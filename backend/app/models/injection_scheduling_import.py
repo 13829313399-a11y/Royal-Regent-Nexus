@@ -56,6 +56,11 @@ class InjectionSchedulingImportProfile(Base):
     template_signature: Mapped[str] = mapped_column(String(64), default="", index=True)
     header_fingerprint: Mapped[str] = mapped_column(String(64), default="", index=True)
     renderer_code: Mapped[str] = mapped_column(String(96), default="")
+    document_kind: Mapped[str] = mapped_column(
+        String(32), default="PLANNED_SCHEDULE", index=True
+    )
+    source_namespace_id: Mapped[str] = mapped_column(String(128), default="")
+    recognition_json: Mapped[str] = mapped_column(Text, default="{}")
     created_by: Mapped[str] = mapped_column(String(64), index=True)
     created_by_name: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[str] = mapped_column(String(32), index=True)
@@ -118,7 +123,7 @@ class InjectionSchedulingImportBatch(Base):
             postgresql_where=text("confirm_request_id IS NOT NULL"),
         ),
         CheckConstraint(
-            "status IN ('PREVIEW', 'CONFIRMED')",
+            "status IN ('PREVIEW', 'PARTIALLY_CONFIRMED', 'CONFIRMED')",
             name="ck_injection_scheduling_import_batch_status",
         ),
         CheckConstraint(
@@ -138,6 +143,10 @@ class InjectionSchedulingImportBatch(Base):
     source_file_name: Mapped[str] = mapped_column(String(255))
     source_file_hash: Mapped[str] = mapped_column(String(64), index=True)
     source_size_bytes: Mapped[int] = mapped_column(Integer)
+    document_kind: Mapped[str] = mapped_column(
+        String(32), default="PLANNED_SCHEDULE", index=True
+    )
+    source_namespace_id: Mapped[str] = mapped_column(String(128), default="")
     plan_sheet_name: Mapped[str] = mapped_column(String(128), default="计划表")
     profile_id: Mapped[str | None] = mapped_column(
         String(96), nullable=True, index=True
@@ -146,9 +155,13 @@ class InjectionSchedulingImportBatch(Base):
     profile_definition_sha256: Mapped[str] = mapped_column(String(64), default="")
     template_signature: Mapped[str] = mapped_column(String(64), default="", index=True)
     mapping_fingerprint: Mapped[str] = mapped_column(String(64), default="", index=True)
-    batch_state: Mapped[str] = mapped_column(String(32), default="LEGACY_PREVIEW", index=True)
+    batch_state: Mapped[str] = mapped_column(
+        String(32), default="LEGACY_PREVIEW", index=True
+    )
     preview_generation: Mapped[int] = mapped_column(Integer, default=1)
-    target_draft_plan_id: Mapped[str] = mapped_column(String(96), default="", index=True)
+    target_draft_plan_id: Mapped[str] = mapped_column(
+        String(96), default="", index=True
+    )
     target_draft_plan_revision: Mapped[int] = mapped_column(Integer, default=0)
     reference_published_plan_id: Mapped[str] = mapped_column(
         String(96), default="", index=True
@@ -157,6 +170,11 @@ class InjectionSchedulingImportBatch(Base):
     reference_published_event_sequence: Mapped[int] = mapped_column(Integer, default=0)
     order_task_revision_digest: Mapped[str] = mapped_column(String(64), default="")
     action_fingerprint: Mapped[str] = mapped_column(String(64), default="", index=True)
+    resolution_digest: Mapped[str] = mapped_column(String(64), default="", index=True)
+    mapping_draft_json: Mapped[str] = mapped_column(Text, default="{}")
+    ui_state_json: Mapped[str] = mapped_column(Text, default="{}")
+    partial_confirmation_json: Mapped[str] = mapped_column(Text, default="{}")
+    artifact_rebind_count: Mapped[int] = mapped_column(Integer, default=0)
     rule_revision: Mapped[int] = mapped_column(Integer, default=0)
     master_revision_digest: Mapped[str] = mapped_column(String(64), default="")
     parser_version: Mapped[str] = mapped_column(String(64))

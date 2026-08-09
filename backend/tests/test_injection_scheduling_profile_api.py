@@ -83,9 +83,11 @@ def test_profile_registry_api_is_factory_scoped_and_not_inferred_for_general_man
             params={"factory_id": "huakang-b"},
         )
         assert response.status_code == 200, response.text
-        assert [item["profile_code"] for item in response.json()["items"]] == [
-            "huakang_b_daily_plan_v1"
-        ]
+        assert {item["profile_code"] for item in response.json()["items"]} == {
+            "huakang_b_daily_plan_v1",
+            "demand_order_shared_v1",
+            "master_data_shared_v1",
+        }
         assert response.json()["items"][0]["status"] == "ACTIVE"
 
         _ensure_user(
@@ -101,3 +103,67 @@ def test_profile_registry_api_is_factory_scoped_and_not_inferred_for_general_man
             params={"factory_id": "huakang-b"},
         )
         assert denied.status_code == 403, denied.text
+
+
+def test_retired_builtin_profile_can_be_reactivated_with_audited_transition(
+    monkeypatch,
+):
+    with _client(monkeypatch) as client:
+        _login(client, "admin", ADMIN_TEST_PASSWORD)
+        listed = client.get(
+            "/api/injection-scheduling/import-profiles",
+            params={"factory_id": "huaxing"},
+        )
+        assert listed.status_code == 200, listed.text
+        profile = next(
+            item
+            for item in listed.json()["items"]
+            if item["profile_code"] == "demand_order_shared_v1"
+        )
+
+        retired = client.post(
+            f"/api/injection-scheduling/import-profiles/{profile['id']}/retire",
+            json={
+                "factory_id": "huaxing",
+                "expected_lifecycle_revision": profile["lifecycle_revision"],
+                "request_id": "profile-retire-test-0001",
+                "reason": "测试退役后受控恢复",
+            },
+        )
+        assert retired.status_code == 200, retired.text
+        assert retired.json()["status"] == "RETIRED"
+
+        restored = client.post(
+            f"/api/injection-scheduling/import-profiles/{profile['id']}/activate",
+            json={
+                "factory_id": "huaxing",
+                "expected_lifecycle_revision": retired.json()[
+                    "lifecycle_revision"
+                ],
+                "request_id": "profile-reactivate-test-0001",
+                "reason": "恢复需求单导入能力",
+            },
+        )
+        assert restored.status_code == 200, restored.text
+        payload = restored.json()
+        assert payload["status"] == "ACTIVE"
+        assert payload["retired_by"] == ""
+        assert payload["retired_at"] == ""
+
+        db_module = importlib.import_module("app.db")
+        execution_models = importlib.import_module(
+            "app.models.injection_scheduling_execution"
+        )
+        with db_module.SessionLocal() as db:
+            event_types = {
+                event.event_type
+                for event in db.query(
+                    execution_models.InjectionSchedulingAuditEvent
+                )
+                .filter(
+                    execution_models.InjectionSchedulingAuditEvent.entity_id
+                    == profile["id"]
+                )
+                .all()
+            }
+        assert "import_profile_reactivated" in event_types

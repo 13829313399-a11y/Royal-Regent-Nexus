@@ -34,6 +34,9 @@ from app.api.injection_scheduling_profiles import (
 from app.api.injection_scheduling_scheduler import (
     router as injection_scheduling_scheduler_router,
 )
+from app.api.injection_scheduling_shared import (
+    router as injection_scheduling_shared_router,
+)
 from app.api.internal_quote import (
     customer_price_artifact_router,
 )
@@ -115,6 +118,7 @@ app.include_router(injection_scheduling_matching_router)
 app.include_router(injection_scheduling_scheduler_router)
 app.include_router(injection_scheduling_phase5_router)
 app.include_router(injection_scheduling_profiles_router)
+app.include_router(injection_scheduling_shared_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)

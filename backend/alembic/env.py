@@ -24,9 +24,11 @@ from app.models import (
     customer_order,  # noqa: F401
     injection_scheduling,  # noqa: F401
     injection_scheduling_execution,  # noqa: F401
+    injection_scheduling_export,  # noqa: F401
     injection_scheduling_import,  # noqa: F401
     injection_scheduling_phase5,  # noqa: F401
     injection_scheduling_scheduler,  # noqa: F401
+    injection_scheduling_shared,  # noqa: F401
     internal_quote,  # noqa: F401
     molding_sample,  # noqa: F401
     pricing,  # noqa: F401

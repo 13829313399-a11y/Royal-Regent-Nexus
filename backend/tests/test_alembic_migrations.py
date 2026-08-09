@@ -105,7 +105,9 @@ INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION = "20260805_0056"
 INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION = "20260805_0057"
 INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION = "20260807_0058"
 CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION = "20260807_0059"
-HEAD_MIGRATION_REVISION = CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION
+INJECTION_SCHEDULING_DEMAND_SHARED_MIGRATION_REVISION = "20260809_0059"
+INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
+HEAD_MIGRATION_REVISION = "20260810_0061"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -815,7 +817,15 @@ def test_customer_order_manual_override_migration_adds_audit_columns(tmp_path):
     env = os.environ.copy()
     env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
     subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), "upgrade", "head"],
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION,
+        ],
         cwd=BACKEND_DIR,
         env=env,
         check=True,
@@ -4146,6 +4156,28 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
             "injection_scheduling_progress_adjustments",
             "injection_scheduling_import_actions",
             "injection_scheduling_import_master_decisions",
+            "injection_scheduling_upload_artifacts",
+            "injection_scheduling_export_audits",
+            "injection_scheduling_company_scopes",
+            "injection_scheduling_demand_order_identities",
+            "injection_scheduling_master_data_proposals",
+            "injection_scheduling_company_factory_memberships",
+            "injection_scheduling_customer_identities",
+            "injection_scheduling_demand_import_rows",
+            "injection_scheduling_field_evidence",
+            "injection_scheduling_mold_definitions",
+            "injection_scheduling_customer_aliases",
+            "injection_scheduling_demand_resolution_snapshots",
+            "injection_scheduling_mold_aliases",
+            "injection_scheduling_mold_output_specs",
+            "injection_scheduling_physical_mold_assets",
+            "injection_scheduling_commercial_rate_rules",
+            "injection_scheduling_demand_order_versions",
+            "injection_scheduling_factory_mold_capabilities",
+            "injection_scheduling_legacy_mold_copy_bindings",
+            "injection_scheduling_mold_asset_movements",
+            "injection_scheduling_mold_reservations",
+            "injection_scheduling_rollout_policies",
         }
         machine_columns = {
             row[1]

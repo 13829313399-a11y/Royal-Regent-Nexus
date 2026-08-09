@@ -32,6 +32,7 @@ class FieldRule:
     converter: str
     required: bool = False
     unit: str = ""
+    selector_strategy: str = "FIXED_COLUMN_HEADER"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,10 +60,28 @@ class ImportProfile:
     dynamic_shift_end: str
     quantity_scope: str
     renderer_code: str
+    document_kind: str = "PLANNED_SCHEDULE"
+    source_namespace_id: str = ""
+    title_aliases: tuple[str, ...] = ()
+    anchor_aliases: tuple[str, ...] = ()
+    termination_aliases: tuple[str, ...] = ()
 
     @property
     def current_plan_role(self) -> SheetRoleRule:
+        if self.document_kind not in {"PLANNED_SCHEDULE", "SYSTEM_ROUND_TRIP"}:
+            raise ValueError("只有计划表 Profile 才有 CURRENT_PLAN role")
         return next(item for item in self.sheet_roles if item.role == "CURRENT_PLAN")
+
+    @property
+    def primary_source_role(self) -> SheetRoleRule:
+        expected = {
+            "DEMAND_ORDER": "ORDER_SOURCE",
+            "PLANNED_SCHEDULE": "CURRENT_PLAN",
+            "SYSTEM_ROUND_TRIP": "CURRENT_PLAN",
+        }.get(self.document_kind)
+        if expected is None:
+            return next(item for item in self.sheet_roles if item.required)
+        return next(item for item in self.sheet_roles if item.role == expected)
 
 
 CANONICAL_FIELD_CATALOG: dict[str, CanonicalField] = {
@@ -207,6 +226,54 @@ CANONICAL_FIELD_CATALOG: dict[str, CanonicalField] = {
         CanonicalField(
             "source_machine_finish", "text", "SYSTEM_DERIVED", "comparison only"
         ),
+        CanonicalField(
+            "customer_name", "text", "SOURCE_FACT", "customer identity evidence"
+        ),
+        CanonicalField(
+            "source_document_no",
+            "identifier",
+            "SOURCE_FACT",
+            "source document identity evidence",
+        ),
+        CanonicalField(
+            "source_mold_no",
+            "identifier",
+            "SOURCE_FACT",
+            "namespaced shared mold matching evidence",
+        ),
+        CanonicalField(
+            "product_group_no",
+            "identifier",
+            "SOURCE_FACT",
+            "source product grouping evidence",
+        ),
+        CanonicalField(
+            "required_shots", "number", "SOURCE_FACT", "required shots evidence"
+        ),
+        CanonicalField(
+            "source_daily_capacity",
+            "number",
+            "SOURCE_FACT",
+            "source capacity candidate evidence",
+        ),
+        CanonicalField(
+            "total_gross_weight",
+            "number",
+            "SOURCE_FACT",
+            "source material calculation evidence",
+        ),
+        CanonicalField(
+            "total_net_weight",
+            "number",
+            "SOURCE_FACT",
+            "source material calculation evidence",
+        ),
+        CanonicalField(
+            "source_mold_return_due",
+            "text",
+            "SOURCE_FACT",
+            "unconfirmed source timing evidence",
+        ),
     )
 }
 
@@ -218,7 +285,13 @@ ALLOWED_MACHINE_ADAPTERS = frozenset(
 )
 ALLOWED_MOLD_ADAPTERS = frozenset({"huaxing_mold_v1", "system_master_only"})
 ALLOWED_RENDERERS = frozenset(
-    {"huaxing_daily_plan_v1", "huakang_b_daily_plan_v1", "system_standard_v1"}
+    {
+        "huaxing_daily_plan_v1",
+        "huakang_b_daily_plan_v1",
+        "system_standard_v1",
+        "demand_order_review_v1",
+        "master_data_review_v1",
+    }
 )
 ALLOWED_SHEET_ROLES = frozenset(
     {
@@ -230,8 +303,18 @@ ALLOWED_SHEET_ROLES = frozenset(
         "SHIFT_HISTORY",
         "MACHINE_MASTER",
         "MOLD_MASTER",
+        "ORDER_SOURCE",
+        "ORDER_META",
+        "MOLD_DEFINITION_SOURCE",
+        "MOLD_OUTPUT_SOURCE",
+        "FACTORY_CAPABILITY_SOURCE",
+        "PRICE_RULE_SOURCE",
     }
 )
+ALLOWED_DOCUMENT_KINDS = frozenset(
+    {"DEMAND_ORDER", "PLANNED_SCHEDULE", "SYSTEM_ROUND_TRIP", "MASTER_DATA"}
+)
+ALLOWED_SELECTOR_STRATEGIES = frozenset({"FIXED_COLUMN_HEADER", "HEADER_ALIAS"})
 
 
 def normalize_header(value: Any) -> str:
@@ -252,6 +335,7 @@ def _field(
     *,
     required: bool = False,
     unit: str = "",
+    selector_strategy: str = "FIXED_COLUMN_HEADER",
 ) -> FieldRule:
     if canonical not in CANONICAL_FIELD_CATALOG:
         raise RuntimeError(f"unknown canonical field: {canonical}")
@@ -265,6 +349,7 @@ def _field(
         converter=converter,
         required=required,
         unit=unit,
+        selector_strategy=selector_strategy,
     )
 
 
@@ -398,7 +483,9 @@ def _system_standard_fields() -> tuple[FieldRule, ...]:
         _field(p, "order_no", "D", ("订单号",), "identifier", required=True),
         _field(p, "item_no", "E", ("货号",), "identifier"),
         _field(p, "order_quantity", "F", ("订单数量",), "number", required=True),
-        _field(p, "completed_quantity", "G", ("累计完成数量",), "number", required=True),
+        _field(
+            p, "completed_quantity", "G", ("累计完成数量",), "number", required=True
+        ),
         _field(
             p,
             "shift_target_quantity",
@@ -416,6 +503,76 @@ def _system_standard_fields() -> tuple[FieldRule, ...]:
         _field(p, "remark", "O", ("备注",), "text"),
         _field(p, "required_arm_type", "P", ("机械手",), "text"),
         _field(p, "required_fixture_type", "Q", ("夹具",), "text"),
+    )
+
+
+def _demand_order_fields() -> tuple[FieldRule, ...]:
+    p = "demand_order_shared_v1"
+
+    def demand_field(
+        canonical: str,
+        fallback_column: str,
+        aliases: tuple[str, ...],
+        converter: str,
+        *,
+        required: bool = False,
+        unit: str = "",
+    ) -> FieldRule:
+        return _field(
+            p,
+            canonical,
+            fallback_column,
+            aliases,
+            converter,
+            required=required,
+            unit=unit,
+            selector_strategy="HEADER_ALIAS",
+        )
+
+    return (
+        demand_field("product_group_no", "A", ("款号", "产品款号"), "identifier"),
+        demand_field(
+            "source_mold_no",
+            "B",
+            ("模具编号", "工模编号", "工模编码", "模号"),
+            "identifier",
+            required=True,
+        ),
+        demand_field(
+            "product_name",
+            "C",
+            ("工模名称", "产品名称", "名称"),
+            "text",
+            required=True,
+        ),
+        demand_field(
+            "order_quantity", "D", ("数量", "订单数量"), "number", required=True
+        ),
+        demand_field("set_quantity", "E", ("总套数", "套数"), "number"),
+        demand_field("required_shots", "F", ("啤数", "总啤数"), "number"),
+        demand_field("color_name", "G", ("颜色",), "text"),
+        demand_field("color_powder_code", "H", ("色粉号", "色粉"), "identifier"),
+        demand_field("material_name", "I", ("用料名称", "用料", "材料"), "text"),
+        demand_field("source_daily_capacity", "J", ("模具日产量", "日产量"), "number"),
+        demand_field(
+            "whole_shot_gross_weight_g",
+            "K",
+            ("整啤毛重", "毛重"),
+            "number",
+            unit="g",
+        ),
+        demand_field(
+            "whole_shot_net_weight_g",
+            "L",
+            ("整啤净重", "净重"),
+            "number",
+            unit="g",
+        ),
+        demand_field("total_gross_weight", "M", ("总毛重",), "number"),
+        demand_field("total_net_weight", "N", ("总净重",), "number"),
+        demand_field("sprue_ratio", "O", ("水口比例",), "percent"),
+        demand_field("source_mold_return_due", "P", ("啤机复期", "复期"), "text"),
+        demand_field("remark", "Q", ("备注", "说明"), "text"),
     )
 
 
@@ -470,6 +627,70 @@ BUILTIN_IMPORT_PROFILES: tuple[ImportProfile, ...] = (
         dynamic_shift_end="DF",
         quantity_scope="ORDER_CUMULATIVE",
         renderer_code="huakang_b_daily_plan_v1",
+    ),
+    ImportProfile(
+        profile_id="isprofile-demand-order-shared-v1",
+        profile_code="demand_order_shared_v1",
+        profile_family="demand_order_shared",
+        revision=1,
+        name="啤机部生产啤货表（公共需求单）v1",
+        factories=(
+            "huaxing",
+            "huakang-a",
+            "huakang-b",
+            "huakang-c",
+            "huakang-d",
+            "huadeng",
+        ),
+        status="ACTIVE",
+        sheet_roles=(
+            SheetRoleRule("ORDER_SOURCE", ("啤货表", "下单表", "订单表"), True),
+            SheetRoleRule("ORDER_META", ("啤货表", "下单表", "订单表")),
+        ),
+        fields=_demand_order_fields(),
+        machine_adapter="system_master_only",
+        mold_adapter="system_master_only",
+        dynamic_shift_start="A",
+        dynamic_shift_end="A",
+        quantity_scope="ORDER_CUMULATIVE",
+        renderer_code="demand_order_review_v1",
+        document_kind="DEMAND_ORDER",
+        source_namespace_id="demand-order:company",
+        title_aliases=("啤机部生产啤货表",),
+        anchor_aliases=("公司名称", "交货日期", "单号"),
+        termination_aliases=("备注", "下单日期", "操作员"),
+    ),
+    ImportProfile(
+        profile_id="isprofile-master-data-shared-v1",
+        profile_code="master_data_shared_v1",
+        profile_family="master_data_shared",
+        revision=1,
+        name="共享模具与价格主数据证据 v1",
+        factories=(
+            "huaxing",
+            "huakang-a",
+            "huakang-b",
+            "huakang-c",
+            "huakang-d",
+            "huadeng",
+        ),
+        status="ACTIVE",
+        sheet_roles=(
+            SheetRoleRule(
+                "MOLD_DEFINITION_SOURCE",
+                ("机安", "模具资料", "模具主数据"),
+            ),
+            SheetRoleRule("PRICE_RULE_SOURCE", ("单价", "价格", "价格规则")),
+        ),
+        fields=(),
+        machine_adapter="system_master_only",
+        mold_adapter="system_master_only",
+        dynamic_shift_start="A",
+        dynamic_shift_end="A",
+        quantity_scope="ORDER_CUMULATIVE",
+        renderer_code="master_data_review_v1",
+        document_kind="MASTER_DATA",
+        source_namespace_id="master-data:company",
     ),
 )
 
@@ -527,6 +748,11 @@ def profile_config(profile: ImportProfile) -> dict[str, Any]:
                 "required": item.required,
                 "unit": item.unit,
                 "authority": CANONICAL_FIELD_CATALOG[item.canonical_field].authority,
+                **(
+                    {"selector_strategy": item.selector_strategy}
+                    if item.selector_strategy != "FIXED_COLUMN_HEADER"
+                    else {}
+                ),
             }
             for item in profile.fields
         ],
@@ -536,6 +762,19 @@ def profile_config(profile: ImportProfile) -> dict[str, Any]:
         "dynamic_shift_end": profile.dynamic_shift_end,
         "quantity_scope": profile.quantity_scope,
         "renderer_code": profile.renderer_code,
+        **(
+            {
+                "document_kind": profile.document_kind,
+                "source_namespace_id": profile.source_namespace_id,
+                "recognition": {
+                    "title_aliases": list(profile.title_aliases),
+                    "anchor_aliases": list(profile.anchor_aliases),
+                    "termination_aliases": list(profile.termination_aliases),
+                },
+            }
+            if profile.document_kind != "PLANNED_SCHEDULE"
+            else {}
+        ),
     }
 
 
@@ -563,6 +802,7 @@ def profile_definition_digest(profile: ImportProfile) -> str:
 def profile_template_signature(profile: ImportProfile) -> str:
     stable_structure = {
         "profile_family": profile.profile_family,
+        "document_kind": profile.document_kind,
         "sheet_roles": [
             {
                 "role": item.role,
@@ -578,6 +818,7 @@ def profile_template_signature(profile: ImportProfile) -> str:
                 "column": item.column,
                 "headers": [normalize_header(value) for value in item.headers],
                 "converter": item.converter,
+                "selector_strategy": item.selector_strategy,
             }
             for item in profile.fields
         ],
@@ -646,6 +887,9 @@ def profile_from_config(config: dict[str, Any]) -> ImportProfile:
                 converter=converter,
                 required=bool(item.get("required", False)),
                 unit=str(item.get("unit", "")),
+                selector_strategy=str(
+                    item.get("selector_strategy", "FIXED_COLUMN_HEADER")
+                ),
             )
         )
     roles = tuple(
@@ -657,8 +901,18 @@ def profile_from_config(config: dict[str, Any]) -> ImportProfile:
         )
         for item in config["sheet_roles"]
     )
-    if sum(item.role == "CURRENT_PLAN" for item in roles) != 1:
-        raise ValueError("Profile 必须且只能声明一个 CURRENT_PLAN Sheet role")
+    document_kind = str(config.get("document_kind", "PLANNED_SCHEDULE"))
+    if document_kind not in ALLOWED_DOCUMENT_KINDS:
+        raise ValueError("Profile document_kind 无效")
+    expected_role = {
+        "PLANNED_SCHEDULE": "CURRENT_PLAN",
+        "SYSTEM_ROUND_TRIP": "CURRENT_PLAN",
+        "DEMAND_ORDER": "ORDER_SOURCE",
+    }.get(document_kind)
+    if expected_role and sum(item.role == expected_role for item in roles) != 1:
+        raise ValueError(
+            f"{document_kind} Profile 必须且只能声明一个 {expected_role} role"
+        )
     unknown_roles = sorted({item.role for item in roles} - ALLOWED_SHEET_ROLES)
     if unknown_roles:
         raise ValueError(f"Profile 引用了未知 Sheet role: {', '.join(unknown_roles)}")
@@ -678,6 +932,20 @@ def profile_from_config(config: dict[str, Any]) -> ImportProfile:
         dynamic_shift_end=str(config["dynamic_shift_end"]).upper(),
         quantity_scope=str(config["quantity_scope"]),
         renderer_code=str(config["renderer_code"]),
+        document_kind=document_kind,
+        source_namespace_id=str(config.get("source_namespace_id", "")),
+        title_aliases=tuple(
+            str(value)
+            for value in config.get("recognition", {}).get("title_aliases", [])
+        ),
+        anchor_aliases=tuple(
+            str(value)
+            for value in config.get("recognition", {}).get("anchor_aliases", [])
+        ),
+        termination_aliases=tuple(
+            str(value)
+            for value in config.get("recognition", {}).get("termination_aliases", [])
+        ),
     )
     if profile.quantity_scope not in {"ORDER_CUMULATIVE", "SPLIT_CUMULATIVE"}:
         raise ValueError("Profile quantity_scope 无效")
@@ -687,6 +955,17 @@ def profile_from_config(config: dict[str, Any]) -> ImportProfile:
         raise ValueError("Profile mold_adapter 无效")
     if profile.renderer_code not in ALLOWED_RENDERERS:
         raise ValueError("Profile renderer_code 无效")
+    invalid_selectors = sorted(
+        {
+            item.selector_strategy
+            for item in profile.fields
+            if item.selector_strategy not in ALLOWED_SELECTOR_STRATEGIES
+        }
+    )
+    if invalid_selectors:
+        raise ValueError(
+            f"Profile selector strategy 无效: {', '.join(invalid_selectors)}"
+        )
     column_pattern = re.compile(r"^[A-Z]{1,3}$")
     if not column_pattern.fullmatch(
         profile.dynamic_shift_start
@@ -697,9 +976,14 @@ def profile_from_config(config: dict[str, Any]) -> ImportProfile:
     return profile
 
 
-def profiles_for_factory(factory_id: str) -> tuple[ImportProfile, ...]:
+def profiles_for_factory(
+    factory_id: str,
+    document_kind: str = "PLANNED_SCHEDULE",
+) -> tuple[ImportProfile, ...]:
     return tuple(
-        item for item in BUILTIN_IMPORT_PROFILES if factory_id in item.factories
+        item
+        for item in BUILTIN_IMPORT_PROFILES
+        if factory_id in item.factories and item.document_kind == document_kind
     )
 
 

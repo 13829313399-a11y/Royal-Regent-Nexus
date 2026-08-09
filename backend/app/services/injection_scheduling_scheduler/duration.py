@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from math import ceil
 from typing import Any
@@ -39,4 +40,13 @@ def default_shift_target(order: InjectionSchedulingOrder) -> Decimal:
         Decimal(order.order_quantity) - Decimal(order.completed_quantity),
         Decimal(0),
     )
-    return min(outstanding, Decimal(40))
+    try:
+        lineage = json.loads(order.lineage_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        lineage = {}
+    try:
+        source_daily_capacity = Decimal(str(lineage.get("source_daily_capacity") or 0))
+    except (TypeError, ValueError, ArithmeticError):
+        source_daily_capacity = Decimal(0)
+    target = source_daily_capacity if source_daily_capacity > 0 else Decimal(40)
+    return min(outstanding, target)

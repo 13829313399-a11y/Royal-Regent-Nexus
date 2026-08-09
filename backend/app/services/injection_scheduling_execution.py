@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -30,6 +30,13 @@ from app.models.injection_scheduling_execution import (
     InjectionSchedulingPublishedSnapshot,
     InjectionSchedulingShiftReport,
     InjectionSchedulingTask,
+)
+from app.models.injection_scheduling_shared import (
+    InjectionSchedulingDemandOrderVersion,
+    InjectionSchedulingFactoryMoldCapability,
+    InjectionSchedulingLegacyMoldCopyBinding,
+    InjectionSchedulingMoldReservation,
+    InjectionSchedulingPhysicalMoldAsset,
 )
 from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingDraftCreate,
@@ -210,6 +217,7 @@ def task_out(record: InjectionSchedulingTask) -> InjectionSchedulingTaskOut:
         machine_id=record.machine_id,
         order_id=record.order_id,
         mold_id=record.mold_id,
+        physical_mold_asset_id=record.physical_mold_asset_id,
         mold_copy_no=record.mold_copy_no,
         sequence_no=record.sequence_no,
         execution_status=record.execution_status,
@@ -365,7 +373,9 @@ def plan_order_state_out(
     )
 
 
-def plan_out(db: Session, record: InjectionSchedulingPlan) -> InjectionSchedulingPlanOut:
+def plan_out(
+    db: Session, record: InjectionSchedulingPlan
+) -> InjectionSchedulingPlanOut:
     from app.services.injection_scheduling_takeover import plan_order_states
 
     states = plan_order_states(db, record.factory_id, record.id)
@@ -420,10 +430,7 @@ def plan_out(db: Session, record: InjectionSchedulingPlan) -> InjectionSchedulin
         published_at=record.published_at,
         archived_at=record.archived_at,
         orders=projected_orders,
-        plan_order_states=[
-            plan_order_state_out(item)
-            for item in states
-        ],
+        plan_order_states=[plan_order_state_out(item) for item in states],
         tasks=[task_out(item) for item in plan_tasks(db, record.factory_id, record.id)],
     )
 
@@ -833,6 +840,217 @@ def _iso_seconds(value: datetime) -> str:
     return value.astimezone(BUSINESS_TIME_ZONE).isoformat(timespec="seconds")
 
 
+def _ensure_physical_reservation_window_available(
+    db: Session,
+    *,
+    physical_asset_id: str,
+    planned_start: str,
+    planned_finish: str,
+    exclude_task_ids: set[str] | None = None,
+    exclude_reservation_ids: set[str] | None = None,
+) -> None:
+    timestamp = _now()
+    db.execute(
+        update(InjectionSchedulingMoldReservation)
+        .where(
+            InjectionSchedulingMoldReservation.status == "TENTATIVE",
+            InjectionSchedulingMoldReservation.expires_at != "",
+            InjectionSchedulingMoldReservation.expires_at <= timestamp,
+        )
+        .values(
+            status="EXPIRED",
+            revision=InjectionSchedulingMoldReservation.revision + 1,
+            released_at=timestamp,
+        )
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:asset_id))"),
+            {"asset_id": physical_asset_id},
+        )
+    statement = select(InjectionSchedulingMoldReservation.id).where(
+        InjectionSchedulingMoldReservation.physical_asset_id == physical_asset_id,
+        InjectionSchedulingMoldReservation.status.in_({"TENTATIVE", "ACTIVE"}),
+        InjectionSchedulingMoldReservation.window_start < planned_finish,
+        InjectionSchedulingMoldReservation.window_end > planned_start,
+    )
+    if exclude_task_ids:
+        statement = statement.where(
+            InjectionSchedulingMoldReservation.task_id.notin_(exclude_task_ids)
+        )
+    if exclude_reservation_ids:
+        statement = statement.where(
+            InjectionSchedulingMoldReservation.id.notin_(exclude_reservation_ids)
+        )
+    conflict = db.scalar(statement)
+    if conflict is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PHYSICAL_MOLD_ASSET_RESERVED",
+                "message": "该副实物模具在目标时间窗已被占用",
+                "reservation_id": conflict,
+            },
+        )
+
+
+def _sync_task_reservation_window(
+    db: Session,
+    *,
+    task_id: str,
+    plan_id: str,
+    planned_start: str,
+    planned_finish: str,
+) -> None:
+    reservation = db.scalar(
+        select(InjectionSchedulingMoldReservation)
+        .where(
+            InjectionSchedulingMoldReservation.task_id == task_id,
+            InjectionSchedulingMoldReservation.status.in_({"TENTATIVE", "ACTIVE"}),
+        )
+        .with_for_update()
+    )
+    if reservation is None:
+        return
+    reservation.plan_id = plan_id
+    reservation.window_start = planned_start
+    reservation.window_end = planned_finish
+    reservation.status = "ACTIVE"
+    reservation.expires_at = ""
+    reservation.revision += 1
+    reservation.released_at = ""
+
+
+def _release_task_reservation(db: Session, *, task_id: str, timestamp: str) -> None:
+    reservations = list(
+        db.scalars(
+            select(InjectionSchedulingMoldReservation)
+            .where(
+                InjectionSchedulingMoldReservation.task_id == task_id,
+                InjectionSchedulingMoldReservation.status.in_({"TENTATIVE", "ACTIVE"}),
+            )
+            .with_for_update()
+        ).all()
+    )
+    for reservation in reservations:
+        reservation.status = "RELEASED"
+        reservation.revision += 1
+        reservation.released_at = timestamp
+
+
+def _physical_asset_for_new_task(
+    db: Session,
+    *,
+    order: InjectionSchedulingOrder,
+    factory_id: str,
+    requested_asset_id: str | None,
+    mold_copy_no: int,
+    planned_start: str,
+    planned_finish: str,
+) -> InjectionSchedulingPhysicalMoldAsset | None:
+    if order.source_type != "DEMAND_ORDER_VERSION":
+        binding = db.scalar(
+            select(InjectionSchedulingLegacyMoldCopyBinding).where(
+                InjectionSchedulingLegacyMoldCopyBinding.factory_id == factory_id,
+                InjectionSchedulingLegacyMoldCopyBinding.mold_id == order.mold_id,
+                InjectionSchedulingLegacyMoldCopyBinding.mold_copy_no == mold_copy_no,
+                InjectionSchedulingLegacyMoldCopyBinding.status == "ACTIVE",
+            )
+        )
+        if binding is None:
+            if requested_asset_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="旧订单不能直接绑定共享实物；请先完成 LegacyMoldCopyBinding 激活",
+                )
+            return None
+        asset = db.get(InjectionSchedulingPhysicalMoldAsset, binding.physical_asset_id)
+        if (
+            asset is None
+            or asset.current_factory_id != factory_id
+            or asset.status != "AVAILABLE"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "LEGACY_MOLD_ASSET_NOT_AVAILABLE",
+                    "message": "旧副模具绑定的实物资产当前不可用",
+                },
+            )
+        if requested_asset_id and requested_asset_id != asset.id:
+            raise HTTPException(
+                status_code=409,
+                detail="请求的实物模具与已激活 LegacyMoldCopyBinding 不一致",
+            )
+        _ensure_physical_reservation_window_available(
+            db,
+            physical_asset_id=asset.id,
+            planned_start=planned_start,
+            planned_finish=planned_finish,
+        )
+        return asset
+    version = db.get(InjectionSchedulingDemandOrderVersion, order.source_ref)
+    if version is None:
+        raise HTTPException(status_code=409, detail="需求订单冻结版本不存在")
+    if version.readiness_status != "FACTORY_READY":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEMAND_ORDER_NOT_FACTORY_READY",
+                "message": "订单可留在 BACKLOG，但本厂实物或已验证能力不足，不能生成 Task",
+                "order_revision_id": version.id,
+            },
+        )
+    assets = list(
+        db.scalars(
+            select(InjectionSchedulingPhysicalMoldAsset).where(
+                InjectionSchedulingPhysicalMoldAsset.mold_definition_id
+                == version.mold_definition_id,
+                InjectionSchedulingPhysicalMoldAsset.current_factory_id == factory_id,
+                InjectionSchedulingPhysicalMoldAsset.status == "AVAILABLE",
+            )
+        ).all()
+    )
+    capabilities = list(
+        db.scalars(
+            select(InjectionSchedulingFactoryMoldCapability).where(
+                InjectionSchedulingFactoryMoldCapability.factory_id == factory_id,
+                InjectionSchedulingFactoryMoldCapability.mold_definition_id
+                == version.mold_definition_id,
+                InjectionSchedulingFactoryMoldCapability.status == "ACTIVE",
+            )
+        ).all()
+    )
+    eligible_asset_ids = {
+        asset.id
+        for asset in assets
+        if any(
+            capability.physical_asset_id in {None, asset.id}
+            and capability.mold_output_spec_id in {None, version.mold_output_spec_id}
+            for capability in capabilities
+        )
+    }
+    if requested_asset_id:
+        eligible_asset_ids &= {requested_asset_id}
+    if len(eligible_asset_ids) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PHYSICAL_MOLD_ASSET_SELECTION_REQUIRED",
+                "message": "可用实物模具不是唯一结果，请核验资产或明确选择",
+                "candidate_asset_ids": sorted(eligible_asset_ids),
+            },
+        )
+    asset_id = next(iter(eligible_asset_ids))
+    _ensure_physical_reservation_window_available(
+        db,
+        physical_asset_id=asset_id,
+        planned_start=planned_start,
+        planned_finish=planned_finish,
+    )
+    return next(item for item in assets if item.id == asset_id)
+
+
 def add_task(
     db: Session,
     plan_id: str,
@@ -856,12 +1074,22 @@ def add_task(
     mold_id = payload.mold_id or order.mold_id
     if mold_id is not None:
         _require_mold(db, factory_id, mold_id)
+    physical_asset = _physical_asset_for_new_task(
+        db,
+        order=order,
+        factory_id=factory_id,
+        requested_asset_id=payload.physical_mold_asset_id,
+        mold_copy_no=payload.mold_copy_no,
+        planned_start=payload.planned_start,
+        planned_finish=payload.planned_finish,
+    )
     _validate_schedule_conflicts(
         db,
         factory_id=factory_id,
         plan_id=plan.id,
         machine_id=payload.machine_id,
         mold_id=mold_id,
+        physical_mold_asset_id=physical_asset.id if physical_asset else None,
         mold_copy_no=payload.mold_copy_no,
         planned_start=payload.planned_start,
         planned_finish=payload.planned_finish,
@@ -914,6 +1142,7 @@ def add_task(
         machine_id=payload.machine_id,
         order_id=order.id,
         mold_id=mold_id,
+        physical_mold_asset_id=physical_asset.id if physical_asset else None,
         mold_copy_no=payload.mold_copy_no,
         sequence_no=payload.sequence_no,
         execution_status=payload.execution_status,
@@ -951,6 +1180,26 @@ def add_task(
         created_at=timestamp,
         updated_at=timestamp,
     )
+    if physical_asset is not None:
+        db.add(
+            InjectionSchedulingMoldReservation(
+                id=f"ismoldreservation-{uuid4().hex}",
+                physical_asset_id=physical_asset.id,
+                factory_id=factory_id,
+                plan_id=plan.id,
+                task_id=record.id,
+                window_start=payload.planned_start,
+                window_end=payload.planned_finish,
+                status="ACTIVE",
+                revision=1,
+                expires_at="",
+                idempotency_key=f"task:{record.id}",
+                source_kind=origin.upper(),
+                created_by=user.id,
+                created_at=timestamp,
+                released_at="",
+            )
+        )
     db.add(record)
     state = db.scalar(
         select(InjectionSchedulingPlanOrderState).where(
@@ -1134,11 +1383,20 @@ def update_task(
         plan_id=plan.id,
         machine_id=values["machine_id"],
         mold_id=values["mold_id"],
+        physical_mold_asset_id=task.physical_mold_asset_id,
         mold_copy_no=values["mold_copy_no"],
         planned_start=values["planned_start"],
         planned_finish=values["planned_finish"],
         exclude_task_id=task.id,
     )
+    if task.physical_mold_asset_id:
+        _ensure_physical_reservation_window_available(
+            db,
+            physical_asset_id=task.physical_mold_asset_id,
+            planned_start=values["planned_start"],
+            planned_finish=values["planned_finish"],
+            exclude_task_ids={task.id},
+        )
     timestamp = _now()
     try:
         task_result = db.execute(
@@ -1151,7 +1409,9 @@ def update_task(
             )
             .values(
                 **values,
-                manual_adjusted=(task.manual_adjusted or bool(task.auto_schedule_run_id)),
+                manual_adjusted=(
+                    task.manual_adjusted or bool(task.auto_schedule_run_id)
+                ),
                 revision=payload.expected_revision + 1,
                 updated_by=user.id,
                 updated_by_name=_actor_name(user),
@@ -1185,6 +1445,16 @@ def update_task(
                 )
             raise _revision_conflict(
                 "排产任务", payload.expected_revision, latest_task.revision
+            )
+        if values["execution_status"] in {"COMPLETED", "CANCELLED"}:
+            _release_task_reservation(db, task_id=task.id, timestamp=timestamp)
+        else:
+            _sync_task_reservation_window(
+                db,
+                task_id=task.id,
+                plan_id=plan.id,
+                planned_start=values["planned_start"],
+                planned_finish=values["planned_finish"],
             )
         db.flush()
         for order_id in {previous_order_id, values["order_id"]}:
@@ -1249,6 +1519,7 @@ def _validate_proposed_task_windows(
 ) -> None:
     by_machine: dict[str, list[dict[str, Any]]] = {}
     by_mold_copy: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    by_physical_asset: dict[str, list[dict[str, Any]]] = {}
     for placement in placements:
         placement["_start"] = datetime.fromisoformat(placement["planned_start"])
         placement["_finish"] = datetime.fromisoformat(placement["planned_finish"])
@@ -1256,6 +1527,10 @@ def _validate_proposed_task_windows(
         if placement["mold_id"]:
             key = (placement["mold_id"], placement["mold_copy_no"])
             by_mold_copy.setdefault(key, []).append(placement)
+        if placement.get("physical_mold_asset_id"):
+            by_physical_asset.setdefault(
+                placement["physical_mold_asset_id"], []
+            ).append(placement)
 
     def ensure_no_overlap(
         groups: dict[Any, list[dict[str, Any]]],
@@ -1275,6 +1550,7 @@ def _validate_proposed_task_windows(
 
     ensure_no_overlap(by_machine, "移动后的同一机台任务时间发生重叠")
     ensure_no_overlap(by_mold_copy, "移动后的同一实体模具时间发生重叠")
+    ensure_no_overlap(by_physical_asset, "移动后的同一实物模具时间发生重叠")
 
 
 def move_tasks_bulk(
@@ -1349,7 +1625,9 @@ def move_tasks_bulk(
     move_by_task_id = {move.task_id: move for move in payload.moves}
     missing = [task_id for task_id in move_by_task_id if task_id not in task_by_id]
     if missing:
-        raise HTTPException(status_code=404, detail={"message": "排产任务不存在", "task_ids": missing})
+        raise HTTPException(
+            status_code=404, detail={"message": "排产任务不存在", "task_ids": missing}
+        )
 
     match_by_task_id: dict[str, dict[str, Any]] = {}
     move_results: list[InjectionSchedulingTaskMoveResult] = []
@@ -1415,9 +1693,13 @@ def move_tasks_bulk(
             )
         if match.decision == "REVIEW_REQUIRED":
             if not can_override_review:
-                raise HTTPException(status_code=403, detail="待复核移动需要发布/覆盖权限")
+                raise HTTPException(
+                    status_code=403, detail="待复核移动需要发布/覆盖权限"
+                )
             if not move.override_reason:
-                raise HTTPException(status_code=409, detail="待复核移动必须填写人工覆盖原因")
+                raise HTTPException(
+                    status_code=409, detail="待复核移动必须填写人工覆盖原因"
+                )
         match_by_task_id[task.id] = match_payload
         move_results.append(
             InjectionSchedulingTaskMoveResult(
@@ -1461,6 +1743,7 @@ def move_tasks_bulk(
             "planned_start": task.planned_start,
             "planned_finish": task.planned_finish,
             "mold_id": task.mold_id,
+            "physical_mold_asset_id": task.physical_mold_asset_id,
             "mold_copy_no": task.mold_copy_no,
         }
         for task in tasks
@@ -1489,6 +1772,18 @@ def move_tasks_bulk(
     if not changed_tasks:
         raise HTTPException(status_code=409, detail="任务位置和计划时间没有变化")
 
+    changed_task_ids = {item.id for item in changed_tasks}
+    for task in changed_tasks:
+        proposed = proposed_by_id[task.id]
+        if task.physical_mold_asset_id:
+            _ensure_physical_reservation_window_available(
+                db,
+                physical_asset_id=task.physical_mold_asset_id,
+                planned_start=proposed["planned_start"],
+                planned_finish=proposed["planned_finish"],
+                exclude_task_ids=changed_task_ids,
+            )
+
     timestamp = _now()
     temp_base = max((task.sequence_no for task in tasks), default=0) + len(tasks) + 1000
     try:
@@ -1505,6 +1800,13 @@ def move_tasks_bulk(
             )
             if result.rowcount != 1:
                 raise _revision_conflict("排产任务", task.revision, task.revision + 1)
+            _sync_task_reservation_window(
+                db,
+                task_id=task.id,
+                plan_id=plan.id,
+                planned_start=proposed["planned_start"],
+                planned_finish=proposed["planned_finish"],
+            )
         db.flush()
         for task in changed_tasks:
             proposed = proposed_by_id[task.id]
@@ -1604,7 +1906,9 @@ def move_tasks_bulk(
         raise
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="批量移动违反队列或时间约束") from exc
+        raise HTTPException(
+            status_code=409, detail="批量移动违反队列或时间约束"
+        ) from exc
     return InjectionSchedulingTaskBulkMoveResult(
         plan=plan_out(db, _require_plan(db, factory_id, plan.id)),
         moves=move_results,
@@ -1710,6 +2014,80 @@ def publish_plan(
                 user=user,
                 timestamp=timestamp,
             )
+        tasks = plan_tasks(db, factory_id, plan.id)
+        reservation_ids_in_published_plan: set[str] = set()
+        for task in tasks:
+            if not task.physical_mold_asset_id:
+                continue
+            lineage_task_ids = {task.id}
+            if task.source_task_id:
+                lineage_task_ids.add(task.source_task_id)
+            _ensure_physical_reservation_window_available(
+                db,
+                physical_asset_id=task.physical_mold_asset_id,
+                planned_start=task.planned_start,
+                planned_finish=task.planned_finish,
+                exclude_task_ids=lineage_task_ids,
+            )
+            reservation = db.scalar(
+                select(InjectionSchedulingMoldReservation)
+                .where(
+                    InjectionSchedulingMoldReservation.task_id.in_(lineage_task_ids),
+                    InjectionSchedulingMoldReservation.status.in_(
+                        {"TENTATIVE", "ACTIVE"}
+                    ),
+                )
+                .order_by(InjectionSchedulingMoldReservation.revision.desc())
+                .with_for_update()
+            )
+            if reservation is None:
+                reservation = InjectionSchedulingMoldReservation(
+                    id=f"ismoldreservation-{uuid4().hex}",
+                    physical_asset_id=task.physical_mold_asset_id,
+                    factory_id=factory_id,
+                    plan_id=plan.id,
+                    task_id=task.id,
+                    window_start=task.planned_start,
+                    window_end=task.planned_finish,
+                    status="ACTIVE",
+                    revision=1,
+                    expires_at="",
+                    idempotency_key=f"publish:{plan.id}:{task.id}",
+                    source_kind="PLAN_PUBLISH",
+                    created_by=user.id,
+                    created_at=timestamp,
+                    released_at="",
+                )
+                db.add(reservation)
+            else:
+                reservation.plan_id = plan.id
+                reservation.task_id = task.id
+                reservation.window_start = task.planned_start
+                reservation.window_end = task.planned_finish
+                reservation.status = "ACTIVE"
+                reservation.expires_at = ""
+                reservation.revision += 1
+                reservation.released_at = ""
+            reservation_ids_in_published_plan.add(reservation.id)
+        if previous is not None:
+            stale_reservations = list(
+                db.scalars(
+                    select(InjectionSchedulingMoldReservation)
+                    .where(
+                        InjectionSchedulingMoldReservation.plan_id == previous.id,
+                        InjectionSchedulingMoldReservation.status.in_(
+                            {"TENTATIVE", "ACTIVE"}
+                        ),
+                    )
+                    .with_for_update()
+                ).all()
+            )
+            for reservation in stale_reservations:
+                if reservation.id in reservation_ids_in_published_plan:
+                    continue
+                reservation.status = "RELEASED"
+                reservation.revision += 1
+                reservation.released_at = timestamp
         if previous is not None:
             db.execute(
                 update(InjectionSchedulingTask)
@@ -1841,7 +2219,9 @@ def rollback_plan(
         )
     )
     if replay is not None:
-        audit = _event_for_request(db, factory_id, payload.request_id, "plan_rolled_back")
+        audit = _event_for_request(
+            db, factory_id, payload.request_id, "plan_rolled_back"
+        )
         detail = _load_json(audit.detail_json, {})
         if detail.get("payload_hash") != request_hash:
             raise _idempotency_conflict()
@@ -1853,12 +2233,16 @@ def rollback_plan(
         )
     )
     if existing_draft is not None:
-        raise HTTPException(status_code=409, detail="当前厂区已有草案，不能创建回滚草案")
+        raise HTTPException(
+            status_code=409, detail="当前厂区已有草案，不能创建回滚草案"
+        )
     source = _require_plan(db, factory_id, plan_id)
     if source.status not in {"PUBLISHED", "ARCHIVED"}:
         raise HTTPException(status_code=409, detail="只能从已发布计划创建回滚草案")
     if source.revision != payload.expected_revision:
-        raise _revision_conflict("已发布计划", payload.expected_revision, source.revision)
+        raise _revision_conflict(
+            "已发布计划", payload.expected_revision, source.revision
+        )
     timestamp = _now()
     from app.services.injection_scheduling_takeover import clone_successor_draft
 
@@ -1933,9 +2317,7 @@ def _recalculate_order_projection(
             )
         ).all()
     )
-    finish_values = [
-        item.estimated_finish for item in tasks if item.estimated_finish
-    ]
+    finish_values = [item.estimated_finish for item in tasks if item.estimated_finish]
     estimated_finish = max(
         finish_values,
         key=lambda value: parse_business_timestamp(value) or business_now(),
@@ -2131,9 +2513,7 @@ def _recalculate_machine_queue(
             or task.production_minutes != int(calculation["production_minutes"])
             or task.planned_downtime_minutes
             != int(calculation["calendar_delay_minutes"])
-            + (
-                reported_downtime_minutes if task.id == reported_task_id else 0
-            )
+            + (reported_downtime_minutes if task.id == reported_task_id else 0)
             or task.changeover_type != str(calculation["changeover_type"])
         )
         task.estimated_start = estimated_start
@@ -2178,7 +2558,9 @@ def _recalculate_plan_queues(
     user: AuthContext,
     timestamp: str,
 ) -> None:
-    machine_ids = sorted({task.machine_id for task in plan_tasks(db, plan.factory_id, plan.id)})
+    machine_ids = sorted(
+        {task.machine_id for task in plan_tasks(db, plan.factory_id, plan.id)}
+    )
     for machine_id in machine_ids:
         _recalculate_machine_queue(
             db,
@@ -2325,8 +2707,7 @@ def create_shift_report(
             True,
         )
     task_locator = db.scalar(
-        select(InjectionSchedulingTask)
-        .where(
+        select(InjectionSchedulingTask).where(
             InjectionSchedulingTask.factory_id == factory_id,
             InjectionSchedulingTask.id == task_id,
         )
@@ -2370,9 +2751,7 @@ def create_shift_report(
             },
         )
     if task.revision != payload.expected_revision:
-        raise _revision_conflict(
-            "排产任务", payload.expected_revision, task.revision
-        )
+        raise _revision_conflict("排产任务", payload.expected_revision, task.revision)
     order = db.scalar(
         select(InjectionSchedulingOrder)
         .where(
@@ -2386,7 +2765,9 @@ def create_shift_report(
     reported = _decimal(payload.reported_quantity)
     if payload.quantity_mode == "CUMULATIVE":
         if reported < task.reported_quantity:
-            raise HTTPException(status_code=409, detail="累计完成数不能小于当前已回报数")
+            raise HTTPException(
+                status_code=409, detail="累计完成数不能小于当前已回报数"
+            )
         increment = reported - task.reported_quantity
     else:
         increment = reported
@@ -2467,9 +2848,7 @@ def create_shift_report(
             Decimal(0),
         )
         state.completed_quantity = completed
-        state.status = (
-            "COMPLETED" if completed >= state.order_quantity else "SCHEDULED"
-        )
+        state.status = "COMPLETED" if completed >= state.order_quantity else "SCHEDULED"
         state.revision += 1
         state.updated_by = user.id
         state.updated_by_name = _actor_name(user)
@@ -2490,6 +2869,8 @@ def create_shift_report(
                 .values(execution_status="COMPLETED")
             )
             report.reported_status = "COMPLETED"
+        if payload.reported_status == "COMPLETED" or order.status == "COMPLETED":
+            _release_task_reservation(db, task_id=task.id, timestamp=timestamp)
         db.flush()
         changed_projection_task_ids = _recalculate_machine_queue(
             db,
@@ -2524,9 +2905,9 @@ def create_shift_report(
                 "task": task_out(
                     _require_task_by_id(db, factory_id, task.id)
                 ).model_dump(mode="json"),
-                "order": order_out(
-                    _require_order(db, factory_id, order.id)
-                ).model_dump(mode="json"),
+                "order": order_out(_require_order(db, factory_id, order.id)).model_dump(
+                    mode="json"
+                ),
                 "tasks": [
                     task_out(
                         _require_task_by_id(db, factory_id, changed_task_id)
@@ -2799,6 +3180,7 @@ def _validate_schedule_conflicts(
     mold_copy_no: int,
     planned_start: str,
     planned_finish: str,
+    physical_mold_asset_id: str | None = None,
     exclude_task_id: str = "",
 ) -> None:
     start = datetime.fromisoformat(planned_start)
@@ -2823,6 +3205,11 @@ def _validate_schedule_conflicts(
             continue
         if existing.machine_id == machine_id:
             raise HTTPException(status_code=409, detail="同一机台的排产时间不可重叠")
+        if (
+            physical_mold_asset_id is not None
+            and existing.physical_mold_asset_id == physical_mold_asset_id
+        ):
+            raise HTTPException(status_code=409, detail="同一实物模具不可重叠排产")
         if (
             mold_id is not None
             and existing.mold_id == mold_id

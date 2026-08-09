@@ -91,6 +91,7 @@ class InjectionSchedulingRunAssignmentOut(BaseModel):
     order_id: str
     existing_task_id: str | None
     mold_id: str | None
+    physical_mold_asset_id: str | None
     mold_copy_no: int
     machine_id: str | None
     sequence_no: int | None

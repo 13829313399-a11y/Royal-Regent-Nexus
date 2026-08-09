@@ -106,6 +106,12 @@ class InjectionSchedulingRunAssignment(Base):
             name="fk_injection_scheduling_assignment_run_factory",
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["physical_mold_asset_id"],
+            ["injection_scheduling_physical_mold_assets.id"],
+            name="fk_inj_sched_assignment_physical_asset",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "decision IN ('PASS', 'REVIEW_REQUIRED', 'UNASSIGNED')",
             name="ck_injection_scheduling_assignment_decision",
@@ -126,6 +132,9 @@ class InjectionSchedulingRunAssignment(Base):
         String(96), nullable=True, index=True
     )
     mold_id: Mapped[str | None] = mapped_column(String(96), nullable=True, index=True)
+    physical_mold_asset_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
     mold_copy_no: Mapped[int] = mapped_column(Integer, default=1)
     machine_id: Mapped[str | None] = mapped_column(
         String(96), nullable=True, index=True
@@ -222,3 +231,8 @@ class InjectionSchedulingMachineCalendar(Base):
     reason: Mapped[str] = mapped_column(String(255), default="")
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[str] = mapped_column(String(32), index=True)
+
+
+# Keep shared physical-asset tables in Base.metadata when focused tests import
+# the scheduler model directly.
+from app.models import injection_scheduling_shared as _shared_models  # noqa: F401

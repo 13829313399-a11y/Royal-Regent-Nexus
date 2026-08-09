@@ -51,6 +51,29 @@ def _ensure_profile_permission(db: Session, user: AuthContext, factory_id: str) 
     return factory_id
 
 
+def _ensure_profile_proposal_permission(
+    db: Session, user: AuthContext, factory_id: str
+) -> str:
+    factory_id = require_injection_scheduling_factory(factory_id)
+    for permission in (
+        "injection_scheduling:import",
+        "injection_scheduling:propose_import_profiles",
+    ):
+        if any(
+            has_permission_in_scope(user, permission, factory_id, department)
+            for department in SCHEDULING_DEPARTMENTS
+        ):
+            continue
+        ensure_permission_in_scope(
+            db,
+            user,
+            permission,
+            factory_id,
+            SCHEDULING_DEPARTMENTS[0],
+        )
+    return factory_id
+
+
 @router.get("", response_model=InjectionSchedulingImportProfileListOut)
 def get_import_profiles(
     factory_id: str,
@@ -77,7 +100,9 @@ def post_import_profile_revision(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[AuthContext, Depends(get_current_user)],
 ):
-    factory_id = _ensure_profile_permission(db, current_user, payload.factory_id)
+    factory_id = _ensure_profile_proposal_permission(
+        db, current_user, payload.factory_id
+    )
     record = create_profile_revision(
         db,
         factory_id=factory_id,
