@@ -2,15 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from decimal import Decimal
 from math import ceil
 from time import monotonic
 from typing import Any
 
 from app.core.time import BUSINESS_TIME_ZONE
-from app.models.injection_scheduling import (
-    InjectionSchedulingMachine,
-    InjectionSchedulingMold,
-)
+from app.models.injection_scheduling import InjectionSchedulingMachine
 from app.models.injection_scheduling_execution import (
     InjectionSchedulingOrder,
     InjectionSchedulingTask,
@@ -20,7 +18,15 @@ from app.schemas.injection_scheduling_matching import (
     InjectionSchedulingMachineMatchOut,
     InjectionSchedulingMatchBatchOut,
 )
-from app.services.injection_scheduling_scheduler.duration import production_minutes
+from app.services.injection_scheduling_mold_context import (
+    SchedulingMoldContext,
+    order_mold_key,
+    task_mold_key,
+)
+from app.services.injection_scheduling_scheduler.duration import (
+    ProductionEstimate,
+    production_estimate,
+)
 from app.services.injection_scheduling_scheduler.explanation import (
     assignment_explanation,
     unassigned_explanation,
@@ -135,7 +141,7 @@ def solve_cp_sat(
     *,
     orders: list[InjectionSchedulingOrder],
     machines: list[InjectionSchedulingMachine],
-    molds: dict[str, InjectionSchedulingMold],
+    molds: dict[str, SchedulingMoldContext],
     plan_tasks: list[InjectionSchedulingTask],
     matches: InjectionSchedulingMatchBatchOut,
     calendars: list[InjectionSchedulingMachineCalendar],
@@ -150,9 +156,24 @@ def solve_cp_sat(
     horizon_minutes = max(1, ceil((horizon_end - horizon_start).total_seconds() / 60))
     order_ids = {item.id for item in orders}
     order_by_id = {item.id: item for item in orders}
+    tasks_by_order: dict[str, list[InjectionSchedulingTask]] = {}
+    for item in plan_tasks:
+        if item.order_id in order_ids and item.execution_status != "CANCELLED":
+            tasks_by_order.setdefault(item.order_id, []).append(item)
+    allocated_by_order = {
+        order_id: sum(
+            (Decimal(item.allocated_quantity or 0) for item in items), Decimal(0)
+        )
+        for order_id, items in tasks_by_order.items()
+    }
+    partial_order_ids = {
+        item.id
+        for item in orders
+        if item.status == "BACKLOG" and allocated_by_order.get(item.id, Decimal(0)) > 0
+    }
     task_by_order: dict[str, InjectionSchedulingTask] = {}
     for item in sorted(plan_tasks, key=lambda task: task.id):
-        if item.order_id in order_ids:
+        if item.order_id in order_ids and item.order_id not in partial_order_ids:
             task_by_order.setdefault(item.order_id, item)
     machine_by_id = {item.id: item for item in machines}
     evaluation_by_order = {item.order_id: item for item in matches.evaluations}
@@ -160,6 +181,7 @@ def solve_cp_sat(
     assignments: list[dict[str, Any]] = []
     candidate_orders: list[InjectionSchedulingOrder] = []
     eligible_by_order: dict[str, list[InjectionSchedulingMachineMatchOut]] = {}
+    estimates_by_order: dict[str, ProductionEstimate] = {}
     frozen_order_ids = {
         item.order_id
         for item in plan_tasks
@@ -167,7 +189,7 @@ def solve_cp_sat(
     }
     for order in orders:
         existing_task = task_by_order.get(order.id)
-        if order.id in frozen_order_ids:
+        if order.id in frozen_order_ids and order.id not in partial_order_ids:
             continue
         if order.material_readiness_status == "blocked":
             assignments.append(
@@ -180,7 +202,7 @@ def solve_cp_sat(
                 )
             )
             continue
-        mold = molds.get(order.mold_id or "")
+        mold = molds.get(order_mold_key(order))
         if mold is None:
             assignments.append(
                 _unassigned(
@@ -217,8 +239,37 @@ def solve_cp_sat(
                 )
             )
             continue
+        setup_buffer = max(
+            int(objective_config.get("dark_to_light_minutes", 60)),
+            int(objective_config.get("mold_change_minutes", 30))
+            + int(objective_config.get("material_change_minutes", 20))
+            + int(objective_config.get("color_change_minutes", 10)),
+        )
+        estimate = production_estimate(
+            order,
+            objective_config,
+            already_allocated_quantity=allocated_by_order.get(
+                order.id, Decimal(0)
+            )
+            if order.id in partial_order_ids
+            else Decimal(0),
+            max_production_minutes=max(1, horizon_minutes - setup_buffer),
+        )
+        if estimate.production_minutes <= 0 or estimate.planned_quantity <= 0:
+            detail = "当前草案已覆盖订单全部未完成数量，无需重复排期。"
+            unassigned = _unassigned(
+                order,
+                existing_task,
+                mold_id=mold.id,
+                code="ALREADY_FULLY_ALLOCATED",
+                detail=detail,
+            )
+            unassigned["explanation"]["production"] = estimate.explanation()
+            assignments.append(unassigned)
+            continue
         candidate_orders.append(order)
         eligible_by_order[order.id] = eligible
+        estimates_by_order[order.id] = estimate
 
     schedulable_ids = {item.id for item in candidate_orders}
     fixed_tasks = [
@@ -226,6 +277,7 @@ def solve_cp_sat(
         for item in plan_tasks
         if item.order_id not in schedulable_ids
         or item.order_id not in order_ids
+        or item.order_id in partial_order_ids
         or item.locked
         or item.active_execution
         or item.execution_status == "RUNNING"
@@ -267,14 +319,15 @@ def solve_cp_sat(
     objective_terms: list[Any] = []
 
     for order in candidate_orders:
-        duration = production_minutes(order, objective_config)
+        estimate = estimates_by_order[order.id]
+        duration = estimate.production_minutes
         durations[order.id] = duration
         start_var = model.NewIntVar(0, horizon_minutes - 1, f"start_{order.id}")
         end_var = model.NewIntVar(1, horizon_minutes, f"end_{order.id}")
         model.Add(end_var == start_var + duration)
         start_vars[order.id] = start_var
         end_vars[order.id] = end_var
-        mold = molds[order.mold_id or ""]
+        mold = molds[order_mold_key(order)]
         options: list[_Option] = []
         by_machine: dict[str, list[Any]] = {}
         for match in eligible_by_order[order.id]:
@@ -368,11 +421,12 @@ def solve_cp_sat(
             fixed_start, fixed_end - fixed_start, f"fixed_task_{task.id}"
         )
         machine_intervals[task.machine_id].append(interval)
+        task_key = task_mold_key(task, order_by_id)
         machine_nodes[task.machine_id].append(
-            _MachineNode(task.order_id, task.mold_id, fixed_start, fixed_end, None)
+            _MachineNode(task.order_id, task_key or None, fixed_start, fixed_end, None)
         )
-        if task.mold_id:
-            mold_intervals.setdefault((task.mold_id, task.mold_copy_no), []).append(
+        if task_key:
+            mold_intervals.setdefault((task_key, task.mold_copy_no), []).append(
                 interval
             )
 
@@ -528,7 +582,7 @@ def solve_cp_sat(
         slot = QueueSlot(
             task.machine_id,
             task.order_id,
-            task.mold_id,
+            task_mold_key(task, order_by_id),
             task.mold_copy_no,
             task.sequence_no,
             as_business_datetime(task.planned_start),
@@ -553,7 +607,7 @@ def solve_cp_sat(
             for item in after_slots[machine.id]
         )
         for order, option in solved_by_machine.get(machine.id, []):
-            mold = molds[order.mold_id or ""]
+            mold = molds[order_mold_key(order)]
             start = horizon_start + timedelta(
                 minutes=solver.Value(start_vars[order.id])
             )
@@ -587,6 +641,13 @@ def solve_cp_sat(
             explanation = assignment_explanation(
                 match, score, transition, machine, mold
             )
+            estimate = estimates_by_order[order.id]
+            explanation["production"] = estimate.explanation()
+            if estimate.split_required:
+                explanation["summary"] = (
+                    f"当前窗口安排 {float(estimate.planned_quantity):g}，"
+                    f"剩余 {float(estimate.remaining_quantity):g} 继续留在待排订单。"
+                )
             explanation["solver"] = {
                 "type": "CP_SAT",
                 "status": solver_status,
@@ -612,7 +673,7 @@ def solve_cp_sat(
                     "existing_task_id": task_by_order.get(order.id).id
                     if task_by_order.get(order.id)
                     else None,
-                    "mold_id": mold.id,
+                    "mold_id": order.mold_id,
                     "mold_copy_no": option.mold_copy_no,
                     "machine_id": machine.id,
                     "sequence_no": next_sequence,

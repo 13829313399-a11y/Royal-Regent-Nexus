@@ -17,6 +17,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Server,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -218,6 +219,10 @@ function goScheduling() {
   void router.push({ name: 'injection-scheduling-v2', query: { factory: factoryId.value } })
 }
 
+function goMachines() {
+  void router.push({ name: 'injection-scheduling-machine-database', query: { factory: factoryId.value } })
+}
+
 function goHome() {
   void router.push({ name: 'dashboard' })
 }
@@ -267,6 +272,7 @@ onBeforeUnmount(() => {
     <section class="scheduling-commandbar mold-commandbar" aria-label="模具数据库命令栏">
       <div class="page-identity"><span class="eyebrow">生产部 / 注塑排产 / 模具数据库</span><strong>共享模具数据库</strong><span class="readonly-badge editable">受控主数据</span></div>
       <button class="command-button is-secondary" @click="goScheduling"><ArrowLeft :size="15" />返回排产</button>
+      <button class="command-button is-secondary" @click="goMachines"><Server :size="15" />厂区机台库</button>
       <label class="command-field factory-field"><span>厂区</span><select :value="factoryId" @change="changeFactory(($event.target as HTMLSelectElement).value)"><option v-for="(name, id) in factoryNames" :key="id" :value="id">{{ name }}</option></select></label>
       <label class="command-search"><Search :size="16" /><input v-model="search" placeholder="搜索模具编号、名称、货号、产品…" /></label>
       <button class="command-button is-secondary" :disabled="loading" @click="loadCatalog()"><RefreshCw :size="15" :class="{ spinning: loading }" />{{ loading ? '加载中' : '刷新数据' }}</button>

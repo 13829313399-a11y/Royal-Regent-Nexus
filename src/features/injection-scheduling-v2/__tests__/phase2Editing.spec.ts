@@ -50,6 +50,9 @@ describe('injection scheduling V2 Phase 2 editing', () => {
     expect(rowSource).toContain(':draggable="draggable()"')
     expect(rowSource).toContain("ArrowUp: 'up'")
     expect(rowSource).toContain("ArrowRight: 'next-machine'")
+    expect(rowSource).toContain('formatBusinessDateTime')
+    expect(rowSource).toContain('北京时间：')
+    expect(rowSource).toContain('class="schedule-time-cell"')
   })
 
   it('reads execution and planning contexts explicitly and exposes one continuation anchor contract', () => {

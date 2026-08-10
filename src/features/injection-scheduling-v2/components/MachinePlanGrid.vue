@@ -7,6 +7,7 @@ import MachineGroupRow from './MachineGroupRow.vue'
 import ScheduleTaskRow from './ScheduleTaskRow.vue'
 import { useScheduleDragDrop } from '../composables/useScheduleDragDrop'
 import type { CellDraft, EditableCellKey, ScheduleGridRow, SchedulingColumnDefinition } from '../types'
+import { formatBusinessDateTime } from '@/lib/dateTime'
 
 const props = defineProps<{ rows: ScheduleGridRow[]; columns: SchedulingColumnDefinition[]; collapsedMachineIds: string[]; widths: Record<string, number>; sort: { key: string; desc: boolean } | null; selectedTaskId: string | null; planStatus: string; canEdit: boolean; canReport: boolean; pendingEdits: Record<string, CellDraft> }>()
 const emit = defineEmits<{
@@ -50,7 +51,11 @@ const stickyLeft = computed(() => {
 })
 function groupCount(machineId: string) { return props.rows.filter((row) => row.rowType === 'task' && row.machine.id === machineId).length }
 function currentLabel(machineId: string) { const row = props.rows.find((item) => item.rowType === 'task' && item.machine.id === machineId && item.status === 'RUNNING'); return row ? `${row.moldNo} · ${row.productName}` : '' }
-function releaseAt(machineId: string) { return props.rows.filter((row) => row.rowType === 'task' && row.machine.id === machineId).at(-1)?.plannedFinish.slice(5, 16) ?? '' }
+function releaseAt(machineId: string) {
+  const value = props.rows.filter((row) => row.rowType === 'task' && row.machine.id === machineId).at(-1)?.plannedFinish
+  const formatted = formatBusinessDateTime(value, { fallback: '' })
+  return formatted ? formatted.slice(5) : ''
+}
 function dropAtEnd(machineId: string, event: DragEvent) { drag.drop(machineId, groupCount(machineId), event) }
 function dropAtTask(machineId: string, sequence: number, event: DragEvent) { drag.drop(machineId, sequence, event) }
 function forwardEdit(taskId: string, key: EditableCellKey, value: string | number) { emit('edit', taskId, key, value) }

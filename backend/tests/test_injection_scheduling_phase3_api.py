@@ -608,7 +608,7 @@ def test_phase3_plan_publish_report_rollback_and_polling_contract(monkeypatch):
         assert hidden_other_factory.status_code == 404
 
 
-def test_phase3_clerk_can_edit_and_report_but_supervisor_controls_release(monkeypatch):
+def test_phase3_clerk_can_edit_report_and_publish_but_not_override_or_rollback(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "admin", ADMIN_TEST_PASSWORD)
         factory_id = "huakang-b"
@@ -676,22 +676,14 @@ def test_phase3_clerk_can_edit_and_report_but_supervisor_controls_release(monkey
             json={
                 "factory_id": factory_id,
                 "expected_revision": 2,
-                "request_id": "clerk-publish-denied",
+                "request_id": "clerk-publish-allowed",
             },
         )
-        assert clerk_publish.status_code == 403
+        assert clerk_publish.status_code == 200, clerk_publish.text
+        assert clerk_publish.json()["plan"]["status"] == "PUBLISHED"
 
         supervisor = login(client, "phase3-supervisor")
         assert "injection_scheduling:publish" in supervisor["permissions"]
-        published = client.post(
-            f"/api/injection-scheduling/plans/{plan_id}/publish",
-            json={
-                "factory_id": factory_id,
-                "expected_revision": 2,
-                "request_id": "supervisor-publish-001",
-            },
-        )
-        assert published.status_code == 200, published.text
 
         login(client, "phase3-clerk")
         report = client.post(
@@ -714,6 +706,149 @@ def test_phase3_clerk_can_edit_and_report_but_supervisor_controls_release(monkey
             },
         )
         assert clerk_rollback.status_code == 403
+
+
+def test_phase3_clerk_withdraws_published_order_into_successor_backlog(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        factory_id = "huaxing"
+        machine = client.post(
+            "/api/injection-scheduling/machines",
+            json=machine_payload(factory_id, "撤回测试机"),
+        )
+        assert machine.status_code == 201, machine.text
+        first_order = client.post(
+            "/api/injection-scheduling/orders",
+            json=order_payload(factory_id, "WITHDRAW-ORDER-1"),
+        )
+        second_order = client.post(
+            "/api/injection-scheduling/orders",
+            json=order_payload(factory_id, "WITHDRAW-ORDER-2"),
+        )
+        assert first_order.status_code == 201, first_order.text
+        assert second_order.status_code == 201, second_order.text
+
+        ensure_user(
+            "withdraw-clerk",
+            "molding_clerk",
+            factory_id=factory_id,
+            department="molding",
+        )
+        login(client, "withdraw-clerk")
+        draft = client.post(
+            "/api/injection-scheduling/plans/drafts",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": 0,
+                "business_date": "2026-08-01",
+            },
+        )
+        assert draft.status_code == 201, draft.text
+        plan_id = draft.json()["id"]
+        first_task_plan = client.post(
+            f"/api/injection-scheduling/plans/{plan_id}/tasks",
+            json=task_payload(
+                factory_id,
+                1,
+                machine.json()["id"],
+                first_order.json()["id"],
+                1,
+            ),
+        )
+        second_task_plan = client.post(
+            f"/api/injection-scheduling/plans/{plan_id}/tasks",
+            json=task_payload(
+                factory_id,
+                2,
+                machine.json()["id"],
+                second_order.json()["id"],
+                2,
+            ),
+        )
+        assert first_task_plan.status_code == 201, first_task_plan.text
+        assert second_task_plan.status_code == 201, second_task_plan.text
+
+        published = client.post(
+            f"/api/injection-scheduling/plans/{plan_id}/publish",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": second_task_plan.json()["revision"],
+                "request_id": "withdraw-publish-source",
+            },
+        )
+        assert published.status_code == 200, published.text
+        published_plan = published.json()["plan"]
+        first_task = next(
+            item
+            for item in published_plan["tasks"]
+            if item["order_id"] == first_order.json()["id"]
+        )
+        withdraw_payload = {
+            "factory_id": factory_id,
+            "expected_plan_revision": published_plan["revision"],
+            "expected_task_revision": first_task["revision"],
+            "expected_planning_revision": None,
+            "request_id": "withdraw-published-order-001",
+            "reason": "订单暂停，退回待排池",
+        }
+        withdrawn = client.post(
+            f"/api/injection-scheduling/tasks/{first_task['id']}/withdraw-to-backlog",
+            json=withdraw_payload,
+        )
+        assert withdrawn.status_code == 200, withdrawn.text
+        result = withdrawn.json()
+        assert result["successor_created"] is True
+        assert result["source_plan_id"] == plan_id
+        assert result["source_task_id"] == first_task["id"]
+        assert result["order_id"] == first_order.json()["id"]
+        assert result["plan"]["status"] == "DRAFT"
+        assert {
+            item["order_id"] for item in result["plan"]["tasks"]
+        } == {second_order.json()["id"]}
+        first_state = next(
+            item
+            for item in result["plan"]["plan_order_states"]
+            if item["order_id"] == first_order.json()["id"]
+        )
+        assert first_state["status"] == "BACKLOG"
+
+        replay = client.post(
+            f"/api/injection-scheduling/tasks/{first_task['id']}/withdraw-to-backlog",
+            json=withdraw_payload,
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["idempotent_replay"] is True
+        assert replay.json()["plan"]["id"] == result["plan"]["id"]
+
+        context = client.get(
+            "/api/injection-scheduling/plans/context",
+            params={"factory_id": factory_id},
+        )
+        assert context.status_code == 200, context.text
+        assert context.json()["execution_published_plan"]["id"] == plan_id
+        assert context.json()["planning_draft_plan"]["id"] == result["plan"]["id"]
+        backlog = client.get(
+            "/api/injection-scheduling/backlog",
+            params={"factory_id": factory_id},
+        )
+        assert backlog.status_code == 200, backlog.text
+        assert first_order.json()["id"] in {
+            item["id"] for item in backlog.json()["items"]
+        }
+
+        replacement = client.post(
+            f"/api/injection-scheduling/plans/{result['plan']['id']}/publish",
+            json={
+                "factory_id": factory_id,
+                "expected_revision": result["plan"]["revision"],
+                "request_id": "withdraw-publish-replacement",
+            },
+        )
+        assert replacement.status_code == 200, replacement.text
+        assert replacement.json()["plan"]["status"] == "PUBLISHED"
+        assert {
+            item["order_id"] for item in replacement.json()["plan"]["tasks"]
+        } == {second_order.json()["id"]}
 
 
 def test_phase3_lifecycle_runs_against_migrated_database_guards(monkeypatch):

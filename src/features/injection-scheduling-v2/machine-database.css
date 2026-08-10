@@ -1,0 +1,19 @@
+.machine-database .machine-catalog-table { min-width: 1320px; }
+.machine-database .machine-catalog-table th:nth-child(1) { width: 145px; }
+.machine-database .machine-catalog-table th:nth-child(2) { width: 165px; }
+.machine-database .machine-catalog-table th:nth-child(3) { width: 130px; }
+.machine-database .machine-catalog-table th:nth-child(4) { width: 170px; }
+.machine-database .machine-catalog-table th:nth-child(5) { width: 135px; }
+.machine-database .machine-catalog-table th:nth-child(6) { width: 180px; }
+.machine-database .machine-catalog-table th:nth-child(7) { width: 90px; }
+.machine-database .machine-catalog-table th:nth-child(8) { width: 240px; }
+.machine-database .machine-catalog-table th:nth-child(9) { width: 90px; }
+.machine-status-chip { width: fit-content; min-height: 23px; padding: 0 8px; border-radius: 10px; display: inline-flex !important; align-items: center; font-size: 8px !important; font-weight: 800; }
+.machine-status-chip.available { color: #087a64; background: #dff3ed; }
+.machine-status-chip.running { color: #2e6ee6; background: #e7effd; }
+.machine-status-chip.maintenance { color: #986006; background: #faebce; }
+.machine-status-chip.offline { color: #8a3c48; background: #f8e4e8; }
+.machine-editor { width: min(820px, calc(100vw - 60px)); }
+.machine-editor fieldset:disabled { opacity: .88; }
+.machine-form-grid select { width: 100%; height: 32px; padding: 0 8px; border: 1px solid #cbd8e0; border-radius: 6px; background: #fff; color: #31485a; font: inherit; }
+.machine-form-grid label > input + input { margin-top: 5px; }

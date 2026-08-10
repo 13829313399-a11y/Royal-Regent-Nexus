@@ -8,9 +8,11 @@ export const demoMachines: MachineRecord[] = [
   ['m-new25', '新25', '25', 12, 217, ['双臂', '单臂'], ['吸盘', '夹子'], [], 'running'],
   ['m-new27', '新27', '27', 12, 217, ['双臂', '单臂'], ['吸盘', '夹子'], [], 'maintenance'],
 ].map(([id, code, position, aClass, injectionCapacityG, armCapabilities, fixtureCapabilities, processRestrictions, status]) => ({
-  id: String(id), code: String(code), position: String(position), area: '注塑车间', aClass: Number(aClass), aClassRaw: `${aClass}A`,
-  injectionCapacityG: Number(injectionCapacityG), armCapabilities: armCapabilities as string[], fixtureCapabilities: fixtureCapabilities as string[],
+  id: String(id), factoryId: 'huaxing', code: String(code), position: String(position), area: '注塑车间', aClass: Number(aClass), aClassRaw: `${aClass}A`,
+  clampingForceTons: Number(aClass) * 10, injectionCapacityG: Number(injectionCapacityG), tieBarXmm: null, tieBarYmm: null, processTags: [],
+  armCapabilities: armCapabilities as string[], fixtureCapabilities: fixtureCapabilities as string[],
   processRestrictions: processRestrictions as string[], machineType: 'standard', specialMachineType: '', status: status as MachineRecord['status'], normalizationStatus: 'COMPLETE',
+  equipmentDetails: {}, remarks: '', revision: 1,
 }))
 
 const moldSeed = [
@@ -38,10 +40,10 @@ const orderSeed = [
   ['o-8', 'BJB251146', '57520', '水樽左右壳', null, 2400, 0, '2026-05-20', -76, 'CRITICAL', 'partial'],
 ] as const
 export const demoOrders: OrderRecord[] = orderSeed.map(([id, orderNo, itemNo, productName, moldId, quantity, completed, due, slack, priority, readiness], index) => ({
-  id, orderNo, itemNo, productName, moldId, orderQuantity: quantity, sourceCompletedQuantity: completed, completedQuantity: completed, outstandingQuantity: quantity - completed,
+  id, orderNo, itemNo, productName, moldId, moldDefinitionId: null, moldOutputSpecId: null, orderQuantity: quantity, sourceCompletedQuantity: completed, completedQuantity: completed, outstandingQuantity: quantity - completed,
   completionRate: quantity ? completed / quantity : 0, deliveryStartDate: '', deliveryDueDate: due, deliverySlackDays: slack,
   priorityCode: priority, materialReadinessStatus: readiness, warehouseText: index % 2 ? '四楼刘杰' : '李诗收',
-  remark: id === 'o-7' ? '需要抽芯能力复核' : '', status: index >= 6 ? 'BACKLOG' : 'SCHEDULED',
+  remark: id === 'o-7' ? '需要抽芯能力复核' : '', status: index >= 6 ? 'BACKLOG' : 'SCHEDULED', sourceType: 'manual',
   lineage: { set_quantity: quantity * 2, powder: index % 2 ? '49215' : '黑种', order_date: '2026-07-18', spray: index === 3 ? '是' : '否' }, revision: 1,
 }))
 

@@ -35,6 +35,10 @@ from app.services.injection_scheduling_execution import (
     task_out,
 )
 from app.services.injection_scheduling_matching import evaluate_order_matches
+from app.services.injection_scheduling_mold_context import (
+    load_scheduling_molds,
+    order_mold_key,
+)
 from app.services.injection_scheduling_projection import (
     CALCULATION_VERSION,
     load_calculation_context,
@@ -94,12 +98,17 @@ def _preview(
 ) -> InjectionSchedulingManualAppendPreview:
     plan = _require_plan(db, payload.factory_id, plan_id)
     order = _require_order(db, payload.factory_id, payload.order_id)
-    if order.source_type == "DEMAND_ORDER_VERSION" and order.mold_id is None:
+    scheduling_molds = load_scheduling_molds(
+        db,
+        factory_id=payload.factory_id,
+        orders=[order],
+    )
+    if order_mold_key(order) not in scheduling_molds:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "DEMAND_MOLD_ENRICHMENT_PENDING",
-                "message": "订单已进入待排池，但模具资料尚未补齐，暂不能追加到机台",
+                "message": "需求已进入待排池，但共享模具资料尚未补齐，暂不能追加到机台",
             },
         )
     if plan.revision != payload.expected_plan_revision:
@@ -217,19 +226,7 @@ def _preview(
     context = load_calculation_context(
         db, factory_id=payload.factory_id, mold_ids=mold_ids
     )
-    mold_rows = (
-        {
-            item.id: item
-            for item in db.scalars(
-                select(InjectionSchedulingMold).where(
-                    InjectionSchedulingMold.factory_id == payload.factory_id,
-                    InjectionSchedulingMold.id.in_(mold_ids),
-                )
-            ).all()
-        }
-        if mold_ids
-        else {}
-    )
+    mold_rows = scheduling_molds
     previous_task = max(
         machine_tasks,
         key=lambda item: (item.sequence_no, item.id),
@@ -255,7 +252,7 @@ def _preview(
         completed_quantity=0,
         shift_target_quantity=shift_target,
         previous_mold=previous_mold,
-        current_mold=mold_rows.get(order.mold_id or ""),
+        current_mold=mold_rows.get(order_mold_key(order)),
         earliest_start=queue_tail,
         calendars=calendar_rows,
         context=context,
