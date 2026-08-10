@@ -95,6 +95,8 @@ class InjectionSchedulingOrderOut(BaseModel):
     item_no: str
     product_name: str
     mold_id: str | None
+    mold_definition_id: str | None
+    mold_output_spec_id: str | None
     order_quantity: float
     source_completed_quantity: float
     completed_quantity: float
@@ -121,6 +123,120 @@ class InjectionSchedulingOrderOut(BaseModel):
     updated_by_name: str
     created_at: str
     updated_at: str
+
+
+class InjectionSchedulingManualDemandCreate(StrictWriteModel):
+    factory_id: str
+    expected_revision: Literal[0] = 0
+    business_date: date
+    mold_definition_id: str = Field(min_length=1, max_length=96)
+    mold_output_spec_id: str | None = Field(default=None, max_length=96)
+    planned_quantity: float = Field(gt=0)
+    quantity_basis: Literal["UNITS", "SHOTS"] = "UNITS"
+    item_no: str = Field(default="", max_length=128)
+    product_name: str = Field(default="", max_length=255)
+    delivery_due_date: date | None = None
+    priority_code: PriorityCode = "NORMAL"
+    material_readiness_status: MaterialReadinessStatus = "unknown"
+    warehouse_text: str = Field(default="", max_length=255)
+    material_name: str = Field(default="", max_length=255)
+    color_name: str = Field(default="", max_length=128)
+    remark: str = Field(default="", max_length=2000)
+
+    @field_validator(
+        "factory_id",
+        "mold_definition_id",
+        "item_no",
+        "product_name",
+        "warehouse_text",
+        "material_name",
+        "color_name",
+        "remark",
+    )
+    @classmethod
+    def strip_manual_demand_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("mold_output_spec_id")
+    @classmethod
+    def normalize_manual_output_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class InjectionSchedulingManualDemandUpdate(StrictWriteModel):
+    factory_id: str
+    expected_revision: int = Field(ge=1)
+    mold_definition_id: str | None = Field(default=None, min_length=1, max_length=96)
+    mold_output_spec_id: str | None = Field(default=None, max_length=96)
+    planned_quantity: float | None = Field(default=None, gt=0)
+    quantity_basis: Literal["UNITS", "SHOTS"] | None = None
+    item_no: str | None = Field(default=None, max_length=128)
+    product_name: str | None = Field(default=None, max_length=255)
+    delivery_due_date: date | None = None
+    clear_delivery_due_date: bool = False
+    priority_code: PriorityCode | None = None
+    material_readiness_status: MaterialReadinessStatus | None = None
+    warehouse_text: str | None = Field(default=None, max_length=255)
+    material_name: str | None = Field(default=None, max_length=255)
+    color_name: str | None = Field(default=None, max_length=128)
+    remark: str | None = Field(default=None, max_length=2000)
+
+    @field_validator(
+        "factory_id",
+        "mold_definition_id",
+        "mold_output_spec_id",
+        "item_no",
+        "product_name",
+        "warehouse_text",
+        "material_name",
+        "color_name",
+        "remark",
+    )
+    @classmethod
+    def strip_manual_demand_optional_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def require_manual_demand_change(self):
+        changes = self.model_dump(
+            exclude={"factory_id", "expected_revision", "clear_delivery_due_date"},
+            exclude_none=True,
+        )
+        if not changes and not self.clear_delivery_due_date:
+            raise ValueError("至少提交一个手工排期需求变更")
+        return self
+
+
+class InjectionSchedulingManualDemandCancel(StrictWriteModel):
+    factory_id: str
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=2, max_length=2000)
+
+    @field_validator("factory_id", "reason")
+    @classmethod
+    def strip_manual_cancel_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class InjectionSchedulingBacklogOrderCancel(StrictWriteModel):
+    factory_id: str
+    expected_revision: int = Field(ge=1)
+    expected_plan_id: str | None = Field(default=None, max_length=96)
+    expected_plan_revision: int | None = Field(default=None, ge=1)
+    reason: str = Field(min_length=2, max_length=500)
+
+    @field_validator("factory_id", "expected_plan_id", "reason")
+    @classmethod
+    def strip_backlog_cancel_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def require_complete_plan_revision(self):
+        if (self.expected_plan_id is None) != (self.expected_plan_revision is None):
+            raise ValueError("规划草案编号与版本必须同时提交")
+        return self
 
 
 class InjectionSchedulingBacklogOut(BaseModel):
@@ -462,6 +578,31 @@ class InjectionSchedulingRollbackInput(InjectionSchedulingPublishInput):
 class InjectionSchedulingPlanOperationOut(BaseModel):
     plan: InjectionSchedulingPlanOut
     snapshot_id: str
+    audit_sequence: int
+    idempotent_replay: bool = False
+
+
+class InjectionSchedulingTaskWithdrawInput(StrictWriteModel):
+    factory_id: str
+    expected_plan_revision: int = Field(ge=1)
+    expected_task_revision: int = Field(ge=1)
+    expected_planning_revision: int | None = Field(default=None, ge=1)
+    request_id: str = Field(min_length=8, max_length=128)
+    reason: str = Field(min_length=2, max_length=500)
+
+    @field_validator("factory_id", "request_id", "reason")
+    @classmethod
+    def strip_withdraw_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class InjectionSchedulingTaskWithdrawOut(BaseModel):
+    plan: InjectionSchedulingPlanOut
+    source_plan_id: str
+    source_task_id: str
+    order_id: str
+    withdrawn_task_ids: list[str]
+    successor_created: bool
     audit_sequence: int
     idempotent_replay: bool = False
 

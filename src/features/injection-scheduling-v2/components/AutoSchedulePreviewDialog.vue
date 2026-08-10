@@ -60,6 +60,22 @@ const detailList = (assignment: AutoScheduleAssignmentRecord, key: string) => {
   const value = assignment.explanation[key]
   return Array.isArray(value) ? value as Array<Record<string, unknown>> : []
 }
+const productionDetails = (assignment: AutoScheduleAssignmentRecord) => {
+  const value = assignment.explanation.production
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  const item = value as Record<string, unknown>
+  const source = String(item.capacity_source ?? '')
+  const sourceLabel = source === 'SOURCE_DAILY_CAPACITY' ? '下单表模具日产量' : source === 'ACTIVE_SPEED_MODEL' ? '有效速度模型' : source === 'MOLD_DAILY_CAPACITY' ? '共享模具日产量' : '系统默认速度'
+  const numberText = (input: unknown) => Number.isFinite(Number(input)) ? Number(input).toLocaleString('zh-CN', { maximumFractionDigits: 3 }) : '—'
+  const fullDays = Number(item.full_order_minutes) / 1440
+  return [
+    { label: '工时依据', value: sourceLabel },
+    { label: '整单预计', value: Number.isFinite(fullDays) ? `${fullDays.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 天` : '—' },
+    { label: '本窗口安排', value: numberText(item.planned_quantity) },
+    { label: '窗口后待排', value: numberText(item.remaining_quantity) },
+    { label: '预计生产时长', value: `${numberText(item.production_minutes)} 分钟` },
+  ]
+}
 const solverLabel = (run: AutoScheduleRunRecord) => run.solverType === 'CP_SAT' ? `CP-SAT · ${run.solverStatus}` : run.fallbackUsed ? `启发式回退 · ${run.solverStatus}` : '确定性启发式'
 
 watch(selectedPreset, (value) => {
@@ -99,7 +115,7 @@ watch(() => props.run?.id, () => { reviewOverrideReason.value = '' })
           <article><Clock3 :size="15" /><span>机台接续点</span><strong>{{ run.summary.continuationAnchors?.length ?? 0 }}</strong></article>
         </div>
         <section class="load-section"><header><Gauge :size="15" /><strong>机台负荷</strong></header><div><label v-for="load in run.summary.machineLoads" :key="load.machineId"><span>{{ load.machineCode }}</span><i><b :style="{ width: `${Math.min(100, load.loadRatio * 100)}%` }"></b></i><em>{{ (load.loadRatio * 100).toFixed(1) }}%</em></label></div></section>
-        <section class="assignment-section"><header><strong>安排与解释</strong><span>{{ run.assignments.length }} 条</span></header><div class="assignment-list"><details v-for="assignment in run.assignments" :key="assignment.id" :class="assignment.decision.toLowerCase()"><summary><span class="decision">{{ decisionLabel(assignment.decision) }}</span><div><strong>{{ orderMap.get(assignment.orderId)?.orderNo || assignment.orderId }}</strong><small>{{ orderMap.get(assignment.orderId)?.productName }}</small></div><span>{{ assignment.machineId ? machineMap.get(assignment.machineId)?.code || assignment.machineId : assignment.unassignedReasonCode }}</span><time>{{ assignment.plannedStart ? `${assignment.plannedStart.slice(5, 16)} → ${assignment.plannedFinish.slice(5, 16)}` : '—' }}</time><b>{{ assignment.score == null ? '—' : assignment.score.toFixed(1) }}</b></summary><div class="assignment-detail"><p>{{ String(assignment.explanation.summary ?? '暂无说明') }}</p><ul><li v-for="item in detailList(assignment, 'hard_checks')" :key="String(item.code)"><CheckCircle2 :size="13" /><span><strong>{{ item.label }}</strong>{{ item.detail }}</span></li><li v-for="item in detailList(assignment, 'hard_failures')" :key="String(item.rule_code)"><AlertTriangle :size="13" /><span><strong>{{ item.label }}</strong>{{ item.detail }}</span></li></ul><dl v-if="detailList(assignment, 'score_breakdown').length"><div v-for="item in detailList(assignment, 'score_breakdown')" :key="String(item.code)"><dt>{{ item.code }}</dt><dd>{{ item.detail }} · {{ item.cost }}</dd></div></dl></div></details></div></section>
+        <section class="assignment-section"><header><strong>安排与解释</strong><span>{{ run.assignments.length }} 条</span></header><div class="assignment-list"><details v-for="assignment in run.assignments" :key="assignment.id" :class="assignment.decision.toLowerCase()"><summary><span class="decision">{{ decisionLabel(assignment.decision) }}</span><div><strong>{{ orderMap.get(assignment.orderId)?.orderNo || assignment.orderId }}</strong><small>{{ orderMap.get(assignment.orderId)?.productName }}</small></div><span>{{ assignment.machineId ? machineMap.get(assignment.machineId)?.code || assignment.machineId : assignment.unassignedReasonCode }}</span><time>{{ assignment.plannedStart ? `${assignment.plannedStart.slice(5, 16)} → ${assignment.plannedFinish.slice(5, 16)}` : '—' }}</time><b>{{ assignment.score == null ? '—' : assignment.score.toFixed(1) }}</b></summary><div class="assignment-detail"><p>{{ String(assignment.explanation.summary ?? '暂无说明') }}</p><dl v-if="productionDetails(assignment).length" class="production-details"><div v-for="item in productionDetails(assignment)" :key="item.label"><dt>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl><ul><li v-for="item in detailList(assignment, 'hard_checks')" :key="String(item.code)"><CheckCircle2 :size="13" /><span><strong>{{ item.label }}</strong>{{ item.detail }}</span></li><li v-for="item in detailList(assignment, 'hard_failures')" :key="String(item.rule_code)"><AlertTriangle :size="13" /><span><strong>{{ item.label }}</strong>{{ item.detail }}</span></li></ul><dl v-if="detailList(assignment, 'score_breakdown').length"><div v-for="item in detailList(assignment, 'score_breakdown')" :key="String(item.code)"><dt>{{ item.code }}</dt><dd>{{ item.detail }} · {{ item.cost }}</dd></div></dl></div></details></div></section>
         <label v-if="run.summary.reviewCount" class="override-field"><span>待复核覆盖原因</span><textarea v-model="reviewOverrideReason" :disabled="!canOverride || run.status === 'APPLIED'" placeholder="具备发布/覆盖权限的人员填写后，才可应用含待复核项的方案"></textarea><small v-if="!canOverride">当前账号没有发布/覆盖权限，不能应用待复核安排。</small></label>
       </div>
 

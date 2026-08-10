@@ -37,6 +37,8 @@ class InjectionSchedulingMachineData(BaseModel):
     robot_capabilities: list[str] = Field(default_factory=list, max_length=32)
     fixture_capabilities: list[str] = Field(default_factory=list, max_length=64)
     process_restrictions: list[str] = Field(default_factory=list, max_length=64)
+    equipment_details: dict[str, Any] = Field(default_factory=dict)
+    remarks: str = Field(default="", max_length=4000)
     status: MachineStatus = "available"
 
     @field_validator(
@@ -47,6 +49,7 @@ class InjectionSchedulingMachineData(BaseModel):
         "machine_class_raw",
         "machine_type",
         "special_machine_type",
+        "remarks",
     )
     @classmethod
     def strip_text(cls, value: str) -> str:
