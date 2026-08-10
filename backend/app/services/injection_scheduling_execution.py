@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -35,12 +35,18 @@ from app.models.injection_scheduling_shared import (
     InjectionSchedulingDemandOrderVersion,
     InjectionSchedulingFactoryMoldCapability,
     InjectionSchedulingLegacyMoldCopyBinding,
+    InjectionSchedulingMoldDefinition,
+    InjectionSchedulingMoldOutputSpec,
     InjectionSchedulingMoldReservation,
     InjectionSchedulingPhysicalMoldAsset,
 )
 from app.schemas.injection_scheduling_execution import (
+    InjectionSchedulingBacklogOrderCancel,
     InjectionSchedulingDraftCreate,
     InjectionSchedulingEventOut,
+    InjectionSchedulingManualDemandCancel,
+    InjectionSchedulingManualDemandCreate,
+    InjectionSchedulingManualDemandUpdate,
     InjectionSchedulingOrderCreate,
     InjectionSchedulingOrderOut,
     InjectionSchedulingOrderUpdate,
@@ -60,6 +66,7 @@ from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingTaskMoveResult,
     InjectionSchedulingTaskOut,
     InjectionSchedulingTaskUpdate,
+    InjectionSchedulingTaskWithdrawInput,
 )
 from app.services.auth import AuthContext
 from app.services.injection_scheduling import require_injection_scheduling_factory
@@ -106,7 +113,8 @@ def _stable_order_key(order: InjectionSchedulingOrder) -> str:
             order.factory_id,
             order.order_no,
             order.item_no,
-            order.mold_id or "",
+            order.mold_id or order.mold_definition_id or "",
+            order.mold_output_spec_id or "",
             order.product_name,
         ]
     )
@@ -178,6 +186,8 @@ def order_out(record: InjectionSchedulingOrder) -> InjectionSchedulingOrderOut:
         item_no=record.item_no,
         product_name=record.product_name,
         mold_id=record.mold_id,
+        mold_definition_id=record.mold_definition_id,
+        mold_output_spec_id=record.mold_output_spec_id,
         order_quantity=order_quantity,
         source_completed_quantity=_float(record.source_completed_quantity),
         completed_quantity=completed_quantity,
@@ -482,6 +492,10 @@ def create_order(
     payload: InjectionSchedulingOrderCreate,
     user: AuthContext,
     request_id: str,
+    *,
+    source_type: str = "manual",
+    mold_definition_id: str | None = None,
+    mold_output_spec_id: str | None = None,
 ) -> tuple[InjectionSchedulingOrder, int]:
     factory_id = require_injection_scheduling_factory(payload.factory_id)
     if payload.mold_id is not None:
@@ -497,6 +511,8 @@ def create_order(
         item_no=payload.item_no,
         product_name=payload.product_name,
         mold_id=payload.mold_id,
+        mold_definition_id=mold_definition_id,
+        mold_output_spec_id=mold_output_spec_id,
         order_quantity=quantity,
         source_completed_quantity=completed,
         completed_quantity=completed,
@@ -517,7 +533,7 @@ def create_order(
         material_readiness_status=payload.material_readiness_status,
         warehouse_text=payload.warehouse_text,
         remark=payload.remark,
-        source_type="manual",
+        source_type=source_type,
         source_ref=payload.source_ref,
         source_version=payload.source_version,
         lineage_json=_json(payload.lineage),
@@ -531,6 +547,53 @@ def create_order(
         updated_at=timestamp,
     )
     db.add(record)
+    draft = db.scalar(
+        select(InjectionSchedulingPlan).where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.status == "DRAFT",
+        )
+    )
+    if draft is not None and status == "BACKLOG":
+        db.add(
+            InjectionSchedulingPlanOrderState(
+                id=f"ispostate-{uuid4().hex}",
+                factory_id=factory_id,
+                plan_id=draft.id,
+                order_id=record.id,
+                stable_order_key=_stable_order_key(record),
+                order_quantity=quantity,
+                delivery_start_date=record.delivery_start_date,
+                delivery_due_date=record.delivery_due_date,
+                takeover_source_completed_quantity=completed,
+                report_increment_total=Decimal(0),
+                progress_adjustment_total=Decimal(0),
+                completed_quantity=completed,
+                status="BACKLOG",
+                quantity_scope="ORDER_CUMULATIVE",
+                source_batch_id=None,
+                source_sheet_name="",
+                source_row=None,
+                source_profile_id=None,
+                source_profile_revision=None,
+                source_lineage_json=record.lineage_json,
+                order_revision_id=None,
+                factory_readiness_status=(
+                    "DRAFT_READY" if mold_definition_id else "LEGACY_UNKNOWN"
+                ),
+                revision=1,
+                created_by=user.id,
+                created_by_name=_actor_name(user),
+                updated_by=user.id,
+                updated_by_name=_actor_name(user),
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+        )
+        draft.revision += 1
+        draft.updated_by = user.id
+        draft.updated_by_name = _actor_name(user)
+        draft.updated_at = timestamp
+        _record_plan_revision(db, plan=draft, user=user, timestamp=timestamp)
     audit = _audit(
         db,
         factory_id=factory_id,
@@ -547,6 +610,511 @@ def create_order(
         user=user,
     )
     db.commit()
+    return record, audit.sequence
+
+
+def _manual_demand_master(
+    db: Session,
+    *,
+    factory_id: str,
+    mold_definition_id: str,
+    mold_output_spec_id: str | None,
+) -> tuple[
+    InjectionSchedulingMoldDefinition,
+    InjectionSchedulingMoldOutputSpec | None,
+    list[InjectionSchedulingFactoryMoldCapability],
+]:
+    definition = db.scalar(
+        select(InjectionSchedulingMoldDefinition).where(
+            InjectionSchedulingMoldDefinition.id == mold_definition_id,
+            InjectionSchedulingMoldDefinition.status == "ACTIVE",
+        )
+    )
+    if definition is None:
+        raise HTTPException(status_code=409, detail="共享模具定义不存在或未激活")
+    output = None
+    if mold_output_spec_id:
+        output = db.scalar(
+            select(InjectionSchedulingMoldOutputSpec).where(
+                InjectionSchedulingMoldOutputSpec.id == mold_output_spec_id,
+                InjectionSchedulingMoldOutputSpec.mold_definition_id == definition.id,
+                InjectionSchedulingMoldOutputSpec.status == "ACTIVE",
+            )
+        )
+        if output is None:
+            raise HTTPException(
+                status_code=409, detail="所选模具产出规格不存在或未激活"
+            )
+    capabilities = list(
+        db.scalars(
+            select(InjectionSchedulingFactoryMoldCapability).where(
+                InjectionSchedulingFactoryMoldCapability.factory_id == factory_id,
+                InjectionSchedulingFactoryMoldCapability.mold_definition_id
+                == definition.id,
+                InjectionSchedulingFactoryMoldCapability.status == "ACTIVE",
+                or_(
+                    InjectionSchedulingFactoryMoldCapability.mold_output_spec_id
+                    == mold_output_spec_id,
+                    InjectionSchedulingFactoryMoldCapability.mold_output_spec_id.is_(
+                        None
+                    ),
+                ),
+            )
+        ).all()
+    )
+    if not capabilities:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FACTORY_MOLD_CAPABILITY_MISSING",
+                "message": "该共享模具尚无当前厂区有效机安能力，不能建立可排需求",
+            },
+        )
+    return definition, output, capabilities
+
+
+def _manual_planned_units(
+    planned_quantity: float,
+    quantity_basis: str,
+    output: InjectionSchedulingMoldOutputSpec | None,
+) -> tuple[Decimal, Decimal | None]:
+    value = _decimal(planned_quantity)
+    if quantity_basis == "UNITS":
+        return value, None
+    if output is None or not output.units_per_shot or output.units_per_shot <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="按啤数建立需求时，所选产出规格必须配置每啤件数",
+        )
+    return value * Decimal(output.units_per_shot), value
+
+
+def create_manual_demand(
+    db: Session,
+    payload: InjectionSchedulingManualDemandCreate,
+    user: AuthContext,
+    request_id: str,
+) -> tuple[InjectionSchedulingOrder, int]:
+    factory_id = require_injection_scheduling_factory(payload.factory_id)
+    draft = db.scalar(
+        select(InjectionSchedulingPlan).where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.status == "DRAFT",
+        )
+    )
+    if draft is None:
+        create_draft_plan(
+            db,
+            InjectionSchedulingDraftCreate(
+                factory_id=factory_id,
+                expected_revision=0,
+                business_date=payload.business_date,
+            ),
+            user,
+            f"{request_id}:draft",
+        )
+    definition, output, capabilities = _manual_demand_master(
+        db,
+        factory_id=factory_id,
+        mold_definition_id=payload.mold_definition_id,
+        mold_output_spec_id=payload.mold_output_spec_id,
+    )
+    planned_units, planned_shots = _manual_planned_units(
+        payload.planned_quantity, payload.quantity_basis, output
+    )
+    timestamp = business_now()
+    internal_no = f"MPD-{timestamp.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6].upper()}"
+    source_daily_capacity = next(
+        (
+            Decimal(capability.nominal_daily_capacity)
+            for capability in capabilities
+            if capability.nominal_daily_capacity
+        ),
+        Decimal(output.nominal_daily_capacity)
+        if output is not None and output.nominal_daily_capacity
+        else Decimal(0),
+    )
+    lineage = {
+        "demand_entry_mode": "MANUAL_PLANNING_DEMAND",
+        "mold_definition_id": definition.id,
+        "mold_output_spec_id": output.id if output is not None else None,
+        "source_mold_no": definition.display_mold_no or definition.canonical_mold_no,
+        "mold_enrichment_status": "MATCHED",
+        "factory_readiness_status": "DRAFT_READY",
+        "factory_capability_ids": [item.id for item in capabilities],
+        "quantity_basis": payload.quantity_basis,
+        "planned_shots": float(planned_shots) if planned_shots is not None else None,
+        "source_daily_capacity": float(source_daily_capacity),
+        "material_name": payload.material_name
+        or (output.default_material if output is not None else ""),
+        "color_name": payload.color_name
+        or (output.default_color if output is not None else ""),
+    }
+    order_payload = InjectionSchedulingOrderCreate(
+        factory_id=factory_id,
+        expected_revision=0,
+        order_no=internal_no,
+        item_no=payload.item_no or (output.item_no if output is not None else ""),
+        product_name=payload.product_name
+        or (output.product_name if output is not None else "")
+        or definition.standard_name,
+        mold_id=None,
+        order_quantity=float(planned_units),
+        source_completed_quantity=0,
+        delivery_due_date=payload.delivery_due_date,
+        priority_code=payload.priority_code,
+        material_readiness_status=payload.material_readiness_status,
+        warehouse_text=payload.warehouse_text,
+        remark=payload.remark,
+        source_ref=internal_no,
+        source_version="1",
+        lineage=lineage,
+    )
+    return create_order(
+        db,
+        order_payload,
+        user,
+        request_id,
+        source_type="MANUAL_PLANNING_DEMAND",
+        mold_definition_id=definition.id,
+        mold_output_spec_id=output.id if output is not None else None,
+    )
+
+
+def update_manual_demand(
+    db: Session,
+    order_id: str,
+    payload: InjectionSchedulingManualDemandUpdate,
+    user: AuthContext,
+    request_id: str,
+) -> tuple[InjectionSchedulingOrder, int]:
+    factory_id = require_injection_scheduling_factory(payload.factory_id)
+    record = _require_order(db, factory_id, order_id)
+    if record.source_type != "MANUAL_PLANNING_DEMAND":
+        raise HTTPException(status_code=409, detail="只有手工排期需求可以在此修改")
+    if record.status != "BACKLOG":
+        raise HTTPException(status_code=409, detail="已进入任务的手工需求不能直接修改")
+    if record.revision != payload.expected_revision:
+        raise _revision_conflict(
+            "手工排期需求", payload.expected_revision, record.revision
+        )
+    definition_id = payload.mold_definition_id or record.mold_definition_id
+    output_id = payload.mold_output_spec_id
+    if payload.mold_definition_id is None and payload.mold_output_spec_id is None:
+        output_id = record.mold_output_spec_id
+    if not definition_id:
+        raise HTTPException(status_code=409, detail="手工排期需求缺少共享模具")
+    definition, output, capabilities = _manual_demand_master(
+        db,
+        factory_id=factory_id,
+        mold_definition_id=definition_id,
+        mold_output_spec_id=output_id,
+    )
+    lineage = _load_json(record.lineage_json, {})
+    basis = payload.quantity_basis or str(lineage.get("quantity_basis") or "UNITS")
+    displayed_quantity = (
+        payload.planned_quantity
+        if payload.planned_quantity is not None
+        else float(lineage.get("planned_shots") or record.order_quantity)
+        if basis == "SHOTS"
+        else float(record.order_quantity)
+    )
+    units, shots = _manual_planned_units(displayed_quantity, basis, output)
+    if record.completed_quantity > units:
+        raise HTTPException(
+            status_code=409, detail="修改后的计划数量不能小于已完成数量"
+        )
+    timestamp = _now()
+    record.mold_definition_id = definition.id
+    record.mold_output_spec_id = output.id if output is not None else None
+    record.order_quantity = units
+    if payload.item_no is not None:
+        record.item_no = payload.item_no
+    if payload.product_name is not None:
+        record.product_name = payload.product_name
+    if payload.delivery_due_date is not None:
+        record.delivery_due_date = payload.delivery_due_date.isoformat()
+    elif payload.clear_delivery_due_date:
+        record.delivery_due_date = ""
+    for field in (
+        "priority_code",
+        "material_readiness_status",
+        "warehouse_text",
+        "remark",
+    ):
+        value = getattr(payload, field)
+        if value is not None:
+            setattr(record, field, value)
+    lineage.update(
+        {
+            "mold_definition_id": definition.id,
+            "mold_output_spec_id": output.id if output is not None else None,
+            "source_mold_no": definition.display_mold_no
+            or definition.canonical_mold_no,
+            "factory_capability_ids": [item.id for item in capabilities],
+            "quantity_basis": basis,
+            "planned_shots": float(shots) if shots is not None else None,
+            "material_name": payload.material_name
+            if payload.material_name is not None
+            else lineage.get("material_name", ""),
+            "color_name": payload.color_name
+            if payload.color_name is not None
+            else lineage.get("color_name", ""),
+        }
+    )
+    record.lineage_json = _json(lineage)
+    record.revision += 1
+    record.updated_by = user.id
+    record.updated_by_name = _actor_name(user)
+    record.updated_at = timestamp
+    state = db.scalar(
+        select(InjectionSchedulingPlanOrderState)
+        .join(
+            InjectionSchedulingPlan,
+            InjectionSchedulingPlan.id == InjectionSchedulingPlanOrderState.plan_id,
+        )
+        .where(
+            InjectionSchedulingPlanOrderState.factory_id == factory_id,
+            InjectionSchedulingPlanOrderState.order_id == record.id,
+            InjectionSchedulingPlan.status == "DRAFT",
+        )
+    )
+    if state is not None:
+        state.order_quantity = units
+        state.delivery_due_date = record.delivery_due_date
+        state.source_lineage_json = record.lineage_json
+        state.factory_readiness_status = "DRAFT_READY"
+        state.revision += 1
+        state.updated_by = user.id
+        state.updated_by_name = _actor_name(user)
+        state.updated_at = timestamp
+        draft = db.get(InjectionSchedulingPlan, state.plan_id)
+        if draft is not None:
+            draft.revision += 1
+            draft.updated_by = user.id
+            draft.updated_by_name = _actor_name(user)
+            draft.updated_at = timestamp
+            _record_plan_revision(db, plan=draft, user=user, timestamp=timestamp)
+    audit = _audit(
+        db,
+        factory_id=factory_id,
+        event_type="manual_demand_updated",
+        entity_type="order",
+        entity_id=record.id,
+        entity_revision=record.revision,
+        request_id=request_id,
+        detail={"order": order_out(record).model_dump(mode="json")},
+        user=user,
+    )
+    db.commit()
+    return record, audit.sequence
+
+
+def cancel_manual_demand(
+    db: Session,
+    order_id: str,
+    payload: InjectionSchedulingManualDemandCancel,
+    user: AuthContext,
+    request_id: str,
+) -> tuple[InjectionSchedulingOrder, int]:
+    factory_id = require_injection_scheduling_factory(payload.factory_id)
+    record = _require_order(db, factory_id, order_id)
+    if record.source_type != "MANUAL_PLANNING_DEMAND":
+        raise HTTPException(status_code=409, detail="只有手工排期需求可以在此取消")
+    if record.status in {"COMPLETED", "CANCELLED"}:
+        raise HTTPException(
+            status_code=409, detail="已完成或已取消的手工需求不能重复取消"
+        )
+    if record.revision != payload.expected_revision:
+        raise _revision_conflict(
+            "手工排期需求", payload.expected_revision, record.revision
+        )
+    active_task = db.scalar(
+        select(InjectionSchedulingTask.id).where(
+            InjectionSchedulingTask.factory_id == factory_id,
+            InjectionSchedulingTask.order_id == record.id,
+            InjectionSchedulingTask.execution_status.notin_(("COMPLETED", "CANCELLED")),
+        )
+    )
+    if active_task:
+        raise HTTPException(status_code=409, detail="该需求已有排期任务，请先撤销任务")
+    timestamp = _now()
+    record.status = "CANCELLED"
+    record.revision += 1
+    record.updated_by = user.id
+    record.updated_by_name = _actor_name(user)
+    record.updated_at = timestamp
+    states = list(
+        db.scalars(
+            select(InjectionSchedulingPlanOrderState).where(
+                InjectionSchedulingPlanOrderState.factory_id == factory_id,
+                InjectionSchedulingPlanOrderState.order_id == record.id,
+                InjectionSchedulingPlanOrderState.status.in_(("BACKLOG", "SCHEDULED")),
+            )
+        ).all()
+    )
+    for state in states:
+        state.status = "CANCELLED"
+        state.revision += 1
+        state.updated_by = user.id
+        state.updated_by_name = _actor_name(user)
+        state.updated_at = timestamp
+    draft_plan_ids = {state.plan_id for state in states}
+    for draft in db.scalars(
+        select(InjectionSchedulingPlan).where(
+            InjectionSchedulingPlan.id.in_(draft_plan_ids),
+            InjectionSchedulingPlan.status == "DRAFT",
+        )
+    ).all():
+        draft.revision += 1
+        draft.updated_by = user.id
+        draft.updated_by_name = _actor_name(user)
+        draft.updated_at = timestamp
+        _record_plan_revision(db, plan=draft, user=user, timestamp=timestamp)
+    audit = _audit(
+        db,
+        factory_id=factory_id,
+        event_type="manual_demand_cancelled",
+        entity_type="order",
+        entity_id=record.id,
+        entity_revision=record.revision,
+        request_id=request_id,
+        detail={"reason": payload.reason},
+        user=user,
+    )
+    db.commit()
+    return record, audit.sequence
+
+
+def cancel_backlog_order(
+    db: Session,
+    order_id: str,
+    payload: InjectionSchedulingBacklogOrderCancel,
+    user: AuthContext,
+    request_id: str,
+) -> tuple[InjectionSchedulingOrder, int]:
+    """Cancel an unscheduled order without deleting its source or audit lineage."""
+
+    factory_id = require_injection_scheduling_factory(payload.factory_id)
+    record = db.scalar(
+        select(InjectionSchedulingOrder)
+        .where(
+            InjectionSchedulingOrder.factory_id == factory_id,
+            InjectionSchedulingOrder.id == order_id,
+        )
+        .with_for_update()
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="排产订单不存在")
+    if record.status in {"COMPLETED", "CANCELLED"}:
+        raise HTTPException(status_code=409, detail="已完成或已删除的待排单不能重复删除")
+    if record.revision != payload.expected_revision:
+        raise _revision_conflict("待排订单", payload.expected_revision, record.revision)
+
+    draft = db.scalar(
+        select(InjectionSchedulingPlan)
+        .where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.status == "DRAFT",
+        )
+        .with_for_update()
+    )
+    state: InjectionSchedulingPlanOrderState | None = None
+    if draft is not None:
+        if payload.expected_plan_id != draft.id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "PLANNING_DRAFT_CHANGED",
+                    "message": "规划草案已变化，请刷新后重试",
+                    "current_plan_id": draft.id,
+                    "current_plan_revision": draft.revision,
+                },
+            )
+        if payload.expected_plan_revision != draft.revision:
+            raise _revision_conflict(
+                "规划草案",
+                payload.expected_plan_revision or 0,
+                draft.revision,
+            )
+        state = db.scalar(
+            select(InjectionSchedulingPlanOrderState)
+            .where(
+                InjectionSchedulingPlanOrderState.factory_id == factory_id,
+                InjectionSchedulingPlanOrderState.plan_id == draft.id,
+                InjectionSchedulingPlanOrderState.order_id == record.id,
+            )
+            .with_for_update()
+        )
+        if state is None or state.status != "BACKLOG":
+            raise HTTPException(status_code=409, detail="该订单已不在当前待排池，请刷新后重试")
+    elif payload.expected_plan_id is not None:
+        raise HTTPException(status_code=409, detail="规划草案已变化，请刷新后重试")
+    elif record.status != "BACKLOG":
+        raise HTTPException(status_code=409, detail="该订单已不在待排池")
+
+    active_task = db.scalar(
+        select(InjectionSchedulingTask.id)
+        .join(
+            InjectionSchedulingPlan,
+            InjectionSchedulingPlan.id == InjectionSchedulingTask.plan_id,
+        )
+        .where(
+            InjectionSchedulingTask.factory_id == factory_id,
+            InjectionSchedulingTask.order_id == record.id,
+            InjectionSchedulingTask.execution_status.notin_(("COMPLETED", "CANCELLED")),
+            InjectionSchedulingPlan.status.in_(("DRAFT", "PUBLISHED")),
+        )
+    )
+    if active_task:
+        raise HTTPException(
+            status_code=409,
+            detail="该订单仍有排期任务，请先撤回待排并发布调整草案后再删除",
+        )
+
+    timestamp = _now()
+    previous_order_status = record.status
+    record.status = "CANCELLED"
+    record.revision += 1
+    record.updated_by = user.id
+    record.updated_by_name = _actor_name(user)
+    record.updated_at = timestamp
+    if state is not None:
+        state.status = "CANCELLED"
+        state.revision += 1
+        state.updated_by = user.id
+        state.updated_by_name = _actor_name(user)
+        state.updated_at = timestamp
+    if draft is not None:
+        draft.revision += 1
+        draft.updated_by = user.id
+        draft.updated_by_name = _actor_name(user)
+        draft.updated_at = timestamp
+        _record_plan_revision(db, plan=draft, user=user, timestamp=timestamp)
+    audit = _audit(
+        db,
+        factory_id=factory_id,
+        event_type="backlog_order_cancelled",
+        entity_type="order",
+        entity_id=record.id,
+        entity_revision=record.revision,
+        request_id=request_id,
+        detail={
+            "reason": payload.reason,
+            "source_type": record.source_type,
+            "source_ref": record.source_ref,
+            "previous_order_status": previous_order_status,
+            "planning_plan_id": draft.id if draft is not None else None,
+            "planning_plan_revision": draft.revision if draft is not None else None,
+            "source_record_preserved": True,
+        },
+        user=user,
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="删除待排单与其他操作冲突，请刷新后重试") from exc
     return record, audit.sequence
 
 
@@ -948,7 +1516,14 @@ def _physical_asset_for_new_task(
     planned_start: str,
     planned_finish: str,
 ) -> InjectionSchedulingPhysicalMoldAsset | None:
-    if order.source_type != "DEMAND_ORDER_VERSION":
+    definition_id = order.mold_definition_id
+    output_spec_id = order.mold_output_spec_id
+    if definition_id is None and order.source_type == "DEMAND_ORDER_VERSION":
+        version = db.get(InjectionSchedulingDemandOrderVersion, order.source_ref)
+        if version is not None:
+            definition_id = version.mold_definition_id
+            output_spec_id = version.mold_output_spec_id
+    if definition_id is None:
         binding = db.scalar(
             select(InjectionSchedulingLegacyMoldCopyBinding).where(
                 InjectionSchedulingLegacyMoldCopyBinding.factory_id == factory_id,
@@ -989,23 +1564,11 @@ def _physical_asset_for_new_task(
             planned_finish=planned_finish,
         )
         return asset
-    version = db.get(InjectionSchedulingDemandOrderVersion, order.source_ref)
-    if version is None:
-        raise HTTPException(status_code=409, detail="需求订单冻结版本不存在")
-    if version.readiness_status != "FACTORY_READY":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "DEMAND_ORDER_NOT_FACTORY_READY",
-                "message": "订单可留在 BACKLOG，但本厂实物或已验证能力不足，不能生成 Task",
-                "order_revision_id": version.id,
-            },
-        )
     assets = list(
         db.scalars(
             select(InjectionSchedulingPhysicalMoldAsset).where(
                 InjectionSchedulingPhysicalMoldAsset.mold_definition_id
-                == version.mold_definition_id,
+                == definition_id,
                 InjectionSchedulingPhysicalMoldAsset.current_factory_id == factory_id,
                 InjectionSchedulingPhysicalMoldAsset.status == "AVAILABLE",
             )
@@ -1016,7 +1579,7 @@ def _physical_asset_for_new_task(
             select(InjectionSchedulingFactoryMoldCapability).where(
                 InjectionSchedulingFactoryMoldCapability.factory_id == factory_id,
                 InjectionSchedulingFactoryMoldCapability.mold_definition_id
-                == version.mold_definition_id,
+                == definition_id,
                 InjectionSchedulingFactoryMoldCapability.status == "ACTIVE",
             )
         ).all()
@@ -1026,13 +1589,13 @@ def _physical_asset_for_new_task(
         for asset in assets
         if any(
             capability.physical_asset_id in {None, asset.id}
-            and capability.mold_output_spec_id in {None, version.mold_output_spec_id}
+            and capability.mold_output_spec_id in {None, output_spec_id}
             for capability in capabilities
         )
     }
     if requested_asset_id:
         eligible_asset_ids &= {requested_asset_id}
-    if len(eligible_asset_ids) != 1:
+    if requested_asset_id and len(eligible_asset_ids) != 1:
         raise HTTPException(
             status_code=409,
             detail={
@@ -1041,6 +1604,8 @@ def _physical_asset_for_new_task(
                 "candidate_asset_ids": sorted(eligible_asset_ids),
             },
         )
+    if len(eligible_asset_ids) != 1:
+        return None
     asset_id = next(iter(eligible_asset_ids))
     _ensure_physical_reservation_window_available(
         db,
@@ -1049,6 +1614,94 @@ def _physical_asset_for_new_task(
         planned_finish=planned_finish,
     )
     return next(item for item in assets if item.id == asset_id)
+
+
+def _auto_create_default_shared_mold_asset(
+    db: Session,
+    *,
+    order: InjectionSchedulingOrder,
+    factory_id: str,
+    user: AuthContext,
+    timestamp: str,
+) -> InjectionSchedulingPhysicalMoldAsset | None:
+    """Create the factory's default single copy when no asset record exists.
+
+    Shared mold definitions remain the master-data source.  The default asset is
+    only a scheduling identity for the common business case where one mold number
+    represents one physical mold.  Existing asset records, including unavailable
+    ones, always win so maintenance/transfer state is never bypassed.
+    """
+
+    definition_id = order.mold_definition_id
+    output_spec_id = order.mold_output_spec_id
+    if definition_id is None and order.source_type == "DEMAND_ORDER_VERSION":
+        version = db.get(InjectionSchedulingDemandOrderVersion, order.source_ref)
+        if version is not None:
+            definition_id = version.mold_definition_id
+            output_spec_id = version.mold_output_spec_id
+    if definition_id is None:
+        return None
+
+    existing_asset_id = db.scalar(
+        select(InjectionSchedulingPhysicalMoldAsset.id).where(
+            InjectionSchedulingPhysicalMoldAsset.mold_definition_id == definition_id,
+            InjectionSchedulingPhysicalMoldAsset.current_factory_id == factory_id,
+        )
+    )
+    if existing_asset_id is not None:
+        return None
+
+    capabilities = list(
+        db.scalars(
+            select(InjectionSchedulingFactoryMoldCapability).where(
+                InjectionSchedulingFactoryMoldCapability.factory_id == factory_id,
+                InjectionSchedulingFactoryMoldCapability.mold_definition_id
+                == definition_id,
+                InjectionSchedulingFactoryMoldCapability.status == "ACTIVE",
+            )
+        ).all()
+    )
+    if not any(
+        capability.physical_asset_id is None
+        and capability.mold_output_spec_id in {None, output_spec_id}
+        for capability in capabilities
+    ):
+        return None
+    definition = db.get(InjectionSchedulingMoldDefinition, definition_id)
+    if definition is None or definition.status != "ACTIVE":
+        return None
+
+    label = (
+        definition.display_mold_no
+        or definition.canonical_mold_no
+        or definition.id
+    ).strip()
+    identity_hash = hashlib.sha256(
+        f"{factory_id}:{definition.id}:1".encode("utf-8")
+    ).hexdigest()[:12].upper()
+    code_prefix = f"DEFAULT-{label}"[: 128 - len(identity_hash) - 1]
+    asset = InjectionSchedulingPhysicalMoldAsset(
+        id=f"isphysicalmold-{uuid4().hex}",
+        mold_definition_id=definition.id,
+        owner_scope_type="FACTORY",
+        owner_scope_id=factory_id,
+        asset_code=f"{code_prefix}-{identity_hash}",
+        serial_no="",
+        current_factory_id=factory_id,
+        current_location="",
+        status="AVAILABLE",
+        actual_cavity_count=None,
+        available_from=timestamp,
+        revision=1,
+        source_mold_id=None,
+        source_copy_no=1,
+        verified_by=user.id,
+        verified_at=timestamp,
+        created_at=timestamp,
+    )
+    db.add(asset)
+    db.flush()
+    return asset
 
 
 def add_task(
@@ -2016,6 +2669,64 @@ def publish_plan(
             )
         tasks = plan_tasks(db, factory_id, plan.id)
         reservation_ids_in_published_plan: set[str] = set()
+        missing_asset_tasks: list[str] = []
+        auto_created_physical_asset_ids: list[str] = []
+        order_by_id = {
+            item.id: item
+            for item in db.scalars(
+                select(InjectionSchedulingOrder).where(
+                    InjectionSchedulingOrder.factory_id == factory_id,
+                    InjectionSchedulingOrder.id.in_({task.order_id for task in tasks}),
+                )
+            ).all()
+        }
+        for task in tasks:
+            if task.physical_mold_asset_id:
+                continue
+            order = order_by_id.get(task.order_id)
+            if order is None or not order.mold_definition_id:
+                continue
+            asset = _physical_asset_for_new_task(
+                db,
+                order=order,
+                factory_id=factory_id,
+                requested_asset_id=None,
+                mold_copy_no=task.mold_copy_no,
+                planned_start=task.planned_start,
+                planned_finish=task.planned_finish,
+            )
+            if asset is None:
+                created_asset = _auto_create_default_shared_mold_asset(
+                    db,
+                    order=order,
+                    factory_id=factory_id,
+                    user=user,
+                    timestamp=timestamp,
+                )
+                if created_asset is not None:
+                    auto_created_physical_asset_ids.append(created_asset.id)
+                    asset = _physical_asset_for_new_task(
+                        db,
+                        order=order,
+                        factory_id=factory_id,
+                        requested_asset_id=created_asset.id,
+                        mold_copy_no=task.mold_copy_no,
+                        planned_start=task.planned_start,
+                        planned_finish=task.planned_finish,
+                    )
+            if asset is None:
+                missing_asset_tasks.append(task.id)
+            else:
+                task.physical_mold_asset_id = asset.id
+        if missing_asset_tasks:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "PHYSICAL_MOLD_ASSET_REQUIRED_BEFORE_PUBLISH",
+                    "message": "草案可以先排机，但发布前必须为共享模具任务落实唯一可用实体模具",
+                    "task_ids": missing_asset_tasks,
+                },
+            )
         for task in tasks:
             if not task.physical_mold_asset_id:
                 continue
@@ -2166,6 +2877,7 @@ def publish_plan(
                 "snapshot_id": snapshot.id,
                 "snapshot_sha256": snapshot_sha256,
                 "task_count": len(tasks),
+                "auto_created_physical_asset_ids": auto_created_physical_asset_ids,
                 "rebase": rebase_detail,
             },
             user=user,
@@ -2194,6 +2906,273 @@ def publish_plan(
             )
         raise HTTPException(status_code=409, detail="计划发布冲突") from exc
     return plan, snapshot.id, audit.sequence, False
+
+
+def withdraw_task_to_backlog(
+    db: Session,
+    task_id: str,
+    payload: InjectionSchedulingTaskWithdrawInput,
+    user: AuthContext,
+) -> tuple[
+    InjectionSchedulingPlan,
+    str,
+    str,
+    list[str],
+    bool,
+    int,
+    bool,
+]:
+    """Remove an order's schedule rows from a DRAFT and return its remainder to backlog.
+
+    Published plans stay immutable.  When the selected task belongs to the current
+    published plan, the operation creates (or reuses) its successor DRAFT and
+    performs the withdrawal there.  All rows for the same order are removed so a
+    partially scheduled order cannot be exposed as a duplicate full backlog demand.
+    """
+
+    factory_id = require_injection_scheduling_factory(payload.factory_id)
+    request_detail = {
+        "operation": "withdraw_task_to_backlog",
+        "factory_id": factory_id,
+        "source_task_id": task_id,
+        "expected_plan_revision": payload.expected_plan_revision,
+        "expected_task_revision": payload.expected_task_revision,
+        "expected_planning_revision": payload.expected_planning_revision,
+        "reason": payload.reason,
+    }
+    request_hash = _payload_hash(request_detail)
+    replay = db.scalar(
+        select(InjectionSchedulingAuditEvent).where(
+            InjectionSchedulingAuditEvent.factory_id == factory_id,
+            InjectionSchedulingAuditEvent.request_id == payload.request_id,
+            InjectionSchedulingAuditEvent.event_type
+            == "plan_task_withdrawn_to_backlog",
+        )
+    )
+    if replay is not None:
+        detail = _load_json(replay.detail_json, {})
+        if detail.get("payload_hash") != request_hash:
+            raise _idempotency_conflict()
+        return (
+            _require_plan(db, factory_id, detail["draft_plan_id"]),
+            detail["source_plan_id"],
+            detail["order_id"],
+            list(detail.get("withdrawn_task_ids", [])),
+            bool(detail.get("successor_created")),
+            replay.sequence,
+            True,
+        )
+
+    source_task = db.scalar(
+        select(InjectionSchedulingTask)
+        .where(
+            InjectionSchedulingTask.factory_id == factory_id,
+            InjectionSchedulingTask.id == task_id,
+        )
+        .with_for_update()
+    )
+    if source_task is None:
+        raise HTTPException(status_code=404, detail="排产任务不存在")
+    source_plan = db.scalar(
+        select(InjectionSchedulingPlan)
+        .where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.id == source_task.plan_id,
+        )
+        .with_for_update()
+    )
+    if source_plan is None:
+        raise HTTPException(status_code=404, detail="排产计划不存在")
+    if source_plan.status not in {"DRAFT", "PUBLISHED"}:
+        raise HTTPException(status_code=409, detail="只能撤回草案或当前执行计划中的任务")
+    if source_plan.revision != payload.expected_plan_revision:
+        raise _revision_conflict(
+            "排产计划", payload.expected_plan_revision, source_plan.revision
+        )
+    if source_task.revision != payload.expected_task_revision:
+        raise _revision_conflict(
+            "排产任务",
+            payload.expected_task_revision,
+            source_task.revision,
+            diff={"updated_at": source_task.updated_at},
+        )
+    if source_task.execution_status in {"COMPLETED", "CANCELLED"}:
+        raise HTTPException(status_code=409, detail="已完成或已取消任务不能撤回待排")
+    if source_task.locked:
+        raise HTTPException(
+            status_code=409,
+            detail="锁定基线任务不能直接撤回，请先解除锁定后再操作",
+        )
+
+    timestamp = _now()
+    successor_created = False
+    if source_plan.status == "PUBLISHED":
+        draft = db.scalar(
+            select(InjectionSchedulingPlan)
+            .where(
+                InjectionSchedulingPlan.factory_id == factory_id,
+                InjectionSchedulingPlan.status == "DRAFT",
+            )
+            .with_for_update()
+        )
+        if draft is None:
+            from app.services.injection_scheduling_takeover import (
+                clone_successor_draft,
+            )
+
+            draft = clone_successor_draft(
+                db,
+                source=source_plan,
+                business_date=source_plan.business_date,
+                user=user,
+                timestamp=timestamp,
+            )
+            successor_created = True
+            expected_draft_revision = 1
+        else:
+            if draft.based_on_plan_id != source_plan.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "WITHDRAW_DRAFT_BASE_MISMATCH",
+                        "message": "当前规划草案不是这份执行计划的接续草案，请先处理现有草案",
+                        "draft_plan_id": draft.id,
+                        "based_on_plan_id": draft.based_on_plan_id,
+                    },
+                )
+            if payload.expected_planning_revision is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="已有规划草案，请刷新页面后再撤回任务",
+                )
+            if draft.revision != payload.expected_planning_revision:
+                raise _revision_conflict(
+                    "规划草案", payload.expected_planning_revision, draft.revision
+                )
+            expected_draft_revision = payload.expected_planning_revision
+    else:
+        draft = source_plan
+        expected_draft_revision = payload.expected_plan_revision
+
+    target_tasks = list(
+        db.scalars(
+            select(InjectionSchedulingTask)
+            .where(
+                InjectionSchedulingTask.factory_id == factory_id,
+                InjectionSchedulingTask.plan_id == draft.id,
+                InjectionSchedulingTask.order_id == source_task.order_id,
+            )
+            .order_by(InjectionSchedulingTask.sequence_no, InjectionSchedulingTask.id)
+            .with_for_update()
+        ).all()
+    )
+    if not target_tasks:
+        raise HTTPException(status_code=409, detail="该订单已不在当前规划草案中")
+    if any(item.locked for item in target_tasks):
+        raise HTTPException(
+            status_code=409,
+            detail="该订单包含锁定基线任务，请先解除锁定后再撤回",
+        )
+
+    order = _require_order(db, factory_id, source_task.order_id)
+    state = _require_or_create_plan_order_state(
+        db,
+        plan=draft,
+        task=target_tasks[0],
+        order=order,
+        user=user,
+        timestamp=timestamp,
+    )
+    withdrawn_task_ids = [item.id for item in target_tasks]
+    try:
+        for target in target_tasks:
+            _release_task_reservation(db, task_id=target.id, timestamp=timestamp)
+            db.delete(target)
+        state.status = (
+            "COMPLETED"
+            if _decimal(state.completed_quantity) >= _decimal(state.order_quantity)
+            else "BACKLOG"
+        )
+        state.revision += 1
+        state.updated_by = user.id
+        state.updated_by_name = _actor_name(user)
+        state.updated_at = timestamp
+        db.flush()
+        plan_result = db.execute(
+            update(InjectionSchedulingPlan)
+            .where(
+                InjectionSchedulingPlan.id == draft.id,
+                InjectionSchedulingPlan.factory_id == factory_id,
+                InjectionSchedulingPlan.status == "DRAFT",
+                InjectionSchedulingPlan.revision == expected_draft_revision,
+            )
+            .values(
+                revision=expected_draft_revision + 1,
+                updated_by=user.id,
+                updated_by_name=_actor_name(user),
+                updated_at=timestamp,
+            )
+        )
+        if plan_result.rowcount != 1:
+            db.rollback()
+            latest = _require_plan(db, factory_id, draft.id)
+            raise _revision_conflict(
+                "规划草案", expected_draft_revision, latest.revision
+            )
+        db.flush()
+        _synchronize_order_schedule_status(
+            db,
+            factory_id=factory_id,
+            order_id=order.id,
+            user=user,
+            timestamp=timestamp,
+        )
+        refreshed_draft = _require_plan(db, factory_id, draft.id)
+        _record_plan_revision(
+            db,
+            plan=refreshed_draft,
+            user=user,
+            timestamp=timestamp,
+        )
+        audit = _audit(
+            db,
+            factory_id=factory_id,
+            event_type="plan_task_withdrawn_to_backlog",
+            entity_type="order",
+            entity_id=order.id,
+            entity_revision=state.revision,
+            request_id=payload.request_id,
+            detail={
+                "payload_hash": request_hash,
+                "source_plan_id": source_plan.id,
+                "source_task_id": source_task.id,
+                "draft_plan_id": draft.id,
+                "draft_plan_revision": expected_draft_revision + 1,
+                "order_id": order.id,
+                "withdrawn_task_ids": withdrawn_task_ids,
+                "successor_created": successor_created,
+                "reason": payload.reason,
+                "order_state": state.status,
+            },
+            user=user,
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="撤回待排与其他操作冲突") from exc
+
+    return (
+        _require_plan(db, factory_id, draft.id),
+        source_plan.id,
+        order.id,
+        withdrawn_task_ids,
+        successor_created,
+        audit.sequence,
+        False,
+    )
 
 
 def rollback_plan(

@@ -2520,6 +2520,8 @@ def _confirm_demand_order(
                 item_no=version.item_no,
                 product_name=version.product_name,
                 mold_id=legacy_mold.id if legacy_mold else None,
+                mold_definition_id=version.mold_definition_id,
+                mold_output_spec_id=version.mold_output_spec_id,
                 order_quantity=version.order_quantity,
                 source_completed_quantity=Decimal(0),
                 completed_quantity=Decimal(0),
@@ -2557,6 +2559,9 @@ def _confirm_demand_order(
             db.add(order)
             db.flush()
             created_orders += 1
+        elif version.mold_definition_id:
+            order.mold_definition_id = version.mold_definition_id
+            order.mold_output_spec_id = version.mold_output_spec_id
         state = db.scalar(
             select(InjectionSchedulingPlanOrderState).where(
                 InjectionSchedulingPlanOrderState.plan_id == plan.id,

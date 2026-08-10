@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.injection_scheduling_execution import (
+    InjectionSchedulingBacklogOrderCancel,
     InjectionSchedulingBacklogOut,
     InjectionSchedulingCurrentPlanOut,
     InjectionSchedulingDraftCreate,
@@ -16,6 +17,9 @@ from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingManualAppendPreview,
     InjectionSchedulingManualAppendPreviewRequest,
     InjectionSchedulingManualAppendResult,
+    InjectionSchedulingManualDemandCancel,
+    InjectionSchedulingManualDemandCreate,
+    InjectionSchedulingManualDemandUpdate,
     InjectionSchedulingOrderCreate,
     InjectionSchedulingOrderOut,
     InjectionSchedulingOrderUpdate,
@@ -34,6 +38,8 @@ from app.schemas.injection_scheduling_execution import (
     InjectionSchedulingTaskBulkMoveResult,
     InjectionSchedulingTaskCreate,
     InjectionSchedulingTaskUpdate,
+    InjectionSchedulingTaskWithdrawInput,
+    InjectionSchedulingTaskWithdrawOut,
 )
 from app.services.auth import (
     AuthContext,
@@ -47,7 +53,10 @@ from app.services.injection_scheduling import (
 )
 from app.services.injection_scheduling_execution import (
     add_task,
+    cancel_backlog_order,
+    cancel_manual_demand,
     create_draft_plan,
+    create_manual_demand,
     create_order,
     create_shift_report,
     create_shift_reports_bulk,
@@ -65,8 +74,10 @@ from app.services.injection_scheduling_execution import (
     rollback_plan,
     shift_report_out,
     task_out,
+    update_manual_demand,
     update_order,
     update_task,
+    withdraw_task_to_backlog,
 )
 from app.services.injection_scheduling_manual_append import (
     confirm_manual_append,
@@ -112,6 +123,23 @@ def _ensure_permission(
         factory_id,
         SCHEDULING_DEPARTMENTS[0],
     )
+    return factory_id
+
+
+def _ensure_any_permission(
+    db: Session,
+    user: AuthContext,
+    permissions: tuple[str, ...],
+    factory_id: str,
+) -> str:
+    factory_id = require_injection_scheduling_factory(factory_id)
+    if any(
+        has_permission_in_scope(user, permission, factory_id, department)
+        for permission in permissions
+        for department in SCHEDULING_DEPARTMENTS
+    ):
+        return factory_id
+    _ensure_permission(db, user, permissions[0], factory_id)
     return factory_id
 
 
@@ -163,6 +191,26 @@ def get_backlog(
         factory_id=factory_id,
         items=[order_out(item) for item in list_backlog_orders(db, factory_id)],
     )
+
+
+@router.post(
+    "/backlog/{order_id}/cancel",
+    response_model=InjectionSchedulingOrderOut,
+)
+def post_backlog_order_cancel(
+    order_id: str,
+    payload: InjectionSchedulingBacklogOrderCancel,
+    request: Request,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _ensure_permission(
+        db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    record, _ = cancel_backlog_order(
+        db, order_id, payload, current_user, _request_id(request)
+    )
+    return order_out(record)
 
 
 @router.post(
@@ -276,6 +324,64 @@ def patch_task(
 
 
 @router.post(
+    "/manual-demands",
+    response_model=InjectionSchedulingOrderOut,
+    status_code=201,
+)
+def post_manual_demand(
+    payload: InjectionSchedulingManualDemandCreate,
+    request: Request,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _ensure_permission(
+        db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    record, _ = create_manual_demand(db, payload, current_user, _request_id(request))
+    return order_out(record)
+
+
+@router.patch(
+    "/manual-demands/{order_id}",
+    response_model=InjectionSchedulingOrderOut,
+)
+def patch_manual_demand(
+    order_id: str,
+    payload: InjectionSchedulingManualDemandUpdate,
+    request: Request,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _ensure_permission(
+        db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    record, _ = update_manual_demand(
+        db, order_id, payload, current_user, _request_id(request)
+    )
+    return order_out(record)
+
+
+@router.post(
+    "/manual-demands/{order_id}/cancel",
+    response_model=InjectionSchedulingOrderOut,
+)
+def post_manual_demand_cancel(
+    order_id: str,
+    payload: InjectionSchedulingManualDemandCancel,
+    request: Request,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _ensure_permission(
+        db, current_user, "injection_scheduling:edit", payload.factory_id
+    )
+    record, _ = cancel_manual_demand(
+        db, order_id, payload, current_user, _request_id(request)
+    )
+    return order_out(record)
+
+
+@router.post(
     "/plans/{plan_id}/tasks/bulk-move",
     response_model=InjectionSchedulingTaskBulkMoveResult,
 )
@@ -381,8 +487,11 @@ def post_publish(
     db: DbSession,
     current_user: CurrentUser,
 ):
-    _ensure_permission(
-        db, current_user, "injection_scheduling:publish", payload.factory_id
+    _ensure_any_permission(
+        db,
+        current_user,
+        ("injection_scheduling:publish", "injection_scheduling:edit"),
+        payload.factory_id,
     )
     plan, snapshot_id, audit_sequence, replay = publish_plan(
         db, plan_id, payload, current_user
@@ -414,6 +523,43 @@ def post_rollback(
     return InjectionSchedulingPlanOperationOut(
         plan=plan_out(db, plan),
         snapshot_id=snapshot_id,
+        audit_sequence=audit_sequence,
+        idempotent_replay=replay,
+    )
+
+
+@router.post(
+    "/tasks/{task_id}/withdraw-to-backlog",
+    response_model=InjectionSchedulingTaskWithdrawOut,
+)
+def post_task_withdraw_to_backlog(
+    task_id: str,
+    payload: InjectionSchedulingTaskWithdrawInput,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _ensure_any_permission(
+        db,
+        current_user,
+        ("injection_scheduling:edit", "injection_scheduling:publish"),
+        payload.factory_id,
+    )
+    (
+        plan,
+        source_plan_id,
+        order_id,
+        withdrawn_task_ids,
+        successor_created,
+        audit_sequence,
+        replay,
+    ) = withdraw_task_to_backlog(db, task_id, payload, current_user)
+    return InjectionSchedulingTaskWithdrawOut(
+        plan=plan_out(db, plan),
+        source_plan_id=source_plan_id,
+        source_task_id=task_id,
+        order_id=order_id,
+        withdrawn_task_ids=withdrawn_task_ids,
+        successor_created=successor_created,
         audit_sequence=audit_sequence,
         idempotent_replay=replay,
     )

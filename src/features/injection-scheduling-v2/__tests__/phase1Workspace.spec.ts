@@ -46,6 +46,16 @@ describe('injection scheduling V2 workspace foundation', () => {
     expect(storeSource).toContain('function moveColumn')
   })
 
+  it('lets planners enlarge the plan grid by dragging or toggling the KPI boundary', () => {
+    expect(viewSource).toContain('role="separator"')
+    expect(viewSource).toContain('调整计划表高度')
+    expect(viewSource).toContain('@pointerdown="startKpiResize"')
+    expect(viewSource).toContain('@dblclick="toggleWorkspaceHeight"')
+    expect(viewSource).toContain("event.key === 'ArrowUp'")
+    expect(viewSource).toContain("event.key === 'ArrowDown'")
+    expect(viewSource).toContain("workspaceExpanded ? '恢复指标' : '放大表格'")
+  })
+
   it('projects demand-order planning facts with the agreed plan-column mapping', () => {
     expect(storeSource).toContain("readLineage(order, 'source_mold_no'")
     expect(storeSource).toContain('setQuantity: total')

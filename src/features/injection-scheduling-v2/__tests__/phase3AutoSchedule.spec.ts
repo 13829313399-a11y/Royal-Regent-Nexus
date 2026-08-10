@@ -33,7 +33,7 @@ const run: AutoScheduleRunRecord = {
     id: 'assignment-1', orderId: 'order-1', existingTaskId: null, moldId: 'mold-1', moldCopyNo: 1,
     machineId: 'machine-1', sequence: 1, plannedStart: '2026-08-04T08:00:00+08:00', plannedFinish: '2026-08-04T12:00:00+08:00',
     setupMinutes: 30, productionMinutes: 210, plannedDowntimeMinutes: 0, changeoverType: 'MOLD', decision: 'REVIEW_REQUIRED', score: 42,
-    explanation: { summary: '资料待复核', hard_checks: [{ code: 'ELIGIBILITY_PASS', label: '硬约束', detail: '无硬失败' }], score_breakdown: [{ code: 'transition', detail: '换模 30 分钟', cost: 60 }] },
+    explanation: { summary: '当前窗口安排 72,000，剩余 128,004 继续留在待排订单。', production: { capacity_source: 'SOURCE_DAILY_CAPACITY', planned_quantity: 72000, remaining_quantity: 128004, production_minutes: 20736 }, hard_checks: [{ code: 'ELIGIBILITY_PASS', label: '硬约束', detail: '无硬失败' }], score_breakdown: [{ code: 'transition', detail: '换模 30 分钟', cost: 60 }] },
     unassignedReasonCode: '',
   }],
 }
@@ -52,6 +52,11 @@ describe('Phase 3 自动排期预览', () => {
     expect(wrapper.text()).toContain('目标值 / 下界')
     expect(wrapper.text()).toContain('机台负荷')
     expect(wrapper.text()).toContain('SO-001')
+    expect(wrapper.text()).toContain('下单表模具日产量')
+    expect(wrapper.text()).toContain('本窗口安排')
+    expect(wrapper.text()).toContain('72,000')
+    expect(wrapper.text()).toContain('窗口后待排')
+    expect(wrapper.text()).toContain('128,004')
     const applyButton = wrapper.findAll('button').find((item) => item.text().includes('应用到草案'))!
     expect(applyButton.attributes('disabled')).toBeDefined()
     await wrapper.find('textarea').setValue('主管确认资料可覆盖')

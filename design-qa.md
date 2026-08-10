@@ -1,57 +1,55 @@
-# Shared Mold Database Design QA
+# Injection Scheduling Backlog Deletion Design QA
 
-- source visual truth path: `C:\Users\匡树杰\AppData\Local\Temp\codex-clipboard-2085c240-8fbc-44ce-b90e-f13f60cc97f3.png`
-- implementation screenshot path: `D:\RR\royal-regent-nexus\.codex-phase1-qa\mold-database-implementation-revised-1280x720.png`
-- focused detail screenshot: `D:\RR\royal-regent-nexus\.codex-phase1-qa\mold-database-detail-1280x720.png`
-- focused proposal screenshot: `D:\RR\royal-regent-nexus\.codex-phase1-qa\mold-database-proposal-1280x720.png`
-- normalized comparison: `D:\RR\royal-regent-nexus\.codex-phase1-qa\mold-database-side-by-side-revised.png`
-- viewport: 1280 x 720 CSS px, device pixel ratio 1
-- source pixels: 1918 x 934
-- implementation pixels: 1280 x 720
-- density normalization: the source was proportionally reduced to 1280 x 623 and vertically centered in a 1280 x 720 frame; the implementation was captured at native 1280 x 720. The two frames were combined into one 2560 x 720 comparison image.
-- state: authenticated Huaxing user, formal database, shared mold catalog page 1 with 4,971 active definitions
-
-## Comparison Scope
-
-The supplied screenshot is the visual-language truth for the existing injection-scheduling product, not an exact mock of the new mold-database route. The comparison therefore checks shared shell, density, tokens, typography, table treatment and command hierarchy. The catalog, detail drawer and proposal drawer are new product states and were checked for consistency with that system rather than false pixel-for-pixel identity.
+- source visual truth path: `browser:Selected browser region` from the current user comment (Huaxing backlog view before the delete action)
+- implementation screenshot path: `D:\RR\royal-regent-nexus\artifacts\design-qa\backlog-delete-list.png`
+- confirmation screenshot path: `D:\RR\royal-regent-nexus\artifacts\design-qa\backlog-delete-dialog.png`
+- viewport: 1538 x 698 CSS px
+- source pixels: browser-comment capture at the same 1538 x 698 page viewport
+- implementation pixels: 1538 x 697
+- CSS size and density: desktop in-app browser at devicePixelRatio 1.25; screenshot API returned 1538 x 697 pixels
+- density normalization: source browser comment and implementation use the same route, factory, authenticated data state and desktop viewport; no rescaling was used for the visual comparison
+- state: authenticated Huaxing formal-data workspace, `待排订单` active, three imported backlog orders visible; implementation adds a delete action and its reason-required confirmation dialog
 
 ## Full-view Comparison Evidence
 
-- Fonts and typography: both use the existing Segoe UI / PingFang SC / Microsoft YaHei stack, compact 9–13 px operational text, bold numeric KPI hierarchy and truncated dense-table copy.
-- Spacing and layout rhythm: the 58 px dark top bar, compact white command bar, card strip, dense workspace, 7–11 px radii and shallow elevation match the scheduling page. The new page intentionally uses four master-data KPIs in one row instead of the scheduler's eight execution KPIs.
-- Colors and visual tokens: navy shell, teal primary action, blue/amber/violet semantic cards, white work surface, cool gray grid and amber readiness chips use the same product tokens.
-- Image quality and asset fidelity: no new raster illustrations or product images are required. Existing product mark, account menu and the installed Lucide icon set are reused; no placeholder or handcrafted replacement assets were introduced.
-- Copy and content: the page uses production Chinese labels, separates company definition from factory readiness and clearly states that proposals do not directly activate data.
+- Fonts and typography: the existing Chinese UI font stack, weights, compact labels and row hierarchy remain unchanged. The new `删除` label uses the same small button typography and stays legible.
+- Spacing and layout rhythm: the three order rows retain their original height, left priority marker, order details and right-side qualification facts. The compact delete button sits beside the existing append action without clipping, horizontal overflow or row growth.
+- Colors and visual tokens: the existing navy, teal, slate and white surfaces remain unchanged. Red is reserved for the destructive cancellation action, warning notice and confirm button.
+- Image quality and asset fidelity: this workflow contains no raster product imagery. Trash, warning, close and loading icons use the installed Lucide library; no handcrafted SVG, CSS drawing, emoji or placeholder asset was introduced.
+- Copy and content: the action is named `删除` in the list and `删除待排单` in confirmation. The dialog explains that the row leaves scheduling while its workbook, order version and audit history remain preserved.
 
-## Focused Region Evidence
+## Focused Region Comparison Evidence
 
-- Detail drawer: captured separately and verified for basic definition, outputs, Huaxing capability/assets, permission-aware CNY pricing and governance notice. The source screenshot has no drawer state, so the check is internal token and hierarchy consistency.
-- Proposal drawer: captured separately and verified for required fields, repeatable product outputs, optional capability, permission-aware per-shot CNY price, governance copy and sticky actions. The source screenshot has no proposal state, so the check is interaction density and consistency with the existing import dialog language.
+The source selection covers the complete backlog list at `x=22.4, y=330.4, width=1484.8, height=268.8`. At the same viewport, `backlog-delete-list.png` shows the intentional delta: each row gains one compact red bordered delete button aligned with the disabled append button. `backlog-delete-dialog.png` verifies the focused confirmation state at original resolution, including order context, warning copy, reason field, counter and footer actions.
+
+## Findings
+
+- No actionable P0, P1 or P2 visual mismatch remains.
+- P3 follow-up only: the bottom backlog dock uses a two-column wrapped action group on each compact card; this preserves all actions but may benefit from an overflow menu if more card actions are added later.
 
 ## Comparison History
 
 ### Iteration 1
 
-- [P1] Catalog search was hidden at the 1280 px browser viewport by an inherited scheduler breakpoint. This removed a core interaction from the new page.
-  - Fix: added a more specific mold-database breakpoint override that keeps the search field visible with a 190 px minimum width.
-- [P2] Imported machine-arm, fixture and data-quality codes were shown as `single`, `suction_cup` and `APPROVED_SOURCE`.
-  - Fix: mapped those values to `单臂`, `吸盘` and `已审核来源` in the catalog and detail drawer.
+- Finding: adding a second direct row button would exceed the original single-action grid column and compress button copy.
+- Fix: grouped row actions into a responsive right-aligned action area, widened only the action track, and kept all order-detail columns flexible.
+- Post-fix evidence: `backlog-delete-list.png` shows all three rows at their original height with fully visible append and delete controls; no P0, P1 or P2 issue remains.
 
-### Iteration 2
+## Interaction and Accessibility Verification
 
-The revised combined image shows the search field above the fold, localized operational labels, aligned command controls, readable table density and no clipped persistent actions. No actionable P0, P1 or P2 differences remain.
+- Verified all three imported backlog rows expose an enabled `删除` action for a scheduling editor.
+- Verified the dialog uses `role="dialog"`, `aria-modal="true"`, a labelled title and an explicit close button.
+- Verified confirmation is disabled with an empty reason and enabled after entering `重复下单`.
+- Verified `取消` closes the dialog without deleting formal data; the destructive confirm action was intentionally not submitted against the user's live local records.
+- Browser console after the final interaction pass: zero warnings and zero errors.
 
-## Browser Verification
+## Verification Notes
 
-- Opened the page from the scheduling command-bar `正式数据库` control.
-- Loaded 4,971 active definitions through the paginated catalog API.
-- Opened and closed a real mold detail drawer.
-- Opened the proposal drawer, filled required mold/product/reason fields, confirmed the submit action became enabled, then cancelled without writing production data.
-- Verified the price and capability fields appear only with their scoped permissions.
-- Browser console contained only Vite connection debug messages; zero warnings and zero errors.
-
-## Residual Test Gap
-
-The supplied visual target is the parent scheduling workspace rather than an exact mold-database mock. This prevents exact content-level comparison of the new catalog and drawers, but does not leave a P0/P1/P2 implementation issue.
+- Backend manual/imported backlog lifecycle tests: 3 passed.
+- Existing published-task withdrawal regression: 1 passed.
+- Frontend backlog/manual/withdraw tests: 7 passed.
+- Production frontend type-check and build: passed.
+- Python compilation and `git diff --check`: passed.
+- Live backend route check: `/api/injection-scheduling/backlog/{order_id}/cancel` is present after restart.
 
 final result: passed

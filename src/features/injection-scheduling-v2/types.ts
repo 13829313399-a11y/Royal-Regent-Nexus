@@ -116,19 +116,27 @@ export interface ManualAppendPreviewRecord {
 
 export interface MachineRecord {
   id: string
+  factoryId: string
   code: string
   position: string
   area: string
   aClass: number | null
   aClassRaw: string
+  clampingForceTons: number | null
   injectionCapacityG: number | null
+  tieBarXmm: number | null
+  tieBarYmm: number | null
+  processTags: string[]
   armCapabilities: string[]
   fixtureCapabilities: string[]
   processRestrictions: string[]
+  equipmentDetails: Record<string, unknown>
+  remarks: string
   machineType: string
   specialMachineType: string
   status: 'available' | 'running' | 'maintenance' | 'offline'
   normalizationStatus: 'COMPLETE' | 'REVIEW_REQUIRED'
+  revision: number
 }
 
 export interface MoldRecord {
@@ -155,6 +163,8 @@ export interface OrderRecord {
   itemNo: string
   productName: string
   moldId: string | null
+  moldDefinitionId: string | null
+  moldOutputSpecId: string | null
   orderQuantity: number
   sourceCompletedQuantity: number
   completedQuantity: number
@@ -167,6 +177,7 @@ export interface OrderRecord {
   materialReadinessStatus: 'unknown' | 'ready' | 'partial' | 'blocked'
   warehouseText: string
   remark: string
+  sourceType: string
   status: 'BACKLOG' | 'SCHEDULED' | 'COMPLETED' | 'CANCELLED'
   lineage: Record<string, unknown>
   revision: number

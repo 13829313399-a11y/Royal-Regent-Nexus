@@ -4,6 +4,7 @@ import type { CSSProperties } from 'vue'
 import { GripVertical, LockKeyhole } from '@lucide/vue'
 import GridEditableCell from './GridEditableCell.vue'
 import type { CellDraft, EditableCellKey, ScheduleGridRow } from '../types'
+import { formatBusinessDateTime } from '@/lib/dateTime'
 
 const props = defineProps<{ row: Row<ScheduleGridRow>; top: number; width: number; stickyLeft: Record<string, number>; selected: boolean; dragging: boolean; dropTarget: boolean; planStatus: string; canEdit: boolean; canReport: boolean; pendingEdits: Record<string, CellDraft> }>()
 const emit = defineEmits<{
@@ -18,6 +19,12 @@ const emit = defineEmits<{
 }>()
 const number = new Intl.NumberFormat('zh-CN')
 function display(value: unknown) { return typeof value === 'number' ? number.format(value) : value || '—' }
+function isPlanTimeColumn(columnId: string) { return columnId === 'plannedStart' || columnId === 'plannedFinish' }
+function planTime(value: unknown) { return formatBusinessDateTime(typeof value === 'string' ? value : '', { fallback: '—' }) }
+function planTimeTitle(value: unknown) {
+  const formatted = planTime(value)
+  return formatted === '—' ? '暂无有效计划时间' : `北京时间：${formatted}`
+}
 function cellStyle(cell: ReturnType<Row<ScheduleGridRow>['getVisibleCells']>[number]): CSSProperties {
   const align = (cell.column.columnDef.meta as { align?: CSSProperties['textAlign'] } | undefined)?.align ?? 'left'
   return { width: `${cell.column.getSize()}px`, left: stickyLeftValue(cell.column.id), textAlign: align }
@@ -67,8 +74,9 @@ function keyboard(event: KeyboardEvent) {
 <template>
   <tr class="schedule-task-row" :class="[`status-${row.original.status.toLowerCase()}`, { overdue: Number(row.original.slack) < 0, shortage: row.original.materialReadiness === 'blocked', 'is-selected': selected, 'is-dragging': dragging, 'drop-target': dropTarget, 'has-pending-edit': Object.keys(pendingEdits).some((key) => key.startsWith(`${row.original.id}:`)), draggable: draggable() }]" :style="{ transform: `translateY(${top}px)`, width: `${width}px` }" :draggable="draggable()" :aria-selected="selected" tabindex="0" @click="emit('select', row.original.id)" @dragstart="emit('dragStart', row.original.id, $event)" @dragend="emit('dragEnd')" @dragenter.prevent="emit('dragHover', row.original.machine.id)" @dragover.prevent="emit('dragHover', row.original.machine.id)" @dragleave="emit('dragLeave', row.original.machine.id)" @drop="emit('dropTask', row.original.machine.id, Number(row.original.sequence), $event)" @keydown="keyboard">
     <td v-for="cell in row.getVisibleCells()" :key="cell.id" :class="['grid-cell', { frozen: stickyLeft[cell.column.id] !== undefined }]" :style="cellStyle(cell)">
-      <GridEditableCell v-if="canEditCell(cell.column.id)" :value="editValue(cell.column.id, cell.getValue())" :kind="kind(cell.column.id)" :options="cell.column.id === 'status' ? statusOptions() : []" :pending="pending(cell.column.id)" @commit="commitEdit(cell.column.id, $event)"><span v-if="cell.column.id === 'status'" class="status-chip" :class="String(editValue(cell.column.id, cell.getValue())).toLowerCase()">{{ statusLabel(editValue(cell.column.id, cell.getValue())) }}</span><span v-else>{{ display(editValue(cell.column.id, cell.getValue())) }}</span></GridEditableCell>
+      <GridEditableCell v-if="canEditCell(cell.column.id)" :value="editValue(cell.column.id, cell.getValue())" :kind="kind(cell.column.id)" :options="cell.column.id === 'status' ? statusOptions() : []" :pending="pending(cell.column.id)" @commit="commitEdit(cell.column.id, $event)"><span v-if="cell.column.id === 'status'" class="status-chip" :class="String(editValue(cell.column.id, cell.getValue())).toLowerCase()">{{ statusLabel(editValue(cell.column.id, cell.getValue())) }}</span><time v-else-if="isPlanTimeColumn(cell.column.id)" class="schedule-time-cell" :datetime="String(editValue(cell.column.id, cell.getValue()))" :title="planTimeTitle(editValue(cell.column.id, cell.getValue()))">{{ planTime(editValue(cell.column.id, cell.getValue())) }}</time><span v-else>{{ display(editValue(cell.column.id, cell.getValue())) }}</span></GridEditableCell>
       <span v-else-if="cell.column.id === 'status'" class="status-chip" :class="row.original.status.toLowerCase()">{{ statusLabel(row.original.status) }}</span>
+      <time v-else-if="isPlanTimeColumn(cell.column.id)" class="schedule-time-cell" :datetime="String(cell.getValue() ?? '')" :title="planTimeTitle(cell.getValue())">{{ planTime(cell.getValue()) }}</time>
       <span v-else-if="cell.column.id === 'progress'" class="progress-cell"><i><b :style="{ width: `${row.original.progress}%` }"></b></i><em>{{ row.original.progress }}%</em></span>
       <span v-else-if="cell.column.id === 'fit'" class="fit-chip" :class="row.original.fit.toLowerCase()">{{ row.original.fit === 'PASS' ? '通过' : row.original.fit === 'FAIL' ? '不适配' : '待复核' }}</span>
       <span v-else-if="cell.column.id === 'slack'" :class="{ negative: Number(row.original.slack) < 0, warning: Number(row.original.slack) >= 0 && Number(row.original.slack) <= 3 }">{{ display(cell.getValue()) }}</span>

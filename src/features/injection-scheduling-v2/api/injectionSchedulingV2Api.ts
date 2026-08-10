@@ -113,24 +113,101 @@ const numberLikeOrNull = (value: unknown) => {
   return null
 }
 const strings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+const objectValue = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 
 function mapMachine(source: UnknownRecord): MachineRecord {
   return {
     id: text(source.id),
+    factoryId: text(source.factory_id),
     code: text(source.machine_code),
     position: text(source.position),
     area: text(source.area),
     aClass: numberOrNull(source.machine_a_class),
     aClassRaw: text(source.machine_class_raw) || text(source.machine_class),
+    clampingForceTons: numberOrNull(source.clamping_force_tons),
     injectionCapacityG: numberOrNull(source.injection_capacity_g),
+    tieBarXmm: numberOrNull(source.tie_bar_x_mm),
+    tieBarYmm: numberOrNull(source.tie_bar_y_mm),
+    processTags: strings(source.process_tags),
     armCapabilities: strings(source.robot_capabilities),
     fixtureCapabilities: strings(source.fixture_capabilities),
     processRestrictions: strings(source.process_restrictions),
+    equipmentDetails: objectValue(source.equipment_details),
+    remarks: text(source.remarks),
     machineType: text(source.machine_type),
     specialMachineType: text(source.special_machine_type),
     status: (text(source.status) || 'available') as MachineRecord['status'],
     normalizationStatus: (text(source.normalization_status) || 'REVIEW_REQUIRED') as MachineRecord['normalizationStatus'],
+    revision: numberValue(source.revision),
   }
+}
+
+export interface MachineMasterInput {
+  machineCode: string
+  area: string
+  position: string
+  machineClassRaw: string
+  clampingForceTons: number | null
+  injectionCapacityG: number | null
+  tieBarXmm: number | null
+  tieBarYmm: number | null
+  machineType: string
+  processTags: string[]
+  robotCapabilities: string[]
+  fixtureCapabilities: string[]
+  processRestrictions: string[]
+  specialMachineType: string
+  equipmentDetails: Record<string, unknown>
+  remarks: string
+  status: MachineRecord['status']
+}
+
+function machineMasterPayload(factoryId: string, input: MachineMasterInput, expectedRevision: number) {
+  return {
+    factory_id: factoryId,
+    expected_revision: expectedRevision,
+    machine_code: input.machineCode,
+    area: input.area,
+    position: input.position,
+    machine_class: input.machineClassRaw,
+    machine_class_raw: input.machineClassRaw,
+    process_tags: input.processTags,
+    special_machine_type: input.specialMachineType,
+    clamping_force_tons: input.clampingForceTons,
+    injection_capacity_g: input.injectionCapacityG,
+    tie_bar_x_mm: input.tieBarXmm,
+    tie_bar_y_mm: input.tieBarYmm,
+    platen_x_mm: null,
+    platen_y_mm: null,
+    min_mold_thickness_mm: null,
+    max_mold_thickness_mm: null,
+    opening_stroke_mm: null,
+    machine_type: input.machineType,
+    robot_capabilities: input.robotCapabilities,
+    fixture_capabilities: input.fixtureCapabilities,
+    process_restrictions: input.processRestrictions,
+    equipment_details: input.equipmentDetails,
+    remarks: input.remarks,
+    status: input.status,
+  }
+}
+
+export async function listMachineMasters(factoryId: string, filters: { search?: string; status?: string } = {}) {
+  const { data } = await http.get('/injection-scheduling/machines', {
+    params: { factory_id: factoryId, search: filters.search || '', status: filters.status || '' },
+  })
+  const source = data as UnknownRecord
+  return (Array.isArray(source.items) ? source.items : []).map((item) => mapMachine(item as UnknownRecord))
+}
+
+export async function createMachineMaster(factoryId: string, input: MachineMasterInput) {
+  const { data } = await http.post('/injection-scheduling/machines', machineMasterPayload(factoryId, input, 0))
+  return mapMachine(data as UnknownRecord)
+}
+
+export async function updateMachineMaster(factoryId: string, machine: MachineRecord, input: MachineMasterInput) {
+  const { data } = await http.put(`/injection-scheduling/machines/${machine.id}`, machineMasterPayload(factoryId, input, machine.revision))
+  return mapMachine(data as UnknownRecord)
 }
 
 function mapMold(source: UnknownRecord): MoldRecord {
@@ -156,18 +233,100 @@ function mapMold(source: UnknownRecord): MoldRecord {
 export function mapOrder(source: UnknownRecord): OrderRecord {
   return {
     id: text(source.id), orderNo: text(source.order_no), itemNo: text(source.item_no), productName: text(source.product_name),
-    moldId: text(source.mold_id) || null, orderQuantity: numberValue(source.order_quantity),
+    moldId: text(source.mold_id) || null,
+    moldDefinitionId: text(source.mold_definition_id) || null,
+    moldOutputSpecId: text(source.mold_output_spec_id) || null,
+    orderQuantity: numberValue(source.order_quantity),
     sourceCompletedQuantity: numberValue(source.source_completed_quantity),
     completedQuantity: numberValue(source.completed_quantity), outstandingQuantity: numberValue(source.outstanding_quantity),
     completionRate: numberValue(source.completion_rate), deliveryStartDate: text(source.delivery_start_date),
     deliveryDueDate: text(source.delivery_due_date), deliverySlackDays: numberOrNull(source.delivery_slack_days),
     priorityCode: (text(source.priority_code) || 'NORMAL') as OrderRecord['priorityCode'],
     materialReadinessStatus: (text(source.material_readiness_status) || 'unknown') as OrderRecord['materialReadinessStatus'],
-    warehouseText: text(source.warehouse_text), remark: text(source.remark),
+    warehouseText: text(source.warehouse_text), remark: text(source.remark), sourceType: text(source.source_type),
     status: (text(source.status) || 'BACKLOG') as OrderRecord['status'],
     lineage: source.lineage && typeof source.lineage === 'object' ? source.lineage as UnknownRecord : {},
     revision: numberValue(source.revision),
   }
+}
+
+export interface ManualDemandInput {
+  businessDate: string
+  moldDefinitionId: string
+  moldOutputSpecId: string | null
+  plannedQuantity: number
+  quantityBasis: 'UNITS' | 'SHOTS'
+  itemNo: string
+  productName: string
+  deliveryDueDate: string
+  priorityCode: OrderRecord['priorityCode']
+  materialReadinessStatus: OrderRecord['materialReadinessStatus']
+  warehouseText: string
+  materialName: string
+  colorName: string
+  remark: string
+}
+
+function manualDemandPayload(factoryId: string, input: ManualDemandInput) {
+  return {
+    factory_id: factoryId,
+    mold_definition_id: input.moldDefinitionId,
+    mold_output_spec_id: input.moldOutputSpecId,
+    planned_quantity: input.plannedQuantity,
+    quantity_basis: input.quantityBasis,
+    item_no: input.itemNo,
+    product_name: input.productName,
+    delivery_due_date: input.deliveryDueDate || null,
+    priority_code: input.priorityCode,
+    material_readiness_status: input.materialReadinessStatus,
+    warehouse_text: input.warehouseText,
+    material_name: input.materialName,
+    color_name: input.colorName,
+    remark: input.remark,
+  }
+}
+
+export async function createManualDemand(factoryId: string, input: ManualDemandInput) {
+  const { data } = await http.post('/injection-scheduling/manual-demands', {
+    ...manualDemandPayload(factoryId, input),
+    expected_revision: 0,
+    business_date: input.businessDate,
+  }, { headers: { 'X-Request-ID': newRequestId('manual-demand-create') } })
+  return mapOrder(data as UnknownRecord)
+}
+
+export async function updateManualDemand(factoryId: string, order: OrderRecord, input: ManualDemandInput) {
+  const { data } = await http.patch(`/injection-scheduling/manual-demands/${order.id}`, {
+    ...manualDemandPayload(factoryId, input),
+    expected_revision: order.revision,
+    clear_delivery_due_date: !input.deliveryDueDate,
+  }, { headers: { 'X-Request-ID': newRequestId('manual-demand-update') } })
+  return mapOrder(data as UnknownRecord)
+}
+
+export async function cancelManualDemand(factoryId: string, order: OrderRecord, reason: string) {
+  const { data } = await http.post(`/injection-scheduling/manual-demands/${order.id}/cancel`, {
+    factory_id: factoryId,
+    expected_revision: order.revision,
+    reason,
+  }, { headers: { 'X-Request-ID': newRequestId('manual-demand-cancel') } })
+  return mapOrder(data as UnknownRecord)
+}
+
+export async function cancelBacklogOrder(
+  factoryId: string,
+  order: OrderRecord,
+  planningPlan: SchedulingPlanRecord | null,
+  reason: string,
+) {
+  const { data } = await http.post(`/injection-scheduling/backlog/${order.id}/cancel`, {
+    factory_id: factoryId,
+    expected_revision: order.revision,
+    expected_plan_id: planningPlan?.id ?? null,
+    expected_plan_revision: planningPlan?.revision ?? null,
+    reason,
+  }, { headers: { 'X-Request-ID': newRequestId('backlog-order-cancel') } })
+  return mapOrder(data as UnknownRecord)
 }
 
 export function mapTask(source: UnknownRecord): ScheduleTaskRecord {
@@ -425,6 +584,66 @@ export async function applyAutoSchedulePreview(
   })
   const payload = data as { run: UnknownRecord; plan: UnknownRecord; audit_sequence?: number }
   return { run: mapAutoScheduleRun(payload.run), ...mapPlan(payload.plan), auditSequence: numberValue(payload.audit_sequence) }
+}
+
+export async function publishSchedulingPlan(factoryId: string, plan: SchedulingPlanRecord) {
+  const requestId = newRequestId('plan-publish')
+  const { data } = await http.post(`/injection-scheduling/plans/${plan.id}/publish`, {
+    factory_id: factoryId,
+    expected_revision: plan.revision,
+    request_id: requestId,
+  }, { headers: { 'X-Request-ID': requestId } })
+  const payload = data as {
+    plan: UnknownRecord
+    snapshot_id?: string
+    audit_sequence?: number
+    idempotent_replay?: boolean
+  }
+  return {
+    ...mapPlan(payload.plan),
+    snapshotId: text(payload.snapshot_id),
+    auditSequence: numberValue(payload.audit_sequence),
+    idempotentReplay: Boolean(payload.idempotent_replay),
+  }
+}
+
+// Published plans are immutable; the server applies this operation to a successor DRAFT.
+export async function withdrawScheduleTask(
+  factoryId: string,
+  sourcePlan: SchedulingPlanRecord,
+  task: ScheduleTaskRecord,
+  planningPlan: SchedulingPlanRecord | null,
+  reason: string,
+) {
+  const requestId = newRequestId('task-withdraw')
+  const { data } = await http.post(`/injection-scheduling/tasks/${task.id}/withdraw-to-backlog`, {
+    factory_id: factoryId,
+    expected_plan_revision: sourcePlan.revision,
+    expected_task_revision: task.revision,
+    expected_planning_revision: sourcePlan.status === 'PUBLISHED' ? planningPlan?.revision ?? null : null,
+    request_id: requestId,
+    reason,
+  }, { headers: { 'X-Request-ID': requestId } })
+  const payload = data as {
+    plan: UnknownRecord
+    source_plan_id?: string
+    source_task_id?: string
+    order_id?: string
+    withdrawn_task_ids?: string[]
+    successor_created?: boolean
+    audit_sequence?: number
+    idempotent_replay?: boolean
+  }
+  return {
+    ...mapPlan(payload.plan),
+    sourcePlanId: text(payload.source_plan_id),
+    sourceTaskId: text(payload.source_task_id),
+    orderId: text(payload.order_id),
+    withdrawnTaskIds: strings(payload.withdrawn_task_ids),
+    successorCreated: Boolean(payload.successor_created),
+    auditSequence: numberValue(payload.audit_sequence),
+    idempotentReplay: Boolean(payload.idempotent_replay),
+  }
 }
 
 export async function fetchEligibility(factoryId: string, orderId: string, machineIds: string[] = [], allowScheduled = false) {

@@ -255,7 +255,7 @@ INJECTION_SCHEDULING_V2_PHASE5_REVISION = "20260804_0052"
 INJECTION_SCHEDULING_PROFILE_REVISION = "20260805_0056"
 INJECTION_SCHEDULING_TAKEOVER_REVISION = "20260805_0057"
 INJECTION_SCHEDULING_PUBLIC_PLANNING_REVISION = "20260807_0058"
-INJECTION_SCHEDULING_DEMAND_SHARED_REVISION = "20260810_0061"
+INJECTION_SCHEDULING_DEMAND_SHARED_REVISION = "20260810_0063"
 INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
     "injection_scheduling_machines": {
         "machine_class_raw",
@@ -263,6 +263,8 @@ INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
         "normalization_status",
         "process_tags_json",
         "special_machine_type",
+        "equipment_details_json",
+        "remarks",
     },
     "injection_scheduling_molds": {
         "mold_class_raw",
@@ -270,6 +272,10 @@ INJECTION_SCHEDULING_V2_REQUIRED_COLUMNS = {
         "normalization_status",
         "process_tags_json",
         "special_machine_type",
+    },
+    "injection_scheduling_orders": {
+        "mold_definition_id",
+        "mold_output_spec_id",
     },
 }
 INJECTION_SCHEDULING_V2_PHASE3_REQUIRED_TABLES = {

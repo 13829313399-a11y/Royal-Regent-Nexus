@@ -35,6 +35,11 @@ from app.services.injection_scheduling import (
     require_injection_scheduling_factory,
 )
 from app.services.injection_scheduling_execution import add_task, plan_out
+from app.services.injection_scheduling_mold_context import (
+    SchedulingMoldContext,
+    load_scheduling_molds,
+    machine_capabilities_for_mold,
+)
 from app.services.injection_scheduling_rules import (
     MachineEligibilityProfile,
     MoldEligibilityProfile,
@@ -90,14 +95,16 @@ def _mold_for_order(
     db: Session,
     factory_id: str,
     order: InjectionSchedulingOrder,
-) -> InjectionSchedulingMold | None:
-    if not order.mold_id:
-        return None
-    return db.scalar(
-        select(InjectionSchedulingMold).where(
-            InjectionSchedulingMold.id == order.mold_id,
-            InjectionSchedulingMold.factory_id == factory_id,
-        )
+) -> SchedulingMoldContext | None:
+    return next(
+        iter(
+            load_scheduling_molds(
+                db,
+                factory_id=factory_id,
+                orders=[order],
+            ).values()
+        ),
+        None,
     )
 
 
@@ -178,7 +185,7 @@ def _queue_context(
 
 def _score(
     machine: InjectionSchedulingMachine,
-    mold: InjectionSchedulingMold | None,
+    mold: InjectionSchedulingMold | SchedulingMoldContext | None,
     order: InjectionSchedulingOrder,
     config: dict[str, Any],
     queue: list[InjectionSchedulingTask],
@@ -339,14 +346,17 @@ def evaluate_order_matches(
             advisories: list[InjectionSchedulingMatchReasonOut] = []
             decision = "REVIEW_REQUIRED"
         else:
+            arm_capabilities, fixture_capabilities = machine_capabilities_for_mold(
+                mold,
+                tuple(_json(machine.robot_capabilities_json, [])),
+                tuple(_json(machine.fixture_capabilities_json, [])),
+            )
             eligibility = evaluate_eligibility(
                 MachineEligibilityProfile(
                     a_class=machine.machine_a_class,
                     injection_capacity_g=machine.injection_capacity_g,
-                    arm_capabilities=tuple(_json(machine.robot_capabilities_json, [])),
-                    fixture_capabilities=tuple(
-                        _json(machine.fixture_capabilities_json, [])
-                    ),
+                    arm_capabilities=arm_capabilities,
+                    fixture_capabilities=fixture_capabilities,
                     process_capabilities=tuple(_json(machine.process_tags_json, [])),
                     process_restrictions=tuple(
                         _json(machine.process_restrictions_json, [])
@@ -516,7 +526,7 @@ def confirm_suggestion(
         expected_revision=payload.expected_plan_revision,
         machine_id=payload.machine_id,
         order_id=order.id,
-        mold_id=order.mold_id,
+        mold_id=order.mold_id or order.mold_definition_id or "",
         mold_copy_no=1,
         sequence_no=(machine_tasks[-1].sequence_no + 1) if machine_tasks else 0,
         execution_status="QUEUED",

@@ -91,6 +91,8 @@ class InjectionSchedulingMachine(Base):
     robot_capabilities_json: Mapped[str] = mapped_column(Text, default="[]")
     fixture_capabilities_json: Mapped[str] = mapped_column(Text, default="[]")
     process_restrictions_json: Mapped[str] = mapped_column(Text, default="[]")
+    equipment_details_json: Mapped[str] = mapped_column(Text, default="{}")
+    remarks: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="available", index=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[str] = mapped_column(String(64), default="", index=True)
