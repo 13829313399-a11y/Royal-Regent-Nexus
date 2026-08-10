@@ -598,6 +598,52 @@ def test_seed_upgrades_existing_business_supervisor_with_self_review_once(monkey
             assert db.query(auth_models.AuthRolePermission).filter_by(id=mapping_id).count() == 1
 
 
+def test_seed_upgrades_existing_engineering_supervisor_with_customer_manage_once(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            permission = db.scalar(
+                auth_service.select(auth_models.AuthPermission).where(
+                    auth_models.AuthPermission.code
+                    == auth_service.INTERNAL_QUOTE_CUSTOMER_PERMISSION
+                )
+            )
+            assert permission is not None
+
+            marker = db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER,
+            )
+            assert marker is not None
+            db.delete(marker)
+            db.add(
+                auth_models.AuthIamState(
+                    key="internal_quote_customer_grant_v1_completed",
+                    value_json="{}",
+                    updated_at=auth_service.now_text(),
+                )
+            )
+
+            mapping_id = f"engineering_supervisor:{permission.id}"
+            mapping = db.get(auth_models.AuthRolePermission, mapping_id)
+            assert mapping is not None
+            db.delete(mapping)
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            assert db.get(auth_models.AuthRolePermission, mapping_id) is not None
+            assert db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER,
+            ) is not None
+
+            auth_service.seed_auth_defaults(db)
+            assert db.query(auth_models.AuthRolePermission).filter_by(id=mapping_id).count() == 1
+
+
 def test_seed_reconciles_fixed_system_position_template_from_code(monkeypatch):
     with make_client(monkeypatch):
         db_module = importlib.import_module("app.db")

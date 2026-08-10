@@ -515,7 +515,7 @@ def test_sales_markup_selection_and_misc_ratio_survive_save_detail_and_summary_r
         assert [item["is_active"] for item in pricing["markup_tiers"]] == [True, False, False]
 
 
-def test_factory_customers_are_readable_but_only_managed_by_local_sales_supervisor(monkeypatch):
+def test_factory_customers_are_readable_but_only_managed_by_local_sales_or_engineering_supervisor(monkeypatch):
     with make_client(monkeypatch) as client:
         owner_profile = login(
             client,
@@ -603,6 +603,42 @@ def test_factory_customers_are_readable_but_only_managed_by_local_sales_supervis
         historical_quote = client.get(f"/api/internal-quotes/{quote.json()['id']}")
         assert historical_quote.status_code == 200
         assert historical_quote.json()["customer"] == "Alpha Renamed"
+
+        logout(client)
+        engineering_profile = login(
+            client,
+            "iq_customer_engineering_supervisor",
+            "position_engineering_supervisor",
+            "engineering",
+        )
+        assert "internal_quote:customer_manage" in engineering_profile["permissions"]
+        engineering_created = client.post(
+            "/api/internal-quotes/customers",
+            params={"factory_id": "huaxing"},
+            json={"name": "Engineering Client"},
+        )
+        assert engineering_created.status_code == 201, engineering_created.text
+        engineering_customer = engineering_created.json()
+
+        engineering_cross_factory = client.post(
+            "/api/internal-quotes/customers",
+            params={"factory_id": "huadeng"},
+            json={"name": "Engineering Wrong Factory"},
+        )
+        assert engineering_cross_factory.status_code == 403
+
+        engineering_updated = client.put(
+            f"/api/internal-quotes/customers/{engineering_customer['id']}",
+            json={"name": "Engineering Renamed", "revision": 1},
+        )
+        assert engineering_updated.status_code == 200, engineering_updated.text
+        assert engineering_updated.json()["name"] == "Engineering Renamed"
+
+        engineering_deleted = client.delete(
+            f"/api/internal-quotes/customers/{engineering_customer['id']}",
+            params={"revision": 2},
+        )
+        assert engineering_deleted.status_code == 204, engineering_deleted.text
 
 
 def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_supervisor(monkeypatch):

@@ -83,7 +83,10 @@ function getQuoteRoute(path: string, factoryId: string = activeFactory.value.id)
 quoteStore.activateFactoryContext(activeFactoryId.value)
 const canViewPricingBaseline = computed(() => authStore.can('internal_quote:baseline_read', activeFactoryId.value, 'sales-business'))
 const canManagePricingBaseline = computed(() => authStore.can('internal_quote:baseline_manage', activeFactoryId.value, 'sales-business'))
-const canManageCustomers = computed(() => authStore.can('internal_quote:customer_manage', activeFactoryId.value, 'sales-business'))
+const canManageCustomers = computed(() => (
+  authStore.can('internal_quote:customer_manage', activeFactoryId.value, 'sales-business')
+  || authStore.can('internal_quote:customer_manage', activeFactoryId.value, 'engineering')
+))
 const initiatorDepartments = ['sales-business', 'engineering'] as const
 const allowedInitiatorDepartments = computed(() => initiatorDepartments.filter((department) => (
   authStore.can('internal_quote:create', activeFactoryId.value, department)
@@ -110,7 +113,7 @@ const createUnavailableMessage = computed(() => {
   if (isCurrentFactoryForeign.value) return '跨厂数据仅供查看，请切换回本厂后操作'
   if (canCreateCurrentFactory.value && !ownersReadyForCurrentFactory.value) return '正在读取当前厂区业务负责人'
   if (canCreateCurrentFactory.value && !customersReadyForCurrentFactory.value) return '正在读取当前厂区客户资料'
-  if (canCreateCurrentFactory.value && !quoteStore.factoryCustomers.length) return '当前厂区暂无客户，请业务主管先维护客户资料'
+  if (canCreateCurrentFactory.value && !quoteStore.factoryCustomers.length) return '当前厂区暂无客户，请业务主管或工程主管先维护客户资料'
   return '当前账号没有新建内部报价权限'
 })
 const comparisonQuoteIds = computed(() => new Set(comparisonQuotes.value.map((quote) => quote.id)))

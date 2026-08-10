@@ -81,9 +81,12 @@ INTERNAL_QUOTE_EXPORT_PERMISSION = "internal_quote:export"
 INTERNAL_QUOTE_EXPORT_DEFAULT_ROLE_IDS = ("sales_customer_owner", "sales_customer_supervisor")
 INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER = "internal_quote_p4_release_grant_v1_completed"
 INTERNAL_QUOTE_BASELINE_GRANT_MARKER = "internal_quote_baseline_grant_v1_completed"
-INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER = "internal_quote_customer_grant_v1_completed"
+INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER = "internal_quote_customer_grant_v2_completed"
 INTERNAL_QUOTE_CUSTOMER_PERMISSION = "internal_quote:customer_manage"
-INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
+INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS = (
+    "sales_customer_supervisor",
+    "engineering_supervisor",
+)
 INTERNAL_QUOTE_SELF_REVIEW_GRANT_MARKER = "internal_quote_self_review_grant_v1_completed"
 INTERNAL_QUOTE_SELF_REVIEW_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
 CUSTOMER_ORDER_CONTROL_GRANT_MARKER = "customer_order_control_grant_v1_completed"
@@ -179,6 +182,7 @@ INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS = {
         *INTERNAL_QUOTE_COMMON_PERMISSIONS,
         "internal_quote:create",
         "internal_quote:clone",
+        "internal_quote:customer_manage",
         "internal_quote:engineering_edit",
         "internal_quote:engineering_review",
         "internal_quote:reference_manage",
@@ -1414,7 +1418,7 @@ def seed_internal_quote_baseline_grants_once(db: Session, now: str) -> int:
 
 
 def seed_internal_quote_customer_grants_once(db: Session, now: str) -> int:
-    """Grant factory customer maintenance to existing business supervisors once."""
+    """Grant factory customer maintenance to existing sales and engineering supervisors once."""
     if db.get(AuthIamState, INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER) is not None:
         return 0
     permission = db.scalar(

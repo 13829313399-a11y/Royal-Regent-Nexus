@@ -85,6 +85,56 @@ function salesSession(
   }
 }
 
+function engineeringSupervisorSession(factoryId = 'huaxing'): AuthMeResponse {
+  const permissions = [
+    'internal_quote:read',
+    'internal_quote:create',
+    'internal_quote:clone',
+    'internal_quote:customer_manage',
+    'internal_quote:engineering_edit',
+    'internal_quote:engineering_review',
+  ]
+  return {
+    id: 'engineering-supervisor',
+    username: 'engineering-supervisor',
+    display_name: '华兴工程主管',
+    roles: ['工程主管'],
+    permissions,
+    grants: [{
+      role_id: 'position_engineering_supervisor',
+      role_code: 'position_engineering_supervisor',
+      role_name: '主管',
+      factory_id: factoryId,
+      department: 'engineering',
+      permissions,
+      scope_mode: 'cross_factory_read',
+      read_permission_codes: ['internal_quote:read'],
+      unrestricted_department: true,
+      data_scope: 'all',
+    }],
+    effective_access: [{
+      permission_code: 'internal_quote:customer_manage',
+      factory_id: factoryId,
+      department: 'engineering',
+      effect: 'allow',
+      allowed: true,
+      source_type: 'role_binding',
+      source_ids: ['engineering-supervisor-binding'],
+      source_name: '工程主管',
+    }],
+    factory_scopes: [factoryId],
+    department_scopes: ['engineering'],
+    profile: {
+      primary_factory_id: factoryId,
+      primary_department: 'engineering',
+      position: '工程主管',
+      confirmation_status: 'confirmed',
+    },
+    authz_mode: 'enforce',
+    force_password_change: false,
+  }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((done) => { resolve = done })
@@ -238,7 +288,7 @@ describe('InternalQuoteHome factory permission boundary', () => {
     expect(internalQuoteApiMock.list).toHaveBeenLastCalledWith('huakang-c', { page: 1, pageSize: 10 })
   })
 
-  it('shows customer maintenance only to the local sales supervisor and writes the active factory', async () => {
+  it('shows customer maintenance to local sales and engineering supervisors only', async () => {
     const createdCustomer = apiCustomer('huaxing', '新增客户')
     internalQuoteApiMock.createCustomer.mockResolvedValue(createdCustomer)
     internalQuoteApiMock.updateCustomer.mockResolvedValue(apiCustomer('huaxing', '修改客户', 2))
@@ -275,6 +325,23 @@ describe('InternalQuoteHome factory permission boundary', () => {
     await flushPromises()
     expect(wrapper.findComponent(InternalQuoteCustomerDialog).props('open')).toBe(false)
     expect(wrapper.find('.quote-customer-button').exists()).toBe(false)
+
+    wrapper.unmount()
+    const engineeringPinia = createPinia()
+    setActivePinia(engineeringPinia)
+    useAuthStore().applySession(engineeringSupervisorSession('huaxing'))
+    useAppStore().setActiveFactory('huaxing')
+    const engineeringWrapper = mount(InternalQuoteHome, { global: { plugins: [engineeringPinia] } })
+    await flushPromises()
+
+    expect(engineeringWrapper.find('.quote-customer-button').exists()).toBe(true)
+    await engineeringWrapper.get('.quote-customer-button').trigger('click')
+    expect(engineeringWrapper.findComponent(InternalQuoteCustomerDialog).props('open')).toBe(true)
+
+    useAppStore().setActiveFactory('huadeng')
+    await flushPromises()
+    expect(engineeringWrapper.findComponent(InternalQuoteCustomerDialog).props('open')).toBe(false)
+    expect(engineeringWrapper.find('.quote-customer-button').exists()).toBe(false)
   })
 
   it('shows quote deletion only to the creator or local sales supervisor and confirms before deleting', async () => {
