@@ -1,4 +1,5 @@
 from itertools import pairwise
+from types import SimpleNamespace
 
 from test_injection_scheduling_phase3_api import (
     ADMIN_TEST_PASSWORD,
@@ -156,6 +157,156 @@ def test_v2_phase4_cp_sat_is_feasible_deterministic_and_replayable(monkeypatch):
             item["auto_schedule_run_id"] == first_run["id"]
             for item in applied.json()["plan"]["tasks"]
         )
+
+
+def test_duration_prefers_order_sheet_daily_capacity_and_caps_current_window():
+    from app.services.injection_scheduling_scheduler.duration import (
+        production_estimate,
+    )
+
+    order = SimpleNamespace(
+        order_quantity=200004,
+        completed_quantity=0,
+        mold_id=None,
+        lineage_json='{"source_daily_capacity":5000}',
+    )
+    estimate = production_estimate(
+        order,
+        {"default_units_per_hour": 40, "speed_models": {}},
+        max_production_minutes=20820,
+    )
+
+    assert estimate.capacity_source == "SOURCE_DAILY_CAPACITY"
+    assert float(estimate.units_per_hour) == 5000 / 24
+    assert estimate.full_order_minutes == 57602
+    assert estimate.production_minutes <= 20820
+    assert 72000 < float(estimate.planned_quantity) < 73000
+    assert estimate.remaining_quantity > 0
+    assert estimate.split_required is True
+
+
+def test_v2_phase4_cp_sat_isolates_one_order_without_collapsing_batch(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        factory_id, _, _, orders, draft = _phase4_fixture(client)
+        response = client.post(
+            "/api/injection-scheduling/auto-schedule/runs",
+            headers={"X-Request-ID": "v2-phase4-cp-isolate-one-order"},
+            json=_run_payload(
+                factory_id,
+                orders,
+                draft,
+                horizon_end="2026-08-04T10:00:00+08:00",
+                scenario_group_id="scenario-phase4-isolation",
+                scenario_name="单条隔离",
+            ),
+        )
+
+        assert response.status_code == 201, response.text
+        run = response.json()
+        assert run["solver_type"] == "HEURISTIC"
+        assert run["solver_status"] == "INFEASIBLE"
+        assert run["fallback_used"] is True
+        assert run["summary"]["scheduled_count"] == 2
+        assert run["summary"]["unassigned_count"] == 1
+        unassigned = next(
+            item for item in run["assignments"] if item["decision"] == "UNASSIGNED"
+        )
+        assert unassigned["unassigned_reason_code"] == "HORIZON_EXCEEDED"
+        assert "其他订单" in unassigned["explanation"]["summary"]
+
+
+def test_v2_phase4_partial_window_allocation_stays_in_backlog(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        factory_id, _, mold, _, _ = _phase4_fixture(client)
+        huge_payload = order_payload(factory_id, "V2-P4-HUGE-ORDER", 200004)
+        huge_payload.update(
+            mold_id=mold["id"],
+            delivery_due_date="2026-09-30",
+            lineage={"source": "demand-order", "source_daily_capacity": 5000},
+        )
+        huge_order = client.post(
+            "/api/injection-scheduling/orders", json=huge_payload
+        ).json()
+        current_draft = client.get(
+            "/api/injection-scheduling/plans/current",
+            params={"factory_id": factory_id},
+        ).json()["plan"]
+        preview = client.post(
+            "/api/injection-scheduling/auto-schedule/runs",
+            headers={"X-Request-ID": "v2-phase4-partial-window-preview"},
+            json=_run_payload(
+                factory_id,
+                [huge_order],
+                current_draft,
+                horizon_end="2026-08-06T20:00:00+08:00",
+                scenario_group_id="scenario-phase4-partial-window",
+                scenario_name="当前窗口部分安排",
+            ),
+        )
+
+        assert preview.status_code == 201, preview.text
+        run = preview.json()
+        assignment = run["assignments"][0]
+        production = assignment["explanation"]["production"]
+        assert assignment["decision"] == "PASS"
+        assert production["capacity_source"] == "SOURCE_DAILY_CAPACITY"
+        assert production["split_required"] is True
+        assert 0 < production["planned_quantity"] < huge_order["order_quantity"]
+        assert production["remaining_quantity"] > 0
+
+        applied = client.post(
+            f"/api/injection-scheduling/auto-schedule/runs/{run['id']}/apply",
+            json={
+                "factory_id": factory_id,
+                "expected_plan_revision": current_draft["revision"],
+                "expected_rule_revision": current_draft["rule_revision"],
+                "request_id": "v2-phase4-partial-window-apply",
+                "review_override_reason": "",
+            },
+        )
+        assert applied.status_code == 200, applied.text
+        plan = applied.json()["plan"]
+        task = next(
+            item for item in plan["tasks"] if item["order_id"] == huge_order["id"]
+        )
+        state = next(
+            item
+            for item in plan["plan_order_states"]
+            if item["order_id"] == huge_order["id"]
+        )
+        assert task["allocated_quantity"] == production["planned_quantity"]
+        assert state["status"] == "BACKLOG"
+        assert state["quantity_scope"] == "SPLIT_CUMULATIVE"
+        backlog = client.get(
+            "/api/injection-scheduling/backlog", params={"factory_id": factory_id}
+        )
+        assert backlog.status_code == 200, backlog.text
+        assert huge_order["id"] in {item["id"] for item in backlog.json()["items"]}
+
+        next_preview = client.post(
+            "/api/injection-scheduling/auto-schedule/runs",
+            headers={"X-Request-ID": "v2-phase4-partial-next-window"},
+            json=_run_payload(
+                factory_id,
+                [huge_order],
+                plan,
+                horizon_start="2026-08-07T08:00:00+08:00",
+                horizon_end="2026-08-09T20:00:00+08:00",
+                scenario_group_id="scenario-phase4-partial-next-window",
+                scenario_name="下一窗口续排",
+            ),
+        )
+        assert next_preview.status_code == 201, next_preview.text
+        next_assignment = next_preview.json()["assignments"][0]
+        next_production = next_assignment["explanation"]["production"]
+        assert next_assignment["decision"] == "PASS"
+        assert next_assignment["existing_task_id"] is None
+        assert next_preview.json()["summary"]["frozen_task_count"] == 1
+        assert next_production["outstanding_quantity"] == production["remaining_quantity"]
+        assert next_production["planned_quantity"] > 0
+        assert next_production["remaining_quantity"] < production["remaining_quantity"]
 
 
 def test_v2_phase4_cp_sat_unavailable_and_time_limit_fall_back(monkeypatch):

@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from app.models.injection_scheduling import (
     InjectionSchedulingMachine,
-    InjectionSchedulingMold,
 )
 from app.models.injection_scheduling_execution import InjectionSchedulingOrder
 from app.schemas.injection_scheduling_matching import (
@@ -20,6 +19,11 @@ from app.schemas.injection_scheduling_matching import (
 )
 from app.services.injection_scheduling import DEFAULT_RULE_CONFIG, current_rule_set
 from app.services.injection_scheduling_matching import _queue_context, _score
+from app.services.injection_scheduling_mold_context import (
+    load_scheduling_molds,
+    machine_capabilities_for_mold,
+    order_mold_key,
+)
 from app.services.injection_scheduling_rules import (
     MachineEligibilityProfile,
     MoldEligibilityProfile,
@@ -96,19 +100,10 @@ def evaluate_batch_matches(
             status_code=404, detail="部分候选机台不存在或不属于当前厂区"
         )
 
-    mold_ids = {item.mold_id for item in orders if item.mold_id}
-    molds = (
-        {
-            item.id: item
-            for item in db.scalars(
-                select(InjectionSchedulingMold).where(
-                    InjectionSchedulingMold.factory_id == factory_id,
-                    InjectionSchedulingMold.id.in_(mold_ids),
-                )
-            ).all()
-        }
-        if mold_ids
-        else {}
+    molds = load_scheduling_molds(
+        db,
+        factory_id=factory_id,
+        orders=orders,
     )
     queues, queue_molds = _queue_context(db, factory_id)
     max_queue_count = max((len(items) for items in queues.values()), default=0)
@@ -117,7 +112,7 @@ def evaluate_batch_matches(
     evaluations: list[InjectionSchedulingMatchEvaluationOut] = []
     for order_id in order_ids:
         order = order_by_id[order_id]
-        mold = molds.get(order.mold_id or "")
+        mold = molds.get(order_mold_key(order))
         results: list[InjectionSchedulingMachineMatchOut] = []
         for machine in machines:
             if mold is None:
@@ -132,16 +127,17 @@ def evaluate_batch_matches(
                 advisories: list[InjectionSchedulingMatchReasonOut] = []
                 decision = "REVIEW_REQUIRED"
             else:
+                arm_capabilities, fixture_capabilities = machine_capabilities_for_mold(
+                    mold,
+                    tuple(load_json(machine.robot_capabilities_json, [])),
+                    tuple(load_json(machine.fixture_capabilities_json, [])),
+                )
                 eligibility = evaluate_eligibility(
                     MachineEligibilityProfile(
                         a_class=machine.machine_a_class,
                         injection_capacity_g=machine.injection_capacity_g,
-                        arm_capabilities=tuple(
-                            load_json(machine.robot_capabilities_json, [])
-                        ),
-                        fixture_capabilities=tuple(
-                            load_json(machine.fixture_capabilities_json, [])
-                        ),
+                        arm_capabilities=arm_capabilities,
+                        fixture_capabilities=fixture_capabilities,
                         process_capabilities=tuple(
                             load_json(machine.process_tags_json, [])
                         ),
@@ -220,7 +216,7 @@ def evaluate_batch_matches(
             InjectionSchedulingMatchEvaluationOut(
                 factory_id=factory_id,
                 order_id=order.id,
-                mold_id=mold.id if mold is not None else "",
+                mold_id=(order.mold_id or order.mold_definition_id or ""),
                 rule_set_id=rules.id,
                 rule_set_revision=rules.revision,
                 results=results,

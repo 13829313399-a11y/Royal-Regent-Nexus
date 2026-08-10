@@ -139,6 +139,8 @@ def machine_out(record: InjectionSchedulingMachine) -> InjectionSchedulingMachin
         robot_capabilities=_load_json(record.robot_capabilities_json, []),
         fixture_capabilities=_load_json(record.fixture_capabilities_json, []),
         process_restrictions=_load_json(record.process_restrictions_json, []),
+        equipment_details=_load_json(record.equipment_details_json, {}),
+        remarks=record.remarks,
         status=record.status,
         revision=record.revision,
         created_by=record.created_by,
@@ -237,6 +239,8 @@ def _apply_machine(
     record.robot_capabilities_json = _json(payload.robot_capabilities)
     record.fixture_capabilities_json = _json(payload.fixture_capabilities)
     record.process_restrictions_json = _json(payload.process_restrictions)
+    record.equipment_details_json = _json(payload.equipment_details)
+    record.remarks = payload.remarks
     record.status = payload.status
 
 
@@ -274,6 +278,8 @@ def _machine_update_values(
         "robot_capabilities_json": _json(payload.robot_capabilities),
         "fixture_capabilities_json": _json(payload.fixture_capabilities),
         "process_restrictions_json": _json(payload.process_restrictions),
+        "equipment_details_json": _json(payload.equipment_details),
+        "remarks": payload.remarks,
         "status": payload.status,
     }
 
@@ -379,6 +385,8 @@ def list_machines(
                 InjectionSchedulingMachine.machine_class.ilike(pattern),
                 InjectionSchedulingMachine.area.ilike(pattern),
                 InjectionSchedulingMachine.position.ilike(pattern),
+                InjectionSchedulingMachine.equipment_details_json.ilike(pattern),
+                InjectionSchedulingMachine.remarks.ilike(pattern),
             )
         )
     return list(

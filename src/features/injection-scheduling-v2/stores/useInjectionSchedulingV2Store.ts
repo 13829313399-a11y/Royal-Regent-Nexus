@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   applyAutoSchedulePreview,
+  cancelBacklogOrder,
   createAutoSchedulePreview,
   fetchCurrentSchedulingPlan,
   fetchEligibility,
@@ -16,8 +17,10 @@ import {
   moveScheduleTask,
   patchScheduleOrder,
   patchScheduleTask,
+  publishSchedulingPlan,
   rebuildPhase5SpeedModels,
   saveShiftReportsBulk,
+  withdrawScheduleTask,
 } from '../api/injectionSchedulingV2Api'
 import { schedulingColumns } from '../composables/useSchedulingColumns'
 import { cellDraftKey, isOrderEdit, isPlanEdit, isReportEdit, normalizeCellValue, resolveReportedQuantity } from '../composables/useScheduleDraftEdits'
@@ -91,6 +94,12 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const autoScheduleComparisonRuns = ref<AutoScheduleRunRecord[]>([])
   const autoScheduleLoading = ref(false)
   const autoScheduleError = ref('')
+  const publishingPlan = ref(false)
+  const publishPlanError = ref('')
+  const withdrawingTask = ref(false)
+  const withdrawTaskError = ref('')
+  const cancellingBacklogOrderId = ref<string | null>(null)
+  const cancelBacklogOrderError = ref('')
   const plan = ref<SchedulingPlanRecord | null>(null)
   const executionPlan = ref<SchedulingPlanRecord | null>(null)
   const planningPlan = ref<SchedulingPlanRecord | null>(null)
@@ -132,8 +141,12 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const schedulingDepartments = ['production', 'molding', 'pmc-warehouse', 'warehouse', 'management']
   const hasScopedPermission = (permission: string) => schedulingDepartments.some((department) => authStore.can(permission, factoryId.value, department))
   const canEdit = computed(() => sourceMode.value === 'live' && activePlanSlice.value === 'planning' && plan.value?.status === 'DRAFT' && hasScopedPermission('injection_scheduling:edit'))
+  const canCreateDemand = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:edit'))
   const canReport = computed(() => sourceMode.value === 'live' && activePlanSlice.value === 'execution' && plan.value?.status === 'PUBLISHED' && hasScopedPermission('injection_scheduling:report'))
   const canOverride = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:publish'))
+  const canPublish = computed(() => sourceMode.value === 'live' && Boolean(planningPlan.value) && (
+    hasScopedPermission('injection_scheduling:edit') || hasScopedPermission('injection_scheduling:publish')
+  ))
   const canManageRules = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:manage_rules'))
   const canImport = computed(() => sourceMode.value === 'live' && hasScopedPermission('injection_scheduling:import'))
   const canConfirmDemand = computed(() => canImport.value && hasScopedPermission('injection_scheduling:edit'))
@@ -172,6 +185,19 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const selectedMold = computed(() => selectedTask.value?.moldId ? moldMap.value.get(selectedTask.value.moldId) ?? null : null)
   const selectedMachine = computed(() => selectedTask.value ? machineMap.value.get(selectedTask.value.machineId) ?? null : null)
   const backlogOrders = computed(() => backlogOrderIds.value.map((id) => orderMap.value.get(id)).filter((item): item is OrderRecord => Boolean(item)))
+  const withdrawDisabledReason = computed(() => {
+    const task = selectedTask.value
+    if (!task || !plan.value) return '请先选择一条已排任务'
+    if (sourceMode.value !== 'live') return '演示数据不能撤回'
+    if (!(hasScopedPermission('injection_scheduling:edit') || hasScopedPermission('injection_scheduling:publish'))) return '当前账号没有排产编辑权限'
+    if (!['DRAFT', 'PUBLISHED'].includes(plan.value.status)) return '当前计划状态不能撤回任务'
+    if (pendingEditCount.value) return '请先保存或放弃未保存修改'
+    if (task.locked) return '锁定基线任务请先解除锁定'
+    if (['COMPLETED', 'CANCELLED'].includes(task.status)) return '已完成或已取消任务不能撤回'
+    return ''
+  })
+  const canWithdraw = computed(() => !withdrawDisabledReason.value && !withdrawingTask.value)
+  const canCancelBacklogOrder = computed(() => canCreateDemand.value && !cancellingBacklogOrderId.value)
 
   const visibleColumns = computed(() => columnOrder.value
     .map((key) => schedulingColumns.find((column) => column.key === key))
@@ -660,6 +686,96 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     }
   }
 
+  async function publishPlanningPlan() {
+    const draft = planningPlan.value
+    if (!draft || publishingPlan.value) return false
+    publishPlanError.value = ''
+    if (!canPublish.value) {
+      publishPlanError.value = '当前账号没有排产编辑或发布权限'
+      saveMessage.value = `发布失败：${publishPlanError.value}`
+      return false
+    }
+    if (pendingEditCount.value) {
+      publishPlanError.value = '存在未保存修改，请先保存或放弃后再发布'
+      saveMessage.value = `发布失败：${publishPlanError.value}`
+      return false
+    }
+    publishingPlan.value = true
+    try {
+      const result = await publishSchedulingPlan(factoryId.value, draft)
+      pollingRevision.value = Math.max(pollingRevision.value, result.auditSequence)
+      await load({ quiet: true })
+      activatePlanSlice('execution', true)
+      saveMessage.value = `计划已发布 · 执行 PUBLISHED · r${result.plan?.revision ?? draft.revision + 1}`
+      return true
+    } catch (error) {
+      publishPlanError.value = getApiErrorMessage(error)
+      saveMessage.value = `发布失败：${publishPlanError.value}`
+      return false
+    } finally {
+      publishingPlan.value = false
+    }
+  }
+
+  async function withdrawSelectedTask(reason: string) {
+    const sourcePlan = plan.value
+    const task = selectedTask.value
+    const order = selectedOrder.value
+    withdrawTaskError.value = ''
+    if (!sourcePlan || !task || withdrawingTask.value) return false
+    if (withdrawDisabledReason.value) {
+      withdrawTaskError.value = withdrawDisabledReason.value
+      saveMessage.value = `撤回失败：${withdrawTaskError.value}`
+      return false
+    }
+    withdrawingTask.value = true
+    try {
+      const result = await withdrawScheduleTask(factoryId.value, sourcePlan, task, planningPlan.value, reason.trim())
+      pollingRevision.value = Math.max(pollingRevision.value, result.auditSequence)
+      await load({ quiet: true })
+      activatePlanSlice('planning', true)
+      selectedTaskId.value = null
+      backlogDockOpen.value = true
+      activeView.value = 'plan'
+      saveMessage.value = sourcePlan.status === 'PUBLISHED'
+        ? `已撤回待排：${order?.orderNo || '所选订单'}；调整已写入规划草案，发布后替换正式计划。`
+        : `已撤回待排：${order?.orderNo || '所选订单'}；订单已回到待排池。`
+      return true
+    } catch (error) {
+      withdrawTaskError.value = getApiErrorMessage(error)
+      saveMessage.value = `撤回失败：${withdrawTaskError.value}`
+      return false
+    } finally {
+      withdrawingTask.value = false
+    }
+  }
+
+  async function cancelBacklog(orderId: string, reason: string) {
+    const order = backlogOrders.value.find((item) => item.id === orderId)
+    cancelBacklogOrderError.value = ''
+    if (!order || cancellingBacklogOrderId.value) return false
+    if (!canCreateDemand.value) {
+      cancelBacklogOrderError.value = '当前账号没有排产编辑权限'
+      saveMessage.value = `删除失败：${cancelBacklogOrderError.value}`
+      return false
+    }
+    cancellingBacklogOrderId.value = order.id
+    try {
+      await cancelBacklogOrder(factoryId.value, order, planningPlan.value, reason.trim())
+      await load({ quiet: true })
+      if (planningPlan.value) activatePlanSlice('planning', true)
+      activeView.value = 'backlog'
+      saveMessage.value = `已删除待排单：${order.orderNo}；原始下单和审计记录已保留。`
+      return true
+    } catch (error) {
+      cancelBacklogOrderError.value = getApiErrorMessage(error)
+      saveMessage.value = `删除失败：${cancelBacklogOrderError.value}`
+      return false
+    } finally {
+      cancellingBacklogOrderId.value = null
+    }
+  }
+
   async function prepareMove(taskId: string, targetMachineId: string, targetSequence: number) {
     const task = taskMap.value.get(taskId)
     if (!task || !plan.value || plan.value.status !== 'DRAFT' || !canEdit.value) {
@@ -845,10 +961,10 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, executionPlan, planningPlan, executionPublishedPlan, planningDraftPlan, activePlanSlice, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
     activeView, activePreset, search, statusFilter, riskFilter, selectedTaskId, selectedTask, selectedOrder, selectedMold, selectedMachine, inspectorTab,
     backlogDockOpen, autoScheduleDialogOpen, columnMenuOpen, collapsedMachineIds, customVisibleColumns, columnWidths, columnOrder, sort, visibleColumns, summary, alerts, gridRows,
-    cellDrafts, pendingEditCount, timelineScrollLeft, timelineZoom, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, canEdit, canReport, canOverride, canManageRules, canImport, canConfirmDemand, canProposeImportProfile, canProposeMasterData, canManageImportProfiles, canReviewSharedMolds, canActivateSharedMolds, canManageFactoryCapabilities, canManageSharedMoldPrices, canExport, canManageMaster,
+    cellDrafts, pendingEditCount, timelineScrollLeft, timelineZoom, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, publishingPlan, publishPlanError, withdrawingTask, withdrawTaskError, withdrawDisabledReason, canWithdraw, cancellingBacklogOrderId, cancelBacklogOrderError, canCancelBacklogOrder, canEdit, canCreateDemand, canReport, canOverride, canPublish, canManageRules, canImport, canConfirmDemand, canProposeImportProfile, canProposeMasterData, canManageImportProfiles, canReviewSharedMolds, canActivateSharedMolds, canManageFactoryCapabilities, canManageSharedMoldPrices, canExport, canManageMaster,
     phase5Analytics, phase5AnalyticsLoading, phase5AnalyticsError,
     load, setFactory, activatePlanSlice, setPreset, toggleMachine, toggleColumn, moveColumn, resetColumns, selectTask, cycleSort,
     draftValue, stageCellEdit, savePendingEdits, discardPendingEdits, prepareMove, updateMovePreview, confirmMove, moveByKeyboard, pollEvents,
-    generateAutoSchedulePreview, generateAutoScheduleAlternatives, replayAutoScheduleRun, selectAutoScheduleRun, applyAutoScheduleRun,
+    generateAutoSchedulePreview, generateAutoScheduleAlternatives, replayAutoScheduleRun, selectAutoScheduleRun, applyAutoScheduleRun, publishPlanningPlan, withdrawSelectedTask, cancelBacklog,
     loadPhase5Analytics, calibratePhase5SpeedModels }
 })

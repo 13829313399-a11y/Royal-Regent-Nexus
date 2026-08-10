@@ -25,6 +25,18 @@ class InjectionSchedulingOrder(Base):
             "factory_id",
             name="uq_injection_scheduling_order_id_factory",
         ),
+        ForeignKeyConstraint(
+            ["mold_definition_id"],
+            ["injection_scheduling_mold_definitions.id"],
+            name="fk_inj_sched_order_mold_definition",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["mold_output_spec_id"],
+            ["injection_scheduling_mold_output_specs.id"],
+            name="fk_inj_sched_order_mold_output",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "order_quantity > 0",
             name="ck_injection_scheduling_order_quantity",
@@ -69,6 +81,12 @@ class InjectionSchedulingOrder(Base):
     item_no: Mapped[str] = mapped_column(String(128), default="", index=True)
     product_name: Mapped[str] = mapped_column(String(255), default="")
     mold_id: Mapped[str | None] = mapped_column(String(96), nullable=True, index=True)
+    mold_definition_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
+    mold_output_spec_id: Mapped[str | None] = mapped_column(
+        String(96), nullable=True, index=True
+    )
     order_quantity: Mapped[Decimal] = mapped_column(Numeric(14, 3))
     source_completed_quantity: Mapped[Decimal] = mapped_column(
         Numeric(14, 3), default=Decimal(0)

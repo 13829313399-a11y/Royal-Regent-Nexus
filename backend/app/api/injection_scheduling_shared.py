@@ -317,9 +317,7 @@ def _rate_applies_to_demand(
         return False
     if rule.quantity_min is not None and order_quantity < rule.quantity_min:
         return False
-    if rule.quantity_max is not None and order_quantity > rule.quantity_max:
-        return False
-    return True
+    return rule.quantity_max is None or order_quantity <= rule.quantity_max
 
 
 def _proposal_out(record: InjectionSchedulingMasterDataProposal) -> dict[str, Any]:
@@ -685,6 +683,8 @@ def post_enrich_demand_order_molds(
         readiness = "FACTORY_READY" if execution_is_ready else "NOT_FACTORY_READY"
         if legacy_mold is not None:
             order.mold_id = legacy_mold.id
+        order.mold_definition_id = definition.id if definition is not None else None
+        order.mold_output_spec_id = selected_output.id if selected_output else None
         order.revision += 1
         order.updated_by = current_user.id
         order.updated_by_name = _actor_name(current_user)

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Bot, CalendarDays, Database, Download, House, RefreshCw, RotateCcw, Save, Search, Sparkles, Upload } from '@lucide/vue'
+import { Bot, CalendarDays, Database, Download, House, RefreshCw, RotateCcw, Save, Search, Send, Sparkles, Upload } from '@lucide/vue'
 import AccountMenu from '../../../components/layout/AccountMenu.vue'
 import type { FactoryId } from '../types'
 
-const props = defineProps<{ factoryId: FactoryId; factoryName: string; sourceMode: 'live' | 'fallback'; sourceMessage: string; refreshing: boolean; search: string; lastSyncedAt: string; planStatus: string; pendingCount: number; saving: boolean; canSave: boolean; canImport: boolean; canExport: boolean; saveMessage: string }>()
-const emit = defineEmits<{ 'update:factoryId': [value: string]; 'update:search': [value: string]; home: []; refresh: []; openAutoSchedule: []; openImport: []; openExport: []; openMasterData: []; save: []; discard: [] }>()
+const props = defineProps<{ factoryId: FactoryId; factoryName: string; sourceMode: 'live' | 'fallback'; sourceMessage: string; refreshing: boolean; search: string; lastSyncedAt: string; planStatus: string; pendingCount: number; saving: boolean; canSave: boolean; canImport: boolean; canExport: boolean; hasPlanningDraft: boolean; canPublish: boolean; publishingPlan: boolean; publishDisabledReason: string; saveMessage: string }>()
+const emit = defineEmits<{ 'update:factoryId': [value: string]; 'update:search': [value: string]; home: []; refresh: []; openAutoSchedule: []; openImport: []; openExport: []; openMasterData: []; publish: []; save: []; discard: [] }>()
 const today = computed(() => new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()).replaceAll('/', '-'))
 </script>
 
@@ -26,6 +26,7 @@ const today = computed(() => new Intl.DateTimeFormat('zh-CN', { year: 'numeric',
     <button class="command-button is-secondary" :disabled="refreshing" :aria-busy="refreshing" @click="emit('refresh')"><RefreshCw :size="15" :class="{ spinning: refreshing }" />{{ refreshing ? '正在同步' : '刷新同步' }}</button>
     <button v-if="pendingCount" class="command-button" @click="emit('discard')"><RotateCcw :size="15" />撤销 {{ pendingCount }}</button>
     <button class="command-button save is-secondary" :disabled="!canSave || !pendingCount || saving" :aria-busy="saving" @click="emit('save')"><Save :size="15" />{{ saving ? '保存中' : `保存 ${pendingCount}` }}</button>
+    <button v-if="hasPlanningDraft" class="command-button publish is-secondary" :disabled="!canPublish || publishingPlan || Boolean(publishDisabledReason)" :aria-busy="publishingPlan" :title="publishDisabledReason || '发布为正式执行计划'" @click="emit('publish')"><RefreshCw v-if="publishingPlan" :size="15" class="spinning" /><Send v-else :size="15" />{{ publishingPlan ? '发布中' : '发布计划' }}</button>
     <button class="command-button is-secondary" :disabled="!canImport" @click="emit('openImport')"><Upload :size="15" />导入计划 / 下单表</button>
     <button class="command-button is-secondary" :disabled="!canExport" @click="emit('openExport')"><Download :size="15" />导出计划表</button>
     <button class="command-button auto is-primary" @click="emit('openAutoSchedule')"><Sparkles :size="15" />自动排期</button>

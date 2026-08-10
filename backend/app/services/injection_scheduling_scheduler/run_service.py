@@ -32,6 +32,9 @@ from app.models.injection_scheduling_scheduler import (
     InjectionSchedulingTransitionRule,
 )
 from app.models.injection_scheduling_shared import (
+    InjectionSchedulingFactoryMoldCapability,
+    InjectionSchedulingMoldDefinition,
+    InjectionSchedulingMoldOutputSpec,
     InjectionSchedulingMoldReservation,
     InjectionSchedulingPhysicalMoldAsset,
     InjectionSchedulingRolloutPolicy,
@@ -61,6 +64,7 @@ from app.services.injection_scheduling_execution import (
     _validate_proposed_task_windows,
     plan_out,
 )
+from app.services.injection_scheduling_mold_context import load_scheduling_molds
 from app.services.injection_scheduling_scheduler.anchor import (
     build_machine_continuation_anchors,
 )
@@ -81,6 +85,27 @@ from app.services.injection_scheduling_scheduler.normalization import (
 
 def _now() -> str:
     return business_now().isoformat(timespec="seconds")
+
+
+def _assignment_planned_quantity(
+    assignment: InjectionSchedulingRunAssignment,
+    order: InjectionSchedulingOrder,
+) -> Decimal:
+    explanation = load_json(assignment.explanation_json, {})
+    production = explanation.get("production", {})
+    raw_value = (
+        production.get("planned_quantity") if isinstance(production, dict) else None
+    )
+    try:
+        planned = Decimal(str(raw_value))
+    except (TypeError, ValueError, ArithmeticError):
+        planned = Decimal(0)
+    outstanding = max(
+        Decimal(order.order_quantity) - Decimal(order.completed_quantity), Decimal(0)
+    )
+    if planned <= 0:
+        planned = outstanding
+    return min(planned, outstanding).quantize(Decimal("0.001"))
 
 
 def _expire_tentative_reservations(db: Session, *, factory_id: str) -> int:
@@ -283,37 +308,6 @@ def _selected_orders(
             status_code=409,
             detail={"message": "已完成或已取消订单不可排期", "order_ids": invalid},
         )
-    demand_order_ids = {
-        item.id for item in orders if item.source_type == "DEMAND_ORDER_VERSION"
-    }
-    if demand_order_ids:
-        ready_demand_order_ids = set(
-            db.scalars(
-                select(InjectionSchedulingPlanOrderState.order_id).where(
-                    InjectionSchedulingPlanOrderState.factory_id == factory_id,
-                    InjectionSchedulingPlanOrderState.plan_id == plan_id,
-                    InjectionSchedulingPlanOrderState.order_id.in_(demand_order_ids),
-                    InjectionSchedulingPlanOrderState.factory_readiness_status
-                    == "FACTORY_READY",
-                )
-            ).all()
-        )
-        blocked = sorted(demand_order_ids - ready_demand_order_ids)
-        if blocked and requested_order_ids:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "DEMAND_ORDERS_NOT_FACTORY_READY",
-                    "message": "需求订单可留在 BACKLOG，但本厂实物或能力未就绪，不能自动排产",
-                    "order_ids": blocked,
-                },
-            )
-        orders = [item for item in orders if item.id not in blocked]
-        order_ids = [item for item in order_ids if item not in blocked]
-        if not orders:
-            raise HTTPException(
-                status_code=409, detail="当前草案没有本厂就绪的可排订单"
-            )
     order_by_id = {item.id: item for item in orders}
     return [order_by_id[item] for item in order_ids]
 
@@ -469,18 +463,10 @@ def create_run(
         all_mold_ids = {item.mold_id for item in orders if item.mold_id} | {
             item.mold_id for item in plan_tasks if item.mold_id
         }
-        molds = (
-            {
-                item.id: item
-                for item in db.scalars(
-                    select(InjectionSchedulingMold).where(
-                        InjectionSchedulingMold.factory_id == factory_id,
-                        InjectionSchedulingMold.id.in_(all_mold_ids),
-                    )
-                ).all()
-            }
-            if all_mold_ids
-            else {}
+        molds = load_scheduling_molds(
+            db,
+            factory_id=factory_id,
+            orders=orders,
         )
         calendars = list(
             db.scalars(
@@ -579,6 +565,8 @@ def create_run(
                     "status": item.status,
                     "material_readiness_status": item.material_readiness_status,
                     "mold_id": item.mold_id,
+                    "mold_definition_id": item.mold_definition_id,
+                    "mold_output_spec_id": item.mold_output_spec_id,
                 }
                 for item in orders
             ],
@@ -592,6 +580,14 @@ def create_run(
                     "revision": item.revision,
                     "status": item.status,
                     "copy_count": item.copy_count,
+                    "legacy_mold_id": item.legacy_mold_id,
+                    "definition_id": item.definition_id,
+                    "definition_revision": item.definition_revision,
+                    "output_spec_id": item.output_spec_id,
+                    "output_spec_revision": item.output_spec_revision,
+                    "capability_revisions": [
+                        list(value) for value in item.capability_revisions
+                    ],
                 }
                 for item in molds.values()
             ],
@@ -653,6 +649,10 @@ def create_run(
                 )
                 if record.solver_status == "TIME_LIMIT":
                     fallback_reason = "CP-SAT 在时间限制内未找到可行解"
+                elif record.solver_status == "INFEASIBLE":
+                    fallback_reason = (
+                        "CP-SAT 完整模型不可行，已逐条隔离超范围或无时间槽订单"
+                    )
             except CpSatUnavailableError as exc:
                 record.solver_status = "UNAVAILABLE"
                 fallback_reason = str(exc)
@@ -831,7 +831,18 @@ def _validate_snapshot(db: Session, run: InjectionSchedulingRun) -> None:
     conflicts: list[dict[str, Any]] = []
     for model, key, fields in (
         (InjectionSchedulingMachine, "machines", ("revision", "status")),
-        (InjectionSchedulingMold, "molds", ("revision", "status", "copy_count")),
+        (
+            InjectionSchedulingOrder,
+            "orders",
+            (
+                "revision",
+                "status",
+                "material_readiness_status",
+                "mold_id",
+                "mold_definition_id",
+                "mold_output_spec_id",
+            ),
+        ),
         (
             InjectionSchedulingTask,
             "tasks",
@@ -868,6 +879,89 @@ def _validate_snapshot(db: Session, run: InjectionSchedulingRun) -> None:
                 conflicts.append(
                     {"entity": key, "id": expected["id"], "changes": changed}
                 )
+    for expected in snapshot.get("molds", []):
+        legacy_mold_id = expected.get("legacy_mold_id")
+        if legacy_mold_id:
+            current = db.get(InjectionSchedulingMold, legacy_mold_id)
+            if current is None or current.factory_id != run.factory_id:
+                conflicts.append(
+                    {"entity": "molds", "id": expected["id"], "reason": "missing"}
+                )
+                continue
+            changed = {
+                field: {
+                    "expected": expected.get(field),
+                    "current": getattr(current, field),
+                }
+                for field in ("revision", "status", "copy_count")
+                if expected.get(field) != getattr(current, field)
+            }
+            if changed:
+                conflicts.append(
+                    {"entity": "molds", "id": expected["id"], "changes": changed}
+                )
+            continue
+        definition_id = expected.get("definition_id")
+        definition = db.get(InjectionSchedulingMoldDefinition, definition_id)
+        if definition is None or definition.status != "ACTIVE":
+            conflicts.append(
+                {"entity": "shared_molds", "id": expected["id"], "reason": "missing"}
+            )
+            continue
+        shared_changes: dict[str, Any] = {}
+        if expected.get("definition_revision") != definition.revision:
+            shared_changes["definition_revision"] = {
+                "expected": expected.get("definition_revision"),
+                "current": definition.revision,
+            }
+        output_spec_id = expected.get("output_spec_id")
+        if output_spec_id:
+            output = db.get(InjectionSchedulingMoldOutputSpec, output_spec_id)
+            current_output_revision = (
+                output.revision
+                if output is not None
+                and output.mold_definition_id == definition.id
+                and output.status == "ACTIVE"
+                else None
+            )
+            if expected.get("output_spec_revision") != current_output_revision:
+                shared_changes["output_spec_revision"] = {
+                    "expected": expected.get("output_spec_revision"),
+                    "current": current_output_revision,
+                }
+        capabilities = list(
+            db.scalars(
+                select(InjectionSchedulingFactoryMoldCapability).where(
+                    InjectionSchedulingFactoryMoldCapability.factory_id
+                    == run.factory_id,
+                    InjectionSchedulingFactoryMoldCapability.mold_definition_id
+                    == definition.id,
+                    InjectionSchedulingFactoryMoldCapability.status == "ACTIVE",
+                )
+            ).all()
+        )
+        relevant_capabilities = [
+            item
+            for item in capabilities
+            if item.mold_output_spec_id in {None, output_spec_id}
+        ]
+        capability_revisions = [
+            [item.id, item.revision]
+            for item in sorted(relevant_capabilities, key=lambda item: item.id)
+        ]
+        if expected.get("capability_revisions") != capability_revisions:
+            shared_changes["capability_revisions"] = {
+                "expected": expected.get("capability_revisions"),
+                "current": capability_revisions,
+            }
+        if shared_changes:
+            conflicts.append(
+                {
+                    "entity": "shared_molds",
+                    "id": expected["id"],
+                    "changes": shared_changes,
+                }
+            )
     if conflicts:
         raise HTTPException(
             status_code=409,
@@ -1055,6 +1149,29 @@ def apply_run(
             },
         )
     task_by_id = {item.id: item for item in current_tasks}
+    allocations_by_order: dict[str, Decimal] = {}
+    for task in current_tasks:
+        if task.execution_status in {"COMPLETED", "CANCELLED"}:
+            continue
+        allocations_by_order[task.order_id] = allocations_by_order.get(
+            task.order_id, Decimal(0)
+        ) + max(Decimal(task.allocated_quantity or 0), Decimal(0))
+    planned_quantity_by_assignment: dict[str, Decimal] = {}
+    for assignment in assignments:
+        order = db.get(InjectionSchedulingOrder, assignment.order_id)
+        planned_quantity_by_assignment[assignment.id] = _assignment_planned_quantity(
+            assignment, order
+        )
+        if assignment.existing_task_id:
+            existing = task_by_id[assignment.existing_task_id]
+            allocations_by_order[assignment.order_id] = max(
+                allocations_by_order.get(assignment.order_id, Decimal(0))
+                - max(Decimal(existing.allocated_quantity or 0), Decimal(0)),
+                Decimal(0),
+            )
+        allocations_by_order[assignment.order_id] = allocations_by_order.get(
+            assignment.order_id, Decimal(0)
+        ) + planned_quantity_by_assignment[assignment.id]
     states = {
         item.order_id: item
         for item in db.scalars(
@@ -1131,6 +1248,7 @@ def apply_run(
         for assignment in assignments:
             affected_order_ids.add(assignment.order_id)
             explanation = assignment.explanation_json
+            planned_quantity = planned_quantity_by_assignment[assignment.id]
             if assignment.existing_task_id:
                 task = task_by_id[assignment.existing_task_id]
                 values = {
@@ -1149,6 +1267,7 @@ def apply_run(
                     "auto_schedule_run_id": run.id,
                     "auto_score": assignment.score,
                     "auto_explanation_json": explanation,
+                    "allocated_quantity": planned_quantity,
                     "manual_adjusted": False,
                     "manual_override_reason": payload.review_override_reason
                     if assignment.decision == "REVIEW_REQUIRED"
@@ -1268,10 +1387,7 @@ def apply_run(
                     source_sheet_name="",
                     source_row=None,
                     source_file_hash="",
-                    allocated_quantity=max(
-                        order.order_quantity - order.completed_quantity,
-                        Decimal(0),
-                    ),
+                    allocated_quantity=planned_quantity,
                     takeover_source_completed_quantity=order.source_completed_quantity,
                     origin="auto_schedule",
                     stable_order_key=stable_order_key,
@@ -1343,8 +1459,8 @@ def apply_run(
                     report_increment_total=Decimal(0),
                     progress_adjustment_total=Decimal(0),
                     completed_quantity=order.completed_quantity,
-                    status="SCHEDULED",
-                    quantity_scope="ORDER_CUMULATIVE",
+                    status="BACKLOG",
+                    quantity_scope="SPLIT_CUMULATIVE",
                     source_batch_id=None,
                     source_sheet_name="",
                     source_row=None,
@@ -1363,16 +1479,39 @@ def apply_run(
                 )
                 db.add(state)
                 states[assignment.order_id] = state
-            elif state.status == "BACKLOG":
-                state.status = "SCHEDULED"
+        for order_id in affected_order_ids:
+            order = db.get(InjectionSchedulingOrder, order_id)
+            outstanding = max(
+                Decimal(order.order_quantity) - Decimal(order.completed_quantity),
+                Decimal(0),
+            )
+            fully_allocated = allocations_by_order.get(order_id, Decimal(0)) >= outstanding
+            target_status = "SCHEDULED" if fully_allocated else "BACKLOG"
+            state = states[order_id]
+            task_count = sum(
+                1
+                for item in current_tasks
+                if item.order_id == order_id
+                and item.execution_status not in {"COMPLETED", "CANCELLED"}
+            ) + sum(
+                1
+                for item in assignments
+                if item.order_id == order_id and not item.existing_task_id
+            )
+            target_scope = (
+                "SPLIT_CUMULATIVE"
+                if not fully_allocated or task_count > 1
+                else "ORDER_CUMULATIVE"
+            )
+            if state.status != target_status or state.quantity_scope != target_scope:
+                state.status = target_status
+                state.quantity_scope = target_scope
                 state.revision += 1
                 state.updated_by = user.id
                 state.updated_by_name = _actor_name(user)
                 state.updated_at = timestamp
-        for order_id in affected_order_ids:
-            order = db.get(InjectionSchedulingOrder, order_id)
-            if order.status == "BACKLOG":
-                order.status = "SCHEDULED"
+            if order.status != target_status:
+                order.status = target_status
                 order.revision += 1
                 order.updated_by = user.id
                 order.updated_by_name = _actor_name(user)

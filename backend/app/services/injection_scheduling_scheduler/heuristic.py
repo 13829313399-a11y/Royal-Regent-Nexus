@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from itertools import pairwise
 from time import monotonic
 from typing import Any
 
-from app.models.injection_scheduling import (
-    InjectionSchedulingMachine,
-    InjectionSchedulingMold,
-)
+from app.models.injection_scheduling import InjectionSchedulingMachine
 from app.models.injection_scheduling_execution import (
     InjectionSchedulingOrder,
     InjectionSchedulingTask,
@@ -19,8 +17,13 @@ from app.schemas.injection_scheduling_matching import (
     InjectionSchedulingMachineMatchOut,
     InjectionSchedulingMatchBatchOut,
 )
+from app.services.injection_scheduling_mold_context import (
+    SchedulingMoldContext,
+    order_mold_key,
+    task_mold_key,
+)
 from app.services.injection_scheduling_scheduler.anchor import next_feasible_start
-from app.services.injection_scheduling_scheduler.duration import production_minutes
+from app.services.injection_scheduling_scheduler.duration import production_estimate
 from app.services.injection_scheduling_scheduler.explanation import (
     assignment_explanation,
     unassigned_explanation,
@@ -79,7 +82,7 @@ def _priority_bucket(order: InjectionSchedulingOrder) -> tuple[Any, ...]:
 
 def _locally_batch_orders(
     orders: list[InjectionSchedulingOrder],
-    molds: dict[str, InjectionSchedulingMold],
+    molds: dict[str, SchedulingMoldContext],
 ) -> tuple[list[InjectionSchedulingOrder], int]:
     """Deterministically batch compatible molds without weakening due-date order."""
     baseline = sorted(orders, key=_order_sort_key)
@@ -92,20 +95,20 @@ def _locally_batch_orders(
             end += 1
         pending = list(baseline[cursor:end])
         while pending:
-            previous_mold_id = improved[-1].mold_id if improved else None
+            previous_mold_id = order_mold_key(improved[-1]) if improved else None
             same_mold = next(
                 (
                     item
                     for item in pending
-                    if previous_mold_id and item.mold_id == previous_mold_id
+                    if previous_mold_id and order_mold_key(item) == previous_mold_id
                 ),
                 None,
             )
             selected = same_mold or min(
                 pending,
                 key=lambda item: (
-                    molds[item.mold_id].mold_no
-                    if item.mold_id and item.mold_id in molds
+                    molds[order_mold_key(item)].mold_no
+                    if order_mold_key(item) in molds
                     else "~",
                     item.order_no,
                     item.id,
@@ -115,16 +118,14 @@ def _locally_batch_orders(
             pending.remove(selected)
         cursor = end
     move_count = sum(
-        1
-        for index, order in enumerate(improved)
-        if baseline[index].id != order.id
+        1 for index, order in enumerate(improved) if baseline[index].id != order.id
     )
     return improved, move_count
 
 
 def _queue_metrics(
     slots_by_machine: dict[str, list[QueueSlot]],
-    molds: dict[str, InjectionSchedulingMold],
+    molds: dict[str, SchedulingMoldContext],
 ) -> dict[str, int]:
     mold_changes = 0
     dark_to_light = 0
@@ -151,7 +152,7 @@ def solve_heuristic(
     *,
     orders: list[InjectionSchedulingOrder],
     machines: list[InjectionSchedulingMachine],
-    molds: dict[str, InjectionSchedulingMold],
+    molds: dict[str, SchedulingMoldContext],
     plan_tasks: list[InjectionSchedulingTask],
     matches: InjectionSchedulingMatchBatchOut,
     calendars: list[InjectionSchedulingMachineCalendar],
@@ -163,9 +164,25 @@ def solve_heuristic(
 ) -> HeuristicResult:
     started = monotonic()
     order_ids = {item.id for item in orders}
+    order_by_id = {item.id: item for item in orders}
+    tasks_by_order: dict[str, list[InjectionSchedulingTask]] = {}
+    for item in plan_tasks:
+        if item.order_id in order_ids and item.execution_status != "CANCELLED":
+            tasks_by_order.setdefault(item.order_id, []).append(item)
+    allocated_by_order = {
+        order_id: sum(
+            (Decimal(item.allocated_quantity or 0) for item in items), Decimal(0)
+        )
+        for order_id, items in tasks_by_order.items()
+    }
+    partial_order_ids = {
+        item.id
+        for item in orders
+        if item.status == "BACKLOG" and allocated_by_order.get(item.id, Decimal(0)) > 0
+    }
     task_by_order: dict[str, InjectionSchedulingTask] = {}
     for item in sorted(plan_tasks, key=lambda task: task.id):
-        if item.order_id in order_ids:
+        if item.order_id in order_ids and item.order_id not in partial_order_ids:
             task_by_order.setdefault(item.order_id, item)
     evaluation_by_order = {item.order_id: item for item in matches.evaluations}
     machine_by_id = {item.id: item for item in machines}
@@ -180,7 +197,7 @@ def solve_heuristic(
         if (
             has_candidate
             and order.material_readiness_status != "blocked"
-            and order.mold_id in molds
+            and order_mold_key(order) in molds
         ):
             schedulable_order_ids.add(order.id)
 
@@ -189,12 +206,17 @@ def solve_heuristic(
         for item in plan_tasks
         if item.order_id not in schedulable_order_ids
         or item.order_id not in order_ids
+        or item.order_id in partial_order_ids
         or item.locked
         or item.active_execution
         or item.execution_status == "RUNNING"
     ]
     frozen_task_ids = tuple(sorted(item.id for item in fixed_tasks))
-    frozen_order_ids = {item.order_id for item in fixed_tasks}
+    frozen_order_ids = {
+        item.order_id
+        for item in fixed_tasks
+        if item.order_id not in partial_order_ids
+    }
     slots_by_machine: dict[str, list[QueueSlot]] = {item.id: [] for item in machines}
     mold_available: dict[tuple[str, int], datetime] = {}
     for task in fixed_tasks:
@@ -207,15 +229,16 @@ def solve_heuristic(
         slot = QueueSlot(
             machine_id=task.machine_id,
             order_id=task.order_id,
-            mold_id=task.mold_id,
+            mold_id=task_mold_key(task, order_by_id),
             mold_copy_no=task.mold_copy_no,
             sequence_no=task.sequence_no,
             start=as_business_datetime(task.planned_start),
             finish=as_business_datetime(task.planned_finish),
         )
         slots_by_machine[task.machine_id].append(slot)
-        if task.mold_id:
-            key = (task.mold_id, task.mold_copy_no)
+        task_key = task_mold_key(task, order_by_id)
+        if task_key:
+            key = (task_key, task.mold_copy_no)
             mold_available[key] = max(
                 mold_available.get(key, horizon_start), slot.finish
             )
@@ -231,7 +254,7 @@ def solve_heuristic(
                 QueueSlot(
                     task.machine_id,
                     task.order_id,
-                    task.mold_id,
+                    task_mold_key(task, order_by_id),
                     task.mold_copy_no,
                     task.sequence_no,
                     as_business_datetime(task.planned_start),
@@ -271,7 +294,7 @@ def solve_heuristic(
                 }
             )
             continue
-        mold = molds.get(order.mold_id or "")
+        mold = molds.get(order_mold_key(order))
         if mold is None:
             assignments.append(
                 {
@@ -314,7 +337,7 @@ def solve_heuristic(
                 {
                     "order_id": order.id,
                     "existing_task_id": existing_task.id if existing_task else None,
-                    "mold_id": mold.id,
+                    "mold_id": order.mold_id,
                     "mold_copy_no": existing_task.mold_copy_no if existing_task else 1,
                     "machine_id": None,
                     "sequence_no": None,
@@ -334,7 +357,56 @@ def solve_heuristic(
             )
             continue
 
-        production = production_minutes(order, objective_config)
+        horizon_minutes = max(
+            1, int((horizon_end - horizon_start).total_seconds() / 60)
+        )
+        setup_buffer = max(
+            int(objective_config.get("dark_to_light_minutes", 60)),
+            int(objective_config.get("mold_change_minutes", 30))
+            + int(objective_config.get("material_change_minutes", 20))
+            + int(objective_config.get("color_change_minutes", 10)),
+        )
+        estimate = production_estimate(
+            order,
+            objective_config,
+            already_allocated_quantity=allocated_by_order.get(
+                order.id, Decimal(0)
+            )
+            if order.id in partial_order_ids
+            else Decimal(0),
+            max_production_minutes=max(1, horizon_minutes - setup_buffer),
+        )
+        production = estimate.production_minutes
+        if production <= 0 or estimate.planned_quantity <= 0:
+            assignments.append(
+                {
+                    "order_id": order.id,
+                    "existing_task_id": existing_task.id if existing_task else None,
+                    "mold_id": mold.id,
+                    "mold_copy_no": existing_task.mold_copy_no
+                    if existing_task
+                    else 1,
+                    "machine_id": None,
+                    "sequence_no": None,
+                    "planned_start": "",
+                    "planned_finish": "",
+                    "setup_minutes": 0,
+                    "production_minutes": 0,
+                    "planned_downtime_minutes": 0,
+                    "changeover_type": "",
+                    "decision": "UNASSIGNED",
+                    "score": None,
+                    "explanation": {
+                        **unassigned_explanation(
+                            "ALREADY_FULLY_ALLOCATED",
+                            "当前草案已覆盖订单全部未完成数量，无需重复排期。",
+                        ),
+                        "production": estimate.explanation(),
+                    },
+                    "unassigned_reason_code": "ALREADY_FULLY_ALLOCATED",
+                }
+            )
+            continue
         candidates: list[
             tuple[
                 float,
@@ -347,9 +419,6 @@ def solve_heuristic(
                 Any,
             ]
         ] = []
-        horizon_minutes = max(
-            1, int((horizon_end - horizon_start).total_seconds() / 60)
-        )
         for match in eligible:
             machine = machine_by_id[match.machine_id]
             queue = slots_by_machine[machine.id]
@@ -424,9 +493,13 @@ def solve_heuristic(
                     "changeover_type": "",
                     "decision": "UNASSIGNED",
                     "score": None,
-                    "explanation": unassigned_explanation(
-                        "HORIZON_EXCEEDED", "合法候选均无法在排期范围内完成。"
-                    ),
+                    "explanation": {
+                        **unassigned_explanation(
+                            "HORIZON_EXCEEDED",
+                            "该订单当前分段仍无法放入排期范围，其他订单不受影响。",
+                        ),
+                        "production": estimate.explanation(),
+                    },
                     "unassigned_reason_code": "HORIZON_EXCEEDED",
                 }
             )
@@ -441,11 +514,20 @@ def solve_heuristic(
         )
         queue.append(slot)
         mold_available[(mold.id, copy_no)] = finish
+        explanation = assignment_explanation(
+            match, score, transition, machine_by_id[match.machine_id], mold
+        )
+        explanation["production"] = estimate.explanation()
+        if estimate.split_required:
+            explanation["summary"] = (
+                f"当前窗口安排 {float(estimate.planned_quantity):g}，"
+                f"剩余 {float(estimate.remaining_quantity):g} 继续留在待排订单。"
+            )
         assignments.append(
             {
                 "order_id": order.id,
                 "existing_task_id": existing_task.id if existing_task else None,
-                "mold_id": mold.id,
+                "mold_id": order.mold_id,
                 "mold_copy_no": copy_no,
                 "machine_id": match.machine_id,
                 "sequence_no": sequence_no,
@@ -457,16 +539,13 @@ def solve_heuristic(
                 "changeover_type": transition.changeover_type,
                 "decision": match.decision,
                 "score": total,
-                "explanation": assignment_explanation(
-                    match, score, transition, machine_by_id[match.machine_id], mold
-                ),
+                "explanation": explanation,
                 "unassigned_reason_code": "",
             }
         )
 
     before_metrics = _queue_metrics(before_slots, molds)
     after_metrics = _queue_metrics(slots_by_machine, molds)
-    order_by_id = {item.id: item for item in orders}
     overdue_before = sum(
         1
         for slots in before_slots.values()

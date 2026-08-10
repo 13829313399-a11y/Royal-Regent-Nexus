@@ -103,6 +103,12 @@ def machine_payload(factory_id: str, machine_code: str) -> dict:
         "robot_capabilities": ["single", "dual"],
         "fixture_capabilities": ["suction_cup"],
         "process_restrictions": [],
+        "equipment_details": {
+            "manufacturer": "博创",
+            "model": "BH320",
+            "manufacture_year": "2017.3",
+        },
+        "remarks": "PC 螺杆",
         "status": "available",
     }
 
@@ -163,6 +169,8 @@ def test_phase2_master_data_revision_rules_and_factory_isolation(monkeypatch):
         assert machine_body["machine_class_raw"] == "32A"
         assert machine_body["machine_a_class"] == 32
         assert machine_body["normalization_status"] == "COMPLETE"
+        assert machine_body["equipment_details"]["model"] == "BH320"
+        assert machine_body["remarks"] == "PC 螺杆"
         assert machine_body["revision"] == 1
 
         duplicate = client.post(
@@ -223,6 +231,7 @@ def test_phase2_master_data_revision_rules_and_factory_isolation(monkeypatch):
         correct_update = machine_payload("huaxing", "旧2")
         correct_update["expected_revision"] = 1
         correct_update["status"] = "maintenance"
+        correct_update["remarks"] = "待更换油封"
         updated = client.put(
             f"/api/injection-scheduling/machines/{machine_body['id']}",
             json=correct_update,
@@ -230,6 +239,7 @@ def test_phase2_master_data_revision_rules_and_factory_isolation(monkeypatch):
         assert updated.status_code == 200, updated.text
         assert updated.json()["revision"] == 2
         assert updated.json()["status"] == "maintenance"
+        assert updated.json()["remarks"] == "待更换油封"
 
         cross_factory_object = machine_payload("huakang-b", "旧2")
         cross_factory_object["expected_revision"] = 2
