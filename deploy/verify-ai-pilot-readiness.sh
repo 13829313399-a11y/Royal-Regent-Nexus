@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -eu
+export LC_ALL=C
 
 ENV_FILE="${ENV_FILE:-.env.production}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
@@ -42,6 +43,57 @@ require_env_nonempty() {
   key="$1"
   actual="$(read_env_value "$key")"
   [ -n "$actual" ] || fail "$key is missing"
+}
+
+require_env_csv_ids() {
+  key="$1"
+  maximum="$2"
+  actual="$(read_env_value "$key")"
+  if ! count="$(
+    printf '%s\n' "$actual" \
+      | awk -F ',' -v maximum="$maximum" '
+          {
+            count = 0
+            for (field_index = 1; field_index <= NF; field_index += 1) {
+              value = $field_index
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+              if (value == "") continue
+              count += 1
+              if (count > maximum || length(value) > 128 || value !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || seen[value]++) {
+                failed = 1
+                exit 1
+              }
+            }
+          }
+          END { if (!failed) print count }
+        '
+  )"; then
+    fail "$key must contain at most $maximum unique valid IDs"
+  fi
+  [ "$count" -ge 1 ] || fail "$key is missing"
+}
+
+require_env_pilot_factories() {
+  actual="$(read_env_value AI_PILOT_FACTORY_IDS)"
+  if ! printf '%s\n' "$actual" | awk -F ',' '
+    BEGIN {
+      allowed["huakang-a"] = 1
+      allowed["huakang-b"] = 1
+      allowed["huakang-c"] = 1
+      allowed["huakang-d"] = 1
+      allowed["huadeng"] = 1
+      allowed["huaxing"] = 1
+    }
+    {
+      for (field_index = 1; field_index <= NF; field_index += 1) {
+        value = $field_index
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        if (value != "" && !allowed[value]) exit 1
+      }
+    }
+  '; then
+    fail "AI_PILOT_FACTORY_IDS contains an unsupported factory ID"
+  fi
 }
 
 require_env_integer_range() {
@@ -96,8 +148,9 @@ require_env_exact AI_PROVIDER qwen
 require_env_exact AI_REGION cn-beijing
 require_env_exact AI_DEFAULT_MODEL qwen3.7-plus
 require_env_exact AI_BASE_URL ""
-require_env_nonempty AI_PILOT_USER_IDS
-require_env_nonempty AI_PILOT_FACTORY_IDS
+require_env_csv_ids AI_PILOT_USER_IDS 128
+require_env_csv_ids AI_PILOT_FACTORY_IDS 6
+require_env_pilot_factories
 require_env_nonempty AI_WORKSPACE_ID
 require_env_nonempty DASHSCOPE_API_KEY
 require_env_integer_range AI_PILOT_MAX_CONCURRENT_PER_USER 1 2

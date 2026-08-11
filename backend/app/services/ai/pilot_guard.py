@@ -29,6 +29,8 @@ AIPilotStatus = Literal[
 ]
 
 _PILOT_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_MAX_PILOT_USER_IDS = 128
+_MAX_PILOT_FACTORY_IDS = len(ALLOWED_FACTORY_IDS)
 _RATE_WINDOW_SECONDS = 60.0
 _MAX_RETRY_AFTER_SECONDS = 86_400
 _MAX_TOOL_CALLS_PER_ROUND = 8
@@ -134,11 +136,11 @@ class AIPilotGuard:
         self._budgets: dict[tuple[str, date], _UserBudgetState] = {}
 
     @staticmethod
-    def _configured_ids(raw: str) -> frozenset[str]:
+    def _configured_ids(raw: str, *, max_values: int) -> frozenset[str]:
         values = tuple(value.strip() for value in raw.split(",") if value.strip())
         if (
             not values
-            or len(values) > 100
+            or len(values) > max_values
             or len(set(values)) != len(values)
             or any(_PILOT_ID_PATTERN.fullmatch(value) is None for value in values)
         ):
@@ -153,8 +155,14 @@ class AIPilotGuard:
         self,
         settings: Settings,
     ) -> tuple[frozenset[str], frozenset[str]]:
-        user_ids = self._configured_ids(settings.ai_pilot_user_ids)
-        factory_ids = self._configured_ids(settings.ai_pilot_factory_ids)
+        user_ids = self._configured_ids(
+            settings.ai_pilot_user_ids,
+            max_values=_MAX_PILOT_USER_IDS,
+        )
+        factory_ids = self._configured_ids(
+            settings.ai_pilot_factory_ids,
+            max_values=_MAX_PILOT_FACTORY_IDS,
+        )
         if not factory_ids.issubset(ALLOWED_FACTORY_IDS):
             raise AIPilotGuardError(
                 code="AI_PILOT_ACCESS_DENIED",

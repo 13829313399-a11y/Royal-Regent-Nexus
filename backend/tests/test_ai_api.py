@@ -324,6 +324,55 @@ def test_disabled_feature_does_not_expose_capabilities_to_non_pilot_user(
     assert response.json()["detail"]["code"] == "AI_PILOT_ACCESS_DENIED"
 
 
+def test_capabilities_admit_superadmin_as_the_101st_explicit_pilot_user(
+    monkeypatch,
+):
+    pilot_ids = [f"user-employee-{index:03d}" for index in range(100)]
+    pilot_ids.append("user-admin")
+    with make_client(
+        monkeypatch,
+        AI_ENABLED="true",
+        AI_PROVIDER="fake",
+        AI_DEFAULT_MODEL="fake-model",
+        AI_PILOT_USER_IDS=",".join(pilot_ids),
+    ) as client:
+        login_admin(client)
+        capabilities = client.get("/api/ai/capabilities")
+
+    assert capabilities.status_code == 200
+    assert capabilities.json()["enabled"] is True
+    assert capabilities.json()["available"] is True
+    assert capabilities.json()["streaming"] is True
+    assert capabilities.json()["pilot_access"] == {
+        "granted": True,
+        "status": "GRANTED",
+        "read_only": True,
+    }
+
+
+def test_over_capacity_pilot_allowlist_fails_closed_without_business_regression(
+    monkeypatch,
+):
+    pilot_ids = ["user-admin"]
+    pilot_ids.extend(f"user-over-{index:03d}" for index in range(128))
+    with make_client(
+        monkeypatch,
+        AI_ENABLED="true",
+        AI_PROVIDER="fake",
+        AI_DEFAULT_MODEL="fake-model",
+        AI_PILOT_USER_IDS=",".join(pilot_ids),
+    ) as client:
+        login_admin(client)
+        capabilities = client.get("/api/ai/capabilities")
+        response = client.post("/api/ai/responses", json=chat_payload())
+        health = client.get("/health")
+
+    for blocked in (capabilities, response):
+        assert blocked.status_code == 403
+        assert blocked.json()["detail"]["code"] == "AI_PILOT_ACCESS_DENIED"
+    assert health.status_code == 200
+
+
 def test_production_fake_provider_cannot_enable_beijing_vision_consent(monkeypatch):
     with make_client(
         monkeypatch,

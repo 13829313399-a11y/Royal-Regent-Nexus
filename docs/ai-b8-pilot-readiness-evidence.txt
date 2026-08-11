@@ -8,7 +8,9 @@ Production Pilot status: NO-GO until the external gates below are completed.
 
 Implemented boundary
 --------------------
-- Default-deny server-side Pilot user and factory allowlists.
+- Default-deny server-side Pilot user and factory allowlists. The user list is
+  bounded to 128 unique IDs; the factory list remains limited to the six
+  canonical factories, and readiness mirrors the runtime validation.
 - Existing canonical domain authorization, explicit-deny and request-scoped
   READ_ONLY Tool enforcement remain authoritative.
 - Per-user concurrency, requests-per-minute and Asia/Shanghai daily admission

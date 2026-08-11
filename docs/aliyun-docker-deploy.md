@@ -226,7 +226,7 @@ docker compose -f docker-compose.prod.yml exec db pg_dump -U rrnexus royal_regen
 ```dotenv
 AI_ENABLED=true
 AI_PILOT_ENABLED=true
-AI_PILOT_USER_IDS=明确批准的用户ID，多个用英文逗号分隔
+AI_PILOT_USER_IDS=明确批准的用户ID，多个用英文逗号分隔，去重后最多128个
 AI_PILOT_FACTORY_IDS=明确批准的厂区ID，多个用英文逗号分隔
 AI_PILOT_PUBLIC_TLS_VERIFIED=true
 AI_RUNTIME_DISABLE_PATH=/app/backend/control/ai.disabled

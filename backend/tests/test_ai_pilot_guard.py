@@ -184,6 +184,76 @@ def test_user_and_factory_scopes_are_both_required_including_null_context():
         )
 
 
+def test_pilot_user_allowlist_admits_101_users_and_is_bounded_at_128():
+    guard = AIPilotGuard()
+    employee_ids = [f"user-employee-{index:03d}" for index in range(100)]
+    superadmin_id = "user-superadmin"
+    required_ids = [*employee_ids, superadmin_id]
+    required_settings = _settings(ai_pilot_user_ids=",".join(required_ids))
+
+    access = guard.evaluate_access(
+        _user(user_id=superadmin_id, factory_scopes=("*",)),
+        required_settings,
+    )
+    assert access.granted is True
+    assert access.status == "GRANTED"
+
+    maximum_ids = [f"user-capacity-{index:03d}" for index in range(128)]
+    maximum_settings = _settings(
+        ai_pilot_user_ids=f" , {', '.join(maximum_ids)},,",
+    )
+    assert guard.evaluate_access(
+        _user(user_id=maximum_ids[-1]),
+        maximum_settings,
+    ).granted is True
+
+
+@pytest.mark.parametrize(
+    "configured_ids",
+    [
+        ",".join(f"user-over-{index:03d}" for index in range(129)),
+        "user-duplicate,user-duplicate",
+        "user-valid,user invalid",
+        f"user-valid,{'x' * 129}",
+    ],
+)
+def test_pilot_user_allowlist_fails_closed_for_invalid_configuration(
+    configured_ids: str,
+):
+    guard = AIPilotGuard()
+    first_id = configured_ids.split(",", 1)[0]
+
+    with pytest.raises(AIPilotGuardError) as denied:
+        guard.evaluate_access(
+            _user(user_id=first_id),
+            _settings(ai_pilot_user_ids=configured_ids),
+        )
+
+    assert denied.value.code == "AI_PILOT_ACCESS_DENIED"
+    assert denied.value.status_code == 403
+
+
+def test_pilot_factory_allowlist_remains_limited_to_canonical_factories():
+    guard = AIPilotGuard()
+    canonical_factories = (
+        "huakang-a,huakang-b,huakang-c,huakang-d,huadeng,huaxing"
+    )
+    assert guard.evaluate_access(
+        _user(factory_scopes=("*",)),
+        _settings(ai_pilot_factory_ids=canonical_factories),
+    ).granted is True
+
+    with pytest.raises(AIPilotGuardError) as denied:
+        guard.evaluate_access(
+            _user(factory_scopes=("*",)),
+            _settings(
+                ai_pilot_factory_ids="huakang-a,unknown-factory",
+            ),
+        )
+
+    assert denied.value.code == "AI_PILOT_ACCESS_DENIED"
+
+
 def test_concurrency_limit_releases_and_cancelled_attempt_charges_reservation():
     guard = AIPilotGuard()
     settings = _settings(ai_pilot_requests_per_minute=10)
