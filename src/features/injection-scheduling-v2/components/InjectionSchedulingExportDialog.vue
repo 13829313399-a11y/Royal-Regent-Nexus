@@ -4,6 +4,9 @@ import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, ShieldCheck, X 
 import { getApiErrorMessage } from '@/lib/http'
 import { downloadPlanExport } from '../api/injectionSchedulingV2Api'
 import type { FactoryId, PlanExportMode, PlanExportResult, SchedulingPlanRecord } from '../types'
+import { useDialogFocus } from '../composables/useDialogFocus'
+import { exportBindingSourceMeta, planStatusMeta } from '../presentation/schedulingLabels'
+import SchedulingTechnicalDetails from './SchedulingTechnicalDetails.vue'
 
 const props = defineProps<{
   open: boolean
@@ -18,6 +21,12 @@ const mode = ref<PlanExportMode>('SYSTEM_STANDARD')
 const busy = ref(false)
 const error = ref('')
 const result = ref<PlanExportResult | null>(null)
+const dialogRoot = ref<HTMLElement | null>(null)
+const requestClose = () => emit('close')
+const { announcement: dialogAnnouncement } = useDialogFocus(() => props.open, dialogRoot, {
+  onEscape: requestClose,
+  openAnnouncement: '计划导出对话框已打开，按 Escape 关闭。',
+})
 const sourceCompatibleAvailable = computed(() => Boolean(
   props.plan?.exportBindingSource === 'IMPORT_PROFILE'
   && props.plan.exportProfileId
@@ -30,6 +39,25 @@ const canSubmit = computed(() => Boolean(
   && props.pendingCount === 0
   && (!sourceCompatibleAvailable.value ? mode.value !== 'SOURCE_COMPATIBLE' : true),
 ))
+const exportTechnicalItems = computed(() => props.plan ? [
+  { label: '计划 ID', rawValue: props.plan.id },
+  { label: '计划原始状态', rawValue: props.plan.status },
+  { label: '计划 revision', rawValue: String(props.plan.revision) },
+  { label: '计算版本', rawValue: props.plan.calculationVersion || '—' },
+  { label: '导出绑定来源', rawValue: props.plan.exportBindingSource || '—' },
+  { label: 'Profile ID', rawValue: props.plan.exportProfileId || '—' },
+  { label: 'Profile revision', rawValue: String(props.plan.exportProfileRevision ?? '—') },
+  { label: 'Profile family', rawValue: props.plan.exportProfileFamily || '—' },
+  { label: 'renderer code', rawValue: props.plan.exportRendererCode || '—' },
+] : [])
+const resultTechnicalItems = computed(() => result.value ? [
+  { label: '审计 ID', rawValue: result.value.auditId || '—' },
+  { label: 'SHA-256', rawValue: result.value.fileSha256 || '—' },
+  { label: '导出模式', rawValue: result.value.mode },
+  { label: 'Profile ID', rawValue: result.value.profileId || '—' },
+  { label: 'Profile revision', rawValue: String(result.value.profileRevision ?? '—') },
+  { label: 'renderer code', rawValue: result.value.rendererCode || '—' },
+] : [])
 
 watch(() => [props.open, props.plan?.id, props.plan?.revision] as const, ([open]) => {
   if (!open) return
@@ -69,26 +97,28 @@ async function exportPlan() {
 </script>
 
 <template>
-  <div v-if="open" class="export-backdrop" @mousedown.self="emit('close')">
+  <div v-if="open" ref="dialogRoot" class="export-backdrop" tabindex="-1" @mousedown.self="requestClose">
     <section role="dialog" aria-modal="true" aria-labelledby="plan-export-title">
-      <header><div><FileSpreadsheet :size="19" /><strong id="plan-export-title">导出计划工作簿</strong></div><button aria-label="关闭" @click="emit('close')"><X :size="17" /></button></header>
+      <p class="scheduling-sr-only dialog-live-announcement" role="status" aria-live="polite">{{ dialogAnnouncement }}</p>
+      <header><div><FileSpreadsheet :size="19" /><strong id="plan-export-title">导出计划工作簿</strong></div><button aria-label="关闭" @click="requestClose"><X :size="17" /></button></header>
       <div class="export-body">
         <p v-if="sourceMode !== 'live'" class="notice"><AlertTriangle :size="16" />当前为只读演示，不能生成正式导出审计。</p>
         <p v-else-if="pendingCount" class="notice"><AlertTriangle :size="16" />存在 {{ pendingCount }} 项未保存修改，请先保存或放弃后再导出。</p>
         <p v-if="error" class="notice error"><AlertTriangle :size="16" />{{ error }}</p>
         <dl v-if="plan" class="snapshot">
-          <div><dt>当前快照</dt><dd>{{ plan.status }} · r{{ plan.revision }}</dd></div>
-          <div><dt>计算版本</dt><dd>{{ plan.calculationVersion || '历史计划未标记' }}</dd></div>
-          <div><dt>来源绑定</dt><dd>{{ plan.exportProfileFamily || plan.exportBindingSource || 'LEGACY_UNKNOWN' }}</dd></div>
+          <div><dt>当前计划</dt><dd>{{ planStatusMeta(plan.status).label }} · 版本 {{ plan.revision }}</dd></div>
+          <div><dt>计算口径</dt><dd>{{ plan.calculationVersion ? '已锁定' : '历史计划未标记' }}</dd></div>
+          <div><dt>来源模板</dt><dd>{{ exportBindingSourceMeta(plan.exportBindingSource).label }}</dd></div>
         </dl>
+        <SchedulingTechnicalDetails v-if="plan" :items="exportTechnicalItems" summary="导出技术信息" />
         <fieldset>
           <legend>选择导出契约</legend>
-          <label :class="{ disabled: !sourceCompatibleAvailable }"><input v-model="mode" type="radio" value="SOURCE_COMPATIBLE" :disabled="!sourceCompatibleAvailable" /><span><strong>来源兼容格式</strong><small>按计划锁定的 Profile revision 生成，可重新导入同厂区。</small><em v-if="sourceCompatibleAvailable">{{ plan?.exportProfileId }} · r{{ plan?.exportProfileRevision }}</em><em v-else>当前计划没有 IMPORT_PROFILE binding</em></span></label>
-          <label><input v-model="mode" type="radio" value="SYSTEM_STANDARD" /><span><strong>系统标准格式</strong><small>生成新的规范字段工作簿，不复用来源模板、公式、宏或外链。</small><em>system_standard_v1</em></span></label>
+          <label :class="{ disabled: !sourceCompatibleAvailable }"><input v-model="mode" type="radio" value="SOURCE_COMPATIBLE" :disabled="!sourceCompatibleAvailable" /><span><strong>来源兼容格式</strong><small>按计划锁定的导入模板版本生成，可重新导入同厂区。</small><em v-if="sourceCompatibleAvailable">已锁定来源模板</em><em v-else>当前计划未绑定可回写的来源模板</em></span></label>
+          <label><input v-model="mode" type="radio" value="SYSTEM_STANDARD" /><span><strong>系统标准格式</strong><small>生成新的规范字段工作簿，不复用来源模板、公式、宏或外链。</small><em>系统标准模板</em></span></label>
         </fieldset>
-        <p class="security"><ShieldCheck :size="16" />文件包含 veryHidden 的签名元数据；服务端记录计划版本、Profile、SHA-256、操作者与审计编号。</p>
+        <p class="security"><ShieldCheck :size="16" />工作簿包含防篡改签名信息；服务端会记录计划版本、来源模板、文件校验值、操作者与审计编号。</p>
         <button class="export-primary" :disabled="!canSubmit || busy" @click="exportPlan"><Download :size="16" />{{ busy ? '生成与签名中…' : '生成并下载 XLSX' }}</button>
-        <div v-if="result" class="export-result"><CheckCircle2 :size="17" /><div><strong>导出完成</strong><p>{{ result.fileName }}</p><small>审计 {{ result.auditId }} · SHA-256 {{ result.fileSha256 }}</small></div></div>
+        <div v-if="result" class="export-result"><CheckCircle2 :size="17" /><div><strong>导出完成</strong><p>{{ result.fileName }}</p><SchedulingTechnicalDetails :items="resultTechnicalItems" summary="导出审计技术信息" /></div></div>
       </div>
     </section>
   </div>

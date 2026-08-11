@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { Activity, AlertTriangle, CheckCircle2, Database, Gauge, RefreshCw, RotateCcw } from '@lucide/vue'
 import AnimatedMetricValue from './AnimatedMetricValue.vue'
-import type { Phase5AnalyticsRecord } from '../types'
+import SchedulingTechnicalDetails from './SchedulingTechnicalDetails.vue'
+import type { IntegrationStatusRecord, Phase5AnalyticsRecord, Phase5MetricRecord, SpeedModelRecord } from '../types'
+import { integrationSourceMeta, integrationStatusMeta, speedModelStatusMeta } from '../presentation/schedulingLabels'
 
 const props = defineProps<{
   analytics: Phase5AnalyticsRecord | null
@@ -29,12 +31,36 @@ function formatDateTime(value: string) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-CN', { hour12: false })
 }
 
-function integrationLabel(sourceType: 'ERP' | 'DEVICE') {
-  return sourceType === 'ERP' ? 'ERP 新单增量同步' : '现场设备生产采集'
+function metricTechnicalItems(metric: Phase5MetricRecord) {
+  return [
+    { label: '计算公式', rawValue: metric.formula || '—' },
+    { label: '分子', rawValue: String(metric.numerator) },
+    { label: '分母', rawValue: String(metric.denominator) },
+    { label: '单位', rawValue: metric.unit || '—' },
+  ]
 }
 
-function integrationStatusLabel(status: string) {
-  return status === 'ACTIVE' ? '正常接收' : status === 'ERROR' ? '同步异常' : '未配置接口'
+function integrationTechnicalItems(integration: IntegrationStatusRecord) {
+  return [
+    { label: '来源原始类型', rawValue: integration.sourceType },
+    { label: '来源 key', rawValue: integration.sourceKey || '—' },
+    { label: '原始状态', rawValue: integration.status },
+    { label: '游标', rawValue: integration.cursor || '—' },
+    { label: 'revision', rawValue: String(integration.revision) },
+    { label: '最近接收时间', rawValue: integration.lastReceivedAt || '—' },
+  ]
+}
+
+function speedModelTechnicalItems(model: SpeedModelRecord) {
+  return [
+    { label: '模型 ID', rawValue: model.id },
+    { label: '模具 ID', rawValue: model.moldId },
+    { label: '原始状态', rawValue: model.status },
+    { label: '来源窗口开始', rawValue: model.sourceWindowStart || '—' },
+    { label: '来源窗口结束', rawValue: model.sourceWindowEnd || '—' },
+    { label: '最近观测时间', rawValue: model.lastObservedAt || '—' },
+    { label: 'revision', rawValue: String(model.revision) },
+  ]
 }
 </script>
 
@@ -56,7 +82,8 @@ function integrationStatusLabel(status: string) {
         <article v-for="card in metricCards" :key="card.key" :class="card.tone">
           <span>{{ card.label }}</span>
           <strong><AnimatedMetricValue :value="analytics[card.key].value" :decimals="analytics[card.key].unit === '%' ? 1 : 0" />{{ analytics[card.key].unit }}</strong>
-          <p>样本 {{ analytics[card.key].sampleCount }} · {{ analytics[card.key].formula }}</p>
+          <p>样本 {{ analytics[card.key].sampleCount }}</p>
+          <SchedulingTechnicalDetails :items="metricTechnicalItems(analytics[card.key])" summary="统计口径技术信息" />
         </article>
       </div>
 
@@ -64,11 +91,12 @@ function integrationStatusLabel(status: string) {
         <section class="integration-panel">
           <header><Database :size="15" /><strong>接口接入状态</strong><span>{{ analytics.deviceInterfaceConfigured ? '设备接口已接入' : '当前未配置设备接口' }}</span></header>
           <div>
-            <article v-for="integration in analytics.integrationStatuses" :key="`${integration.sourceType}:${integration.sourceKey}`" :class="integration.status.toLowerCase()">
+            <article v-for="integration in analytics.integrationStatuses" :key="`${integration.sourceType}:${integration.sourceKey}`" :class="integrationStatusMeta(integration.status).cssToken">
               <span class="integration-icon"><CheckCircle2 v-if="integration.status === 'ACTIVE'" :size="17" /><AlertTriangle v-else :size="17" /></span>
-              <div><strong>{{ integrationLabel(integration.sourceType) }}</strong><p>{{ integration.sourceKey || 'default' }} · {{ integrationStatusLabel(integration.status) }}</p></div>
-              <dl><div><dt>接收事件</dt><dd>{{ integration.eventCount }}</dd></div><div><dt>游标</dt><dd>{{ integration.cursor || '—' }}</dd></div><div><dt>最近成功</dt><dd>{{ formatDateTime(integration.lastSuccessAt) }}</dd></div></dl>
+              <div><strong>{{ integrationSourceMeta(integration.sourceType).label }}</strong><p>{{ integrationStatusMeta(integration.status).label }}</p></div>
+              <dl><div><dt>接收事件</dt><dd>{{ integration.eventCount }}</dd></div><div><dt>最近成功</dt><dd>{{ formatDateTime(integration.lastSuccessAt) }}</dd></div></dl>
               <small v-if="integration.lastError">{{ integration.lastError }}</small>
+              <SchedulingTechnicalDetails :items="integrationTechnicalItems(integration)" summary="接口技术信息" />
             </article>
           </div>
         </section>
@@ -77,9 +105,12 @@ function integrationStatusLabel(status: string) {
           <header><Gauge :size="15" /><strong>模具速度模型</strong><span>按设备历史周期中位数校准</span></header>
           <div class="speed-model-table">
             <div class="speed-model-head"><span>模具</span><span>周期</span><span>每周期产量</span><span>小时产能</span><span>样本 / 置信度</span><span>状态</span></div>
-            <article v-for="model in analytics.speedModels" :key="model.id">
-              <strong>{{ model.moldNo }}</strong><span>{{ model.calibratedCycleSeconds.toFixed(1) }} 秒</span><span>{{ model.unitsPerCycle.toFixed(2) }}</span><span>{{ model.calibratedUnitsPerHour.toFixed(1) }}</span><span>{{ model.sampleCount }} / {{ (model.confidence * 100).toFixed(0) }}%</span><em :class="model.status.toLowerCase()">{{ model.status === 'ACTIVE' ? '已启用' : '样本不足' }}</em>
-            </article>
+            <template v-for="model in analytics.speedModels" :key="model.id">
+              <article>
+                <strong>{{ model.moldNo }}</strong><span>{{ model.calibratedCycleSeconds.toFixed(1) }} 秒</span><span>{{ model.unitsPerCycle.toFixed(2) }}</span><span>{{ model.calibratedUnitsPerHour.toFixed(1) }}</span><span>{{ model.sampleCount }} / {{ (model.confidence * 100).toFixed(0) }}%</span><em :class="speedModelStatusMeta(model.status).cssToken">{{ speedModelStatusMeta(model.status).label }}</em>
+              </article>
+              <SchedulingTechnicalDetails :items="speedModelTechnicalItems(model)" :summary="`${model.moldNo} 技术信息`" />
+            </template>
             <p v-if="!analytics.speedModels.length" class="empty-copy">尚无设备周期样本；接入设备事件并积累至少 3 个样本后可启用校准速度。</p>
           </div>
         </section>
@@ -92,3 +123,7 @@ function integrationStatusLabel(status: string) {
     <div v-else class="phase5-empty"><Activity :size="28" /><strong>尚未读取运营分析</strong><p>点击刷新读取当前厂区指标与接口状态。</p><button type="button" @click="emit('refresh')">读取数据</button></div>
   </section>
 </template>
+
+<style scoped>
+.phase5-metrics article :deep(.scheduling-technical-details){margin-top:7px}.integration-panel article :deep(.scheduling-technical-details){grid-column:1/-1}.speed-model-table>:deep(.scheduling-technical-details){margin:5px 10px 8px}
+</style>

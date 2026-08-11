@@ -18,6 +18,8 @@ import PublishPlanDialog from './components/PublishPlanDialog.vue'
 import WithdrawTaskDialog from './components/WithdrawTaskDialog.vue'
 import ScheduleTimeline from './components/ScheduleTimeline.vue'
 import SchedulingCommandBar from './components/SchedulingCommandBar.vue'
+import SchedulingFreshnessBanner from './components/SchedulingFreshnessBanner.vue'
+import SchedulingTechnicalDetails from './components/SchedulingTechnicalDetails.vue'
 import SchedulingKpiStrip from './components/SchedulingKpiStrip.vue'
 import SchedulingFeedbackToast from './components/SchedulingFeedbackToast.vue'
 import TaskInspectorDrawer from './components/TaskInspectorDrawer.vue'
@@ -27,6 +29,10 @@ import RevisionConflictDialog from './components/RevisionConflictDialog.vue'
 import ScheduleRunHistory from './components/ScheduleRunHistory.vue'
 import type { AutoScheduleRunRecord, OrderRecord } from './types'
 import type { ColumnPreset, EditableCellKey, FactoryId, WorkspaceView } from './types'
+import { demandSourceMeta, factoryReadinessStatusMeta, moldEnrichmentStatusMeta, planSliceMeta, priorityMeta } from './presentation/schedulingLabels'
+import { formatPlanRevision } from './presentation/schedulingFormatters'
+import { planTechnicalDetails } from './presentation/technicalDetails'
+import { shouldShowFeedbackToast } from './presentation/asyncFeedback'
 import './injection-scheduling-v2.css'
 import './styles/tokens.css'
 import './styles/polish.css'
@@ -58,7 +64,7 @@ let kpiResizeStartHeight = 0
 const manualAppendOrder = computed(() => store.orders.find((item) => item.id === manualAppendOrderId.value) ?? null)
 const manualDemandOrder = computed(() => store.orders.find((item) => item.id === manualDemandOrderId.value) ?? null)
 const backlogCancelOrder = computed(() => store.backlogOrders.find((item) => item.id === backlogCancelOrderId.value) ?? null)
-const appendDisabledReason = computed(() => !store.planningPlan ? '尚无 planning DRAFT，请先导入或创建接续草案' : !store.canEdit ? '请切换到规划 DRAFT，或检查编辑权限' : '')
+const appendDisabledReason = computed(() => !store.planningPlan ? '尚无排产草案，请先导入或创建接续草案' : !store.canEdit ? '请切换到排产草案，或检查编辑权限' : '')
 const publishDisabledReason = computed(() => {
   if (!store.planningPlan) return '当前没有可发布的规划草案'
   if (!store.canPublish) return '当前账号没有排产编辑或发布权限'
@@ -77,14 +83,10 @@ const selectedOpen = computed(() => Boolean(store.selectedTaskId && store.active
 const currentKpiHeight = computed(() => kpiPanelHeight.value ?? kpiFullHeight.value)
 const workspaceExpanded = computed(() => kpiPanelHeight.value !== null && kpiPanelHeight.value <= 1)
 const kpiPanelStyle = computed(() => kpiPanelHeight.value === null ? undefined : { height: `${kpiPanelHeight.value}px` })
-const feedback = computed(() => {
-  const error = store.autoScheduleError || store.phase5AnalyticsError
-  if (error) return { message: error, tone: 'error' as const }
-  if (store.revisionConflict) return { message: store.revisionConflict.message, tone: 'error' as const }
-  const message = store.saveMessage
-  return { message, tone: /失败|不足|冲突|禁止/.test(message) ? 'error' as const : 'success' as const }
-})
+const toastFeedback = computed(() => shouldShowFeedbackToast(store.asyncFeedback, Boolean(store.revisionConflict)) ? store.asyncFeedback : null)
+const workspaceTechnicalItems = computed(() => planTechnicalDetails({ plan: store.plan, activeSlice: store.activePlanSlice, eventSequence: store.pollingRevision }))
 const presetLabels: Record<ColumnPreset, string> = { planner: '计划员视图', production: '生产视图', fit: '资格适配', full: '完整字段' }
+const activePresetLabel = computed(() => store.customPresets.find((preset) => preset.id === store.activeCustomPresetId)?.name ?? presetLabels[store.activePreset])
 
 async function changeFactory(value: string) {
   if (!store.setFactory(value)) return
@@ -123,7 +125,7 @@ async function importConfirmed() {
   store.activatePlanSlice('planning', true)
 }
 function openManualAppend(orderId: string) {
-  if (!store.planningPlan) { store.saveMessage = '尚无 planning DRAFT，请先导入或创建接续草案。'; return }
+  if (!store.planningPlan) { store.saveMessage = '尚无排产草案，请先导入或创建接续草案。'; return }
   if (store.activePlanSlice !== 'planning' && !store.activatePlanSlice('planning')) return
   manualAppendOrderId.value = orderId
 }
@@ -171,16 +173,20 @@ async function confirmBacklogCancel(reason: string) {
   if (await store.cancelBacklog(backlogCancelOrderId.value, reason)) backlogCancelOrderId.value = null
 }
 function selectView(view: WorkspaceView) { store.activeView = view; if (view === 'analytics') void store.loadPhase5Analytics() }
-function resizeColumn(key: string, width: number) { store.columnWidths = { ...store.columnWidths, [key]: Math.max(54, Math.min(420, width)) } }
+function resizeColumn(key: string, width: number) { store.resizeColumn(key, width) }
 function closeInspector() { store.selectedTaskId = null }
 function openBacklogOrder(orderId: string) { store.activeView = 'backlog'; const order = store.orders.find((item) => item.id === orderId); store.search = order?.orderNo ?? '' }
 function sourceMoldNo(order: Pick<OrderRecord, 'moldId' | 'lineage'>) { return store.molds.find((mold) => mold.id === order.moldId)?.moldNo || String(order.lineage.source_mold_no || '待补模具') }
 function sharedMoldMatched(order: Pick<OrderRecord, 'moldDefinitionId' | 'lineage'>) { return Boolean(order.moldDefinitionId) || order.lineage.mold_enrichment_status === 'MATCHED' }
 function hasSchedulableMold(order: Pick<OrderRecord, 'moldId' | 'moldDefinitionId'>) { return Boolean(order.moldId || order.moldDefinitionId) }
-function moldEnrichmentLabel(order: Pick<OrderRecord, 'moldId' | 'moldDefinitionId' | 'lineage'>) { return sharedMoldMatched(order) ? '共享资料已补齐' : order.moldId ? '旧模具已关联' : '待补齐' }
+function moldEnrichmentLabel(order: Pick<OrderRecord, 'moldId' | 'moldDefinitionId' | 'lineage'>) {
+  if (sharedMoldMatched(order)) return moldEnrichmentStatusMeta('MATCHED').label
+  if (order.lineage.mold_enrichment_status) return moldEnrichmentStatusMeta(order.lineage.mold_enrichment_status).label
+  return order.moldId ? '旧模具已关联' : moldEnrichmentStatusMeta('PENDING').label
+}
 function moldReadinessLabel(order: Pick<OrderRecord, 'moldId' | 'moldDefinitionId' | 'lineage'>) {
-  if (order.lineage.factory_readiness_status === 'FACTORY_READY') return '可排机'
-  return sharedMoldMatched(order) ? '草案可排 · 发布前补实体' : '待复核'
+  if (order.lineage.factory_readiness_status) return factoryReadinessStatusMeta(order.lineage.factory_readiness_status).label
+  return sharedMoldMatched(order) ? factoryReadinessStatusMeta('DRAFT_READY').label : factoryReadinessStatusMeta('NOT_FACTORY_READY').label
 }
 function backlogAppendTitle(order: Pick<OrderRecord, 'moldId' | 'moldDefinitionId' | 'lineage'>) {
   if (!hasSchedulableMold(order)) return '共享模具资料待补齐，暂不能排到机台'
@@ -302,9 +308,9 @@ useScheduleLiveEvents(store.pollEvents)
 
 <template>
   <div class="injection-scheduling-v2" :class="{ 'has-backlog-dock': store.backlogDockOpen && store.activeView === 'plan' }">
-    <SchedulingCommandBar :factory-id="store.factoryId as FactoryId" :factory-name="store.factoryName" :source-mode="store.sourceMode" :source-message="store.sourceMessage" :refreshing="store.refreshing" :search="store.search" :last-synced-at="store.lastSyncedAt" :plan-status="store.plan?.status ?? ''" :pending-count="store.pendingEditCount" :saving="store.savingEdits" :can-save="store.canEdit || store.canReport" :can-import="store.canImport" :can-export="store.canExport && Boolean(store.plan)" :has-planning-draft="Boolean(store.planningPlan)" :can-publish="store.canPublish" :publishing-plan="store.publishingPlan" :publish-disabled-reason="publishDisabledReason" :save-message="store.saveMessage" @update:factory-id="changeFactory" @update:search="store.search = $event" @home="goHome" @refresh="store.load({ quiet: true })" @open-auto-schedule="store.autoScheduleDialogOpen = true" @open-import="importWizardOpen = true" @open-export="exportDialogOpen = true" @open-master-data="openMasterData" @publish="openPublishDialog" @save="store.savePendingEdits" @discard="store.discardPendingEdits" />
+    <SchedulingCommandBar :factory-id="store.factoryId as FactoryId" :factory-name="store.factoryName" :source-mode="store.sourceMode" :source-message="store.sourceMessage" :sync-health="store.syncHealth" :refreshing="store.refreshing" :search="store.search" :last-synced-at="store.lastSyncedAt" :plan-status="store.plan?.status ?? ''" :pending-count="store.pendingEditCount" :saving="store.savingEdits" :can-save="store.canEdit || store.canReport" :can-import="store.canImport" :can-export="store.canExport && Boolean(store.plan)" :has-planning-draft="Boolean(store.planningPlan)" :can-publish="store.canPublish" :publishing-plan="store.publishingPlan" :publish-disabled-reason="publishDisabledReason" :save-message="store.saveMessage" @update:factory-id="changeFactory" @update:search="store.search = $event" @home="goHome" @refresh="store.load({ quiet: true })" @open-auto-schedule="store.autoScheduleDialogOpen = true" @open-import="importWizardOpen = true" @open-export="exportDialogOpen = true" @open-master-data="openMasterData" @publish="openPublishDialog" @save="store.savePendingEdits" @discard="store.discardPendingEdits" />
     <main :class="{ 'workspace-expanded': workspaceExpanded }">
-      <div v-if="store.sourceMode === 'fallback'" class="fallback-banner"><AlertOctagon :size="15" /><strong>只读演示：</strong><span>{{ store.sourceMessage }}</span></div>
+      <SchedulingFreshnessBanner :sync-health="store.syncHealth" :source-mode="store.sourceMode" :source-message="store.sourceMessage" :last-synced-at="store.lastSyncedAt" :refreshing="store.refreshing" @retry="store.load({ quiet: true })" />
       <div class="schedule-overview-shell" :class="{ 'is-resizing': kpiResizing, 'is-collapsed': workspaceExpanded }" :style="kpiPanelStyle">
         <div class="schedule-overview-viewport">
           <div ref="kpiContent" class="schedule-overview-content">
@@ -332,28 +338,27 @@ useScheduleLiveEvents(store.pollEvents)
       <section class="scheduling-workspace">
         <nav class="workspace-tabs" aria-label="排产视图">
           <button v-for="tab in tabs" :key="tab.key" :class="{ active: store.activeView === tab.key }" @click="selectView(tab.key)"><component :is="tab.icon" :size="15" /><span>{{ tab.label }}</span><em>{{ tabCount[tab.key] }}</em></button>
-          <div class="workspace-status"><span class="status-dot"></span><button :class="{ active: store.activePlanSlice === 'execution' }" :disabled="!store.executionPlan" @click="store.activatePlanSlice('execution')">执行 {{ store.executionPlan ? `PUBLISHED · r${store.executionPlan.revision}` : '暂无' }}</button><button :class="{ active: store.activePlanSlice === 'planning' }" :disabled="!store.planningPlan" @click="store.activatePlanSlice('planning')">规划 {{ store.planningPlan ? `DRAFT · r${store.planningPlan.revision}` : '暂无' }}</button><b>轮询 {{ store.pollingRevision }}</b></div>
+          <div class="workspace-status"><span class="status-dot"></span><button :class="{ active: store.activePlanSlice === 'execution' }" :disabled="!store.executionPlan" @click="store.activatePlanSlice('execution')">{{ planSliceMeta('execution').label }} {{ store.executionPlan ? `· ${formatPlanRevision(store.executionPlan.revision)}` : '· 暂无' }}</button><button :class="{ active: store.activePlanSlice === 'planning' }" :disabled="!store.planningPlan" @click="store.activatePlanSlice('planning')">{{ planSliceMeta('planning').label }} {{ store.planningPlan ? `· ${formatPlanRevision(store.planningPlan.revision)}` : '· 暂无' }}</button><SchedulingTechnicalDetails :items="workspaceTechnicalItems" /></div>
         </nav>
 
         <Transition name="workspace-view" mode="out-in">
         <section v-if="store.activeView === 'plan'" key="plan" class="plan-view">
           <div class="plan-toolbar">
-            <div class="toolbar-search"><Search :size="15" /><input v-model="store.search" placeholder="机号 / 工模 / 产品 / 单号 / 货号" /></div>
             <label><Filter :size="14" /><select v-model="store.statusFilter"><option value="all">全部状态</option><option value="RUNNING">正在生产</option><option value="QUEUED">排队中</option><option value="BLOCKED">异常 / 待料</option><option value="COMPLETED">已完成</option></select></label>
             <label><ShieldAlert :size="14" /><select v-model="store.riskFilter"><option value="all">全部风险</option><option value="overdue">已经超期</option><option value="soon">3 天内到期</option><option value="review">资格待复核</option></select></label>
             <span class="rule-note">资格口径：安数 · 射胶量 · 机械手 · 夹具 · 工艺限制 · 状态</span>
             <div class="toolbar-spacer"></div>
             <button class="toolbar-button workspace-size-button" :class="{ active: workspaceExpanded }" :aria-pressed="workspaceExpanded" @click="toggleWorkspaceHeight"><Minimize2 v-if="workspaceExpanded" :size="15" /><Maximize2 v-else :size="15" />{{ workspaceExpanded ? '恢复指标' : '放大表格' }}</button>
-            <button class="toolbar-button" :class="{ active: store.columnMenuOpen }" @click="store.columnMenuOpen = !store.columnMenuOpen"><Columns3 :size="15" />{{ presetLabels[store.activePreset] }}</button>
+            <button class="toolbar-button" :class="{ active: store.columnMenuOpen }" aria-haspopup="menu" :aria-expanded="store.columnMenuOpen" aria-controls="column-preset-menu" @click="store.columnMenuOpen = !store.columnMenuOpen"><Columns3 :size="15" />{{ activePresetLabel }}</button>
             <button class="toolbar-button" @click="store.backlogDockOpen = !store.backlogDockOpen"><PanelBottomOpen :size="15" />待排池</button>
             <button class="toolbar-button quick-schedule" @click="store.autoScheduleDialogOpen = true"><Sparkles :size="15" />方案预览</button>
-            <ColumnPresetMenu :open="store.columnMenuOpen" :preset="store.activePreset" :visible-keys="visibleKeys" :widths="store.columnWidths" @close="store.columnMenuOpen = false" @preset="store.setPreset" @toggle="store.toggleColumn" @move="store.moveColumn" @reset="store.resetColumns" @resize="resizeColumn" />
+            <ColumnPresetMenu :open="store.columnMenuOpen" :preset="store.activePreset" :visible-keys="visibleKeys" :widths="store.columnWidths" :column-order="store.columnOrder" :density="store.density" :frozen-keys="store.frozenColumnKeys" :custom-presets="store.customPresets" :active-custom-preset-id="store.activeCustomPresetId" @close="store.columnMenuOpen = false" @preset="store.setPreset" @density="store.setDensity" @toggle="store.toggleColumn" @toggle-freeze="store.toggleFrozenColumn" @move="store.moveColumn" @reset="store.resetColumns" @resize="resizeColumn" @save-custom-preset="store.saveCustomPreset" @apply-custom-preset="store.applyCustomPreset" @delete-custom-preset="store.deleteCustomPreset" />
           </div>
           <div v-if="store.loading && !store.tasks.length" class="table-skeleton" role="status" aria-label="正在读取排产任务">
             <span v-for="line in 8" :key="line" :style="{ '--skeleton-delay': `${line * 28}ms` }"></span>
           </div>
           <div v-else class="plan-work-area" :class="{ 'inspector-open': selectedOpen }">
-            <MachinePlanGrid :rows="store.gridRows" :columns="store.visibleColumns" :collapsed-machine-ids="store.collapsedMachineIds" :widths="store.columnWidths" :sort="store.sort" :selected-task-id="store.selectedTaskId" :plan-status="store.plan?.status ?? ''" :can-edit="store.canEdit" :can-report="store.canReport" :pending-edits="store.cellDrafts" @toggle-machine="store.toggleMachine" @select="store.selectTask" @sort="store.cycleSort" @resize="resizeColumn" @edit="store.stageCellEdit" @move-request="store.prepareMove" @keyboard-move="store.moveByKeyboard" />
+            <MachinePlanGrid :rows="store.gridRows" :machine-summary-by-id="store.machineSummaryById" :columns="store.visibleColumns" :collapsed-machine-ids="store.collapsedMachineIds" :widths="store.columnWidths" :sort="store.sort" :selected-task-id="store.selectedTaskId" :plan-status="store.plan?.status ?? ''" :can-edit="store.canEdit" :can-report="store.canReport" :pending-edits="store.cellDrafts" :density="store.density" @toggle-machine="store.toggleMachine" @select="store.selectTask" @sort="store.cycleSort" @resize="resizeColumn" @edit="store.stageCellEdit" @move-request="store.prepareMove" @keyboard-move="store.moveByKeyboard" />
             <Transition name="inspector">
               <TaskInspectorDrawer v-if="selectedOpen" :task="store.selectedTask" :order="store.selectedOrder" :mold="store.selectedMold" :machine="store.selectedMachine" :tab="store.inspectorTab" :events="store.events" :plan-status="store.plan?.status ?? ''" :can-report="store.canReport" :can-withdraw="store.canWithdraw" :withdraw-disabled-reason="store.withdrawDisabledReason" :withdrawing="store.withdrawingTask" :pending-count="store.pendingEditCount" :saving="store.savingEdits" @update:tab="store.inspectorTab = $event" @close="closeInspector" @stage="stageReport" @save="store.savePendingEdits" @withdraw="openWithdrawDialog" />
             </Transition>
@@ -372,8 +377,8 @@ useScheduleLiveEvents(store.pollEvents)
           </header>
           <div class="backlog-list">
             <article v-for="order in store.backlogOrders.filter((item) => !store.search || [item.orderNo, sourceMoldNo(item), item.itemNo, item.productName].join(' ').toLowerCase().includes(store.search.toLowerCase()))" :key="order.id">
-              <span class="priority" :class="order.priorityCode.toLowerCase()">{{ order.priorityCode === 'CRITICAL' ? '特急' : order.priorityCode === 'URGENT' ? '加急' : '普通' }}</span>
-              <div><strong>{{ sourceMoldNo(order) }} · {{ order.productName }}</strong><p>{{ order.orderNo }} · {{ order.itemNo }} · {{ order.sourceType === 'MANUAL_PLANNING_DEMAND' ? '手工需求' : '下单表' }} · 欠 {{ order.outstandingQuantity.toLocaleString('zh-CN') }} · {{ order.deliveryDueDate || '交期待补充' }}</p></div>
+              <span class="priority" :class="priorityMeta(order.priorityCode).cssToken">{{ priorityMeta(order.priorityCode).label }}</span>
+              <div><strong>{{ sourceMoldNo(order) }} · {{ order.productName }}</strong><p>{{ order.orderNo }} · {{ order.itemNo }} · {{ demandSourceMeta(order.sourceType).label }} · 欠 {{ order.outstandingQuantity.toLocaleString('zh-CN') }} · {{ order.deliveryDueDate || '交期待补充' }}</p></div>
               <dl><div><dt>模具补齐</dt><dd>{{ moldEnrichmentLabel(order) }}</dd></div><div><dt>资格状态</dt><dd>{{ moldReadinessLabel(order) }}</dd></div></dl>
               <div class="backlog-actions">
                 <button v-if="order.sourceType === 'MANUAL_PLANNING_DEMAND'" :disabled="!store.canCreateDemand" @click="openManualDemand(order.id)">修改需求</button>
@@ -404,6 +409,6 @@ useScheduleLiveEvents(store.pollEvents)
     <ManualAppendDialog :open="Boolean(manualAppendOrderId)" :factory-id="store.factoryId as FactoryId" :plan="store.planningPlan" :order="manualAppendOrder" :machines="store.machines" :can-edit="store.canEdit" @close="manualAppendOrderId = null" @confirmed="manualAppendConfirmed" />
     <ManualDemandDialog :open="manualDemandOpen" :factory-id="store.factoryId as FactoryId" :business-date="store.planningPlan?.businessDate || store.plan?.businessDate || new Date().toISOString().slice(0, 10)" :order="manualDemandOrder" :can-edit="store.canCreateDemand" @close="manualDemandOpen = false" @saved="manualDemandChanged('排期需求已保存并加入待排池。')" @cancelled="manualDemandChanged('手工排期需求已取消。')" />
     <div v-if="store.refreshing" class="sync-progress" aria-hidden="true"><span></span></div>
-    <SchedulingFeedbackToast :message="feedback.message" :tone="feedback.tone" />
+    <SchedulingFeedbackToast :feedback="toastFeedback" />
   </div>
 </template>
