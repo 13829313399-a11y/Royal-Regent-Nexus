@@ -49,7 +49,8 @@ describe('Phase 3 自动排期预览', () => {
     })
     expect(wrapper.text()).toContain('预计超期')
     expect(wrapper.text()).toContain('2 → 1（-1）')
-    expect(wrapper.text()).toContain('目标值 / 下界')
+    expect(wrapper.get('.scheduling-technical-details dl').text()).toContain('目标值')
+    expect(wrapper.get('.scheduling-technical-details dl').text()).toContain('目标下界')
     expect(wrapper.text()).toContain('机台负荷')
     expect(wrapper.text()).toContain('SO-001')
     expect(wrapper.text()).toContain('下单表模具日产量')
@@ -67,7 +68,9 @@ describe('Phase 3 自动排期预览', () => {
 
   it('运行历史可回看持久化方案', async () => {
     const wrapper = mount(ScheduleRunHistory, { props: { runs: [run] } })
-    expect(wrapper.text()).toContain('部分完成')
+    expect(wrapper.get('.run-status').text()).toBe('方案已生成，仍有待复核或未安排项')
+    expect(wrapper.get('.run-status').text()).not.toContain('PARTIAL')
+    expect(wrapper.get('.scheduling-technical-details dl').text()).toContain('PARTIAL')
     expect(wrapper.text()).toContain('排 1 · 核 1 · 未 0')
     await wrapper.get('button').trigger('click')
     expect(wrapper.emitted('select')?.[0]?.[0]).toEqual(run)

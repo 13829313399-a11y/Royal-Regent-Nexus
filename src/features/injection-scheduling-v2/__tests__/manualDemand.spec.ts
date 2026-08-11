@@ -8,6 +8,7 @@ const viewSource = readFileSync(join(root, 'InjectionSchedulingV2View.vue'), 'ut
 const backlogSource = readFileSync(join(root, 'components/BacklogDock.vue'), 'utf8')
 const apiSource = readFileSync(join(root, 'api/injectionSchedulingV2Api.ts'), 'utf8')
 const storeSource = readFileSync(join(root, 'stores/useInjectionSchedulingV2Store.ts'), 'utf8')
+const labelSource = readFileSync(join(root, 'presentation/schedulingLabels.ts'), 'utf8')
 
 describe('manual planning demand dual entry', () => {
   it('offers a manual demand form independent of an imported order sheet', () => {
@@ -31,7 +32,8 @@ describe('manual planning demand dual entry', () => {
   it('lets shared master data enter a draft without a legacy mold id', () => {
     expect(viewSource).toContain('order.moldId || order.moldDefinitionId')
     expect(backlogSource).toContain('order.moldId || order.moldDefinitionId')
-    expect(viewSource).toContain('草案可排 · 发布前补实体')
+    expect(viewSource).toContain("factoryReadinessStatusMeta('DRAFT_READY').label")
+    expect(labelSource).toContain("DRAFT_READY: meta('DRAFT_READY', '草案可排 · 发布前补实体'")
     expect(dialogSource).toContain('草案可排；发布前再落实实体模具')
   })
 })

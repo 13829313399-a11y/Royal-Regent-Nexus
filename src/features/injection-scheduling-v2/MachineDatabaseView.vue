@@ -25,10 +25,13 @@ import {
   updateMachineMaster,
   type MachineMasterInput,
 } from './api/injectionSchedulingV2Api'
+import { useDialogFocus } from './composables/useDialogFocus'
+import { machineStatusMeta } from './presentation/schedulingLabels'
 import type { MachineRecord } from './types'
 import './injection-scheduling-v2.css'
 import './styles/tokens.css'
 import './styles/polish.css'
+import './styles/motion.css'
 import './shared-mold-database.css'
 import './machine-database.css'
 
@@ -54,9 +57,19 @@ const loadError = ref('')
 const editorOpen = ref(false)
 const editing = ref<MachineRecord | null>(null)
 const saving = ref(false)
+const editorDialogRoot = ref<HTMLElement | null>(null)
 const feedback = reactive({ message: '', tone: 'success' as 'success' | 'error' })
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 let feedbackTimer: ReturnType<typeof setTimeout> | null = null
+
+function closeEditor() {
+  editorOpen.value = false
+}
+
+const { announcement: editorDialogAnnouncement } = useDialogFocus(() => editorOpen.value, editorDialogRoot, {
+  onEscape: closeEditor,
+  openAnnouncement: () => `${editing.value ? '机台资料详情' : '新增机台'}已打开，按 Escape 关闭。`,
+})
 
 const canManage = computed(() => schedulingDepartments.some((department) => authStore.can('injection_scheduling:manage_master', factoryId.value, department)))
 const availableCount = computed(() => machines.value.filter((item) => item.status === 'available').length)
@@ -113,7 +126,6 @@ const detailText = (machine: MachineRecord, key: string) => {
   return value == null ? '' : String(value)
 }
 const machineTypeLabel = (value: string) => ({ standard: '普通', high_speed: '高速', all_electric: '全电动机', vertical: '立式', two_color: '双色机' } as Record<string, string>)[value] || value || '—'
-const statusLabel = (value: MachineRecord['status']) => ({ available: '可用', running: '生产中', maintenance: '维护中', offline: '停用' } as const)[value]
 
 function errorMessage(error: unknown) {
   const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
@@ -244,7 +256,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="injection-scheduling-v2 shared-mold-database machine-database">
+  <div class="injection-scheduling-v2 shared-mold-database scheduling-auxiliary-page machine-database">
     <header class="scheduling-topbar">
       <div class="brand-mark"><Bot :size="22" /></div><div class="brand-copy"><strong>Royal Regent Nexus</strong><span>ROYAL REGENT · PRODUCTION INTELLIGENCE</span></div>
       <button type="button" class="topbar-home-button" @click="router.push({ name: 'dashboard' })"><House :size="15" /><span>返回主页</span></button>
@@ -272,21 +284,23 @@ onBeforeUnmount(() => {
         <div class="mold-table-scroll"><table class="mold-catalog-table machine-catalog-table"><thead><tr><th>机号 / 位置</th><th>品牌 / 型号</th><th>安数 / 合模力</th><th>射胶量 / 机架</th><th>机器类型</th><th>机械手</th><th>状态</th><th>备注</th><th></th></tr></thead><tbody>
           <tr v-if="loading && !machines.length" v-for="line in 10" :key="line" class="catalog-skeleton"><td colspan="9"><span></span></td></tr>
           <tr v-for="machine in machines" :key="machine.id" tabindex="0" @click="openEdit(machine)" @keydown.enter="openEdit(machine)">
-            <td><strong>{{ machine.code }}</strong><span>{{ machine.area }} · {{ machine.position }}号位</span><small>r{{ machine.revision }} · {{ machine.normalizationStatus === 'COMPLETE' ? '已规范' : '待复核' }}</small></td>
+            <td><strong>{{ machine.code }}</strong><span>{{ machine.area }} · {{ machine.position }}号位</span><small>{{ machine.normalizationStatus === 'COMPLETE' ? '资料已规范' : '资料待复核' }}</small></td>
             <td><strong>{{ detailText(machine, 'manufacturer') || '—' }}</strong><span>{{ detailText(machine, 'model') || '型号待补' }}</span><small>{{ detailText(machine, 'manufacture_year') || '年份待补' }}</small></td>
             <td><strong>{{ machine.aClass ? `${machine.aClass}A` : machine.aClassRaw || '—' }}</strong><span>{{ machine.clampingForceTons ? `${machine.clampingForceTons}T` : '合模力待补' }}</span></td>
             <td><strong>{{ machine.injectionCapacityG ? `${machine.injectionCapacityG}g` : '—' }}</strong><span>{{ machine.tieBarXmm && machine.tieBarYmm ? `${machine.tieBarXmm} × ${machine.tieBarYmm} mm` : '机架尺寸待补' }}</span></td>
             <td><strong>{{ detailText(machine, 'machine_type_raw') || machineTypeLabel(machine.machineType) }}</strong><span>{{ detailText(machine, 'total_power_raw') || '功率待补' }}</span></td>
             <td><strong>{{ detailText(machine, 'robot_type_raw') || '—' }}</strong><span>{{ detailText(machine, 'robot_model') || '型号待补' }}</span></td>
-            <td><span class="machine-status-chip" :class="machine.status">{{ statusLabel(machine.status) }}</span></td><td><span>{{ machine.remarks || '—' }}</span></td>
+            <td><span class="machine-status-chip" :class="machine.status">{{ machineStatusMeta(machine.status).label }}</span></td><td><span>{{ machine.remarks || '—' }}</span></td>
             <td><button class="row-detail-button" @click.stop="openEdit(machine)">{{ canManage ? '查看 / 编辑' : '查看' }}</button></td>
           </tr>
           <tr v-if="!loading && !machines.length"><td colspan="9" class="catalog-empty"><Server :size="28" /><strong>当前厂区没有符合条件的机台</strong><span>可切换厂区、调整筛选或新增机台</span></td></tr>
         </tbody></table></div>
       </section>
     </main>
-    <div v-if="editorOpen" class="mold-drawer-layer" @mousedown.self="editorOpen = false"><aside class="mold-proposal-drawer machine-editor" aria-label="机台资料编辑">
-      <header><div><span>{{ editing ? '机台资料详情' : '新增机台' }}</span><strong>{{ editing?.code || '新建厂区机台' }}</strong><p>{{ factoryNames[factoryId] }} · {{ canManage ? '可编辑正式主数据' : '只读查看' }}</p></div><button @click="editorOpen = false"><X :size="18" /></button></header>
+    <div v-if="editorOpen" class="mold-drawer-layer" role="presentation" @mousedown.self="closeEditor"><aside ref="editorDialogRoot" class="mold-proposal-drawer machine-editor" role="dialog" aria-modal="true" aria-labelledby="machine-editor-title" tabindex="-1">
+      <p class="scheduling-sr-only drawer-live-announcement" role="status" aria-live="polite">{{ editorDialogAnnouncement }}</p>
+      <header><div><span>{{ editing ? '机台资料详情' : '新增机台' }}</span><strong id="machine-editor-title">{{ editing?.code || '新建厂区机台' }}</strong><p>{{ factoryNames[factoryId] }} · {{ canManage ? '可编辑正式主数据' : '只读查看' }}</p></div><button type="button" aria-label="关闭机台资料编辑" @click="closeEditor"><X :size="18" /></button></header>
+      <details v-if="editing" class="master-technical-details"><summary>技术信息</summary><dl><div><dt>资料版本</dt><dd>{{ editing.revision }}</dd></div></dl></details>
       <form class="proposal-form" @submit.prevent="submit"><fieldset :disabled="saving || !canManage"><legend>1. 机台身份与排程资格</legend><div class="proposal-grid machine-form-grid">
         <label><span>机号 *</span><input v-model="form.machineCode" required placeholder="例如 旧1 / 新1" /></label><label><span>运行状态</span><select v-model="form.status"><option value="available">可用</option><option value="running">生产中</option><option value="maintenance">维护中</option><option value="offline">停用</option></select></label>
         <label><span>摆放区域 *</span><input v-model="form.area" required /></label><label><span>机位 *</span><input v-model="form.position" required /></label><label><span>安数 *</span><input v-model="form.machineClassRaw" required placeholder="例如 32A" /></label><label><span>合模力（T）</span><input v-model.number="form.clampingForceTons" type="number" min="0" step="0.001" /></label>
@@ -296,7 +310,7 @@ onBeforeUnmount(() => {
       </div></fieldset>
       <fieldset :disabled="saving || !canManage"><legend>2. 设备明细</legend><div class="proposal-grid machine-form-grid"><label><span>品牌 / 名称</span><input v-model="form.manufacturer" /></label><label><span>型号</span><input v-model="form.model" /></label><label><span>总功率原文</span><input v-model="form.totalPowerRaw" /></label><label><span>射胶规格原文</span><input v-model="form.injectionSpecRaw" /></label><label><span>机器年份</span><input v-model="form.manufactureYear" /></label><label><span>机器类型原文</span><input v-model="form.machineTypeRaw" /></label><label><span>机械手类型</span><input v-model="form.robotTypeRaw" /></label><label><span>机械手型号</span><input v-model="form.robotModel" /></label><label><span>机械手购买年份</span><input v-model="form.robotPurchaseYear" /></label><label><span>冷水机型号 / 功率</span><input v-model="form.chillerModel" /><input v-model="form.chillerPowerRaw" /></label><label><span>水口机型号 / 功率</span><input v-model="form.sprueCrusherModel" /><input v-model="form.sprueCrusherPowerRaw" /></label><label><span>吸料机型号 / 功率</span><input v-model="form.loaderModel" /><input v-model="form.loaderPowerRaw" /></label></div></fieldset>
       <fieldset :disabled="saving || !canManage"><legend>3. 文员备注</legend><label class="reason-field"><span>备注</span><textarea v-model="form.remarks" maxlength="4000" placeholder="维修提示、专用螺杆、抽芯限制或其他现场说明"></textarea><small>{{ form.remarks.length }}/4000</small></label></fieldset>
-      <footer><button type="button" class="secondary" @click="editorOpen = false">关闭</button><button v-if="canManage" type="submit" class="primary" :disabled="saving"><RefreshCw v-if="saving" :size="15" class="spinning" /><Save v-else :size="15" />{{ saving ? '保存中' : '保存机台资料' }}</button></footer>
+      <footer><button type="button" class="secondary" @click="closeEditor">关闭</button><button v-if="canManage" type="submit" class="primary" :disabled="saving"><RefreshCw v-if="saving" :size="15" class="spinning" /><Save v-else :size="15" />{{ saving ? '保存中' : '保存机台资料' }}</button></footer>
       </form>
     </aside></div>
     <div v-if="feedback.message" class="scheduling-feedback-toast" :class="feedback.tone"><CheckCircle2 v-if="feedback.tone === 'success'" :size="17" /><AlertTriangle v-else :size="17" /><span>{{ feedback.message }}</span><button @click="feedback.message = ''"><X :size="15" /></button></div>
