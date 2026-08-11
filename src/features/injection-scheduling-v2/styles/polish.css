@@ -97,6 +97,52 @@
 .injection-scheduling-v2 .page-identity strong { font-size: 18px; line-height: 1.1; }
 .injection-scheduling-v2 .readonly-badge { padding: 4px 8px; color: var(--is-accent); background: var(--is-accent-soft); font-size: 10px; }
 .injection-scheduling-v2 .command-search { max-width: 300px; }
+.injection-scheduling-v2 .scheduling-commandbar {
+  height: 56px;
+  padding-inline: 14px;
+  display: grid;
+  grid-template-columns: minmax(330px, auto) minmax(210px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.injection-scheduling-v2 .command-zone { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.injection-scheduling-v2 .command-context { overflow: hidden; }
+.injection-scheduling-v2 .command-context .page-identity { min-width: 188px; }
+.injection-scheduling-v2 .command-center { justify-content: center; }
+.injection-scheduling-v2 .command-center .command-search { min-width: 160px; max-width: 480px; flex: 1; }
+.injection-scheduling-v2 .command-source-status { flex: 0 0 auto; }
+.injection-scheduling-v2 .command-actions { justify-content: flex-end; position: relative; }
+.injection-scheduling-v2 .command-primary { border-color: var(--is-accent); color: #fff; background: var(--is-accent); box-shadow: 0 4px 10px rgba(8,122,100,.18); }
+.injection-scheduling-v2 .command-primary:hover:not(:disabled) { border-color: #076b59; color: #fff; background: #076b59; }
+.injection-scheduling-v2 .command-primary.is-readonly { border-color: #d4ad69; color: #7b5314; background: #fff7e8; box-shadow: none; }
+.injection-scheduling-v2 .command-quick-actions { display: flex; align-items: center; gap: 5px; }
+.injection-scheduling-v2 .command-more { position: relative; }
+.injection-scheduling-v2 .command-more > summary { list-style: none; }
+.injection-scheduling-v2 .command-more > summary::-webkit-details-marker { display: none; }
+.injection-scheduling-v2 .command-more[open] > summary { border-color: var(--is-accent); color: var(--is-accent); background: var(--is-accent-soft); }
+.injection-scheduling-v2 .command-more-menu {
+  width: 260px;
+  padding: 6px;
+  position: absolute;
+  z-index: 90;
+  top: 40px;
+  right: 0;
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--is-border);
+  border-radius: 10px;
+  background: var(--is-surface);
+  box-shadow: var(--is-shadow-lg);
+}
+.injection-scheduling-v2 .command-more:not([open]) .command-more-menu { display: none; }
+.injection-scheduling-v2 .command-more-menu button { min-height: 46px; padding: 7px 9px; border: 0; border-radius: 7px; display: flex; align-items: center; gap: 9px; color: var(--is-text-primary); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.injection-scheduling-v2 .command-more-menu button:hover:not(:disabled) { color: var(--is-accent); background: var(--is-accent-soft); }
+.injection-scheduling-v2 .command-more-menu button:disabled { cursor: not-allowed; opacity: .62; }
+.injection-scheduling-v2 .command-more-menu button > span { min-width: 0; display: flex; flex-direction: column; }
+.injection-scheduling-v2 .command-more-menu strong { font-size: 11px; }
+.injection-scheduling-v2 .command-more-menu small { margin-top: 2px; color: var(--is-text-tertiary); font-size: 9px; }
+.injection-scheduling-v2 .command-more-responsive { display: none !important; }
+.injection-scheduling-v2 .command-action-reason { max-width: 190px; color: #8b5b0d; font-size: 9px; font-weight: 700; line-height: 1.25; }
 .injection-scheduling-v2 .command-field,
 .injection-scheduling-v2 .command-search,
 .injection-scheduling-v2 .source-pill,
@@ -282,6 +328,8 @@
   box-shadow: 0 12px 32px rgba(5,20,35,.16);
 }
 .scheduling-feedback-toast.success { border-left: 3px solid #087a64; color: #07614f; }
+.scheduling-feedback-toast.info { border-left: 3px solid #2e6ee6; color: #315f9f; }
+.scheduling-feedback-toast.warning { border-left: 3px solid #d98a12; color: #8a590b; }
 .scheduling-feedback-toast.error { border-left: 3px solid #d34152; color: #a72f3f; }
 .scheduling-feedback-toast button { width: 26px; height: 26px; margin-left: auto; border: 0; border-radius: 6px; display: grid; place-items: center; background: transparent; color: currentColor; cursor: pointer; }
 
@@ -315,12 +363,36 @@
 }
 
 @media (max-width: 1390px) {
-  .injection-scheduling-v2 .brand-copy { min-width: 260px; }
+  .injection-scheduling-v2 .brand-copy { min-width: 180px; }
   .injection-scheduling-v2 .account-name,
-  .injection-scheduling-v2 .sync-time,
-  .injection-scheduling-v2 .command-search { display: none; }
-  .injection-scheduling-v2 .page-identity { min-width: 235px; }
+  .injection-scheduling-v2 .sync-time { display: none; }
+  .injection-scheduling-v2 .page-identity { min-width: 150px; }
   .injection-scheduling-v2 .workspace-tabs button { padding-inline: 9px; }
   .injection-scheduling-v2 .workspace-status b { display: none; }
   .injection-scheduling-v2 .plan-work-area.inspector-open { grid-template-columns: minmax(0,1fr) 350px; }
+}
+
+@media (max-width: 1535.98px) {
+  .injection-scheduling-v2 .scheduling-commandbar { grid-template-columns: minmax(330px, auto) minmax(230px, 1fr) auto; gap: 9px; }
+  .injection-scheduling-v2 .command-quick-actions { display: none; }
+  .injection-scheduling-v2 .command-more-responsive { display: flex !important; }
+  .injection-scheduling-v2 .command-center .command-search { max-width: none; display: flex; }
+}
+
+@media (max-width: 1199px) {
+  .injection-scheduling-v2 .scheduling-topbar { padding-inline: 12px; }
+  .injection-scheduling-v2 .brand-copy { min-width: 150px; }
+  .injection-scheduling-v2 .brand-copy span { display: none; }
+  .injection-scheduling-v2 .scheduling-commandbar { padding-inline: 10px; grid-template-columns: minmax(300px, auto) minmax(210px, 1fr) auto; gap: 7px; }
+  .injection-scheduling-v2 .command-context { gap: 4px; }
+  .injection-scheduling-v2 .command-context .page-identity { min-width: 122px; }
+  .injection-scheduling-v2 .page-identity .eyebrow,
+  .injection-scheduling-v2 .page-identity .readonly-badge { display: none; }
+  .injection-scheduling-v2 .page-identity strong { font-size: 14px; }
+  .injection-scheduling-v2 .factory-field > span { display: none; }
+  .injection-scheduling-v2 .factory-field select { width: 82px; padding-left: 7px; }
+  .injection-scheduling-v2 .date-field { padding-inline: 6px; }
+  .injection-scheduling-v2 .command-center .command-search { min-width: 150px; }
+  .injection-scheduling-v2 .command-action-reason { max-width: 135px; }
+  .injection-scheduling-v2 .command-context-action { padding-inline: 8px; }
 }

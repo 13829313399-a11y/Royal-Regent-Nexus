@@ -12,6 +12,8 @@ import {
   type SharedMoldDetail,
 } from '../api/injectionSchedulingV2Api'
 import type { OrderRecord } from '../types'
+import { useDialogFocus } from '../composables/useDialogFocus'
+import { factoryMeta, materialReadinessMeta, priorityMeta, quantityBasisMeta } from '../presentation/schedulingLabels'
 
 const props = defineProps<{
   open: boolean
@@ -30,6 +32,12 @@ const loadingDetail = ref(false)
 const saving = ref(false)
 const cancelling = ref(false)
 const error = ref('')
+const dialogRoot = ref<HTMLElement | null>(null)
+const requestClose = () => emit('close')
+const { announcement: dialogAnnouncement } = useDialogFocus(() => props.open, dialogRoot, {
+  onEscape: requestClose,
+  openAnnouncement: () => `${props.order ? '修改排期需求' : '新增排期任务'}对话框已打开，按 Escape 关闭。`,
+})
 const cancelReason = ref('不再需要排期')
 const form = reactive<ManualDemandInput>({
   businessDate: '', moldDefinitionId: '', moldOutputSpecId: null,
@@ -37,6 +45,9 @@ const form = reactive<ManualDemandInput>({
   deliveryDueDate: '', priorityCode: 'NORMAL', materialReadinessStatus: 'unknown',
   warehouseText: '', materialName: '', colorName: '', remark: '',
 })
+const priorityOptions = ['NORMAL', 'URGENT', 'CRITICAL'] as const
+const materialReadinessOptions = ['unknown', 'ready', 'partial', 'blocked'] as const
+const quantityBasisOptions = ['UNITS', 'SHOTS'] as const
 
 const selectedOutput = computed(() => detail.value?.outputs.find((item) => item.id === form.moldOutputSpecId) ?? null)
 const hasFactoryCapability = computed(() => Boolean(detail.value?.capabilities.length))
@@ -160,11 +171,12 @@ watch(() => props.open, async (open) => {
 </script>
 
 <template>
-  <div v-if="open" class="manual-demand-backdrop" @mousedown.self="emit('close')">
+  <div v-if="open" ref="dialogRoot" class="manual-demand-backdrop" tabindex="-1" @mousedown.self="requestClose">
     <section class="manual-demand-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-demand-title">
+      <p class="scheduling-sr-only dialog-live-announcement" role="status" aria-live="polite">{{ dialogAnnouncement }}</p>
       <header>
         <div><Boxes :size="19" /><div><strong id="manual-demand-title">{{ order ? '修改排期需求' : '新增排期任务' }}</strong><span>无需下单表，直接从共享模具库建立待排需求</span></div></div>
-        <button type="button" aria-label="关闭" @click="emit('close')"><X :size="18" /></button>
+        <button type="button" aria-label="关闭" @click="requestClose"><X :size="18" /></button>
       </header>
       <div class="manual-demand-body">
         <p v-if="error" class="manual-demand-error"><AlertTriangle :size="15" />{{ error }}</p>
@@ -172,7 +184,7 @@ watch(() => props.open, async (open) => {
           <label><span>搜索共享模具</span><div><Search :size="15" /><input v-model="search" placeholder="模具编号、货号或产品名称" @keyup.enter="searchMolds" /><button type="button" :disabled="loadingCatalog" @click="searchMolds">{{ loadingCatalog ? '搜索中' : '搜索' }}</button></div></label>
           <div v-if="results.length" class="mold-results">
             <button v-for="item in results" :key="item.id" type="button" :class="{ selected: form.moldDefinitionId === item.id }" @click="selectMold(item)">
-              <strong>{{ item.displayMoldNo || item.canonicalMoldNo }}</strong><span>{{ item.standardName }} · {{ item.moldAClass ?? '—' }}A</span><em>{{ item.factoryReadiness.activeCapabilityCount ? '有华兴机安数据' : '缺少华兴机安数据' }}</em>
+              <strong>{{ item.displayMoldNo || item.canonicalMoldNo }}</strong><span>{{ item.standardName }} · {{ item.moldAClass ?? '—' }}A</span><em>{{ item.factoryReadiness.activeCapabilityCount ? `有${factoryMeta(props.factoryId).label}机安数据` : `缺少${factoryMeta(props.factoryId).label}机安数据` }}</em>
             </button>
           </div>
         </div>
@@ -185,18 +197,18 @@ watch(() => props.open, async (open) => {
         <form @submit.prevent="submit">
           <label v-if="detail?.outputs.length"><span>产品输出 *</span><select v-model="form.moldOutputSpecId" @change="applyOutputDefaults(true)"><option :value="null" disabled>请选择</option><option v-for="output in detail.outputs" :key="output.id" :value="output.id">{{ output.itemNo || '未设货号' }} · {{ output.productName }} · {{ output.cavityCount || '—' }} 穴</option></select></label>
           <label><span>计划数量 *</span><input v-model.number="form.plannedQuantity" type="number" min="0.0001" step="0.0001" required /></label>
-          <label><span>数量口径</span><select v-model="form.quantityBasis"><option value="UNITS">件 / 套</option><option value="SHOTS">啤数</option></select></label>
+          <label><span>数量口径</span><select v-model="form.quantityBasis"><option v-for="value in quantityBasisOptions" :key="value" :value="value">{{ quantityBasisMeta(value).label }}</option></select></label>
           <label><span>货号</span><input v-model="form.itemNo" /></label>
           <label><span>产品名称</span><input v-model="form.productName" /></label>
           <label><span>交货日期</span><input v-model="form.deliveryDueDate" type="date" /></label>
-          <label><span>优先级</span><select v-model="form.priorityCode"><option value="NORMAL">普通</option><option value="URGENT">加急</option><option value="CRITICAL">特急</option></select></label>
-          <label><span>物料状态</span><select v-model="form.materialReadinessStatus"><option value="unknown">未确认</option><option value="ready">已齐料</option><option value="partial">部分齐料</option><option value="blocked">缺料阻断</option></select></label>
+          <label><span>优先级</span><select v-model="form.priorityCode"><option v-for="value in priorityOptions" :key="value" :value="value">{{ priorityMeta(value).label }}</option></select></label>
+          <label><span>物料状态</span><select v-model="form.materialReadinessStatus"><option v-for="value in materialReadinessOptions" :key="value" :value="value">{{ materialReadinessMeta(value).label }}</option></select></label>
           <label><span>仓库 / 下单人</span><input v-model="form.warehouseText" /></label>
           <label><span>用料名称</span><input v-model="form.materialName" /></label>
           <label><span>颜色 / 色粉号</span><input v-model="form.colorName" /></label>
           <label class="wide"><span>备注</span><textarea v-model="form.remark" rows="2" /></label>
           <div v-if="order" class="cancel-demand wide"><label><span>取消原因</span><input v-model="cancelReason" /></label><button type="button" :disabled="!canEdit || cancelling" @click="cancelDemand">{{ cancelling ? '取消中' : '取消此需求' }}</button></div>
-          <footer class="wide"><button type="button" @click="emit('close')">关闭</button><button class="primary" type="submit" :disabled="!canSubmit">{{ saving ? '保存中' : order ? '保存修改' : '加入待排池' }}</button></footer>
+          <footer class="wide"><button type="button" @click="requestClose">关闭</button><button class="primary" type="submit" :disabled="!canSubmit">{{ saving ? '保存中' : order ? '保存修改' : '加入待排池' }}</button></footer>
         </form>
       </div>
     </section>

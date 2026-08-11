@@ -1,7 +1,8 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { isAxiosError } from 'axios'
 import { useAuthStore } from '@/stores/auth'
+import { formatBusinessDateTime } from '@/lib/dateTime'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   applyAutoSchedulePreview,
@@ -22,10 +23,33 @@ import {
   saveShiftReportsBulk,
   withdrawScheduleTask,
 } from '../api/injectionSchedulingV2Api'
-import { schedulingColumns } from '../composables/useSchedulingColumns'
+import {
+  getColumnMoveDecision,
+  getFrozenColumnToggleDecision,
+  maxSchedulingFrozenWidth,
+  normalizeSchedulingColumnOrder,
+  schedulingColumns,
+  schedulingDefaultColumnOrder,
+  schedulingFrozenWidth,
+  schedulingFrozenKeysByPreset,
+} from '../composables/useSchedulingColumns'
 import { cellDraftKey, isOrderEdit, isPlanEdit, isReportEdit, normalizeCellValue, resolveReportedQuantity } from '../composables/useScheduleDraftEdits'
 import { demoEvents, demoMachines, demoMolds, demoOrders, demoTasks } from '../data/demo'
+import { createAsyncFeedback } from '../presentation/asyncFeedback'
+import { indexTasksByMachine } from '../selectors/schedulingTaskIndex'
+import { defaultSchedulingDensity, type SchedulingDensityMode } from '../config/schedulingLayout'
+import {
+  createSchedulingPreferencesDocument,
+  loadSchedulingPreferences,
+  saveSchedulingPreferences,
+  type SchedulingCustomPreset,
+  type SchedulingLayoutPreference,
+} from '../config/schedulingPreferences'
 import type {
+  AsyncFeedback,
+  AsyncFeedbackPhase,
+  AsyncFeedbackTone,
+  AsyncOperation,
   AutoScheduleRunRecord,
   AutoScheduleGenerationOptions,
   AuditEvent,
@@ -34,6 +58,7 @@ import type {
   EditableCellKey,
   FactoryId,
   MachineRecord,
+  MachineScheduleSummary,
   MoldRecord,
   MovePreview,
   OrderRecord,
@@ -43,6 +68,8 @@ import type {
   ScheduleGridRow,
   ScheduleTaskRecord,
   SchedulingPlanRecord,
+  SchedulingSyncFailureKind,
+  SchedulingSyncHealth,
   ShiftReportDraft,
   WorkspaceView,
 } from '../types'
@@ -79,6 +106,30 @@ const balancedScheduleOptions = (): AutoScheduleGenerationOptions => ({
   objectiveWeights: { tardinessWeight: 100, transitionWeight: 2, classGapWeight: 1.5, loadBalanceWeight: 25, existingTaskMoveCost: 40 },
 })
 
+interface SchedulingLoadFailure {
+  kind: SchedulingSyncFailureKind
+  demoEligible: boolean
+}
+
+function classifySchedulingLoadFailure(error: unknown): SchedulingLoadFailure {
+  if (!isAxiosError(error)) return { kind: 'unexpected', demoEligible: false }
+  const status = error.response?.status
+  if (!status) return { kind: 'network', demoEligible: true }
+  if (status === 401) return { kind: 'authentication', demoEligible: false }
+  if (status === 403) return { kind: 'authorization', demoEligible: false }
+  if (status >= 400 && status < 500) return { kind: 'business', demoEligible: false }
+  if (status >= 500 && status < 600) return { kind: 'server', demoEligible: true }
+  return { kind: 'unexpected', demoEligible: false }
+}
+
+function initialLoadFailureMessage(failure: SchedulingLoadFailure, error: unknown) {
+  const detail = getApiErrorMessage(error)
+  if (failure.kind === 'authentication') return `登录状态已失效，未取得正式排产数据：${detail}`
+  if (failure.kind === 'authorization') return `当前账号无权读取该厂区排产数据：${detail}`
+  if (failure.kind === 'business') return `正式排产数据请求未被接受：${detail}`
+  return `正式排产数据读取失败：${detail}`
+}
+
 export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v2', () => {
   const authStore = useAuthStore()
   const factoryId = ref<FactoryId>('huaxing')
@@ -109,11 +160,18 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const pollingRevision = ref(0)
   const sourceMode = ref<'live' | 'fallback'>('live')
   const sourceMessage = ref('正式数据库')
+  const syncHealth = ref<SchedulingSyncHealth>('live')
+  const syncFailureKind = ref<SchedulingSyncFailureKind | null>(null)
+  const hasFormalSnapshot = ref(false)
   const loading = ref(false)
   const refreshing = ref(false)
   const lastSyncedAt = ref('')
   const activeView = ref<WorkspaceView>('plan')
   const activePreset = ref<ColumnPreset>('planner')
+  const density = ref<SchedulingDensityMode>(defaultSchedulingDensity)
+  const frozenColumnKeys = ref<string[]>([...schedulingFrozenKeysByPreset.planner])
+  const customPresets = ref<SchedulingCustomPreset[]>([])
+  const activeCustomPresetId = ref<string | null>(null)
   const search = ref('')
   const statusFilter = ref('all')
   const riskFilter = ref('all')
@@ -125,11 +183,12 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const collapsedMachineIds = ref<string[]>([])
   const customVisibleColumns = ref<Record<string, boolean>>({})
   const columnWidths = ref<Record<string, number>>({})
-  const columnOrder = ref(schedulingColumns.map((column) => String(column.key)))
+  const columnOrder = ref([...schedulingDefaultColumnOrder])
   const sort = ref<{ key: string; desc: boolean } | null>(null)
   const cellDrafts = ref<Record<string, CellDraft>>({})
   const savingEdits = ref(false)
   const saveMessage = ref('')
+  const asyncFeedback = ref<AsyncFeedback | null>(null)
   const revisionConflict = ref<RevisionConflict | null>(null)
   const movePreview = ref<MovePreview | null>(null)
   const moveLoading = ref(false)
@@ -137,6 +196,10 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const phase5Analytics = ref<Phase5AnalyticsRecord | null>(null)
   const phase5AnalyticsLoading = ref(false)
   const phase5AnalyticsError = ref('')
+
+  function setAsyncFeedback(operation: AsyncOperation, phase: AsyncFeedbackPhase, tone: AsyncFeedbackTone, message: string) {
+    asyncFeedback.value = createAsyncFeedback(operation, phase, tone, message)
+  }
 
   const schedulingDepartments = ['production', 'molding', 'pmc-warehouse', 'warehouse', 'management']
   const hasScopedPermission = (permission: string) => schedulingDepartments.some((department) => authStore.can(permission, factoryId.value, department))
@@ -180,6 +243,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const moldMap = computed(() => new Map(molds.value.map((item) => [item.id, item])))
   const machineMap = computed(() => new Map(machines.value.map((item) => [item.id, item])))
   const taskMap = computed(() => new Map(tasks.value.map((item) => [item.id, item])))
+  const tasksByMachine = computed(() => indexTasksByMachine(tasks.value))
   const selectedTask = computed(() => selectedTaskId.value ? taskMap.value.get(selectedTaskId.value) ?? null : null)
   const selectedOrder = computed(() => selectedTask.value ? orderMap.value.get(selectedTask.value.orderId) ?? null : null)
   const selectedMold = computed(() => selectedTask.value?.moldId ? moldMap.value.get(selectedTask.value.moldId) ?? null : null)
@@ -199,10 +263,89 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
   const canWithdraw = computed(() => !withdrawDisabledReason.value && !withdrawingTask.value)
   const canCancelBacklogOrder = computed(() => canCreateDemand.value && !cancellingBacklogOrderId.value)
 
-  const visibleColumns = computed(() => columnOrder.value
+  const visibleColumns = computed(() => {
+    const frozenKeys = new Set(frozenColumnKeys.value)
+    return normalizeSchedulingColumnOrder(columnOrder.value, activePreset.value, frozenColumnKeys.value)
     .map((key) => schedulingColumns.find((column) => column.key === key))
     .filter((column): column is typeof schedulingColumns[number] => Boolean(column))
-    .filter((column) => customVisibleColumns.value[String(column.key)] ?? column.presets.includes(activePreset.value)))
+    .filter((column) => customVisibleColumns.value[String(column.key)] ?? column.presets.includes(activePreset.value))
+    .map((column) => ({ ...column, frozen: frozenKeys.has(String(column.key)) }))
+  })
+  const frozenWidth = computed(() => schedulingFrozenWidth(frozenColumnKeys.value, columnWidths.value))
+
+  function preferenceStorage() {
+    try {
+      return typeof window !== 'undefined' ? window.localStorage : null
+    } catch {
+      return null
+    }
+  }
+
+  function currentLayoutPreference(): SchedulingLayoutPreference {
+    return {
+      preset: activePreset.value,
+      density: density.value,
+      customVisibleColumns: { ...customVisibleColumns.value },
+      columnWidths: { ...columnWidths.value },
+      columnOrder: [...columnOrder.value],
+      frozenKeys: [...frozenColumnKeys.value],
+    }
+  }
+
+  function applyLayoutPreference(layout: SchedulingLayoutPreference) {
+    activePreset.value = layout.preset
+    density.value = layout.density
+    customVisibleColumns.value = { ...layout.customVisibleColumns }
+    columnWidths.value = { ...layout.columnWidths }
+    columnOrder.value = [...layout.columnOrder]
+    const requestedFrozen = new Set(layout.frozenKeys)
+    frozenColumnKeys.value = normalizeSchedulingColumnOrder(columnOrder.value, activePreset.value, layout.frozenKeys)
+      .filter((key) => requestedFrozen.has(key))
+  }
+
+  function resetLayoutPreferenceState() {
+    activePreset.value = 'planner'
+    density.value = defaultSchedulingDensity
+    customVisibleColumns.value = {}
+    columnWidths.value = {}
+    columnOrder.value = [...schedulingDefaultColumnOrder]
+    frozenColumnKeys.value = [...schedulingFrozenKeysByPreset.planner]
+    customPresets.value = []
+    activeCustomPresetId.value = null
+  }
+
+  function persistLayoutPreferences() {
+    const storage = preferenceStorage()
+    const userId = authStore.currentUser?.id?.trim() ?? ''
+    if (!storage || !userId) return false
+    return saveSchedulingPreferences(storage, userId, factoryId.value, createSchedulingPreferencesDocument(
+      currentLayoutPreference(),
+      customPresets.value,
+      activeCustomPresetId.value,
+    ))
+  }
+
+  function restoreLayoutPreferences() {
+    const storage = preferenceStorage()
+    const userId = authStore.currentUser?.id?.trim() ?? ''
+    if (!storage || !userId) {
+      resetLayoutPreferenceState()
+      return false
+    }
+    const preferences = loadSchedulingPreferences(storage, userId, factoryId.value)
+    if (!preferences) {
+      resetLayoutPreferenceState()
+      return false
+    }
+    applyLayoutPreference(preferences)
+    customPresets.value = preferences.customPresets.map((preset) => ({ ...preset, layout: { ...preset.layout } }))
+    activeCustomPresetId.value = preferences.activeCustomPresetId
+    return true
+  }
+
+  function frozenToggleDecision(key: string) {
+    return getFrozenColumnToggleDecision(frozenColumnKeys.value, key, visibleColumns.value.map((column) => String(column.key)), columnWidths.value)
+  }
 
   const summary = computed(() => {
     const overdue = tasks.value.filter((task) => (orderMap.value.get(task.orderId)?.deliverySlackDays ?? 0) < 0).length
@@ -262,18 +405,34 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     }
   }
 
-  const gridRows = computed(() => {
-    const query = search.value.trim().toLowerCase()
-    const result: ScheduleGridRow[] = []
+  const gridTaskPresentationIndex = computed(() => {
+    const rowsByMachine = new Map<string, ScheduleGridRow[]>()
+    const searchTextByTaskId = new Map<string, string>()
     for (const machine of machines.value) {
-      let machineTasks = tasks.value.filter((task) => task.machineId === machine.id).map((task) => toGridRow(machine, task))
+      const rows = (tasksByMachine.value.get(machine.id) ?? []).map((task) => toGridRow(machine, task))
+      rowsByMachine.set(machine.id, rows)
+      for (const row of rows) {
+        searchTextByTaskId.set(row.id, [row.machineCode, row.moldNo, row.productName, row.orderNo, row.itemNo, row.material, row.warehouse].join(' ').toLowerCase())
+      }
+    }
+    return { rowsByMachine, searchTextByTaskId }
+  })
+
+  const schedulingGridPresentation = computed(() => {
+    const query = search.value.trim().toLowerCase()
+    const rows: ScheduleGridRow[] = []
+    const taskRowsById = new Map<string, ScheduleGridRow>()
+    const machineSummaryById = new Map<string, MachineScheduleSummary>()
+    const { rowsByMachine, searchTextByTaskId } = gridTaskPresentationIndex.value
+    for (const machine of machines.value) {
+      let machineTasks = rowsByMachine.get(machine.id) ?? []
       machineTasks = machineTasks.filter((row) => {
         if (statusFilter.value !== 'all' && row.status !== statusFilter.value) return false
         if (riskFilter.value === 'overdue' && !(Number(row.slack) < 0)) return false
         if (riskFilter.value === 'soon' && !(Number(row.slack) >= 0 && Number(row.slack) <= 3)) return false
         if (riskFilter.value === 'review' && row.fit !== 'REVIEW_REQUIRED') return false
         if (!query) return true
-        return [row.machineCode, row.moldNo, row.productName, row.orderNo, row.itemNo, row.material, row.warehouse].join(' ').toLowerCase().includes(query)
+        return searchTextByTaskId.get(row.id)?.includes(query) ?? false
       })
       machineTasks.sort((a, b) => {
         if (a.status === 'RUNNING' && b.status !== 'RUNNING') return -1
@@ -283,11 +442,27 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
         return String(a[key as keyof ScheduleGridRow] ?? '').localeCompare(String(b[key as keyof ScheduleGridRow] ?? ''), 'zh-CN', { numeric: true }) * (desc ? -1 : 1)
       })
       if (!machineTasks.length && (query || statusFilter.value !== 'all' || riskFilter.value !== 'all')) continue
-      result.push({ ...toGridRow(machine, machineTasks[0]?.task ?? ({ id: '', planId: '', machineId: machine.id, orderId: '', moldId: null, sequence: 0, status: 'QUEUED', plannedStart: '', plannedFinish: '', targetQuantity: 0, reportedQuantity: 0, sourceSheetName: '', sourceRow: null, locked: false, manualOverrideReason: '', activeExecution: false, estimatedStart: '', estimatedFinish: '', estimatedRemainingShifts: 0, deliverySlackDays: null, revision: 0 })), rowType: 'machine', id: `machine:${machine.id}` })
-      if (!collapsedMachineIds.value.includes(machine.id)) result.push(...machineTasks)
+      rows.push({ ...toGridRow(machine, machineTasks[0]?.task ?? ({ id: '', planId: '', machineId: machine.id, orderId: '', moldId: null, sequence: 0, status: 'QUEUED', plannedStart: '', plannedFinish: '', targetQuantity: 0, reportedQuantity: 0, sourceSheetName: '', sourceRow: null, locked: false, manualOverrideReason: '', activeExecution: false, estimatedStart: '', estimatedFinish: '', estimatedRemainingShifts: 0, deliverySlackDays: null, revision: 0 })), rowType: 'machine', id: `machine:${machine.id}` })
+      const machineSummary: MachineScheduleSummary = { taskCount: 0, currentLabel: '', releaseAt: '' }
+      if (!collapsedMachineIds.value.includes(machine.id)) {
+        let releaseValue = ''
+        for (const row of machineTasks) {
+          rows.push(row)
+          taskRowsById.set(row.id, row)
+          machineSummary.taskCount += 1
+          if (!machineSummary.currentLabel && row.status === 'RUNNING') machineSummary.currentLabel = `${row.moldNo} · ${row.productName}`
+          releaseValue = row.plannedFinish
+        }
+        const formattedRelease = formatBusinessDateTime(releaseValue, { fallback: '' })
+        machineSummary.releaseAt = formattedRelease ? formattedRelease.slice(5) : ''
+      }
+      machineSummaryById.set(machine.id, machineSummary)
     }
-    return result
+    return { rows, taskRowsById, machineSummaryById }
   })
+  const gridRows = computed(() => schedulingGridPresentation.value.rows)
+  const gridTaskRowMap = computed(() => schedulingGridPresentation.value.taskRowsById)
+  const machineSummaryById = computed(() => schedulingGridPresentation.value.machineSummaryById)
 
   function syncActivePlanSlice() {
     const target = activePlanSlice.value === 'execution' ? executionPublishedPlan : planningDraftPlan
@@ -362,15 +537,57 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     planningDraftPlan.value = emptyPlanSlice(); activePlanSlice.value = 'execution'
     autoScheduleRuns.value = []; autoScheduleRun.value = null; autoScheduleComparisonRuns.value = []; autoScheduleError.value = ''
     sourceMode.value = 'fallback'; sourceMessage.value = `后端暂不可用，当前显示只读演示数据 · ${reason}`; selectedTaskId.value = demoTasks[0]?.id ?? null
+    syncHealth.value = 'demo-readonly'; hasFormalSnapshot.value = false
   }
 
-  async function load(options: { quiet?: boolean } = {}) {
+  function clearWorkspaceData() {
+    machines.value = []; molds.value = []; orders.value = []; tasks.value = []; backlogRecords.value = []; backlogOrderIds.value = []
+    events.value = []; pollingRevision.value = 0; plan.value = null; executionPlan.value = null; planningPlan.value = null
+    executionPublishedPlan.value = emptyPlanSlice(); planningDraftPlan.value = emptyPlanSlice(); activePlanSlice.value = 'execution'
+    selectedTaskId.value = null; autoScheduleRuns.value = []; autoScheduleRun.value = null; autoScheduleComparisonRuns.value = []
+  }
+
+  async function load(options: { quiet?: boolean; feedbackOperation?: 'initial-load' | 'refresh' | null } = {}) {
+    const feedbackOperation = options.feedbackOperation === undefined
+      ? (options.quiet || hasFormalSnapshot.value ? 'refresh' : 'initial-load')
+      : options.feedbackOperation
+    if (feedbackOperation) {
+      setAsyncFeedback(feedbackOperation, 'pending', 'info', feedbackOperation === 'refresh' ? '正在刷新排产数据' : '正在读取正式排产数据')
+    }
     options.quiet ? refreshing.value = true : loading.value = true
+    syncHealth.value = 'refreshing'
+    syncFailureKind.value = null
     try {
       applyData(await fetchSchedulingWorkspace(factoryId.value))
-      sourceMode.value = 'live'; sourceMessage.value = '正式数据库'; lastSyncedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      sourceMode.value = 'live'; sourceMessage.value = '正式数据库'; syncHealth.value = 'live'; hasFormalSnapshot.value = true
+      lastSyncedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      if (feedbackOperation) {
+        setAsyncFeedback(feedbackOperation, 'succeeded', 'success', feedbackOperation === 'refresh' ? '排产数据已刷新' : '正式排产数据已加载')
+      }
     } catch (error) {
-      if (!options.quiet || sourceMode.value !== 'fallback') applyFallback(error instanceof Error ? error.message : '网络错误')
+      const failure = classifySchedulingLoadFailure(error)
+      syncFailureKind.value = failure.kind
+      if (hasFormalSnapshot.value) {
+        sourceMode.value = 'live'
+        syncHealth.value = 'stale'
+        sourceMessage.value = `数据同步暂时中断：${getApiErrorMessage(error)}`
+      } else if (failure.demoEligible) {
+        applyFallback(getApiErrorMessage(error))
+      } else {
+        clearWorkspaceData()
+        sourceMode.value = 'live'
+        syncHealth.value = 'error'
+        sourceMessage.value = initialLoadFailureMessage(failure, error)
+      }
+      if (feedbackOperation) {
+        const tone: AsyncFeedbackTone = !hasFormalSnapshot.value && !failure.demoEligible ? 'error' : 'warning'
+        const message = hasFormalSnapshot.value
+          ? '排产数据刷新失败，当前继续显示最近正式数据'
+          : failure.demoEligible
+            ? '正式数据暂不可用，当前显示只读演示数据'
+            : sourceMessage.value
+        setAsyncFeedback(feedbackOperation, 'failed', tone, message)
+      }
     } finally {
       loading.value = false; refreshing.value = false
     }
@@ -436,7 +653,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
 
   function stageCellEdit(taskId: string, key: EditableCellKey, rawValue: string | number) {
     const task = taskMap.value.get(taskId)
-    const row = gridRows.value.find((item) => item.id === taskId)
+    const row = gridTaskRowMap.value.get(taskId)
     if (!task || !row || !plan.value || sourceMode.value !== 'live') return
     const allowed = isOrderEdit(key)
       ? canEdit.value
@@ -481,6 +698,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     if (!plan.value || !pendingEditCount.value || savingEdits.value) return
     savingEdits.value = true
     revisionConflict.value = null
+    setAsyncFeedback('save', 'pending', 'info', '正在保存排产修改')
     const pending = Object.values(cellDrafts.value)
     const localValues = Object.fromEntries(pending.map((draft) => [`${draft.taskId}.${draft.key}`, draft.value]))
     try {
@@ -545,6 +763,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
         clearDrafts(reportDrafts)
       }
       saveMessage.value = '所有修改已由服务器确认保存'
+      setAsyncFeedback('save', 'succeeded', 'success', saveMessage.value)
       lastSyncedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
     } catch (error) {
       if (isAxiosError(error) && error.response?.status === 409) {
@@ -557,9 +776,11 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
           serverValues: typeof detail === 'object' ? detail.diff ?? {} : {},
           retry: async () => { revisionConflict.value = null; await savePendingEdits() },
         }
-        saveMessage.value = '保存已暂停：请处理 revision 冲突'
+        saveMessage.value = '保存已暂停：请处理版本冲突'
+        setAsyncFeedback('save', 'failed', 'error', saveMessage.value)
       } else {
         saveMessage.value = `保存失败：${getApiErrorMessage(error)}`
+        setAsyncFeedback('save', 'failed', 'error', saveMessage.value)
       }
     } finally {
       savingEdits.value = false
@@ -570,6 +791,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     cellDrafts.value = {}
     revisionConflict.value = null
     saveMessage.value = '已采用服务器数据'
+    setAsyncFeedback('save', 'succeeded', 'success', saveMessage.value)
   }
 
   function addDays(dateText: string, days: number) {
@@ -593,10 +815,12 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     if (!plan.value || plan.value.status !== 'DRAFT' || !canEdit.value || autoScheduleLoading.value) return
     if (pendingEditCount.value) {
       autoScheduleError.value = '请先保存或放弃当前单元格修改，再生成自动排期预览。'
+      setAsyncFeedback('auto-generate', 'failed', 'error', autoScheduleError.value)
       return
     }
     autoScheduleLoading.value = true
     autoScheduleError.value = ''
+    setAsyncFeedback('auto-generate', 'pending', 'info', '正在生成自动排期方案')
     try {
       const [horizonStart, horizonEnd] = scheduleHorizon()
       const run = await createAutoSchedulePreview(
@@ -607,8 +831,10 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
         options,
       )
       rememberAutoScheduleRun(run)
+      setAsyncFeedback('auto-generate', 'succeeded', 'success', '自动排期方案已生成')
     } catch (error) {
       autoScheduleError.value = `自动排期预览生成失败：${getApiErrorMessage(error)}`
+      setAsyncFeedback('auto-generate', 'failed', 'error', autoScheduleError.value)
     } finally {
       autoScheduleLoading.value = false
     }
@@ -618,10 +844,12 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     if (!plan.value || plan.value.status !== 'DRAFT' || !canEdit.value || autoScheduleLoading.value) return
     if (pendingEditCount.value) {
       autoScheduleError.value = '请先保存或放弃当前单元格修改，再生成多方案。'
+      setAsyncFeedback('auto-generate', 'failed', 'error', autoScheduleError.value)
       return
     }
     autoScheduleLoading.value = true
     autoScheduleError.value = ''
+    setAsyncFeedback('auto-generate', 'pending', 'info', '正在生成三套自动排期方案')
     const groupId = `isscenario-ui-${Date.now()}-${Math.random().toString(16).slice(2)}`
     const alternatives: AutoScheduleGenerationOptions[] = [
       { ...balancedScheduleOptions(), scenarioGroupId: groupId, alternativeNo: 1 },
@@ -639,8 +867,10 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
       })
       autoScheduleComparisonRuns.value = generated
       autoScheduleRun.value = generated[0] ?? null
+      setAsyncFeedback('auto-generate', 'succeeded', 'success', '三套自动排期方案已生成')
     } catch (error) {
       autoScheduleError.value = `多方案生成失败：${getApiErrorMessage(error)}`
+      setAsyncFeedback('auto-generate', 'failed', 'error', autoScheduleError.value)
     } finally {
       autoScheduleLoading.value = false
     }
@@ -666,6 +896,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     if (!plan.value || !autoScheduleRun.value || autoScheduleLoading.value) return
     autoScheduleLoading.value = true
     autoScheduleError.value = ''
+    setAsyncFeedback('auto-apply', 'pending', 'info', '正在应用自动排期方案')
     try {
       const result = await applyAutoSchedulePreview(
         factoryId.value,
@@ -677,10 +908,12 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
       autoScheduleRuns.value = [result.run, ...autoScheduleRuns.value.filter((item) => item.id !== result.run.id)]
       mergePlanResult(result)
       pollingRevision.value = Math.max(pollingRevision.value, result.auditSequence)
-      saveMessage.value = `自动方案已应用 · 计划 r${result.plan?.revision ?? plan.value?.revision}`
-      await load({ quiet: true })
+      await load({ quiet: true, feedbackOperation: null })
+      saveMessage.value = `自动方案已应用 · 版本 ${result.plan?.revision ?? plan.value?.revision}`
+      setAsyncFeedback('auto-apply', 'succeeded', 'success', saveMessage.value)
     } catch (error) {
       autoScheduleError.value = `自动方案应用失败：${getApiErrorMessage(error)}`
+      setAsyncFeedback('auto-apply', 'failed', 'error', autoScheduleError.value)
     } finally {
       autoScheduleLoading.value = false
     }
@@ -693,24 +926,29 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     if (!canPublish.value) {
       publishPlanError.value = '当前账号没有排产编辑或发布权限'
       saveMessage.value = `发布失败：${publishPlanError.value}`
+      setAsyncFeedback('publish', 'failed', 'error', saveMessage.value)
       return false
     }
     if (pendingEditCount.value) {
       publishPlanError.value = '存在未保存修改，请先保存或放弃后再发布'
       saveMessage.value = `发布失败：${publishPlanError.value}`
+      setAsyncFeedback('publish', 'failed', 'error', saveMessage.value)
       return false
     }
     publishingPlan.value = true
+    setAsyncFeedback('publish', 'pending', 'info', '正在发布排产草案')
     try {
       const result = await publishSchedulingPlan(factoryId.value, draft)
       pollingRevision.value = Math.max(pollingRevision.value, result.auditSequence)
-      await load({ quiet: true })
+      await load({ quiet: true, feedbackOperation: null })
       activatePlanSlice('execution', true)
-      saveMessage.value = `计划已发布 · 执行 PUBLISHED · r${result.plan?.revision ?? draft.revision + 1}`
+      saveMessage.value = `计划已发布 · 当前执行 · 版本 ${result.plan?.revision ?? draft.revision + 1}`
+      setAsyncFeedback('publish', 'succeeded', 'success', saveMessage.value)
       return true
     } catch (error) {
       publishPlanError.value = getApiErrorMessage(error)
       saveMessage.value = `发布失败：${publishPlanError.value}`
+      setAsyncFeedback('publish', 'failed', 'error', saveMessage.value)
       return false
     } finally {
       publishingPlan.value = false
@@ -732,7 +970,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     try {
       const result = await withdrawScheduleTask(factoryId.value, sourcePlan, task, planningPlan.value, reason.trim())
       pollingRevision.value = Math.max(pollingRevision.value, result.auditSequence)
-      await load({ quiet: true })
+      await load({ quiet: true, feedbackOperation: null })
       activatePlanSlice('planning', true)
       selectedTaskId.value = null
       backlogDockOpen.value = true
@@ -762,7 +1000,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     cancellingBacklogOrderId.value = order.id
     try {
       await cancelBacklogOrder(factoryId.value, order, planningPlan.value, reason.trim())
-      await load({ quiet: true })
+      await load({ quiet: true, feedbackOperation: null })
       if (planningPlan.value) activatePlanSlice('planning', true)
       activeView.value = 'backlog'
       saveMessage.value = `已删除待排单：${order.orderNo}；原始下单和审计记录已保留。`
@@ -869,7 +1107,7 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     const task = taskMap.value.get(taskId)
     if (!task) return
     if (direction === 'up' || direction === 'down') {
-      const queue = tasks.value.filter((item) => item.machineId === task.machineId).sort((a, b) => a.sequence - b.sequence)
+      const queue = [...(tasksByMachine.value.get(task.machineId) ?? [])].sort((a, b) => a.sequence - b.sequence)
       const index = queue.findIndex((item) => item.id === taskId)
       const target = Math.max(0, Math.min(queue.length - 1, index + (direction === 'up' ? -1 : 1)))
       if (target !== index) void prepareMove(taskId, task.machineId, target)
@@ -879,13 +1117,15 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     const targetIndex = machineIndex + (direction === 'previous-machine' ? -1 : 1)
     const machine = machines.value[targetIndex]
     if (!machine) return
-    const queueLength = tasks.value.filter((item) => item.machineId === machine.id).length
+    const queueLength = tasksByMachine.value.get(machine.id)?.length ?? 0
     void prepareMove(taskId, machine.id, queueLength)
   }
 
   async function pollEvents() {
-    if (sourceMode.value !== 'live' || pollingEvents.value) return
+    if (sourceMode.value !== 'live' || !hasFormalSnapshot.value || pollingEvents.value) return
     pollingEvents.value = true
+    let draftCollisionDetected = false
+    setAsyncFeedback('poll', 'pending', 'info', '正在检查排产更新')
     try {
       const response = await fetchIncrementalEvents(factoryId.value, pollingRevision.value)
       let needsPlanRefresh = false
@@ -900,7 +1140,8 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
         if (typeof detail.plan_revision === 'number' && plan.value) plan.value = { ...plan.value, revision: detail.plan_revision }
         if (!taskSnapshots.length && !orderSnapshots.length && (['task', 'order', 'plan'].includes(event.entityType) || event.eventType === 'import_confirmed')) needsPlanRefresh = true
         if (Object.values(cellDrafts.value).some((draft) => draft.taskId === event.entityId || draft.orderId === event.entityId)) {
-          saveMessage.value = '检测到其他用户更新了正在编辑的实体；本地草稿未覆盖，请保存时处理 revision 对比。'
+          draftCollisionDetected = true
+          saveMessage.value = '检测到其他用户更新了正在编辑的实体；本地草稿未覆盖，请保存时处理版本对比。'
         }
       }
       if (needsPlanRefresh) {
@@ -913,9 +1154,18 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
       response.events.forEach((event) => merged.set(event.id, event))
       events.value = [...merged.values()].sort((a, b) => b.sequence - a.sequence).slice(0, 200)
       pollingRevision.value = Math.max(pollingRevision.value, response.latestSequence)
-      if (response.events.length) lastSyncedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      lastSyncedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      syncHealth.value = 'live'; syncFailureKind.value = null; sourceMessage.value = '正式数据库'
+      setAsyncFeedback(
+        'poll',
+        'succeeded',
+        draftCollisionDetected ? 'warning' : 'info',
+        draftCollisionDetected ? '已同步其他用户更新，本地草稿保持不变' : response.events.length ? `已同步 ${response.events.length} 条排产更新` : '排产数据已是最新',
+      )
     } catch (error) {
-      saveMessage.value = `增量同步暂时失败：${getApiErrorMessage(error)}`
+      syncHealth.value = 'stale'; syncFailureKind.value = classifySchedulingLoadFailure(error).kind
+      sourceMessage.value = `数据同步暂时中断：${getApiErrorMessage(error)}`
+      setAsyncFeedback('poll', 'failed', 'warning', '增量同步暂时失败，当前继续显示最近正式数据')
     } finally {
       pollingEvents.value = false
     }
@@ -923,11 +1173,13 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
 
   function setFactory(value: string) {
     if (!(value in factoryNames)) return false
+    if (value === factoryId.value) return true
     if (pendingEditCount.value) {
       saveMessage.value = '存在未保存的规划修改，切换厂区前请先保存或放弃。'
       return false
     }
     factoryId.value = value as FactoryId
+    restoreLayoutPreferences()
     cellDrafts.value = {}
     revisionConflict.value = null
     movePreview.value = null
@@ -936,34 +1188,118 @@ export const useInjectionSchedulingV2Store = defineStore('injection-scheduling-v
     autoScheduleRuns.value = []
     autoScheduleError.value = ''
     saveMessage.value = ''
+    asyncFeedback.value = null
     phase5Analytics.value = null
     phase5AnalyticsError.value = ''
-    executionPublishedPlan.value = emptyPlanSlice()
-    planningDraftPlan.value = emptyPlanSlice()
-    activePlanSlice.value = 'execution'
+    clearWorkspaceData()
+    sourceMode.value = 'live'
+    sourceMessage.value = '正式数据库'
+    syncHealth.value = 'live'
+    syncFailureKind.value = null
+    hasFormalSnapshot.value = false
+    lastSyncedAt.value = ''
     return true
   }
-  function setPreset(preset: ColumnPreset) { activePreset.value = preset; customVisibleColumns.value = {} }
+  function setPreset(preset: ColumnPreset) {
+    activePreset.value = preset
+    activeCustomPresetId.value = null
+    customVisibleColumns.value = {}
+    frozenColumnKeys.value = [...schedulingFrozenKeysByPreset[preset]]
+    persistLayoutPreferences()
+  }
+  function setDensity(value: SchedulingDensityMode) {
+    density.value = value
+    activeCustomPresetId.value = null
+    persistLayoutPreferences()
+  }
   function toggleMachine(machineId: string) { collapsedMachineIds.value = collapsedMachineIds.value.includes(machineId) ? collapsedMachineIds.value.filter((id) => id !== machineId) : [...collapsedMachineIds.value, machineId] }
-  function toggleColumn(key: string) { customVisibleColumns.value = { ...customVisibleColumns.value, [key]: !(customVisibleColumns.value[key] ?? visibleColumns.value.some((column) => column.key === key)) } }
+  function toggleColumn(key: string) {
+    const nextVisible = !(customVisibleColumns.value[key] ?? visibleColumns.value.some((column) => column.key === key))
+    customVisibleColumns.value = { ...customVisibleColumns.value, [key]: nextVisible }
+    if (!nextVisible) frozenColumnKeys.value = frozenColumnKeys.value.filter((frozenKey) => frozenKey !== key)
+    activeCustomPresetId.value = null
+    persistLayoutPreferences()
+  }
   function moveColumn(key: string, direction: -1 | 1) {
+    const decision = getColumnMoveDecision(columnOrder.value, key, direction, activePreset.value, frozenColumnKeys.value)
+    if (!decision.allowed || !decision.targetKey) return
     const currentIndex = columnOrder.value.indexOf(key)
-    const targetIndex = currentIndex + direction
-    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= columnOrder.value.length) return
+    const targetIndex = columnOrder.value.indexOf(decision.targetKey)
     const next = [...columnOrder.value]
     ;[next[currentIndex], next[targetIndex]] = [next[targetIndex]!, next[currentIndex]!]
     columnOrder.value = next
+    activeCustomPresetId.value = null
+    persistLayoutPreferences()
   }
-  function resetColumns() { customVisibleColumns.value = {}; columnWidths.value = {}; columnOrder.value = schedulingColumns.map((column) => String(column.key)) }
+  function resizeColumn(key: string, width: number) {
+    let nextWidth = Math.max(54, Math.min(420, Math.round(width)))
+    if (frozenColumnKeys.value.includes(key)) {
+      const otherFrozenWidth = schedulingFrozenWidth(frozenColumnKeys.value.filter((frozenKey) => frozenKey !== key), columnWidths.value)
+      nextWidth = Math.min(nextWidth, Math.max(54, maxSchedulingFrozenWidth - otherFrozenWidth))
+    }
+    columnWidths.value = { ...columnWidths.value, [key]: nextWidth }
+    activeCustomPresetId.value = null
+    persistLayoutPreferences()
+  }
+  function toggleFrozenColumn(key: string) {
+    const decision = frozenToggleDecision(key)
+    if (!decision.allowed) return false
+    const next = frozenColumnKeys.value.includes(key)
+      ? frozenColumnKeys.value.filter((frozenKey) => frozenKey !== key)
+      : [...frozenColumnKeys.value, key]
+    const nextSet = new Set(next)
+    frozenColumnKeys.value = normalizeSchedulingColumnOrder(columnOrder.value, activePreset.value, next)
+      .filter((columnKey) => nextSet.has(columnKey))
+    activeCustomPresetId.value = null
+    persistLayoutPreferences()
+    return true
+  }
+  function resetColumns() {
+    activeCustomPresetId.value = null
+    customVisibleColumns.value = {}
+    columnWidths.value = {}
+    columnOrder.value = [...schedulingDefaultColumnOrder]
+    frozenColumnKeys.value = [...schedulingFrozenKeysByPreset[activePreset.value]]
+    persistLayoutPreferences()
+  }
+  function saveCustomPreset(name: string) {
+    const normalizedName = name.trim().replace(/\s+/g, ' ').slice(0, 40)
+    if (!normalizedName) return null
+    const existing = customPresets.value.find((preset) => preset.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase())
+    const id = existing?.id ?? `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const preset: SchedulingCustomPreset = { id, name: normalizedName, layout: currentLayoutPreference() }
+    customPresets.value = [...customPresets.value.filter((item) => item.id !== id), preset].slice(-8)
+    activeCustomPresetId.value = id
+    persistLayoutPreferences()
+    return preset
+  }
+  function applyCustomPreset(id: string) {
+    const preset = customPresets.value.find((item) => item.id === id)
+    if (!preset) return false
+    applyLayoutPreference(preset.layout)
+    activeCustomPresetId.value = id
+    persistLayoutPreferences()
+    return true
+  }
+  function deleteCustomPreset(id: string) {
+    if (!customPresets.value.some((preset) => preset.id === id)) return false
+    customPresets.value = customPresets.value.filter((preset) => preset.id !== id)
+    if (activeCustomPresetId.value === id) activeCustomPresetId.value = null
+    persistLayoutPreferences()
+    return true
+  }
   function selectTask(taskId: string) { selectedTaskId.value = taskId }
   function cycleSort(key: string) { sort.value = sort.value?.key === key ? (sort.value.desc ? null : { key, desc: true }) : { key, desc: false } }
 
-  return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, executionPlan, planningPlan, executionPublishedPlan, planningDraftPlan, activePlanSlice, pollingRevision, sourceMode, sourceMessage, loading, refreshing, lastSyncedAt,
-    activeView, activePreset, search, statusFilter, riskFilter, selectedTaskId, selectedTask, selectedOrder, selectedMold, selectedMachine, inspectorTab,
-    backlogDockOpen, autoScheduleDialogOpen, columnMenuOpen, collapsedMachineIds, customVisibleColumns, columnWidths, columnOrder, sort, visibleColumns, summary, alerts, gridRows,
-    cellDrafts, pendingEditCount, timelineScrollLeft, timelineZoom, savingEdits, saveMessage, revisionConflict, movePreview, moveLoading, pollingEvents, publishingPlan, publishPlanError, withdrawingTask, withdrawTaskError, withdrawDisabledReason, canWithdraw, cancellingBacklogOrderId, cancelBacklogOrderError, canCancelBacklogOrder, canEdit, canCreateDemand, canReport, canOverride, canPublish, canManageRules, canImport, canConfirmDemand, canProposeImportProfile, canProposeMasterData, canManageImportProfiles, canReviewSharedMolds, canActivateSharedMolds, canManageFactoryCapabilities, canManageSharedMoldPrices, canExport, canManageMaster,
+  watch(() => authStore.currentUser?.id, () => restoreLayoutPreferences(), { flush: 'sync' })
+  restoreLayoutPreferences()
+
+  return { factoryId, factoryName, machines, molds, orders, tasks, backlogOrders, events, autoScheduleRuns, autoScheduleRun, autoScheduleComparisonRuns, autoScheduleLoading, autoScheduleError, plan, executionPlan, planningPlan, executionPublishedPlan, planningDraftPlan, activePlanSlice, pollingRevision, sourceMode, sourceMessage, syncHealth, syncFailureKind, hasFormalSnapshot, loading, refreshing, lastSyncedAt,
+    activeView, activePreset, density, frozenColumnKeys, frozenWidth, customPresets, activeCustomPresetId, search, statusFilter, riskFilter, selectedTaskId, selectedTask, selectedOrder, selectedMold, selectedMachine, inspectorTab,
+    backlogDockOpen, autoScheduleDialogOpen, columnMenuOpen, collapsedMachineIds, customVisibleColumns, columnWidths, columnOrder, sort, visibleColumns, summary, alerts, tasksByMachine, gridRows, machineSummaryById,
+    cellDrafts, pendingEditCount, timelineScrollLeft, timelineZoom, savingEdits, saveMessage, asyncFeedback, revisionConflict, movePreview, moveLoading, pollingEvents, publishingPlan, publishPlanError, withdrawingTask, withdrawTaskError, withdrawDisabledReason, canWithdraw, cancellingBacklogOrderId, cancelBacklogOrderError, canCancelBacklogOrder, canEdit, canCreateDemand, canReport, canOverride, canPublish, canManageRules, canImport, canConfirmDemand, canProposeImportProfile, canProposeMasterData, canManageImportProfiles, canReviewSharedMolds, canActivateSharedMolds, canManageFactoryCapabilities, canManageSharedMoldPrices, canExport, canManageMaster,
     phase5Analytics, phase5AnalyticsLoading, phase5AnalyticsError,
-    load, setFactory, activatePlanSlice, setPreset, toggleMachine, toggleColumn, moveColumn, resetColumns, selectTask, cycleSort,
+    load, setFactory, activatePlanSlice, setPreset, setDensity, toggleMachine, toggleColumn, moveColumn, resizeColumn, toggleFrozenColumn, frozenToggleDecision, resetColumns, saveCustomPreset, applyCustomPreset, deleteCustomPreset, restoreLayoutPreferences, selectTask, cycleSort,
     draftValue, stageCellEdit, savePendingEdits, discardPendingEdits, prepareMove, updateMovePreview, confirmMove, moveByKeyboard, pollEvents,
     generateAutoSchedulePreview, generateAutoScheduleAlternatives, replayAutoScheduleRun, selectAutoScheduleRun, applyAutoScheduleRun, publishPlanningPlan, withdrawSelectedTask, cancelBacklog,
     loadPhase5Analytics, calibratePhase5SpeedModels }

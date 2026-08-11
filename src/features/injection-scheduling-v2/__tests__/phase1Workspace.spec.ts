@@ -26,7 +26,7 @@ describe('injection scheduling V2 workspace foundation', () => {
       'outsourcePrice', 'shiftEnd', 'duration', 'shiftPlan',
     ]))
     expect(schedulingColumns.filter((column) => column.frozen).map((column) => column.key)).toEqual([
-      'status', 'sequence', 'machineCode', 'moldA', 'moldNo', 'productName', 'orderNo', 'itemNo',
+      'status', 'machineCode', 'moldNo', 'productName',
     ])
     expect(schedulingColumns.filter((column) => column.presets.includes('full')).length).toBe(schedulingColumns.length)
   })

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>B1a 数据新鲜度去敏验收</title>
+    <style>
+      html, body, #app { min-height: 100%; margin: 0; }
+      body { background: #edf2f5; font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+      .b1a-controls { margin: 18px auto 10px; width: min(1180px, calc(100% - 32px)); display: flex; align-items: center; gap: 8px; }
+      .b1a-controls strong { margin-right: auto; color: #243c50; }
+      .b1a-controls button { padding: 7px 11px; border: 1px solid #bdcbd5; border-radius: 7px; background: #fff; color: #31485d; cursor: pointer; }
+      .b1a-controls button.active { border-color: #087a64; background: #eaf8f4; color: #087a64; font-weight: 700; }
+      .b1a-stage { margin: 0 auto; width: min(1180px, calc(100% - 32px)); overflow: hidden; border: 1px solid #cbd7df; border-radius: 10px; box-shadow: 0 12px 32px rgba(32, 54, 72, .08); background: #fff; }
+      .b1a-stage .scheduling-commandbar { border-radius: 0; }
+      .b1a-stage main { padding: 12px; }
+      .b1a-note { margin: 12px; padding: 24px; border: 1px dashed #c8d3db; border-radius: 8px; color: #6d7e8c; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./b1aFreshnessHarness.ts"></script>
+  </body>
+</html>

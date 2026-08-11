@@ -24,9 +24,12 @@ describe('注塑排产公共计划 Phase 5 导出', () => {
     })
     expect(wrapper.text()).toContain('来源兼容格式')
     expect(wrapper.text()).toContain('系统标准格式')
-    expect(wrapper.text()).toContain('isprofile-huaxing-daily-v1 · r1')
-    expect(wrapper.text()).toContain('injection-scheduling-calculation-v2')
-    expect(wrapper.text()).toContain('veryHidden')
+    expect(wrapper.get('.snapshot').text()).toContain('排产草案 · 版本 3')
+    expect(wrapper.get('.snapshot').text()).toContain('来源模板已锁定')
+    expect(wrapper.get('.snapshot').text()).not.toContain('DRAFT')
+    expect(wrapper.get('details').attributes('open')).toBeUndefined()
+    expect(wrapper.get('details').text()).toContain('isprofile-huaxing-daily-v1')
+    expect(wrapper.get('details').text()).toContain('injection-scheduling-calculation-v2')
     expect(wrapper.get('button.export-primary').attributes('disabled')).toBeUndefined()
   })
 
@@ -37,7 +40,7 @@ describe('注塑排产公共计划 Phase 5 导出', () => {
         plan: { ...sourceBoundPlan, exportProfileId: null, exportProfileRevision: null, exportBindingSource: 'SYSTEM_STANDARD' },
       },
     })
-    expect(wrapper.text()).toContain('当前计划没有 IMPORT_PROFILE binding')
+    expect(wrapper.text()).toContain('当前计划未绑定可回写的来源模板')
     expect(wrapper.text()).toContain('存在 2 项未保存修改')
     expect(wrapper.get('input[value="SOURCE_COMPATIBLE"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('button.export-primary').attributes('disabled')).toBeDefined()
