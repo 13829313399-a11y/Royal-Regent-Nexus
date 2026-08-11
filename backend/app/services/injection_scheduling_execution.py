@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, time
 from decimal import Decimal
 from itertools import pairwise
@@ -10,7 +11,18 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import (
+    and_,
+    case,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    true,
+    union_all,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -70,6 +82,59 @@ from app.schemas.injection_scheduling_execution import (
 )
 from app.services.auth import AuthContext
 from app.services.injection_scheduling import require_injection_scheduling_factory
+
+
+@dataclass(frozen=True, slots=True)
+class InjectionSchedulingAIPlanSummary:
+    plan_id: str
+    business_date: str
+    status: str
+    revision: int
+    task_count: int
+    running_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class InjectionSchedulingAIPlanContext:
+    factory_id: str
+    as_of: str
+    execution_published: InjectionSchedulingAIPlanSummary | None
+    planning_draft: InjectionSchedulingAIPlanSummary | None
+    polling_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class InjectionSchedulingAIBacklogOrder:
+    order_id: str
+    order_no: str
+    item_no: str
+    product_name: str
+    mold_no: str
+    priority_code: str
+    delivery_due_date: str
+    order_quantity: float
+    outstanding_quantity: float
+    mold_enrichment_status: str
+    source_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class InjectionSchedulingAIBacklogPage:
+    factory_id: str
+    as_of: str
+    source_scope: str
+    total: int
+    limit: int
+    offset: int
+    items: tuple[InjectionSchedulingAIBacklogOrder, ...]
+
+    @property
+    def returned(self) -> int:
+        return len(self.items)
+
+    @property
+    def truncated(self) -> bool:
+        return self.offset + self.returned < self.total
 
 
 def _now() -> str:
@@ -1213,6 +1278,344 @@ def progress_adjustment_out(
     )
 
 
+def read_ai_plan_context(
+    db: Session,
+    factory_id: str,
+) -> InjectionSchedulingAIPlanContext:
+    factory_id = require_injection_scheduling_factory(factory_id)
+    slot_names = union_all(
+        select(literal("PUBLISHED").label("slot_status")),
+        select(literal("DRAFT").label("slot_status")),
+    ).cte("ai_plan_slot_names")
+    candidates = (
+        select(
+            InjectionSchedulingPlan.id.label("plan_id"),
+            InjectionSchedulingPlan.business_date.label("business_date"),
+            InjectionSchedulingPlan.status.label("plan_status"),
+            InjectionSchedulingPlan.revision.label("plan_revision"),
+            func.row_number()
+            .over(
+                partition_by=InjectionSchedulingPlan.status,
+                order_by=(
+                    case(
+                        (
+                            InjectionSchedulingPlan.status == "PUBLISHED",
+                            InjectionSchedulingPlan.published_at,
+                        ),
+                        else_=InjectionSchedulingPlan.updated_at,
+                    ).desc(),
+                    InjectionSchedulingPlan.updated_at.desc(),
+                    InjectionSchedulingPlan.id.desc(),
+                ),
+            )
+            .label("slot_rank"),
+        )
+        .where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.status.in_(("PUBLISHED", "DRAFT")),
+        )
+        .cte("ai_plan_candidates")
+    )
+    task_counts = (
+        select(
+            InjectionSchedulingTask.plan_id.label("plan_id"),
+            func.count(InjectionSchedulingTask.id).label("task_count"),
+            func.sum(
+                case(
+                    (
+                        (
+                            InjectionSchedulingTask.execution_status == "RUNNING"
+                        )
+                        & InjectionSchedulingTask.active_execution.is_(True),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("running_count"),
+        )
+        .where(InjectionSchedulingTask.factory_id == factory_id)
+        .group_by(InjectionSchedulingTask.plan_id)
+        .cte("ai_plan_task_counts")
+    )
+    polling_revision = (
+        select(func.coalesce(func.max(InjectionSchedulingAuditEvent.sequence), 0))
+        .where(InjectionSchedulingAuditEvent.factory_id == factory_id)
+        .scalar_subquery()
+    )
+    statement = (
+        select(
+            slot_names.c.slot_status,
+            candidates.c.plan_id,
+            candidates.c.business_date,
+            candidates.c.plan_status,
+            candidates.c.plan_revision,
+            func.coalesce(task_counts.c.task_count, 0).label("task_count"),
+            func.coalesce(task_counts.c.running_count, 0).label("running_count"),
+            polling_revision.label("polling_revision"),
+        )
+        .select_from(
+            slot_names.outerjoin(
+                candidates,
+                and_(
+                    candidates.c.plan_status == slot_names.c.slot_status,
+                    candidates.c.slot_rank == 1,
+                ),
+            ).outerjoin(task_counts, task_counts.c.plan_id == candidates.c.plan_id)
+        )
+        .order_by(
+            case((slot_names.c.slot_status == "PUBLISHED", 0), else_=1)
+        )
+    )
+    rows = db.execute(statement).mappings().all()
+    summaries: dict[str, InjectionSchedulingAIPlanSummary] = {}
+    polling_value = 0
+    for row in rows:
+        polling_value = int(row["polling_revision"] or 0)
+        plan_id = row["plan_id"]
+        if plan_id is None:
+            continue
+        slot_status = str(row["slot_status"])
+        summaries[slot_status] = InjectionSchedulingAIPlanSummary(
+            plan_id=str(plan_id),
+            business_date=str(row["business_date"]),
+            status=str(row["plan_status"]),
+            revision=int(row["plan_revision"]),
+            task_count=int(row["task_count"] or 0),
+            running_count=int(row["running_count"] or 0),
+        )
+
+    return InjectionSchedulingAIPlanContext(
+        factory_id=factory_id,
+        as_of=_now(),
+        execution_published=summaries.get("PUBLISHED"),
+        planning_draft=summaries.get("DRAFT"),
+        polling_revision=polling_value,
+    )
+
+
+def count_backlog_orders(db: Session, factory_id: str) -> int:
+    factory_id = require_injection_scheduling_factory(factory_id)
+    scope, _source_context = _backlog_scope(factory_id)
+    statement = select(func.count(scope.c.order_id)).select_from(scope)
+    return int(db.scalar(statement) or 0)
+
+
+def list_backlog_orders_page(
+    db: Session,
+    factory_id: str,
+    *,
+    limit: int,
+    offset: int,
+) -> InjectionSchedulingAIBacklogPage:
+    factory_id = require_injection_scheduling_factory(factory_id)
+    if limit < 1 or limit > 50:
+        raise ValueError("backlog page limit must be between 1 and 50")
+    if offset < 0:
+        raise ValueError("backlog page offset must not be negative")
+
+    statement = _backlog_page_statement(
+        factory_id,
+        limit=limit,
+        offset=offset,
+    )
+    rows = db.execute(statement).mappings().all()
+    total = int(rows[0]["_total"] or 0)
+    items = tuple(
+        _ai_backlog_order_from_row(row)
+        for row in rows
+        if row["order_id"] is not None
+    )
+    return InjectionSchedulingAIBacklogPage(
+        factory_id=factory_id,
+        as_of=_now(),
+        source_scope=str(rows[0]["_source_scope"]),
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=items,
+    )
+
+
+def _backlog_page_statement(
+    factory_id: str,
+    *,
+    limit: int,
+    offset: int,
+):
+    scope, source_context = _backlog_scope(factory_id)
+    page = (
+        select(scope)
+        .order_by(*_backlog_ordering(scope.c))
+        .limit(limit)
+        .offset(offset)
+        .cte("ai_backlog_page")
+    )
+    total = (
+        select(func.count(scope.c.order_id).label("_total"))
+        .select_from(scope)
+        .cte("ai_backlog_total")
+    )
+    return (
+        select(total.c._total, source_context.c._source_scope, page)
+        .select_from(
+            total.join(source_context, true()).outerjoin(page, true())
+        )
+        .order_by(*_backlog_ordering(page.c))
+    )
+
+
+def _backlog_scope(factory_id: str) -> tuple[Any, Any]:
+    draft_plan = (
+        select(InjectionSchedulingPlan.id.label("plan_id"))
+        .where(
+            InjectionSchedulingPlan.factory_id == factory_id,
+            InjectionSchedulingPlan.status == "DRAFT",
+        )
+        .cte("ai_backlog_draft_plan")
+    )
+    draft_exists = select(draft_plan.c.plan_id).exists()
+
+    draft_scope = _backlog_scope_select(
+        factory_id,
+        quantity=InjectionSchedulingPlanOrderState.order_quantity,
+        completed=InjectionSchedulingPlanOrderState.completed_quantity,
+        due_date=InjectionSchedulingPlanOrderState.delivery_due_date,
+    ).join(
+        InjectionSchedulingPlanOrderState,
+        (
+            InjectionSchedulingPlanOrderState.order_id
+            == InjectionSchedulingOrder.id
+        )
+        & (InjectionSchedulingPlanOrderState.factory_id == factory_id),
+    ).join(
+        draft_plan,
+        InjectionSchedulingPlanOrderState.plan_id == draft_plan.c.plan_id,
+    ).where(
+        InjectionSchedulingOrder.factory_id == factory_id,
+        InjectionSchedulingPlanOrderState.status == "BACKLOG",
+    )
+    global_scope = _backlog_scope_select(
+        factory_id,
+        quantity=InjectionSchedulingOrder.order_quantity,
+        completed=InjectionSchedulingOrder.completed_quantity,
+        due_date=InjectionSchedulingOrder.delivery_due_date,
+    ).where(
+        InjectionSchedulingOrder.factory_id == factory_id,
+        InjectionSchedulingOrder.status == "BACKLOG",
+        ~draft_exists,
+    )
+    scope = draft_scope.union_all(global_scope).cte("ai_backlog_scope")
+    source_context = (
+        select(
+            case(
+                (draft_exists, "PLANNING_DRAFT"),
+                else_="GLOBAL_BACKLOG",
+            ).label("_source_scope")
+        )
+        .cte("ai_backlog_context")
+    )
+    return scope, source_context
+
+
+def _backlog_scope_select(
+    factory_id: str,
+    *,
+    quantity: Any,
+    completed: Any,
+    due_date: Any,
+):
+    return (
+        select(
+            InjectionSchedulingOrder.id.label("order_id"),
+            InjectionSchedulingOrder.order_no,
+            InjectionSchedulingOrder.item_no,
+            InjectionSchedulingOrder.product_name,
+            InjectionSchedulingOrder.mold_id,
+            InjectionSchedulingOrder.mold_definition_id,
+            InjectionSchedulingOrder.priority_code,
+            InjectionSchedulingOrder.source_type,
+            InjectionSchedulingOrder.lineage_json,
+            InjectionSchedulingMold.mold_no,
+            InjectionSchedulingMoldDefinition.display_mold_no,
+            InjectionSchedulingMoldDefinition.canonical_mold_no,
+            quantity.label("effective_quantity"),
+            completed.label("effective_completed"),
+            due_date.label("effective_due_date"),
+        )
+        .select_from(InjectionSchedulingOrder)
+        .outerjoin(
+            InjectionSchedulingMold,
+            (InjectionSchedulingMold.id == InjectionSchedulingOrder.mold_id)
+            & (InjectionSchedulingMold.factory_id == factory_id),
+        )
+        .outerjoin(
+            InjectionSchedulingMoldDefinition,
+            InjectionSchedulingMoldDefinition.id
+            == InjectionSchedulingOrder.mold_definition_id,
+        )
+    )
+
+
+def _backlog_ordering(columns: Any) -> tuple[Any, ...]:
+    priority_rank = case(
+        (columns.priority_code == "CRITICAL", 0),
+        (columns.priority_code == "URGENT", 1),
+        else_=2,
+    )
+    blank_due_date = case((columns.effective_due_date == "", 1), else_=0)
+    return (
+        priority_rank,
+        blank_due_date,
+        columns.effective_due_date,
+        columns.order_no,
+        columns.item_no,
+        columns.order_id,
+    )
+
+
+def _ai_backlog_order_from_row(row: Any) -> InjectionSchedulingAIBacklogOrder:
+    lineage = _load_json(str(row["lineage_json"] or "{}"), {})
+    if not isinstance(lineage, dict):
+        lineage = {}
+    mold_no = next(
+        (
+            str(value).strip()
+            for value in (
+                row["mold_no"],
+                row["display_mold_no"],
+                row["canonical_mold_no"],
+                lineage.get("source_mold_no"),
+            )
+            if value is not None and str(value).strip()
+        ),
+        "",
+    )
+    raw_enrichment_status = lineage.get("mold_enrichment_status")
+    if isinstance(raw_enrichment_status, str) and raw_enrichment_status.strip():
+        enrichment_status = raw_enrichment_status.strip()
+    elif row["mold_definition_id"] is not None:
+        enrichment_status = "MATCHED"
+    elif row["mold_id"] is not None:
+        enrichment_status = "LEGACY_LINKED"
+    else:
+        enrichment_status = "PENDING"
+    quantity = _decimal(row["effective_quantity"])
+    completed = _decimal(row["effective_completed"])
+    return InjectionSchedulingAIBacklogOrder(
+        order_id=str(row["order_id"]),
+        order_no=str(row["order_no"]),
+        item_no=str(row["item_no"] or ""),
+        product_name=str(row["product_name"] or ""),
+        mold_no=mold_no,
+        priority_code=str(row["priority_code"]),
+        delivery_due_date=str(row["effective_due_date"] or ""),
+        order_quantity=_float(quantity),
+        outstanding_quantity=_float(max(quantity - completed, Decimal(0))),
+        mold_enrichment_status=enrichment_status,
+        source_type=str(row["source_type"]),
+    )
+
+
 def list_backlog_orders(
     db: Session,
     factory_id: str,
@@ -1677,7 +2080,7 @@ def _auto_create_default_shared_mold_asset(
         or definition.id
     ).strip()
     identity_hash = hashlib.sha256(
-        f"{factory_id}:{definition.id}:1".encode("utf-8")
+        f"{factory_id}:{definition.id}:1".encode()
     ).hexdigest()[:12].upper()
     code_prefix = f"DEFAULT-{label}"[: 128 - len(identity_hash) - 1]
     asset = InjectionSchedulingPhysicalMoldAsset(

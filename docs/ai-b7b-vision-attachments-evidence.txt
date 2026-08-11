@@ -1,0 +1,58 @@
+AI-B7B 图片理解安全实现与验收证据
+==================================
+
+状态日期：2026-08-11
+
+范围
+----
+
+- 用户已明确批准把当前请求中主动选择的截图或业务图片发送至阿里云百炼华北2
+  （北京）服务。
+- 该批准不等于供应商零留存承诺，也不替代独立法律意见；每批图片仍需展示
+  `aliyun-cn-beijing-v1` 提示并与本批附件 ID 精确绑定。
+- 只在经过服务端验证的注塑排程 Page Context 中开放附件；其它页面保持纯文本。
+- 未引入附件持久化、对象存储、内置工具、业务写入或自动重试。
+
+运行时合同
+----------
+
+- Provider / Region / Model：qwen / cn-beijing / qwen3.7-plus。
+- Endpoint：由 Workspace ID 推导的 HTTPS
+  `https://<workspace>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`；Vision 模式
+  禁止 Base URL override。
+- Responses：stream=true、store=false、parallel_tool_calls=false、tools=()；每个
+  含图请求只调用 Provider 一次。
+- 请求顺序：认证 -> Vision runtime contract -> 服务端 Page Context -> 图片解码。
+- 图片来源标记：USER_PROVIDED；模型数值/描述标记：MODEL_INFERENCE。
+
+附件边界
+--------
+
+- PNG/JPEG/WebP；真实 MIME、Magic、容器终止、Pillow 解码一致。
+- 单图 <=4 MiB，最多3图，原始合计 <=12 MiB。
+- 单图 <=16,000,000 像素，请求合计 <=24,000,000 像素；总预算在完整解码前检查。
+- 拒绝空、损坏、动画、假 MIME、尾随数据和 PNG+ZIP polyglot。
+- EXIF/元数据剥离并安全重编码；应用持有的可变 bytearray 在成功、错误、超时和
+  取消路径清零。Python/SDK/HTTP 栈的不可变副本只能及时释放引用，不宣称密码学擦除。
+- SSE 使用 `private, no-store, no-transform`；模型输出在发送前整段检查 Data URL、
+  跨 delta 且插入 ASCII 空白的长 Base64，并限制为 65,536 字符。
+- Nginx AI 路由关闭请求/响应 buffering，避免把图片请求体写入 Nginx 临时文件。
+
+验证证据
+--------
+
+- 北京真实 Provider Canary：32 x 32 四象限合成 PNG，经当前 sanitizer -> Provider
+  路径通过；classification=passed_sanitized_image_stream。未使用客户图片或业务数据。
+- 后端附件/Provider、API、超时/取消、Page Context、泄漏、Request-ID 与邻接回归均
+  使用临时数据库或合成数据；真实 Key 不写入测试、日志、示例或本文件。
+- 前端覆盖文件选择、粘贴、拖入、格式/尺寸/总像素、逐次同意、路由/厂区变化、
+  FileReader 中止、Object URL/Data URL 清理、Vision Flag 隐藏和纯文本回归。
+
+生产门
+------
+
+- 仓库示例与生产 Vision Flag 保持 false。
+- 当前仓库 Nginx/Compose 仅暴露 HTTP 80；AI-B8 或任何真实客户图片公网试点前，
+  必须验证外层 ALB/CDN 的 TLS/HSTS，或补齐并实测 HTTPS 443。
+- B8 仍需确定服务器侧 Pilot allowlist/`ai:use`、用户与厂区、速率、预算、告警和
+  故障演练。B7B 图片批准不自动批准 B10/B12 的客户工作簿/文档外发。

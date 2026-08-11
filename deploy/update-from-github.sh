@@ -17,6 +17,61 @@ fail() {
   exit 1
 }
 
+capture_environment_manifest() {
+  env_file="$1"
+  manifest_path="$2"
+  checksum_path="$3"
+
+  # Backups must never duplicate runtime secret values. Record only valid
+  # variable names and a checksum so operators can prove which unchanged
+  # server-side secret file was used for the deployment.
+  awk '
+    {
+      line = $0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      equals = index(line, "=")
+      if (equals == 0) next
+      key = substr(line, 1, equals - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (key ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print key
+    }
+  ' "$env_file" | LC_ALL=C sort -u > "$manifest_path"
+  sha256sum "$env_file" | awk '{ print $1 "  runtime-environment" }' > "$checksum_path"
+  chmod 600 "$manifest_path" "$checksum_path"
+}
+
+read_env_value() {
+  key="$1"
+  awk -v wanted="$key" '
+    {
+      line = $0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      equals = index(line, "=")
+      if (equals == 0) next
+      candidate = substr(line, 1, equals - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", candidate)
+      if (candidate == wanted) value = substr(line, equals + 1)
+    }
+    END { print value }
+  ' "$ENV_FILE" | tr -d '\r'
+}
+
+capture_container_metadata() {
+  for container_id in "$@"; do
+    docker inspect --format 'id={{.Id}}
+name={{.Name}}
+image={{.Image}}
+config_image={{.Config.Image}}
+created={{.Created}}
+state={{.State.Status}}
+health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}
+restart_count={{.RestartCount}}
+networks={{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}
+mounts={{range .Mounts}}{{.Type}}:{{.Destination}} {{end}}
+---' "$container_id"
+  done
+}
+
 container_health() {
   docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1"
 }
@@ -93,10 +148,10 @@ create_rollback_artifact() {
 
   rootfs_name="${service_label}-container-rootfs.tar"
   rootfs_path="$artifact_dir/$rootfs_name"
-  inspect_path="$artifact_dir/${service_label}-container-inspect.json"
+  metadata_path="$artifact_dir/${service_label}-container-metadata.txt"
 
   echo "$service_label image object $image_id is unavailable; exporting the running container rootfs"
-  docker inspect "$container_id" > "$inspect_path"
+  capture_container_metadata "$container_id" > "$metadata_path"
   docker export "$container_id" > "$rootfs_path"
   [ -s "$rootfs_path" ] || fail "$service_label container rootfs export is empty"
   (
@@ -114,7 +169,7 @@ create_rollback_artifact() {
     echo "missing_source_image=$image_id"
     echo "rootfs=$rootfs_path"
     echo "rootfs_sha256=$rootfs_path.sha256"
-    echo "container_inspect=$inspect_path"
+    echo "container_metadata=$metadata_path"
   } > "$record_path"
 }
 
@@ -137,10 +192,16 @@ capture_database_state() {
 }
 
 candidate_id=""
+ai_control_volume=""
+ai_disable_marker_preexisting=0
+ai_disable_marker_created=0
 cleanup_candidate() {
   if [ -n "$candidate_id" ]; then
     echo "Deployment stopped before cutover completed; leaving API candidate $candidate_id running." >&2
     echo "After recovery, remove it with: docker rm -f $candidate_id" >&2
+  fi
+  if [ "$ai_disable_marker_created" -eq 1 ]; then
+    echo "AI runtime disable marker remains active because deployment did not complete." >&2
   fi
 }
 trap cleanup_candidate EXIT INT TERM
@@ -166,6 +227,24 @@ web_id="$(compose ps -q web)"
 [ "$(container_health "$api_id")" = "healthy" ] || fail "API container is not healthy"
 [ "$(container_health "$web_id")" = "healthy" ] || fail "Web container is not healthy"
 
+ai_pilot_enabled="$(read_env_value AI_PILOT_ENABLED)"
+case "$ai_pilot_enabled" in
+  true)
+    [ "$(read_env_value AI_RUNTIME_DISABLE_PATH)" = "/app/backend/control/ai.disabled" ] \
+      || fail "AI Pilot requires the approved runtime disable path"
+    ai_control_volume="$(
+      docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/backend/control"}}{{.Name}}{{end}}{{end}}' "$api_id"
+    )"
+    [ -n "$ai_control_volume" ] || fail "AI Pilot control volume is not mounted"
+    if docker run --rm --network none -v "$ai_control_volume:/control:ro" \
+      postgres:16-alpine test -f /control/ai.disabled; then
+      ai_disable_marker_preexisting=1
+    fi
+    ;;
+  false|"") ;;
+  *) fail "AI_PILOT_ENABLED must be true or false" ;;
+esac
+
 old_commit="$(git rev-parse HEAD)"
 git fetch --prune origin
 target_commit="$(git rev-parse "$UPSTREAM")"
@@ -187,8 +266,10 @@ chmod 700 "$backup_dir"
 printf '%s\n' "$old_commit" > "$backup_dir/old-commit.txt"
 printf '%s\n' "$target_commit" > "$backup_dir/target-commit.txt"
 git diff --name-only "$old_commit" "$target_commit" > "$backup_dir/changed-files.txt"
-cp "$ENV_FILE" "$backup_dir/environment.snapshot"
-chmod 600 "$backup_dir/environment.snapshot"
+capture_environment_manifest \
+  "$ENV_FILE" \
+  "$backup_dir/environment.keys.txt" \
+  "$backup_dir/environment.sha256"
 cp "$COMPOSE_FILE" "$backup_dir/compose.snapshot.yml"
 for snapshot_file in Dockerfile.backend Dockerfile.frontend nginx.prod.conf deploy/update-from-github.sh; do
   if [ -f "$snapshot_file" ]; then
@@ -197,7 +278,8 @@ for snapshot_file in Dockerfile.backend Dockerfile.frontend nginx.prod.conf depl
 done
 
 compose ps > "$backup_dir/containers-before.txt"
-docker inspect "$db_id" "$api_id" "$web_id" > "$backup_dir/container-inspect-before.json"
+capture_container_metadata "$db_id" "$api_id" "$web_id" \
+  > "$backup_dir/container-metadata-before.txt"
 capture_database_state > "$backup_dir/database-state-before.txt"
 compose exec -T db sh -lc 'pg_dump --format=custom --username="$POSTGRES_USER" "$POSTGRES_DB"' \
   > "$backup_dir/database.dump"
@@ -213,7 +295,14 @@ git merge --ff-only "$target_commit"
 echo "Building API and Web images while the current service remains online"
 compose build api web
 
-if [ -z "$migration_changes" ]; then
+if [ "$ai_pilot_enabled" = "true" ] && [ "$ai_disable_marker_preexisting" -eq 0 ]; then
+  echo "Disabling AI at the shared runtime control boundary before API cutover"
+  docker run --rm --network none -v "$ai_control_volume:/control" postgres:16-alpine \
+    sh -c 'umask 077; : > /control/ai.disabled'
+  ai_disable_marker_created=1
+fi
+
+if [ -z "$migration_changes" ] && [ "$ai_pilot_enabled" != "true" ]; then
   network_name="$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$api_id")"
   [ -n "$network_name" ] || fail "Cannot determine the production Docker network"
   new_api_image_ref="$(docker inspect --format '{{.Config.Image}}' "$api_id")"
@@ -225,6 +314,7 @@ if [ -z "$migration_changes" ]; then
   candidate_id="$(docker run -d \
     --name "$candidate_name" \
     --env-file "$ENV_FILE" \
+    --volumes-from "$api_id" \
     --network "$network_name" \
     --network-alias api \
     "$new_api_image")"
@@ -243,8 +333,13 @@ if [ -z "$migration_changes" ]; then
   docker rm -f "$candidate_id" >/dev/null
   candidate_id=""
 else
-  echo "Alembic migration changes detected; using the health-gated maintenance-window path"
-  printf '%s\n' "$migration_changes"
+  echo "Using the health-gated single-API maintenance-window path"
+  if [ -n "$migration_changes" ]; then
+    echo "Alembic migration changes detected:"
+    printf '%s\n' "$migration_changes"
+  else
+    echo "AI Pilot is enabled; avoiding concurrent in-process limiter instances"
+  fi
   compose up -d --no-deps api
   api_id="$(compose ps -q api)"
   wait_for_healthy "$api_id" "API"
@@ -256,7 +351,8 @@ fi
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1/health > "$backup_dir/health.json"
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1/ > "$backup_dir/home.html"
 compose ps > "$backup_dir/containers-after.txt"
-docker inspect "$db_id" "$api_id" "$web_id" > "$backup_dir/container-inspect-after.json"
+capture_container_metadata "$db_id" "$api_id" "$web_id" \
+  > "$backup_dir/container-metadata-after.txt"
 capture_database_state > "$backup_dir/database-state-after.txt"
 diff -u "$backup_dir/database-state-before.txt" "$backup_dir/database-state-after.txt" \
   > "$backup_dir/database-state.diff" || true
@@ -270,3 +366,6 @@ echo "Database container preserved: $db_id"
 echo "Verified backup: $backup_dir/database.dump"
 echo "Rollback images: rrnexus-api:rollback-$timestamp and rrnexus-web:rollback-$timestamp"
 echo "Rollback evidence: $backup_dir/api-rollback-artifact.txt and $backup_dir/web-rollback-artifact.txt"
+if [ "$ai_disable_marker_created" -eq 1 ]; then
+  echo "AI remains disabled by the runtime marker; run the two-stage Pilot readiness procedure before removing it."
+fi

@@ -184,11 +184,13 @@ APP_DIR=/你的实际目录 sh deploy/update-from-github.sh
 脚本采用数据保护和健康检查流程：
 
 1. 确认生产工作区干净，并检查 DB、API、Web 都处于健康状态。
-2. 仅接受到 `origin/main` 的快进更新；更新前创建 PostgreSQL custom-format 备份、校验和、恢复清单以及容器/配置快照。
+2. 仅接受到 `origin/main` 的快进更新；更新前创建 PostgreSQL custom-format 备份、校验和、恢复清单，以及不含环境变量值的容器元数据和配置键名清单。脚本不会再复制 `.env.production` 或归档完整 `docker inspect`。
 3. 保持旧服务在线完成 API、Web 镜像构建，并保留带时间戳的 API/Web 回滚镜像。
-4. 没有 Alembic 变更时，先启动健康的 API 候选容器，再依次替换 Web 和正式 API；Nginx 会动态解析 API 容器地址。
+4. 没有 Alembic 变更且 AI Pilot 未启用时，先启动继承正式 API 持久 volume 的健康候选容器，再依次替换 Web 和正式 API；Nginx 会动态解析 API 容器地址。
 5. 检测到 Alembic 变更时自动改用维护窗口路径，避免新旧代码同时访问可能不兼容的数据库结构。
 6. 每个服务替换后都等待健康状态，最后验证 `/health`、首页和备份校验和。数据库容器和数据卷不会被重建。
+
+当 `AI_PILOT_ENABLED=true` 时，脚本不会启动并行 API candidate。它会在 API 切换前通过共享 control volume 创建关闭标记并使用单 API 维护窗口路径；健康检查通过后仍保留标记，必须由运维完成 13.2 的两阶段就绪检查后再手工移除。部署失败或原本已经存在的标记同样会保持 AI 关闭。初始 Pilot 的并发、分钟速率和日预算是单进程内状态，API 重启后会重置，因此禁止通过多 worker、多个 API 副本或频繁重启规避限制；横向扩展前必须迁移到共享原子限流/预算存储。
 
 可通过 `BACKUP_ROOT` 和 `HEALTH_TIMEOUT_SECONDS` 调整备份目录及健康检查等待时间。部署中途失败且 API 候选容器仍能服务时，脚本会保留该候选容器并输出清理命令，避免自动清理导致二次中断。
 
@@ -206,9 +208,127 @@ docker compose -f docker-compose.prod.yml exec db pg_dump -U rrnexus royal_regen
 
 ## 12. HTTPS
 
-当前 compose 只配置 HTTP 80 端口。生产正式使用时建议再接 HTTPS，可以选择：
+当前 compose 只配置 HTTP 80 端口。生产正式使用时应在公网入口接入 HTTPS，可以选择：
 
 - 在 ECS 上用 Certbot 给 Nginx 配证书。
 - 在前面加一层阿里云负载均衡或 CDN，由它终止 HTTPS。
 
 未配置 HTTPS 前，不要把真实企业账号密码用于公网生产环境。
+
+对 Nexus AI Pilot，HTTPS 不是建议项而是硬门：必须验证浏览器到公网入口全程使用 HTTPS、HTTP 永久跳转到同一 HTTPS Origin，并返回至少一年 `max-age` 的 HSTS。只把 Provider 请求发往 HTTPS，不能弥补浏览器到 Nexus 仍走 HTTP 的问题。
+
+## 13. Nexus AI Pilot 安全启用与紧急关闭
+
+### 13.1 启用前配置
+
+首次部署包含 B8 的代码和 Compose 时，先保持 `AI_ENABLED=false`、`AI_PILOT_ENABLED=false`，按第 10 节完成一次正常更新，让新的只读 control volume 先就位。然后完成外层 ALB/CDN TLS 或 Nginx 443，并按 13.3 的命令先创建关闭标记。只有标记已确认存在，才在真实、未跟踪的 `.env.production` 中填写 Pilot 控制项并重建 API。这样配置切换和就绪检查期间不会提前开放 Provider 或 Tool。后续 Pilot 已启用的发布将自动使用前述单 API 维护窗口。不要把 API Key、Workspace Host、用户清单或真实环境文件提交到仓库：
+
+```dotenv
+AI_ENABLED=true
+AI_PILOT_ENABLED=true
+AI_PILOT_USER_IDS=明确批准的用户ID，多个用英文逗号分隔
+AI_PILOT_FACTORY_IDS=明确批准的厂区ID，多个用英文逗号分隔
+AI_PILOT_PUBLIC_TLS_VERIFIED=true
+AI_RUNTIME_DISABLE_PATH=/app/backend/control/ai.disabled
+AI_PILOT_MAX_CONCURRENT_PER_USER=1
+AI_PILOT_REQUESTS_PER_MINUTE=10
+AI_PILOT_DAILY_TOKEN_BUDGET=20000000
+AI_PILOT_MAX_OUTPUT_TOKENS=4096
+AI_LOG_RAW_PROMPTS=false
+AI_LOG_RAW_TOOL_RESULTS=false
+```
+
+确认关闭标记存在后，再切换配置并执行：
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production \
+  up -d --no-deps api
+docker compose -f docker-compose.prod.yml --env-file .env.production \
+  ps api
+```
+
+`AI_PILOT_PUBLIC_TLS_VERIFIED=true` 是完成外部 TLS/HSTS 实测后的运维声明，不能用它代替实测。Pilot Provider 固定为 Qwen、`cn-beijing`、`qwen3.7-plus` 和 Workspace 推导的官方 HTTPS Host；生产禁止自定义 `AI_BASE_URL`。应使用新轮换且只存在于服务器 Secret 边界中的 Key。
+
+`AI_PILOT_DAILY_TOKEN_BUDGET` 同时承担并发请求的保守 admission reservation：文字 Tool 请求会按最大轮次、每轮最多 8 个 Tool 结果及重复回放上限预留，Vision 会按原始图片字节上限预留。成功且 Provider 返回 usage 后只按真实累计 Token 对账；usage 缺失、取消或异常中断则按保守预留计费。因此不能把日预算随意改成低于单次最大预留的小数值；就绪脚本会根据同一组限制计算并拒绝不可用配置。
+
+第一次 Pilot 建议保持 `AI_CLOUD_VISION_ENABLED=false`，先验收纯文字和只读 Tool。只有图片流程也已完成外部 TLS、逐次同意和故障演练后才单独开启 Vision。
+
+### 13.2 自动就绪检查
+
+API/Web 部署完成且关闭标记仍存在时，从生产目录执行第一阶段检查：
+
+```bash
+cd /opt/royal-regent/royal-regent-nexus
+AI_PUBLIC_ORIGIN=https://你的正式域名 \
+  sh deploy/verify-ai-pilot-readiness.sh
+```
+
+默认 `AI_PILOT_EXPECT_DISABLED_MARKER=true`，因此第一阶段会要求关闭标记保持存在。检查通过后才移除标记，并立即执行第二阶段检查：
+
+```bash
+API_ID="$(docker compose -f docker-compose.prod.yml \
+  --env-file .env.production ps -q api)"
+AI_CONTROL_VOLUME="$(docker inspect --format \
+  '{{range .Mounts}}{{if eq .Destination "/app/backend/control"}}{{.Name}}{{end}}{{end}}' \
+  "$API_ID")"
+test -n "$AI_CONTROL_VOLUME"
+docker run --rm --network none -v "$AI_CONTROL_VOLUME:/control" \
+  postgres:16-alpine rm -f /control/ai.disabled
+AI_PILOT_EXPECT_DISABLED_MARKER=false \
+AI_PUBLIC_ORIGIN=https://你的正式域名 \
+  sh deploy/verify-ai-pilot-readiness.sh
+```
+
+该脚本不会调用模型或上传业务数据。它只验证：
+
+- HTTPS 健康检查、同 Origin 的 HTTP→HTTPS 永久跳转和 HSTS；
+- 匿名访问 AI capabilities 必须返回 `401`；
+- Pilot 用户/厂区、并发、速率、预算、只读日志和 Provider 控制项已安全设置；
+- runtime control volume 在 API 中只读挂载，且关闭标记符合本阶段预期状态。
+
+脚本通过后，还必须由一个批准的 Pilot 账号在浏览器完成现场验收：登录响应的 `rr_session` Cookie 具有 `Secure`、`HttpOnly` 和 `SameSite=Lax`；非 Pilot 账号看不到入口并得到 `403`；Pilot 账号只能读取已授权厂区；停止生成、429、Provider 故障和 Tool 故障都不影响正式业务页面。不要把 Cookie 或凭据粘贴进命令、日志或验收文档。
+
+### 13.3 不重启 API 的紧急关闭
+
+`ai-control` 是独立持久化 volume，并以只读方式挂载到 API。创建空标记文件即可阻止后续 Provider/Tool 调用；正在进行的流会在下一个模型事件或工具执行边界安全终止。
+
+先从当前 API 容器取得它实际挂载的 control volume 名：
+
+```bash
+API_ID="$(docker compose -f docker-compose.prod.yml \
+  --env-file .env.production ps -q api)"
+AI_CONTROL_VOLUME="$(docker inspect --format \
+  '{{range .Mounts}}{{if eq .Destination "/app/backend/control"}}{{.Name}}{{end}}{{end}}' \
+  "$API_ID")"
+test -n "$AI_CONTROL_VOLUME"
+```
+
+紧急关闭：
+
+```bash
+docker run --rm --network none -v "$AI_CONTROL_VOLUME:/control" \
+  postgres:16-alpine touch /control/ai.disabled
+```
+
+确认标记存在且刷新浏览器后 AI 入口消失：
+
+```bash
+docker run --rm --network none -v "$AI_CONTROL_VOLUME:/control:ro" \
+  postgres:16-alpine test -f /control/ai.disabled
+```
+
+重新启用前必须先排除故障，并在标记保持存在时重新完成第一阶段就绪检查。通过后移除标记，再执行第二阶段检查：
+
+```bash
+AI_PUBLIC_ORIGIN=https://你的正式域名 \
+  sh deploy/verify-ai-pilot-readiness.sh
+docker run --rm --network none -v "$AI_CONTROL_VOLUME:/control" \
+  postgres:16-alpine rm -f /control/ai.disabled
+AI_PILOT_EXPECT_DISABLED_MARKER=false \
+AI_PUBLIC_ORIGIN=https://你的正式域名 \
+  sh deploy/verify-ai-pilot-readiness.sh
+```
+
+### 13.4 旧备份 Secret 审计
+
+旧版部署脚本曾把 `.env.production` 和完整容器 inspect 复制到备份目录。新版只保存变量键名、环境文件校验摘要和 allowlisted 容器元数据。升级后应在服务器上审计历史备份中是否存在 `environment.snapshot` 或 `container-inspect*.json`，限制备份目录访问，并轮换可能出现过的数据库密码、签名 Key、边缘 Token 和 Provider Key。未经明确确认不要自动删除数据库备份或回滚镜像。

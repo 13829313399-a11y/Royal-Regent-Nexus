@@ -7,8 +7,16 @@ export interface ApiErrorPayload {
   details?: unknown
 }
 
-export type UnauthorizedHandler = (error: AxiosError<ApiErrorPayload>) => void
-export type ForbiddenHandler = (error: AxiosError<ApiErrorPayload>) => void
+export interface AccessFailure {
+  config?: { url?: unknown }
+  response?: {
+    status?: number
+    data?: unknown
+  }
+}
+
+export type UnauthorizedHandler = (error: AccessFailure) => void
+export type ForbiddenHandler = (error: AccessFailure) => void
 
 let unauthorizedHandler: UnauthorizedHandler | null = null
 let forbiddenHandler: ForbiddenHandler | null = null
@@ -21,6 +29,25 @@ export function setForbiddenHandler(handler: ForbiddenHandler | null) {
   forbiddenHandler = handler
 }
 
+/**
+ * Route fetch-based clients through the same session/authorization handlers
+ * used by the shared Axios instance. Streaming POST responses cannot use the
+ * Axios interceptor, but a 401/403 must still have exactly one application
+ * session-expiry path.
+ */
+export function dispatchAccessFailure(status: number, url: string, data?: unknown) {
+  const failure: AccessFailure = {
+    config: { url },
+    response: { status, data },
+  }
+  if (status === 401) {
+    unauthorizedHandler?.(failure)
+  }
+  if (status === 403) {
+    forbiddenHandler?.(failure)
+  }
+}
+
 export const http: AxiosInstance = axios.create({
   baseURL: import.meta.env?.VITE_API_BASE_URL ?? '/api',
   timeout: 15000,
@@ -30,13 +57,24 @@ export const http: AxiosInstance = axios.create({
   },
 })
 
+function isExpectedCapabilityForbidden(error: AxiosError<ApiErrorPayload>) {
+  if (error.config?.skipForbiddenSessionRefresh !== true) return false
+  const requestUrl = error.config.url
+  if (typeof requestUrl !== 'string') return false
+  const requestPath = requestUrl.split('?')[0]
+  return requestPath === '/ai/capabilities' || requestPath.endsWith('/ai/capabilities')
+}
+
 http.interceptors.response.use(
   (response) => response,
   (error: AxiosError<ApiErrorPayload>) => {
     if (error.response?.status === 401) {
       unauthorizedHandler?.(error)
     }
-    if (error.response?.status === 403) {
+    if (
+      error.response?.status === 403
+      && !isExpectedCapabilityForbidden(error)
+    ) {
       forbiddenHandler?.(error)
     }
 

@@ -3,10 +3,12 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import SidebarNav from '@/components/layout/SidebarNav.vue'
 import TopBar from '@/components/layout/TopBar.vue'
+import AiAssistantDrawer from '@/features/ai-assistant/AiAssistantDrawer.vue'
+import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 
 const route = useRoute()
 const isMobileNavigationOpen = ref(false)
-let bodyOverflowBeforeNavigation = ''
+let releaseNavigationScrollLock: BodyScrollLockRelease | null = null
 let desktopMediaQuery: MediaQueryList | null = null
 
 const isFullPage = computed(() => Boolean(route.meta.fullPage))
@@ -17,12 +19,11 @@ watch(() => route.path, () => {
 
 watch(isMobileNavigationOpen, (isOpen) => {
   if (isOpen) {
-    bodyOverflowBeforeNavigation = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    releaseNavigationScrollLock ??= acquireBodyScrollLock()
     return
   }
-
-  document.body.style.overflow = bodyOverflowBeforeNavigation
+  releaseNavigationScrollLock?.()
+  releaseNavigationScrollLock = null
 })
 
 function closeNavigationOnEscape(event: KeyboardEvent) {
@@ -46,7 +47,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', closeNavigationOnEscape)
   desktopMediaQuery?.removeEventListener('change', closeNavigationAtDesktop)
-  document.body.style.overflow = bodyOverflowBeforeNavigation
+  releaseNavigationScrollLock?.()
+  releaseNavigationScrollLock = null
 })
 </script>
 
@@ -78,4 +80,7 @@ onBeforeUnmount(() => {
       </main>
     </div>
   </div>
+
+  <!-- Teleported overlay: available on full-page business routes without changing their grid. -->
+  <AiAssistantDrawer />
 </template>
