@@ -19,14 +19,19 @@ from app.schemas.carton_procurement import (
     CartonExceptionOut,
     CartonExceptionUpdate,
     CartonImportBatchOut,
+    CartonImportBatchListOut,
+    CartonHistoryOrderImportOut,
+    CartonHistoryInventoryImportOut,
     CartonInventoryBalanceOut,
     CartonInventoryMovementCreate,
     CartonInventoryMovementListOut,
     CartonInventoryMovementOut,
     CartonInventoryReversalRequest,
+    CartonOrderCancelRequest,
     CartonOrderCreate,
     CartonOrderListOut,
     CartonOrderOut,
+    CartonOrderUpdate,
     CartonReceiptConfirmRequest,
     CartonReceiptCreate,
     CartonReceiptListOut,
@@ -40,6 +45,7 @@ from app.services.auth import (
 )
 from app.services.carton_procurement import (
     CARTON_DEPARTMENTS,
+    cancel_order,
     confirm_receipt,
     create_customer,
     create_import_batch,
@@ -57,6 +63,7 @@ from app.services.carton_procurement import (
     list_customers,
     list_closings,
     list_exceptions,
+    list_import_batches,
     list_movements,
     list_orders,
     list_receipts,
@@ -64,6 +71,7 @@ from app.services.carton_procurement import (
     receipt_out,
     require_carton_factory,
     reverse_inventory_movement,
+    update_order,
     update_closing_status,
     update_customer,
     update_exception,
@@ -72,6 +80,8 @@ from app.services.carton_procurement_export import (
     XLSX_MEDIA_TYPE,
     build_purchase_order_workbook,
 )
+from app.services.carton_procurement_history_import import import_history_orders
+from app.services.carton_procurement_history_inventory import import_history_inventory
 from app.core.time import business_now
 
 
@@ -195,6 +205,52 @@ def post_order(
     return order_out(db, create_order(db, payload, current_user))
 
 
+@router.patch("/orders/{order_no}", response_model=CartonOrderOut)
+def patch_order(
+    order_no: str,
+    payload: CartonOrderUpdate,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return order_out(db, update_order(db, order_no, payload, current_user))
+
+
+@router.post("/orders/{order_no}/cancel", response_model=CartonOrderOut)
+def post_order_cancel(
+    order_no: str,
+    payload: CartonOrderCancelRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return order_out(db, cancel_order(db, order_no, payload, current_user))
+
+
+@router.post(
+    "/orders/history-imports",
+    response_model=CartonHistoryOrderImportOut,
+    status_code=201,
+)
+async def post_history_order_import(
+    factory_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(
+        db, current_user, "carton_procurement:order_write", factory_id
+    )
+    content = await file.read()
+    return import_history_orders(
+        db,
+        factory_id,
+        file.filename or "history-orders.xlsx",
+        content,
+        current_user,
+    )
+
+
 @router.get("/orders/{order_no}/purchase-order.xlsx")
 def get_purchase_order_workbook(
     order_no: str,
@@ -290,6 +346,27 @@ async def post_weekly_import(
     return create_import_batch(db, factory_id, "WEEKLY_SCHEDULE", file, content, current_user)
 
 
+@router.post("/inspection-imports", response_model=CartonImportBatchOut, status_code=201)
+async def post_inspection_import(
+    factory_id: str,
+    advance_days: int = Query(default=3, ge=0, le=30),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
+    content = await file.read()
+    return create_import_batch(
+        db,
+        factory_id,
+        "INSPECTION_SCHEDULE",
+        file,
+        content,
+        current_user,
+        import_profile={"advance_days": advance_days},
+    )
+
+
 @router.get("/receipt-imports/latest", response_model=CartonImportBatchOut | None)
 def get_latest_receipt_import(
     factory_id: str,
@@ -298,6 +375,32 @@ def get_latest_receipt_import(
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
     return get_latest_import_batch(db, factory_id, "DELIVERY_NOTE")
+
+
+@router.get("/imports", response_model=CartonImportBatchListOut)
+def get_imports(
+    factory_id: str,
+    import_type: str = Query(default="", max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    total, items = list_import_batches(
+        db,
+        factory_id,
+        import_type=import_type.strip(),
+        limit=limit,
+        offset=offset,
+    )
+    return CartonImportBatchListOut(
+        factory_id=factory_id,
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=items,
+    )
 
 
 @router.get("/imports/{batch_id}", response_model=CartonImportBatchOut)
@@ -375,6 +478,30 @@ def get_inventory_movements(
         limit=limit,
         offset=offset,
         items=items,
+    )
+
+
+@router.post(
+    "/inventory/history-imports",
+    response_model=CartonHistoryInventoryImportOut,
+    status_code=201,
+)
+async def post_history_inventory_import(
+    factory_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(
+        db, current_user, "carton_procurement:inventory_write", factory_id
+    )
+    content = await file.read()
+    return import_history_inventory(
+        db,
+        factory_id,
+        file.filename or "history-inventory.xlsx",
+        content,
+        current_user,
     )
 
 

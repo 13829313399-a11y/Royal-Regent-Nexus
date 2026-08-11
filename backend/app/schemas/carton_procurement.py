@@ -34,7 +34,7 @@ def _validate_iso_date(value: str) -> str:
 
 class CartonCustomerCreate(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
-    customer_code: str = Field(min_length=1, max_length=64)
+    customer_code: str = Field(default="", max_length=64)
     customer_name: str = Field(min_length=1, max_length=255)
     country_region: str = Field(default="", max_length=128)
     contact_name: str = Field(default="", max_length=128)
@@ -192,6 +192,59 @@ class CartonOrderCreate(BaseModel):
         return self
 
 
+class CartonOrderUpdate(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=500)
+    customer_code: str = Field(min_length=1, max_length=64)
+    customer_name: str = Field(min_length=1, max_length=255)
+    supplier_id: str | None = Field(default=None, max_length=96)
+    contract_no: str = Field(min_length=1, max_length=128)
+    item_no: str = Field(min_length=1, max_length=128)
+    product_name: str = Field(default="", max_length=255)
+    product_order_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    order_date: str
+    due_date: str
+    note: str = Field(default="", max_length=4000)
+    lines: list[CartonOrderLineCreate] = Field(min_length=1, max_length=50)
+
+    @field_validator(
+        "factory_id",
+        "reason",
+        "customer_code",
+        "customer_name",
+        "contract_no",
+        "item_no",
+        "product_name",
+        "note",
+    )
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+    @field_validator("order_date", "due_date")
+    @classmethod
+    def validate_dates(cls, value: str) -> str:
+        return _validate_iso_date(value)
+
+    @model_validator(mode="after")
+    def validate_due_date(self):
+        if self.due_date < self.order_date:
+            raise ValueError("计划交期不能早于下单日期")
+        return self
+
+
+class CartonOrderCancelRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=500)
+
+    @field_validator("factory_id", "reason")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+
 class CartonOrderLineOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -246,6 +299,19 @@ class CartonOrderListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonOrderOut]
+
+
+class CartonHistoryOrderImportOut(BaseModel):
+    factory_id: str
+    original_filename: str
+    row_count: int
+    group_count: int
+    imported_count: int
+    imported_line_count: int
+    skipped_count: int
+    imported_orders: list[str] = Field(default_factory=list)
+    skipped_orders: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class CartonReceiptLineCreate(BaseModel):
@@ -355,20 +421,29 @@ class CartonReceiptConfirmRequest(BaseModel):
 
 class CartonInventoryMovementCreate(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
-    order_line_id: str = Field(min_length=1, max_length=96)
+    order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
+    reference_movement_id: str | None = Field(default=None, min_length=1, max_length=96)
     movement_type: Literal["OUTBOUND", "ADJUSTMENT"]
     quantity: Decimal = Field(max_digits=18, decimal_places=4)
     location: str = Field(default="", max_length=128)
     document_no: str = Field(min_length=1, max_length=128)
     reason: str = Field(min_length=1, max_length=2000)
 
-    @field_validator("factory_id", "order_line_id", "location", "document_no", "reason")
+    @field_validator("factory_id", "location", "document_no", "reason")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return _strip(value)
 
+    @field_validator("order_line_id", "reference_movement_id")
+    @classmethod
+    def strip_optional_id(cls, value: str | None) -> str | None:
+        normalized = _strip(value or "")
+        return normalized or None
+
     @model_validator(mode="after")
     def validate_quantity(self):
+        if not self.order_line_id and not self.reference_movement_id:
+            raise ValueError("必须选择一条库存结存记录")
         if self.movement_type == "OUTBOUND" and self.quantity <= 0:
             raise ValueError("出库数量必须大于 0")
         if self.movement_type == "ADJUSTMENT" and self.quantity == 0:
@@ -425,6 +500,20 @@ class CartonInventoryMovementListOut(BaseModel):
     items: list[CartonInventoryMovementOut]
 
 
+class CartonHistoryInventoryImportOut(BaseModel):
+    factory_id: str
+    original_filename: str
+    row_count: int
+    imported_count: int
+    skipped_count: int
+    matched_order_line_count: int
+    standalone_count: int
+    total_quantity: Decimal
+    duplicate: bool = False
+    movement_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class CartonInventoryBalanceOut(BaseModel):
     factory_id: str
     customer_code: str
@@ -438,6 +527,7 @@ class CartonInventoryBalanceOut(BaseModel):
     unit: str
     balance: Decimal
     latest_location: str
+    latest_movement_id: str
     latest_movement_at: str
 
 
@@ -478,6 +568,7 @@ class CartonClosingOut(BaseModel):
     adjustment_quantity: Decimal
     ending_quantity: Decimal
     ending_amount: Decimal
+    currency: str
     status: CartonClosingStatus
     revision: int
     generated_by: str
@@ -494,9 +585,10 @@ class CartonImportBatchOut(BaseModel):
 
     id: str
     factory_id: str
-    import_type: Literal["DELIVERY_NOTE", "WEEKLY_SCHEDULE"]
+    import_type: Literal["DELIVERY_NOTE", "WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"]
     original_filename: str
     source_sha256: str
+    import_profile: str
     content_type: str
     source_size_bytes: int
     status: Literal["REQUIRES_REVIEW", "CONFIRMED", "REJECTED"]
@@ -505,6 +597,14 @@ class CartonImportBatchOut(BaseModel):
     created_at: str
     parse_summary: dict[str, object] = Field(default_factory=dict)
     duplicate: bool = False
+
+
+class CartonImportBatchListOut(BaseModel):
+    factory_id: str
+    total: int
+    limit: int
+    offset: int
+    items: list[CartonImportBatchOut]
 
 
 class CartonExceptionUpdate(BaseModel):

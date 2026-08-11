@@ -107,7 +107,7 @@ INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION = "20260807_0058"
 CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION = "20260807_0059"
 INJECTION_SCHEDULING_DEMAND_SHARED_MIGRATION_REVISION = "20260809_0059"
 INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
-HEAD_MIGRATION_REVISION = "20260810_0063"
+HEAD_MIGRATION_REVISION = "20260810_0064"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -4657,6 +4657,97 @@ def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path
             WHERE code LIKE 'carton_procurement:%'
             """
         ).fetchone() == (8,)
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+
+
+def test_carton_closing_currency_migration_backfills_without_changing_locked_values(tmp_path):
+    database_path = tmp_path / "carton_closing_currency_0064.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE carton_closings (
+                id VARCHAR(96) NOT NULL PRIMARY KEY,
+                factory_id VARCHAR(64) NOT NULL,
+                period VARCHAR(7) NOT NULL,
+                customer_code VARCHAR(64) NOT NULL,
+                ending_quantity NUMERIC(18, 4) NOT NULL,
+                ending_amount NUMERIC(18, 4) NOT NULL,
+                status VARCHAR(16) NOT NULL,
+                CONSTRAINT uq_carton_closing_factory_period_customer UNIQUE (factory_id, period, customer_code)
+            );
+            CREATE TABLE carton_inventory_movements (
+                id VARCHAR(96) NOT NULL PRIMARY KEY,
+                factory_id VARCHAR(64) NOT NULL,
+                customer_code VARCHAR(64) NOT NULL,
+                currency VARCHAR(8) NOT NULL,
+                occurred_at VARCHAR(40) NOT NULL
+            );
+            CREATE TABLE alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            INSERT INTO alembic_version(version_num) VALUES ('20260810_0063');
+            INSERT INTO carton_closings(
+                id, factory_id, period, customer_code,
+                ending_quantity, ending_amount, status
+            ) VALUES (
+                'CCL-HKD-LOCKED', 'huaxing', '2026-08', 'DICKIE',
+                1852, 4400.89, 'LOCKED'
+            );
+            INSERT INTO carton_inventory_movements(
+                id, factory_id, customer_code, currency, occurred_at
+            ) VALUES (
+                'CIM-HKD-1', 'huaxing', 'DICKIE', '港币', '2026-08-05T00:00:00+08:00'
+            );
+            """
+        )
+
+    env = os.environ.copy()
+    env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            HEAD_MIGRATION_REVISION,
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            """
+            SELECT ending_quantity, ending_amount, status, currency
+            FROM carton_closings WHERE id = 'CCL-HKD-LOCKED'
+            """
+        ).fetchone() == (1852, 4400.89, "LOCKED", "HKD")
+        unique_columns = {
+            tuple(
+                row[2]
+                for row in connection.execute(
+                    f"PRAGMA index_info('{index_row[1]}')"
+                ).fetchall()
+            )
+            for index_row in connection.execute(
+                "PRAGMA index_list('carton_closings')"
+            ).fetchall()
+            if index_row[2]
+        }
+        assert (
+            "factory_id",
+            "period",
+            "customer_code",
+            "currency",
+        ) in unique_columns
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_MIGRATION_REVISION,)

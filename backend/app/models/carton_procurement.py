@@ -150,11 +150,11 @@ class CartonImportBatch(Base):
     __tablename__ = "carton_import_batches"
     __table_args__ = (
         UniqueConstraint(
-            "factory_id", "import_type", "source_sha256",
+            "factory_id", "import_type", "source_sha256", "import_profile",
             name="uq_carton_import_factory_type_hash",
         ),
         CheckConstraint(
-            "import_type IN ('DELIVERY_NOTE', 'WEEKLY_SCHEDULE')",
+            "import_type IN ('DELIVERY_NOTE', 'WEEKLY_SCHEDULE', 'INSPECTION_SCHEDULE')",
             name="ck_carton_import_type",
         ),
         CheckConstraint(
@@ -168,6 +168,7 @@ class CartonImportBatch(Base):
     import_type: Mapped[str] = mapped_column(String(32), index=True)
     original_filename: Mapped[str] = mapped_column(String(255))
     source_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    import_profile: Mapped[str] = mapped_column(String(255), default="")
     content_type: Mapped[str] = mapped_column(String(128), default="")
     source_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(32), default="REQUIRES_REVIEW", index=True)
@@ -322,8 +323,8 @@ class CartonClosing(Base):
     __tablename__ = "carton_closings"
     __table_args__ = (
         UniqueConstraint(
-            "factory_id", "period", "customer_code",
-            name="uq_carton_closing_factory_period_customer",
+            "factory_id", "period", "customer_code", "currency",
+            name="uq_carton_closing_factory_period_customer_currency",
         ),
         CheckConstraint(
             "status IN ('DRAFT', 'PENDING', 'CONFIRMED', 'LOCKED')",
@@ -344,6 +345,7 @@ class CartonClosing(Base):
     adjustment_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4))
     ending_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4))
     ending_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    currency: Mapped[str] = mapped_column(String(8), default="CNY", index=True)
     status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     generated_by: Mapped[str] = mapped_column(String(64), index=True)
