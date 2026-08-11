@@ -42,9 +42,11 @@ from app.schemas.carton_procurement import (
     CartonInventoryMovementCreate,
     CartonInventoryMovementOut,
     CartonInventoryReversalRequest,
+    CartonOrderCancelRequest,
     CartonOrderCreate,
     CartonOrderLineOut,
     CartonOrderOut,
+    CartonOrderUpdate,
     CartonReceiptConfirmRequest,
     CartonReceiptCreate,
     CartonReceiptLineOut,
@@ -61,6 +63,16 @@ QUANTITY_QUANTUM = Decimal("0.0001")
 MONEY_QUANTUM = Decimal("0.0001")
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
 ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg"}
+CURRENCY_ALIASES = {
+    "RMB": "CNY",
+    "人民币": "CNY",
+    "人民币元": "CNY",
+    "¥": "CNY",
+    "￥": "CNY",
+    "港币": "HKD",
+    "港元": "HKD",
+    "HK$": "HKD",
+}
 
 
 def now_text() -> str:
@@ -69,6 +81,11 @@ def now_text() -> str:
 
 def quantity(value: Decimal | int | str) -> Decimal:
     return Decimal(value).quantize(QUANTITY_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def normalize_currency(value: str) -> str:
+    normalized = value.strip().upper()
+    return CURRENCY_ALIASES.get(normalized, normalized or "CNY")
 
 
 def require_carton_factory(factory_id: str) -> str:
@@ -183,13 +200,58 @@ def get_active_customer(db: Session, factory_id: str, customer_code: str) -> Car
     return customer
 
 
+def get_active_customer_by_name(
+    db: Session,
+    factory_id: str,
+    customer_name: str,
+) -> CartonCustomer:
+    normalized_name = " ".join(customer_name.strip().split()).casefold()
+    matches = [
+        customer
+        for customer in db.scalars(
+            select(CartonCustomer).where(
+                CartonCustomer.factory_id == factory_id,
+                CartonCustomer.status == "ACTIVE",
+            )
+        ).all()
+        if " ".join(customer.customer_name.strip().split()).casefold() == normalized_name
+    ]
+    if not matches:
+        raise HTTPException(
+            status_code=422,
+            detail=f"客户名称“{customer_name.strip()}”不存在或未启用，请先由纸箱部主管维护客户资料",
+        )
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"客户名称“{customer_name.strip()}”对应多个客户，请先合并或更正客户资料",
+        )
+    return matches[0]
+
+
 def create_customer(db: Session, payload: CartonCustomerCreate, user: AuthContext) -> CartonCustomer:
     factory_id = require_carton_factory(payload.factory_id)
     timestamp = now_text()
+    duplicate_name = next(
+        (
+            item
+            for item in db.scalars(
+                select(CartonCustomer).where(CartonCustomer.factory_id == factory_id)
+            ).all()
+            if " ".join(item.customer_name.strip().split()).casefold()
+            == " ".join(payload.customer_name.strip().split()).casefold()
+        ),
+        None,
+    )
+    if duplicate_name is not None:
+        raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称")
+    internal_code = payload.customer_code.upper() or (
+        "CUST-" + hashlib.sha256(payload.customer_name.casefold().encode("utf-8")).hexdigest()[:12].upper()
+    )
     customer = CartonCustomer(
         id=f"CCU-{uuid4().hex}",
         factory_id=factory_id,
-        customer_code=payload.customer_code.upper(),
+        customer_code=internal_code,
         customer_name=payload.customer_name,
         country_region=payload.country_region,
         contact_name=payload.contact_name,
@@ -213,7 +275,7 @@ def create_customer(db: Session, payload: CartonCustomerCreate, user: AuthContex
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="当前厂区已存在相同客户编号") from exc
+        raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称或内部编号") from exc
     db.refresh(customer)
     return customer
 
@@ -236,6 +298,23 @@ def update_customer(
     if customer.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="客户资料已被其他人更新，请刷新后重试")
     changes = payload.model_dump(exclude={"factory_id", "expected_revision"}, exclude_none=True)
+    if "customer_name" in changes:
+        normalized_name = " ".join(changes["customer_name"].strip().split()).casefold()
+        duplicate_name = next(
+            (
+                item
+                for item in db.scalars(
+                    select(CartonCustomer).where(
+                        CartonCustomer.factory_id == factory_id,
+                        CartonCustomer.id != customer.id,
+                    )
+                ).all()
+                if " ".join(item.customer_name.strip().split()).casefold() == normalized_name
+            ),
+            None,
+        )
+        if duplicate_name is not None:
+            raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称")
     if "customer_code" in changes:
         changes["customer_code"] = changes["customer_code"].upper()
     previous = {field: getattr(customer, field) for field in changes}
@@ -253,7 +332,7 @@ def update_customer(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="当前厂区已存在相同客户编号") from exc
+        raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称或内部编号") from exc
     db.refresh(customer)
     return customer
 
@@ -281,7 +360,15 @@ def _new_number(prefix: str) -> str:
     return f"{prefix}-{business_now().strftime('%y%m%d')}-{uuid4().hex[:6].upper()}"
 
 
-def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> CartonOrder:
+def create_order(
+    db: Session,
+    payload: CartonOrderCreate,
+    user: AuthContext,
+    *,
+    order_no: str | None = None,
+    commit: bool = True,
+    audit_event: str = "ORDER_CREATED",
+) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     customer = get_active_customer(db, factory_id, payload.customer_code)
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
@@ -290,7 +377,7 @@ def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> 
     order = CartonOrder(
         id=order_id,
         factory_id=factory_id,
-        order_no=_new_number("CT"),
+        order_no=order_no or _new_number("CT"),
         customer_code=customer.customer_code,
         customer_name=customer.customer_name,
         supplier_id=supplier.id,
@@ -333,7 +420,7 @@ def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> 
                 required_quantity=required_quantity,
                 unit=line.unit,
                 unit_price=line.unit_price,
-                currency=line.currency.upper(),
+                currency=normalize_currency(line.currency),
                 price_source=line.price_source,
                 note=line.note,
             )
@@ -342,17 +429,21 @@ def create_order(db: Session, payload: CartonOrderCreate, user: AuthContext) -> 
         db,
         user,
         factory_id,
-        "ORDER_CREATED",
+        audit_event,
         "carton_order",
         order_id,
         {"line_count": len(payload.lines), "contract_no": payload.contract_no},
     )
     try:
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="纸箱订单编号冲突，请重试") from exc
-    db.refresh(order)
+    if commit:
+        db.refresh(order)
     return order
 
 
@@ -380,6 +471,237 @@ def _order_lines(db: Session, order_id: str) -> list[CartonOrderLine]:
 
 def get_order_lines(db: Session, order_id: str) -> list[CartonOrderLine]:
     return _order_lines(db, order_id)
+
+
+def _order_has_business_activity(db: Session, order: CartonOrder) -> bool:
+    line_ids = [line.id for line in _order_lines(db, order.id)]
+    if not line_ids:
+        return False
+    receipt_line_count = db.scalar(
+        select(func.count(CartonReceiptLine.id)).where(
+            CartonReceiptLine.order_line_id.in_(line_ids)
+        )
+    ) or 0
+    if receipt_line_count:
+        return True
+    movement_count = db.scalar(
+        select(func.count(CartonInventoryMovement.id)).where(
+            CartonInventoryMovement.order_line_id.in_(line_ids)
+        )
+    ) or 0
+    return bool(movement_count)
+
+
+def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
+    return (
+        str(line.packaging_type),
+        str(line.paper_quality),
+        str(line.specification),
+        str(line.dimension_unit),
+        str(Decimal(line.usage_quantity).normalize()),
+        str(line.unit),
+        str(Decimal(line.unit_price).normalize()),
+        normalize_currency(str(line.currency)),
+        str(line.price_source),
+        str(line.note),
+    )
+
+
+def update_order(
+    db: Session,
+    order_no: str,
+    payload: CartonOrderUpdate,
+    user: AuthContext,
+) -> CartonOrder:
+    factory_id = require_carton_factory(payload.factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    if order.status == "CANCELLED":
+        raise HTTPException(status_code=409, detail="已取消订单不能修改")
+    if order.status == "COMPLETED":
+        raise HTTPException(status_code=409, detail="已完成订单不能修改；如有差异请通过库存调整处理")
+    if order.revision != payload.expected_revision:
+        raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
+
+    existing_lines = _order_lines(db, order.id)
+    customer = (
+        get_active_customer(db, factory_id, payload.customer_code)
+        if payload.customer_code != order.customer_code
+        else None
+    )
+    supplier = (
+        get_active_supplier(db, factory_id, payload.supplier_id)
+        if payload.supplier_id and payload.supplier_id != order.supplier_id
+        else None
+    )
+    target_customer_code = customer.customer_code if customer else order.customer_code
+    target_customer_name = customer.customer_name if customer else order.customer_name
+    target_supplier_id = supplier.id if supplier else order.supplier_id
+    target_supplier_name = supplier.supplier_name if supplier else order.supplier_name_snapshot
+    target_line_signatures = [
+        (
+            line.packaging_type,
+            line.paper_quality,
+            line.specification,
+            line.dimension_unit,
+            str(Decimal(line.usage_quantity).normalize()),
+            line.unit,
+            str(Decimal(line.unit_price).normalize()),
+            normalize_currency(line.currency),
+            line.price_source,
+            line.note,
+        )
+        for line in payload.lines
+    ]
+    structural_changed = any(
+        (
+            target_customer_code != order.customer_code,
+            target_supplier_id != order.supplier_id,
+            payload.contract_no != order.contract_no,
+            payload.item_no != order.item_no,
+            payload.product_name != order.product_name,
+            Decimal(payload.product_order_quantity) != Decimal(order.product_order_quantity),
+            payload.order_date != order.order_date,
+            target_line_signatures != [_order_line_signature(line) for line in existing_lines],
+        )
+    )
+    schedule_changed = payload.due_date != order.due_date or payload.note != order.note
+    if not structural_changed and not schedule_changed:
+        raise HTTPException(status_code=422, detail="订单内容没有发生变化")
+    if structural_changed and _order_has_business_activity(db, order):
+        raise HTTPException(
+            status_code=409,
+            detail="订单已有收料或库存流水，只能修改计划交期和备注",
+        )
+
+    before = {
+        "revision": order.revision,
+        "customer_code": order.customer_code,
+        "contract_no": order.contract_no,
+        "item_no": order.item_no,
+        "product_order_quantity": order.product_order_quantity,
+        "order_date": order.order_date,
+        "due_date": order.due_date,
+        "note": order.note,
+        "lines": [_order_line_signature(line) for line in existing_lines],
+    }
+    if structural_changed:
+        order.customer_code = target_customer_code
+        order.customer_name = target_customer_name
+        order.supplier_id = target_supplier_id
+        order.supplier_name_snapshot = target_supplier_name
+        order.contract_no = payload.contract_no
+        order.item_no = payload.item_no
+        order.product_name = payload.product_name
+        order.product_order_quantity = payload.product_order_quantity
+        order.order_date = payload.order_date
+        for index, input_line in enumerate(payload.lines, start=1):
+            required_quantity = quantity(payload.product_order_quantity * input_line.usage_quantity)
+            if required_quantity <= 0:
+                raise HTTPException(status_code=422, detail=f"第 {index} 行计算后的需求数量必须大于 0")
+            line = existing_lines[index - 1] if index <= len(existing_lines) else CartonOrderLine(
+                id=f"CTL-{uuid4().hex}",
+                factory_id=factory_id,
+                order_id=order.id,
+                line_no=index,
+            )
+            line.line_no = index
+            line.customer_code = target_customer_code
+            line.contract_no = payload.contract_no
+            line.item_no = payload.item_no
+            line.packaging_type = input_line.packaging_type
+            line.paper_quality = input_line.paper_quality
+            line.specification = input_line.specification
+            line.dimension_unit = input_line.dimension_unit
+            line.usage_quantity = input_line.usage_quantity
+            line.required_quantity = required_quantity
+            line.unit = input_line.unit
+            line.unit_price = input_line.unit_price
+            line.currency = normalize_currency(input_line.currency)
+            line.price_source = input_line.price_source
+            line.note = input_line.note
+            if index > len(existing_lines):
+                db.add(line)
+        for line in existing_lines[len(payload.lines):]:
+            db.delete(line)
+
+    order.due_date = payload.due_date
+    order.note = payload.note
+    order.revision += 1
+    order.updated_by = user.id
+    order.updated_by_name = user.display_name
+    order.updated_at = now_text()
+    _audit(
+        db,
+        user,
+        factory_id,
+        "ORDER_UPDATED",
+        "carton_order",
+        order.id,
+        {
+            "reason": payload.reason,
+            "structural_changed": structural_changed,
+            "before": before,
+            "after": {
+                "revision": order.revision,
+                "customer_code": order.customer_code,
+                "contract_no": order.contract_no,
+                "item_no": order.item_no,
+                "product_order_quantity": order.product_order_quantity,
+                "order_date": order.order_date,
+                "due_date": order.due_date,
+                "note": order.note,
+                "lines": target_line_signatures,
+            },
+        },
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="订单修改与现有业务数据冲突，请刷新后重试") from exc
+    db.refresh(order)
+    return order
+
+
+def cancel_order(
+    db: Session,
+    order_no: str,
+    payload: CartonOrderCancelRequest,
+    user: AuthContext,
+) -> CartonOrder:
+    factory_id = require_carton_factory(payload.factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    if order.status == "CANCELLED":
+        raise HTTPException(status_code=409, detail="订单已经取消")
+    if order.status == "COMPLETED":
+        raise HTTPException(status_code=409, detail="已完成订单不能取消")
+    if order.revision != payload.expected_revision:
+        raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
+    if _order_has_business_activity(db, order):
+        raise HTTPException(status_code=409, detail="订单已有收料或库存流水，不能取消")
+
+    previous_status = order.status
+    order.status = "CANCELLED"
+    order.revision += 1
+    order.updated_by = user.id
+    order.updated_by_name = user.display_name
+    order.updated_at = now_text()
+    _audit(
+        db,
+        user,
+        factory_id,
+        "ORDER_CANCELLED",
+        "carton_order",
+        order.id,
+        {
+            "reason": payload.reason,
+            "previous_status": previous_status,
+            "revision": order.revision,
+        },
+    )
+    db.commit()
+    db.refresh(order)
+    return order
 
 
 def _posted_received_by_line(db: Session, line_ids: list[str]) -> dict[str, Decimal]:
@@ -807,6 +1129,25 @@ def _movement_key(movement: CartonInventoryMovement) -> str:
     )
 
 
+def _inventory_balance_for_key(
+    db: Session,
+    factory_id: str,
+    movement_key: str,
+) -> Decimal:
+    return sum(
+        (
+            row.quantity
+            for row in db.scalars(
+                select(CartonInventoryMovement).where(
+                    CartonInventoryMovement.factory_id == factory_id
+                )
+            ).all()
+            if _movement_key(row) == movement_key
+        ),
+        Decimal(0),
+    )
+
+
 def _movement_out(movement: CartonInventoryMovement, balance: Decimal) -> CartonInventoryMovementOut:
     return CartonInventoryMovementOut(
         **{
@@ -895,6 +1236,7 @@ def inventory_balances(
             unit=row.unit,
             balance=quantity(totals[key]),
             latest_location=row.location,
+            latest_movement_id=row.id,
             latest_movement_at=row.occurred_at,
         )
         for key, row in latest.items()
@@ -907,47 +1249,67 @@ def create_inventory_movement(
     user: AuthContext,
 ) -> CartonInventoryMovementOut:
     factory_id = require_carton_factory(payload.factory_id)
-    order_line = db.get(CartonOrderLine, payload.order_line_id)
-    if order_line is None or order_line.factory_id != factory_id:
-        raise HTTPException(status_code=404, detail="纸箱订单明细不存在")
-    order = db.get(CartonOrder, order_line.order_id)
-    if order is None:
-        raise HTTPException(status_code=409, detail="纸箱订单主记录不存在")
+    order_line: CartonOrderLine | None = None
+    reference: CartonInventoryMovement | None = None
+    if payload.order_line_id:
+        order_line = db.get(CartonOrderLine, payload.order_line_id)
+        if order_line is None or order_line.factory_id != factory_id:
+            raise HTTPException(status_code=404, detail="纸箱订单明细不存在")
+        order = db.get(CartonOrder, order_line.order_id)
+        if order is None:
+            raise HTTPException(status_code=409, detail="纸箱订单主记录不存在")
+        movement_key = order_line.id
+        customer_code = order.customer_code
+        customer_name = order.customer_name
+        contract_no = order.contract_no
+        item_no = order.item_no
+        packaging_type = order_line.packaging_type
+        paper_quality = order_line.paper_quality
+        specification = order_line.specification
+        unit = order_line.unit
+        unit_price = order_line.unit_price
+        currency = order_line.currency
+    else:
+        reference = db.get(CartonInventoryMovement, payload.reference_movement_id)
+        if reference is None or reference.factory_id != factory_id:
+            raise HTTPException(status_code=404, detail="库存结存引用流水不存在")
+        movement_key = _movement_key(reference)
+        customer_code = reference.customer_code
+        customer_name = reference.customer_name
+        contract_no = reference.contract_no
+        item_no = reference.item_no
+        packaging_type = reference.packaging_type
+        paper_quality = reference.paper_quality
+        specification = reference.specification
+        unit = reference.unit
+        unit_price = reference.unit_price
+        currency = reference.currency
     timestamp = now_text()
-    _ensure_period_open(db, factory_id, order.customer_code, timestamp)
-    current = sum(
-        (
-            row.quantity
-            for row in db.scalars(
-                select(CartonInventoryMovement).where(
-                    CartonInventoryMovement.factory_id == factory_id,
-                    CartonInventoryMovement.order_line_id == order_line.id,
-                )
-            ).all()
-        ),
-        Decimal(0),
-    )
+    _ensure_period_open(db, factory_id, customer_code, timestamp)
+    current = _inventory_balance_for_key(db, factory_id, movement_key)
     signed_quantity = -payload.quantity if payload.movement_type == "OUTBOUND" else payload.quantity
     if payload.movement_type == "OUTBOUND" and current < payload.quantity:
         raise HTTPException(status_code=409, detail="库存不足，不能出库")
+    if current + signed_quantity < 0:
+        raise HTTPException(status_code=409, detail="调整后库存不能小于 0")
     movement_id = f"CIM-{uuid4().hex}"
     movement = CartonInventoryMovement(
         id=movement_id,
         factory_id=factory_id,
-        order_line_id=order_line.id,
-        customer_code=order.customer_code,
-        customer_name=order.customer_name,
-        contract_no=order.contract_no,
-        item_no=order.item_no,
-        packaging_type=order_line.packaging_type,
-        paper_quality=order_line.paper_quality,
-        specification=order_line.specification,
+        order_line_id=order_line.id if order_line is not None else None,
+        customer_code=customer_code,
+        customer_name=customer_name,
+        contract_no=contract_no,
+        item_no=item_no,
+        packaging_type=packaging_type,
+        paper_quality=paper_quality,
+        specification=specification,
         movement_type=payload.movement_type,
         quantity=quantity(signed_quantity),
-        unit=order_line.unit,
-        unit_price=order_line.unit_price,
-        currency=order_line.currency,
-        location=payload.location,
+        unit=unit,
+        unit_price=unit_price,
+        currency=currency,
+        location=payload.location or (reference.location if reference is not None else ""),
         document_no=payload.document_no,
         source_type="MANUAL",
         source_id=movement_id,
@@ -985,18 +1347,9 @@ def reverse_inventory_movement(
         raise HTTPException(status_code=409, detail="该库存流水已经冲销")
     timestamp = now_text()
     _ensure_period_open(db, factory_id, original.customer_code, timestamp)
-    current = sum(
-        (
-            row.quantity
-            for row in db.scalars(
-                select(CartonInventoryMovement).where(
-                    CartonInventoryMovement.factory_id == factory_id,
-                    CartonInventoryMovement.order_line_id == original.order_line_id,
-                )
-            ).all()
-        ),
-        Decimal(0),
-    )
+    current = _inventory_balance_for_key(db, factory_id, _movement_key(original))
+    if current - original.quantity < 0:
+        raise HTTPException(status_code=409, detail="冲销后库存将小于 0，请先冲销后续出库或补做调整")
     reversal_id = f"CIM-{uuid4().hex}"
     reversal = CartonInventoryMovement(
         id=reversal_id,
@@ -1058,20 +1411,34 @@ def _create_import_exceptions(
         if not isinstance(row, dict):
             continue
         match_status = str(row.get("match_status") or "")
-        if match_status == "MATCHED":
-            continue
-        if match_status == "MISSING_ORDER":
-            category = "MISSING_ORDER" if batch.import_type == "WEEKLY_SCHEDULE" else "RECEIPT_UNMATCHED"
-            severity = "HIGH"
-            title = "周排期未找到正式纸箱订单" if batch.import_type == "WEEKLY_SCHEDULE" else "送货明细未找到订单纸品"
-        elif match_status == "QUANTITY_MISMATCH":
-            category = "QUANTITY_MISMATCH"
-            severity = "MEDIUM"
-            title = "排期数量与纸箱订单数量不一致"
+        if batch.import_type == "INSPECTION_SCHEDULE":
+            reminder_status = str(row.get("reminder_status") or "")
+            inspection_exception = {
+                "MISSING_ORDER": ("INSPECTION_ORDER_MISSING", "HIGH", "下周查货合同未找到纸箱订单"),
+                "AMBIGUOUS": ("INSPECTION_ORDER_AMBIGUOUS", "HIGH", "下周查货合同存在多个候选订单"),
+                "INVALID_DATE": ("INSPECTION_DATE_INVALID", "MEDIUM", "查货合同的验货日期无法识别"),
+                "OVERDUE": ("INSPECTION_DELIVERY_OVERDUE", "HIGH", "纸箱最迟交货日已逾期"),
+                "DUE_SOON": ("INSPECTION_DELIVERY_DUE", "HIGH", "纸箱最迟交货日临近"),
+                "UPCOMING": ("INSPECTION_DELIVERY_REMINDER", "MEDIUM", "下周查货纸箱交货提醒"),
+            }.get(reminder_status)
+            if inspection_exception is None:
+                continue
+            category, severity, title = inspection_exception
         else:
-            category = "AMBIGUOUS_MATCH"
-            severity = "MEDIUM"
-            title = "导入明细存在多个候选订单"
+            if match_status == "MATCHED":
+                continue
+            if match_status == "MISSING_ORDER":
+                category = "MISSING_ORDER" if batch.import_type == "WEEKLY_SCHEDULE" else "RECEIPT_UNMATCHED"
+                severity = "HIGH"
+                title = "周排期未找到正式纸箱订单" if batch.import_type == "WEEKLY_SCHEDULE" else "送货明细未找到订单纸品"
+            elif match_status == "QUANTITY_MISMATCH":
+                category = "QUANTITY_MISMATCH"
+                severity = "MEDIUM"
+                title = "排期数量与纸箱订单数量不一致"
+            else:
+                category = "AMBIGUOUS_MATCH"
+                severity = "MEDIUM"
+                title = "导入明细存在多个候选订单"
         exception = CartonException(
             id=f"CEX-{uuid4().hex}",
             factory_id=batch.factory_id,
@@ -1086,7 +1453,11 @@ def _create_import_exceptions(
             item_no=str(row.get("item_no") or ""),
             title=title,
             description=str(row.get("suggestion") or "请人工复核导入内容并关联正式纸箱订单"),
-            owner_department="纸箱下单" if batch.import_type == "WEEKLY_SCHEDULE" else "纸箱仓管",
+            owner_department=(
+                "纸箱部"
+                if batch.import_type == "INSPECTION_SCHEDULE"
+                else "纸箱下单" if batch.import_type == "WEEKLY_SCHEDULE" else "纸箱仓管"
+            ),
             status="OPEN",
             resolution_note="",
             revision=1,
@@ -1112,6 +1483,7 @@ def create_import_batch(
     upload: UploadFile,
     content: bytes,
     user: AuthContext,
+    import_profile: dict[str, object] | None = None,
 ) -> CartonImportBatchOut:
     factory_id = require_carton_factory(factory_id)
     filename = Path(upload.filename or "未命名文件").name
@@ -1123,22 +1495,38 @@ def create_import_batch(
     if len(content) > MAX_IMPORT_BYTES:
         raise HTTPException(status_code=413, detail="导入文件不能超过 20 MB")
     sha256 = hashlib.sha256(content).hexdigest()
+    profile_text = (
+        json.dumps(import_profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        if import_profile
+        else ""
+    )
     existing = db.scalar(
         select(CartonImportBatch).where(
             CartonImportBatch.factory_id == factory_id,
             CartonImportBatch.import_type == import_type,
             CartonImportBatch.source_sha256 == sha256,
+            CartonImportBatch.import_profile == profile_text,
         )
     )
     if existing is not None:
         return import_batch_out(existing, duplicate=True)
-    parse_summary = parse_carton_import(db, factory_id, import_type, filename, content)
+    parse_options = dict(import_profile or {})
+    parse_options["reference_date"] = business_now().date().isoformat()
+    parse_summary = parse_carton_import(
+        db,
+        factory_id,
+        import_type,
+        filename,
+        content,
+        options=parse_options,
+    )
     batch = CartonImportBatch(
         id=f"CIB-{uuid4().hex}",
         factory_id=factory_id,
         import_type=import_type,
         original_filename=filename,
         source_sha256=sha256,
+        import_profile=profile_text,
         content_type=upload.content_type or "",
         source_size_bytes=len(content),
         status="REQUIRES_REVIEW",
@@ -1196,6 +1584,32 @@ def get_latest_import_batch(
         .limit(1)
     )
     return import_batch_out(batch) if batch is not None else None
+
+
+def list_import_batches(
+    db: Session,
+    factory_id: str,
+    *,
+    import_type: str = "",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[int, list[CartonImportBatchOut]]:
+    factory_id = require_carton_factory(factory_id)
+    allowed_types = {"DELIVERY_NOTE", "WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}
+    if import_type and import_type not in allowed_types:
+        raise HTTPException(status_code=422, detail="导入批次类型无效")
+    query = select(CartonImportBatch).where(CartonImportBatch.factory_id == factory_id)
+    if import_type:
+        query = query.where(CartonImportBatch.import_type == import_type)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = list(
+        db.scalars(
+            query.order_by(CartonImportBatch.created_at.desc(), CartonImportBatch.id.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+    return int(total), [import_batch_out(row) for row in rows]
 
 
 def list_exceptions(
@@ -1301,7 +1715,7 @@ def generate_closings(
     if payload.customer_code:
         movements = [row for row in movements if row.customer_code == payload.customer_code]
     customer_names: dict[str, str] = {}
-    aggregates: dict[str, dict[str, Decimal]] = defaultdict(
+    aggregates: dict[tuple[str, str], dict[str, Decimal]] = defaultdict(
         lambda: {
             "opening": Decimal(0),
             "inbound": Decimal(0),
@@ -1313,7 +1727,8 @@ def generate_closings(
     )
     for movement in movements:
         customer_names[movement.customer_code] = movement.customer_name
-        values = aggregates[movement.customer_code]
+        currency = normalize_currency(movement.currency)
+        values = aggregates[(movement.customer_code, currency)]
         if movement.occurred_at < f"{start}T":
             values["opening"] += movement.quantity
         else:
@@ -1328,16 +1743,20 @@ def generate_closings(
 
     timestamp = now_text()
     closings: list[CartonClosing] = []
-    for customer_code, values in sorted(aggregates.items()):
+    for (customer_code, currency), values in sorted(aggregates.items()):
         existing = db.scalar(
             select(CartonClosing).where(
                 CartonClosing.factory_id == factory_id,
                 CartonClosing.period == payload.period,
                 CartonClosing.customer_code == customer_code,
+                CartonClosing.currency == currency,
             )
         )
         if existing is not None and existing.status in {"CONFIRMED", "LOCKED"}:
-            raise HTTPException(status_code=409, detail=f"{customer_names[customer_code]} 的 {payload.period} 月结已确认或锁账")
+            raise HTTPException(
+                status_code=409,
+                detail=f"{customer_names[customer_code]} 的 {payload.period} {currency} 月结已确认或锁账",
+            )
         closing = existing or CartonClosing(
             id=f"CCL-{uuid4().hex}",
             factory_id=factory_id,
@@ -1350,6 +1769,7 @@ def generate_closings(
             adjustment_quantity=Decimal(0),
             ending_quantity=Decimal(0),
             ending_amount=Decimal(0),
+            currency=currency,
             status="DRAFT",
             revision=1,
             generated_by=user.id,
@@ -1363,6 +1783,7 @@ def generate_closings(
         if existing is not None:
             closing.revision += 1
         closing.customer_name = customer_names[customer_code]
+        closing.currency = currency
         closing.opening_quantity = quantity(values["opening"])
         closing.inbound_quantity = quantity(values["inbound"])
         closing.outbound_quantity = quantity(values["outbound"])
@@ -1376,7 +1797,19 @@ def generate_closings(
         if existing is None:
             db.add(closing)
         closings.append(closing)
-    _audit(db, user, factory_id, "CLOSING_GENERATED", "carton_closing_period", payload.period, {"customer_count": len(closings), "customer_code": payload.customer_code or ""})
+    _audit(
+        db,
+        user,
+        factory_id,
+        "CLOSING_GENERATED",
+        "carton_closing_period",
+        payload.period,
+        {
+            "closing_count": len(closings),
+            "customer_code": payload.customer_code or "",
+            "currencies": sorted({closing.currency for closing in closings}),
+        },
+    )
     db.commit()
     return closings
 
@@ -1393,7 +1826,15 @@ def list_closings(
         query = query.where(CartonClosing.period == period)
     if customer_code:
         query = query.where(CartonClosing.customer_code == customer_code)
-    return list(db.scalars(query.order_by(CartonClosing.period.desc(), CartonClosing.customer_name)).all())
+    return list(
+        db.scalars(
+            query.order_by(
+                CartonClosing.period.desc(),
+                CartonClosing.customer_name,
+                CartonClosing.currency,
+            )
+        ).all()
+    )
 
 
 def update_closing_status(
@@ -1420,7 +1861,19 @@ def update_closing_status(
     elif payload.status == "LOCKED":
         closing.locked_by = user.id
         closing.locked_at = timestamp
-    _audit(db, user, factory_id, f"CLOSING_{payload.status}", "carton_closing", closing.id, {"period": closing.period, "customer_code": closing.customer_code})
+    _audit(
+        db,
+        user,
+        factory_id,
+        f"CLOSING_{payload.status}",
+        "carton_closing",
+        closing.id,
+        {
+            "period": closing.period,
+            "customer_code": closing.customer_code,
+            "currency": closing.currency,
+        },
+    )
     db.commit()
     db.refresh(closing)
     return closing

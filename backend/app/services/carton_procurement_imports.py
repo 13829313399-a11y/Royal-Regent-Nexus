@@ -121,6 +121,31 @@ def _date_text(value: Any, datemode: int = 0) -> str:
     return ""
 
 
+def _inspection_start_date(value: Any, reference_date: date) -> date | None:
+    parsed = _date_text(value)
+    if parsed:
+        try:
+            return date.fromisoformat(parsed)
+        except ValueError:
+            return None
+    text = _text(value)
+    match = re.search(r"(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*日?", text)
+    if match is None:
+        match = re.search(r"(?<!\d)(\d{1,2})[/.](\d{1,2})(?!\d)", text)
+    if match is None:
+        return None
+    try:
+        result = date(reference_date.year, int(match.group(1)), int(match.group(2)))
+    except ValueError:
+        return None
+    if result < reference_date - timedelta(days=180):
+        try:
+            result = result.replace(year=result.year + 1)
+        except ValueError:
+            return None
+    return result
+
+
 def _sheet_rows(filename: str, content: bytes) -> list[tuple[str, list[list[Any]], int]]:
     suffix = Path(filename).suffix.lower()
     if suffix in {".xlsx", ".xlsm"}:
@@ -397,7 +422,7 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                 basis += " + 纸品"
 
         unique_orders = {order.id: order for _, order in candidates}
-        if import_type == "WEEKLY_SCHEDULE":
+        if import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
             if len(unique_orders) == 1:
                 order = next(iter(unique_orders.values()))
                 row.update(
@@ -406,19 +431,24 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                         "order_no": order.order_no,
                         "customer_code": order.customer_code,
                         "customer_name": order.customer_name,
+                        "order_status": order.status,
                         "match_basis": basis,
                     }
                 )
                 schedule_quantity = _number(row.get("quantity")) or Decimal(0)
-                if schedule_quantity != Decimal(order.product_order_quantity):
+                if import_type == "WEEKLY_SCHEDULE" and schedule_quantity != Decimal(order.product_order_quantity):
                     row["match_status"] = "QUANTITY_MISMATCH"
                     row["suggestion"] = f"排期数量 {schedule_quantity} 与订单数量 {order.product_order_quantity} 不一致，请人工确认"
                 else:
                     row["match_status"] = "MATCHED"
-                    row["suggestion"] = "已匹配正式纸箱订单"
+                    row["suggestion"] = "已匹配正式纸箱订单" if import_type == "WEEKLY_SCHEDULE" else "已关联正式纸箱订单，等待计算交货提醒"
             else:
                 row["match_status"] = "AMBIGUOUS" if candidates else "MISSING_ORDER"
-                row["suggestion"] = "找到多个候选订单，请人工选择" if candidates else "未找到正式纸箱订单，仅生成异常待办"
+                row["suggestion"] = "找到多个候选订单，请人工选择" if candidates else (
+                    "查货合同未找到正式纸箱订单，请先核对是否漏单"
+                    if import_type == "INSPECTION_SCHEDULE"
+                    else "未找到正式纸箱订单，仅生成异常待办"
+                )
             continue
 
         if len(candidates) == 1:
@@ -445,15 +475,67 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
             row["suggestion"] = "找到多条纸品明细，请人工选择" if candidates else "未找到可关联的正式订单明细"
 
 
+def _apply_inspection_reminders(
+    rows: list[dict[str, Any]],
+    *,
+    advance_days: int,
+    reference_date: date,
+) -> None:
+    for row in rows:
+        inspection_date = _inspection_start_date(row.get("inspection_window"), reference_date)
+        row["advance_days"] = advance_days
+        if inspection_date is None:
+            row.update(
+                {
+                    "inspection_start_date": "",
+                    "required_delivery_date": "",
+                    "days_until_delivery": None,
+                    "reminder_status": "INVALID_DATE",
+                    "suggestion": "无法识别验货开始日期，请人工补充后再计算最迟交货日",
+                }
+            )
+            continue
+
+        required_date = inspection_date - timedelta(days=advance_days)
+        days_until = (required_date - reference_date).days
+        row.update(
+            {
+                "inspection_start_date": inspection_date.isoformat(),
+                "required_delivery_date": required_date.isoformat(),
+                "days_until_delivery": days_until,
+            }
+        )
+        if row.get("match_status") == "MISSING_ORDER":
+            row["reminder_status"] = "MISSING_ORDER"
+            row["suggestion"] = f"最迟应于 {required_date.isoformat()} 前到纸箱；当前未找到正式订单，请立即核对漏单"
+        elif row.get("match_status") == "AMBIGUOUS":
+            row["reminder_status"] = "AMBIGUOUS"
+            row["suggestion"] = f"最迟应于 {required_date.isoformat()} 前到纸箱；存在多个候选订单，请人工关联"
+        elif row.get("order_status") == "COMPLETED":
+            row["reminder_status"] = "READY"
+            row["suggestion"] = "纸箱订单已全部收齐，无需催交"
+        elif days_until < 0:
+            row["reminder_status"] = "OVERDUE"
+            row["suggestion"] = f"最迟交货日 {required_date.isoformat()} 已逾期 {abs(days_until)} 天，请立即跟进纸箱到料"
+        elif days_until <= 1:
+            row["reminder_status"] = "DUE_SOON"
+            row["suggestion"] = f"最迟交货日为 {required_date.isoformat()}，请优先确认纸箱到料安排"
+        else:
+            row["reminder_status"] = "UPCOMING"
+            row["suggestion"] = f"请在 {required_date.isoformat()} 前完成纸箱交货，距最迟交货日 {days_until} 天"
+
+
 def parse_carton_import(
     db: Session,
     factory_id: str,
     import_type: str,
     filename: str,
     content: bytes,
+    options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    options = options or {}
     suffix = Path(filename).suffix.lower()
-    if import_type == "WEEKLY_SCHEDULE":
+    if import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
         parsed = _parse_weekly(filename, content)
     elif suffix in {".xlsx", ".xlsm", ".xls"}:
         parsed = _parse_delivery_spreadsheet(filename, content)
@@ -461,16 +543,37 @@ def parse_carton_import(
         parsed = _parse_delivery_document(filename, content)
     rows = parsed.get("rows", [])
     _match_rows(db, factory_id, import_type, rows)
+    if import_type == "INSPECTION_SCHEDULE":
+        advance_days = max(0, min(30, int(options.get("advance_days", 3))))
+        try:
+            reference_date = date.fromisoformat(str(options.get("reference_date") or ""))
+        except ValueError:
+            reference_date = date.today()
+        _apply_inspection_reminders(
+            rows,
+            advance_days=advance_days,
+            reference_date=reference_date,
+        )
     matched = sum(1 for row in rows if row.get("match_status") == "MATCHED")
     issues = len(rows) - matched
+    reminder_rows = [row for row in rows if row.get("reminder_status") not in {None, "READY"}]
     parsed.update(
         {
-            "message": "导入内容已解析并生成待复核预览；不会自动创建订单或库存",
+            "message": (
+                "下周查货合同已解析并按最迟交货日生成提醒；不会自动创建订单或库存"
+                if import_type == "INSPECTION_SCHEDULE"
+                else "导入内容已解析并生成待复核预览；不会自动创建订单或库存"
+            ),
             "creates_order": False,
             "creates_inventory": False,
             "row_count": len(rows),
             "matched_count": matched,
             "issue_count": issues,
+            "reminder_count": len(reminder_rows),
+            "overdue_count": sum(1 for row in rows if row.get("reminder_status") == "OVERDUE"),
+            "due_soon_count": sum(1 for row in rows if row.get("reminder_status") == "DUE_SOON"),
+            "ready_count": sum(1 for row in rows if row.get("reminder_status") == "READY"),
+            "advance_days": int(options.get("advance_days", 3)) if import_type == "INSPECTION_SCHEDULE" else None,
         }
     )
     return parsed
