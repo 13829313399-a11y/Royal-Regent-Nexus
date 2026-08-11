@@ -18,7 +18,9 @@ describe('factory machine database workspace', () => {
       expect(featureSource).toContain(copy)
     }
     expect(featureSource).toContain("authStore.can('injection_scheduling:manage_master'")
-    expect(featureSource).toContain('machine.revision')
+    expect(featureSource).toContain('<summary>技术信息</summary>')
+    expect(featureSource).toContain('{{ editing.revision }}')
+    expect(apiSource).toContain('machineMasterPayload(factoryId, input, machine.revision)')
     expect(apiSource).toContain("http.get('/injection-scheduling/machines'")
     expect(apiSource).toContain("http.post('/injection-scheduling/machines'")
     expect(apiSource).toContain('http.put(`/injection-scheduling/machines/${machine.id}`')

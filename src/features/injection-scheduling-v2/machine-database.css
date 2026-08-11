@@ -8,7 +8,7 @@
 .machine-database .machine-catalog-table th:nth-child(7) { width: 90px; }
 .machine-database .machine-catalog-table th:nth-child(8) { width: 240px; }
 .machine-database .machine-catalog-table th:nth-child(9) { width: 90px; }
-.machine-status-chip { width: fit-content; min-height: 23px; padding: 0 8px; border-radius: 10px; display: inline-flex !important; align-items: center; font-size: 8px !important; font-weight: 800; }
+.machine-status-chip { width: fit-content; min-height: 25px; padding: 0 8px; border-radius: 10px; display: inline-flex !important; align-items: center; font-size: 11px !important; font-weight: 800; }
 .machine-status-chip.available { color: #087a64; background: #dff3ed; }
 .machine-status-chip.running { color: #2e6ee6; background: #e7effd; }
 .machine-status-chip.maintenance { color: #986006; background: #faebce; }

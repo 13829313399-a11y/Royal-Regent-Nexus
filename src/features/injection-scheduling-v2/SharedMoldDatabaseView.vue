@@ -34,9 +34,11 @@ import {
   type SharedMoldDetail,
   type SharedMoldProposalInput,
 } from './api/injectionSchedulingV2Api'
+import { useDialogFocus } from './composables/useDialogFocus'
 import './injection-scheduling-v2.css'
 import './styles/tokens.css'
 import './styles/polish.css'
+import './styles/motion.css'
 import './shared-mold-database.css'
 
 const factoryNames: Record<string, string> = {
@@ -66,9 +68,28 @@ const detailLoading = ref(false)
 const detail = ref<SharedMoldDetail | null>(null)
 const proposalOpen = ref(false)
 const submitting = ref(false)
+const detailDialogRoot = ref<HTMLElement | null>(null)
+const proposalDialogRoot = ref<HTMLElement | null>(null)
 const feedback = reactive({ message: '', tone: 'success' as 'success' | 'error' })
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 let feedbackTimer: ReturnType<typeof setTimeout> | null = null
+
+function closeDetail() {
+  detailOpen.value = false
+}
+
+function closeProposal() {
+  proposalOpen.value = false
+}
+
+const { announcement: detailDialogAnnouncement } = useDialogFocus(() => detailOpen.value, detailDialogRoot, {
+  onEscape: closeDetail,
+  openAnnouncement: '模具数据详情已打开，按 Escape 关闭。',
+})
+const { announcement: proposalDialogAnnouncement } = useDialogFocus(() => proposalOpen.value, proposalDialogRoot, {
+  onEscape: closeProposal,
+  openAnnouncement: '新增模具提案已打开，按 Escape 关闭。',
+})
 
 const canScoped = (permission: string) => schedulingDepartments.some((department) => authStore.can(permission, factoryId.value, department))
 const canPropose = computed(() => canScoped('shared_mold:propose'))
@@ -260,7 +281,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="injection-scheduling-v2 shared-mold-database">
+  <div class="injection-scheduling-v2 shared-mold-database scheduling-auxiliary-page">
     <header class="scheduling-topbar">
       <div class="brand-mark"><Bot :size="22" /></div>
       <div class="brand-copy"><strong>Royal Regent Nexus</strong><span>ROYAL REGENT · PRODUCTION INTELLIGENCE</span></div>
@@ -302,7 +323,7 @@ onBeforeUnmount(() => {
             <tbody>
               <tr v-if="loading && !catalog.items.length" v-for="line in 10" :key="`loading-${line}`" class="catalog-skeleton"><td colspan="9"><span></span></td></tr>
               <tr v-for="item in catalog.items" :key="item.id" tabindex="0" @click="openDetail(item)" @keydown.enter="openDetail(item)">
-                <td><strong>{{ item.displayMoldNo || item.canonicalMoldNo }}</strong><span>{{ item.standardName || '名称待补充' }}</span><small>r{{ item.revision }} · {{ dataQualityLabel(item.dataQuality) }}</small></td>
+                <td><strong>{{ item.displayMoldNo || item.canonicalMoldNo }}</strong><span>{{ item.standardName || '名称待补充' }}</span><small>{{ dataQualityLabel(item.dataQuality) }}</small></td>
                 <td><template v-if="item.outputs.length"><strong>{{ item.outputs[0]?.itemNo || '未设货号' }}</strong><span>{{ item.outputs[0]?.productName }}</span><small v-if="item.outputCount > 1">另有 {{ item.outputCount - 1 }} 个产品输出</small></template><span v-else class="muted">暂无产品输出</span></td>
                 <td><strong>{{ item.factoryCapability?.machineClass || item.moldAClass || '—' }}<small v-if="item.factoryCapability?.machineClass || item.moldAClass">A</small></strong><span>{{ item.recommendedMachineClassRaw || '机型待补充' }}</span></td>
                 <td><strong>{{ armLabel(item.factoryCapability?.requiredArmType || item.defaultArmType) }}</strong><span>{{ fixtureLabel(item.factoryCapability?.requiredFixtureType || item.defaultFixtureType) }}</span></td>
@@ -320,31 +341,34 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
-    <div v-if="detailOpen" class="mold-drawer-layer" @mousedown.self="detailOpen = false">
-      <aside class="mold-detail-drawer" aria-label="模具数据详情">
-        <header><div><span>共享模具详情</span><strong>{{ detail?.displayMoldNo || detail?.canonicalMoldNo || '读取中' }}</strong><p>{{ detail?.standardName }}</p></div><button @click="detailOpen = false"><X :size="18" /></button></header>
+    <div v-if="detailOpen" class="mold-drawer-layer" role="presentation" @mousedown.self="closeDetail">
+      <aside ref="detailDialogRoot" class="mold-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="shared-mold-detail-title" tabindex="-1">
+        <p class="scheduling-sr-only drawer-live-announcement" role="status" aria-live="polite">{{ detailDialogAnnouncement }}</p>
+        <header><div><span>共享模具详情</span><strong id="shared-mold-detail-title">{{ detail?.displayMoldNo || detail?.canonicalMoldNo || '读取中' }}</strong><p>{{ detail?.standardName }}</p></div><button type="button" aria-label="关闭模具详情" @click="closeDetail"><X :size="18" /></button></header>
         <div v-if="detailLoading" class="drawer-loading"><RefreshCw :size="22" class="spinning" /><span>正在读取模具完整资料…</span></div>
         <div v-else-if="detail" class="mold-detail-body">
-          <section class="detail-status"><span class="readiness-chip" :class="detail.factoryReadiness.status.toLowerCase()"><ShieldCheck :size="14" />{{ readinessLabel(detail.factoryReadiness.status) }}</span><small>公司目录已激活 · {{ dataQualityLabel(detail.dataQuality) }} · r{{ detail.revision }}</small></section>
+          <section class="detail-status"><span class="readiness-chip" :class="detail.factoryReadiness.status.toLowerCase()"><ShieldCheck :size="14" />{{ readinessLabel(detail.factoryReadiness.status) }}</span><small>公司目录已激活 · {{ dataQualityLabel(detail.dataQuality) }}</small></section>
           <section class="detail-section"><header><Info :size="15" /><strong>基础定义</strong></header><dl class="detail-grid"><div><dt>规范模号</dt><dd>{{ detail.canonicalMoldNo }}</dd></div><div><dt>显示模号</dt><dd>{{ detail.displayMoldNo || '—' }}</dd></div><div><dt>模具名称</dt><dd>{{ detail.standardName || '—' }}</dd></div><div><dt>别名</dt><dd>{{ detail.aliases.map((item) => item.rawAlias).join('、') || '—' }}</dd></div><div><dt>默认安数</dt><dd>{{ detail.moldAClass ? `${detail.moldAClass}A` : '—' }}</dd></div><div><dt>推荐机型</dt><dd>{{ detail.recommendedMachineClassRaw || '—' }}</dd></div></dl></section>
           <section class="detail-section"><header><Boxes :size="15" /><strong>产品输出（{{ detail.outputs.length }}）</strong></header><div class="detail-output-list"><article v-for="output in detail.outputs" :key="output.id"><div><strong>{{ output.itemNo || '未设货号' }}</strong><span>{{ output.productName }}</span></div><dl><div><dt>穴数</dt><dd>{{ output.cavityCount || '—' }}</dd></div><div><dt>净重</dt><dd>{{ formatNumber(output.wholeShotNetWeightG, 4) }} g</dd></div><div><dt>毛重</dt><dd>{{ formatNumber(output.wholeShotGrossWeightG, 4) }} g</dd></div><div><dt>计划目标</dt><dd>{{ formatNumber(output.nominalDailyCapacity) }} / 日</dd></div><div><dt>用料</dt><dd>{{ output.defaultMaterial || '—' }}</dd></div><div><dt>颜色</dt><dd>{{ output.defaultColor || '—' }}</dd></div></dl></article></div></section>
           <section class="detail-section"><header><Gauge :size="15" /><strong>{{ factoryNames[factoryId] }}机安与实体</strong></header><div class="detail-summary-cards"><article><span>机安能力</span><strong>{{ detail.capabilities.length }}</strong><small>{{ detail.capabilities[0]?.machineClass ? `${detail.capabilities[0].machineClass}A` : '安数待补' }} · {{ armLabel(detail.capabilities[0]?.requiredArmType || '') }} · {{ fixtureLabel(detail.capabilities[0]?.requiredFixtureType || '') }}</small></article><article><span>实体模具</span><strong>{{ detail.assets.length }}</strong><small>{{ detail.assets.length ? detail.assets.map((item) => item.assetCode).join('、') : '尚未登记可排机实体' }}</small></article></div></section>
           <section class="detail-section"><header><CircleDollarSign :size="15" /><strong>人民币单价</strong></header><div v-if="detail.priceAccess === 'RESTRICTED'" class="price-restricted"><ShieldCheck :size="15" />当前账号没有共享模具价格查看权限</div><div v-else-if="detail.prices.length" class="price-list"><article v-for="price in detail.prices" :key="price.id"><strong>¥ {{ formatNumber(price.amount, 4) }}</strong><span>{{ price.pricingBasis === 'PER_SHOT' ? '每啤 / 每模次' : price.pricingBasis }} · {{ price.taxMode }}</span></article></div><p v-else class="detail-empty">当前厂区暂无生效单价</p></section>
           <section class="detail-governance"><ShieldCheck :size="16" /><div><strong>受控主数据</strong><p>详情只展示已激活版本。新增或修订必须先提交提案，并由另一位有权限人员审核、激活。</p></div></section>
+          <details class="master-technical-details"><summary>技术信息</summary><dl><div><dt>资料版本</dt><dd>{{ detail.revision }}</dd></div></dl></details>
         </div>
       </aside>
     </div>
 
-    <div v-if="proposalOpen" class="mold-drawer-layer" @mousedown.self="proposalOpen = false">
-      <aside class="mold-proposal-drawer" aria-label="新增模具提案">
-        <header><div><span>新增模具数据</span><strong>发起共享模具提案</strong><p>提交后不会直接写入正式库</p></div><button @click="proposalOpen = false"><X :size="18" /></button></header>
+    <div v-if="proposalOpen" class="mold-drawer-layer" role="presentation" @mousedown.self="closeProposal">
+      <aside ref="proposalDialogRoot" class="mold-proposal-drawer" role="dialog" aria-modal="true" aria-labelledby="shared-mold-proposal-title" tabindex="-1">
+        <p class="scheduling-sr-only drawer-live-announcement" role="status" aria-live="polite">{{ proposalDialogAnnouncement }}</p>
+        <header><div><span>新增模具数据</span><strong id="shared-mold-proposal-title">发起共享模具提案</strong><p>提交后不会直接写入正式库</p></div><button type="button" aria-label="关闭模具提案" @click="closeProposal"><X :size="18" /></button></header>
         <form class="proposal-form" @submit.prevent="submitProposal">
-          <div class="proposal-notice"><ShieldCheck :size="16" /><span>公司模具定义、华兴机安能力和人民币单价会拆成独立治理提案；提案人不能审核自己的提案。</span></div>
+          <div class="proposal-notice"><ShieldCheck :size="16" /><span>公司模具定义、{{ factoryNames[factoryId] }}机安能力和人民币单价会拆成独立治理提案；提案人不能审核自己的提案。</span></div>
           <fieldset><legend>1. 模具基础资料</legend><div class="proposal-grid"><label><span>工模编号 *</span><input v-model="proposal.canonicalMoldNo" required placeholder="例如 20 330 2018-001" /></label><label><span>显示编号</span><input v-model="proposal.displayMoldNo" placeholder="留空则沿用工模编号" /></label><label class="wide"><span>工模名称 *</span><input v-model="proposal.standardName" required placeholder="例如 车顶" /></label><label class="wide"><span>模具别名</span><input v-model="proposal.aliases" placeholder="多个别名用逗号分隔" /></label><label><span>默认安数</span><input v-model.number="proposal.moldAClass" type="number" min="1" placeholder="A" /></label><label><span>推荐机型原文</span><input v-model="proposal.recommendedMachineClassRaw" placeholder="例如 14A 模高" /></label><label><span>默认机械臂</span><input v-model="proposal.defaultArmType" placeholder="例如 单臂" /></label><label><span>默认夹具</span><input v-model="proposal.defaultFixtureType" placeholder="例如 吸盘" /></label></div></fieldset>
           <fieldset><legend><span>2. 产品输出</span><button type="button" @click="proposal.outputs.push(newOutput())"><Plus :size="14" />增加产品</button></legend><article v-for="(output, index) in proposal.outputs" :key="index" class="proposal-output"><header><strong>产品 {{ index + 1 }}</strong><button v-if="proposal.outputs.length > 1" type="button" @click="proposal.outputs.splice(index, 1)"><Trash2 :size="14" />移除</button></header><div class="proposal-grid"><label><span>货号</span><input v-model="output.itemNo" placeholder="计划表货号" /></label><label><span>产品名称 *</span><input v-model="output.productName" required placeholder="计划表名称" /></label><label><span>穴数</span><input v-model.number="output.cavityCount" type="number" min="1" /></label><label><span>计划目标（啤/日）</span><input v-model.number="output.nominalDailyCapacity" type="number" min="0" /></label><label><span>整啤净重（g）</span><input v-model.number="output.wholeShotNetWeightG" type="number" min="0" step="0.0001" /></label><label><span>整啤毛重（g）</span><input v-model.number="output.wholeShotGrossWeightG" type="number" min="0" step="0.0001" /></label><label><span>用料名称</span><input v-model="output.defaultMaterial" /></label><label><span>颜色</span><input v-model="output.defaultColor" /></label><label v-if="canProposePrice" class="wide price-input"><span>人民币单价（每啤）</span><input v-model.number="output.unitPriceCny" type="number" min="0" step="0.0001" placeholder="按表格单价，可留空" /><small>币种固定为人民币，口径为每啤 / 每模次，税制按原表。</small></label></div></article></fieldset>
           <fieldset v-if="canProposeCapability"><legend>3. 厂区机安能力</legend><label class="capability-toggle"><input v-model="proposal.includeCapability" type="checkbox" /><span>同时提交 {{ factoryNames[factoryId] }} 机安能力提案</span></label><div v-if="proposal.includeCapability" class="proposal-grid"><label><span>适配安数</span><input v-model.number="proposal.capabilityMachineClass" type="number" min="1" placeholder="A" /></label><label><span>机型原文</span><input v-model="proposal.capabilityMachineClassRaw" /></label><label><span>机械臂</span><input v-model="proposal.capabilityArmType" /></label><label><span>夹具</span><input v-model="proposal.capabilityFixtureType" /></label></div></fieldset>
           <fieldset><legend>{{ canProposeCapability ? '4' : '3' }}. 提案说明</legend><label class="reason-field"><span>新增依据 *</span><textarea v-model="proposal.reason" minlength="4" maxlength="500" required placeholder="说明资料来源和新增原因，至少 4 个字符"></textarea><small>{{ proposal.reason.trim().length }}/500</small></label></fieldset>
-          <footer><button type="button" class="secondary" @click="proposalOpen = false">取消</button><button type="submit" class="primary" :disabled="!proposalValid || submitting"><RefreshCw v-if="submitting" :size="15" class="spinning" /><ShieldCheck v-else :size="15" />{{ submitting ? '提交中' : '提交治理提案' }}</button></footer>
+          <footer><button type="button" class="secondary" @click="closeProposal">取消</button><button type="submit" class="primary" :disabled="!proposalValid || submitting"><RefreshCw v-if="submitting" :size="15" class="spinning" /><ShieldCheck v-else :size="15" />{{ submitting ? '提交中' : '提交治理提案' }}</button></footer>
         </form>
       </aside>
     </div>

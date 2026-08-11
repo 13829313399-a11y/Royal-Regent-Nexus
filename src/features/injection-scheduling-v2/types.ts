@@ -445,6 +445,12 @@ export interface ScheduleGridRow {
   materialReadiness: string
 }
 
+export interface MachineScheduleSummary {
+  taskCount: number
+  currentLabel: string
+  releaseAt: string
+}
+
 export interface SchedulingColumnDefinition {
   key: keyof ScheduleGridRow
   title: string
@@ -496,6 +502,36 @@ export type EditableCellKey =
   | 'plannedFinish'
   | 'warehouse'
   | 'remark'
+
+export type SchedulingSyncHealth = 'live' | 'refreshing' | 'stale' | 'demo-readonly' | 'error'
+
+export type AsyncOperation =
+  | 'initial-load'
+  | 'refresh'
+  | 'save'
+  | 'publish'
+  | 'auto-generate'
+  | 'auto-apply'
+  | 'poll'
+
+export type AsyncFeedbackPhase = 'idle' | 'pending' | 'succeeded' | 'failed'
+export type AsyncFeedbackTone = 'info' | 'success' | 'warning' | 'error'
+
+export interface AsyncFeedback {
+  operation: AsyncOperation
+  phase: AsyncFeedbackPhase
+  tone: AsyncFeedbackTone
+  message: string
+  occurredAt?: string
+}
+
+export type SchedulingSyncFailureKind =
+  | 'network'
+  | 'server'
+  | 'authentication'
+  | 'authorization'
+  | 'business'
+  | 'unexpected'
 
 export interface CellDraft {
   taskId: string

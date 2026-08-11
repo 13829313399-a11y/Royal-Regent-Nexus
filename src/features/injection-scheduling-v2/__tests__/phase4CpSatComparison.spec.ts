@@ -22,15 +22,20 @@ const dueRun: AutoScheduleRunRecord = { ...baseRun, id: 'cp-run-b', scenarioName
 describe('Phase 4 CP-SAT 多方案', () => {
   it('生成页暴露求解器、权重和三方案入口', async () => {
     const wrapper = mount(AutoSchedulePreviewDialog, { global: { stubs: { Teleport: true } }, props: { open: true, backlogCount: 8, machineCount: 4, planStatus: 'DRAFT', canEdit: true, canOverride: true, run: null, comparisonRuns: [], loading: false, error: '', orders: [], machines: [] } })
-    expect(wrapper.text()).toContain('CP-SAT 优化')
-    expect(wrapper.text()).toContain('双重 NoOverlap')
+    expect(wrapper.text()).toContain('优化求解')
+    expect(wrapper.text()).toContain('校验机台与模具占用')
+    expect(wrapper.get('option[value="CP_SAT"]').attributes('value')).toBe('CP_SAT')
     await wrapper.findAll('button').find((item) => item.text().includes('生成三套方案'))!.trigger('click')
     expect(wrapper.emitted('compare')).toHaveLength(1)
   })
 
   it('对比方案并支持按保存权重回放', async () => {
     const wrapper = mount(AutoSchedulePreviewDialog, { global: { stubs: { Teleport: true } }, props: { open: true, backlogCount: 2, machineCount: 2, planStatus: 'DRAFT', canEdit: true, canOverride: true, run: baseRun, comparisonRuns: [baseRun, dueRun], loading: false, error: '', orders: [], machines: [] } })
-    expect(wrapper.text()).toContain('CP-SAT · OPTIMAL')
+    expect(wrapper.get('.run-banner').text()).toContain('方案 A · 综合平衡')
+    expect(wrapper.get('.run-banner').text()).not.toContain('CP_SAT')
+    expect(wrapper.get('.optimization-result-overview').text()).toContain('优化求解 · 模型目标下已找到最优结果')
+    expect(wrapper.get('.scheduling-technical-details dl').text()).toContain('CP_SAT')
+    expect(wrapper.get('.scheduling-technical-details dl').text()).toContain('OPTIMAL')
     expect(wrapper.text()).toContain('方案 B · 交期优先')
     await wrapper.findAll('.scenario-strip button')[1]!.trigger('click')
     expect(wrapper.emitted('select')?.[0]?.[0]).toEqual(dueRun)

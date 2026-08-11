@@ -107,7 +107,8 @@ INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION = "20260807_0058"
 CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION = "20260807_0059"
 INJECTION_SCHEDULING_DEMAND_SHARED_MIGRATION_REVISION = "20260809_0059"
 INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
-HEAD_MIGRATION_REVISION = "20260810_0064"
+CARTON_CLOSING_CURRENCY_MIGRATION_REVISION = "20260810_0064"
+HEAD_MIGRATION_REVISION = "20260811_0065"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -4713,7 +4714,7 @@ def test_carton_closing_currency_migration_backfills_without_changing_locked_val
             "-c",
             str(ALEMBIC_INI),
             "upgrade",
-            HEAD_MIGRATION_REVISION,
+            CARTON_CLOSING_CURRENCY_MIGRATION_REVISION,
         ],
         cwd=BACKEND_DIR,
         env=env,
@@ -4750,4 +4751,4 @@ def test_carton_closing_currency_migration_backfills_without_changing_locked_val
         ) in unique_columns
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        ).fetchone() == (CARTON_CLOSING_CURRENCY_MIGRATION_REVISION,)

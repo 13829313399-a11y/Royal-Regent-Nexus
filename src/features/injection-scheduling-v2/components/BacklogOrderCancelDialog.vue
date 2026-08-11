@@ -2,6 +2,7 @@
 import { AlertTriangle, LoaderCircle, Trash2, X } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import type { OrderRecord } from '../types'
+import { useDialogFocus } from '../composables/useDialogFocus'
 
 const props = defineProps<{
   open: boolean
@@ -14,6 +15,14 @@ const props = defineProps<{
 const emit = defineEmits<{ close: []; confirm: [reason: string] }>()
 const reason = ref('')
 const canConfirm = computed(() => props.canCancel && reason.value.trim().length >= 2 && !props.cancelling)
+const dialogRoot = ref<HTMLElement | null>(null)
+function requestClose() {
+  if (!props.cancelling) emit('close')
+}
+const { announcement: dialogAnnouncement } = useDialogFocus(() => props.open, dialogRoot, {
+  onEscape: requestClose,
+  openAnnouncement: '删除待排单确认已打开，按 Escape 关闭。',
+})
 
 watch(() => props.open, (open) => {
   if (open) reason.value = ''
@@ -22,11 +31,12 @@ watch(() => props.open, (open) => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @mousedown.self="!cancelling && emit('close')">
+    <div v-if="open" ref="dialogRoot" class="modal-backdrop" tabindex="-1" @mousedown.self="requestClose">
       <section class="phase2-dialog backlog-cancel-dialog" role="dialog" aria-modal="true" aria-labelledby="backlog-cancel-title">
+        <p class="scheduling-sr-only dialog-live-announcement" role="status" aria-live="polite">{{ dialogAnnouncement }}</p>
         <header>
           <div><span class="eyebrow">待排管理</span><strong id="backlog-cancel-title">删除待排单</strong></div>
-          <button type="button" aria-label="关闭删除确认" :disabled="cancelling" @click="emit('close')"><X :size="17" /></button>
+          <button type="button" aria-label="关闭删除确认" :disabled="cancelling" @click="requestClose"><X :size="17" /></button>
         </header>
 
         <div class="backlog-cancel-body">
@@ -51,7 +61,7 @@ watch(() => props.open, (open) => {
         </div>
 
         <footer>
-          <button type="button" :disabled="cancelling" @click="emit('close')">取消</button>
+          <button type="button" :disabled="cancelling" @click="requestClose">取消</button>
           <button type="button" class="danger" :disabled="!canConfirm" @click="emit('confirm', reason.trim())">
             <LoaderCircle v-if="cancelling" :size="15" class="spinning" />
             <Trash2 v-else :size="15" />

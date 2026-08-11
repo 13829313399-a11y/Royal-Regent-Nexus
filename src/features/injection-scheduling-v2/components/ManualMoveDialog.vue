@@ -8,14 +8,18 @@ const props = defineProps<{ preview: MovePreview | null; machines: MachineRecord
 const emit = defineEmits<{ close: []; update: [changes: Partial<MovePreview>]; confirm: [] }>()
 const machine = computed(() => props.preview ? props.machines.find((item) => item.id === props.preview!.targetMachineId) : null)
 const dialogRoot = ref<HTMLElement | null>(null)
-useDialogFocus(() => Boolean(props.preview), dialogRoot)
+const { announcement: dialogAnnouncement } = useDialogFocus(() => Boolean(props.preview), dialogRoot, {
+  onEscape: () => emit('close'),
+  openAnnouncement: '人工移动资格预览已打开，按 Escape 关闭。',
+})
 </script>
 
 <template>
   <Teleport to="body">
   <Transition name="modal">
-  <div v-if="preview" ref="dialogRoot" class="modal-backdrop" tabindex="-1" @mousedown.self="emit('close')" @keydown.esc="emit('close')">
+  <div v-if="preview" ref="dialogRoot" class="modal-backdrop" tabindex="-1" @mousedown.self="emit('close')">
     <section class="phase2-dialog move-dialog" role="dialog" aria-modal="true" aria-label="人工移动资格预览">
+      <p class="scheduling-sr-only dialog-live-announcement" role="status" aria-live="polite">{{ dialogAnnouncement }}</p>
       <header><div><span class="eyebrow">人工调度</span><strong>人工移动资格预览</strong></div><button aria-label="关闭人工移动弹窗" @click="emit('close')"><X :size="17" /></button></header>
       <div class="move-decision" :class="preview.decision.toLowerCase()"><ShieldAlert :size="18" /><div><strong>{{ preview.decision === 'PASS' ? '资格通过，可保存' : preview.decision === 'FAIL' ? '硬约束失败，禁止移动' : '需要授权覆盖' }}</strong><p>{{ preview.explanation }}</p></div></div>
       <dl class="move-summary"><div><dt>目标机台</dt><dd>{{ machine?.code ?? preview.targetMachineId }}</dd></div><div><dt>目标队列</dt><dd>#{{ preview.targetSequence }}</dd></div><div><dt>换模/转色影响</dt><dd>{{ preview.setupReview }}</dd></div></dl>
