@@ -342,13 +342,15 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Indonesia customer-order schedule processing is outside the current BuzzBee parser contract.
 - Many module cards and dashboard metrics still use demonstration data and need explicit replacement plans before they can be treated as operational.
 - The repository alone cannot confirm the live production `AUTHZ_MODE`, permission-write posture, database head or deployed application revision.
-- AI is implemented locally through the B8 Pilot safety boundary while retaining the B6B read-only
-  text/tool contract and optional B7B image-understanding path. B8 uses default-deny server-side user
-  and factory allowlists, canonical domain authorization, per-user process-local concurrency/RPM/daily
+- AI is implemented through the B8 Pilot safety boundary while retaining the B6B read-only text/tool
+  contract and optional B7B image-understanding path. B8 uses default-deny server-side user and
+  factory allowlists, canonical domain authorization, per-user process-local concurrency/RPM/daily
   budget guards, bounded Provider output, metadata-only observability and a runtime disable marker.
-  Production examples remain disabled with empty allowlists; production also fails closed unless the
-  fixed control path, external TLS assertion and Qwen Beijing provider contract are valid. Pilot
-  releases use a single API instance until the limiter/budget state is moved to shared atomic storage.
+  The explicit Pilot user list is bounded to 128 unique IDs; factories remain limited to the six
+  canonical IDs. Production examples remain disabled with empty allowlists, and the readiness path
+  fails closed unless the fixed control path, external TLS assertion and Qwen Beijing Provider
+  contract are valid. Pilot releases use a single API instance until limiter/budget state moves to
+  shared atomic storage.
   Contract tests cover Request-ID correlation, strict context/tool scope, canonical-deny enforcement,
   result limits, stable SSE, provider/tool failure, timeout, abnormal EOF, cancellation and session
   cleanup. Non-sensitive live Qwen contracts have passed for B2 text, the B7A Data URL/function
@@ -357,11 +359,14 @@ Several cards and dashboards in the module catalog remain planning, design or de
   screenshots/business images to the Aliyun Bailian Beijing service. B7B still requires versioned
   per-request consent, treats images/OCR as untrusted `USER_PROVIDED` data, strips metadata, disables
   tools and makes only one Provider call. The UI discloses that `store=false` does not mean zero
-  provider retention. Vision remains default-off and, in the B8 Pilot, image requests must bind to a
-  server-verified non-empty Pilot factory. No production deployment or Pilot has been accepted. The
-  repository edge still exposes HTTP port 80, so the real public TLS/HSTS edge, approved Pilot IDs,
-  rotated Provider secret, Secure session cookie and fault/kill-switch drill remain field gates. AI
-  availability must not be treated as business-domain authorization.
+  provider retention. Vision remains default-off in examples and image requests must bind to a
+  server-verified non-empty Pilot factory. The live server currently runs a user-directed temporary
+  HTTP/development-mode rollout for approved active accounts across all six factories, including
+  Vision, before the public TLS edge is ready. This does not pass production readiness: the browser
+  to Nexus hop, login and image upload remain plaintext, `AI_PILOT_PUBLIC_TLS_VERIFIED` must remain
+  false, and the exposed Provider secret still requires rotation. The Cloud Document Translation flag is an unused
+  placeholder; the working document translator is server-local/offline and must not be represented as
+  a cloud workflow. AI availability must not be treated as business-domain authorization.
 - AI-B9 has one locally implemented domain batch: Internal Quote read-only summaries. The AI context
   is admitted only on the exact Internal Quote home page, remains text-only, and exposes a dedicated
   `internal_quote.list_summaries` Tool only after canonical `internal_quote:read`, factory and
@@ -385,12 +390,12 @@ The smallest unresolved decisions that require product or operational confirmati
 - Schedule the Huakang A 3D printing cutover, provide production deployment access, and field-accept one idle printer before enabling remote control across all printers.
 - Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
-- Populate and approve the real AI Pilot users/factories, rotate every Provider Key exposed outside the
-  server secret boundary, and run the readiness script plus browser field acceptance against the real
-  TLS/HSTS edge before enabling the default-off Pilot. The recorded B7B approval covers only
-  user-selected images in the current request; it is not a separate legal sign-off and does not approve
-  customer workbooks/documents for B10 or B12. Those file workflows still require their own
-  transmission and retention/deletion policy decision. Production credentials must stay in the
+- Replace the temporary HTTP/development-mode AI rollout with the real TLS/HSTS edge, secure session
+  cookie, rotated Provider secret, runtime-disable drill, authenticated browser acceptance and total-
+  cost alerting. Re-run readiness before calling the Pilot production-ready. The recorded B7B approval
+  covers user-selected images with per-request consent; it is not a separate legal sign-off and does
+  not approve customer workbooks/documents for B10 or B12. Those file workflows still require their
+  own transmission and retention/deletion policy decision. Production credentials must stay in the
   untracked server secret boundary.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.
 
