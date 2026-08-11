@@ -1,0 +1,186 @@
+AI-B7A Vision 私密传输兼容性 Spike
+====================================
+
+## 结论边界
+
+此 Spike 只验证一个尚未由当前官方合同明确承诺的兼容性问题：
+`qwen3.7-plus` 的 Responses API 是否能在同一请求中接受 PNG Base64 Data
+URL、流式响应和自定义 Function Call，并保持 `store=false`。
+
+在显式 Live 测试真正通过前，不能把 Data URL 路径标记为可用，不能实现正式附件
+入口，也不能开启 `AI_CLOUD_VISION_ENABLED`。当前官方合同只承诺 public URL 时，
+Live 结果才是本系统对 Data URL 兼容性的有效证据。
+
+测试代码只在内存中生成一张 32 x 32、四个纯色象限的 PNG：
+
+- 不读取或写入图片文件；
+- 不使用用户截图、业务数据或 EXIF；
+- 不打印 Base64、API Key、响应正文或 Function 参数；
+- 请求只注册一个自定义 Function，不启用 Web Search、File Search、Code
+  Interpreter 等内置工具；
+- 捕获结果只含安全分类、HTTP status（如有）、Responses status 和事件类型；
+- 无论成功或失败都关闭 Stream 和 SDK Client。
+
+这不是 AI-B7B，也不证明生产附件的格式、大小、像素、清理、用户授权和审计策略
+已经完成。
+
+## 默认离线验证
+
+默认 CI 和普通本地测试不会访问云端：
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest tests/test_ai_vision_compatibility_live.py -q
+.\.venv\Scripts\ruff.exe check tests/test_ai_vision_compatibility_live.py
+```
+
+预期结果是离线合同测试通过、一个 Live 测试跳过。离线测试会确认：只有精确设置
+`AI_B7A_LIVE=1` 才能解除门控；请求固定为 `stream=True`、`store=False`、
+`parallel_tool_calls=False`，并且仅含一个自定义 Function；模型未识别四象限时不能
+误判通过。
+
+## 受控 Live 运行
+
+仅在 B4-B6 回归通过、数据治理允许后运行。测试只有在显式 Live Flag 开启后才
+导入应用 Settings；届时使用系统标准配置来源，因此可以使用已经安全保存在被 Git
+忽略的 `backend/.env` 中的 Workspace 和 Key，也可以由受控运行环境注入。测试代码
+和操作说明都不读取、显示或复制 Secret。不要把 Key 写进命令、Markdown、截图、
+终端转录或 JUnit 文件。
+
+必需的进程环境变量：
+
+```text
+AI_B7A_LIVE=1
+AI_ENABLED=true
+AI_PROVIDER=qwen
+AI_REGION=cn-beijing
+AI_WORKSPACE_ID=<由标准 Settings 安全读取>
+DASHSCOPE_API_KEY=<由标准 Settings 安全读取>
+AI_DEFAULT_MODEL=qwen3.7-plus
+AI_CLOUD_VISION_ENABLED=false
+AI_BASE_URL=
+OPENAI_LOG=error
+```
+
+测试拒绝自定义 Base URL、非北京区域、其它模型和已经开启的生产 Vision Flag。
+如果配置由当前进程环境注入，可在不显示值的前提下检查敏感变量是否存在；若使用
+被 Git 忽略的 `backend/.env`，不要用终端命令读取或打印该文件：
+
+```powershell
+Test-Path Env:DASHSCOPE_API_KEY
+Test-Path Env:AI_WORKSPACE_ID
+```
+
+然后运行一次：
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest tests/test_ai_vision_compatibility_live.py -q `
+  --junitxml=.pytest-tmp/ai-b7a-live.xml
+```
+
+不要使用 `-s`、`OPENAI_LOG=debug` 或 HTTP 调试代理。JUnit 的
+`ai_b7a_safe_evidence` property 只记录安全字段；失败时也只显示同一份安全摘要。
+
+## 证据模板
+
+不得把 Key、Workspace 完整主机名、Base64、响应正文、Function 参数或真实截图
+填入证据。
+
+```text
+测试时间（Asia/Shanghai）：
+执行人/审批记录：
+官方文档链接及复核时间：
+SDK：openai 2.53.0（运行时再次核对）
+Provider / Model：Qwen / qwen3.7-plus
+区域：cn-beijing
+Endpoint 类别：阿里云北京、Workspace-scoped HTTPS（不记完整主机名）
+输入方式：内存生成 32 x 32 PNG Base64 Data URL
+请求合同：Responses；stream=true；store=false；custom function only
+安全结果 classification：
+HTTP status（如有）：
+Responses status（如有）：
+事件类型集合：
+JUnit 文件 SHA-256：
+清理结果：无图片文件/对象存储；Stream 与 SDK Client 已关闭
+最终决策：PASS / FAIL / INCONCLUSIVE
+审批人：
+```
+
+## 2026-08-11 技术实测记录
+
+```text
+测试时间（Asia/Shanghai）：2026-08-11T16:27:53+08:00
+执行范围：本地合成无敏感图片技术兼容性；未使用客户图片或业务数据
+数据治理/法务批准：尚未提供，本记录不能替代批准
+官方文档：
+  https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses
+  https://help.aliyun.com/zh/model-studio/vision-model/
+  https://help.aliyun.com/zh/model-studio/regions/
+  https://help.aliyun.com/zh/model-studio/privacy-notice
+SDK：openai 2.53.0
+Provider / Model：Qwen / qwen3.7-plus
+区域：cn-beijing
+Endpoint 类别：阿里云北京、Workspace-scoped HTTPS（未记录完整主机名）
+输入方式：内存生成 32 x 32 PNG Base64 Data URL
+请求合同：Responses；stream=true；store=false；parallel_tool_calls=false；custom function only
+安全结果 classification：passed_image_stream_function_call
+HTTP status：无错误状态
+Responses status：completed
+事件类型集合：
+  response.created
+  response.in_progress
+  response.output_item.added
+  response.function_call_arguments.delta
+  response.reasoning_text.delta
+  response.reasoning_text.done
+  response.function_call_arguments.done
+  response.output_item.done
+  response.completed
+JUnit 文件：backend/.pytest-tmp/ai-b7a-live.xml（本地临时证据，不提交）
+JUnit SHA-256：0B49A319C5181F01C81C60CD90AF6119AC5DC30C678D399D6C72A154F5EDC5E5
+清理结果：未创建图片文件或对象存储；Stream 与 SDK Client 已关闭
+技术决策：方案 A 技术兼容性 PASS
+产品决策：Vision 继续关闭，等待数据治理/法务批准和 AI-B7B 安全实现
+审批人：待填写
+```
+
+## 2026-08-11 AI-B7B 后续记录
+
+```text
+记录时间（Asia/Shanghai）：2026-08-11T18:12:16+08:00
+产品批准：用户已明确批准将当前请求中主动选择的截图或业务图片发送至
+  阿里云百炼华北2（北京）服务。
+批准边界：该批准不等于“零留存”承诺，也不替代独立法律意见；前端每批图片仍
+  必须展示版本化提示并获得与附件 ID 精确绑定的本次同意。
+实现状态：AI-B7B 本地安全实现已完成；图片仅在认证、Vision Flag 与服务端页面
+  上下文校验后解码，经过真实格式/像素/动画/容器边界校验、元数据清理和安全重编码。
+外发合同：qwen3.7-plus；Responses；stream=true；store=false；
+  parallel_tool_calls=false；tools=()；每个含图请求只调用 Provider 一次。
+Live Canary：32 x 32 四象限合成 PNG 经当前 sanitizer -> Provider 路径通过，
+  classification=passed_sanitized_image_stream；未使用客户图片或业务数据。
+生产状态：仓库示例和生产 rollout 继续默认关闭，等待 AI-B8 Pilot 入口、账号/厂区、
+  速率与预算策略验收。仓库当前边缘配置仅监听 HTTP 80；任何真实客户图片放量前，
+  必须验证外层 TLS/HSTS 终止或补齐并实测 HTTPS 443。
+```
+
+## 判定规则
+
+只有安全分类为 `passed_image_stream_function_call`，Responses status 为
+`completed`，事件集合包含 `response.completed`，并且指定自定义 Function Call
+同时确认图片可用且识别为 `four_color_quadrants` 时，方案 A 的“技术兼容性”才可
+记为 PASS。`other` 或 `unclear` 会安全归类为
+`model_did_not_observe_expected_pattern`，不能仅凭接口接受请求判定通过。
+
+下列情况均不得开启 Vision：
+
+- `image_data_url_or_request_rejected`：Data URL 或组合请求被拒绝；
+- `authentication_rejected`、`rate_limited`、`timeout`、网络或服务端错误：结果为
+  INCONCLUSIVE，修复测试条件后再运行；
+- 只有长期公共 URL 才能工作；
+- 无法确认 `store=false`；
+- 事件流未完成，或没有指定的 Function Call。
+
+若方案 A 失败，只能另立审批评估公司受控、不可枚举、最短 TTL、单对象签名 URL
+并在处理后删除的方案 B；本 Spike 不实现该方案。完整 B7A 还需在所选路径上补齐
+图片大小、格式、像素和安全错误矩阵，AI-B7B 才能开始。

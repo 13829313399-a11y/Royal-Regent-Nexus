@@ -1,0 +1,90 @@
+Royal Regent Nexus AI-B8 Pilot Readiness Evidence
+Date: 2026-08-11 (Asia/Shanghai)
+
+Result
+------
+Local engineering status: CONDITIONAL PASS.
+Production Pilot status: NO-GO until the external gates below are completed.
+
+Implemented boundary
+--------------------
+- Default-deny server-side Pilot user and factory allowlists.
+- Existing canonical domain authorization, explicit-deny and request-scoped
+  READ_ONLY Tool enforcement remain authoritative.
+- Per-user concurrency, requests-per-minute and Asia/Shanghai daily admission
+  budget guards. Provider output, Tool rounds, rows, bytes, fields and input
+  limits are bounded in Settings.
+- The conservative admission formula includes fixed system/page-context input,
+  Tool schemas, replayed Tool arguments, replayed Tool results and Vision input.
+- Production fails closed unless the fixed runtime control path, external TLS
+  assertion and Qwen cn-beijing qwen3.7-plus Provider contract are valid.
+- Vision requests require a non-empty server-verified Pilot factory, versioned
+  per-request cloud consent and one Provider call with Tools disabled.
+- Metadata-only logs, private no-store AI responses, stable Chinese errors and
+  safe cancellation/retry behavior are implemented.
+- Pilot deployments use one API instance and leave the runtime disable marker
+  active. Operators must pass the two-stage readiness procedure before manually
+  removing the marker.
+- Deployment backups no longer copy the runtime environment or full container
+  inspect output containing secret values.
+
+Verification on the final local tree
+------------------------------------
+- B8 taskbook AI backend group: 108 passed in 319.20 seconds.
+- Auth and injection-scheduling takeover group: 53 passed in 850.99 seconds.
+- Frontend unit suite: 129 test files passed, 5 skipped; 785 tests passed,
+  6 skipped (791 total).
+- Frontend AI/AppShell/HTTP focused suite: 85 passed (agent verification).
+- npm run typecheck:test: passed.
+- npm run build: passed; only existing @vueuse PURE annotation warnings.
+- AI-B8 scoped Ruff: passed.
+- Full backend Ruff was executed and reported 1265 pre-existing repository
+  findings; it is not a clean repository-wide Ruff result.
+- Alembic: 20260811_0065 is the single head.
+- Python compileall, deployment/readiness shell syntax and git diff --check:
+  passed (git only reported line-ending warnings).
+- Docker Compose rendering was not run because Docker CLI is unavailable in
+  this Windows session.
+- Scoped repository scan found no pasted Provider credential prefix.
+
+Two stale origin/main test expectations were synchronized without changing
+business behavior: the admin read-permission expectation now includes the
+existing carton_procurement:read permission, and the internal-quote dual-
+currency test now uses the current "original unit price" labels and amount
+column.
+
+Safety of this verification
+---------------------------
+- Pydantic dotenv loading was disabled in backend test processes.
+- The ignored backend/.env and any real Provider Key were not read or changed.
+- No Provider request, customer-data upload, production deployment, Git commit
+  or push was performed.
+
+External production gates
+-------------------------
+1. Revoke and rotate every Provider Key that was pasted into chat or may exist
+   in historical environment/inspect backups. Store the replacement only in
+   the untracked server secret boundary.
+2. Configure and test the real public HTTPS edge: same-origin permanent HTTP
+   redirect, HSTS max-age of at least one year, and an actual rr_session cookie
+   with Secure, HttpOnly and SameSite=Lax.
+3. Approve and configure the real Pilot user IDs, factory IDs, RPM, per-user
+   daily budget, total-cost alert, budget owner and incident contact.
+4. Configure alert delivery for Provider authentication/rate/server failures,
+   timeouts, budget denials, stream interruption, Tool failures and Vision
+   failures; trigger and verify those alerts.
+5. Run the two-stage readiness procedure with the disable marker active, then
+   remove it and immediately perform approved/non-approved account, cross-
+   factory, cancellation, 429 and fault-isolation browser acceptance.
+6. Prove login, scheduling, quoting, import, local translation and 3D-printing
+   APIs remain usable during each required AI failure scenario.
+7. Keep one Uvicorn worker and one API replica. Process-local limiter/budget
+   state resets on restart; move it to shared atomic storage before scaling.
+8. Keep Vision disabled for the first text/Tool Pilot unless its separate TLS,
+   consent, factory-binding and failure drill are also accepted.
+
+The runtime marker stops new calls and terminates an active flow only at the
+next Provider-event or Tool boundary; it cannot revoke a request already sent
+to the Provider. Factory binding cannot prove the provenance of a manually
+selected image, so the Pilot SOP must still prohibit uploading data from an
+unapproved factory or source.

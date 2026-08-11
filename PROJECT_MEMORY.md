@@ -39,6 +39,18 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
+- The repository has a default-off AI boundary with deterministic Fake and Qwen OpenAI-compatible
+  Responses providers. Qwen requests always use `store=false`; endpoints are derived from a validated
+  region and Workspace identifier. The login-protected `/api/ai/responses` Orchestrator carries the
+  middleware-owned Request ID through versioned SSE and metadata-only logs, enforces server-owned
+  policy, limits, timeout/cancellation and one terminal event, and supports bounded replay of registered
+  read-only custom tools. Tool discovery and execution both recheck the canonical IAM decision and the
+  verified page/tool-group scope. Injection Scheduling V2 exposes versioned module knowledge, separate
+  PUBLISHED/DRAFT plan context and a paginated formal Backlog summary; tool database sessions are
+  short-lived and self-owned. The frontend has a global memory-only assistant Drawer with strict page
+  context and structured result cards. Production Nginx disables buffering for the SSE route. There is
+  still no conversation persistence, AI-specific database state, consequential AI write path or enabled
+  production Vision feature.
 - Alembic has one current head: `20260811_0065`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
@@ -317,6 +329,8 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260807_0058` adds public planning bindings, recoverable import artifacts and signed-export audit evidence. Its downgrade refuses to discard those artifacts, and SQLite/PostgreSQL guards reject export-audit updates and deletes.
 - Migration `20260809_0059` adds demand-order import state and the company/shared-mold plus factory physical-asset model; it intentionally seeds company membership only and no commercial rates. Migration `20260809_0060` adds conservative rollout policies for all six factories and physical-asset assignment lineage. Compatibility migration `20260810_0061` follows the remote customer-order `0059` plus injection branch and conditionally supplies the customer-order audit columns missing from already-migrated local databases. Local SQLite was backed up and migrated through the injection `0060` branch with integrity, foreign-key, schema-gate and `/health` verification; it still needs the compatibility-head upgrade, and production still requires its own verified backup, migration and real-workbook reconciliation.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
+- Production Compose injects only the three required `POSTGRES_*` variables into PostgreSQL; the API
+  alone receives the complete untracked `.env.production`, including any future AI Provider secret.
 
 ## 8. Active Known Issues
 
@@ -328,6 +342,39 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Indonesia customer-order schedule processing is outside the current BuzzBee parser contract.
 - Many module cards and dashboard metrics still use demonstration data and need explicit replacement plans before they can be treated as operational.
 - The repository alone cannot confirm the live production `AUTHZ_MODE`, permission-write posture, database head or deployed application revision.
+- AI is implemented locally through the B8 Pilot safety boundary while retaining the B6B read-only
+  text/tool contract and optional B7B image-understanding path. B8 uses default-deny server-side user
+  and factory allowlists, canonical domain authorization, per-user process-local concurrency/RPM/daily
+  budget guards, bounded Provider output, metadata-only observability and a runtime disable marker.
+  Production examples remain disabled with empty allowlists; production also fails closed unless the
+  fixed control path, external TLS assertion and Qwen Beijing provider contract are valid. Pilot
+  releases use a single API instance until the limiter/budget state is moved to shared atomic storage.
+  Contract tests cover Request-ID correlation, strict context/tool scope, canonical-deny enforcement,
+  result limits, stable SSE, provider/tool failure, timeout, abnormal EOF, cancellation and session
+  cleanup. Non-sensitive live Qwen contracts have passed for B2 text, the B7A Data URL/function
+  compatibility path and the B7B sanitizer-to-Provider path with `qwen3.7-plus`, streaming and
+  `store=false`. On 2026-08-11 the user explicitly approved sending the current request's selected
+  screenshots/business images to the Aliyun Bailian Beijing service. B7B still requires versioned
+  per-request consent, treats images/OCR as untrusted `USER_PROVIDED` data, strips metadata, disables
+  tools and makes only one Provider call. The UI discloses that `store=false` does not mean zero
+  provider retention. Vision remains default-off and, in the B8 Pilot, image requests must bind to a
+  server-verified non-empty Pilot factory. No production deployment or Pilot has been accepted. The
+  repository edge still exposes HTTP port 80, so the real public TLS/HSTS edge, approved Pilot IDs,
+  rotated Provider secret, Secure session cookie and fault/kill-switch drill remain field gates. AI
+  availability must not be treated as business-domain authorization.
+- AI-B9 has one locally implemented domain batch: Internal Quote read-only summaries. The AI context
+  is admitted only on the exact Internal Quote home page, remains text-only, and exposes a dedicated
+  `internal_quote.list_summaries` Tool only after canonical `internal_quote:read`, factory and
+  department checks. The Tool uses a selected-column, single-statement query and a closed Field
+  Policy that returns only quote/customer/status/stage/version/update/navigation metadata; it does
+  not return pricing, quantities, product details, remarks, owners, calculation/cost sections or
+  approval/export actions, and it does not invoke the existing view-audit-writing detail service.
+  The frontend accepts only the versioned discriminator and renders fixed named-router links; unknown
+  or extra result fields fail closed. Tests cover pagination, truncation, literal wildcard search,
+  no business-table writes, explicit-deny and cross-factory rejection, hostile tool-call replay,
+  image rejection and the complete Provider/API/SSE/card contract. This is only the first B9 batch:
+  molding samples, cartons, raw-material inventory and customer orders remain separate, unimplemented
+  domain batches and must not be inferred from the Internal Quote implementation.
 - Injection-scheduling V2 now includes Phase 5 provider-neutral ingestion, device-derived cycle observations, mold speed-model calibration and operational analytics. Real ERP/device adapter credentials and mappings, calendar maintenance UI, richer conflict resolution, production-scale calibration and KPI field acceptance remain later integration work.
 
 ## 9. Current Next Steps
@@ -338,6 +385,13 @@ The smallest unresolved decisions that require product or operational confirmati
 - Schedule the Huakang A 3D printing cutover, provide production deployment access, and field-accept one idle printer before enabling remote control across all printers.
 - Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
+- Populate and approve the real AI Pilot users/factories, rotate every Provider Key exposed outside the
+  server secret boundary, and run the readiness script plus browser field acceptance against the real
+  TLS/HSTS edge before enabling the default-off Pilot. The recorded B7B approval covers only
+  user-selected images in the current request; it is not a separate legal sign-off and does not approve
+  customer workbooks/documents for B10 or B12. Those file workflows still require their own
+  transmission and retention/deletion policy decision. Production credentials must stay in the
+  untracked server secret boundary.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.
 
 When one of these decisions becomes an implemented, verified long-lived fact, update the relevant section in place and remove the corresponding unresolved item.
