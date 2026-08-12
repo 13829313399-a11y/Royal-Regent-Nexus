@@ -15,12 +15,13 @@ from app.services.auth import (
     AuthContext,
     add_auth_audit,
     ensure_permission_in_scope,
+    has_permission_in_scope,
     now_text,
 )
 from app.services.internal_quote import ensure_quote_read
 
 
-CUSTOMER_DEPARTMENT = "sales-business"
+CUSTOMER_MANAGE_DEPARTMENTS = ("sales-business", "engineering")
 CUSTOMER_MANAGE_PERMISSION = "internal_quote:customer_manage"
 
 
@@ -51,12 +52,22 @@ def _get_customer(db: Session, customer_id: str) -> InternalQuoteCustomer:
 
 
 def _ensure_manage(db: Session, user: AuthContext, factory_id: str) -> None:
+    if any(
+        has_permission_in_scope(
+            user,
+            CUSTOMER_MANAGE_PERMISSION,
+            factory_id,
+            department,
+        )
+        for department in CUSTOMER_MANAGE_DEPARTMENTS
+    ):
+        return
     ensure_permission_in_scope(
         db,
         user,
         CUSTOMER_MANAGE_PERMISSION,
         factory_id,
-        CUSTOMER_DEPARTMENT,
+        CUSTOMER_MANAGE_DEPARTMENTS[0],
     )
 
 

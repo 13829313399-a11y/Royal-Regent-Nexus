@@ -205,6 +205,7 @@ ENGINEERING_SUPERVISOR_PERMISSION_CODES = (
     *ENGINEER_PERMISSION_CODES,
     "molding_sample:supervisor_review",
     MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE,
+    "internal_quote:customer_manage",
     "internal_quote:reference_manage",
     "internal_quote:engineering_review",
 )

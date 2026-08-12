@@ -81,9 +81,12 @@ INTERNAL_QUOTE_EXPORT_PERMISSION = "internal_quote:export"
 INTERNAL_QUOTE_EXPORT_DEFAULT_ROLE_IDS = ("sales_customer_owner", "sales_customer_supervisor")
 INTERNAL_QUOTE_P4_RELEASE_GRANT_MARKER = "internal_quote_p4_release_grant_v1_completed"
 INTERNAL_QUOTE_BASELINE_GRANT_MARKER = "internal_quote_baseline_grant_v1_completed"
-INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER = "internal_quote_customer_grant_v1_completed"
+INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER = "internal_quote_customer_grant_v2_completed"
 INTERNAL_QUOTE_CUSTOMER_PERMISSION = "internal_quote:customer_manage"
-INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
+INTERNAL_QUOTE_CUSTOMER_DEFAULT_ROLE_IDS = (
+    "sales_customer_supervisor",
+    "engineering_supervisor",
+)
 INTERNAL_QUOTE_SELF_REVIEW_GRANT_MARKER = "internal_quote_self_review_grant_v1_completed"
 INTERNAL_QUOTE_SELF_REVIEW_DEFAULT_ROLE_IDS = ("sales_customer_supervisor",)
 CUSTOMER_ORDER_CONTROL_GRANT_MARKER = "customer_order_control_grant_v1_completed"
@@ -179,6 +182,7 @@ INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS = {
         *INTERNAL_QUOTE_COMMON_PERMISSIONS,
         "internal_quote:create",
         "internal_quote:clone",
+        "internal_quote:customer_manage",
         "internal_quote:engineering_edit",
         "internal_quote:engineering_review",
         "internal_quote:reference_manage",
@@ -1414,7 +1418,7 @@ def seed_internal_quote_baseline_grants_once(db: Session, now: str) -> int:
 
 
 def seed_internal_quote_customer_grants_once(db: Session, now: str) -> int:
-    """Grant factory customer maintenance to existing business supervisors once."""
+    """Grant factory customer maintenance to existing sales and engineering supervisors once."""
     if db.get(AuthIamState, INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER) is not None:
         return 0
     permission = db.scalar(
@@ -2325,6 +2329,17 @@ def authorization_decision(
     if user.active_permission_codes and permission not in user.active_permission_codes:
         return False, "inactive_permission", (), "权限未启用"
 
+    matching_overrides = [
+        override
+        for override in user.overrides
+        if override.permission_code == permission
+        and scope_matches(override.factory_id, override.department, factory_id, department)
+        and time_window_is_active(override.valid_from, override.valid_until, at)
+    ]
+    denied = [override for override in matching_overrides if override.effect == "deny"]
+    if denied:
+        return False, "user_override", tuple(sorted(override.id for override in denied)), "用户单独禁止"
+
     superadmin_grants = [
         grant
         for grant in user.grants
@@ -2340,17 +2355,6 @@ def authorization_decision(
             tuple(sorted(grant.binding_id for grant in superadmin_grants if grant.binding_id)),
             "集团超级管理员",
         )
-
-    matching_overrides = [
-        override
-        for override in user.overrides
-        if override.permission_code == permission
-        and scope_matches(override.factory_id, override.department, factory_id, department)
-        and time_window_is_active(override.valid_from, override.valid_until, at)
-    ]
-    denied = [override for override in matching_overrides if override.effect == "deny"]
-    if denied:
-        return False, "user_override", tuple(sorted(override.id for override in denied)), "用户单独禁止"
 
     allowed = [override for override in matching_overrides if override.effect == "allow"]
     if allowed:

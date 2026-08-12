@@ -24,23 +24,23 @@ describe('InternalQuoteSectionForm dual-currency material prices', () => {
       },
     })
 
-    expect(wrapper.get('input[aria-label="包装材料单价 HKD"]').element).toHaveProperty('value', '4')
-    await wrapper.get('input[aria-label="包装材料单价 HKD"]').setValue('5.2')
+    expect(wrapper.get('input[aria-label="包装材料原单价 HKD"]').element).toHaveProperty('value', '4')
+    await wrapper.get('input[aria-label="包装材料原单价 HKD"]').setValue('5.2')
 
     expect(payload.packaging_materials[0]).toMatchObject({
       unit_price_source_currency: 'HKD',
       unit_price_hkd: 5.2,
       unit_price_rmb: 4.42,
     })
-    expect(wrapper.get('.packagingMaterials tbody .calculated-cell').text()).toBe('10.400')
+    expect(wrapper.findAll('.packagingMaterials tbody .calculated-cell')[1]?.text()).toBe('10.400')
 
-    await wrapper.get('input[aria-label="包装材料单价 RMB"]').setValue('3.4')
+    await wrapper.get('input[aria-label="包装材料原单价 RMB"]').setValue('3.4')
     expect(payload.packaging_materials[0]).toMatchObject({
       unit_price_source_currency: 'RMB',
       unit_price_rmb: 3.4,
       unit_price_hkd: 4,
     })
-    expect(wrapper.get('.packagingMaterials tbody .calculated-cell').text()).toBe('8.000')
+    expect(wrapper.findAll('.packagingMaterials tbody .calculated-cell')[1]?.text()).toBe('8.000')
   })
 
   it('lets engineering enter auxiliary material HKD and derives RMB and total', async () => {
@@ -63,15 +63,15 @@ describe('InternalQuoteSectionForm dual-currency material prices', () => {
       },
     })
 
-    expect(wrapper.get('input[aria-label="辅助材料单价 RMB"]').element).toHaveProperty('value', '1.275')
-    expect(wrapper.get('input[aria-label="辅助材料单价 HKD"]').element).toHaveProperty('value', '1.5')
-    await wrapper.get('input[aria-label="辅助材料单价 HKD"]').setValue('2')
+    expect(wrapper.get('input[aria-label="辅助材料原单价 RMB"]').element).toHaveProperty('value', '1.275')
+    expect(wrapper.get('input[aria-label="辅助材料原单价 HKD"]').element).toHaveProperty('value', '1.5')
+    await wrapper.get('input[aria-label="辅助材料原单价 HKD"]').setValue('2')
 
     expect(payload.materials[0]).toMatchObject({
       unit_price_source_currency: 'HKD',
       unit_price_hkd: 2,
       unit_price_rmb: 1.7,
     })
-    expect(wrapper.get('.engineeringAuxiliary tbody .calculated-cell').text()).toBe('6.000')
+    expect(wrapper.findAll('.engineeringAuxiliary tbody .calculated-cell')[1]?.text()).toBe('6.000')
   })
 })

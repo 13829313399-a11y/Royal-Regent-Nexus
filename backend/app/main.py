@@ -5,7 +5,11 @@ from time import perf_counter
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
+from app.api.ai import router as ai_router
 from app.api.auth import router as auth_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_procurement import router as carton_procurement_router
@@ -64,6 +68,25 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 
+@app.exception_handler(RequestValidationError)
+async def handle_request_validation_error(
+    request: Request,
+    exc: RequestValidationError,
+):
+    if request.url.path == "/api/ai/responses":
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": {
+                    "code": "AI_INVALID_REQUEST",
+                    "message": "请求格式不正确，请检查消息内容后重试。",
+                    "retryable": False,
+                }
+            },
+        )
+    return await request_validation_exception_handler(request, exc)
+
+
 @app.middleware("http")
 async def record_request_timing(request: Request, call_next):
     started_at = perf_counter()
@@ -73,22 +96,46 @@ async def record_request_timing(request: Request, call_next):
         if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", supplied_request_id)
         else uuid4().hex
     )
-    try:
-        response = await call_next(request)
-    except Exception:
-        duration_ms = (perf_counter() - started_at) * 1000
-        request_timing_logger.error(
-            "request_timing method=%s path=%s status=500 duration_ms=%.2f request_id=%s",
-            request.method,
-            request.url.path,
-            duration_ms,
-            request_id,
+    request.state.request_id = request_id
+    response = None
+    content_length = request.headers.get("content-length", "")
+    if (
+        request.url.path == "/api/ai/responses"
+        and content_length.isdecimal()
+        and int(content_length) > settings.ai_max_request_bytes
+    ):
+        response = JSONResponse(
+            status_code=413,
+            content={
+                "detail": {
+                    "code": "AI_REQUEST_TOO_LARGE",
+                    "message": "AI 请求内容超过允许上限，请减少图片后重试。",
+                    "retryable": False,
+                }
+            },
         )
-        raise
+
+    if response is None:
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = (perf_counter() - started_at) * 1000
+            request_timing_logger.error(
+                "request_timing method=%s path=%s status=500 duration_ms=%.2f request_id=%s",
+                request.method,
+                request.url.path,
+                duration_ms,
+                request_id,
+            )
+            raise
 
     duration_ms = (perf_counter() - started_at) * 1000
     response.headers["X-Request-ID"] = request_id
     response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
+    if request.url.path.startswith("/api/ai/"):
+        response.headers["Cache-Control"] = "private, no-store, no-transform"
+    if request.url.path == "/api/ai/responses":
+        response.headers["X-Accel-Buffering"] = "no"
     if request.url.path != "/health":
         route = request.scope.get("route")
         route_path = getattr(route, "path", request.url.path)
@@ -104,6 +151,7 @@ async def record_request_timing(request: Request, call_next):
 
 
 app.include_router(auth_router)
+app.include_router(ai_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_procurement_router)
 app.include_router(customer_order_router)

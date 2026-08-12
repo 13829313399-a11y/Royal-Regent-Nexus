@@ -202,7 +202,7 @@ describe('internal quote desk frontend layout', () => {
     }
     expect(homeSource).toContain("internal_quote:baseline_read")
     expect(homeSource).toContain("internal_quote:baseline_manage")
-    for (const text of ['客户资料', '仅本厂业务主管可新增、修改和删除', '删除只会从后续建单选项中移除']) {
+    for (const text of ['客户资料', '仅本厂业务主管或工程主管可新增、修改和删除', '删除只会从后续建单选项中移除']) {
       expect(`${homeSource}\n${customerDialogSource}`).toContain(text)
     }
     expect(homeSource).toContain("internal_quote:customer_manage")

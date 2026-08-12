@@ -315,6 +315,28 @@ def test_molding_sample_dispatch_permission_catalog_and_legacy_role_contract():
     assert dispatch_permission not in auth_service.ROLE_PERMISSIONS["molding_clerk"]
 
 
+def test_internal_quote_customer_manage_is_granted_to_local_supervisors():
+    auth_service = importlib.import_module("app.services.auth")
+    positions = importlib.import_module("app.services.system_positions")
+    scope_policy = importlib.import_module("app.services.permission_scope_policy")
+    permission = "internal_quote:customer_manage"
+
+    engineer = positions.get_system_position("position_engineering_engineer")
+    engineering_supervisor = positions.get_system_position(
+        "position_engineering_supervisor"
+    )
+    engineering_manager = positions.get_system_position("position_engineering_manager")
+
+    assert permission not in engineer.permission_codes
+    assert permission in engineering_supervisor.permission_codes
+    assert permission in engineering_manager.permission_codes
+    assert permission in auth_service.ROLE_PERMISSIONS["engineering_supervisor"]
+
+    policy = scope_policy.permission_scope_policy(permission)
+    assert policy.departments == ("sales-business", "engineering")
+    assert policy.requires_global_factory is False
+
+
 def test_reconcile_restores_drift_preserves_bindings_and_is_idempotent(monkeypatch):
     with make_client(monkeypatch):
         db_module = importlib.import_module("app.db")

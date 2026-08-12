@@ -83,11 +83,12 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                     for code in sorted(me["permissions"])
                     if code in {
                         "carton_mark:read",
+                        "carton_procurement:read",
                         "customer_price:compare",
-                            "customer_price:read",
-                            "customer_order:audit_read",
-                            "customer_order:read",
-                            "internal_quote:baseline_read",
+                        "customer_price:read",
+                        "customer_order:audit_read",
+                        "customer_order:read",
+                        "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",
                         "internal_quote:timeline_read",
@@ -598,6 +599,52 @@ def test_seed_upgrades_existing_business_supervisor_with_self_review_once(monkey
             assert db.query(auth_models.AuthRolePermission).filter_by(id=mapping_id).count() == 1
 
 
+def test_seed_upgrades_existing_engineering_supervisor_with_customer_manage_once(monkeypatch):
+    with make_client(monkeypatch):
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        auth_service = importlib.import_module("app.services.auth")
+        with db_module.SessionLocal() as db:
+            permission = db.scalar(
+                auth_service.select(auth_models.AuthPermission).where(
+                    auth_models.AuthPermission.code
+                    == auth_service.INTERNAL_QUOTE_CUSTOMER_PERMISSION
+                )
+            )
+            assert permission is not None
+
+            marker = db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER,
+            )
+            assert marker is not None
+            db.delete(marker)
+            db.add(
+                auth_models.AuthIamState(
+                    key="internal_quote_customer_grant_v1_completed",
+                    value_json="{}",
+                    updated_at=auth_service.now_text(),
+                )
+            )
+
+            mapping_id = f"engineering_supervisor:{permission.id}"
+            mapping = db.get(auth_models.AuthRolePermission, mapping_id)
+            assert mapping is not None
+            db.delete(mapping)
+            db.commit()
+
+            auth_service.seed_auth_defaults(db)
+
+            assert db.get(auth_models.AuthRolePermission, mapping_id) is not None
+            assert db.get(
+                auth_models.AuthIamState,
+                auth_service.INTERNAL_QUOTE_CUSTOMER_GRANT_MARKER,
+            ) is not None
+
+            auth_service.seed_auth_defaults(db)
+            assert db.query(auth_models.AuthRolePermission).filter_by(id=mapping_id).count() == 1
+
+
 def test_seed_reconciles_fixed_system_position_template_from_code(monkeypatch):
     with make_client(monkeypatch):
         db_module = importlib.import_module("app.db")
@@ -710,6 +757,40 @@ def test_canonical_can_uses_deny_then_allow_then_role_and_scope(monkeypatch):
         ) is True
         assert auth_service.can(context, "module:read", "huaxing", "engineering") is True
         assert auth_service.can(context, "module:read", "huadeng", "engineering") is False
+
+        superadmin_grant = auth_service.AuthGrantContext(
+            role_id="admin",
+            role_name="系统管理员",
+            role_code="admin",
+            factory_id="*",
+            department="*",
+            permissions=frozenset(),
+            binding_id="binding-superadmin",
+        )
+        wildcard_deny = auth_service.AuthOverrideContext(
+            id="override-superadmin-deny",
+            permission_code="module:read",
+            effect="deny",
+            factory_id="*",
+            department="*",
+        )
+        superadmin_context = auth_service.replace(
+            context,
+            grants=(superadmin_grant,),
+            overrides=(wildcard_deny,),
+        )
+        assert auth_service.can(
+            superadmin_context,
+            "module:read",
+            "huaxing",
+            "engineering",
+        ) is False
+        assert auth_service.can(
+            auth_service.replace(superadmin_context, overrides=()),
+            "module:read",
+            "huaxing",
+            "engineering",
+        ) is True
 
 
 @pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])

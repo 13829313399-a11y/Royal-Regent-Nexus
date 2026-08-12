@@ -90,7 +90,7 @@ function requestDelete(customer: ApiInternalQuoteCustomer) {
               <span><Users aria-hidden="true" /></span>
               <div>
                 <h2 id="customer-dialog-title">客户资料</h2>
-                <p>{{ factoryName }} · 仅本厂业务主管可新增、修改和删除</p>
+                <p>{{ factoryName }} · 仅本厂业务主管或工程主管可新增、修改和删除</p>
               </div>
             </div>
             <button type="button" class="customer-close" :disabled="busy" aria-label="关闭客户资料" @click="emit('close')"><X aria-hidden="true" /></button>

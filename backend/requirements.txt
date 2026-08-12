@@ -1,4 +1,4 @@
-fastapi
+fastapi>=0.135,<1
 uvicorn[standard]
 sqlalchemy
 psycopg[binary]
@@ -16,10 +16,11 @@ pypdf
 pypdfium2
 pdfplumber>=0.11,<0.12
 python-docx>=1.1,<2
-Pillow
+Pillow>=12.3,<13
 pytesseract
 rapidocr>=3.9.1,<4
 onnxruntime>=1.27,<2
 ortools==9.15.6755
+openai==2.53.0
 httpx2
 pytest

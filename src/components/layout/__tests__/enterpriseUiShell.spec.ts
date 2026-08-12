@@ -31,7 +31,7 @@ describe('enterprise UI shell contract', () => {
     expect(sidebarSource).toContain('mobileCloseButtonRef.value?.focus()')
     expect(appShellSource).toContain(':mobile-open="isMobileNavigationOpen"')
     expect(appShellSource).toContain('@close="isMobileNavigationOpen = false"')
-    expect(appShellSource).toContain("document.body.style.overflow = 'hidden'")
+    expect(appShellSource).toContain('acquireBodyScrollLock()')
     expect(appShellSource).toContain("document.addEventListener('keydown', closeNavigationOnEscape)")
     expect(appShellSource).toContain("window.matchMedia('(min-width: 1024px)')")
     expect(appShellSource).toContain("desktopMediaQuery.addEventListener('change', closeNavigationAtDesktop)")

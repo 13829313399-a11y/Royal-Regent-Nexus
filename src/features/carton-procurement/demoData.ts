@@ -39,6 +39,15 @@ export interface WeeklyCheckRow {
   suggestion: string
 }
 
+export interface InspectionReminderRow extends WeeklyCheckRow {
+  inspectionStartDate: string
+  requiredDeliveryDate: string
+  advanceDays: number
+  daysUntilDelivery: number | null
+  orderStatus: string
+  reminderStatus: string
+}
+
 export interface ReceiptLineSeed {
   id: string
   orderNo: string
@@ -62,7 +71,7 @@ export interface InventoryMovementRow {
   packagingType: string
   paperQuality: string
   specification: string
-  movementType: '入库' | '出库' | '调整'
+  movementType: '入库' | '出库' | '调整' | '冲销' | '期初'
   quantity: number
   balance: number
   location: string
@@ -80,6 +89,7 @@ export interface ClosingRow {
   adjustmentQuantity: number
   endingQuantity: number
   endingAmount: number
+  currency: string
   status: string
   tone: CartonTone
 }
@@ -353,6 +363,7 @@ export const cartonClosings: ClosingRow[] = [
     adjustmentQuantity: -2,
     endingQuantity: 66,
     endingAmount: 228.36,
+    currency: 'CNY',
     status: '待核对',
     tone: 'amber',
   },
@@ -366,6 +377,7 @@ export const cartonClosings: ClosingRow[] = [
     adjustmentQuantity: 0,
     endingQuantity: 108,
     endingAmount: 286.44,
+    currency: 'CNY',
     status: '已对平',
     tone: 'green',
   },
@@ -379,6 +391,7 @@ export const cartonClosings: ClosingRow[] = [
     adjustmentQuantity: 1,
     endingQuantity: 43,
     endingAmount: 148.78,
+    currency: 'CNY',
     status: '有差异',
     tone: 'red',
   },
@@ -392,6 +405,7 @@ export const cartonClosings: ClosingRow[] = [
     adjustmentQuantity: -2,
     endingQuantity: 22,
     endingAmount: 76.12,
+    currency: 'CNY',
     status: '待核对',
     tone: 'amber',
   },

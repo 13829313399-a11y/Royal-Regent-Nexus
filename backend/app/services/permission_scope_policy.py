@@ -140,7 +140,10 @@ INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "internal_quote:archive": ScopePolicy(("sales-business",)),
     "internal_quote:baseline_read": ScopePolicy(("sales-business",)),
     "internal_quote:baseline_manage": ScopePolicy(("sales-business",)),
-    "internal_quote:customer_manage": ScopePolicy(("sales-business",)),
+    "internal_quote:customer_manage": ScopePolicy(
+        ("sales-business", "engineering"),
+        guidance="仅本厂业务主管、业务经理、工程主管或工程经理可维护内部报价客户资料",
+    ),
     "internal_quote:reference_manage": ScopePolicy(("sales-business", "engineering")),
     "internal_quote:export": ScopePolicy(("sales-business",)),
     "internal_quote:final_submit": ScopePolicy(("sales-business",)),

@@ -47,6 +47,7 @@ backend/models/document-translation/
 !/docs/three-d-printing-deployment.md
 !/docs/injection-production-hub-context-memory.md
 !/docs/injection-scheduling-shared-master-sop.md
+!/docs/ai/modules/injection-scheduling.md
 !/docs/business/internal-quote-collaboration-design.md
 !/docs/business/internal-quote-l6-release-readiness.md
 !/docs/business/injection-scheduling-public-takeover-phase0-audit.md

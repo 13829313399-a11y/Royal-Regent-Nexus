@@ -208,7 +208,7 @@ function selectBusinessOwner() {
                   <option value="" disabled>{{ customerOptions.length ? '选择客户' : '当前厂区暂无客户' }}</option>
                   <option v-for="customer in customerOptions" :key="customer" :value="customer">{{ customer }}</option>
                 </select>
-                <small v-if="!customerOptions.length" class="quote-owner-hint">请联系本厂业务主管先维护客户资料。</small>
+                <small v-if="!customerOptions.length" class="quote-owner-hint">请联系本厂业务主管或工程主管先维护客户资料。</small>
               </label>
               <label>
                 <span>业务负责人 / 全部分段审核人 <b>*</b></span>
