@@ -12,7 +12,8 @@ class AIPilotAccessCapability(BaseModel):
         "PROVIDER_REQUIRED",
         "GRANTED",
     ]
-    read_only: Literal[True] = True
+    read_only: bool
+    max_tool_risk_level: Literal["READ_ONLY", "PREVIEW_WITH_AUDIT"]
 
 
 class AICapabilities(BaseModel):

@@ -970,6 +970,7 @@ def ensure_sqlite_legacy_columns() -> None:
 
 def init_db() -> None:
     from app.models import (
+        ai_action,  # noqa: F401
         auth,  # noqa: F401
         carton_procurement,  # noqa: F401
         customer_order,  # noqa: F401

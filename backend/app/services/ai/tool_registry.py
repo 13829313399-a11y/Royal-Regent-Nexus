@@ -131,7 +131,10 @@ class ToolRegistry:
         return spec.tool_group in page_context.allowed_tool_groups
 
     def is_available(self, spec: ToolSpec, context: ToolAccessContext) -> bool:
-        if spec.risk_level != AIToolRiskLevel.READ_ONLY:
+        if spec.risk_level not in {
+            AIToolRiskLevel.READ_ONLY,
+            AIToolRiskLevel.PREVIEW_WITH_AUDIT,
+        }:
             return False
         if not self.is_in_request_scope(spec, context):
             return False
@@ -154,19 +157,41 @@ class ToolRegistry:
         )
 
 
-def build_default_tool_registry() -> ToolRegistry:
+def build_default_tool_registry(*, controlled_apply_enabled: bool = False) -> ToolRegistry:
+    from app.services.ai.tools.carton_procurement_read_tools import (
+        carton_procurement_tool_specs,
+    )
+    from app.services.ai.tools.controlled_apply_tools import (
+        controlled_apply_proposal_tool_spec,
+    )
+    from app.services.ai.tools.customer_order_read_tools import (
+        customer_order_tool_specs,
+    )
     from app.services.ai.tools.identity_tools import identity_tool_spec
     from app.services.ai.tools.internal_quote_read_tools import (
         internal_quote_tool_specs,
     )
     from app.services.ai.tools.module_help_tools import module_help_tool_spec
+    from app.services.ai.tools.molding_sample_read_tools import (
+        molding_sample_tool_specs,
+    )
+    from app.services.ai.tools.raw_material_read_tools import raw_material_tool_specs
+    from app.services.ai.tools.scheduling_advisor_tools import (
+        scheduling_advisor_tool_specs,
+    )
     from app.services.ai.tools.scheduling_read_tools import scheduling_tool_specs
 
-    return ToolRegistry(
-        (
+    specs = [
             identity_tool_spec(),
             module_help_tool_spec(),
+            *carton_procurement_tool_specs(),
+            *customer_order_tool_specs(),
             *internal_quote_tool_specs(),
+            *molding_sample_tool_specs(),
+            *raw_material_tool_specs(),
+            *scheduling_advisor_tool_specs(),
             *scheduling_tool_specs(),
-        )
-    )
+    ]
+    if controlled_apply_enabled:
+        specs.append(controlled_apply_proposal_tool_spec())
+    return ToolRegistry(specs)

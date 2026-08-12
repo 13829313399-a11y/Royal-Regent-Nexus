@@ -89,6 +89,8 @@ class Settings(BaseSettings):
         le=24_000_000,
     )
     ai_cloud_document_translation_enabled: bool = False
+    ai_cloud_workbook_mapping_enabled: bool = False
+    ai_controlled_apply_enabled: bool = False
     ai_base_url: str = ""
 
     @property
