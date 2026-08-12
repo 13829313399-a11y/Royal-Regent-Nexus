@@ -43,7 +43,9 @@ export interface PdfToExcelResult {
   metrics: PdfToExcelMetrics
 }
 
-export type PdfToWordMetrics = PdfToExcelMetrics
+export interface PdfToWordMetrics extends PdfToExcelMetrics {
+  imageCount: number
+}
 
 export interface PdfToWordResult {
   blob: Blob
@@ -202,6 +204,7 @@ export function createSharedToolsApi(client: SharedToolsHttpClient = http) {
           metrics: {
             pageCount: headerCount(response.headers, 'x-pdf-page-count'),
             tableCount: headerCount(response.headers, 'x-pdf-table-count'),
+            imageCount: headerCount(response.headers, 'x-pdf-image-count'),
             textPageCount: headerCount(response.headers, 'x-pdf-text-page-count'),
             ocrPageCount: headerCount(response.headers, 'x-pdf-ocr-page-count'),
           },

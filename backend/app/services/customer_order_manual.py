@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
     "po_no": {"label": "P/O#", "input_type": "text"},
+    "so_no": {"label": "SO", "input_type": "text"},
     "contract_no": {"label": "Contract No.", "input_type": "text"},
     "customer_country": {"label": "客名/国家", "input_type": "text"},
     "customer_name": {"label": "客户名称", "input_type": "text"},

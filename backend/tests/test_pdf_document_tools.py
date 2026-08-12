@@ -5,6 +5,7 @@ from zipfile import ZipFile
 
 import pytest
 from docx import Document
+from PIL import Image
 from pypdf import PdfReader, PdfWriter
 
 
@@ -101,6 +102,61 @@ def test_pdf_to_word_uses_ocr_when_native_content_is_missing(monkeypatch):
     assert result.ocr_page_count == 1
     document = Document(BytesIO(result.content))
     assert document.paragraphs[0].text == "OCR 文字"
+
+
+def test_pdf_to_word_embeds_meaningful_images_and_skips_blank_masks(monkeypatch):
+    from app.services import pdf_to_word as service
+
+    class ImageWordPage(FakeWordPage):
+        width = 600
+        images = [
+            {
+                "name": "ImagePhoto",
+                "top": 260,
+                "width": 300,
+                "height": 180,
+            },
+            {
+                "name": "ImageMask",
+                "top": 260,
+                "width": 300,
+                "height": 180,
+            },
+        ]
+
+    class ImageWordDocument(FakeWordDocument):
+        pages = [ImageWordPage()]
+
+    photo = Image.new("RGB", (80, 60), "white")
+    for x in range(40):
+        for y in range(60):
+            photo.putpixel((x, y), (15, 70, 160))
+
+    class FakePdfImage:
+        def __init__(self, name, image):
+            self.name = name
+            self.image = image
+
+    class FakeReaderPage:
+        images = [
+            FakePdfImage("ImagePhoto.png", photo),
+            FakePdfImage("ImageMask.png", Image.new("RGBA", (80, 60), (0, 0, 0, 0))),
+        ]
+
+    class FakeReader:
+        pages = [FakeReaderPage()]
+
+    monkeypatch.setattr(service.pdfplumber, "open", lambda _stream: ImageWordDocument())
+    monkeypatch.setattr(service, "PdfReader", lambda _stream: FakeReader())
+
+    result = service.convert_pdf_to_word(b"%PDF-image", "图片手册.pdf")
+
+    assert result.image_count == 1
+    assert result.text_page_count == 1
+    document = Document(BytesIO(result.content))
+    assert len(document.inline_shapes) == 1
+    with ZipFile(BytesIO(result.content)) as archive:
+        assert len([name for name in archive.namelist() if name.startswith("word/media/")]) == 1
 
 
 def test_pdf_split_supports_each_page_and_named_ranges():

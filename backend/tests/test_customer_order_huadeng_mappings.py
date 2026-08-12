@@ -6,10 +6,12 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+import pytesseract
 from openpyxl.utils import get_column_letter
 
 from app.api.customer_order import CUSTOMER_FACTORY_IDS
 from app.services import customer_order_huadeng as service
+from app.services.huadeng_order_legacy import common_pdf_text, simba_po_parser
 
 
 def _workbook_bytes(sheet_name: str, headers: dict[int, str], row: dict[int, object]) -> bytes:
@@ -215,6 +217,95 @@ def test_simba_prefers_same_name_excel_and_inherits_schedule(monkeypatch) -> Non
     assert len(prepared.records) == 1
     assert prepared.records[0]["order_date"] == "2026-08-03"
     assert any("优先采用 Excel" in warning for warning in prepared.warnings)
+
+
+def test_simba_scanned_pdf_uses_shared_tesseract_configuration(monkeypatch) -> None:
+    class FakePage:
+        def extract_text(self, **_kwargs):
+            return ""
+
+        def to_image(self, **_kwargs):
+            return type("Rendered", (), {"original": object()})()
+
+    class FakePdf:
+        pages = [FakePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    configured: list[object] = []
+    monkeypatch.setattr(common_pdf_text.pdfplumber, "open", lambda _source: FakePdf())
+    monkeypatch.setattr(
+        common_pdf_text,
+        "configure_tesseract",
+        lambda module: (configured.append(module) or (r"C:\Tesseract\tesseract.exe", "eng")),
+    )
+    monkeypatch.setattr(
+        pytesseract,
+        "image_to_string",
+        lambda _image, *, lang, config: f"Release Order {lang} {config}",
+    )
+
+    text, pages, used_ocr = common_pdf_text.extract_pdf_text(b"scanned")
+
+    assert configured == [pytesseract]
+    assert text == "Release Order eng --psm 6"
+    assert pages == 1
+    assert used_ocr is True
+
+
+def test_simba_release_parser_tolerates_ocr_reference_and_zero_packing() -> None:
+    text = """
+Release Order
+Reference: $C700144914/ 800
+Date of creation: 27.APR.2026
+Mat. No.: 109491008
+SPB Feature Plush, 30cm
+Packing: OPC / 12PC Volume: 2.568 FT3 - 0.073 M3
+Carton dimension: 59.500 x 26.000 x 47.000 CM
+Quantity Master Contract No. PO Contract No. Unit Price Delivery Date
+264 PC 500055145/ 10 300493420/ 10 40.45 HKD 09.JUN.2026
+Total CTN: 22
+Port of discharge: MELBOURNE
+"""
+
+    rows = simba_po_parser.parse_release_order_text(text, "RR_700144914.pdf")
+
+    assert rows is not None
+    assert len(rows) == 1
+    assert rows[0]["contract_no"] == "700144914/800"
+    assert rows[0]["item_no"] == "109491008"
+    assert rows[0]["inner_pack"] == 0
+    assert rows[0]["outer_pack"] == 12
+    assert rows[0]["cartons"] == 22
+    assert rows[0]["quantity"] == 264
+
+
+def test_simba_empty_batch_reports_each_file_parser_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.simba_schedule,
+        "read_schedule",
+        lambda *_args, **_kwargs: {"sheet": "Simba排期", "records": []},
+    )
+    monkeypatch.setattr(
+        service.simba_po_parser,
+        "parse_po_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("OCR未配置")),
+    )
+
+    with pytest.raises(
+        service.HuadengCustomerOrderError,
+        match="RR700147106.pdf.*OCR未配置",
+    ):
+        service._prepare_simba(
+            [("RR700147106.pdf", b"pdf")],
+            "仙霸排货表.xlsx",
+            b"schedule",
+            "2026-08-12",
+        )
 
 
 def test_spin_master_uses_independent_schedule_and_composite_dedupe(monkeypatch) -> None:

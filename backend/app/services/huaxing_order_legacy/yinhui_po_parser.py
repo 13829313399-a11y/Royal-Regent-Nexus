@@ -9,13 +9,72 @@ from typing import Any, BinaryIO
 import pdfplumber
 from openpyxl import load_workbook
 
+from app.services.carton_mark import configure_tesseract
+
 from .yinhui_schedule import add_derived_fields, read_schedule
 
 
-def _pdf_text(source: str | Path | bytes | BinaryIO) -> tuple[str, int]:
-    stream: Any = io.BytesIO(source) if isinstance(source, bytes) else source
-    with pdfplumber.open(stream) as pdf:
-        return "\n".join(page.extract_text() or "" for page in pdf.pages).strip(), len(pdf.pages)
+def _source_bytes(source: str | Path | bytes | BinaryIO) -> bytes:
+    if isinstance(source, bytes):
+        return source
+    if isinstance(source, (str, Path)):
+        return Path(source).read_bytes()
+    try:
+        source.seek(0)
+    except (AttributeError, OSError):
+        pass
+    data = source.read()
+    if not isinstance(data, bytes):
+        raise ValueError("银辉 PO 不是有效的二进制文件")
+    return data
+
+
+def _ocr_pdf_text(data: bytes) -> str:
+    try:
+        import pypdfium2 as pdfium  # type: ignore
+        import pytesseract  # type: ignore
+    except ImportError as exc:
+        raise ValueError(
+            "银辉扫描版 PDF 需要服务器 OCR 组件（pypdfium2、Pillow、pytesseract）"
+        ) from exc
+    tesseract_cmd, language = configure_tesseract(pytesseract)
+    if not tesseract_cmd:
+        raise ValueError("未找到 Tesseract，无法识别银辉扫描版 PDF")
+    try:
+        document = pdfium.PdfDocument(data)
+    except Exception as exc:
+        raise ValueError("银辉 PO 不是有效的 PDF 文件") from exc
+    if len(document) == 0 or len(document) > 20:
+        document.close()
+        raise ValueError("银辉 PO 页数必须在 1 至 20 页之间")
+    pages: list[str] = []
+    try:
+        for page in document:
+            image = page.render(scale=3.0).to_pil().convert("RGB")
+            try:
+                text = pytesseract.image_to_string(
+                    image,
+                    lang=language,
+                    config="--oem 3 --psm 6",
+                    timeout=60,
+                )
+            except Exception as exc:
+                raise ValueError(f"银辉 PDF OCR 失败：{exc}") from exc
+            pages.append(text.strip())
+            page.close()
+    finally:
+        document.close()
+    return "\n<<OCR_PAGE_BREAK>>\n".join(pages).strip()
+
+
+def _pdf_text(source: str | Path | bytes | BinaryIO) -> tuple[str, int, bool]:
+    data = _source_bytes(source)
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
+        pages = len(pdf.pages)
+    if text:
+        return text, pages, False
+    return _ocr_pdf_text(data), pages, True
 
 
 def _find(pattern: str, text: str) -> str | None:
@@ -42,7 +101,8 @@ def _rows_text(ws, start_row: int, end_row: int) -> str:
 
 def _remarks_text(all_text: str) -> str:
     match = re.search(
-        r"(?:^|\n)\s*Remarks\s*[:：]\s*(.*?)(?=\n\s*Terms\s+and\s+Conditions\s*[:：]|\Z)",
+        r"(?:^|\n)\s*Remarks\s*[:：]\s*(.*?)"
+        r"(?=\n\s*(?:Terms\s+and\s+Conditions\s*[:：]|<<OCR_PAGE_BREAK>>)|\Z)",
         all_text,
         re.I | re.S,
     )
@@ -68,6 +128,28 @@ def _shipping_mark_from_remarks(remarks: str) -> str | None:
         if value and any(re.search(pattern, value, re.I) for pattern in markers):
             return value
     return None
+
+
+def _so_no(text: str) -> str | None:
+    """Return the schedule SO, excluding Silverlit's line suffix (-780/-790)."""
+    match = re.search(r"\bS(?:O|0O|0)\s*[:：]\s*([A-Z0-9]+)", text, re.I)
+    return match.group(1).strip() if match else None
+
+
+def _pdf_customer(text: str) -> str | None:
+    known = _find(r"\bName\s*[:：]\s*(SILVERLIT\s+NORDIC\s+AB)\b", text)
+    if known:
+        return re.sub(r"\s+", " ", known).strip()
+    value = _find(r"\bName\s*[:：]\s*([^\r\n]+)", text)
+    return re.sub(r"\s+", " ", value).strip() if value else None
+
+
+def _declared_page_total(text: str) -> int | None:
+    values = [
+        int(value)
+        for value in re.findall(r"\bPage\s*[:：]\s*\d+\s+of\s+(\d+)\b", text, re.I)
+    ]
+    return max(values) if values else None
 
 
 def _case_pack(text: str) -> float | int | None:
@@ -160,27 +242,46 @@ def check_amount_in_words(text: str, line_sum: float) -> str | None:
 
 
 def parse_pdf(source: str | Path | bytes | BinaryIO, filename: str) -> dict[str, Any]:
-    text, pages = _pdf_text(source)
+    text, pages, used_ocr = _pdf_text(source)
     if not text:
         return {
             "filename": filename, "type": "pdf", "rows": [],
-            "meta": {"pages": pages, "text_chars": 0},
-            "warnings": ["该PO是扫描图片版，系统已识别文件但无法可靠读取文字；请用排期表Excel导入，或上传可选中文字的PO。"],
+            "meta": {"pages": pages, "text_chars": 0, "used_ocr": used_ocr},
+            "warnings": ["银辉 PO 没有可识别文字；本地 OCR 已执行但未能读取订单内容。"],
         }
     po_no = _find(r"PURCHASE\s+ORDER\s*[:：]\s*([A-Z0-9-]+)", text)
     order_date = _find(r"Date\s*\(YMD\)\s*[:：]\s*([0-9.\/-]+)", text)
+    remarks = _remarks_text(text)
+    customer = _pdf_customer(text)
+    artwork = _remarks_line(remarks, r"彩盒", r"客盒")
+    manual = _remarks_line(remarks, r"说明书", r"說明書", r"説明書")
+    customer_label = _remarks_line(remarks, r"客贴", r"客貼", r"贴纸", r"貼紙", r"入口商")
+    shipping_mark = _shipping_mark_from_remarks(remarks)
     row_pattern = re.compile(
         r"^\s*\d+\s+([A-Z0-9-]+)\s+(.+?)\s+(\d{4}[.\/-]\d{2}[.\/-]\d{2})\s+"
         r"([\d,]+)\s+(?:PCS|PC|EA|SET)\s+([\d.]+)\s+([\d,.]+)\s*$", re.I | re.M,
     )
     rows = []
-    warnings = []
-    for match in row_pattern.finditer(text):
+    warnings = [
+        "扫描版 PDF 已使用本地 OCR；合同号、SO、货号、数量、日期和金额已做结构及算术校验，仍请在预览中人工复核。",
+        "扫描件中文备注不可靠，系统未把 OCR 乱码写入排期；说明书、彩盒、箱唛等内容保留为待确认。",
+    ] if used_ocr else []
+    matches = list(row_pattern.finditer(text))
+    for index, match in enumerate(matches):
         item, description, delivery, qty, price, amount = match.groups()
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        item_block = text[match.end():next_start]
+        case_pack = _case_pack(item_block)
         row = {
             "contract_no": po_no, "item_no": item, "product_name": description,
             "po_ship_date": delivery.replace(".", "-"), "quantity": qty,
             "unit_price_usd": price, "total_usd": amount, "order_date": order_date,
+            "so_no": _so_no(item_block), "customer": customer,
+            "case_pack": case_pack if case_pack else None,
+            "artwork": artwork, "manual": manual,
+            "customer_label": customer_label, "shipping_mark": shipping_mark,
+            "memo": None if used_ocr else (remarks or None),
+            "source_sheet": "PDF OCR" if used_ocr else "PDF",
         }
         add_derived_fields(row)
         rows.append(row)
@@ -194,8 +295,15 @@ def parse_pdf(source: str | Path | bytes | BinaryIO, filename: str) -> dict[str,
             warnings.append(f"{po_no}: {say_warn}")
     else:
         warnings.append("已读取PO文字，但未识别到标准明细行，请人工复核或使用排期表Excel。")
+    declared_pages = _declared_page_total(text)
+    if declared_pages and declared_pages != pages:
+        warnings.append(
+            f"PDF 文件实际为 {pages} 页，但单据页码标注总计 {declared_pages} 页；"
+            "请确认是否缺页后再正式放行。"
+        )
     return {"filename": filename, "type": "pdf", "rows": rows,
-            "meta": {"pages": pages, "text_chars": len(text), "po_no": po_no}, "warnings": warnings}
+            "meta": {"pages": pages, "text_chars": len(text), "po_no": po_no,
+                     "used_ocr": used_ocr}, "warnings": warnings}
 
 
 def _parse_converted_po_excel(source: str | Path | bytes | BinaryIO, filename: str) -> dict[str, Any] | None:

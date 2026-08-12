@@ -7,6 +7,8 @@ from typing import Any, BinaryIO
 
 import pdfplumber
 
+from app.services.carton_mark import configure_tesseract, missing_tesseract_message
+
 
 def extract_pdf_text(
     source: str | Path | bytes | BinaryIO,
@@ -26,10 +28,16 @@ def extract_pdf_text(
             import pytesseract
         except ImportError as exc:
             raise ValueError("扫描版 PDF 需要服务器 OCR 组件（pytesseract/tesseract）") from exc
+        tesseract_cmd, language = configure_tesseract(pytesseract)
+        if not tesseract_cmd:
+            raise ValueError(
+                "扫描版 PDF 无文字层且服务器 OCR 未配置："
+                + missing_tesseract_message()
+            )
         ocr_pages = [
             pytesseract.image_to_string(
                 page.to_image(resolution=resolution).original,
-                lang="eng",
+                lang=language,
                 config="--psm 6",
             )
             for page in pdf.pages

@@ -118,6 +118,7 @@ describe('shared tools api', () => {
         'content-disposition': "attachment; filename*=UTF-8''%E8%AE%A2%E5%8D%95_%E8%BD%AC%E6%8D%A2%E7%BB%93%E6%9E%9C.docx",
         'x-pdf-page-count': '4',
         'x-pdf-table-count': '1',
+        'x-pdf-image-count': '3',
         'x-pdf-text-page-count': '2',
         'x-pdf-ocr-page-count': '2',
       },
@@ -132,7 +133,7 @@ describe('shared tools api', () => {
     expect((payload as FormData).get('pdf_file')).toBe(file)
     expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_TO_WORD_TIMEOUT_MS })
     expect(result.fileName).toBe('订单_转换结果.docx')
-    expect(result.metrics).toEqual({ pageCount: 4, tableCount: 1, textPageCount: 2, ocrPageCount: 2 })
+    expect(result.metrics).toEqual({ pageCount: 4, tableCount: 1, imageCount: 3, textPageCount: 2, ocrPageCount: 2 })
   })
 
   it('submits split mode and page ranges then returns ZIP metadata', async () => {
