@@ -44,6 +44,54 @@ export function buildAIPageContext(
       selected_entity: null,
     }
   }
+  if (
+    route.name === 'molding-sample'
+    && route.path === '/modules/molding-sample'
+  ) {
+    return {
+      route_name: 'molding-sample',
+      path: '/modules/molding-sample',
+      factory_id: verifiedFactoryHint(route, fallbackFactoryId),
+      module_id: 'molding-sample',
+      selected_entity: null,
+    }
+  }
+  if (
+    route.name === 'carton-procurement'
+    && route.path === '/modules/pmc-warehouse/carton-procurement'
+  ) {
+    return {
+      route_name: 'carton-procurement',
+      path: '/modules/pmc-warehouse/carton-procurement',
+      factory_id: verifiedFactoryHint(route, fallbackFactoryId),
+      module_id: 'carton-procurement',
+      selected_entity: null,
+    }
+  }
+  if (
+    route.name === 'raw-material-management'
+    && route.path === '/modules/pmc-warehouse/raw-material-management'
+  ) {
+    return {
+      route_name: 'raw-material-management',
+      path: '/modules/pmc-warehouse/raw-material-management',
+      factory_id: verifiedFactoryHint(route, fallbackFactoryId),
+      module_id: 'raw-material',
+      selected_entity: null,
+    }
+  }
+  if (
+    route.name === 'customer-order-center'
+    && route.path === '/modules/sales-business/po-schedule-intake'
+  ) {
+    return {
+      route_name: 'customer-order-center',
+      path: '/modules/sales-business/po-schedule-intake',
+      factory_id: verifiedFactoryHint(route, fallbackFactoryId),
+      module_id: 'customer-order',
+      selected_entity: null,
+    }
+  }
   return null
 }
 

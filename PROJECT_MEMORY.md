@@ -51,7 +51,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
   context and structured result cards. Production Nginx disables buffering for the SSE route. There is
   still no conversation persistence, AI-specific database state, consequential AI write path or enabled
   production Vision feature.
-- Alembic has one current head: `20260811_0065`.
+- Alembic has one current head: `20260812_0066`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -278,7 +278,7 @@ Logged-in Chrome acceptance on 2026-08-04 used a disposable Phase 5 SQLite datab
 
 Machine and mold class source text is preserved in `machine_class_raw` and `mold_class_raw`; trusted numeric values live in `machine_a_class` and `mold_a_class`, with `normalization_status`, structured process tags and special-machine type kept separately. Values without an explicit `A` marker are not guessed unless an explicit mapping exists. Eligibility uses only numeric A-class coverage, the exact 100% whole-shot net-weight/injection-capacity boundary, mechanical-arm coverage, fixture coverage, machine/mold availability and structured process restrictions. Tie-bar/platen dimensions, mold L/W/H, mold thickness and rotation remain engineering data and do not affect eligibility. Missing A-class, weight, arm or fixture data normally produces `REVIEW_REQUIRED`; for a shared mold with an active factory capability, that governed capability supplies the DRAFT-stage arm/fixture fallback only when the selected machine has no corresponding capability rows, while an explicit incompatible machine capability still fails. A clean DRAFT can be published by a user with scheduling edit or publish authority, so the molding clerk can complete the normal scheduling handoff; hard failures remain blocked, while review-required candidates and baseline/progress overrides still require explicit `injection_scheduling:publish` authority plus a reason. Both the heuristic and CP-SAT schedulers use this eligibility contract and prefer the smallest sufficient A-class.
 
-Migration `20260804_0047` remains the irreversible historical removal boundary. Forward migration `20260804_0048` recreates the V2 Phase 0 tables, permissions and database guards. Phase 2 adds API and UI behavior without another schema migration. Customer-order export audit migration `20260804_0049` precedes the unpublished scheduling migrations. Migration `20260804_0050` adds persisted auto-schedule runs, assignments, transition rules, machine calendars and task provenance/duration fields for the Phase 3 heuristic. Migration `20260804_0051` adds solver selection/status, fallback, scenario and replay metadata for Phase 4. Migration `20260804_0052` adds integration cursors, idempotent external events, device cycle observations and calibrated speed models for Phase 5. Migration `20260805_0053` merges the carton-procurement and injection-scheduling migration heads; carton migrations continue through `20260805_0055`. Migration `20260805_0056` adds the versioned import-Profile registry, factory bindings, Profile governance permission and Profile identity on import batches. Migration `20260805_0057` adds plan-aware takeover context, deterministic reconciliation evidence, order-level state, successor lineage, progress adjustments and append-only/immutable guards. Migration `20260807_0058` binds plans to their import Profile/batch, persists upload artifacts and preview generations, and adds immutable export audits with rule, mapping, row-manifest and report-sequence evidence. Customer-order migration `20260807_0059` adds exact manual-override audit evidence. Injection-scheduling migrations `20260809_0059` and `20260809_0060` follow it with demand-order/shared-mold state, rollout policy and assignment-asset lineage. Compatibility migration `20260810_0061` conditionally reconciles customer-order audit columns for local databases that had already applied the previously based injection branch. Migration `20260810_0062` adds editable machine equipment-detail JSON plus clerk remarks and refuses to discard populated machine details. Migration `20260810_0063` adds direct order-to-shared-definition/output links, backfills them from demand versions/lineage and refuses downgrade once those links hold business data. Migration `20260810_0064` separates carton month-end snapshots by customer and currency, and `20260811_0065` is the single current head adding inspection-schedule import support. `/api/injection` remains the separate molding-sample production domain.
+Migration `20260804_0047` remains the irreversible historical removal boundary. Forward migration `20260804_0048` recreates the V2 Phase 0 tables, permissions and database guards. Phase 2 adds API and UI behavior without another schema migration. Customer-order export audit migration `20260804_0049` precedes the unpublished scheduling migrations. Migration `20260804_0050` adds persisted auto-schedule runs, assignments, transition rules, machine calendars and task provenance/duration fields for the Phase 3 heuristic. Migration `20260804_0051` adds solver selection/status, fallback, scenario and replay metadata for Phase 4. Migration `20260804_0052` adds integration cursors, idempotent external events, device cycle observations and calibrated speed models for Phase 5. Migration `20260805_0053` merges the carton-procurement and injection-scheduling migration heads; carton migrations continue through `20260805_0055`. Migration `20260805_0056` adds the versioned import-Profile registry, factory bindings, Profile governance permission and Profile identity on import batches. Migration `20260805_0057` adds plan-aware takeover context, deterministic reconciliation evidence, order-level state, successor lineage, progress adjustments and append-only/immutable guards. Migration `20260807_0058` binds plans to their import Profile/batch, persists upload artifacts and preview generations, and adds immutable export audits with rule, mapping, row-manifest and report-sequence evidence. Customer-order migration `20260807_0059` adds exact manual-override audit evidence. Injection-scheduling migrations `20260809_0059` and `20260809_0060` follow it with demand-order/shared-mold state, rollout policy and assignment-asset lineage. Compatibility migration `20260810_0061` conditionally reconciles customer-order audit columns for local databases that had already applied the previously based injection branch. Migration `20260810_0062` adds editable machine equipment-detail JSON plus clerk remarks and refuses to discard populated machine details. Migration `20260810_0063` adds direct order-to-shared-definition/output links, backfills them from demand versions/lineage and refuses downgrade once those links hold business data. Migration `20260810_0064` separates carton month-end snapshots by customer and currency, `20260811_0065` adds inspection-schedule import support, and the single current head `20260812_0066` adds AI action confirmations with TTL, revision/hash binding, state transitions and idempotent execution-request identity. `/api/injection` remains the separate molding-sample production domain.
 
 ### Huakang A 3D Printing Management
 
@@ -364,22 +364,25 @@ Several cards and dashboards in the module catalog remain planning, design or de
   HTTP/development-mode rollout for approved active accounts across all six factories, including
   Vision, before the public TLS edge is ready. This does not pass production readiness: the browser
   to Nexus hop, login and image upload remain plaintext, `AI_PILOT_PUBLIC_TLS_VERIFIED` must remain
-  false, and the exposed Provider secret still requires rotation. The Cloud Document Translation flag is an unused
-  placeholder; the working document translator is server-local/offline and must not be represented as
-  a cloud workflow. AI availability must not be treated as business-domain authorization.
-- AI-B9 has one locally implemented domain batch: Internal Quote read-only summaries. The AI context
-  is admitted only on the exact Internal Quote home page, remains text-only, and exposes a dedicated
-  `internal_quote.list_summaries` Tool only after canonical `internal_quote:read`, factory and
-  department checks. The Tool uses a selected-column, single-statement query and a closed Field
-  Policy that returns only quote/customer/status/stage/version/update/navigation metadata; it does
-  not return pricing, quantities, product details, remarks, owners, calculation/cost sections or
-  approval/export actions, and it does not invoke the existing view-audit-writing detail service.
-  The frontend accepts only the versioned discriminator and renders fixed named-router links; unknown
-  or extra result fields fail closed. Tests cover pagination, truncation, literal wildcard search,
-  no business-table writes, explicit-deny and cross-factory rejection, hostile tool-call replay,
-  image rejection and the complete Provider/API/SSE/card contract. This is only the first B9 batch:
-  molding samples, cartons, raw-material inventory and customer orders remain separate, unimplemented
-  domain batches and must not be inferred from the Internal Quote implementation.
+  false, and the exposed Provider secret still requires rotation. AI availability must not be treated
+  as business-domain authorization.
+- AI-B9 now provides separately authorized, factory-scoped, read-only Tool and closed frontend-result
+  contracts for Internal Quote, molding samples, carton procurement, raw-material inventory and
+  customer orders. Each domain uses selected-field serializers and canonical permission checks; the
+  Tool surface does not inherit unrelated detail, pricing, approval, export or mutation capability.
+  Unknown or additional result fields fail closed.
+- AI-B10/B11 inspect workbook structure into a bounded semantic snapshot and may propose mappings only
+  through the versioned Profile workflow. Unknown templates require human review and a `PROFILE_DRAFT`;
+  `DEMAND_ORDER` may enter DRAFT/BACKLOG but cannot fabricate Tasks, machines or dates. Cloud mapping
+  remains default-off. AI-B12 cloud document translation is also default-off and falls back to the
+  existing server-local translator; enabling it does not authorize workbook transmission or retention.
+- AI-B13 can persist and compare scheduling candidate previews through the existing auto-schedule-run
+  service but cannot Apply or Publish them. AI-B14/B15 add a separate confirmation API and the first
+  controlled action, applying a selected run only to DRAFT. Confirmations bind the user, factory,
+  canonical arguments, entity revision/hash and TTL, recheck current permission and freshness, and use
+  idempotent execution-request identity. The Provider-visible Tool can only propose the confirmation;
+  the consequential `apply_preview_run` handler is never registered as a model-callable Tool. Controlled
+  Apply remains default-off and never Publish/Rollback.
 - Injection-scheduling V2 now includes Phase 5 provider-neutral ingestion, device-derived cycle observations, mold speed-model calibration and operational analytics. Real ERP/device adapter credentials and mappings, calendar maintenance UI, richer conflict resolution, production-scale calibration and KPI field acceptance remain later integration work.
 
 ## 9. Current Next Steps

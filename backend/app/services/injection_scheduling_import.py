@@ -1382,6 +1382,17 @@ def propose_import_profile_from_batch(
     mappings = draft.get("mappings") or {}
     if not mappings:
         raise HTTPException(status_code=409, detail="请先保存字段映射草案")
+    if (
+        draft.get("preview_generation") != batch.preview_generation
+        or draft.get("mapping_fingerprint") != batch.mapping_fingerprint
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MAPPING_PROPOSAL_STALE",
+                "message": "映射草案对应的 Preview 或映射摘要已变化，请重新预览",
+            },
+        )
     base = db.get(InjectionSchedulingImportProfile, batch.profile_id)
     if base is None or base.document_kind != "DEMAND_ORDER":
         raise HTTPException(status_code=409, detail="需求单基础 Profile 不可用")

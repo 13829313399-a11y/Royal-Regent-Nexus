@@ -29,6 +29,7 @@ describe('shared tools api', () => {
     expect(url).toBe('/tools/document-translation')
     expect((payload as FormData).get('document_file')).toBe(file)
     expect((payload as FormData).get('direction')).toBe('zh_to_en')
+    expect((payload as FormData).get('mode')).toBe('local_private')
     expect((payload as FormData).get('sheet_names')).toBeNull()
     expect(config).toMatchObject({ responseType: 'blob', timeout: DOCUMENT_TRANSLATION_TIMEOUT_MS })
     expect(result).toMatchObject({
@@ -37,6 +38,19 @@ describe('shared tools api', () => {
       skippedUnitCount: 7,
       processedPartCount: 3,
     })
+  })
+
+  it('requires an explicit cloud mode and consent marker', async () => {
+    const post = vi.fn().mockResolvedValue({ data: new Blob(['xlsx']), headers: {} })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['office'], '订单.xlsx')
+
+    await api.translateDocument(file, 'zh_to_en', ['订单'], 'ai_smart_cloud', true)
+
+    const payload = post.mock.calls[0]![1] as FormData
+    expect(payload.get('mode')).toBe('ai_smart_cloud')
+    expect(payload.get('cloud_consent')).toBe('true')
+    expect(payload.get('sheet_names')).toBe('["订单"]')
   })
 
   it('uploads the selected Excel worksheet names with the translation request', async () => {

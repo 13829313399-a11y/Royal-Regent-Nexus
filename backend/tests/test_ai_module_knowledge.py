@@ -260,6 +260,7 @@ def test_registry_is_group_fail_closed_without_verified_page_context() -> None:
         "knowledge.get_module_help",
         "injection_scheduling.get_plan_context",
         "injection_scheduling.get_backlog",
+        "injection_scheduling.compare_previews",
     }
 
     denied_page = build_server_page_context(
@@ -476,6 +477,8 @@ def test_api_injects_only_server_verified_context_and_registered_tools(
         "knowledge.get_module_help",
         "injection_scheduling.get_plan_context",
         "injection_scheduling.get_backlog",
+        "injection_scheduling.compare_previews",
+        "injection_scheduling.generate_preview",
     }
     assert all(
         tool.parameters["additionalProperties"] is False

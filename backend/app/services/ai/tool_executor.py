@@ -51,6 +51,7 @@ class ToolExecutionContext:
     page_context: object | None = None
     tool_groups: tuple[str, ...] = ()
     session_factory: Callable[[], Session] | None = None
+    tool_call_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,14 +90,17 @@ class ToolExecutor:
                 code=AIToolErrorCode.UNKNOWN_TOOL,
                 message="请求的工具不可用。",
             )
-        if spec.risk_level != AIToolRiskLevel.READ_ONLY:
+        if spec.risk_level not in {
+            AIToolRiskLevel.READ_ONLY,
+            AIToolRiskLevel.PREVIEW_WITH_AUDIT,
+        }:
             return self._failure(
                 call=call,
                 spec=spec,
                 context=context,
                 timer=timer,
                 code=AIToolErrorCode.RISK_NOT_ALLOWED,
-                message="当前阶段只允许执行只读工具。",
+                message="当前阶段不允许执行正式业务写工具。",
             )
         if not self.registry.is_in_request_scope(spec, context):
             return self._failure(
@@ -170,6 +174,7 @@ class ToolExecutor:
 
         execution_context = replace(
             context,
+            tool_call_id=call.call_id,
             tool_groups=self.registry.available_tool_groups(context),
         )
         try:

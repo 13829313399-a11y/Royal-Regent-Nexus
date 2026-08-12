@@ -286,7 +286,8 @@ def test_capabilities_requires_login_and_reports_feature_flag_off(monkeypatch):
         "pilot_access": {
             "granted": False,
             "status": "DISABLED",
-            "read_only": True,
+            "read_only": False,
+            "max_tool_risk_level": "PREVIEW_WITH_AUDIT",
         },
     }
     assert blocked_image.status_code == 422
@@ -346,7 +347,8 @@ def test_capabilities_admit_superadmin_as_the_101st_explicit_pilot_user(
     assert capabilities.json()["pilot_access"] == {
         "granted": True,
         "status": "GRANTED",
-        "read_only": True,
+        "read_only": False,
+        "max_tool_risk_level": "PREVIEW_WITH_AUDIT",
     }
 
 
@@ -401,7 +403,8 @@ def test_production_fake_provider_cannot_enable_beijing_vision_consent(monkeypat
         "pilot_access": {
             "granted": False,
             "status": "PROVIDER_REQUIRED",
-            "read_only": True,
+            "read_only": False,
+            "max_tool_risk_level": "PREVIEW_WITH_AUDIT",
         },
     }
     assert blocked.status_code == 403
@@ -546,7 +549,8 @@ def test_production_pilot_tls_gate_is_authoritative_and_fail_closed(monkeypatch)
     assert capabilities.json()["pilot_access"] == {
         "granted": False,
         "status": "TLS_REQUIRED",
-        "read_only": True,
+        "read_only": False,
+        "max_tool_risk_level": "PREVIEW_WITH_AUDIT",
     }
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "AI_PILOT_ACCESS_DENIED"
@@ -577,7 +581,8 @@ def test_production_exact_beijing_qwen_contract_can_report_pilot_granted(
     assert response.json()["pilot_access"] == {
         "granted": True,
         "status": "GRANTED",
-        "read_only": True,
+        "read_only": False,
+        "max_tool_risk_level": "PREVIEW_WITH_AUDIT",
     }
     assert key_marker not in response.text
     assert workspace_marker not in response.text
@@ -641,7 +646,8 @@ def test_runtime_kill_switch_stops_active_and_new_requests(monkeypatch, tmp_path
     assert capabilities.json()["pilot_access"] == {
         "granted": False,
         "status": "DISABLED",
-        "read_only": True,
+        "read_only": False,
+        "max_tool_risk_level": "PREVIEW_WITH_AUDIT",
     }
     assert blocked.status_code == 503
     assert blocked.json()["detail"]["code"] == "AI_DISABLED"
