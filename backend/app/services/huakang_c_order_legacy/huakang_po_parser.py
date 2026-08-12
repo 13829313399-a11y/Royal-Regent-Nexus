@@ -345,6 +345,10 @@ class HuakangPOParser:
         po_date = normalize_date(_match(r"P\.O\.\s*DATE\s+(\d{1,2}/\d{1,2}/\d{2,4})", text), day_first=True)
         ship_date = normalize_date(_match(r"\bDELIVERY\s+(\d{1,2}/\d{1,2}/\d{2,4})", text), day_first=True)
         contract = _match(r"S\.C\.\s*NO\.\s+([A-Z0-9-]+)", text)
+        project = re.search(r"(?mi)^Project#\s*([A-Z0-9-]+)\s+(.+?)\s*$", text)
+        project_no = _clean(project.group(1)) if project else ""
+        project_name = _clean(project.group(2)) if project else ""
+        delivery_term = _match(r"TERMS OF DELIVERY\s+([^\n]+)", text)
         lines = []
         pattern = re.compile(
             r"(?m)^([A-Z0-9]+-[A-Z0-9]+)\s+(.+?)\s+([\d,]+)\s+([A-Za-z]+)\s+"
@@ -367,6 +371,9 @@ class HuakangPOParser:
             contract_no=contract or po,
             po_date=po_date,
             ship_date=ship_date,
+            project_no=project_no,
+            project_name=project_name,
+            delivery_term=delivery_term,
             contact="朱江",
             lines=lines,
             warnings=["装箱数未在 MAXX PO 中提供，导出时保留为空。"],

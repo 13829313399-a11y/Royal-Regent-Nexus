@@ -163,6 +163,7 @@ async def pdf_to_word(
             "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(result.output_file_name)}",
             "X-PDF-Page-Count": str(result.page_count),
             "X-PDF-Table-Count": str(result.table_count),
+            "X-PDF-Image-Count": str(result.image_count),
             "X-PDF-Text-Page-Count": str(result.text_page_count),
             "X-PDF-OCR-Page-Count": str(result.ocr_page_count),
             "Cache-Control": "no-store",

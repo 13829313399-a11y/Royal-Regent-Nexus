@@ -85,9 +85,9 @@ describe('customer order center static frontend', () => {
 
   it('registers an independently mapped 360 customer under Huakang A', () => {
     expect(workspaceSource).toContain("'huakang-a': [")
-    expect(workspaceSource).toContain('HUAKANG_A_360_NEW_ORDER_V1')
+    expect(workspaceSource).toContain('HUAKANG_A_360_SCHEDULE_APPEND_V3')
     expect(workspaceSource).toContain('ThreeSixty PURCHASE ORDER RELEASE')
-    expect(workspaceSource).toContain('360客排期表新单')
+    expect(workspaceSource).toContain('每个货号先按现有产品标题行写入货号和名称')
   })
 
   it('shows only 360 in Huakang A and routes it with the Huakang A factory id', async () => {
@@ -613,6 +613,42 @@ describe('customer order center static frontend', () => {
     expect(poDropZone.get('strong').attributes('title')).toBe('PO-1.xls\nPO-2.xlsx')
     expect(scheduleDropZone.get('strong').text()).toBe('2026年 BUZZ BEE 生产排期表.xls.xlsx')
     expect(wrapper.text()).toContain('也可直接拖入此区域')
+  })
+
+  it('ignores macOS metadata files and keeps only the real Yinhui PO', async () => {
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+    await wrapper.get('[data-testid="customer-choice-yinhui"]').trigger('click')
+    const poDropZone = wrapper.get('[data-testid="po-drop-zone"]')
+
+    await poDropZone.trigger('drop', {
+      dataTransfer: {
+        files: [new File(['Mac OS X metadata'], '._RR-4500002299.pdf')],
+      },
+    })
+
+    expect(poDropZone.get('strong').text()).toBe('尚未选择 PO 文件')
+    expect(wrapper.get('[role="status"]').text()).toContain('Mac 解压产生的隐藏资源文件')
+    expect(wrapper.get('[role="status"]').text()).toContain('不带“._”前缀')
+
+    await poDropZone.trigger('drop', {
+      dataTransfer: {
+        files: [
+          new File(['metadata'], '._RR-4500002299.pdf'),
+          new File(['%PDF-1.7'], 'RR-4500002299.pdf', { type: 'application/pdf' }),
+        ],
+      },
+    })
+
+    expect(poDropZone.get('strong').text()).toBe('RR-4500002299.pdf')
+    expect(poDropZone.get('strong').attributes('title')).toBe('RR-4500002299.pdf')
+    expect(wrapper.get('[role="status"]').text()).toContain('已自动忽略 1 个 Mac 隐藏资源文件')
+    expect(wrapper.get('[role="status"]').text()).toContain('已选择 1 份真实 PO')
   })
 
   it('requires a factory-owned customer and switches PO file types and APIs for Dickie', async () => {

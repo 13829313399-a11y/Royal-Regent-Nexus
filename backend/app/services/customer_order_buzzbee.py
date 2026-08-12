@@ -51,12 +51,13 @@ FORMULA_CELL_REF_PATTERN = re.compile(r"(?<![A-Z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+)"
 FORMULA_RANGE_PATTERN = re.compile(
     r"(?<![A-Z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+):(\$?[A-Z]{1,3})(\$?)(\d+)"
 )
-PACKAGING_PATTERN = re.compile(r"\b(\d{5}-\d{2}-\d{2}-[A-Za-z]+\d*)\b")
+PACKAGING_PATTERN = re.compile(r"\b(\d{5}-\d{2}-\d{2}-[A-Za-z0-9]+)\b")
 PO_PATTERN = re.compile(r"(?:P\s*/?\s*O|PO)\s*(?:NUMBER|NO\.?|/[^:]+)?\s*:\s*([0-9]{7,})", re.I)
 
 LABEL_FIELDS = (
     ("Contract No.", "contract_no"),
     ("Date of Loading", "requested_ship_date"),
+    ("Final Inspection Date", "inspection_date"),
     ("Inspection Date", "inspection_date"),
     ("Our Item#", "product_no"),
     ("Goods", "product_name_en"),
@@ -193,74 +194,241 @@ def _cell_name(row: int, column: int) -> str:
     return f"{openpyxl.utils.get_column_letter(column)}{row}"
 
 
-def _parse_xls_po(content: bytes) -> list[ParsedPoLine]:
-    try:
-        workbook = xlrd.open_workbook(file_contents=content, formatting_info=True)
-    except Exception as exc:
-        raise CustomerOrderWorkbookError(f"普通 PO 文件无法读取：{exc}") from exc
-    sheet = workbook.sheet_by_index(0)
+def _ordinary_customer_metadata(
+    file_name: str,
+    rows: list[tuple[int, list[tuple[int, Any, str]]]],
+    *,
+    contract_row: int | None,
+    contract_value_column: int | None,
+) -> tuple[str, str, str, str, str]:
+    row_values = {
+        row_number: {
+            column: (_clean_text(value), coordinate)
+            for column, value, coordinate in row
+            if _clean_text(value)
+        }
+        for row_number, row in rows
+    }
+    customer_fragments: list[str] = []
+    customer_sources: list[str] = []
+    if contract_row is not None and contract_value_column is not None:
+        candidates = [
+            (column, text, coordinate)
+            for column, (text, coordinate) in row_values.get(contract_row, {}).items()
+            if contract_value_column < column <= contract_value_column + 6
+            and re.search(r"[A-Za-z]", text)
+            and not any(_label_matches(text, label) for label, _ in LABEL_FIELDS)
+        ]
+        if candidates:
+            customer_column, current_fragment, current_source = candidates[-1]
+            previous = row_values.get(contract_row - 1, {}).get(customer_column)
+            if previous and re.search(r"[A-Za-z]", previous[0]) and not re.search(
+                r"\b(?:CONTACT|DATE|PURCHASE ORDER)\b", previous[0], re.I
+            ):
+                customer_fragments.append(previous[0])
+                customer_sources.append(previous[1])
+            customer_fragments.append(current_fragment)
+            customer_sources.append(current_source)
+
+    raw_customer = re.sub(r"\s+", " ", " ".join(customer_fragments)).strip(" -/")
+    all_text = " ".join(
+        _clean_text(value)
+        for _, row in rows
+        for _, value, _ in row
+        if _clean_text(value)
+    )
+    probe = re.sub(r"\s+", " ", f"{file_name} {raw_customer} {all_text}").upper()
+
+    customer_name = raw_customer
+    country = ""
+    profile_standard = ""
+    profile_source = ""
+    if "DOLLAR GENERAL" in probe:
+        customer_name, country, profile_standard = "Dollar General", "美国", "美国标准"
+        profile_source = "客户规则 · Dollar General"
+    elif "AAFES" in probe:
+        customer_name, country, profile_standard = "AAFES", "美国", "美国标准"
+        profile_source = "客户规则 · AAFES"
+    elif "SAFARI HOUSE" in probe:
+        customer_name, country, profile_standard = "SAFARI HOUSE", "科威特", "欧洲标准"
+        profile_source = "客户规则 · SAFARI HOUSE"
+    elif "TOTTUS" in probe:
+        if "CHILE" in probe:
+            customer_name, country = "TOTTUS -CHILE", "智利"
+        elif "PERU" in probe:
+            customer_name, country = "TOTTUS -PERU", "秘鲁"
+        else:
+            customer_name = "TOTTUS"
+        profile_standard = "欧洲标准"
+        profile_source = "客户规则 · TOTTUS"
+    elif "ABU ISSA" in probe:
+        customer_name, country, profile_standard = "ABU ISSA", "卡塔尔", "欧洲标准"
+        profile_source = "客户规则 · ABU ISSA"
+    elif re.search(r"\bSKME\b", probe):
+        customer_name, profile_standard = "SKME", "欧洲标准"
+        profile_source = "客户规则 · SKME"
+    elif re.search(r"\bCOOP\b", probe):
+        customer_name, profile_standard = "COOP", "欧洲标准"
+        profile_source = "客户规则 · COOP"
+
+    country_aliases = (
+        ("UNITED STATES", "美国"),
+        ("U.S.A.", "美国"),
+        ("USA", "美国"),
+        ("CANADA", "加拿大"),
+        ("KUWAIT", "科威特"),
+        ("QATAR", "卡塔尔"),
+        ("PERU", "秘鲁"),
+        ("CHILE", "智利"),
+    )
+    if not country:
+        for token, localized in country_aliases:
+            if re.search(rf"\b{re.escape(token)}\b", raw_customer, re.I):
+                country = localized
+                customer_name = re.sub(
+                    rf"(?:\s*[-/]?\s*)\b{re.escape(token)}\b\s*$",
+                    "",
+                    customer_name,
+                    flags=re.I,
+                ).strip(" -/")
+                break
+
+    if "EUROPEAN STANDARD" in probe or "EUROPEAN SAFETY" in probe or "2009/48/EC" in probe:
+        standard = "欧洲标准"
+        standard_source = "合同条款 · European Standard"
+    elif "CANADIAN STANDARD" in probe:
+        standard = "加拿大标准"
+        standard_source = "合同条款 · Canadian Standard"
+    elif any(token in probe for token in ("AMERICAN STANDARD", "U.S. STANDARD", "ASTM F963")):
+        standard = "美国标准"
+        standard_source = "合同条款 · U.S. Standard"
+    else:
+        standard = profile_standard
+        standard_source = profile_source
+
+    customer_source = (
+        " / ".join(customer_sources)
+        if customer_sources
+        else profile_source or "合同表头 · 未识别"
+    )
+    return customer_name, country, standard, customer_source, standard_source
+
+
+def _parse_ordinary_po_rows(
+    file_name: str,
+    sheet_name: str,
+    rows: list[tuple[int, list[tuple[int, Any, str]]]],
+    *,
+    datemode: int = 0,
+) -> list[ParsedPoLine]:
     values: dict[str, Any] = {}
     lineage: dict[str, str] = {}
+    field_locations: dict[str, tuple[int, int]] = {}
     packaging = ""
     packaging_source = ""
     po_no = ""
     po_source = ""
 
-    for row_index in range(sheet.nrows):
-        row_values = [(column, sheet.cell_value(row_index, column)) for column in range(sheet.ncols)]
-        for column, raw_value in row_values:
+    for row_number, row in rows:
+        simple_row = [(column, value) for column, value, _ in row]
+        for column, raw_value, coordinate in row:
             text = _clean_text(raw_value)
             if not text:
                 continue
             for label, field in LABEL_FIELDS:
                 if field in values or not _label_matches(text, label):
                     continue
-                found = _next_non_empty(row_values, column)
+                found = _next_non_empty(simple_row, column)
                 if found:
                     value_column, value = found
                     values[field] = value
-                    lineage[field] = f"{sheet.name}!{_cell_name(row_index + 1, value_column + 1)}"
+                    lineage[field] = f"{sheet_name}!{_cell_name(row_number, value_column)}"
+                    field_locations[field] = (row_number, value_column)
             if not packaging:
                 match = PACKAGING_PATTERN.search(text)
                 if match:
                     packaging = match.group(1)
-                    packaging_source = f"{sheet.name}!{_cell_name(row_index + 1, column + 1)}"
+                    packaging_source = f"{sheet_name}!{coordinate}"
             if not po_no and "PO NUMBER" in text.upper():
-                found = _next_non_empty(row_values, column)
+                found = _next_non_empty(simple_row, column)
                 if found:
                     value_column, value = found
                     po_no = _clean_text(value)
-                    po_source = f"{sheet.name}!{_cell_name(row_index + 1, value_column + 1)}"
+                    po_source = f"{sheet_name}!{_cell_name(row_number, value_column)}"
             if not po_no:
                 match = PO_PATTERN.search(text)
                 if match:
                     po_no = match.group(1)
-                    po_source = f"{sheet.name}!{_cell_name(row_index + 1, column + 1)}"
+                    po_source = f"{sheet_name}!{coordinate}"
 
+    contract_location = field_locations.get("contract_no")
+    customer_name, country, standard, customer_source, standard_source = (
+        _ordinary_customer_metadata(
+            file_name,
+            rows,
+            contract_row=contract_location[0] if contract_location else None,
+            contract_value_column=contract_location[1] if contract_location else None,
+        )
+    )
+    if customer_source and "!" not in customer_source and re.fullmatch(
+        r"[A-Z]+\d+(?: / [A-Z]+\d+)*", customer_source
+    ):
+        customer_source = " / ".join(
+            f"{sheet_name}!{coordinate}" for coordinate in customer_source.split(" / ")
+        )
+    inspection_raw = _clean_text(values.get("inspection_date"))
     values["contract_no"] = _clean_identifier(values.get("contract_no"))
     values["product_no"] = _clean_identifier(values.get("product_no"))
     values["po_no"] = po_no
-    values["customer_name"] = "AAFES"
-    values["country"] = "美国"
-    values["standard"] = "美国标准"
+    values["customer_name"] = customer_name
+    values["country"] = country
+    values["standard"] = standard
     values["packaging"] = packaging
     values["requested_ship_date"] = _format_iso_date(
-        values.get("requested_ship_date"), datemode=workbook.datemode
+        values.get("requested_ship_date"), datemode=datemode
     )
-    values["inspection_raw"] = _clean_text(values.get("inspection_date"))
+    values["inspection_raw"] = inspection_raw
     values["inspection_date"] = _format_iso_date(
-        values.get("inspection_date"), datemode=workbook.datemode
+        values.get("inspection_date"), datemode=datemode
     )
     lineage.update(
         {
             "po_no": po_source,
-            "customer_name": "模板规则 · AAFES",
-            "country": "模板规则 · AAFES → 美国",
-            "standard": "模板规则 · AAFES → 美国标准",
+            "customer_name": customer_source,
+            "country": customer_source,
+            "standard": standard_source,
             "packaging": packaging_source,
         }
     )
     return [ParsedPoLine(values=values, lineage=lineage, input_template=STANDARD_TEMPLATE)]
+
+
+def _parse_xls_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
+    try:
+        workbook = xlrd.open_workbook(file_contents=content, formatting_info=True)
+    except Exception as exc:
+        raise CustomerOrderWorkbookError(f"普通 PO 文件无法读取：{exc}") from exc
+    sheet = workbook.sheet_by_index(0)
+    rows = [
+        (
+            row_index + 1,
+            [
+                (
+                    column + 1,
+                    sheet.cell_value(row_index, column),
+                    _cell_name(row_index + 1, column + 1),
+                )
+                for column in range(sheet.ncols)
+            ],
+        )
+        for row_index in range(sheet.nrows)
+    ]
+    return _parse_ordinary_po_rows(
+        file_name,
+        sheet.name,
+        rows,
+        datemode=workbook.datemode,
+    )
 
 
 def _iter_xlsx_rows(sheet: openpyxl.worksheet.worksheet.Worksheet):
@@ -271,6 +439,75 @@ def _iter_xlsx_rows(sheet: openpyxl.worksheet.worksheet.Worksheet):
         ]
 
 
+def _parse_wmc_xlsx_sheet(
+    sheet: openpyxl.worksheet.worksheet.Worksheet,
+) -> list[ParsedPoLine]:
+    values: dict[str, Any] = {}
+    lineage: dict[str, str] = {}
+    packaging = ""
+    packaging_source = ""
+    po_no = ""
+    po_source = ""
+    inspection_raw = ""
+    inspection_source = ""
+
+    for row_number, row in _iter_xlsx_rows(sheet):
+        simple_row = [(column, value) for column, value, _ in row]
+        for column, raw_value, coordinate in row:
+            text = _clean_text(raw_value)
+            if not text:
+                continue
+            for label, field in LABEL_FIELDS:
+                if field in values or not _label_matches(text, label):
+                    continue
+                found = _next_non_empty(simple_row, column)
+                if found:
+                    value_column, value = found
+                    values[field] = value
+                    lineage[field] = f"{sheet.title}!{_cell_name(row_number, value_column)}"
+            if not packaging:
+                match = PACKAGING_PATTERN.search(text)
+                if match:
+                    packaging = match.group(1)
+                    packaging_source = f"{sheet.title}!{coordinate}"
+            if not po_no:
+                match = PO_PATTERN.search(text)
+                if match:
+                    po_no = match.group(1)
+                    po_source = f"{sheet.title}!{coordinate}"
+            if not inspection_raw and "INSPECTION" in text.upper():
+                inspection_raw = text.split(":", 1)[-1].strip()
+                inspection_source = f"{sheet.title}!{coordinate}"
+
+    values["contract_no"] = _clean_identifier(values.get("contract_no") or sheet["N4"].value)
+    values["product_no"] = _clean_identifier(values.get("product_no") or sheet["F12"].value)
+    values["product_name_en"] = _clean_text(values.get("product_name_en") or sheet["C14"].value)
+    values["quantity"] = values.get("quantity") or sheet["F16"].value
+    values["po_no"] = po_no
+    values["customer_name"] = "WMC"
+    values["country"] = "加拿大"
+    values["standard"] = "加拿大标准"
+    values["packaging"] = packaging
+    values["requested_ship_date"] = _format_iso_date(values.get("requested_ship_date") or sheet["F8"].value)
+    values["inspection_raw"] = inspection_raw
+    values["inspection_date"] = _format_iso_date(inspection_raw)
+    lineage.update(
+        {
+            "contract_no": lineage.get("contract_no") or f"{sheet.title}!N4",
+            "product_no": lineage.get("product_no") or f"{sheet.title}!F12",
+            "product_name_en": lineage.get("product_name_en") or f"{sheet.title}!C14",
+            "quantity": lineage.get("quantity") or f"{sheet.title}!F16",
+            "po_no": po_source,
+            "customer_name": "模板规则 · P4=WMC",
+            "country": "模板规则 · WMC → 加拿大",
+            "standard": "模板规则 · WMC → 加拿大标准",
+            "packaging": packaging_source,
+            "inspection_date": inspection_source,
+        }
+    )
+    return [ParsedPoLine(values=values, lineage=lineage, input_template=WMC_TEMPLATE)]
+
+
 def _parse_xlsx_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
     try:
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=True, read_only=True)
@@ -278,75 +515,22 @@ def _parse_xlsx_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
         raise CustomerOrderWorkbookError(f"PO 文件无法读取：{exc}") from exc
     try:
         sheet = workbook.worksheets[0]
-        if _clean_text(sheet["P4"].value).upper() != "WMC":
-            raise CustomerOrderWorkbookError(
-                "当前 BuzzBee 范围只支持普通 AAFES 合同和 WMC 首页内嵌 PO；WMU/印尼排期暂不处理"
-            )
+        if _clean_text(sheet["P4"].value).upper() == "WMC":
+            return _parse_wmc_xlsx_sheet(sheet)
 
-        values: dict[str, Any] = {}
-        lineage: dict[str, str] = {}
-        packaging = ""
-        packaging_source = ""
-        po_no = ""
-        po_source = ""
-        inspection_raw = ""
-        inspection_source = ""
-
-        for row_number, row in _iter_xlsx_rows(sheet):
-            simple_row = [(column, value) for column, value, _ in row]
-            for column, raw_value, coordinate in row:
-                text = _clean_text(raw_value)
-                if not text:
-                    continue
-                for label, field in LABEL_FIELDS:
-                    if field in values or not _label_matches(text, label):
-                        continue
-                    found = _next_non_empty(simple_row, column)
-                    if found:
-                        value_column, value = found
-                        values[field] = value
-                        lineage[field] = f"{sheet.title}!{_cell_name(row_number, value_column)}"
-                if not packaging:
-                    match = PACKAGING_PATTERN.search(text)
-                    if match:
-                        packaging = match.group(1)
-                        packaging_source = f"{sheet.title}!{coordinate}"
-                if not po_no:
-                    match = PO_PATTERN.search(text)
-                    if match:
-                        po_no = match.group(1)
-                        po_source = f"{sheet.title}!{coordinate}"
-                if not inspection_raw and "INSPECTION" in text.upper():
-                    inspection_raw = text.split(":", 1)[-1].strip()
-                    inspection_source = f"{sheet.title}!{coordinate}"
-
-        values["contract_no"] = _clean_identifier(values.get("contract_no") or sheet["N4"].value)
-        values["product_no"] = _clean_identifier(values.get("product_no") or sheet["F12"].value)
-        values["product_name_en"] = _clean_text(values.get("product_name_en") or sheet["C14"].value)
-        values["quantity"] = values.get("quantity") or sheet["F16"].value
-        values["po_no"] = po_no
-        values["customer_name"] = "WMC"
-        values["country"] = "加拿大"
-        values["standard"] = "加拿大标准"
-        values["packaging"] = packaging
-        values["requested_ship_date"] = _format_iso_date(values.get("requested_ship_date") or sheet["F8"].value)
-        values["inspection_raw"] = inspection_raw
-        values["inspection_date"] = _format_iso_date(inspection_raw)
-        lineage.update(
-            {
-                "contract_no": lineage.get("contract_no") or f"{sheet.title}!N4",
-                "product_no": lineage.get("product_no") or f"{sheet.title}!F12",
-                "product_name_en": lineage.get("product_name_en") or f"{sheet.title}!C14",
-                "quantity": lineage.get("quantity") or f"{sheet.title}!F16",
-                "po_no": po_source,
-                "customer_name": "模板规则 · P4=WMC",
-                "country": "模板规则 · WMC → 加拿大",
-                "standard": "模板规则 · WMC → 加拿大标准",
-                "packaging": packaging_source,
-                "inspection_date": inspection_source,
-            }
-        )
-        return [ParsedPoLine(values=values, lineage=lineage, input_template=WMC_TEMPLATE)]
+        rows = list(_iter_xlsx_rows(sheet))
+        identity_probe = " ".join(
+            [file_name]
+            + [
+                _clean_text(value)
+                for _, row in rows
+                for _, value, _ in row
+                if _clean_text(value)
+            ]
+        ).upper()
+        if "WMU" in identity_probe or "INDONESIA" in identity_probe or "印尼" in identity_probe:
+            raise CustomerOrderWorkbookError("WMU/印尼合同不属于当前 BuzzBee 映射范围")
+        return _parse_ordinary_po_rows(file_name, sheet.title, rows)
     finally:
         workbook.close()
 
@@ -354,7 +538,7 @@ def _parse_xlsx_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
 def parse_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
     lowered = file_name.lower()
     if lowered.endswith(".xls") and not lowered.endswith(".xlsx"):
-        lines = _parse_xls_po(content)
+        lines = _parse_xls_po(file_name, content)
     elif lowered.endswith((".xlsx", ".xlsm")):
         lines = _parse_xlsx_po(file_name, content)
     else:
@@ -967,10 +1151,12 @@ def _build_preview_rows(
 
         required_fields = {
             "contract_no": "Contract No.",
+            "customer_name": "客户名称",
             "product_no": "产品编号",
             "product_name_en": "产品名称",
             "quantity": "数量",
             "units_per_carton": "装箱数",
+            "standard": "国家标准",
             "requested_ship_date": "客要求走货期",
         }
         if _requires_po_number(parsed) and not _clean_text(values.get("po_no")):
