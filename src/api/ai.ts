@@ -159,6 +159,9 @@ function normalizeCapabilities(value: unknown): AICapabilities {
       granted: pilotAccess.granted === true,
       status: normalizePilotStatus(pilotAccess.status),
       read_only: pilotAccess.read_only === true,
+      max_tool_risk_level: pilotAccess.max_tool_risk_level === 'PREVIEW_WITH_AUDIT'
+        ? 'PREVIEW_WITH_AUDIT'
+        : 'READ_ONLY',
     },
   }
 }

@@ -8,12 +8,18 @@ export const PDF_SPLIT_TIMEOUT_MS = 60_000
 export const DOCUMENT_TRANSLATION_TIMEOUT_MS = 600_000
 
 export type DocumentTranslationDirection = 'zh_to_en' | 'en_to_zh'
+export type DocumentTranslationMode = 'local_private' | 'ai_smart_cloud'
 
 export interface DocumentTranslationStatus {
   available: boolean
   engine: 'offline'
   engineLabel: string
   directions: Record<DocumentTranslationDirection, boolean>
+  cloudAvailable?: boolean
+  modes?: {
+    local_private: { available: boolean; label: string }
+    ai_smart_cloud: { available: boolean; label: string; provider: string; model: string }
+  }
 }
 
 export interface DocumentTranslationResult {
@@ -119,10 +125,14 @@ export function createSharedToolsApi(client: SharedToolsHttpClient = http) {
       documentFile: File,
       direction: DocumentTranslationDirection,
       selectedSheetNames?: string[],
+      mode: DocumentTranslationMode = 'local_private',
+      cloudConsent = false,
     ): Promise<DocumentTranslationResult> {
       const payload = new FormData()
       payload.append('document_file', documentFile)
       payload.append('direction', direction)
+      payload.append('mode', mode)
+      if (mode === 'ai_smart_cloud') payload.append('cloud_consent', String(cloudConsent))
       if (selectedSheetNames) payload.append('sheet_names', JSON.stringify(selectedSheetNames))
       const extension = documentFile.name.match(/\.(xlsx|xlsm|docx)$/i)?.[0].toLowerCase() ?? '.docx'
       const stem = documentFile.name.replace(/\.(xlsx|xlsm|docx)$/i, '') || '文档'

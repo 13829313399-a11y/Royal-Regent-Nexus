@@ -5,18 +5,34 @@ from pydantic import BaseModel, ConfigDict, Field
 AIPageRouteName = Literal[
     "injection-scheduling-v2",
     "internal-quote-desk-home",
+    "molding-sample",
+    "carton-procurement",
+    "raw-material-management",
+    "customer-order-center",
 ]
 AIPagePath = Literal[
     "/modules/production/injection-scheduling",
     "/modules/sales-business/internal-quote-desk",
+    "/modules/molding-sample",
+    "/modules/pmc-warehouse/carton-procurement",
+    "/modules/pmc-warehouse/raw-material-management",
+    "/modules/sales-business/po-schedule-intake",
 ]
 AIPageModuleId = Literal[
     "injection-scheduling",
     "internal-quote",
+    "molding-sample",
+    "carton-procurement",
+    "raw-material",
+    "customer-order",
 ]
 AIKnowledgeId = Literal[
     "injection-scheduling",
     "internal-quote",
+    "molding-sample",
+    "carton-procurement",
+    "raw-material",
+    "customer-order",
 ]
 
 

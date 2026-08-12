@@ -870,6 +870,32 @@ export async function uploadImportPreview(factoryId: string, file: File, documen
   return mapImportBatch(data as UnknownRecord)
 }
 
+export async function inspectWorkbookSemanticSnapshot(factoryId: string, file: File) {
+  const body = new FormData()
+  body.set('factory_id', factoryId)
+  body.set('file', file)
+  const { data } = await http.post('/ai/workbooks/inspect', body, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data as UnknownRecord
+}
+
+export async function proposeWorkbookFieldMapping(
+  factoryId: string,
+  file: File,
+  documentKind: Exclude<ImportDocumentKindChoice, 'AUTO'>,
+) {
+  const body = new FormData()
+  body.set('factory_id', factoryId)
+  body.set('document_kind', documentKind)
+  body.set('cloud_consent', 'true')
+  body.set('file', file)
+  const { data } = await http.post('/ai/workbooks/mapping-proposal', body, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data as UnknownRecord
+}
+
 export async function retryImportPreview(factoryId: string, batch: ImportBatchRecord) {
   const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/retry`, {
     factory_id: factoryId, expected_revision: batch.revision, request_id: newRequestId('import-retry'),

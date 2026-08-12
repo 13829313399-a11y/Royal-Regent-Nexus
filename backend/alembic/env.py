@@ -19,6 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
+    ai_action,  # noqa: F401
     auth,  # noqa: F401
     carton_procurement,  # noqa: F401
     customer_order,  # noqa: F401

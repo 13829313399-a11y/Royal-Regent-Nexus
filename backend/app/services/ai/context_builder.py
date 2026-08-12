@@ -5,6 +5,12 @@ from dataclasses import dataclass
 
 from app.schemas.ai.context import AIPageContextInput, AIServerPageContext
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext, authorization_decision
+from app.services.business_authz import (
+    ENGINEERING_DEPARTMENTS,
+    SHARED_MOLDING_DEPARTMENTS,
+    WAREHOUSE_DEPARTMENTS,
+)
+from app.services.carton_procurement import CARTON_DEPARTMENTS
 from app.services.injection_scheduling import SCHEDULING_DEPARTMENTS
 from app.services.internal_quote import ALL_QUOTE_DEPARTMENTS
 
@@ -41,6 +47,46 @@ _PAGE_POLICIES = (
         departments=ALL_QUOTE_DEPARTMENTS,
         base_tool_groups=("identity",),
         authorized_tool_group="internal_quote",
+    ),
+    _PagePolicy(
+        route_name="molding-sample",
+        path="/modules/molding-sample",
+        module_id="molding-sample",
+        knowledge_id="molding-sample",
+        read_permission="molding_sample:read",
+        departments=tuple(SHARED_MOLDING_DEPARTMENTS),
+        base_tool_groups=("identity",),
+        authorized_tool_group="molding_sample",
+    ),
+    _PagePolicy(
+        route_name="carton-procurement",
+        path="/modules/pmc-warehouse/carton-procurement",
+        module_id="carton-procurement",
+        knowledge_id="carton-procurement",
+        read_permission="carton_procurement:read",
+        departments=CARTON_DEPARTMENTS,
+        base_tool_groups=("identity",),
+        authorized_tool_group="carton_procurement",
+    ),
+    _PagePolicy(
+        route_name="raw-material-management",
+        path="/modules/pmc-warehouse/raw-material-management",
+        module_id="raw-material",
+        knowledge_id="raw-material",
+        read_permission="molding_sample:raw_material_write",
+        departments=(*ENGINEERING_DEPARTMENTS, *WAREHOUSE_DEPARTMENTS),
+        base_tool_groups=("identity",),
+        authorized_tool_group="raw_material",
+    ),
+    _PagePolicy(
+        route_name="customer-order-center",
+        path="/modules/sales-business/po-schedule-intake",
+        module_id="customer-order",
+        knowledge_id="customer-order",
+        read_permission="customer_order:read",
+        departments=("sales-business",),
+        base_tool_groups=("identity",),
+        authorized_tool_group="customer_order",
     ),
 )
 

@@ -20,6 +20,7 @@ import { computed, onMounted, ref } from 'vue'
 import {
   sharedToolsApi,
   type DocumentTranslationDirection,
+  type DocumentTranslationMode,
   type DocumentTranslationStatus,
 } from '@/api/tools'
 import { getApiErrorMessage } from '@/lib/http'
@@ -41,6 +42,8 @@ const selectedFile = ref<File | null>(null)
 const sheetNames = ref<string[]>([])
 const selectedSheetNames = ref<string[]>([])
 const direction = ref<DocumentTranslationDirection>('zh_to_en')
+const translationMode = ref<DocumentTranslationMode>('local_private')
+const cloudConsent = ref(false)
 const isDragging = ref(false)
 const isTranslating = ref(false)
 const isLoadingSheets = ref(false)
@@ -56,12 +59,16 @@ const isExcel = computed(() => Boolean(selectedFile.value?.name.match(/\.xls[xm]
 const allSheetsSelected = computed(() => sheetNames.value.length > 0
   && selectedSheetNames.value.length === sheetNames.value.length)
 const selectedDirectionReady = computed(() => serviceStatus.value?.directions[direction.value] !== false)
+const selectedModeAvailable = computed(() => translationMode.value === 'local_private'
+  ? serviceStatus.value?.available === true
+  : serviceStatus.value?.cloudAvailable === true)
 const canTranslate = computed(() => Boolean(selectedFile.value)
   && !isTranslating.value
   && !isLoadingSheets.value
   && (!isExcel.value || selectedSheetNames.value.length > 0)
-  && serviceStatus.value?.available === true
-  && selectedDirectionReady.value)
+  && selectedModeAvailable.value
+  && selectedDirectionReady.value
+  && (translationMode.value === 'local_private' || cloudConsent.value))
 
 let fileSelectionVersion = 0
 
@@ -139,6 +146,12 @@ function setDirection(value: DocumentTranslationDirection) {
   resetResult()
 }
 
+function setTranslationMode(value: DocumentTranslationMode) {
+  translationMode.value = value
+  if (value === 'local_private') cloudConsent.value = false
+  resetResult()
+}
+
 async function loadServiceStatus() {
   isLoadingStatus.value = true
   statusError.value = ''
@@ -163,6 +176,8 @@ async function translateFile() {
       selectedFile.value,
       direction.value,
       isExcel.value ? [...selectedSheetNames.value] : undefined,
+      translationMode.value,
+      translationMode.value === 'ai_smart_cloud' && cloudConsent.value,
     )
     downloadToolBlob(result.blob, result.fileName)
     resultMetrics.value = {
@@ -209,6 +224,37 @@ onMounted(loadServiceStatus)
     <div class="grid gap-0 lg:grid-cols-[minmax(0,1fr)_300px]">
       <div class="p-5 sm:p-7">
         <fieldset>
+          <legend class="text-sm font-bold text-slate-900">选择处理模式</legend>
+          <div class="mt-3 grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              class="rounded-xl border px-4 py-3 text-left transition"
+              :class="translationMode === 'local_private' ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-100' : 'border-slate-200 bg-white'"
+              :aria-pressed="translationMode === 'local_private'"
+              @click="setTranslationMode('local_private')"
+            >
+              <strong class="block text-sm text-slate-900">Local Private（默认）</strong>
+              <span class="mt-1 block text-xs text-slate-500">正文只在当前服务器处理，不发送到云端。</span>
+            </button>
+            <button
+              type="button"
+              class="rounded-xl border px-4 py-3 text-left transition"
+              :class="translationMode === 'ai_smart_cloud' ? 'border-violet-400 bg-violet-50 ring-2 ring-violet-100' : 'border-slate-200 bg-white'"
+              :aria-pressed="translationMode === 'ai_smart_cloud'"
+              :disabled="serviceStatus?.cloudAvailable !== true"
+              @click="setTranslationMode('ai_smart_cloud')"
+            >
+              <strong class="block text-sm text-slate-900">AI Smart / Cloud</strong>
+              <span class="mt-1 block text-xs text-slate-500">仅发送需要翻译的文本片段，Provider 不接收或生成完整文件。</span>
+            </button>
+          </div>
+          <label v-if="translationMode === 'ai_smart_cloud'" class="mt-3 flex items-start gap-2 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs text-violet-950">
+            <input v-model="cloudConsent" type="checkbox" class="mt-0.5 size-4" @change="resetResult">
+            <span>我已知晓所选文字片段会发送到已批准的云端模型；公式、宏、样式、图片、绘图和完整 Office 文件不会发送。</span>
+          </label>
+        </fieldset>
+
+        <fieldset class="mt-5">
           <legend class="text-sm font-bold text-slate-900">选择翻译方向</legend>
           <div class="mt-3 grid gap-3 sm:grid-cols-2">
             <button
@@ -379,19 +425,23 @@ onMounted(loadServiceStatus)
           </li>
         </ul>
 
-        <div class="mt-6 rounded-xl border p-4" :class="serviceStatus?.available ? 'border-emerald-100 bg-emerald-50/80' : 'border-amber-200 bg-amber-50/80'">
-          <p class="flex items-center gap-2 text-xs font-bold" :class="serviceStatus?.available ? 'text-emerald-900' : 'text-amber-900'">
+        <div class="mt-6 rounded-xl border p-4" :class="selectedModeAvailable ? 'border-emerald-100 bg-emerald-50/80' : 'border-amber-200 bg-amber-50/80'">
+          <p class="flex items-center gap-2 text-xs font-bold" :class="selectedModeAvailable ? 'text-emerald-900' : 'text-amber-900'">
             <LoaderCircle v-if="isLoadingStatus" class="size-4 animate-spin" aria-hidden="true" />
-            <ShieldCheck v-else-if="serviceStatus?.available" class="size-4" aria-hidden="true" />
+            <ShieldCheck v-else-if="selectedModeAvailable" class="size-4" aria-hidden="true" />
             <RefreshCw v-else class="size-4" aria-hidden="true" />
-            {{ isLoadingStatus ? '正在检查翻译模型' : serviceStatus?.available ? '离线翻译已就绪' : '翻译模型未就绪' }}
+            {{ isLoadingStatus ? '正在检查翻译模型' : selectedModeAvailable ? translationMode === 'local_private' ? '离线翻译已就绪' : '云端智能翻译已就绪' : '翻译模型未就绪' }}
           </p>
-          <p class="mt-2 text-xs leading-5" :class="serviceStatus?.available ? 'text-emerald-800/80' : 'text-amber-800/90'">
-            {{ serviceStatus?.available
-              ? '文档正文只在当前服务器内处理，不发送到第三方翻译网站，也不保存源文件、结果或翻译记录。'
-              : statusError || '请联系系统管理员安装中英双向离线模型后再使用。' }}
+          <p class="mt-2 text-xs leading-5" :class="selectedModeAvailable ? 'text-emerald-800/80' : 'text-amber-800/90'">
+            {{ translationMode === 'local_private'
+              ? serviceStatus?.available
+                ? '文档正文只在当前服务器内处理，不发送到第三方翻译网站，也不保存源文件、结果或翻译记录。'
+                : statusError || '请联系系统管理员安装中英双向离线模型后再使用。'
+              : serviceStatus?.cloudAvailable
+                ? 'AI Smart / Cloud 已就绪；仅待翻译文本片段出站，完整文件始终由本地 OOXML 流程生成。'
+                : 'AI Smart / Cloud 当前未启用；Local Private 默认入口仍保持不变。' }}
           </p>
-          <button v-if="!isLoadingStatus && !serviceStatus?.available" type="button" class="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-amber-800 hover:text-amber-950" @click="loadServiceStatus">
+          <button v-if="!isLoadingStatus && !selectedModeAvailable" type="button" class="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-amber-800 hover:text-amber-950" @click="loadServiceStatus">
             <RefreshCw class="size-3.5" aria-hidden="true" />重新检查
           </button>
         </div>
