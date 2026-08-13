@@ -94,6 +94,24 @@ def _schedule_bytes(customer_code: str) -> bytes:
             for col_no in (10, 11):
                 worksheet.cell(summary_row, col_no).fill = PatternFill("solid", fgColor="F8CBAD")
             worksheet.row_dimensions[summary_row].height = 25
+    elif customer_code == "index":
+        headers = {
+            1: "接单日期", 4: "客PO号", 5: "合同", 6: "客名", 7: "国家",
+            8: "大货号", 9: "小货号", 10: "货名", 11: "订单数量",
+            24: "装箱", 25: "纸箱", 41: "订单截数期", 42: "单价HK$",
+            43: "金额HK$", 44: "出货期", 49: "备注",
+        }
+        for col_no, value in headers.items():
+            worksheet.cell(1, col_no, value)
+        for col_no in range(1, profile.max_col + 1):
+            cell = worksheet.cell(profile.style_row, col_no)
+            cell.font = Font(name="Calibri", size=10)
+            cell.fill = PatternFill(fill_type=None)
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        worksheet.cell(profile.style_row, 25, f"=K{profile.style_row}/X{profile.style_row}")
+        worksheet.cell(profile.style_row, 42, "=2*7.75")
+        worksheet.cell(profile.style_row, 43, f"=AP{profile.style_row}*K{profile.style_row}")
+        worksheet.row_dimensions[profile.style_row].height = 36
     elif customer_code == "strottman":
         headers = {
             1: "能否备料", 2: "能否生产", 3: "款号", 4: "入单日期",
@@ -308,7 +326,7 @@ ITEM NO. ITEM DESCRIPTION QUANTITY U/M USD UNIT PRICE USD AMOUNT
 @pytest.mark.parametrize(
     ("customer_code", "contract_column", "item_column", "quantity_column", "data_row"),
     [
-        ("index", 5, 6, 10, 7),
+        ("index", 5, 9, 11, 5),
         ("jazwares", 5, 9, 11, 4),
         ("maxx", 5, 9, 11, 5),
         ("strottman", 5, 6, 10, 12),
@@ -370,10 +388,60 @@ def test_preview_and_export_follow_each_customer_schedule_profile(
         assert worksheet.cell(data_row, contract_column).value == "SC-100"
         assert worksheet.cell(data_row, item_column).value == "ITEM-1"
         assert worksheet.cell(data_row, quantity_column).value == 120
+        if customer_code == "index":
+            assert worksheet.cell(data_row, 1).value.strftime("%Y-%m-%d") == "2026-08-03"
+            assert worksheet.cell(data_row, 4).value == "PO-100"
+            assert worksheet.cell(data_row, 6).value == "INDEX"
+            assert worksheet.cell(data_row, 8).value == "ITEM-1"
+            assert worksheet.cell(data_row, 10).value == "排期标准品名"
+            assert worksheet.cell(data_row, 24).value == 12
+            assert worksheet.cell(data_row, 25).value == f'=IFERROR(K{data_row}/X{data_row},"")'
+            assert worksheet.cell(data_row, 41).value.strftime("%Y-%m-%d") == "2026-09-01"
+            assert worksheet.cell(data_row, 42).value == "=2*7.75"
+            assert worksheet.cell(data_row, 43).value == f"=AP{data_row}*K{data_row}"
+            assert worksheet.cell(data_row, 44).value.strftime("%Y-%m-%d") == "2026-09-01"
+            assert worksheet.cell(data_row, 41).number_format == "yyyy/m/d;@"
+            expected_hkd_format = '[$HK$-C04]#,##0.00;\\-[$HK$-C04]#,##0.00'
+            assert worksheet.cell(data_row, 42).number_format == expected_hkd_format
+            assert worksheet.cell(data_row, 43).number_format == expected_hkd_format
+            assert worksheet.cell(data_row, 44).number_format == "yyyy/m/d;@"
     finally:
         workbook.close()
     assert file_name == preview["output_file_name"]
     assert exported_preview["summary"]["total"] == 1
+
+
+def test_invalid_date_styled_history_value_is_preserved_during_full_export(monkeypatch) -> None:
+    order = _order("jazwares")
+    monkeypatch.setattr(
+        service.huakang_po_parser.HuakangPOParser,
+        "parse",
+        lambda _self, _path: deepcopy(order),
+    )
+    schedule = _schedule_bytes("jazwares")
+    source = openpyxl.load_workbook(BytesIO(schedule), data_only=False)
+    source_ws = source[source.sheetnames[0]]
+    source_ws["AS20"] = 300028000000
+    source_ws["AS20"].number_format = "yyyy/m/d;@"
+    stream = BytesIO()
+    source.save(stream)
+    source.close()
+
+    output, _file_name, _preview = service.export_huakang_c_customer_schedule(
+        customer_code="jazwares",
+        factory_id="huakang-c",
+        received_date="2026-08-03",
+        po_files=[("jazwares.pdf", b"pdf")],
+        schedule_file_name="jazwares排期.xlsx",
+        schedule_content=stream.getvalue(),
+    )
+    workbook = openpyxl.load_workbook(BytesIO(output), data_only=False)
+    try:
+        worksheet = workbook[workbook.sheetnames[0]]
+        assert worksheet["AS22"].value == 300028000000
+        assert worksheet["AS22"].number_format == "General"
+    finally:
+        workbook.close()
 
 
 def test_jazwares_export_appends_small_pos_and_one_parent_total_with_template_styles(

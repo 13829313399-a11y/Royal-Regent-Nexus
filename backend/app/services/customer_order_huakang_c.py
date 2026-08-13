@@ -123,7 +123,7 @@ def _quantity_key(value: Any) -> str:
 
 def _schedule_quantity_column(profile_code: str) -> int:
     return {
-        "index": 10,
+        "index": 11,
         "jazwares": 11,
         "maxx": 11,
         "strottman": 11,
@@ -671,6 +671,11 @@ def export_huakang_c_customer_schedule(
         output_path = root / preview["output_file_name"]
         try:
             profile = huakang_schedule.PROFILES[spec.legacy_code]
+            safe_schedule_content = schedule_content
+            if Path(schedule_file_name).suffix.lower() in {".xlsx", ".xlsm"}:
+                safe_schedule_content, _date_repairs = (
+                    huakang_schedule.repair_invalid_xlsx_date_bytes(schedule_content)
+                )
 
             def row_values(entry: tuple[dict[str, Any], dict[str, Any]], row_no: int) -> dict[int, Any]:
                 order, line = entry
@@ -702,7 +707,7 @@ def export_huakang_c_customer_schedule(
                     }
 
                 append_grouped_column_records_to_workbook(
-                    schedule_content,
+                    safe_schedule_content,
                     output_path,
                     groups,
                     filename=schedule_file_name,
@@ -727,7 +732,7 @@ def export_huakang_c_customer_schedule(
                 )
             else:
                 append_column_records_to_workbook(
-                    schedule_content,
+                    safe_schedule_content,
                     output_path,
                     prepared.entries,
                     filename=schedule_file_name,
@@ -747,9 +752,19 @@ def export_huakang_c_customer_schedule(
                         else None
                     ),
                     column_formats=(
-                        {4: "yyyy/m/d;@", 13: 'm"月"d"日"', 34: "yyyy/m/d;@"}
-                        if spec.code == "strottman"
-                        else None
+                        {
+                            1: "yyyy/m/d;@",
+                            41: "yyyy/m/d;@",
+                            42: '[$HK$-C04]#,##0.00;\\-[$HK$-C04]#,##0.00',
+                            43: '[$HK$-C04]#,##0.00;\\-[$HK$-C04]#,##0.00',
+                            44: "yyyy/m/d;@",
+                        }
+                        if spec.code == "index"
+                        else (
+                            {4: "yyyy/m/d;@", 13: 'm"月"d"日"', 34: "yyyy/m/d;@"}
+                            if spec.code == "strottman"
+                            else None
+                        )
                     ),
                 )
         except Exception as exc:

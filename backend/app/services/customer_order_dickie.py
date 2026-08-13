@@ -4,8 +4,10 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
+from functools import reduce
 from hashlib import sha256
 from io import BytesIO
+from math import gcd
 from typing import Any
 
 from app.services.carton_mark import configure_tesseract
@@ -56,6 +58,7 @@ MONTHS = {
 @dataclass
 class DickieProductLookup:
     product_name_zh: str = ""
+    customer_name: str = ""
     contact: str = ""
     packaging: str = ""
     order_type: str = "normal"
@@ -79,6 +82,7 @@ class DickieParsedOrder:
     contact: str = ""
     packaging: str = ""
     allocations: list[tuple[str, Decimal]] = field(default_factory=list)
+    attachment_allocations: list[DickieAttachmentAllocation] = field(default_factory=list)
     lineage: dict[str, str] = field(default_factory=dict)
 
 
@@ -221,6 +225,15 @@ def _extract_contact(text: str) -> str:
 
 
 def _extract_customer(text: str) -> tuple[str, str]:
+    customer_match = re.search(
+        r"for\s+customer\s+([A-Za-z][A-Za-z &.'()\-]{2,60}?)\s*[.\n]",
+        text,
+        re.IGNORECASE,
+    )
+    if customer_match:
+        customer = re.sub(r"\s+", " ", customer_match.group(1)).strip()
+        country = "德国" if "GERMANY" in customer.upper() else ""
+        return customer, country
     match = re.search(
         r"This\s+order\s+is\s+for\s+([A-Za-z][A-Za-z &.'()\-]{2,60}?)\s*[.\n]",
         text,
@@ -498,6 +511,7 @@ def _parse_dickie_ocr_pages(
         contact=contact,
         packaging=packaging,
         allocations=allocations,
+        attachment_allocations=attachment_allocations,
         lineage={
             "received_date": "PDF首页 · Date of creation",
             "po_no": "PDF首页/Attachment · Purchase Contract No.",
@@ -513,7 +527,7 @@ def _parse_dickie_ocr_pages(
             "amount_hkd": "系统计算 · 数量 × 单价HK",
             "packaging": "PDF首页 · Packing 下方包装方式",
             "line_q": "PDF · Delivery Date",
-            "customer_q": "旧插件规则 · Delivery Date 减 7 天",
+            "customer_q": "Dickie步骤 · Delivery Date 减 7 天，周末提前至工作日",
             "requested_ship_date": "PDF · Delivery Date",
         },
     )
@@ -593,6 +607,86 @@ def _product_key(value: Any) -> str:
     return re.sub(r"\s+", "", _clean_identifier(value)).upper()
 
 
+def _product_digit_key(value: Any) -> str:
+    return re.sub(r"\D", "", _product_key(value))
+
+
+def _product_keys_match(left: Any, right: Any) -> bool:
+    left_key = _product_key(left)
+    right_key = _product_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_digits = _product_digit_key(left_key)
+    right_digits = _product_digit_key(right_key)
+    if not left_digits or not right_digits:
+        return False
+    if left_digits == right_digits:
+        return True
+    shorter, longer = sorted((left_digits, right_digits), key=len)
+    return len(shorter) >= 9 and longer.startswith(shorter)
+
+
+def _lookup_product(
+    product_index: dict[str, DickieProductLookup],
+    product_no: str,
+) -> DickieProductLookup | None:
+    exact = product_index.get(_product_key(product_no))
+    if exact is not None:
+        return exact
+    matches = [
+        lookup
+        for indexed_product_no, lookup in product_index.items()
+        if _product_keys_match(indexed_product_no, product_no)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _format_mixed_contracts(
+    attachment_allocations: list[DickieAttachmentAllocation],
+    fallback: str,
+) -> str:
+    if len(attachment_allocations) <= 1:
+        return fallback
+    return "\n".join(
+        f"{allocation.master_contract} {_decimal_text(allocation.quantity)}pc"
+        for allocation in attachment_allocations
+        if allocation.master_contract
+    )
+
+
+def _mixed_product_name(
+    attachment_allocations: list[DickieAttachmentAllocation],
+    product_index: dict[str, DickieProductLookup],
+    fallback: str,
+) -> str:
+    if len(attachment_allocations) <= 1:
+        return fallback
+    integer_quantities = [
+        int(allocation.quantity)
+        for allocation in attachment_allocations
+        if allocation.quantity == allocation.quantity.to_integral_value()
+        and allocation.quantity > 0
+    ]
+    common_quantity = reduce(gcd, integer_quantities) if integer_quantities else 1
+    details: list[str] = []
+    for allocation in attachment_allocations:
+        lookup = _lookup_product(product_index, allocation.item_no)
+        product_name = lookup.product_name_zh if lookup else ""
+        formatted_item_no = format_dickie_product_no(allocation.item_no)
+        multiplier = (
+            int(allocation.quantity) // common_quantity
+            if allocation.quantity == allocation.quantity.to_integral_value()
+            else 1
+        )
+        detail = f"{multiplier}*{formatted_item_no}"
+        if product_name:
+            detail += product_name
+        details.append(detail)
+    return "+".join(details) or fallback
+
+
 def _packing_units(packing: str) -> Decimal | None:
     values = [Decimal(value) for value in re.findall(r"\d+", packing)]
     if not values:
@@ -661,6 +755,8 @@ class DickieSchedule(OoxmlSchedule):
                 record.order_type = order_type
                 if values.get("H"):
                     record.product_name_zh = _clean_text(values.get("H"))
+                if values.get("E"):
+                    record.customer_name = _clean_text(values.get("E"))
                 if values.get(contact_column):
                     record.contact = _clean_text(values.get(contact_column))
                 if values.get(packaging_column):
@@ -773,6 +869,7 @@ def _make_issue(
 def _preview_row(
     parsed: DickieParsedOrder,
     lookup: DickieProductLookup | None,
+    product_index: dict[str, DickieProductLookup],
     *,
     file_name: str,
     row_index: int,
@@ -788,11 +885,10 @@ def _preview_row(
     )
     unit_price = parsed.unit_price_hkd
     amount = quantity * unit_price if quantity is not None and unit_price is not None else None
-    inspection_date = (
-        (date.fromisoformat(parsed.ship_date) - timedelta(days=7)).isoformat()
-        if parsed.ship_date
-        else ""
-    )
+    inspection = date.fromisoformat(parsed.ship_date) - timedelta(days=7) if parsed.ship_date else None
+    while inspection is not None and inspection.weekday() >= 5:
+        inspection -= timedelta(days=1)
+    inspection_date = inspection.isoformat() if inspection is not None else ""
     issues: list[dict[str, Any]] = []
     required = {
         "reference_no": ("SC Reference", parsed.reference_no),
@@ -852,7 +948,12 @@ def _preview_row(
                 f"产品 {formatted_product_no or product_no} 未在当前 Dickie Item 表出现，将追加到活动区末尾",
             )
         )
-    if not parsed.customer_name:
+    customer_name = (
+        lookup.customer_name
+        if lookup and lookup.customer_name
+        else parsed.customer_name
+    )
+    if not customer_name:
         issues.append(
             _make_issue(
                 "blocked",
@@ -863,7 +964,15 @@ def _preview_row(
                 skip_label="客名/国家留空，稍后由跟客补充",
             )
         )
-    product_name_zh = lookup.product_name_zh if lookup else parsed.product_name_en
+    product_name_zh = (
+        lookup.product_name_zh
+        if lookup and lookup.product_name_zh
+        else _mixed_product_name(
+            parsed.attachment_allocations,
+            product_index,
+            parsed.product_name_en,
+        )
+    )
     contact = parsed.contact or (lookup.contact if lookup else "")
     packaging = parsed.packaging or (lookup.packaging if lookup else "")
     if not contact:
@@ -899,13 +1008,19 @@ def _preview_row(
             else ""
         )
     customer_country = " / ".join(
-        value for value in (parsed.customer_name, parsed.country) if value
+        value for value in (customer_name, parsed.country) if value
     )
     lineage = dict(parsed.lineage)
     lineage["product_name_zh"] = (
         f"当前 Dickie 排期 · 货号 {formatted_product_no}"
         if lookup and lookup.product_name_zh
+        else "PDF Attachment 子货号匹配当前排期的混装明细"
+        if len(parsed.attachment_allocations) > 1
         else "PDF产品英文名回退"
+    )
+    contract_no = _format_mixed_contracts(
+        parsed.attachment_allocations,
+        parsed.master_contract,
     )
     return {
         "id": row_id,
@@ -913,10 +1028,10 @@ def _preview_row(
         "status_label": {"valid": "有效", "warning": "警告", "blocked": "阻断"}[status],
         "received_date": parsed.source_date,
         "po_no": parsed.po_no,
-        "contract_no": parsed.master_contract,
+        "contract_no": contract_no,
         "reference_no": parsed.reference_no,
         "customer_country": customer_country,
-        "customer_name": parsed.customer_name,
+        "customer_name": customer_name,
         "country": parsed.country,
         "product_no": formatted_product_no,
         "product_name_zh": product_name_zh,
@@ -925,7 +1040,7 @@ def _preview_row(
         "units_per_carton": _decimal_text(packing_units),
         "packing": parsed.packing,
         "carton_count": _decimal_text(carton_count),
-        "standard": _country_standard(parsed.customer_name, parsed.country),
+        "standard": _country_standard(customer_name, parsed.country),
         "unit_price_hkd": _decimal_text(unit_price),
         "amount_hkd": _decimal_text(amount),
         "packaging": packaging,
@@ -942,6 +1057,15 @@ def _preview_row(
         "lineage": lineage,
         "issues": issues,
         "_allocations": parsed.allocations,
+        "_allocation_details": [
+            {
+                "item_no": allocation.item_no,
+                "master_contract": allocation.master_contract,
+                "po_no": allocation.po_no,
+                "quantity": allocation.quantity,
+            }
+            for allocation in parsed.attachment_allocations
+        ],
     }
 
 
@@ -1002,6 +1126,7 @@ def create_dickie_batch_preview(
                 _preview_row(
                     parsed,
                     lookup,
+                    product_index,
                     file_name=file_name,
                     row_index=row_index,
                 )
@@ -1017,7 +1142,7 @@ def create_dickie_batch_preview(
     po_hashes = [sha256(content).hexdigest() for _, content in po_files]
     warnings = [
         "Dickie 原始 PO 为扫描版 PDF，预览保留字段级来源；确认前需人工核对 OCR 识别结果。",
-        "输出更新接单表、正单评审表及 Iteam 表；同货号、同主合同的“已入系统”行按各子合同数量分别扣减。",
+        "输出更新接单表、正单评审表及 Iteam 表；混装按附件子货号、子合同和子数量逐条扣减对应“已入系统”行。",
         "下载文件保持原排期文件名和 2026 打开密码。"
         if encrypted
         else "上传文件未加密；下载文件将使用 2026 打开密码。",
@@ -1145,7 +1270,10 @@ def _item_values(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _contract_base(value: str) -> str:
     first_line = _clean_text(value).splitlines()[0] if value else ""
-    return re.sub(r"/\d+$", "", first_line).strip()
+    numeric_contract = re.search(r"(?<!\d)([35]\d{8})(?!\d)", first_line)
+    if numeric_contract:
+        return numeric_contract.group(1)
+    return re.sub(r"(?:/\d+|-\d+)(?:\s+\d+(?:\.\d+)?pc)?$", "", first_line).strip()
 
 
 def _deduct_allocations(
@@ -1155,24 +1283,41 @@ def _deduct_allocations(
     sheet_name = _item_sheet_for_row(row)
     product_no = _product_key(row["product_no"])
     rows = workbook.read_rows(sheet_name)
+    allocation_details = row.get("_allocation_details") or []
     allocations = row.get("_allocations") or []
-    if not allocations:
+    if allocation_details:
+        deductions = [
+            (
+                detail.get("item_no") or product_no,
+                detail.get("master_contract") or "",
+                _decimal(detail.get("quantity")),
+            )
+            for detail in allocation_details
+        ]
+    elif allocations:
+        deductions = [
+            (product_no, master_contract, _decimal(allocation_quantity))
+            for master_contract, allocation_quantity in allocations
+        ]
+    else:
         contract_lines = _clean_text(row.get("contract_no")).splitlines()
         if not contract_lines:
             # A confirmed missing contract can still be written for manual
             # review, but there is no safe system allocation to deduct.
             return
-        allocations = [(contract_lines[0], Decimal(row["quantity"]))]
-    for master_contract, allocation_quantity in allocations:
+        deductions = [
+            (product_no, contract_lines[0], _decimal(row.get("quantity")))
+        ]
+    for allocation_product_no, master_contract, allocation_quantity in deductions:
         master_base = _contract_base(master_contract)
-        if not master_base:
+        if not master_base or allocation_quantity is None:
             continue
         target_row = next(
             (
                 row_number
                 for row_number, values in rows.items()
                 if _clean_text(values.get("C")) == "已入系统"
-                and _product_key(values.get("F")) == product_no
+                and _product_keys_match(values.get("F"), allocation_product_no)
                 and _contract_base(values.get("B", "")) == master_base
             ),
             None,
@@ -1225,7 +1370,7 @@ def _order_values(row: dict[str, Any], insert_row: int) -> dict[str, dict[str, A
         "J": _formula_payload(f"VLOOKUP(D{insert_row},'{item_sheet}'!C:J,8,0)"),
         "K": _formula_payload(f"VLOOKUP(D{insert_row},'正单评审表'!D:S,16,0)"),
         "L": _formula_payload(f"I{insert_row}*K{insert_row}"),
-        "O": _formula_payload(f"VLOOKUP(D{insert_row},'正单评审表'!D:R,14,0)"),
+        "O": _formula_payload(f"VLOOKUP(D{insert_row},'正单评审表'!D:R,15,0)"),
     }
 
 
@@ -1237,6 +1382,8 @@ def _review_values(row: dict[str, Any], insert_row: int) -> dict[str, dict[str, 
     requested_range_end = "R" if is_dino else "O"
     requested_index = 16 if is_dino else 13
     unit_price = _decimal(row.get("unit_price_hkd"))
+    units_per_carton = _decimal(row.get("units_per_carton"))
+    carton_count = _decimal(row.get("carton_count"))
     return {
         "B": {"value": _excel_serial(row["received_date"])},
         "C": {"value": row["contract_no"], "inline": True},
@@ -1247,7 +1394,10 @@ def _review_values(row: dict[str, Any], insert_row: int) -> dict[str, dict[str, 
         "H": _formula_payload(f"VLOOKUP(D{insert_row},'{item_sheet}'!C:H,6,0)"),
         "I": _formula_payload(f"VLOOKUP(D{insert_row},'{item_sheet}'!C:I,7,0)"),
         "J": _formula_payload(f"VLOOKUP(D{insert_row},'{item_sheet}'!C:J,8,0)"),
-        "K": _formula_payload(f"I{insert_row}/J{insert_row}"),
+        "K": _formula_payload(
+            f"I{insert_row}/{_decimal_text(units_per_carton)}",
+            carton_count,
+        ),
         "Q": _formula_payload(
             f"VLOOKUP(D{insert_row},'{item_sheet}'!C:{ship_range_end},{ship_index},0)"
         ),
@@ -1302,7 +1452,10 @@ def export_dickie_batch_schedule(
     plain_schedule, _ = _decrypt_schedule(schedule_content)
     workbook = DickieSchedule(plain_schedule)
 
-    for row in reversed(preview["rows"]):
+    # Re-read the active/system boundary after every insertion. This keeps the
+    # uploaded PO order stable even when several mixed orders share one parent
+    # item, while each new row still stays immediately above its system rows.
+    for row in preview["rows"]:
         _write_item_row(workbook, row)
 
     for row in preview["rows"]:
