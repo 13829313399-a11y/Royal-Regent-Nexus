@@ -631,14 +631,15 @@ Several cards and dashboards in the module catalog remain planning, design or de
   complete six-type evaluation delivered to a consistent recipient set with every notice handled.
   Repository implementation is not field acceptance: production must still trigger and acknowledge
   all six alerts on the exact deployed revision. The current HTTP/development-mode production Pilot
-  enables text and registered read-only AI for approved users with Shared Guard; Provider fault,
-  business isolation, Worker recovery, multi-instance, kill-switch, backup/restore and isolated
-  image rollback evidence exist for revision `50a06ac`. Overall NIF-18 remains `NO-GO` because
-  TLS/HSTS, Secure Cookie, secret rotation, Artifact/ClamAV/OSS/KMS operations, Evidence reauth,
-  Controlled Apply DRAFT, full browser acceptance and cost-alert acknowledgement remain incomplete.
-  Latest `origin/main` is newer than that deployment and adds migration `20260813_0075`; production
-  must not be described as current-main until it is deployed and verified. The server root disk is
-  at 98% utilization, so another image build requires an approved capacity or cleanup action.
+  has the NIF Runtime, Shared Guard, Semantic/Knowledge, Artifact and Artifact workflows, controlled
+  Vision comparison, Feedback/Observability/metric export/operational alerts, Action Gateway and the
+  sole DRAFT Controlled Apply handler enabled under the user's accepted HTTP risk. ClamAV is healthy,
+  its clean/EICAR field probes pass, and the private Artifact volume is mounted only into API/Worker.
+  Artifact and Action routes use `build_pilot_guard()` like the other Shared-Guard routes so every
+  state-changing AI route shares the same multi-instance replay and budget protection. The runtime stage is
+  `action-field`, but overall NIF-18 remains `NO-GO`: TLS/HSTS, Secure Cookie, secret rotation,
+  encrypted private OSS/KMS backup and restore evidence, full browser acceptance, and the six alert
+  trigger/recipient acknowledgement evidence remain incomplete.
   Current alert-channel source verification on the `41187cd` baseline passed all 447 backend
   `test_ai_*.py` tests with 2 intentional skips, all 909 frontend tests with 6 skips, the exact AI
   Ruff scope, frontend typecheck, production build, shell syntax and diff check. These are repository
@@ -686,9 +687,10 @@ The smallest unresolved decisions that require product or operational confirmati
   enablement, multi-instance activation or Action authorization. A real PostgreSQL contention/load
   drill remains part of the later field gate because this workstation has no native Docker runtime.
 - ADR-008, ADR-009 and ADR-012 are approved engineering rollout baselines. NIF-12 through NIF-17
-  are implemented default-off, and the repository-side NIF-18 evidence pack is implemented while
-  production remains `NO-GO`. ADR-012 authorizes only the existing DRAFT Action Gateway engineering
-  baseline; it does not enable production, authorize a second write action or add legal sign-off.
+  remain default-off in repository examples, but their production runtime flags are explicitly enabled
+  under accepted HTTP risk; the repository-side NIF-18 evidence pack is implemented while formal
+  production readiness remains `NO-GO`. ADR-012 authorizes only the existing DRAFT Action Gateway;
+  it does not authorize a second write action, Publish/Rollback, or add legal sign-off.
   Do not treat user images as formal system facts or enable any file-to-Provider route in production:
   workbook, document and image consent remain separate and request-bound, `RESTRICTED` never leaves
   Nexus, and the private-volume/ClamAV/OSS/KMS/restore evidence above remains an NIF-18 field gate

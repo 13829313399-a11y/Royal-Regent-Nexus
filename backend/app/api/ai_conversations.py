@@ -24,11 +24,11 @@ from app.services.ai.conversation_service import (
     get_owned_conversation,
     list_conversations,
 )
-from app.services.ai.pilot_guard import AIPilotGuard, AIPilotGuardError
+from app.services.ai.pilot_guard import AIPilotGuardError, build_pilot_guard
 from app.services.auth import AuthContext, add_auth_audit, get_current_user
 
 router = APIRouter(prefix="/api/ai/conversations", tags=["ai-conversations"])
-conversation_pilot_guard = AIPilotGuard()
+conversation_pilot_guard = build_pilot_guard()
 
 DbSession = Annotated[Session, Depends(get_db)]
 CurrentUser = Annotated[AuthContext, Depends(get_current_user)]
