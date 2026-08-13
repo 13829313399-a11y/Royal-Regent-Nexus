@@ -27,6 +27,11 @@ class CartonMarkExtractionStatus(BaseModel):
     engine: str
     message: str = ""
     raw_text: str = ""
+    matched_page: int | None = Field(default=None, ge=1)
+    page_count: int | None = Field(default=None, ge=1)
+    match_confidence: float | None = Field(default=None, ge=0, le=1)
+    requires_review: bool = False
+    review_reason: str = ""
 
 
 class CartonMarkAutoCheckSummary(BaseModel):
@@ -58,3 +63,56 @@ class CartonMarkBatchCheckItem(BaseModel):
 class CartonMarkBatchCheckResponse(BaseModel):
     summary: CartonMarkAutoCheckSummary
     items: list[CartonMarkBatchCheckItem]
+
+
+class CartonMarkDocumentTextItem(BaseModel):
+    text: str
+    location: str
+    field_key: str = ""
+
+
+class CartonMarkDocumentComparisonItem(BaseModel):
+    status: str
+    expected: str = ""
+    actual: str = ""
+    expected_location: str = ""
+    actual_location: str = ""
+    note: str = ""
+
+
+class CartonMarkDocumentCheckSummary(BaseModel):
+    overall_status: str
+    pass_count: int
+    changed_count: int
+    missing_count: int
+    unexpected_count: int
+    review_count: int
+
+
+class CartonMarkDocumentCheckResponse(BaseModel):
+    excel_file_name: str
+    pdf_file_name: str
+    summary: CartonMarkDocumentCheckSummary
+    excel_items: list[CartonMarkDocumentTextItem]
+    pdf_items: list[CartonMarkDocumentTextItem]
+    comparisons: list[CartonMarkDocumentComparisonItem]
+    extraction: list[CartonMarkExtractionStatus]
+
+
+class CartonMarkTemplateOut(BaseModel):
+    id: str
+    factory_id: str
+    customer_name: str
+    po: str
+    item: str
+    contract_number: str
+    version: int = Field(ge=1)
+    check_status: str
+    check_result: CartonMarkDocumentCheckResponse
+    excel_file_name: str
+    excel_file_size: int = Field(gt=0)
+    pdf_file_name: str
+    pdf_file_size: int = Field(gt=0)
+    created_at: str
+    created_by_name: str
+    qc_ready: bool

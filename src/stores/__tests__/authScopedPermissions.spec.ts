@@ -202,6 +202,7 @@ describe('authStore scoped permission decisions', () => {
       expect(store.can('molding_sample:production_read', 'huaxing', 'production')).toBe(true)
       expect(store.can('molding_sample:production_read', 'huadeng', 'production')).toBe(true)
       expect(store.can('carton_mark:read', 'huaxing', 'qa')).toBe(true)
+      expect(store.can('carton_mark:read', 'huaxing', 'qc')).toBe(false)
       expect(store.can('carton_mark:read', 'huadeng', 'qa')).toBe(false)
       expect(store.can('molding_sample:production_fillback', 'huaxing', 'production')).toBe(false)
       expect(store.can('molding_sample:production_fillback', 'huadeng', 'production')).toBe(false)

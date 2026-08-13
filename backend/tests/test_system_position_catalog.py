@@ -41,7 +41,7 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v17"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v18"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
@@ -307,10 +307,36 @@ def test_fixed_system_position_definition_contract():
     assert "qc_inspection:customer_manage" in qc_supervisor.permission_codes
     assert "qc_inspection:audit_read" in qc_manager.permission_codes
     assert "qc_inspection:factory_summary" in qc_manager.permission_codes
+    assert {
+        "carton_mark:read",
+        "carton_mark:photo_upload",
+        "carton_mark:review",
+    } <= set(qc_inspector.permission_codes)
+    qa_clerk = positions.get_system_position("position_qa_clerk")
+    assert "carton_mark:read" in qa_clerk.permission_codes
+    assert "carton_mark:photo_upload" in qa_clerk.permission_codes
+    assert "carton_mark:review" not in qa_clerk.permission_codes
     assert all(
         "qc_inspection:group_summary" not in definition.permission_codes
         for definition in (qc_inspector, qc_supervisor, qc_manager)
     )
+    carton_scope_policy = importlib.import_module("app.services.permission_scope_policy")
+    assert carton_scope_policy.permission_scope_policy("carton_mark:template_upload").departments == (
+        "pmc-warehouse",
+        "warehouse",
+        "carton",
+    )
+    assert carton_scope_policy.permission_scope_policy("carton_mark:review").departments == (
+        "qa",
+        "qc",
+    )
+    auth_service = importlib.import_module("app.services.auth")
+    assert {
+        "carton_mark:read",
+        "carton_mark:template_upload",
+        "carton_mark:photo_upload",
+        "carton_mark:review",
+    } <= auth_service.POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES
 
     hashes = [
         positions.system_position_definition_hash(definition)

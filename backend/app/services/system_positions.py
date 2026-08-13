@@ -19,7 +19,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v17"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v18"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -83,6 +83,9 @@ CARTON_OPERATION_PERMISSION_CODES = tuple(
 )
 QC_INSPECTION_OPERATOR_PERMISSION_CODES = (
     PRODUCTION_TASK_READ_PERMISSION_CODE,
+    "carton_mark:read",
+    "carton_mark:photo_upload",
+    "carton_mark:review",
     "qc_inspection:read",
     "qc_inspection:schedule_write",
     "qc_inspection:order_write",
@@ -671,7 +674,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="carton",
         department_name="纸箱部",
         sort_order=820,
-        description="纸箱箱唛 PDF 模板维护",
+        description="纸箱箱唛 Excel、打印 PDF 与文字核对维护",
         permission_codes=CARTON_WAREHOUSE_PERMISSION_CODES,
     ),
     SystemPositionDefinition(

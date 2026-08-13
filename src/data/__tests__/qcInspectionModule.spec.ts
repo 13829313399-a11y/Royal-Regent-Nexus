@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   departmentModuleRegistry,
   moduleDepartmentIds,
+  qcCartonMarkVerificationModule,
   qcInspectionOperationsModule,
 } from '@/data/enterpriseMock'
 import { getPositionSuggestions } from '@/data/positionCatalog'
@@ -13,6 +14,13 @@ describe('QC inspection module registry', () => {
     expect(departmentModuleRegistry.qa.modules).toContain(qcInspectionOperationsModule)
     expect(qcInspectionOperationsModule.route).toBe('/modules/qc/inspection-operations')
     expect(qcInspectionOperationsModule.owner).toContain('QC 部')
+  })
+
+  it('exposes carton-mark photo verification from the canonical QC department center', () => {
+    expect(departmentModuleRegistry.qc.modules).toContain(qcCartonMarkVerificationModule)
+    expect(qcCartonMarkVerificationModule.route).toBe('/modules/qc/carton-mark-check')
+    expect(qcCartonMarkVerificationModule.owner).toContain('QC')
+    expect(departmentModuleRegistry.qa.modules).not.toContain(qcCartonMarkVerificationModule)
   })
 
   it('offers QC-specific position suggestions', () => {

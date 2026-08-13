@@ -25,6 +25,7 @@ from app.models import (
     ai_observability,  # noqa: F401
     ai_task,  # noqa: F401
     auth,  # noqa: F401
+    carton_mark,  # noqa: F401
     carton_procurement,  # noqa: F401
     customer_order,  # noqa: F401
     injection_scheduling,  # noqa: F401
