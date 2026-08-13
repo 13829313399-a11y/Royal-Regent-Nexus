@@ -10,6 +10,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 import msoffcrypto
 import openpyxl
+import pytest
 
 
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
@@ -137,6 +138,35 @@ def build_wmc_po(
     sheet["A22"] = "Shipping Carton Packing"
     sheet["F22"] = 5
     sheet["A48"] = "PACKAGING REF: 67771-05-26-WMC"
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def build_tottus_po() -> bytes:
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet["Q7"] = "TOTTUS -"
+    sheet["M8"] = "Contract No.:"
+    sheet["O8"] = 52497
+    sheet["P8"] = 7
+    sheet["Q8"] = "PERU"
+    sheet["A10"] = "Final Inspection Date:"
+    sheet["F10"] = "TBA"
+    sheet["A12"] = "Date of Loading:"
+    sheet["F12"] = date(2026, 6, 12)
+    sheet["A16"] = "Our Item# :"
+    sheet["F16"] = 45803
+    sheet["A18"] = "Goods:"
+    sheet["C18"] = "BELT BLASTER"
+    sheet["A20"] = "Quantity:"
+    sheet["F20"] = 2800
+    sheet["A26"] = "Shipping Carton Packing"
+    sheet["F26"] = 4
+    sheet["B40"] = "Use 45803-04-26-EN packaging"
+    sheet["B44"] = "European Standard & Non-Phthalates materials is required"
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -655,6 +685,42 @@ def test_item_export_routes_water_product_and_deducts_preparation_stock():
     assert item_rows[5]["H"] == "2172"
     assert item_rows[5]["L"] == "备料单"
     assert workbook.read_cell_formula("水枪ITEM表", 5, "H") == "2352-180"
+
+
+def test_ordinary_xlsx_contract_uses_labels_instead_of_aafes_or_wmc_gate():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+
+    parsed = service.parse_po(
+        "TOTTUS SM 52497 - 45803 WH 7.xlsx",
+        build_tottus_po(),
+    )[0]
+
+    assert parsed.input_template == service.STANDARD_TEMPLATE
+    assert parsed.values == {
+        "contract_no": "52497",
+        "inspection_date": "",
+        "requested_ship_date": "2026-06-12",
+        "product_no": "45803",
+        "product_name_en": "BELT BLASTER",
+        "quantity": 2800,
+        "units_per_carton": 4,
+        "po_no": "",
+        "customer_name": "TOTTUS -PERU",
+        "country": "秘鲁",
+        "standard": "欧洲标准",
+        "packaging": "45803-04-26-EN",
+        "inspection_raw": "TBA",
+    }
+    assert parsed.lineage["contract_no"] == "Sheet1!O8"
+    assert parsed.lineage["customer_name"] == "Sheet1!Q7 / Sheet1!Q8"
+    assert parsed.lineage["standard"] == "合同条款 · European Standard"
+
+
+def test_wmu_xlsx_contract_remains_out_of_scope():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+
+    with pytest.raises(service.CustomerOrderWorkbookError, match="WMU/印尼合同"):
+        service.parse_po("WMU Indonesia schedule.xlsx", build_tottus_po())
 
 
 def test_po_number_is_optional_for_standard_customer_but_required_for_walmart():

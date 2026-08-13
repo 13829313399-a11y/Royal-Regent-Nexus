@@ -7,10 +7,13 @@ from pathlib import Path
 
 import pdfplumber
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.text import WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt
+from docx.shared import Cm, Emu, Pt
+from PIL import ImageStat
+from pypdf import PdfReader
 
 from app.services import pdf_to_excel as pdf_extraction
 
@@ -34,16 +37,26 @@ class PdfToWordResult:
     content: bytes
     page_count: int
     table_count: int
+    image_count: int
     text_page_count: int
     ocr_page_count: int
     output_file_name: str
 
 
 @dataclass(frozen=True)
+class _PageImage:
+    content: bytes
+    name: str
+    page_number: int
+    display_width: float
+    page_width: float
+
+
+@dataclass(frozen=True)
 class _PageBlock:
     top: float
     kind: str
-    value: str | list[list[str]]
+    value: str | list[list[str]] | _PageImage
 
 
 def _clean_text(value: object) -> str:
@@ -145,6 +158,92 @@ def _extract_native_blocks(page) -> tuple[list[_PageBlock], int, str]:
     return blocks, len(tables), native_text
 
 
+def _image_is_meaningful(image, *, display_width: float, display_height: float) -> bool:
+    if display_width < 8 or display_height < 8 or display_width * display_height < 250:
+        return False
+
+    try:
+        pil_image = image.image
+        if pil_image.width < 16 or pil_image.height < 16:
+            return False
+        preview = pil_image.convert("RGB")
+        preview.thumbnail((128, 128))
+        return max(ImageStat.Stat(preview).stddev) >= 1
+    except Exception:
+        return False
+
+
+def _image_as_png(image) -> bytes:
+    pil_image = image.image
+    if pil_image.mode not in {"RGB", "RGBA", "L", "LA"}:
+        pil_image = pil_image.convert("RGBA" if "transparency" in pil_image.info else "RGB")
+    output = BytesIO()
+    pil_image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _extract_image_blocks(page, reader_page, *, page_number: int) -> list[_PageBlock]:
+    if reader_page is None:
+        return []
+
+    try:
+        images_by_name = {Path(image.name).stem: image for image in reader_page.images}
+    except Exception:
+        return []
+
+    # A single PDF image object can be painted hundreds of times as a tiny rule or
+    # texture. Keep only its largest appearance on the page so those drawing aids
+    # do not become hundreds of separate Word pictures.
+    largest_appearances: dict[str, tuple[float, dict]] = {}
+    for raw_image in getattr(page, "images", []) or []:
+        name = str(raw_image.get("name", ""))
+        try:
+            display_width = float(raw_image.get("width", 0))
+            display_height = float(raw_image.get("height", 0))
+        except (TypeError, ValueError):
+            continue
+        area = display_width * display_height
+        previous = largest_appearances.get(name)
+        if previous is None or area > previous[0]:
+            largest_appearances[name] = (area, raw_image)
+
+    blocks: list[_PageBlock] = []
+    for name, (_area, raw_image) in largest_appearances.items():
+        image = images_by_name.get(name)
+        if image is None:
+            continue
+        try:
+            display_width = float(raw_image.get("width", 0))
+            display_height = float(raw_image.get("height", 0))
+            top = float(raw_image.get("top", 0))
+        except (TypeError, ValueError):
+            continue
+        if not _image_is_meaningful(
+            image,
+            display_width=display_width,
+            display_height=display_height,
+        ):
+            continue
+        try:
+            content = _image_as_png(image)
+        except Exception:
+            continue
+        blocks.append(
+            _PageBlock(
+                top=top,
+                kind="image",
+                value=_PageImage(
+                    content=content,
+                    name=name,
+                    page_number=page_number,
+                    display_width=display_width,
+                    page_width=float(getattr(page, "width", 0) or 0),
+                ),
+            ),
+        )
+    return blocks
+
+
 def _set_cell_shading(cell, fill: str) -> None:
     properties = cell._tc.get_or_add_tcPr()
     shading = OxmlElement("w:shd")
@@ -198,6 +297,24 @@ def _append_table(document: Document, rows: list[list[str]]) -> None:
     document.add_paragraph().paragraph_format.space_after = Pt(1)
 
 
+def _append_image(document: Document, image: _PageImage) -> None:
+    section = document.sections[-1]
+    available_width = int(section.page_width - section.left_margin - section.right_margin)
+    if image.page_width > 0:
+        width_ratio = min(max(image.display_width / image.page_width, 0.12), 1.0)
+    else:
+        width_ratio = 1.0
+    target_width = Emu(max(int(available_width * width_ratio), int(Cm(3))))
+
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_after = Pt(4)
+    run = paragraph.add_run()
+    shape = run.add_picture(BytesIO(image.content), width=target_width)
+    shape._inline.docPr.set("title", image.name)
+    shape._inline.docPr.set("descr", f"PDF 第 {image.page_number} 页图片")
+
+
 def _output_file_name(source_file_name: str) -> str:
     source_name = Path(source_file_name or "PDF文件.pdf").name
     stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(source_name).stem).strip(" .") or "PDF文件"
@@ -214,9 +331,15 @@ def convert_pdf_to_word(pdf_bytes: bytes, source_file_name: str) -> PdfToWordRes
     _configure_document(document)
     document.core_properties.title = Path(source_file_name or "PDF文件.pdf").name
     table_count = 0
+    image_count = 0
     text_page_count = 0
     ocr_page_count = 0
     converted_page_count = 0
+
+    try:
+        image_pdf = PdfReader(BytesIO(pdf_bytes))
+    except Exception:
+        image_pdf = None
 
     try:
         page_count = len(pdf.pages)
@@ -230,6 +353,7 @@ def convert_pdf_to_word(pdf_bytes: bytes, source_file_name: str) -> PdfToWordRes
             if pdf_extraction._native_text_is_unreliable(native_text):
                 blocks = []
                 page_table_count = 0
+            used_native_content = bool(blocks)
 
             used_ocr = False
             if not blocks:
@@ -241,6 +365,20 @@ def convert_pdf_to_word(pdf_bytes: bytes, source_file_name: str) -> PdfToWordRes
                 ]
                 used_ocr = bool(blocks)
 
+            reader_page = None
+            if image_pdf is not None:
+                try:
+                    reader_page = image_pdf.pages[page_index]
+                except Exception:
+                    reader_page = None
+            image_blocks = _extract_image_blocks(
+                page,
+                reader_page,
+                page_number=page_index + 1,
+            )
+            blocks.extend(image_blocks)
+            blocks.sort(key=lambda block: block.top)
+
             if not blocks:
                 continue
             if converted_page_count:
@@ -249,14 +387,17 @@ def convert_pdf_to_word(pdf_bytes: bytes, source_file_name: str) -> PdfToWordRes
             for block in blocks:
                 if block.kind == "table":
                     _append_table(document, block.value)  # type: ignore[arg-type]
+                elif block.kind == "image":
+                    _append_image(document, block.value)  # type: ignore[arg-type]
                 else:
                     _append_paragraph(document, str(block.value))
 
             converted_page_count += 1
             table_count += page_table_count
+            image_count += len(image_blocks)
             if used_ocr:
                 ocr_page_count += 1
-            else:
+            elif used_native_content:
                 text_page_count += 1
     finally:
         pdf.close()
@@ -272,6 +413,7 @@ def convert_pdf_to_word(pdf_bytes: bytes, source_file_name: str) -> PdfToWordRes
         content=output.getvalue(),
         page_count=page_count,
         table_count=table_count,
+        image_count=image_count,
         text_page_count=text_page_count,
         ocr_page_count=ocr_page_count,
         output_file_name=_output_file_name(source_file_name),

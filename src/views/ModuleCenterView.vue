@@ -90,7 +90,7 @@ const visibleModules = computed(() => {
     })
 })
 
-const featuredModule = computed(() => visibleModules.value[0])
+const featuredModule = computed(() => visibleModules.value[0] ?? null)
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
 
 watch(currentDepartmentId, (departmentId) => {
@@ -125,7 +125,7 @@ watch(currentDepartmentId, (departmentId) => {
             v-for="module in visibleModules"
             :key="module.id"
             :module="module"
-            :active="featuredModule.id === module.id"
+            :active="featuredModule?.id === module.id"
           />
         </div>
 
@@ -145,7 +145,7 @@ watch(currentDepartmentId, (departmentId) => {
 
       <aside class="space-y-6">
         <SectionPanel title="模块聚焦" subtitle="这里先展示当前部门最优先建设的模块，点击卡片可进入独立详情页">
-          <div class="space-y-5">
+          <div v-if="featuredModule" class="space-y-5">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <h3 class="text-lg font-semibold text-slate-950">{{ featuredModule.title }}</h3>
@@ -210,6 +210,9 @@ watch(currentDepartmentId, (departmentId) => {
               </a>
             </div>
           </div>
+          <p v-else class="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+            当前厂区没有可显示的模块。
+          </p>
         </SectionPanel>
 
         <PermissionMatrix :rows="departmentEntry.permissionRows" />

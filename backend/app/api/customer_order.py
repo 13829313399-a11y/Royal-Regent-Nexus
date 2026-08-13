@@ -215,10 +215,27 @@ def _validate_upload(
     supported: tuple[str, ...] | None = None,
 ) -> None:
     file_name = file.filename or ""
+    if _is_macos_metadata_upload(file_name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{kind} 文件“{file_name}”是 Mac 解压产生的隐藏资源文件，不是真实文件；"
+                "请选择同名且不带“._”前缀、并且不在 __MACOSX 目录中的文件"
+            ),
+        )
     resolved_supported = supported or ((".xls", ".xlsx") if kind == "PO" else (".xlsx",))
     if not file_name.lower().endswith(resolved_supported):
         suffixes = " / ".join(resolved_supported)
         raise HTTPException(status_code=400, detail=f"{kind} 文件只支持 {suffixes}")
+
+
+def _is_macos_metadata_upload(file_name: str) -> bool:
+    normalized = file_name.replace("\\", "/")
+    parts = [part.lower() for part in normalized.split("/") if part]
+    if not parts:
+        return False
+    base_name = parts[-1]
+    return "__macosx" in parts or base_name.startswith("._") or base_name == ".ds_store"
 
 
 def _parse_skipped_issue_keys(raw: str) -> set[str]:
@@ -597,14 +614,28 @@ async def _read_po_uploads(
 ) -> list[tuple[str, bytes]]:
     if not po_files:
         raise HTTPException(status_code=400, detail="请至少上传一份 PO 文件")
-    if len(po_files) > MAX_BATCH_PO_FILES:
+    usable_po_files = [
+        po_file
+        for po_file in po_files
+        if not _is_macos_metadata_upload(po_file.filename or "")
+    ]
+    if not usable_po_files:
+        first_name = po_files[0].filename or "未命名文件"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"PO 文件“{first_name}”是 Mac 解压产生的隐藏资源文件，不是真实 PO；"
+                "请选择同名且不带“._”前缀、并且不在 __MACOSX 目录中的文件"
+            ),
+        )
+    if len(usable_po_files) > MAX_BATCH_PO_FILES:
         raise HTTPException(
             status_code=400,
             detail=f"单批最多上传 {MAX_BATCH_PO_FILES} 份 PO 文件",
         )
     uploaded: list[tuple[str, bytes]] = []
     total_size = 0
-    for po_file in po_files:
+    for po_file in usable_po_files:
         _validate_upload(po_file, kind="PO", supported=supported)
         content = await po_file.read()
         if not content:

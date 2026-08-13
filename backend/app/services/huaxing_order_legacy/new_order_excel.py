@@ -33,12 +33,7 @@ def _normalise(value: Any) -> str:
 def _copy_style(source, target) -> None:
     if not source.has_style:
         return
-    target.font = copy(source.font)
-    target.fill = copy(source.fill)
-    target.border = copy(source.border)
-    target.alignment = copy(source.alignment)
-    target.number_format = source.number_format
-    target.protection = copy(source.protection)
+    target._style = copy(source._style)
 
 
 _SHEET_REFERENCE = re.compile(
@@ -502,7 +497,10 @@ def _find_append_row(
                 continue
             if any(
                 value not in (None, "")
-                and not (isinstance(value, str) and value.startswith("="))
+                and not (
+                    isinstance(value, str)
+                    and (value.startswith("=") or not value.strip())
+                )
                 for value in values
             ):
                 detail_rows.append(row_no)
@@ -524,6 +522,61 @@ def _find_append_row(
         if any(ws.cell(row_no, col_no).value not in (None, "") for col_no in range(1, max_col + 1))
     ]
     return (populated[-1] + 1) if populated else header_row + 1
+
+
+def _first_total_section_rows(
+    ws,
+    header_row: int,
+    max_col: int,
+    *,
+    detail_columns: Sequence[int] = (),
+) -> tuple[int, int, int]:
+    """Return append row, first-total row, and reusable blank-row count.
+
+    Some customer schedules contain several independent order sections on the
+    same worksheet.  New orders belong only to the first section: reuse the
+    reserved blank rows after its last real order and insert only the shortfall
+    immediately before that section's first total row.
+    """
+    total_row = next(
+        (
+            row_no
+            for row_no in range(header_row + 1, (ws.max_row or header_row) + 1)
+            if any(
+                isinstance(ws.cell(row_no, col_no).value, str)
+                and not ws.cell(row_no, col_no).value.startswith("=")
+                and _normalise(ws.cell(row_no, col_no).value) in _TOTAL_MARKERS
+                for col_no in range(1, max_col + 1)
+            )
+        ),
+        None,
+    )
+    if total_row is None:
+        raise ValueError(f"{ws.title} 未找到首段合计行，无法安全确定新单写入区域")
+
+    inspected_columns = tuple(detail_columns) or tuple(range(1, max_col + 1))
+    last_detail_row = next(
+        (
+            row_no
+            for row_no in range(total_row - 1, header_row, -1)
+            if any(
+                ws.cell(row_no, col_no).value not in (None, "")
+                and not (
+                    isinstance(ws.cell(row_no, col_no).value, str)
+                    and ws.cell(row_no, col_no).value.startswith("=")
+                )
+                for col_no in inspected_columns
+            )
+        ),
+        header_row,
+    )
+    append_row = last_detail_row + 1
+    reusable_rows = 0
+    for row_no in range(append_row, total_row):
+        if any(ws.cell(row_no, col_no).value not in (None, "") for col_no in range(1, max_col + 1)):
+            break
+        reusable_rows += 1
+    return append_row, total_row, reusable_rows
 
 
 def _representative_data_row(
@@ -573,6 +626,37 @@ def _nearest_detail_row(
         if any(value not in (None, "") and not (isinstance(value, str) and value.startswith("=")) for value in values):
             return row_no
     return max(header_row, append_row - 1)
+
+
+def _nearest_group_title_row(
+    ws,
+    header_row: int,
+    detail_style_row: int,
+    max_col: int,
+) -> tuple[int, list[CellRange]]:
+    """Find the nearest horizontally merged item/title row above a detail row."""
+    for row_no in range(detail_style_row - 1, header_row, -1):
+        row_merges = [
+            CellRange(str(merged))
+            for merged in ws.merged_cells.ranges
+            if merged.min_row == row_no
+            and merged.max_row == row_no
+            and merged.max_col > merged.min_col
+            and merged.max_col <= max_col
+        ]
+        if not row_merges:
+            continue
+        values = [ws.cell(row_no, col_no).value for col_no in range(1, max_col + 1)]
+        text_values = [
+            value
+            for value in values
+            if isinstance(value, str) and not value.startswith("=")
+        ]
+        if any(_normalise(value) in _TOTAL_MARKERS for value in text_values):
+            continue
+        if any(value not in (None, "") for value in values):
+            return row_no, row_merges
+    raise ValueError("当前排期没有可复用的货号/产品标题行格式")
 
 
 def _shift_cell_range(
@@ -761,6 +845,9 @@ def append_records_to_workbook(
     field_formats: Mapping[str, str] | None = None,
     formula_fallback_fields: Collection[str] = (),
     new_row_font_color: str = "",
+    group_key_factory: Callable[[Mapping[str, Any]], str] | None = None,
+    group_row_values_factory: Callable[[Mapping[str, Any], int], Mapping[int, Any]] | None = None,
+    first_total_section: bool = False,
 ) -> dict[str, Any]:
     """Copy the complete workbook and insert new detail rows before its total row.
 
@@ -788,14 +875,47 @@ def append_records_to_workbook(
             for col_no, field in column_map.items()
             if field in _DETAIL_FIELDS
         ) or tuple(column_map)
-        append_row = _find_append_row(
-            target,
-            header_row,
-            max_col,
-            detail_columns=detail_columns,
-        )
+        section_total_row: int | None = None
+        reusable_blank_rows = 0
+        if first_total_section:
+            append_row, section_total_row, reusable_blank_rows = _first_total_section_rows(
+                target,
+                header_row,
+                max_col,
+                detail_columns=detail_columns,
+            )
+        else:
+            append_row = _find_append_row(
+                target,
+                header_row,
+                max_col,
+                detail_columns=detail_columns,
+            )
         style_row = _representative_data_row(target, header_row, append_row, max_col, column_map)
         inheritance = inherit_product_names(target, header_row, column_map, rows)
+        grouped_layout: list[tuple[str, dict[str, Any]]] = []
+        group_style_row: int | None = None
+        group_merges: list[CellRange] = []
+        group_count = 0
+        if group_key_factory or group_row_values_factory:
+            if not group_key_factory or not group_row_values_factory:
+                raise ValueError("分组标题行需要同时提供分组键和标题行写入规则")
+            group_style_row, group_merges = _nearest_group_title_row(
+                target,
+                header_row,
+                style_row,
+                max_col,
+            )
+            grouped_records: dict[str, list[dict[str, Any]]] = {}
+            for index, record in enumerate(rows):
+                key = str(group_key_factory(record) or "").strip() or f"__row_{index}"
+                grouped_records.setdefault(key, []).append(record)
+            for grouped_rows in grouped_records.values():
+                grouped_layout.append(("group", grouped_rows[0]))
+                grouped_layout.extend(("detail", record) for record in grouped_rows)
+            group_count = len(grouped_records)
+        else:
+            grouped_layout = [("detail", record) for record in rows]
 
         formulas = []
         for sheet in workbook.worksheets:
@@ -803,36 +923,47 @@ def append_records_to_workbook(
                 if isinstance(cell.value, str) and cell.value.startswith("="):
                     formulas.append((sheet, cell.row, cell.column, cell.value))
 
-        if rows:
-            amount = len(rows)
+        if grouped_layout:
+            amount = len(grouped_layout)
+            insert_row = section_total_row if section_total_row is not None else append_row
+            insert_amount = (
+                max(0, amount - reusable_blank_rows)
+                if first_total_section
+                else amount
+            )
             moved_merges = [
                 CellRange(str(value))
                 for value in target.merged_cells.ranges
-                if value.max_row >= append_row
+                if value.max_row >= insert_row
             ]
-            for merged in moved_merges:
-                target.unmerge_cells(str(merged))
-            target.insert_rows(append_row, amount)
-            _shift_target_sheet_structures(target, append_row, amount, moved_merges)
+            if insert_amount:
+                for merged in moved_merges:
+                    target.unmerge_cells(str(merged))
+                target.insert_rows(insert_row, insert_amount)
+                _shift_target_sheet_structures(target, insert_row, insert_amount, moved_merges)
 
-            for sheet, old_row, column, formula in formulas:
-                destination_row = old_row + amount if sheet is target and old_row >= append_row else old_row
-                sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
-                    formula,
-                    formula_sheet=sheet.title,
-                    target_sheet=target.title,
-                    formula_row=old_row,
-                    insert_row=append_row,
-                    amount=amount,
-                )
+                for sheet, old_row, column, formula in formulas:
+                    destination_row = old_row + insert_amount if sheet is target and old_row >= insert_row else old_row
+                    sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
+                        formula,
+                        formula_sheet=sheet.title,
+                        target_sheet=target.title,
+                        formula_row=old_row,
+                        insert_row=insert_row,
+                        amount=insert_amount,
+                    )
 
-            for offset, record in enumerate(rows):
+            pending_group_rows: list[int] = []
+            for offset, (row_kind, record) in enumerate(grouped_layout):
                 row_no = append_row + offset
-                source_dimension = target.row_dimensions[style_row]
+                source_row = group_style_row if row_kind == "group" else style_row
+                if source_row is None:
+                    raise ValueError("当前排期没有可复用的分组标题行")
+                source_dimension = target.row_dimensions[source_row]
                 if source_dimension.height:
                     target.row_dimensions[row_no].height = source_dimension.height
                 for col_no in range(1, max_col + 1):
-                    source_cell = target.cell(style_row, col_no)
+                    source_cell = target.cell(source_row, col_no)
                     destination = target.cell(row_no, col_no)
                     _copy_style(source_cell, destination)
                     if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
@@ -847,6 +978,14 @@ def append_records_to_workbook(
                         font = copy(destination.font)
                         font.color = new_row_font_color
                         destination.font = font
+                if row_kind == "group":
+                    values = group_row_values_factory(record, row_no)
+                    if not isinstance(values, Mapping):
+                        raise ValueError("分组标题行写入规则必须返回列号到值的映射")
+                    for col_no, value in values.items():
+                        target.cell(row_no, int(col_no)).value = _safe_value(value)
+                    pending_group_rows.append(row_no)
+                    continue
                 for col_no, field in column_map.items():
                     cell = target.cell(row_no, col_no)
                     # A template formula is authoritative for calculated fields.
@@ -871,14 +1010,28 @@ def append_records_to_workbook(
                     if field_formats and field in field_formats:
                         cell.number_format = field_formats[field]
 
-            first_total_row = append_row + amount
+            for row_no in pending_group_rows:
+                for merged in group_merges:
+                    target.merge_cells(
+                        start_row=row_no,
+                        end_row=row_no,
+                        start_column=merged.min_col,
+                        end_column=merged.max_col,
+                    )
+
+            first_total_row = (
+                section_total_row + insert_amount
+                if section_total_row is not None
+                else append_row + amount
+            )
+            last_new_row = append_row + amount - 1
             for row_no in range(first_total_row, (target.max_row or first_total_row) + 1):
                 for col_no in range(1, max_col + 1):
                     cell = target.cell(row_no, col_no)
                     if isinstance(cell.value, str) and cell.value.startswith("="):
                         cell.value = _extend_subtotal_to_previous_row(
                             cell.value,
-                            first_total_row - 1,
+                            last_new_row,
                         )
 
         if hasattr(output_path, "write"):
@@ -894,8 +1047,13 @@ def append_records_to_workbook(
             "template_sheet": target.title,
             "header_row": header_row,
             "style_row": style_row,
+            "group_style_row": group_style_row,
             "insert_row": append_row,
+            "section_total_row": section_total_row,
+            "reused_blank_rows": min(len(grouped_layout), reusable_blank_rows),
             "rows": len(rows),
+            "group_rows": group_count,
+            "inserted_rows": len(grouped_layout),
             "mapped_columns": {str(col): field for col, field in column_map.items()},
             "inheritance": inheritance,
             "mode": "full_workbook_append",
@@ -915,14 +1073,18 @@ def append_column_records_to_workbook(
     max_col: int,
     detail_columns: Sequence[int] = (),
     row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
+    group_key_factory: Callable[[Any], str] | None = None,
+    group_row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
+    column_formats: Mapping[int, str] | None = None,
 ) -> dict[str, Any]:
     """Copy the complete workbook and append fixed-column records to one sheet.
 
     Every inserted row inherits the nearest preceding real detail row; total,
     subtotal, merged group-title, and blank separator rows are skipped.
     Values returned by ``row_values_factory`` may include row-relative formulas.
-    Empty values are intentionally skipped so copied template formulas and blanks
-    remain authoritative.
+    Optional grouping inserts one copied item/title row before the matching detail
+    rows. Empty values are intentionally skipped so copied template formulas and
+    blanks remain authoritative.
     """
     workbook = load_complete_workbook_compatible(template, filename=filename)
     rows = list(records)
@@ -945,6 +1107,29 @@ def append_column_records_to_workbook(
             append_row,
             max_col,
         )
+        grouped_layout: list[tuple[str, Any]] = []
+        group_style_row: int | None = None
+        group_merges: list[CellRange] = []
+        group_count = 0
+        if group_key_factory or group_row_values_factory:
+            if not group_key_factory or not group_row_values_factory:
+                raise ValueError("分组标题行需要同时提供分组键和标题行写入规则")
+            group_style_row, group_merges = _nearest_group_title_row(
+                target,
+                header_row,
+                style_row,
+                max_col,
+            )
+            grouped_records: dict[str, list[Any]] = {}
+            for index, record in enumerate(rows):
+                key = str(group_key_factory(record) or "").strip() or f"__row_{index}"
+                grouped_records.setdefault(key, []).append(record)
+            for grouped_rows in grouped_records.values():
+                grouped_layout.append(("group", grouped_rows[0]))
+                grouped_layout.extend(("detail", record) for record in grouped_rows)
+            group_count = len(grouped_records)
+        else:
+            grouped_layout = [("detail", record) for record in rows]
 
         formulas = []
         for sheet in workbook.worksheets:
@@ -952,8 +1137,8 @@ def append_column_records_to_workbook(
                 if isinstance(cell.value, str) and cell.value.startswith("="):
                     formulas.append((sheet, cell.row, cell.column, cell.value))
 
-        if rows:
-            amount = len(rows)
+        if grouped_layout:
+            amount = len(grouped_layout)
             moved_merges = [
                 CellRange(str(value))
                 for value in target.merged_cells.ranges
@@ -975,13 +1160,17 @@ def append_column_records_to_workbook(
                     amount=amount,
                 )
 
-            for offset, record in enumerate(rows):
+            pending_group_rows: list[int] = []
+            for offset, (row_kind, record) in enumerate(grouped_layout):
                 row_no = append_row + offset
-                source_dimension = target.row_dimensions[style_row]
+                source_row = group_style_row if row_kind == "group" else style_row
+                if source_row is None:
+                    raise ValueError("当前排期没有可复用的分组标题行")
+                source_dimension = target.row_dimensions[source_row]
                 if source_dimension.height:
                     target.row_dimensions[row_no].height = source_dimension.height
                 for col_no in range(1, max_col + 1):
-                    source_cell = target.cell(style_row, col_no)
+                    source_cell = target.cell(source_row, col_no)
                     destination = target.cell(row_no, col_no)
                     _copy_style(source_cell, destination)
                     if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
@@ -993,7 +1182,11 @@ def append_column_records_to_workbook(
                         except (TypeError, ValueError):
                             destination.value = source_cell.value
 
-                values = row_values_factory(record, row_no) if row_values_factory else record
+                if row_kind == "group":
+                    values = group_row_values_factory(record, row_no)
+                    pending_group_rows.append(row_no)
+                else:
+                    values = row_values_factory(record, row_no) if row_values_factory else record
                 if not isinstance(values, Mapping):
                     raise ValueError("固定列写入记录必须是列号到值的映射")
                 for col_no, value in values.items():
@@ -1001,8 +1194,24 @@ def append_column_records_to_workbook(
                         continue
                     cell = target.cell(row_no, int(col_no))
                     cell.value = _safe_value(value)
-                    if isinstance(value, (date, datetime)):
+                    if isinstance(value, (date, datetime)) and cell.number_format == "General":
                         cell.number_format = "yyyy-mm-dd"
+                    if column_formats and int(col_no) in column_formats:
+                        cell.number_format = column_formats[int(col_no)]
+
+            for row_no in pending_group_rows:
+                for merged in group_merges:
+                    target.merge_cells(
+                        start_row=row_no,
+                        end_row=row_no,
+                        start_column=merged.min_col,
+                        end_column=merged.max_col,
+                    )
+                    if group_style_row is not None:
+                        _copy_style(
+                            target.cell(group_style_row, merged.min_col),
+                            target.cell(row_no, merged.min_col),
+                        )
 
             first_total_row = append_row + amount
             for row_no in range(first_total_row, (target.max_row or first_total_row) + 1):
@@ -1013,6 +1222,10 @@ def append_column_records_to_workbook(
                             cell.value,
                             first_total_row - 1,
                         )
+
+        workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
+        workbook.calculation.calcMode = "auto"
 
         if hasattr(output_path, "write"):
             workbook.save(output_path)
@@ -1029,7 +1242,328 @@ def append_column_records_to_workbook(
             "style_row": style_row,
             "insert_row": append_row,
             "rows": len(rows),
+            "group_rows": group_count,
+            "inserted_rows": len(grouped_layout),
             "mode": "full_workbook_append",
+        }
+    finally:
+        workbook.close()
+
+
+def append_grouped_column_records_to_workbook(
+    template: str | Path | bytes | BinaryIO,
+    output_path: str | Path | BinaryIO,
+    groups: Iterable[tuple[Any, Iterable[Any]]],
+    *,
+    filename: str = "",
+    sheet_names: Sequence[str],
+    header_row: int,
+    max_col: int,
+    summary_columns: Sequence[int],
+    detail_style_columns: Sequence[int] = (),
+    detail_row_values_factory: Callable[[Any, int], Mapping[int, Any]],
+    summary_row_values_factory: Callable[[Any, list[Any], int, int, int], Mapping[int, Any]],
+    reuse_trailing_summary_rows: bool = False,
+    repair_existing_summary_values_factory: Callable[[int, int, int], Mapping[int, Any]] | None = None,
+) -> dict[str, Any]:
+    """Append grouped detail rows followed by one copied summary row per group.
+
+    This is for schedules whose normal order pattern is ``detail... + item total``.
+    The latest existing summary row supplies the summary style, while the nearest
+    detail above it supplies the detail style. Templates with preformatted summary
+    placeholders may reuse and clear those trailing rows instead of stacking new
+    rows around them. Date number formats are deliberately left unchanged so the
+    inserted rows display exactly like their template rows.
+    """
+    workbook = load_complete_workbook_compatible(template, filename=filename)
+    grouped_rows = [(key, list(records)) for key, records in groups]
+    grouped_rows = [(key, records) for key, records in grouped_rows if records]
+    try:
+        target = next(
+            (workbook[name] for name in sheet_names if name in workbook.sheetnames),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"模板缺少目标工作表：{' / '.join(sheet_names)}")
+
+        def is_summary_row(row_no: int) -> bool:
+            for col_no in summary_columns:
+                value = target.cell(row_no, col_no).value
+                if not isinstance(value, str) or value.startswith("="):
+                    continue
+                normalized = _normalise(value)
+                if any(normalized == marker or normalized.endswith(marker) for marker in _TOTAL_MARKERS):
+                    return True
+            return False
+
+        last_sheet_row = max(
+            (
+                cell.row
+                for cell in target._cells.values()
+                if cell.column <= max_col and cell.value not in (None, "")
+            ),
+            default=header_row,
+        )
+        trailing_summary_start: int | None = None
+        if reuse_trailing_summary_rows:
+            for row_no in range(last_sheet_row, header_row, -1):
+                if not is_summary_row(row_no):
+                    break
+                trailing_summary_start = row_no
+            if trailing_summary_start is None:
+                raise ValueError(f"{target.title} 未找到可复用的尾部合计占位行")
+
+        summary_style_search_end = (
+            trailing_summary_start - 1
+            if trailing_summary_start is not None
+            else last_sheet_row
+        )
+        summary_style_row = next(
+            (
+                row_no
+                for row_no in range(summary_style_search_end, header_row, -1)
+                if is_summary_row(row_no)
+            ),
+            None,
+        )
+        if summary_style_row is None:
+            raise ValueError(f"{target.title} 未找到可复用的分组合计行")
+        detail_style_row = _nearest_detail_row(
+            target,
+            header_row,
+            trailing_summary_start or summary_style_row,
+            max_col,
+        )
+        if detail_style_columns:
+            merged_rows = {
+                row_no
+                for merged in target.merged_cells.ranges
+                if merged.max_col > merged.min_col
+                for row_no in range(merged.min_row, merged.max_row + 1)
+            }
+            for candidate in range((trailing_summary_start or summary_style_row) - 1, header_row, -1):
+                if candidate in merged_rows or is_summary_row(candidate):
+                    continue
+                values = [
+                    target.cell(candidate, col_no).value
+                    for col_no in range(1, max_col + 1)
+                ]
+                if not any(
+                    value not in (None, "")
+                    and not (isinstance(value, str) and value.startswith("="))
+                    for value in values
+                ):
+                    continue
+                style_cells = [
+                    target.cell(candidate, int(col_no))
+                    for col_no in detail_style_columns
+                ]
+                if any(
+                    isinstance(cell.value, str) and cell.value.startswith("=")
+                    for cell in style_cells
+                ):
+                    continue
+                if any(cell.fill.fill_type not in (None, "none") for cell in style_cells):
+                    continue
+                detail_style_row = candidate
+                break
+        append_row = trailing_summary_start or (summary_style_row + 1)
+
+        if repair_existing_summary_values_factory is not None:
+            group_start_row = header_row + 1
+            for row_no in range(header_row + 1, append_row):
+                if not is_summary_row(row_no):
+                    continue
+                detail_rows = [
+                    candidate
+                    for candidate in range(group_start_row, row_no)
+                    if not is_summary_row(candidate)
+                    and any(
+                        target.cell(candidate, col_no).value not in (None, "")
+                        for col_no in range(1, max_col + 1)
+                    )
+                ]
+                if detail_rows:
+                    repaired_values = repair_existing_summary_values_factory(
+                        row_no,
+                        detail_rows[0],
+                        detail_rows[-1],
+                    )
+                    if not isinstance(repaired_values, Mapping):
+                        raise ValueError("既有合计修复规则必须返回列号到值的映射")
+                    for col_no, value in repaired_values.items():
+                        target.cell(row_no, int(col_no)).value = _safe_value(value)
+                group_start_row = row_no + 1
+
+        detail_template = [
+            (
+                target.cell(detail_style_row, col_no).coordinate,
+                target.cell(detail_style_row, col_no).value,
+                copy(target.cell(detail_style_row, col_no)._style),
+            )
+            for col_no in range(1, max_col + 1)
+        ]
+        summary_template = [
+            (
+                target.cell(summary_style_row, col_no).coordinate,
+                target.cell(summary_style_row, col_no).value,
+                copy(target.cell(summary_style_row, col_no)._style),
+            )
+            for col_no in range(1, max_col + 1)
+        ]
+        detail_row_height = target.row_dimensions[detail_style_row].height
+        summary_row_height = target.row_dimensions[summary_style_row].height
+
+        formulas = []
+        for sheet in workbook.worksheets:
+            for cell in sheet._cells.values():
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    formulas.append((sheet, cell.row, cell.column, cell.value))
+
+        amount = sum(len(records) + 1 for _key, records in grouped_rows)
+        if amount:
+            reusable_summary_rows = (
+                last_sheet_row - append_row + 1
+                if reuse_trailing_summary_rows
+                else 0
+            )
+            insert_amount = (
+                max(0, amount - reusable_summary_rows)
+                if reuse_trailing_summary_rows
+                else amount
+            )
+            insert_row = (
+                last_sheet_row + 1
+                if reuse_trailing_summary_rows
+                else append_row
+            )
+            moved_merges = [
+                CellRange(str(value))
+                for value in target.merged_cells.ranges
+                if value.max_row >= insert_row
+            ]
+            if insert_amount:
+                for merged in moved_merges:
+                    target.unmerge_cells(str(merged))
+                target.insert_rows(insert_row, insert_amount)
+                _shift_target_sheet_structures(target, insert_row, insert_amount, moved_merges)
+
+                for sheet, old_row, column, formula in formulas:
+                    destination_row = (
+                        old_row + insert_amount
+                        if sheet is target and old_row >= insert_row
+                        else old_row
+                    )
+                    sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
+                        formula,
+                        formula_sheet=sheet.title,
+                        target_sheet=target.title,
+                        formula_row=old_row,
+                        insert_row=insert_row,
+                        amount=insert_amount,
+                    )
+
+            row_no = append_row
+            for group_key, records in grouped_rows:
+                detail_start_row = row_no
+                for record in records:
+                    target.row_dimensions[row_no].height = detail_row_height
+                    for col_no, (origin, template_value, template_style) in enumerate(
+                        detail_template,
+                        start=1,
+                    ):
+                        destination = target.cell(row_no, col_no)
+                        destination.value = None
+                        destination._style = copy(template_style)
+                        destination.comment = None
+                        destination.hyperlink = None
+                        if isinstance(template_value, str) and template_value.startswith("="):
+                            try:
+                                destination.value = Translator(
+                                    template_value,
+                                    origin=origin,
+                                ).translate_formula(destination.coordinate)
+                            except (TypeError, ValueError):
+                                destination.value = template_value
+                    values = detail_row_values_factory(record, row_no)
+                    if not isinstance(values, Mapping):
+                        raise ValueError("分组明细写入记录必须是列号到值的映射")
+                    for col_no, value in values.items():
+                        target.cell(row_no, int(col_no)).value = _safe_value(value)
+                    row_no += 1
+
+                detail_end_row = row_no - 1
+                target.row_dimensions[row_no].height = summary_row_height
+                for col_no, (origin, template_value, template_style) in enumerate(
+                    summary_template,
+                    start=1,
+                ):
+                    destination = target.cell(row_no, col_no)
+                    destination.value = None
+                    destination._style = copy(template_style)
+                    destination.comment = None
+                    destination.hyperlink = None
+                    if isinstance(template_value, str) and template_value.startswith("="):
+                        try:
+                            destination.value = Translator(
+                                template_value,
+                                origin=origin,
+                            ).translate_formula(destination.coordinate)
+                        except (TypeError, ValueError):
+                            destination.value = template_value
+                values = summary_row_values_factory(
+                    group_key,
+                    records,
+                    row_no,
+                    detail_start_row,
+                    detail_end_row,
+                )
+                if not isinstance(values, Mapping):
+                    raise ValueError("分组合计写入记录必须是列号到值的映射")
+                for col_no, value in values.items():
+                    target.cell(row_no, int(col_no)).value = _safe_value(value)
+                row_no += 1
+
+            if reuse_trailing_summary_rows:
+                clear_end_row = last_sheet_row + insert_amount
+                for clear_row in range(append_row + amount, clear_end_row + 1):
+                    target.row_dimensions[clear_row].height = None
+                    for col_no in range(1, max_col + 1):
+                        cell = target.cell(clear_row, col_no)
+                        cell.value = None
+                        cell._style = None
+                        cell.comment = None
+                        cell.hyperlink = None
+
+            calculation = getattr(workbook, "calculation", None)
+            if calculation is not None:
+                calculation.fullCalcOnLoad = True
+                calculation.forceFullCalc = True
+                calculation.calcMode = "auto"
+
+        if hasattr(output_path, "write"):
+            workbook.save(output_path)
+            output_reference = "<memory>"
+        else:
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(output_file)
+            output_reference = str(output_file)
+        return {
+            "path": output_reference,
+            "template_sheet": target.title,
+            "header_row": header_row,
+            "detail_style_row": detail_style_row,
+            "summary_style_row": summary_style_row,
+            "insert_row": append_row,
+            "detail_rows": sum(len(records) for _key, records in grouped_rows),
+            "summary_rows": len(grouped_rows),
+            "inserted_rows": amount,
+            "reused_trailing_summary_rows": min(
+                amount,
+                last_sheet_row - append_row + 1,
+            ) if reuse_trailing_summary_rows else 0,
+            "mode": "full_workbook_grouped_append",
         }
     finally:
         workbook.close()

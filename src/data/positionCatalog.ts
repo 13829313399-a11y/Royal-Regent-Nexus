@@ -52,6 +52,11 @@ export const positionSuggestionsByDepartment: Partial<Record<ModuleDepartmentId 
     'QA 主管',
     '品质经理',
   ],
+  qc: [
+    'QC 检验员',
+    'QC 主管',
+    'QC 经理',
+  ],
   'sales-business': [
     '车间业务跟客',
     '业务跟单员',

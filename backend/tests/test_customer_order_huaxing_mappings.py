@@ -1,11 +1,12 @@
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as SpreadsheetImage
 from openpyxl.formatting.rule import CellIsRule
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from PIL import Image
 
@@ -16,14 +17,20 @@ from app.services.customer_order_huaxing import (
     _issues,
     _record_fields,
     _validate_skips,
+    create_huaxing_customer_preview,
+    export_huaxing_customer_schedule,
 )
-from app.services.customer_order_manual import apply_overrides_to_records
+from app.services.customer_order_manual import (
+    apply_overrides_to_records,
+    decorate_manual_resolution_policy,
+)
 from app.services.huaxing_order_legacy import (
     edu_schedule,
     multi_schedule,
     new_order_excel,
     shixin_schedule,
     three_sixty_schedule,
+    yinhui_po_parser,
     yinhui_schedule,
 )
 
@@ -119,49 +126,230 @@ def test_yinhui_uses_fixed_exchange_rate_and_ship_minus_five_days():
     assert row["inspection_date"] == "2026-08-15"
 
 
+def _yinhui_ocr_text(*, ship_date: str = "2026.12.06", declared_pages: int = 2) -> str:
+    return f"""
+Page: 1 of {declared_pages}
+PURCHASE ORDER: 4500002406
+Unloading Point: SWEDEN Date (YMD): 2026.06.16
+ITEM# PART# DESCRIPTION DELI.(YMD) QTY UNIT PRICE AMOUNT
+00010 5122208863801 RESCUE ELLI BANANA {ship_date} 20 PCS 0.1000 2.00
+Packaging: POLYBAG PR:3000010075
+S0O:2300000463 -780
+Packing (Inner/Outer): 0/0
+Name:SILVERLIT NORDIC AB
+00020 5122308863801 RESCUE ELLI TEETH {ship_date} 20 PCS 0.1000 2.00
+Packaging: POLYBAG PR:3000010081
+SO:2300000463 -790
+Packing (Inner/Outer): 0/0
+Name:SILVERLIT NORDIC AB
+Total: 4.00
+**SAY: USD FOUR DOLLARS AND ZERO CENTS ONLY**
+""".strip()
+
+
+def _make_yinhui_three_sheet_template() -> Workbook:
+    workbook = Workbook()
+    item = workbook.active
+    item.title = "Iteam表"
+    item_headers = [
+        "出单日期", "SO", "银辉合同号", "客名", "產品編號", "产品名称",
+        "PO数量", "装箱数量", "外箱装箱数", "说明书", "彩盒", "客贴纸",
+        "贴位图", "日期码", "备注", "箱唛资料", "验货日期", "完成情况",
+        "备注", "订单单价USD", "单价HK$", "总金额HK$", "总金额USD",
+        "总金额HK$", "出厂价HK$", "出厂价总金额HK$", "备注", "系统",
+        "MS Container Type (FCL/LCL)", "Consolidated ID", "Port of Discharge",
+        "走货日期", "车次", "走货方式", "发票单价", "发票金额", "打票日期",
+        "发票号码", "其他", "其他金额",
+    ]
+    for column, value in enumerate(item_headers, 1):
+        item.cell(4, column, value)
+        item.column_dimensions[item.cell(4, column).column_letter].width = 16
+    item_history = [
+        "2026-07-01", "SO-HISTORY", "PO-HISTORY", "历史客户", "ITEM-HISTORY", "历史产品",
+        10, 5, "=G5/H5", "说明书", "彩盒", "贴纸", None, "180B6RR", "历史备注", "箱唛",
+        "2026-07-20", None, None, 2, "=T5*7.75", "=U5*G5", "=T5*G5",
+        "=U5*G5", "=T5*7.75", "=Y5*G5", None, None, None, None, None,
+        "2026-07-25", None, None, None, None, None, None, None, None,
+    ]
+    blue = "0000FF"
+    for column, value in enumerate(item_history, 1):
+        cell = item.cell(5, column, value)
+        cell.fill = PatternFill("solid", fgColor="DDEBF7")
+        cell.font = Font(color=blue)
+    item.row_dimensions[5].height = 28
+    item.merge_cells("E6:F6")
+    item["E6"] = "合计"
+    item["G6"] = "=SUBTOTAL(9,G5:G5)"
+    item.row_dimensions[6].height = 36
+    item.auto_filter.ref = "A4:AN5"
+    item.print_area = "A1:AN6"
+    item.freeze_panes = "A5"
+
+    review = workbook.create_sheet("正单评审表")
+    review_headers = [
+        "款号", "客名", "来单日期", "主合同号", "產品編號", "产品名称", "PO数量",
+        "装箱数量", "装箱", "说明书", "彩盒", "PO利宝", "日期码", "备注", "验货期",
+        "单价", "金额HK$", "公證行驗貨日期(在華登廠房)", "生产要求",
+    ]
+    for column, value in enumerate(review_headers, 1):
+        review.cell(4, column, value)
+    review_links = {
+        2: "D", 3: "A", 4: "C", 5: "E", 6: "F", 7: "G", 8: "H", 9: "I",
+        10: "J", 11: "K", 12: "L", 13: "N", 14: "O", 15: "Q", 16: "U", 17: "V",
+    }
+    for column, source_column in review_links.items():
+        review.cell(5, column, f"='Iteam表'!{source_column}5")
+        review.cell(5, column).font = Font(color=blue)
+    review["E10"] = "='Iteam表'!E6"
+    review["G10"] = "='Iteam表'!G6"
+
+    order = workbook.create_sheet("接单表")
+    order_headers = [
+        "来单日期", "主合同号", "客名", "產品型號", "产品名称", "PO数量", "裝箱隻數",
+        "总箱数", "单价HKD", "金额HKD", "彩盒", "PO利宝", "备注", "验货期", "日期码",
+        "验货结果", "第三方公证行验货",
+    ]
+    for column, value in enumerate(order_headers, 1):
+        order.cell(4, column, value)
+    order_links = {
+        1: "A", 2: "C", 3: "D", 4: "E", 5: "F", 6: "G", 7: "H", 8: "I",
+        9: "U", 10: "V", 11: "K", 12: "L", 13: "O", 14: "Q", 15: "N",
+    }
+    for column, source_column in order_links.items():
+        order.cell(5, column, f"='Iteam表'!{source_column}5")
+        order.cell(5, column).font = Font(color=blue)
+    order["D10"] = "='Iteam表'!E6"
+    order["F10"] = "='Iteam表'!G6"
+    return workbook
+
+
+def test_yinhui_scanned_pdf_ocr_extracts_rows_and_keeps_zero_pack_missing(monkeypatch):
+    monkeypatch.setattr(
+        yinhui_po_parser,
+        "_pdf_text",
+        lambda _source: (_yinhui_ocr_text(declared_pages=3), 2, True),
+    )
+
+    parsed = yinhui_po_parser.parse_pdf(b"%PDF-scan", "RR-4500002406.pdf")
+
+    assert parsed["meta"] == {
+        "pages": 2,
+        "text_chars": len(_yinhui_ocr_text(declared_pages=3)),
+        "po_no": "4500002406",
+        "used_ocr": True,
+    }
+    assert len(parsed["rows"]) == 2
+    first, second = parsed["rows"]
+    assert first["so_no"] == second["so_no"] == "2300000463"
+    assert first["customer"] == "SILVERLIT NORDIC AB"
+    assert first["item_no"] == "5122208863801"
+    assert second["item_no"] == "5122308863801"
+    assert first["quantity"] == second["quantity"] == 20
+    assert first["unit_price_usd"] == second["unit_price_usd"] == 0.1
+    assert first["total_usd"] == second["total_usd"] == 2
+    assert first["case_pack"] is None
+    assert first["cartons"] is None
+    assert first["inspection_date"] == "2026-12-01"
+    assert any(flag["code"] == "missing_case_pack" for flag in first["flags"])
+    assert any("实际为 2 页" in warning for warning in parsed["warnings"])
+
+
+def test_yinhui_scanned_pdf_manual_pack_override_is_written_to_export(monkeypatch):
+    monkeypatch.setattr(
+        yinhui_po_parser,
+        "_pdf_text",
+        lambda _source: (_yinhui_ocr_text(), 2, True),
+    )
+    workbook = _make_yinhui_three_sheet_template()
+    schedule_stream = BytesIO()
+    workbook.save(schedule_stream)
+    workbook.close()
+    schedule_content = schedule_stream.getvalue()
+
+    preview = create_huaxing_customer_preview(
+        customer_code="yinhui",
+        factory_id="huaxing",
+        received_date="2026-08-11",
+        po_files=[("RR-4500002406.pdf", b"%PDF-scan")],
+        schedule_file_name="2026-银辉排期.xlsx",
+        schedule_content=schedule_content,
+    )
+    decorate_manual_resolution_policy(preview)
+    pack_issues = [
+        next(issue for issue in row["issues"] if issue["code"] == "missing_case_pack")
+        for row in preview["rows"]
+    ]
+    assert preview["summary"] == {"total": 2, "valid": 0, "warning": 0, "blocked": 2}
+    assert all(issue["can_edit"] for issue in pack_issues)
+    assert all(issue["edit_field"] == "case_pack" for issue in pack_issues)
+    assert all(issue["edit_input_type"] == "number" for issue in pack_issues)
+
+    overrides = [
+        {
+            "row_id": row["id"],
+            "issue_key": issue["skip_key"],
+            "field": "case_pack",
+            "value": "4",
+        }
+        for row, issue in zip(preview["rows"], pack_issues, strict=True)
+    ]
+    output, _, _ = export_huaxing_customer_schedule(
+        customer_code="yinhui",
+        factory_id="huaxing",
+        received_date="2026-08-11",
+        po_files=[("RR-4500002406.pdf", b"%PDF-scan")],
+        schedule_file_name="2026-银辉排期.xlsx",
+        schedule_content=schedule_content,
+        skipped_issue_keys={issue["skip_key"] for issue in pack_issues},
+        manual_overrides=overrides,
+    )
+
+    rendered = load_workbook(BytesIO(output), data_only=False)
+    target = rendered["Iteam表"]
+    assert target["B6"].value == target["B7"].value == "2300000463"
+    assert target["C6"].value == target["C7"].value == "4500002406"
+    assert target["E6"].value == "5122208863801"
+    assert target["E7"].value == "5122308863801"
+    assert target["H6"].value == target["H7"].value == 4
+    assert target["I6"].value == "=IFERROR(G6/H6,5.0)"
+    assert target["I7"].value == "=IFERROR(G7/H7,5.0)"
+    assert target["V6"].value == "=G6*U6"
+    assert target["W6"].value == "=G6*T6"
+    assert target["X6"].value == "=G6*U6"
+    assert target["Y6"].value == "=T6*7.75"
+    assert target["Z6"].value == "=Y6*G6"
+    assert target["AF6"].value == datetime(2026, 12, 6)
+    assert target["E8"].value == "合计"
+    assert target["G8"].value == "=SUBTOTAL(9,G5:G7)"
+
+    review = rendered["正单评审表"]
+    assert review["D6"].value == "='Iteam表'!C6"
+    assert review["D7"].value == "='Iteam表'!C7"
+    assert review["Q6"].value == "='Iteam表'!V6"
+    assert review["E10"].value == "='Iteam表'!E8"
+
+    order = rendered["接单表"]
+    assert order["B6"].value == "='Iteam表'!C6"
+    assert order["B7"].value == "='Iteam表'!C7"
+    assert order["J6"].value == "='Iteam表'!V6"
+    assert order["D10"].value == "='Iteam表'!E8"
+    rendered.close()
+
+
 def test_yinhui_export_preserves_complete_workbook_and_inserts_before_total(tmp_path: Path):
     source_path = tmp_path / "银辉原排期.xlsx"
     output_path = tmp_path / "银辉原排期_银辉新单.xlsx"
     image_path = tmp_path / "marker.png"
     Image.new("RGB", (8, 8), "red").save(image_path)
 
-    workbook = Workbook()
-    linked = workbook.active
-    linked.title = "接单表"
+    workbook = _make_yinhui_three_sheet_template()
+    linked = workbook["接单表"]
     linked["A1"] = "='Iteam表'!G6"
-    target = workbook.create_sheet("Iteam表")
+    target = workbook["Iteam表"]
     image_sheet = workbook.create_sheet("历史图片")
     image_sheet["A1"] = "历史资料"
     image_sheet.add_image(SpreadsheetImage(image_path), "B2")
-    headers = [
-        "出单日期", "SO", "银辉合同号", "客名", "產品編號", "产品名称",
-        "PO数量", "装箱数量", "外箱装箱数", "说明书", "彩盒", "客贴纸",
-        "贴位图", "日期码", "备注", "箱唛资料", "验货日期", "完成情况",
-        "备注", "订单单价USD", "单价HK$", "总金额HK$", "总金额USD",
-        "总金额HK$", "出厂价HK$", "出厂价总金额HK$",
-    ]
-    for column, value in enumerate(headers, 1):
-        target.cell(4, column, value)
-        target.column_dimensions[target.cell(4, column).column_letter].width = 16
-    history = [
-        "2026-07-01", "SO-HISTORY", "PO-HISTORY", "历史客户", "ITEM-HISTORY", "历史产品",
-        10, 5, "=G5/H5", "说明书", "彩盒", None, None, "180B6RR", None, None,
-        "2026-07-20", None, None, 2, "=T5*7.75", "=U5*G5", "=V5/7.75",
-        "=G5*U5", "=T5*7.75", "=Y5*G5",
-    ]
-    detail_fill = PatternFill("solid", fgColor="DDEBF7")
-    for column, value in enumerate(history, 1):
-        cell = target.cell(5, column, value)
-        cell.fill = detail_fill
-    target.row_dimensions[5].height = 28
-    target.merge_cells("E6:F6")
-    target["E6"] = "合计"
-    target["G6"] = "=SUBTOTAL(9,G5:G5)"
-    target.row_dimensions[6].height = 36
-    target.auto_filter.ref = "A4:Z5"
-    target.print_area = "A1:Z6"
     target.page_setup.orientation = "landscape"
-    target.freeze_panes = "A5"
     target.conditional_formatting.add(
         "E6:F6",
         CellIsRule(operator="equal", formula=['"合计"'], fill=PatternFill("solid", fgColor="FFF2CC")),
@@ -193,7 +381,7 @@ def test_yinhui_export_preserves_complete_workbook_and_inserts_before_total(tmp_
 
     assert source_path.read_bytes() == original_bytes
     rendered = load_workbook(output_path, data_only=False)
-    assert rendered.sheetnames == ["接单表", "Iteam表", "历史图片"]
+    assert rendered.sheetnames == ["Iteam表", "正单评审表", "接单表", "历史图片"]
     assert rendered["历史图片"]["A1"].value == "历史资料"
     assert len(rendered["历史图片"]._images) == 1
     assert rendered["接单表"]["A1"].value == "='Iteam表'!G7"
@@ -201,7 +389,10 @@ def test_yinhui_export_preserves_complete_workbook_and_inserts_before_total(tmp_
     assert target["B5"].value == "SO-HISTORY"
     assert target["B6"].value == "SO-NEW"
     assert target["I6"].value == "=IFERROR(G6/H6,5.0)"
-    assert target["U6"].value == "=T6*7.75"
+    assert target["U6"].value == 23.25
+    assert target["X6"].value == "=G6*U6"
+    assert target["Y6"].value == 20
+    assert target["Z6"].value == 400
     assert target["E7"].value == "合计"
     assert target["G7"].value == "=SUBTOTAL(9,G5:G6)"
     assert "E7:F7" in {str(value) for value in target.merged_cells.ranges}
@@ -209,44 +400,94 @@ def test_yinhui_export_preserves_complete_workbook_and_inserts_before_total(tmp_
     assert target.row_dimensions[7].height == 36
     assert target["A6"].fill.fgColor.rgb == target["A5"].fill.fgColor.rgb
     assert target["A6"]._style.fontId == target["A5"]._style.fontId
-    assert target.auto_filter.ref == "A4:Z6"
-    assert str(target.print_area).endswith("$A$1:$Z$7")
+    assert target.auto_filter.ref == "A4:AN6"
+    assert str(target.print_area).endswith("$A$1:$AN$7")
     assert target.page_setup.orientation == "landscape"
     assert target.freeze_panes == "A5"
     assert "E7:F7" in {str(value.sqref) for value in target.conditional_formatting}
     assert {str(value.sqref) for value in target.data_validations.dataValidation} == {"E7"}
+    assert rendered["正单评审表"]["D6"].value == "='Iteam表'!C6"
+    assert rendered["正单评审表"]["E10"].value == "='Iteam表'!E7"
+    assert rendered["接单表"]["B6"].value == "='Iteam表'!C6"
+    assert rendered["接单表"]["D10"].value == "='Iteam表'!E7"
     rendered.close()
 
 
-def test_360_export_targets_iteam_sheet_and_keeps_row_formulas(tmp_path: Path):
+def test_360_export_writes_item_review_and_order_sheets_above_totals(tmp_path: Path):
     template_path = tmp_path / "360排期.xlsx"
     output_path = tmp_path / "360排期_360新单.xlsx"
     workbook = Workbook()
-    workbook.active.title = "接单表"
-    target = workbook.create_sheet("Iteam表")
-    headers = [
-        None, "出单日期", "PO号", "生产单号", "360生产单号", "WM PO号",
+    order = workbook.active
+    order.title = "接单表"
+    review = workbook.create_sheet("正单评审表 ")
+    item = workbook.create_sheet("Iteam表")
+    workbook.create_sheet("历史资料")["A1"] = "必须保留"
+
+    item_headers = [
+        None, "出单日期", "美国PO号", "美国生产单号", "360生产单号", "WM PO号",
         "360合同号", "客名", "產品編號", "产品名称", "规格", "PO数量",
-        "外箱装箱数", "箱数", "说明书", "彩盒", "车款", "日期码", "备注",
-        "验货日期", "FCD期", "走货期", "跟单", "订单单价USD", "单价HK$",
-        "总金额USD", "总金额HK$", "出厂价HK$", "出厂价总金额HK$",
+        "外箱装箱数", "箱数", "说明书", "彩盒", "车款", "外箱PO利宝", "日期码",
+        "备注", "验货日期", "FCD期", "走货期", "验货结果", None, None, None,
+        None, "走货国家", "跟单", "条码", "订单单价USD", "单价HK$", "模具平摊费用",
+        "测试平摊费用", "订单单价USD", "单价HK$", "总金额HK$", "总金额USD",
+        "总金额HK$", "出厂价HK$", "出厂价总金额HK$",
     ]
-    for column, value in enumerate(headers, 1):
-        target.cell(3, column, value)
-        target.column_dimensions[target.cell(3, column).column_letter].width = 16
-    row = [
-        "已上系统", "2026-07-01", "PO-OLD", "REL-OLD", "RL-OLD", None,
-        "CONTRACT-OLD", "历史客户", "10001", "历史产品", "欧洲", 10, 2,
-        "=L4/M4", "EN", "彩盒", "车款", "60350A26183", None, datetime(2026, 7, 20),
-        None, "=T4+14", "跟单", 12, "=X4*7.75", "=X4*L4", "=Y4*L4",
-        "=X4*7.75-3.8", "=AB4*L4",
+    for column, value in enumerate(item_headers, 1):
+        item.cell(3, column, value)
+    old_item = [
+        None, datetime(2026, 7, 1), "PO-OLD", "REL-OLD", "RL-OLD", None,
+        "CONTRACT-OLD", "历史客户", "10001", "历史产品", "美国", 10, 2,
+        "=L4/M4", "EN", "彩盒", "车款", "利宝", "60350A26183", None,
+        datetime(2026, 7, 20), None, datetime(2026, 7, 30), None,
     ]
-    for column, value in enumerate(row, 1):
-        target.cell(4, column, value)
-    target.merge_cells("E5:J5")
-    target["E5"] = "合计"
-    target["L6"] = "=SUBTOTAL(9,L4:L5)"
-    target.auto_filter.ref = "A3:AC5"
+    for column, value in enumerate(old_item, 1):
+        item.cell(4, column, value)
+    for coordinate, formula in {
+        "AG4": "=AF4*7.75", "AJ4": "=AF4-AH4-AI4", "AK4": "=AJ4*7.75",
+        "AL4": "=L4*AK4", "AM4": "=AF4*L4", "AN4": "=AG4*L4", "AP4": "=AO4*L4",
+    }.items():
+        item[coordinate] = formula
+    item["AF4"] = 12
+    item["AH4"] = "=100/1000"
+    item["AI4"] = "=50/1000"
+    item["AO4"] = 90
+    item["A4"].fill = PatternFill("solid", fgColor="DDEBF7")
+    item["I6"] = "合计"
+    item["L6"] = "=SUBTOTAL(9,L4:L5)"
+
+    review_headers = [
+        "款号", "客名", "来单日期", "主合同号", "360生产单号", "產品編號",
+        "产品名称", "规格", "PO数量", "装箱", "说明书", "彩盒", "车款",
+        "PO利宝", "日期码", "备注", "验货期", "单价", "金额HK$",
+        "公證行驗貨日期(在華登廠房)", "生产要求",
+    ]
+    order_headers = [
+        "来单日期", "主合同号", "360生产单号", "客名", "產品型號", "产品名称",
+        "產品规格", "PO数量", "裝箱隻數", "总箱数", "单价HKD", "金额HKD",
+        "彩盒", "PO利宝", "备注", "验货期", "日期码", "验货结果", "第三方公证行验货",
+    ]
+    for column, value in enumerate(review_headers, 1):
+        review.cell(4, column, value)
+    for column, value in enumerate(order_headers, 1):
+        order.cell(4, column, value)
+    for column, formula in {
+        3: "=Iteam表!B4", 4: "=Iteam表!G4", 5: "=Iteam表!E4", 6: "=Iteam表!I4",
+        7: "=Iteam表!J4", 8: "=Iteam表!K4", 9: "=Iteam表!L4", 10: "=Iteam表!M4",
+        11: "=Iteam表!O4", 12: "=Iteam表!P4", 13: "=Iteam表!Q4", 14: "=Iteam表!R4",
+        15: "=Iteam表!S4", 16: "=Iteam表!T4", 17: "=Iteam表!U4", 18: "=Iteam表!AG4",
+        19: "=I5*R5",
+    }.items():
+        review.cell(5, column, formula)
+    review["F7"] = "=Iteam表!I6"
+    for column, formula in {
+        1: "=Iteam表!B4", 2: "=Iteam表!G4", 3: "=Iteam表!E4", 4: "=Iteam表!H4",
+        5: "=Iteam表!I4", 6: "=Iteam表!J4", 7: "=Iteam表!K4", 8: "=Iteam表!L4",
+        9: "=Iteam表!M4", 10: "=H5/I5", 11: "=Iteam表!AG4", 12: "=K5*H5",
+        13: "=Iteam表!P4", 14: "=Iteam表!R4", 15: "=Iteam表!T4", 16: "=Iteam表!U4",
+        17: "=Iteam表!S4",
+    }.items():
+        order.cell(5, column, formula)
+    order["E7"] = "=Iteam表!I6"
     workbook.save(template_path)
     workbook.close()
 
@@ -266,23 +507,54 @@ def test_360_export_targets_iteam_sheet_and_keeps_row_formulas(tmp_path: Path):
             "outer_pack": 4,
             "inspection_date": "2026-08-20",
             "unit_price_usd": 15,
+        }, {
+            "order_date": "2026-08-08",
+            "po_no": "PO-NEW-2",
+            "customer_release_no": "REL-NEW-2",
+            "production_no": "RL-NEW-2",
+            "contract_no": "CONTRACT-NEW-2",
+            "customer": "新客户",
+            "item_no": "20003",
+            "product_name": "新产品二",
+            "spec": "美国",
+            "quantity": 8,
+            "outer_pack": 4,
+            "inspection_date": "2026-08-21",
+            "unit_price_usd": 15,
         }],
         output_path,
         template_filename=template_path.name,
     )
 
     rendered = load_workbook(output_path, data_only=False)
-    assert rendered.sheetnames == ["接单表", "Iteam表"]
-    target = rendered["Iteam表"]
-    assert target["C4"].value == "PO-OLD"
-    assert target["C5"].value == "PO-NEW"
-    assert target["N5"].value == "=L5/M5"
-    assert target["Y5"].value == "=X5*7.75"
-    assert target["Z5"].value == "=X5*L5"
-    assert target["AA5"].value == "=Y5*L5"
-    assert target["E6"].value == "合计"
-    assert target["L7"].value == "=SUBTOTAL(9,L4:L6)"
-    assert target.auto_filter.ref == "A3:AC6"
+    assert rendered.sheetnames == ["接单表", "正单评审表 ", "Iteam表", "历史资料"]
+    item = rendered["Iteam表"]
+    assert item["C5"].value == "PO-NEW"
+    assert item["E5"].value == "RL-NEW"
+    assert item["I5"].value == "20002"
+    assert item["C6"].value == "PO-NEW-2"
+    assert item["I6"].value == "20003"
+    assert item["N5"].value == "=L5/M5"
+    assert item["AG5"].value == "=AF5*7.75"
+    assert item["AJ5"].value == "=AF5-AH5-AI5"
+    assert item["AN6"].value == "=AG6*L6"
+    assert item["I7"].value == "合计"
+    assert item["L7"].value == "=SUBTOTAL(9,L4:L6)"
+    assert item["A5"].fill.fgColor.rgb == item["A4"].fill.fgColor.rgb
+    assert item["C5"].font.color.type == "rgb"
+    assert item["C5"].font.color.rgb.endswith("0000FF")
+
+    review = rendered["正单评审表 "]
+    assert review["C6"].value == "='Iteam表'!B5"
+    assert review["E7"].value == "='Iteam表'!E6"
+    assert review["S7"].value == "=I7*R7"
+    assert review["F8"].value == "=Iteam表!I7"
+    order = rendered["接单表"]
+    assert order["A6"].value == "='Iteam表'!B5"
+    assert order["C7"].value == "='Iteam表'!E6"
+    assert order["J7"].value == "=H7/I7"
+    assert order["E8"].value == "=Iteam表!I7"
+    assert rendered["历史资料"]["A1"].value == "必须保留"
     rendered.close()
 
 
@@ -367,14 +639,120 @@ def test_seasons_composite_pack_uses_outer_carton_quantity():
     assert shixin_schedule.outer_pack_number("24/144") == 144
 
 
+def test_seasons_appends_to_reserved_rows_before_first_total_and_stays_in_first_section(
+    tmp_path: Path,
+):
+    source_path = tmp_path / "施信排期.xlsx"
+    output_path = tmp_path / "施信排期_新单.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "正单评审表"
+    worksheet.append(["2026年施信产品评审表"])
+    worksheet.append([
+        "证书", "客出单日期", "预备单号（OQF NO）", "O/C NO", "PO.NO",
+        "客名/國家", "產品編號", "產品名称", "數量", "装箱", "箱数",
+        "行Q", "客Q", "Q货情况", "客要求走货期", "包装要求", "国家标准",
+        "备注", "生产车间", "上系统", "单价", "金额HKD", "客货号",
+    ])
+    worksheet.append([None] * 23)
+    worksheet.append([
+        "证书A", date(2026, 5, 16), "QF-OLD", "OC-OLD", "PO-OLD", "BIG W",
+        "ITEM-OLD", "历史产品", 150, 6, "=I4/J4", None, None, "自检ok",
+        date(2026, 7, 1), "客卡", "美国标准", "历史备注", "历史车间", "已上",
+        31.34, "=I4*U4", "客户货号",
+    ])
+    worksheet["A4"].fill = PatternFill("solid", fgColor="DDEBF7")
+    worksheet["A4"].font = Font(name="宋体", color="0000FF")
+    worksheet.append([None] * 23)
+    worksheet.append([None] * 20 + ["合计：", "=SUM(V3:V5)", "=V6/10000"])
+    worksheet.append([None] * 20 + ["接单总计：", "=V6+V12", "=V7/10000"])
+    worksheet.append([None] * 23)
+    worksheet.append([None] * 23)
+    worksheet.append([None] * 23)
+    worksheet.append([None] * 23)
+    worksheet.append([
+        None, date(2025, 12, 15), "QF-LATER", "OC-LATER", "PO-LATER", "WORLD MARKET",
+        "ITEM-LATER", "后段走货订单", 1002, 2, 501,
+    ])
+    workbook.save(source_path)
+    workbook.close()
+
+    aliases: dict[str, list[str]] = {}
+    for label, field in shixin_schedule.FIELDS.items():
+        aliases.setdefault(field, []).append(label)
+    for field, label in shixin_schedule.EXPORT_FIELDS:
+        aliases.setdefault(field, []).append(label)
+
+    result = new_order_excel.append_records_to_workbook(
+        source_path,
+        output_path,
+        [
+            {
+                "order_date": "2026-08-12",
+                "oqf_no": "QF-NEW-1",
+                "oc_no": "OC-NEW-1",
+                "po_no": "PO-NEW-1",
+                "customer": "SEASONS USA",
+                "item_no": "ITEM-NEW-1",
+                "product_name": "新产品1",
+                "quantity": 60,
+                "pack_qty": 6,
+                "cartons": 10,
+                "ship_date": "2026-09-30",
+                "unit_price": 12.5,
+                "amount": 750,
+            },
+            {
+                "order_date": "2026-08-12",
+                "oqf_no": "QF-NEW-2",
+                "oc_no": "OC-NEW-2",
+                "po_no": "PO-NEW-2",
+                "customer": "SEASONS USA",
+                "item_no": "ITEM-NEW-2",
+                "product_name": "新产品2",
+                "quantity": 48,
+                "pack_qty": 6,
+                "cartons": 8,
+                "ship_date": "2026-10-15",
+                "unit_price": 10,
+                "amount": 480,
+            },
+        ],
+        aliases,
+        filename=source_path.name,
+        sheet_names=shixin_schedule.SEASONS_SHEETS,
+        formula_fallback_fields=("cartons",),
+        first_total_section=True,
+    )
+
+    rendered = load_workbook(output_path, data_only=False)
+    worksheet = rendered["正单评审表"]
+    assert result["header_row"] == 2
+    assert result["insert_row"] == 5
+    assert result["section_total_row"] == 6
+    assert result["reused_blank_rows"] == 1
+    assert worksheet["C5"].value == "QF-NEW-1"
+    assert worksheet["E5"].value == "PO-NEW-1"
+    assert worksheet["K5"].value == "=IFERROR(I5/J5,10)"
+    assert worksheet["V5"].value == "=I5*U5"
+    assert worksheet["C6"].value == "QF-NEW-2"
+    assert worksheet["E6"].value == "PO-NEW-2"
+    assert worksheet["K6"].value == "=IFERROR(I6/J6,8)"
+    assert worksheet["V6"].value == "=I6*U6"
+    assert worksheet["A5"].fill.fgColor.rgb == worksheet["A4"].fill.fgColor.rgb
+    assert worksheet["A5"].font.name == worksheet["A4"].font.name
+    assert worksheet["A6"].fill.fgColor.rgb == worksheet["A4"].fill.fgColor.rgb
+    assert worksheet["U7"].value == "合计："
+    assert worksheet["V7"].value == "=SUM(V3:V6)"
+    assert worksheet["V8"].value == "=V7+V13"
+    assert worksheet["E13"].value == "PO-LATER"
+    rendered.close()
+
+
 def test_yinhui_identifiers_are_written_as_text(tmp_path: Path):
     source_path = tmp_path / "银辉排期.xlsx"
     output_path = tmp_path / "银辉排期_新单.xlsx"
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "Iteam表"
-    worksheet.append(["SO", "银辉合同号", "产品编号", "PO数量", "装箱数量", "总箱数"])
-    worksheet.append(["2300000001", "4500000001", "5122208863801", 10, 5, "=D2/E2"])
+    workbook = _make_yinhui_three_sheet_template()
     workbook.save(source_path)
     workbook.close()
 
@@ -392,10 +770,10 @@ def test_yinhui_identifiers_are_written_as_text(tmp_path: Path):
 
     rendered = load_workbook(output_path, data_only=False)
     worksheet = rendered["Iteam表"]
-    for coordinate in ("A3", "B3", "C3"):
+    for coordinate in ("B6", "C6", "E6"):
         assert worksheet[coordinate].data_type == "s"
         assert worksheet[coordinate].number_format == "@"
-    assert worksheet["F3"].value == '=IFERROR(D3/E3,"")'
+    assert worksheet["I6"].value == '=IFERROR(G6/H6,"")'
     rendered.close()
 
 

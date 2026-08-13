@@ -85,13 +85,13 @@ PROFILES: dict[str, ScheduleProfile] = {
         "strottman",
         "STROTTMAN",
         "strottman_schedule.xlsx",
-        ("2026正单", "Strottman放产表"),
-        2,
-        58,
+        ("建文客排期表", "2026正单", "Strottman放产表"),
         3,
-        (5, 8),
-        (1, 3, 4, 5, 6, 8, 10, 11),
-        "箱数换算件数、Special Instructions 多货期和金额",
+        46,
+        10,
+        (5, 6),
+        (1, 2, 3, 4, 5, 6, 7, 8, 10),
+        "第3行字段；货号/品名标题行后写订单明细，并映射箱数换算件数、Special Instructions 多货期和金额",
     ),
     "supplier": ScheduleProfile(
         "supplier",
@@ -215,6 +215,16 @@ def _excel_date(value: str) -> datetime | str:
         return datetime.strptime(value, "%Y-%m-%d")
     except (TypeError, ValueError):
         return value
+
+
+def _month_day_label(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{parsed.month}月{parsed.day}号"
 
 
 def _formula_number(value: float) -> str:
@@ -405,7 +415,10 @@ def _last_data_row(ws, profile: ScheduleProfile) -> int:
 
 
 def _row_key_from_sheet(ws, profile: ScheduleProfile, row: int) -> tuple[str, ...]:
-    return tuple(_norm(ws.cell(row, col).value) for col in profile.key_cols)
+    values = tuple(_norm(ws.cell(row, col).value) for col in profile.key_cols)
+    if profile.code == "strottman" and values:
+        return re.sub(r"^PO", "", values[0], flags=re.I), *values[1:]
+    return values
 
 
 def _row_key_from_order(profile: ScheduleProfile, order: dict[str, Any], line: dict[str, Any]) -> tuple[str, ...]:
@@ -417,7 +430,13 @@ def _row_key_from_order(profile: ScheduleProfile, order: dict[str, Any], line: d
         return _norm(order.get("contract_no") or order.get("po_number")), _norm(line.get("item_code"))
     if profile.code == "strottman":
         item = re.sub(r"-F\d+$", "", str(line.get("item_code") or ""), flags=re.I)
-        return _norm(order.get("contract_no") or order.get("po_number")), _norm(item)
+        contract = re.sub(
+            r"^PO",
+            "",
+            _norm(order.get("contract_no") or order.get("po_number")),
+            flags=re.I,
+        )
+        return contract, _norm(item)
     return _norm(order.get("contract_no") or order.get("po_number")), _norm(line.get("item_code"))
 
 
@@ -429,7 +448,7 @@ def _product_columns(profile: ScheduleProfile) -> tuple[tuple[int, ...], int]:
     if profile.code == "maxx":
         return (8, 9), 10
     if profile.code == "strottman":
-        return (8, 9), 10
+        return (3, 6, 7), 8
     return (5,), 6
 
 
@@ -573,7 +592,7 @@ def compose_row(
             4: po,
             5: contract,
             6: customer,
-            8: item,
+            8: line.get("_jazwares_parent_item") or item,
             9: item,
             10: description,
             11: qty,
@@ -581,7 +600,6 @@ def compose_row(
             41: ship_date,
             42: usd_formula,
             43: f"=AP{row}*K{row}" if usd and qty else "",
-            44: ship_date,
             49: _notes(order, line),
         }
         if line.get("pcs_per_carton"):
@@ -589,44 +607,61 @@ def compose_row(
         return values
 
     if profile.code == "maxx":
+        parent_item = line.get("_maxx_parent_item") or order.get("project_no") or item
         return {
-            1: po_date,
-            3: "MAXX",
+            1: _month_day_label(order.get("po_date", "")),
+            3: "",
             4: po,
             5: contract,
-            6: order.get("ship_to") or "MAXX",
-            7: "MAXX",
-            8: item,
-            9: item,
+            6: "MAXX",
+            7: order.get("project_name") or "",
+            8: parent_item,
+            9: item if _norm(item) != _norm(parent_item) else "/",
             10: description,
             11: qty,
             12: f"=IFERROR(K{row}/{int(line['pcs_per_carton'])},\"\")" if line.get("pcs_per_carton") else "",
             25: f"一箱{line['pcs_per_carton']}个" if line.get("pcs_per_carton") else "",
+            28: order.get("ship_to") or "",
             42: ship_date,
             43: usd_formula,
-            44: f"=AQ{row}*K{row}" if usd and qty else "",
+            44: f"=+AQ{row}*K{row}" if usd and qty else "",
+            46: order.get("delivery_term") or "",
             51: _notes(order, line),
         }
 
     if profile.code == "strottman":
         base_item = re.sub(r"-F\d+$", "", str(item), flags=re.I)
+        contract_text = str(contract or "").strip()
+        contract_match = re.fullmatch(r"PO(\d+)", contract_text, re.I)
+        schedule_contract: Any = (
+            int(contract_match.group(1))
+            if contract_match
+            else contract_text
+        )
         return {
-            1: po_date,
-            3: po,
-            4: "STROTTMAN",
-            5: contract,
-            6: order.get("ship_to") or "Strottman",
-            7: "Strottman",
-            8: base_item,
-            9: item if _norm(item) != _norm(base_item) else "",
-            10: description,
-            11: qty,
-            12: f"=IFERROR(K{row}/{int(line['pcs_per_carton'])},\"\")" if line.get("pcs_per_carton") else "",
-            23: f"一箱{line['pcs_per_carton']}个" if line.get("pcs_per_carton") else "",
-            39: ship_date,
-            40: usd_formula,
-            43: f"=AN{row}*K{row}" if usd and qty else "",
-            48: _notes(order, line),
+            1: "正常备料",
+            2: "正常生产",
+            3: base_item,
+            4: po_date,
+            5: schedule_contract,
+            6: base_item,
+            7: base_item,
+            8: description,
+            9: line.get("version") or order.get("version") or "",
+            10: qty,
+            13: ship_date,
+            18: order.get("ship_to") or "",
+            19: "STROTTMAN",
+            21: order.get("contact") or "朱江",
+            23: int(line["pcs_per_carton"]) if line.get("pcs_per_carton") else "",
+            24: f"=IFERROR(J{row}/W{row},\"\")" if line.get("pcs_per_carton") else "",
+            27: usd or "",
+            28: f"=AA{row}*{rate}" if usd else "",
+            29: f"=AA{row}*J{row}" if usd and qty else "",
+            30: f"=AB{row}*J{row}" if usd and qty else "",
+            32: f'=IF(AE{row}="","",AE{row}*J{row})',
+            33: _notes(order, line),
+            34: po_date,
         }
 
     price = hkd or (usd * exchange_rate if usd else 0)

@@ -41,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v16"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v17"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 96
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 89
+    assert len(registered_codes) == 122
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 115
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -86,7 +86,7 @@ def test_fixed_system_position_definition_contract():
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 80
+    assert len(general_manager.permission_codes) == 87
     assert (
         set(general_manager.permission_codes)
         | positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
@@ -98,6 +98,14 @@ def test_fixed_system_position_definition_contract():
             "injection_scheduling:manage_master",
             "injection_scheduling:manage_rules",
             "injection_scheduling:manage_import_profiles",
+            "shared_mold:approve",
+            "shared_mold:review",
+            "shared_mold:manage",
+            "shared_mold_price:propose",
+            "shared_mold_price:write",
+            "shared_mold_price:approve",
+            "shared_mold_price:manage",
+            *permission_codes.QC_INSPECTION_PERMISSION_CODES,
         )
     )
     assert "injection_scheduling:export" in general_manager.permission_codes
@@ -204,16 +212,19 @@ def test_fixed_system_position_definition_contract():
     expected_clerk_scheduling_permissions = {
         "injection_scheduling:read",
         "injection_scheduling:import",
-            "injection_scheduling:edit",
-            "injection_scheduling:report",
-            "injection_scheduling:export",
+        "injection_scheduling:edit",
+        "injection_scheduling:report",
+        "injection_scheduling:export",
+        "shared_mold:read",
+        "shared_mold_price:read",
+        "injection_scheduling:propose_import_profiles",
     }
     expected_supervisor_scheduling_permissions = {
         *expected_clerk_scheduling_permissions,
         "injection_scheduling:publish",
-            "injection_scheduling:rollback",
-            "injection_scheduling:manage_import_profiles",
-        }
+        "injection_scheduling:rollback",
+        "injection_scheduling:manage_import_profiles",
+    }
     assert molding_clerk.scope_mode == positions.CROSS_FACTORY_READ_SCOPE
     assert molding_supervisor.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
     assert molding_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
@@ -281,6 +292,25 @@ def test_fixed_system_position_definition_contract():
     assert customer_manage in positions.get_system_position("position_carton_supervisor").permission_codes
     assert customer_manage not in positions.get_system_position("position_carton_warehouse_keeper").permission_codes
     assert customer_manage not in positions.get_system_position("position_warehouse_keeper").permission_codes
+
+    qc_inspector = positions.get_system_position("position_qc_inspector")
+    qc_supervisor = positions.get_system_position("position_qc_supervisor")
+    qc_manager = positions.get_system_position("position_qc_manager")
+    assert qc_inspector.scope_mode == positions.OWN_FACTORY_SCOPE
+    assert qc_supervisor.scope_mode == positions.OWN_FACTORY_SCOPE
+    assert qc_manager.scope_mode == positions.OWN_FACTORY_SCOPE
+    assert set(qc_inspector.permission_codes) < set(qc_supervisor.permission_codes)
+    assert qc_manager.permission_codes == qc_supervisor.permission_codes
+    assert "qc_inspection:schedule_write" in qc_inspector.permission_codes
+    assert "qc_inspection:report_rename_execute" in qc_inspector.permission_codes
+    assert "qc_inspection:customer_manage" not in qc_inspector.permission_codes
+    assert "qc_inspection:customer_manage" in qc_supervisor.permission_codes
+    assert "qc_inspection:audit_read" in qc_manager.permission_codes
+    assert "qc_inspection:factory_summary" in qc_manager.permission_codes
+    assert all(
+        "qc_inspection:group_summary" not in definition.permission_codes
+        for definition in (qc_inspector, qc_supervisor, qc_manager)
+    )
 
     hashes = [
         positions.system_position_definition_hash(definition)
@@ -403,6 +433,7 @@ def test_reconcile_restores_drift_preserves_bindings_and_is_idempotent(monkeypat
                     updated_at=timestamp,
                 )
             )
+            db.flush()
             db.add(
                 models.AuthUserRole(
                     id=binding_id,
@@ -412,6 +443,7 @@ def test_reconcile_restores_drift_preserves_bindings_and_is_idempotent(monkeypat
                     department="engineering",
                 )
             )
+            db.flush()
             db.add(
                 models.AuthRoleBindingMetadata(
                     user_role_id=binding_id,
@@ -701,6 +733,7 @@ def test_reconcile_upgrades_legacy_production_task_position_matrix_without_losin
                     updated_at=timestamp,
                 )
             )
+            db.flush()
             db.add(
                 models.AuthUserRole(
                     id=binding_id,
