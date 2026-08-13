@@ -51,11 +51,11 @@ PROFILES: dict[str, ScheduleProfile] = {
         "index_schedule.xlsx",
         ("建文客排期表", "生产排期"),
         3,
-        46,
-        6,
-        (5, 6),
-        (3, 4, 5, 6, 8, 10),
-        "PO号、产品、数量、48pcs/carton、货期和美元价格",
+        53,
+        4,
+        (5, 9),
+        (1, 4, 5, 8, 9, 10, 11),
+        "按现行53列字段写入接单日期、PO/合同、大小货号、品名、数量、装箱、货期和港币价格",
     ),
     "jazwares": ScheduleProfile(
         "jazwares",
@@ -306,7 +306,7 @@ def _load_xls(path: str) -> Workbook:
     return wb
 
 
-def _repair_invalid_xlsx_dates(path: Path) -> tuple[BytesIO | None, list[str]]:
+def _repair_invalid_xlsx_dates(path: Path | BytesIO) -> tuple[BytesIO | None, list[str]]:
     """在内存副本中保留被错误套用日期格式的大整数。
 
     部分业务表把 SO/流水号单元格误设为日期。openpyxl 会把超出日期范围的值
@@ -387,6 +387,21 @@ def _repair_invalid_xlsx_dates(path: Path) -> tuple[BytesIO | None, list[str]]:
         return stream, repairs
 
 
+def repair_invalid_xlsx_date_bytes(content: bytes) -> tuple[bytes, list[str]]:
+    """Return an in-memory xlsx copy that keeps out-of-range date-styled IDs.
+
+    Full-workbook customer exports use the shared append engine instead of
+    ``_load_workbook``.  Applying the same repair to their input bytes prevents
+    historical SO/reference numbers with an accidental date style from becoming
+    ``#VALUE!`` while the new order rows are appended.
+    """
+    repaired_stream, repairs = _repair_invalid_xlsx_dates(BytesIO(content))
+    return (
+        repaired_stream.getvalue() if repaired_stream is not None else content,
+        repairs,
+    )
+
+
 def _load_workbook(path: Path) -> Workbook:
     if path.suffix.lower() == ".xls":
         return _load_xls(str(path))
@@ -442,7 +457,7 @@ def _row_key_from_order(profile: ScheduleProfile, order: dict[str, Any], line: d
 
 def _product_columns(profile: ScheduleProfile) -> tuple[tuple[int, ...], int]:
     if profile.code == "index":
-        return (6, 7, 3), 8
+        return (9, 8), 10
     if profile.code == "jazwares":
         return (9, 8), 10
     if profile.code == "maxx":
@@ -564,25 +579,24 @@ def compose_row(
     usd_formula = f"={_formula_number(usd)}*{rate}" if usd else ""
 
     if profile.code == "index":
-        customer = order.get("ship_to") or profile.label
+        customer = profile.label
         return {
-            3: item,
-            4: po_date,
+            1: po_date,
+            4: po,
             5: contract,
-            6: item,
-            7: item,
-            8: description,
-            10: qty,
-            13: ship_date,
-            19: customer,
-            20: po,
-            23: int(line["pcs_per_carton"]) if line.get("pcs_per_carton") else "",
-            24: f"=IFERROR(J{row}/W{row},\"\")" if line.get("pcs_per_carton") else "",
-            27: usd or "",
-            28: usd_formula,
-            29: f"=AA{row}*J{row}" if usd and qty else "",
-            30: f"=AB{row}*J{row}" if usd and qty else "",
-            33: _notes(order, line),
+            6: customer,
+            7: order.get("ship_to") or "",
+            8: item,
+            9: item,
+            10: description,
+            11: qty,
+            24: int(line["pcs_per_carton"]) if line.get("pcs_per_carton") else "",
+            25: f"=IFERROR(K{row}/X{row},\"\")" if line.get("pcs_per_carton") else "",
+            41: ship_date,
+            42: usd_formula,
+            43: f"=AP{row}*K{row}" if usd and qty else "",
+            44: ship_date,
+            49: _notes(order, line),
         }
 
     if profile.code == "jazwares":

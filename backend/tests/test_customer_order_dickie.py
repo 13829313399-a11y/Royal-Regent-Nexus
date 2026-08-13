@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
@@ -320,6 +321,34 @@ def build_dickie_schedule() -> bytes:
     return output.getvalue()
 
 
+def build_mixed_dickie_schedule() -> bytes:
+    workbook = openpyxl.load_workbook(BytesIO(build_dickie_schedule()))
+    item = workbook["Iteam表"]
+    item["A7"] = date(2026, 1, 1)
+    item["B7"] = "待混装"
+    item["C7"] = "待录入"
+    item["F7"] = "20 371 20232CH"
+    item["I7"] = 0
+    item["J7"] = "0/12"
+    for row_number, contract, product_no, product_name in (
+        (8, "500054230", "20 372 2013", "线控挖土机"),
+        (9, "500054232", "20 373 2000", "线控推土车"),
+        (10, "500053875", "20 371 2034038", "线控宝马车"),
+    ):
+        item.cell(row_number, 1).value = date(2026, 1, 1)
+        item.cell(row_number, 2).value = contract
+        item.cell(row_number, 3).value = "已入系统"
+        item.cell(row_number, 6).value = product_no
+        item.cell(row_number, 8).value = product_name
+        item.cell(row_number, 9).value = "=1000"
+        item.cell(row_number, 10).value = "0/12"
+
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
 def test_dickie_parser_maps_standard_release_order_and_mixed_allocations():
     standard = service._parse_dickie_ocr_pages(
         STANDARD_PAGES,
@@ -361,6 +390,11 @@ def test_dickie_parser_maps_standard_release_order_and_mixed_allocations():
         ("500054230/10", Decimal("336")),
         ("500054232/10", Decimal("336")),
         ("500053875/10", Decimal("336")),
+    ]
+    assert [allocation.item_no for allocation in mixed.attachment_allocations] == [
+        "203722013",
+        "203732000",
+        "203712034038",
     ]
     assert mixed.ship_date == "2026-06-06"
     assert mixed.customer_name == "Calendar"
@@ -416,6 +450,8 @@ def test_dickie_parser_handles_legacy_asw_and_tedi_attachment_rows():
     ]
     assert tedi.quantity == Decimal("6340")
     assert tedi.unit_price_hkd == Decimal("16.22")
+    assert tedi.customer_name == "Tedi Germany"
+    assert tedi.country == "德国"
     assert tedi.allocations == [
         ("500052620/10", Decimal("2536")),
         ("500052620/20", Decimal("3804")),
@@ -514,6 +550,9 @@ def test_dickie_preview_and_export_write_three_tables_and_deduct_matching_stock(
     assert workbook.read_cell_formula("接单表", order_row_number, "L") == (
         f"I{order_row_number}*K{order_row_number}"
     )
+    assert workbook.read_cell_formula("接单表", order_row_number, "O") == (
+        f"VLOOKUP(D{order_row_number},'正单评审表'!D:R,15,0)"
+    )
 
     review_row_number = next(
         row_number
@@ -522,6 +561,10 @@ def test_dickie_preview_and_export_write_three_tables_and_deduct_matching_stock(
     )
     assert review_row_number == 307
     assert workbook.read_rows("正单评审表")[review_row_number]["S"] == "14.6"
+    assert workbook.read_cell_formula("正单评审表", review_row_number, "K") == (
+        f"I{review_row_number}/24"
+    )
+    assert workbook.read_rows("正单评审表")[review_row_number]["K"] == "30"
     assert workbook.read_cell_formula("正单评审表", review_row_number, "T") == (
         f"I{review_row_number}*S{review_row_number}"
     )
@@ -547,6 +590,114 @@ def test_dickie_preview_and_export_write_three_tables_and_deduct_matching_stock(
     assert rendered["正单评审表"][f"D{review_row_number}"].fill.fgColor.rgb == "FFFFFF00"
     assert rendered["Iteam表"][f"F{system_row_number}"].fill.fgColor.rgb != "FFFFFF00"
     rendered.close()
+
+
+def test_dickie_mixed_export_writes_all_contracts_and_deducts_each_child_item(monkeypatch):
+    schedule_content = build_mixed_dickie_schedule()
+    monkeypatch.setattr(service, "_extract_pdf_ocr_pages", lambda _content: MIXED_PAGES)
+    po_files = [("SC700143686-2000.pdf", b"%PDF-1.7 synthetic")]
+
+    preview = service.create_dickie_batch_preview(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年.Dickie 生产情况.xlsx",
+        schedule_content=schedule_content,
+    )
+    assert preview["summary"] == {"total": 1, "valid": 1, "warning": 0, "blocked": 0}
+    row = preview["rows"][0]
+    assert row["contract_no"] == (
+        "500054230/10 336pc\n500054232/10 336pc\n500053875/10 336pc"
+    )
+    assert row["po_no"] == (
+        "300488338/10\n300488339/10\n300488337/10"
+    )
+    assert row["product_name_zh"] == (
+        "1*20 372 2013线控挖土机+1*20 373 2000线控推土车+"
+        "1*20 371 2034038线控宝马车"
+    )
+    assert row["customer_q"] == "2026-05-29"
+
+    output, _, _ = service.export_dickie_batch_schedule(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=po_files,
+        schedule_file_name="2026年.Dickie 生产情况.xlsx",
+        schedule_content=schedule_content,
+    )
+    plain, _ = _decrypt_schedule(output)
+    workbook = service.DickieSchedule(plain)
+    item_row_number, item_values = next(
+        (row_number, values)
+        for row_number, values in workbook.read_rows("Iteam表").items()
+        if values.get("C") == "SC700143686-2000"
+    )
+    assert item_values["B"] == row["contract_no"]
+    assert item_values["D"] == row["po_no"]
+    assert item_values["H"] == row["product_name_zh"]
+
+    expected_formulas = {
+        "20 372 2013": "1000-336",
+        "20 373 2000": "1000-336",
+        "20 371 2034038": "1000-336",
+    }
+    for product_no, expected_formula in expected_formulas.items():
+        system_row = next(
+            row_number
+            for row_number, values in workbook.read_rows("Iteam表").items()
+            if values.get("C") == "已入系统" and values.get("F") == product_no
+        )
+        assert workbook.read_cell_formula("Iteam表", system_row, "I") == expected_formula
+
+    for sheet_name in ("接单表", "正单评审表"):
+        contract_column = "C"
+        reference_column = "D"
+        values = workbook.read_rows(sheet_name)
+        inserted_row = next(
+            row_number
+            for row_number, row_values in values.items()
+            if row_values.get(reference_column) == "SC700143686-2000"
+        )
+        assert values[inserted_row][contract_column] == row["contract_no"]
+        if sheet_name == "正单评审表":
+            assert workbook.read_cell_formula(sheet_name, inserted_row, "K") == (
+                f"I{inserted_row}/12"
+            )
+            assert values[inserted_row]["K"] == "84"
+    assert item_row_number < min(
+        row_number
+        for row_number, values in workbook.read_rows("Iteam表").items()
+        if values.get("C") == "已入系统" and values.get("F") in expected_formulas
+    )
+
+
+def test_dickie_same_mixed_product_keeps_uploaded_reference_order(monkeypatch):
+    first = service._parse_dickie_ocr_pages(
+        MIXED_PAGES,
+        fallback_received_date="2026-07-29",
+    )
+    second = replace(first, reference_no="SC700143686-2100")
+    monkeypatch.setattr(
+        service,
+        "parse_dickie_pdf_orders",
+        lambda *_args, **_kwargs: [first, second],
+    )
+
+    output, _, _ = service.export_dickie_batch_schedule(
+        factory_id="huaxing",
+        received_date="2026-07-29",
+        po_files=[("combined.pdf", b"%PDF-1.7 synthetic")],
+        schedule_file_name="2026年.Dickie 生产情况.xlsx",
+        schedule_content=build_mixed_dickie_schedule(),
+    )
+    plain, _ = _decrypt_schedule(output)
+    workbook = service.DickieSchedule(plain)
+    references = [
+        values.get("C")
+        for _, values in sorted(workbook.read_rows("Iteam表").items())
+        if values.get("C") in {first.reference_no, second.reference_no}
+    ]
+    assert references == [first.reference_no, second.reference_no]
 
 
 def _format_serial(value: str) -> str:
