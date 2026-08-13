@@ -3,8 +3,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
-
 from app.core.config import Settings
 from app.models.injection_scheduling_scheduler import InjectionSchedulingRun
 from app.schemas.ai import AIServerPageContext, AIToolRiskLevel
@@ -18,6 +16,7 @@ from app.services.ai.tools.scheduling_advisor_tools import (
     scheduling_advisor_tool_specs,
 )
 from app.services.auth import AuthContext, AuthGrantContext
+from pydantic import ValidationError
 
 
 def _user(*, include_edit: bool = True) -> AuthContext:
@@ -245,6 +244,15 @@ def test_generate_preview_calls_existing_scheduler_and_returns_persisted_metrics
     assert result.run.metrics.scheduled_count == 1
     assert result.run.metrics.overdue.change == -1
     assert result.run.metrics.load_ratio_average == 0.625
+    manifest = result.run.preview_manifest
+    assert manifest is not None
+    assert manifest.preview_type == "injection_scheduling.run"
+    assert manifest.status == "READY"
+    assert manifest.can_propose_action is True
+    assert manifest.action_capability == "CREATE_PROPOSAL_ONLY"
+    assert manifest.no_write_performed is True
+    assert manifest.source_revision_hash != manifest.input_hash
+    assert manifest.evidence_refs[0].source_level == "FORMAL_DOMAIN_SERVICE"
     serialized = result.model_dump(mode="json")
     assert "secret-machine-a" not in json.dumps(serialized)
     assert "assignments" not in serialized["run"]

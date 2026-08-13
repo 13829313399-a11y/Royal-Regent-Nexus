@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.ai.preview import AIPreviewManifestV1, AIScenarioCompareContractV1
 from app.schemas.ai.scheduling import AIEntityLink
 from app.schemas.ai.tool import StrictToolInput
 
@@ -114,6 +115,7 @@ class AISchedulingPreviewRunSummary(BaseModel):
     horizon_start: str
     horizon_end: str
     metrics: AISchedulingPreviewMetrics
+    preview_manifest: AIPreviewManifestV1 | None = None
 
 
 class AIInjectionSchedulingPreviewData(BaseModel):
@@ -150,4 +152,5 @@ class AIInjectionSchedulingComparisonData(BaseModel):
     comparable_snapshot: bool
     comparison_warning: str
     runs: list[AISchedulingPreviewRunSummary] = Field(min_length=2, max_length=4)
+    scenario_compare: AIScenarioCompareContractV1 | None = None
     entity_links: list[AIEntityLink]

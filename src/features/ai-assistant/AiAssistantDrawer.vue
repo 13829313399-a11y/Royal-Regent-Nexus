@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Bot, RefreshCcw, ShieldCheck, Sparkles, X } from '@lucide/vue'
-import { useRoute } from 'vue-router'
+import { Bot, ExternalLink, RefreshCcw, ShieldCheck, Sparkles, X } from '@lucide/vue'
+import { useRoute, useRouter } from 'vue-router'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
+import { createVisionObservationTask } from '@/api/aiTasks'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import AiBusinessResultCard from './AiBusinessResultCard.vue'
@@ -14,6 +15,7 @@ import AiToolActivity from './AiToolActivity.vue'
 import { buildAIPageContext, isAIBusinessRoute, supportsAIVisionContext } from './pageContext'
 import { suggestedPrompts } from './promptPresets'
 import { useAIAssistantStore } from './store'
+import { useAIConversationsStore } from './stores/conversations'
 
 interface ComposerHandle {
   clear: () => void
@@ -23,17 +25,21 @@ interface ComposerHandle {
 interface AttachmentTrayHandle {
   addFiles: (files: FileList | readonly File[]) => Promise<void>
   clear: () => void
-  prepareForSend: () => Promise<{
+  prepareForSend: (factoryId?: string) => Promise<{
     attachments: import('./types').AIRequestAttachment[]
     consent: import('./types').AICloudProcessingConsent | null
+    artifactAttachments: import('./types').AIArtifactAttachmentReference[]
+    artifactConsent: import('./types').AIArtifactEgressConsent | null
   } | null>
   resetConsent: () => void
 }
 
 const route = useRoute()
+const router = useRouter()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const assistantStore = useAIAssistantStore()
+const conversationsStore = useAIConversationsStore()
 const trigger = ref<HTMLButtonElement | null>(null)
 const drawer = ref<HTMLElement | null>(null)
 const composer = ref<ComposerHandle | null>(null)
@@ -56,6 +62,15 @@ const canAttachImages = computed(() => Boolean(
   && supportsAIVisionContext(pageContext.value),
 ))
 const prompts = computed(() => suggestedPrompts(pageContext.value))
+const conversationPersistenceEnabled = computed(() => (
+  assistantStore.capabilities?.conversation_persistence === true
+))
+const visionComparisonEnabled = computed(() => (
+  assistantStore.capabilities?.vision_tool_comparison_enabled === true
+))
+const feedbackFactoryId = computed(() => (
+  pageContext.value?.factory_id ?? String(appStore.activeFactoryId)
+))
 
 function focusableElements() {
   if (!drawer.value) return []
@@ -110,20 +125,95 @@ async function sendMessage(prompt: string) {
   let batch: {
     attachments: import('./types').AIRequestAttachment[]
     consent: import('./types').AICloudProcessingConsent | null
-  } = { attachments: [], consent: null }
+    artifactAttachments: import('./types').AIArtifactAttachmentReference[]
+    artifactConsent: import('./types').AIArtifactEgressConsent | null
+  } = {
+    attachments: [],
+    consent: null,
+    artifactAttachments: [],
+    artifactConsent: null,
+  }
   if (canAttachImages.value) {
-    const prepared = await attachmentTray.value?.prepareForSend()
+    const selectedFactory = pageContext.value?.factory_id ?? ''
+    const prepared = await attachmentTray.value?.prepareForSend(selectedFactory)
     if (prepared === null) return
     batch = prepared ?? batch
+    if ((buildAIPageContext(route, String(appStore.activeFactoryId))?.factory_id ?? '') !== selectedFactory) {
+      attachmentTray.value?.resetConsent()
+      assistantStore.reportClientError('页面或厂区已变化，请重新确认图片云端处理。')
+      return
+    }
   }
   // Build after any asynchronous image reads so route/factory context cannot go stale.
   const context = buildAIPageContext(route, String(appStore.activeFactoryId))
-  composer.value?.clear()
   try {
-    await assistantStore.sendMessage(prompt, context, batch.attachments, batch.consent)
+    if (visionComparisonEnabled.value && batch.artifactAttachments.length) {
+      if (
+        batch.artifactAttachments.length !== 1
+        || !batch.artifactConsent
+        || context?.route_name !== 'injection-scheduling-v2'
+        || !context.factory_id
+      ) {
+        assistantStore.reportClientError('首批正式核对每次只接受一张当前厂区的排期截图。')
+        return
+      }
+      const task = await createVisionObservationTask({
+        artifactId: batch.artifactAttachments[0]!.artifact_id,
+        factoryId: context.factory_id,
+        consent: batch.artifactConsent,
+        pageContext: context,
+      })
+      composer.value?.clear()
+      closeDrawer(false)
+      await router.push({ name: 'ai-workbench', query: { task: task.id } })
+      return
+    }
+    let conversationId = assistantStore.activeConversationId
+    if (conversationPersistenceEnabled.value && !conversationId) {
+      const created = await conversationsStore.create({
+        mode: 'PERSISTENT',
+        factoryScope: String(appStore.activeProductionFactory?.id ?? 'huaxing'),
+        title: prompt.trim().slice(0, 80),
+      })
+      const detail = await conversationsStore.open(created.id)
+      assistantStore.bindConversation(detail.id, detail.mode, detail.messages)
+      conversationId = detail.id
+    }
+    composer.value?.clear()
+    await assistantStore.sendMessage(
+      prompt,
+      context,
+      batch.attachments,
+      batch.consent,
+      batch.artifactAttachments,
+      batch.artifactConsent,
+    )
+    if (conversationId && assistantStore.activeConversationMode === 'PERSISTENT') {
+      const detail = await conversationsStore.open(conversationId)
+      assistantStore.bindConversation(detail.id, detail.mode, detail.messages)
+    } else if (conversationId) {
+      await conversationsStore.loadList(true)
+    }
+  } catch {
+    assistantStore.reportClientError(
+      visionComparisonEnabled.value && batch.artifactAttachments.length
+        ? '图片 Observation 任务创建失败；正式 Backlog 未被读取或修改。'
+        : '会话暂时无法保存或重新读取，请稍后重试。',
+    )
   } finally {
-    if (batch.attachments.length) attachmentTray.value?.clear()
+    if (batch.attachments.length || batch.artifactAttachments.length) {
+      attachmentTray.value?.clear()
+    }
   }
+}
+
+async function continueInWorkbench() {
+  const conversationId = assistantStore.activeConversationId
+  closeDrawer(false)
+  await router.push({
+    name: 'ai-workbench',
+    query: conversationId ? { conversation: conversationId } : {},
+  })
 }
 
 async function retryLastTextRequest() {
@@ -153,6 +243,7 @@ watch(
   () => authStore.sessionVersion,
   async () => {
     attachmentTray.value?.clear()
+    conversationsStore.reset()
     assistantStore.resetForSession()
     if (isEligible.value) await assistantStore.loadCapabilities(true)
   },
@@ -251,12 +342,33 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="flex size-9 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
-              aria-label="关闭 AI 助手并清空对话"
+              :aria-label="assistantStore.activeConversationMode === 'PERSISTENT'
+                ? '关闭 AI 助手'
+                : '关闭 AI 助手并清空对话'"
               @click="closeDrawer()"
             >
               <X class="size-4" aria-hidden="true" />
             </button>
           </header>
+
+          <div
+            v-if="conversationPersistenceEnabled"
+            class="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2 sm:px-5"
+          >
+            <p class="text-[11px] text-slate-500">
+              {{ assistantStore.activeConversationMode === 'TEMPORARY'
+                ? '临时会话 · 不保存正文'
+                : '持久会话 · 正文与摘要最多保留 30 天' }}
+            </p>
+            <button
+              type="button"
+              class="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-sky-700 hover:text-sky-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
+              @click="continueInWorkbench"
+            >
+              在工作台继续
+              <ExternalLink class="size-3.5" aria-hidden="true" />
+            </button>
+          </div>
 
           <section
             data-ai-pilot-status
@@ -269,7 +381,11 @@ onBeforeUnmount(() => {
             </p>
           </section>
 
-          <AiMessageList :messages="assistantStore.messages">
+          <AiMessageList
+            :messages="assistantStore.messages"
+            :feedback-enabled="assistantStore.capabilities?.feedback_enabled === true"
+            :factory-id="feedbackFactoryId"
+          >
             <AiToolActivity :items="assistantStore.activities" />
             <AiBusinessResultCard
               :results="assistantStore.businessResults"
@@ -306,6 +422,7 @@ onBeforeUnmount(() => {
             v-if="canAttachImages"
             ref="attachmentTray"
             :disabled="assistantStore.isStreaming"
+            :artifact-workflow-enabled="assistantStore.capabilities?.artifact_workflows_enabled === true"
           />
           <AiComposer
             ref="composer"

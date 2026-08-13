@@ -1,0 +1,183 @@
+{
+  "fixture_version": "ai-legacy-responses-v1",
+  "nif_runtime_flag": {
+    "environment_name": "AI_NIF_RUNTIME_ENABLED",
+    "default": false,
+    "legacy_behavior_when_false": "unchanged"
+  },
+  "provider_capability_router_flag": {
+    "environment_name": "AI_PROVIDER_CAPABILITY_ROUTER_ENABLED",
+    "default": false,
+    "legacy_behavior_when_false": "legacy ProviderRequest model, reasoning and limits unchanged"
+  },
+  "chat_request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "你好"
+          }
+        ]
+      }
+    ],
+    "page_context": null,
+    "attachments": [],
+    "cloud_processing_consent": null
+  },
+  "capabilities_disabled": {
+    "enabled": false,
+    "available": false,
+    "provider": "qwen",
+    "model": "qwen3.7-plus",
+    "streaming": false,
+    "vision_enabled": false,
+    "conversation_persistence": false,
+    "tool_groups": [],
+    "pilot_access": {
+      "granted": false,
+      "status": "DISABLED",
+      "read_only": false,
+      "max_tool_risk_level": "PREVIEW_WITH_AUDIT"
+    }
+  },
+  "capabilities_fake_pilot": {
+    "enabled": true,
+    "available": true,
+    "provider": "fake",
+    "model": "fake-model",
+    "streaming": true,
+    "vision_enabled": false,
+    "conversation_persistence": false,
+    "tool_groups": [
+      "identity"
+    ],
+    "pilot_access": {
+      "granted": true,
+      "status": "GRANTED",
+      "read_only": false,
+      "max_tool_risk_level": "PREVIEW_WITH_AUDIT"
+    }
+  },
+  "http_errors": {
+    "anonymous_status": 401,
+    "disabled": {
+      "status": 503,
+      "body": {
+        "detail": {
+          "code": "AI_DISABLED",
+          "message": "AI 功能当前未启用。",
+          "retryable": false
+        }
+      }
+    },
+    "pilot_denied": {
+      "status": 403,
+      "code": "AI_PILOT_ACCESS_DENIED"
+    },
+    "invalid_request": {
+      "status": 422,
+      "body": {
+        "detail": {
+          "code": "AI_INVALID_REQUEST",
+          "message": "请求格式不正确，请检查消息内容后重试。",
+          "retryable": false
+        }
+      }
+    }
+  },
+  "tool_registry": {
+    "default_count": 13,
+    "default": [
+      {
+        "name": "carton_procurement.list_summaries",
+        "group": "carton_procurement",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "customer_order.get_capabilities",
+        "group": "customer_order",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "customer_order.list_export_audits",
+        "group": "customer_order",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "identity.get_current_context",
+        "group": "identity",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "injection_scheduling.compare_previews",
+        "group": "injection_scheduling",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "injection_scheduling.generate_preview",
+        "group": "injection_scheduling",
+        "risk": "PREVIEW_WITH_AUDIT"
+      },
+      {
+        "name": "injection_scheduling.get_backlog",
+        "group": "injection_scheduling",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "injection_scheduling.get_plan_context",
+        "group": "injection_scheduling",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "internal_quote.list_summaries",
+        "group": "internal_quote",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "knowledge.get_module_help",
+        "group": "module_knowledge",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "molding_sample.list_summaries",
+        "group": "molding_sample",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "raw_material.list_inventory_summaries",
+        "group": "raw_material",
+        "risk": "READ_ONLY"
+      },
+      {
+        "name": "raw_material.list_master_summaries",
+        "group": "raw_material",
+        "risk": "READ_ONLY"
+      }
+    ],
+    "controlled_apply_proposal": {
+      "name": "injection_scheduling.propose_apply",
+      "group": "injection_scheduling",
+      "risk": "PREVIEW_WITH_AUDIT"
+    },
+    "controlled_apply_count": 14
+  },
+  "vision_request": {
+    "requires_per_request_consent": true,
+    "provider_tool_count": 0,
+    "max_provider_calls": 1,
+    "unexpected_tool_event_types": [
+      "response.started",
+      "error"
+    ],
+    "unexpected_tool_error_code": "AI_UNEXPECTED_TOOL_CALL"
+  },
+  "action_boundary": {
+    "model_callable_proposal": "injection_scheduling.propose_apply",
+    "non_model_callable_execute_handler": "injection_scheduling.apply_preview_run",
+    "execute_resource": "/api/ai/action-confirmations/{confirmation_id}/execute",
+    "execute_method": "POST",
+    "configured_off_status": 404
+  }
+}

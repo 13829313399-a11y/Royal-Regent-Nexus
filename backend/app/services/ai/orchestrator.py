@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 import logging
 import re
 from collections.abc import AsyncIterator, Callable
@@ -23,6 +24,7 @@ from app.services.ai.attachment_service import (
     prepare_image_attachments,
 )
 from app.services.ai.context_builder import render_server_page_context, supports_vision
+from app.services.ai.observability.metrics import AIObservabilityEvent
 from app.services.ai.output_policy import (
     SYSTEM_POLICY,
     AIErrorCode,
@@ -32,22 +34,42 @@ from app.services.ai.output_policy import (
     public_provider_error,
     timeout_error,
 )
+from app.services.ai.prompts.compiler import CompiledPrompt, PromptCompiler
 from app.services.ai.provider_factory import get_vision_provider_status
 from app.services.ai.providers.base import (
     LLMProvider,
     ProviderCompleted,
     ProviderError,
     ProviderErrorCode,
+    ProviderErrorEvent,
     ProviderImageContent,
+    ProviderIncomplete,
     ProviderMessage,
-    ProviderRequest,
+    ProviderRefusal,
     ProviderTextContent,
     ProviderTextDelta,
     ProviderToolCall,
     ProviderToolCallEvent,
     ProviderToolResult,
+    ProviderUsage,
+    ProviderUsageEvent,
 )
+from app.services.ai.providers.capabilities import (
+    InputModality,
+    ModelCapability,
+    ReasoningPolicy,
+)
+from app.services.ai.providers.router import (
+    ProviderRoute,
+    ProviderRoutingError,
+    build_provider_request,
+    resolve_provider_route,
+)
+from app.services.ai.runtime.plan import RuntimePlan, RuntimePlanBuilder
 from app.services.ai.runtime_gate import is_ai_runtime_disabled
+from app.services.ai.skills.contracts import SkillRegistryError
+from app.services.ai.skills.registry import SkillRegistry
+from app.services.ai.skills.router import SkillRoute, SkillRouter
 from app.services.ai.tool_executor import ToolExecutionContext, ToolExecutor
 from app.services.ai.tool_registry import ToolRegistry
 
@@ -69,6 +91,10 @@ class ValidatedChatInput:
     page_context: AIPageContextInput | None = None
     server_page_context: AIServerPageContext | None = None
     attachments: tuple[PreparedImageAttachment, ...] = ()
+    artifact_ids: tuple[str, ...] = ()
+    conversation_id: str | None = None
+    conversation_user_message_id: str | None = None
+    conversation_history_truncated: bool = False
 
 
 class AIRequestValidationError(ValueError):
@@ -109,10 +135,12 @@ def validate_chat_request_envelope(
             f"消息总长度不能超过 {settings.ai_max_input_chars} 个字符。"
         )
 
-    if request.attachments:
+    has_images = bool(request.attachments or request.artifact_attachments)
+    if has_images:
         vision_status = get_vision_provider_status(settings)
         if not vision_status.available:
             raise AIRequestValidationError("图片识别功能当前未启用。")
+    if request.attachments:
         consent = request.cloud_processing_consent
         attachment_ids = [attachment.id for attachment in request.attachments]
         if (
@@ -210,6 +238,7 @@ class AIOrchestrator:
         provider_started_recorder: Callable[[], None] | None = None,
         usage_recorder: Callable[[int], None] | None = None,
         completion_recorder: Callable[[], None] | None = None,
+        metric_recorder: Callable[[AIObservabilityEvent], None] | None = None,
     ) -> None:
         if (tool_registry is None) != (tool_executor is None):
             raise ValueError(
@@ -222,6 +251,7 @@ class AIOrchestrator:
         self.provider_started_recorder = provider_started_recorder
         self.usage_recorder = usage_recorder
         self.completion_recorder = completion_recorder
+        self.metric_recorder = metric_recorder
 
     async def stream(
         self,
@@ -249,10 +279,109 @@ class AIOrchestrator:
         provider_stream: AsyncIterator[object] | None = None
         started_at = perf_counter()
         provider_name = self.provider.provider_name
-        model = (
+        legacy_model = (
             self.settings.ai_vision_model.strip()
             if chat.attachments
             else self.settings.ai_default_model.strip()
+        )
+        route: ProviderRoute | None = None
+        route_error: ProviderRoutingError | None = None
+        input_modalities = (
+            frozenset({InputModality.TEXT, InputModality.IMAGE})
+            if chat.attachments
+            else frozenset({InputModality.TEXT})
+        )
+        skill_runtime_enabled = (
+            self.settings.ai_nif_runtime_enabled
+            and self.settings.ai_skill_router_enabled
+        )
+        skill_route: SkillRoute | None = None
+        runtime_plan: RuntimePlan | None = None
+        compiled_prompt: CompiledPrompt | None = None
+        skill_error: SkillRegistryError | None = None
+        if skill_runtime_enabled:
+            try:
+                if self.tool_registry is None or tool_context is None:
+                    raise SkillRegistryError("Skill Runtime requires the Tool Registry")
+                skill_registry = SkillRegistry(self.tool_registry)
+                final_user_text = next(
+                    (
+                        message.content
+                        for message in reversed(chat.messages)
+                        if message.role == "user" and isinstance(message.content, str)
+                    ),
+                    "",
+                )
+                skill_route = SkillRouter(skill_registry).route(
+                    text=final_user_text,
+                    context=tool_context,
+                    has_image=bool(chat.attachments),
+                )
+                runtime_plan = RuntimePlanBuilder(skill_registry).build(
+                    primary_skill_id=skill_route.primary_skill.manifest.id,
+                    context=tool_context,
+                )
+                compiled_prompt = PromptCompiler(skill_registry).compile(
+                    runtime_plan,
+                    tool_context,
+                )
+            except SkillRegistryError as exc:
+                skill_error = exc
+        try:
+            route = resolve_provider_route(
+                self.settings,
+                capability=(
+                    skill_route.primary_skill.manifest.model_policy.capability
+                    if skill_route is not None
+                    else (
+                        ModelCapability.MULTIMODAL_GENERAL
+                        if chat.attachments
+                        else ModelCapability.GENERAL_CHAT
+                    )
+                ),
+                reasoning_policy=(
+                    skill_route.primary_skill.manifest.model_policy.reasoning
+                    if skill_route is not None
+                    else ReasoningPolicy.BALANCED
+                ),
+                legacy_model=legacy_model,
+                input_modalities=input_modalities,
+                require_streaming=True,
+                require_custom_tools=(
+                    not chat.attachments
+                    and self.tool_registry is not None
+                    and (runtime_plan is None or bool(runtime_plan.allowed_tool_names))
+                ),
+                required_region=(
+                    self.settings.ai_region.strip().lower()
+                    if chat.attachments
+                    else None
+                ),
+            )
+        except ProviderRoutingError as exc:
+            route_error = exc
+        model = route.model if route is not None else legacy_model
+        skill_event_metadata: dict[str, object] = (
+            {
+                "skill_id": runtime_plan.primary_skill_id,
+                "skill_version": runtime_plan.primary_skill_version,
+                "skill_route_source": skill_route.source if skill_route else "",
+                "skill_intent": skill_route.intent if skill_route else "",
+                "skill_complexity": (
+                    skill_route.complexity.value if skill_route else ""
+                ),
+                "skill_hash": compiled_prompt.skill_hash if compiled_prompt else "",
+                "prompt_version": (
+                    compiled_prompt.prompt_version if compiled_prompt else ""
+                ),
+                "prompt_hash": compiled_prompt.prompt_hash if compiled_prompt else "",
+                "tool_versions": (
+                    list(compiled_prompt.tool_versions) if compiled_prompt else []
+                ),
+                "output_schema_id": runtime_plan.output_schema_id,
+            }
+            if runtime_plan is not None
+            else {}
         )
         pending_output = ""
         output_guard_tail = ""
@@ -283,8 +412,10 @@ class AIOrchestrator:
 
         def log_terminal(status: str, error_code: str = "") -> None:
             duration_ms = (perf_counter() - started_at) * 1000
+            normalized_error = error_code or observed_tool_error_code
             ai_logger.info(
                 "ai_stream request_id=%s user_id=%s provider=%s model=%s "
+                "capability_profile=%s catalog_version=%s reasoning_policy=%s "
                 "status=%s duration_ms=%.2f input_messages=%d input_chars=%d attachments=%d "
                 "output_deltas=%d output_chars=%d tool_count=%d tool_rounds=%d "
                 "factory_id=%s module_id=%s input_tokens=%d output_tokens=%d "
@@ -294,6 +425,9 @@ class AIOrchestrator:
                 user_id,
                 provider_name,
                 model,
+                route.capability_profile if route is not None else "legacy-v1",
+                route.catalog_version if route is not None else "",
+                route.reasoning_policy.value if route is not None else "legacy",
                 status,
                 duration_ms,
                 chat.message_count,
@@ -311,15 +445,71 @@ class AIOrchestrator:
                 tool_latency_ms,
                 returned_rows,
                 truncated,
-                error_code or observed_tool_error_code,
+                normalized_error,
             )
+            if self.metric_recorder is not None:
+                denied = normalized_error in {
+                    "AI_TOOL_PERMISSION_DENIED",
+                    "AI_TOOL_DEPARTMENT_NOT_ALLOWED",
+                    "AI_TOOL_INVALID_FACTORY",
+                    "AI_TOOL_RISK_NOT_ALLOWED",
+                    "AI_UNEXPECTED_TOOL_CALL",
+                }
+                self.metric_recorder(
+                    AIObservabilityEvent(
+                        request_id=request_id,
+                        event_type="MODEL_RUN",
+                        event_key="terminal",
+                        owner_user_id=user_id,
+                        factory_id=factory_id,
+                        conversation_id=chat.conversation_id or "",
+                        skill_id=(
+                            runtime_plan.primary_skill_id if runtime_plan else ""
+                        ),
+                        skill_version=(
+                            runtime_plan.primary_skill_version if runtime_plan else ""
+                        ),
+                        skill_hash=(
+                            compiled_prompt.skill_hash if compiled_prompt else ""
+                        ),
+                        prompt_version=(
+                            compiled_prompt.prompt_version if compiled_prompt else ""
+                        ),
+                        prompt_hash=(
+                            compiled_prompt.prompt_hash if compiled_prompt else ""
+                        ),
+                        provider=provider_name,
+                        model=model,
+                        status=(
+                            "SUCCESS"
+                            if status == "completed"
+                            else "CANCELLED"
+                            if status == "cancelled"
+                            else "DENIED"
+                            if denied
+                            else "FAILURE"
+                        ),
+                        duration_ms=round(duration_ms),
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        error_code=normalized_error,
+                        truncated=truncated,
+                    )
+                )
 
         async def emit_error(error: PublicAIError) -> AsyncIterator[AIStreamEvent]:
             log_terminal("error", error.code.value)
             yield make_event("error", error.payload())
 
         preflight_error: PublicAIError | None = None
-        if is_ai_runtime_disabled(self.settings):
+        if skill_error is not None:
+            preflight_error = PublicAIError(
+                code=AIErrorCode.INVALID_REQUEST,
+                message="当前请求没有可用的已授权 AI Skill，请刷新页面或缩小问题范围。",
+            )
+        elif route_error is not None:
+            preflight_error = public_configuration_error(route_error.reason)
+        elif is_ai_runtime_disabled(self.settings):
             preflight_error = public_configuration_error("disabled")
         elif chat.attachments and not supports_vision(chat.server_page_context):
             preflight_error = PublicAIError(
@@ -343,6 +533,17 @@ class AIOrchestrator:
                         "model": model,
                         "attachment_count": len(chat.attachments),
                         "input_source": "USER_PROVIDED",
+                        **skill_event_metadata,
+                        **(
+                            {
+                                "capability_profile": route.capability_profile,
+                                "catalog_version": route.catalog_version,
+                                "capability_alias": route.capability.value,
+                                "reasoning_policy": route.reasoning_policy.value,
+                            }
+                            if route is not None and route.contract_version == "2"
+                            else {}
+                        ),
                     },
                 )
                 async for terminal in emit_error(preflight_error):
@@ -356,8 +557,14 @@ class AIOrchestrator:
             server_context_message = render_server_page_context(
                 chat.server_page_context
             )
-            provider_input = [ProviderMessage(role="system", content=SYSTEM_POLICY)]
-            if server_context_message is not None:
+            provider_input = [
+                compiled_prompt.system_message
+                if compiled_prompt is not None
+                else ProviderMessage(role="system", content=SYSTEM_POLICY)
+            ]
+            if compiled_prompt is not None:
+                provider_input.extend(compiled_prompt.data_messages)
+            if compiled_prompt is None and server_context_message is not None:
                 provider_input.append(
                     ProviderMessage(role="system", content=server_context_message)
                 )
@@ -392,12 +599,16 @@ class AIOrchestrator:
 
         ai_logger.info(
             "ai_stream request_id=%s user_id=%s provider=%s model=%s "
+            "capability_profile=%s catalog_version=%s reasoning_policy=%s "
             "status=started input_messages=%d input_chars=%d attachments=%d "
             "factory_id=%s module_id=%s",
             request_id,
             user_id,
             provider_name,
             model,
+            route.capability_profile if route is not None else "legacy-v1",
+            route.catalog_version if route is not None else "",
+            route.reasoning_policy.value if route is not None else "legacy",
             chat.message_count,
             chat.input_chars,
             len(chat.attachments),
@@ -412,6 +623,17 @@ class AIOrchestrator:
                     "model": model,
                     "attachment_count": len(chat.attachments),
                     **({"input_source": "USER_PROVIDED"} if chat.attachments else {}),
+                    **skill_event_metadata,
+                    **(
+                        {
+                            "capability_profile": route.capability_profile,
+                            "catalog_version": route.catalog_version,
+                            "capability_alias": route.capability.value,
+                            "reasoning_policy": route.reasoning_policy.value,
+                        }
+                        if route is not None and route.contract_version == "2"
+                        else {}
+                    ),
                 },
             )
             async with asyncio.timeout(self.settings.ai_request_timeout_seconds):
@@ -423,9 +645,17 @@ class AIOrchestrator:
                             yield terminal
                         return
                     provider_completed: ProviderCompleted | None = None
+                    provider_usage = ProviderUsage()
                     pending_tool_calls: list[ProviderToolCall] = []
                     provider_tools = (
-                        self.tool_registry.provider_definitions(tool_context)
+                        (
+                            self.tool_registry.provider_definitions_for_names(
+                                tool_context,
+                                runtime_plan.allowed_tool_names,
+                            )
+                            if runtime_plan is not None
+                            else self.tool_registry.provider_definitions(tool_context)
+                        )
                         if (
                             not chat.attachments
                             and self.tool_registry is not None
@@ -433,12 +663,14 @@ class AIOrchestrator:
                         )
                         else ()
                     )
-                    provider_request = ProviderRequest(
-                        model=model,
+                    assert route is not None
+                    provider_request = build_provider_request(
+                        route,
+                        request_id=request_id,
                         input=tuple(provider_input),
                         tools=provider_tools,
-                        request_id=request_id,
                         max_output_tokens=self.settings.ai_pilot_max_output_tokens,
+                        input_modalities=input_modalities,
                     )
                     if self.provider_started_recorder is not None:
                         self.provider_started_recorder()
@@ -499,6 +731,37 @@ class AIOrchestrator:
                                     )
                                 continue
 
+                            if isinstance(provider_event, ProviderUsageEvent):
+                                provider_usage = provider_event.usage
+                                continue
+
+                            if isinstance(provider_event, ProviderRefusal):
+                                error = PublicAIError(
+                                    code=AIErrorCode.REFUSAL,
+                                    message="模型无法处理当前请求，请调整内容后重试。",
+                                )
+                                async for terminal in emit_error(error):
+                                    yield terminal
+                                return
+
+                            if isinstance(provider_event, ProviderIncomplete):
+                                error = PublicAIError(
+                                    code=AIErrorCode.INCOMPLETE,
+                                    message="模型未能完整生成响应，请缩小问题范围后重试。",
+                                    retryable=True,
+                                )
+                                async for terminal in emit_error(error):
+                                    yield terminal
+                                return
+
+                            if isinstance(provider_event, ProviderErrorEvent):
+                                raise ProviderError(
+                                    provider_event.code,
+                                    "Provider returned a normalized error event.",
+                                    status_code=provider_event.status_code,
+                                    retryable=provider_event.retryable,
+                                )
+
                             if isinstance(provider_event, ProviderCompleted):
                                 provider_completed = provider_event
                                 break
@@ -517,11 +780,14 @@ class AIOrchestrator:
                             "Provider stream ended without a completion event.",
                         )
 
-                    input_tokens += provider_completed.usage.input_tokens
-                    output_tokens += provider_completed.usage.output_tokens
-                    total_tokens += provider_completed.usage.total_tokens
+                    completed_usage = provider_completed.usage
+                    if completed_usage == ProviderUsage():
+                        completed_usage = provider_usage
+                    input_tokens += completed_usage.input_tokens
+                    output_tokens += completed_usage.output_tokens
+                    total_tokens += completed_usage.total_tokens
                     if self.usage_recorder is not None:
-                        self.usage_recorder(provider_completed.usage.total_tokens)
+                        self.usage_recorder(completed_usage.total_tokens)
 
                     if pending_tool_calls:
                         if chat.attachments:
@@ -557,7 +823,13 @@ class AIOrchestrator:
                             )
                             pending_output = ""
 
-                        if tool_rounds >= self.settings.ai_max_tool_rounds:
+                        effective_round_limit = self.settings.ai_max_tool_rounds
+                        if runtime_plan is not None:
+                            effective_round_limit = min(
+                                effective_round_limit,
+                                runtime_plan.max_steps,
+                            )
+                        if tool_rounds >= effective_round_limit:
                             error = PublicAIError(
                                 code=AIErrorCode.TOOL_ROUND_LIMIT,
                                 message="工具调用轮次已达到上限，请缩小问题范围后重试。",
@@ -567,6 +839,18 @@ class AIOrchestrator:
                             return
 
                         tool_rounds += 1
+                        if (
+                            runtime_plan is not None
+                            and tool_count + len(pending_tool_calls)
+                            > runtime_plan.max_steps
+                        ):
+                            error = PublicAIError(
+                                code=AIErrorCode.TOOL_ROUND_LIMIT,
+                                message="工具调用步骤已达到当前 Skill 上限，请缩小问题范围后重试。",
+                            )
+                            async for terminal in emit_error(error):
+                                yield terminal
+                            return
                         for tool_call in pending_tool_calls:
                             if (
                                 not _TOOL_CALL_ID_PATTERN.fullmatch(tool_call.call_id)
@@ -577,6 +861,18 @@ class AIOrchestrator:
                                     "Provider returned an invalid tool call identifier.",
                                 )
                             seen_tool_call_ids.add(tool_call.call_id)
+                            if (
+                                runtime_plan is not None
+                                and tool_call.name
+                                not in runtime_plan.allowed_tool_names
+                            ):
+                                error = PublicAIError(
+                                    code=AIErrorCode.UNEXPECTED_TOOL_CALL,
+                                    message="模型请求了当前 Skill 未授权的工具，已拒绝执行。",
+                                )
+                                async for terminal in emit_error(error):
+                                    yield terminal
+                                return
                             spec = self.tool_registry.resolve(tool_call.name)
                             if is_ai_runtime_disabled(self.settings):
                                 async for terminal in emit_error(
@@ -598,20 +894,94 @@ class AIOrchestrator:
                                 },
                             )
                             tool_started_at = perf_counter()
+                            tool_elapsed_ms = 0.0
                             try:
                                 outcome = await self.tool_executor.execute(
                                     tool_call,
                                     tool_context,
                                 )
                             finally:
-                                tool_latency_ms += (
+                                tool_elapsed_ms = (
                                     perf_counter() - tool_started_at
                                 ) * 1000
+                                tool_latency_ms += tool_elapsed_ms
                             tool_count += 1
                             returned_rows += max(outcome.row_count, 0)
                             truncated = truncated or outcome.truncated
                             if outcome.error_code:
                                 observed_tool_error_code = outcome.error_code
+                            if self.metric_recorder is not None:
+                                evidence_count = 0
+                                try:
+                                    metric_payload = json.loads(
+                                        outcome.provider_output_json
+                                    )
+                                    metric_evidence = metric_payload.get("evidence")
+                                    if isinstance(metric_evidence, list):
+                                        evidence_count = min(len(metric_evidence), 12)
+                                except (json.JSONDecodeError, AttributeError):
+                                    pass
+                                denied = outcome.error_code in {
+                                    "AI_TOOL_PERMISSION_DENIED",
+                                    "AI_TOOL_DEPARTMENT_NOT_ALLOWED",
+                                    "AI_TOOL_INVALID_FACTORY",
+                                    "AI_TOOL_RISK_NOT_ALLOWED",
+                                    "AI_TOOL_UNKNOWN",
+                                }
+                                self.metric_recorder(
+                                    AIObservabilityEvent(
+                                        request_id=request_id,
+                                        event_type="TOOL_CALL",
+                                        event_key=tool_call.call_id,
+                                        owner_user_id=user_id,
+                                        factory_id=factory_id,
+                                        conversation_id=chat.conversation_id or "",
+                                        skill_id=(
+                                            runtime_plan.primary_skill_id
+                                            if runtime_plan
+                                            else ""
+                                        ),
+                                        skill_version=(
+                                            runtime_plan.primary_skill_version
+                                            if runtime_plan
+                                            else ""
+                                        ),
+                                        skill_hash=(
+                                            compiled_prompt.skill_hash
+                                            if compiled_prompt
+                                            else ""
+                                        ),
+                                        prompt_version=(
+                                            compiled_prompt.prompt_version
+                                            if compiled_prompt
+                                            else ""
+                                        ),
+                                        prompt_hash=(
+                                            compiled_prompt.prompt_hash
+                                            if compiled_prompt
+                                            else ""
+                                        ),
+                                        provider=provider_name,
+                                        model=model,
+                                        tool_name=outcome.tool_name,
+                                        tool_version=(
+                                            str(getattr(spec, "version", ""))
+                                            if spec
+                                            else ""
+                                        ),
+                                        status=(
+                                            "SUCCESS"
+                                            if outcome.ok
+                                            else "DENIED"
+                                            if denied
+                                            else "FAILURE"
+                                        ),
+                                        duration_ms=round(tool_elapsed_ms),
+                                        error_code=outcome.error_code,
+                                        evidence_count=evidence_count,
+                                        truncated=outcome.truncated,
+                                    )
+                                )
                             yield make_event(
                                 "tool.completed",
                                 outcome.safe_event_payload,
@@ -672,6 +1042,19 @@ class AIOrchestrator:
                             "tool_count": tool_count,
                             "tool_rounds": tool_rounds,
                             "source": "MODEL_INFERENCE",
+                            **skill_event_metadata,
+                            **(
+                                {
+                                    "provider": provider_name,
+                                    "model": model,
+                                    "capability_profile": route.capability_profile,
+                                    "catalog_version": route.catalog_version,
+                                    "capability_alias": route.capability.value,
+                                    "reasoning_policy": route.reasoning_policy.value,
+                                }
+                                if route.contract_version == "2"
+                                else {}
+                            ),
                         },
                     )
                     return

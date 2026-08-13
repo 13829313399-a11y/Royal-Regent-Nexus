@@ -7,9 +7,21 @@ from urllib.parse import quote as url_quote
 from anyio import from_thread
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
+from pydantic import ValidationError
+from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from app.api.ai_artifacts import (
+    ArtifactScannerDependency,
+    ArtifactStorageDependency,
+    _artifact_error,
+    _require_artifacts,
+)
 from app.core.config import settings
+from app.db import get_db
+from app.schemas.ai.artifact import AIArtifactEgressConsent
+from app.services.ai.artifacts.service import ArtifactError, create_artifact
+from app.services.ai.artifacts.translation_adapter import translate_artifact
 from app.services.ai.cloud_document_translation import translate_cloud_fragments
 from app.services.ai.provider_factory import (
     ProviderConfigurationError,
@@ -80,6 +92,10 @@ def document_translation_service_status(
     return {
         **local_status,
         "cloudAvailable": cloud_available,
+        "artifactWorkflowsEnabled": bool(
+            settings.ai_artifacts_enabled
+            and settings.ai_artifact_workflows_enabled
+        ),
         "modes": {
             "local_private": {
                 "available": local_status["available"],
@@ -101,9 +117,13 @@ async def document_translation(
     document_file: Annotated[UploadFile, File()],
     direction: Annotated[str, Form()],
     current_user: Annotated[AuthContext, Depends(get_current_user)],
+    storage: ArtifactStorageDependency,
+    scanner: ArtifactScannerDependency,
+    db: Annotated[Session, Depends(get_db)],
     sheet_names: Annotated[str, Form()] = "",
     mode: Annotated[str, Form()] = "local_private",
     cloud_consent: Annotated[bool, Form()] = False,
+    factory_id: Annotated[str, Form()] = "",
 ):
     document_bytes, file_name = await _read_office_document(document_file)
     if direction not in {"zh_to_en", "en_to_zh"}:
@@ -127,6 +147,102 @@ async def document_translation(
         raise HTTPException(
             status_code=422,
             detail="AI Smart / Cloud 模式必须明确同意发送待翻译文本片段。",
+        )
+
+    selected_factory = factory_id.strip()
+    concrete_factories = tuple(
+        item for item in current_user.factory_scopes if item != "*"
+    )
+    if not selected_factory and len(concrete_factories) == 1:
+        selected_factory = concrete_factories[0]
+    extension = Path(file_name).suffix.lower()
+    use_artifact_adapter = bool(
+        settings.ai_artifacts_enabled
+        and settings.ai_artifact_workflows_enabled
+        and extension in {".xlsx", ".docx"}
+        and selected_factory
+    )
+    if use_artifact_adapter:
+        allowed_factories = _require_artifacts(current_user)
+        mime_type = XLSX_MEDIA_TYPE if extension == ".xlsx" else DOCX_MEDIA_TYPE
+        provider = None
+        try:
+            source = create_artifact(
+                db,
+                user=current_user,
+                factory_id=selected_factory,
+                classification="CONFIDENTIAL_BUSINESS",
+                filename=file_name,
+                declared_mime_type=mime_type,
+                data=document_bytes,
+                storage=storage,
+                scanner=scanner,
+                settings=settings,
+                allowed_factory_ids=allowed_factories,
+            )
+            consent = None
+            if mode == "ai_smart_cloud":
+                if not settings.ai_cloud_document_translation_enabled:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="AI Smart / Cloud 翻译尚未启用。",
+                    )
+                provider = build_provider(settings)
+            translated = await translate_artifact(
+                db,
+                artifact_id=source.id,
+                user=current_user,
+                direction=direction,
+                mode=mode,
+                selected_sheet_names=selected_sheet_names,
+                consent=consent,
+                provider=provider,
+                request_id=str(request.state.request_id),
+                allowed_factory_ids=allowed_factories,
+                storage=storage,
+                scanner=scanner,
+                settings=settings,
+                legacy_cloud_consent_accepted=(
+                    mode == "ai_smart_cloud" and cloud_consent
+                ),
+            )
+        except ArtifactError as exc:
+            raise _artifact_error(exc) from exc
+        except ProviderConfigurationError as exc:
+            raise HTTPException(status_code=503, detail="云端翻译 Provider 不可用。") from exc
+        except DocumentTranslationUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except DocumentTranslationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        finally:
+            if provider is not None:
+                await provider.aclose()
+        result = translated.document
+        translation_logger.info(
+            "document_translation_legacy_adapter request_id=%s user_id=%s "
+            "source_artifact_id=%s derived_artifact_id=%s mode=%s",
+            str(request.state.request_id),
+            current_user.id,
+            translated.source.id,
+            translated.derived.id,
+            mode,
+        )
+        return Response(
+            content=result.content,
+            media_type=result.media_type,
+            headers={
+                "Content-Disposition": (
+                    "attachment; filename*=UTF-8''"
+                    f"{url_quote(result.output_file_name)}"
+                ),
+                "X-Translation-Unit-Count": str(result.translated_unit_count),
+                "X-Translation-Skipped-Count": str(result.skipped_unit_count),
+                "X-Translation-Part-Count": str(result.processed_part_count),
+                "X-Translation-Mode": mode,
+                "X-Source-Artifact-ID": translated.source.id,
+                "X-Derived-Artifact-ID": translated.derived.id,
+                "Cache-Control": "no-store",
+            },
         )
 
     provider = None
@@ -191,6 +307,122 @@ async def document_translation(
             "X-Translation-Skipped-Count": str(result.skipped_unit_count),
             "X-Translation-Part-Count": str(result.processed_part_count),
             "X-Translation-Mode": mode,
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/document-translation/artifact")
+async def document_translation_artifact(
+    request: Request,
+    artifact_id: Annotated[str, Form()],
+    direction: Annotated[str, Form()],
+    current_user: Annotated[AuthContext, Depends(get_current_user)],
+    storage: ArtifactStorageDependency,
+    scanner: ArtifactScannerDependency,
+    db: Annotated[Session, Depends(get_db)],
+    sheet_names: Annotated[str, Form()] = "",
+    mode: Annotated[str, Form()] = "local_private",
+    cloud_consent_json: Annotated[str, Form()] = "",
+):
+    if not settings.ai_artifact_workflows_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if direction not in {"zh_to_en", "en_to_zh"}:
+        raise HTTPException(status_code=400, detail="翻译方向无效，只支持中译英或英译中。")
+
+    selected_sheet_names: list[str] | None = None
+    if sheet_names.strip():
+        try:
+            parsed_sheet_names = json.loads(sheet_names)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="工作表选择参数格式不正确。") from exc
+        if not isinstance(parsed_sheet_names, list) or any(
+            not isinstance(name, str) for name in parsed_sheet_names
+        ):
+            raise HTTPException(status_code=400, detail="工作表选择参数格式不正确。")
+        selected_sheet_names = parsed_sheet_names
+
+    consent = None
+    if cloud_consent_json.strip():
+        try:
+            consent = AIArtifactEgressConsent.model_validate_json(cloud_consent_json)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "AI_ARTIFACT_WORKFLOW_CONTRACT_INVALID",
+                    "message": "Artifact 云端处理同意格式无效。",
+                    "retryable": False,
+                },
+            ) from exc
+    allowed_factories = _require_artifacts(current_user)
+    provider = None
+    try:
+        if mode == "ai_smart_cloud":
+            try:
+                provider = build_provider(settings)
+            except ProviderConfigurationError as exc:
+                raise HTTPException(status_code=503, detail="云端翻译 Provider 不可用。") from exc
+        translated = await translate_artifact(
+            db,
+            artifact_id=artifact_id,
+            user=current_user,
+            direction=direction,
+            mode=mode,
+            selected_sheet_names=selected_sheet_names,
+            consent=consent,
+            provider=provider,
+            request_id=str(request.state.request_id),
+            allowed_factory_ids=allowed_factories,
+            storage=storage,
+            scanner=scanner,
+            settings=settings,
+        )
+    except ArtifactError as exc:
+        raise _artifact_error(exc) from exc
+    except DocumentTranslationUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except DocumentTranslationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        if provider is not None:
+            await provider.aclose()
+
+    translation_logger.info(
+        "document_translation_artifact request_id=%s user_id=%s mode=%s "
+        "source_artifact_id=%s derived_artifact_id=%s model=%s terms=%s units=%s parts=%s",
+        str(request.state.request_id),
+        current_user.id,
+        mode,
+        translated.source.id,
+        translated.derived.id,
+        translated.derived.model_version,
+        translated.derived.parser_version,
+        translated.document.translated_unit_count,
+        translated.document.processed_part_count,
+    )
+    return Response(
+        content=translated.document.content,
+        media_type=translated.document.media_type,
+        headers={
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''"
+                f"{url_quote(translated.document.output_file_name)}"
+            ),
+            "X-Translation-Unit-Count": str(
+                translated.document.translated_unit_count
+            ),
+            "X-Translation-Skipped-Count": str(
+                translated.document.skipped_unit_count
+            ),
+            "X-Translation-Part-Count": str(
+                translated.document.processed_part_count
+            ),
+            "X-Translation-Mode": mode,
+            "X-Source-Artifact-ID": translated.source.id,
+            "X-Derived-Artifact-ID": translated.derived.id,
+            "X-Parser-Version": translated.derived.parser_version,
+            "X-Model-Version": translated.derived.model_version,
             "Cache-Control": "no-store",
         },
     )

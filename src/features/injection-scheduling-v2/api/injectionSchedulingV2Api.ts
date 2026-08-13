@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import { parsePreviewManifest, type AIPreviewManifest } from '@/features/nexus-copilot/renderers/preview'
 import type {
   AutoScheduleAssignmentRecord,
   AutoScheduleGenerationOptions,
@@ -20,6 +21,24 @@ import type {
 } from '../types'
 
 type UnknownRecord = Record<string, unknown>
+
+export interface AIWorkbookMappingProposal extends UnknownRecord {
+  preview_manifest?: AIPreviewManifest
+}
+
+export function parseWorkbookMappingProposal(value: unknown): AIWorkbookMappingProposal {
+  const source = objectValue(value)
+  const manifest = source.preview_manifest === undefined
+    ? undefined
+    : parsePreviewManifest(source.preview_manifest)
+  if (source.preview_manifest !== undefined && !manifest) {
+    throw new Error('AI 工作簿映射 Preview 校验失败，请重新生成。')
+  }
+  return {
+    ...source,
+    ...(manifest ? { preview_manifest: manifest } : {}),
+  }
+}
 
 export interface SharedMoldCatalogOutput {
   id: string
@@ -880,6 +899,16 @@ export async function inspectWorkbookSemanticSnapshot(factoryId: string, file: F
   return data as UnknownRecord
 }
 
+export async function inspectWorkbookArtifact(factoryId: string, artifactId: string) {
+  const body = new FormData()
+  body.set('factory_id', factoryId)
+  body.set('artifact_id', artifactId)
+  const { data } = await http.post('/ai/workbooks/inspect/artifact', body, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data as UnknownRecord
+}
+
 export async function proposeWorkbookFieldMapping(
   factoryId: string,
   file: File,
@@ -893,7 +922,34 @@ export async function proposeWorkbookFieldMapping(
   const { data } = await http.post('/ai/workbooks/mapping-proposal', body, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
-  return data as UnknownRecord
+  return parseWorkbookMappingProposal(data)
+}
+
+export async function proposeWorkbookArtifactFieldMapping(
+  factoryId: string,
+  artifactId: string,
+  semanticSnapshot: UnknownRecord,
+  documentKind: Exclude<ImportDocumentKindChoice, 'AUTO'>,
+) {
+  const body = new FormData()
+  const classification = 'CONFIDENTIAL_BUSINESS'
+  body.set('factory_id', factoryId)
+  body.set('artifact_id', artifactId)
+  body.set('document_kind', documentKind)
+  body.set('snapshot_json', JSON.stringify(semanticSnapshot))
+  body.set('cloud_consent_json', JSON.stringify({
+    accepted: true,
+    notice_version: 'aliyun-cn-beijing-workbook-v1',
+    provider: 'qwen',
+    region: 'cn-beijing',
+    classification,
+    content_class: 'WORKBOOK',
+    artifact_ids: [artifactId],
+  }))
+  const { data } = await http.post('/ai/workbooks/mapping-proposal/artifact', body, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return parseWorkbookMappingProposal(data)
 }
 
 export async function retryImportPreview(factoryId: string, batch: ImportBatchRecord) {

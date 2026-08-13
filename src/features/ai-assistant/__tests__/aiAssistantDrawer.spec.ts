@@ -57,6 +57,7 @@ function createTestRouter() {
       { path: '/register', name: 'register', component: { template: '<div />' }, meta: { requiresAuth: false, fullPage: true } },
       { path: '/change-password', name: 'change-password', component: { template: '<div />' }, meta: { requiresAuth: true, fullPage: true } },
       { path: '/forbidden', name: 'forbidden', component: { template: '<div />' }, meta: { requiresAuth: true, fullPage: true } },
+      { path: '/workbench/ai', name: 'ai-workbench', component: { template: '<div data-testid="ai-workbench" />' }, meta: { requiresAuth: true, fullPage: true } },
       {
         path: '/modules/production/injection-scheduling',
         name: 'injection-scheduling-v2',
@@ -256,6 +257,24 @@ describe('global AI assistant drawer', () => {
     auth.sessionVersion += 1
     await flushPromises()
     expect(triggerButton()).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('continues a persistence-enabled quick question in the full AI Workbench', async () => {
+    const { wrapper, router } = await mountDrawer({
+      ...usableCapabilities,
+      conversation_persistence: true,
+    })
+    await openDrawer()
+
+    const continueButton = [...document.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('在工作台继续'))
+    expect(continueButton).toBeDefined()
+    continueButton?.click()
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('ai-workbench')
+    expect(document.querySelector('#ai-assistant-drawer')).toBeNull()
     wrapper.unmount()
   })
 

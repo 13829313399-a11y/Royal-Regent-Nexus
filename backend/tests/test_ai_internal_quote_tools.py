@@ -2,10 +2,6 @@ import asyncio
 import json
 
 import pytest
-from sqlalchemy import create_engine, event, func, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
-
 from app.core.config import Settings
 from app.db import Base
 from app.models.internal_quote import (
@@ -34,6 +30,9 @@ from app.services.auth import (
     AuthOverrideContext,
     authorization_decision,
 )
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 NOW = "2026-08-11 12:00:00"
 SENSITIVE_MARKERS = (

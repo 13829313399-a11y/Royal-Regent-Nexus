@@ -48,7 +48,14 @@ backend/models/document-translation/
 !/docs/three-d-printing-deployment.md
 !/docs/injection-production-hub-context-memory.md
 !/docs/injection-scheduling-shared-master-sop.md
-!/docs/ai/modules/injection-scheduling.md
+!/docs/ai/AI_MODULE_DEVELOPMENT_PLAN.md
+!/docs/ai/nif-18-production-readiness.md
+!/docs/ai/adr/
+!/docs/ai/adr/*.md
+!/docs/ai/modules/
+!/docs/ai/modules/*.md
+!/docs/ai/knowledge-review-queue/
+!/docs/ai/knowledge-review-queue/README.md
 !/docs/business/internal-quote-collaboration-design.md
 !/docs/business/qc-complete-business-process.md
 !/docs/business/internal-quote-l6-release-readiness.md

@@ -23,7 +23,13 @@ import {
   type DocumentTranslationMode,
   type DocumentTranslationStatus,
 } from '@/api/tools'
+import { uploadAIArtifact } from '@/api/aiArtifacts'
+import {
+  createArtifactTranslationTask,
+  getAITaskCapabilities,
+} from '@/api/aiTasks'
 import { getApiErrorMessage } from '@/lib/http'
+import ArtifactCard from '@/features/nexus-copilot/components/ArtifactCard.vue'
 import { downloadToolBlob, formatPdfFileSize } from './pdfToolUtils'
 import {
   extractExcelSheetNames,
@@ -33,8 +39,10 @@ import {
 
 const props = withDefaults(defineProps<{
   contextLabel?: string
+  factoryId?: string
 }>(), {
   contextLabel: '全部厂区',
+  factoryId: '',
 })
 
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -53,6 +61,14 @@ const statusError = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 const resultMetrics = ref<{ translated: number; skipped: number; parts: number } | null>(null)
+const artifactResult = ref<{
+  sourceArtifactId: string
+  resultArtifactId: string
+  fileName: string
+} | null>(null)
+const queuedTaskId = ref('')
+
+const LARGE_ARTIFACT_TASK_BYTES = 2 * 1024 * 1024
 
 const selectedFileSize = computed(() => selectedFile.value ? formatPdfFileSize(selectedFile.value.size) : '')
 const isExcel = computed(() => Boolean(selectedFile.value?.name.match(/\.xls[xm]$/i)))
@@ -76,6 +92,8 @@ function resetResult() {
   errorMessage.value = ''
   successMessage.value = ''
   resultMetrics.value = null
+  artifactResult.value = null
+  queuedTaskId.value = ''
 }
 
 async function selectFile(file: File | undefined) {
@@ -172,12 +190,45 @@ async function translateFile() {
   isTranslating.value = true
   resetResult()
   try {
+    const shouldUseTask = translationMode.value === 'local_private'
+      && serviceStatus.value?.artifactWorkflowsEnabled === true
+      && Boolean(props.factoryId)
+      && selectedFile.value.size >= LARGE_ARTIFACT_TASK_BYTES
+      && /\.(xlsx|docx)$/i.test(selectedFile.value.name)
+    let taskRuntimeAvailable = false
+    if (shouldUseTask) {
+      try {
+        taskRuntimeAvailable = (await getAITaskCapabilities()).available
+      }
+      catch {
+        taskRuntimeAvailable = false
+      }
+    }
+    if (shouldUseTask && taskRuntimeAvailable) {
+      const source = await uploadAIArtifact(
+        selectedFile.value,
+        props.factoryId,
+        'CONFIDENTIAL_BUSINESS',
+      )
+      const task = await createArtifactTranslationTask({
+        artifactId: source.id,
+        artifactSha256: source.sha256,
+        factoryId: props.factoryId,
+        direction: direction.value,
+        selectedSheetNames: isExcel.value ? [...selectedSheetNames.value] : undefined,
+      })
+      queuedTaskId.value = task.id
+      successMessage.value = '大文件已交给可恢复任务处理；刷新页面不会丢失进度。'
+      return
+    }
     const result = await sharedToolsApi.translateDocument(
       selectedFile.value,
       direction.value,
       isExcel.value ? [...selectedSheetNames.value] : undefined,
       translationMode.value,
       translationMode.value === 'ai_smart_cloud' && cloudConsent.value,
+      props.factoryId,
+      serviceStatus.value?.artifactWorkflowsEnabled === true,
     )
     downloadToolBlob(result.blob, result.fileName)
     resultMetrics.value = {
@@ -185,7 +236,16 @@ async function translateFile() {
       skipped: result.skippedUnitCount,
       parts: result.processedPartCount,
     }
-    successMessage.value = `${result.fileName} 已生成并开始下载。`
+    artifactResult.value = result.sourceArtifactId && result.derivedArtifactId
+      ? {
+          sourceArtifactId: result.sourceArtifactId,
+          resultArtifactId: result.derivedArtifactId,
+          fileName: result.fileName,
+        }
+      : null
+    successMessage.value = result.derivedArtifactId
+      ? `${result.fileName} 已生成、登记为可恢复派生文件并开始下载。`
+      : `${result.fileName} 已生成并开始下载。`
   }
   catch (error) {
     errorMessage.value = getApiErrorMessage(error)
@@ -377,6 +437,20 @@ onMounted(loadServiceStatus)
               <p v-if="resultMetrics" class="mt-1 pl-6 text-xs text-emerald-700/80">
                 已翻译 {{ resultMetrics.translated }} 段 · 跳过 {{ resultMetrics.skipped }} 段 · 处理 {{ resultMetrics.parts }} 个文档部件
               </p>
+              <ArtifactCard
+                v-if="artifactResult"
+                class="mt-3"
+                :source-artifact-id="artifactResult.sourceArtifactId"
+                :result-artifact-id="artifactResult.resultArtifactId"
+                :file-name="artifactResult.fileName"
+              />
+              <RouterLink
+                v-if="queuedTaskId"
+                :to="{ name: 'ai-workbench', query: { task: queuedTaskId } }"
+                class="mt-3 inline-flex rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-bold text-emerald-800"
+              >
+                查看任务进度与结果
+              </RouterLink>
             </div>
             <p v-else class="text-slate-500">文字长度变化可能影响自动换行或分页，但不会改写原有样式和对象。</p>
           </div>
@@ -435,7 +509,9 @@ onMounted(loadServiceStatus)
           <p class="mt-2 text-xs leading-5" :class="selectedModeAvailable ? 'text-emerald-800/80' : 'text-amber-800/90'">
             {{ translationMode === 'local_private'
               ? serviceStatus?.available
-                ? '文档正文只在当前服务器内处理，不发送到第三方翻译网站，也不保存源文件、结果或翻译记录。'
+                ? serviceStatus?.artifactWorkflowsEnabled
+                  ? '文档正文只在当前服务器内处理；源件与派生件按 Artifact 保留策略登记，可在刷新后恢复和重新下载。'
+                  : '文档正文只在当前服务器内处理，不发送到第三方翻译网站，也不保存源文件、结果或翻译记录。'
                 : statusError || '请联系系统管理员安装中英双向离线模型后再使用。'
               : serviceStatus?.cloudAvailable
                 ? 'AI Smart / Cloud 已就绪；仅待翻译文本片段出站，完整文件始终由本地 OOXML 流程生成。'

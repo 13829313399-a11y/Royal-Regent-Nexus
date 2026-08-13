@@ -47,11 +47,19 @@ The intended Customer Order Center boundary is to own original purchase orders, 
   read-only custom tools. Tool discovery and execution both recheck the canonical IAM decision and the
   verified page/tool-group scope. Injection Scheduling V2 exposes versioned module knowledge, separate
   PUBLISHED/DRAFT plan context and a paginated formal Backlog summary; tool database sessions are
-  short-lived and self-owned. The frontend has a global memory-only assistant Drawer with strict page
-  context and structured result cards. Production Nginx disables buffering for the SSE route. There is
-  still no conversation persistence, AI-specific database state, consequential AI write path or enabled
-  production Vision feature.
-- Alembic has one current head: `20260812_0066`.
+  short-lived and self-owned. The frontend has a global assistant Drawer with strict page context and
+  structured result cards plus a full-page `/workbench/ai` for owner-scoped persistent or temporary
+  conversations. Persistent conversation history is assembled on the server and current IAM is rechecked
+  before bodies or Evidence references are returned; temporary conversations store no user/assistant body.
+  Production Nginx disables buffering for the SSE route. AI-specific database state now exists in
+  `ai_conversations`, `ai_messages`, `ai_conversation_summaries`, `ai_tasks`, `ai_task_steps`,
+  `ai_task_events`, `ai_guard_leases`, `ai_guard_request_events`, `ai_guard_daily_budgets`,
+  `ai_guard_disable_states` and `ai_action_confirmations`, and the
+  only consequential AI write path is the default-off `apply_preview_run` confirmation/execute flow that
+  applies a selected scheduling run to DRAFT only; it never Publishes or Rolls Back. Vision code is present
+  behind Pilot, consent and configuration boundaries, but it is not production-ready until the recorded
+  TLS, Secure-cookie, secret-rotation and field gates pass.
+- Alembic has one current head: `20260813_0074`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -283,7 +291,7 @@ Logged-in Chrome acceptance on 2026-08-04 used a disposable Phase 5 SQLite datab
 
 Machine and mold class source text is preserved in `machine_class_raw` and `mold_class_raw`; trusted numeric values live in `machine_a_class` and `mold_a_class`, with `normalization_status`, structured process tags and special-machine type kept separately. Values without an explicit `A` marker are not guessed unless an explicit mapping exists. Eligibility uses only numeric A-class coverage, the exact 100% whole-shot net-weight/injection-capacity boundary, mechanical-arm coverage, fixture coverage, machine/mold availability and structured process restrictions. Tie-bar/platen dimensions, mold L/W/H, mold thickness and rotation remain engineering data and do not affect eligibility. Missing A-class, weight, arm or fixture data normally produces `REVIEW_REQUIRED`; for a shared mold with an active factory capability, that governed capability supplies the DRAFT-stage arm/fixture fallback only when the selected machine has no corresponding capability rows, while an explicit incompatible machine capability still fails. A clean DRAFT can be published by a user with scheduling edit or publish authority, so the molding clerk can complete the normal scheduling handoff; hard failures remain blocked, while review-required candidates and baseline/progress overrides still require explicit `injection_scheduling:publish` authority plus a reason. Both the heuristic and CP-SAT schedulers use this eligibility contract and prefer the smallest sufficient A-class.
 
-Migration `20260804_0047` remains the irreversible historical removal boundary. Forward migration `20260804_0048` recreates the V2 Phase 0 tables, permissions and database guards. Phase 2 adds API and UI behavior without another schema migration. Customer-order export audit migration `20260804_0049` precedes the unpublished scheduling migrations. Migration `20260804_0050` adds persisted auto-schedule runs, assignments, transition rules, machine calendars and task provenance/duration fields for the Phase 3 heuristic. Migration `20260804_0051` adds solver selection/status, fallback, scenario and replay metadata for Phase 4. Migration `20260804_0052` adds integration cursors, idempotent external events, device cycle observations and calibrated speed models for Phase 5. Migration `20260805_0053` merges the carton-procurement and injection-scheduling migration heads; carton migrations continue through `20260805_0055`. Migration `20260805_0056` adds the versioned import-Profile registry, factory bindings, Profile governance permission and Profile identity on import batches. Migration `20260805_0057` adds plan-aware takeover context, deterministic reconciliation evidence, order-level state, successor lineage, progress adjustments and append-only/immutable guards. Migration `20260807_0058` binds plans to their import Profile/batch, persists upload artifacts and preview generations, and adds immutable export audits with rule, mapping, row-manifest and report-sequence evidence. Customer-order migration `20260807_0059` adds exact manual-override audit evidence. Injection-scheduling migrations `20260809_0059` and `20260809_0060` follow it with demand-order/shared-mold state, rollout policy and assignment-asset lineage. Compatibility migration `20260810_0061` conditionally reconciles customer-order audit columns for local databases that had already applied the previously based injection branch. Migration `20260810_0062` adds editable machine equipment-detail JSON plus clerk remarks and refuses to discard populated machine details. Migration `20260810_0063` adds direct order-to-shared-definition/output links, backfills them from demand versions/lineage and refuses downgrade once those links hold business data. Migration `20260810_0064` separates carton month-end snapshots by customer and currency, `20260811_0065` adds inspection-schedule import support, and the single current head `20260812_0066` adds AI action confirmations with TTL, revision/hash binding, state transitions and idempotent execution-request identity. `/api/injection` remains the separate molding-sample production domain.
+Migration `20260804_0047` remains the irreversible historical removal boundary. Forward migration `20260804_0048` recreates the V2 Phase 0 tables, permissions and database guards. Phase 2 adds API and UI behavior without another schema migration. Customer-order export audit migration `20260804_0049` precedes the unpublished scheduling migrations. Migration `20260804_0050` adds persisted auto-schedule runs, assignments, transition rules, machine calendars and task provenance/duration fields for the Phase 3 heuristic. Migration `20260804_0051` adds solver selection/status, fallback, scenario and replay metadata for Phase 4. Migration `20260804_0052` adds integration cursors, idempotent external events, device cycle observations and calibrated speed models for Phase 5. Migration `20260805_0053` merges the carton-procurement and injection-scheduling migration heads; carton migrations continue through `20260805_0055`. Migration `20260805_0056` adds the versioned import-Profile registry, factory bindings, Profile governance permission and Profile identity on import batches. Migration `20260805_0057` adds plan-aware takeover context, deterministic reconciliation evidence, order-level state, successor lineage, progress adjustments and append-only/immutable guards. Migration `20260807_0058` binds plans to their import Profile/batch, persists upload artifacts and preview generations, and adds immutable export audits with rule, mapping, row-manifest and report-sequence evidence. Customer-order migration `20260807_0059` adds exact manual-override audit evidence. Injection-scheduling migrations `20260809_0059` and `20260809_0060` follow it with demand-order/shared-mold state, rollout policy and assignment-asset lineage. Compatibility migration `20260810_0061` conditionally reconciles customer-order audit columns for local databases that had already applied the previously based injection branch. Migration `20260810_0062` adds editable machine equipment-detail JSON plus clerk remarks and refuses to discard populated machine details. Migration `20260810_0063` adds direct order-to-shared-definition/output links, backfills them from demand versions/lineage and refuses downgrade once those links hold business data. Migration `20260810_0064` separates carton month-end snapshots by customer and currency, `20260811_0065` adds inspection-schedule import support, `20260812_0066` adds AI action confirmations with TTL, revision/hash binding, state transitions and idempotent execution-request identity, and `20260812_0067` adds the factory-scoped QC inspection operations merged on current `origin/main`. The rebased AI chain then uses `20260813_0068` for owner-scoped Conversations, `20260813_0069` for durable Task/Step/Event state, `20260813_0070` for Worker lease/recovery metadata, `20260813_0071` for shared Guard state, `20260813_0072` for immutable Artifact metadata, `20260813_0073` for Feedback/Eval/Model-Tool observability metadata, and the single current head `20260813_0074` for the compatible Action Gateway lifecycle, approval binding and formal verification evidence. `/api/injection` remains the separate molding-sample production domain.
 
 ### Huakang A 3D Printing Management
 
@@ -381,6 +389,248 @@ Several cards and dashboards in the module catalog remain planning, design or de
   to Nexus hop, login and image upload remain plaintext, `AI_PILOT_PUBLIC_TLS_VERIFIED` must remain
   false, and the exposed Provider secret still requires rotation. AI availability must not be treated
   as business-domain authorization.
+- NIF-01 freezes the existing `/api/ai/responses`, SSE v1, 13 default ToolSpecs, optional Proposal
+  Tool, Vision no-Tool rule, Capability v1 and Action isolation in JSON/SSE Golden fixtures and
+  deterministic Fake Provider scenarios. `AI_NIF_RUNTIME_ENABLED` is default-off; while off, the
+  existing Drawer and v1 API behavior remain unchanged. When explicitly enabled, the additive
+  `POST /api/ai/capabilities/context` resource reports only tools allowed after server-side Provider,
+  Pilot, page, factory, IAM and Feature Flag filtering. Controlled Apply configuration never exposes
+  `apply_preview_run` as a model Tool. This source state is not evidence that NIF Runtime or the
+  context resource is enabled in production.
+- NIF-02 adds a strict Provider Capability Catalog and default-off Router. Business AI paths now
+  request stable capability aliases and `FAST/BALANCED/DEEP` policies; the Qwen/Fake adapter maps
+  them to reviewed model and reasoning values only when
+  `AI_PROVIDER_CAPABILITY_ROUTER_ENABLED=true`. ProviderRequest v2 explicitly fixes store/state,
+  cache, region, Tool-choice, parallel-Tool, modality, output-format, retry/fallback and data-class
+  policy. Qwen remains `store=false`; cross-region fallback, unregistered built-ins and private
+  reasoning output fail closed. Bounded retry is restricted to stateless text-only no-Tool requests
+  before any streamed output. Refusal, incomplete, error and usage have standard Provider events.
+  `DOCUMENT_OCR`, embedding and rerank remain unregistered, and the Router is not enabled in the
+  production examples.
+- NIF-03 accepts ADR-003/014 and adds Git-first, versioned Skill manifests and Prompt fragments plus
+  one bounded Nexus Runtime. `AI_SKILL_ROUTER_ENABLED` is independently default-off and also requires
+  `AI_NIF_RUNTIME_ENABLED`; while either Flag is off, the legacy global Prompt and Tool Group path is
+  unchanged. When enabled, deterministic rules and a closed optional classifier select one primary
+  Skill, Runtime Plans can only reduce the intersection of registered/IAM-authorized Tools, and
+  unknown Skill/Tool/version, step, token or risk escalation fails closed. Prompt compilation keeps
+  immutable core policy separate from typed identity/page context, reviewed knowledge, Skill, Tool
+  and output contracts, records stable versions and SHA-256 hashes, and keeps file/OCR/Tool free text
+  in untrusted data blocks. All default Worker-visible ToolSpecs now have explicit version,
+  side-effect, idempotency and retry metadata; side-effecting or unclassified Tools are never
+  automatically replayed. This source state does not enable the Skill Router in production.
+- NIF-04 adds optional Evidence v1 to successful Tool envelopes behind both
+  `AI_NIF_RUNTIME_ENABLED` and independently default-off `AI_EVIDENCE_V1_ENABLED`. Evidence records a
+  stable source level/name, canonical factory, timezone-aware as-of, optional entity revision/cursor,
+  truncation, SHA-256 content hash and `REAUTHORIZE_ON_OPEN`; it never copies arbitrary result fields,
+  and opening an Evidence reference reuses current Tool IAM and page factory scope. The minimum
+  Verifier rejects unsupported formal claims, cross-factory mixing, DRAFT-as-PUBLISHED,
+  Preview-as-Executed, truncated-as-complete, failed-Tool support and user files described as formal
+  system data. Frontend domain parsing is no longer in the Pinia Store: exact
+  `schema_version + result_type` renderers live in a versioned Registry, legacy cards keep their
+  closed field adapters, and unknown Evidence-backed schemas degrade to inert read-only JSON with no
+  links or actions. This source state does not enable Evidence v1 in production.
+- NIF-05 implements the accepted ADR-004/005 Conversation v1 baseline behind default-off
+  `AI_CONVERSATIONS_ENABLED`: persistent message bodies and safe summaries expire after 30 days,
+  temporary conversations store no user/assistant body, deletion removes bodies while retaining a
+  180-day tombstone, conversation security audit is 180 days and Action audit remains 365 days.
+  Owner-only access, current factory/IAM reauthorization, restore tombstone replay and startup/hourly
+  retention enforcement fail closed. Provider requests still use `store=false`; the user's 2026-08-12
+  product/security/operations approval is an engineering rollout baseline, not additional legal
+  sign-off. NIF-06 adds `/workbench/ai`, URL-based refresh recovery, shared Drawer/Workbench in-memory
+  presentation state, persistent/temporary labels, safe stage summaries and Evidence reload behavior
+  that drops inaccessible details instead of reusing cached facts. This source state does not enable
+  conversation persistence in production.
+- NIF-07 implements the accepted ADR-015 Task-retention baseline behind default-off
+  `AI_TASKS_ENABLED`, with durable owner/factory-scoped Task, bounded Step and metadata-only Event
+  records. The strict state machine reserves but cannot enter `WAITING_APPROVAL`; create/read/cancel-
+  intent/resume/events APIs recheck current owner, Pilot factory and stored Tool IAM, while Resume also
+  revalidates input/plan hashes and Skill/Prompt/Tool versions. Only READ/COMPUTE/SIMULATE/PREVIEW
+  plans and NONE/PREVIEW_STATE steps are representable; retries require idempotent failed Steps and
+  Preview never becomes an Action. Terminal Task/Step/Event metadata is retained for 180 days with a
+  maximum 30-day backup-deletion tail. NIF-08 implements the accepted ADR-006 engineering baseline
+  behind a separate default-off `AI_TASK_WORKER_ENABLED` flag: a PostgreSQL-only independent Worker
+  claims Tasks with `FOR UPDATE SKIP LOCKED`, uses a 90-second lease and 15-second heartbeat, permits
+  concurrency 1–4, and allows at most two recovery retries after the initial attempt. Only explicitly
+  side-effect-free, idempotent, `SAFE_TRANSIENT` Steps can be replayed; PREVIEW-state mutation,
+  unclassified Tools and all Action handlers fail closed. Provider/Tool execution is time-bounded,
+  cancellation is durable intent and a returning external result is discarded after cancellation or
+  lease loss. Persistent Events support `after` and `Last-Event-ID`, while the Workbench Task list,
+  timeline, Cancel/Resume controls and refresh recovery always reload server state and current IAM.
+  Compose includes an independently stoppable Worker and ordinary API health does not depend on it.
+  Migration `20260813_0070` preserves lease/recovery data on downgrade refusal. NIF-09 implements
+  the accepted ADR-007 engineering baseline behind default-off `AI_SHARED_GUARD_ENABLED` while
+  preserving the process-local single-instance compatibility mode. PostgreSQL advisory transaction
+  locks atomically coordinate global/factory/user disable state, per-user concurrency, rolling RPM,
+  Asia/Shanghai daily Token reservations and opaque expiring leases across API/Worker instances.
+  The local file marker remains the strongest per-host emergency switch; selected shared-state
+  failure rejects only new AI work, not ordinary business health. Worker Steps use the same Guard,
+  renew active Guard leases and conservatively reconcile usage; expired lease/request/budget/disable
+  metadata has bounded cleanup paths. Migration `20260813_0071` stores only Guard metadata and refuses
+  downgrade while protected state exists. NIF-08/NIF-09 remain production-disabled and do not add an
+  Action handler or enable a multi-instance topology.
+- NIF-10 implements Semantic Gateway v1 behind default-off `AI_SEMANTIC_GATEWAY_ENABLED` without a
+  database migration. Versioned code catalogs define the first single-domain entities, reviewed
+  Chinese/factory aliases and server-owned Metric operations. A closed Pydantic Query Plan accepts
+  only catalogued entity/operation/field/operator/sort/metric combinations, caps filters, sorts,
+  metrics and page size, replaces any model factory hint with the verified server page factory, and
+  deterministically maps to an authorized registered Tool. The first semantic fixture is a new
+  read-only injection-backlog Tool with fixed date/order/item/priority predicates; the frozen legacy
+  scheduling Tool schema remains unchanged. Internal Quote reuses its field-minimized summary Tool.
+  Customer Order exposes only the existing Capability and Export Audit surfaces and still declares
+  that no authoritative order Ledger or official total exists. Business IDs stay strings so leading
+  zeroes and wildcard characters remain literal, dates normalize in Asia/Shanghai, and no Query Plan
+  path accepts or emits SQL. A page may submit only selected-entity type, ID and revision for injection
+  backlog orders or internal quotes; while the flag is enabled the API reloads the current row,
+  rechecks factory, permission and explicit deny, requires an exact current revision and sends only a
+  minimal server-owned label. Tool results, including semantic backlog results, continue to receive
+  the existing Evidence envelope. NIF-10 remains production-disabled and does not enable cross-domain
+  conclusions, cross-factory aggregation, model formulas, arbitrary queries or a customer-order
+  Ledger.
+- NIF-11 implements the accepted ADR-008 engineering baseline behind default-off
+  `AI_KNOWLEDGE_HUB_ENABLED` without a database migration, cloud File Search or vector store. A
+  Git-authored Manifest binds exactly seven first-wave K1 module documents to owner, semantic
+  version, review identity/date, expiry, source files, route, factory/role filters and allowlisted
+  deep links. All seven are only `PILOT_READY`; `EVAL_PASSED` and `PUBLISHED` remain impossible
+  without the later NIF-17 Dataset, Runner result and reviewer evidence. Startup validates the
+  current corpus only when the feature is enabled. The bounded in-process exact/Chinese-keyword
+  Retriever returns at most five section hits with document/section/version/content-hash Citation,
+  explicitly reports missing evidence, excludes expired/retired/K2/out-of-scope content, and keeps
+  a backend adapter seam for a separately justified PostgreSQL FTS implementation. Knowledge text
+  enters Provider requests only as untrusted data, cannot widen Tool or IAM scope, and formal domain
+  Tool facts win on conflict. The Module Tutor and business Skills may optionally use the new Tool
+  when registered, while disabling the feature returns to the legacy injection help path. The
+  frontend renders versioned Knowledge as a distinct cited guidance layer. `PROJECT_MEMORY.md` and
+  `AGENTS.md` are forbidden knowledge sources, and user corrections follow a manual Git review
+  queue rather than runtime or automatic publication. ADR-008 approval was given by the user acting
+  for product, security, operations and module Knowledge Owners as an engineering rollout baseline,
+  not additional legal sign-off. NIF-11 remains production-disabled and does not index or duplicate
+  real-time business records.
+- NIF-12 implements the accepted ADR-009 engineering baseline behind independently default-off
+  `AI_ARTIFACTS_ENABLED`. Migration `20260813_0072` adds owner/factory-scoped immutable Artifact
+  metadata, SHA-256, opaque Storage Key, closed classification/scanner/parser states, 30-day byte
+  retention, 180-day metadata/security-audit tombstones and parent/derived parser/model lineage; it
+  refuses downgrade while any Artifact exists and application startup refuses to let `create_all`
+  bypass the migration. The upload/metadata/download/delete API rechecks current Pilot, owner and
+  factory access, never exposes a storage path or public URL, validates extension/MIME/magic and
+  closed type limits, blocks unsafe OOXML paths, macros, external relationships, high compression,
+  encrypted files, oversized PDF/image content and all scanner-unavailable/rejected cases. Original
+  bytes are written once; duplicate or derived content receives a new ID/key, derived classification
+  cannot weaken the parent and derived retention cannot exceed it. Delete/expiry revokes access
+  before online-byte cleanup, retries pending deletion hourly and records the maximum 30-day backup
+  tail. Production Compose adds a non-published `clamav/clamav:1.4_base` service with persistent
+  signatures checked six times daily and an `ai-artifacts` volume mounted only into API/AI Worker.
+  Production enablement additionally fails startup unless the private volume, ClamAV operations,
+  mainland-China private OSS bucket, KMS encryption and restore-drill evidence are asserted. Artifact
+  Provider egress remains absent: `RESTRICTED` is never external, and later workbook/document/image
+  adapters must keep separate per-request Bailian Beijing consent with `store=false`. Targeted
+  Artifact tests pass 23/23 and directly related legacy/deploy contract tests pass 12/12; one
+  targeted Artifact migration head `20260813_0072` and `git diff --check` pass. This workstation has no Docker command,
+  so live ClamAV/signature alerting, private-volume permissions, daily encrypted OSS backup and restore
+  remain field-only NIF-18 evidence. NIF-12 does not migrate existing domain attachments or claim
+  workbook/PDF/OCR parsers, and the feature remains disabled in production examples.
+- NIF-13 adapts the existing workbook inspection/mapping, local/cloud Office translation and Vision
+  attachment paths to NIF-12 behind a second independently default-off
+  `AI_ARTIFACT_WORKFLOWS_ENABLED` switch. New `.xlsx` inspect/mapping contracts bind the exact source
+  Artifact SHA and versioned snapshot; new `.xlsx`/`.docx` translation creates a separately scanned
+  derived Artifact with parent, parser/terms and model lineage; Vision sends only owner/factory-bound
+  IMAGE Artifact references after reloading, integrity checking, metadata stripping and exact
+  per-request image consent. Workbook, document and image Bailian Beijing consent contracts bind
+  provider, region, classification, content class and the exact Artifact IDs and never inherit from
+  one another; `RESTRICTED` fails before Provider construction. Local CTranslate2/SentencePiece remains
+  the default and requires no cloud consent. Existing multipart APIs remain compatible and internally
+  register eligible macro-free `.xlsx`/`.docx` inputs first; `.xlsm` deliberately stays on the legacy
+  compatibility implementation because the new Artifact baseline rejects macros. Large macro-free
+  local translations enter an idempotency-keyed Preview Task whose source/result hashes and Artifact
+  lineage persist through Worker crash/retry and page refresh; completed Task metadata restores the
+  derived-file download. The model-visible registry still excludes these workflow Tools, and the
+  Worker receives them only when the adapter flag is on. No arbitrary Excel import, PDF/OCR, Profile
+  auto-approval, DEMAND_ORDER production Task, machine/date fabrication or source-byte mutation was
+  added. ADR-009 approval remains an engineering product/security/operations baseline, not additional
+  legal sign-off or production enablement; NIF-13 remains disabled in production examples.
+- NIF-14 implements a two-stage injection-Backlog screenshot workflow behind independently
+  default-off `AI_VISION_TOOL_COMPARISON_ENABLED`. Stage A accepts one currently authorized IMAGE
+  Artifact with exact image-class Bailian Beijing consent, performs exactly one structured
+  multimodal Provider call with `ToolChoicePolicy.NONE`, treats every pixel and recognized string as
+  untrusted data, preserves leading-zero business IDs as strings and persists only a bounded
+  `USER_PROVIDED` Observation with per-field confidence. Stage B is never automatic: the Workbench
+  requires a separate user click, creates a new READ Task containing only the source Observation Task
+  ID and server-fixed factory/page context, reloads the active source Artifact, rechecks current
+  owner/factory/`injection_scheduling:read` access and then performs one fresh registered formal
+  Backlog read with fixed `limit=20, offset=0`. No OCR text can select a Tool, factory, filter or
+  permission. Exact order/item strings are compared deterministically; low-confidence, missing and
+  ambiguous matches remain unconfirmed, and formal truncation/as-of are explicit. Task metadata and
+  Events retain separate `USER_PROVIDED` and `FORMAL_DOMAIN_SERVICE` Evidence plus the image Artifact
+  hash, while the result contract requires `no_write_performed=true`. The UI separately labels both
+  authority layers, confidence, detected image instructions, differences, unconfirmed rows,
+  truncation and the no-write boundary. Turning the flag off restores the existing single-stage
+  Vision/no-Tool behavior. NIF-14 adds no migration, Profile approval, write, import, scheduling Task,
+  arbitrary query or cross-factory comparison and remains disabled in production examples.
+- NIF-15 adds a closed, migration-free `PREVIEW_WITH_AUDIT` framework without replacing either
+  domain algorithm. A versioned Preview Manifest now records the Preview type, factory, source
+  Revision hash, normalized input hash, explicit assumptions, bounded Evidence, creator, TTL,
+  live status and proposal-only capability. The registry has exactly two adapters: existing
+  injection-scheduling Run generation/comparison remains the deterministic source of scheduling
+  metrics, while workbook mapping remains a model-inference proposal backed by separate
+  `USER_PROVIDED` and `MODEL_INFERENCE` Evidence. The generic Verifier rechecks current factory,
+  IAM, source Revision, expiry, assumption values and origin; stale, expired, revoked, cross-factory,
+  mislabeled and unregistered Previews cannot create an Action Proposal. Scenario Compare derives
+  comparability from source hashes and never writes. Task metadata durably retains bounded Manifests
+  and Evidence; recovered UI state recomputes elapsed TTL and shows the same strict Preview card in
+  the Workbench, scheduling result and workbook mapping flow. The card says no formal write occurred
+  and distinguishes `CREATE_PROPOSAL_ONLY` from Apply/Publish/execution. Legacy B13 results without a
+  Manifest remain readable, while unknown Manifest/Scenario fields fail closed. No Preview table,
+  scheduling algorithm, workbook import, Profile activation, Apply, Publish or Rollback was added.
+- NIF-16 implements accepted ADR-012 as a compatible evolution of the existing
+  `AIActionConfirmation` row rather than a parallel state machine. The same row now retains the
+  legacy API status while recording the closed Proposal lifecycle, versioned Handler Manifest and
+  Approval Policy, explicit authenticated-user approval binding, independent approval/execution
+  idempotency IDs, COMMITTING/VERIFYING states, formal DRAFT/Run read-back, Domain Audit ID and
+  non-automatic compensation guidance. Permission, factory, args hash, entity Revision, TTL,
+  handler/policy version and freshness are rechecked at the required boundaries. The Provider-visible
+  Tool may propose only; the executor remains absent from the Tool registry. The sole Handler applies
+  one current injection scheduling Preview to DRAFT and rejects PUBLISHED targets; Publish, Rollback,
+  inventory/final release and a second write action remain absent. `AI_ACTION_GATEWAY_ENABLED` and
+  `AI_CONTROLLED_APPLY_ENABLED` are independent and default off. ADR-012 is an engineering baseline,
+  not production enablement or additional legal sign-off.
+- NIF-17 adds a repeatable product-Eval, feedback and metadata-only observability platform behind
+  independently default-off `AI_FEEDBACK_ENABLED`, `AI_OBSERVABILITY_ENABLED` and
+  `AI_METRIC_EXPORT_ENABLED`. Twelve Git-versioned `OFFLINE_FAKE` datasets bind every current/pilot
+  Skill to the exact Skill/Prompt hashes and cover Chinese language, business grounding, files,
+  Vision, scheduling, security, Provider/Worker resilience and Action replay boundaries. The Runner
+  excludes Live Provider Eval from ordinary CI, emits no user text, answer text, Tool arguments,
+  Raw Prompt/Tool Result or Chain of Thought, and measures task success, grounded claims, citations,
+  Tool selection/arguments plus zero-target unauthorized, cross-factory and Preview/Executed
+  mislabel rates. Migration `20260813_0073` stores bounded Feedback, Eval Run and Model Run/Tool Call
+  metadata and refuses downgrade while evidence exists; startup refuses to let `create_all` bypass
+  it. Runtime metrics bind Request/Conversation/Task/Action, Skill/Prompt/Tool/Provider/Model
+  versions, Token/cost estimate, latency, retries, failures and Evidence count without retaining
+  request or result bodies. Cost is unavailable until approved per-million Token rates are configured
+  and successful-task cost is reported only when a Task-linked Model Run exists. Users can submit
+  owned, factory-matched helpful/correction feedback; an administrator may only triage or propose a
+  manual Eval Case reference, never auto-edit Prompt or Knowledge. Summary, event and Eval Run export
+  are wildcard-system-admin-only and default off. The UI exposes feedback only for complete Assistant
+  messages with a verified persisted Message or Model response receipt and explicitly states the
+  manual-review boundary. NIF-17 does not itself enable production AI, publish Knowledge, open an
+  Action, or claim Live Provider/field acceptance.
+- NIF-18 repository-side readiness controls now include a metadata-only twenty-gate evidence
+  verifier/template, a one-way shared kill-switch drill, explicit `disabled`/`preflight`/
+  `action-field` readiness stages and a deployment path that permits a multi-instance Shared Guard
+  candidate only behind the active disable marker. The evidence document remains explicit
+  `NO-GO`: this workstation cannot prove Docker rendering, TLS/browser/Provider/Worker/PostgreSQL
+  contention, ClamAV/OSS/KMS backup-restore, alert acknowledgement, rollback or production field
+  scenarios. ADR-012 is accepted and the NIF-16 repository implementation exists default-off, but
+  the mandatory DRAFT-only Controlled Apply scenario has not received `FIELD-PASS`; production
+  enablement and all L4 actions remain prohibited. Repository tests and local checks are evidence
+  only and must not be relabelled as production `FIELD-PASS`. The isolated branch preserved the NIF
+  implementation in `1b71a60` and merged `origin/main` at `b0575ef` in `9128eff`. The byte-identical
+  upstream QC migration is `20260812_0067`; the AI chain follows as `0068`–`0074`, with one Alembic
+  head `20260813_0074`. Post-merge verification passed 72 migration/compatibility tests, 440 backend
+  AI tests with 2 intentional skips, 13 deployment/security tests, and the full frontend suite at
+  895 passed/6 skipped across 157 files. Branch-scoped Python Ruff, frontend test typecheck,
+  production build, four Shell syntax checks and `git diff --check` also passed. Docker is unavailable
+  on this workstation, so Compose/container and all real-environment scenarios remain unverified
+  field gates. The branch is locally integrated and verified, but this does not change production
+  readiness from `NO-GO` or authorize AI enablement.
 - AI-B9 now provides separately authorized, factory-scoped, read-only Tool and closed frontend-result
   contracts for Internal Quote, molding samples, carton procurement, raw-material inventory and
   customer orders. Each domain uses selected-field serializers and canonical permission checks; the
@@ -415,6 +665,21 @@ The smallest unresolved decisions that require product or operational confirmati
   not approve customer workbooks/documents for B10 or B12. Those file workflows still require their
   own transmission and retention/deletion policy decision. Production credentials must stay in the
   untracked server secret boundary.
+- ADR-006 is approved as a product/security/operations engineering rollout baseline for NIF-08,
+  with a 90-second lease, 15-second heartbeat, at most two safe recovery retries, one-to-four Worker
+  concurrency and measurable queue/latency/contention triggers for a Redis or broker evaluation.
+  ADR-007 is separately approved on the same authority and scope for the default-off NIF-09
+  PostgreSQL shared Guard baseline. Neither approval is additional legal sign-off, production
+  enablement, multi-instance activation or Action authorization. A real PostgreSQL contention/load
+  drill remains part of the later field gate because this workstation has no native Docker runtime.
+- ADR-008, ADR-009 and ADR-012 are approved engineering rollout baselines. NIF-12 through NIF-17
+  are implemented default-off, and the repository-side NIF-18 evidence pack is implemented while
+  production remains `NO-GO`. ADR-012 authorizes only the existing DRAFT Action Gateway engineering
+  baseline; it does not enable production, authorize a second write action or add legal sign-off.
+  Do not treat user images as formal system facts or enable any file-to-Provider route in production:
+  workbook, document and image consent remain separate and request-bound, `RESTRICTED` never leaves
+  Nexus, and the private-volume/ClamAV/OSS/KMS/restore evidence above remains an NIF-18 field gate
+  rather than repository-proven production readiness.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.
 
 When one of these decisions becomes an implemented, verified long-lived fact, update the relevant section in place and remove the corresponding unresolved item.

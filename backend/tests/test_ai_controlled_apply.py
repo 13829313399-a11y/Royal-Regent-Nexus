@@ -22,6 +22,7 @@ def _enable_controlled_apply(monkeypatch) -> None:
         "AI_PILOT_FACTORY_IDS": "huaxing",
         "AI_PILOT_PUBLIC_TLS_VERIFIED": "true",
         "AI_RUNTIME_DISABLE_PATH": "",
+        "AI_ACTION_GATEWAY_ENABLED": "true",
         "AI_CONTROLLED_APPLY_ENABLED": "true",
     }
     for name, value in values.items():
@@ -128,6 +129,14 @@ def test_controlled_apply_requires_persisted_confirmation_and_replays_once(
             confirmation_id = proposal.confirmation_id
             args_hash = proposal.args_hash
 
+        gateway_before = client.get(
+            f"/api/ai/actions/{confirmation_id}",
+            params={"factory_id": "huaxing"},
+        )
+        assert gateway_before.status_code == 200, gateway_before.text
+        assert gateway_before.json()["lifecycle_status"] == "WAITING_APPROVAL"
+        assert gateway_before.json()["compatibility_confirmation_id"] == confirmation_id
+
         wrong_factory = client.post(
             f"/api/ai/action-confirmations/{confirmation_id}/confirm",
             json={
@@ -149,6 +158,12 @@ def test_controlled_apply_requires_persisted_confirmation_and_replays_once(
         )
         assert confirmed.status_code == 200, confirmed.text
         assert confirmed.json()["status"] == "CONFIRMED"
+        gateway_approved = client.get(
+            f"/api/ai/actions/{confirmation_id}",
+            params={"factory_id": "huaxing"},
+        )
+        assert gateway_approved.status_code == 200, gateway_approved.text
+        assert gateway_approved.json()["lifecycle_status"] == "APPROVED"
 
         execution_payload = {
             "factory_id": "huaxing",
@@ -180,6 +195,17 @@ def test_controlled_apply_requires_persisted_confirmation_and_replays_once(
         )
         assert replay.status_code == 200, replay.text
         assert replay.json()["result"]["idempotent_replay"] is True
+        gateway_executed = client.get(
+            f"/api/ai/actions/{confirmation_id}",
+            params={"factory_id": "huaxing"},
+        )
+        assert gateway_executed.status_code == 200, gateway_executed.text
+        gateway_data = gateway_executed.json()
+        assert gateway_data["lifecycle_status"] == "EXECUTED"
+        assert gateway_data["verification"]["entity_status"] == "DRAFT"
+        assert gateway_data["verification"]["domain_audit_id"].startswith(
+            "injection_scheduling_audit_events:"
+        )
         different_request = client.post(
             f"/api/ai/action-confirmations/{confirmation_id}/execute",
             json=execution_payload
