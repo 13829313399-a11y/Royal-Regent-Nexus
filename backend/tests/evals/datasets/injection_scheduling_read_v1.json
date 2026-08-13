@@ -1,0 +1,5 @@
+{
+  "schema_version": "ai-eval-dataset-v1", "suite_id": "injection_scheduling_read_v1", "dataset_version": "1.0.0", "mode": "OFFLINE_FAKE",
+  "skill_id": "injection_scheduling.read_context", "skill_version": "1.0.0", "prompt_version": "1.0.0",
+  "cases": [{"id": "schedule_draft_published_separation", "category": "SCHEDULING", "user_text": "解释当前执行计划和规划草案，别把草案当成生产", "factory_id": "huaxing", "route_name": "injection-scheduling-v2", "expected": {"skill_id": "injection_scheduling.read_context", "tools": [{"name": "injection_scheduling.get_plan_context", "required_arguments": {"factory_id": "huaxing"}}], "evidence_levels": ["FORMAL_DOMAIN_SERVICE"], "required_answer_terms": ["PUBLISHED", "DRAFT"], "forbidden_answer_terms": ["草案正在执行"], "grounded_claim_count": 2}, "tags": ["draft-published"]}]
+}

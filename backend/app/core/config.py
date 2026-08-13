@@ -29,6 +29,63 @@ class Settings(BaseSettings):
     injection_scheduling_export_signing_key_id: str = "v1"
     injection_scheduling_export_verification_keys_json: str = "{}"
     ai_enabled: bool = False
+    ai_nif_runtime_enabled: bool = False
+    ai_provider_capability_router_enabled: bool = False
+    ai_skill_router_enabled: bool = False
+    ai_evidence_v1_enabled: bool = False
+    ai_conversations_enabled: bool = False
+    ai_conversation_message_retention_days: Literal[30] = 30
+    ai_conversation_summary_retention_days: Literal[30] = 30
+    ai_conversation_tombstone_retention_days: Literal[180] = 180
+    ai_conversation_security_audit_retention_days: Literal[180] = 180
+    ai_conversation_action_audit_retention_days: Literal[365] = 365
+    ai_conversation_backup_retention_days: Literal[30] = 30
+    ai_conversation_backup_delete_sla_days: Literal[30] = 30
+    ai_tasks_enabled: bool = False
+    ai_task_retention_days: Literal[180] = 180
+    ai_task_security_audit_retention_days: Literal[180] = 180
+    ai_task_backup_delete_sla_days: Literal[30] = 30
+    ai_task_worker_enabled: bool = False
+    ai_task_worker_concurrency: int = Field(default=1, ge=1, le=4)
+    ai_task_worker_lease_seconds: Literal[90] = 90
+    ai_task_worker_heartbeat_seconds: Literal[15] = 15
+    ai_task_worker_max_recovery_retries: Literal[2] = 2
+    ai_task_worker_poll_seconds: float = Field(default=1.0, ge=0.1, le=10)
+    ai_shared_guard_enabled: bool = False
+    ai_semantic_gateway_enabled: bool = False
+    ai_knowledge_hub_enabled: bool = False
+    ai_artifacts_enabled: bool = False
+    ai_artifact_workflows_enabled: bool = False
+    ai_vision_tool_comparison_enabled: bool = False
+    ai_preview_ttl_minutes: int = Field(default=30, ge=5, le=1440)
+    ai_artifact_storage_dir: str = str(BACKEND_DIR / "data" / "ai-artifacts")
+    ai_artifact_scanner_backend: Literal["disabled", "clamav"] = "disabled"
+    ai_artifact_clamav_host: str = "clamav"
+    ai_artifact_clamav_port: int = Field(default=3310, ge=1, le=65535)
+    ai_artifact_clamav_timeout_seconds: float = Field(default=15, gt=0, le=60)
+    ai_artifact_retention_days: Literal[30] = 30
+    ai_artifact_tombstone_retention_days: Literal[180] = 180
+    ai_artifact_security_audit_retention_days: Literal[180] = 180
+    ai_artifact_backup_delete_sla_days: Literal[30] = 30
+    ai_artifact_backup_provider: Literal["aliyun_oss"] = "aliyun_oss"
+    ai_artifact_backup_region: str = ""
+    ai_artifact_backup_bucket: str = ""
+    ai_artifact_backup_kms_key_id: SecretStr = SecretStr("")
+    ai_artifact_private_volume_verified: bool = False
+    ai_artifact_clamav_operations_verified: bool = False
+    ai_artifact_backup_encryption_verified: bool = False
+    ai_artifact_backup_restore_drill_verified: bool = False
+    ai_guard_instance_id: str = Field(
+        default="",
+        max_length=128,
+        pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,127})?$",
+    )
+    ai_guard_lease_seconds: int = Field(default=900, ge=180, le=3600)
+    ai_guard_request_retention_minutes: int = Field(default=10, ge=2, le=60)
+    ai_guard_budget_retention_days: int = Field(default=35, ge=2, le=90)
+    ai_task_event_stream_poll_seconds: float = Field(default=0.5, ge=0.1, le=2)
+    ai_task_event_stream_max_seconds: int = Field(default=25, ge=5, le=30)
+    ai_model_catalog_json: str = ""
     ai_provider: str = "qwen"
     ai_region: str = "cn-beijing"
     ai_workspace_id: str = ""
@@ -90,7 +147,14 @@ class Settings(BaseSettings):
     )
     ai_cloud_document_translation_enabled: bool = False
     ai_cloud_workbook_mapping_enabled: bool = False
+    ai_action_gateway_enabled: bool = False
     ai_controlled_apply_enabled: bool = False
+    ai_feedback_enabled: bool = False
+    ai_observability_enabled: bool = False
+    ai_metric_export_enabled: bool = False
+    ai_input_token_cost_usd_per_million: float = Field(default=0.0, ge=0, le=1000)
+    ai_output_token_cost_usd_per_million: float = Field(default=0.0, ge=0, le=1000)
+    ai_nif18_stage: Literal["disabled", "preflight", "action-field"] = "disabled"
     ai_base_url: str = ""
 
     @property

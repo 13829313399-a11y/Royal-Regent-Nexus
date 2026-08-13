@@ -21,5 +21,7 @@ describe('AI-B10/B11 workbook preview and mapping boundaries', () => {
     expect(wizard).toContain('采用 AI 建议到人工草案')
     expect(wizard).toContain('保存映射草案')
     expect(wizard).toContain('提交导入模板审核')
+    expect(wizard).toContain('mappingProposal.preview_manifest')
+    expect(wizard).toContain('<PreviewCard')
   })
 })

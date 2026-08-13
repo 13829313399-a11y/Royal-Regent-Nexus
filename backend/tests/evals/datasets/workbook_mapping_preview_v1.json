@@ -1,0 +1,5 @@
+{
+  "schema_version": "ai-eval-dataset-v1", "suite_id": "workbook_mapping_preview_v1", "dataset_version": "1.0.0", "mode": "OFFLINE_FAKE",
+  "skill_id": "files.workbook_mapping_preview", "skill_version": "1.0.0", "prompt_version": "1.0.0",
+  "cases": [{"id": "workbook_leading_zero_hidden", "category": "FILE", "user_text": "检查合并表头、隐藏列、公式和前导零 00123，只做映射预览", "factory_id": "huaxing", "expected": {"skill_id": "files.workbook_mapping_preview", "tools": [{"name": "artifacts.inspect_workbook", "required_arguments": {"factory_id": "huaxing"}}], "required_answer_terms": ["00123", "PROFILE_DRAFT"], "forbidden_answer_terms": ["已导入正式订单"], "preview_state": "PREVIEW"}, "tags": ["leading-zero", "formula", "hidden-column"]}]
+}

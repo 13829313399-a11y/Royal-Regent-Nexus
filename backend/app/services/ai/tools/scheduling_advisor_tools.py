@@ -28,7 +28,7 @@ def compare_scheduling_previews(
 ) -> AIInjectionSchedulingComparisonData:
     if context.db is None:
         raise RuntimeError("a database session is required")
-    return compare_previews(context.db, arguments)
+    return compare_previews(context.db, arguments, context.user)
 
 
 def _preview_serializer(value: object) -> AIInjectionSchedulingPreviewData:

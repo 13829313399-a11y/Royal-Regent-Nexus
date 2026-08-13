@@ -2,10 +2,6 @@ import json
 from datetime import timedelta
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
-
 from app.core.time import business_now
 from app.db import Base
 from app.models.ai_action import AIActionConfirmation
@@ -32,6 +28,9 @@ from app.services.auth import (
     AuthGrantContext,
     AuthOverrideContext,
 )
+from fastapi import HTTPException
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 
 def _user(

@@ -1,5 +1,9 @@
 import axios from 'axios'
 import { http } from '@/lib/http'
+import {
+  isArtifactWorkflowUnavailable,
+  uploadAIArtifact,
+} from '@/api/aiArtifacts'
 
 
 export const PDF_TO_EXCEL_TIMEOUT_MS = 180_000
@@ -16,6 +20,7 @@ export interface DocumentTranslationStatus {
   engineLabel: string
   directions: Record<DocumentTranslationDirection, boolean>
   cloudAvailable?: boolean
+  artifactWorkflowsEnabled?: boolean
   modes?: {
     local_private: { available: boolean; label: string }
     ai_smart_cloud: { available: boolean; label: string; provider: string; model: string }
@@ -28,6 +33,8 @@ export interface DocumentTranslationResult {
   translatedUnitCount: number
   skippedUnitCount: number
   processedPartCount: number
+  sourceArtifactId?: string
+  derivedArtifactId?: string
 }
 
 export interface PdfToExcelMetrics {
@@ -113,7 +120,10 @@ async function parseBlobError(error: unknown): Promise<never> {
   }
 }
 
-export function createSharedToolsApi(client: SharedToolsHttpClient = http) {
+export function createSharedToolsApi(
+  client: SharedToolsHttpClient = http,
+  artifactUploader = uploadAIArtifact,
+) {
   return {
     async getDocumentTranslationStatus(): Promise<DocumentTranslationStatus> {
       if (!client.get) throw new Error('当前 HTTP 客户端不支持读取翻译服务状态。')
@@ -127,6 +137,8 @@ export function createSharedToolsApi(client: SharedToolsHttpClient = http) {
       selectedSheetNames?: string[],
       mode: DocumentTranslationMode = 'local_private',
       cloudConsent = false,
+      factoryId = '',
+      artifactWorkflowEnabled = false,
     ): Promise<DocumentTranslationResult> {
       const payload = new FormData()
       payload.append('document_file', documentFile)
@@ -140,6 +152,61 @@ export function createSharedToolsApi(client: SharedToolsHttpClient = http) {
       const fallbackFileName = `${stem}_${directionLabel}${extension}`
 
       try {
+        if (
+          artifactWorkflowEnabled
+          && factoryId
+          && /\.(xlsx|docx)$/i.test(documentFile.name)
+        ) {
+          try {
+            const source = await artifactUploader(
+              documentFile,
+              factoryId,
+              'CONFIDENTIAL_BUSINESS',
+            )
+            const artifactPayload = new FormData()
+            artifactPayload.append('artifact_id', source.id)
+            artifactPayload.append('direction', direction)
+            artifactPayload.append('mode', mode)
+            if (selectedSheetNames) {
+              artifactPayload.append('sheet_names', JSON.stringify(selectedSheetNames))
+            }
+            if (mode === 'ai_smart_cloud') {
+              artifactPayload.append('cloud_consent_json', JSON.stringify({
+                accepted: true,
+                notice_version: source.content_class === 'WORKBOOK'
+                  ? 'aliyun-cn-beijing-workbook-v1'
+                  : 'aliyun-cn-beijing-document-v1',
+                provider: 'qwen',
+                region: 'cn-beijing',
+                classification: source.classification,
+                content_class: source.content_class,
+                artifact_ids: [source.id],
+              }))
+            }
+            const artifactResponse = await client.post<Blob>(
+              '/tools/document-translation/artifact',
+              artifactPayload,
+              {
+                headers: { 'Content-Type': 'multipart/form-data' },
+                responseType: 'blob',
+                timeout: DOCUMENT_TRANSLATION_TIMEOUT_MS,
+              },
+            )
+            return {
+              blob: artifactResponse.data,
+              fileName: responseFileName(artifactResponse.headers, fallbackFileName),
+              translatedUnitCount: headerCount(artifactResponse.headers, 'x-translation-unit-count'),
+              skippedUnitCount: headerCount(artifactResponse.headers, 'x-translation-skipped-count'),
+              processedPartCount: headerCount(artifactResponse.headers, 'x-translation-part-count'),
+              sourceArtifactId: String(artifactResponse.headers?.['x-source-artifact-id'] ?? ''),
+              derivedArtifactId: String(artifactResponse.headers?.['x-derived-artifact-id'] ?? ''),
+            }
+          }
+          catch (error) {
+            if (!isArtifactWorkflowUnavailable(error)) throw error
+          }
+        }
+        if (factoryId) payload.append('factory_id', factoryId)
         const response = await client.post<Blob>('/tools/document-translation', payload, {
           headers: { 'Content-Type': 'multipart/form-data' },
           responseType: 'blob',

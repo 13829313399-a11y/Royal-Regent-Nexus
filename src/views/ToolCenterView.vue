@@ -82,7 +82,11 @@ const toolItems = [
         <PdfToExcelTool v-if="activeTool === 'pdf-to-excel'" :context-label="factoryContextLabel" />
         <PdfToWordTool v-else-if="activeTool === 'pdf-to-word'" :context-label="factoryContextLabel" />
         <PdfSplitTool v-else-if="activeTool === 'pdf-split'" :context-label="factoryContextLabel" />
-        <DocumentTranslationTool v-else :context-label="factoryContextLabel" />
+        <DocumentTranslationTool
+          v-else
+          :context-label="factoryContextLabel"
+          :factory-id="String(appStore.activeProductionFactory.id)"
+        />
       </div>
     </section>
   </div>

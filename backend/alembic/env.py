@@ -20,6 +20,11 @@ from app.core.config import settings
 from app.db import Base
 from app.models import (
     ai_action,  # noqa: F401
+    ai_artifact,  # noqa: F401
+    ai_conversation,  # noqa: F401
+    ai_guard,  # noqa: F401
+    ai_observability,  # noqa: F401
+    ai_task,  # noqa: F401
     auth,  # noqa: F401
     carton_procurement,  # noqa: F401
     customer_order,  # noqa: F401

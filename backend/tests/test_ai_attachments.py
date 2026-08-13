@@ -4,9 +4,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from PIL import Image
-from pydantic import ValidationError
-
 from app.schemas.ai.attachment import (
     AICloudProcessingConsent,
     AIImageAttachmentInput,
@@ -20,6 +17,8 @@ from app.services.ai.attachment_service import (
     prepare_image_attachments,
 )
 from app.services.ai.providers.base import ProviderImageContent
+from PIL import Image
+from pydantic import ValidationError
 
 _MIME_BY_FORMAT = {
     "PNG": "image/png",

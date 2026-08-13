@@ -427,6 +427,50 @@ INJECTION_SCHEDULING_DEMAND_SHARED_REQUIRED_COLUMNS = {
         "factory_readiness_status",
     },
 }
+AI_CONVERSATION_REVISION = "20260813_0068"
+AI_CONVERSATION_REQUIRED_TABLES = {
+    "ai_conversations",
+    "ai_messages",
+    "ai_conversation_summaries",
+}
+AI_TASK_REVISION = "20260813_0070"
+AI_TASK_REQUIRED_TABLES = {
+    "ai_tasks",
+    "ai_task_steps",
+    "ai_task_events",
+}
+AI_GUARD_REVISION = "20260813_0071"
+AI_GUARD_REQUIRED_TABLES = {
+    "ai_guard_leases",
+    "ai_guard_request_events",
+    "ai_guard_daily_budgets",
+    "ai_guard_disable_states",
+}
+AI_ARTIFACT_REVISION = "20260813_0072"
+AI_ARTIFACT_REQUIRED_TABLES = {"ai_artifacts"}
+AI_OBSERVABILITY_REVISION = "20260813_0073"
+AI_OBSERVABILITY_REQUIRED_TABLES = {
+    "ai_feedback",
+    "ai_metric_events",
+    "ai_eval_runs",
+}
+AI_ACTION_GATEWAY_REVISION = "20260813_0074"
+AI_ACTION_GATEWAY_REQUIRED_COLUMNS = {
+    "gateway_contract_version",
+    "action_type",
+    "handler_version",
+    "approval_policy_version",
+    "lifecycle_status",
+    "approval_user_id",
+    "approval_request_id",
+    "approval_args_hash",
+    "approval_entity_revision",
+    "approval_expires_at",
+    "execution_user_id",
+    "domain_audit_id",
+    "verification_result_json",
+    "compensation_json",
+}
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -915,6 +959,151 @@ def ensure_injection_scheduling_demand_shared_schema_ready() -> None:
     )
 
 
+def ensure_ai_conversation_schema_ready() -> None:
+    """Refuse to let create_all bypass the approved Conversation migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(AI_CONVERSATION_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成 AI Conversation 迁移 "
+        f"{AI_CONVERSATION_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'table:{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_ai_task_schema_ready() -> None:
+    """Refuse to let create_all bypass the approved NIF-07 Task migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(AI_TASK_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成 AI Task 迁移 "
+        f"{AI_TASK_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'table:{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_ai_guard_schema_ready() -> None:
+    """Refuse to let create_all bypass the accepted NIF-09 migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(AI_GUARD_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成 AI 共享 Guard 迁移 "
+        f"{AI_GUARD_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'table:{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_ai_artifact_schema_ready() -> None:
+    """Refuse to let create_all bypass the accepted NIF-12 migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(AI_ARTIFACT_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成 AI Artifact 迁移 "
+        f"{AI_ARTIFACT_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'table:{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_ai_observability_schema_ready() -> None:
+    """Refuse to let create_all bypass the NIF-17 metadata migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(AI_OBSERVABILITY_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成 AI 反馈与可观测元数据迁移 "
+        f"{AI_OBSERVABILITY_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'table:{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
+def ensure_ai_action_gateway_schema_ready() -> None:
+    """Refuse to let create_all bypass the accepted NIF-16 migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        if "ai_action_confirmations" not in table_names:
+            missing = sorted(AI_ACTION_GATEWAY_REQUIRED_COLUMNS)
+        else:
+            columns = {
+                item["name"]
+                for item in inspector.get_columns("ai_action_confirmations")
+            }
+            missing = sorted(AI_ACTION_GATEWAY_REQUIRED_COLUMNS - columns)
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到数据库尚未完成 AI Action Gateway 迁移 "
+        f"{AI_ACTION_GATEWAY_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(f'column:{item}' for item in missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -971,6 +1160,11 @@ def ensure_sqlite_legacy_columns() -> None:
 def init_db() -> None:
     from app.models import (
         ai_action,  # noqa: F401
+        ai_artifact,  # noqa: F401
+        ai_conversation,  # noqa: F401
+        ai_guard,  # noqa: F401
+        ai_observability,  # noqa: F401
+        ai_task,  # noqa: F401
         auth,  # noqa: F401
         carton_procurement,  # noqa: F401
         customer_order,  # noqa: F401
@@ -1015,6 +1209,12 @@ def init_db() -> None:
     ensure_injection_scheduling_takeover_schema_ready()
     ensure_injection_scheduling_public_planning_schema_ready()
     ensure_injection_scheduling_demand_shared_schema_ready()
+    ensure_ai_conversation_schema_ready()
+    ensure_ai_task_schema_ready()
+    ensure_ai_guard_schema_ready()
+    ensure_ai_artifact_schema_ready()
+    ensure_ai_observability_schema_ready()
+    ensure_ai_action_gateway_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

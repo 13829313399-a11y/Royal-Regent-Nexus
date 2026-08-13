@@ -7,9 +7,6 @@ from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
-from pydantic import Field
-from sqlalchemy.exc import OperationalError
-
 from app.core.config import Settings
 from app.models.auth import AuthUser
 from app.schemas.ai import (
@@ -31,6 +28,8 @@ from app.services.auth import (
     AuthOverrideContext,
     AuthProfileContext,
 )
+from pydantic import Field
+from sqlalchemy.exc import OperationalError
 
 
 class FactoryArguments(StrictToolInput):

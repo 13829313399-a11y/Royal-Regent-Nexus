@@ -2,7 +2,6 @@ import asyncio
 import json
 
 import pytest
-
 from app.core.config import Settings
 from app.services.ai.cloud_document_translation import translate_cloud_fragments
 from app.services.ai.providers import FakeProvider, ProviderResponse, ProviderToolCall

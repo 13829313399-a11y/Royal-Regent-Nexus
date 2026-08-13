@@ -5,13 +5,18 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.time import business_now
 from app.models.ai_action import AIActionConfirmation
-from app.models.injection_scheduling_execution import InjectionSchedulingPlan
+from app.models.injection_scheduling_execution import (
+    InjectionSchedulingAuditEvent,
+    InjectionSchedulingPlan,
+)
 from app.models.injection_scheduling_scheduler import (
     InjectionSchedulingRun,
     InjectionSchedulingRunAssignment,
 )
 from app.schemas.ai.action_confirmation import (
+    AIActionVerificationData,
     AIControlledApplyResult,
     AIInjectionSchedulingApplyActionSummary,
     AIInjectionSchedulingApplyCanonicalAction,
@@ -20,6 +25,11 @@ from app.schemas.injection_scheduling_scheduler import InjectionSchedulingRunApp
 from app.services.ai.action_registry import (
     ActionConfirmationStaleError,
     AIActionHandler,
+)
+from app.services.ai.actions.contracts import (
+    ActionApprovalPolicy,
+    ActionHandlerManifest,
+    ActionVerificationError,
 )
 from app.services.auth import AuthContext, authorization_decision
 from app.services.injection_scheduling import (
@@ -218,6 +228,47 @@ def execute_apply_action(
     )
 
 
+def verify_apply_action(
+    db: Session,
+    value: BaseModel,
+    result: AIControlledApplyResult,
+) -> AIActionVerificationData:
+    action = _typed_action(value)
+    try:
+        run = _run(db, action.factory_id, action.run_id)
+        plan = _plan(db, action.factory_id, action.plan_id)
+    except HTTPException as exc:
+        raise ActionVerificationError(
+            "正式 DRAFT 或 Run 回读不存在，不能确认执行成功"
+        ) from exc
+    audit = db.get(InjectionSchedulingAuditEvent, result.audit_sequence)
+    if (
+        result.run_id != action.run_id
+        or result.plan_id != action.plan_id
+        or result.run_status != "APPLIED"
+        or result.plan_status != "DRAFT"
+        or run.status != "APPLIED"
+        or plan.status != "DRAFT"
+        or plan.revision != result.plan_revision
+        or audit is None
+        or audit.factory_id != action.factory_id
+        or audit.event_type != "auto_schedule_run_applied"
+        or audit.entity_type != "auto_schedule_run"
+        or audit.entity_id != action.run_id
+    ):
+        raise ActionVerificationError(
+            "正式 DRAFT、Run 或 Domain Audit 回读与执行结果不一致"
+        )
+    return AIActionVerificationData(
+        factory_id=action.factory_id,
+        entity_id=plan.id,
+        entity_revision=plan.revision,
+        run_id=run.id,
+        domain_audit_id=f"injection_scheduling_audit_events:{audit.sequence}",
+        verified_at=business_now().isoformat(timespec="seconds"),
+    )
+
+
 def injection_scheduling_apply_handler() -> AIActionHandler:
     return AIActionHandler(
         tool_name=_TOOL_NAME,
@@ -233,4 +284,23 @@ def injection_scheduling_apply_handler() -> AIActionHandler:
         freshness_validator=validate_apply_freshness,
         execution_validator=validate_apply_execution,
         executor=execute_apply_action,
+        manifest=ActionHandlerManifest(
+            action_type="APPLY_INJECTION_AUTO_SCHEDULE_RUN",
+            handler_version="1.0.0",
+            autonomy_level="L3",
+            target_state="DRAFT",
+            model_may_propose=True,
+            model_may_approve=False,
+            model_may_execute=False,
+            publish_allowed=False,
+            rollback_allowed=False,
+        ),
+        approval_policy=ActionApprovalPolicy(
+            policy_id="single-explicit-owner-approval",
+            policy_version="1.0.0",
+            approvals_required=1,
+            approver_must_be_proposer=True,
+            allowed_source="AUTHENTICATED_USER_API",
+        ),
+        post_verifier=verify_apply_action,
     )

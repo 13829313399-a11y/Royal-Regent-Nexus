@@ -2,10 +2,6 @@ import asyncio
 import json
 
 import pytest
-from sqlalchemy import create_engine, event, func, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
-
 from app.core.config import Settings
 from app.db import Base
 from app.models.molding_sample import MoldingSampleInventoryBatch
@@ -21,6 +17,9 @@ from app.services.ai.tool_executor import ToolExecutionContext, ToolExecutor
 from app.services.ai.tool_registry import ToolRegistry, build_default_tool_registry
 from app.services.ai.tools.raw_material_read_tools import raw_material_tool_specs
 from app.services.auth import AuthContext, AuthGrantContext, AuthOverrideContext
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 NOW = "2026-08-12 10:00:00"
 

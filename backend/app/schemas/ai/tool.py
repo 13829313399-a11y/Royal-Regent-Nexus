@@ -2,6 +2,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.ai.evidence import AIEvidenceReferenceV1
+
 
 class AIToolRiskLevel(StrEnum):
     READ_ONLY = "READ_ONLY"
@@ -59,6 +61,7 @@ class AIToolResultEnvelope(BaseModel):
     data: object | None = None
     error: AIToolError | None = None
     metadata: AIToolResultMetadata = Field(default_factory=AIToolResultMetadata)
+    evidence: tuple[AIEvidenceReferenceV1, ...] | None = None
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "AIToolResultEnvelope":
@@ -68,4 +71,6 @@ class AIToolResultEnvelope(BaseModel):
             raise ValueError("failed tool results must contain an error")
         if not self.ok and self.data is not None:
             raise ValueError("failed tool results cannot contain data")
+        if not self.ok and self.evidence is not None:
+            raise ValueError("failed tool results cannot contain Evidence")
         return self

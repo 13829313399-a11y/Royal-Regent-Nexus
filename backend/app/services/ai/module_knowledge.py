@@ -152,6 +152,8 @@ class ModuleKnowledgeRegistry:
         if metadata.route_names != _EXPECTED_ROUTES.get(knowledge_id):
             raise ModuleKnowledgeError("module knowledge route allowlist does not match")
         for source_file in metadata.source_files:
+            if PurePosixPath(source_file).name in {"PROJECT_MEMORY.md", "AGENTS.md"}:
+                raise ModuleKnowledgeError("development knowledge source is forbidden")
             source_path = self._resolve_repository_path(source_file)
             if not source_path.is_file():
                 raise ModuleKnowledgeError("module knowledge source file is unavailable")

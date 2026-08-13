@@ -7,11 +7,19 @@ const apiMocks = vi.hoisted(() => ({
   getAICapabilities: vi.fn(),
   streamAIResponse: vi.fn(),
 }))
+const artifactMocks = vi.hoisted(() => ({
+  uploadVisionArtifact: vi.fn(),
+}))
 
 vi.mock('@/api/ai', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/ai')>(),
   getAICapabilities: apiMocks.getAICapabilities,
   streamAIResponse: apiMocks.streamAIResponse,
+}))
+
+vi.mock('@/api/aiArtifacts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/aiArtifacts')>(),
+  uploadVisionArtifact: artifactMocks.uploadVisionArtifact,
 }))
 
 import type { AuthMeResponse } from '@/api/auth'
@@ -21,6 +29,8 @@ import AiAssistantDrawer from '../AiAssistantDrawer.vue'
 import AiAttachmentTray from '../AiAttachmentTray.vue'
 import type {
   AICapabilities,
+  AIArtifactAttachmentReference,
+  AIArtifactEgressConsent,
   AICloudProcessingConsent,
   AIRequestAttachment,
   AIStreamEnvelope,
@@ -41,9 +51,11 @@ const visionCapabilities: AICapabilities = {
 interface TrayHandle {
   addFiles: (files: readonly File[]) => Promise<void>
   clear: () => void
-  prepareForSend: () => Promise<{
+  prepareForSend: (factoryId?: string) => Promise<{
     attachments: AIRequestAttachment[]
     consent: AICloudProcessingConsent | null
+    artifactAttachments: AIArtifactAttachmentReference[]
+    artifactConsent: AIArtifactEgressConsent | null
   } | null>
 }
 
@@ -200,6 +212,7 @@ beforeEach(() => {
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl })
   apiMocks.getAICapabilities.mockReset()
   apiMocks.streamAIResponse.mockReset()
+  artifactMocks.uploadVisionArtifact.mockReset()
   apiMocks.streamAIResponse.mockImplementation(async (options) => {
     const hasAttachments = Boolean(options.attachments?.length)
     options.onEvent(event(1, 'response.started', {
@@ -341,6 +354,62 @@ describe('AI image attachment safety', () => {
     await wrapper.vm.$nextTick()
     expect(revokeObjectUrl).toHaveBeenCalledTimes(2)
     expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('uploads each approved image once and prepares only Artifact references', async () => {
+    const artifactId = `aiart-${'a'.repeat(32)}`
+    artifactMocks.uploadVisionArtifact.mockResolvedValue({
+      id: artifactId,
+      factory_id: 'huaxing',
+      original_filename: 'screen.png',
+      normalized_extension: '.png',
+      detected_mime_type: 'image/png',
+      content_class: 'IMAGE',
+      size_bytes: 33,
+      sha256: 'b'.repeat(64),
+      classification: 'CONFIDENTIAL_BUSINESS',
+      status: 'ACTIVE',
+      scanner_status: 'CLEAN',
+      parser_status: 'NOT_REQUESTED',
+      parent_artifact_id: null,
+      derivation_type: 'ORIGINAL',
+      parser_version: '',
+      model_version: '',
+      retention_until: '2026-09-11T00:00:00+08:00',
+      created_at: '2026-08-12T00:00:00+08:00',
+      updated_at: '2026-08-12T00:00:00+08:00',
+    })
+    const wrapper = mount(AiAttachmentTray, {
+      props: { artifactWorkflowEnabled: true },
+    })
+    const tray = wrapper.vm as unknown as TrayHandle
+    await tray.addFiles([imageFile()])
+    await wrapper.find('input[type="checkbox"]').setValue(true)
+
+    const prepared = await tray.prepareForSend('huaxing')
+
+    expect(artifactMocks.uploadVisionArtifact).toHaveBeenCalledOnce()
+    expect(artifactMocks.uploadVisionArtifact).toHaveBeenCalledWith(
+      expect.any(File),
+      'huaxing',
+      'CONFIDENTIAL_BUSINESS',
+    )
+    expect(prepared).toMatchObject({
+      attachments: [],
+      consent: null,
+      artifactAttachments: [{ artifact_id: artifactId }],
+      artifactConsent: {
+        accepted: true,
+        notice_version: 'aliyun-cn-beijing-image-v1',
+        provider: 'qwen',
+        region: 'cn-beijing',
+        classification: 'CONFIDENTIAL_BUSINESS',
+        content_class: 'IMAGE',
+        artifact_ids: [artifactId],
+      },
+    })
+    expect(JSON.stringify(prepared)).not.toContain('data:image/')
     wrapper.unmount()
   })
 
