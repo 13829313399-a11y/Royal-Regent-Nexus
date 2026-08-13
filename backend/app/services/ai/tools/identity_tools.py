@@ -23,6 +23,10 @@ _FACTORY_NAMES = {
 _MODULE_NAMES = {
     "injection-scheduling": "注塑排产中枢",
     "internal-quote": "内部报价台",
+    "molding-sample": "啤办进度追踪",
+    "carton-procurement": "纸箱采购",
+    "raw-material": "原料管理",
+    "customer-order": "客户订单中心",
 }
 
 

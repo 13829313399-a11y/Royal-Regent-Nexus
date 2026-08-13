@@ -1,0 +1,16 @@
+id: test.fake_task
+version: 1.0.0
+prompt_version: 1.0.0
+owner: platform-engineering
+status: current
+intents: [execute_fake_task]
+route_names: []
+knowledge_ids: []
+required_context: {factory_scope: optional}
+allowed_tools: [identity.get_current_context]
+model_policy: {capability: GENERAL_CHAT, reasoning: FAST}
+risk_policy: {maximum: READ_ONLY}
+output_contract: {schema_id: test.fake_task.v1}
+max_steps: 2
+max_input_tokens: 1000
+eval_suite_ref: test_fake_task_v1

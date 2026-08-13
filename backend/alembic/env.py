@@ -5,9 +5,8 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from sqlalchemy import engine_from_config, pool
-
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
 if context.is_offline_mode():
     os.environ["ALEMBIC_OFFLINE_METADATA_ONLY"] = "1"
@@ -19,7 +18,14 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
+    ai_action,  # noqa: F401
+    ai_artifact,  # noqa: F401
+    ai_conversation,  # noqa: F401
+    ai_guard,  # noqa: F401
+    ai_observability,  # noqa: F401
+    ai_task,  # noqa: F401
     auth,  # noqa: F401
+    carton_mark,  # noqa: F401
     carton_procurement,  # noqa: F401
     customer_order,  # noqa: F401
     injection_scheduling,  # noqa: F401
@@ -32,6 +38,7 @@ from app.models import (
     internal_quote,  # noqa: F401
     molding_sample,  # noqa: F401
     pricing,  # noqa: F401
+    qc_inspection,  # noqa: F401
     raw_material,  # noqa: F401
     three_d_printing,  # noqa: F401
 )

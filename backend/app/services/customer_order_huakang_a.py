@@ -54,10 +54,11 @@ HUAKANG_A_CUSTOMER_MAPPINGS: dict[str, HuakangACustomerMappingSpec] = {
         po_extensions=(".pdf", ".xls", ".xlsx", ".xlsm"),
         schedule_extensions=(".xlsx", ".xlsm"),
         input_template="HUAKANG_A_360_PO_RELEASE_V1",
-        target_template="HUAKANG_A_360_SCHEDULE_APPEND_V2",
+        target_template="HUAKANG_A_360_SCHEDULE_APPEND_V3",
         rule_summary=(
             "读取 ThreeSixty PURCHASE ORDER RELEASE 的 RL 合同号、修订日期、客户 PO、"
-            "货号、数量、装箱、验货日、FCD、柜型和卸货港，并写入“360客排期表新单”。"
+            "货号、数量、装箱、验货日、FCD、柜型和卸货港；每个货号先新增一行与"
+            "现有产品标题行一致的货号/名称，再在下一行写入 PO 明细。"
         ),
     ),
 }
@@ -404,9 +405,10 @@ def create_huakang_a_customer_preview(
             spec.rule_summary,
             "入单日期沿用 PO 的 Revision Date；来单日期仅作为本次导入追踪日期。",
             "导出结果完整保留当前排期的所有 Sheet、历史数据、格式、公式、图片和打印设置；"
-            "仅在“360客排期表”明细末尾/合计行之前插入本批新单，并从插入点向上选择"
-            "最近的正常明细行继承格式、字体和公式逻辑，跳过合计/小计、分组标题和空白"
-            "分隔行；另存为新文件，不覆盖原排期。",
+            "仅在“360客排期表”最后一张已录入 PO 后插入本批新单。每个货号先复制"
+            "最近的产品标题行（如第 265、267 行）的合并方式、字体、字号、加粗、边框和行高，"
+            "在合并的 A:C 写货号、D:H 写产品名称；下一行再复制最近的正常明细行并写入 PO，"
+            "现有待排产品标题和后续内容整体下移；另存为新文件，不覆盖原排期。",
             *prepared.warnings,
         ])),
     }
@@ -431,6 +433,22 @@ def _new_order_record(record: dict[str, Any]) -> dict[str, Any]:
         "transportation_mode": record.get("transportation_mode"),
         "source_file": record.get("file_name"),
         "warnings": "；".join(record.get("parse_warnings") or []),
+    }
+
+
+def _schedule_group_key(record: dict[str, Any]) -> str:
+    """Keep all PO detail rows for the same item below one copied title row."""
+    return _duplicate_key(record.get("item_no"))
+
+
+def _schedule_group_row_values(
+    record: dict[str, Any],
+    _row_no: int,
+) -> dict[int, Any]:
+    """Match the Huakang A 360 title layout: item in A:C, name in D:H."""
+    return {
+        1: record.get("item_no"),
+        4: record.get("description"),
     }
 
 
@@ -500,6 +518,8 @@ def export_huakang_a_customer_schedule(
                 NEW_ORDER_ALIASES,
                 filename=schedule_file_name,
                 sheet_names=(schedule_parser.SCHEDULE_SHEET,),
+                group_key_factory=_schedule_group_key,
+                group_row_values_factory=_schedule_group_row_values,
             )
         except Exception as exc:
             raise HuakangACustomerOrderError(f"生成华康A 360新单失败：{exc}") from exc

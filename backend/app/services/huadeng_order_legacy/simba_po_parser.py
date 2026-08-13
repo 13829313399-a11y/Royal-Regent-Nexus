@@ -153,7 +153,8 @@ PORT_COUNTRY_MAP = {
 
 def _release_reference(text: str) -> tuple[str | None, str | None]:
     """Return the blue-guide Reference value without the OCR-only SC prefix."""
-    match = re.search(r"Reference:\s*(?:SC)?(\d{9})\s*/\s*(\d{1,4})", text, re.I)
+    # Scanned pages often OCR the leading ``S`` in ``SC`` as ``$`` or ``5``.
+    match = re.search(r"Reference:\s*(?:[S$5]C)?(\d{9})\s*/\s*(\d{1,4})", text, re.I)
     if not match:
         # WPS occasionally recognises "/" as "1", e.g. SC70013997711000.
         match = re.search(r"Reference:\s*(?:SC)?(\d{9})(\d{2,5})\b", text, re.I)
@@ -235,7 +236,7 @@ def _release_port_country(text: str) -> tuple[str | None, str | None]:
 
 def _release_packing(block: str) -> tuple[float | None, float | None]:
     match = re.search(
-        r"Packing\s*:\s*([\d,]+)\s*PC\s*(?:/|\||1)\s*([\d,]+)\s*PC",
+        r"Packing\s*:\s*([\d,]+|[Oo])\s*PC\s*(?:/|\||1)\s*([\d,]+|[Oo])\s*PC",
         block,
         re.I,
     )
@@ -387,7 +388,7 @@ def parse_release_order_text(text: str, filename: str | None = None) -> list[dic
     ctn_match = re.search(r"Total\s*CTN\s*:\s*([\d,]+)", text, re.I)
     if ctn_match and len(qtys) <= len(mats):
         outers = [mats[i]["outer_pack"] for i in range(len(qtys))]
-        if all(o > 0 for o in outers):
+        if all(o is not None and o > 0 for o in outers):
             expect_ctn = sum(q / o for q, o in zip(qtys, outers))
             doc_ctn = _release_num(ctn_match.group(1))
             if abs(expect_ctn - doc_ctn) > 0.51:

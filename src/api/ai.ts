@@ -2,6 +2,8 @@ import { http, dispatchAccessFailure } from '@/lib/http'
 import type {
   AICapabilities,
   AIChatRequestMessage,
+  AIArtifactAttachmentReference,
+  AIArtifactEgressConsent,
   AICloudProcessingConsent,
   AIFailure,
   AIPageContext,
@@ -96,9 +98,12 @@ export class AIClientError extends Error {
 
 export interface AIStreamOptions {
   messages: AIChatRequestMessage[]
+  conversationId?: string
   pageContext: AIPageContext | null
   attachments?: readonly AIRequestAttachment[]
   cloudProcessingConsent?: AICloudProcessingConsent | null
+  artifactAttachments?: readonly AIArtifactAttachmentReference[]
+  artifactEgressConsent?: AIArtifactEgressConsent | null
   signal?: AbortSignal
   timeoutMs?: number
   requestId?: string
@@ -151,7 +156,10 @@ function normalizeCapabilities(value: unknown): AICapabilities {
     model: typeof source.model === 'string' ? source.model : '',
     streaming: source.streaming === true,
     vision_enabled: source.vision_enabled === true,
-    conversation_persistence: false,
+    conversation_persistence: source.conversation_persistence === true,
+    artifact_workflows_enabled: source.artifact_workflows_enabled === true,
+    vision_tool_comparison_enabled: source.vision_tool_comparison_enabled === true,
+    feedback_enabled: source.feedback_enabled === true,
     tool_groups: Array.isArray(source.tool_groups)
       ? source.tool_groups.filter((item): item is string => typeof item === 'string')
       : [],
@@ -159,6 +167,9 @@ function normalizeCapabilities(value: unknown): AICapabilities {
       granted: pilotAccess.granted === true,
       status: normalizePilotStatus(pilotAccess.status),
       read_only: pilotAccess.read_only === true,
+      max_tool_risk_level: pilotAccess.max_tool_risk_level === 'PREVIEW_WITH_AUDIT'
+        ? 'PREVIEW_WITH_AUDIT'
+        : 'READ_ONLY',
     },
   }
 }
@@ -457,6 +468,7 @@ export async function consumeAIEventStream(
 
 export async function streamAIResponse(options: AIStreamOptions): Promise<AIStreamEnvelope> {
   const attachments = options.attachments ?? []
+  const artifactAttachments = options.artifactAttachments ?? []
   let requestId: string
   try {
     requestId = options.requestId ?? createRequestId()
@@ -468,10 +480,21 @@ export async function streamAIResponse(options: AIStreamOptions): Promise<AIStre
     clearRequestAttachmentData(attachments)
     throw new AIClientError('请求标识格式无效。', { code: 'AI_INVALID_REQUEST_ID' })
   }
+  if (options.conversationId && !/^aicv-[0-9a-f]{32}$/.test(options.conversationId)) {
+    clearRequestAttachmentData(attachments)
+    throw new AIClientError('会话标识格式无效。', { code: 'AI_INVALID_CONVERSATION_ID' })
+  }
   if (attachments.length > 3) {
     clearRequestAttachmentData(attachments)
     throw new AIClientError('每次最多发送 3 张图片。', {
       code: 'AI_ATTACHMENT_COUNT_EXCEEDED',
+      requestId,
+    })
+  }
+  if (attachments.length && artifactAttachments.length) {
+    clearRequestAttachmentData(attachments)
+    throw new AIClientError('不能混合发送原始图片和 Artifact 图片。', {
+      code: 'AI_ATTACHMENT_CONTRACT_INVALID',
       requestId,
     })
   }
@@ -488,6 +511,22 @@ export async function streamAIResponse(options: AIStreamOptions): Promise<AIStre
     clearRequestAttachmentData(attachments)
     throw new AIClientError('发送图片前，请先确认同意云端处理。', {
       code: 'AI_CLOUD_PROCESSING_CONSENT_REQUIRED',
+      requestId,
+    })
+  }
+  const artifactConsent = options.artifactEgressConsent
+  const artifactIds = artifactAttachments.map((attachment) => attachment.artifact_id)
+  const exactArtifactConsent = artifactConsent?.accepted === true
+    && artifactConsent.notice_version === 'aliyun-cn-beijing-image-v1'
+    && artifactConsent.provider === 'qwen'
+    && artifactConsent.region === 'cn-beijing'
+    && artifactConsent.classification === 'CONFIDENTIAL_BUSINESS'
+    && artifactConsent.content_class === 'IMAGE'
+    && artifactConsent.artifact_ids.length === artifactIds.length
+    && artifactConsent.artifact_ids.every((id, index) => id === artifactIds[index])
+  if (artifactAttachments.length && !exactArtifactConsent) {
+    throw new AIClientError('发送图片 Artifact 前，请重新确认本次云端处理。', {
+      code: 'AI_ARTIFACT_EGRESS_CONSENT_REQUIRED',
       requestId,
     })
   }
@@ -508,11 +547,18 @@ export async function streamAIResponse(options: AIStreamOptions): Promise<AIStre
     try {
       requestBody = JSON.stringify({
         messages: options.messages,
+        ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
         page_context: options.pageContext,
         ...(attachments.length
           ? {
               attachments,
               cloud_processing_consent: consent,
+            }
+          : {}),
+        ...(artifactAttachments.length
+          ? {
+              artifact_attachments: artifactAttachments,
+              artifact_egress_consent: artifactConsent,
             }
           : {}),
       })

@@ -127,9 +127,9 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       scheduleAccept: '.xlsx,.xlsm',
       scheduleExtensions: ['.xlsx', '.xlsm'],
       poDescription: '360 主合同与 Release PDF / Excel',
-      templateDescription: '360 客排期表 / 接单表',
+      templateDescription: '华兴 360 接单表 / 正单评审表 / Iteam表',
       targetTemplate: 'HUAXING_360_NEW_ORDER_V1',
-      ruleDescription: '主合同用于补价格，Release 用于生成新单；按 RL 修订版去重，并继承当前排期主数据和日期码。',
+      ruleDescription: '主合同用于补价格，Release 用于生成新单；新行同步写入接单表、正单评审表和 Iteam表，并保留原表公式与合计。',
     },
     {
       code: 'yinhui',
@@ -195,8 +195,8 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       scheduleExtensions: ['.xlsx', '.xlsm'],
       poDescription: 'ThreeSixty PURCHASE ORDER RELEASE PDF 或 WPS 转换 Excel',
       templateDescription: '华康A 360客排期表',
-      targetTemplate: 'HUAKANG_A_360_NEW_ORDER_V1',
-      ruleDescription: '读取 RL 合同号、Revision Date、客户 PO、货号、数量、装箱、验货日、FCD、柜型及卸货港，生成独立“360客排期表新单”。',
+      targetTemplate: 'HUAKANG_A_360_SCHEDULE_APPEND_V3',
+      ruleDescription: '读取 RL 合同号、Revision Date、客户 PO、货号、数量、装箱、验货日、FCD、柜型及卸货港；每个货号先按现有产品标题行写入货号和名称，下一行再写 PO 明细。',
     },
   ],
   'huakang-c': [
@@ -1081,6 +1081,13 @@ function selectUpload(kind: 'po' | 'schedule') {
   else scheduleInput.value?.click()
 }
 
+function isMacMetadataFile(file: File) {
+  const normalizedPath = (file.webkitRelativePath || file.name).replace(/\\/g, '/')
+  const pathParts = normalizedPath.toLowerCase().split('/').filter(Boolean)
+  const baseName = pathParts.at(-1) ?? ''
+  return pathParts.includes('__macosx') || baseName.startsWith('._') || baseName === '.ds_store'
+}
+
 function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
   if (files.length === 0) return
   if (!selectedCustomer.value) {
@@ -1088,10 +1095,25 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
     return
   }
 
+  const ignoredMacFiles = files.filter(isMacMetadataFile)
+  const usableFiles = files.filter((file) => !isMacMetadataFile(file))
+  if (usableFiles.length === 0) {
+    clearPreviewState()
+    if (kind === 'po') {
+      poFiles.value = []
+    } else {
+      scheduleFile.value = null
+      selectedScheduleFile.value = '尚未选择客户排期'
+    }
+    const fileName = ignoredMacFiles[0]?.name ?? '所选文件'
+    notify(`已忽略 ${fileName}：这是 Mac 解压产生的隐藏资源文件，不是真实${kind === 'po' ? ' PO' : '排期'}。请选择同名且不带“._”前缀的文件。`)
+    return
+  }
+
   const acceptedExtensions = kind === 'po'
     ? selectedCustomer.value.poExtensions
     : selectedCustomer.value.scheduleExtensions
-  const invalidFiles = files.filter(
+  const invalidFiles = usableFiles.filter(
     (file) => !acceptedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)),
   )
   if (invalidFiles.length > 0) {
@@ -1102,27 +1124,30 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
     )
     return
   }
-  if (kind === 'po' && files.length > 30) {
-    notify(`单批最多导入30份PO，当前拖入 ${files.length} 份。`)
+  if (kind === 'po' && usableFiles.length > 30) {
+    notify(`单批最多导入30份PO，当前拖入 ${usableFiles.length} 份。`)
     return
   }
-  if (kind === 'schedule' && files.length > 1) {
+  if (kind === 'schedule' && usableFiles.length > 1) {
     notify('客户排期每次只能导入1份，请重新拖入。')
     return
   }
 
   if (kind === 'po') {
-    poFiles.value = files
+    poFiles.value = usableFiles
   } else {
-    const file = files[0]!
+    const file = usableFiles[0]!
     scheduleFile.value = file
     selectedScheduleFile.value = file.name
   }
   clearPreviewState()
+  const ignoredMessage = ignoredMacFiles.length > 0
+    ? `已自动忽略 ${ignoredMacFiles.length} 个 Mac 隐藏资源文件；`
+    : ''
   notify(
     kind === 'po'
-      ? `已选择 ${files.length} 份 PO；客户排期齐全后可批量解析。`
-      : `已选择 ${files[0]!.name}；PO文件齐全后可批量解析。`,
+      ? `${ignoredMessage}已选择 ${usableFiles.length} 份真实 PO；客户排期齐全后可批量解析。`
+      : `${ignoredMessage}已选择 ${usableFiles[0]!.name}；PO文件齐全后可批量解析。`,
   )
 }
 

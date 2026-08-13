@@ -4,8 +4,18 @@ from urllib.parse import urlsplit
 
 from app.core.config import Settings
 from app.services.ai.providers.base import LLMProvider
+from app.services.ai.providers.capabilities import (
+    InputModality,
+    ModelCapability,
+    ReasoningPolicy,
+)
+from app.services.ai.providers.catalog import ModelCatalogError, load_model_catalog
 from app.services.ai.providers.fake import FakeProvider
 from app.services.ai.providers.qwen_responses import QwenResponsesProvider
+from app.services.ai.providers.router import (
+    ProviderRoutingError,
+    resolve_provider_route,
+)
 
 _IDENTIFIER_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _CUSTOM_BASE_URL_ENVS = {"development", "test"}
@@ -29,6 +39,10 @@ class ProviderStatus:
     streaming: bool
     function_calls: bool
     reason: str | None = None
+    capability_profile: str = ""
+    catalog_version: str = ""
+    capabilities: tuple[str, ...] = ()
+    reasoning_policies: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +55,8 @@ class VisionProviderStatus:
     base_url: str | None = None
     test_only: bool = False
     reason: str | None = None
+    capability_profile: str = ""
+    catalog_version: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +122,20 @@ def _validate_common_settings(settings: Settings) -> str | None:
     return None
 
 
+def _route_metadata(route) -> dict[str, object]:
+    profile = route.profile
+    if profile is None:
+        return {}
+    return {
+        "capability_profile": route.capability_profile,
+        "catalog_version": route.catalog_version,
+        "capabilities": tuple(
+            sorted(capability.value for capability in profile.capabilities)
+        ),
+        "reasoning_policies": tuple(policy.value for policy in ReasoningPolicy),
+    }
+
+
 def get_provider_status(settings: Settings) -> ProviderStatus:
     provider = _normalized_provider(settings)
     model = settings.ai_default_model.strip()
@@ -141,6 +171,27 @@ def get_provider_status(settings: Settings) -> ProviderStatus:
             function_calls=False,
             reason="unsupported_provider",
         )
+    route = None
+    if settings.ai_provider_capability_router_enabled:
+        try:
+            route = resolve_provider_route(
+                settings,
+                capability=ModelCapability.GENERAL_CHAT,
+                reasoning_policy=ReasoningPolicy.BALANCED,
+                legacy_model=model,
+                require_streaming=True,
+            )
+        except ProviderRoutingError as exc:
+            return ProviderStatus(
+                enabled=True,
+                available=False,
+                provider=provider,
+                model=model,
+                streaming=False,
+                function_calls=False,
+                reason=exc.reason,
+            )
+        model = route.model
     if provider == "fake":
         return ProviderStatus(
             enabled=True,
@@ -149,6 +200,7 @@ def get_provider_status(settings: Settings) -> ProviderStatus:
             model=model,
             streaming=True,
             function_calls=True,
+            **(_route_metadata(route) if route is not None else {}),
         )
 
     if not settings.dashscope_api_key.get_secret_value().strip():
@@ -180,6 +232,7 @@ def get_provider_status(settings: Settings) -> ProviderStatus:
         model=model,
         streaming=True,
         function_calls=True,
+        **(_route_metadata(route) if route is not None else {}),
     )
 
 
@@ -189,6 +242,7 @@ def get_vision_provider_status(settings: Settings) -> VisionProviderStatus:
     provider = _normalized_provider(settings)
     model = settings.ai_vision_model.strip()
     region = settings.ai_region.strip().lower()
+    route = None
 
     def rejected(reason: str) -> VisionProviderStatus:
         return VisionProviderStatus(
@@ -204,6 +258,22 @@ def get_vision_provider_status(settings: Settings) -> VisionProviderStatus:
         return rejected("vision_disabled")
     if not settings.ai_enabled:
         return rejected("disabled")
+    if settings.ai_provider_capability_router_enabled:
+        try:
+            route = resolve_provider_route(
+                settings,
+                capability=ModelCapability.MULTIMODAL_GENERAL,
+                reasoning_policy=ReasoningPolicy.BALANCED,
+                legacy_model=model,
+                input_modalities=frozenset(
+                    {InputModality.TEXT, InputModality.IMAGE}
+                ),
+                require_streaming=True,
+                required_region=_VISION_REGION,
+            )
+        except ProviderRoutingError as exc:
+            return rejected(exc.reason)
+        model = route.model
     if model != _VISION_MODEL:
         return rejected("vision_model_not_allowed")
     if region != _VISION_REGION:
@@ -219,6 +289,8 @@ def get_vision_provider_status(settings: Settings) -> VisionProviderStatus:
                 model=model,
                 region=region,
                 test_only=True,
+                capability_profile=(route.capability_profile if route else ""),
+                catalog_version=(route.catalog_version if route else ""),
             )
         return rejected("test_fake_vision_not_allowed")
 
@@ -261,6 +333,8 @@ def get_vision_provider_status(settings: Settings) -> VisionProviderStatus:
         model=model,
         region=region,
         base_url=base_url,
+        capability_profile=(route.capability_profile if route else ""),
+        catalog_version=(route.catalog_version if route else ""),
     )
 
 
@@ -270,6 +344,25 @@ def get_pilot_provider_status(settings: Settings) -> PilotProviderStatus:
     provider = _normalized_provider(settings)
     model = settings.ai_default_model.strip()
     region = settings.ai_region.strip().lower()
+    if settings.ai_provider_capability_router_enabled:
+        try:
+            route = resolve_provider_route(
+                settings,
+                capability=ModelCapability.GENERAL_CHAT,
+                reasoning_policy=ReasoningPolicy.BALANCED,
+                legacy_model=model,
+                require_streaming=True,
+                required_region=_VISION_REGION,
+            )
+        except ProviderRoutingError as exc:
+            return PilotProviderStatus(
+                available=False,
+                provider=provider,
+                model=model,
+                region=region,
+                reason=exc.reason,
+            )
+        model = route.model
 
     def rejected(reason: str) -> PilotProviderStatus:
         return PilotProviderStatus(
@@ -317,6 +410,12 @@ def build_provider(
     *,
     require_vision: bool = False,
 ) -> LLMProvider:
+    catalog = None
+    if settings.ai_provider_capability_router_enabled:
+        try:
+            catalog = load_model_catalog(settings)
+        except ModelCatalogError as exc:
+            raise ProviderConfigurationError(exc.reason) from None
     if require_vision:
         vision_status = get_vision_provider_status(settings)
         if not vision_status.available:
@@ -332,6 +431,8 @@ def build_provider(
             base_url=vision_status.base_url,
             timeout_seconds=settings.ai_request_timeout_seconds,
             reasoning_effort=settings.ai_reasoning_effort,
+            catalog=catalog,
+            region=vision_status.region,
         )
 
     status = get_provider_status(settings)
@@ -344,4 +445,6 @@ def build_provider(
         base_url=resolve_qwen_base_url(settings),
         timeout_seconds=settings.ai_request_timeout_seconds,
         reasoning_effort=settings.ai_reasoning_effort,
+        catalog=catalog,
+        region=settings.ai_region.strip().lower(),
     )

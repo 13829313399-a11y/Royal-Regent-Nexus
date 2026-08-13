@@ -107,8 +107,9 @@ INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION = "20260807_0058"
 CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION = "20260807_0059"
 INJECTION_SCHEDULING_DEMAND_SHARED_MIGRATION_REVISION = "20260809_0059"
 INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
+PROTECTED_DOWNGRADE_PREFLIGHT_REVISION = "20260810_0061"
 CARTON_CLOSING_CURRENCY_MIGRATION_REVISION = "20260810_0064"
-HEAD_MIGRATION_REVISION = "20260811_0065"
+HEAD_MIGRATION_REVISION = "20260813_0075"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -1745,24 +1746,23 @@ def test_raw_material_shared_sqlite_write_lock_blocks_competing_writer(tmp_path)
     ).module
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     try:
-        with engine.connect() as migration_connection:
-            with migration_connection.begin():
-                migration_module._acquire_sqlite_write_lock(migration_connection)
-                assert migration_connection.connection.driver_connection.in_transaction
+        with engine.connect() as migration_connection, migration_connection.begin():
+            migration_module._acquire_sqlite_write_lock(migration_connection)
+            assert migration_connection.connection.driver_connection.in_transaction
 
-                with sqlite3.connect(database_path, timeout=0) as competing_connection:
-                    try:
-                        competing_connection.execute(
-                            "INSERT INTO raw_materials (id, factory_id) VALUES (?, ?)",
-                            ("RM-COMPETING", "huaxing"),
-                        )
-                        competing_connection.commit()
-                    except sqlite3.OperationalError as error:
-                        assert "locked" in str(error).lower()
-                    else:
-                        raise AssertionError(
-                            "SQLite competing writer was not blocked by the 0027 write lock"
-                        )
+            with sqlite3.connect(database_path, timeout=0) as competing_connection:
+                try:
+                    competing_connection.execute(
+                        "INSERT INTO raw_materials (id, factory_id) VALUES (?, ?)",
+                        ("RM-COMPETING", "huaxing"),
+                    )
+                    competing_connection.commit()
+                except sqlite3.OperationalError as error:
+                    assert "locked" in str(error).lower()
+                else:
+                    raise AssertionError(
+                        "SQLite competing writer was not blocked by the 0027 write lock"
+                    )
     finally:
         engine.dispose()
 
@@ -4569,7 +4569,7 @@ def test_injection_scheduling_public_planning_downgrade_rejects_artifacts(tmp_pa
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        ).fetchone() == (PROTECTED_DOWNGRADE_PREFLIGHT_REVISION,)
         assert connection.execute(
             "SELECT COUNT(*) FROM injection_scheduling_upload_artifacts"
         ).fetchone() == (1,)

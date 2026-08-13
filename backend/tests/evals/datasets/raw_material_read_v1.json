@@ -1,0 +1,5 @@
+{
+  "schema_version": "ai-eval-dataset-v1", "suite_id": "raw_material_read_v1", "dataset_version": "1.0.0", "mode": "OFFLINE_FAKE",
+  "skill_id": "raw_material.read_summary", "skill_version": "1.0.0", "prompt_version": "1.0.0",
+  "cases": [{"id": "raw_material_truncated", "category": "BUSINESS_GROUNDING", "user_text": "看原料库存摘要，若分页截断必须说清楚", "factory_id": "huaxing", "route_name": "raw-material-management", "expected": {"skill_id": "raw_material.read_summary", "tools": [{"name": "raw_material.list_inventory_summaries", "required_arguments": {"factory_id": "huaxing"}}], "evidence_levels": ["FORMAL_DOMAIN_SERVICE"], "required_answer_terms": ["已截断"], "grounded_claim_count": 1}, "tags": ["pagination", "truncation"]}]
+}

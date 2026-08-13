@@ -43,6 +43,8 @@ READ_PERMISSION_CODES = frozenset(
         "internal_quote:summary_read",
         "internal_quote:timeline_read",
         "injection_scheduling:read",
+        "qc_inspection:read",
+        "qc_inspection:audit_read",
         "system:audit_read",
         "system:permission_catalog_read",
     }

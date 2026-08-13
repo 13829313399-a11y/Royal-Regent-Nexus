@@ -5,7 +5,7 @@ import math
 import re
 import zipfile
 from copy import copy
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import lru_cache
@@ -14,10 +14,20 @@ from typing import Any, BinaryIO, Iterable
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
+from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.datetime import from_excel
-from .new_order_excel import append_records_to_workbook, create_new_order_workbook
+from openpyxl.worksheet.cell_range import CellRange
+
+from .new_order_excel import (
+    _copy_style,
+    _extend_subtotal_to_previous_row,
+    _rewrite_formula_for_insert,
+    _shift_target_sheet_structures,
+    load_complete_workbook_compatible,
+    load_workbook_compatible,
+)
 
 
 FIELD_TITLES: dict[str, str] = {
@@ -47,7 +57,8 @@ NUMBER_FIELDS = {"quantity", "outer_pack", "cartons", "unit_price_usd", "unit_pr
 FIELD_ALIASES = {
     "系统状态": "system_status", "出单日期": "order_date", "来单日期": "order_date",
     "入单日期": "order_date",
-    "PO号": "po_no", "生产单号": "customer_release_no", "360生产单号": "production_no",
+    "PO号": "po_no", "美国PO号": "po_no", "生产单号": "customer_release_no",
+    "美国生产单号": "customer_release_no", "360生产单号": "production_no",
     "WMPO号": "customer_po", "客户PO号": "customer_po", "360合同号": "contract_no",
     "第三方客户PONO#": "customer_po", "主合同号": "contract_no",
     # 360 当前排期的“正单合同号”实际保存 RL-xxxx-x 生产单号，而非主合同数字。
@@ -61,12 +72,12 @@ FIELD_ALIASES = {
     "外箱装箱数": "outer_pack", "裝箱隻數": "outer_pack", "装箱": "outer_pack",
     "箱数": "cartons", "总箱数": "cartons", "说明书": "manual", "彩盒": "artwork",
     "车款": "vehicle", "日期码": "date_code", "备注": "special_remark",
-    "PO利宝": "customer_label", "验货结果": "inspection_result",
+    "PO利宝": "customer_label", "外箱PO利宝": "customer_label", "验货结果": "inspection_result",
     "第三方公证行验货": "third_party_inspection",
     "验货日期": "inspection_date", "验货期": "inspection_date", "FCD期": "fcd_date",
     "走货期FCD": "fcd_date",
     "走货期": "po_ship_date", "PO走货期": "po_ship_date", "跟单": "merchandiser",
-    "订单单价USD": "unit_price_usd", "订单单价HK$": "unit_price_hkd",
+    "订单单价USD": "unit_price_usd", "订单单价HK$": "unit_price_hkd", "单价HK$": "unit_price_hkd",
     "单价HKD": "unit_price_hkd", "单价": "unit_price_hkd",
     "总金额USD": "total_usd", "总金额HK$": "total_hkd", "金额HKD": "total_hkd",
     "走货国家": "customer_country", "条码": "barcode", "工厂编号": "factory_no",
@@ -596,38 +607,286 @@ def create_import_workbook(records: list[dict[str, Any]], output_path: Path, _te
     return output_path
 
 
-def _new_order_aliases() -> dict[str, tuple[str, ...]]:
-    return {
-        field: tuple(
-            dict.fromkeys(
-                [title] + [alias for alias, target in FIELD_ALIASES.items() if target == field]
-            )
+def warm_schedule_template(template: bytes) -> None:
+    """Preload reusable schedule indexes after service start/upload."""
+    _schedule_index(template)
+
+
+_TOTAL_LABELS = {normalize_label(value) for value in ("合计", "总计", "小计")}
+_SIMPLE_SHEET_REFERENCE = re.compile(
+    r"^=(?:'(?P<quoted>(?:[^']|'')+)'|(?P<plain>[^'!]+))!"
+    r"(?P<column>\$?[A-Z]{1,3})(?P<row>\$?\d+)$",
+    re.I,
+)
+_BUSINESS_FIELDS = ("production_no", "contract_no", "item_no", "customer", "quantity")
+_FORMULA_FIELDS = {"cartons", "unit_price_hkd", "total_usd", "total_hkd"}
+_IDENTIFIER_FIELDS = {
+    "po_no", "customer_release_no", "production_no", "customer_po", "contract_no",
+    "item_no", "item_full", "ship_item_no", "date_code", "barcode",
+}
+
+
+def _sheet_by_names(workbook, names: Iterable[str]):
+    wanted = {str(name).strip().casefold() for name in names}
+    return next(
+        (sheet for sheet in workbook.worksheets if sheet.title.strip().casefold() in wanted),
+        None,
+    )
+
+
+def _logical_max_column(ws, header_row: int) -> int:
+    populated = [
+        column
+        for column in range(1, min(ws.max_column or 1, 512) + 1)
+        if ws.cell(header_row, column).value not in (None, "")
+    ]
+    return max(populated, default=1)
+
+
+def _header_columns(ws, header_row: int) -> dict[str, list[int]]:
+    columns: dict[str, list[int]] = defaultdict(list)
+    for column in range(1, _logical_max_column(ws, header_row) + 1):
+        field = FIELD_ALIASES.get(normalize_label(ws.cell(header_row, column).value))
+        if field:
+            columns[field].append(column)
+    return dict(columns)
+
+
+def _effective_value(
+    workbook,
+    data_workbook,
+    sheet_name: str,
+    row: int,
+    column: int,
+    *,
+    depth: int = 0,
+) -> Any:
+    formula_sheet = _sheet_by_names(workbook, (sheet_name,))
+    data_sheet = _sheet_by_names(data_workbook, (sheet_name,))
+    if formula_sheet is None:
+        return None
+    if data_sheet is not None:
+        cached = data_sheet.cell(row, column).value
+        if cached not in (None, ""):
+            return cached
+    raw = formula_sheet.cell(row, column).value
+    if not isinstance(raw, str) or not raw.startswith("=") or depth >= 3:
+        return raw
+    match = _SIMPLE_SHEET_REFERENCE.fullmatch(raw)
+    if not match:
+        return None
+    referenced_sheet = (match.group("quoted") or match.group("plain") or "").replace("''", "'").strip()
+    return _effective_value(
+        workbook,
+        data_workbook,
+        referenced_sheet,
+        int(match.group("row").replace("$", "")),
+        column_index_from_string(match.group("column").replace("$", "")),
+        depth=depth + 1,
+    )
+
+
+def _find_total_row(workbook, data_workbook, ws, header_row: int) -> int:
+    data_sheet = _sheet_by_names(data_workbook, (ws.title,))
+    max_column = _logical_max_column(ws, header_row)
+    for row in range(header_row + 1, (ws.max_row or header_row) + 1):
+        for column in range(1, max_column + 1):
+            values = [ws.cell(row, column).value]
+            if data_sheet is not None:
+                values.append(data_sheet.cell(row, column).value)
+            values.append(_effective_value(workbook, data_workbook, ws.title, row, column))
+            if any(
+                value not in (None, "")
+                and not (isinstance(value, str) and value.startswith("="))
+                and normalize_label(value) in _TOTAL_LABELS
+                for value in values
+            ):
+                return row
+    raise ValueError(f"360 排期工作表“{ws.title.strip()}”未找到合计行。")
+
+
+def _row_has_business_content(
+    workbook,
+    data_workbook,
+    ws,
+    row: int,
+    columns: dict[str, list[int]],
+) -> bool:
+    for field in _BUSINESS_FIELDS:
+        for column in columns.get(field, ()):
+            value = _effective_value(workbook, data_workbook, ws.title, row, column)
+            if value not in (None, "", "-") and normalize_label(value) not in _TOTAL_LABELS:
+                return True
+    return False
+
+
+def _last_business_row(
+    workbook,
+    data_workbook,
+    ws,
+    header_row: int,
+    total_row: int,
+    columns: dict[str, list[int]],
+) -> int:
+    for row in range(total_row - 1, header_row, -1):
+        if _row_has_business_content(workbook, data_workbook, ws, row, columns):
+            return row
+    return header_row
+
+
+def _insert_rows_preserving_workbook(workbook, target, insert_row: int, amount: int) -> None:
+    if amount <= 0:
+        return
+    formulas = [
+        (sheet, cell.row, cell.column, cell.value)
+        for sheet in workbook.worksheets
+        for cell in sheet._cells.values()
+        if isinstance(cell.value, str) and cell.value.startswith("=")
+    ]
+    moved_merges = [
+        CellRange(str(value))
+        for value in target.merged_cells.ranges
+        if value.max_row >= insert_row
+    ]
+    for merged in moved_merges:
+        target.unmerge_cells(str(merged))
+    target.insert_rows(insert_row, amount)
+    _shift_target_sheet_structures(target, insert_row, amount, moved_merges)
+    for sheet, old_row, column, formula in formulas:
+        destination_row = old_row + amount if sheet is target and old_row >= insert_row else old_row
+        sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
+            formula,
+            formula_sheet=sheet.title,
+            target_sheet=target.title,
+            formula_row=old_row,
+            insert_row=insert_row,
+            amount=amount,
         )
-        for field, title in FIELD_TITLES.items()
+    first_total_row = insert_row + amount
+    for column in range(1, _logical_max_column(target, 3 if target.title.strip() == "Iteam表" else 4) + 1):
+        cell = target.cell(first_total_row, column)
+        if isinstance(cell.value, str) and cell.value.startswith("="):
+            cell.value = _extend_subtotal_to_previous_row(cell.value, first_total_row - 1)
+
+
+def _copy_last_po_row(ws, target_row: int, *, source_row: int, header_row: int) -> None:
+    source_dimension = ws.row_dimensions[source_row]
+    if source_dimension.height:
+        ws.row_dimensions[target_row].height = source_dimension.height
+    for column in range(1, _logical_max_column(ws, header_row) + 1):
+        source = ws.cell(source_row, column)
+        destination = ws.cell(target_row, column)
+        destination.value = None
+        _copy_style(source, destination)
+        if isinstance(source.value, str) and source.value.startswith("="):
+            try:
+                destination.value = Translator(
+                    source.value,
+                    origin=source.coordinate,
+                ).translate_formula(destination.coordinate)
+            except (TypeError, ValueError):
+                destination.value = source.value
+        font = copy(destination.font)
+        font.color = "0000FF"
+        destination.font = font
+
+
+def _allocate_rows(
+    workbook,
+    data_workbook,
+    ws,
+    row_count: int,
+    *,
+    header_row: int,
+) -> tuple[list[int], dict[str, list[int]], dict[str, int]]:
+    columns = _header_columns(ws, header_row)
+    total_row = _find_total_row(workbook, data_workbook, ws, header_row)
+    last_row = _last_business_row(workbook, data_workbook, ws, header_row, total_row, columns)
+    if last_row <= header_row:
+        raise ValueError(f"360 排期工作表“{ws.title.strip()}”没有可仿照的历史 PO 行。")
+    available = max(0, total_row - last_row - 1)
+    inserted = max(0, row_count - available)
+    if inserted:
+        _insert_rows_preserving_workbook(workbook, ws, total_row, inserted)
+    target_rows = list(range(last_row + 1, last_row + row_count + 1))
+    for target_row in target_rows:
+        _copy_last_po_row(ws, target_row, source_row=last_row, header_row=header_row)
+    return target_rows, columns, {
+        "header_row": header_row,
+        "last_row": last_row,
+        "total_row": total_row + inserted,
+        "reused_blank_rows": min(row_count, available),
+        "inserted_rows": inserted,
     }
 
 
-@lru_cache(maxsize=4)
-def _slim_export_template(template: bytes) -> bytes:
-    """Keep only the 360 header and one representative style row for fast exports."""
-    output = io.BytesIO()
-    create_new_order_workbook(
-        template,
-        output,
-        [{}],
-        _new_order_aliases(),
-        filename="schedule.xlsx",
-        sheet_names=("360客排期表", "接单表"),
-        sheet_title="360客排期表",
-        audit_sheet=False,
-    )
-    return output.getvalue()
+def _excel_record_value(field: str, value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if field in DATE_FIELDS:
+        parsed = parse_iso_date(value)
+        if parsed:
+            return datetime(parsed.year, parsed.month, parsed.day)
+    return value
 
 
-def warm_schedule_template(template: bytes) -> None:
-    """Preload schedule indexes and the small export template after service start/upload."""
-    _schedule_index(template)
-    _slim_export_template(template)
+def _set_field_format(cell, field: str) -> None:
+    if field in DATE_FIELDS:
+        cell.number_format = "yyyy-mm-dd"
+    elif field in _IDENTIFIER_FIELDS:
+        cell.number_format = "@"
+    elif field in {"quantity", "outer_pack", "cartons"}:
+        cell.number_format = "#,##0.##"
+    elif field in {"unit_price_usd", "unit_price_hkd"}:
+        cell.number_format = "0.0000"
+    elif field in {"total_usd", "total_hkd"}:
+        cell.number_format = "#,##0.00"
+
+
+def _write_item_row(ws, row: int, record: dict[str, Any], columns: dict[str, list[int]]) -> None:
+    for field, target_columns in columns.items():
+        if field in _FORMULA_FIELDS:
+            continue
+        cell = ws.cell(row, target_columns[0], _excel_record_value(field, record.get(field)))
+        _set_field_format(cell, field)
+
+    quantity = columns.get("quantity", [None])[0]
+    outer_pack = columns.get("outer_pack", [None])[0]
+    cartons = columns.get("cartons", [None])[0]
+    usd_columns = columns.get("unit_price_usd", [])
+    hkd_columns = columns.get("unit_price_hkd", [])
+    total_usd_columns = columns.get("total_usd", [])
+    total_hkd_columns = columns.get("total_hkd", [])
+    if quantity and outer_pack and cartons and not ws.cell(row, cartons).value:
+        ws.cell(row, cartons).value = (
+            f'=IFERROR({get_column_letter(quantity)}{row}/{get_column_letter(outer_pack)}{row},"")'
+        )
+    if usd_columns and hkd_columns and not ws.cell(row, hkd_columns[0]).value:
+        ws.cell(row, hkd_columns[0]).value = f"={get_column_letter(usd_columns[0])}{row}*7.75"
+    if quantity and usd_columns and total_usd_columns and not ws.cell(row, total_usd_columns[0]).value:
+        ws.cell(row, total_usd_columns[0]).value = (
+            f"={get_column_letter(usd_columns[0])}{row}*{get_column_letter(quantity)}{row}"
+        )
+    if quantity and hkd_columns and total_hkd_columns and not ws.cell(row, total_hkd_columns[-1]).value:
+        ws.cell(row, total_hkd_columns[-1]).value = (
+            f"={get_column_letter(hkd_columns[0])}{row}*{get_column_letter(quantity)}{row}"
+        )
+
+
+def _bind_linked_row_to_item(ws, row: int, *, item_sheet_name: str, item_row: int, header_row: int) -> None:
+    for column in range(1, _logical_max_column(ws, header_row) + 1):
+        cell = ws.cell(row, column)
+        formula = cell.value
+        if not isinstance(formula, str) or not formula.startswith("="):
+            continue
+        match = _SIMPLE_SHEET_REFERENCE.fullmatch(formula)
+        if not match:
+            continue
+        referenced_sheet = (match.group("quoted") or match.group("plain") or "").replace("''", "'").strip()
+        if referenced_sheet.casefold() != item_sheet_name.strip().casefold():
+            continue
+        prefix = f"'{item_sheet_name.replace(chr(39), chr(39) * 2)}'"
+        cell.value = f"={prefix}!{match.group('column')}{item_row}"
 
 
 def create_schedule_review_workbook(
@@ -637,39 +896,85 @@ def create_schedule_review_workbook(
     *,
     template_filename: str = "schedule.xlsx",
 ) -> Path:
-    """Copy the complete schedule and append rows to its actual Iteam detail sheet."""
+    """Copy the complete Huaxing 360 schedule and append every PO to its three linked sheets."""
     if not template:
         raise ValueError("缺少当前360排期底表，无法生成回填副本。")
     prepared = [add_derived_fields(dict(record)) for record in records]
-    aliases = _new_order_aliases()
-    append_records_to_workbook(
+    workbook = load_complete_workbook_compatible(template, filename=template_filename)
+    data_workbook = load_workbook_compatible(
         template,
-        output_path,
-        prepared,
-        aliases,
         filename=template_filename,
-        sheet_names=("Iteam表", "ITEM表"),
-        field_formats={
-            **{
-                field: "@"
-                for field in (
-                    "system_status", "po_no", "customer_release_no", "production_no",
-                    "customer_po", "contract_no", "customer", "item_no", "item_full",
-                    "ship_item_no", "product_name", "version", "spec", "manual", "artwork",
-                    "vehicle", "date_code", "special_remark", "customer_label",
-                    "inspection_result", "third_party_inspection", "merchandiser",
-                    "customer_country", "barcode", "factory_no", "container_type",
-                    "consolidated_id", "port_of_discharge", "transportation_mode",
-                    "rl_order_type", "release_revision",
-                )
-            },
-            **{field: "yyyy-mm-dd" for field in DATE_FIELDS},
-            **{field: "#,##0.##" for field in ("quantity", "outer_pack", "cartons")},
-            **{field: "0.0000" for field in ("unit_price_usd", "unit_price_hkd")},
-            **{field: "#,##0.00" for field in ("total_usd", "total_hkd")},
-        },
+        data_only=True,
     )
-    return output_path
+    try:
+        item_sheet = _sheet_by_names(workbook, ("Iteam表", "ITEM表"))
+        review_sheet = _sheet_by_names(workbook, ("正单评审表",))
+        order_sheet = _sheet_by_names(workbook, ("接单表",))
+        missing = [
+            name
+            for name, sheet in (
+                ("Iteam表", item_sheet),
+                ("正单评审表", review_sheet),
+                ("接单表", order_sheet),
+            )
+            if sheet is None
+        ]
+        if missing:
+            raise ValueError(f"华兴360排期缺少目标工作表：{'、'.join(missing)}")
+
+        item_rows, item_columns, _ = _allocate_rows(
+            workbook,
+            data_workbook,
+            item_sheet,
+            len(prepared),
+            header_row=3,
+        )
+        for row, record in zip(item_rows, prepared, strict=True):
+            _write_item_row(item_sheet, row, record, item_columns)
+
+        review_rows, _, _ = _allocate_rows(
+            workbook,
+            data_workbook,
+            review_sheet,
+            len(prepared),
+            header_row=4,
+        )
+        for row, item_row in zip(review_rows, item_rows, strict=True):
+            _bind_linked_row_to_item(
+                review_sheet,
+                row,
+                item_sheet_name=item_sheet.title,
+                item_row=item_row,
+                header_row=4,
+            )
+
+        order_rows, _, _ = _allocate_rows(
+            workbook,
+            data_workbook,
+            order_sheet,
+            len(prepared),
+            header_row=4,
+        )
+        for row, item_row in zip(order_rows, item_rows, strict=True):
+            _bind_linked_row_to_item(
+                order_sheet,
+                row,
+                item_sheet_name=item_sheet.title,
+                item_row=item_row,
+                header_row=4,
+            )
+
+        calculation = getattr(workbook, "calculation", None)
+        if calculation is not None:
+            calculation.fullCalcOnLoad = True
+            calculation.forceFullCalc = True
+            calculation.calcMode = "auto"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        workbook.save(output_path)
+        return output_path
+    finally:
+        data_workbook.close()
+        workbook.close()
 
 
 def create_summary_workbook(records: list[dict[str, Any]], output_path: Path) -> Path:

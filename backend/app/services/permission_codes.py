@@ -95,6 +95,21 @@ INJECTION_SCHEDULING_PERMISSION_CODES = (
     "shared_mold_price:manage",
 )
 
+QC_INSPECTION_PERMISSION_CODES = (
+    "qc_inspection:read",
+    "qc_inspection:schedule_write",
+    "qc_inspection:order_write",
+    "qc_inspection:result_write",
+    "qc_inspection:problem_write",
+    "qc_inspection:report_export",
+    "qc_inspection:report_rename_preview",
+    "qc_inspection:report_rename_execute",
+    "qc_inspection:customer_manage",
+    "qc_inspection:audit_read",
+    "qc_inspection:factory_summary",
+    "qc_inspection:group_summary",
+)
+
 INTERNAL_QUOTE_SECTION_CODES = (
     "sales",
     "engineering",
@@ -153,6 +168,7 @@ BUSINESS_PERMISSION_CODES = (
     *CUSTOMER_ORDER_PERMISSION_CODES,
     *THREE_D_PRINTING_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
+    *QC_INSPECTION_PERMISSION_CODES,
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )
 

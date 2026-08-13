@@ -10,6 +10,16 @@ import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
+const qcInspectionOperationsView = () => import('@/views/QcInspectionOperationsView.vue')
+const qcInspectionFullPageMeta = {
+  fullPage: true,
+  requiresAuth: true,
+  permissions: ['qc_inspection:read'],
+  enforcePermissions: true,
+  allowAuthenticatedReadOnly: true,
+  permissionDepartment: 'qc',
+}
+
 const routes: RouteRecordRaw[] = [
   {
     path: '/login',
@@ -254,6 +264,20 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/qc/carton-mark-check',
+    name: 'qc-carton-mark-check',
+    component: () => import('@/views/CartonMarkQcVerificationView.vue'),
+    meta: {
+      title: 'QC 箱唛核验',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['carton_mark:read'],
+      enforcePermissions: true,
+      strictPermissions: true,
+      permissionDepartment: 'qc',
+    },
+  },
+  {
     path: '/modules/qa/carton-mark-check',
     name: 'carton-mark-check',
     component: () => import('@/views/CartonMarkVerificationView.vue'),
@@ -261,6 +285,64 @@ const routes: RouteRecordRaw[] = [
       title: '箱唛核验',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['carton_mark:read'],
+      enforcePermissions: true,
+      strictPermissions: true,
+      permissionDepartment: 'qa',
+    },
+  },
+  {
+    path: '/modules/qc/inspection-operations',
+    name: 'qc-inspection-schedule',
+    component: qcInspectionOperationsView,
+    meta: {
+      ...qcInspectionFullPageMeta,
+      title: 'QC 验货排期',
+    },
+  },
+  {
+    path: '/modules/qc/inspection-operations/orders/new',
+    name: 'qc-inspection-order-new',
+    component: qcInspectionOperationsView,
+    meta: {
+      ...qcInspectionFullPageMeta,
+      title: 'QC 临时订单录入',
+    },
+  },
+  {
+    path: '/modules/qc/inspection-operations/orders/:orderId',
+    name: 'qc-inspection-order-detail',
+    component: qcInspectionOperationsView,
+    meta: {
+      ...qcInspectionFullPageMeta,
+      title: 'QC 验货主单详情',
+    },
+  },
+  {
+    path: '/modules/qc/inspection-operations/problems',
+    name: 'qc-inspection-problems',
+    component: qcInspectionOperationsView,
+    meta: {
+      ...qcInspectionFullPageMeta,
+      title: 'QC 验货问题统计',
+    },
+  },
+  {
+    path: '/modules/qc/inspection-operations/reports',
+    name: 'qc-inspection-reports',
+    component: qcInspectionOperationsView,
+    meta: {
+      ...qcInspectionFullPageMeta,
+      title: 'QC 报表中心',
+    },
+  },
+  {
+    path: '/modules/qc/inspection-operations/report-renaming',
+    name: 'qc-inspection-report-renaming',
+    component: qcInspectionOperationsView,
+    meta: {
+      ...qcInspectionFullPageMeta,
+      title: 'QC 验货报告批量改名',
     },
   },
   {
@@ -316,6 +398,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ApprovalWorkbenchView.vue'),
     meta: {
       title: '业务审批工作台',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/workbench/ai',
+    name: 'ai-workbench',
+    component: () => import('@/features/nexus-copilot/workbench/AiWorkbenchView.vue'),
+    meta: {
+      title: 'Nexus AI 工作台',
+      fullPage: true,
       requiresAuth: true,
     },
   },

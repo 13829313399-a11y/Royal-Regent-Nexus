@@ -32,6 +32,12 @@ ENV DOCUMENT_TRANSLATION_MODEL_DIR=/app/backend/models/document-translation \
     DOCUMENT_TRANSLATION_DEVICE=cpu
 
 COPY backend/ ./
+COPY docs/ai/ /app/docs/ai/
+COPY src/ /app/src/
+
+# Fail the image build when a reviewed Skill manifest references a Prompt
+# fragment that is absent from the packaged runtime filesystem.
+RUN python -c "from app.services.ai.skills.registry import SkillRegistry; from app.services.ai.tool_registry import build_default_tool_registry; registry = SkillRegistry(build_default_tool_registry()); core = registry.prompt_registry.load_core(); print(f'validated {len(registry.skills)} AI Skill Prompt fragments and {core.fragment_id}')"
 
 EXPOSE 8000
 

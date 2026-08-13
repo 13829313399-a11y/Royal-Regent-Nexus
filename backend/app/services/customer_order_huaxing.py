@@ -63,7 +63,7 @@ HUAXING_CUSTOMER_MAPPINGS: dict[str, HuaxingCustomerMappingSpec] = {
     "360": HuaxingCustomerMappingSpec(
         "360", "360", (".pdf", ".xlsx", ".xlsm"), (".xlsx", ".xlsm"),
         "HUAXING_360_CONTRACT_RELEASE_V1", "HUAXING_360_SCHEDULE_APPEND_V2",
-        "主合同补价格、Release 生成新单；按 RL 修订版去重并继承 360 排期主数据与日期码。",
+        "主合同补价格、Release 生成新单；按 RL 修订版去重，并同步写入接单表、正单评审表和 Iteam 表。",
     ),
     "yinhui": HuaxingCustomerMappingSpec(
         "yinhui", "银辉", (".pdf", ".xlsx", ".xlsm"), (".xlsx", ".xlsm"),
@@ -244,7 +244,7 @@ def _prepare_360(
     po_files: list[tuple[str, bytes]], schedule_file_name: str, schedule_content: bytes,
 ) -> PreparedBatch:
     schedule = three_sixty_schedule.read_schedule(
-        schedule_content, filename=schedule_file_name, sheet_name="360客排期表",
+        schedule_content, filename=schedule_file_name, sheet_name="Iteam表",
     )
     parsed_files: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -290,7 +290,7 @@ def _prepare_360(
             f"{len(existing)} 行已存在当前/历史排期，测试阶段可确认后重复生成："
             + "、".join(numbers[:20])
         )
-    return PreparedBatch(records, warnings, _text(schedule.get("sheet")) or "360客排期表")
+    return PreparedBatch(records, warnings, _text(schedule.get("sheet")) or "Iteam表")
 
 
 def _prepare_yinhui(
@@ -802,6 +802,7 @@ def _export_prepared(
             filename=schedule_file_name,
             sheet_names=shixin_schedule.SEASONS_SHEETS,
             formula_fallback_fields=("cartons",),
+            first_total_section=True,
         )
         return
     with TemporaryDirectory(prefix=f"huaxing-{customer_code}-export-") as temp_dir:

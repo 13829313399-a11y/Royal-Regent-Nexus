@@ -4,7 +4,6 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-
 from app.core.config import Settings
 from app.services.ai.provider_factory import (
     ProviderConfigurationError,

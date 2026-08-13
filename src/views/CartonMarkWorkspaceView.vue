@@ -9,16 +9,24 @@ import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
 
-type CartonMarkWorkspaceMode = 'warehouse' | 'qa'
+type CartonMarkWorkspaceMode = 'warehouse' | 'qa' | 'qc'
 
 const props = defineProps<{
   workspaceMode: CartonMarkWorkspaceMode
 }>()
 
 const isWarehouseWorkspace = computed(() => props.workspaceMode === 'warehouse')
-const currentDepartmentId = computed(() => isWarehouseWorkspace.value ? 'pmc-warehouse' : 'qa')
+const isQcWorkspace = computed(() => props.workspaceMode === 'qc')
+const currentDepartmentId = computed(() => {
+  if (isWarehouseWorkspace.value) return 'pmc-warehouse'
+  return isQcWorkspace.value ? 'qc' : 'qa'
+})
+const returnDepartmentLabel = computed(() => {
+  if (isWarehouseWorkspace.value) return 'PMC / 仓管'
+  return isQcWorkspace.value ? 'QC 部' : 'QA 部'
+})
 const workspaceTitle = computed(() => isWarehouseWorkspace.value ? '箱唛资料模板' : '箱唛核验')
-const workspaceSubtitle = computed(() => isWarehouseWorkspace.value ? '客户箱唛 PDF 模板入库' : '实拍箱唛自动核对')
+const workspaceSubtitle = computed(() => isWarehouseWorkspace.value ? '客人 PO 箱唛 Excel 与打印 PDF 文字核对' : '打印 PDF 与现场箱唛照片核对')
 const activeFactory = computed(() => appStore.activeProductionFactory)
 const departmentRoute = computed(() => getFactoryScopedRoute(
   getDepartmentRoute(currentDepartmentId.value),
@@ -39,7 +47,7 @@ watch(currentDepartmentId, (departmentId) => {
           class="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-950"
         >
           <ArrowLeft class="size-4" aria-hidden="true" />
-          <span class="hidden sm:inline">返回{{ isWarehouseWorkspace ? 'PMC / 仓管' : 'QA 部' }}</span>
+          <span class="hidden sm:inline">返回{{ returnDepartmentLabel }}</span>
           <span class="sm:hidden">返回</span>
         </RouterLink>
 

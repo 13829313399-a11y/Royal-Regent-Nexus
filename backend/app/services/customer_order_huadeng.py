@@ -711,7 +711,11 @@ def _prepare_simba(
                 warnings.append(f"同单存在版本差异，保留 {current_name}，未重复写入 {file_name}。")
     records = [merged[key] for key in order]
     if not records:
-        raise HuadengCustomerOrderError("本批文件未识别到可生成的 Simba 新单明细")
+        detail = "；".join(dict.fromkeys(warnings))
+        message = "本批文件未识别到可生成的 Simba 新单明细"
+        if detail:
+            message += f"。文件处理结果：{detail}"
+        raise HuadengCustomerOrderError(message)
     inheritance = simba_schedule.enrich_rows_from_schedule(records, schedule.get("records") or [])
     warnings.append(
         f"已从当前 Simba 排期安全继承 {inheritance['product_names_applied']} 个中文品名、"

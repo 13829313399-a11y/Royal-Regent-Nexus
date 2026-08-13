@@ -99,7 +99,7 @@ async function convertFile() {
               <h2 id="pdf-to-word-title" class="text-xl font-bold tracking-tight text-slate-950">PDF 转 Word</h2>
               <span class="rounded-full bg-cyan-100 px-2.5 py-1 text-[11px] font-bold tracking-wide text-cyan-800">已启用</span>
             </div>
-            <p class="mt-1.5 max-w-2xl text-sm leading-6 text-slate-600">提取 PDF 中的可编辑文字和表格并生成 Word；扫描页或异常字体会自动尝试本机 OCR。</p>
+            <p class="mt-1.5 max-w-2xl text-sm leading-6 text-slate-600">提取 PDF 中的可编辑文字、表格和有效图片并生成 Word；扫描页或异常字体会自动尝试本机 OCR。</p>
           </div>
         </div>
         <span class="inline-flex w-fit items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm">
@@ -147,7 +147,7 @@ async function convertFile() {
             <div v-else-if="successMessage" class="text-emerald-700" role="status">
               <p class="flex items-start gap-2 font-medium"><CheckCircle2 class="mt-0.5 size-4 shrink-0" aria-hidden="true" />{{ successMessage }}</p>
               <p v-if="conversionMetrics" class="mt-1 pl-6 text-xs text-emerald-700/80">
-                {{ conversionMetrics.pageCount }} 页 · {{ conversionMetrics.tableCount }} 个表格 · {{ conversionMetrics.textPageCount }} 个文字页<span v-if="conversionMetrics.ocrPageCount"> · {{ conversionMetrics.ocrPageCount }} 个 OCR 页</span>
+                {{ conversionMetrics.pageCount }} 页 · {{ conversionMetrics.tableCount }} 个表格 · {{ conversionMetrics.imageCount }} 张图片 · {{ conversionMetrics.textPageCount }} 个文字页<span v-if="conversionMetrics.ocrPageCount"> · {{ conversionMetrics.ocrPageCount }} 个 OCR 页</span>
               </p>
             </div>
             <p v-else class="text-slate-500">输出为可编辑 .docx；复杂版式和 OCR 内容建议对照原 PDF 复核。</p>
@@ -181,12 +181,12 @@ async function convertFile() {
       <aside class="border-t border-slate-200/80 bg-slate-50/70 p-5 sm:p-7 lg:border-l lg:border-t-0" aria-label="转换说明">
         <p class="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">转换流程</p>
         <ol class="mt-5 space-y-5">
-          <li v-for="(step, index) in ['选择 PDF 文件', '提取文字与表格', '下载新的 Word']" :key="step" class="flex gap-3">
+          <li v-for="(step, index) in ['选择 PDF 文件', '提取文字、表格与图片', '下载新的 Word']" :key="step" class="flex gap-3">
             <span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold text-cyan-700 shadow-sm ring-1 ring-slate-200">{{ index + 1 }}</span>
             <div>
               <strong class="text-sm text-slate-900">{{ step }}</strong>
               <p class="mt-1 text-xs leading-5 text-slate-500">
-                {{ index === 0 ? '支持文字型和可 OCR 的扫描 PDF。' : index === 1 ? '按页面顺序写入段落和可编辑表格。' : '输出为 .docx，不覆盖源 PDF。' }}
+                {{ index === 0 ? '支持文字型和可 OCR 的扫描 PDF。' : index === 1 ? '按页面顺序写入段落、可编辑表格和有效图片。' : '输出为 .docx，不覆盖源 PDF。' }}
               </p>
             </div>
           </li>

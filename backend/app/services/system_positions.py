@@ -14,11 +14,12 @@ from app.services.permission_codes import (
     BUSINESS_PERMISSION_CODES,
     CARTON_PROCUREMENT_PERMISSION_CODES,
     INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
+    QC_INSPECTION_PERMISSION_CODES,
     SYSTEM_MANAGEMENT_PERMISSION_CODES,
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v16"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v18"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -79,6 +80,26 @@ CARTON_OPERATION_PERMISSION_CODES = tuple(
     code
     for code in CARTON_PROCUREMENT_PERMISSION_CODES
     if code != CARTON_CUSTOMER_MANAGE_PERMISSION_CODE
+)
+QC_INSPECTION_OPERATOR_PERMISSION_CODES = (
+    PRODUCTION_TASK_READ_PERMISSION_CODE,
+    "carton_mark:read",
+    "carton_mark:photo_upload",
+    "carton_mark:review",
+    "qc_inspection:read",
+    "qc_inspection:schedule_write",
+    "qc_inspection:order_write",
+    "qc_inspection:result_write",
+    "qc_inspection:problem_write",
+    "qc_inspection:report_export",
+    "qc_inspection:report_rename_preview",
+    "qc_inspection:report_rename_execute",
+)
+QC_INSPECTION_SUPERVISOR_PERMISSION_CODES = (
+    *QC_INSPECTION_OPERATOR_PERMISSION_CODES,
+    "qc_inspection:customer_manage",
+    "qc_inspection:audit_read",
+    "qc_inspection:factory_summary",
 )
 
 
@@ -171,6 +192,7 @@ GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LI
 GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
     (
         *THREE_D_PRINTING_PERMISSION_CODES,
+        *QC_INSPECTION_PERMISSION_CODES,
         "injection_scheduling:manage_master",
         "injection_scheduling:manage_rules",
         "injection_scheduling:manage_import_profiles",
@@ -607,8 +629,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="qc",
         department_name="QC部",
         sort_order=700,
-        description="全厂只读查看啤办生产任务；QC 模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="维护本厂 QC 验货运营、客户配置、正式汇总与审计",
+        permission_codes=QC_INSPECTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_qc_supervisor",
@@ -616,8 +638,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="qc",
         department_name="QC部",
         sort_order=710,
-        description="全厂只读查看啤办生产任务；QC 模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="维护本厂 QC 验货运营、客户配置、正式汇总与审计",
+        permission_codes=QC_INSPECTION_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_qc_inspector",
@@ -625,8 +647,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="qc",
         department_name="QC部",
         sort_order=720,
-        description="全厂只读查看啤办生产任务；QC 模块尚未完善",
-        permission_codes=(PRODUCTION_TASK_READ_PERMISSION_CODE,),
+        description="维护本厂排期、临时单、验货结果、问题、报表和报告改名",
+        permission_codes=QC_INSPECTION_OPERATOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
         role_id="position_carton_manager",
@@ -652,7 +674,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="carton",
         department_name="纸箱部",
         sort_order=820,
-        description="纸箱箱唛 PDF 模板维护",
+        description="纸箱箱唛 Excel、打印 PDF 与文字核对维护",
         permission_codes=CARTON_WAREHOUSE_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -850,6 +872,21 @@ def validate_system_position_definitions() -> None:
         for definition in warehouse_positions
     ):
         raise RuntimeError("仓库内置职位必须可维护本厂原料资料")
+
+    qc_inspector = definitions_by_id["position_qc_inspector"]
+    qc_supervisor = definitions_by_id["position_qc_supervisor"]
+    qc_manager = definitions_by_id["position_qc_manager"]
+    if not (
+        qc_inspector.scope_mode == OWN_FACTORY_SCOPE
+        and qc_supervisor.scope_mode == OWN_FACTORY_SCOPE
+        and qc_manager.scope_mode == OWN_FACTORY_SCOPE
+        and qc_inspector.permission_codes == QC_INSPECTION_OPERATOR_PERMISSION_CODES
+        and qc_supervisor.permission_codes == QC_INSPECTION_SUPERVISOR_PERMISSION_CODES
+        and qc_manager.permission_codes == QC_INSPECTION_SUPERVISOR_PERMISSION_CODES
+        and set(qc_inspector.permission_codes) < set(qc_supervisor.permission_codes)
+        and "qc_inspection:group_summary" not in qc_manager.permission_codes
+    ):
+        raise RuntimeError("QC 检验员、主管和经理的本厂权限关系无效")
 
 
 validate_system_position_definitions()

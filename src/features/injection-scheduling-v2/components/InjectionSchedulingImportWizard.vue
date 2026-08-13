@@ -2,6 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { AlertTriangle, CheckCircle2, FileSpreadsheet, RefreshCw, Upload, X } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
+import PreviewCard from '@/features/nexus-copilot/components/PreviewCard.vue'
+import {
+  isArtifactWorkflowUnavailable,
+  uploadAIArtifact,
+  type AIArtifactData,
+} from '@/api/aiArtifacts'
 import {
   approveImportMasterDifferences,
   confirmImportBatch,
@@ -9,12 +15,17 @@ import {
   listImportProfiles,
   listMasterDataProposals,
   proposeImportProfile,
+  proposeWorkbookFieldMapping,
+  proposeWorkbookArtifactFieldMapping,
   recoverImportBatch,
   retryImportPreview,
   reviewMasterDataProposal,
   transitionImportProfile,
   updateImportMappingDraft,
   uploadImportPreview,
+  inspectWorkbookSemanticSnapshot,
+  inspectWorkbookArtifact,
+  type AIWorkbookMappingProposal,
 } from '../api/injectionSchedulingV2Api'
 import type { FactoryId, ImportBatchRecord, ImportDocumentKindChoice, ImportIssueRecord } from '../types'
 import { useDialogFocus } from '../composables/useDialogFocus'
@@ -74,6 +85,11 @@ const profiles = ref<Array<Record<string, unknown>>>([])
 const profileTransitionReason = ref('')
 const governanceProposals = ref<Array<Record<string, unknown>>>([])
 const governanceReason = ref('')
+const semanticSnapshot = ref<Record<string, unknown> | null>(null)
+const mappingProposal = ref<AIWorkbookMappingProposal | null>(null)
+const cloudMappingConsent = ref(false)
+const preflightBusy = ref(false)
+const sourceArtifact = ref<AIArtifactData | null>(null)
 
 const blockingIssues = computed(() => batch.value?.issues.filter((item) => item.blocking) ?? [])
 const filteredIssues = computed(() => {
@@ -208,6 +224,10 @@ watch(() => [props.open, props.factoryId, props.initialBatchId] as const, async 
   if (!open) return
   file.value = null
   batch.value = null
+  semanticSnapshot.value = null
+  mappingProposal.value = null
+  cloudMappingConsent.value = false
+  sourceArtifact.value = null
   error.value = ''
   masterReason.value = ''
   await loadRecent()
@@ -215,6 +235,94 @@ watch(() => [props.open, props.factoryId, props.initialBatchId] as const, async 
   await loadGovernanceProposals()
   if (props.initialBatchId) await recover(props.initialBatchId)
 }, { immediate: true })
+
+async function selectFile(event: Event) {
+  file.value = (event.target as HTMLInputElement).files?.[0] ?? null
+  semanticSnapshot.value = null
+  mappingProposal.value = null
+  cloudMappingConsent.value = false
+  sourceArtifact.value = null
+  if (!file.value) return
+  preflightBusy.value = true
+  error.value = ''
+  try {
+    try {
+      const artifact = await uploadAIArtifact(
+        file.value,
+        props.factoryId,
+        'CONFIDENTIAL_BUSINESS',
+      )
+      semanticSnapshot.value = await inspectWorkbookArtifact(props.factoryId, artifact.id)
+      sourceArtifact.value = artifact
+    } catch (cause) {
+      if (!isArtifactWorkflowUnavailable(cause)) throw cause
+      semanticSnapshot.value = await inspectWorkbookSemanticSnapshot(props.factoryId, file.value)
+    }
+  } catch (cause) {
+    error.value = `工作簿安全检查失败：${getApiErrorMessage(cause)}`
+  } finally {
+    preflightBusy.value = false
+  }
+}
+
+async function generateMappingProposal() {
+  if (
+    !file.value
+    || !semanticSnapshot.value
+    || !cloudMappingConsent.value
+    || documentKind.value === 'AUTO'
+    || preflightBusy.value
+  ) return
+  preflightBusy.value = true
+  error.value = ''
+  try {
+    mappingProposal.value = sourceArtifact.value
+      ? await proposeWorkbookArtifactFieldMapping(
+          props.factoryId,
+          sourceArtifact.value.id,
+          semanticSnapshot.value,
+          documentKind.value,
+        )
+      : await proposeWorkbookFieldMapping(
+          props.factoryId,
+          file.value,
+          documentKind.value,
+        )
+  } catch (cause) {
+    error.value = `AI 映射建议生成失败：${getApiErrorMessage(cause)}`
+  } finally {
+    preflightBusy.value = false
+  }
+}
+
+function applyMappingProposal() {
+  if (!batch.value || !mappingProposal.value) return
+  if (String(mappingProposal.value.source_sha256 ?? '') !== batch.value.sourceFileHash) {
+    error.value = 'AI 映射建议与当前原文件摘要不一致，请重新检查并生成建议。'
+    return
+  }
+  const proposal = Array.isArray(mappingProposal.value.proposal)
+    ? mappingProposal.value.proposal
+    : []
+  const allowedCanonical = new Set(
+    mappingReviewItems.value.map((item) => String(item.canonical_field ?? '')),
+  )
+  const allowedHeaders = new Set(availableSourceHeaders.value)
+  mappingDraft.value = {
+    ...mappingDraft.value,
+    ...Object.fromEntries(
+      proposal.flatMap((rawItem) => {
+        if (!rawItem || typeof rawItem !== 'object') return []
+        const item = rawItem as Record<string, unknown>
+        const canonical = String(item.canonical_field ?? '')
+        const sourceHeader = String(item.source_header ?? '')
+        return allowedCanonical.has(canonical) && allowedHeaders.has(sourceHeader)
+          ? [[canonical, sourceHeader]]
+          : []
+      }),
+    ),
+  }
+}
 
 async function upload() {
   if (!file.value || !props.canImport || busy.value) return
@@ -355,7 +463,20 @@ async function confirm() {
 
       <div v-if="!batch" class="wizard-upload-step">
         <label class="document-kind"><span>文件类型</span><select v-model="documentKind" :disabled="busy"><option value="AUTO">自动识别（推荐）</option><option value="DEMAND_ORDER">客户下单表</option><option value="PLANNED_SCHEDULE">已排计划表</option><option value="SYSTEM_ROUND_TRIP">系统回写文件</option><option value="MASTER_DATA">共享模具 / 单价主数据</option></select><small>自动识别只接受已登记的文档签名或导入模板；不确定的文件会停在预览，不会写入排产。</small></label>
-        <label class="file-picker"><Upload :size="26" /><strong>选择 .xlsx 计划或下单文件</strong><span>{{ file?.name || '文件只用于受限解析；服务端按批次和厂区隔离保存 72 小时' }}</span><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" :disabled="!canImport || busy" @change="file = ($event.target as HTMLInputElement).files?.[0] ?? null" /></label>
+        <label class="file-picker"><Upload :size="26" /><strong>选择 .xlsx/.xlsm 计划或下单文件</strong><span>{{ file?.name || '先做本地只读语义检查；确认导入后才按批次隔离保存 72 小时' }}</span><input type="file" accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12" :disabled="!canImport || busy || preflightBusy" @change="selectFile" /></label>
+        <section v-if="semanticSnapshot" class="semantic-snapshot" data-testid="workbook-semantic-snapshot">
+          <div><CheckCircle2 :size="16" /><strong>本地只读语义检查通过</strong></div>
+          <p>{{ semanticSnapshot.sheet_count }} 个 Sheet · {{ semanticSnapshot.formula_cell_count }} 个公式单元格 · SHA-256 {{ String((semanticSnapshot.source_lineage as Record<string, unknown>)?.source_sha256 ?? '').slice(0, 12) }}…</p>
+          <p>样例已脱敏；检查不会创建 Import Batch、订单、Task 或 Profile，也不会修改源文件。</p>
+          <label class="cloud-mapping-consent"><input v-model="cloudMappingConsent" type="checkbox" :disabled="documentKind === 'AUTO' || !canProposeProfile" /><span>我同意仅将脱敏语义快照发送到已批准的云端模型；原始 Excel 不发送。</span></label>
+          <button type="button" :disabled="!cloudMappingConsent || documentKind === 'AUTO' || !canProposeProfile || preflightBusy" @click="generateMappingProposal">{{ preflightBusy ? '生成中…' : '生成 AI 字段映射建议' }}</button>
+          <small v-if="documentKind === 'AUTO'">生成建议前请明确选择文件类型。</small>
+        </section>
+        <section v-if="mappingProposal" class="mapping-proposal" data-testid="workbook-mapping-proposal">
+          <div><AlertTriangle :size="16" /><strong>AI 建议仅供人工预览</strong></div>
+          <p>建议 {{ Array.isArray(mappingProposal.proposal) ? mappingProposal.proposal.length : 0 }} 项；缺失必填 {{ Array.isArray(mappingProposal.missing_required_fields) ? mappingProposal.missing_required_fields.length : 0 }} 项。只能保存到现有 PROFILE_DRAFT，不能自动激活。</p>
+          <PreviewCard v-if="mappingProposal.preview_manifest" :manifest="mappingProposal.preview_manifest" />
+        </section>
         <button class="wizard-primary" :disabled="!file || !canImport || busy" @click="upload"><RefreshCw v-if="busy" :size="16" class="spinning" /><Upload v-else :size="16" />{{ busy ? '识别中' : '生成预览' }}</button>
         <div v-if="recent.length" class="recent-batches"><strong>恢复最近批次</strong><button v-for="item in recent" :key="item.id" @click="recover(item.id)"><span>{{ item.sourceFileName }}</span><b>{{ importBatchStateMeta(item.batchState).label }}</b></button></div>
         <details v-if="canReviewSharedMolds || canActivateSharedMolds || canManageFactoryCapabilities || canManageSharedMoldPrices" open><summary>已整理主数据提案（{{ governanceProposals.length }}）</summary><div class="mapping-editor"><p><AlertTriangle :size="15" />无需重复上传源表。公司模具与{{ factoryMeta(props.factoryId).label }}机安能力独立治理；单价按原表值，以人民币、每啤/每模次、当前厂区全客户全合同口径激活。</p><input v-model="governanceReason" placeholder="审核或激活依据（至少 4 个字符）" /><div class="action-list"><p v-for="proposal in governanceProposals" :key="String(proposal.id)"><b>{{ masterDataEntityMeta(proposal.entity_type).label }} · {{ proposalActionMeta(proposal.action_type).label }}</b><span>{{ masterProposalStatusMeta(proposal.status).label }} · {{ proposalEntryCount(proposal) }} 条来源 · {{ proposal.proposed_by_name || '提案人信息待补充' }}</span><SchedulingTechnicalDetails :items="proposalTechnicalItems(proposal)" summary="提案技术信息" /><small><button v-if="proposal.status === 'PROPOSED' && (proposal.entity_type !== 'FACTORY_MOLD_CAPABILITY_BUNDLE' ? canReviewSharedMolds : canManageFactoryCapabilities)" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'approve')">独立批准</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'MOLD_DEFINITION_BUNDLE' && canActivateSharedMolds" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活公司模具</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'FACTORY_MOLD_CAPABILITY_BUNDLE' && canManageFactoryCapabilities" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活{{ factoryMeta(props.factoryId).label }}机安能力</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'COMMERCIAL_RATE_RULE' && canManageSharedMoldPrices" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活人民币单价</button></small></p></div></div></details>
@@ -372,7 +493,7 @@ async function confirm() {
         <details v-if="canManageProfiles"><summary>导入模板版本治理（{{ profiles.length }}）</summary><div class="mapping-editor"><p><AlertTriangle :size="15" />激活、恢复启用和停用需要独立模板管理权限；提交人不能批准自己的草案。</p><input v-model="profileTransitionReason" placeholder="状态变更依据（至少 8 个字符）" /><div class="action-list"><p v-for="profile in profiles" :key="String(profile.id)"><b>{{ profile.name || '未命名导入模板' }}</b><span>{{ importDocumentKindMeta(profile.document_kind).label }} · {{ profileStatusMeta(profile.status).label }}</span><SchedulingTechnicalDetails :items="profileTechnicalItems(profile)" summary="模板技术信息" /><small><button v-if="profile.status === 'PROFILE_DRAFT'" :disabled="busy || profileTransitionReason.trim().length < 8" @click="transitionProfile(profile, 'activate')">审核激活</button><button v-if="profile.status === 'RETIRED'" :disabled="busy || profileTransitionReason.trim().length < 8" @click="transitionProfile(profile, 'activate')">恢复启用</button><button v-if="profile.status === 'ACTIVE'" :disabled="busy || profileTransitionReason.trim().length < 8" @click="transitionProfile(profile, 'retire')">停用</button></small></p></div></div></details>
         <details v-if="canReviewSharedMolds || canActivateSharedMolds || canManageFactoryCapabilities"><summary>共享模具提案治理（{{ governanceProposals.length }}）</summary><div class="mapping-editor"><p><AlertTriangle :size="15" />审核与激活分步执行；先激活公司模具，再激活{{ factoryMeta(props.factoryId).label }}机安能力。价格提案在合同及明确作用域签字前不能激活。</p><input v-model="governanceReason" placeholder="审核或激活依据（至少 4 个字符）" /><div class="action-list"><p v-for="proposal in governanceProposals" :key="String(proposal.id)"><b>{{ masterDataEntityMeta(proposal.entity_type).label }} · {{ proposalActionMeta(proposal.action_type).label }}</b><span>{{ masterProposalStatusMeta(proposal.status).label }} · {{ proposal.proposed_by_name || '提案人信息待补充' }}</span><SchedulingTechnicalDetails :items="proposalTechnicalItems(proposal)" summary="提案技术信息" /><small><button v-if="proposal.status === 'PROPOSED' && (proposal.entity_type !== 'FACTORY_MOLD_CAPABILITY_BUNDLE' ? canReviewSharedMolds : canManageFactoryCapabilities)" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'approve')">独立批准</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'MOLD_DEFINITION_BUNDLE' && canActivateSharedMolds" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活公司模具</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'FACTORY_MOLD_CAPABILITY_BUNDLE' && canManageFactoryCapabilities" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活{{ factoryMeta(props.factoryId).label }}机安能力</button></small></p></div></div></details>
 
-        <details><summary>工作表角色与字段映射（{{ batch.mapping.length }}）</summary><div class="mapping-table"><div v-for="(item, index) in batch.mapping.slice(0, 80)" :key="index"><span>{{ item.raw_header || item.source_header || item.source || item.cell_ref || '—' }}</span><b>{{ item.canonical_field || item.field_name || item.target || '未映射' }}</b><em>{{ item.status || item.match_status || '' }}</em></div></div><div v-if="mappingReviewItems.length" class="mapping-editor"><p><AlertTriangle :size="15" />未知表头只保存为草案；须由另一位导入模板管理员审核激活后，才能用原始文件重新识别。</p><label v-for="item in mappingReviewItems" :key="String(item.canonical_field)"><span>{{ item.canonical_field }}{{ item.required ? '（必填）' : '' }}</span><select v-model="mappingDraft[String(item.canonical_field)]"><option value="">选择来源表头</option><option v-for="header in availableSourceHeaders" :key="header" :value="header">{{ header }}</option></select></label><div class="mapping-actions"><button :disabled="busy || !Object.keys(mappingDraft).length" @click="saveMappingDraft">保存映射草案</button><input v-model="profileProposalName" placeholder="导入模板草案名称" /><input v-model="profileProposalReason" placeholder="提交依据（至少 4 个字符）" /><button :disabled="!canProposeProfile || busy || profileProposalReason.trim().length < 4 || !Object.keys(batch.mappingDraft).length" @click="submitProfileProposal">提交导入模板审核</button></div><small v-if="!canProposeProfile">当前账号可编辑预览，但没有提交导入模板草案权限。</small></div></details>
+        <details><summary>工作表角色与字段映射（{{ batch.mapping.length }}）</summary><div class="mapping-table"><div v-for="(item, index) in batch.mapping.slice(0, 80)" :key="index"><span>{{ item.raw_header || item.source_header || item.source || item.cell_ref || '—' }}</span><b>{{ item.canonical_field || item.field_name || item.target || '未映射' }}</b><em>{{ item.status || item.match_status || '' }}</em></div></div><div v-if="mappingReviewItems.length" class="mapping-editor"><p><AlertTriangle :size="15" />未知表头只保存为草案；须由另一位导入模板管理员审核激活后，才能用原始文件重新识别。</p><button v-if="mappingProposal" type="button" :disabled="busy" @click="applyMappingProposal">采用 AI 建议到人工草案</button><label v-for="item in mappingReviewItems" :key="String(item.canonical_field)"><span>{{ item.canonical_field }}{{ item.required ? '（必填）' : '' }}</span><select v-model="mappingDraft[String(item.canonical_field)]"><option value="">选择来源表头</option><option v-for="header in availableSourceHeaders" :key="header" :value="header">{{ header }}</option></select></label><div class="mapping-actions"><button :disabled="busy || !Object.keys(mappingDraft).length" @click="saveMappingDraft">保存映射草案</button><input v-model="profileProposalName" placeholder="导入模板草案名称" /><input v-model="profileProposalReason" placeholder="提交依据（至少 4 个字符）" /><button :disabled="!canProposeProfile || busy || profileProposalReason.trim().length < 4 || !Object.keys(batch.mappingDraft).length" @click="submitProfileProposal">提交导入模板审核</button></div><small v-if="!canProposeProfile">当前账号可编辑预览，但没有提交导入模板草案权限。</small></div></details>
         <details open><summary>问题与差异（{{ batch.issues.length }}）</summary><input v-model="issueQuery" class="issue-search" placeholder="按源行、字段、错误码筛选" /><div class="issue-list"><p v-for="issue in filteredIssues.slice(0, 120)" :key="issue.id" :class="{ blocking: issue.blocking }"><b>{{ issue.blocking ? '阻断问题' : '处理提示' }}</b><span>{{ issue.message }}</span><small>{{ issue.sheetName }}{{ issue.sourceRow ? ` · 行 ${issue.sourceRow}` : '' }}{{ issue.cellRef ? ` · ${issue.cellRef}` : '' }}</small><SchedulingTechnicalDetails :items="issueTechnicalItems(issue)" summary="问题技术信息" /></p><p v-if="!filteredIssues.length" class="empty"><CheckCircle2 :size="16" />当前筛选下无问题</p></div></details>
         <details><summary>对账动作（{{ batch.reconciliationActions.length }}）与计算差异（{{ batch.calculationComparisons.length }}）</summary><div class="action-list"><p v-for="(item, index) in batch.reconciliationActions.slice(0, 100)" :key="index"><b>{{ item.action_type }}</b><span>{{ item.reason_code || item.stable_order_key || item.stable_row_key }}</span></p></div></details>
 
@@ -385,5 +506,5 @@ async function confirm() {
 
 <style scoped>
 .import-wizard-backdrop{position:fixed;inset:0;z-index:70;background:rgba(5,13,24,.62);display:grid;place-items:center;padding:24px}.import-wizard{width:min(1180px,96vw);max-height:92vh;overflow:auto;background:#f8fafc;border:1px solid #cbd5e1;border-radius:18px;box-shadow:0 28px 80px rgba(15,23,42,.38);color:#0f172a}.import-wizard>header{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;padding:18px 22px;background:#fff;border-bottom:1px solid #e2e8f0}.import-wizard>header>div{display:flex;align-items:center;gap:12px}.import-wizard>header div div{display:grid}.import-wizard>header span{font-size:12px;color:#64748b}.import-wizard button{border:1px solid #cbd5e1;border-radius:9px;background:#fff;padding:9px 13px;cursor:pointer}.import-wizard button:disabled{opacity:.48;cursor:not-allowed}.wizard-banner{margin:14px 22px 0;padding:10px 12px;border-radius:9px;display:flex;gap:8px}.wizard-banner.error{background:#fff1f2;color:#be123c}.wizard-upload-step{padding:28px;display:grid;gap:16px}.document-kind{display:grid;grid-template-columns:110px 1fr;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.document-kind select{padding:9px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}.document-kind small{grid-column:2;color:#64748b}.file-picker{border:2px dashed #94a3b8;border-radius:14px;padding:34px;display:grid;place-items:center;gap:8px;background:#fff;cursor:pointer}.file-picker span{color:#64748b;font-size:13px}.file-picker input{margin-top:8px}.wizard-primary{display:inline-flex;align-items:center;justify-content:center;gap:7px;background:#0f766e!important;color:#fff;border-color:#0f766e!important}.wizard-secondary{display:inline-flex;gap:6px;align-items:center}.recent-batches{display:grid;gap:7px}.recent-batches>button{display:flex;justify-content:space-between;text-align:left}.recent-batches b{font-size:12px;color:#475569}.wizard-preview{padding:18px 22px 22px}.wizard-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px}.wizard-steps span{padding:8px;border-radius:8px;background:#e2e8f0;color:#64748b;font-size:12px;text-align:center}.wizard-steps .done{background:#ccfbf1;color:#115e59}.batch-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.batch-heading>div{display:grid}.batch-heading span{font-size:12px;color:#64748b}.batch-heading em{font-style:normal;padding:6px 10px;border-radius:999px;background:#fef3c7;color:#92400e;font-size:12px}.batch-heading em.preview_ready,.batch-heading em.partially_confirmed,.batch-heading em.confirmed{background:#dcfce7;color:#166534}.preview-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:15px}.preview-cards article{display:grid;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.preview-cards span,.preview-cards small{color:#64748b;font-size:12px}.preview-cards strong{font-size:20px}.wizard-preview details{background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin:9px 0;padding:11px}.wizard-preview summary{cursor:pointer;font-weight:650}.mapping-table{margin-top:9px;max-height:230px;overflow:auto}.mapping-table>div{display:grid;grid-template-columns:1.2fr 1.2fr .6fr;gap:8px;padding:7px;border-top:1px solid #f1f5f9;font-size:12px}.mapping-table em{font-style:normal;color:#64748b}.mapping-editor{margin-top:10px;padding:10px;background:#fff7ed;border-radius:9px;display:grid;gap:8px}.mapping-editor p{display:flex;gap:6px;margin:0;color:#9a3412}.mapping-editor>label{display:grid;grid-template-columns:220px 1fr;align-items:center;gap:8px}.mapping-editor select,.mapping-editor input{padding:8px;border:1px solid #cbd5e1;border-radius:7px;background:#fff}.mapping-actions{display:grid;grid-template-columns:auto 1fr 1.4fr auto;gap:8px}.demand-toolbar{display:flex;justify-content:space-between;gap:12px;margin:10px 0;color:#475569;font-size:12px}.demand-table{overflow:auto;max-height:340px}.demand-head,.demand-row{min-width:1000px;display:grid;grid-template-columns:55px 55px 1.15fr 1.45fr .9fr 1fr 1.15fr;gap:8px;align-items:center;padding:8px;border-top:1px solid #f1f5f9;font-size:12px}.demand-head{position:sticky;top:0;background:#f8fafc;font-weight:650;z-index:1}.demand-row>span{display:grid}.demand-row small{color:#64748b}.issue-search{width:100%;box-sizing:border-box;margin:9px 0;padding:8px;border:1px solid #cbd5e1;border-radius:8px}.issue-list{max-height:260px;overflow:auto}.issue-list p,.action-list p{display:grid;grid-template-columns:170px 1fr auto;gap:8px;margin:0;padding:7px;border-top:1px solid #f1f5f9;font-size:12px}.issue-list p.blocking{background:#fff7ed}.issue-list small{color:#64748b}.issue-list .empty{display:flex;color:#166534}.master-review{margin-top:12px;padding:12px;border-radius:10px;background:#fff7ed}.master-review p{display:flex;gap:7px}.master-review textarea{width:100%;box-sizing:border-box;margin:6px 0;padding:8px}.wizard-preview footer{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}@media(max-width:760px){.preview-cards{grid-template-columns:repeat(2,1fr)}.wizard-steps{grid-template-columns:repeat(2,1fr)}.mapping-table>div,.issue-list p{grid-template-columns:1fr}.document-kind,.mapping-editor>label,.mapping-actions{grid-template-columns:1fr}.document-kind small{grid-column:1}.import-wizard-backdrop{padding:8px}}
-.wizard-preview > :deep(.scheduling-technical-details){margin:-5px 0 12px}.action-list p :deep(.scheduling-technical-details),.issue-list p :deep(.scheduling-technical-details){grid-column:1/-1}.action-list p :deep(.scheduling-technical-details>dl),.issue-list p :deep(.scheduling-technical-details>dl){right:auto;left:0}
+.wizard-preview > :deep(.scheduling-technical-details){margin:-5px 0 12px}.action-list p :deep(.scheduling-technical-details),.issue-list p :deep(.scheduling-technical-details){grid-column:1/-1}.action-list p :deep(.scheduling-technical-details>dl),.issue-list p :deep(.scheduling-technical-details>dl){right:auto;left:0}.semantic-snapshot,.mapping-proposal{display:grid;gap:8px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa;padding:12px;font-size:12px}.semantic-snapshot>div,.mapping-proposal>div{display:flex;align-items:center;gap:7px;color:#115e59}.semantic-snapshot p,.mapping-proposal p{margin:0;color:#475569}.cloud-mapping-consent{display:flex;align-items:flex-start;gap:8px;color:#334155}.mapping-proposal{border-color:#fde68a;background:#fffbeb}.mapping-proposal>div{color:#92400e}
 </style>

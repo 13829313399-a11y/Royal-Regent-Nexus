@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { Bot, UserRound } from '@lucide/vue'
 import type { AIConversationMessage } from './types'
+import FeedbackControls from '@/features/nexus-copilot/components/FeedbackControls.vue'
 
-defineProps<{
+withDefaults(defineProps<{
   message: AIConversationMessage
-}>()
+  feedbackEnabled?: boolean
+  factoryId?: string
+}>(), {
+  feedbackEnabled: false,
+  factoryId: '',
+})
 </script>
 
 <template>
@@ -46,6 +52,12 @@ defineProps<{
       <span v-if="message.status === 'cancelled'" class="mt-2 block text-xs font-medium text-amber-700">
         已停止生成
       </span>
+      <FeedbackControls
+        v-if="feedbackEnabled && factoryId && message.role === 'assistant' && message.status === 'complete' && message.feedbackTarget"
+        :factory-id="factoryId"
+        :target-type="message.feedbackTarget.type"
+        :target-id="message.feedbackTarget.id"
+      />
     </div>
     <span
       v-if="message.role === 'user'"

@@ -5,6 +5,8 @@ import type { AIConversationMessage } from './types'
 
 const props = defineProps<{
   messages: AIConversationMessage[]
+  feedbackEnabled?: boolean
+  factoryId?: string
 }>()
 
 const listRoot = ref<HTMLElement | null>(null)
@@ -32,13 +34,19 @@ watch(
     aria-label="AI 对话记录"
   >
     <div v-if="messages.length" class="space-y-4 px-4 sm:px-5">
-      <AiMessage v-for="message in messages" :key="message.id" :message="message" />
+      <AiMessage
+        v-for="message in messages"
+        :key="message.id"
+        :message="message"
+        :feedback-enabled="feedbackEnabled"
+        :factory-id="factoryId"
+      />
     </div>
     <div v-else class="flex items-center justify-center px-4 py-8 text-center sm:px-5">
       <div class="max-w-xs">
         <p class="text-sm font-semibold text-slate-800">需要页面帮助吗？</p>
         <p class="mt-2 text-xs leading-5 text-slate-500">
-          我只会读取当前账号已获授权的信息。首版对话仅保存在本页内存中，关闭后即清空。
+          我只会读取当前账号已获授权的信息。持久会话最多保留 30 天正文；临时会话不保存正文。
         </p>
       </div>
     </div>

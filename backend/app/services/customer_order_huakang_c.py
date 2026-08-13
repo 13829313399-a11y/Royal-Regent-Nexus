@@ -13,6 +13,7 @@ from typing import Any
 from app.services.huakang_c_order_legacy import huakang_po_parser, huakang_schedule
 from app.services.huaxing_order_legacy.new_order_excel import (
     append_column_records_to_workbook,
+    append_grouped_column_records_to_workbook,
 )
 from app.services.customer_order_manual import (
     apply_overrides_to_preview,
@@ -122,7 +123,7 @@ def _quantity_key(value: Any) -> str:
 
 def _schedule_quantity_column(profile_code: str) -> int:
     return {
-        "index": 10,
+        "index": 11,
         "jazwares": 11,
         "maxx": 11,
         "strottman": 11,
@@ -343,6 +344,59 @@ def _record_fields(
     }
 
 
+def _jazwares_parent_item(value: Any) -> str:
+    item = _text(value)
+    match = re.fullmatch(r"(.+?)-(XXS|XS|S|M|L|XL|XXL|XXXL)", item, re.I)
+    return match.group(1) if match else item
+
+
+def _jazwares_group_entries(
+    entries: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> list[tuple[str, list[tuple[dict[str, Any], dict[str, Any]]]]]:
+    groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for index, (order, line) in enumerate(entries, start=1):
+        parent_item = _jazwares_parent_item(line.get("item_code")) or f"未识别货号-{index}"
+        line["_jazwares_parent_item"] = parent_item
+        groups.setdefault(parent_item, []).append((order, line))
+    return list(groups.items())
+
+
+def _maxx_parent_item(order: dict[str, Any], line: dict[str, Any]) -> str:
+    project_no = _text(order.get("project_no"))
+    if project_no:
+        return project_no
+    item = _text(line.get("item_code"))
+    match = re.match(r"^([A-Z0-9]+)-", item, re.I)
+    return match.group(1) if match else item
+
+
+def _maxx_group_entries(
+    entries: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> list[tuple[str, list[tuple[dict[str, Any], dict[str, Any]]]]]:
+    groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for index, (order, line) in enumerate(entries, start=1):
+        parent_item = _maxx_parent_item(order, line) or f"未识别货号-{index}"
+        line["_maxx_parent_item"] = parent_item
+        groups.setdefault(parent_item, []).append((order, line))
+    return list(groups.items())
+
+
+def _strottman_group_key(entry: tuple[dict[str, Any], dict[str, Any]]) -> str:
+    _order, line = entry
+    return re.sub(r"-F\d+$", "", _text(line.get("item_code")), flags=re.I)
+
+
+def _strottman_group_row_values(
+    entry: tuple[dict[str, Any], dict[str, Any]],
+    _row_no: int,
+) -> dict[int, Any]:
+    _order, line = entry
+    return {
+        1: _strottman_group_key(entry),
+        4: line.get("description") or "",
+    }
+
+
 def _issues(order: dict[str, Any], line: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for index, message in enumerate(order.get("warnings") or [], start=1):
@@ -477,6 +531,29 @@ def create_huakang_c_customer_preview(
     ]
     file_names = [name for name, _ in po_files]
     po_hashes = [sha256(content).hexdigest() for _, content in po_files]
+    if spec.code == "jazwares":
+        append_rule = (
+            "JAZWARES 按现有排期的“分+总”结构追加：同一大货号的小PO明细连续写入，"
+            "随后新增一行大货号合计；明细与合计分别继承最近正常明细行和合计行的完整样式、"
+            "公式及行高。"
+        )
+    elif spec.code == "maxx":
+        append_rule = (
+            "MAXX 按第1行字段和第2至8行的“分+总”结构追加：Project# 作为大货号，"
+            "同项目的小货号明细连续写入，随后只保留一行合计；明细与合计分别继承原表"
+            "正常明细行和合计行的完整样式、公式及行高。"
+        )
+    elif spec.code == "strottman":
+        append_rule = (
+            "STROTTMAN 以“建文客排期表”第3行为字段行，并按第4至10行的结构追加："
+            "每个产品先复制一行货号/品名标题，随后写入订单明细；标题与明细分别继承"
+            "最近同类行的合并、字体、边框、公式和行高。"
+        )
+    else:
+        append_rule = (
+            "仅在对应客户目标表明细末尾/合计行之前插入本批新单，并从插入点向上选择"
+            "最近的正常明细行继承格式、字体和公式逻辑，跳过合计/小计、分组标题和空白分隔行。"
+        )
     return {
         "preview_schema_version": PREVIEW_SCHEMA_VERSION,
         "customer_code": customer_code,
@@ -502,9 +579,8 @@ def create_huakang_c_customer_preview(
             spec.rule_summary,
             "来单日期按旧系统的“邮件确认接单日期”规则覆盖PO Date。",
             "美元价格按固定汇率7.75换算港币。导出结果完整保留当前排期的所有 Sheet、"
-            "历史数据、格式、公式、图片和打印设置；仅在对应客户目标表明细末尾/合计行之前"
-            "插入本批新单，并从插入点向上选择最近的正常明细行继承格式、字体和公式逻辑，"
-            "跳过合计/小计、分组标题和空白分隔行；另存为新文件，不覆盖原排期。",
+            f"历史数据、格式、公式、图片和打印设置；{append_rule}"
+            "另存为新文件，不覆盖原排期。",
             *prepared.warnings,
         ])),
     }
@@ -595,6 +671,11 @@ def export_huakang_c_customer_schedule(
         output_path = root / preview["output_file_name"]
         try:
             profile = huakang_schedule.PROFILES[spec.legacy_code]
+            safe_schedule_content = schedule_content
+            if Path(schedule_file_name).suffix.lower() in {".xlsx", ".xlsm"}:
+                safe_schedule_content, _date_repairs = (
+                    huakang_schedule.repair_invalid_xlsx_date_bytes(schedule_content)
+                )
 
             def row_values(entry: tuple[dict[str, Any], dict[str, Any]], row_no: int) -> dict[int, Any]:
                 order, line = entry
@@ -606,17 +687,86 @@ def export_huakang_c_customer_schedule(
                     EXCHANGE_RATE,
                 )
 
-            append_column_records_to_workbook(
-                schedule_content,
-                output_path,
-                prepared.entries,
-                filename=schedule_file_name,
-                sheet_names=(prepared.sheet_name, *profile.sheets),
-                header_row=profile.header_rows,
-                max_col=profile.max_col,
-                detail_columns=profile.scan_cols,
-                row_values_factory=row_values,
-            )
+            if spec.code in {"jazwares", "maxx"}:
+                groups = (
+                    _jazwares_group_entries(prepared.entries)
+                    if spec.code == "jazwares"
+                    else _maxx_group_entries(prepared.entries)
+                )
+
+                def summary_values(
+                    group_key: str,
+                    _records: list[tuple[dict[str, Any], dict[str, Any]]],
+                    _row_no: int,
+                    detail_start_row: int,
+                    detail_end_row: int,
+                ) -> dict[int, Any]:
+                    return {
+                        10: f"{group_key} 合计" if spec.code == "jazwares" else "合计",
+                        11: f"=SUM(K{detail_start_row}:K{detail_end_row})",
+                    }
+
+                append_grouped_column_records_to_workbook(
+                    safe_schedule_content,
+                    output_path,
+                    groups,
+                    filename=schedule_file_name,
+                    sheet_names=(prepared.sheet_name, *profile.sheets),
+                    header_row=profile.header_rows,
+                    max_col=profile.max_col,
+                    summary_columns=(10,),
+                    detail_style_columns=(11,) if spec.code == "jazwares" else (),
+                    detail_row_values_factory=row_values,
+                    summary_row_values_factory=summary_values,
+                    reuse_trailing_summary_rows=spec.code == "maxx",
+                    repair_existing_summary_values_factory=(
+                        (
+                            lambda _row_no, detail_start_row, detail_end_row: {
+                                10: "合计",
+                                11: f"=SUM(K{detail_start_row}:K{detail_end_row})",
+                            }
+                        )
+                        if spec.code == "maxx"
+                        else None
+                    ),
+                )
+            else:
+                append_column_records_to_workbook(
+                    safe_schedule_content,
+                    output_path,
+                    prepared.entries,
+                    filename=schedule_file_name,
+                    sheet_names=(prepared.sheet_name, *profile.sheets),
+                    header_row=profile.header_rows,
+                    max_col=profile.max_col,
+                    detail_columns=profile.scan_cols,
+                    row_values_factory=row_values,
+                    group_key_factory=(
+                        _strottman_group_key
+                        if spec.code == "strottman"
+                        else None
+                    ),
+                    group_row_values_factory=(
+                        _strottman_group_row_values
+                        if spec.code == "strottman"
+                        else None
+                    ),
+                    column_formats=(
+                        {
+                            1: "yyyy/m/d;@",
+                            41: "yyyy/m/d;@",
+                            42: '[$HK$-C04]#,##0.00;\\-[$HK$-C04]#,##0.00',
+                            43: '[$HK$-C04]#,##0.00;\\-[$HK$-C04]#,##0.00',
+                            44: "yyyy/m/d;@",
+                        }
+                        if spec.code == "index"
+                        else (
+                            {4: "yyyy/m/d;@", 13: 'm"月"d"日"', 34: "yyyy/m/d;@"}
+                            if spec.code == "strottman"
+                            else None
+                        )
+                    ),
+                )
         except Exception as exc:
             raise HuakangCCustomerOrderError(
                 f"生成{spec.name}新单失败：{exc}"

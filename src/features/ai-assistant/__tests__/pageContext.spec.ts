@@ -65,6 +65,59 @@ describe('AI allowlisted page context', () => {
     }), 'huaxing')).toBeNull()
   })
 
+  it('adds the AI workbench Knowledge context without accepting a factory hint', () => {
+    const context = buildAIPageContext(contextRoute({
+      name: 'ai-workbench',
+      path: '/workbench/ai',
+      query: { factory: 'huakang-b' },
+    }), 'huaxing')
+
+    expect(context).toEqual({
+      route_name: 'ai-workbench',
+      path: '/workbench/ai',
+      factory_id: null,
+      module_id: 'ai-workbench',
+      selected_entity: null,
+    })
+    expect(supportsAIVisionContext(context)).toBe(false)
+  })
+
+  it('forwards only a typed selected entity reference on the matching page', () => {
+    const scheduling = buildAIPageContext(
+      contextRoute(),
+      'huaxing',
+      {
+        type: 'scheduling_backlog_order',
+        id: 'order-000123',
+        revision: 3,
+      },
+    )
+    expect(scheduling?.selected_entity).toEqual({
+      type: 'scheduling_backlog_order',
+      id: 'order-000123',
+      revision: 3,
+    })
+
+    const quoteRoute = contextRoute({
+      name: 'internal-quote-desk-home',
+      path: '/modules/sales-business/internal-quote-desk',
+    })
+    expect(buildAIPageContext(
+      quoteRoute,
+      'huaxing',
+      { type: 'scheduling_backlog_order', id: 'order-000123', revision: 3 },
+    )?.selected_entity).toBeNull()
+    expect(buildAIPageContext(
+      quoteRoute,
+      'huaxing',
+      { type: 'internal_quote', id: 'quote-0001', revision: 2 },
+    )?.selected_entity).toEqual({
+      type: 'internal_quote',
+      id: 'quote-0001',
+      revision: 2,
+    })
+  })
+
   it('allows authenticated business surfaces but excludes public, password and system pages', () => {
     expect(isAIBusinessRoute(businessRoute('dashboard', '/'))).toBe(true)
     expect(isAIBusinessRoute(businessRoute('injection-scheduling-v2', '/modules/production/injection-scheduling'))).toBe(true)

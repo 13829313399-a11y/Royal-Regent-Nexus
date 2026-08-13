@@ -9,6 +9,10 @@ import {
 
 
 describe('shared tools api', () => {
+  it('allows document translation requests to wait for 30 minutes', () => {
+    expect(DOCUMENT_TRANSLATION_TIMEOUT_MS).toBe(30 * 60 * 1000)
+  })
+
   it('uploads one Office document with the selected translation direction', async () => {
     const blob = new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
     const post = vi.fn().mockResolvedValue({
@@ -29,6 +33,7 @@ describe('shared tools api', () => {
     expect(url).toBe('/tools/document-translation')
     expect((payload as FormData).get('document_file')).toBe(file)
     expect((payload as FormData).get('direction')).toBe('zh_to_en')
+    expect((payload as FormData).get('mode')).toBe('local_private')
     expect((payload as FormData).get('sheet_names')).toBeNull()
     expect(config).toMatchObject({ responseType: 'blob', timeout: DOCUMENT_TRANSLATION_TIMEOUT_MS })
     expect(result).toMatchObject({
@@ -37,6 +42,57 @@ describe('shared tools api', () => {
       skippedUnitCount: 7,
       processedPartCount: 3,
     })
+  })
+
+  it('requires an explicit cloud mode and consent marker', async () => {
+    const post = vi.fn().mockResolvedValue({ data: new Blob(['xlsx']), headers: {} })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['office'], '订单.xlsx')
+
+    await api.translateDocument(file, 'zh_to_en', ['订单'], 'ai_smart_cloud', true)
+
+    const payload = post.mock.calls[0]![1] as FormData
+    expect(payload.get('mode')).toBe('ai_smart_cloud')
+    expect(payload.get('cloud_consent')).toBe('true')
+    expect(payload.get('sheet_names')).toBe('["订单"]')
+  })
+
+  it('turns an HTML gateway timeout into a safe Chinese message', async () => {
+    const post = vi.fn().mockRejectedValue({
+      isAxiosError: true,
+      message: 'Request failed with status code 504',
+      response: {
+        status: 504,
+        headers: { 'content-type': 'text/html' },
+        data: new Blob([
+          '<html><head><title>504 Gateway Time-out</title></head><body>nginx</body></html>',
+        ], { type: 'text/html' }),
+      },
+    })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['office'], '订单.docx')
+
+    await expect(api.translateDocument(file, 'zh_to_en')).rejects.toThrow(
+      '文档处理超过网关等待时间（最长 30 分钟）',
+    )
+  })
+
+  it('does not expose an upstream HTML error page', async () => {
+    const post = vi.fn().mockRejectedValue({
+      isAxiosError: true,
+      message: 'Request failed with status code 502',
+      response: {
+        status: 502,
+        headers: { 'content-type': 'text/html' },
+        data: new Blob(['<html><body>upstream details</body></html>'], { type: 'text/html' }),
+      },
+    })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['office'], '订单.docx')
+
+    await expect(api.translateDocument(file, 'zh_to_en')).rejects.toThrow(
+      '服务器暂时无法完成文档处理，请稍后重试。',
+    )
   })
 
   it('uploads the selected Excel worksheet names with the translation request', async () => {
@@ -52,6 +108,54 @@ describe('shared tools api', () => {
     const payload = post.mock.calls[0]![1] as FormData
     expect(payload.get('direction')).toBe('en_to_zh')
     expect(payload.get('sheet_names')).toBe('["报价单","生产计划"]')
+  })
+
+  it('uses a strict type-bound Artifact contract without sending the source file twice', async () => {
+    const post = vi.fn().mockResolvedValue({
+      data: new Blob(['translated']),
+      headers: {
+        'x-source-artifact-id': `aiart-${'a'.repeat(32)}`,
+        'x-derived-artifact-id': `aiart-${'b'.repeat(32)}`,
+      },
+    })
+    const upload = vi.fn().mockResolvedValue({
+      id: `aiart-${'a'.repeat(32)}`,
+      content_class: 'DOCUMENT',
+      classification: 'CONFIDENTIAL_BUSINESS',
+      sha256: 'c'.repeat(64),
+    })
+    const api = createSharedToolsApi({ post }, upload)
+    const file = new File(['office'], '订单.docx')
+
+    const result = await api.translateDocument(
+      file,
+      'zh_to_en',
+      undefined,
+      'ai_smart_cloud',
+      true,
+      'huaxing',
+      true,
+    )
+
+    expect(upload).toHaveBeenCalledWith(file, 'huaxing', 'CONFIDENTIAL_BUSINESS')
+    expect(post).toHaveBeenCalledOnce()
+    const [url, payload] = post.mock.calls[0]!
+    expect(url).toBe('/tools/document-translation/artifact')
+    expect((payload as FormData).get('document_file')).toBeNull()
+    expect((payload as FormData).get('artifact_id')).toBe(`aiart-${'a'.repeat(32)}`)
+    expect(JSON.parse(String((payload as FormData).get('cloud_consent_json')))).toEqual({
+      accepted: true,
+      notice_version: 'aliyun-cn-beijing-document-v1',
+      provider: 'qwen',
+      region: 'cn-beijing',
+      classification: 'CONFIDENTIAL_BUSINESS',
+      content_class: 'DOCUMENT',
+      artifact_ids: [`aiart-${'a'.repeat(32)}`],
+    })
+    expect(result).toMatchObject({
+      sourceArtifactId: `aiart-${'a'.repeat(32)}`,
+      derivedArtifactId: `aiart-${'b'.repeat(32)}`,
+    })
   })
 
   it('uploads one PDF and returns download metadata', async () => {
@@ -104,6 +208,7 @@ describe('shared tools api', () => {
         'content-disposition': "attachment; filename*=UTF-8''%E8%AE%A2%E5%8D%95_%E8%BD%AC%E6%8D%A2%E7%BB%93%E6%9E%9C.docx",
         'x-pdf-page-count': '4',
         'x-pdf-table-count': '1',
+        'x-pdf-image-count': '3',
         'x-pdf-text-page-count': '2',
         'x-pdf-ocr-page-count': '2',
       },
@@ -118,7 +223,7 @@ describe('shared tools api', () => {
     expect((payload as FormData).get('pdf_file')).toBe(file)
     expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_TO_WORD_TIMEOUT_MS })
     expect(result.fileName).toBe('订单_转换结果.docx')
-    expect(result.metrics).toEqual({ pageCount: 4, tableCount: 1, textPageCount: 2, ocrPageCount: 2 })
+    expect(result.metrics).toEqual({ pageCount: 4, tableCount: 1, imageCount: 3, textPageCount: 2, ocrPageCount: 2 })
   })
 
   it('submits split mode and page ranges then returns ZIP metadata', async () => {

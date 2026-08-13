@@ -204,8 +204,8 @@ DEFAULT_ROLES = [
     ("engineering_supervisor", "工程主管", "工程主管审核与啤办生产任务分派"),
     ("manager", "经理", "经理终审、生产任务分派、改价和敏感审计"),
     ("warehouse_keeper", "PMC / 仓管", "啤办领料、发料与库存管理"),
-    ("carton_warehouse_keeper", "纸箱仓管", "纸箱箱唛 PDF 模板维护"),
-    ("qa_inspector", "QA 检验员", "QA 箱唛实拍上传与核对"),
+    ("carton_warehouse_keeper", "纸箱仓管", "纸箱箱唛 Excel、打印 PDF 与文字核对维护"),
+    ("qa_inspector", "QA 检验员", "兼容旧入口的箱唛实拍上传与核对"),
     ("molding_clerk", "啤机部文员", "啤办任务接收、开始、生产回填和完成；不可修改或删除工程草稿"),
     ("molding_production_observer", "啤办生产只读观察者", "只读查看本厂啤办生产任务和进度，不可开始、回填或完成"),
     ("sales_customer_owner", "车间业务跟客", "按车间和客户范围转换报客价"),
@@ -623,6 +623,10 @@ POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
         "molding_sample:notification_read",
         "internal_quote:create",
         "internal_quote:clone",
+        "carton_mark:read",
+        "carton_mark:template_upload",
+        "carton_mark:photo_upload",
+        "carton_mark:review",
     }
 )
 

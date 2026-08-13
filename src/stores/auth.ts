@@ -35,6 +35,10 @@ const positionDepartmentSensitivePermissions = new Set([
   'molding_sample:notification_read',
   'internal_quote:create',
   'internal_quote:clone',
+  'carton_mark:read',
+  'carton_mark:template_upload',
+  'carton_mark:photo_upload',
+  'carton_mark:review',
 ])
 
 function grantDepartmentMatches(grant: AuthGrant, permission: string, department?: string) {

@@ -5,15 +5,31 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from app.core.config import Settings
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-
-from app.core.config import Settings
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = BACKEND_DIR.parent
 TEST_TMP_DIR = BACKEND_DIR / ".pytest-tmp"
 ADMIN_TEST_PASSWORD = "AdminSeed123!"
+
+
+class _RestoringAppTestClient(TestClient):
+    """Restore pytest-collected app modules after the env-specific app reload."""
+
+    def __init__(self, app, original_modules: dict[str, object]):
+        super().__init__(app)
+        self._original_app_modules = original_modules
+
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            for module_name in list(sys.modules):
+                if module_name == "app" or module_name.startswith("app."):
+                    del sys.modules[module_name]
+            sys.modules.update(self._original_app_modules)
 
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -125,11 +141,16 @@ def _make_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     }
     for name, value in fake_environment.items():
         monkeypatch.setenv(name, value)
+    original_modules = {
+        module_name: module
+        for module_name, module in sys.modules.items()
+        if module_name == "app" or module_name.startswith("app.")
+    }
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
             del sys.modules[module_name]
     main = importlib.import_module("app.main")
-    return TestClient(main.app)
+    return _RestoringAppTestClient(main.app, original_modules)
 
 
 def _login_admin(client: TestClient) -> None:
@@ -260,6 +281,7 @@ def test_registry_is_group_fail_closed_without_verified_page_context() -> None:
         "knowledge.get_module_help",
         "injection_scheduling.get_plan_context",
         "injection_scheduling.get_backlog",
+        "injection_scheduling.compare_previews",
     }
 
     denied_page = build_server_page_context(
@@ -476,6 +498,8 @@ def test_api_injects_only_server_verified_context_and_registered_tools(
         "knowledge.get_module_help",
         "injection_scheduling.get_plan_context",
         "injection_scheduling.get_backlog",
+        "injection_scheduling.compare_previews",
+        "injection_scheduling.generate_preview",
     }
     assert all(
         tool.parameters["additionalProperties"] is False

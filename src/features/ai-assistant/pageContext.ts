@@ -1,7 +1,7 @@
 import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import { isFactoryContextId, productionFactoryContextIds } from '@/data/enterpriseMock'
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
-import type { AIPageContext } from './types'
+import type { AIPageContext, AISelectedEntityHint } from './types'
 
 function routeQueryValue(value: unknown) {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : ''
@@ -19,7 +19,17 @@ function verifiedFactoryHint(route: Pick<RouteLocationNormalizedLoaded, 'query'>
 export function buildAIPageContext(
   route: Pick<RouteLocationNormalizedLoaded, 'name' | 'path' | 'query'>,
   fallbackFactoryId: string,
+  selectedEntity: AISelectedEntityHint | null = null,
 ): AIPageContext | null {
+  if (route.name === 'ai-workbench' && route.path === '/workbench/ai') {
+    return {
+      route_name: 'ai-workbench',
+      path: '/workbench/ai',
+      factory_id: null,
+      module_id: 'ai-workbench',
+      selected_entity: null,
+    }
+  }
   if (
     route.name === 'injection-scheduling-v2'
     && route.path === '/modules/production/injection-scheduling'
@@ -29,7 +39,13 @@ export function buildAIPageContext(
       path: '/modules/production/injection-scheduling',
       factory_id: verifiedFactoryHint(route, fallbackFactoryId),
       module_id: 'injection-scheduling',
-      selected_entity: null,
+      selected_entity: selectedEntity?.type === 'scheduling_backlog_order'
+        ? {
+            type: selectedEntity.type,
+            id: selectedEntity.id,
+            revision: selectedEntity.revision,
+          }
+        : null,
     }
   }
   if (
@@ -41,6 +57,60 @@ export function buildAIPageContext(
       path: '/modules/sales-business/internal-quote-desk',
       factory_id: verifiedFactoryHint(route, fallbackFactoryId),
       module_id: 'internal-quote',
+      selected_entity: selectedEntity?.type === 'internal_quote'
+        ? {
+            type: selectedEntity.type,
+            id: selectedEntity.id,
+            revision: selectedEntity.revision,
+          }
+        : null,
+    }
+  }
+  if (
+    route.name === 'molding-sample'
+    && route.path === '/modules/molding-sample'
+  ) {
+    return {
+      route_name: 'molding-sample',
+      path: '/modules/molding-sample',
+      factory_id: verifiedFactoryHint(route, fallbackFactoryId),
+      module_id: 'molding-sample',
+      selected_entity: null,
+    }
+  }
+  if (
+    route.name === 'carton-procurement'
+    && route.path === '/modules/pmc-warehouse/carton-procurement'
+  ) {
+    return {
+      route_name: 'carton-procurement',
+      path: '/modules/pmc-warehouse/carton-procurement',
+      factory_id: verifiedFactoryHint(route, fallbackFactoryId),
+      module_id: 'carton-procurement',
+      selected_entity: null,
+    }
+  }
+  if (
+    route.name === 'raw-material-management'
+    && route.path === '/modules/pmc-warehouse/raw-material-management'
+  ) {
+    return {
+      route_name: 'raw-material-management',
+      path: '/modules/pmc-warehouse/raw-material-management',
+      factory_id: verifiedFactoryHint(route, fallbackFactoryId),
+      module_id: 'raw-material',
+      selected_entity: null,
+    }
+  }
+  if (
+    route.name === 'customer-order-center'
+    && route.path === '/modules/sales-business/po-schedule-intake'
+  ) {
+    return {
+      route_name: 'customer-order-center',
+      path: '/modules/sales-business/po-schedule-intake',
+      factory_id: verifiedFactoryHint(route, fallbackFactoryId),
+      module_id: 'customer-order',
       selected_entity: null,
     }
   }

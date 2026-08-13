@@ -1,6 +1,7 @@
+import asyncio
 import logging
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from time import perf_counter
 from uuid import uuid4
 
@@ -10,6 +11,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.ai import router as ai_router
+from app.api.ai_actions import gateway_router as ai_action_gateway_router
+from app.api.ai_actions import router as ai_actions_router
+from app.api.ai_artifacts import router as ai_artifacts_router
+from app.api.ai_conversations import router as ai_conversations_router
+from app.api.ai_feedback import router as ai_feedback_router
+from app.api.ai_tasks import router as ai_tasks_router
 from app.api.auth import router as auth_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_procurement import router as carton_procurement_router
@@ -49,20 +56,84 @@ from app.api.internal_quote import (
 )
 from app.api.molding_sample import router as molding_sample_router
 from app.api.pricing import router as pricing_router
+from app.api.qc_inspection import router as qc_inspection_router
 from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.api.tools import router as tools_router
 from app.core.config import settings
-from app.db import init_db
+from app.db import SessionLocal, init_db
+from app.services.ai.artifacts.readiness import ensure_artifact_runtime_ready
+from app.services.ai.artifacts.retention import (
+    artifact_retention_loop,
+    enforce_artifact_retention,
+)
+from app.services.ai.artifacts.storage import LocalImmutableArtifactStorage
+from app.services.ai.conversation_retention import (
+    conversation_retention_loop,
+    enforce_conversation_retention,
+)
+from app.services.ai.knowledge import KnowledgeRegistry
+from app.services.ai.observability.alerts import (
+    ai_operational_alert_loop,
+    ensure_ai_alert_runtime_ready,
+    ensure_ai_alert_targets,
+)
+from app.services.ai.task_service import enforce_task_retention
 
 request_timing_logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ensure_artifact_runtime_ready(settings)
+    ensure_ai_alert_runtime_ready(settings)
+    if settings.ai_knowledge_hub_enabled:
+        KnowledgeRegistry().validate_all(require_current=True)
     init_db()
-    yield
+    with SessionLocal() as alert_db:
+        ensure_ai_alert_targets(alert_db, settings)
+    with SessionLocal() as retention_db:
+        enforce_conversation_retention(retention_db, settings=settings)
+    with SessionLocal() as retention_db:
+        enforce_task_retention(retention_db, settings=settings)
+    artifact_storage = LocalImmutableArtifactStorage(settings.ai_artifact_storage_dir)
+    with SessionLocal() as retention_db:
+        enforce_artifact_retention(
+            retention_db, storage=artifact_storage, settings=settings
+        )
+    retention_task = asyncio.create_task(
+        conversation_retention_loop(SessionLocal, settings=settings),
+        name="ai-conversation-retention",
+    )
+    artifact_retention_task = asyncio.create_task(
+        artifact_retention_loop(
+            SessionLocal, storage=artifact_storage, settings=settings
+        ),
+        name="ai-artifact-retention",
+    )
+    operational_alert_task = (
+        asyncio.create_task(
+            ai_operational_alert_loop(SessionLocal, settings=settings),
+            name="ai-operational-alerts",
+        )
+        if settings.ai_operational_alerts_enabled
+        else None
+    )
+    try:
+        yield
+    finally:
+        retention_task.cancel()
+        artifact_retention_task.cancel()
+        if operational_alert_task is not None:
+            operational_alert_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await retention_task
+        with suppress(asyncio.CancelledError):
+            await artifact_retention_task
+        if operational_alert_task is not None:
+            with suppress(asyncio.CancelledError):
+                await operational_alert_task
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -152,6 +223,12 @@ async def record_request_timing(request: Request, call_next):
 
 app.include_router(auth_router)
 app.include_router(ai_router)
+app.include_router(ai_actions_router)
+app.include_router(ai_action_gateway_router)
+app.include_router(ai_artifacts_router)
+app.include_router(ai_conversations_router)
+app.include_router(ai_feedback_router)
+app.include_router(ai_tasks_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_procurement_router)
 app.include_router(customer_order_router)
@@ -171,6 +248,7 @@ app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
 app.include_router(raw_material_router)
+app.include_router(qc_inspection_router)
 app.include_router(system_router)
 app.include_router(three_d_printing_router)
 app.include_router(tools_router)
