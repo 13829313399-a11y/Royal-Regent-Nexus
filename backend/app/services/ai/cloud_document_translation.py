@@ -9,8 +9,16 @@ from app.core.config import Settings
 from app.services.ai.providers import (
     LLMProvider,
     ProviderMessage,
-    ProviderRequest,
     ProviderToolDefinition,
+)
+from app.services.ai.providers.capabilities import (
+    ModelCapability,
+    ReasoningPolicy,
+    ToolChoicePolicy,
+)
+from app.services.ai.providers.router import (
+    build_provider_request,
+    resolve_provider_route,
 )
 from app.services.document_translation import (
     DocumentTranslationError,
@@ -71,9 +79,16 @@ async def translate_cloud_fragments(
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        route = resolve_provider_route(
+            settings,
+            capability=ModelCapability.TRANSLATION,
+            reasoning_policy=ReasoningPolicy.BALANCED,
+            legacy_model=settings.ai_default_model,
+            require_custom_tools=True,
+        )
         response = await provider.generate(
-            ProviderRequest(
-                model=settings.ai_default_model,
+            build_provider_request(
+                route,
                 request_id=f"{request_id}-translation-{index}",
                 input=(
                     ProviderMessage(
@@ -87,6 +102,7 @@ async def translate_cloud_fragments(
                 ),
                 tools=(tool,),
                 max_output_tokens=min(settings.ai_pilot_max_output_tokens, 8_192),
+                tool_choice_policy=ToolChoicePolicy.REQUIRED,
             )
         )
         if len(response.tool_calls) != 1 or response.tool_calls[0].name != tool.name:

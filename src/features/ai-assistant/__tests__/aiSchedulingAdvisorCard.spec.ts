@@ -61,6 +61,40 @@ function run(runId = 'isrun-ai-1', alternativeNo = 1) {
   }
 }
 
+function previewManifest() {
+  return {
+    schema_version: 'ai-preview-manifest-v1',
+    preview_id: 'isrun-ai-preview-1',
+    preview_type: 'injection_scheduling.run',
+    source_revision_hash: 'a'.repeat(64),
+    factory_id: 'huaxing',
+    input_hash: 'b'.repeat(64),
+    assumptions: [{ key: 'plan_status', label: '计划切片', value: 'DRAFT' }],
+    evidence_refs: [{
+      evidence_id: 'preview:evidence-0001',
+      source_level: 'FORMAL_DOMAIN_SERVICE',
+      source_name: 'injection_scheduling.preview_run',
+      factory_id: 'huaxing',
+      as_of: '2026-08-12T09:00:00+08:00',
+      entity_type: 'scheduling_preview_run',
+      entity_id: 'isrun-ai-preview-1',
+      entity_revision: 1,
+      content_hash: `sha256:${'c'.repeat(64)}`,
+      truncated: false,
+      cursor: null,
+      access_policy: 'REAUTHORIZE_ON_OPEN',
+    }],
+    created_by: 'planner-1',
+    created_at: '2099-08-12T09:00:00+08:00',
+    expires_at: '2099-08-12T09:30:00+08:00',
+    status: 'READY',
+    deterministic_service: true,
+    can_propose_action: true,
+    action_capability: 'CREATE_PROPOSAL_ONLY',
+    no_write_performed: true,
+  }
+}
+
 function previewData() {
   return {
     schema_version: 'ai-scheduling-preview-v1',
@@ -164,6 +198,16 @@ describe('AI scheduling advisor card', () => {
             comparable_snapshot: false,
             comparison_warning: '候选方案的计划、规则或时间范围不同，指标不可直接横向比较。',
             runs: [run(), { ...run('isrun-ai-2', 2), plan_revision: 8 }],
+            scenario_compare: {
+              schema_version: 'ai-scenario-compare-v1',
+              preview_type: 'injection_scheduling.run',
+              preview_ids: ['isrun-ai-preview-1', 'isrun-ai-preview-2'],
+              source_revision_hashes: ['a'.repeat(64), 'b'.repeat(64)],
+              comparable: false,
+              comparison_basis: 'MIXED_SOURCE_REVISION',
+              warning: '候选方案的计划、规则或时间范围不同，指标不可直接横向比较。',
+              no_write_performed: true,
+            },
             entity_links: [],
           },
           error: null,
@@ -181,6 +225,54 @@ describe('AI scheduling advisor card', () => {
     expect(wrapper.text()).toContain('指标不可直接横向比较')
     expect(wrapper.text()).toContain('交期优先')
     expect(wrapper.text()).toContain('负载均衡')
+    expect(store.businessResults[0]?.schedulingPreviews?.scenarioCompare?.comparison_basis).toBe('MIXED_SOURCE_REVISION')
+  })
+
+  it('renders the verified generic Preview manifest without claiming execution', async () => {
+    const store = usableStore()
+    const data = previewData()
+    Object.assign(data.run, { preview_manifest: previewManifest() })
+    apiMocks.streamAIResponse.mockImplementationOnce(async (options) => {
+      options.onEvent(event(1, 'tool.completed', {
+        tool_call_id: 'preview-manifest',
+        tool_name: 'injection_scheduling.generate_preview',
+        status: 'completed',
+        result: {
+          ok: true,
+          tool_name: 'injection_scheduling.generate_preview',
+          data,
+          error: null,
+          metadata: {},
+        },
+      }))
+      options.onEvent(event(2, 'response.completed', {}))
+      return event(2, 'response.completed', {})
+    })
+
+    await store.sendMessage('生成可审计候选方案', null)
+    const wrapper = mount(AiBusinessResultCard, {
+      props: { results: store.businessResults, sources: store.sources },
+    })
+    expect(wrapper.get('[data-preview-card]').text()).toContain('可供复核')
+    expect(wrapper.get('[data-preview-card]').text()).toContain('没有执行正式业务写入')
+
+    const unsafeStore = usableStore()
+    const unsafe = previewData()
+    Object.assign(unsafe.run, {
+      preview_manifest: { ...previewManifest(), unknown_field: 'blocked' },
+    })
+    apiMocks.streamAIResponse.mockImplementationOnce(async (options) => {
+      options.onEvent(event(1, 'tool.completed', {
+        tool_call_id: 'preview-invalid-manifest',
+        tool_name: 'injection_scheduling.generate_preview',
+        status: 'completed',
+        result: { ok: true, tool_name: 'injection_scheduling.generate_preview', data: unsafe, error: null, metadata: {} },
+      }))
+      options.onEvent(event(2, 'response.completed', {}))
+      return event(2, 'response.completed', {})
+    })
+    await unsafeStore.sendMessage('生成非法候选方案', null)
+    expect(unsafeStore.businessResults).toEqual([])
   })
 
   it('fails closed when a preview result includes an unregistered assignment field', async () => {

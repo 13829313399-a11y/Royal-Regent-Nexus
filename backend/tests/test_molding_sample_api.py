@@ -212,6 +212,20 @@ def login_as(client, username: str):
 
 
 TEST_USER_SPECS = {
+    "qc_inspector": (
+        "user-qc-inspector",
+        "华兴QC检验员",
+        "position_qc_inspector",
+        "huaxing",
+        "qc",
+    ),
+    "qc_supervisor": (
+        "user-qc-supervisor",
+        "华兴QC主管",
+        "position_qc_supervisor",
+        "huaxing",
+        "qc",
+    ),
     "engineer": ("user-engineer", "华兴工程师", "engineer", "huaxing", "engineering"),
     "engineer_peer": ("user-engineer-peer", "华兴工程同事", "engineer", "huaxing", "engineering"),
     "supervisor": ("user-supervisor", "华兴工程主管", "engineering_supervisor", "huaxing", "engineering"),

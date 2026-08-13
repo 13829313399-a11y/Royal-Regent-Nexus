@@ -66,7 +66,6 @@
     "src/features/injection-scheduling-v2/api/injectionSchedulingV2Api.ts",
     "src/features/injection-scheduling-v2/stores/useInjectionSchedulingV2Store.ts",
     "src/features/injection-scheduling-v2/presentation/schedulingLabels.ts",
-    "PROJECT_MEMORY.md",
     "docs/injection-scheduling-shared-master-sop.md",
     "src/data/enterpriseMock.ts"
   ]
@@ -74,12 +73,14 @@
 -->
 # 注塑排产中枢模块帮助
 
+<!-- knowledge-section:formal-data -->
 ## 正式数据边界
 
 本模块按厂区隔离数据。只有服务端根据当前登录账号重新验证过的厂区，才可用于读取排产业务数据。页面路由只用于定位模块，不能作为权限证明；客户端提交的厂区、模块、路径或实体也不能直接进入模型或工具。
 
 正式业务事实来自后端数据库及受权限保护的业务 API。页面若标记为“只读演示数据”或 `demo-readonly`，说明当前展示的是前端回退数据，只能帮助理解界面，不能用于生产判断、数量汇报、交付承诺或状态确认。401、403 与其他业务类 4xx 不会触发演示回退；仅初始加载时符合条件的网络错误或 5xx 才可能进入只读回退。
 
+<!-- knowledge-section:planning-execution -->
 ## 规划与执行
 
 - `PUBLISHED` 是当前执行切片。发布后的计划作为正式执行基线，不应被描述为普通可编辑草案；生产回报面向当前发布执行任务。
@@ -89,12 +90,14 @@
 
 当前执行与规划草案可以同时存在。回答“现在正在执行什么”时应使用经工具读取的 `PUBLISHED` 切片；回答“正在计划什么”时应使用经工具读取的 `DRAFT` 切片。缺少某个切片时必须说明缺失，不能用另一个切片冒充。
 
+<!-- knowledge-section:review-publish -->
 ## 复核与发布
 
 导入和接管流程包含预览、匹配、主数据复核与计划生成。`REVIEW_REQUIRED`、`MASTER_REVIEW_REQUIRED`、`RESOLUTION_REVIEW_REQUIRED` 和 `FAIL` 都是阻断或待处理状态，不能被 AI 改写为已经确认。任何需要覆盖原因、主管权限或发布权限的动作仍由业务页面与后端权限规则执行。
 
 典型顺序是：确认授权厂区与数据源状态，查看当前发布执行计划，创建或继续规划草案，导入并复核来源数据，在草案中排程和处理冲突，发布通过校验的草案，随后对发布任务进行生产回报。
 
+<!-- knowledge-section:ai-boundary -->
 ## AI 能做与不能做
 
 AI 可以解释本模块的状态含义和正常流程，并在服务端明确开放只读工具时查询最小必要的正式数据。AI 不能代替用户导入、编辑、发布、回滚、审批或回报，不能构造任意 URL、SQL、文件路径或工具名，也不能从测试文件、截图、演示数据或导航示例推断真实业务结果。

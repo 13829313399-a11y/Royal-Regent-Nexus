@@ -190,7 +190,7 @@ APP_DIR=/你的实际目录 sh deploy/update-from-github.sh
 5. 检测到 Alembic 变更时自动改用维护窗口路径，避免新旧代码同时访问可能不兼容的数据库结构。
 6. 每个服务替换后都等待健康状态，最后验证 `/health`、首页和备份校验和。数据库容器和数据卷不会被重建。
 
-当 `AI_PILOT_ENABLED=true` 时，脚本不会启动并行 API candidate。它会在 API 切换前通过共享 control volume 创建关闭标记并使用单 API 维护窗口路径；健康检查通过后仍保留标记，必须由运维完成 13.2 的两阶段就绪检查后再手工移除。部署失败或原本已经存在的标记同样会保持 AI 关闭。初始 Pilot 的并发、分钟速率和日预算是单进程内状态，API 重启后会重置，因此禁止通过多 worker、多个 API 副本或频繁重启规避限制；横向扩展前必须迁移到共享原子限流/预算存储。
+当 `AI_PILOT_ENABLED=true` 时，脚本会在 API 切换前通过共享 control volume 创建关闭标记。若 `AI_SHARED_GUARD_ENABLED=false`，仍使用单 API 维护窗口，禁止并行副本绕过进程内并发、分钟速率或日预算。若已经完成 ADR-007/NIF-09 配置并设置 `AI_SHARED_GUARD_ENABLED=true`，无迁移的发布可在关闭标记持续生效时启动健康候选 API；候选与正式 API 通过 PostgreSQL Guard 共用并发、RPM、日预算和禁用状态。存在 Alembic 变更时始终使用维护窗口。健康检查通过后仍保留标记，必须由运维完成 13.2/NIF-18 两阶段检查后再单独决定是否移除；部署失败或原本已经存在的标记同样保持 AI 关闭。
 
 可通过 `BACKUP_ROOT` 和 `HEALTH_TIMEOUT_SECONDS` 调整备份目录及健康检查等待时间。部署中途失败且 API 候选容器仍能服务时，脚本会保留该候选容器并输出清理命令，避免自动清理导致二次中断。
 
@@ -221,7 +221,7 @@ docker compose -f docker-compose.prod.yml exec db pg_dump -U rrnexus royal_regen
 
 ### 13.1 启用前配置
 
-首次部署包含 B8 的代码和 Compose 时，先保持 `AI_ENABLED=false`、`AI_PILOT_ENABLED=false`，按第 10 节完成一次正常更新，让新的只读 control volume 先就位。然后完成外层 ALB/CDN TLS 或 Nginx 443，并按 13.3 的命令先创建关闭标记。只有标记已确认存在，才在真实、未跟踪的 `.env.production` 中填写 Pilot 控制项并重建 API。这样配置切换和就绪检查期间不会提前开放 Provider 或 Tool。后续 Pilot 已启用的发布将自动使用前述单 API 维护窗口。不要把 API Key、Workspace Host、用户清单或真实环境文件提交到仓库：
+首次部署包含 B8 的代码和 Compose 时，先保持 `AI_ENABLED=false`、`AI_PILOT_ENABLED=false`，按第 10 节完成一次正常更新，让新的只读 control volume 先就位。然后完成外层 ALB/CDN TLS 或 Nginx 443，并按 13.3 的命令先创建关闭标记。只有标记已确认存在，才在真实、未跟踪的 `.env.production` 中填写 Pilot 控制项并重建 API。这样配置切换和就绪检查期间不会提前开放 Provider 或 Tool。未启用 Shared Guard 的 Pilot 使用单 API 维护窗口；启用并现场验证 Shared Guard 后，可使用第 10 节描述的关闭标记保护候选路径。不要把 API Key、Workspace Host、用户清单或真实环境文件提交到仓库：
 
 ```dotenv
 AI_ENABLED=true

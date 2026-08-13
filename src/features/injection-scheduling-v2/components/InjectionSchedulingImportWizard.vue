@@ -2,6 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { AlertTriangle, CheckCircle2, FileSpreadsheet, RefreshCw, Upload, X } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
+import PreviewCard from '@/features/nexus-copilot/components/PreviewCard.vue'
+import {
+  isArtifactWorkflowUnavailable,
+  uploadAIArtifact,
+  type AIArtifactData,
+} from '@/api/aiArtifacts'
 import {
   approveImportMasterDifferences,
   confirmImportBatch,
@@ -10,6 +16,7 @@ import {
   listMasterDataProposals,
   proposeImportProfile,
   proposeWorkbookFieldMapping,
+  proposeWorkbookArtifactFieldMapping,
   recoverImportBatch,
   retryImportPreview,
   reviewMasterDataProposal,
@@ -17,6 +24,8 @@ import {
   updateImportMappingDraft,
   uploadImportPreview,
   inspectWorkbookSemanticSnapshot,
+  inspectWorkbookArtifact,
+  type AIWorkbookMappingProposal,
 } from '../api/injectionSchedulingV2Api'
 import type { FactoryId, ImportBatchRecord, ImportDocumentKindChoice, ImportIssueRecord } from '../types'
 import { useDialogFocus } from '../composables/useDialogFocus'
@@ -77,9 +86,10 @@ const profileTransitionReason = ref('')
 const governanceProposals = ref<Array<Record<string, unknown>>>([])
 const governanceReason = ref('')
 const semanticSnapshot = ref<Record<string, unknown> | null>(null)
-const mappingProposal = ref<Record<string, unknown> | null>(null)
+const mappingProposal = ref<AIWorkbookMappingProposal | null>(null)
 const cloudMappingConsent = ref(false)
 const preflightBusy = ref(false)
+const sourceArtifact = ref<AIArtifactData | null>(null)
 
 const blockingIssues = computed(() => batch.value?.issues.filter((item) => item.blocking) ?? [])
 const filteredIssues = computed(() => {
@@ -217,6 +227,7 @@ watch(() => [props.open, props.factoryId, props.initialBatchId] as const, async 
   semanticSnapshot.value = null
   mappingProposal.value = null
   cloudMappingConsent.value = false
+  sourceArtifact.value = null
   error.value = ''
   masterReason.value = ''
   await loadRecent()
@@ -230,11 +241,23 @@ async function selectFile(event: Event) {
   semanticSnapshot.value = null
   mappingProposal.value = null
   cloudMappingConsent.value = false
+  sourceArtifact.value = null
   if (!file.value) return
   preflightBusy.value = true
   error.value = ''
   try {
-    semanticSnapshot.value = await inspectWorkbookSemanticSnapshot(props.factoryId, file.value)
+    try {
+      const artifact = await uploadAIArtifact(
+        file.value,
+        props.factoryId,
+        'CONFIDENTIAL_BUSINESS',
+      )
+      semanticSnapshot.value = await inspectWorkbookArtifact(props.factoryId, artifact.id)
+      sourceArtifact.value = artifact
+    } catch (cause) {
+      if (!isArtifactWorkflowUnavailable(cause)) throw cause
+      semanticSnapshot.value = await inspectWorkbookSemanticSnapshot(props.factoryId, file.value)
+    }
   } catch (cause) {
     error.value = `工作簿安全检查失败：${getApiErrorMessage(cause)}`
   } finally {
@@ -253,11 +276,18 @@ async function generateMappingProposal() {
   preflightBusy.value = true
   error.value = ''
   try {
-    mappingProposal.value = await proposeWorkbookFieldMapping(
-      props.factoryId,
-      file.value,
-      documentKind.value,
-    )
+    mappingProposal.value = sourceArtifact.value
+      ? await proposeWorkbookArtifactFieldMapping(
+          props.factoryId,
+          sourceArtifact.value.id,
+          semanticSnapshot.value,
+          documentKind.value,
+        )
+      : await proposeWorkbookFieldMapping(
+          props.factoryId,
+          file.value,
+          documentKind.value,
+        )
   } catch (cause) {
     error.value = `AI 映射建议生成失败：${getApiErrorMessage(cause)}`
   } finally {
@@ -445,6 +475,7 @@ async function confirm() {
         <section v-if="mappingProposal" class="mapping-proposal" data-testid="workbook-mapping-proposal">
           <div><AlertTriangle :size="16" /><strong>AI 建议仅供人工预览</strong></div>
           <p>建议 {{ Array.isArray(mappingProposal.proposal) ? mappingProposal.proposal.length : 0 }} 项；缺失必填 {{ Array.isArray(mappingProposal.missing_required_fields) ? mappingProposal.missing_required_fields.length : 0 }} 项。只能保存到现有 PROFILE_DRAFT，不能自动激活。</p>
+          <PreviewCard v-if="mappingProposal.preview_manifest" :manifest="mappingProposal.preview_manifest" />
         </section>
         <button class="wizard-primary" :disabled="!file || !canImport || busy" @click="upload"><RefreshCw v-if="busy" :size="16" class="spinning" /><Upload v-else :size="16" />{{ busy ? '识别中' : '生成预览' }}</button>
         <div v-if="recent.length" class="recent-batches"><strong>恢复最近批次</strong><button v-for="item in recent" :key="item.id" @click="recover(item.id)"><span>{{ item.sourceFileName }}</span><b>{{ importBatchStateMeta(item.batchState).label }}</b></button></div>

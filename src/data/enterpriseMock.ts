@@ -4,6 +4,7 @@ import {
   Archive,
   Boxes,
   Calculator,
+  CalendarCheck2,
   CalendarClock,
   ClipboardCheck,
   FileSpreadsheet,
@@ -33,6 +34,7 @@ export type DepartmentId =
   | 'pmc-warehouse'
   | 'production'
   | 'qa'
+  | 'qc'
   | 'sales-business'
   | 'accounting'
 
@@ -226,6 +228,7 @@ export const moduleDepartmentIds: ModuleDepartmentId[] = [
   'pmc-warehouse',
   'production',
   'qa',
+  'qc',
   'sales-business',
   'accounting',
 ]
@@ -332,6 +335,12 @@ export const departments: Department[] = [
     name: 'QA 部',
     shortName: 'QA',
     focus: '检验、异常、复判、质量门禁',
+  },
+  {
+    id: 'qc',
+    name: 'QC 部',
+    shortName: 'QC',
+    focus: '验货排期、执行、问题闭环、汇总报表与报告文件治理',
   },
   {
     id: 'sales-business',
@@ -463,6 +472,7 @@ export const navigationGroups: NavigationGroup[] = [
       { label: 'PMC / 仓管', to: getDepartmentRoute('pmc-warehouse'), icon: Archive, departmentId: 'pmc-warehouse' },
       { label: '生产部', to: getDepartmentRoute('production'), icon: Boxes, departmentId: 'production' },
       { label: 'QA 部', to: getDepartmentRoute('qa'), icon: ShieldCheck, departmentId: 'qa' },
+      { label: 'QC 部', to: getDepartmentRoute('qc'), icon: CalendarCheck2, departmentId: 'qc' },
       { label: '业务部', to: getDepartmentRoute('sales-business'), icon: ClipboardCheck, departmentId: 'sales-business' },
       { label: '会计部', to: getDepartmentRoute('accounting'), icon: Calculator, departmentId: 'accounting' },
     ],
@@ -550,6 +560,60 @@ export const moduleHealth: ModuleHealth[] = [
   { name: 'QA 部', value: 66, tone: 'amber' },
   { name: '业务部', value: 78, tone: 'teal' },
 ]
+
+/**
+ * QC owns this domain. QA may still surface the shared inspection entry as a
+ * cross-department public link, without sharing QC data or authorization scope.
+ */
+export const qcInspectionOperationsModule: EnterpriseModule = {
+  id: 'inspection-operations',
+  title: 'QC 验货运营中心',
+  owner: 'QC 部 / 业务部协同',
+  summary: '从生产排期导入、验货执行到问题闭环、报表和报告文件治理的一站式工作台',
+  status: '待部署',
+  statusTone: 'amber',
+  stats: '正式数据以 QC 接口为准',
+  icon: CalendarCheck2,
+  route: '/modules/qc/inspection-operations',
+  statusMetrics: [
+    { label: '入口', value: '5 类', tone: 'teal' },
+    { label: '范围', value: '本厂', tone: 'blue' },
+    { label: '文件', value: 'PDF/JPG', tone: 'slate' },
+  ],
+  todos: [
+    '导入本周生产排期并逐项确认变化',
+    '完成验货结果和问题单点录入闭环',
+    '预览并生成改名后的报告 ZIP',
+  ],
+  children: [
+    { label: '排期与订单', route: '/modules/qc/inspection-operations' },
+    { label: '问题闭环', route: '/modules/qc/inspection-operations/problems' },
+    { label: '报表与文件', route: '/modules/qc/inspection-operations/reports' },
+  ],
+}
+
+export const qcCartonMarkVerificationModule: EnterpriseModule = {
+  id: 'carton-mark-check',
+  title: '箱唛核验',
+  owner: 'QC / 纸箱部协同',
+  summary: '承接纸箱部已核对的打印 PDF，使用现场箱唛照片逐项核验文字内容',
+  status: '建设中',
+  statusTone: 'blue',
+  stats: '打印 PDF · 现场照片',
+  icon: PackageCheck,
+  route: getDepartmentRoute('qc', 'carton-mark-check'),
+  statusMetrics: [
+    { label: '基准', value: 'PDF', tone: 'blue' },
+    { label: '现场', value: '照片', tone: 'teal' },
+    { label: '比对', value: '逐项', tone: 'amber' },
+  ],
+  todos: ['接收纸箱部核对通过的打印 PDF', '上传现场正唛与侧唛照片', '复核并处理文字差异'],
+  children: [
+    { label: '打印 PDF', summary: '只接收纸箱部已完成 Excel–PDF 文字核对的版本' },
+    { label: '现场拍照', summary: 'QC 上传纸箱现场正唛、侧唛照片' },
+    { label: '逐项核验', summary: '使用打印 PDF 与现场照片逐项核验并保留结果' },
+  ],
+}
 
 export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModuleRegistryEntry> = {
   engineering: {
@@ -744,22 +808,23 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         id: 'carton-mark-check',
         title: '箱唛资料模板',
         owner: '纸箱部仓管',
-        summary: '客户箱唛 PDF 模板上传、客名库维护、按 PO / ITEM 归档',
+        summary: '客人 PO 箱唛 Excel 与排版 PDF 核对，确认文字不变后流转 QC 实拍核验',
         status: '建设中',
         statusTone: 'blue',
-        stats: 'PDF 模板 · QA 待核',
+        stats: 'Excel → PDF → QC',
         icon: PackageCheck,
         route: getDepartmentRoute('pmc-warehouse', 'carton-mark-check'),
         statusMetrics: [
-          { label: '模板', value: 'PDF', tone: 'blue' },
-          { label: '客名库', value: '独立', tone: 'teal' },
-          { label: '流转', value: 'QA', tone: 'amber' },
+          { label: '客人原稿', value: 'Excel', tone: 'teal' },
+          { label: '印刷箱唛', value: 'PDF', tone: 'blue' },
+          { label: '流转', value: 'QC', tone: 'amber' },
         ],
-        todos: ['纸箱仓管上传客户模板', '按厂区维护独立客名库', '把模板流转给 QA 实拍核对'],
+        todos: ['上传客人 PO 箱唛 Excel', '核对排版 PDF 的文字内容', '把核对后的 PDF 流转给 QC 实拍核验'],
         children: [
-          { label: '客名库', summary: '每个厂区独立维护客户名称，并供模板上传下拉选择' },
-          { label: 'PDF 模板', summary: '按客户、PO、ITEM 保存客户提供的箱唛资料' },
-          { label: 'QA 流转', summary: '纸箱到厂后由 QA 选择模板并上传实拍核对' },
+          { label: '客人 Excel', summary: '按客户、合同号和 ITEM 保存客人提供的 PO 箱唛原稿' },
+          { label: '印刷 PDF', summary: '保存调整空间排版并增加图案后的待印刷箱唛文档' },
+          { label: '内容核对', summary: '逐项比较 Excel 与 PDF 的文字内容，排版和新增图案不作为差异' },
+          { label: 'QC 流转', summary: '内容核对后流转 PDF，由 QC 使用 PDF 与现场照片核验' },
         ],
       },
       {
@@ -964,28 +1029,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
           { label: '批次记录', summary: '建立批次、样本和结果归档' },
         ],
       },
-      {
-        id: 'carton-mark-check',
-        title: '箱唛核验',
-        owner: 'QA / 纸箱部协同',
-        summary: '承接纸箱部 PDF 模板，纸箱到厂拍照并按 PO 比对差异',
-        status: '建设中',
-        statusTone: 'blue',
-        stats: 'PDF 模板 · 实拍图片',
-        icon: PackageCheck,
-        route: getDepartmentRoute('qa', 'carton-mark-check'),
-        statusMetrics: [
-          { label: '上传', value: 'PDF', tone: 'blue' },
-          { label: '实拍', value: '图片', tone: 'teal' },
-          { label: '比对', value: '待接', tone: 'amber' },
-        ],
-        todos: ['定义客户箱唛模板字段', '建立 PO 与箱唛照片绑定', '补差异确认和复判记录'],
-        children: [
-          { label: '模板资料', summary: '上传客户原始箱唛模板，并按客户、PO 和版本归档' },
-          { label: '到厂拍照', summary: '纸箱回厂后由 QA 上传箱唛实拍照片' },
-          { label: 'PO 比对', summary: '同一 PO 下模板、实拍照片和历史版本逐项核验' },
-        ],
-      },
+      qcInspectionOperationsModule,
       {
         id: 'quality-exception',
         title: '异常与复判',
@@ -1041,6 +1085,22 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
       { id: 'QA-451', title: '客户报告补图', meta: '本周 6 份报告待完成附件' },
       { id: 'QA-478', title: '异常归责确认', meta: '需工程和生产共同签字' },
     ],
+  },
+  qc: {
+    departmentId: 'qc',
+    heroTitle: 'QC 验货运营中心',
+    heroSubtitle: '把排期确认、验货执行、问题闭环、汇总报表和报告文件治理集中在同一条业务链路',
+    panelTitle: 'QC 部模块',
+    panelSubtitle: '独立于 QA 来料与成品检验，所有正式数据按厂区和 QC 权限读取',
+    modules: [qcInspectionOperationsModule, qcCartonMarkVerificationModule],
+    quickCandidates: ['客户验货配置', '验货机构维护', 'QC 审计查询', '集团汇总授权'],
+    permissionRows: [
+      { role: 'QC 检验员', view: true, edit: true, approve: false },
+      { role: 'QC 主管', view: true, edit: true, approve: true },
+      { role: 'QC 经理', view: true, edit: true, approve: true },
+      { role: '集团授权人员', view: true, edit: false, approve: true },
+    ],
+    todos: [],
   },
   'sales-business': {
     departmentId: 'sales-business',

@@ -6,6 +6,7 @@ ENV_FILE="${ENV_FILE:-.env.production}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 PUBLIC_ORIGIN="${AI_PUBLIC_ORIGIN:-}"
 EXPECT_DISABLED_MARKER="${AI_PILOT_EXPECT_DISABLED_MARKER:-true}"
+NIF18_STAGE="${AI_NIF18_STAGE:-disabled}"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -48,10 +49,11 @@ require_env_nonempty() {
 require_env_csv_ids() {
   key="$1"
   maximum="$2"
+  maximum_length="${3:-128}"
   actual="$(read_env_value "$key")"
   if ! count="$(
     printf '%s\n' "$actual" \
-      | awk -F ',' -v maximum="$maximum" '
+      | awk -F ',' -v maximum="$maximum" -v maximum_length="$maximum_length" '
           {
             count = 0
             for (field_index = 1; field_index <= NF; field_index += 1) {
@@ -59,7 +61,7 @@ require_env_csv_ids() {
               gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
               if (value == "") continue
               count += 1
-              if (count > maximum || length(value) > 128 || value !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || seen[value]++) {
+              if (count > maximum || length(value) > maximum_length || value !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || seen[value]++) {
                 failed = 1
                 exit 1
               }
@@ -106,6 +108,16 @@ require_env_integer_range() {
   esac
   [ "$actual" -ge "$minimum" ] && [ "$actual" -le "$maximum" ] \
     || fail "$key is outside the approved Pilot range"
+}
+
+require_env_positive_decimal() {
+  key="$1"
+  actual="$(read_env_value "$key")"
+  case "$actual" in
+    ""|*[!0-9.]*) fail "$key must be a positive decimal" ;;
+  esac
+  awk -v value="$actual" 'BEGIN { exit !(value + 0 > 0) }' \
+    || fail "$key must be greater than zero"
 }
 
 require_hsts_header() {
@@ -164,6 +176,54 @@ require_env_integer_range AI_MAX_INPUT_MESSAGE_CHARS 1 8000
 require_env_integer_range AI_MAX_INPUT_CHARS 1 40000
 require_env_integer_range AI_MAX_IMAGE_TOTAL_BYTES 1 12582912
 
+case "$NIF18_STAGE" in
+  disabled) ;;
+  preflight|action-field)
+    require_env_exact AI_NIF_RUNTIME_ENABLED true
+    require_env_exact AI_PROVIDER_CAPABILITY_ROUTER_ENABLED true
+    require_env_exact AI_SKILL_ROUTER_ENABLED true
+    require_env_exact AI_EVIDENCE_V1_ENABLED true
+    require_env_exact AI_CONVERSATIONS_ENABLED true
+    require_env_exact AI_TASKS_ENABLED true
+    require_env_exact AI_TASK_WORKER_ENABLED true
+    require_env_exact AI_SHARED_GUARD_ENABLED true
+    require_env_exact AI_SEMANTIC_GATEWAY_ENABLED true
+    require_env_exact AI_KNOWLEDGE_HUB_ENABLED true
+    require_env_exact AI_ARTIFACTS_ENABLED true
+    require_env_exact AI_ARTIFACT_WORKFLOWS_ENABLED true
+    require_env_exact AI_VISION_TOOL_COMPARISON_ENABLED true
+    require_env_exact AI_ARTIFACT_SCANNER_BACKEND clamav
+    require_env_exact AI_ARTIFACT_PRIVATE_VOLUME_VERIFIED true
+    require_env_exact AI_ARTIFACT_CLAMAV_OPERATIONS_VERIFIED true
+    require_env_exact AI_ARTIFACT_BACKUP_ENCRYPTION_VERIFIED true
+    require_env_exact AI_ARTIFACT_BACKUP_RESTORE_DRILL_VERIFIED true
+    require_env_exact AI_FEEDBACK_ENABLED true
+    require_env_exact AI_OBSERVABILITY_ENABLED true
+    require_env_exact AI_METRIC_EXPORT_ENABLED true
+    require_env_positive_decimal AI_INPUT_TOKEN_COST_USD_PER_MILLION
+    require_env_positive_decimal AI_OUTPUT_TOKEN_COST_USD_PER_MILLION
+    require_env_exact AI_OPERATIONAL_ALERTS_ENABLED true
+    require_env_csv_ids AI_ALERT_TARGET_USER_IDS 16 64
+    require_env_integer_range AI_ALERT_EVALUATION_INTERVAL_SECONDS 30 3600
+    require_env_integer_range AI_ALERT_WINDOW_MINUTES 1 1440
+    require_env_integer_range AI_ALERT_COOLDOWN_MINUTES 5 1440
+    require_env_integer_range AI_COST_PER_SUCCESSFUL_TASK_ALERT_MICROUSD 1 10000000000
+    require_env_integer_range AI_PROVIDER_FAILURE_ALERT_COUNT 1 1000000
+    require_env_integer_range AI_TOOL_FAILURE_ALERT_COUNT 1 1000000
+    require_env_integer_range AI_WORKER_RECOVERY_ALERT_COUNT 1 1000000
+    require_env_integer_range AI_BUDGET_ALERT_PERCENT 1 100
+    require_env_integer_range AI_SCANNER_SIGNATURE_MAX_AGE_HOURS 1 720
+    if [ "$NIF18_STAGE" = "preflight" ]; then
+      require_env_exact AI_ACTION_GATEWAY_ENABLED false
+      require_env_exact AI_CONTROLLED_APPLY_ENABLED false
+    else
+      require_env_exact AI_ACTION_GATEWAY_ENABLED true
+      require_env_exact AI_CONTROLLED_APPLY_ENABLED true
+    fi
+    ;;
+  *) fail "AI_NIF18_STAGE must be disabled, preflight or action-field" ;;
+esac
+
 vision_enabled="$(read_env_value AI_CLOUD_VISION_ENABLED)"
 case "$vision_enabled" in
   true)
@@ -212,6 +272,19 @@ fi
 
 api_id="$(compose ps -q api)"
 [ -n "$api_id" ] || fail "API container is not running"
+if [ "$NIF18_STAGE" != "disabled" ]; then
+  worker_id="$(compose ps -q ai-task-worker)"
+  [ -n "$worker_id" ] || fail "AI Task Worker container is not running"
+  worker_state="$(docker inspect --format '{{.State.Status}}' "$worker_id")"
+  [ "$worker_state" = "running" ] || fail "AI Task Worker container is not running"
+  database_revision="$(
+    compose exec -T db sh -lc 'psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT version_num FROM alembic_version"' \
+      | tr -d '[:space:]'
+  )"
+  code_head="$(compose exec -T api alembic -c alembic.ini heads | awk '{print $1; exit}')"
+  [ -n "$database_revision" ] && [ "$database_revision" = "$code_head" ] \
+    || fail "database revision does not match the single code head"
+fi
 control_mount_writable="$(
   docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/backend/control"}}{{.RW}}{{end}}{{end}}' "$api_id"
 )"

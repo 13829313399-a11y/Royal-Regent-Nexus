@@ -44,6 +44,7 @@ const {
   resumeCurrentToast,
   activateNotification,
   markNotificationRead,
+  markNotificationHandled,
   activateToast,
   refreshNotifications,
   formatNotificationTime,
@@ -117,6 +118,16 @@ function handleItemAction(item: NotificationCenterItem) {
 
 function handleMarkRead(item: NotificationCenterItem) {
   void markNotificationRead(item)
+}
+
+function canAcknowledgeItem(item: NotificationCenterItem) {
+  return item.source === 'system'
+    && item.category === 'ai_operational_alert'
+    && item.status !== 'handled'
+}
+
+function handleMarkHandled(item: NotificationCenterItem) {
+  void markNotificationHandled(item)
 }
 
 function handleTabKeydown(event: KeyboardEvent, tabIndex: number) {
@@ -338,16 +349,27 @@ onUnmounted(() => {
                 <p class="mt-1.5 truncate text-[11px] text-slate-500">{{ item.contextLabel }}</p>
 
                 <div class="mt-2.5 flex items-center justify-between gap-3 border-t border-slate-100 pt-2.5">
-                  <button
-                    v-if="item.isUnread"
-                    type="button"
-                    class="text-[11px] font-semibold text-slate-500 transition hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
-                    :aria-label="`将“${item.title}”标为已读`"
-                    @click="handleMarkRead(item)"
-                  >
-                    标为已读
-                  </button>
-                  <span v-else class="text-[11px] text-slate-400">{{ itemFooterLabel(item) }}</span>
+                  <div class="flex items-center gap-3">
+                    <button
+                      v-if="item.isUnread"
+                      type="button"
+                      class="text-[11px] font-semibold text-slate-500 transition hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+                      :aria-label="`将“${item.title}”标为已读`"
+                      @click="handleMarkRead(item)"
+                    >
+                      标为已读
+                    </button>
+                    <button
+                      v-if="canAcknowledgeItem(item)"
+                      type="button"
+                      class="text-[11px] font-bold text-emerald-700 transition hover:text-emerald-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30"
+                      :aria-label="`确认已处理：${item.title}`"
+                      @click="handleMarkHandled(item)"
+                    >
+                      确认已处理
+                    </button>
+                    <span v-if="!item.isUnread && !canAcknowledgeItem(item)" class="text-[11px] text-slate-400">{{ itemFooterLabel(item) }}</span>
+                  </div>
 
                   <RouterLink
                     :to="item.route"

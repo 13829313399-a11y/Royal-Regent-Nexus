@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -10,6 +10,11 @@ from sqlalchemy.orm import Session
 from app.schemas.ai.action_confirmation import (
     AIControlledApplyResult,
     AIInjectionSchedulingApplyActionSummary,
+)
+from app.services.ai.actions.contracts import (
+    ActionApprovalPolicy,
+    ActionHandlerManifest,
+    ActionPostVerifier,
 )
 from app.services.auth import AuthContext
 
@@ -33,6 +38,30 @@ ActionExecutor = Callable[
 ]
 
 
+def _legacy_manifest() -> ActionHandlerManifest:
+    return ActionHandlerManifest(
+        action_type="APPLY_INJECTION_AUTO_SCHEDULE_RUN",
+        handler_version="legacy-confirmation-v1",
+        autonomy_level="L3",
+        target_state="DRAFT",
+        model_may_propose=True,
+        model_may_approve=False,
+        model_may_execute=False,
+        publish_allowed=False,
+        rollback_allowed=False,
+    )
+
+
+def _legacy_approval_policy() -> ActionApprovalPolicy:
+    return ActionApprovalPolicy(
+        policy_id="single-explicit-owner-approval",
+        policy_version="legacy-confirmation-v1",
+        approvals_required=1,
+        approver_must_be_proposer=True,
+        allowed_source="AUTHENTICATED_USER_API",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AIActionHandler:
     tool_name: str
@@ -48,6 +77,11 @@ class AIActionHandler:
     freshness_validator: ActionFreshnessValidator
     execution_validator: ActionExecutionValidator
     executor: ActionExecutor
+    manifest: ActionHandlerManifest = field(default_factory=_legacy_manifest)
+    approval_policy: ActionApprovalPolicy = field(
+        default_factory=_legacy_approval_policy
+    )
+    post_verifier: ActionPostVerifier | None = None
 
 
 class AIActionRegistry:

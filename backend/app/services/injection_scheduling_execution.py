@@ -1436,6 +1436,115 @@ def list_backlog_orders_page(
     )
 
 
+def query_backlog_orders_page(
+    db: Session,
+    factory_id: str,
+    *,
+    due_date_eq: str = "",
+    due_date_gte: str = "",
+    due_date_lte: str = "",
+    order_no: str = "",
+    item_no: str = "",
+    mold_no: str = "",
+    priority_code: str = "",
+    sort_direction: str = "ASC",
+    limit: int,
+    offset: int,
+) -> InjectionSchedulingAIBacklogPage:
+    """Execute the fixed Semantic Gateway v1 backlog projection.
+
+    The caller supplies only reviewed predicates. This function never accepts SQL,
+    column names, expressions, joins, or arbitrary ordering.
+    """
+
+    factory_id = require_injection_scheduling_factory(factory_id)
+    if limit < 1 or limit > 20 or offset < 0 or offset > 10_000:
+        raise ValueError("semantic backlog page is outside cost bounds")
+    if sort_direction not in {"ASC", "DESC"}:
+        raise ValueError("semantic backlog sort direction is invalid")
+
+    scope, source_context = _backlog_scope(factory_id)
+    filtered_scope = select(scope)
+    if due_date_eq:
+        filtered_scope = filtered_scope.where(scope.c.effective_due_date == due_date_eq)
+    if due_date_gte:
+        filtered_scope = filtered_scope.where(
+            scope.c.effective_due_date >= due_date_gte
+        )
+    if due_date_lte:
+        filtered_scope = filtered_scope.where(
+            scope.c.effective_due_date <= due_date_lte
+        )
+    if order_no:
+        filtered_scope = filtered_scope.where(scope.c.order_no == order_no)
+    if item_no:
+        filtered_scope = filtered_scope.where(scope.c.item_no == item_no)
+    if mold_no:
+        filtered_scope = filtered_scope.where(
+            or_(
+                scope.c.mold_no == mold_no,
+                scope.c.display_mold_no == mold_no,
+                scope.c.canonical_mold_no == mold_no,
+            )
+        )
+    if priority_code:
+        filtered_scope = filtered_scope.where(scope.c.priority_code == priority_code)
+    filtered = filtered_scope.cte("ai_semantic_backlog_scope")
+    blank_due_date = case((filtered.c.effective_due_date == "", 1), else_=0)
+    due_date_sort = (
+        filtered.c.effective_due_date.asc()
+        if sort_direction == "ASC"
+        else filtered.c.effective_due_date.desc()
+    )
+    ordering = (
+        blank_due_date,
+        due_date_sort,
+        filtered.c.order_no,
+        filtered.c.item_no,
+        filtered.c.order_id,
+    )
+    page = (
+        select(filtered)
+        .order_by(*ordering)
+        .limit(limit)
+        .offset(offset)
+        .cte("ai_semantic_backlog_page")
+    )
+    total = (
+        select(func.count(filtered.c.order_id).label("_total"))
+        .select_from(filtered)
+        .cte("ai_semantic_backlog_total")
+    )
+    rows = db.execute(
+        select(total.c._total, source_context.c._source_scope, page)
+        .select_from(total.join(source_context, true()).outerjoin(page, true()))
+        .order_by(
+            case((page.c.effective_due_date == "", 1), else_=0),
+            page.c.effective_due_date.asc()
+            if sort_direction == "ASC"
+            else page.c.effective_due_date.desc(),
+            page.c.order_no,
+            page.c.item_no,
+            page.c.order_id,
+        )
+    ).mappings().all()
+    total_count = int(rows[0]["_total"] or 0) if rows else 0
+    items = tuple(
+        _ai_backlog_order_from_row(row)
+        for row in rows
+        if row["order_id"] is not None
+    )
+    return InjectionSchedulingAIBacklogPage(
+        factory_id=factory_id,
+        as_of=_now(),
+        source_scope=str(rows[0]["_source_scope"]),
+        total=total_count,
+        limit=limit,
+        offset=offset,
+        items=items,
+    )
+
+
 def _backlog_page_statement(
     factory_id: str,
     *,

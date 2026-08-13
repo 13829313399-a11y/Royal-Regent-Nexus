@@ -820,4 +820,60 @@ describe('TopBar notifications', () => {
     expect(wrapper.text()).toContain('0 条未读 · 1 项待处理')
     expect(wrapper.text()).toContain('新用户注册待审批')
   })
+
+  it('requires an explicit receiving-channel acknowledgement for AI operational alerts', async () => {
+    seedAccount({
+      roles: ['系统管理员'],
+      permissions: ['system:user_manage'],
+      factoryScopes: ['*'],
+    })
+    const alert = createSystemNotification({
+      id: 'AI-ALERT-UI-1',
+      title: 'AI Provider 连续失败',
+      type: 'ai_operational_alert',
+      target_user_id: 'user-test',
+      target_permission: '',
+      target_factory_id: '',
+      target_department: '',
+      payload: {
+        schema_version: 'ai-operational-alert-v1',
+        alert_type: 'PROVIDER_FAILURE',
+        observed_value: 5,
+        threshold_value: 3,
+        metadata_only: true,
+      },
+    })
+    const registration = createSystemNotification({
+      id: 'SYS-REG-NO-MANUAL-ACK',
+      title: '普通注册通知',
+    })
+    systemApiMock.listNotifications.mockResolvedValue([alert, registration])
+    systemApiMock.updateNotification.mockResolvedValue({
+      ...alert,
+      status: 'handled',
+      read_at: '2026-07-18 16:01:00',
+      handled_at: '2026-07-18 16:02:00',
+    })
+
+    const wrapper = mountTopBar()
+    await flushPromises()
+    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('2 条未读 · 2 项待处理')
+    expect(wrapper.text()).toContain('AI 运维告警')
+    expect(wrapper.findAll('button').filter((button) => button.text() === '确认已处理')).toHaveLength(1)
+
+    await wrapper.get('button[aria-label="确认已处理：AI Provider 连续失败"]').trigger('click')
+    await flushPromises()
+
+    expect(systemApi.updateNotification).toHaveBeenCalledWith('AI-ALERT-UI-1', { status: 'handled' })
+    expect(wrapper.text()).toContain('1 条未读 · 1 项待处理')
+    expect(wrapper.text()).toContain('已处理')
+
+    const pendingTab = wrapper.findAll('button').find((button) => button.text().includes('待处理'))
+    await pendingTab?.trigger('click')
+    expect(wrapper.text()).not.toContain('AI Provider 连续失败')
+    expect(wrapper.text()).toContain('普通注册通知')
+  })
 })

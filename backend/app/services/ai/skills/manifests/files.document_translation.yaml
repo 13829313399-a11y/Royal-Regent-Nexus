@@ -1,0 +1,17 @@
+id: files.document_translation
+version: 1.0.0
+prompt_version: 1.0.0
+owner: data-platform
+status: pilot
+intents: [translate_document]
+route_names: []
+knowledge_ids: []
+required_context: {factory_scope: optional}
+allowed_tools: []
+feature_tools: [artifacts.translate_document_local]
+model_policy: {capability: TRANSLATION, reasoning: FAST}
+risk_policy: {maximum: PREVIEW_WITH_AUDIT}
+output_contract: {schema_id: files.document_translation.v1}
+max_steps: 2
+max_input_tokens: 8000
+eval_suite_ref: document_translation_v1

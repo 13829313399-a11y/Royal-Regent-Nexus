@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.ai.preview import AIPreviewManifestV1
+
 
 class AIWorkbookSourceLineage(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -11,6 +13,10 @@ class AIWorkbookSourceLineage(BaseModel):
     source_size_bytes: int = Field(gt=0)
     detected_format: Literal["XLSX", "XLSM"]
     inspector_version: Literal["workbook-semantic-snapshot-v1"]
+    artifact_id: str | None = Field(
+        default=None,
+        pattern=r"^aiart-[0-9a-f]{32}$",
+    )
 
 
 class AIWorkbookHeaderCell(BaseModel):
@@ -120,6 +126,7 @@ class AIWorkbookMappingProposal(BaseModel):
     missing_required_fields: list[str] = Field(max_length=100)
     warnings: list[str] = Field(max_length=30)
     stale_guards: dict[str, str] = Field(max_length=8)
+    preview_manifest: AIPreviewManifestV1 | None = None
 
 
 class AIModelMappingItem(BaseModel):

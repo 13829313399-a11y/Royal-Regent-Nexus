@@ -29,6 +29,24 @@ VISION_PAGE_CONTEXT = {
     "selected_entity": None,
 }
 
+
+class RestoringAppTestClient(TestClient):
+    """Keep pytest-collected app modules coherent after an env-specific app reload."""
+
+    def __init__(self, app, original_modules: dict[str, object]):
+        super().__init__(app)
+        self._original_app_modules = original_modules
+
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            for module_name in list(sys.modules):
+                if module_name == "app" or module_name.startswith("app."):
+                    del sys.modules[module_name]
+            sys.modules.update(self._original_app_modules)
+
+
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
@@ -42,6 +60,9 @@ def make_client(monkeypatch, **ai_env):
     defaults = {
         "APP_ENV": "development",
         "AI_ENABLED": "false",
+        "AI_NIF_RUNTIME_ENABLED": "false",
+        "AI_PROVIDER_CAPABILITY_ROUTER_ENABLED": "false",
+        "AI_MODEL_CATALOG_JSON": "",
         "AI_PROVIDER": "qwen",
         "AI_REGION": "cn-beijing",
         "AI_WORKSPACE_ID": "",
@@ -65,12 +86,17 @@ def make_client(monkeypatch, **ai_env):
     for name, value in defaults.items():
         monkeypatch.setenv(name, value)
 
+    original_modules = {
+        module_name: module
+        for module_name, module in sys.modules.items()
+        if module_name == "app" or module_name.startswith("app.")
+    }
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
             del sys.modules[module_name]
 
     main = importlib.import_module("app.main")
-    return TestClient(main.app)
+    return RestoringAppTestClient(main.app, original_modules)
 
 
 def login_admin(client: TestClient) -> None:
@@ -164,6 +190,85 @@ def parse_sse(body: str) -> list[dict[str, object]]:
             data_lines.append(value)
     finish_event()
     return events
+
+
+def test_bound_response_persists_only_persistent_conversation_bodies(monkeypatch):
+    with make_client(
+        monkeypatch,
+        AI_ENABLED="true",
+        AI_PROVIDER="fake",
+        AI_DEFAULT_MODEL="fake-model",
+        AI_CONVERSATIONS_ENABLED="true",
+    ) as client:
+        login_admin(client)
+        persistent = client.post(
+            "/api/ai/conversations",
+            json={
+                "mode": "PERSISTENT",
+                "factory_scope": "huaxing",
+                "title": "绑定响应测试",
+            },
+        )
+        assert persistent.status_code == 201, persistent.text
+        persistent_id = persistent.json()["id"]
+        payload = chat_payload("请给出本次绑定回答")
+        payload["conversation_id"] = persistent_id
+        response = client.post(
+            "/api/ai/responses",
+            json=payload,
+            headers={"X-Request-ID": "conversation-bound-persistent-1"},
+        )
+        assert response.status_code == 200, response.text
+        events = parse_sse(response.text)
+        completed = next(
+            item["data"] for item in events if item["event"] == "response.completed"
+        )
+        assert completed["payload"]["conversation"] == {
+            "id": persistent_id,
+            "user_message_id": completed["payload"]["conversation"]["user_message_id"],
+            "assistant_message_id": completed["payload"]["conversation"][
+                "assistant_message_id"
+            ],
+            "assistant_persisted": True,
+            "history_truncated": False,
+        }
+        detail = client.get(f"/api/ai/conversations/{persistent_id}")
+        assert detail.status_code == 200, detail.text
+        assert [item["role"] for item in detail.json()["messages"]] == [
+            "USER",
+            "ASSISTANT",
+        ]
+        assert all(
+            item["requires_tool_refresh"] is True for item in detail.json()["messages"]
+        )
+
+        temporary = client.post(
+            "/api/ai/conversations",
+            json={"mode": "TEMPORARY", "factory_scope": "huaxing"},
+        )
+        assert temporary.status_code == 201, temporary.text
+        temporary_id = temporary.json()["id"]
+        temporary_payload = chat_payload("password: temporary-only-value")
+        temporary_payload["conversation_id"] = temporary_id
+        temporary_response = client.post(
+            "/api/ai/responses",
+            json=temporary_payload,
+            headers={"X-Request-ID": "conversation-bound-temporary-1"},
+        )
+        assert temporary_response.status_code == 200, temporary_response.text
+        temporary_events = parse_sse(temporary_response.text)
+        temporary_completed = next(
+            item["data"]
+            for item in temporary_events
+            if item["event"] == "response.completed"
+        )
+        assert (
+            temporary_completed["payload"]["conversation"]["assistant_persisted"]
+            is False
+        )
+        temporary_detail = client.get(f"/api/ai/conversations/{temporary_id}")
+        assert temporary_detail.status_code == 200
+        assert temporary_detail.json()["messages"] == []
 
 
 def test_ai_auth_dependency_closes_short_session_before_stream(monkeypatch):
@@ -1276,9 +1381,7 @@ def test_internal_quote_tool_api_round_trip_is_minimal_and_rejects_hostile_write
     assert response.status_code == 200
     events = parse_sse(response.text)
     tool_events = [
-        item["data"]["payload"]
-        for item in events
-        if item["event"] == "tool.completed"
+        item["data"]["payload"] for item in events if item["event"] == "tool.completed"
     ]
     assert len(tool_events) == 2
     first_result = tool_events[0]["result"]
@@ -2117,6 +2220,7 @@ def test_orchestrator_terminal_log_aggregates_only_safe_metadata(caplog):
             )
 
     provider = MetadataProvider()
+    metric_events = []
     orchestrator = orchestrator_module.AIOrchestrator(
         provider=provider,
         settings=config.Settings(
@@ -2127,6 +2231,7 @@ def test_orchestrator_terminal_log_aggregates_only_safe_metadata(caplog):
         ),
         tool_registry=MetadataRegistry(),
         tool_executor=MetadataExecutor(),
+        metric_recorder=metric_events.append,
     )
     chat = orchestrator_module.ValidatedChatInput(
         messages=(base.ProviderMessage(role="user", content=prompt_marker),),
@@ -2172,6 +2277,19 @@ def test_orchestrator_terminal_log_aggregates_only_safe_metadata(caplog):
     assert prompt_marker not in caplog.text
     assert argument_marker not in caplog.text
     assert result_marker not in caplog.text
+    assert [item.event_type for item in metric_events] == ["TOOL_CALL", "MODEL_RUN"]
+    tool_metric, model_metric = metric_events
+    assert tool_metric.tool_name == "synthetic.read_only"
+    assert tool_metric.evidence_count == 0
+    assert tool_metric.truncated is True
+    assert model_metric.status == "SUCCESS"
+    assert model_metric.input_tokens == 7
+    assert model_metric.output_tokens == 3
+    assert model_metric.factory_id == "huaxing"
+    assert model_metric.owner_user_id == "observability-user"
+    assert prompt_marker not in repr(metric_events)
+    assert argument_marker not in repr(metric_events)
+    assert result_marker not in repr(metric_events)
 
 
 async def _collect_orchestrator_events(orchestrator, chat, tool_context):
