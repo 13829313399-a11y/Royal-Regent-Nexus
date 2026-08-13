@@ -3,10 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-
 from app.core.config import Settings
 from app.db import Base
 from app.models.ai_conversation import AIConversation, AIMessage
@@ -18,6 +14,9 @@ from app.services.ai.skills.registry import SkillRegistry
 from app.services.ai.task_service import create_task
 from app.services.ai.tool_registry import build_default_tool_registry
 from app.services.auth import AuthContext, AuthGrantContext
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 FAKE_TASK_SKILL_ROOT = Path(__file__).resolve().parent / "fixtures" / "ai_task_skill"
 

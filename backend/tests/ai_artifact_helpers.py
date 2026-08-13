@@ -3,16 +3,15 @@ from __future__ import annotations
 import io
 from datetime import datetime
 
-from PIL import Image
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
-
 from app.core.config import Settings
 from app.db import Base
 from app.models.ai_artifact import AIArtifact
 from app.models.auth import AuthAuditLog, AuthUser
 from app.services.auth import AuthContext, AuthGrantContext
+from PIL import Image
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 
 def artifact_settings() -> Settings:

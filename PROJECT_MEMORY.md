@@ -621,16 +621,16 @@ Several cards and dashboards in the module catalog remain planning, design or de
   scenarios. ADR-012 is accepted and the NIF-16 repository implementation exists default-off, but
   the mandatory DRAFT-only Controlled Apply scenario has not received `FIELD-PASS`; production
   enablement and all L4 actions remain prohibited. Repository tests and local checks are evidence
-  only and must not be relabelled as production `FIELD-PASS`. The current single Alembic head is
-  `20260813_0074`. Before upstream reconciliation, the isolated worktree at local base `18dc3b1`
-  verified 439 passed/2
-  intentionally skipped backend AI tests, 13 passed deployment/security tests, 275 passed frontend
-  AI/Workbench/scheduling tests, full AI Ruff, frontend test typecheck, production build, four Shell
-  syntax checks and `git diff --check`. Docker is unavailable on this workstation, so Compose/container
-  and all real-environment scenarios remain unverified field gates. A later fetch found `origin/main`
-  at `b0575ef`, five commits ahead, with QC migration revision `20260812_0067`. The byte-identical
-  upstream QC migration is now present locally and the AI chain has been renumbered to `0068`–`0074`;
-  overlapping application files still require main integration and the full gates must be rerun.
+  only and must not be relabelled as production `FIELD-PASS`. The isolated branch preserved the NIF
+  implementation in `1b71a60` and merged `origin/main` at `b0575ef` in `9128eff`. The byte-identical
+  upstream QC migration is `20260812_0067`; the AI chain follows as `0068`–`0074`, with one Alembic
+  head `20260813_0074`. Post-merge verification passed 72 migration/compatibility tests, 440 backend
+  AI tests with 2 intentional skips, 13 deployment/security tests, and the full frontend suite at
+  895 passed/6 skipped across 157 files. Branch-scoped Python Ruff, frontend test typecheck,
+  production build, four Shell syntax checks and `git diff --check` also passed. Docker is unavailable
+  on this workstation, so Compose/container and all real-environment scenarios remain unverified
+  field gates. The branch is locally integrated and verified, but this does not change production
+  readiness from `NO-GO` or authorize AI enablement.
 - AI-B9 now provides separately authorized, factory-scoped, read-only Tool and closed frontend-result
   contracts for Internal Quote, molding samples, carton procurement, raw-material inventory and
   customer orders. Each domain uses selected-field serializers and canonical permission checks; the

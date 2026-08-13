@@ -5,9 +5,8 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from sqlalchemy import engine_from_config, pool
-
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
 if context.is_offline_mode():
     os.environ["ALEMBIC_OFFLINE_METADATA_ONLY"] = "1"
@@ -38,8 +37,8 @@ from app.models import (
     internal_quote,  # noqa: F401
     molding_sample,  # noqa: F401
     pricing,  # noqa: F401
-    raw_material,  # noqa: F401
     qc_inspection,  # noqa: F401
+    raw_material,  # noqa: F401
     three_d_printing,  # noqa: F401
 )
 

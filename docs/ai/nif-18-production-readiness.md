@@ -19,19 +19,21 @@ Local tests can reach only the first two classes. Operators must never copy a lo
 
 ## Current local verification snapshot
 
-On 2026-08-13 this isolated worktree initially reported one local Alembic head
-`20260813_0073`, 439 passed/2 intentionally skipped backend AI tests, 13 passed
-deployment/security tests, 275 passed frontend tests, Ruff, test typecheck,
-production build, four deployment-script syntax checks and `git diff --check`.
-Docker was unavailable, so Compose rendering was not verified here.
+On 2026-08-13 this isolated worktree merged `origin/main` at `b0575ef` in local
+merge commit `9128eff`, after preserving the AI implementation in safety commit
+`1b71a60`. The upstream QC migration remains `20260812_0067`, the AI chain follows
+as `20260813_0068`–`20260813_0074`, and Alembic reports the single head
+`20260813_0074`. The post-merge worktree verified 72 migration/compatibility tests,
+440 passed/2 intentionally skipped backend AI tests, 13 deployment/security tests,
+and the full frontend suite at 895 passed/6 skipped across 157 test files. Ruff on
+the branch Python scope, frontend test typecheck, production build, four
+deployment-script syntax checks and `git diff --check` also passed. The build
+reported only non-blocking dependency annotation warnings from `@vueuse/core`.
 
-Those full results were produced at local base `18dc3b1`. A subsequent fetch found
-`origin/main` at `b0575ef`, five commits ahead, including QC migration
-`20260812_0067`. The byte-identical upstream migration is now present and the AI
-chain has been renumbered behind it as `20260813_0068`–`20260813_0074`; one head
-and 23 focused migration tests pass. The remaining overlapping files must still be
-merged and the complete gates rerun before this branch is merge-ready. This
-integration gap is another reason the current result remains `NO-GO`.
+Docker remains unavailable on this workstation, so Compose/container validation
+and every real production field scenario remain unverified. The repository merge
+and local gates close the earlier integration gap but do not change the production
+result from `NO-GO` or authorize enabling AI.
 
 ## Two-stage rollout
 

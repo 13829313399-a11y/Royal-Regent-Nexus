@@ -5,9 +5,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.core.config import Settings
 from app.models.ai_guard import (
     AIGuardDailyBudget,
@@ -18,6 +15,8 @@ from app.models.ai_guard import (
 from app.services.ai.pilot_guard import AIPilotGuard
 from app.services.ai.postgres_guard_backend import PostgreSQLGuardBackend
 from app.services.auth import AuthContext
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 def shared_settings(**overrides) -> Settings:
