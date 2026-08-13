@@ -499,6 +499,11 @@ class QwenResponsesProvider:
             if request.contract_version == "2"
             else self.reasoning_effort
         )
+        if request.tool_choice_policy is ToolChoicePolicy.REQUIRED:
+            # Qwen thinking mode accepts only AUTO/NONE tool choice. These
+            # closed, single-tool contracts need REQUIRED, so serialize them
+            # in non-thinking mode instead of sending an invalid combination.
+            reasoning_effort = "none"
         kwargs: dict[str, object] = {
             "model": request.model,
             "input": [_serialize_input(item) for item in request.input],
