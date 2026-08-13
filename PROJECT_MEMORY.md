@@ -640,6 +640,10 @@ Several cards and dashboards in the module catalog remain planning, design or de
   `action-field`, but overall NIF-18 remains `NO-GO`: TLS/HSTS, Secure Cookie, secret rotation,
   encrypted private OSS/KMS backup and restore evidence, full browser acceptance, and the six alert
   trigger/recipient acknowledgement evidence remain incomplete.
+  `backend/local-ai.env.example` is the secret-free, opt-in local development profile for exposing
+  the same AI UI/API feature surface without changing the repository's default-off baseline. Real
+  credentials remain only in ignored `backend/.env`; SQLite-only Worker/Shared Guard and the absent
+  local ClamAV operations/alert channel remain disabled, so this profile is not NIF-18 field evidence.
   Current alert-channel source verification on the `41187cd` baseline passed all 447 backend
   `test_ai_*.py` tests with 2 intentional skips, all 909 frontend tests with 6 skips, the exact AI
   Ruff scope, frontend typecheck, production build, shell syntax and diff check. These are repository
