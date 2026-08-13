@@ -4,6 +4,7 @@ import {
   Archive,
   Boxes,
   Calculator,
+  CalendarCheck2,
   CalendarClock,
   ClipboardCheck,
   FileSpreadsheet,
@@ -33,6 +34,7 @@ export type DepartmentId =
   | 'pmc-warehouse'
   | 'production'
   | 'qa'
+  | 'qc'
   | 'sales-business'
   | 'accounting'
 
@@ -226,6 +228,7 @@ export const moduleDepartmentIds: ModuleDepartmentId[] = [
   'pmc-warehouse',
   'production',
   'qa',
+  'qc',
   'sales-business',
   'accounting',
 ]
@@ -332,6 +335,12 @@ export const departments: Department[] = [
     name: 'QA 部',
     shortName: 'QA',
     focus: '检验、异常、复判、质量门禁',
+  },
+  {
+    id: 'qc',
+    name: 'QC 部',
+    shortName: 'QC',
+    focus: '验货排期、执行、问题闭环、汇总报表与报告文件治理',
   },
   {
     id: 'sales-business',
@@ -463,6 +472,7 @@ export const navigationGroups: NavigationGroup[] = [
       { label: 'PMC / 仓管', to: getDepartmentRoute('pmc-warehouse'), icon: Archive, departmentId: 'pmc-warehouse' },
       { label: '生产部', to: getDepartmentRoute('production'), icon: Boxes, departmentId: 'production' },
       { label: 'QA 部', to: getDepartmentRoute('qa'), icon: ShieldCheck, departmentId: 'qa' },
+      { label: 'QC 部', to: getDepartmentRoute('qc'), icon: CalendarCheck2, departmentId: 'qc' },
       { label: '业务部', to: getDepartmentRoute('sales-business'), icon: ClipboardCheck, departmentId: 'sales-business' },
       { label: '会计部', to: getDepartmentRoute('accounting'), icon: Calculator, departmentId: 'accounting' },
     ],
@@ -550,6 +560,38 @@ export const moduleHealth: ModuleHealth[] = [
   { name: 'QA 部', value: 66, tone: 'amber' },
   { name: '业务部', value: 78, tone: 'teal' },
 ]
+
+/**
+ * QC owns this domain. The same object is deliberately surfaced in the QA
+ * catalog as a cross-department public entry, without sharing QA data or
+ * authorization scope.
+ */
+export const qcInspectionOperationsModule: EnterpriseModule = {
+  id: 'inspection-operations',
+  title: 'QC 验货运营中心',
+  owner: 'QC 部 / 业务部协同',
+  summary: '从生产排期导入、验货执行到问题闭环、报表和报告文件治理的一站式工作台',
+  status: '待部署',
+  statusTone: 'amber',
+  stats: '正式数据以 QC 接口为准',
+  icon: CalendarCheck2,
+  route: '/modules/qc/inspection-operations',
+  statusMetrics: [
+    { label: '入口', value: '5 类', tone: 'teal' },
+    { label: '范围', value: '本厂', tone: 'blue' },
+    { label: '文件', value: 'PDF/JPG', tone: 'slate' },
+  ],
+  todos: [
+    '导入本周生产排期并逐项确认变化',
+    '完成验货结果和问题单点录入闭环',
+    '预览并生成改名后的报告 ZIP',
+  ],
+  children: [
+    { label: '排期与订单', route: '/modules/qc/inspection-operations' },
+    { label: '问题闭环', route: '/modules/qc/inspection-operations/problems' },
+    { label: '报表与文件', route: '/modules/qc/inspection-operations/reports' },
+  ],
+}
 
 export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModuleRegistryEntry> = {
   engineering: {
@@ -964,6 +1006,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
           { label: '批次记录', summary: '建立批次、样本和结果归档' },
         ],
       },
+      qcInspectionOperationsModule,
       {
         id: 'carton-mark-check',
         title: '箱唛核验',
@@ -1041,6 +1084,22 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
       { id: 'QA-451', title: '客户报告补图', meta: '本周 6 份报告待完成附件' },
       { id: 'QA-478', title: '异常归责确认', meta: '需工程和生产共同签字' },
     ],
+  },
+  qc: {
+    departmentId: 'qc',
+    heroTitle: 'QC 验货运营中心',
+    heroSubtitle: '把排期确认、验货执行、问题闭环、汇总报表和报告文件治理集中在同一条业务链路',
+    panelTitle: 'QC 部模块',
+    panelSubtitle: '独立于 QA 来料与成品检验，所有正式数据按厂区和 QC 权限读取',
+    modules: [qcInspectionOperationsModule],
+    quickCandidates: ['客户验货配置', '验货机构维护', 'QC 审计查询', '集团汇总授权'],
+    permissionRows: [
+      { role: 'QC 检验员', view: true, edit: true, approve: false },
+      { role: 'QC 主管', view: true, edit: true, approve: true },
+      { role: 'QC 经理', view: true, edit: true, approve: true },
+      { role: '集团授权人员', view: true, edit: false, approve: true },
+    ],
+    todos: [],
   },
   'sales-business': {
     departmentId: 'sales-business',

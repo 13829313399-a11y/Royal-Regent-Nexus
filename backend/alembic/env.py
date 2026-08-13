@@ -34,6 +34,7 @@ from app.models import (
     molding_sample,  # noqa: F401
     pricing,  # noqa: F401
     raw_material,  # noqa: F401
+    qc_inspection,  # noqa: F401
     three_d_printing,  # noqa: F401
 )
 
