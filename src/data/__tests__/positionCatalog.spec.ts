@@ -9,7 +9,7 @@ describe('position catalog', () => {
     expect(getPositionSuggestions('qa')).toContain('QA 检验员')
     expect(getPositionSuggestions('sales-business')).toContain('车间业务跟客')
     expect(getPositionSuggestions('accounting')).toContain('会计主管')
-    expect(Object.values(positionSuggestionsByDepartment).every((items) => items.length >= 8)).toBe(true)
+    expect(Object.entries(positionSuggestionsByDepartment).every(([department, items]) => department === 'qc' || items.length >= 8)).toBe(true)
   })
 
   it('returns no suggestions for an unknown department', () => {

@@ -42,6 +42,7 @@ backend/models/document-translation/
 !/AGENTS.md
 !/AGENTS.MD
 !/PROJECT_MEMORY.md
+!/DESIGN.md
 !/design-qa.md
 !/docs/aliyun-docker-deploy.md
 !/docs/three-d-printing-deployment.md
@@ -49,6 +50,7 @@ backend/models/document-translation/
 !/docs/injection-scheduling-shared-master-sop.md
 !/docs/ai/modules/injection-scheduling.md
 !/docs/business/internal-quote-collaboration-design.md
+!/docs/business/qc-complete-business-process.md
 !/docs/business/internal-quote-l6-release-readiness.md
 !/docs/business/injection-scheduling-public-takeover-phase0-audit.md
 !/edge/three-d-printing-agent/README.md

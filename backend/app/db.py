@@ -2,7 +2,7 @@ import os
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -25,11 +25,20 @@ def _create_engine():
         if db_path and db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        return create_engine(
+        sqlite_engine = create_engine(
             database_url,
             connect_args={"check_same_thread": False},
             future=True,
         )
+        @event.listens_for(sqlite_engine, "connect")
+        def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
+
+        return sqlite_engine
 
     return create_engine(database_url, future=True)
 
@@ -427,6 +436,43 @@ INJECTION_SCHEDULING_DEMAND_SHARED_REQUIRED_COLUMNS = {
         "factory_readiness_status",
     },
 }
+QC_INSPECTION_REVISION = "20260812_0067"
+QC_INSPECTION_REQUIRED_TABLES = {
+    "qc_customer_configs",
+    "qc_schedule_import_batches",
+    "qc_schedule_import_rows",
+    "qc_inspection_orders",
+    "qc_inspection_problems",
+    "qc_schedule_change_decisions",
+    "qc_inspection_reports",
+    "qc_report_rename_batches",
+    "qc_report_rename_groups",
+    "qc_report_rename_source_files",
+    "qc_inspection_audit_events",
+    "qc_inspection_idempotency_records",
+}
+
+
+def ensure_qc_inspection_schema_ready() -> None:
+    """Refuse to run a partially migrated QC inspection domain."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(QC_INSPECTION_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+    raise RuntimeError(
+        "检测到 QC 验货数据库尚未完整迁移 "
+        f"{QC_INSPECTION_REVISION}；当前版本：{current_revision}；"
+        f"缺少表：{', '.join(missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -985,6 +1031,7 @@ def init_db() -> None:
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
         raw_material,  # noqa: F401
+        qc_inspection,  # noqa: F401
         three_d_printing,  # noqa: F401
     )
     from app.services.auth import seed_auth_defaults
@@ -1015,6 +1062,7 @@ def init_db() -> None:
     ensure_injection_scheduling_takeover_schema_ready()
     ensure_injection_scheduling_public_planning_schema_ready()
     ensure_injection_scheduling_demand_shared_schema_ready()
+    ensure_qc_inspection_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

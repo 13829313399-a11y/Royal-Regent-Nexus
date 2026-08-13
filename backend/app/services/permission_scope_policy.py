@@ -204,6 +204,31 @@ INJECTION_SCHEDULING_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     )
 }
 
+QC_INSPECTION_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
+    permission_code: ScopePolicy(
+        ("qc",),
+        guidance="仅在 QC 部和当前厂区范围生效",
+    )
+    for permission_code in (
+        "qc_inspection:read",
+        "qc_inspection:schedule_write",
+        "qc_inspection:order_write",
+        "qc_inspection:result_write",
+        "qc_inspection:problem_write",
+        "qc_inspection:report_export",
+        "qc_inspection:report_rename_preview",
+        "qc_inspection:report_rename_execute",
+        "qc_inspection:customer_manage",
+        "qc_inspection:audit_read",
+        "qc_inspection:factory_summary",
+    )
+}
+QC_INSPECTION_PERMISSION_SCOPE_POLICIES["qc_inspection:group_summary"] = ScopePolicy(
+    ("*",),
+    requires_global_factory=True,
+    guidance="集团汇总必须单独绑定到全部厂区 / 全部部门范围",
+)
+
 ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "admin": ScopePolicy(
         ("*",),
@@ -264,9 +289,12 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
         permission_code,
         INJECTION_SCHEDULING_PERMISSION_SCOPE_POLICIES.get(
             permission_code,
-            INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+            QC_INSPECTION_PERMISSION_SCOPE_POLICIES.get(
                 permission_code,
-                ScopePolicy(),
+                INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                    permission_code,
+                    ScopePolicy(),
+                ),
             ),
         ),
     )
