@@ -229,6 +229,25 @@ QC_INSPECTION_PERMISSION_SCOPE_POLICIES["qc_inspection:group_summary"] = ScopePo
     guidance="集团汇总必须单独绑定到全部厂区 / 全部部门范围",
 )
 
+CARTON_MARK_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
+    "carton_mark:read": ScopePolicy(
+        (*WAREHOUSE_DEPARTMENTS, "carton", "qa", "qc"),
+        guidance="纸箱部维护源文件；QA 旧入口和 QC 现场核验入口可按本厂查看",
+    ),
+    "carton_mark:template_upload": ScopePolicy(
+        (*WAREHOUSE_DEPARTMENTS, "carton"),
+        guidance="仅纸箱部或 PMC/仓管范围可上传 Excel、打印 PDF 并核对",
+    ),
+    "carton_mark:photo_upload": ScopePolicy(
+        ("qa", "qc"),
+        guidance="QA 旧入口和 QC 部可上传现场箱唛照片",
+    ),
+    "carton_mark:review": ScopePolicy(
+        ("qa", "qc"),
+        guidance="QA 旧入口和 QC 部可复核打印 PDF 与现场照片",
+    ),
+}
+
 ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "admin": ScopePolicy(
         ("*",),
@@ -291,9 +310,12 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
             permission_code,
             QC_INSPECTION_PERMISSION_SCOPE_POLICIES.get(
                 permission_code,
-                INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                CARTON_MARK_PERMISSION_SCOPE_POLICIES.get(
                     permission_code,
-                    ScopePolicy(),
+                    INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                        permission_code,
+                        ScopePolicy(),
+                    ),
                 ),
             ),
         ),

@@ -451,6 +451,33 @@ QC_INSPECTION_REQUIRED_TABLES = {
     "qc_inspection_audit_events",
     "qc_inspection_idempotency_records",
 }
+CARTON_MARK_LIBRARY_REVISION = "20260813_0068"
+CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
+    "carton_mark_templates",
+    "carton_mark_documents",
+}
+
+
+def ensure_carton_mark_library_schema_ready() -> None:
+    """Refuse to let create_all silently bypass the persistent library migration."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "alembic_version" not in table_names:
+            return
+        current_revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one_or_none()
+        missing = sorted(CARTON_MARK_LIBRARY_REQUIRED_TABLES - table_names)
+        if not missing:
+            return
+    raise RuntimeError(
+        "检测到箱唛资料库尚未完整迁移 "
+        f"{CARTON_MARK_LIBRARY_REVISION}；当前版本：{current_revision}；"
+        f"缺少表：{', '.join(missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
 
 
 def ensure_qc_inspection_schema_ready() -> None:
@@ -1018,6 +1045,7 @@ def init_db() -> None:
     from app.models import (
         ai_action,  # noqa: F401
         auth,  # noqa: F401
+        carton_mark,  # noqa: F401
         carton_procurement,  # noqa: F401
         customer_order,  # noqa: F401
         injection_scheduling,  # noqa: F401
@@ -1063,6 +1091,7 @@ def init_db() -> None:
     ensure_injection_scheduling_public_planning_schema_ready()
     ensure_injection_scheduling_demand_shared_schema_ready()
     ensure_qc_inspection_schema_ready()
+    ensure_carton_mark_library_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

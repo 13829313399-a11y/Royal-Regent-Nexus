@@ -227,7 +227,7 @@ The shared tool center provides four authenticated, request-time modules and doe
 
 ### Carton Mark and Indonesia Invoice
 
-Carton-mark comparison is a permission-protected, request-time PDF/OCR/photo comparison service. It does not currently define a persistent carton-mark business model.
+Carton-mark now has a factory-scoped persistent template library. The carton/PMC-warehouse upload path atomically stores the customer Excel, print-ready PDF, SHA-256 identities, versioned customer/PO/ITEM/contract metadata and the complete request-time Excel-to-PDF text-check result; duplicate document pairs are rejected, every check outcome is retained, and only `核对通过` records are QC-ready. Carton/PMC-warehouse roles may create and soft-archive records, while authorized carton/PMC-warehouse/legacy-QA/QC roles may list, inspect and download the original documents only within their factory. Creation and archive operations write metadata-only carton audit events, and archived records are removed from normal detail/download surfaces. QC's later print-PDF-to-site-photo comparison remains the existing permission-protected request-time PDF/OCR/photo service.
 
 Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF inputs for an authenticated user. It is also request-time processing rather than a persisted workflow.
 

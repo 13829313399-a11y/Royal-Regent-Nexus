@@ -15,6 +15,20 @@ const qcRoutes = [
 ] as const
 
 describe('QC inspection full-page routes', () => {
+  it('resolves the QC carton-mark workspace with QC-scoped carton permissions', () => {
+    const resolved = router.resolve('/modules/qc/carton-mark-check?factory=huaxing')
+
+    expect(resolved.name).toBe('qc-carton-mark-check')
+    expect(resolved.matched).toHaveLength(1)
+    expect(resolved.meta).toMatchObject({
+      fullPage: true,
+      requiresAuth: true,
+      enforcePermissions: true,
+      permissionDepartment: 'qc',
+    })
+    expect(resolved.meta.permissions).toEqual(['carton_mark:read'])
+  })
+
   it.each(qcRoutes)('resolves %s as one flat full-page route', (path, expectedName) => {
     const resolved = router.resolve(`${path}?factory=huaxing&week=2026-W33`)
 

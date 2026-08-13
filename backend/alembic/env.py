@@ -21,6 +21,7 @@ from app.db import Base
 from app.models import (
     ai_action,  # noqa: F401
     auth,  # noqa: F401
+    carton_mark,  # noqa: F401
     carton_procurement,  # noqa: F401
     customer_order,  # noqa: F401
     injection_scheduling,  # noqa: F401

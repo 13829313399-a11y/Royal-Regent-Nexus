@@ -264,6 +264,20 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/qc/carton-mark-check',
+    name: 'qc-carton-mark-check',
+    component: () => import('@/views/CartonMarkQcVerificationView.vue'),
+    meta: {
+      title: 'QC 箱唛核验',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['carton_mark:read'],
+      enforcePermissions: true,
+      strictPermissions: true,
+      permissionDepartment: 'qc',
+    },
+  },
+  {
     path: '/modules/qa/carton-mark-check',
     name: 'carton-mark-check',
     component: () => import('@/views/CartonMarkVerificationView.vue'),
@@ -271,6 +285,10 @@ const routes: RouteRecordRaw[] = [
       title: '箱唛核验',
       fullPage: true,
       requiresAuth: true,
+      permissions: ['carton_mark:read'],
+      enforcePermissions: true,
+      strictPermissions: true,
+      permissionDepartment: 'qa',
     },
   },
   {
