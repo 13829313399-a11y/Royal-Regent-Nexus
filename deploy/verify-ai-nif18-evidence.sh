@@ -43,8 +43,41 @@ require_nonempty() {
   esac
 }
 
+require_distinct_fields() {
+  checked_fields=""
+  for key in "$@"
+  do
+    actual="$(read_evidence_value "$key")"
+    for previous_key in $checked_fields
+    do
+      previous="$(read_evidence_value "$previous_key")"
+      [ "$actual" != "$previous" ] \
+        || fail "$key duplicates the evidence reference in $previous_key"
+    done
+    checked_fields="$checked_fields $key"
+  done
+}
+
 [ -n "$EVIDENCE_FILE" ] || fail "NIF18_EVIDENCE_FILE is required"
 [ -f "$EVIDENCE_FILE" ] || fail "NIF-18 evidence file is unavailable"
+
+duplicate_key="$(
+  awk '
+    {
+      line = $0
+      if (line ~ /^[[:space:]]*#/ || line ~ /^[[:space:]]*$/) next
+      equals = index(line, "=")
+      if (equals == 0) next
+      key = substr(line, 1, equals - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (++seen[key] > 1) {
+        print key
+        exit
+      }
+    }
+  ' "$EVIDENCE_FILE" | tr -d '\r'
+)"
+[ -z "$duplicate_key" ] || fail "duplicate evidence key: $duplicate_key"
 
 # Evidence is metadata only. Secret values, cookies and connection strings are
 # prohibited even if an operator accidentally adds an unrecognized key.
@@ -52,7 +85,7 @@ if grep -Eiq '(password|secret|api[_-]?key|cookie|authorization|database_url)[[:
   fail "NIF-18 evidence must not contain credentials or cookies"
 fi
 
-require_exact NIF18_SCHEMA_VERSION nif18-production-evidence-v1
+require_exact NIF18_SCHEMA_VERSION nif18-production-evidence-v2
 require_exact OVERALL_RESULT PASS
 for gate in \
   GIT_GATE \
@@ -74,7 +107,14 @@ for gate in \
   BUSINESS_FAILURE_ISOLATION_GATE \
   BROWSER_ACCEPTANCE_GATE \
   ROLLBACK_GATE \
-  COST_ALERT_GATE
+  COST_ALERT_GATE \
+  COST_PER_SUCCESSFUL_TASK_ALERT_GATE \
+  PROVIDER_FAILURE_ALERT_GATE \
+  TOOL_FAILURE_ALERT_GATE \
+  WORKER_RECOVERY_ALERT_GATE \
+  SCANNER_STALE_ALERT_GATE \
+  BUDGET_ALERT_GATE \
+  ALERT_ACKNOWLEDGEMENT_GATE
 do
   require_exact "$gate" PASS
 done
@@ -89,12 +129,28 @@ for field in \
   FAULT_DRILL_REF \
   BROWSER_EVIDENCE_REF \
   COST_ALERT_REF \
+  COST_PER_SUCCESSFUL_TASK_ALERT_REF \
+  PROVIDER_FAILURE_ALERT_REF \
+  TOOL_FAILURE_ALERT_REF \
+  WORKER_RECOVERY_ALERT_REF \
+  SCANNER_STALE_ALERT_REF \
+  BUDGET_ALERT_REF \
+  ALERT_ACKNOWLEDGEMENT_REF \
   PRODUCT_APPROVER \
   SECURITY_APPROVER \
   OPERATIONS_APPROVER
 do
   require_nonempty "$field"
 done
+
+require_distinct_fields \
+  COST_PER_SUCCESSFUL_TASK_ALERT_REF \
+  PROVIDER_FAILURE_ALERT_REF \
+  TOOL_FAILURE_ALERT_REF \
+  WORKER_RECOVERY_ALERT_REF \
+  SCANNER_STALE_ALERT_REF \
+  BUDGET_ALERT_REF \
+  ALERT_ACKNOWLEDGEMENT_REF
 
 deployed_revision="$(read_evidence_value DEPLOYED_REVISION)"
 case "$deployed_revision" in

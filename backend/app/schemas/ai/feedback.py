@@ -19,6 +19,14 @@ FeedbackIssueCategory = Literal[
     "OTHER",
 ]
 FeedbackStatus = Literal["SUBMITTED", "TRIAGED", "EVAL_CANDIDATE", "DISMISSED"]
+OperationalAlertType = Literal[
+    "COST_PER_SUCCESSFUL_TASK",
+    "PROVIDER_FAILURE",
+    "TOOL_FAILURE",
+    "WORKER_RECOVERY",
+    "SCANNER_STALE",
+    "BUDGET",
+]
 
 
 class AIFeedbackCreate(StrictToolInput):
@@ -188,6 +196,73 @@ class AIMetricEventData(BaseModel):
     cross_factory_leakage: bool
     preview_executed_mislabel: bool
     created_at: str
+
+
+class AIOperationalAlertItemData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alert_type: OperationalAlertType
+    triggered: bool
+    observed_value: int = Field(ge=0)
+    threshold_value: int = Field(gt=0)
+    notification_ids: list[str]
+    detail_code: str
+
+
+class AIOperationalAlertEvaluationData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["ai-operational-alert-evaluation-v1"] = (
+        "ai-operational-alert-evaluation-v1"
+    )
+    evaluated_at: str
+    window_minutes: int = Field(ge=1, le=1440)
+    recipient_count: int = Field(ge=1, le=16)
+    items: list[AIOperationalAlertItemData]
+
+
+class AIOperationalAlertAcknowledgementRequest(StrictToolInput):
+    notification_ids: list[str] = Field(min_length=1, max_length=96)
+
+    @field_validator("notification_ids")
+    @classmethod
+    def validate_notification_ids(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("Operational alert notification ids must be unique")
+        for value in values:
+            if (
+                len(value) != 48
+                or not value.startswith("ainotif-")
+                or any(character not in "0123456789abcdef" for character in value[8:])
+            ):
+                raise ValueError("Operational alert notification id is invalid")
+        return values
+
+
+class AIOperationalAlertAcknowledgementItemData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notification_id: str
+    alert_type: OperationalAlertType
+    status: Literal["unread", "read", "handled"]
+    created_at: str
+    read_at: str
+    handled_at: str
+    acknowledged: bool
+
+
+class AIOperationalAlertAcknowledgementReportData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["ai-operational-alert-acknowledgement-v1"] = (
+        "ai-operational-alert-acknowledgement-v1"
+    )
+    generated_at: str
+    notification_count: int = Field(ge=1, le=96)
+    recipient_count: int = Field(ge=1, le=16)
+    complete_delivery_set: bool
+    all_acknowledged: bool
+    items: list[AIOperationalAlertAcknowledgementItemData]
 
 
 class AIEvalRunData(BaseModel):

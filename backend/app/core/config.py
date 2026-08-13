@@ -154,6 +154,25 @@ class Settings(BaseSettings):
     ai_metric_export_enabled: bool = False
     ai_input_token_cost_usd_per_million: float = Field(default=0.0, ge=0, le=1000)
     ai_output_token_cost_usd_per_million: float = Field(default=0.0, ge=0, le=1000)
+    ai_operational_alerts_enabled: bool = False
+    ai_alert_target_user_ids: str = ""
+    ai_alert_evaluation_interval_seconds: int = Field(
+        default=300,
+        ge=30,
+        le=3600,
+    )
+    ai_alert_window_minutes: int = Field(default=15, ge=1, le=1440)
+    ai_alert_cooldown_minutes: int = Field(default=60, ge=5, le=1440)
+    ai_cost_per_successful_task_alert_microusd: int = Field(
+        default=0,
+        ge=0,
+        le=10_000_000_000,
+    )
+    ai_provider_failure_alert_count: int = Field(default=0, ge=0, le=1_000_000)
+    ai_tool_failure_alert_count: int = Field(default=0, ge=0, le=1_000_000)
+    ai_worker_recovery_alert_count: int = Field(default=0, ge=0, le=1_000_000)
+    ai_budget_alert_percent: int = Field(default=0, ge=0, le=100)
+    ai_scanner_signature_max_age_hours: int = Field(default=0, ge=0, le=720)
     ai_nif18_stage: Literal["disabled", "preflight", "action-field"] = "disabled"
     ai_base_url: str = ""
 

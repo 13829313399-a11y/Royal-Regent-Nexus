@@ -148,6 +148,8 @@ def test_pilot_readiness_script_checks_external_and_server_side_gates() -> None:
         "AI_PILOT_DAILY_TOKEN_BUDGET",
         "AI_PILOT_MAX_OUTPUT_TOKENS",
         "AI_NIF18_STAGE",
+        "AI_OPERATIONAL_ALERTS_ENABLED",
+        "AI_ALERT_TARGET_USER_IDS",
         "SESSION_COOKIE_SECURE",
         "AI_LOG_RAW_PROMPTS",
         "AI_LOG_RAW_TOOL_RESULTS",
@@ -176,6 +178,13 @@ def test_pilot_readiness_script_checks_external_and_server_side_gates() -> None:
     assert "require_env_exact AI_FEEDBACK_ENABLED true" in script
     assert "require_env_exact AI_OBSERVABILITY_ENABLED true" in script
     assert "require_env_positive_decimal AI_INPUT_TOKEN_COST_USD_PER_MILLION" in script
+    assert "require_env_exact AI_OPERATIONAL_ALERTS_ENABLED true" in script
+    assert "require_env_csv_ids AI_ALERT_TARGET_USER_IDS 16 64" in script
+    assert (
+        "require_env_integer_range AI_COST_PER_SUCCESSFUL_TASK_ALERT_MICROUSD 1 10000000000"
+        in script
+    )
+    assert "require_env_integer_range AI_BUDGET_ALERT_PERCENT 1 100" in script
     assert "database revision does not match the single code head" in script
     assert "AI_ACTION_GATEWAY_ENABLED false" in script
     assert "AI_ACTION_GATEWAY_ENABLED true" in script
@@ -190,6 +199,8 @@ def test_pilot_readiness_script_checks_external_and_server_side_gates() -> None:
     ).read_text(encoding="utf-8")
     assert "AI_ACTION_GATEWAY_ENABLED=false" in production_example
     assert "AI_ACTION_GATEWAY_ENABLED=false" in backend_example
+    assert "AI_OPERATIONAL_ALERTS_ENABLED=false" in production_example
+    assert "AI_OPERATIONAL_ALERTS_ENABLED=false" in backend_example
 
     auth_tree = ast.parse(
         (REPOSITORY_ROOT / "backend" / "app" / "services" / "auth.py").read_text(
@@ -241,6 +252,13 @@ def test_nif18_evidence_verifier_requires_every_field_gate() -> None:
         "BROWSER_ACCEPTANCE_GATE",
         "ROLLBACK_GATE",
         "COST_ALERT_GATE",
+        "COST_PER_SUCCESSFUL_TASK_ALERT_GATE",
+        "PROVIDER_FAILURE_ALERT_GATE",
+        "TOOL_FAILURE_ALERT_GATE",
+        "WORKER_RECOVERY_ALERT_GATE",
+        "SCANNER_STALE_ALERT_GATE",
+        "BUDGET_ALERT_GATE",
+        "ALERT_ACKNOWLEDGEMENT_GATE",
     )
     for gate in required_gates:
         assert gate in verifier
@@ -335,6 +353,13 @@ def test_nif18_evidence_verifier_executes_strict_boundaries(tmp_path: Path) -> N
         "BROWSER_ACCEPTANCE_GATE",
         "ROLLBACK_GATE",
         "COST_ALERT_GATE",
+        "COST_PER_SUCCESSFUL_TASK_ALERT_GATE",
+        "PROVIDER_FAILURE_ALERT_GATE",
+        "TOOL_FAILURE_ALERT_GATE",
+        "WORKER_RECOVERY_ALERT_GATE",
+        "SCANNER_STALE_ALERT_GATE",
+        "BUDGET_ALERT_GATE",
+        "ALERT_ACKNOWLEDGEMENT_GATE",
     )
     references = (
         "PILOT_USER_SET_REF",
@@ -344,12 +369,19 @@ def test_nif18_evidence_verifier_executes_strict_boundaries(tmp_path: Path) -> N
         "FAULT_DRILL_REF",
         "BROWSER_EVIDENCE_REF",
         "COST_ALERT_REF",
+        "COST_PER_SUCCESSFUL_TASK_ALERT_REF",
+        "PROVIDER_FAILURE_ALERT_REF",
+        "TOOL_FAILURE_ALERT_REF",
+        "WORKER_RECOVERY_ALERT_REF",
+        "SCANNER_STALE_ALERT_REF",
+        "BUDGET_ALERT_REF",
+        "ALERT_ACKNOWLEDGEMENT_REF",
         "PRODUCT_APPROVER",
         "SECURITY_APPROVER",
         "OPERATIONS_APPROVER",
     )
     evidence.write_text(
-        "NIF18_SCHEMA_VERSION=nif18-production-evidence-v1\n"
+        "NIF18_SCHEMA_VERSION=nif18-production-evidence-v2\n"
         "OVERALL_RESULT=PASS\n"
         f"DEPLOYED_REVISION={revision}\n"
         "EXECUTED_AT_UTC=2026-08-13T00:00:00Z\n"
@@ -390,6 +422,49 @@ def test_nif18_evidence_verifier_executes_strict_boundaries(tmp_path: Path) -> N
     )
     assert pending.returncode != 0
     assert "CONTROLLED_APPLY_DRAFT_GATE" in pending.stderr
+
+    evidence.write_text(
+        evidence.read_text(encoding="utf-8")
+        .replace(
+            "CONTROLLED_APPLY_DRAFT_GATE=PENDING",
+            "CONTROLLED_APPLY_DRAFT_GATE=PASS",
+        )
+        .replace(
+            "PROVIDER_FAILURE_ALERT_REF=evidence-8",
+            "PROVIDER_FAILURE_ALERT_REF=evidence-7",
+        ),
+        encoding="utf-8",
+    )
+    duplicate_alert_reference = subprocess.run(
+        [shell, _shell_path(verifier)],
+        cwd=repository,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert duplicate_alert_reference.returncode != 0
+    assert "duplicates the evidence reference" in duplicate_alert_reference.stderr
+
+    evidence.write_text(
+        evidence.read_text(encoding="utf-8")
+        .replace(
+            "PROVIDER_FAILURE_ALERT_REF=evidence-7",
+            "PROVIDER_FAILURE_ALERT_REF=evidence-8",
+        )
+        + "BUDGET_ALERT_GATE=PASS\n",
+        encoding="utf-8",
+    )
+    duplicate_key = subprocess.run(
+        [shell, _shell_path(verifier)],
+        cwd=repository,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert duplicate_key.returncode != 0
+    assert "duplicate evidence key: BUDGET_ALERT_GATE" in duplicate_key.stderr
 
 
 def test_pilot_readiness_csv_validation_executes_real_shell_boundaries(
