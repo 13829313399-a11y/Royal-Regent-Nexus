@@ -1,0 +1,26 @@
+{
+  "schema_version": "ai-eval-dataset-v1",
+  "suite_id": "business_current_page_v1",
+  "dataset_version": "1.0.0",
+  "mode": "OFFLINE_FAKE",
+  "skill_id": "business.current_page_query",
+  "skill_version": "1.0.0",
+  "prompt_version": "1.0.0",
+  "cases": [
+    {
+      "id": "business_chinese_ellipsis",
+      "category": "CHINESE_LANGUAGE",
+      "user_text": "睇下而家呢页有咩积压，唔好乱作数",
+      "factory_id": "huaxing",
+      "route_name": "injection-scheduling-v2",
+      "expected": {
+        "skill_id": "business.current_page_query",
+        "tools": [{"name": "injection_scheduling.get_backlog", "required_arguments": {"factory_id": "huaxing"}}],
+        "evidence_levels": ["FORMAL_DOMAIN_SERVICE"],
+        "required_answer_terms": ["正式数据"],
+        "grounded_claim_count": 1
+      },
+      "tags": ["cantonese", "grounded"]
+    }
+  ]
+}

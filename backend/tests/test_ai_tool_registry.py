@@ -1,8 +1,6 @@
 from dataclasses import replace
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
 from app.core.config import Settings
 from app.schemas.ai import AIServerPageContext, AIToolRiskLevel, StrictToolInput
 from app.services.ai.tool_executor import ToolExecutionContext
@@ -16,6 +14,7 @@ from app.services.auth import (
     AuthGrantContext,
     AuthOverrideContext,
 )
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class FactoryArguments(StrictToolInput):

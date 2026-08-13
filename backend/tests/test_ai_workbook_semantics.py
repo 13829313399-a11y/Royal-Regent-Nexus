@@ -6,8 +6,6 @@ from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
-from openpyxl import Workbook
-
 from app.core.config import Settings
 from app.services.ai.providers import FakeProvider, ProviderResponse, ProviderToolCall
 from app.services.ai.workbook_inspection import (
@@ -18,6 +16,33 @@ from app.services.ai.workbook_mapping import (
     WorkbookMappingError,
     propose_workbook_mapping,
 )
+from app.services.auth import AuthContext, AuthGrantContext
+from openpyxl import Workbook
+
+
+def mapping_user() -> AuthContext:
+    permissions = frozenset({"injection_scheduling:propose_import_profiles"})
+    return AuthContext(
+        id="workbook-mapping-reviewer",
+        username="workbook-mapping-reviewer",
+        display_name="工作簿映射审核员",
+        roles=("工作簿映射审核员",),
+        role_codes=("workbook_mapping_reviewer",),
+        permissions=permissions,
+        factory_scopes=("huaxing",),
+        department_scopes=("production",),
+        grants=(
+            AuthGrantContext(
+                role_id="workbook-mapping-role",
+                role_name="工作簿映射审核员",
+                factory_id="huaxing",
+                department="production",
+                permissions=permissions,
+                binding_id="workbook-mapping-binding",
+            ),
+        ),
+        active_permission_codes=permissions,
+    )
 
 
 def workbook_bytes() -> bytes:
@@ -180,6 +205,7 @@ def test_mapping_proposal_uses_existing_catalog_and_stays_profile_draft() -> Non
             provider=provider,
             settings=mapping_settings(),
             request_id="request-mapping-1",
+            user=mapping_user(),
         )
     )
     assert result.profile_registry == "injection_scheduling_import_profiles"
@@ -189,6 +215,17 @@ def test_mapping_proposal_uses_existing_catalog_and_stays_profile_draft() -> Non
     assert result.missing_required_fields == []
     assert "Task" in " ".join(result.warnings)
     assert result.source_sha256 == snapshot.source_lineage.source_sha256
+    manifest = result.preview_manifest
+    assert manifest is not None
+    assert manifest.preview_type == "workbook.mapping"
+    assert manifest.status == "READY"
+    assert manifest.can_propose_action is False
+    assert manifest.no_write_performed is True
+    assert manifest.deterministic_service is False
+    assert {item.source_level.value for item in manifest.evidence_refs} == {
+        "USER_PROVIDED",
+        "MODEL_INFERENCE",
+    }
     request_payload = provider.requests[0].input[1].content
     assert isinstance(request_payload, str)
     assert "M-001" not in request_payload
@@ -234,6 +271,7 @@ def test_mapping_proposal_rejects_invented_source_or_transformer() -> None:
                 provider=provider,
                 settings=mapping_settings(),
                 request_id="request-mapping-invalid",
+                user=mapping_user(),
             )
         )
     assert captured.value.code == "AI_MAPPING_INVALID_OUTPUT"

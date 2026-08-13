@@ -16,6 +16,12 @@ class AIActionConfirmation(Base):
             "'CANCELLED', 'STALE', 'FAILED')",
             name="ck_ai_action_confirmation_status",
         ),
+        CheckConstraint(
+            "lifecycle_status IN ('PROPOSED', 'WAITING_APPROVAL', 'APPROVED', 'REJECTED', "
+            "'EXPIRED', 'CANCELLED', 'COMMITTING', 'VERIFYING', 'EXECUTED', "
+            "'FAILED', 'STALE')",
+            name="ck_ai_action_lifecycle_status",
+        ),
         Index(
             "uq_ai_action_confirmation_request",
             "user_id",
@@ -42,6 +48,18 @@ class AIActionConfirmation(Base):
             "entity_type",
             "entity_id",
         ),
+        Index(
+            "ix_ai_action_lifecycle_expiry",
+            "lifecycle_status",
+            "expires_at",
+        ),
+        Index(
+            "uq_ai_action_approval_request",
+            "approval_request_id",
+            unique=True,
+            sqlite_where=text("approval_request_id != ''"),
+            postgresql_where=text("approval_request_id != ''"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
@@ -65,3 +83,29 @@ class AIActionConfirmation(Base):
     execution_request_id: Mapped[str] = mapped_column(String(128), default="")
     execution_result_json: Mapped[str] = mapped_column(Text, default="{}")
     failure_code: Mapped[str] = mapped_column(String(96), default="")
+    gateway_contract_version: Mapped[str] = mapped_column(String(32), default="")
+    action_type: Mapped[str] = mapped_column(String(96), default="")
+    handler_version: Mapped[str] = mapped_column(String(32), default="")
+    approval_policy_version: Mapped[str] = mapped_column(String(32), default="")
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(32), default="WAITING_APPROVAL", index=True
+    )
+    waiting_approval_at: Mapped[str] = mapped_column(String(32), default="")
+    approval_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("auth_users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    approval_request_id: Mapped[str] = mapped_column(String(128), default="")
+    approval_args_hash: Mapped[str] = mapped_column(String(64), default="")
+    approval_entity_revision: Mapped[int] = mapped_column(default=0)
+    approval_expires_at: Mapped[str] = mapped_column(String(32), default="")
+    rejected_at: Mapped[str] = mapped_column(String(32), default="")
+    rejection_reason: Mapped[str] = mapped_column(Text, default="")
+    commit_started_at: Mapped[str] = mapped_column(String(32), default="")
+    verification_started_at: Mapped[str] = mapped_column(String(32), default="")
+    verified_at: Mapped[str] = mapped_column(String(32), default="")
+    execution_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("auth_users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    domain_audit_id: Mapped[str] = mapped_column(String(128), default="")
+    verification_result_json: Mapped[str] = mapped_column(Text, default="{}")
+    compensation_json: Mapped[str] = mapped_column(Text, default="{}")

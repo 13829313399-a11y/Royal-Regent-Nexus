@@ -6,6 +6,7 @@ ENV_FILE="${ENV_FILE:-.env.production}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 PUBLIC_ORIGIN="${AI_PUBLIC_ORIGIN:-}"
 EXPECT_DISABLED_MARKER="${AI_PILOT_EXPECT_DISABLED_MARKER:-true}"
+NIF18_STAGE="${AI_NIF18_STAGE:-disabled}"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -108,6 +109,16 @@ require_env_integer_range() {
     || fail "$key is outside the approved Pilot range"
 }
 
+require_env_positive_decimal() {
+  key="$1"
+  actual="$(read_env_value "$key")"
+  case "$actual" in
+    ""|*[!0-9.]*) fail "$key must be a positive decimal" ;;
+  esac
+  awk -v value="$actual" 'BEGIN { exit !(value + 0 > 0) }' \
+    || fail "$key must be greater than zero"
+}
+
 require_hsts_header() {
   header_path="$1"
   route_label="$2"
@@ -164,6 +175,43 @@ require_env_integer_range AI_MAX_INPUT_MESSAGE_CHARS 1 8000
 require_env_integer_range AI_MAX_INPUT_CHARS 1 40000
 require_env_integer_range AI_MAX_IMAGE_TOTAL_BYTES 1 12582912
 
+case "$NIF18_STAGE" in
+  disabled) ;;
+  preflight|action-field)
+    require_env_exact AI_NIF_RUNTIME_ENABLED true
+    require_env_exact AI_PROVIDER_CAPABILITY_ROUTER_ENABLED true
+    require_env_exact AI_SKILL_ROUTER_ENABLED true
+    require_env_exact AI_EVIDENCE_V1_ENABLED true
+    require_env_exact AI_CONVERSATIONS_ENABLED true
+    require_env_exact AI_TASKS_ENABLED true
+    require_env_exact AI_TASK_WORKER_ENABLED true
+    require_env_exact AI_SHARED_GUARD_ENABLED true
+    require_env_exact AI_SEMANTIC_GATEWAY_ENABLED true
+    require_env_exact AI_KNOWLEDGE_HUB_ENABLED true
+    require_env_exact AI_ARTIFACTS_ENABLED true
+    require_env_exact AI_ARTIFACT_WORKFLOWS_ENABLED true
+    require_env_exact AI_VISION_TOOL_COMPARISON_ENABLED true
+    require_env_exact AI_ARTIFACT_SCANNER_BACKEND clamav
+    require_env_exact AI_ARTIFACT_PRIVATE_VOLUME_VERIFIED true
+    require_env_exact AI_ARTIFACT_CLAMAV_OPERATIONS_VERIFIED true
+    require_env_exact AI_ARTIFACT_BACKUP_ENCRYPTION_VERIFIED true
+    require_env_exact AI_ARTIFACT_BACKUP_RESTORE_DRILL_VERIFIED true
+    require_env_exact AI_FEEDBACK_ENABLED true
+    require_env_exact AI_OBSERVABILITY_ENABLED true
+    require_env_exact AI_METRIC_EXPORT_ENABLED true
+    require_env_positive_decimal AI_INPUT_TOKEN_COST_USD_PER_MILLION
+    require_env_positive_decimal AI_OUTPUT_TOKEN_COST_USD_PER_MILLION
+    if [ "$NIF18_STAGE" = "preflight" ]; then
+      require_env_exact AI_ACTION_GATEWAY_ENABLED false
+      require_env_exact AI_CONTROLLED_APPLY_ENABLED false
+    else
+      require_env_exact AI_ACTION_GATEWAY_ENABLED true
+      require_env_exact AI_CONTROLLED_APPLY_ENABLED true
+    fi
+    ;;
+  *) fail "AI_NIF18_STAGE must be disabled, preflight or action-field" ;;
+esac
+
 vision_enabled="$(read_env_value AI_CLOUD_VISION_ENABLED)"
 case "$vision_enabled" in
   true)
@@ -212,6 +260,19 @@ fi
 
 api_id="$(compose ps -q api)"
 [ -n "$api_id" ] || fail "API container is not running"
+if [ "$NIF18_STAGE" != "disabled" ]; then
+  worker_id="$(compose ps -q ai-task-worker)"
+  [ -n "$worker_id" ] || fail "AI Task Worker container is not running"
+  worker_state="$(docker inspect --format '{{.State.Status}}' "$worker_id")"
+  [ "$worker_state" = "running" ] || fail "AI Task Worker container is not running"
+  database_revision="$(
+    compose exec -T db sh -lc 'psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT version_num FROM alembic_version"' \
+      | tr -d '[:space:]'
+  )"
+  code_head="$(compose exec -T api alembic -c alembic.ini heads | awk '{print $1; exit}')"
+  [ -n "$database_revision" ] && [ "$database_revision" = "$code_head" ] \
+    || fail "database revision does not match the single code head"
+fi
 control_mount_writable="$(
   docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/backend/control"}}{{.RW}}{{end}}{{end}}' "$api_id"
 )"

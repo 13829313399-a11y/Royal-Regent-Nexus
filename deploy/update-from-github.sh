@@ -195,6 +195,7 @@ candidate_id=""
 ai_control_volume=""
 ai_disable_marker_preexisting=0
 ai_disable_marker_created=0
+ai_shared_guard_enabled="false"
 cleanup_candidate() {
   if [ -n "$candidate_id" ]; then
     echo "Deployment stopped before cutover completed; leaving API candidate $candidate_id running." >&2
@@ -240,6 +241,11 @@ case "$ai_pilot_enabled" in
       postgres:16-alpine test -f /control/ai.disabled; then
       ai_disable_marker_preexisting=1
     fi
+    ai_shared_guard_enabled="$(read_env_value AI_SHARED_GUARD_ENABLED)"
+    case "$ai_shared_guard_enabled" in
+      true|false) ;;
+      *) fail "AI_SHARED_GUARD_ENABLED must be true or false while AI Pilot is enabled" ;;
+    esac
     ;;
   false|"") ;;
   *) fail "AI_PILOT_ENABLED must be true or false" ;;
@@ -302,7 +308,9 @@ if [ "$ai_pilot_enabled" = "true" ] && [ "$ai_disable_marker_preexisting" -eq 0 
   ai_disable_marker_created=1
 fi
 
-if [ -z "$migration_changes" ] && [ "$ai_pilot_enabled" != "true" ]; then
+if [ -z "$migration_changes" ] && { \
+  [ "$ai_pilot_enabled" != "true" ] || [ "$ai_shared_guard_enabled" = "true" ]; \
+}; then
   network_name="$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$api_id")"
   [ -n "$network_name" ] || fail "Cannot determine the production Docker network"
   new_api_image_ref="$(docker inspect --format '{{.Config.Image}}' "$api_id")"
@@ -310,6 +318,9 @@ if [ -z "$migration_changes" ] && [ "$ai_pilot_enabled" != "true" ]; then
   [ -n "$new_api_image" ] || fail "Cannot determine the newly built API image"
   candidate_name="rr-api-candidate-$timestamp"
 
+  if [ "$ai_pilot_enabled" = "true" ]; then
+    echo "Shared AI Guard enabled; starting the candidate behind the active AI disable marker"
+  fi
   echo "Starting a health-checked API candidate before replacing the production API"
   candidate_id="$(docker run -d \
     --name "$candidate_name" \
@@ -338,7 +349,7 @@ else
     echo "Alembic migration changes detected:"
     printf '%s\n' "$migration_changes"
   else
-    echo "AI Pilot is enabled; avoiding concurrent in-process limiter instances"
+    echo "AI Pilot is enabled without Shared Guard; avoiding concurrent limiter instances"
   fi
   compose up -d --no-deps api
   api_id="$(compose ps -q api)"

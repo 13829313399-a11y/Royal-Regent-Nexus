@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.time import BUSINESS_TIME_ZONE, business_now
 from app.models.injection_scheduling_execution import InjectionSchedulingPlan
 from app.models.injection_scheduling_scheduler import InjectionSchedulingRun
@@ -25,6 +26,10 @@ from app.schemas.ai.scheduling_advisor import (
 from app.schemas.injection_scheduling_scheduler import (
     InjectionSchedulingObjectiveWeights,
     InjectionSchedulingRunCreate,
+)
+from app.services.ai.previews.scheduling_adapter import (
+    build_scheduling_preview_manifest,
+    build_scheduling_scenario_compare,
 )
 from app.services.auth import AuthContext
 from app.services.injection_scheduling import current_rule_set
@@ -133,7 +138,11 @@ def _metrics(summary: dict[str, Any]) -> AISchedulingPreviewMetrics:
     )
 
 
-def _run_summary(record: InjectionSchedulingRun) -> AISchedulingPreviewRunSummary:
+def _run_summary(
+    record: InjectionSchedulingRun,
+    *,
+    preview_manifest=None,
+) -> AISchedulingPreviewRunSummary:
     if record.status not in {"SUCCEEDED", "PARTIAL"}:
         raise HTTPException(status_code=409, detail="该候选方案尚未成功生成")
     summary = load_json(record.summary_json, {})
@@ -155,6 +164,7 @@ def _run_summary(record: InjectionSchedulingRun) -> AISchedulingPreviewRunSummar
         horizon_start=record.horizon_start,
         horizon_end=record.horizon_end,
         metrics=_metrics(summary),
+        preview_manifest=preview_manifest,
     )
 
 
@@ -274,11 +284,20 @@ def generate_preview(
         user,
         _request_id(context, intent.model_dump(mode="json")),
     )
+    created_at = datetime.fromisoformat(record.created_at)
+    manifest = build_scheduling_preview_manifest(
+        record,
+        user=user,
+        current_plan=plan,
+        current_rule_revision=rules.revision,
+        ttl_minutes=settings.ai_preview_ttl_minutes,
+        now=created_at,
+    )
     return AIInjectionSchedulingPreviewData(
         factory_id=intent.factory_id,
         as_of=business_now().isoformat(timespec="seconds"),
         intent_objective=intent.objective,
-        run=_run_summary(record),
+        run=_run_summary(record, preview_manifest=manifest),
         entity_links=[_scheduling_link(intent.factory_id, record.id)],
     )
 
@@ -286,6 +305,7 @@ def generate_preview(
 def compare_previews(
     db: Session,
     arguments: InjectionSchedulingPreviewComparisonInput,
+    user: AuthContext,
 ) -> AIInjectionSchedulingComparisonData:
     records = list(
         db.scalars(
@@ -310,15 +330,46 @@ def compare_previews(
         for record in ordered
     }
     comparable = len(snapshot_keys) == 1
+    current_plan = db.scalar(
+        select(InjectionSchedulingPlan).where(
+            InjectionSchedulingPlan.factory_id == arguments.factory_id,
+            InjectionSchedulingPlan.status == "DRAFT",
+        )
+    )
+    current_rules = (
+        current_rule_set(db, arguments.factory_id) if current_plan is not None else None
+    )
+    now = business_now()
+    manifests = tuple(
+        build_scheduling_preview_manifest(
+            record,
+            user=user,
+            current_plan=current_plan,
+            current_rule_revision=(
+                current_rules.revision if current_rules is not None else None
+            ),
+            ttl_minutes=settings.ai_preview_ttl_minutes,
+            now=now,
+        )
+        for record in ordered
+    )
+    warning = (
+        "候选方案基于同一计划、规则与时间范围，可直接比较。"
+        if comparable
+        else "候选方案的计划、规则或时间范围不同，指标不可直接横向比较。"
+    )
     return AIInjectionSchedulingComparisonData(
         factory_id=arguments.factory_id,
         as_of=business_now().isoformat(timespec="seconds"),
         comparable_snapshot=comparable,
-        comparison_warning=(
-            "候选方案基于同一计划、规则与时间范围，可直接比较。"
-            if comparable
-            else "候选方案的计划、规则或时间范围不同，指标不可直接横向比较。"
+        comparison_warning=warning,
+        runs=[
+            _run_summary(record, preview_manifest=manifest)
+            for record, manifest in zip(ordered, manifests, strict=True)
+        ],
+        scenario_compare=build_scheduling_scenario_compare(
+            manifests,
+            warning=warning,
         ),
-        runs=[_run_summary(record) for record in ordered],
         entity_links=[_scheduling_link(arguments.factory_id)],
     )

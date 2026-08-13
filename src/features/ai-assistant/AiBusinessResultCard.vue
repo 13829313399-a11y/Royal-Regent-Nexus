@@ -3,6 +3,7 @@ import { ExternalLink, FileSearch, ShieldCheck } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 import type { RouteLocationRaw } from 'vue-router'
 import AiActionConfirmationCard from './AiActionConfirmationCard.vue'
+import PreviewCard from '@/features/nexus-copilot/components/PreviewCard.vue'
 import type {
   AIBusinessResult,
   AICartonProcurementSummary,
@@ -155,6 +156,41 @@ function customerOrderLink(factoryId: string | undefined): RouteLocationRaw {
               </dd>
             </div>
           </dl>
+          <section
+            v-if="result.kind === 'knowledge_search' && result.knowledgeSearch"
+            class="mt-2 space-y-2"
+            data-ai-knowledge-search
+          >
+            <p
+              v-if="result.knowledgeSearch.evidenceMissing"
+              class="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] font-medium text-amber-900"
+            >
+              当前没有可引用的有效知识，AI 不会补写缺失规则。
+            </p>
+            <ul v-else class="space-y-2">
+              <li
+                v-for="hit in result.knowledgeSearch.hits"
+                :key="`${hit.citation.knowledgeId}:${hit.citation.version}:${hit.citation.sectionId}`"
+                class="rounded-lg border border-sky-200 bg-white p-2.5"
+              >
+                <p class="text-[11px] font-bold text-slate-900">{{ hit.citation.heading }}</p>
+                <p class="mt-1 whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600">{{ hit.textMarkdown }}</p>
+                <p class="mt-2 break-all text-[10px] text-slate-500">
+                  Citation：{{ hit.citation.knowledgeId }}@{{ hit.citation.version }}
+                  · 段落 {{ hit.citation.sectionId }} · 审核 {{ hit.citation.reviewedAt }}
+                </p>
+                <div v-if="hit.links.length" class="mt-2 flex flex-wrap gap-2">
+                  <a
+                    v-for="link in hit.links"
+                    :key="`${link.route}:${link.label}`"
+                    :href="linkHref(link)"
+                    class="font-semibold text-sky-700 underline decoration-sky-300 underline-offset-2"
+                  >{{ link.label }}</a>
+                </div>
+              </li>
+            </ul>
+            <p class="text-[10px] text-slate-500">流程知识仅作指导；实时业务事实冲突时，以正式业务工具为准。</p>
+          </section>
           <section
             v-if="result.kind === 'internal_quote_list' && result.internalQuote"
             class="mt-2 space-y-2"
@@ -438,6 +474,7 @@ function customerOrderLink(factoryId: string | undefined): RouteLocationRaw {
                   <div><dt class="text-slate-500">计划 revision</dt><dd class="font-bold text-slate-900">{{ run.planRevision }}</dd></div>
                   <div><dt class="text-slate-500">规则 revision</dt><dd class="font-bold text-slate-900">{{ run.ruleRevision }}</dd></div>
                 </dl>
+                <PreviewCard v-if="run.previewManifest" :manifest="run.previewManifest" />
               </li>
             </ul>
             <p class="text-[10px] leading-4 text-slate-500">
@@ -459,6 +496,19 @@ function customerOrderLink(factoryId: string | undefined): RouteLocationRaw {
           <p v-if="result.truncated" class="mt-1 text-[11px] font-medium text-amber-700">
             结果已按安全上限截断
           </p>
+          <dl
+            v-if="result.evidence?.length"
+            class="mt-2 rounded-lg border border-emerald-200 bg-white px-2.5 py-2 text-[10px] text-slate-600"
+            data-ai-evidence
+          >
+            <div class="flex flex-wrap gap-x-2 gap-y-1">
+              <dt class="font-semibold text-emerald-800">证据</dt>
+              <dd>{{ result.evidence[0]?.sourceLevel }}</dd>
+              <dd v-if="result.evidence[0]?.factoryId">厂区 {{ result.evidence[0]?.factoryId }}</dd>
+              <dd>时点 {{ result.evidence[0]?.asOf }}</dd>
+              <dd>{{ result.evidence.some((item) => item.truncated) ? '不完整/已截断' : '完整性：未截断' }}</dd>
+            </div>
+          </dl>
           <div v-if="result.links.length" class="mt-2 flex flex-wrap gap-2">
             <a
               v-for="link in result.links"

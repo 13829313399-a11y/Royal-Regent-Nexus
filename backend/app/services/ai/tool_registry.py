@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel
@@ -22,10 +23,77 @@ _TOOL_NAME_PATTERN = re.compile(
     r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+"
 )
 
-
 class ToolAccessContext(Protocol):
     user: object
     page_context: object | None
+
+
+class ToolSideEffectClass(StrEnum):
+    UNCLASSIFIED = "UNCLASSIFIED"
+    NONE = "NONE"
+    PREVIEW_STATE = "PREVIEW_STATE"
+    CONSEQUENTIAL_STATE = "CONSEQUENTIAL_STATE"
+
+
+class ToolIdempotency(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    IDEMPOTENT = "IDEMPOTENT"
+    IDEMPOTENT_WITH_KEY = "IDEMPOTENT_WITH_KEY"
+    NON_IDEMPOTENT = "NON_IDEMPOTENT"
+
+
+class ToolRetryPolicy(StrEnum):
+    NEVER_RETRY = "NEVER_RETRY"
+    SAFE_TRANSIENT = "SAFE_TRANSIENT"
+
+
+_READ_CONTRACT = (
+    ToolSideEffectClass.NONE,
+    ToolIdempotency.IDEMPOTENT,
+    ToolRetryPolicy.SAFE_TRANSIENT,
+)
+_REGISTERED_EXECUTION_CONTRACTS = {
+    "artifacts.inspect_workbook": (
+        ToolSideEffectClass.PREVIEW_STATE,
+        ToolIdempotency.IDEMPOTENT_WITH_KEY,
+        ToolRetryPolicy.SAFE_TRANSIENT,
+    ),
+    "artifacts.translate_document_local": (
+        ToolSideEffectClass.PREVIEW_STATE,
+        ToolIdempotency.IDEMPOTENT_WITH_KEY,
+        ToolRetryPolicy.SAFE_TRANSIENT,
+    ),
+    "carton_procurement.list_summaries": _READ_CONTRACT,
+    "customer_order.get_capabilities": _READ_CONTRACT,
+    "customer_order.list_export_audits": _READ_CONTRACT,
+    "identity.get_current_context": _READ_CONTRACT,
+    "injection_scheduling.compare_previews": _READ_CONTRACT,
+    "injection_scheduling.generate_preview": (
+        ToolSideEffectClass.PREVIEW_STATE,
+        ToolIdempotency.NON_IDEMPOTENT,
+        ToolRetryPolicy.NEVER_RETRY,
+    ),
+    "injection_scheduling.get_backlog": _READ_CONTRACT,
+    "injection_scheduling.get_plan_context": _READ_CONTRACT,
+    "injection_scheduling.propose_apply": (
+        ToolSideEffectClass.PREVIEW_STATE,
+        ToolIdempotency.NON_IDEMPOTENT,
+        ToolRetryPolicy.NEVER_RETRY,
+    ),
+    "internal_quote.list_summaries": _READ_CONTRACT,
+    "knowledge.get_module_help": _READ_CONTRACT,
+    "knowledge.search_module": _READ_CONTRACT,
+    "molding_sample.list_summaries": _READ_CONTRACT,
+    "raw_material.list_inventory_summaries": _READ_CONTRACT,
+    "raw_material.list_master_summaries": _READ_CONTRACT,
+    "semantic.injection_scheduling.query_backlog": _READ_CONTRACT,
+    "vision.compare_injection_backlog": _READ_CONTRACT,
+    "vision.observe_injection_backlog_image": (
+        ToolSideEffectClass.NONE,
+        ToolIdempotency.NON_IDEMPOTENT,
+        ToolRetryPolicy.NEVER_RETRY,
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +113,10 @@ class ToolSpec:
     max_result_rows: int = 50
     timeout_seconds: float = 10
     audit_policy: AIToolAuditPolicy = AIToolAuditPolicy.METADATA_ONLY
+    version: str = "1.0.0"
+    side_effect_class: ToolSideEffectClass = ToolSideEffectClass.UNCLASSIFIED
+    idempotency: ToolIdempotency = ToolIdempotency.UNKNOWN
+    retry_policy: ToolRetryPolicy = ToolRetryPolicy.NEVER_RETRY
 
     def __post_init__(self) -> None:
         if not _TOOL_NAME_PATTERN.fullmatch(self.name):
@@ -72,6 +144,23 @@ class ToolSpec:
             raise ValueError("permissioned tools must declare allowed_departments")
         if self.max_result_rows <= 0 or self.timeout_seconds <= 0:
             raise ValueError("tool result and timeout limits must be positive")
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", self.version):
+            raise ValueError("tool version must use semantic versioning")
+        if self.retry_policy == ToolRetryPolicy.SAFE_TRANSIENT:
+            safe_read = (
+                self.side_effect_class == ToolSideEffectClass.NONE
+                and self.idempotency == ToolIdempotency.IDEMPOTENT
+                and self.risk_level == AIToolRiskLevel.READ_ONLY
+            )
+            keyed_preview = (
+                self.side_effect_class == ToolSideEffectClass.PREVIEW_STATE
+                and self.idempotency == ToolIdempotency.IDEMPOTENT_WITH_KEY
+                and self.risk_level == AIToolRiskLevel.PREVIEW_WITH_AUDIT
+            )
+            if not (safe_read or keyed_preview):
+                raise ValueError(
+                    "SAFE_TRANSIENT requires an idempotent read or keyed Preview"
+                )
 
     def provider_definition(self) -> ProviderToolDefinition:
         return ProviderToolDefinition(
@@ -97,6 +186,24 @@ class ToolRegistry:
     def resolve(self, name: str) -> ToolSpec | None:
         return self._by_name.get(name)
 
+    def validate_worker_contracts(self) -> None:
+        for spec in self._specs:
+            if spec.side_effect_class == ToolSideEffectClass.UNCLASSIFIED:
+                raise ValueError(f"Tool side effect is unclassified: {spec.name}")
+            if spec.idempotency == ToolIdempotency.UNKNOWN:
+                raise ValueError(f"Tool idempotency is unknown: {spec.name}")
+            if (
+                spec.side_effect_class != ToolSideEffectClass.NONE
+                and spec.retry_policy != ToolRetryPolicy.NEVER_RETRY
+                and (
+                spec.idempotency != ToolIdempotency.IDEMPOTENT_WITH_KEY
+                or spec.retry_policy != ToolRetryPolicy.SAFE_TRANSIENT
+                )
+            ):
+                raise ValueError(
+                    f"non-keyed side-effecting Tool cannot be retried: {spec.name}"
+                )
+
     def provider_definitions(
         self,
         context: ToolAccessContext,
@@ -106,6 +213,22 @@ class ToolRegistry:
             for spec in self._specs
             if self.is_available(spec, context)
         )
+
+    def provider_definitions_for_names(
+        self,
+        context: ToolAccessContext,
+        names: Iterable[str],
+    ) -> tuple[ProviderToolDefinition, ...]:
+        requested = tuple(names)
+        if len(requested) != len(set(requested)):
+            raise ValueError("Tool definition names must be unique")
+        definitions: list[ProviderToolDefinition] = []
+        for name in requested:
+            spec = self.resolve(name)
+            if spec is None or not self.is_available(spec, context):
+                raise ValueError("Tool definition is unknown or unauthorized")
+            definitions.append(spec.provider_definition())
+        return tuple(definitions)
 
     def available_tool_groups(self, context: ToolAccessContext) -> tuple[str, ...]:
         return tuple(
@@ -157,7 +280,18 @@ class ToolRegistry:
         )
 
 
-def build_default_tool_registry(*, controlled_apply_enabled: bool = False) -> ToolRegistry:
+def build_default_tool_registry(
+    *,
+    controlled_apply_enabled: bool = False,
+    semantic_gateway_enabled: bool = False,
+    knowledge_hub_enabled: bool = False,
+    artifact_workflows_enabled: bool = False,
+    vision_tool_comparison_enabled: bool = False,
+) -> ToolRegistry:
+    from app.services.ai.semantic.query_tools import semantic_tool_specs
+    from app.services.ai.tools.artifact_workflow_tools import (
+        artifact_workflow_tool_specs,
+    )
     from app.services.ai.tools.carton_procurement_read_tools import (
         carton_procurement_tool_specs,
     )
@@ -171,6 +305,7 @@ def build_default_tool_registry(*, controlled_apply_enabled: bool = False) -> To
     from app.services.ai.tools.internal_quote_read_tools import (
         internal_quote_tool_specs,
     )
+    from app.services.ai.tools.knowledge_tools import knowledge_hub_tool_specs
     from app.services.ai.tools.module_help_tools import module_help_tool_spec
     from app.services.ai.tools.molding_sample_read_tools import (
         molding_sample_tool_specs,
@@ -180,6 +315,7 @@ def build_default_tool_registry(*, controlled_apply_enabled: bool = False) -> To
         scheduling_advisor_tool_specs,
     )
     from app.services.ai.tools.scheduling_read_tools import scheduling_tool_specs
+    from app.services.ai.tools.vision_workflow_tools import vision_workflow_tool_specs
 
     specs = [
             identity_tool_spec(),
@@ -194,4 +330,28 @@ def build_default_tool_registry(*, controlled_apply_enabled: bool = False) -> To
     ]
     if controlled_apply_enabled:
         specs.append(controlled_apply_proposal_tool_spec())
-    return ToolRegistry(specs)
+    if semantic_gateway_enabled:
+        specs.extend(semantic_tool_specs())
+    if knowledge_hub_enabled:
+        specs.extend(knowledge_hub_tool_specs())
+    if artifact_workflows_enabled:
+        specs.extend(artifact_workflow_tool_specs())
+    if vision_tool_comparison_enabled:
+        specs.extend(vision_workflow_tool_specs())
+    contracted_specs: list[ToolSpec] = []
+    for spec in specs:
+        contract = _REGISTERED_EXECUTION_CONTRACTS.get(spec.name)
+        if contract is None:
+            raise ValueError(f"Tool has no registered execution contract: {spec.name}")
+        side_effect_class, idempotency, retry_policy = contract
+        contracted_specs.append(
+            replace(
+                spec,
+                side_effect_class=side_effect_class,
+                idempotency=idempotency,
+                retry_policy=retry_policy,
+            )
+        )
+    registry = ToolRegistry(contracted_specs)
+    registry.validate_worker_contracts()
+    return registry

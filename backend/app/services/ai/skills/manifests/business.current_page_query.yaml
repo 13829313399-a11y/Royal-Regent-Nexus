@@ -1,0 +1,17 @@
+id: business.current_page_query
+version: 1.0.0
+prompt_version: 1.0.0
+owner: platform-engineering
+status: current
+intents: [query_current_page, summarize_current_page]
+route_names: [injection-scheduling-v2, internal-quote-desk-home, molding-sample, carton-procurement, raw-material-management, customer-order-center]
+knowledge_ids: []
+required_context: {factory_scope: required}
+allowed_tools: [carton_procurement.list_summaries, customer_order.get_capabilities, customer_order.list_export_audits, injection_scheduling.compare_previews, injection_scheduling.get_backlog, injection_scheduling.get_plan_context, internal_quote.list_summaries, molding_sample.list_summaries, raw_material.list_inventory_summaries, raw_material.list_master_summaries]
+feature_tools: [knowledge.search_module]
+model_policy: {capability: GENERAL_CHAT, reasoning: BALANCED}
+risk_policy: {maximum: READ_ONLY}
+output_contract: {schema_id: business.current_page_query.v1}
+max_steps: 4
+max_input_tokens: 8000
+eval_suite_ref: business_current_page_v1

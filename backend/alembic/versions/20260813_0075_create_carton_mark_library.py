@@ -1,7 +1,7 @@
 """create persistent factory-scoped carton-mark library
 
-Revision ID: 20260813_0068
-Revises: 20260812_0067
+Revision ID: 20260813_0075
+Revises: 20260813_0074
 Create Date: 2026-08-13
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "20260813_0068"
-down_revision: str | Sequence[str] | None = "20260812_0067"
+revision: str = "20260813_0075"
+down_revision: str | Sequence[str] | None = "20260813_0074"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -129,7 +129,7 @@ def downgrade() -> None:
     ]
     if populated:
         raise RuntimeError(
-            "20260813_0068 cannot be downgraded after carton-mark data exists: "
+            "20260813_0075 cannot be downgraded after carton-mark data exists: "
             + ",".join(populated)
         )
     op.drop_index(

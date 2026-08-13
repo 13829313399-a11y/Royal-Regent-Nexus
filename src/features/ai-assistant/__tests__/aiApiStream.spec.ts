@@ -308,6 +308,41 @@ describe('AI fetch + SSE client', () => {
     expect(attachment.data_url).toBe('')
   })
 
+  it('serializes Artifact references with exact image consent and no Data URL', async () => {
+    const terminalFrame = `event: response.completed\ndata: ${JSON.stringify(envelope(1, 'response.completed', {}))}\n\n`
+    const fetchMock = vi.fn().mockResolvedValue(successResponse(singleByteStream(terminalFrame)))
+    vi.stubGlobal('fetch', fetchMock)
+    const artifactId = `aiart-${'a'.repeat(32)}`
+
+    await streamAIResponse({
+      requestId,
+      messages: [{ role: 'user', content: [{ type: 'input_text', text: '识别文件' }] }],
+      pageContext: null,
+      artifactAttachments: [{ artifact_id: artifactId }],
+      artifactEgressConsent: {
+        accepted: true,
+        notice_version: 'aliyun-cn-beijing-image-v1',
+        provider: 'qwen',
+        region: 'cn-beijing',
+        classification: 'CONFIDENTIAL_BUSINESS',
+        content_class: 'IMAGE',
+        artifact_ids: [artifactId],
+      },
+      onEvent: () => undefined,
+    })
+
+    const [, init] = fetchMock.mock.calls[0] ?? []
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.artifact_attachments).toEqual([{ artifact_id: artifactId }])
+    expect(body.artifact_egress_consent).toMatchObject({
+      notice_version: 'aliyun-cn-beijing-image-v1',
+      content_class: 'IMAGE',
+      artifact_ids: [artifactId],
+    })
+    expect(body).not.toHaveProperty('attachments')
+    expect(JSON.stringify(body)).not.toContain('data:image/')
+  })
+
   it('releases caller image data after response headers while SSE remains open', async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined
     const stream = new ReadableStream<Uint8Array>({

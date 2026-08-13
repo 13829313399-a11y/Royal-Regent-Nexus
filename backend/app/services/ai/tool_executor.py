@@ -27,6 +27,7 @@ from app.services.ai.audit_service import (
     log_tool_outcome,
     record_security_denial,
 )
+from app.services.ai.evidence import EvidenceError, build_tool_evidence
 from app.services.ai.providers import ProviderToolCall
 from app.services.ai.tool_registry import ToolRegistry, ToolSpec
 from app.services.auth import (
@@ -240,6 +241,35 @@ class ToolExecutor:
                 field_count=field_count,
             )
 
+        truncated = (
+            isinstance(safe_data, dict)
+            and safe_data.get("truncated") is True
+        )
+        evidence = None
+        if self.settings.ai_nif_runtime_enabled and self.settings.ai_evidence_v1_enabled:
+            try:
+                evidence = (
+                    build_tool_evidence(
+                        spec=spec,
+                        request_id=context.request_id,
+                        call_id=call.call_id,
+                        data=safe_data,
+                        factory_id=factory_id,
+                        truncated=truncated,
+                    ),
+                )
+            except EvidenceError:
+                return self._failure(
+                    call=call,
+                    spec=spec,
+                    context=context,
+                    timer=timer,
+                    code=AIToolErrorCode.INVALID_RESULT,
+                    message="工具结果缺少有效的证据元数据。",
+                    row_count=row_count,
+                    field_count=field_count,
+                )
+
         envelope = AIToolResultEnvelope(
             ok=True,
             tool_name=spec.name,
@@ -247,13 +277,11 @@ class ToolExecutor:
             metadata=AIToolResultMetadata(
                 row_count=row_count,
                 field_count=field_count,
-                truncated=(
-                    isinstance(safe_data, dict)
-                    and safe_data.get("truncated") is True
-                ),
+                truncated=truncated,
             ),
+            evidence=evidence,
         )
-        provider_output_json = _dump_json(envelope.model_dump(mode="json"))
+        provider_output_json = _dump_json(_envelope_payload(envelope))
         byte_count = len(provider_output_json.encode("utf-8"))
         if byte_count > self.settings.ai_max_tool_result_bytes:
             return self._failure(
@@ -343,7 +371,7 @@ class ToolExecutor:
                 retryable=retryable,
             ),
         )
-        provider_output_json = _dump_json(envelope.model_dump(mode="json"))
+        provider_output_json = _dump_json(_envelope_payload(envelope))
         event_payload = _event_payload(
             call=call,
             spec=spec,
@@ -585,8 +613,15 @@ def _event_payload(
         "tool_name": spec.name if spec is not None else "unregistered",
         "display_label": spec.display_label if spec is not None else "不可用工具",
         "status": status,
-        "result": envelope.model_dump(mode="json"),
+        "result": _envelope_payload(envelope),
     }
+
+
+def _envelope_payload(envelope: AIToolResultEnvelope) -> dict[str, object]:
+    payload = envelope.model_dump(mode="json")
+    if payload.get("evidence") is None:
+        payload.pop("evidence", None)
+    return payload
 
 
 def _dump_json(value: object) -> str:

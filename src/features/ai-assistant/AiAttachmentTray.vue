@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { ImagePlus, Trash2, X } from '@lucide/vue'
+import { getApiErrorMessage } from '@/lib/http'
+import { isArtifactWorkflowUnavailable, uploadVisionArtifact } from '@/api/aiArtifacts'
 import type {
+  AIArtifactAttachmentReference,
+  AIArtifactEgressConsent,
   AIAttachmentMediaType,
   AICloudProcessingConsent,
   AIRequestAttachment,
@@ -37,10 +41,13 @@ interface ImageDimensions {
 interface PreparedAttachmentBatch {
   attachments: AIRequestAttachment[]
   consent: AICloudProcessingConsent | null
+  artifactAttachments: AIArtifactAttachmentReference[]
+  artifactConsent: AIArtifactEgressConsent | null
 }
 
 const props = defineProps<{
   disabled?: boolean
+  artifactWorkflowEnabled?: boolean
 }>()
 
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -446,8 +453,15 @@ function readAsDataUrl(file: File) {
   })
 }
 
-async function prepareForSend(): Promise<PreparedAttachmentBatch | null> {
-  if (!attachments.value.length) return { attachments: [], consent: null }
+async function prepareForSend(factoryId = ''): Promise<PreparedAttachmentBatch | null> {
+  if (!attachments.value.length) {
+    return {
+      attachments: [],
+      consent: null,
+      artifactAttachments: [],
+      artifactConsent: null,
+    }
+  }
   if (isPreparing.value) {
     errorMessage.value = '图片正在准备中，请稍候。'
     return null
@@ -463,6 +477,49 @@ async function prepareForSend(): Promise<PreparedAttachmentBatch | null> {
   isPreparing.value = true
   errorMessage.value = ''
   try {
+    if (props.artifactWorkflowEnabled) {
+      if (!factoryId) {
+        errorMessage.value = '当前厂区无效，请刷新页面后重新选择图片。'
+        return null
+      }
+      const artifactReferences: AIArtifactAttachmentReference[] = []
+      for (const [index, item] of current.entries()) {
+        try {
+          const artifact = await uploadVisionArtifact(
+            item.file,
+            factoryId,
+            'CONFIDENTIAL_BUSINESS',
+          )
+          artifactReferences.push({ artifact_id: artifact.id })
+        }
+        catch (error) {
+          if (index === 0 && isArtifactWorkflowUnavailable(error)) break
+          errorMessage.value = getApiErrorMessage(error) || '图片 Artifact 登记失败，未发送到云端。'
+          return null
+        }
+        if (
+          generation !== lifecycleGeneration
+          || acceptedConsentGeneration !== consentGeneration
+          || !cloudProcessingConsent.value
+        ) throw new DOMException('Attachment consent changed', 'AbortError')
+      }
+      if (artifactReferences.length === current.length) {
+        return {
+          attachments: [],
+          consent: null,
+          artifactAttachments: artifactReferences,
+          artifactConsent: {
+            accepted: true,
+            notice_version: 'aliyun-cn-beijing-image-v1',
+            provider: 'qwen',
+            region: 'cn-beijing',
+            classification: 'CONFIDENTIAL_BUSINESS',
+            content_class: 'IMAGE',
+            artifact_ids: artifactReferences.map((item) => item.artifact_id),
+          },
+        }
+      }
+    }
     for (const item of current) {
       prepared.push({
         id: item.id,
@@ -482,6 +539,8 @@ async function prepareForSend(): Promise<PreparedAttachmentBatch | null> {
         notice_version: CLOUD_PROCESSING_NOTICE_VERSION,
         attachment_ids: prepared.map((item) => item.id),
       },
+      artifactAttachments: [],
+      artifactConsent: null,
     }
   } catch {
     prepared.forEach((attachment) => {

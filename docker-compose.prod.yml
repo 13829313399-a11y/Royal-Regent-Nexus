@@ -21,6 +21,18 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  clamav:
+    # Feature-release tag and persistent signatures follow the official image guidance.
+    # TCP 3310 is intentionally not published to the host.
+    image: clamav/clamav:1.4_base
+    environment:
+      FRESHCLAM_CHECKS: "6"
+      CLAMD_STARTUP_TIMEOUT: "1800"
+    volumes:
+      - clamav-db:/var/lib/clamav
+    restart: unless-stopped
+    logging: *default-logging
+
   api:
     build:
       context: .
@@ -33,6 +45,25 @@ services:
     volumes:
       - three-d-assets:/app/backend/data/three-d-printing-assets
       - ai-control:/app/backend/control:ro
+      - ai-artifacts:/app/backend/data/ai-artifacts
+    restart: unless-stopped
+    logging: *default-logging
+
+  ai-task-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: ["python", "-m", "app.services.ai.task_worker"]
+    env_file:
+      - .env.production
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - ai-control:/app/backend/control:ro
+      - ai-artifacts:/app/backend/data/ai-artifacts
     restart: unless-stopped
     logging: *default-logging
 
@@ -54,3 +85,5 @@ volumes:
   postgres-data:
   three-d-assets:
   ai-control:
+  ai-artifacts:
+  clamav-db:

@@ -3,10 +3,6 @@ import json
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, event, func, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
-
 from app.core.config import Settings
 from app.db import Base
 from app.models.carton_procurement import CartonOrder
@@ -22,6 +18,9 @@ from app.services.ai.tools.carton_procurement_read_tools import (
     carton_procurement_tool_specs,
 )
 from app.services.auth import AuthContext, AuthGrantContext, AuthOverrideContext
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 NOW = "2026-08-12T09:00:00+08:00"
 SENSITIVE_MARKERS = (

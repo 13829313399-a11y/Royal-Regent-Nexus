@@ -36,7 +36,7 @@ def test_carton_mark_library_migration_upgrades_fresh_sqlite(tmp_path: Path) -> 
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260813_0068",
+            "20260813_0075",
         )
         tables = {
             row[0]
@@ -98,10 +98,10 @@ def test_carton_mark_library_migration_refuses_data_loss_on_downgrade(
         )
         connection.commit()
 
-    rejected = _run_alembic(database_url, "downgrade", "20260812_0067")
+    rejected = _run_alembic(database_url, "downgrade", "20260813_0074")
     assert rejected.returncode != 0
     assert "cannot be downgraded after carton-mark data exists" in rejected.stderr
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260813_0068",
+            "20260813_0075",
         )
