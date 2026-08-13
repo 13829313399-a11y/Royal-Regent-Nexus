@@ -33,6 +33,7 @@ vi.mock('@/api/aiTasks', async (importOriginal) => ({
 }))
 
 import type { AuthMeResponse } from '@/api/auth'
+import AiMessageList from '@/features/ai-assistant/AiMessageList.vue'
 import { router as applicationRouter } from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import AiWorkbenchView from '../workbench/AiWorkbenchView.vue'
@@ -111,6 +112,7 @@ function capabilities() {
     streaming: true,
     vision_enabled: false,
     conversation_persistence: true,
+    feedback_enabled: true,
     tool_groups: ['module_help'],
     pilot_access: { granted: true, status: 'GRANTED' as const, read_only: true },
   }
@@ -184,6 +186,10 @@ describe('NIF-06 AI Workbench', () => {
     expect(wrapper.get('[data-safe-stage-summary]').text()).toContain('安全阶段摘要（非权威）')
     expect(wrapper.text()).toContain('scheduling.plan_context')
     expect(wrapper.text()).toContain('每次打开都按当前权限重新验证')
+    expect(wrapper.findComponent(AiMessageList).props()).toMatchObject({
+      feedbackEnabled: true,
+      factoryId: 'huaxing',
+    })
     wrapper.unmount()
   })
 

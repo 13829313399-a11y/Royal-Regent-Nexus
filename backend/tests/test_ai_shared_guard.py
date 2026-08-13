@@ -268,6 +268,14 @@ def test_guard_lease_can_be_renewed_by_a_worker_heartbeat(shared_guard_runtime):
     lease.close()
 
 
+def test_shared_guard_backend_is_wired_into_artifact_and_action_routes():
+    from app.api.ai_actions import action_pilot_guard
+    from app.api.ai_artifacts import artifact_pilot_guard
+
+    assert action_pilot_guard._shared_backend is not None
+    assert artifact_pilot_guard._shared_backend is not None
+
+
 def test_shared_disable_interrupts_the_next_active_lease_heartbeat(
     shared_guard_runtime,
 ):

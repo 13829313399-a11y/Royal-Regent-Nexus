@@ -74,6 +74,23 @@ def test_ai_prompt_runtime_assets_are_complete_and_git_tracked() -> None:
     assert "registry.prompt_registry.load_core()" in dockerfile
 
 
+def test_ai_knowledge_runtime_assets_are_packaged() -> None:
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile.backend").read_text(encoding="utf-8")
+
+    assert "COPY docs/ai/ /app/docs/ai/" in dockerfile
+    assert "COPY src/ /app/src/" in dockerfile
+
+
+def test_ai_task_worker_has_a_process_specific_healthcheck() -> None:
+    compose = yaml.safe_load(
+        (REPOSITORY_ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    )
+
+    healthcheck = compose["services"]["ai-task-worker"]["healthcheck"]
+    assert healthcheck["test"][:3] == ["CMD", "python", "-c"]
+    assert "app.services.ai.task_worker" in healthcheck["test"][3]
+
+
 def _posix_shell() -> Path:
     candidates = [shutil.which("sh"), shutil.which("bash")]
     git = shutil.which("git")

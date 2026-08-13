@@ -503,3 +503,9 @@ def test_conversation_api_is_default_off_then_owner_only(monkeypatch) -> None:
     finally:
         app.dependency_overrides.clear()
         db.close()
+
+
+def test_conversation_api_configures_the_shared_guard_backend() -> None:
+    from app.api import ai_conversations
+
+    assert ai_conversations.conversation_pilot_guard._shared_backend is not None

@@ -467,7 +467,11 @@ onMounted(() => void initialize())
           <p class="mt-1 text-[11px] text-violet-700">不展示模型私有思维过程；正式事实需重新调用业务工具。</p>
         </div>
 
-        <AiMessageList :messages="assistantStore.messages">
+        <AiMessageList
+          :messages="assistantStore.messages"
+          :feedback-enabled="assistantStore.capabilities?.feedback_enabled === true"
+          :factory-id="conversationsStore.active?.factory_scope"
+        >
           <AiToolActivity :items="assistantStore.activities" />
           <AiBusinessResultCard
             :results="assistantStore.businessResults"
