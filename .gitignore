@@ -56,6 +56,10 @@ backend/models/document-translation/
 !/docs/ai/modules/*.md
 !/docs/ai/knowledge-review-queue/
 !/docs/ai/knowledge-review-queue/README.md
+!/backend/app/services/ai/prompts/core_policy.md
+!/backend/app/services/ai/prompts/skills/*.md
+!/backend/tests/fixtures/ai_task_skill/prompts/core_policy.md
+!/backend/tests/fixtures/ai_task_skill/prompts/skills/*.md
 !/docs/business/internal-quote-collaboration-design.md
 !/docs/business/qc-complete-business-process.md
 !/docs/business/internal-quote-l6-release-readiness.md

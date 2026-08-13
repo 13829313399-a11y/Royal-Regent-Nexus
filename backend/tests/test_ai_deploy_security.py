@@ -5,8 +5,73 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_ai_prompt_runtime_assets_are_complete_and_git_tracked() -> None:
+    prompt_root = REPOSITORY_ROOT / "backend" / "app" / "services" / "ai" / "prompts"
+    manifest_root = prompt_root.parent / "skills" / "manifests"
+    manifest_ids = {
+        yaml.safe_load(path.read_text(encoding="utf-8"))["id"]
+        for path in manifest_root.glob("*.yaml")
+    }
+    assert manifest_ids
+
+    runtime_assets = {
+        prompt_root / "core_policy.md",
+        *(prompt_root / "skills" / f"{skill_id}.md" for skill_id in manifest_ids),
+    }
+    fixture_assets = {
+        REPOSITORY_ROOT
+        / "backend"
+        / "tests"
+        / "fixtures"
+        / "ai_task_skill"
+        / "prompts"
+        / "core_policy.md",
+        REPOSITORY_ROOT
+        / "backend"
+        / "tests"
+        / "fixtures"
+        / "ai_task_skill"
+        / "prompts"
+        / "skills"
+        / "test.fake_task.md",
+    }
+    required_assets = runtime_assets | fixture_assets
+    missing = sorted(
+        path.relative_to(REPOSITORY_ROOT).as_posix()
+        for path in required_assets
+        if not path.is_file()
+    )
+    assert not missing, f"missing AI Prompt assets: {missing}"
+
+    actual_runtime_assets = set((prompt_root / "skills").glob("*.md"))
+    assert actual_runtime_assets == runtime_assets - {prompt_root / "core_policy.md"}
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", *sorted(
+            path.relative_to(REPOSITORY_ROOT).as_posix()
+            for path in required_assets
+        )],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8").split("\0")
+    tracked_paths = {path for path in tracked if path}
+    required_paths = {
+        path.relative_to(REPOSITORY_ROOT).as_posix() for path in required_assets
+    }
+    assert tracked_paths == required_paths, (
+        "AI Prompt assets must be committed so clean archives and production images "
+        f"contain them; untracked={sorted(required_paths - tracked_paths)}"
+    )
+
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile.backend").read_text(encoding="utf-8")
+    assert "SkillRegistry(build_default_tool_registry())" in dockerfile
+    assert "registry.prompt_registry.load_core()" in dockerfile
 
 
 def _posix_shell() -> Path:
