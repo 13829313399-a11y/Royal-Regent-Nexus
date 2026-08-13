@@ -22,6 +22,7 @@ from app.services.ai.providers import (
     ProviderRefusal,
     ProviderResponseFormat,
     ProviderRetryPolicy,
+    ProviderToolDefinition,
     ProviderUsageEvent,
     QwenResponsesProvider,
     ReasoningPolicy,
@@ -343,6 +344,53 @@ def test_qwen_v2_payload_maps_catalog_policies_and_forces_store_false() -> None:
         asyncio.run(provider.generate(invalid_store))
     assert exc_info.value.code == ProviderErrorCode.REQUEST_FAILED
     assert len(responses.calls) == 1
+
+
+def test_qwen_v2_required_tool_choice_disables_thinking_mode() -> None:
+    current, request = routed_request()
+    request = replace(
+        request,
+        tools=(
+            ProviderToolDefinition(
+                name="translation.submit_fragments",
+                description="Return translated fragments in order.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "translations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        }
+                    },
+                    "required": ["translations"],
+                    "additionalProperties": False,
+                },
+            ),
+        ),
+        tool_choice_policy=ToolChoicePolicy.REQUIRED,
+    )
+    tool_call = SimpleNamespace(
+        type="function_call",
+        call_id="translation-1",
+        name="translation.submit_fragments",
+        arguments='{"translations":["Purchase order"]}',
+    )
+    response = SimpleNamespace(
+        id="response-required-tool",
+        status="completed",
+        output_text="",
+        output=[tool_call],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+    )
+    responses = SequenceResponses(response)
+    provider = qwen_provider(responses, catalog=load_model_catalog(current))
+
+    result = asyncio.run(provider.generate(request))
+
+    assert result.tool_calls[0].name == "translation.submit_fragments"
+    payload = responses.calls[0]
+    assert payload["tool_choice"] == "required"
+    assert payload["reasoning"] == {"effort": "none"}
 
 
 @pytest.mark.parametrize("status_code", [429, 503])
