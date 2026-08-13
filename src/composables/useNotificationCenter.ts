@@ -154,6 +154,7 @@ export function useNotificationCenter() {
   const seenNotificationKeys = new Set<string>()
   const initializedSources = new Set<NotificationCenterSource>()
   const readOverrides = new Set<string>()
+  const handledOverrides = new Set<string>()
   let loadSequence = 0
   let disposed = false
   let refreshTimer: ReturnType<typeof window.setTimeout> | undefined
@@ -165,6 +166,7 @@ export function useNotificationCenter() {
   let activeLoadAccountKey = ''
   let hasInitializedAccountContext = false
   const readMutationPromises = new Map<string, Promise<boolean>>()
+  const handledMutationPromises = new Map<string, Promise<boolean>>()
 
   const accountNotificationKey = computed(() => [
     authStore.currentUser?.id ?? '',
@@ -256,6 +258,7 @@ export function useNotificationCenter() {
   }
 
   function getSystemRoute(notification: SystemNotificationResponse) {
+    if (notification.type === 'ai_operational_alert') return '/workbench/ai'
     if (notification.type === 'internal_quote') {
       let targetRoute = INTERNAL_QUOTE_ROUTE_BASE
       if (notification.payload.event === 'customer_price_artifact_available') {
@@ -327,6 +330,7 @@ export function useNotificationCenter() {
 
   function normalizeSystemNotification(notification: SystemNotificationResponse): NotificationCenterItem {
     const internalQuoteEvent = typeof notification.payload.event === 'string' ? notification.payload.event : ''
+    const isAIOperationalAlert = notification.type === 'ai_operational_alert'
     const isPending = notification.status !== 'handled'
       && (notification.type !== 'internal_quote' || ACTIONABLE_INTERNAL_QUOTE_EVENTS.has(internalQuoteEvent))
     return {
@@ -334,7 +338,7 @@ export function useNotificationCenter() {
       id: notification.id,
       source: 'system',
       category: notification.type,
-      severity: ['password_reset', 'user_registration'].includes(notification.type) ? 'high' : 'normal',
+      severity: ['password_reset', 'user_registration', 'ai_operational_alert'].includes(notification.type) ? 'high' : 'normal',
       status: normalizeSystemStatus(notification.status),
       isUnread: notification.status === 'unread',
       isPending,
@@ -346,20 +350,28 @@ export function useNotificationCenter() {
       contextLabel: [
         notification.target_factory_id,
         notification.target_department,
-        notification.type === 'password_reset'
+        isAIOperationalAlert
+          ? 'AI 运维'
+          : notification.type === 'password_reset'
           ? '账号服务'
           : notification.type === 'internal_quote' ? '内部报价' : '用户与授权',
       ].filter(Boolean).join(' · '),
       route: getSystemRoute(notification),
-      actionLabel: '查看详情',
+      actionLabel: isAIOperationalAlert ? '打开 AI 工作台' : '查看详情',
       createdAt: notification.created_at,
-      categoryLabel: notification.type === 'password_reset'
+      categoryLabel: isAIOperationalAlert
+        ? 'AI 运维告警'
+        : notification.type === 'password_reset'
         ? '密码重置'
         : notification.type === 'internal_quote' ? '内部报价' : '系统通知',
-      referenceLabel: notification.type === 'password_reset'
+      referenceLabel: isAIOperationalAlert
+        ? String(notification.payload.alert_type || 'AI 运维')
+        : notification.type === 'password_reset'
         ? '账号服务'
         : notification.type === 'internal_quote' ? String(notification.payload.quote_no || '内部报价') : '用户与授权',
-      targetLabel: notification.type === 'internal_quote' ? '业务协作' : '系统管理',
+      targetLabel: isAIOperationalAlert
+        ? '指定运维接收人'
+        : notification.type === 'internal_quote' ? '业务协作' : '系统管理',
       raw: notification,
     }
   }
@@ -419,11 +431,21 @@ export function useNotificationCenter() {
   }
 
   function applyReadOverridesToSystem(source: SystemNotificationResponse[]) {
-    return source.map((notification) => (
-      notification.status === 'unread' && readOverrides.has(readOverrideKey(`system:${notification.id}`))
+    return source.map((notification) => {
+      const overrideKey = readOverrideKey(`system:${notification.id}`)
+      if (notification.status !== 'handled' && handledOverrides.has(overrideKey)) {
+        const now = new Date().toISOString()
+        return {
+          ...notification,
+          status: 'handled' as const,
+          read_at: notification.read_at || now,
+          handled_at: notification.handled_at || now,
+        }
+      }
+      return notification.status === 'unread' && readOverrides.has(overrideKey)
         ? { ...notification, status: 'read' as const, read_at: notification.read_at || new Date().toISOString() }
         : notification
-    ))
+    })
   }
 
   function mergeNotificationsById<T extends { id: string }>(current: T[], changes: T[]) {
@@ -965,6 +987,63 @@ export function useNotificationCenter() {
     return mutationPromise
   }
 
+  function markNotificationHandled(item: NotificationCenterItem) {
+    const latestItem = items.value.find((candidate) => candidate.key === item.key)
+    if (
+      !latestItem
+      || latestItem.source !== 'system'
+      || latestItem.category !== 'ai_operational_alert'
+    ) return false
+    if (latestItem.status === 'handled') return true
+    item = latestItem
+    const mutationAccountKey = accountNotificationKey.value
+    const mutationKey = readOverrideKey(item.key, mutationAccountKey)
+    const existingPromise = handledMutationPromises.get(mutationKey)
+    if (existingPromise) return existingPromise
+    rememberKey(handledOverrides, mutationKey)
+
+    const mutationPromise = (async () => {
+      const previousItem = systemNotifications.value.find((notification) => notification.id === item.id)
+      const now = new Date().toISOString()
+      systemNotifications.value = systemNotifications.value.map((notification) => notification.id === item.id
+        ? {
+            ...notification,
+            status: 'handled',
+            read_at: notification.read_at || now,
+            handled_at: notification.handled_at || now,
+          }
+        : notification)
+      reconcileToastQueue()
+      try {
+        const updated = await systemApi.updateNotification(item.id, { status: 'handled' })
+        if (mutationAccountKey === accountNotificationKey.value) {
+          systemNotifications.value = systemNotifications.value.map((notification) => (
+            notification.id === item.id ? updated : notification
+          ))
+          reconcileToastQueue()
+        }
+        return true
+      } catch (error) {
+        handledOverrides.delete(mutationKey)
+        if (mutationAccountKey === accountNotificationKey.value) {
+          systemNotifications.value = systemNotifications.value.map((notification) => (
+            notification.id === item.id && notification.status === 'handled' && previousItem
+              ? previousItem
+              : notification
+          ))
+          reconcileToastQueue()
+          updateSourceStatus('system', { state: 'error', error: getApiErrorMessage(error) })
+        }
+        return false
+      }
+    })()
+    handledMutationPromises.set(mutationKey, mutationPromise)
+    void mutationPromise.finally(() => {
+      if (handledMutationPromises.get(mutationKey) === mutationPromise) handledMutationPromises.delete(mutationKey)
+    })
+    return mutationPromise
+  }
+
   function activateNotification(item: NotificationCenterItem) {
     closePanel()
     const latestItem = items.value.find((candidate) => candidate.key === item.key)
@@ -1052,6 +1131,7 @@ export function useNotificationCenter() {
     systemNotifications.value = []
     seenNotificationKeys.clear()
     readOverrides.clear()
+    handledOverrides.clear()
     initializedSources.clear()
     clearToasts()
     closePanel()
@@ -1107,6 +1187,7 @@ export function useNotificationCenter() {
     resumeCurrentToast,
     activateNotification,
     markNotificationRead,
+    markNotificationHandled,
     activateToast,
     refreshNotifications,
     formatNotificationTime,

@@ -74,6 +74,11 @@ from app.services.ai.conversation_retention import (
     enforce_conversation_retention,
 )
 from app.services.ai.knowledge import KnowledgeRegistry
+from app.services.ai.observability.alerts import (
+    ai_operational_alert_loop,
+    ensure_ai_alert_runtime_ready,
+    ensure_ai_alert_targets,
+)
 from app.services.ai.task_service import enforce_task_retention
 
 request_timing_logger = logging.getLogger("uvicorn.error")
@@ -82,9 +87,12 @@ request_timing_logger = logging.getLogger("uvicorn.error")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_artifact_runtime_ready(settings)
+    ensure_ai_alert_runtime_ready(settings)
     if settings.ai_knowledge_hub_enabled:
         KnowledgeRegistry().validate_all(require_current=True)
     init_db()
+    with SessionLocal() as alert_db:
+        ensure_ai_alert_targets(alert_db, settings)
     with SessionLocal() as retention_db:
         enforce_conversation_retention(retention_db, settings=settings)
     with SessionLocal() as retention_db:
@@ -104,15 +112,28 @@ async def lifespan(app: FastAPI):
         ),
         name="ai-artifact-retention",
     )
+    operational_alert_task = (
+        asyncio.create_task(
+            ai_operational_alert_loop(SessionLocal, settings=settings),
+            name="ai-operational-alerts",
+        )
+        if settings.ai_operational_alerts_enabled
+        else None
+    )
     try:
         yield
     finally:
         retention_task.cancel()
         artifact_retention_task.cancel()
+        if operational_alert_task is not None:
+            operational_alert_task.cancel()
         with suppress(asyncio.CancelledError):
             await retention_task
         with suppress(asyncio.CancelledError):
             await artifact_retention_task
+        if operational_alert_task is not None:
+            with suppress(asyncio.CancelledError):
+                await operational_alert_task
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

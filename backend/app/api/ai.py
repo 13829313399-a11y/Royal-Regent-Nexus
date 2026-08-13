@@ -738,6 +738,7 @@ def contextual_capabilities(
             "feedback_configured": settings.ai_feedback_enabled,
             "observability_configured": settings.ai_observability_enabled,
             "metric_export_configured": settings.ai_metric_export_enabled,
+            "operational_alerts_configured": (settings.ai_operational_alerts_enabled),
             "semantic_gateway_configured": settings.ai_semantic_gateway_enabled,
             "knowledge_hub_configured": settings.ai_knowledge_hub_enabled,
             "artifacts_configured": settings.ai_artifacts_enabled,

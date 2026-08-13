@@ -17,6 +17,11 @@ from app.schemas.ai.feedback import (
     AIFeedbackReview,
     AIMetricEventData,
     AIMetricSummary,
+    AIOperationalAlertAcknowledgementItemData,
+    AIOperationalAlertAcknowledgementReportData,
+    AIOperationalAlertAcknowledgementRequest,
+    AIOperationalAlertEvaluationData,
+    AIOperationalAlertItemData,
 )
 from app.services.ai.feedback import (
     FeedbackError,
@@ -24,6 +29,12 @@ from app.services.ai.feedback import (
     feedback_data,
     list_feedback,
     review_feedback,
+)
+from app.services.ai.observability.alerts import (
+    AIAlertConfigurationError,
+    AIAlertEvidenceError,
+    build_ai_operational_alert_acknowledgement_report,
+    evaluate_ai_operational_alerts,
 )
 from app.services.ai.observability.metrics import (
     build_metric_summary,
@@ -62,6 +73,12 @@ def _require_admin_export(user: AuthContext) -> None:
                 "retryable": False,
             },
         )
+
+
+def _require_operational_alerts(user: AuthContext) -> None:
+    if not settings.ai_operational_alerts_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+    _require_admin_export(user)
 
 
 def _metric_range(from_time: str, to_time: str) -> tuple[str, str]:
@@ -201,4 +218,87 @@ def get_eval_runs(
         to_time=end,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.post(
+    "/admin/alerts/evaluate",
+    response_model=AIOperationalAlertEvaluationData,
+)
+def post_operational_alert_evaluation(
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _require_operational_alerts(current_user)
+    try:
+        evaluation = evaluate_ai_operational_alerts(db, settings=settings)
+    except AIAlertConfigurationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "AI_ALERT_CHANNEL_UNAVAILABLE",
+                "message": "AI 运维告警通道尚未完成配置。",
+                "retryable": False,
+            },
+        ) from exc
+    return AIOperationalAlertEvaluationData(
+        evaluated_at=evaluation.evaluated_at,
+        window_minutes=evaluation.window_minutes,
+        recipient_count=evaluation.recipient_count,
+        items=[
+            AIOperationalAlertItemData(
+                alert_type=item.alert_type,
+                triggered=item.triggered,
+                observed_value=item.observed_value,
+                threshold_value=item.threshold_value,
+                notification_ids=list(item.notification_ids),
+                detail_code=item.detail_code,
+            )
+            for item in evaluation.items
+        ],
+    )
+
+
+@router.post(
+    "/admin/alerts/acknowledgements",
+    response_model=AIOperationalAlertAcknowledgementReportData,
+)
+def post_operational_alert_acknowledgements(
+    payload: AIOperationalAlertAcknowledgementRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    _require_operational_alerts(current_user)
+    try:
+        report = build_ai_operational_alert_acknowledgement_report(
+            db,
+            notification_ids=tuple(payload.notification_ids),
+        )
+    except AIAlertEvidenceError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AI_ALERT_ACKNOWLEDGEMENT_EVIDENCE_INVALID",
+                "message": "指定的 AI 运维告警确认记录不完整或无法验证。",
+                "retryable": False,
+            },
+        ) from exc
+    return AIOperationalAlertAcknowledgementReportData(
+        generated_at=report.generated_at,
+        notification_count=report.notification_count,
+        recipient_count=report.recipient_count,
+        complete_delivery_set=report.complete_delivery_set,
+        all_acknowledged=report.all_acknowledged,
+        items=[
+            AIOperationalAlertAcknowledgementItemData(
+                notification_id=item.notification_id,
+                alert_type=item.alert_type,
+                status=item.status,
+                created_at=item.created_at,
+                read_at=item.read_at,
+                handled_at=item.handled_at,
+                acknowledged=item.acknowledged,
+            )
+            for item in report.items
+        ],
     )

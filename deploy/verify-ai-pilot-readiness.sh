@@ -49,10 +49,11 @@ require_env_nonempty() {
 require_env_csv_ids() {
   key="$1"
   maximum="$2"
+  maximum_length="${3:-128}"
   actual="$(read_env_value "$key")"
   if ! count="$(
     printf '%s\n' "$actual" \
-      | awk -F ',' -v maximum="$maximum" '
+      | awk -F ',' -v maximum="$maximum" -v maximum_length="$maximum_length" '
           {
             count = 0
             for (field_index = 1; field_index <= NF; field_index += 1) {
@@ -60,7 +61,7 @@ require_env_csv_ids() {
               gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
               if (value == "") continue
               count += 1
-              if (count > maximum || length(value) > 128 || value !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || seen[value]++) {
+              if (count > maximum || length(value) > maximum_length || value !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || seen[value]++) {
                 failed = 1
                 exit 1
               }
@@ -201,6 +202,17 @@ case "$NIF18_STAGE" in
     require_env_exact AI_METRIC_EXPORT_ENABLED true
     require_env_positive_decimal AI_INPUT_TOKEN_COST_USD_PER_MILLION
     require_env_positive_decimal AI_OUTPUT_TOKEN_COST_USD_PER_MILLION
+    require_env_exact AI_OPERATIONAL_ALERTS_ENABLED true
+    require_env_csv_ids AI_ALERT_TARGET_USER_IDS 16 64
+    require_env_integer_range AI_ALERT_EVALUATION_INTERVAL_SECONDS 30 3600
+    require_env_integer_range AI_ALERT_WINDOW_MINUTES 1 1440
+    require_env_integer_range AI_ALERT_COOLDOWN_MINUTES 5 1440
+    require_env_integer_range AI_COST_PER_SUCCESSFUL_TASK_ALERT_MICROUSD 1 10000000000
+    require_env_integer_range AI_PROVIDER_FAILURE_ALERT_COUNT 1 1000000
+    require_env_integer_range AI_TOOL_FAILURE_ALERT_COUNT 1 1000000
+    require_env_integer_range AI_WORKER_RECOVERY_ALERT_COUNT 1 1000000
+    require_env_integer_range AI_BUDGET_ALERT_PERCENT 1 100
+    require_env_integer_range AI_SCANNER_SIGNATURE_MAX_AGE_HOURS 1 720
     if [ "$NIF18_STAGE" = "preflight" ]; then
       require_env_exact AI_ACTION_GATEWAY_ENABLED false
       require_env_exact AI_CONTROLLED_APPLY_ENABLED false

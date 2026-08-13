@@ -612,25 +612,38 @@ Several cards and dashboards in the module catalog remain planning, design or de
   messages with a verified persisted Message or Model response receipt and explicitly states the
   manual-review boundary. NIF-17 does not itself enable production AI, publish Knowledge, open an
   Action, or claim Live Provider/field acceptance.
-- NIF-18 repository-side readiness controls now include a metadata-only twenty-gate evidence
+- NIF-18 repository-side readiness controls include a metadata-only twenty-gate evidence
   verifier/template, a one-way shared kill-switch drill, explicit `disabled`/`preflight`/
   `action-field` readiness stages and a deployment path that permits a multi-instance Shared Guard
-  candidate only behind the active disable marker. The evidence document remains explicit
-  `NO-GO`: this workstation cannot prove Docker rendering, TLS/browser/Provider/Worker/PostgreSQL
-  contention, ClamAV/OSS/KMS backup-restore, alert acknowledgement, rollback or production field
-  scenarios. ADR-012 is accepted and the NIF-16 repository implementation exists default-off, but
-  the mandatory DRAFT-only Controlled Apply scenario has not received `FIELD-PASS`; production
-  enablement and all L4 actions remain prohibited. Repository tests and local checks are evidence
-  only and must not be relabelled as production `FIELD-PASS`. The isolated branch preserved the NIF
-  implementation in `1b71a60` and merged `origin/main` at `b0575ef` in `9128eff`. The byte-identical
-  upstream QC migration is `20260812_0067`; the AI chain follows as `0068`–`0074`, with one Alembic
-  head `20260813_0074`. Post-merge verification passed 72 migration/compatibility tests, 440 backend
-  AI tests with 2 intentional skips, 13 deployment/security tests, and the full frontend suite at
-  895 passed/6 skipped across 157 files. Branch-scoped Python Ruff, frontend test typecheck,
-  production build, four Shell syntax checks and `git diff --check` also passed. Docker is unavailable
-  on this workstation, so Compose/container and all real-environment scenarios remain unverified
-  field gates. The branch is locally integrated and verified, but this does not change production
-  readiness from `NO-GO` or authorize AI enablement.
+  candidate only behind the active disable marker. A default-off
+  `AI_OPERATIONAL_ALERTS_ENABLED` channel continuously evaluates cost per successful Task,
+  Provider/Tool failures, Worker recovery, ClamAV signature age/availability and per-user budget.
+  It requires positive approved thresholds, Token rates, observability/export, Artifact/ClamAV
+  readiness and active recipient user IDs; deterministic cooldown IDs prevent multi-instance
+  duplicates. Alerts use the private System Notification feed and its `handled` transition as the
+  recipient acknowledgement. The notification center provides `确认已处理` only for these AI
+  alerts: read/view is not acknowledgement and a failed acknowledgement restores pending state.
+  Payloads retain only counts, thresholds, window and a closed detail code. NIF-18 evidence schema
+  v2 requires six separate trigger gates/references plus a distinct recipient-acknowledgement
+  gate/reference before the aggregate cost-alert gate can pass; duplicate keys or alert references
+  fail verification. The wildcard-admin acknowledgement report accepts only opaque alert IDs and
+  returns no recipient ID or observed value; it can report `all_acknowledged=true` only for one
+  complete six-type evaluation delivered to a consistent recipient set with every notice handled.
+  Repository implementation is not field acceptance: production must still trigger and acknowledge
+  all six alerts on the exact deployed revision. The current HTTP/development-mode production Pilot
+  enables text and registered read-only AI for approved users with Shared Guard; Provider fault,
+  business isolation, Worker recovery, multi-instance, kill-switch, backup/restore and isolated
+  image rollback evidence exist for revision `50a06ac`. Overall NIF-18 remains `NO-GO` because
+  TLS/HSTS, Secure Cookie, secret rotation, Artifact/ClamAV/OSS/KMS operations, Evidence reauth,
+  Controlled Apply DRAFT, full browser acceptance and cost-alert acknowledgement remain incomplete.
+  Latest `origin/main` is newer than that deployment and adds migration `20260813_0075`; production
+  must not be described as current-main until it is deployed and verified. The server root disk is
+  at 98% utilization, so another image build requires an approved capacity or cleanup action.
+  Current alert-channel source verification on the `41187cd` baseline passed all 447 backend
+  `test_ai_*.py` tests with 2 intentional skips, all 909 frontend tests with 6 skips, the exact AI
+  Ruff scope, frontend typecheck, production build, shell syntax and diff check. These are repository
+  results, not `FIELD-PASS`. ADR-012 remains the default-off DRAFT-only engineering baseline; all
+  L4 actions stay prohibited.
 - AI-B9 now provides separately authorized, factory-scoped, read-only Tool and closed frontend-result
   contracts for Internal Quote, molding samples, carton procurement, raw-material inventory and
   customer orders. Each domain uses selected-field serializers and canonical permission checks; the

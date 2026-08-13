@@ -4,7 +4,15 @@
 
 `NO-GO` for production NIF completion.
 
-The repository-side gates and evidence format exist, but this file does not claim that a production browser, TLS edge, database, Provider, Worker, ClamAV/OSS/KMS path, alert channel or rollback image has been exercised. ADR-012 is `ACCEPTED` for the default-off NIF-16 engineering baseline, and that repository implementation now exists. The mandatory DRAFT-only Controlled Apply scenario has not received `FIELD-PASS`, so production enablement remains unauthorized. L4 Publish, Rollback, final release and inventory adjustment remain prohibited.
+Revision `50a06ac` currently has field evidence for the read-only HTTP Pilot,
+Provider/Guard/Worker fault isolation, kill switch, database backup/restore and an
+isolated API/Web image rollback. Those results do not cover the newer repository
+revision, and they do not close TLS/HSTS, Secure Cookie, Provider-secret rotation,
+ClamAV/OSS/KMS Artifact operations, Evidence reauthorization, DRAFT-only Controlled
+Apply, full browser acceptance or acknowledged cost/operations alerts. ADR-012 is `ACCEPTED`
+only for the default-off NIF-16 engineering baseline. The mandatory DRAFT-only
+Controlled Apply scenario has not received `FIELD-PASS`. L4 Publish,
+Rollback, final release and inventory adjustment remain prohibited.
 
 ## Evidence classes
 
@@ -19,21 +27,58 @@ Local tests can reach only the first two classes. Operators must never copy a lo
 
 ## Current local verification snapshot
 
-On 2026-08-13 this isolated worktree merged `origin/main` at `b0575ef` in local
-merge commit `9128eff`, after preserving the AI implementation in safety commit
-`1b71a60`. The upstream QC migration remains `20260812_0067`, the AI chain follows
-as `20260813_0068`–`20260813_0074`, and Alembic reports the single head
-`20260813_0074`. The post-merge worktree verified 72 migration/compatibility tests,
-440 passed/2 intentionally skipped backend AI tests, 13 deployment/security tests,
-and the full frontend suite at 895 passed/6 skipped across 157 test files. Ruff on
-the branch Python scope, frontend test typecheck, production build, four
-deployment-script syntax checks and `git diff --check` also passed. The build
-reported only non-blocking dependency annotation warnings from `@vueuse/core`.
+On 2026-08-13 this isolated worktree starts from current `origin/main` revision
+`41187cd`. The AI migration chain remains `20260813_0068`–`20260813_0074`, followed
+by the upstream carton-mark migration `20260813_0075`; Alembic reports the single
+head `20260813_0075`. The default-off operations-alert change has verified the full
+backend `test_ai_*.py` set at 447 passed/2 intentionally skipped and the full
+frontend suite at 909 passed/6 skipped. The exact NIF-18 Python scope passed Ruff;
+frontend test typecheck, production build, Git Bash syntax for the updated readiness
+script and `git diff --check` also passed. The production build reports only the
+existing non-blocking `@vueuse/core` annotation-position warnings.
 
-Docker remains unavailable on this workstation, so Compose/container validation
-and every real production field scenario remain unverified. The repository merge
-and local gates close the earlier integration gap but do not change the production
-result from `NO-GO` or authorize enabling AI.
+Docker remains unavailable on this workstation, so the new alert channel has no
+local Compose/ClamAV evidence. Existing field evidence belongs to deployed revision
+`50a06ac`, not this worktree. Neither source verification nor the older field drill
+changes the production result from `NO-GO` or authorizes Controlled Apply.
+
+## Default-off operations alert channel
+
+The repository now contains a default-off internal operations channel behind
+`AI_OPERATIONAL_ALERTS_ENABLED`. When enabled, it continuously evaluates six
+metadata-only conditions: cost per successful Task, Provider failure, Tool failure,
+Worker recovery, stale/unavailable ClamAV signatures and per-user daily budget.
+Every condition requires an explicit positive threshold. The channel also requires
+approved Token rates, observability/export, full Artifact/ClamAV readiness and one
+or more active recipient user IDs; startup fails closed when that contract is
+incomplete.
+
+Triggered alerts use deterministic cooldown-scoped notification IDs, so concurrent
+API instances cannot fan out duplicate notices. They are delivered through the
+existing private System Notification feed to the configured recipients only. The
+notification center exposes an AI-alert-only `确认已处理` action: opening or marking
+an alert read leaves it pending, and only the recipient's explicit `handled`
+transition is the receiving-channel acknowledgement. Failed acknowledgements roll
+back to pending. The notification payload contains counts, thresholds, time window
+and a closed detail code, never prompts, Tool arguments/results, customer data or
+Provider bodies. A wildcard system administrator may also request one immediate
+evaluation through `POST /api/ai/admin/alerts/evaluate` when metric export is
+enabled. After the configured recipients act, the same administrator may submit
+only those opaque notification IDs to
+`POST /api/ai/admin/alerts/acknowledgements`. The report exposes alert type,
+notification status and timestamps but no recipient ID, observed value or business
+content. `all_acknowledged=true` is possible only when one evaluation contains all
+six alert types, every type covers the same recipient set and every notification is
+`handled`; a partial or mixed-evaluation ID set remains incomplete.
+
+This is repository implementation, not `FIELD-PASS`. Operators must still configure
+approved prices and thresholds, start the private ClamAV/Artifact path, trigger all
+six conditions on the exact deployed revision and capture a configured recipient's
+`handled` acknowledgement. Evidence schema v2 requires a separate PASS gate and a
+distinct metadata reference for each trigger, plus a distinct acknowledgement
+reference whose acknowledgement report has both `complete_delivery_set=true` and
+`all_acknowledged=true`; only after all seven detailed gates pass may
+`COST_ALERT_GATE=PASS`.
 
 ## Two-stage rollout
 

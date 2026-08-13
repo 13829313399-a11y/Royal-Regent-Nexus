@@ -8,12 +8,21 @@ from app.core.config import Settings
 from app.db import Base
 from app.models.ai_observability import AIFeedback, AIMetricEvent
 from app.models.auth import AuthUser
-from app.schemas.ai.feedback import AIFeedbackCreate, AIFeedbackReview
+from app.schemas.ai.feedback import (
+    AIFeedbackCreate,
+    AIFeedbackReview,
+    AIOperationalAlertAcknowledgementRequest,
+)
 from app.services.ai.feedback import (
     FeedbackError,
     create_feedback,
     feedback_data,
     review_feedback,
+)
+from app.services.ai.observability.alerts import (
+    AIAlertEvidenceError,
+    AIOperationalAlertAcknowledgementItem,
+    AIOperationalAlertAcknowledgementReport,
 )
 from app.services.ai.observability.metrics import (
     AIObservabilityEvent,
@@ -184,6 +193,20 @@ def test_feedback_schema_requires_meaningful_not_helpful_category() -> None:
         _payload(rating="HELPFUL", issue_category="WRONG_TOOL")
 
 
+def test_alert_acknowledgement_request_requires_unique_closed_notification_ids() -> None:
+    notification_id = f"ainotif-{'a' * 40}"
+    request = AIOperationalAlertAcknowledgementRequest(
+        notification_ids=[notification_id]
+    )
+    assert request.notification_ids == [notification_id]
+    with pytest.raises(ValidationError):
+        AIOperationalAlertAcknowledgementRequest(
+            notification_ids=[notification_id, notification_id]
+        )
+    with pytest.raises(ValidationError):
+        AIOperationalAlertAcknowledgementRequest(notification_ids=["other-id"])
+
+
 def test_metric_export_is_default_off_and_wildcard_admin_only(monkeypatch) -> None:
     from app.api import ai_feedback as api
 
@@ -212,3 +235,93 @@ def test_metric_export_is_default_off_and_wildcard_admin_only(monkeypatch) -> No
         api._require_admin_export(_user("feedback-user"))
     assert denied.value.status_code == 403
     assert api._require_admin_export(admin) is None
+
+    monkeypatch.setattr(api.settings, "ai_operational_alerts_enabled", False)
+    with pytest.raises(HTTPException) as alerts_disabled:
+        api._require_operational_alerts(admin)
+    assert alerts_disabled.value.status_code == 404
+
+    monkeypatch.setattr(api.settings, "ai_operational_alerts_enabled", True)
+    with pytest.raises(HTTPException) as alerts_denied:
+        api._require_operational_alerts(_user("feedback-user"))
+    assert alerts_denied.value.status_code == 403
+    assert api._require_operational_alerts(admin) is None
+
+
+def test_alert_acknowledgement_endpoint_returns_metadata_and_fails_closed(
+    monkeypatch,
+) -> None:
+    from app.api import ai_feedback as api
+
+    notification_id = f"ainotif-{'a' * 40}"
+    payload = AIOperationalAlertAcknowledgementRequest(
+        notification_ids=[notification_id]
+    )
+    admin = AuthContext(
+        **{
+            **_user("admin-user").__dict__,
+            "grants": (
+                AuthGrantContext(
+                    role_id="admin",
+                    role_name="系统管理员",
+                    role_code="admin",
+                    factory_id="*",
+                    department="system",
+                    permissions=frozenset(),
+                ),
+            ),
+        }
+    )
+    report = AIOperationalAlertAcknowledgementReport(
+        generated_at="2026-08-13T12:05:00+08:00",
+        notification_count=1,
+        recipient_count=1,
+        complete_delivery_set=False,
+        all_acknowledged=False,
+        items=(
+            AIOperationalAlertAcknowledgementItem(
+                notification_id=notification_id,
+                alert_type="PROVIDER_FAILURE",
+                status="read",
+                created_at="2026-08-13T12:00:00+08:00",
+                read_at="2026-08-13T12:01:00+08:00",
+                handled_at="",
+                acknowledged=False,
+            ),
+        ),
+    )
+    monkeypatch.setattr(api.settings, "ai_metric_export_enabled", True)
+    monkeypatch.setattr(api.settings, "ai_operational_alerts_enabled", True)
+    monkeypatch.setattr(
+        api,
+        "build_ai_operational_alert_acknowledgement_report",
+        lambda *_args, **_kwargs: report,
+    )
+    db = _session()
+    try:
+        response = api.post_operational_alert_acknowledgements(payload, db, admin)
+        serialized = response.model_dump()
+        assert serialized["schema_version"] == (
+            "ai-operational-alert-acknowledgement-v1"
+        )
+        assert serialized["complete_delivery_set"] is False
+        assert serialized["all_acknowledged"] is False
+        assert "target_user_id" not in str(serialized)
+        assert "observed_value" not in str(serialized)
+
+        def invalid_report(*_args, **_kwargs):
+            raise AIAlertEvidenceError("alert_notification_integrity_invalid")
+
+        monkeypatch.setattr(
+            api,
+            "build_ai_operational_alert_acknowledgement_report",
+            invalid_report,
+        )
+        with pytest.raises(HTTPException) as invalid:
+            api.post_operational_alert_acknowledgements(payload, db, admin)
+        assert invalid.value.status_code == 409
+        assert invalid.value.detail["code"] == (
+            "AI_ALERT_ACKNOWLEDGEMENT_EVIDENCE_INVALID"
+        )
+    finally:
+        db.close()
