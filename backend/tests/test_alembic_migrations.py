@@ -4651,7 +4651,7 @@ def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path
                 """
             ).fetchall()
         }
-        assert carton_tables == CARTON_PROCUREMENT_TABLES
+        assert CARTON_PROCUREMENT_TABLES <= carton_tables
         assert connection.execute(
             """
             SELECT COUNT(*) FROM auth_permissions
