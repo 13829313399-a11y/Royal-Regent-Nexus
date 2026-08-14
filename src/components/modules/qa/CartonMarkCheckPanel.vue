@@ -7,6 +7,7 @@ import {
   type CartonMarkAutoCheckResponse,
   type CartonMarkBatchCheckResponse,
   type CartonMarkComparisonItem,
+  type CartonMarkCustomerOption,
   type CartonMarkDocumentContentComparison,
   type CartonMarkDocumentContentCheckResponse,
   type CartonMarkTemplateDocumentKind,
@@ -133,6 +134,7 @@ const photoForm = reactive({
 
 const allRecords = ref<CartonMarkTemplateRecord[]>([])
 const allPhotoRecords = ref<CartonMarkPhotoRecord[]>([])
+const customerOptions = ref<CartonMarkCustomerOption[]>([])
 const selectedFile = ref<File | null>(null)
 const selectedExcelFile = ref<File | null>(null)
 const selectedFrontPhotoFile = ref<File | null>(null)
@@ -161,14 +163,17 @@ const documentComparisonRecord = ref<CartonMarkTemplateRecord | null>(null)
 const autoCheckResult = ref<CartonMarkAutoCheckResponse | null>(null)
 const autoCheckErrorMessage = ref('')
 const recheckingPhotoId = ref('')
+const recheckingDocumentId = ref('')
 const activeCustomer = ref(ALL_CUSTOMERS)
 const searchKeyword = ref('')
 const errorMessage = ref('')
 const successMessage = ref('')
 const documentReviewMessage = ref('')
+const customerOptionsErrorMessage = ref('')
 const photoErrorMessage = ref('')
 const photoSuccessMessage = ref('')
 const isLoading = ref(false)
+const isLoadingCustomerOptions = ref(false)
 const isSaving = ref(false)
 const isSavingPhoto = ref(false)
 const isSavingBatchPhoto = ref(false)
@@ -178,6 +183,8 @@ const photoStorageMode = ref<'indexedDb' | 'localStorage'>('indexedDb')
 const downloadingDocumentKey = ref('')
 let factoryGeneration = 0
 let templateRequestController: AbortController | null = null
+let documentRecheckRequestController: AbortController | null = null
+let customerOptionsRequestController: AbortController | null = null
 let isPanelMounted = false
 const pdfUrls = new Set<string>()
 const excelUrls = new Set<string>()
@@ -214,7 +221,7 @@ const canReviewPhoto = computed(() => isAdmin.value || authStore.can('carton_mar
 const canDeleteTemplate = computed(() => isWarehouseWorkspace.value && canUploadTemplate.value)
 const currentUserName = computed(() => authStore.currentUser?.display_name ?? '当前账号')
 const templatePermissionHint = computed(() => canUploadTemplate.value
-  ? '先上传客人提供的 PO 箱唛 Excel，再上传调整排版和图案后的打印 PDF；系统只核对文字内容。'
+  ? '先上传客人提供的 PO 箱唛 Excel，再上传调整排版和图案后的打印 PDF；系统只核对普通业务文字，图形内文字不参与比较。'
   : '当前账号只能查看箱唛资料；请使用纸箱部仓管账号上传 Excel 与打印 PDF。')
 const photoPermissionHint = computed(() => {
   if (canUploadPhoto.value) {
@@ -268,10 +275,17 @@ const selectedSideBatchFilesLabel = computed(() => selectedSideBatchFiles.value.
   ? `已选择 ${selectedSideBatchFiles.value.length} 张侧唛`
   : '未选择侧唛')
 
+const hasSelectedCustomerOption = computed(() => {
+  const selectedCustomer = normalizeKey(form.customerName)
+  return Boolean(selectedCustomer) && customerOptions.value.some(
+    (customer) => normalizeKey(customer.name) === selectedCustomer,
+  )
+})
+
 const canSubmit = computed(() => {
   return Boolean(
     canUploadTemplate.value
-    && form.customerName.trim()
+    && hasSelectedCustomerOption.value
     && form.item.trim()
     && form.contractNumber.trim()
     && selectedExcelFile.value
@@ -466,6 +480,9 @@ onMounted(async () => {
   const requestedFactoryName = activeFactory.value.shortName
   const requestedFactoryGeneration = factoryGeneration
   templateRequestController = new AbortController()
+  if (isWarehouseWorkspace.value) {
+    void loadCustomerOptions(requestedFactoryId, requestedFactoryGeneration)
+  }
 
   const templatesPromise = cartonMarkApi.listTemplates(requestedFactoryId, templateRequestController.signal)
   const photosPromise = readPhotoRecordsFromDb()
@@ -523,6 +540,36 @@ async function loadTemplateRecords(factoryId: ProductionFactoryContextId, factor
   }
 }
 
+async function loadCustomerOptions(factoryId: ProductionFactoryContextId, generation: number) {
+  customerOptionsRequestController?.abort()
+  const controller = new AbortController()
+  customerOptionsRequestController = controller
+  isLoadingCustomerOptions.value = true
+  customerOptionsErrorMessage.value = ''
+
+  try {
+    const nextCustomerOptions = await cartonMarkApi.listCustomerOptions(factoryId, controller.signal)
+    if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted) return
+    customerOptions.value = nextCustomerOptions
+    if (!nextCustomerOptions.some((customer) => normalizeKey(customer.name) === normalizeKey(form.customerName))) {
+      form.customerName = ''
+    }
+  } catch (error) {
+    if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted || controller.signal.aborted) return
+    customerOptions.value = []
+    form.customerName = ''
+    customerOptionsErrorMessage.value = `内部报价台客户读取失败：${getApiErrorMessage(error)}`
+  } finally {
+    if (isCurrentFactoryTask(factoryId, generation) && isPanelMounted) {
+      isLoadingCustomerOptions.value = false
+    }
+  }
+}
+
+function reloadCustomerOptions() {
+  void loadCustomerOptions(activeFactoryId.value, factoryGeneration)
+}
+
 function revokeTemplateUrls() {
   for (const url of pdfUrls) {
     URL.revokeObjectURL(url)
@@ -538,15 +585,22 @@ function revokeTemplateUrls() {
 watch(activeFactoryId, () => {
   factoryGeneration += 1
   templateRequestController?.abort()
+  documentRecheckRequestController?.abort()
+  customerOptionsRequestController?.abort()
   revokeTemplateUrls()
   allRecords.value = []
+  customerOptions.value = []
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryName = activeFactory.value.shortName
   const requestedFactoryGeneration = factoryGeneration
   void loadTemplateRecords(requestedFactoryId, requestedFactoryName, requestedFactoryGeneration)
+  if (isWarehouseWorkspace.value) {
+    void loadCustomerOptions(requestedFactoryId, requestedFactoryGeneration)
+  }
   errorMessage.value = ''
   successMessage.value = ''
   documentReviewMessage.value = ''
+  customerOptionsErrorMessage.value = ''
   photoErrorMessage.value = ''
   photoSuccessMessage.value = ''
   documentComparisonRecord.value = null
@@ -557,6 +611,7 @@ watch(activeFactoryId, () => {
   isSavingPhoto.value = false
   isSavingBatchPhoto.value = false
   recheckingPhotoId.value = ''
+  recheckingDocumentId.value = ''
   deletingRecordId.value = ''
   downloadingDocumentKey.value = ''
   resetForm()
@@ -579,6 +634,8 @@ onBeforeUnmount(() => {
   isPanelMounted = false
   factoryGeneration += 1
   templateRequestController?.abort()
+  documentRecheckRequestController?.abort()
+  customerOptionsRequestController?.abort()
   revokeTemplateUrls()
 
   for (const url of imageUrls) {
@@ -972,7 +1029,7 @@ function mapTemplateRecord(record: CartonMarkTemplateRecordResponse, factoryName
     excelFileName: record.excel_file_name,
     excelFileSize: record.excel_file_size,
     documentCheckResult: record.check_result,
-    documentCheckedAt: record.created_at,
+    documentCheckedAt: record.updated_at,
     checkStatus: record.check_status,
     qcReady: record.qc_ready,
     createdByName: record.created_by_name,
@@ -1452,6 +1509,63 @@ async function submitTemplate() {
   } finally {
     if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration) && isPanelMounted) {
       isSaving.value = false
+    }
+  }
+}
+
+async function recheckTemplateRecord(record: CartonMarkTemplateRecord) {
+  errorMessage.value = ''
+  successMessage.value = ''
+  documentReviewMessage.value = ''
+
+  if (!canUploadTemplate.value) {
+    errorMessage.value = '当前账号无权重新核对箱唛资料，请使用纸箱仓管账号操作。'
+    return
+  }
+
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryName = activeFactory.value.shortName
+  const requestedFactoryGeneration = factoryGeneration
+  if (record.factoryId !== requestedFactoryId) {
+    errorMessage.value = '这份箱唛资料不属于当前厂区，请切换厂区后再重新核对。'
+    return
+  }
+
+  documentRecheckRequestController?.abort()
+  const controller = new AbortController()
+  documentRecheckRequestController = controller
+  recheckingDocumentId.value = record.id
+
+  try {
+    const persistedRecord = await cartonMarkApi.recheckTemplate(record.id, requestedFactoryId, controller.signal)
+    if (!isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration) || !isPanelMounted || controller.signal.aborted) return
+
+    const refreshedRecord = {
+      ...mapTemplateRecord(persistedRecord, requestedFactoryName),
+      pdfUrl: record.pdfUrl,
+      fileBlob: record.fileBlob,
+      excelUrl: record.excelUrl,
+    }
+    allRecords.value = sortRecords(allRecords.value.map((item) => item.id === record.id ? refreshedRecord : item))
+    documentComparisonRecord.value = refreshedRecord
+
+    if (refreshedRecord.checkStatus === '核对通过') {
+      successMessage.value = `${requestedFactoryName} · ${refreshedRecord.customerName} · ITEM：${refreshedRecord.item} 已按最新规则重新核对；普通业务文字一致，图形内文字已忽略${refreshedRecord.qcReady ? '，可流转 QC' : ''}。`
+    } else if (refreshedRecord.checkStatus === '发现差异') {
+      errorMessage.value = `${requestedFactoryName} · ${refreshedRecord.customerName} · ITEM：${refreshedRecord.item} 已按最新规则重新核对；仍发现普通业务文字差异，请检查打印 PDF。`
+    } else {
+      documentReviewMessage.value = `${requestedFactoryName} · ${refreshedRecord.customerName} · ITEM：${refreshedRecord.item} 已按最新规则重新核对；${refreshedRecord.checkStatus || '需复核'}，请纸箱部人工确认普通业务文字。`
+    }
+  } catch (error) {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration) && isPanelMounted && !controller.signal.aborted) {
+      errorMessage.value = `箱唛资料重新核对失败：${getApiErrorMessage(error)}`
+    }
+  } finally {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration) && isPanelMounted && recheckingDocumentId.value === record.id) {
+      recheckingDocumentId.value = ''
+    }
+    if (documentRecheckRequestController === controller) {
+      documentRecheckRequestController = null
     }
   }
 }
@@ -2246,30 +2360,46 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           </div>
           <div class="rounded-lg border border-amber-100 bg-amber-50/70 px-4 py-3">
             <p class="text-xs font-semibold text-amber-700">03 只核文字</p>
-            <p class="mt-1 text-sm font-semibold text-slate-900">排版与新增图案不报差异</p>
+            <p class="mt-1 text-sm font-semibold text-slate-900">排版与图形内文字不报差异</p>
           </div>
         </div>
 
         <div class="mt-6 grid gap-4 md:grid-cols-3">
-          <label class="block">
-            <span class="text-sm font-medium text-slate-700">客名</span>
-            <input
+          <div class="block">
+            <label for="carton-mark-customer" class="text-sm font-medium text-slate-700">客名</label>
+            <select
+              id="carton-mark-customer"
               v-model="form.customerName"
-              list="carton-mark-customer-suggestions"
-              type="text"
-              class="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50"
-              placeholder="例如：Dickie"
-              :disabled="!canUploadTemplate"
+              aria-describedby="carton-mark-customer-help"
+              class="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+              :disabled="!canUploadTemplate || isLoadingCustomerOptions || !customerOptions.length"
             >
-            <datalist id="carton-mark-customer-suggestions">
+              <option value="">
+                {{ isLoadingCustomerOptions ? '正在读取客户…' : customerOptions.length ? '请选择客户' : '当前厂区暂无客户' }}
+              </option>
               <option
-                v-for="customer in customerGroups"
-                :key="`template-customer-${customer.name}`"
+                v-for="customer in customerOptions"
+                :key="customer.id"
                 :value="customer.name"
-              />
-            </datalist>
-            <p class="mt-1 text-xs text-slate-500">作为右侧客户资料集合的归档名称。</p>
-          </label>
+              >
+                {{ customer.name }}
+              </option>
+            </select>
+            <p
+              v-if="customerOptionsErrorMessage"
+              id="carton-mark-customer-help"
+              class="mt-1 text-xs text-red-600"
+            >
+              {{ customerOptionsErrorMessage }}
+              <button type="button" class="font-semibold underline underline-offset-2" @click="reloadCustomerOptions">重试</button>
+            </p>
+            <p v-else-if="!isLoadingCustomerOptions && !customerOptions.length" id="carton-mark-customer-help" class="mt-1 text-xs text-amber-700">
+              当前厂区尚未在内部报价台添加客户，请先到内部报价台维护客户名。
+            </p>
+            <p v-else id="carton-mark-customer-help" class="mt-1 text-xs text-slate-500">
+              客名来自当前厂区内部报价台客户库，并作为右侧客户资料集合的归档名称。
+            </p>
+          </div>
           <label class="block">
             <span class="text-sm font-medium text-slate-700">ITEM</span>
             <input
@@ -2392,7 +2522,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 {{ documentComparisonRecord.customerName }} · 合同：{{ documentComparisonRecord.contractNumber || '未填写' }} · ITEM：{{ documentComparisonRecord.item }}
               </p>
               <p v-if="documentComparisonRecord.documentCheckedAt" class="mt-1 text-xs text-slate-500">
-                核对时间：{{ formatDate(documentComparisonRecord.documentCheckedAt) }} · 忽略空间排版与新增图案，只比较文字
+                核对时间：{{ formatDate(documentComparisonRecord.documentCheckedAt) }} · 忽略空间排版及图形内文字，只比较普通业务文字
               </p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
@@ -2403,6 +2533,20 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               >
                 {{ documentCheckResult.summary.overall_status }}
               </span>
+              <button
+                v-if="canUploadTemplate"
+                type="button"
+                :disabled="recheckingDocumentId === documentComparisonRecord.id"
+                class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-amber-200 bg-white px-3 text-xs font-semibold text-amber-700 transition hover:bg-amber-50 disabled:cursor-wait disabled:opacity-60"
+                @click="recheckTemplateRecord(documentComparisonRecord)"
+              >
+                <RefreshCw
+                  class="size-3.5"
+                  :class="recheckingDocumentId === documentComparisonRecord.id ? 'animate-spin' : ''"
+                  aria-hidden="true"
+                />
+                {{ recheckingDocumentId === documentComparisonRecord.id ? '核对中' : '重新核对' }}
+              </button>
               <button
                 type="button"
                 :disabled="downloadingDocumentKey === `${documentComparisonRecord.id}:source_excel`"

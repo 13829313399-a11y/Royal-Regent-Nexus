@@ -31,11 +31,28 @@ const persistedTemplate: CartonMarkTemplateRecordResponse = {
   pdf_file_name: 'print.pdf',
   pdf_file_size: 2400,
   created_at: '2026-08-13T10:00:00Z',
+  updated_at: '2026-08-13T10:00:00Z',
   created_by_name: '纸箱仓管',
   qc_ready: true,
 }
 
 describe('carton-mark persisted template API', () => {
+  it('loads customer options from the current factory quote customer library', async () => {
+    const customerOptions = [
+      { id: 'IQC-DICKIE', name: 'Dickie' },
+      { id: 'IQC-ZURU', name: 'ZURU' },
+    ]
+    const get = vi.fn().mockResolvedValue({ data: customerOptions })
+    const api = createCartonMarkApi({ get } as Parameters<typeof createCartonMarkApi>[0])
+    const controller = new AbortController()
+
+    await expect(api.listCustomerOptions('huaxing', controller.signal)).resolves.toEqual(customerOptions)
+    expect(get).toHaveBeenCalledWith('/carton-mark/customer-options', {
+      params: { factory_id: 'huaxing' },
+      signal: controller.signal,
+    })
+  })
+
   it('atomically uploads factory metadata, Excel and print PDF', async () => {
     const post = vi.fn().mockResolvedValue({ data: persistedTemplate })
     const api = createCartonMarkApi({ post } as Parameters<typeof createCartonMarkApi>[0])
@@ -89,6 +106,19 @@ describe('carton-mark persisted template API', () => {
     expect(get).toHaveBeenNthCalledWith(2, '/carton-mark/templates/cm-1', {
       params: { factory_id: 'huaxing' },
       signal: undefined,
+    })
+  })
+
+  it('rechecks the stored Excel and PDF inside the requested factory', async () => {
+    const post = vi.fn().mockResolvedValue({ data: persistedTemplate })
+    const api = createCartonMarkApi({ post } as Parameters<typeof createCartonMarkApi>[0])
+    const controller = new AbortController()
+
+    await expect(api.recheckTemplate('cm-1', 'huaxing', controller.signal)).resolves.toEqual(persistedTemplate)
+    expect(post).toHaveBeenCalledWith('/carton-mark/templates/cm-1/recheck', undefined, {
+      params: { factory_id: 'huaxing' },
+      timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS,
+      signal: controller.signal,
     })
   })
 

@@ -53,6 +53,15 @@ class PdfTextSpan:
     text: str
     x: float
     y: float
+    is_graphic_text: bool = False
+
+
+@dataclass(frozen=True)
+class PdfGraphicRegion:
+    left: float
+    bottom: float
+    right: float
+    top: float
 
 
 @dataclass
@@ -64,6 +73,7 @@ class _PdfVectorDocumentLine:
     field_key: str
     label_only: bool
     starts_field_label: bool
+    is_graphic_text: bool = False
 
 
 @dataclass(frozen=True)
@@ -962,6 +972,68 @@ def _annotate_pdf_vector_region(lines: list[_PdfVectorDocumentLine], page_height
         lines[value_index].field_key = lines[slot_index].field_key
 
 
+def _pdf_transform_point(
+    x: float,
+    y: float,
+    matrix,
+) -> tuple[float, float]:
+    try:
+        a, b, c, d, e, f = (float(value) for value in matrix[:6])
+    except (TypeError, ValueError):
+        a, b, c, d, e, f = 1.0, 0.0, 0.0, 1.0, 0.0, 0.0
+    return a * x + c * y + e, b * x + d * y + f
+
+
+def _pdf_graphic_path_region(
+    points: list[tuple[float, float]],
+    path_kinds: set[str],
+    *,
+    page_width: float,
+    page_height: float,
+) -> PdfGraphicRegion | None:
+    """Return a small non-rectangular artwork boundary, never a form cell.
+
+    Customer-added logos, certification marks and stamps are normally drawn as
+    paths. Business tables use the PDF rectangle operator, while the outer mark
+    panels are far larger than an artwork object. This geometry distinction lets
+    us ignore text inside arbitrary artwork without hard-coding customer words.
+    """
+
+    if len(points) < 2 or path_kinds == {"re"}:
+        return None
+    left = min(point[0] for point in points)
+    right = max(point[0] for point in points)
+    bottom = min(point[1] for point in points)
+    top = max(point[1] for point in points)
+    width = right - left
+    height = top - bottom
+    page_area = max(page_width * page_height, 1.0)
+    area_ratio = width * height / page_area
+    if (
+        width < page_width * 0.02
+        or height < page_height * 0.025
+        or area_ratio < 0.0002
+        or area_ratio > 0.08
+    ):
+        return None
+    return PdfGraphicRegion(left=left, bottom=bottom, right=right, top=top)
+
+
+def _pdf_span_is_inside_graphic(
+    span: PdfTextSpan,
+    regions: list[PdfGraphicRegion],
+    *,
+    page_width: float,
+    page_height: float,
+) -> bool:
+    margin = max(2.0, min(page_width, page_height) * 0.004)
+    return any(
+        region.left - margin <= span.x <= region.right + margin
+        and region.bottom - margin <= span.y <= region.top + margin
+        for region in regions
+    )
+
+
 def build_pdf_vector_document_items(
     spans: list[PdfTextSpan],
     *,
@@ -1017,6 +1089,7 @@ def build_pdf_vector_document_items(
                     field_key=prefix_key if starts_field_label else _document_field_key(line),
                     label_only=label_only,
                     starts_field_label=starts_field_label,
+                    is_graphic_text=span.is_graphic_text,
                 ))
         _annotate_pdf_vector_region(region_lines, page_height)
         for line_number, line in enumerate(region_lines, start=1):
@@ -1024,6 +1097,7 @@ def build_pdf_vector_document_items(
                     text=line.text,
                     location=f"第 {page_index} 页 · {region_name} · 第 {line_number} 行",
                     field_key=line.field_key,
+                    is_graphic_text=line.is_graphic_text,
                 ))
 
     if len(items) < 3:
@@ -1042,6 +1116,9 @@ def _extract_pdf_page_vector_document_items(
         page_width = float(page.mediabox.width)
         page_height = float(page.mediabox.height)
         spans: list[PdfTextSpan] = []
+        graphic_regions: list[PdfGraphicRegion] = []
+        path_points: list[tuple[float, float]] = []
+        path_kinds: set[str] = set()
 
         def collect_text(text, _cm, tm, _font_dict, _font_size):
             value = str(text or "")
@@ -1052,7 +1129,76 @@ def _extract_pdf_page_vector_document_items(
             except (IndexError, TypeError, ValueError):
                 return
 
-        page.extract_text(visitor_text=collect_text)
+        def collect_operand(operator, operands, cm, _tm):
+            nonlocal path_points, path_kinds
+            name = operator.decode("latin1") if isinstance(operator, bytes) else str(operator)
+            try:
+                values = [float(value) for value in operands]
+            except (TypeError, ValueError):
+                values = []
+            if name in {"m", "l"} and len(values) >= 2:
+                path_points.append(_pdf_transform_point(values[0], values[1], cm))
+                path_kinds.add(name)
+                return
+            if name == "c" and len(values) >= 6:
+                path_points.extend(
+                    _pdf_transform_point(values[index], values[index + 1], cm)
+                    for index in (0, 2, 4)
+                )
+                path_kinds.add(name)
+                return
+            if name in {"v", "y"} and len(values) >= 4:
+                path_points.extend(
+                    _pdf_transform_point(values[index], values[index + 1], cm)
+                    for index in (0, 2)
+                )
+                path_kinds.add(name)
+                return
+            if name == "re" and len(values) >= 4:
+                x, y, width, height = values[:4]
+                path_points.extend(
+                    _pdf_transform_point(point_x, point_y, cm)
+                    for point_x, point_y in (
+                        (x, y),
+                        (x + width, y),
+                        (x + width, y + height),
+                        (x, y + height),
+                    )
+                )
+                path_kinds.add(name)
+                return
+            if name not in {"S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n"}:
+                return
+            if name != "n":
+                region = _pdf_graphic_path_region(
+                    path_points,
+                    path_kinds,
+                    page_width=page_width,
+                    page_height=page_height,
+                )
+                if region is not None:
+                    graphic_regions.append(region)
+            path_points = []
+            path_kinds = set()
+
+        page.extract_text(
+            visitor_text=collect_text,
+            visitor_operand_before=collect_operand,
+        )
+        spans = [
+            PdfTextSpan(
+                text=span.text,
+                x=span.x,
+                y=span.y,
+                is_graphic_text=_pdf_span_is_inside_graphic(
+                    span,
+                    graphic_regions,
+                    page_width=page_width,
+                    page_height=page_height,
+                ),
+            )
+            for span in spans
+        ]
         return build_pdf_vector_document_items(
             spans,
             page_width=page_width,
@@ -1799,6 +1945,9 @@ def _document_ignored_residual_indexes(
 
     ignored: set[int] = set()
     for index, residual in enumerate(residuals):
+        if residual.is_graphic_text:
+            ignored.add(index)
+            continue
         signature = document_canonical_value(residual.text)
         if not signature:
             ignored.add(index)
@@ -2155,6 +2304,7 @@ def _append_document_residual(
             text=text,
             location=item.location,
             field_key=item.field_key or _document_field_key(item.text),
+            is_graphic_text=item.is_graphic_text,
         ))
         partial_residuals.append(is_partial)
 

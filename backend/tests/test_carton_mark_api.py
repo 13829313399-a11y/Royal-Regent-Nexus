@@ -33,6 +33,81 @@ def _pdf_bytes() -> bytes:
     return output.getvalue()
 
 
+def test_customer_options_read_internal_quote_names_for_the_authorized_factory(monkeypatch):
+    with make_client(monkeypatch) as client:
+        db_module = importlib.import_module("app.db")
+        model = importlib.import_module("app.models.internal_quote")
+        with db_module.SessionLocal() as db:
+            db.add_all(
+                [
+                    model.InternalQuoteCustomer(
+                        id="IQC-HUAXING-ZURU",
+                        factory_id="huaxing",
+                        name="ZURU",
+                        normalized_name="zuru",
+                        revision=1,
+                        created_by="sales-user",
+                        created_by_name="业务员",
+                        created_at="2026-08-14T09:00:00+08:00",
+                        updated_by="sales-user",
+                        updated_by_name="业务员",
+                        updated_at="2026-08-14T09:00:00+08:00",
+                    ),
+                    model.InternalQuoteCustomer(
+                        id="IQC-HUAXING-DICKIE",
+                        factory_id="huaxing",
+                        name="Dickie",
+                        normalized_name="dickie",
+                        revision=1,
+                        created_by="sales-user",
+                        created_by_name="业务员",
+                        created_at="2026-08-14T09:01:00+08:00",
+                        updated_by="sales-user",
+                        updated_by_name="业务员",
+                        updated_at="2026-08-14T09:01:00+08:00",
+                    ),
+                    model.InternalQuoteCustomer(
+                        id="IQC-HUAKANG-OTHER",
+                        factory_id="huakang-c",
+                        name="外厂客户",
+                        normalized_name="外厂客户",
+                        revision=1,
+                        created_by="sales-user",
+                        created_by_name="业务员",
+                        created_at="2026-08-14T09:02:00+08:00",
+                        updated_by="sales-user",
+                        updated_by_name="业务员",
+                        updated_at="2026-08-14T09:02:00+08:00",
+                    ),
+                ]
+            )
+            db.commit()
+
+        login_as(client, "carton_warehouse")
+        response = client.get(
+            "/api/carton-mark/customer-options",
+            params={"factory_id": "huaxing"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == [
+            {"id": "IQC-HUAXING-DICKIE", "name": "Dickie"},
+            {"id": "IQC-HUAXING-ZURU", "name": "ZURU"},
+        ]
+
+        wrong_factory = client.get(
+            "/api/carton-mark/customer-options",
+            params={"factory_id": "huakang-c"},
+        )
+        assert wrong_factory.status_code == 403
+
+        login_as(client, "qc_inspector")
+        forbidden = client.get(
+            "/api/carton-mark/customer-options",
+            params={"factory_id": "huaxing"},
+        )
+        assert forbidden.status_code == 403
+
+
 def test_document_content_check_requires_template_upload_and_returns_stable_schema(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "qc_inspector")
@@ -236,6 +311,7 @@ def test_persisted_templates_support_qc_read_download_duplicate_and_soft_archive
         assert record["check_status"] == "核对通过"
         assert record["qc_ready"] is True
         assert record["check_result"]["summary"]["overall_status"] == "核对通过"
+        assert record["updated_at"] == record["created_at"]
 
         duplicate = client.post("/api/carton-mark/templates", **create_payload)
         assert duplicate.status_code == 409
@@ -272,8 +348,20 @@ def test_persisted_templates_support_qc_read_download_duplicate_and_soft_archive
             params={"factory_id": "huaxing"},
         )
         assert forbidden_archive.status_code == 403
+        forbidden_recheck = client.post(
+            f"/api/carton-mark/templates/{template_id}/recheck",
+            params={"factory_id": "huaxing"},
+        )
+        assert forbidden_recheck.status_code == 403
 
         login_as(client, "carton_warehouse")
+        rechecked = client.post(
+            f"/api/carton-mark/templates/{template_id}/recheck",
+            params={"factory_id": "huaxing"},
+        )
+        assert rechecked.status_code == 200, rechecked.text
+        assert rechecked.json()["check_status"] == "核对通过"
+        assert rechecked.json()["check_result"]["summary"]["unexpected_count"] == 0
         archived = client.delete(
             f"/api/carton-mark/templates/{template_id}",
             params={"factory_id": "huaxing"},
@@ -301,6 +389,7 @@ def test_persisted_templates_support_qc_read_download_duplicate_and_soft_archive
             ).all()
         assert [event.event_type for event in events] == [
             "CARTON_MARK_TEMPLATE_CREATED",
+            "CARTON_MARK_TEMPLATE_RECHECKED",
             "CARTON_MARK_TEMPLATE_ARCHIVED",
         ]
         assert "PO NO" not in "".join(event.detail_json for event in events)
