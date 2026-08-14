@@ -21,6 +21,38 @@
         "grounded_claim_count": 1
       },
       "tags": ["cantonese", "grounded"]
+    },
+    {
+      "id": "business_concise_presentation",
+      "category": "BUSINESS_GROUNDING",
+      "user_text": "直接告诉我重点，不要重复工具表格",
+      "factory_id": "huaxing",
+      "route_name": "injection-scheduling-v2",
+      "expected": {
+        "skill_id": "business.current_page_query",
+        "tools": [{"name": "injection_scheduling.get_backlog", "required_arguments": {"factory_id": "huaxing"}}],
+        "evidence_levels": ["FORMAL_DOMAIN_SERVICE"],
+        "required_answer_terms": ["结论"],
+        "forbidden_answer_terms": ["injection_scheduling.get_backlog", "函数调用"],
+        "grounded_claim_count": 1
+      },
+      "tags": ["presentation", "concise"]
+    },
+    {
+      "id": "business_truncated_next_step",
+      "category": "RESILIENCE",
+      "user_text": "如果数据很多，告诉我目前看到了什么以及怎么继续",
+      "factory_id": "huaxing",
+      "route_name": "injection-scheduling-v2",
+      "expected": {
+        "skill_id": "business.current_page_query",
+        "tools": [{"name": "injection_scheduling.get_backlog", "required_arguments": {"factory_id": "huaxing"}}],
+        "evidence_levels": ["FORMAL_DOMAIN_SERVICE"],
+        "required_answer_terms": ["结果不完整", "继续查看下一页"],
+        "forbidden_answer_terms": ["已全部加载"],
+        "grounded_claim_count": 1
+      },
+      "tags": ["presentation", "truncation"]
     }
   ]
 }

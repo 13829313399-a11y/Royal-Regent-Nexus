@@ -1,28 +1,32 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ArrowLeft, Bot, ChevronUp, RefreshCcw, ShieldCheck } from '@lucide/vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { ChevronUp, RefreshCcw } from '@lucide/vue'
+import { useRoute, useRouter } from 'vue-router'
 import { isAIConversationId, type AIConversationMode } from '@/api/aiConversations'
 import {
   createVisionComparisonTask,
   getAITaskCapabilities,
   isAITaskId,
 } from '@/api/aiTasks'
-import AiBusinessResultCard from '@/features/ai-assistant/AiBusinessResultCard.vue'
 import AiComposer from '@/features/ai-assistant/AiComposer.vue'
 import AiMessageList from '@/features/ai-assistant/AiMessageList.vue'
-import AiToolActivity from '@/features/ai-assistant/AiToolActivity.vue'
 import { useAIAssistantStore } from '@/features/ai-assistant/store'
 import { useAIConversationsStore } from '@/features/ai-assistant/stores/conversations'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import ConversationList from '../components/ConversationList.vue'
 import ConversationRetentionBadge from '../components/ConversationRetentionBadge.vue'
+import ContextPicker from '../components/ContextPicker.vue'
 import EvidencePanel from '../components/EvidencePanel.vue'
 import TaskControls from '../components/TaskControls.vue'
 import TaskList from '../components/TaskList.vue'
 import TaskTimeline from '../components/TaskTimeline.vue'
 import { useAITasksStore } from '../stores/tasks'
+import { pageContextFromConversation } from '../conversation/conversationContext'
+import { summarizeConversationRuntime } from '../conversation/conversationRuntimeStatus'
+import InspectorPanel, { type InspectorTab } from './InspectorPanel.vue'
+import WorkbenchHeader from './WorkbenchHeader.vue'
+import WorkbenchShell from './WorkbenchShell.vue'
 
 interface ComposerHandle {
   clear: () => void
@@ -39,6 +43,10 @@ const tasksStore = useAITasksStore()
 const composer = ref<ComposerHandle | null>(null)
 const initializing = ref(true)
 const pageError = ref('')
+const railCollapsed = ref(false)
+const inspectorOpen = ref(true)
+const inspectorWidth = ref(360)
+const inspectorTab = ref<InspectorTab>('sources')
 let initializationGeneration = 0
 
 const persistenceAvailable = computed(() => (
@@ -49,6 +57,39 @@ const visionComparisonStarting = ref(false)
 const activeEvidence = computed(() => (
   conversationsStore.active?.messages.flatMap((message) => message.evidence) ?? []
 ))
+const conversationContext = computed(() => (
+  pageContextFromConversation(conversationsStore.active?.context_binding)
+))
+const contextPickerAvailable = computed(() => (
+  assistantStore.capabilities?.conversation_context_enabled === true
+))
+const workbenchV2Enabled = computed(() => (
+  assistantStore.capabilities?.workbench_v2_enabled === true
+))
+const inspectorCounts = computed<Record<InspectorTab, number>>(() => ({
+  sources: activeEvidence.value.length,
+  tasks: tasksStore.items.length,
+  artifacts: assistantStore.turns.reduce(
+    (total, turn) => total + turn.businessResults.filter(
+      (result) => result.kind !== 'action_confirmation',
+    ).length,
+    0,
+  ),
+  actions: assistantStore.turns.reduce(
+    (total, turn) => total + turn.businessResults.filter(
+      (result) => result.kind === 'action_confirmation',
+    ).length,
+    0,
+  ),
+}))
+const conversationRuntimeStatuses = computed(() => {
+  const conversationId = conversationsStore.activeId
+  if (!conversationId) return {}
+  const results = assistantStore.turns.flatMap((turn) => turn.businessResults)
+  return {
+    [conversationId]: summarizeConversationRuntime(conversationId, tasksStore.items, results),
+  }
+})
 
 function queryConversationId() {
   const value = Array.isArray(route.query.conversation)
@@ -92,6 +133,9 @@ async function openConversation(conversationId: string, updateQuery = true) {
   pageError.value = ''
   try {
     const detail = await conversationsStore.open(conversationId)
+    if (contextPickerAvailable.value) {
+      await conversationsStore.loadContextOptions(detail.factory_scope)
+    }
     assistantStore.bindConversation(detail.id, detail.mode, detail.messages)
     tasksStore.reset()
     if (taskExecutionAvailable.value) {
@@ -129,6 +173,9 @@ async function initialize() {
       taskExecutionAvailable.value = false
     }
     await conversationsStore.loadList(true)
+    if (contextPickerAvailable.value) {
+      await conversationsStore.loadContextOptions(String(appStore.activeProductionFactory.id))
+    }
     if (generation !== initializationGeneration) return
     const requestedId = queryConversationId()
     const hasInvalidRequestedId = route.query.conversation != null && !requestedId
@@ -186,6 +233,28 @@ async function removeConversation(conversationId: string) {
     if (!next) tasksStore.reset()
   } catch {
     pageError.value = '会话删除失败，请稍后重试。'
+  }
+}
+
+async function changeContext(option: import('@/api/aiConversations').AIContextOption | null) {
+  if (!conversationsStore.active || assistantStore.isStreaming) return
+  pageError.value = ''
+  try {
+    await conversationsStore.setContext(pageContextFromConversation(option))
+  } catch {
+    pageError.value = '上下文切换未通过服务端权限验证，请刷新后重试。'
+  }
+}
+
+async function manageConversation(
+  conversationId: string,
+  change: { title?: string; pinned?: boolean; archived?: boolean },
+) {
+  pageError.value = ''
+  try {
+    await conversationsStore.updateMetadata(conversationId, change)
+  } catch {
+    pageError.value = '会话信息更新失败，可能已在其他窗口发生变化，请刷新后重试。'
   }
 }
 
@@ -259,7 +328,7 @@ async function sendMessage(prompt: string) {
   const active = conversationsStore.active
   if (!active) return
   composer.value?.clear()
-  const completed = await assistantStore.sendMessage(prompt, null)
+  const completed = await assistantStore.sendMessage(prompt, conversationContext.value)
   if (active.mode === 'PERSISTENT') {
     await openConversation(active.id, false)
   } else {
@@ -271,7 +340,7 @@ async function sendMessage(prompt: string) {
 }
 
 async function retryLastTextRequest() {
-  const completed = await assistantStore.retryLastTextRequest(null)
+  const completed = await assistantStore.retryLastTextRequest(conversationContext.value)
   if (completed && conversationsStore.active?.mode === 'PERSISTENT') {
     await openConversation(conversationsStore.active.id, false)
   }
@@ -286,6 +355,19 @@ watch(
       void openConversation(requestedId, false)
     }
   },
+)
+
+watch(
+  inspectorCounts,
+  (counts, previous) => {
+    const total = Object.values(counts).reduce((sum, count) => sum + count, 0)
+    const previousTotal = previous
+      ? Object.values(previous).reduce((sum, count) => sum + count, 0)
+      : 0
+    if (total === 0) inspectorOpen.value = false
+    else if (previousTotal === 0) inspectorOpen.value = true
+  },
+  { immediate: true },
 )
 
 watch(
@@ -313,26 +395,7 @@ onMounted(() => void initialize())
 
 <template>
   <div class="flex min-h-dvh flex-col bg-slate-100 text-slate-950" data-ai-workbench>
-    <header class="flex shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
-      <RouterLink
-        to="/"
-        class="flex size-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
-        aria-label="返回业务首页"
-      >
-        <ArrowLeft class="size-4" aria-hidden="true" />
-      </RouterLink>
-      <span class="flex size-10 items-center justify-center rounded-2xl bg-slate-950 text-white" aria-hidden="true">
-        <Bot class="size-5" />
-      </span>
-      <div class="min-w-0 flex-1">
-        <h1 class="text-base font-bold">Nexus AI 工作台</h1>
-        <p class="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
-          <ShieldCheck class="size-3 text-emerald-600" aria-hidden="true" />
-          服务端组装历史；正式业务事实需通过当前权限重新读取
-        </p>
-      </div>
-      <span class="hidden text-xs text-slate-500 sm:inline">{{ appStore.activeProductionFactory.shortName }}厂区</span>
-    </header>
+    <WorkbenchHeader :factory-label="appStore.activeProductionFactory.shortName" />
 
     <div v-if="initializing" class="flex flex-1 items-center justify-center p-8 text-sm text-slate-500" role="status">
       正在加载 AI 工作台…
@@ -342,18 +405,34 @@ onMounted(() => void initialize())
         {{ pageError || '当前未开放 AI 持续会话。' }}
       </div>
     </div>
-    <div v-else class="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_360px]">
-      <ConversationList
-        class="hidden lg:flex"
-        :items="conversationsStore.items"
-        :active-id="conversationsStore.activeId"
-        :loading="conversationsStore.loading"
-        :has-more="Boolean(conversationsStore.nextCursor)"
-        @select="openConversation"
-        @create="createConversation"
-        @delete="removeConversation"
-        @load-more="conversationsStore.loadList(false)"
-      />
+    <WorkbenchShell
+      v-else
+      :rail-collapsed="railCollapsed"
+      :inspector-open="inspectorOpen"
+      :inspector-width="inspectorWidth"
+      :controls-enabled="workbenchV2Enabled"
+      @toggle-rail="railCollapsed = !railCollapsed"
+      @toggle-inspector="inspectorOpen = !inspectorOpen"
+      @inspector-width="inspectorWidth = $event"
+    >
+      <template #rail>
+        <ConversationList
+          class="h-full"
+          :items="conversationsStore.items"
+          :active-id="conversationsStore.activeId"
+          :loading="conversationsStore.loading"
+          :has-more="Boolean(conversationsStore.nextCursor)"
+          :management-enabled="workbenchV2Enabled"
+          :runtime-statuses="conversationRuntimeStatuses"
+          @select="openConversation"
+          @create="createConversation"
+          @delete="removeConversation"
+          @rename="(id, title) => manageConversation(id, { title })"
+          @pin="(id, pinned) => manageConversation(id, { pinned })"
+          @archive="(id, archived) => manageConversation(id, { archived })"
+          @load-more="conversationsStore.loadList(false)"
+        />
+      </template>
 
       <main class="flex min-h-0 min-w-0 flex-col bg-slate-50" aria-label="AI 长会话">
         <details class="border-b border-slate-200 bg-white lg:hidden">
@@ -366,35 +445,46 @@ onMounted(() => void initialize())
             :active-id="conversationsStore.activeId"
             :loading="conversationsStore.loading"
             :has-more="Boolean(conversationsStore.nextCursor)"
+            :management-enabled="workbenchV2Enabled"
+            :runtime-statuses="conversationRuntimeStatuses"
             @select="openConversation"
             @create="createConversation"
             @delete="removeConversation"
+            @rename="(id, title) => manageConversation(id, { title })"
+            @pin="(id, pinned) => manageConversation(id, { pinned })"
+            @archive="(id, archived) => manageConversation(id, { archived })"
             @load-more="conversationsStore.loadList(false)"
           />
         </details>
-        <div class="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2.5 sm:px-5">
-          <div class="min-w-0 flex-1">
+        <div class="flex flex-col gap-2 border-b border-slate-200 bg-white px-4 py-2.5 sm:flex-row sm:items-center sm:px-5">
+          <div class="w-full min-w-0 sm:flex-1">
             <p class="truncate text-sm font-bold text-slate-900">
               {{ conversationsStore.active?.title ?? '选择或创建会话' }}
             </p>
-            <p v-if="conversationsStore.active" class="mt-0.5 text-[11px] text-slate-500">
+            <p v-if="conversationsStore.active" class="mt-0.5 text-[11px] leading-4 text-slate-500">
               厂区 {{ conversationsStore.active.factory_scope }} · 会话内容仅供交流，不构成正式业务记录
             </p>
           </div>
-          <ConversationRetentionBadge
-            v-if="conversationsStore.active"
-            :mode="conversationsStore.active.mode"
-          />
-          <button
-            v-if="conversationsStore.active"
-            type="button"
-            class="flex size-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
-            aria-label="重新加载当前会话"
-            :disabled="conversationsStore.loading"
-            @click="refreshActiveConversation"
-          >
-            <RefreshCcw class="size-3.5" :class="conversationsStore.loading ? 'animate-spin' : ''" aria-hidden="true" />
-          </button>
+          <div v-if="conversationsStore.active" class="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+            <ConversationRetentionBadge :mode="conversationsStore.active.mode" />
+            <ContextPicker
+              v-if="contextPickerAvailable"
+              :model-value="conversationsStore.active.context_binding"
+              :options="conversationsStore.contextOptions"
+              :disabled="assistantStore.isStreaming"
+              :loading="conversationsStore.loading"
+              @change="changeContext"
+            />
+            <button
+              type="button"
+              class="ml-auto flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600 sm:ml-0"
+              aria-label="重新加载当前会话"
+              :disabled="conversationsStore.loading"
+              @click="refreshActiveConversation"
+            >
+              <RefreshCcw class="size-3.5" :class="conversationsStore.loading ? 'animate-spin' : ''" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <details class="border-b border-slate-200 bg-white xl:hidden">
@@ -467,16 +557,47 @@ onMounted(() => void initialize())
           <p class="mt-1 text-[11px] text-violet-700">不展示模型私有思维过程；正式事实需重新调用业务工具。</p>
         </div>
 
+        <section
+          v-if="conversationsStore.active && !assistantStore.messages.length"
+          class="mx-auto grid w-full max-w-3xl gap-3 px-4 py-8 sm:grid-cols-3 sm:px-6"
+          data-workbench-empty-state
+          aria-label="开始使用 AI 工作台"
+        >
+          <button
+            type="button"
+            class="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-sky-300 hover:bg-sky-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-600"
+            @click="sendMessage('查询当前业务上下文中的关键状态，并标明数据时间和来源。')"
+          >
+            <span class="text-sm font-bold text-slate-900">查询业务</span>
+            <span class="mt-1 block text-xs leading-5 text-slate-500">按当前权限读取正式状态、数量与版本。</span>
+          </button>
+          <button
+            type="button"
+            class="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-violet-300 hover:bg-violet-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-600"
+            @click="sendMessage('基于当前已验证信息给出最多三条重点分析和下一步建议。')"
+          >
+            <span class="text-sm font-bold text-slate-900">分析与建议</span>
+            <span class="mt-1 block text-xs leading-5 text-slate-500">区分正式事实、流程知识与 AI 推断。</span>
+          </button>
+          <button
+            type="button"
+            class="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-amber-300 hover:bg-amber-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-600"
+            @click="composer?.focus()"
+          >
+            <span class="text-sm font-bold text-slate-900">文件工作</span>
+            <span class="mt-1 block text-xs leading-5 text-slate-500">在支持的页面中使用受控文件与图片流程。</span>
+          </button>
+        </section>
+
         <AiMessageList
+          v-if="assistantStore.messages.length || !conversationsStore.active"
           :messages="assistantStore.messages"
+          :turns="assistantStore.turns"
           :feedback-enabled="assistantStore.capabilities?.feedback_enabled === true"
           :factory-id="conversationsStore.active?.factory_scope"
+          :rich-text-enabled="assistantStore.capabilities?.rich_message_renderer_enabled === true"
+          :presentation-enabled="assistantStore.capabilities?.presentation_blocks_enabled === true"
         >
-          <AiToolActivity :items="assistantStore.activities" />
-          <AiBusinessResultCard
-            :results="assistantStore.businessResults"
-            :sources="assistantStore.sources"
-          />
           <div
             v-if="assistantStore.lastError || assistantStore.canRetry"
             class="mx-4 mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900 sm:mx-5"
@@ -503,42 +624,81 @@ onMounted(() => void initialize())
         />
       </main>
 
-      <aside class="hidden min-h-0 flex-col border-l border-slate-200 bg-white xl:flex" aria-label="任务与证据">
-        <TaskList
-          :items="tasksStore.items"
-          :active-id="tasksStore.activeId"
-          :loading="tasksStore.loading"
-          :available="taskExecutionAvailable"
-          :has-more="Boolean(tasksStore.nextCursor)"
-          @select="openTask"
-          @refresh="tasksStore.loadList(true, conversationsStore.activeId)"
-          @load-more="tasksStore.loadList(false)"
-        />
-        <template v-if="tasksStore.active">
-          <TaskTimeline
-            class="max-h-[42%] flex-1"
-            :task="tasksStore.active"
-            :events="tasksStore.events"
-            :comparing-vision="visionComparisonStarting"
-            @compare-vision="compareVisionObservation"
-          />
-          <TaskControls
-            :task="tasksStore.active"
-            :loading="tasksStore.loading"
-            @cancel="cancelTask"
-            @resume="resumeTask"
-            @refresh="tasksStore.recoverEvents"
-          />
-        </template>
-        <EvidencePanel
-          heading-id="evidence-panel-desktop-title"
-          class="min-h-0 flex-1 border-l-0 border-t border-slate-200"
-          :evidence="activeEvidence"
-          :inaccessible="conversationsStore.evidenceAccessChanged"
-          :loading="conversationsStore.loading"
-          @refresh="refreshActiveConversation"
-        />
-      </aside>
-    </div>
+      <template #inspector>
+        <InspectorPanel
+          :active-tab="inspectorTab"
+          :counts="inspectorCounts"
+          @tab="inspectorTab = $event"
+        >
+          <template #sources>
+            <EvidencePanel
+              heading-id="evidence-panel-desktop-title"
+              class="min-h-0 border-l-0"
+              :evidence="activeEvidence"
+              :inaccessible="conversationsStore.evidenceAccessChanged"
+              :loading="conversationsStore.loading"
+              @refresh="refreshActiveConversation"
+            />
+          </template>
+          <template #tasks>
+            <TaskList
+              :items="tasksStore.items"
+              :active-id="tasksStore.activeId"
+              :loading="tasksStore.loading"
+              :available="taskExecutionAvailable"
+              :has-more="Boolean(tasksStore.nextCursor)"
+              @select="openTask"
+              @refresh="tasksStore.loadList(true, conversationsStore.activeId)"
+              @load-more="tasksStore.loadList(false)"
+            />
+            <template v-if="tasksStore.active">
+              <TaskTimeline
+                :task="tasksStore.active"
+                :events="tasksStore.events"
+                :comparing-vision="visionComparisonStarting"
+                @compare-vision="compareVisionObservation"
+              />
+              <TaskControls
+                :task="tasksStore.active"
+                :loading="tasksStore.loading"
+                @cancel="cancelTask"
+                @resume="resumeTask"
+                @refresh="tasksStore.recoverEvents"
+              />
+            </template>
+          </template>
+          <template #artifacts>
+            <div class="space-y-2 p-3">
+              <template v-for="turn in assistantStore.turns" :key="turn.id">
+                <article
+                  v-for="result in turn.businessResults.filter((item) => item.kind !== 'action_confirmation')"
+                  :key="result.id"
+                  class="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                >
+                  <p class="text-xs font-bold text-slate-900">{{ result.title }}</p>
+                  <p class="mt-1 text-xs leading-5 text-slate-600">{{ result.summary }}</p>
+                </article>
+              </template>
+              <p v-if="!inspectorCounts.artifacts" class="py-8 text-center text-xs text-slate-500">当前会话还没有可查看的产物。</p>
+            </div>
+          </template>
+          <template #actions>
+            <div class="space-y-2 p-3">
+              <template v-for="turn in assistantStore.turns" :key="turn.id">
+                <article
+                  v-for="result in turn.businessResults.filter((item) => item.kind === 'action_confirmation')"
+                  :key="result.id"
+                  class="rounded-xl border border-amber-200 bg-amber-50 p-3"
+                >
+                  <p class="text-xs font-bold text-amber-950">{{ result.title }}</p>
+                  <p class="mt-1 text-xs leading-5 text-amber-800">{{ result.summary }}</p>
+                </article>
+              </template>
+              <p v-if="!inspectorCounts.actions" class="py-8 text-center text-xs text-slate-500">没有待处理的确认操作。</p>
+            </div>
+          </template>
+        </InspectorPanel>
+      </template>
+    </WorkbenchShell>
   </div>
 </template>

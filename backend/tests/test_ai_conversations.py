@@ -9,6 +9,7 @@ from app.db import Base, get_db
 from app.main import app
 from app.models.ai_conversation import (
     AIConversation,
+    AIConversationContextBinding,
     AIConversationSummary,
     AIMessage,
 )
@@ -95,6 +96,7 @@ def _database() -> Session:
             AuthUser.__table__,
             AuthAuditLog.__table__,
             AIConversation.__table__,
+            AIConversationContextBinding.__table__,
             AIMessage.__table__,
             AIConversationSummary.__table__,
         ],

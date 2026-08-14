@@ -7,6 +7,9 @@ const apiMocks = vi.hoisted(() => ({
   deleteAIConversation: vi.fn(),
   getAIConversation: vi.fn(),
   listAIConversations: vi.fn(),
+  listAIContextOptions: vi.fn(),
+  setAIConversationContext: vi.fn(),
+  updateAIConversation: vi.fn(),
 }))
 
 vi.mock('@/api/aiConversations', async (importOriginal) => ({
@@ -32,6 +35,9 @@ const listItem = {
   expires_at: null,
   message_count: 0,
   last_message_at: null,
+  pinned_at: null,
+  archived_at: null,
+  context_binding: null,
 }
 
 const detail = {
@@ -112,5 +118,50 @@ describe('NIF-05 conversation client contract', () => {
     expect(apiMocks.deleteAIConversation).toHaveBeenCalledWith(listItem.id)
     expect(store.items).toEqual([])
     expect(store.active).toBeNull()
+  })
+
+  it('keeps context and management metadata revisioned in the server store', async () => {
+    apiMocks.listAIConversations.mockResolvedValue({ items: [listItem], next_cursor: null })
+    apiMocks.getAIConversation.mockResolvedValue({ ...detail })
+    apiMocks.setAIConversationContext.mockResolvedValue({
+      factory_scope: 'huaxing',
+      module_id: 'injection-scheduling',
+      route_name: 'injection-scheduling-v2',
+      path: '/modules/production/injection-scheduling',
+      context_version: 1,
+      selected_entity_type: '',
+      selected_entity_id: '',
+      selected_entity_revision: null,
+      updated_at: '2026-08-12T08:02:00+08:00',
+    })
+    const store = useAIConversationsStore()
+    await store.loadList()
+    await store.open(listItem.id)
+    await store.setContext({
+      route_name: 'injection-scheduling-v2',
+      path: '/modules/production/injection-scheduling',
+      factory_id: 'huaxing',
+      module_id: 'injection-scheduling',
+      selected_entity: null,
+    })
+    apiMocks.updateAIConversation.mockResolvedValue({
+      ...store.items[0],
+      title: '已固定会话',
+      revision: 3,
+      pinned_at: '2026-08-12T08:03:00+08:00',
+    })
+    await store.updateMetadata(listItem.id, { title: '已固定会话', pinned: true })
+
+    expect(apiMocks.setAIConversationContext).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: listItem.id,
+      expectedRevision: 1,
+    }))
+    expect(apiMocks.updateAIConversation).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: listItem.id,
+      expectedRevision: 2,
+      pinned: true,
+    }))
+    expect(store.active?.title).toBe('已固定会话')
+    expect(store.active?.pinned_at).not.toBeNull()
   })
 })

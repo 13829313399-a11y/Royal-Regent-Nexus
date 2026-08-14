@@ -105,6 +105,10 @@ def test_prompt_compiler_has_stable_order_budget_hashes_and_versions() -> None:
     assert first.skill_version == "injection_scheduling.read_context@1.0.0"
     assert all(item.endswith("@1.0.0") for item in first.tool_versions)
     assert "private-prompt-user" not in content
+    assert "第一段先给直接结论" in content
+    assert "不得再次复制同一份长表" in content
+    assert "结果不完整" in content
+    assert "不得把建议、Preview、候选方案" in content
 
 
 def test_untrusted_file_and_ocr_injection_stays_out_of_system_policy() -> None:

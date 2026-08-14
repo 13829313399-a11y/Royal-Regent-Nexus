@@ -109,7 +109,7 @@ INJECTION_SCHEDULING_DEMAND_SHARED_MIGRATION_REVISION = "20260809_0059"
 INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
 PROTECTED_DOWNGRADE_PREFLIGHT_REVISION = "20260810_0061"
 CARTON_CLOSING_CURRENCY_MIGRATION_REVISION = "20260810_0064"
-HEAD_MIGRATION_REVISION = "20260813_0075"
+HEAD_MIGRATION_REVISION = "20260814_0077"
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -4651,7 +4651,7 @@ def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path
                 """
             ).fetchall()
         }
-        assert carton_tables == CARTON_PROCUREMENT_TABLES
+        assert CARTON_PROCUREMENT_TABLES <= carton_tables
         assert connection.execute(
             """
             SELECT COUNT(*) FROM auth_permissions

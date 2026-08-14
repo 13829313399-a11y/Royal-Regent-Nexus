@@ -26,6 +26,8 @@ import type {
   AISourceSummary,
   AIStreamEnvelope,
   AIToolActivityItem,
+  AITurnPresentation,
+  AIEvidenceReferenceV1,
 } from './types'
 
 const MAX_CONVERSATION_MESSAGES = 12
@@ -61,6 +63,52 @@ function publicStreamFailure(event: AIStreamEnvelope) {
   return normalizeAIFailure(event.payload)
 }
 
+function parsePersistedEvidence(value: Readonly<Record<string, unknown>>): AIEvidenceReferenceV1[] {
+  const evidenceId = text(value.evidence_id ?? value.evidenceId, 160)
+  const sourceLevel = text(value.source_level ?? value.sourceLevel, 64)
+  const sourceName = text(value.source_name ?? value.sourceName, 160)
+  const asOf = text(value.as_of ?? value.asOf, 80)
+  const contentHash = text(value.content_hash ?? value.contentHash, 80)
+  const accessPolicy = text(value.access_policy ?? value.accessPolicy, 64)
+  const allowedLevels = new Set<AIEvidenceReferenceV1['sourceLevel']>([
+    'FORMAL_DOMAIN_SERVICE',
+    'VERSIONED_MODULE_KNOWLEDGE',
+    'AUTHENTICATED_SERVER_CONTEXT',
+    'USER_PROVIDED',
+    'MODEL_INFERENCE',
+  ])
+  if (
+    !evidenceId.startsWith('ev:')
+    || !sourceName
+    || !allowedLevels.has(sourceLevel as AIEvidenceReferenceV1['sourceLevel'])
+    || !Number.isFinite(Date.parse(asOf))
+    || !/^sha256:[a-f0-9]{64}$/.test(contentHash)
+    || accessPolicy !== 'REAUTHORIZE_ON_OPEN'
+  ) return []
+  const factoryId = text(value.factory_id ?? value.factoryId, 64)
+  const entityType = text(value.entity_type ?? value.entityType, 120)
+  const entityId = text(value.entity_id ?? value.entityId, 160)
+  const revisionValue = value.entity_revision ?? value.entityRevision
+  const entityRevision = typeof revisionValue === 'number' && Number.isInteger(revisionValue) && revisionValue >= 0
+    ? revisionValue
+    : undefined
+  const cursor = text(value.cursor, 256)
+  return [{
+    evidenceId,
+    sourceLevel: sourceLevel as AIEvidenceReferenceV1['sourceLevel'],
+    sourceName,
+    ...(factoryId ? { factoryId } : {}),
+    asOf,
+    ...(entityType ? { entityType } : {}),
+    ...(entityId ? { entityId } : {}),
+    ...(entityRevision !== undefined ? { entityRevision } : {}),
+    contentHash,
+    truncated: value.truncated === true,
+    ...(cursor ? { cursor } : {}),
+    accessPolicy: 'REAUTHORIZE_ON_OPEN',
+  }]
+}
+
 export const useAIAssistantStore = defineStore('aiAssistant', () => {
   const capabilities = ref<AICapabilities | null>(null)
   const capabilitiesLoading = ref(false)
@@ -70,6 +118,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
   const activities = ref<AIToolActivityItem[]>([])
   const sources = ref<AISourceSummary[]>([])
   const businessResults = ref<AIBusinessResult[]>([])
+  const turns = ref<AITurnPresentation[]>([])
   const lastError = ref('')
   const lastFailure = ref<AIFailure | null>(null)
   const retryPrompt = ref('')
@@ -77,6 +126,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
   const activeConversationMode = ref<AIConversationMode | null>(null)
   let activeController: AbortController | null = null
   let activeAssistant: AIConversationMessage | null = null
+  let activeTurn: AITurnPresentation | null = null
   let activePrompt = ''
   let activeHadAttachments = false
   let conversationGeneration = 0
@@ -128,6 +178,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
     activeAssistant = null
     activePrompt = ''
     activeHadAttachments = false
+    activeTurn = null
   }
 
   function abortForReset() {
@@ -166,6 +217,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
     const controller = activeController
     if (!controller || status.value !== 'streaming') return false
     const assistant = activeAssistant
+    const turn = activeTurn
     const cancelledPrompt = activePrompt
     const canRetryCancelledPrompt = !activeHadAttachments
     controller.abort()
@@ -174,7 +226,12 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
       assistant.status = 'cancelled'
       if (!assistant.text) assistant.text = '已停止生成。'
     }
-    activities.value = activities.value.filter((item) => item.status !== 'running')
+    if (turn) turn.status = 'cancelled'
+    activities.value.splice(
+      0,
+      activities.value.length,
+      ...activities.value.filter((item) => item.status !== 'running'),
+    )
     status.value = 'idle'
     lastFailure.value = null
     lastError.value = ''
@@ -191,6 +248,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
     activities.value = []
     sources.value = []
     businessResults.value = []
+    turns.value = []
     lastError.value = ''
     lastFailure.value = null
     retryPrompt.value = ''
@@ -221,6 +279,53 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
           ? { feedbackTarget: { type: 'MESSAGE' as const, id: message.id } }
           : {}),
       }))
+      turns.value = []
+      let pendingUserId = ''
+      for (const message of persistedMessages) {
+        if (message.role === 'USER') {
+          pendingUserId = message.id
+          continue
+        }
+        const parsedEvidence = message.evidence.flatMap(parsePersistedEvidence)
+        turns.value.push({
+          id: localId('turn-history'),
+          requestId: '',
+          userMessageId: pendingUserId,
+          assistantMessageId: message.id,
+          createdAt: message.created_at,
+          status: 'complete',
+          activities: [],
+          sources: parsedEvidence.map((item) => ({
+            id: item.evidenceId,
+            level: item.sourceLevel === 'FORMAL_DOMAIN_SERVICE'
+              || item.sourceLevel === 'AUTHENTICATED_SERVER_CONTEXT'
+              ? 'FORMAL'
+              : item.sourceLevel === 'VERSIONED_MODULE_KNOWLEDGE'
+                ? 'MODULE_KNOWLEDGE'
+                : item.sourceLevel,
+            label: item.sourceLevel === 'FORMAL_DOMAIN_SERVICE'
+              || item.sourceLevel === 'AUTHENTICATED_SERVER_CONTEXT'
+              ? '系统正式数据'
+              : item.sourceLevel === 'VERSIONED_MODULE_KNOWLEDGE'
+                ? '受控页面知识'
+                : item.sourceLevel === 'USER_PROVIDED'
+                  ? '用户提供内容'
+                  : '模型推断',
+            ...(item.factoryId ? { factoryId: item.factoryId } : {}),
+            updatedAt: item.asOf,
+            links: [],
+          })),
+          businessResults: [],
+          evidence: parsedEvidence,
+          historical: true,
+          requiresRefresh: message.requires_tool_refresh,
+        })
+        pendingUserId = ''
+      }
+      const latest = turns.value.at(-1)
+      activities.value = latest?.activities ?? []
+      sources.value = latest?.sources ?? []
+      businessResults.value = latest?.businessResults ?? []
     }
   }
 
@@ -236,6 +341,10 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
 
   function closeDrawer() {
     if (activeConversationMode.value !== 'PERSISTENT') clearConversation()
+    isOpen.value = false
+  }
+
+  function minimizeDrawer() {
     isOpen.value = false
   }
 
@@ -273,6 +382,13 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
     const key = resultKey(candidate)
     if (businessResults.value.some((item) => resultKey(item) === key)) return
     if (businessResults.value.length < MAX_BUSINESS_RESULTS) businessResults.value.push(candidate)
+    candidate.evidence?.forEach(addEvidence)
+  }
+
+  function addEvidence(candidate: AIEvidenceReferenceV1) {
+    if (!activeTurn) return
+    if (activeTurn.evidence.some((item) => item.evidenceId === candidate.evidenceId)) return
+    activeTurn.evidence.push(candidate)
   }
 
   function updateToolActivity(event: AIStreamEnvelope) {
@@ -304,7 +420,12 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
     })
   }
 
-  function applyStreamEvent(event: AIStreamEnvelope, assistant: AIConversationMessage) {
+  function applyStreamEvent(
+    event: AIStreamEnvelope,
+    assistant: AIConversationMessage,
+    turn: AITurnPresentation,
+  ) {
+    if (!turn.requestId) turn.requestId = event.request_id
     updateToolActivity(event)
     addSource(extractSource(event.payload.source))
     addSource(extractSource(event.payload.input_source))
@@ -326,12 +447,14 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
       if (assistant.status !== 'truncated') assistant.status = 'complete'
     } else if (event.type === 'error') {
       assistant.status = 'error'
+      turn.status = 'error'
       const failure = publicStreamFailure(event)
       if (!assistant.text) assistant.text = failure.message
       recordFailure(failure)
       status.value = 'error'
     } else if (event.type === 'response.completed') {
       if (assistant.status !== 'truncated') assistant.status = 'complete'
+      turn.status = assistant.status === 'truncated' ? 'error' : 'complete'
       const conversation = event.payload.conversation
       const persistedMessageId = conversation
         && typeof conversation === 'object'
@@ -411,13 +534,14 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
     activities.value = []
     sources.value = []
     businessResults.value = []
-    messages.value.push({
+    const userMessage: AIConversationMessage = {
       id: localId('user'),
       role: 'user',
       text: normalized,
       status: 'complete',
       createdAt: new Date().toISOString(),
-    })
+    }
+    messages.value.push(userMessage)
     messages.value = messages.value.slice(-(MAX_CONVERSATION_MESSAGES - 1))
     const history = activeConversationId.value
       ? [{ role: 'user' as const, content: [{ type: 'input_text' as const, text: normalized }] }]
@@ -430,10 +554,30 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
       createdAt: new Date().toISOString(),
     })
     messages.value.push(assistant)
+    const turn = reactive<AITurnPresentation>({
+      id: localId('turn'),
+      requestId: '',
+      userMessageId: userMessage.id,
+      assistantMessageId: assistant.id,
+      createdAt: userMessage.createdAt,
+      status: 'streaming',
+      activities: [],
+      sources: [],
+      businessResults: [],
+      evidence: [],
+      historical: false,
+      requiresRefresh: false,
+    })
+    turns.value.push(turn)
+    turns.value = turns.value.slice(-MAX_CONVERSATION_MESSAGES)
+    activities.value = turn.activities
+    sources.value = turn.sources
+    businessResults.value = turn.businessResults
     const generation = conversationGeneration
     const controller = new AbortController()
     activeController = controller
     activeAssistant = assistant
+    activeTurn = turn
     activePrompt = normalized
     activeHadAttachments = attachments.length > 0 || artifactAttachments.length > 0
     status.value = 'streaming'
@@ -450,7 +594,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
         signal: controller.signal,
         onEvent: (event) => {
           if (generation !== conversationGeneration || controller.signal.aborted) return
-          applyStreamEvent(event, assistant)
+          applyStreamEvent(event, assistant, turn)
         },
       })
       if (generation !== conversationGeneration || controller.signal.aborted) return false
@@ -466,6 +610,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
         }
         if (!assistant.text) assistant.text = 'AI 已完成响应，但没有返回可显示的文本。'
         assistant.status = 'complete'
+        turn.status = 'complete'
         lastFailure.value = null
         lastError.value = ''
         retryPrompt.value = ''
@@ -483,6 +628,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
         }, activeHadAttachments ? '' : normalized)
       }
       status.value = 'error'
+      turn.status = 'error'
       return false
     } catch (error) {
       if (generation !== conversationGeneration || controller.signal.aborted) return false
@@ -501,6 +647,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
             retryable: true,
           }
       assistant.status = 'error'
+      turn.status = 'error'
       if (!assistant.text) assistant.text = failure.message
       recordFailure(failure, attachments.length ? '' : normalized)
       if (error instanceof AIClientError && error.status === 403) invalidateCapabilities()
@@ -526,6 +673,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
       && user.role === 'user'
       && user.text.trim() === prompt
     ) {
+      turns.value = turns.value.filter((turn) => turn.assistantMessageId !== assistant.id)
       messages.value.splice(assistantIndex - 1, 2)
     }
     retryPrompt.value = ''
@@ -538,6 +686,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
     isOpen,
     status,
     messages,
+    turns,
     activities,
     sources,
     businessResults,
@@ -555,6 +704,7 @@ export const useAIAssistantStore = defineStore('aiAssistant', () => {
     bindConversation,
     resetForSession,
     openDrawer,
+    minimizeDrawer,
     closeDrawer,
     sendMessage,
     retryLastTextRequest,

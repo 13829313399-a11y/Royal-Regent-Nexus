@@ -6,12 +6,15 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
 from app.schemas.ai.conversation import (
+    AIConversationContextBinding,
+    AIConversationContextUpdate,
     AIConversationCreate,
     AIConversationDetail,
     AIConversationListItem,
     AIConversationListPage,
     AIConversationMessageCreate,
     AIConversationMessageData,
+    AIConversationUpdate,
 )
 from app.services.ai.conversation_service import (
     ConversationError,
@@ -23,6 +26,8 @@ from app.services.ai.conversation_service import (
     get_conversation_detail,
     get_owned_conversation,
     list_conversations,
+    update_conversation,
+    update_conversation_context,
 )
 from app.services.ai.pilot_guard import AIPilotGuardError, build_pilot_guard
 from app.services.auth import AuthContext, add_auth_audit, get_current_user
@@ -192,6 +197,98 @@ def get_conversation(
                 operation="detail",
                 request=request,
             )
+        raise _conversation_error(exc) from exc
+
+
+@router.patch(
+    "/{conversation_id}/context",
+    response_model=AIConversationContextBinding | None,
+)
+def patch_conversation_context(
+    conversation_id: str,
+    payload: AIConversationContextUpdate,
+    request: Request,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    if not settings.ai_conversation_context_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+    allowed_factories = _require_conversations(current_user)
+    try:
+        _require_record_factory(
+            db,
+            conversation_id=conversation_id,
+            user=current_user,
+            allowed_factories=allowed_factories,
+        )
+        result = update_conversation_context(
+            db,
+            conversation_id=conversation_id,
+            payload=payload,
+            user=current_user,
+            settings=settings,
+        )
+        add_auth_audit(
+            db,
+            "ai_conversation_context_changed",
+            username=current_user.username,
+            user_id=current_user.id,
+            detail=(
+                "operation=context_switch module_id="
+                + (result.module_id if result is not None else "none")
+            ),
+            request=request,
+        )
+        db.commit()
+        return result
+    except ConversationError as exc:
+        add_auth_audit(
+            db,
+            "ai_conversation_context_denied",
+            username=current_user.username,
+            user_id=current_user.id,
+            detail=f"operation=context_switch code={exc.code}",
+            request=request,
+        )
+        db.commit()
+        raise _conversation_error(exc) from exc
+
+
+@router.patch("/{conversation_id}", response_model=AIConversationListItem)
+def patch_conversation(
+    conversation_id: str,
+    payload: AIConversationUpdate,
+    request: Request,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    if not settings.ai_workbench_v2_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+    allowed_factories = _require_conversations(current_user)
+    try:
+        _require_record_factory(
+            db,
+            conversation_id=conversation_id,
+            user=current_user,
+            allowed_factories=allowed_factories,
+        )
+        result = update_conversation(
+            db,
+            conversation_id=conversation_id,
+            payload=payload,
+            user=current_user,
+        )
+        add_auth_audit(
+            db,
+            "ai_conversation_metadata_changed",
+            username=current_user.username,
+            user_id=current_user.id,
+            detail="operation=conversation_management",
+            request=request,
+        )
+        db.commit()
+        return result
+    except ConversationError as exc:
         raise _conversation_error(exc) from exc
 
 

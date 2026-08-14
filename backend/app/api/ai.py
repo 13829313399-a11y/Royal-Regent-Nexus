@@ -4,7 +4,16 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -26,7 +35,11 @@ from app.schemas.ai import (
 )
 from app.schemas.ai.artifact import AIArtifactEgressConsent
 from app.schemas.ai.context import AIPageContextInput, AIServerPageContext
-from app.schemas.ai.conversation import AIConversationMessageCreate
+from app.schemas.ai.conversation import (
+    AIContextOption,
+    AIContextOptionsResponse,
+    AIConversationMessageCreate,
+)
 from app.schemas.ai.evidence import AIEvidenceReferenceV1
 from app.schemas.ai.workbook import (
     AIWorkbookMappingProposal,
@@ -45,6 +58,7 @@ from app.services.ai.attachment_service import (
 )
 from app.services.ai.context_builder import (
     AIPageContextValidationError,
+    available_contexts,
     build_server_page_context,
     supports_vision,
 )
@@ -53,9 +67,11 @@ from app.services.ai.conversation_service import (
     AssistantMessageMetadata,
     ConversationError,
     ConversationNotFoundError,
+    ConversationValidationError,
     append_assistant_message,
     append_user_message,
     assemble_conversation_history,
+    bound_page_context,
     get_owned_conversation,
 )
 from app.services.ai.observability.metrics import safe_record_metric_event
@@ -331,6 +347,15 @@ def _bind_conversation_chat(
             and requested_factory != record.factory_scope
         ):
             raise ConversationNotFoundError("会话不存在。")
+        if settings.ai_conversation_context_enabled:
+            stored_context = bound_page_context(
+                conversation_db,
+                conversation_id=record.id,
+            )
+            if payload.page_context != stored_context:
+                raise ConversationValidationError(
+                    "会话业务上下文已变化，请刷新后重新选择。"
+                )
         current_message = chat.messages[-1]
         current_text = (
             current_message.content if isinstance(current_message.content, str) else ""
@@ -569,6 +594,21 @@ def capabilities(
         streaming=provider_status.streaming and pilot_access.granted,
         vision_enabled=vision_status.available and pilot_access.granted,
         conversation_persistence=(available and settings.ai_conversations_enabled),
+        adaptive_surface_enabled=(
+            True if available and settings.ai_adaptive_surface_enabled else None
+        ),
+        rich_message_renderer_enabled=(
+            True if available and settings.ai_rich_message_renderer_enabled else None
+        ),
+        workbench_v2_enabled=(
+            True if available and settings.ai_workbench_v2_enabled else None
+        ),
+        conversation_context_enabled=(
+            True if available and settings.ai_conversation_context_enabled else None
+        ),
+        presentation_blocks_enabled=(
+            True if available and settings.ai_presentation_blocks_enabled else None
+        ),
         artifact_workflows_enabled=(
             True
             if available
@@ -603,6 +643,46 @@ def capabilities(
             read_only=False,
             max_tool_risk_level="PREVIEW_WITH_AUDIT",
         ),
+    )
+
+
+@router.get("/context-options", response_model=AIContextOptionsResponse)
+def context_options(
+    current_user: Annotated[AuthContext, Depends(get_ai_current_user)],
+    pilot_access: Annotated[AIPilotAccess, Depends(_pilot_capability_access)],
+    factory_id: Annotated[str, Query(min_length=1, max_length=64)],
+) -> AIContextOptionsResponse:
+    if (
+        not settings.ai_conversations_enabled
+        or not settings.ai_conversation_context_enabled
+    ):
+        raise HTTPException(status_code=404, detail="Not Found")
+    allowed_factories = pilot_guard.configured_factory_ids(settings)
+    if not pilot_access.granted or factory_id not in allowed_factories:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "AI_PILOT_ACCESS_DENIED",
+                "message": "当前厂区未开放 AI 上下文权限。",
+                "retryable": False,
+            },
+        )
+    return AIContextOptionsResponse(
+        items=[
+            AIContextOption(
+                factory_scope=item.page_context.factory_id or "",
+                module_id=item.page_context.module_id,
+                route_name=item.page_context.route_name,
+                path=item.page_context.path,
+                display_label=item.display_label,
+                tool_groups=list(item.tool_groups),
+            )
+            for item in available_contexts(
+                current_user,
+                factory_scope=factory_id,
+                knowledge_hub_enabled=settings.ai_knowledge_hub_enabled,
+            )
+        ]
     )
 
 

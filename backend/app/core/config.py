@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     ai_skill_router_enabled: bool = False
     ai_evidence_v1_enabled: bool = False
     ai_conversations_enabled: bool = False
+    ai_adaptive_surface_enabled: bool = False
+    ai_rich_message_renderer_enabled: bool = False
+    ai_workbench_v2_enabled: bool = False
+    ai_conversation_context_enabled: bool = False
+    ai_presentation_blocks_enabled: bool = False
     ai_conversation_message_retention_days: Literal[30] = 30
     ai_conversation_summary_retention_days: Literal[30] = 30
     ai_conversation_tombstone_retention_days: Literal[180] = 180
