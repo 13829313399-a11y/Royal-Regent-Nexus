@@ -56,6 +56,7 @@ export interface CartonMarkDocumentContentItem {
   text: string
   location: string
   field_key?: string
+  is_graphic_text?: boolean
 }
 
 export interface CartonMarkDocumentContentComparison {
@@ -119,6 +120,11 @@ export interface CartonMarkDocumentContentCheckRequest {
   printPdf: Blob
 }
 
+export interface CartonMarkCustomerOption {
+  id: string
+  name: string
+}
+
 export interface CartonMarkTemplateRecordResponse {
   id: string
   factory_id: string
@@ -134,6 +140,7 @@ export interface CartonMarkTemplateRecordResponse {
   pdf_file_name: string
   pdf_file_size: number
   created_at: string
+  updated_at: string
   created_by_name: string
   qc_ready: boolean
 }
@@ -153,6 +160,14 @@ export type CartonMarkTemplateDocumentKind = 'source_excel' | 'print_pdf'
 
 export function createCartonMarkApi(client = http) {
   return {
+    async listCustomerOptions(factoryId: string, signal?: AbortSignal) {
+      const response = await client.get<CartonMarkCustomerOption[]>('/carton-mark/customer-options', {
+        params: { factory_id: factoryId },
+        signal,
+      })
+      return response.data
+    },
+
     async createTemplate(payload: CartonMarkTemplateCreateRequest) {
       const formData = new FormData()
       formData.set('factory_id', payload.factoryId)
@@ -184,6 +199,15 @@ export function createCartonMarkApi(client = http) {
     async getTemplate(templateId: string, factoryId: string, signal?: AbortSignal) {
       const response = await client.get<CartonMarkTemplateRecordResponse>(`/carton-mark/templates/${templateId}`, {
         params: { factory_id: factoryId },
+        signal,
+      })
+      return response.data
+    },
+
+    async recheckTemplate(templateId: string, factoryId: string, signal?: AbortSignal) {
+      const response = await client.post<CartonMarkTemplateRecordResponse>(`/carton-mark/templates/${templateId}/recheck`, undefined, {
+        params: { factory_id: factoryId },
+        timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS,
         signal,
       })
       return response.data

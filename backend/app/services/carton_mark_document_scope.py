@@ -247,6 +247,7 @@ def clean_pdf_document_items(
             text=text,
             location=item.location,
             field_key=item.field_key,
+            is_graphic_text=item.is_graphic_text,
         ))
     return cleaned
 

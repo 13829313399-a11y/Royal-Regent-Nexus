@@ -141,8 +141,13 @@ describe('carton mark standalone workspaces', () => {
     }
 
     expect(cartonPanelSource).not.toContain('采购订单号')
-    expect(cartonPanelSource).not.toContain('当前厂区客名库')
+    expect(cartonPanelSource).toContain('客名来自当前厂区内部报价台客户库')
     expect(cartonPanelSource).not.toContain('新增客名')
+    expect(cartonPanelSource).toContain('cartonMarkApi.listCustomerOptions')
+    expect(cartonPanelSource).toContain('v-model="form.customerName"')
+    expect(cartonPanelSource).toContain('v-for="customer in customerOptions"')
+    expect(cartonPanelSource).toContain('当前厂区尚未在内部报价台添加客户')
+    expect(cartonPanelSource).toContain('customerOptionsRequestController?.abort()')
     expect(cartonPanelSource).toContain("if (props.workspaceMode) return props.workspaceMode === 'warehouse'")
     expect(cartonPanelSource).toContain('form.contractNumber')
   })
@@ -157,6 +162,7 @@ describe('carton mark standalone workspaces', () => {
       '上传并核对 Excel 与 PDF',
       'cartonMarkApi.createTemplate',
       'cartonMarkApi.listTemplates',
+      'cartonMarkApi.recheckTemplate',
       'cartonMarkApi.deleteTemplate',
       'cartonMarkApi.downloadTemplateDocument',
       'factoryId: requestedFactoryId',
@@ -172,6 +178,10 @@ describe('carton mark standalone workspaces', () => {
 
     expect(cartonPanelSource).toContain('accept=".xls,.xlsx,.xlsm,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"')
     expect(cartonPanelSource).toContain('只有核对通过的 PDF 才可供 QC 现场核验')
+    expect(cartonPanelSource).toContain('图形内文字不参与比较')
+    expect(cartonPanelSource).toContain('排版与图形内文字不报差异')
+    expect(cartonPanelSource).toContain("recheckingDocumentId === documentComparisonRecord.id ? '核对中' : '重新核对'")
+    expect(cartonPanelSource).toContain('documentCheckedAt: record.updated_at')
     expect(cartonPanelSource).toContain('templateRequestController?.abort()')
     expect(cartonPanelSource).toContain('if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted) return')
     expect(cartonPanelSource).not.toContain("const LOCAL_STORAGE_KEY = 'rr-carton-mark-library-records'")
