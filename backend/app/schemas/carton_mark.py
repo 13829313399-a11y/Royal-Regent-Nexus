@@ -69,6 +69,9 @@ class CartonMarkDocumentTextItem(BaseModel):
     text: str
     location: str
     field_key: str = ""
+    # Extraction-only metadata. Artwork text is retained for diagnostics but
+    # does not become a PDF-only business-text difference.
+    is_graphic_text: bool = Field(default=False, exclude=True)
 
 
 class CartonMarkDocumentComparisonItem(BaseModel):
@@ -99,6 +102,11 @@ class CartonMarkDocumentCheckResponse(BaseModel):
     extraction: list[CartonMarkExtractionStatus]
 
 
+class CartonMarkCustomerOptionOut(BaseModel):
+    id: str
+    name: str
+
+
 class CartonMarkTemplateOut(BaseModel):
     id: str
     factory_id: str
@@ -114,5 +122,6 @@ class CartonMarkTemplateOut(BaseModel):
     pdf_file_name: str
     pdf_file_size: int = Field(gt=0)
     created_at: str
+    updated_at: str
     created_by_name: str
     qc_ready: bool

@@ -378,6 +378,38 @@ def test_document_comparison_ignores_empty_physical_placeholders_but_keeps_value
     assert unexpected == ["QUANTITY: 12 PCS", "CTN QTY: 42 CTNS"]
 
 
+def test_document_comparison_ignores_pdf_only_text_inside_graphics():
+    from app.schemas.carton_mark import CartonMarkDocumentTextItem
+    from app.services.carton_mark import compare_document_text_items
+
+    comparisons = compare_document_text_items(
+        [CartonMarkDocumentTextItem(text="ITEM NO: 7044498", location="箱唛!A1")],
+        [
+            CartonMarkDocumentTextItem(
+                text="ITEM NO: 7044498",
+                location="第 1 页 · 正唛 · 第 1 行",
+            ),
+            CartonMarkDocumentTextItem(
+                text="FTC",
+                location="第 1 页 · 正唛 · 第 2 行",
+                is_graphic_text=True,
+            ),
+            CartonMarkDocumentTextItem(
+                text="New Zealand",
+                location="第 1 页 · 正唛 · 第 3 行",
+                is_graphic_text=True,
+            ),
+            CartonMarkDocumentTextItem(
+                text="NEW WARNING",
+                location="第 1 页 · 正唛 · 第 4 行",
+            ),
+        ],
+    )
+
+    assert [item.status for item in comparisons] == ["pass", "unexpected"]
+    assert comparisons[-1].actual == "NEW WARNING"
+
+
 def test_document_comparison_does_not_fuzzy_match_unlabelled_numbers():
     from app.schemas.carton_mark import CartonMarkDocumentTextItem
     from app.services.carton_mark import compare_document_text_items
@@ -919,6 +951,43 @@ def test_pdf_vector_document_scope_preserves_repeated_multi_page_bodies_and_addi
     assert sum(item.text == "CTN QTY: 42 CTNS" for item in items) == 2
     assert all("PRODUCTION HEADER" not in item.text for item in items)
     assert all("ѓ" not in item.text for item in items)
+
+
+def test_pdf_vector_extraction_marks_non_rectangular_artwork_text_only():
+    from app.services.carton_mark import _extract_pdf_page_vector_document_items
+
+    class MediaBox:
+        width = 842
+        height = 595
+
+    class Page:
+        mediabox = MediaBox()
+
+        def extract_text(self, *, visitor_text, visitor_operand_before):
+            identity = [1, 0, 0, 1, 0, 0]
+            visitor_operand_before(b"m", [100, 250], identity, identity)
+            visitor_operand_before(b"l", [160, 190], identity, identity)
+            visitor_operand_before(b"S", [], identity, identity)
+            visitor_operand_before(b"re", [100, 120, 180, 45], identity, identity)
+            visitor_operand_before(b"S", [], identity, identity)
+            for text, x, y in (
+                ("FTC", 130, 220),
+                ("New Zealand", 120, 200),
+                ("ITEM NO: 7044498", 120, 155),
+                ("QTY: 8 PCS", 120, 135),
+                ("NEW WARNING", 120, 105),
+            ):
+                visitor_text(text, identity, [1, 0, 0, 1, x, y], None, 12)
+            return ""
+
+    items = _extract_pdf_page_vector_document_items(Page(), 1)
+    by_text = {item.text: item for item in items}
+
+    assert by_text["FTC"].is_graphic_text
+    assert by_text["New Zealand"].is_graphic_text
+    assert not by_text["ITEM NO: 7044498"].is_graphic_text
+    assert not by_text["QTY: 8 PCS"].is_graphic_text
+    assert not by_text["NEW WARNING"].is_graphic_text
 
 
 def test_pdf_vector_document_fields_pair_same_visual_rows():
