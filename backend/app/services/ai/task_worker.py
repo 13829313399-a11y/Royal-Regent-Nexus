@@ -46,6 +46,12 @@ def _validate_worker_startup() -> None:
         )
     if settings.ai_artifact_workflows_enabled and not settings.ai_artifacts_enabled:
         raise RuntimeError("Artifact workflows require the Artifact foundation")
+    if settings.ai_document_studio_enabled and not (
+        settings.ai_artifacts_enabled
+        and settings.ai_artifact_workflows_enabled
+        and settings.ai_tasks_enabled
+    ):
+        raise RuntimeError("Document Studio requires Artifact and Task workflows")
     if (
         settings.ai_artifact_workflows_enabled
         and settings.ai_artifact_scanner_backend != "clamav"
@@ -69,6 +75,7 @@ async def _worker_slot(slot: int, stop: asyncio.Event) -> None:
         semantic_gateway_enabled=settings.ai_semantic_gateway_enabled,
         knowledge_hub_enabled=settings.ai_knowledge_hub_enabled,
         artifact_workflows_enabled=settings.ai_artifact_workflows_enabled,
+        document_studio_enabled=settings.ai_document_studio_enabled,
         vision_tool_comparison_enabled=settings.ai_vision_tool_comparison_enabled,
     )
     instance = f"{socket.gethostname()}:{os.getpid()}:{slot}:{uuid4().hex[:12]}"

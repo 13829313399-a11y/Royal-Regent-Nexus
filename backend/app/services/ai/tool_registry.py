@@ -53,6 +53,12 @@ _READ_CONTRACT = (
     ToolRetryPolicy.SAFE_TRANSIENT,
 )
 _REGISTERED_EXECUTION_CONTRACTS = {
+    "artifacts.extract_document": (
+        ToolSideEffectClass.PREVIEW_STATE,
+        ToolIdempotency.IDEMPOTENT_WITH_KEY,
+        ToolRetryPolicy.SAFE_TRANSIENT,
+    ),
+    "artifacts.inspect_document": _READ_CONTRACT,
     "artifacts.inspect_workbook": (
         ToolSideEffectClass.PREVIEW_STATE,
         ToolIdempotency.IDEMPOTENT_WITH_KEY,
@@ -63,6 +69,22 @@ _REGISTERED_EXECUTION_CONTRACTS = {
         ToolIdempotency.IDEMPOTENT_WITH_KEY,
         ToolRetryPolicy.SAFE_TRANSIENT,
     ),
+    "artifacts.reconcile_document": (
+        ToolSideEffectClass.PREVIEW_STATE,
+        ToolIdempotency.IDEMPOTENT_WITH_KEY,
+        ToolRetryPolicy.SAFE_TRANSIENT,
+    ),
+    "artifacts.render_document": (
+        ToolSideEffectClass.PREVIEW_STATE,
+        ToolIdempotency.IDEMPOTENT_WITH_KEY,
+        ToolRetryPolicy.SAFE_TRANSIENT,
+    ),
+    "artifacts.review_document": (
+        ToolSideEffectClass.PREVIEW_STATE,
+        ToolIdempotency.IDEMPOTENT_WITH_KEY,
+        ToolRetryPolicy.SAFE_TRANSIENT,
+    ),
+    "artifacts.verify_document": _READ_CONTRACT,
     "carton_procurement.list_summaries": _READ_CONTRACT,
     "customer_order.get_capabilities": _READ_CONTRACT,
     "customer_order.list_export_audits": _READ_CONTRACT,
@@ -286,6 +308,7 @@ def build_default_tool_registry(
     semantic_gateway_enabled: bool = False,
     knowledge_hub_enabled: bool = False,
     artifact_workflows_enabled: bool = False,
+    document_studio_enabled: bool = False,
     vision_tool_comparison_enabled: bool = False,
 ) -> ToolRegistry:
     from app.services.ai.semantic.query_tools import semantic_tool_specs
@@ -336,6 +359,12 @@ def build_default_tool_registry(
         specs.extend(knowledge_hub_tool_specs())
     if artifact_workflows_enabled:
         specs.extend(artifact_workflow_tool_specs())
+    if document_studio_enabled:
+        from app.services.ai.tools.document_studio_tools import (
+            document_studio_tool_specs,
+        )
+
+        specs.extend(document_studio_tool_specs())
     if vision_tool_comparison_enabled:
         specs.extend(vision_workflow_tool_specs())
     contracted_specs: list[ToolSpec] = []
