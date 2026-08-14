@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from openpyxl import Workbook, load_workbook
 from pypdf import PdfReader, PdfWriter
 
@@ -27,9 +29,11 @@ from app.services.document_studio.pipelines.pdf_to_word import (
 from app.services.document_studio.pipelines.pdf_translation import translate_snapshot
 from app.services.document_studio.providers.qwen_document import (
     QwenDocumentBlock,
+    QwenDocumentError,
     QwenDocumentPage,
     QwenDocumentParseResult,
     QwenDocumentProvider,
+    _parse_result,
     get_document_provider_status,
 )
 from app.services.document_studio.providers.qwen_reconcile import (
@@ -259,6 +263,30 @@ def test_office_font_preflight_fails_with_stable_code(monkeypatch) -> None:
     assert captured.value.code == "DOCUMENT_FONT_MISSING"
 
 
+def test_office_font_preflight_ignores_east_asia_language_metadata(
+    monkeypatch,
+) -> None:
+    source = BytesIO()
+    document = Document()
+    run = document.add_paragraph().add_run("language metadata is not a font")
+    run.font.name = "Noto Sans CJK SC"
+    run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Noto Sans CJK SC")
+    language = OxmlElement("w:lang")
+    language.set(qn("w:eastAsia"), "en-US")
+    run._element.get_or_add_rPr().append(language)
+    document.save(source)
+
+    requested_fonts = office_pdf_renderer._requested_fonts(source.getvalue())
+    assert "en-US" not in requested_fonts
+    assert "Noto Sans CJK SC" in requested_fonts
+    monkeypatch.setattr(
+        office_pdf_renderer,
+        "_installed_fonts",
+        lambda: frozenset({"noto sans cjk sc", "dejavu sans mono"}),
+    )
+    office_pdf_renderer._validate_fonts(source.getvalue())
+
+
 def test_qwen_document_provider_uses_responses_file_input_without_storage() -> None:
     settings = Settings(
         _env_file=None,
@@ -339,6 +367,49 @@ def test_qwen_document_provider_uses_responses_file_input_without_storage() -> N
     assert calls[0]["input"][0]["content"][0]["type"] == "input_file"
     assert signed_source.revoked is True
     assert get_document_provider_status(settings).available is True
+
+
+def test_qwen_document_parser_accepts_single_page_processed_text_only() -> None:
+    result = _parse_result(
+        {"processed_text": "  订单 0012  "},
+        expected_pages=1,
+    )
+
+    assert result.pages[0].page_number == 1
+    assert result.pages[0].blocks[0].text == "订单 0012"
+
+    with pytest.raises(QwenDocumentError) as captured:
+        _parse_result({"processed_text": "ambiguous pages"}, expected_pages=2)
+
+    assert captured.value.code == "DOCUMENT_OCR_SCHEMA_INVALID"
+
+
+def test_qwen_document_parser_normalizes_zero_based_layout_pages() -> None:
+    result = _parse_result(
+        {
+            "layouts": [
+                {
+                    "pageNum": 0,
+                    "blocks": [{"text": "订单"}, {"text": " 0012 "}],
+                    "text": "订单 0012",
+                },
+                {"pageNum": 1, "blocks": [], "text": "第二页"},
+            ]
+        },
+        expected_pages=2,
+    )
+
+    assert [page.page_number for page in result.pages] == [1, 2]
+    assert [block.text for block in result.pages[0].blocks] == ["订单", "0012"]
+    assert result.pages[1].blocks[0].text == "第二页"
+
+    with pytest.raises(QwenDocumentError) as captured:
+        _parse_result(
+            {"layouts": [{"pageNum": 1, "text": "missing page"}]},
+            expected_pages=2,
+        )
+
+    assert captured.value.code == "DOCUMENT_OCR_PAGE_MISMATCH"
 
 
 def test_qwen_extractor_chunks_51_pages_and_restores_global_page_numbers() -> None:
@@ -440,3 +511,5 @@ def test_qwen_reconcile_is_closed_and_never_drops_leading_zeroes() -> None:
     assert calls[0]["store"] is False
     assert calls[0]["text"]["format"]["type"] == "json_schema"
     assert "tools" not in calls[0]
+    assert "exactly one JSON object" in calls[0]["input"][0]["content"]
+    assert "revisions array" in calls[0]["input"][0]["content"]

@@ -117,6 +117,64 @@ def _ocr_result(response: object) -> object:
 def _parse_result(raw: object, *, expected_pages: int) -> QwenDocumentParseResult:
     if isinstance(raw, dict) and "pages" in raw:
         candidate = raw
+    elif isinstance(raw, dict) and isinstance(raw.get("layouts"), list):
+        layouts = raw["layouts"]
+        grouped: dict[int, list[dict[str, str]]] = {}
+        for layout in layouts:
+            if not isinstance(layout, dict) or type(layout.get("pageNum")) is not int:
+                raise QwenDocumentError(
+                    "DOCUMENT_OCR_SCHEMA_INVALID", "云 OCR 布局结果无效。"
+                )
+            page_number = layout["pageNum"]
+            grouped.setdefault(page_number, [])
+            blocks = layout.get("blocks")
+            block_texts = (
+                [
+                    block["text"].strip()
+                    for block in blocks
+                    if isinstance(block, dict)
+                    and isinstance(block.get("text"), str)
+                    and block["text"].strip()
+                ]
+                if isinstance(blocks, list)
+                else []
+            )
+            if not block_texts and isinstance(layout.get("text"), str):
+                text = layout["text"].strip()
+                block_texts = [text] if text else []
+            grouped[page_number].extend({"text": text} for text in block_texts)
+        page_numbers = set(grouped)
+        if page_numbers == set(range(expected_pages)):
+            page_offset = 1
+        elif page_numbers == set(range(1, expected_pages + 1)):
+            page_offset = 0
+        else:
+            raise QwenDocumentError(
+                "DOCUMENT_OCR_PAGE_MISMATCH", "云 OCR 布局页码与请求分片不一致。"
+            )
+        candidate = {
+            "pages": [
+                {
+                    "page_number": page_number + page_offset,
+                    "blocks": grouped[page_number],
+                }
+                for page_number in sorted(grouped)
+            ]
+        }
+    elif (
+        isinstance(raw, dict)
+        and expected_pages == 1
+        and isinstance(raw.get("processed_text"), str)
+        and raw["processed_text"].strip()
+    ):
+        candidate = {
+            "pages": [
+                {
+                    "page_number": 1,
+                    "blocks": [{"text": raw["processed_text"].strip()}],
+                }
+            ]
+        }
     elif isinstance(raw, list):
         candidate = {"pages": raw}
     elif isinstance(raw, str) and expected_pages == 1 and raw.strip():

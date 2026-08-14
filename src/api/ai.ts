@@ -1,4 +1,5 @@
 import { http, dispatchAccessFailure } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 import type {
   AICapabilities,
   AIChatRequestMessage,
@@ -122,18 +123,14 @@ function apiBaseUrl() {
 }
 
 function createRequestId() {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return `web-${globalThis.crypto.randomUUID()}`
+  try {
+    return `web-${createRandomUuid()}`
   }
-  if (typeof globalThis.crypto?.getRandomValues !== 'function') {
+  catch {
     throw new AIClientError('当前浏览器无法生成安全请求标识。', {
       code: 'AI_SECURE_RANDOM_UNAVAILABLE',
     })
   }
-  const bytes = new Uint8Array(16)
-  globalThis.crypto.getRandomValues(bytes)
-  const token = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
-  return `web-${token}`
 }
 
 function normalizePilotStatus(value: unknown): AIPilotAccessStatus {

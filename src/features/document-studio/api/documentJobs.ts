@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { uploadAIArtifact, type AIArtifactData } from '@/api/aiArtifacts'
 import { http } from '@/lib/http'
+import { createRandomUuidHex } from '@/lib/randomUuid'
 import type { DocumentToolId } from '../types'
 
 export type DocumentJobType =
@@ -298,7 +299,7 @@ export async function preflightDocumentJob(input: {
 
 export async function createDocumentJob(input: CreateDocumentJobInput) {
   const operationId = input.operationId
-    ?? `docop-${globalThis.crypto.randomUUID().replaceAll('-', '')}`
+    ?? `docop-${createRandomUuidHex()}`
   input.onOperationId?.(operationId)
   let source = input.sourceArtifact
   if (!source) {
@@ -399,7 +400,7 @@ export async function reviewDocumentJob(input: {
       expected_runtime_plan_hash: job.runtime_plan_hash,
       patches: input.actions.map(({ issue, action, replacementValue }) => ({
         contract_version: '1',
-        patch_id: `docpatch-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+        patch_id: `docpatch-${createRandomUuidHex()}`,
         operation_id: job.operation_id,
         issue_id: issue.issue_id,
         action,

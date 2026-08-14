@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import { createRandomUuid, createRandomUuidHex } from '@/lib/randomUuid'
 import { parsePreviewManifest, type AIPreviewManifest } from '@/features/nexus-copilot/renderers/preview'
 import type {
   AutoScheduleAssignmentRecord,
@@ -518,7 +519,7 @@ export async function rebuildPhase5SpeedModels(factoryId: string) {
     factory_id: factoryId,
     mold_ids: [],
     minimum_sample_count: 3,
-  }, { headers: { 'X-Request-ID': `phase5-calibration-${crypto.randomUUID()}` } })
+  }, { headers: { 'X-Request-ID': `phase5-calibration-${createRandomUuid()}` } })
   return fetchPhase5Analytics(factoryId)
 }
 
@@ -797,9 +798,7 @@ export async function fetchCurrentSchedulingPlan(factoryId: string) {
 }
 
 function newRequestId(prefix: string) {
-  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID().replaceAll('-', '')
-    : Math.random().toString(36).slice(2)
+  const random = createRandomUuidHex()
   return `${prefix}-${Date.now()}-${random}`.slice(0, 128)
 }
 

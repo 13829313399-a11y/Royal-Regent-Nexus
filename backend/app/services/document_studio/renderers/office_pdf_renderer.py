@@ -49,6 +49,8 @@ _FONT_SUBSTITUTIONS = {
     "cambria": {"liberation serif", "dejavu serif"},
     "arial": {"liberation sans", "dejavu sans"},
     "times new roman": {"liberation serif", "dejavu serif"},
+    "courier": {"liberation mono", "dejavu sans mono"},
+    "courier new": {"liberation mono", "dejavu sans mono"},
     "microsoft yahei": {"noto sans cjk sc"},
     "微软雅黑": {"noto sans cjk sc"},
     "simsun": {"noto serif cjk sc"},
@@ -107,6 +109,8 @@ def _requested_fonts(content: bytes) -> frozenset[str]:
                 continue
             root = ElementTree.fromstring(archive.read(name))
             for element in root.iter():
+                if element.tag.rsplit("}", 1)[-1] != "rFonts":
+                    continue
                 for attribute, value in element.attrib.items():
                     local_name = attribute.rsplit("}", 1)[-1]
                     if local_name in _FONT_ATTRIBUTES and value.strip():

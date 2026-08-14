@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import { createRandomUuidHex } from '@/lib/randomUuid'
 import type {
   AIArtifactEgressConsent,
   AIInjectionSchedulingPageContext,
@@ -307,7 +308,7 @@ async function sha256Hex(value: string) {
 }
 
 function newOperationId() {
-  return `atrans-${globalThis.crypto.randomUUID().replaceAll('-', '')}`
+  return `atrans-${createRandomUuidHex()}`
 }
 
 function schedulingPageContext(factoryId: string): AIInjectionSchedulingPageContext {
