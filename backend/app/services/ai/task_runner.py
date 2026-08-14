@@ -73,6 +73,7 @@ class StepExecutionResult:
     metadata: dict[str, object]
     evidence: tuple[AIEvidenceReferenceV1, ...] = ()
     artifacts: tuple[AIArtifactReference, ...] = ()
+    waiting_input: bool = False
 
 
 async def _run_with_guard_heartbeat(
@@ -291,6 +292,25 @@ def _safe_tool_metadata(
                         content_hash=f"sha256:{result_sha}",
                     )
                 )
+        if isinstance(data.get("review_required"), bool):
+            metadata["review_required"] = data["review_required"]
+        metrics = data.get("metrics")
+        if isinstance(metrics, dict):
+            allowed_metric_names = {
+                "page_count",
+                "table_count",
+                "text_page_count",
+                "ocr_page_count",
+                "cloud_page_count",
+                "image_count",
+                "file_count",
+            }
+            metadata["document_metrics"] = {
+                name: value
+                for name, value in metrics.items()
+                if name in allowed_metric_names
+                and (value is None or isinstance(value, int) and value >= 0)
+            }
         result_type = data.get("result_type")
         if result_type == "vision.injection_backlog_observation.v1":
             metadata["vision_observation"] = data
@@ -357,6 +377,8 @@ async def _execute_tool_step(
             request_id=f"task:{task.id}:step:{step.id}:attempt:{step.attempt_count}",
             page_context=_parse_page_context(task),
             session_factory=session_factory,
+            task_id=task.id,
+            task_step_id=step.id,
         ),
     )
     if not outcome.ok:
@@ -370,6 +392,7 @@ async def _execute_tool_step(
         metadata=metadata,
         evidence=evidence,
         artifacts=artifacts,
+        waiting_input=metadata.get("review_required") is True,
     )
 
 
@@ -853,6 +876,32 @@ async def run_claimed_task(
                     sort_keys=True,
                     separators=(",", ":"),
                 )
+                if result.waiting_input:
+                    transition_step(
+                        db,
+                        task=task,
+                        step=step,
+                        requested_state=AITaskStepState.WAITING_INPUT,
+                        actor_type="SYSTEM",
+                        reason_code="WORKER_REVIEW_INPUT_REQUIRED",
+                        evidence=result.evidence,
+                        artifacts=result.artifacts,
+                    )
+                    transition_task(
+                        db,
+                        task=task,
+                        requested_state=AITaskState.WAITING_INPUT,
+                        actor_type="SYSTEM",
+                        reason_code="WORKER_REVIEW_INPUT_REQUIRED",
+                        settings=settings,
+                    )
+                    db.commit()
+                    release_task_lease(
+                        db,
+                        lease=lease,
+                        reason_code="WORKER_REVIEW_INPUT_REQUIRED",
+                    )
+                    return AITaskState.WAITING_INPUT.value
                 transition_step(
                     db,
                     task=task,

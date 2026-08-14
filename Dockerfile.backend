@@ -17,6 +17,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgl1 \
         libreoffice-calc \
+        libreoffice-writer \
+        fonts-noto-cjk \
         python3-uno \
         tesseract-ocr \
         tesseract-ocr-eng \
