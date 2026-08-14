@@ -44,6 +44,9 @@ const visionCapabilities: AICapabilities = {
   streaming: true,
   vision_enabled: true,
   conversation_persistence: false,
+  adaptive_surface_enabled: true,
+  rich_message_renderer_enabled: true,
+  presentation_blocks_enabled: true,
   tool_groups: ['module_help'],
   pilot_access: { granted: true, status: 'GRANTED', read_only: true },
 }

@@ -19,7 +19,13 @@ from app.models.ai_conversation import (
     AIConversationSummary,
     AIMessage,
 )
+from app.models.ai_conversation import (
+    AIConversationContextBinding as AIConversationContextBindingRecord,
+)
+from app.schemas.ai.context import AIPageContextInput, AISelectedEntityInput
 from app.schemas.ai.conversation import (
+    AIConversationContextBinding,
+    AIConversationContextUpdate,
     AIConversationCreate,
     AIConversationDetail,
     AIConversationListItem,
@@ -27,8 +33,13 @@ from app.schemas.ai.conversation import (
     AIConversationMessageCreate,
     AIConversationMessageData,
     AIConversationSummaryData,
+    AIConversationUpdate,
 )
 from app.schemas.ai.evidence import AIEvidenceReferenceV1
+from app.services.ai.context_builder import (
+    AIPageContextValidationError,
+    build_server_page_context,
+)
 from app.services.ai.providers.base import ProviderMessage
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext, authorization_decision
 
@@ -151,9 +162,7 @@ def validate_persistable_text(
     if not normalized:
         raise ConversationValidationError(f"{field_name}不能为空。")
     if len(normalized) > max_chars:
-        raise ConversationValidationError(
-            f"{field_name}不能超过 {max_chars} 个字符。"
-        )
+        raise ConversationValidationError(f"{field_name}不能超过 {max_chars} 个字符。")
     if any(pattern.search(normalized) for pattern in _SECRET_PATTERNS):
         raise ConversationValidationError(
             f"{field_name}疑似包含密码、令牌或密钥，不能写入持久会话。"
@@ -324,7 +333,65 @@ def _body_is_currently_authorized(
     )
 
 
-def conversation_list_item(record: AIConversation) -> AIConversationListItem:
+def context_binding_data(
+    record: AIConversationContextBindingRecord | None,
+) -> AIConversationContextBinding | None:
+    if record is None:
+        return None
+    return AIConversationContextBinding(
+        factory_scope=record.factory_scope,
+        module_id=record.module_id,
+        route_name=record.route_name,
+        path=record.path,
+        context_version=record.context_version,
+        selected_entity_type=record.selected_entity_type,
+        selected_entity_id=record.selected_entity_id,
+        selected_entity_revision=record.selected_entity_revision,
+        updated_at=_parse_timestamp(record.updated_at),
+    )
+
+
+def get_context_binding(
+    db: Session,
+    *,
+    conversation_id: str,
+) -> AIConversationContextBindingRecord | None:
+    return db.get(AIConversationContextBindingRecord, conversation_id)
+
+
+def bound_page_context(
+    db: Session,
+    *,
+    conversation_id: str,
+) -> AIPageContextInput | None:
+    binding = get_context_binding(db, conversation_id=conversation_id)
+    if binding is None:
+        return None
+    selected_entity = (
+        AISelectedEntityInput(
+            type=binding.selected_entity_type,
+            id=binding.selected_entity_id,
+            revision=binding.selected_entity_revision,
+        )
+        if binding.selected_entity_type
+        and binding.selected_entity_id
+        and binding.selected_entity_revision is not None
+        else None
+    )
+    return AIPageContextInput(
+        route_name=binding.route_name,
+        path=binding.path,
+        factory_id=binding.factory_scope,
+        module_id=binding.module_id,
+        selected_entity=selected_entity,
+    )
+
+
+def conversation_list_item(
+    record: AIConversation,
+    *,
+    context_binding: AIConversationContextBindingRecord | None = None,
+) -> AIConversationListItem:
     return AIConversationListItem(
         id=record.id,
         mode=record.mode,
@@ -337,6 +404,9 @@ def conversation_list_item(record: AIConversation) -> AIConversationListItem:
         expires_at=_optional_timestamp(record.expires_at),
         message_count=record.message_count,
         last_message_at=_optional_timestamp(record.last_message_at),
+        pinned_at=_optional_timestamp(record.pinned_at),
+        archived_at=_optional_timestamp(record.archived_at),
+        context_binding=context_binding_data(context_binding),
     )
 
 
@@ -433,6 +503,8 @@ def create_conversation(
         last_idempotency_key="",
         last_request_hash="",
         last_ephemeral_message_id="",
+        pinned_at="",
+        archived_at="",
     )
     db.add(record)
     db.commit()
@@ -479,8 +551,9 @@ def list_conversations(
         )
     rows = list(
         db.scalars(
-            query.order_by(AIConversation.updated_at.desc(), AIConversation.id.desc())
-            .limit(limit + 1)
+            query.order_by(
+                AIConversation.updated_at.desc(), AIConversation.id.desc()
+            ).limit(limit + 1)
         ).all()
     )
     has_more = len(rows) > limit
@@ -490,8 +563,25 @@ def list_conversations(
         if has_more and visible
         else None
     )
+    bindings = (
+        {
+            item.conversation_id: item
+            for item in db.scalars(
+                select(AIConversationContextBindingRecord).where(
+                    AIConversationContextBindingRecord.conversation_id.in_(
+                        [item.id for item in visible]
+                    )
+                )
+            ).all()
+        }
+        if visible
+        else {}
+    )
     return AIConversationListPage(
-        items=[conversation_list_item(item) for item in visible],
+        items=[
+            conversation_list_item(item, context_binding=bindings.get(item.id))
+            for item in visible
+        ],
         next_cursor=next_cursor,
     )
 
@@ -575,18 +665,20 @@ def get_conversation_detail(
         )
     ]
     selected.reverse()
-    summaries = list(db.scalars(
-        select(AIConversationSummary)
-        .where(
-            AIConversationSummary.conversation_id == record.id,
-            AIConversationSummary.expires_at > current_text,
-        )
-        .order_by(
-            AIConversationSummary.created_at.desc(),
-            AIConversationSummary.id.desc(),
-        )
-        .limit(12)
-    ).all())
+    summaries = list(
+        db.scalars(
+            select(AIConversationSummary)
+            .where(
+                AIConversationSummary.conversation_id == record.id,
+                AIConversationSummary.expires_at > current_text,
+            )
+            .order_by(
+                AIConversationSummary.created_at.desc(),
+                AIConversationSummary.id.desc(),
+            )
+            .limit(12)
+        ).all()
+    )
     summary = next(
         (
             item
@@ -599,7 +691,10 @@ def get_conversation_detail(
         ),
         None,
     )
-    base = conversation_list_item(record).model_dump()
+    base = conversation_list_item(
+        record,
+        context_binding=get_context_binding(db, conversation_id=record.id),
+    ).model_dump()
     return AIConversationDetail(
         **base,
         messages=[message_data(item) for item in selected],
@@ -678,7 +773,10 @@ def append_user_message(
             if existing.request_hash != request_hash:
                 raise ConversationConflictError("幂等键已用于不同消息。")
             return message_data(existing)
-    if payload.expected_revision is not None and payload.expected_revision != record.revision:
+    if (
+        payload.expected_revision is not None
+        and payload.expected_revision != record.revision
+    ):
         raise ConversationStaleError("会话已更新，请刷新后重试。")
 
     created_at = _now_text(current)
@@ -974,18 +1072,20 @@ def assemble_conversation_history(
         selected.append(item)
         used_chars += len(item.body)
     selected.reverse()
-    summaries = list(db.scalars(
-        select(AIConversationSummary)
-        .where(
-            AIConversationSummary.conversation_id == record.id,
-            AIConversationSummary.expires_at > current_text,
-        )
-        .order_by(
-            AIConversationSummary.created_at.desc(),
-            AIConversationSummary.id.desc(),
-        )
-        .limit(12)
-    ).all())
+    summaries = list(
+        db.scalars(
+            select(AIConversationSummary)
+            .where(
+                AIConversationSummary.conversation_id == record.id,
+                AIConversationSummary.expires_at > current_text,
+            )
+            .order_by(
+                AIConversationSummary.created_at.desc(),
+                AIConversationSummary.id.desc(),
+            )
+            .limit(12)
+        ).all()
+    )
     summary = next(
         (
             item
@@ -1012,6 +1112,136 @@ def assemble_conversation_history(
         input_chars=used_chars,
         truncated=truncated,
         summary=summary_text,
+    )
+
+
+def update_conversation_context(
+    db: Session,
+    *,
+    conversation_id: str,
+    payload: AIConversationContextUpdate,
+    user: AuthContext,
+    settings: Settings,
+    now: datetime | None = None,
+) -> AIConversationContextBinding | None:
+    """Persist a context hint only after current IAM and entity reauthorization."""
+
+    record = get_owned_conversation(
+        db,
+        conversation_id=conversation_id,
+        user=user,
+    )
+    if (
+        payload.expected_revision is not None
+        and payload.expected_revision != record.revision
+    ):
+        raise ConversationStaleError("会话版本已变化，请刷新后重试。")
+    current = now or business_now()
+    current_text = _now_text(current)
+    binding = get_context_binding(db, conversation_id=record.id)
+    if payload.page_context is None:
+        if binding is not None:
+            db.delete(binding)
+        record.updated_at = current_text
+        record.revision += 1
+        db.commit()
+        return None
+    requested = payload.page_context
+    if requested.factory_id != record.factory_scope:
+        raise ConversationValidationError("会话上下文不能跨厂区切换。")
+    try:
+        server_context = build_server_page_context(
+            requested,
+            user,
+            db=db,
+            semantic_gateway_enabled=settings.ai_semantic_gateway_enabled,
+            knowledge_hub_enabled=settings.ai_knowledge_hub_enabled,
+        )
+    except AIPageContextValidationError as exc:
+        raise ConversationValidationError(
+            "当前业务上下文不可用，请刷新权限后重试。"
+        ) from exc
+    if (
+        server_context is None
+        or server_context.verified_factory_id != record.factory_scope
+        or server_context.verified_module_id != requested.module_id
+    ):
+        raise ConversationValidationError("当前账号无该业务上下文权限。")
+    selected = requested.selected_entity
+    if binding is None:
+        binding = AIConversationContextBindingRecord(
+            conversation_id=record.id,
+            factory_scope=record.factory_scope,
+            module_id=requested.module_id,
+            route_name=requested.route_name,
+            path=requested.path,
+            context_version=1,
+            selected_entity_type=selected.type if selected is not None else "",
+            selected_entity_id=selected.id if selected is not None else "",
+            selected_entity_revision=selected.revision
+            if selected is not None
+            else None,
+            created_at=current_text,
+            updated_at=current_text,
+        )
+        db.add(binding)
+    else:
+        binding.factory_scope = record.factory_scope
+        binding.module_id = requested.module_id
+        binding.route_name = requested.route_name
+        binding.path = requested.path
+        binding.context_version += 1
+        binding.selected_entity_type = selected.type if selected is not None else ""
+        binding.selected_entity_id = selected.id if selected is not None else ""
+        binding.selected_entity_revision = (
+            selected.revision if selected is not None else None
+        )
+        binding.updated_at = current_text
+    record.updated_at = current_text
+    record.revision += 1
+    db.commit()
+    db.refresh(binding)
+    return context_binding_data(binding)
+
+
+def update_conversation(
+    db: Session,
+    *,
+    conversation_id: str,
+    payload: AIConversationUpdate,
+    user: AuthContext,
+    now: datetime | None = None,
+) -> AIConversationListItem:
+    record = get_owned_conversation(
+        db,
+        conversation_id=conversation_id,
+        user=user,
+    )
+    if (
+        payload.expected_revision is not None
+        and payload.expected_revision != record.revision
+    ):
+        raise ConversationStaleError("会话版本已变化，请刷新后重试。")
+    current_text = _now_text(now)
+    if payload.title is not None:
+        record.title = validate_persistable_text(
+            payload.title,
+            max_chars=MAX_TITLE_CHARS,
+            field_name="会话标题",
+        )
+    if payload.pinned is not None:
+        record.pinned_at = current_text if payload.pinned else ""
+    if payload.archived is not None:
+        record.archived_at = current_text if payload.archived else ""
+        if payload.archived:
+            record.pinned_at = ""
+    record.updated_at = current_text
+    record.revision += 1
+    db.commit()
+    db.refresh(record)
+    return conversation_list_item(
+        record,
+        context_binding=get_context_binding(db, conversation_id=record.id),
     )
 
 

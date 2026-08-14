@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import type { AIPageContext } from '@/features/ai-assistant/types'
 
 export type AIConversationMode = 'PERSISTENT' | 'TEMPORARY'
 export type AIConversationStatus = 'ACTIVE' | 'DELETION_PENDING' | 'DELETED' | 'EXPIRED'
@@ -15,6 +16,31 @@ export interface AIConversationListItem {
   expires_at: string | null
   message_count: number
   last_message_at: string | null
+  pinned_at: string | null
+  archived_at: string | null
+  context_binding: AIConversationContextBinding | null
+}
+
+export interface AIConversationContextBinding {
+  factory_scope: string
+  module_id: AIPageContext['module_id']
+  route_name: AIPageContext['route_name']
+  path: AIPageContext['path']
+  context_version: number
+  selected_entity_type: string
+  selected_entity_id: string
+  selected_entity_revision: number | null
+  updated_at: string
+}
+
+export interface AIContextOption {
+  factory_scope: string
+  module_id: AIPageContext['module_id']
+  route_name: AIPageContext['route_name']
+  path: AIPageContext['path']
+  display_label: string
+  tool_groups: string[]
+  maximum_risk: 'PREVIEW_WITH_AUDIT'
 }
 
 export interface AIConversationMessage {
@@ -120,11 +146,92 @@ function timestamp(source: Record<string, unknown>, key: string, nullable = fals
   return value
 }
 
+function optionalTimestamp(source: Record<string, unknown>, key: string) {
+  return source[key] === undefined ? null : timestamp(source, key, true)
+}
+
+const CONTEXT_ROUTES = new Set([
+  'injection-scheduling-v2', 'internal-quote-desk-home', 'molding-sample',
+  'carton-procurement', 'raw-material-management', 'customer-order-center', 'ai-workbench',
+])
+const CONTEXT_MODULES = new Set([
+  'injection-scheduling', 'internal-quote', 'molding-sample', 'carton-procurement',
+  'raw-material', 'customer-order', 'ai-workbench',
+])
+const CONTEXT_PATHS = new Set([
+  '/modules/production/injection-scheduling',
+  '/modules/sales-business/internal-quote-desk',
+  '/modules/molding-sample',
+  '/modules/pmc-warehouse/carton-procurement',
+  '/modules/pmc-warehouse/raw-material-management',
+  '/modules/sales-business/po-schedule-intake',
+  '/workbench/ai',
+])
+
+function contextIdentity(source: Record<string, unknown>) {
+  const factoryScope = text(source, 'factory_scope', 64)
+  const moduleId = text(source, 'module_id', 64)
+  const routeName = text(source, 'route_name', 96)
+  const path = text(source, 'path', 255)
+  if (!FACTORY_IDS.has(factoryScope)
+    || !CONTEXT_MODULES.has(moduleId)
+    || !CONTEXT_ROUTES.has(routeName)
+    || !CONTEXT_PATHS.has(path)) {
+    throw new Error('AI conversation context is invalid')
+  }
+  return {
+    factory_scope: factoryScope,
+    module_id: moduleId as AIPageContext['module_id'],
+    route_name: routeName as AIPageContext['route_name'],
+    path: path as AIPageContext['path'],
+  }
+}
+
+function parseContextBinding(value: unknown): AIConversationContextBinding {
+  const source = record(value)
+  closed(source, [
+    'factory_scope', 'module_id', 'route_name', 'path', 'context_version',
+    'selected_entity_type', 'selected_entity_id', 'selected_entity_revision', 'updated_at',
+  ])
+  const revision = source.selected_entity_revision
+  if (revision !== null && (!Number.isInteger(revision) || (revision as number) < 1)) {
+    throw new Error('AI conversation selected entity revision is invalid')
+  }
+  return {
+    ...contextIdentity(source),
+    context_version: integer(source, 'context_version', 1),
+    selected_entity_type: text(source, 'selected_entity_type', 64),
+    selected_entity_id: text(source, 'selected_entity_id', 96),
+    selected_entity_revision: revision as number | null,
+    updated_at: timestamp(source, 'updated_at'),
+  }
+}
+
+function parseContextOption(value: unknown): AIContextOption {
+  const source = record(value)
+  closed(source, [
+    'factory_scope', 'module_id', 'route_name', 'path', 'display_label',
+    'tool_groups', 'maximum_risk',
+  ])
+  if (!Array.isArray(source.tool_groups)
+    || source.tool_groups.some((item) => typeof item !== 'string')
+    || source.maximum_risk !== 'PREVIEW_WITH_AUDIT') {
+    throw new Error('AI context option capability is invalid')
+  }
+  return {
+    ...contextIdentity(source),
+    display_label: text(source, 'display_label', 64),
+    tool_groups: [...source.tool_groups] as string[],
+    maximum_risk: 'PREVIEW_WITH_AUDIT',
+  }
+}
+
 function parseListItem(value: unknown): AIConversationListItem {
   const source = record(value)
   closed(source, [
     'id', 'mode', 'status', 'title', 'factory_scope', 'revision', 'created_at',
-    'updated_at', 'expires_at', 'message_count', 'last_message_at',
+    'updated_at', 'expires_at', 'message_count', 'last_message_at', 'pinned_at',
+    'archived_at', 'context_binding',
   ])
   const id = text(source, 'id', 64)
   const mode = source.mode
@@ -150,6 +257,11 @@ function parseListItem(value: unknown): AIConversationListItem {
     expires_at: timestamp(source, 'expires_at', true),
     message_count: integer(source, 'message_count'),
     last_message_at: timestamp(source, 'last_message_at', true),
+    pinned_at: optionalTimestamp(source, 'pinned_at'),
+    archived_at: optionalTimestamp(source, 'archived_at'),
+    context_binding: source.context_binding == null
+      ? null
+      : parseContextBinding(source.context_binding),
   }
 }
 
@@ -252,7 +364,8 @@ export function parseAIConversationDetail(value: unknown): AIConversationDetail 
   const source = record(value)
   const listFields = [
     'id', 'mode', 'status', 'title', 'factory_scope', 'revision', 'created_at',
-    'updated_at', 'expires_at', 'message_count', 'last_message_at',
+    'updated_at', 'expires_at', 'message_count', 'last_message_at', 'pinned_at',
+    'archived_at', 'context_binding',
   ] as const
   closed(source, [...listFields, 'messages', 'summary', 'next_message_cursor'])
   const listValue = Object.fromEntries(listFields.map((key) => [key, source[key]]))
@@ -323,4 +436,52 @@ export async function appendAIConversationMessage(input: {
 
 export async function deleteAIConversation(conversationId: string) {
   await http.delete(`/ai/conversations/${encodeURIComponent(conversationId)}`)
+}
+
+export async function listAIContextOptions(factoryScope: string) {
+  const response = await http.get('/ai/context-options', {
+    params: { factory_id: factoryScope },
+  })
+  const source = record(response.data)
+  closed(source, ['items'])
+  if (!Array.isArray(source.items)) throw new Error('AI context options are invalid')
+  return source.items.map(parseContextOption)
+}
+
+export async function setAIConversationContext(input: {
+  conversationId: string
+  pageContext: AIPageContext | null
+  expectedRevision?: number
+}) {
+  const response = await http.patch(
+    `/ai/conversations/${encodeURIComponent(input.conversationId)}/context`,
+    {
+      page_context: input.pageContext,
+      ...(input.expectedRevision !== undefined
+        ? { expected_revision: input.expectedRevision }
+        : {}),
+    },
+  )
+  return response.data === null ? null : parseContextBinding(response.data)
+}
+
+export async function updateAIConversation(input: {
+  conversationId: string
+  title?: string
+  pinned?: boolean
+  archived?: boolean
+  expectedRevision?: number
+}) {
+  const response = await http.patch(
+    `/ai/conversations/${encodeURIComponent(input.conversationId)}`,
+    {
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.pinned !== undefined ? { pinned: input.pinned } : {}),
+      ...(input.archived !== undefined ? { archived: input.archived } : {}),
+      ...(input.expectedRevision !== undefined
+        ? { expected_revision: input.expectedRevision }
+        : {}),
+    },
+  )
+  return parseListItem(response.data)
 }

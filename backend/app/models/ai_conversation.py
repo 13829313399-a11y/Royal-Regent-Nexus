@@ -52,10 +52,47 @@ class AIConversation(Base):
     expires_at: Mapped[str] = mapped_column(String(32), default="", index=True)
     title_expires_at: Mapped[str] = mapped_column(String(32), default="", index=True)
     deleted_at: Mapped[str] = mapped_column(String(32), default="", index=True)
-    tombstone_expires_at: Mapped[str] = mapped_column(String(32), default="", index=True)
+    tombstone_expires_at: Mapped[str] = mapped_column(
+        String(32), default="", index=True
+    )
     last_idempotency_key: Mapped[str] = mapped_column(String(128), default="")
     last_request_hash: Mapped[str] = mapped_column(String(64), default="")
     last_ephemeral_message_id: Mapped[str] = mapped_column(String(64), default="")
+    pinned_at: Mapped[str] = mapped_column(String(32), default="")
+    archived_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class AIConversationContextBinding(Base):
+    __tablename__ = "ai_conversation_context_bindings"
+    __table_args__ = (
+        CheckConstraint(
+            "context_version >= 1",
+            name="ck_ai_conversation_context_version",
+        ),
+        CheckConstraint(
+            "selected_entity_revision IS NULL OR selected_entity_revision >= 1",
+            name="ck_ai_conversation_context_entity_revision",
+        ),
+        Index(
+            "ix_ai_conversation_context_factory_module",
+            "factory_scope",
+            "module_id",
+        ),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_conversations.id", ondelete="CASCADE"), primary_key=True
+    )
+    factory_scope: Mapped[str] = mapped_column(String(64))
+    module_id: Mapped[str] = mapped_column(String(64))
+    route_name: Mapped[str] = mapped_column(String(96))
+    path: Mapped[str] = mapped_column(String(255))
+    context_version: Mapped[int] = mapped_column(Integer, default=1)
+    selected_entity_type: Mapped[str] = mapped_column(String(64), default="")
+    selected_entity_id: Mapped[str] = mapped_column(String(96), default="")
+    selected_entity_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[str] = mapped_column(String(32))
 
 
 class AIMessage(Base):
@@ -102,9 +139,7 @@ class AIMessage(Base):
     kind: Mapped[str] = mapped_column(String(32))
     body: Mapped[str] = mapped_column(Text)
     body_sha256: Mapped[str] = mapped_column(String(64))
-    authority: Mapped[str] = mapped_column(
-        String(32), default="CONVERSATIONAL_ONLY"
-    )
+    authority: Mapped[str] = mapped_column(String(32), default="CONVERSATIONAL_ONLY")
     requires_tool_refresh: Mapped[int] = mapped_column(Integer, default=1)
     truncated: Mapped[int] = mapped_column(Integer, default=0)
     skill_id: Mapped[str] = mapped_column(String(128), default="")
@@ -153,9 +188,7 @@ class AIConversationSummary(Base):
     kind: Mapped[str] = mapped_column(String(32), default="SAFE_STAGE_SUMMARY")
     body: Mapped[str] = mapped_column(Text)
     body_sha256: Mapped[str] = mapped_column(String(64))
-    authority: Mapped[str] = mapped_column(
-        String(32), default="CONVERSATIONAL_ONLY"
-    )
+    authority: Mapped[str] = mapped_column(String(32), default="CONVERSATIONAL_ONLY")
     requires_tool_refresh: Mapped[int] = mapped_column(Integer, default=1)
     source_message_count: Mapped[int] = mapped_column(Integer, default=0)
     prompt_version: Mapped[str] = mapped_column(String(128), default="")

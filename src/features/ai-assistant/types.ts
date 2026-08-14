@@ -16,6 +16,11 @@ export interface AICapabilities {
   streaming: boolean
   vision_enabled: boolean
   conversation_persistence: boolean
+  adaptive_surface_enabled?: boolean
+  rich_message_renderer_enabled?: boolean
+  workbench_v2_enabled?: boolean
+  conversation_context_enabled?: boolean
+  presentation_blocks_enabled?: boolean
   artifact_workflows_enabled?: boolean
   vision_tool_comparison_enabled?: boolean
   feedback_enabled?: boolean
@@ -140,6 +145,23 @@ export interface AIToolActivityItem {
   id: string
   label: string
   status: 'running' | 'complete' | 'error'
+}
+
+export type AITurnStatus = 'streaming' | 'complete' | 'error' | 'cancelled'
+
+export interface AITurnPresentation {
+  id: string
+  requestId: string
+  userMessageId: string
+  assistantMessageId: string | null
+  createdAt: string
+  status: AITurnStatus
+  activities: AIToolActivityItem[]
+  sources: AISourceSummary[]
+  businessResults: AIBusinessResult[]
+  evidence: AIEvidenceReferenceV1[]
+  historical: boolean
+  requiresRefresh: boolean
 }
 
 export interface AIEntityLink {
