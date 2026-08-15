@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     ai_skill_router_enabled: bool = False
     ai_evidence_v1_enabled: bool = False
     ai_conversations_enabled: bool = False
+    ai_adaptive_surface_enabled: bool = False
+    ai_rich_message_renderer_enabled: bool = False
+    ai_workbench_v2_enabled: bool = False
+    ai_conversation_context_enabled: bool = False
+    ai_presentation_blocks_enabled: bool = False
     ai_conversation_message_retention_days: Literal[30] = 30
     ai_conversation_summary_retention_days: Literal[30] = 30
     ai_conversation_tombstone_retention_days: Literal[180] = 180
@@ -57,6 +62,52 @@ class Settings(BaseSettings):
     ai_artifacts_enabled: bool = False
     ai_artifact_workflows_enabled: bool = False
     ai_vision_tool_comparison_enabled: bool = False
+    ai_document_studio_enabled: bool = False
+    ai_document_cloud_ocr_enabled: bool = False
+    ai_document_ocr_model: str = Field(
+        default="qwen3.5-ocr",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    ai_document_ocr_region: Literal["cn-beijing"] = "cn-beijing"
+    ai_document_ocr_max_pages: int = Field(default=50, ge=1, le=50)
+    ai_document_ocr_max_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        ge=1,
+        le=20 * 1024 * 1024,
+    )
+    ai_document_ocr_max_concurrency: int = Field(default=2, ge=1, le=4)
+    ai_document_reconcile_enabled: bool = False
+    ai_document_reconcile_model: str = Field(
+        default="qwen3.7-plus",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    ai_document_signed_url_ttl_seconds: int = Field(default=300, ge=60, le=600)
+    ai_document_signed_file_service_url: str = ""
+    ai_document_signed_file_service_token: SecretStr = SecretStr("")
+    ai_document_signed_file_allowed_hosts: str = ""
+    document_office_renderer_enabled: bool = False
+    document_office_renderer_command: str = Field(
+        default="libreoffice",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    document_office_renderer_timeout_seconds: int = Field(
+        default=120,
+        ge=30,
+        le=300,
+    )
+    document_office_renderer_network_isolation_command: str = Field(
+        default="unshare",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    document_office_renderer_network_isolation_verified: bool = False
     ai_preview_ttl_minutes: int = Field(default=30, ge=5, le=1440)
     ai_artifact_storage_dir: str = str(BACKEND_DIR / "data" / "ai-artifacts")
     ai_artifact_scanner_backend: Literal["disabled", "clamav"] = "disabled"

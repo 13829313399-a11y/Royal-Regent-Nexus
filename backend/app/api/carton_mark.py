@@ -8,6 +8,7 @@ from app.db import get_db
 from app.schemas.carton_mark import (
     CartonMarkAutoCheckResponse,
     CartonMarkBatchCheckResponse,
+    CartonMarkCustomerOptionOut,
     CartonMarkDocumentCheckResponse,
     CartonMarkTemplateOut,
 )
@@ -27,8 +28,11 @@ from app.services.carton_mark_library import (
     create_carton_mark_template,
     ensure_carton_mark_scope,
     get_authorized_carton_mark_document,
+    get_carton_mark_document_recheck_source,
     get_carton_mark_template,
+    list_carton_mark_customer_options,
     list_carton_mark_templates,
+    update_carton_mark_document_check_result,
 )
 
 router = APIRouter()
@@ -125,6 +129,25 @@ async def create_persisted_carton_mark_template(
     )
 
 
+@router.get(
+    "/api/carton-mark/customer-options",
+    response_model=list[CartonMarkCustomerOptionOut],
+)
+def get_carton_mark_customer_options(
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = ensure_carton_mark_scope(
+        db,
+        current_user,
+        "carton_mark:read",
+        factory_id,
+        CARTON_MARK_WRITE_DEPARTMENTS,
+    )
+    return list_carton_mark_customer_options(db, factory_id)
+
+
 @router.get("/api/carton-mark/templates", response_model=list[CartonMarkTemplateOut])
 def get_persisted_carton_mark_templates(
     factory_id: str,
@@ -159,6 +182,45 @@ def get_persisted_carton_mark_template(
         CARTON_MARK_READ_DEPARTMENTS,
     )
     return get_carton_mark_template(db, factory_id, template_id)
+
+
+@router.post(
+    "/api/carton-mark/templates/{template_id}/recheck",
+    response_model=CartonMarkTemplateOut,
+)
+async def recheck_persisted_carton_mark_template(
+    template_id: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = ensure_carton_mark_scope(
+        db,
+        current_user,
+        "carton_mark:template_upload",
+        factory_id,
+        CARTON_MARK_WRITE_DEPARTMENTS,
+    )
+    source = get_carton_mark_document_recheck_source(db, factory_id, template_id)
+    try:
+        check_result = await run_in_threadpool(
+            build_carton_mark_document_check,
+            excel_file_name=source.excel_file_name,
+            excel_bytes=source.excel_bytes,
+            pdf_file_name=source.pdf_file_name,
+            pdf_bytes=source.pdf_bytes,
+        )
+    except CartonMarkDocumentConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except CartonMarkDocumentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return update_carton_mark_document_check_result(
+        db,
+        current_user,
+        factory_id=factory_id,
+        template_id=template_id,
+        check_result=check_result,
+    )
 
 
 @router.get("/api/carton-mark/templates/{template_id}/documents/{kind}")

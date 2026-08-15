@@ -26,6 +26,11 @@ class AICapabilities(BaseModel):
     streaming: bool
     vision_enabled: bool
     conversation_persistence: bool = False
+    adaptive_surface_enabled: bool | None = None
+    rich_message_renderer_enabled: bool | None = None
+    workbench_v2_enabled: bool | None = None
+    conversation_context_enabled: bool | None = None
+    presentation_blocks_enabled: bool | None = None
     artifact_workflows_enabled: bool | None = None
     vision_tool_comparison_enabled: bool | None = None
     feedback_enabled: bool | None = None

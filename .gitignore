@@ -48,6 +48,10 @@ backend/models/document-translation/
 !/docs/three-d-printing-deployment.md
 !/docs/injection-production-hub-context-memory.md
 !/docs/injection-scheduling-shared-master-sop.md
+!/docs/document-studio/baseline.md
+!/docs/document-studio/implementation-status.md
+!/docs/document-studio/activation-runbook.md
+!/docs/document-studio/evaluation.md
 !/docs/ai/AI_MODULE_DEVELOPMENT_PLAN.md
 !/docs/ai/nif-18-production-readiness.md
 !/docs/ai/adr/

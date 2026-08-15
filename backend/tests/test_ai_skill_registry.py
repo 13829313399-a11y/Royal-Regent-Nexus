@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+
 from app.schemas.ai import AIServerPageContext
 from app.services.ai.prompts.registry import PromptRegistry
 from app.services.ai.skills.contracts import SkillRegistryError
@@ -106,11 +107,11 @@ def test_default_registry_has_reviewed_unique_versioned_skills_and_stable_hashes
     first = SkillRegistry(tools)
     second = SkillRegistry(tools)
 
-    assert len(first.skills) == 12
+    assert len(first.skills) == 17
     assert [skill.manifest.id for skill in first.skills] == sorted(
         skill.manifest.id for skill in first.skills
     )
-    assert len({skill.manifest.id for skill in first.skills}) == 12
+    assert len({skill.manifest.id for skill in first.skills}) == 17
     assert [skill.content_hash for skill in first.skills] == [
         skill.content_hash for skill in second.skills
     ]
@@ -123,6 +124,13 @@ def test_default_registry_has_reviewed_unique_versioned_skills_and_stable_hashes
     assert first.resolve("system.module_tutor", "1.1.0").manifest.feature_tools == (
         "knowledge.search_module",
     )
+    assert {
+        "files.pdf_to_excel",
+        "files.pdf_to_word",
+        "files.pdf_split",
+        "files.pdf_translation",
+        "files.word_to_pdf",
+    }.issubset({skill.manifest.id for skill in first.skills})
 
 
 def test_module_tutor_feature_tool_is_optional_and_only_authorized_when_enabled() -> None:

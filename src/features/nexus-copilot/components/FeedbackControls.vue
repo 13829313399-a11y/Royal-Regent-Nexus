@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { ThumbsDown, ThumbsUp } from '@lucide/vue'
+import { createRandomUuid } from '@/lib/randomUuid'
 import {
   submitAIFeedback,
   type AIFeedbackIssueCategory,
@@ -36,7 +37,7 @@ const categories: Array<{ value: AIFeedbackIssueCategory; label: string }> = [
 function requestId(rating: AIFeedbackRating) {
   const existing = requestIds.get(rating)
   if (existing) return existing
-  const value = `feedback-${crypto.randomUUID()}`
+  const value = `feedback-${createRandomUuid()}`
   requestIds.set(rating, value)
   return value
 }

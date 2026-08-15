@@ -14,7 +14,9 @@ from sqlalchemy.orm import Session
 from app.core.time import business_now
 from app.models.carton_mark import CartonMarkDocument, CartonMarkTemplate
 from app.models.carton_procurement import CartonAuditEvent
+from app.models.internal_quote import InternalQuoteCustomer
 from app.schemas.carton_mark import (
+    CartonMarkCustomerOptionOut,
     CartonMarkDocumentCheckResponse,
     CartonMarkTemplateOut,
 )
@@ -42,6 +44,14 @@ class CartonMarkDocumentDownload:
     size_bytes: int
     sha256: str
     content: bytes
+
+
+@dataclass(frozen=True)
+class CartonMarkDocumentRecheckSource:
+    excel_file_name: str
+    excel_bytes: bytes
+    pdf_file_name: str
+    pdf_bytes: bytes
 
 
 def _now_text() -> str:
@@ -127,6 +137,22 @@ def ensure_carton_mark_scope(
     return factory_id
 
 
+def list_carton_mark_customer_options(
+    db: Session,
+    factory_id: str,
+) -> list[CartonMarkCustomerOptionOut]:
+    factory_id = require_carton_factory(factory_id)
+    customers = db.scalars(
+        select(InternalQuoteCustomer)
+        .where(InternalQuoteCustomer.factory_id == factory_id)
+        .order_by(InternalQuoteCustomer.normalized_name, InternalQuoteCustomer.id)
+    ).all()
+    return [
+        CartonMarkCustomerOptionOut(id=customer.id, name=customer.name)
+        for customer in customers
+    ]
+
+
 def _active_template(db: Session, factory_id: str, template_id: str) -> CartonMarkTemplate:
     template = db.scalar(
         select(CartonMarkTemplate).where(
@@ -180,6 +206,7 @@ def _template_out(
         pdf_file_name=pdf.file_name,
         pdf_file_size=pdf.size_bytes,
         created_at=template.created_at,
+        updated_at=template.updated_at,
         created_by_name=template.created_by_name,
         qc_ready=template.check_status == "核对通过",
     )
@@ -344,6 +371,67 @@ def get_carton_mark_template(
 ) -> CartonMarkTemplateOut:
     factory_id = require_carton_factory(factory_id)
     template = _active_template(db, factory_id, template_id)
+    documents = _documents_for_templates(db, [template.id])
+    return _template_out(template, documents.get(template.id, {}))
+
+
+def get_carton_mark_document_recheck_source(
+    db: Session,
+    factory_id: str,
+    template_id: str,
+) -> CartonMarkDocumentRecheckSource:
+    factory_id = require_carton_factory(factory_id)
+    template = _active_template(db, factory_id, template_id)
+    documents = _documents_for_templates(db, [template.id]).get(template.id, {})
+    excel = documents.get("source_excel")
+    pdf = documents.get("print_pdf")
+    if excel is None or pdf is None:
+        raise HTTPException(status_code=409, detail="箱唛资料缺少客人 Excel 或打印 PDF，无法重新核对")
+    return CartonMarkDocumentRecheckSource(
+        excel_file_name=excel.file_name,
+        excel_bytes=excel.content,
+        pdf_file_name=pdf.file_name,
+        pdf_bytes=pdf.content,
+    )
+
+
+def update_carton_mark_document_check_result(
+    db: Session,
+    user: AuthContext,
+    *,
+    factory_id: str,
+    template_id: str,
+    check_result: CartonMarkDocumentCheckResponse,
+) -> CartonMarkTemplateOut:
+    factory_id = require_carton_factory(factory_id)
+    template = _active_template(db, factory_id, template_id)
+    check_status = check_result.summary.overall_status
+    if check_status not in {"核对通过", "发现差异", "需复核"}:
+        raise HTTPException(status_code=422, detail="箱唛核对结果状态无效")
+
+    template.check_status = check_status
+    template.check_result_json = json.dumps(
+        check_result.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    template.updated_at = _now_text()
+    _audit(
+        db,
+        user,
+        factory_id=factory_id,
+        event_type="CARTON_MARK_TEMPLATE_RECHECKED",
+        template_id=template.id,
+        detail={
+            "version": template.version,
+            "check_status": check_status,
+            "excel_sha256": template.excel_sha256,
+            "pdf_sha256": template.pdf_sha256,
+        },
+    )
+    db.commit()
+    db.refresh(template)
     documents = _documents_for_templates(db, [template.id])
     return _template_out(template, documents.get(template.id, {}))
 

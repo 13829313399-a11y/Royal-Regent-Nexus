@@ -9,6 +9,10 @@ import {
 
 
 describe('shared tools api', () => {
+  it('allows document translation requests to wait for 30 minutes', () => {
+    expect(DOCUMENT_TRANSLATION_TIMEOUT_MS).toBe(30 * 60 * 1000)
+  })
+
   it('uploads one Office document with the selected translation direction', async () => {
     const blob = new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
     const post = vi.fn().mockResolvedValue({
@@ -51,6 +55,44 @@ describe('shared tools api', () => {
     expect(payload.get('mode')).toBe('ai_smart_cloud')
     expect(payload.get('cloud_consent')).toBe('true')
     expect(payload.get('sheet_names')).toBe('["订单"]')
+  })
+
+  it('turns an HTML gateway timeout into a safe Chinese message', async () => {
+    const post = vi.fn().mockRejectedValue({
+      isAxiosError: true,
+      message: 'Request failed with status code 504',
+      response: {
+        status: 504,
+        headers: { 'content-type': 'text/html' },
+        data: new Blob([
+          '<html><head><title>504 Gateway Time-out</title></head><body>nginx</body></html>',
+        ], { type: 'text/html' }),
+      },
+    })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['office'], '订单.docx')
+
+    await expect(api.translateDocument(file, 'zh_to_en')).rejects.toThrow(
+      '文档处理超过网关等待时间（最长 30 分钟）',
+    )
+  })
+
+  it('does not expose an upstream HTML error page', async () => {
+    const post = vi.fn().mockRejectedValue({
+      isAxiosError: true,
+      message: 'Request failed with status code 502',
+      response: {
+        status: 502,
+        headers: { 'content-type': 'text/html' },
+        data: new Blob(['<html><body>upstream details</body></html>'], { type: 'text/html' }),
+      },
+    })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['office'], '订单.docx')
+
+    await expect(api.translateDocument(file, 'zh_to_en')).rejects.toThrow(
+      '服务器暂时无法完成文档处理，请稍后重试。',
+    )
   })
 
   it('uploads the selected Excel worksheet names with the translation request', async () => {

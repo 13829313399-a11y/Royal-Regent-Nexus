@@ -13,8 +13,12 @@ class AITaskTransitionError(ValueError):
 
 
 TASK_TRANSITIONS: dict[AITaskState, frozenset[AITaskState]] = {
-    AITaskState.CREATED: frozenset({AITaskState.UNDERSTOOD}),
-    AITaskState.UNDERSTOOD: frozenset({AITaskState.PLANNED, AITaskState.RUNNING}),
+    AITaskState.CREATED: frozenset(
+        {AITaskState.UNDERSTOOD, AITaskState.CANCELLING}
+    ),
+    AITaskState.UNDERSTOOD: frozenset(
+        {AITaskState.PLANNED, AITaskState.RUNNING, AITaskState.CANCELLING}
+    ),
     AITaskState.PLANNED: frozenset({AITaskState.RUNNING, AITaskState.CANCELLING}),
     AITaskState.RUNNING: frozenset(
         {

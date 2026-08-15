@@ -1,4 +1,5 @@
 import { http, dispatchAccessFailure } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 import type {
   AICapabilities,
   AIChatRequestMessage,
@@ -122,18 +123,14 @@ function apiBaseUrl() {
 }
 
 function createRequestId() {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return `web-${globalThis.crypto.randomUUID()}`
+  try {
+    return `web-${createRandomUuid()}`
   }
-  if (typeof globalThis.crypto?.getRandomValues !== 'function') {
+  catch {
     throw new AIClientError('当前浏览器无法生成安全请求标识。', {
       code: 'AI_SECURE_RANDOM_UNAVAILABLE',
     })
   }
-  const bytes = new Uint8Array(16)
-  globalThis.crypto.getRandomValues(bytes)
-  const token = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
-  return `web-${token}`
 }
 
 function normalizePilotStatus(value: unknown): AIPilotAccessStatus {
@@ -157,6 +154,11 @@ function normalizeCapabilities(value: unknown): AICapabilities {
     streaming: source.streaming === true,
     vision_enabled: source.vision_enabled === true,
     conversation_persistence: source.conversation_persistence === true,
+    adaptive_surface_enabled: source.adaptive_surface_enabled === true,
+    rich_message_renderer_enabled: source.rich_message_renderer_enabled === true,
+    workbench_v2_enabled: source.workbench_v2_enabled === true,
+    conversation_context_enabled: source.conversation_context_enabled === true,
+    presentation_blocks_enabled: source.presentation_blocks_enabled === true,
     artifact_workflows_enabled: source.artifact_workflows_enabled === true,
     vision_tool_comparison_enabled: source.vision_tool_comparison_enabled === true,
     feedback_enabled: source.feedback_enabled === true,

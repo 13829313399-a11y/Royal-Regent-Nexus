@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { ImagePlus, Trash2, X } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 import { isArtifactWorkflowUnavailable, uploadVisionArtifact } from '@/api/aiArtifacts'
 import type {
   AIArtifactAttachmentReference,
@@ -58,17 +59,12 @@ const isPreparing = ref(false)
 const activeReaders = new Set<FileReader>()
 let lifecycleGeneration = 0
 let consentGeneration = 0
-let localSequence = 0
 let additionQueue: Promise<void> = Promise.resolve()
 
 const hasAttachments = computed(() => attachments.value.length > 0)
 
 function attachmentId() {
-  localSequence += 1
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return `image-${globalThis.crypto.randomUUID()}`
-  }
-  return `image-${Date.now()}-${localSequence}`
+  return `image-${createRandomUuid()}`
 }
 
 function detectedMediaType(bytes: Uint8Array): AIAttachmentMediaType | null {

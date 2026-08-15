@@ -53,6 +53,8 @@ class ToolExecutionContext:
     tool_groups: tuple[str, ...] = ()
     session_factory: Callable[[], Session] | None = None
     tool_call_id: str = ""
+    task_id: str = ""
+    task_step_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

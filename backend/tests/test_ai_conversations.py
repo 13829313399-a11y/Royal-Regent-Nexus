@@ -9,6 +9,7 @@ from app.db import Base, get_db
 from app.main import app
 from app.models.ai_conversation import (
     AIConversation,
+    AIConversationContextBinding,
     AIConversationSummary,
     AIMessage,
 )
@@ -95,6 +96,7 @@ def _database() -> Session:
             AuthUser.__table__,
             AuthAuditLog.__table__,
             AIConversation.__table__,
+            AIConversationContextBinding.__table__,
             AIMessage.__table__,
             AIConversationSummary.__table__,
         ],
@@ -503,3 +505,9 @@ def test_conversation_api_is_default_off_then_owner_only(monkeypatch) -> None:
     finally:
         app.dependency_overrides.clear()
         db.close()
+
+
+def test_conversation_api_configures_the_shared_guard_backend() -> None:
+    from app.api import ai_conversations
+
+    assert ai_conversations.conversation_pilot_guard._shared_backend is not None

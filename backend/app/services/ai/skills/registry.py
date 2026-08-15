@@ -25,8 +25,14 @@ _RISK_ORDER = {
     "HIGH_RISK_WRITE": 3,
 }
 _OPTIONAL_FEATURE_TOOLS = {
+    "artifacts.extract_document",
+    "artifacts.inspect_document",
     "artifacts.inspect_workbook",
+    "artifacts.reconcile_document",
+    "artifacts.render_document",
+    "artifacts.review_document",
     "artifacts.translate_document_local",
+    "artifacts.verify_document",
     "knowledge.search_module",
     "vision.compare_injection_backlog",
     "vision.observe_injection_backlog_image",

@@ -1,8 +1,15 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.ai.context import (
+    AIPageContextInput,
+    AIPageModuleId,
+    AIPagePath,
+    AIPageRouteName,
+)
 from app.schemas.ai.evidence import AIEvidenceReferenceV1
 
 
@@ -29,6 +36,65 @@ class AIConversationCreate(BaseModel):
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
+
+
+class AIConversationContextBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    factory_scope: str
+    module_id: AIPageModuleId
+    route_name: AIPageRouteName
+    path: AIPagePath
+    context_version: int = Field(ge=1)
+    selected_entity_type: str = ""
+    selected_entity_id: str = ""
+    selected_entity_revision: int | None = Field(default=None, ge=1)
+    updated_at: datetime
+
+
+class AIConversationContextUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page_context: AIPageContextInput | None
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
+class AIContextOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    factory_scope: str
+    module_id: AIPageModuleId
+    route_name: AIPageRouteName
+    path: AIPagePath
+    display_label: str = Field(min_length=1, max_length=64)
+    tool_groups: list[str] = Field(default_factory=list)
+    maximum_risk: Literal["PREVIEW_WITH_AUDIT"] = "PREVIEW_WITH_AUDIT"
+
+
+class AIContextOptionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[AIContextOption]
+
+
+class AIConversationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    pinned: bool | None = None
+    archived: bool | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
+
+    @field_validator("title")
+    @classmethod
+    def strip_optional_title(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if self.title is None and self.pinned is None and self.archived is None:
+            raise ValueError("至少提供一个会话管理变更。")
+        return self
 
 
 class AIConversationMessageCreate(BaseModel):
@@ -58,6 +124,9 @@ class AIConversationListItem(BaseModel):
     expires_at: datetime | None
     message_count: int = Field(ge=0)
     last_message_at: datetime | None
+    pinned_at: datetime | None = None
+    archived_at: datetime | None = None
+    context_binding: AIConversationContextBinding | None = None
 
 
 class AIConversationMessageData(BaseModel):

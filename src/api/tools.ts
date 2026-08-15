@@ -9,7 +9,7 @@ import {
 export const PDF_TO_EXCEL_TIMEOUT_MS = 180_000
 export const PDF_TO_WORD_TIMEOUT_MS = 180_000
 export const PDF_SPLIT_TIMEOUT_MS = 60_000
-export const DOCUMENT_TRANSLATION_TIMEOUT_MS = 600_000
+export const DOCUMENT_TRANSLATION_TIMEOUT_MS = 1_800_000
 
 export type DocumentTranslationDirection = 'zh_to_en' | 'en_to_zh'
 export type DocumentTranslationMode = 'local_private' | 'ai_smart_cloud'
@@ -107,6 +107,7 @@ async function parseBlobError(error: unknown): Promise<never> {
   }
 
   const raw = await error.response.data.text()
+  const status = error.response.status
   try {
     const payload = JSON.parse(raw) as { detail?: unknown; message?: unknown }
     const message = typeof payload.detail === 'string'
@@ -116,6 +117,16 @@ async function parseBlobError(error: unknown): Promise<never> {
   }
   catch (parseError) {
     if (parseError instanceof SyntaxError) {
+      if (status === 504) {
+        throw new Error(
+          '文档处理超过网关等待时间（最长 30 分钟），结果可能仍在后台生成。请勿立即重复提交，稍后重试或联系管理员。',
+        )
+      }
+      const contentType = String(error.response.headers?.['content-type'] ?? '')
+      const looksLikeHtml = contentType.includes('text/html') || /^\s*</.test(raw)
+      if (looksLikeHtml) {
+        throw new Error('服务器暂时无法完成文档处理，请稍后重试。')
+      }
       throw new Error(raw.trim() || error.message)
     }
     throw parseError

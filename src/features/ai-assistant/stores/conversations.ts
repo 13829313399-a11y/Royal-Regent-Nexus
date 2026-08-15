@@ -5,13 +5,18 @@ import {
   createAIConversation,
   deleteAIConversation,
   getAIConversation,
+  listAIContextOptions,
   listAIConversations,
+  setAIConversationContext,
+  updateAIConversation,
 } from '@/api/aiConversations'
 import type {
   AIConversationDetail,
   AIConversationListItem,
   AIConversationMode,
+  AIContextOption,
 } from '@/api/aiConversations'
+import type { AIPageContext } from '@/features/ai-assistant/types'
 
 export const useAIConversationsStore = defineStore('aiConversations', () => {
   const items = ref<AIConversationListItem[]>([])
@@ -20,6 +25,7 @@ export const useAIConversationsStore = defineStore('aiConversations', () => {
   const loading = ref(false)
   const error = ref('')
   const evidenceAccessChanged = ref(false)
+  const contextOptions = ref<AIContextOption[]>([])
 
   const activeId = computed(() => active.value?.id ?? null)
 
@@ -79,6 +85,9 @@ export const useAIConversationsStore = defineStore('aiConversations', () => {
         expires_at: next.expires_at,
         message_count: next.message_count,
         last_message_at: next.last_message_at,
+        pinned_at: next.pinned_at,
+        archived_at: next.archived_at,
+        context_binding: next.context_binding,
       }
       items.value = [listItem, ...items.value.filter((item) => item.id !== next.id)]
       return active.value
@@ -139,6 +148,49 @@ export const useAIConversationsStore = defineStore('aiConversations', () => {
     if (active.value?.id === conversationId) active.value = null
   }
 
+  async function loadContextOptions(factoryScope: string) {
+    contextOptions.value = await listAIContextOptions(factoryScope)
+    return contextOptions.value
+  }
+
+  async function setContext(pageContext: AIPageContext | null) {
+    const current = active.value
+    if (!current) throw new Error('请先选择会话。')
+    const binding = await setAIConversationContext({
+      conversationId: current.id,
+      pageContext,
+      expectedRevision: current.revision,
+    })
+    if (active.value?.id !== current.id) return binding
+    active.value.context_binding = binding
+    active.value.revision += 1
+    const item = items.value.find((candidate) => candidate.id === current.id)
+    if (item) {
+      item.context_binding = binding
+      item.revision = active.value.revision
+    }
+    return binding
+  }
+
+  async function updateMetadata(conversationId: string, input: {
+    title?: string
+    pinned?: boolean
+    archived?: boolean
+  }) {
+    const current = active.value?.id === conversationId
+      ? active.value
+      : items.value.find((item) => item.id === conversationId)
+    if (!current) throw new Error('会话不存在。')
+    const updated = await updateAIConversation({
+      conversationId,
+      ...input,
+      expectedRevision: current.revision,
+    })
+    items.value = [updated, ...items.value.filter((item) => item.id !== updated.id)]
+    if (active.value?.id === updated.id) Object.assign(active.value, updated)
+    return updated
+  }
+
   function reset() {
     items.value = []
     active.value = null
@@ -146,6 +198,7 @@ export const useAIConversationsStore = defineStore('aiConversations', () => {
     loading.value = false
     error.value = ''
     evidenceAccessChanged.value = false
+    contextOptions.value = []
   }
 
   return {
@@ -156,12 +209,16 @@ export const useAIConversationsStore = defineStore('aiConversations', () => {
     loading,
     error,
     evidenceAccessChanged,
+    contextOptions,
     loadList,
     create,
     open,
     loadOlderMessages,
     appendUserMessage,
     remove,
+    loadContextOptions,
+    setContext,
+    updateMetadata,
     reset,
   }
 })

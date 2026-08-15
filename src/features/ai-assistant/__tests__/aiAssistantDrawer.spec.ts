@@ -33,6 +33,9 @@ const usableCapabilities: AICapabilities = {
   streaming: true,
   vision_enabled: false,
   conversation_persistence: false,
+  adaptive_surface_enabled: true,
+  rich_message_renderer_enabled: true,
+  presentation_blocks_enabled: true,
   tool_groups: ['module_help'],
   pilot_access: { granted: true, status: 'GRANTED', read_only: true },
 }
@@ -278,23 +281,21 @@ describe('global AI assistant drawer', () => {
     wrapper.unmount()
   })
 
-  it('focuses the composer, traps Tab in the dialog, and restores focus after Escape', async () => {
+  it('focuses the composer, remains non-modal on desktop, and restores focus after Escape', async () => {
     const { wrapper } = await mountDrawer()
     expect(triggerButton()?.className).toContain('focus-visible:outline')
     await openDrawer()
     const dialog = document.querySelector<HTMLElement>('#ai-assistant-drawer')
     const textarea = document.querySelector<HTMLTextAreaElement>('#ai-assistant-message')
-    const close = document.querySelector<HTMLButtonElement>('button[aria-label="关闭 AI 助手并清空对话"]')
-    expect(dialog?.getAttribute('role')).toBe('dialog')
+    expect(dialog?.getAttribute('role')).toBe('complementary')
+    expect(dialog?.hasAttribute('aria-modal')).toBe(false)
     expect(document.querySelector('[role="log"]')?.getAttribute('aria-live')).toBe('polite')
     expect(document.querySelector('input[type="file"]')).toBeNull()
     expect(dialog?.textContent).toContain('当前仅支持文字，不上传附件')
     expect(document.activeElement).toBe(textarea)
 
-    textarea?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
-    expect(document.activeElement).toBe(close)
-    close?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }))
-    expect(document.activeElement).toBe(textarea)
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    expect(textarea?.dispatchEvent(tab)).toBe(true)
 
     const escapedToDocument = vi.fn()
     document.addEventListener('keydown', escapedToDocument)
@@ -325,7 +326,7 @@ describe('global AI assistant drawer', () => {
     expect(document.body.style.overflow).toBe('clip')
   })
 
-  it('rebuilds route/factory context at each send and renders hostile model text as plain text', async () => {
+  it('rebuilds route/factory context at each send and safely renders hostile model text as rich text', async () => {
     apiMocks.streamAIResponse.mockImplementation(async (options) => {
       options.onEvent(event(1, 'message.delta', { delta: '<img src=x onerror=alert(1)> **raw**' }))
       options.onEvent(event(2, 'response.completed'))
@@ -336,7 +337,8 @@ describe('global AI assistant drawer', () => {
     inputMessage('第一次')
     await flushPromises()
     expect(document.querySelector('#ai-assistant-drawer img')).toBeNull()
-    expect(document.querySelector('#ai-assistant-drawer')?.textContent).toContain('<img src=x onerror=alert(1)> **raw**')
+    expect(document.querySelector('#ai-assistant-drawer')?.textContent).toContain('<img src=x onerror=alert(1)> raw')
+    expect(document.querySelector('#ai-assistant-drawer [data-ai-rich-text] strong')?.textContent).toBe('raw')
 
     await router.push('/modules/production/injection-scheduling?factory=huakang-b')
     await flushPromises()
@@ -365,7 +367,7 @@ describe('global AI assistant drawer', () => {
 
     pushEvent?.(event(1, 'message.delta', { delta: '第一段 ' }))
     await flushPromises()
-    expect(document.querySelector('#ai-assistant-drawer')?.textContent).toContain('第一段 ')
+    expect(document.querySelector('#ai-assistant-drawer')?.textContent).toContain('第一段')
     pushEvent?.(event(2, 'message.delta', { delta: '第二段' }))
     await flushPromises()
     expect(document.querySelector('#ai-assistant-drawer')?.textContent).toContain('第一段 第二段')

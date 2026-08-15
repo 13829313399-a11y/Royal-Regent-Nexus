@@ -28,6 +28,7 @@ from app.services.ai.provider_factory import (
     build_provider,
     get_provider_status,
 )
+from app.services.ai.providers import ProviderError
 from app.services.auth import AuthContext, get_current_user
 from app.services.document_translation import (
     DocumentTranslationError,
@@ -47,6 +48,25 @@ MAX_DOCUMENT_SIZE_BYTES = 20 * 1024 * 1024
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 ZIP_MEDIA_TYPE = "application/zip"
+
+
+def _cloud_translation_provider_error(
+    exc: ProviderError,
+    *,
+    request_id: str,
+) -> HTTPException:
+    translation_logger.warning(
+        "document_translation_provider_error request_id=%s code=%s "
+        "status_code=%s retryable=%s",
+        request_id,
+        exc.code.value,
+        exc.status_code,
+        exc.retryable,
+    )
+    return HTTPException(
+        status_code=503,
+        detail="云端翻译服务暂时不可用，请稍后重试。",
+    )
 
 
 async def _read_office_document(document_file: UploadFile) -> tuple[bytes, str]:
@@ -210,6 +230,11 @@ async def document_translation(
             raise _artifact_error(exc) from exc
         except ProviderConfigurationError as exc:
             raise HTTPException(status_code=503, detail="云端翻译 Provider 不可用。") from exc
+        except ProviderError as exc:
+            raise _cloud_translation_provider_error(
+                exc,
+                request_id=str(request.state.request_id),
+            ) from exc
         except DocumentTranslationUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except DocumentTranslationError as exc:
@@ -285,6 +310,11 @@ async def document_translation(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except DocumentTranslationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProviderError as exc:
+        raise _cloud_translation_provider_error(
+            exc,
+            request_id=str(request.state.request_id),
+        ) from exc
     finally:
         if provider is not None:
             await provider.aclose()
@@ -384,6 +414,11 @@ async def document_translation_artifact(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except DocumentTranslationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProviderError as exc:
+        raise _cloud_translation_provider_error(
+            exc,
+            request_id=str(request.state.request_id),
+        ) from exc
     finally:
         if provider is not None:
             await provider.aclose()

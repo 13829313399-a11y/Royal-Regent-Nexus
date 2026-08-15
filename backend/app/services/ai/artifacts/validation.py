@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import re
 import unicodedata
 import warnings
@@ -245,6 +246,70 @@ def _validate_csv(data: bytes) -> None:
         raise _invalid("AI_ARTIFACT_EMPTY", "文件不能为空。")
 
 
+def _validate_derived_pdf_archive(data: bytes) -> None:
+    if not data.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        raise _invalid("AI_ARTIFACT_MAGIC_MISMATCH", "派生 ZIP 容器无效。")
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = [item for item in archive.infolist() if not item.is_dir()]
+            if not entries or len(entries) > MAX_PDF_PAGES:
+                raise _invalid(
+                    "AI_ARTIFACT_ZIP_LIMIT", "派生 PDF 压缩包条目数量无效。"
+                )
+            expanded = 0
+            compressed = 0
+            for entry in entries:
+                if (
+                    not _safe_zip_name(entry.filename)
+                    or PurePosixPath(entry.filename).suffix.casefold()
+                    not in {".pdf", ".docx"}
+                    or entry.flag_bits & 0x1
+                ):
+                    raise _invalid(
+                        "AI_ARTIFACT_ZIP_PATH", "派生文档压缩包包含不安全条目。"
+                    )
+                unix_mode = entry.external_attr >> 16
+                if unix_mode & 0o170000 == 0o120000:
+                    raise _invalid(
+                        "AI_ARTIFACT_ZIP_PATH", "派生 PDF 压缩包包含不安全链接。"
+                    )
+                expanded += entry.file_size
+                compressed += entry.compress_size
+                if entry.file_size > MAX_DOCUMENT_BYTES:
+                    raise _invalid(
+                        "AI_ARTIFACT_ZIP_LIMIT", "派生 PDF 压缩包条目过大。"
+                    )
+                if entry.file_size and (
+                    entry.compress_size == 0
+                    or entry.file_size
+                    > entry.compress_size * MAX_OOXML_COMPRESSION_RATIO
+                ):
+                    raise _invalid(
+                        "AI_ARTIFACT_ZIP_RATIO", "派生 PDF 压缩包压缩比过高。"
+                    )
+                entry_data = archive.read(entry)
+                if entry.filename.casefold().endswith(".pdf"):
+                    _validate_pdf(entry_data)
+                else:
+                    _validate_ooxml(entry_data, ".docx")
+            if expanded > MAX_OOXML_EXPANDED_BYTES or (
+                expanded
+                and (
+                    compressed == 0
+                    or expanded > compressed * MAX_OOXML_COMPRESSION_RATIO
+                )
+            ):
+                raise _invalid(
+                    "AI_ARTIFACT_ZIP_LIMIT", "派生 PDF 压缩包解压体积过大。"
+                )
+    except ArtifactValidationError:
+        raise
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as exc:
+        raise _invalid(
+            "AI_ARTIFACT_INVALID_ZIP", "派生 PDF 压缩包损坏或无法安全读取。"
+        ) from exc
+
+
 def validate_artifact_upload(
     *, filename: str, declared_mime_type: str, data: bytes
 ) -> ValidatedArtifact:
@@ -277,6 +342,70 @@ def validate_artifact_upload(
         declared_mime_type=mime_type,
         detected_mime_type=expected_mime,
         content_class=content_class,
+        size_bytes=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+        data=data,
+    )
+
+
+def validate_derived_artifact(
+    *, filename: str, declared_mime_type: str, data: bytes
+) -> ValidatedArtifact:
+    """Allow closed JSON metadata and PDF-only ZIP only for derived results."""
+
+    safe_filename = normalize_filename(filename)
+    lowered = safe_filename.casefold()
+    if lowered.endswith(".json"):
+        if (declared_mime_type or "").strip().casefold() != "application/json":
+            raise _invalid(
+                "AI_ARTIFACT_MIME_MISMATCH", "派生 JSON 声明类型无效。"
+            )
+        if not data:
+            raise _invalid("AI_ARTIFACT_EMPTY", "文件不能为空。")
+        if len(data) > MAX_DOCUMENT_BYTES:
+            raise _invalid("AI_ARTIFACT_TOO_LARGE", "文件超过允许大小。")
+        try:
+            decoded = data.decode("utf-8", errors="strict")
+            value = json.loads(decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _invalid(
+                "AI_ARTIFACT_INVALID_JSON", "派生 JSON 无法安全读取。"
+            ) from exc
+        if not isinstance(value, dict):
+            raise _invalid(
+                "AI_ARTIFACT_INVALID_JSON", "派生 JSON 顶层必须是对象。"
+            )
+        return ValidatedArtifact(
+            original_filename=safe_filename,
+            normalized_extension=".json",
+            declared_mime_type="application/json",
+            detected_mime_type="application/json",
+            content_class=ArtifactContentClass.DOCUMENT,
+            size_bytes=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+            data=data,
+        )
+    if not lowered.endswith(".zip"):
+        return validate_artifact_upload(
+            filename=safe_filename,
+            declared_mime_type=declared_mime_type,
+            data=data,
+        )
+    if (declared_mime_type or "").strip().casefold() != "application/zip":
+        raise _invalid(
+            "AI_ARTIFACT_MIME_MISMATCH", "派生压缩包声明类型无效。"
+        )
+    if not data:
+        raise _invalid("AI_ARTIFACT_EMPTY", "文件不能为空。")
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise _invalid("AI_ARTIFACT_TOO_LARGE", "文件超过允许大小。")
+    _validate_derived_pdf_archive(data)
+    return ValidatedArtifact(
+        original_filename=safe_filename,
+        normalized_extension=".zip",
+        declared_mime_type="application/zip",
+        detected_mime_type="application/zip",
+        content_class=ArtifactContentClass.DOCUMENT,
         size_bytes=len(data),
         sha256=hashlib.sha256(data).hexdigest(),
         data=data,

@@ -64,6 +64,16 @@ services:
     volumes:
       - ai-control:/app/backend/control:ro
       - ai-artifacts:/app/backend/data/ai-artifacts
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from pathlib import Path; raise SystemExit(0 if b'app.services.ai.task_worker' in Path('/proc/1/cmdline').read_bytes() else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     restart: unless-stopped
     logging: *default-logging
 

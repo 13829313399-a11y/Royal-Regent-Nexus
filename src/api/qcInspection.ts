@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 
 export interface QcEntityBase {
   id: string
@@ -296,9 +297,7 @@ function responseFileName(headers: Record<string, unknown> | undefined, fallback
 }
 
 export function createQcRequestId() {
-  return typeof globalThis.crypto?.randomUUID === 'function'
-    ? globalThis.crypto.randomUUID()
-    : `qc-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return createRandomUuid()
 }
 
 export function createQcInspectionApi(client: QcInspectionHttpClient = http) {

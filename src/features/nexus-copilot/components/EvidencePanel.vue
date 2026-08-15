@@ -21,6 +21,56 @@ interface SafeEvidence {
   asOf: string
   entityLabel: string
   truncated: boolean
+  sourceLabel: string
+  levelLabel: string
+}
+
+const factoryLabels: Record<string, string> = {
+  'huakang-a': '华康 A', 'huakang-b': '华康 B', 'huakang-c': '华康 C',
+  'huakang-d': '华康 D', huadeng: '华登', huaxing: '华兴',
+}
+
+function sourceLabel(sourceName: string, sourceLevel: string) {
+  const normalized = sourceName.toLowerCase()
+  const domains: Array<[string, string]> = [
+    ['scheduling', '注塑排产'], ['injection', '注塑排产'], ['internal_quote', '内部报价'],
+    ['molding', '啤办任务'], ['carton', '纸箱采购'], ['raw_material', '原料管理'],
+    ['customer_order', '客户订单'],
+  ]
+  const domain = domains.find(([prefix]) => normalized.includes(prefix))?.[1]
+  if (domain) return `${domain}${sourceLevel === 'VERSIONED_MODULE_KNOWLEDGE' ? '流程知识' : '正式数据'}`
+  if (sourceLevel === 'AUTHENTICATED_SERVER_CONTEXT') return '当前登录与页面上下文'
+  if (sourceLevel === 'USER_PROVIDED') return '本轮用户提供内容'
+  if (sourceLevel === 'MODEL_INFERENCE') return 'AI 推断'
+  return '系统来源'
+}
+
+function levelLabel(level: string) {
+  return {
+    FORMAL_DOMAIN_SERVICE: '系统正式数据',
+    AUTHENTICATED_SERVER_CONTEXT: '已验证页面上下文',
+    VERSIONED_MODULE_KNOWLEDGE: '受控流程知识',
+    USER_PROVIDED: '用户提供内容',
+    MODEL_INFERENCE: 'AI 推断',
+  }[level] ?? '受控来源'
+}
+
+function entityLabel(type: string, id: string) {
+  const label = {
+    scheduling_backlog_order: '待排订单',
+    internal_quote: '内部报价',
+    auto_schedule_run: '排产候选方案',
+  }[type] ?? (type ? '业务对象' : '')
+  return [label, id].filter(Boolean).join(' · ')
+}
+
+function displayTime(value: string) {
+  return Number.isFinite(Date.parse(value))
+    ? new Intl.DateTimeFormat('zh-CN', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+      }).format(new Date(value))
+    : '时间待确认'
 }
 
 function safeText(value: unknown, max = 160) {
@@ -46,8 +96,10 @@ const safeEvidence = computed<SafeEvidence[]>(() => {
       sourceLevel,
       factoryId: safeText(source.factory_id ?? source.factoryId, 64),
       asOf,
-      entityLabel: [entityType, entityId].filter(Boolean).join(' · '),
+      entityLabel: entityLabel(entityType, entityId),
       truncated: source.truncated === true,
+      sourceLabel: sourceLabel(sourceName, sourceLevel),
+      levelLabel: levelLabel(sourceLevel),
     }]
   })
 })
@@ -91,16 +143,20 @@ const safeEvidence = computed<SafeEvidence[]>(() => {
           <div class="flex items-start gap-2">
             <ShieldCheck class="mt-0.5 size-4 shrink-0 text-emerald-600" aria-hidden="true" />
             <div class="min-w-0">
-              <p class="truncate text-xs font-bold text-slate-900">{{ item.sourceName }}</p>
-              <p class="mt-1 break-words text-[11px] leading-4 text-slate-500">{{ item.sourceLevel }}</p>
+              <p class="truncate text-xs font-bold text-slate-900">{{ item.sourceLabel }}</p>
+              <p class="mt-1 break-words text-[11px] leading-4 text-slate-500">{{ item.levelLabel }}</p>
             </div>
           </div>
           <dl class="mt-2 space-y-1 text-[11px] leading-4 text-slate-600">
-            <div v-if="item.factoryId" class="flex gap-2"><dt>厂区</dt><dd>{{ item.factoryId }}</dd></div>
-            <div class="flex gap-2"><dt>时点</dt><dd>{{ item.asOf }}</dd></div>
+            <div v-if="item.factoryId" class="flex gap-2"><dt>厂区</dt><dd>{{ factoryLabels[item.factoryId] ?? '当前厂区' }}</dd></div>
+            <div class="flex gap-2"><dt>数据时间</dt><dd>{{ displayTime(item.asOf) }}</dd></div>
             <div v-if="item.entityLabel" class="flex gap-2"><dt>对象</dt><dd class="break-all">{{ item.entityLabel }}</dd></div>
             <div class="flex gap-2"><dt>完整性</dt><dd>{{ item.truncated ? '已截断' : '未截断' }}</dd></div>
           </dl>
+          <details class="mt-2 text-[10px] text-slate-400">
+            <summary class="cursor-pointer font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-600">技术细节</summary>
+            <p class="mt-1 break-all">{{ item.sourceName }} · {{ item.sourceLevel }} · {{ item.id }}</p>
+          </details>
         </li>
       </ul>
     </div>

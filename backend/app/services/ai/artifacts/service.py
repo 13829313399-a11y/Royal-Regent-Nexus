@@ -33,6 +33,7 @@ from app.services.ai.artifacts.storage import (
 from app.services.ai.artifacts.validation import (
     ArtifactValidationError,
     validate_artifact_upload,
+    validate_derived_artifact,
 )
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
 
@@ -136,6 +137,17 @@ def _validated(
             filename=filename,
             declared_mime_type=declared_mime_type,
             data=data,
+        )
+    except ArtifactValidationError as exc:
+        raise ArtifactInvalidError(exc.public_message, code=exc.code) from exc
+
+
+def _validated_derived(
+    *, filename: str, declared_mime_type: str, data: bytes
+):
+    try:
+        return validate_derived_artifact(
+            filename=filename, declared_mime_type=declared_mime_type, data=data
         )
     except ArtifactValidationError as exc:
         raise ArtifactInvalidError(exc.public_message, code=exc.code) from exc
@@ -352,7 +364,7 @@ def create_derived_artifact(
         raise ArtifactInvalidError("派生文件不能标记为原件。")
     if not parser_version.strip() and not model_version.strip():
         raise ArtifactInvalidError("派生文件必须记录解析器或模型版本。")
-    validated = _validated(
+    validated = _validated_derived(
         filename=filename, declared_mime_type=declared_mime_type, data=data
     )
     scanner_code = _scan(scanner, validated.data)

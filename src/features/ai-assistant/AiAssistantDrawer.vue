@@ -1,21 +1,23 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Bot, ExternalLink, RefreshCcw, ShieldCheck, Sparkles, X } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Bot, ExternalLink, RefreshCcw, ShieldCheck } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 import { createVisionObservationTask } from '@/api/aiTasks'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
-import AiBusinessResultCard from './AiBusinessResultCard.vue'
 import AiAttachmentTray from './AiAttachmentTray.vue'
 import AiComposer from './AiComposer.vue'
 import AiMessageList from './AiMessageList.vue'
 import AiSuggestedPrompts from './AiSuggestedPrompts.vue'
-import AiToolActivity from './AiToolActivity.vue'
 import { buildAIPageContext, isAIBusinessRoute, supportsAIVisionContext } from './pageContext'
 import { suggestedPrompts } from './promptPresets'
 import { useAIAssistantStore } from './store'
 import { useAIConversationsStore } from './stores/conversations'
+import AiEdgeHandle from '@/features/nexus-copilot/surfaces/AiEdgeHandle.vue'
+import AiSurfaceWindow from '@/features/nexus-copilot/surfaces/AiSurfaceWindow.vue'
+import { useAISurfaceStore } from '@/features/nexus-copilot/surfaces/surfaceStore'
+import { pageContextFromConversation } from '@/features/nexus-copilot/conversation/conversationContext'
 
 interface ComposerHandle {
   clear: () => void
@@ -40,8 +42,7 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const assistantStore = useAIAssistantStore()
 const conversationsStore = useAIConversationsStore()
-const trigger = ref<HTMLButtonElement | null>(null)
-const drawer = ref<HTMLElement | null>(null)
+const surfaceStore = useAISurfaceStore()
 const composer = ref<ComposerHandle | null>(null)
 const attachmentTray = ref<AttachmentTrayHandle | null>(null)
 let releaseDrawerScrollLock: BodyScrollLockRelease | null = null
@@ -68,13 +69,22 @@ const conversationPersistenceEnabled = computed(() => (
 const visionComparisonEnabled = computed(() => (
   assistantStore.capabilities?.vision_tool_comparison_enabled === true
 ))
+const adaptiveSurfaceEnabled = computed(() => (
+  assistantStore.capabilities?.adaptive_surface_enabled === true
+))
+const effectiveSurfaceMode = computed(() => (
+  adaptiveSurfaceEnabled.value || surfaceStore.mode === 'FULLSCREEN_MOBILE'
+    ? surfaceStore.mode
+    : 'DOCKED_RIGHT'
+))
 const feedbackFactoryId = computed(() => (
   pageContext.value?.factory_id ?? String(appStore.activeFactoryId)
 ))
 
 function focusableElements() {
-  if (!drawer.value) return []
-  return [...drawer.value.querySelectorAll<HTMLElement>(
+  const drawer = document.querySelector<HTMLElement>('#ai-assistant-drawer')
+  if (!drawer) return []
+  return [...drawer.querySelectorAll<HTMLElement>(
     'button:not([disabled]), a[href], textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
   )].filter((element) => !element.hasAttribute('hidden') && element.getAttribute('aria-hidden') !== 'true')
 }
@@ -83,6 +93,7 @@ async function openDrawer() {
   if (!isEligible.value) return
   await assistantStore.loadCapabilities(true)
   if (!isVisible.value) return
+  surfaceStore.open()
   assistantStore.openDrawer()
   void nextTick(() => composer.value?.focus())
 }
@@ -91,23 +102,32 @@ function closeDrawer(restoreFocus = true) {
   if (!assistantStore.isOpen) return
   attachmentTray.value?.clear()
   assistantStore.closeDrawer()
+  surfaceStore.minimize()
   if (restoreFocus && isVisible.value) {
-    void nextTick(() => trigger.value?.focus())
+    void nextTick(() => document.querySelector<HTMLButtonElement>('#ai-assistant-trigger')?.focus())
   }
+}
+
+function minimizeDrawer() {
+  if (!assistantStore.isOpen) return
+  assistantStore.minimizeDrawer()
+  surfaceStore.minimize()
+  void nextTick(() => document.querySelector<HTMLButtonElement>('#ai-assistant-trigger')?.focus())
 }
 
 function handleDrawerKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault()
     event.stopPropagation()
-    closeDrawer()
+    minimizeDrawer()
     return
   }
+  if (surfaceStore.mode !== 'FULLSCREEN_MOBILE') return
   if (event.key !== 'Tab') return
   const elements = focusableElements()
   if (!elements.length) {
     event.preventDefault()
-    drawer.value?.focus()
+    document.querySelector<HTMLElement>('#ai-assistant-drawer')?.focus()
     return
   }
   const first = elements[0]
@@ -169,6 +189,16 @@ async function sendMessage(prompt: string) {
       return
     }
     let conversationId = assistantStore.activeConversationId
+    const contextBindingEnabled = assistantStore.capabilities?.conversation_context_enabled === true
+    if (conversationPersistenceEnabled.value && conversationId) {
+      const detail = conversationsStore.active?.id === conversationId
+        ? conversationsStore.active
+        : await conversationsStore.open(conversationId)
+      if (context?.factory_id && detail.factory_scope !== context.factory_id) {
+        assistantStore.clearConversation()
+        conversationId = null
+      }
+    }
     if (conversationPersistenceEnabled.value && !conversationId) {
       const created = await conversationsStore.create({
         mode: 'PERSISTENT',
@@ -178,6 +208,14 @@ async function sendMessage(prompt: string) {
       const detail = await conversationsStore.open(created.id)
       assistantStore.bindConversation(detail.id, detail.mode, detail.messages)
       conversationId = detail.id
+    }
+    if (contextBindingEnabled && conversationId && conversationsStore.active) {
+      const storedContext = pageContextFromConversation(
+        conversationsStore.active.context_binding,
+      )
+      if (JSON.stringify(storedContext) !== JSON.stringify(context)) {
+        await conversationsStore.setContext(context)
+      }
     }
     composer.value?.clear()
     await assistantStore.sendMessage(
@@ -271,9 +309,9 @@ watch(() => route.fullPath, () => attachmentTray.value?.resetConsent())
 watch(() => appStore.activeFactoryId, () => attachmentTray.value?.resetConsent())
 
 watch(
-  () => assistantStore.isOpen,
-  (open) => {
-    if (open) {
+  [() => assistantStore.isOpen, effectiveSurfaceMode],
+  ([open, mode]) => {
+    if (open && mode === 'FULLSCREEN_MOBILE') {
       releaseDrawerScrollLock ??= acquireBodyScrollLock()
       return
     }
@@ -282,74 +320,70 @@ watch(
   },
 )
 
+function handleViewportChange() {
+  surfaceStore.syncViewport()
+}
+
+onMounted(() => {
+  surfaceStore.hydrate()
+  window.addEventListener('resize', handleViewportChange)
+})
+
 onBeforeUnmount(() => {
   attachmentTray.value?.clear()
   assistantStore.resetForSession()
   releaseDrawerScrollLock?.()
   releaseDrawerScrollLock = null
+  window.removeEventListener('resize', handleViewportChange)
 })
 </script>
 
 <template>
   <Teleport to="body">
-    <button
+    <AiEdgeHandle
       v-if="isVisible && !assistantStore.isOpen"
-      id="ai-assistant-trigger"
-      ref="trigger"
-      type="button"
-      class="ai-assistant-trigger fixed bottom-5 right-4 z-[85] inline-flex h-12 items-center gap-2 rounded-2xl bg-slate-950 px-4 text-sm font-semibold text-white shadow-[0_18px_48px_rgba(15,23,42,0.28)] transition hover:-translate-y-0.5 hover:bg-sky-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600 sm:bottom-6 sm:right-6"
-      aria-haspopup="dialog"
-      aria-controls="ai-assistant-drawer"
-      :aria-expanded="assistantStore.isOpen"
-      @click="openDrawer"
-    >
-      <Sparkles class="size-4" aria-hidden="true" />
-      AI 助手
-    </button>
+      :side="surfaceStore.edgeSide"
+      :y="surfaceStore.edgeY"
+      :busy="assistantStore.isStreaming"
+      :movable="adaptiveSurfaceEnabled"
+      @move="surfaceStore.setEdgeY"
+      @open="openDrawer"
+    />
 
-    <Transition name="ai-drawer">
-      <div
+    <Transition name="ai-surface">
+      <AiSurfaceWindow
         v-if="isVisible && assistantStore.isOpen"
-        class="fixed inset-0 z-[90] bg-slate-950/35 backdrop-blur-[1px]"
-        role="presentation"
-        @mousedown.self="closeDrawer()"
+        :mode="effectiveSurfaceMode"
+        :geometry="surfaceStore.geometry"
+        :dock-width="surfaceStore.dockWidth"
+        :close-label="assistantStore.activeConversationMode === 'PERSISTENT'
+          ? '关闭 AI 助手'
+          : '关闭 AI 助手并清空对话'"
+        :adaptive-enabled="adaptiveSurfaceEnabled"
+        @mode="surfaceStore.setMode"
+        @geometry="surfaceStore.setGeometry"
+        @dock-width="surfaceStore.setDockWidth"
+        @minimize="minimizeDrawer"
+        @close="closeDrawer()"
+        @paste="handleFileTransfer"
+        @dragover="handleDragOver"
+        @drop="handleFileTransfer"
+        @keydown="handleDrawerKeydown"
       >
-        <aside
-          id="ai-assistant-drawer"
-          ref="drawer"
-          class="absolute inset-0 flex min-h-0 flex-col bg-slate-50 shadow-2xl outline-none sm:inset-y-0 sm:left-auto sm:w-[min(430px,100vw)] sm:border-l sm:border-slate-200"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="ai-assistant-title"
-          aria-describedby="ai-assistant-description"
-          tabindex="-1"
-          @paste="handleFileTransfer"
-          @dragover="handleDragOver"
-          @drop="handleFileTransfer"
-          @keydown="handleDrawerKeydown"
-        >
-          <header class="flex shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 py-3.5 sm:px-5">
-            <span class="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-white" aria-hidden="true">
-              <Bot class="size-5" />
+        <template #identity>
+          <div class="flex items-center gap-2">
+            <span class="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground" aria-hidden="true">
+              <Bot class="size-4" />
             </span>
-            <div class="min-w-0 flex-1">
+            <div class="min-w-0">
               <h2 id="ai-assistant-title" class="text-sm font-bold text-slate-950">Nexus AI 助手</h2>
               <p id="ai-assistant-description" class="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
                 <ShieldCheck class="size-3 text-emerald-600" aria-hidden="true" />
                 仅访问当前账号已授权的信息
               </p>
             </div>
-            <button
-              type="button"
-              class="flex size-9 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600"
-              :aria-label="assistantStore.activeConversationMode === 'PERSISTENT'
-                ? '关闭 AI 助手'
-                : '关闭 AI 助手并清空对话'"
-              @click="closeDrawer()"
-            >
-              <X class="size-4" aria-hidden="true" />
-            </button>
-          </header>
+          </div>
+        </template>
 
           <div
             v-if="conversationPersistenceEnabled"
@@ -383,14 +417,12 @@ onBeforeUnmount(() => {
 
           <AiMessageList
             :messages="assistantStore.messages"
+            :turns="assistantStore.turns"
             :feedback-enabled="assistantStore.capabilities?.feedback_enabled === true"
             :factory-id="feedbackFactoryId"
+            :rich-text-enabled="assistantStore.capabilities?.rich_message_renderer_enabled === true"
+            :presentation-enabled="assistantStore.capabilities?.presentation_blocks_enabled === true"
           >
-            <AiToolActivity :items="assistantStore.activities" />
-            <AiBusinessResultCard
-              :results="assistantStore.businessResults"
-              :sources="assistantStore.sources"
-            />
             <div
               v-if="assistantStore.lastError || assistantStore.canRetry"
               class="mx-4 mt-2 rounded-xl border px-3 py-2 text-xs leading-5 sm:mx-5"
@@ -431,42 +463,26 @@ onBeforeUnmount(() => {
             @cancel="assistantStore.cancelActiveRequest"
             @send="sendMessage"
           />
-        </aside>
-      </div>
+      </AiSurfaceWindow>
     </Transition>
   </Teleport>
 </template>
 
 <style scoped>
-.ai-drawer-enter-active,
-.ai-drawer-leave-active {
-  transition: opacity 180ms ease;
+.ai-surface-enter-active,
+.ai-surface-leave-active {
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.ai-drawer-enter-active aside,
-.ai-drawer-leave-active aside {
-  transition: transform 220ms ease;
-}
-
-.ai-drawer-enter-from,
-.ai-drawer-leave-to {
+.ai-surface-enter-from,
+.ai-surface-leave-to {
   opacity: 0;
-}
-
-.ai-drawer-enter-from aside,
-.ai-drawer-leave-to aside {
-  transform: translateX(100%);
+  scale: 0.98;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ai-drawer-enter-active,
-  .ai-drawer-leave-active,
-  .ai-drawer-enter-active aside,
-  .ai-drawer-leave-active aside {
-    transition: none;
-  }
-
-  .ai-assistant-trigger {
+  .ai-surface-enter-active,
+  .ai-surface-leave-active {
     transition: none;
   }
 }

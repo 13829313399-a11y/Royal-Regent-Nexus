@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.schemas.ai.task import AITaskState, AITaskStepState
 from app.services.ai.task_state_machine import (
     STEP_TRANSITIONS,
@@ -30,6 +31,11 @@ def test_waiting_approval_is_reserved_and_unreachable() -> None:
         AITaskState.WAITING_APPROVAL not in targets
         for targets in TASK_TRANSITIONS.values()
     )
+
+
+def test_queued_tasks_can_be_cancelled_before_worker_claim() -> None:
+    assert AITaskState.CANCELLING in TASK_TRANSITIONS[AITaskState.CREATED]
+    assert AITaskState.CANCELLING in TASK_TRANSITIONS[AITaskState.UNDERSTOOD]
 
 
 def test_step_state_machine_accepts_only_the_declared_edges() -> None:

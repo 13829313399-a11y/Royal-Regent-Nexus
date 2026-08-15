@@ -30,13 +30,13 @@ from app.services.ai.actions.gateway import (
     get_proposal,
     reject_proposal,
 )
-from app.services.ai.pilot_guard import AIPilotGuard, AIPilotGuardError
+from app.services.ai.pilot_guard import AIPilotGuardError, build_pilot_guard
 from app.services.auth import AuthContext, get_current_user
 
 router = APIRouter(prefix="/api/ai/action-confirmations", tags=["ai-actions"])
 gateway_router = APIRouter(prefix="/api/ai/actions", tags=["ai-action-gateway"])
 action_registry = build_default_action_registry()
-action_pilot_guard = AIPilotGuard()
+action_pilot_guard = build_pilot_guard()
 
 DbSession = Annotated[Session, Depends(get_db)]
 CurrentUser = Annotated[AuthContext, Depends(get_current_user)]

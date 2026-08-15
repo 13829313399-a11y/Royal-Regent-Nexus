@@ -10,6 +10,8 @@ const apiMocks = vi.hoisted(() => ({
   deleteAIConversation: vi.fn(),
   getAIConversation: vi.fn(),
   listAIConversations: vi.fn(),
+  listAIContextOptions: vi.fn(),
+  setAIConversationContext: vi.fn(),
   getAITaskCapabilities: vi.fn(),
 }))
 
@@ -25,6 +27,8 @@ vi.mock('@/api/aiConversations', async (importOriginal) => ({
   deleteAIConversation: apiMocks.deleteAIConversation,
   getAIConversation: apiMocks.getAIConversation,
   listAIConversations: apiMocks.listAIConversations,
+  listAIContextOptions: apiMocks.listAIContextOptions,
+  setAIConversationContext: apiMocks.setAIConversationContext,
 }))
 
 vi.mock('@/api/aiTasks', async (importOriginal) => ({
@@ -33,6 +37,8 @@ vi.mock('@/api/aiTasks', async (importOriginal) => ({
 }))
 
 import type { AuthMeResponse } from '@/api/auth'
+import AiMessageList from '@/features/ai-assistant/AiMessageList.vue'
+import AiComposer from '@/features/ai-assistant/AiComposer.vue'
 import { router as applicationRouter } from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import AiWorkbenchView from '../workbench/AiWorkbenchView.vue'
@@ -50,6 +56,19 @@ const listItem = {
   expires_at: null,
   message_count: 2,
   last_message_at: '2026-08-12T08:02:00+08:00',
+  pinned_at: null,
+  archived_at: null,
+  context_binding: {
+    factory_scope: 'huaxing',
+    module_id: 'injection-scheduling' as const,
+    route_name: 'injection-scheduling-v2' as const,
+    path: '/modules/production/injection-scheduling' as const,
+    context_version: 1,
+    selected_entity_type: '',
+    selected_entity_id: '',
+    selected_entity_revision: null,
+    updated_at: '2026-08-12T08:02:00+08:00',
+  },
 }
 
 const detail = {
@@ -111,6 +130,11 @@ function capabilities() {
     streaming: true,
     vision_enabled: false,
     conversation_persistence: true,
+    rich_message_renderer_enabled: true,
+    presentation_blocks_enabled: true,
+    workbench_v2_enabled: true,
+    conversation_context_enabled: true,
+    feedback_enabled: true,
     tool_groups: ['module_help'],
     pilot_access: { granted: true, status: 'GRANTED' as const, read_only: true },
   }
@@ -149,6 +173,15 @@ beforeEach(() => {
     worker_enabled: false,
   })
   apiMocks.listAIConversations.mockResolvedValue({ items: [listItem], next_cursor: null })
+  apiMocks.listAIContextOptions.mockResolvedValue([{
+    factory_scope: 'huaxing',
+    module_id: 'injection-scheduling',
+    route_name: 'injection-scheduling-v2',
+    path: '/modules/production/injection-scheduling',
+    display_label: '注塑排产',
+    tool_groups: ['identity', 'injection_scheduling'],
+    maximum_risk: 'PREVIEW_WITH_AUDIT',
+  }])
   apiMocks.getAIConversation.mockResolvedValue(detail)
   vi.stubGlobal('matchMedia', vi.fn(() => ({
     matches: false,
@@ -184,6 +217,10 @@ describe('NIF-06 AI Workbench', () => {
     expect(wrapper.get('[data-safe-stage-summary]').text()).toContain('安全阶段摘要（非权威）')
     expect(wrapper.text()).toContain('scheduling.plan_context')
     expect(wrapper.text()).toContain('每次打开都按当前权限重新验证')
+    expect(wrapper.findComponent(AiMessageList).props()).toMatchObject({
+      feedbackEnabled: true,
+      factoryId: 'huaxing',
+    })
     wrapper.unmount()
   })
 
@@ -198,6 +235,29 @@ describe('NIF-06 AI Workbench', () => {
 
     expect(wrapper.text()).not.toContain('恢复后的问题')
     expect(wrapper.text()).toContain('会话不可访问')
+    wrapper.unmount()
+  })
+
+  it('continues from Workbench with the persisted business context instead of null', async () => {
+    apiMocks.streamAIResponse.mockResolvedValue({
+      type: 'response.completed',
+      payload: {},
+    })
+    const { wrapper } = await mountWorkbench()
+
+    wrapper.findComponent(AiComposer).vm.$emit('send', '继续查看待排订单')
+    await flushPromises()
+
+    expect(apiMocks.streamAIResponse).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId,
+      pageContext: {
+        route_name: 'injection-scheduling-v2',
+        path: '/modules/production/injection-scheduling',
+        factory_id: 'huaxing',
+        module_id: 'injection-scheduling',
+        selected_entity: null,
+      },
+    }))
     wrapper.unmount()
   })
 })
