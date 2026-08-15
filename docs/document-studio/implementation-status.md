@@ -4,7 +4,7 @@ Current repository status after Milestones 0–7 and the repository-side Phase 5
 
 ## Implemented
 
-- One five-tab Document Studio shell for PDF-to-Excel, PDF-to-Word, Word-to-PDF, PDF translation and PDF split. The existing synchronous tools remain the fallback for the original three PDF tools.
+- One five-tab Document Studio shell for PDF-to-Excel, PDF-to-Word, Word-to-PDF, PDF translation and PDF split. All five default to authenticated request-time local processing; governed Document Jobs are an explicit AI-enhanced option rather than a prerequisite.
 - Closed preflight, job, snapshot, page/block/table/cell evidence, quality, review-patch, event, result and operational-metric contracts. The façade reuses AI Task and AI Artifact; it does not add a second task table or state machine.
 - A fixed six-step Task plan: inspect, extract, reconcile, review, render and verify. Task/plan/input/Snapshot hashes bind human review, and an accepted review resumes the same Task.
 - Native extraction and local OCR evidence, page-level Qwen OCR selection and 50-page chunking, an isolated `qwen3.5-ocr` Responses `input_file` provider, exact signed-file host/TTL/hash/size validation and lease revocation.
@@ -12,7 +12,7 @@ Current repository status after Milestones 0–7 and the repository-side Phase 5
 - Evidence-aware Excel output with source mapping, conservative/smart type inference and table/page/same-schema worksheet strategies.
 - Editable and layout-preserving PDF-to-Word modes.
 - Offline bidirectional PDF translation for blocks and table cells, protected-token preservation, one-to-one unit validation, overflow review, translated-only/side-by-side/stacked PDF layouts and optional editable DOCX packaging.
-- Word-to-PDF in the AI Task Worker through a temporary-profile LibreOffice subprocess. DOCX validation rejects corruption, macros and external relationships; production activation additionally requires an attested no-network namespace command. CPU, address-space, output-size, file-descriptor and wall-clock limits are applied on Linux, fonts are preflighted, the result PDF is validated and low-resolution page rendering records blank-page counts without rejecting intentional blank pages.
+- Word-to-PDF through a temporary-profile LibreOffice safe-mode subprocess. The request-time route rejects corruption, macros and external relationships and applies CPU, address-space, output-size, file-descriptor and wall-clock limits on Linux; governed Task activation additionally requires an attested no-network namespace command. Fonts are preflighted, the result PDF is validated and low-resolution rendering records blank-page counts without rejecting intentional blank pages.
 - Frontend source/result PDF preview, per-tool settings, explicit Beijing Qwen consent, issue-by-issue human review, authorized history, quality summary, sequential batches of up to ten files and four common configuration templates.
 - Operational aggregation for success rate, review rate, P50/P95 duration, cloud-page count and average quality confidence.
 

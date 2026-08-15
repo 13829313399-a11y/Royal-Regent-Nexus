@@ -21,6 +21,7 @@ from app.schemas.document_studio import (
     DocumentSnapshot,
     DocumentTable,
 )
+from app.services import pdf_translation as local_pdf_translation
 from app.services.document_studio.extractors.qwen_ocr import enhance_snapshot_with_qwen
 from app.services.document_studio.pipelines import pdf_to_excel as excel_pipeline
 from app.services.document_studio.pipelines.pdf_to_word import (
@@ -220,6 +221,51 @@ def test_pdf_translation_includes_table_cells_in_one_to_one_units() -> None:
     assert "0012" in values[0]
 
 
+def test_local_pdf_translation_reuses_pipeline_without_task_runtime(monkeypatch) -> None:
+    source_pdf = _pdf_bytes()
+    monkeypatch.setattr(
+        local_pdf_translation,
+        "extract_local_snapshot",
+        lambda **_kwargs: _snapshot(),
+    )
+    monkeypatch.setattr(
+        local_pdf_translation,
+        "render_pdf_translation",
+        lambda **_kwargs: (b"translated-pdf", "order_translated.pdf", "application/pdf"),
+    )
+
+    result = local_pdf_translation.convert_pdf_translation(
+        source_pdf,
+        "order.pdf",
+        settings=Settings(_env_file=None),
+        requested_direction="ZH_TO_EN",
+        protected_tokens=("PO-001",),
+        translator=lambda values, _direction: [
+            value.replace("订单", "Order").replace("数量", "Quantity")
+            for value in values
+        ],
+    )
+
+    assert result.content == b"translated-pdf"
+    assert result.output_file_name == "order_translated.pdf"
+    assert result.page_count == 1
+    assert result.translated_unit_count == 1
+    assert result.ocr_page_count == 0
+
+
+def test_local_pdf_translation_rejects_more_than_80_pages() -> None:
+    with pytest.raises(
+        local_pdf_translation.PdfTranslationConversionError,
+        match="单次最多翻译 80 页",
+    ):
+        local_pdf_translation.convert_pdf_translation(
+            _pdf_bytes(81),
+            "large.pdf",
+            settings=Settings(_env_file=None),
+            translator=lambda values, _direction: list(values),
+        )
+
+
 def test_office_renderer_uses_temporary_profile_and_validates_output(
     monkeypatch,
 ) -> None:
@@ -229,8 +275,10 @@ def test_office_renderer_uses_temporary_profile_and_validates_output(
     document.save(source)
     monkeypatch.setattr(office_pdf_renderer.shutil, "which", lambda _value: "libreoffice")
     monkeypatch.setattr(office_pdf_renderer, "_validate_fonts", lambda _value: None)
+    captured_command: list[str] = []
 
     def run(command, **_kwargs):
+        captured_command.extend(command)
         output_dir = Path(command[command.index("--outdir") + 1])
         (output_dir / "source.pdf").write_bytes(_pdf_bytes())
         assert any(value.startswith("-env:UserInstallation=file:") for value in command)
@@ -247,6 +295,8 @@ def test_office_renderer_uses_temporary_profile_and_validates_output(
     assert result.blank_page_count == 1
     assert result.output_file_name == "订单_转换结果.pdf"
     assert len(PdfReader(BytesIO(result.content)).pages) == 1
+    assert "--safe-mode" in captured_command
+    assert "--norestore" in captured_command
 
 
 def test_office_font_preflight_fails_with_stable_code(monkeypatch) -> None:

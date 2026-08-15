@@ -23,7 +23,7 @@ export const DOCUMENT_TOOLS: readonly DocumentToolDefinition[] = [
     description: '生成适合分发的 PDF 文档',
     accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     extensionLabel: 'DOCX',
-    available: false,
+    available: true,
   },
   {
     id: 'pdf-translation',
@@ -31,7 +31,7 @@ export const DOCUMENT_TOOLS: readonly DocumentToolDefinition[] = [
     description: '翻译文档并保留可复核证据',
     accept: '.pdf,application/pdf',
     extensionLabel: 'PDF',
-    available: false,
+    available: true,
   },
   {
     id: 'pdf-split',

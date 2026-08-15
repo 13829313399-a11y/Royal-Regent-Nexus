@@ -4,7 +4,7 @@ Use this runbook only after the repository checks in `implementation-status.md` 
 
 ## 1. Keep kill switches off
 
-Start with Document Studio, cloud OCR, reconciliation and Office rendering disabled. Confirm the existing synchronous PDF and Office-document translation routes remain healthy.
+Start with governed Document Studio, cloud OCR and reconciliation disabled. Confirm all five request-time local document routes plus Office-document translation remain healthy; their availability must not depend on AI Pilot, Artifact, Task Worker or ClamAV flags.
 
 ## 2. Validate governed Task prerequisites
 

@@ -2,15 +2,22 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createSharedToolsApi,
   DOCUMENT_TRANSLATION_TIMEOUT_MS,
+  PDF_TRANSLATION_TIMEOUT_MS,
   PDF_SPLIT_TIMEOUT_MS,
   PDF_TO_EXCEL_TIMEOUT_MS,
   PDF_TO_WORD_TIMEOUT_MS,
+  WORD_TO_PDF_TIMEOUT_MS,
 } from '@/api/tools'
 
 
 describe('shared tools api', () => {
   it('allows document translation requests to wait for 30 minutes', () => {
     expect(DOCUMENT_TRANSLATION_TIMEOUT_MS).toBe(30 * 60 * 1000)
+    expect(PDF_TRANSLATION_TIMEOUT_MS).toBe(30 * 60 * 1000)
+    expect(PDF_TO_EXCEL_TIMEOUT_MS).toBe(15 * 60 * 1000)
+    expect(PDF_TO_WORD_TIMEOUT_MS).toBe(15 * 60 * 1000)
+    expect(WORD_TO_PDF_TIMEOUT_MS).toBe(5 * 60 * 1000)
+    expect(PDF_SPLIT_TIMEOUT_MS).toBe(5 * 60 * 1000)
   })
 
   it('uploads one Office document with the selected translation direction', async () => {
@@ -224,6 +231,64 @@ describe('shared tools api', () => {
     expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_TO_WORD_TIMEOUT_MS })
     expect(result.fileName).toBe('订单_转换结果.docx')
     expect(result.metrics).toEqual({ pageCount: 4, tableCount: 1, imageCount: 3, textPageCount: 2, ocrPageCount: 2 })
+  })
+
+  it('converts one Word document to PDF without the Document Job runtime', async () => {
+    const blob = new Blob(['pdf'], { type: 'application/pdf' })
+    const post = vi.fn().mockResolvedValue({
+      data: blob,
+      headers: {
+        'content-disposition': "attachment; filename*=UTF-8''%E8%AE%A2%E5%8D%95_%E8%BD%AC%E6%8D%A2%E7%BB%93%E6%9E%9C.pdf",
+        'x-word-page-count': '3',
+        'x-word-blank-page-count': '1',
+      },
+    })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['docx'], '订单.docx')
+
+    const result = await api.convertWordToPdf(file)
+
+    const [url, payload, config] = post.mock.calls[0]!
+    expect(url).toBe('/tools/word-to-pdf')
+    expect((payload as FormData).get('document_file')).toBe(file)
+    expect(config).toMatchObject({ responseType: 'blob', timeout: WORD_TO_PDF_TIMEOUT_MS })
+    expect(result).toMatchObject({ fileName: '订单_转换结果.pdf', pageCount: 3, blankPageCount: 1 })
+  })
+
+  it('translates one PDF locally with layout and protected-token options', async () => {
+    const blob = new Blob(['translated'], { type: 'application/pdf' })
+    const post = vi.fn().mockResolvedValue({
+      data: blob,
+      headers: {
+        'content-disposition': "attachment; filename*=UTF-8''order_translated.pdf",
+        'x-pdf-page-count': '2',
+        'x-translation-unit-count': '18',
+        'x-pdf-ocr-page-count': '1',
+      },
+    })
+    const api = createSharedToolsApi({ post })
+    const file = new File(['%PDF-test'], 'order.pdf', { type: 'application/pdf' })
+
+    const result = await api.translatePdf(file, {
+      direction: 'ZH_TO_EN',
+      layout: 'SIDE_BY_SIDE',
+      protectedTokens: ['PO-001', '0012'],
+      includeEditableDocx: false,
+    })
+
+    const [url, payload, config] = post.mock.calls[0]!
+    expect(url).toBe('/tools/pdf-translation')
+    expect((payload as FormData).get('pdf_file')).toBe(file)
+    expect((payload as FormData).get('direction')).toBe('ZH_TO_EN')
+    expect((payload as FormData).get('layout')).toBe('SIDE_BY_SIDE')
+    expect((payload as FormData).get('protected_tokens')).toBe('["PO-001","0012"]')
+    expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_TRANSLATION_TIMEOUT_MS })
+    expect(result).toMatchObject({
+      fileName: 'order_translated.pdf',
+      pageCount: 2,
+      translatedUnitCount: 18,
+      ocrPageCount: 1,
+    })
   })
 
   it('submits split mode and page ranges then returns ZIP metadata', async () => {
