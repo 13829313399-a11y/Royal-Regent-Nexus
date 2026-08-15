@@ -469,6 +469,26 @@ _DETAIL_FIELDS = {
 }
 
 
+def _row_has_total_marker(ws, row_no: int, max_col: int) -> bool:
+    return any(
+        isinstance(ws.cell(row_no, col_no).value, str)
+        and not ws.cell(row_no, col_no).value.startswith("=")
+        and _normalise(ws.cell(row_no, col_no).value) in _TOTAL_MARKERS
+        for col_no in range(1, max_col + 1)
+    )
+
+
+def _nearest_total_row(ws, header_row: int, before_row: int, max_col: int) -> int | None:
+    return next(
+        (
+            row_no
+            for row_no in range(min(before_row, ws.max_row or before_row), header_row, -1)
+            if _row_has_total_marker(ws, row_no, max_col)
+        ),
+        None,
+    )
+
+
 def _find_append_row(
     ws,
     header_row: int,
@@ -847,6 +867,11 @@ def append_records_to_workbook(
     new_row_font_color: str = "",
     group_key_factory: Callable[[Mapping[str, Any]], str] | None = None,
     group_row_values_factory: Callable[[Mapping[str, Any], int], Mapping[int, Any]] | None = None,
+    group_total_key_factory: Callable[[Mapping[str, Any]], str] | None = None,
+    group_total_row_values_factory: Callable[
+        [Sequence[Mapping[str, Any]], int, int, int, Mapping[int, str]],
+        Mapping[int, Any],
+    ] | None = None,
     first_total_section: bool = False,
 ) -> dict[str, Any]:
     """Copy the complete workbook and insert new detail rows before its total row.
@@ -893,11 +918,40 @@ def append_records_to_workbook(
             )
         style_row = _representative_data_row(target, header_row, append_row, max_col, column_map)
         inheritance = inherit_product_names(target, header_row, column_map, rows)
-        grouped_layout: list[tuple[str, dict[str, Any]]] = []
+        grouped_layout: list[tuple[str, Any]] = []
         group_style_row: int | None = None
+        group_total_style_row: int | None = None
         group_merges: list[CellRange] = []
         group_count = 0
-        if group_key_factory or group_row_values_factory:
+        group_total_count = 0
+        if group_total_key_factory or group_total_row_values_factory:
+            if group_key_factory or group_row_values_factory:
+                raise ValueError("分组标题行和分组合计行不能同时启用")
+            if not group_total_key_factory or not group_total_row_values_factory:
+                raise ValueError("分组合计行需要同时提供分组键和合计行写入规则")
+            group_total_style_row = _nearest_total_row(
+                target,
+                header_row,
+                append_row,
+                max_col,
+            )
+            if group_total_style_row is None:
+                group_total_style_row = style_row
+            if append_row <= (target.max_row or append_row) and _row_has_total_marker(
+                target,
+                append_row,
+                max_col,
+            ):
+                append_row += 1
+            grouped_records: dict[str, list[dict[str, Any]]] = {}
+            for index, record in enumerate(rows):
+                key = str(group_total_key_factory(record) or "").strip() or f"__row_{index}"
+                grouped_records.setdefault(key, []).append(record)
+            for grouped_rows in grouped_records.values():
+                grouped_layout.extend(("detail", record) for record in grouped_rows)
+                grouped_layout.append(("total", grouped_rows))
+            group_total_count = len(grouped_records)
+        elif group_key_factory or group_row_values_factory:
             if not group_key_factory or not group_row_values_factory:
                 raise ValueError("分组标题行需要同时提供分组键和标题行写入规则")
             group_style_row, group_merges = _nearest_group_title_row(
@@ -954,11 +1008,17 @@ def append_records_to_workbook(
                     )
 
             pending_group_rows: list[int] = []
-            for offset, (row_kind, record) in enumerate(grouped_layout):
+            for offset, (row_kind, payload) in enumerate(grouped_layout):
                 row_no = append_row + offset
-                source_row = group_style_row if row_kind == "group" else style_row
+                source_row = (
+                    group_style_row
+                    if row_kind == "group"
+                    else group_total_style_row
+                    if row_kind == "total"
+                    else style_row
+                )
                 if source_row is None:
-                    raise ValueError("当前排期没有可复用的分组标题行")
+                    raise ValueError("当前排期没有可复用的分组行")
                 source_dimension = target.row_dimensions[source_row]
                 if source_dimension.height:
                     target.row_dimensions[row_no].height = source_dimension.height
@@ -979,13 +1039,30 @@ def append_records_to_workbook(
                         font.color = new_row_font_color
                         destination.font = font
                 if row_kind == "group":
-                    values = group_row_values_factory(record, row_no)
+                    values = group_row_values_factory(payload, row_no)
                     if not isinstance(values, Mapping):
                         raise ValueError("分组标题行写入规则必须返回列号到值的映射")
                     for col_no, value in values.items():
                         target.cell(row_no, int(col_no)).value = _safe_value(value)
                     pending_group_rows.append(row_no)
                     continue
+                if row_kind == "total":
+                    grouped_rows = payload
+                    group_end_row = row_no - 1
+                    group_start_row = group_end_row - len(grouped_rows) + 1
+                    values = group_total_row_values_factory(
+                        grouped_rows,
+                        group_start_row,
+                        group_end_row,
+                        row_no,
+                        column_map,
+                    )
+                    if not isinstance(values, Mapping):
+                        raise ValueError("分组合计行写入规则必须返回列号到值的映射")
+                    for col_no, value in values.items():
+                        target.cell(row_no, int(col_no)).value = _safe_value(value)
+                    continue
+                record = payload
                 for col_no, field in column_map.items():
                     cell = target.cell(row_no, col_no)
                     # A template formula is authoritative for calculated fields.
@@ -1048,11 +1125,13 @@ def append_records_to_workbook(
             "header_row": header_row,
             "style_row": style_row,
             "group_style_row": group_style_row,
+            "group_total_style_row": group_total_style_row,
             "insert_row": append_row,
             "section_total_row": section_total_row,
             "reused_blank_rows": min(len(grouped_layout), reusable_blank_rows),
             "rows": len(rows),
             "group_rows": group_count,
+            "group_total_rows": group_total_count,
             "inserted_rows": len(grouped_layout),
             "mapped_columns": {str(col): field for col, field in column_map.items()},
             "inheritance": inheritance,
