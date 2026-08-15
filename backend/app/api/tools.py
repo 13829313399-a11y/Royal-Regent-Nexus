@@ -30,6 +30,10 @@ from app.services.ai.provider_factory import (
 )
 from app.services.ai.providers import ProviderError
 from app.services.auth import AuthContext, get_current_user
+from app.services.document_studio.renderers.office_pdf_renderer import (
+    OfficePdfRenderError,
+    render_docx_to_pdf,
+)
 from app.services.document_translation import (
     DocumentTranslationError,
     DocumentTranslationUnavailableError,
@@ -39,6 +43,10 @@ from app.services.document_translation import (
 from app.services.pdf_split import PdfSplitError, split_pdf
 from app.services.pdf_to_excel import PdfToExcelConversionError, convert_pdf_to_excel
 from app.services.pdf_to_word import PdfToWordConversionError, convert_pdf_to_word
+from app.services.pdf_translation import (
+    PdfTranslationConversionError,
+    convert_pdf_translation,
+)
 
 router = APIRouter(prefix="/api/tools")
 translation_logger = logging.getLogger("app.tools.document_translation")
@@ -82,6 +90,13 @@ async def _read_office_document(document_file: UploadFile) -> tuple[bytes, str]:
         raise HTTPException(status_code=413, detail="单个 Office 文档不可超过 20MB。")
     if not document_bytes.startswith(b"PK"):
         raise HTTPException(status_code=400, detail="文件内容不是有效的 Office 文档。")
+    return document_bytes, file_name
+
+
+async def _read_word_document(document_file: UploadFile) -> tuple[bytes, str]:
+    document_bytes, file_name = await _read_office_document(document_file)
+    if Path(file_name).suffix.lower() != ".docx":
+        raise HTTPException(status_code=400, detail="Word 转 PDF 只支持上传 .docx 文件。")
     return document_bytes, file_name
 
 
@@ -511,6 +526,98 @@ async def pdf_to_word(
             "X-PDF-Table-Count": str(result.table_count),
             "X-PDF-Image-Count": str(result.image_count),
             "X-PDF-Text-Page-Count": str(result.text_page_count),
+            "X-PDF-OCR-Page-Count": str(result.ocr_page_count),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/word-to-pdf")
+async def word_to_pdf(
+    document_file: Annotated[UploadFile, File()],
+    _current_user: Annotated[AuthContext, Depends(get_current_user)],
+):
+    document_bytes, file_name = await _read_word_document(document_file)
+    try:
+        result = await run_in_threadpool(
+            render_docx_to_pdf,
+            document_bytes,
+            file_name,
+            command=settings.document_office_renderer_command,
+            timeout_seconds=settings.document_office_renderer_timeout_seconds,
+            # The synchronous tool already rejects macros/external relationships,
+            # uses LibreOffice safe mode and a disposable profile, and applies
+            # subprocess resource limits. Reuse an attested network namespace when
+            # present, without making the full Document Job gate a prerequisite.
+            network_isolation_command=(
+                settings.document_office_renderer_network_isolation_command
+                if settings.document_office_renderer_network_isolation_verified
+                else None
+            ),
+        )
+    except OfficePdfRenderError as exc:
+        status_code = 503 if exc.retryable or exc.code.endswith("UNAVAILABLE") else 422
+        raise HTTPException(status_code=status_code, detail=exc.public_message) from exc
+
+    return Response(
+        content=result.content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(result.output_file_name)}",
+            "X-Word-Page-Count": str(result.page_count),
+            "X-Word-Blank-Page-Count": str(result.blank_page_count),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/pdf-translation")
+async def pdf_translation(
+    pdf_file: Annotated[UploadFile, File()],
+    _current_user: Annotated[AuthContext, Depends(get_current_user)],
+    direction: Annotated[str, Form()] = "AUTO",
+    layout: Annotated[str, Form()] = "TRANSLATED_ONLY",
+    protected_tokens: Annotated[str, Form()] = "[]",
+    include_editable_docx: Annotated[bool, Form()] = False,
+):
+    pdf_bytes, file_name = await _read_pdf(pdf_file)
+    try:
+        parsed_tokens = json.loads(protected_tokens)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="保护词参数格式不正确。") from exc
+    if (
+        not isinstance(parsed_tokens, list)
+        or len(parsed_tokens) > 100
+        or any(
+            not isinstance(token, str) or len(token) > 200
+            for token in parsed_tokens
+        )
+    ):
+        raise HTTPException(status_code=400, detail="保护词参数格式不正确。")
+
+    try:
+        result = await run_in_threadpool(
+            convert_pdf_translation,
+            pdf_bytes,
+            file_name,
+            settings=settings,
+            requested_direction=direction,
+            layout=layout,
+            protected_tokens=tuple(
+                dict.fromkeys(token.strip() for token in parsed_tokens if token.strip())
+            ),
+            include_editable_docx=include_editable_docx,
+        )
+    except PdfTranslationConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return Response(
+        content=result.content,
+        media_type=result.media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(result.output_file_name)}",
+            "X-PDF-Page-Count": str(result.page_count),
+            "X-Translation-Unit-Count": str(result.translated_unit_count),
             "X-PDF-OCR-Page-Count": str(result.ocr_page_count),
             "Cache-Control": "no-store",
         },

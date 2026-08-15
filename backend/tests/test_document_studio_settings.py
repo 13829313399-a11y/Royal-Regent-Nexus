@@ -1,7 +1,11 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_document_studio_flags_are_default_off() -> None:
@@ -20,6 +24,19 @@ def test_document_studio_flags_are_default_off() -> None:
     assert settings.ai_document_ocr_max_concurrency == 2
     assert settings.ai_document_signed_url_ttl_seconds == 300
     assert settings.document_office_renderer_command == "libreoffice"
+
+
+def test_backend_image_contains_local_document_conversion_dependencies() -> None:
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile.backend").read_text(encoding="utf-8")
+
+    for package in (
+        "libreoffice-writer",
+        "fonts-noto-cjk",
+        "tesseract-ocr-eng",
+        "tesseract-ocr-chi-sim",
+        "tesseract-ocr-chi-tra",
+    ):
+        assert package in dockerfile
 
 
 @pytest.mark.parametrize(

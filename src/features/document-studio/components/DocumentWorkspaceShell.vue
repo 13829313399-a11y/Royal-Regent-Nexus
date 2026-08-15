@@ -90,6 +90,9 @@ const taskRuntimeAvailable = computed(() => Boolean(
   jobCapabilities.value?.available
   && jobCapabilities.value.supported_job_types.includes(documentJobTypeForTool(props.toolId)),
 ))
+const useTaskRuntime = computed(() => Boolean(
+  taskRuntimeAvailable.value && processingMode.value === 'AI_ENHANCED',
+))
 const effectiveToolAvailable = computed(() => tool.value.available || taskRuntimeAvailable.value)
 const workspaceTool = computed(() => ({ ...tool.value, available: effectiveToolAvailable.value }))
 const canStart = computed(() => Boolean(
@@ -233,7 +236,7 @@ async function runConversion() {
   resultSummary.value = []
 
   try {
-    if (taskRuntimeAvailable.value) {
+    if (useTaskRuntime.value) {
       if (
         currentJob.value?.task_id
         && previousState === 'FAILED'
@@ -311,6 +314,33 @@ async function runConversion() {
         `${result.metrics.ocrPageCount} 个 OCR 页`,
       ]
     }
+    else if (props.toolId === 'word-to-pdf') {
+      const result = await sharedToolsApi.convertWordToPdf(file)
+      resultBlob.value = result.blob
+      resultFileName.value = result.fileName
+      resultSummary.value = [
+        `${result.pageCount} 页`,
+        result.blankPageCount ? `${result.blankPageCount} 个空白页` : '未发现空白页',
+      ]
+    }
+    else if (props.toolId === 'pdf-translation') {
+      const result = await sharedToolsApi.translatePdf(file, {
+        direction: translationDirection.value,
+        layout: translationLayout.value,
+        protectedTokens: protectedTokens.value
+          .split(/[\n,]/)
+          .map(item => item.trim())
+          .filter(Boolean),
+        includeEditableDocx: includeEditableDocx.value,
+      })
+      resultBlob.value = result.blob
+      resultFileName.value = result.fileName
+      resultSummary.value = [
+        `${result.pageCount} 页`,
+        `${result.translatedUnitCount} 个翻译单元`,
+        `${result.ocrPageCount} 个 OCR 页`,
+      ]
+    }
     else if (props.toolId === 'pdf-split') {
       const result = await sharedToolsApi.splitPdf(file, {
         mode: splitMode.value,
@@ -322,6 +352,11 @@ async function runConversion() {
     }
 
     if (!resultBlob.value) throw new Error('当前工具尚未接入处理器。')
+    if (resultBlob.value.type === 'application/pdf') {
+      if (resultPreviewUrl.value) URL.revokeObjectURL(resultPreviewUrl.value)
+      resultPreviewUrl.value = URL.createObjectURL(resultBlob.value)
+      previewPane.value = 'result'
+    }
     downloadToolBlob(resultBlob.value, resultFileName.value)
     state.value = 'COMPLETED'
     await advanceBatch()
@@ -625,7 +660,10 @@ onBeforeUnmount(() => {
             <h2 class="text-sm font-semibold text-slate-950">处理设置</h2>
           </div>
           <div class="space-y-5 p-5">
-            <label class="block text-xs font-semibold text-slate-700">
+            <label
+              v-if="toolId === 'pdf-translation' || (useTaskRuntime && (toolId === 'pdf-to-excel' || toolId === 'pdf-to-word'))"
+              class="block text-xs font-semibold text-slate-700"
+            >
               常用配置模板
               <select v-model="settingsPreset" class="mt-2 h-9 w-full rounded-lg border border-slate-300 bg-white px-2 text-xs">
                 <option value="STANDARD">标准保守</option>
@@ -639,12 +677,14 @@ onBeforeUnmount(() => {
               <div class="mt-2 rounded-xl border border-teal-200 bg-teal-50 p-3">
                 <div class="flex items-center gap-2 text-sm font-semibold text-teal-900">
                   <LockKeyhole class="size-4" aria-hidden="true" />
-                  {{ taskRuntimeAvailable ? '可恢复文档任务' : '本地确定性处理' }}
+                  {{ useTaskRuntime ? 'AI 增强文档任务' : '本地确定性处理' }}
                 </div>
                 <p class="mt-1.5 text-xs leading-5 text-teal-800/80">
-                  {{ taskRuntimeAvailable
+                  {{ useTaskRuntime
                     ? `源文件进入受控 Artifact，固定 Task 步骤生成派生结果；云 OCR ${jobCapabilities?.cloud_ocr_available ? '可选且需明确同意' : '未配置'}。`
-                    : 'Document Job 未开放时沿用现有同步接口；AI 增强与云 OCR 保持关闭。' }}
+                    : taskRuntimeAvailable
+                      ? '默认使用不持久化的本地同步接口；只有明确选择 AI 增强时才进入 Artifact / Task。'
+                      : '使用不持久化的本地同步接口；AI 增强与云 OCR 保持关闭。' }}
                 </p>
               </div>
             </div>
@@ -676,7 +716,7 @@ onBeforeUnmount(() => {
               </label>
             </div>
 
-            <div v-if="toolId === 'pdf-to-excel'">
+            <div v-if="toolId === 'pdf-to-excel' && useTaskRuntime">
               <label class="block text-xs font-semibold text-slate-700">
                 工作表策略
                 <select v-model="sheetStrategy" class="mt-2 h-9 w-full rounded-lg border border-slate-300 bg-white px-2 text-xs">
@@ -694,7 +734,7 @@ onBeforeUnmount(() => {
               </label>
             </div>
 
-            <div v-if="toolId === 'pdf-to-word'">
+            <div v-if="toolId === 'pdf-to-word' && useTaskRuntime">
               <p class="text-xs font-semibold text-slate-700">输出模式</p>
               <div class="mt-2 grid grid-cols-2 gap-2">
                 <button type="button" class="rounded-lg border px-2 py-2 text-xs font-semibold" :class="wordMode === 'EDITABLE' ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-200 text-slate-600'" @click="wordMode = 'EDITABLE'">可编辑</button>
@@ -763,7 +803,7 @@ onBeforeUnmount(() => {
             <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-600">
               <strong class="font-semibold text-slate-800">兼容边界</strong>
               <p class="mt-1">
-                {{ taskRuntimeAvailable
+                {{ useTaskRuntime
                   ? '任务复用现有 AI Task / Artifact；结果下载时重新鉴权，源文件保持不变。'
                   : '当前操作完成后直接下载新文件，不写入虚构任务历史。' }}
               </p>

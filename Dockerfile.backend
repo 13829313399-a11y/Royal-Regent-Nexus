@@ -21,6 +21,8 @@ RUN apt-get update \
         fonts-noto-cjk \
         python3-uno \
         tesseract-ocr \
+        tesseract-ocr-chi-sim \
+        tesseract-ocr-chi-tra \
         tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --upgrade pip \

@@ -6,9 +6,11 @@ import {
 } from '@/api/aiArtifacts'
 
 
-export const PDF_TO_EXCEL_TIMEOUT_MS = 180_000
-export const PDF_TO_WORD_TIMEOUT_MS = 180_000
-export const PDF_SPLIT_TIMEOUT_MS = 60_000
+export const PDF_TO_EXCEL_TIMEOUT_MS = 900_000
+export const PDF_TO_WORD_TIMEOUT_MS = 900_000
+export const WORD_TO_PDF_TIMEOUT_MS = 300_000
+export const PDF_TRANSLATION_TIMEOUT_MS = 1_800_000
+export const PDF_SPLIT_TIMEOUT_MS = 300_000
 export const DOCUMENT_TRANSLATION_TIMEOUT_MS = 1_800_000
 
 export type DocumentTranslationDirection = 'zh_to_en' | 'en_to_zh'
@@ -70,6 +72,28 @@ export interface PdfSplitResult {
   fileName: string
   pageCount: number
   fileCount: number
+}
+
+export interface WordToPdfResult {
+  blob: Blob
+  fileName: string
+  pageCount: number
+  blankPageCount: number
+}
+
+export interface PdfTranslationOptions {
+  direction: 'AUTO' | 'ZH_TO_EN' | 'EN_TO_ZH'
+  layout: 'TRANSLATED_ONLY' | 'SIDE_BY_SIDE' | 'STACKED'
+  protectedTokens?: string[]
+  includeEditableDocx?: boolean
+}
+
+export interface PdfTranslationResult {
+  blob: Blob
+  fileName: string
+  pageCount: number
+  translatedUnitCount: number
+  ocrPageCount: number
 }
 
 export interface SharedToolsHttpClient {
@@ -286,6 +310,61 @@ export function createSharedToolsApi(
             textPageCount: headerCount(response.headers, 'x-pdf-text-page-count'),
             ocrPageCount: headerCount(response.headers, 'x-pdf-ocr-page-count'),
           },
+        }
+      }
+      catch (error) {
+        return parseBlobError(error)
+      }
+    },
+
+    async convertWordToPdf(documentFile: File): Promise<WordToPdfResult> {
+      const payload = new FormData()
+      payload.append('document_file', documentFile)
+      const fallbackFileName = `${documentFile.name.replace(/\.docx$/i, '') || 'Word文档'}_转换结果.pdf`
+
+      try {
+        const response = await client.post<Blob>('/tools/word-to-pdf', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: WORD_TO_PDF_TIMEOUT_MS,
+        })
+        return {
+          blob: response.data,
+          fileName: responseFileName(response.headers, fallbackFileName),
+          pageCount: headerCount(response.headers, 'x-word-page-count'),
+          blankPageCount: headerCount(response.headers, 'x-word-blank-page-count'),
+        }
+      }
+      catch (error) {
+        return parseBlobError(error)
+      }
+    },
+
+    async translatePdf(
+      pdfFile: File,
+      options: PdfTranslationOptions,
+    ): Promise<PdfTranslationResult> {
+      const payload = new FormData()
+      payload.append('pdf_file', pdfFile)
+      payload.append('direction', options.direction)
+      payload.append('layout', options.layout)
+      payload.append('protected_tokens', JSON.stringify(options.protectedTokens ?? []))
+      payload.append('include_editable_docx', String(options.includeEditableDocx ?? false))
+      const suffix = options.includeEditableDocx ? '.zip' : '.pdf'
+      const fallbackFileName = `${pdfFile.name.replace(/\.pdf$/i, '') || 'PDF文件'}_translated${suffix}`
+
+      try {
+        const response = await client.post<Blob>('/tools/pdf-translation', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: PDF_TRANSLATION_TIMEOUT_MS,
+        })
+        return {
+          blob: response.data,
+          fileName: responseFileName(response.headers, fallbackFileName),
+          pageCount: headerCount(response.headers, 'x-pdf-page-count'),
+          translatedUnitCount: headerCount(response.headers, 'x-translation-unit-count'),
+          ocrPageCount: headerCount(response.headers, 'x-pdf-ocr-page-count'),
         }
       }
       catch (error) {

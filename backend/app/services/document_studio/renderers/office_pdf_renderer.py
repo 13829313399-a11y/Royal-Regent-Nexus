@@ -119,10 +119,10 @@ def _requested_fonts(content: bytes) -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
-def _installed_fonts() -> frozenset[str]:
+def _installed_fonts() -> frozenset[str] | None:
     executable = shutil.which("fc-list")
     if executable is None:
-        return frozenset()
+        return None
     completed = subprocess.run(
         [executable, "--format=%{family}\n"],
         check=False,
@@ -131,7 +131,7 @@ def _installed_fonts() -> frozenset[str]:
         timeout=15,
     )
     if completed.returncode != 0:
-        return frozenset()
+        return None
     return frozenset(
         family.strip().casefold()
         for line in completed.stdout.splitlines()
@@ -145,6 +145,8 @@ def _validate_fonts(content: bytes) -> None:
     if not requested:
         return
     installed = _installed_fonts()
+    if installed is None:
+        return
     missing = []
     for font in requested:
         normalized = font.casefold()
@@ -191,18 +193,22 @@ def render_docx_to_pdf(
     *,
     command: str,
     timeout_seconds: int = 120,
-    network_isolation_command: str = "unshare",
+    network_isolation_command: str | None = "unshare",
 ) -> OfficePdfRenderResult:
     _validate_docx(content)
-    _validate_fonts(content)
     executable = shutil.which(command)
     if executable is None:
         raise OfficePdfRenderError(
             "DOCUMENT_OFFICE_RENDERER_UNAVAILABLE",
             "受限 Office 渲染器未安装。",
         )
-    isolation_executable = shutil.which(network_isolation_command)
-    if os.name != "nt" and isolation_executable is None:
+    _validate_fonts(content)
+    isolation_executable = (
+        shutil.which(network_isolation_command)
+        if network_isolation_command
+        else None
+    )
+    if os.name != "nt" and network_isolation_command and isolation_executable is None:
         raise OfficePdfRenderError(
             "DOCUMENT_OFFICE_RENDERER_UNAVAILABLE",
             "Office 渲染器缺少无外网隔离命令。",
@@ -227,8 +233,10 @@ def render_docx_to_pdf(
             office_command = [
                     executable,
                     "--headless",
+                    "--safe-mode",
                     "--nologo",
                     "--nodefault",
+                    "--norestore",
                     "--nolockcheck",
                     "--nofirststartwizard",
                     f"-env:UserInstallation={profile_url}",
