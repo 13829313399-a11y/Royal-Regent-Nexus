@@ -14,11 +14,11 @@ from typing import Any, BinaryIO, Iterable
 from openpyxl import Workbook, load_workbook
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles.numbers import is_date_format
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.worksheet.cell_range import CellRange
 
 from .new_order_excel import (
-    _copy_style,
     _extend_subtotal_to_previous_row,
     _rewrite_formula_for_insert,
     _shift_target_sheet_structures,
@@ -355,7 +355,6 @@ _ITEM_COMPLETE_FIELDS = (
     "quantity", "unit_price_usd", "unit_price_hkd", "total_hkd", "total_usd",
     "factory_unit_price_hkd", "factory_total_hkd",
 )
-_IDENTIFIER_FIELDS = {"so_no", "contract_no", "item_no", "date_code"}
 
 
 def _sheet_by_names(workbook, names: Iterable[str]):
@@ -455,6 +454,38 @@ def _last_business_row(
     return header_row
 
 
+def _font_is_blue(cell) -> bool:
+    color = cell.font.color
+    if color is None or color.type != "rgb":
+        return False
+    rgb = str(color.rgb or "").upper()
+    return rgb[-6:] == "0000FF"
+
+
+def _normal_style_row(
+    workbook,
+    data_workbook,
+    ws,
+    header_row: int,
+    last_row: int,
+    columns: dict[str, list[int]],
+) -> int:
+    """Prefer the latest ordinary data row over a blue exception row."""
+    mapped_columns = sorted({column for matches in columns.values() for column in matches})
+    for row in range(last_row, header_row, -1):
+        if not _row_has_business_content(workbook, data_workbook, ws, row, columns):
+            continue
+        populated = [
+            ws.cell(row, column)
+            for column in mapped_columns
+            if _effective_value(workbook, data_workbook, ws.title, row, column)
+            not in (None, "", "-")
+        ]
+        if populated and not any(_font_is_blue(cell) for cell in populated):
+            return row
+    return max(header_row + 1, last_row)
+
+
 def _field_is_present(
     workbook,
     data_workbook,
@@ -538,14 +569,23 @@ def _copy_template_row(
     formula_row: int,
 ) -> None:
     source_dimension = ws.row_dimensions[style_row]
-    if source_dimension.height:
-        ws.row_dimensions[target_row].height = source_dimension.height
+    target_dimension = ws.row_dimensions[target_row]
+    target_dimension.height = source_dimension.height
+    target_dimension.hidden = source_dimension.hidden
+    target_dimension.outlineLevel = source_dimension.outlineLevel
+    target_dimension.collapsed = source_dimension.collapsed
+    target_dimension.thickTop = source_dimension.thickTop
+    target_dimension.thickBot = source_dimension.thickBot
     for column in range(1, (ws.max_column or 1) + 1):
         style_source = ws.cell(style_row, column)
         formula_source = ws.cell(formula_row, column)
         destination = ws.cell(target_row, column)
         destination.value = None
-        _copy_style(style_source, destination)
+        # A reserved blank row can already carry a different style. Replace the
+        # complete style array even when the source cell uses Excel's default
+        # style so the inserted order is visually identical to the ordinary
+        # historical order row selected above.
+        destination._style = copy(style_source._style)
         if isinstance(formula_source.value, str) and formula_source.value.startswith("="):
             try:
                 destination.value = Translator(
@@ -554,9 +594,6 @@ def _copy_template_row(
                 ).translate_formula(destination.coordinate)
             except (TypeError, ValueError):
                 destination.value = formula_source.value
-        font = copy(destination.font)
-        font.color = "0000FF"
-        destination.font = font
 
 
 def _allocate_rows(
@@ -569,7 +606,14 @@ def _allocate_rows(
     columns = _header_columns(ws, header_row)
     total_row = _find_total_row(workbook, data_workbook, ws, header_row)
     last_row = _last_business_row(workbook, data_workbook, ws, header_row, total_row, columns)
-    style_row = max(header_row + 1, last_row)
+    style_row = _normal_style_row(
+        workbook,
+        data_workbook,
+        ws,
+        header_row,
+        last_row,
+        columns,
+    )
     formula_row = _complete_formula_row(
         workbook,
         data_workbook,
@@ -616,17 +660,10 @@ def _preferred_column(columns: dict[str, list[int]], field: str) -> int | None:
     return matches[0] if matches else None
 
 
-def _set_field_format(cell, field: str) -> None:
-    if field in DATE_FIELDS:
-        cell.number_format = "yyyy-mm-dd"
-    elif field in _IDENTIFIER_FIELDS:
-        cell.number_format = "@"
-    elif field in {"quantity", "case_pack", "cartons"}:
-        cell.number_format = "#,##0.##"
-    elif field in {"unit_price_usd", "unit_price_hkd", "factory_unit_price_hkd"}:
-        cell.number_format = "0.0000"
-    elif field in {"total_usd", "total_hkd", "factory_total_hkd"}:
-        cell.number_format = "#,##0.00"
+def _set_value_preserving_style(cell, value: Any) -> None:
+    style = copy(cell._style)
+    cell.value = value
+    cell._style = style
 
 
 def _write_item_row(ws, row: int, record: dict[str, Any], columns: dict[str, list[int]]) -> None:
@@ -639,8 +676,15 @@ def _write_item_row(ws, row: int, record: dict[str, Any], columns: dict[str, lis
         selected_columns = target_columns[:1] if field == "memo" else target_columns
         value = _excel_record_value(field, record.get(field))
         for column in selected_columns:
-            cell = ws.cell(row, column, value)
-            _set_field_format(cell, field)
+            cell = ws.cell(row, column)
+            cell_value = value
+            if (
+                field in DATE_FIELDS
+                and isinstance(value, datetime)
+                and not is_date_format(cell.number_format)
+            ):
+                cell_value = value.strftime("%Y-%m-%d")
+            _set_value_preserving_style(cell, cell_value)
 
     quantity_column = _preferred_column(columns, "quantity")
     pack_column = _preferred_column(columns, "case_pack")
@@ -651,40 +695,41 @@ def _write_item_row(ws, row: int, record: dict[str, Any], columns: dict[str, lis
     if quantity_column and pack_column and cartons_column:
         fallback = record.get("cartons")
         fallback_text = str(float(fallback)) if fallback not in (None, "") else '""'
-        ws.cell(row, cartons_column).value = (
+        _set_value_preserving_style(ws.cell(row, cartons_column), (
             f"=IFERROR({get_column_letter(quantity_column)}{row}/"
             f"{get_column_letter(pack_column)}{row},{fallback_text})"
-        )
-        _set_field_format(ws.cell(row, cartons_column), "cartons")
+        ))
     if quantity_column and hkd_column:
         for column in columns.get("total_hkd", ()):
-            ws.cell(row, column).value = (
+            _set_value_preserving_style(ws.cell(row, column), (
                 f"={get_column_letter(quantity_column)}{row}*{get_column_letter(hkd_column)}{row}"
-            )
-            _set_field_format(ws.cell(row, column), "total_hkd")
+            ))
     if quantity_column and usd_column:
         for column in columns.get("total_usd", ()):
-            ws.cell(row, column).value = (
+            _set_value_preserving_style(ws.cell(row, column), (
                 f"={get_column_letter(quantity_column)}{row}*{get_column_letter(usd_column)}{row}"
-            )
-            _set_field_format(ws.cell(row, column), "total_usd")
+            ))
     if factory_unit_column:
         factory_value = record.get("factory_unit_price_hkd")
         cell = ws.cell(row, factory_unit_column)
         if factory_value not in (None, ""):
-            cell.value = factory_value
+            _set_value_preserving_style(cell, factory_value)
         elif usd_column:
-            cell.value = f"={get_column_letter(usd_column)}{row}*{EXCHANGE_RATE}"
-        _set_field_format(cell, "factory_unit_price_hkd")
+            _set_value_preserving_style(
+                cell,
+                f"={get_column_letter(usd_column)}{row}*{EXCHANGE_RATE}",
+            )
     if quantity_column and factory_unit_column:
         for column in columns.get("factory_total_hkd", ()):
             cell = ws.cell(row, column)
             factory_total = record.get("factory_total_hkd")
-            cell.value = factory_total if factory_total not in (None, "") else (
-                f"={get_column_letter(factory_unit_column)}{row}*"
-                f"{get_column_letter(quantity_column)}{row}"
+            _set_value_preserving_style(
+                cell,
+                factory_total if factory_total not in (None, "") else (
+                    f"={get_column_letter(factory_unit_column)}{row}*"
+                    f"{get_column_letter(quantity_column)}{row}"
+                ),
             )
-            _set_field_format(cell, "factory_total_hkd")
 
 
 def _write_linked_row(
@@ -702,11 +747,10 @@ def _write_linked_row(
         if source_column is None:
             continue
         for column in target_columns:
-            cell = ws.cell(row, column)
-            cell.value = (
-                f"='{escaped_sheet}'!{get_column_letter(source_column)}{item_row}"
+            _set_value_preserving_style(
+                ws.cell(row, column),
+                f"='{escaped_sheet}'!{get_column_letter(source_column)}{item_row}",
             )
-            _set_field_format(cell, field)
 
 
 def _create_template_export(

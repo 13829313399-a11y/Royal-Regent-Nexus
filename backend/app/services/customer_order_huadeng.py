@@ -1086,6 +1086,25 @@ def _export_prepared(
             ))
             for field, title in simba_schedule.FIELD_TITLES.items()
         }
+
+        def item_total_values(
+            _records: list[dict[str, Any]],
+            start_row: int,
+            end_row: int,
+            _total_row: int,
+            column_map: dict[int, str],
+        ) -> dict[int, Any]:
+            field_columns = {field: column for column, field in column_map.items()}
+            name_column = field_columns["product_name"]
+            quantity_column = field_columns["quantity"]
+            quantity_letter = get_column_letter(quantity_column)
+            return {
+                name_column: "合计：",
+                quantity_column: (
+                    f"=SUM({quantity_letter}{start_row}:{quantity_letter}{end_row})"
+                ),
+            }
+
         append_records_to_workbook(
             schedule_content,
             output_path,
@@ -1093,6 +1112,8 @@ def _export_prepared(
             aliases,
             filename=schedule_file_name,
             sheet_names=(prepared.sheet_name,),
+            group_total_key_factory=lambda record: _text(record.get("item_no")).upper(),
+            group_total_row_values_factory=item_total_values,
         )
         return
     append_records_to_workbook(

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
@@ -751,6 +752,95 @@ def create_huaxing_customer_preview(
     }
 
 
+def _append_records_across_sheets(
+    *,
+    schedule_content: bytes,
+    schedule_file_name: str,
+    output_path: Path,
+    aliases: dict[str, list[str]] | dict[str, tuple[str, ...]],
+    targets: list[tuple[str, list[dict[str, Any]], bool]],
+    formula_fallback_fields: tuple[str, ...] = (),
+) -> None:
+    """Apply several linked-sheet appends to one complete workbook copy."""
+    current_content = schedule_content
+    current_filename = schedule_file_name
+    working_suffix = ".xlsm" if Path(schedule_file_name).suffix.lower() == ".xlsm" else ".xlsx"
+    for sheet_name, records, first_total_section in targets:
+        if not records:
+            continue
+        output = BytesIO()
+        new_order_excel.append_records_to_workbook(
+            current_content,
+            output,
+            records,
+            aliases,
+            filename=current_filename,
+            sheet_names=(sheet_name,),
+            formula_fallback_fields=formula_fallback_fields,
+            first_total_section=first_total_section,
+        )
+        current_content = output.getvalue()
+        current_filename = f"working{working_suffix}"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(current_content)
+
+
+_SEASONS_ITEM_TO_ORDER_SHEET = {
+    "吹气系列ITEM表": "吹气、PU接单表",
+    "面具ITEM表": "面具接单表",
+    "骷髅ITEM表": "骷髅接单表",
+    "其它款ITEM": "其它接单表",
+    "工具系列ITEM表": "其它接单表",
+}
+
+
+def _seasons_lane_records(
+    schedule_content: bytes,
+    schedule_file_name: str,
+    records: list[dict[str, Any]],
+    aliases: dict[str, list[str]],
+) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    """Resolve each SEASONS item to its existing order/ITEM schedule lane."""
+    workbook = new_order_excel.load_complete_workbook_compatible(
+        schedule_content,
+        filename=schedule_file_name,
+    )
+    try:
+        lane_items: dict[str, set[str]] = {}
+        for item_sheet in _SEASONS_ITEM_TO_ORDER_SHEET:
+            if item_sheet not in workbook.sheetnames:
+                continue
+            worksheet = workbook[item_sheet]
+            header_row, column_map = new_order_excel.detect_header(worksheet, aliases)
+            item_column = next(
+                (column for column, field in column_map.items() if field == "item_no"),
+                None,
+            )
+            if item_column is None:
+                continue
+            lane_items[item_sheet] = {
+                re.sub(r"[^A-Z0-9]", "", _text(worksheet.cell(row, item_column).value).upper())
+                for row in range(header_row + 1, (worksheet.max_row or header_row) + 1)
+                if _text(worksheet.cell(row, item_column).value)
+            }
+
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for record in records:
+            item_key = re.sub(r"[^A-Z0-9]", "", _text(record.get("item_no")).upper())
+            matches = [sheet for sheet, items in lane_items.items() if item_key and item_key in items]
+            if len(matches) != 1:
+                raise HuaxingCustomerOrderError(
+                    f"{record.get('item_no') or '未知货号'}：无法在 SEASONS ITEM 表中唯一确定写入区域"
+                )
+            grouped[matches[0]].append(record)
+        return [
+            (item_sheet, _SEASONS_ITEM_TO_ORDER_SHEET[item_sheet], grouped_records)
+            for item_sheet, grouped_records in grouped.items()
+        ]
+    finally:
+        workbook.close()
+
+
 def _export_prepared(
     *, customer_code: str, prepared: PreparedBatch, schedule_file_name: str,
     schedule_content: bytes, output_path: Path,
@@ -763,13 +853,16 @@ def _export_prepared(
             ))
             for field, title in edu_schedule.FIELD_TITLES.items()
         }
-        new_order_excel.append_records_to_workbook(
-            schedule_content,
-            output_path,
-            rows,
-            aliases,
-            filename=schedule_file_name,
-            sheet_names=(prepared.sheet_name,),
+        _append_records_across_sheets(
+            schedule_content=schedule_content,
+            schedule_file_name=schedule_file_name,
+            output_path=output_path,
+            aliases=aliases,
+            targets=[
+                (prepared.sheet_name, rows, False),
+                ("正单评审表", rows, False),
+                ("接单表", rows, False),
+            ],
         )
         return
     if customer_code == "360":
@@ -794,15 +887,28 @@ def _export_prepared(
             aliases.setdefault(field, []).append(label)
         for field, label in shixin_schedule.EXPORT_FIELDS:
             aliases.setdefault(field, []).append(label)
-        new_order_excel.append_records_to_workbook(
+        rows = [dict(record) for record in prepared.records]
+        lanes = _seasons_lane_records(
             schedule_content,
-            output_path,
-            prepared.records,
+            schedule_file_name,
+            rows,
             aliases,
-            filename=schedule_file_name,
-            sheet_names=shixin_schedule.SEASONS_SHEETS,
+        )
+        targets: list[tuple[str, list[dict[str, Any]], bool]] = [
+            (shixin_schedule.SEASONS_SHEETS[0], rows, True),
+        ]
+        for item_sheet, order_sheet, lane_rows in lanes:
+            targets.extend([
+                (item_sheet, lane_rows, False),
+                (order_sheet, lane_rows, False),
+            ])
+        _append_records_across_sheets(
+            schedule_content=schedule_content,
+            schedule_file_name=schedule_file_name,
+            output_path=output_path,
+            aliases=aliases,
+            targets=targets,
             formula_fallback_fields=("cartons",),
-            first_total_section=True,
         )
         return
     with TemporaryDirectory(prefix=f"huaxing-{customer_code}-export-") as temp_dir:
