@@ -215,10 +215,32 @@ def test_pdf_translation_includes_table_cells_in_one_to_one_units() -> None:
         translator=translator,
     )
 
-    assert len(received) == 2
+    assert received == []
     values = [cell.normalized_value for cell in result.pages[0].tables[0].cells]
-    assert values[0].startswith("Translated ")
-    assert "0012" in values[0]
+    assert values == ["0012", "42.00"]
+
+
+def test_pdf_translation_keeps_protected_values_out_of_model_payload() -> None:
+    received = []
+
+    def translator(values, direction):
+        assert direction == "en_to_zh"
+        received.extend(values)
+        return [
+            value.replace("Purchase order", "采购订单").replace("Quantity", "数量")
+            for value in values
+        ]
+
+    result = translate_snapshot(
+        _snapshot("Purchase order PO-001. Quantity 12."),
+        settings=Settings(_env_file=None),
+        requested_direction="EN_TO_ZH",
+        protected_tokens=(),
+        translator=translator,
+    )
+
+    assert received == ["Purchase order", ". Quantity"]
+    assert result.pages[0].blocks[0].normalized_text == "采购订单 PO-001. 数量 12."
 
 
 def test_local_pdf_translation_reuses_pipeline_without_task_runtime(monkeypatch) -> None:
