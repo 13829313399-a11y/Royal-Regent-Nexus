@@ -1,3 +1,4 @@
+from copy import copy
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
@@ -13,7 +14,9 @@ from PIL import Image
 from app.services.customer_order_huaxing import (
     HUAXING_CUSTOMER_MAPPINGS,
     HuaxingCustomerOrderError,
+    PreparedBatch,
     _dedupe_multi_orders,
+    _export_prepared,
     _issues,
     _record_fields,
     _validate_skips,
@@ -62,6 +65,91 @@ def test_edu_inspection_date_is_seven_days_before_ship_date_and_avoids_weekend()
 
     assert row["inspection_date"] == "2026-08-07"
     assert row["cartons"] == 10
+
+
+def test_edu_export_synchronizes_item_review_and_order_sheets(tmp_path: Path):
+    workbook = Workbook()
+    item = workbook.active
+    item.title = "Iteam表"
+    item_headers = [
+        "客出单日期", "客人PO", "华兴PO", "是否已入系统", "主合同号",
+        "SO.NO", "客名", "国家", "产品编号", "客货号", "产品名称",
+        "数量", "装箱", "包装", "生产日期码", "客要求走货期",
+    ]
+    for column, value in enumerate(item_headers, 1):
+        item.cell(3, column, value)
+        item.cell(4, column).font = Font(color="000000")
+    item["B4"] = "PO-OLD"
+    item["C4"] = "EDUHX00001"
+    item["I4"] = "ITEM-OLD"
+    item["L4"] = 1
+
+    review = workbook.create_sheet("正单评审表")
+    review_headers = [
+        "客出单日期", "客人PO", "华兴PO", "主合同号", "SO.NO", "客名",
+        "国家", "产品编号", "客货号", "产品名称", "数量", "装箱",
+        "生产日期码", "验货期", "走货期", "单价", "金额HKD",
+    ]
+    for column, value in enumerate(review_headers, 1):
+        review.cell(4, column, value)
+    review["B5"] = "PO-OLD"
+    review["C5"] = "EDUHX00001"
+    review["D5"] = "=VLOOKUP(C5,Iteam表!C:E,3,0)"
+    review["K5"] = "=VLOOKUP(C5,Iteam表!C:L,10,0)"
+
+    order = workbook.create_sheet("接单表")
+    order_headers = [
+        "客出单日期", "客人PO", "华兴PO", "主合同号", "SO.NO", "客名",
+        "国家", "产品编号", "客货号", "产品名称", "数量", "单价", "金额",
+        "客要求走货期",
+    ]
+    for column, value in enumerate(order_headers, 1):
+        order.cell(3, column, value)
+    order["B4"] = "PO-OLD"
+    order["C4"] = "EDUHX00001"
+    order["D4"] = "=VLOOKUP(C4,Iteam表!C:E,3,0)"
+    order["K4"] = "=VLOOKUP(C4,Iteam表!C:L,10,0)"
+    order["L5"] = "合计"
+    order["M5"] = "=SUM(M4:M4)"
+
+    source = BytesIO()
+    workbook.save(source)
+    workbook.close()
+    output_path = tmp_path / "EDU排期_新单.xlsx"
+    record = {
+        "order_date": "2026-08-14",
+        "customer_po": "PO-NEW",
+        "huaxing_po": "EDUHX00002",
+        "contract_no": "SC-NEW",
+        "customer": "EDU UK",
+        "country": "英国",
+        "item_no": "ITEM-NEW",
+        "product_name": "新产品",
+        "quantity": 120,
+        "case_pack": 12,
+        "ship_date": "2026-09-30",
+        "unit_price": 10,
+        "amount": 1200,
+    }
+
+    _export_prepared(
+        customer_code="edu",
+        prepared=PreparedBatch([record], [], "Iteam表"),
+        schedule_file_name="EDU排期.xlsx",
+        schedule_content=source.getvalue(),
+        output_path=output_path,
+    )
+
+    rendered = load_workbook(output_path, data_only=False)
+    assert rendered["Iteam表"]["C5"].value == "EDUHX00002"
+    assert rendered["Iteam表"]["I5"].value == "ITEM-NEW"
+    assert rendered["正单评审表"]["C6"].value == "EDUHX00002"
+    assert rendered["正单评审表"]["D6"].value == "=VLOOKUP(C6,Iteam表!C:E,3,0)"
+    assert rendered["接单表"]["C5"].value == "EDUHX00002"
+    assert rendered["接单表"]["D5"].value == "=VLOOKUP(C5,Iteam表!C:E,3,0)"
+    assert rendered["接单表"]["L6"].value == "合计"
+    assert rendered["接单表"]["M6"].value == "=SUM(M4:M5)"
+    rendered.close()
 
 
 def test_360_date_code_uses_factory_year_and_day_of_year():
@@ -318,7 +406,7 @@ def test_yinhui_scanned_pdf_manual_pack_override_is_written_to_export(monkeypatc
     assert target["X6"].value == "=G6*U6"
     assert target["Y6"].value == "=T6*7.75"
     assert target["Z6"].value == "=Y6*G6"
-    assert target["AF6"].value == datetime(2026, 12, 6)
+    assert target["AF6"].value == "2026-12-06"
     assert target["E8"].value == "合计"
     assert target["G8"].value == "=SUBTOTAL(9,G5:G7)"
 
@@ -410,6 +498,126 @@ def test_yinhui_export_preserves_complete_workbook_and_inserts_before_total(tmp_
     assert rendered["正单评审表"]["E10"].value == "='Iteam表'!E7"
     assert rendered["接单表"]["B6"].value == "='Iteam表'!C6"
     assert rendered["接单表"]["D10"].value == "='Iteam表'!E7"
+    rendered.close()
+
+
+def test_yinhui_export_keeps_source_row_font_color_instead_of_forcing_blue(tmp_path: Path):
+    source_path = tmp_path / "银辉黑字排期.xlsx"
+    output_path = tmp_path / "银辉黑字排期_新单.xlsx"
+    workbook = _make_yinhui_three_sheet_template()
+    for worksheet in workbook.worksheets:
+        for cell in worksheet[5]:
+            font = Font(
+                name=cell.font.name,
+                size=cell.font.size,
+                bold=cell.font.bold,
+                italic=cell.font.italic,
+                color="000000",
+            )
+            cell.font = font
+    workbook.save(source_path)
+    workbook.close()
+
+    yinhui_schedule.create_export(
+        [{
+            "order_date": "2026-08-14",
+            "so_no": "SO-NEW",
+            "contract_no": "PO-NEW",
+            "customer": "新客户",
+            "item_no": "ITEM-NEW",
+            "product_name": "新产品",
+            "quantity": 20,
+            "case_pack": 4,
+            "unit_price_usd": 3,
+        }],
+        output_path,
+        source_path,
+        template_filename=source_path.name,
+    )
+
+    rendered = load_workbook(output_path, data_only=False)
+    source_color = rendered["Iteam表"]["C5"].font.color
+    new_color = rendered["Iteam表"]["C6"].font.color
+    assert source_color.type == new_color.type == "rgb"
+    assert source_color.rgb == new_color.rgb
+    rendered.close()
+
+
+def test_yinhui_export_uses_complete_ordinary_style_when_last_order_is_blue(tmp_path: Path):
+    source_path = tmp_path / "银辉末行蓝字排期.xlsx"
+    output_path = tmp_path / "银辉末行蓝字排期_新单.xlsx"
+    workbook = _make_yinhui_three_sheet_template()
+    for worksheet in workbook.worksheets:
+        worksheet.row_dimensions[5].height = 31.5
+        for column in range(1, worksheet.max_column + 1):
+            ordinary = worksheet.cell(5, column)
+            ordinary.number_format = (
+                "0.000" if column % 2 else "@"
+            )
+            ordinary.font = copy(ordinary.font)
+            ordinary.font = Font(
+                name=ordinary.font.name,
+                size=ordinary.font.size,
+                bold=ordinary.font.bold,
+                italic=ordinary.font.italic,
+                color="000000",
+            )
+        if worksheet.title == "Iteam表":
+            worksheet.unmerge_cells("E6:F6")
+        worksheet.insert_rows(6)
+        if worksheet.title == "Iteam表":
+            worksheet.merge_cells("E7:F7")
+        worksheet.row_dimensions[6].height = worksheet.row_dimensions[5].height
+        for column in range(1, worksheet.max_column + 1):
+            source = worksheet.cell(5, column)
+            destination = worksheet.cell(6, column)
+            destination.value = source.value
+            destination._style = copy(source._style)
+            destination.font = copy(source.font)
+            destination.font = Font(
+                name=destination.font.name,
+                size=destination.font.size,
+                bold=destination.font.bold,
+                italic=destination.font.italic,
+                color="0000FF",
+            )
+    workbook.save(source_path)
+    workbook.close()
+
+    yinhui_schedule.create_export(
+        [{
+            "order_date": "2026-08-14",
+            "so_no": "SO-NEW",
+            "contract_no": "PO-NEW",
+            "customer": "新客户",
+            "item_no": "ITEM-NEW",
+            "product_name": "新产品",
+            "quantity": 20,
+            "case_pack": 4,
+            "unit_price_usd": 3,
+        }],
+        output_path,
+        source_path,
+        template_filename=source_path.name,
+    )
+
+    rendered = load_workbook(output_path, data_only=False)
+    for worksheet in rendered.worksheets:
+        assert worksheet["C6"].font.color.type == "rgb"
+        assert worksheet["C6"].font.color.rgb.endswith("0000FF")
+        assert worksheet.row_dimensions[7].height == worksheet.row_dimensions[5].height
+        for column in range(1, worksheet.max_column + 1):
+            ordinary = worksheet.cell(5, column)
+            inserted = worksheet.cell(7, column)
+            assert inserted.number_format == ordinary.number_format, (
+                f"{worksheet.title}!{inserted.coordinate}: "
+                f"{inserted.number_format!r} != {ordinary.number_format!r}"
+            )
+            assert copy(inserted.font) == copy(ordinary.font)
+            assert copy(inserted.fill) == copy(ordinary.fill)
+            assert copy(inserted.border) == copy(ordinary.border)
+            assert copy(inserted.alignment) == copy(ordinary.alignment)
+            assert copy(inserted.protection) == copy(ordinary.protection)
     rendered.close()
 
 
@@ -749,6 +957,104 @@ def test_seasons_appends_to_reserved_rows_before_first_total_and_stays_in_first_
     rendered.close()
 
 
+def test_seasons_export_synchronizes_review_and_matching_blow_mold_lane(tmp_path: Path):
+    workbook = Workbook()
+    review = workbook.active
+    review.title = "正单评审表"
+    review_headers = [
+        "证书", "客出单日期", "预备单号（OQF NO）", "O/C NO", "PO.NO",
+        "客名/國家", "產品編號", "產品名称", "數量", "装箱", "箱数",
+        "行Q", "客Q", "Q货情况", "客要求走货期", "包装要求", "国家标准",
+        "备注", "生产车间", "上系统", "单价", "金额HKD",
+    ]
+    for column, value in enumerate(review_headers, 1):
+        review.cell(2, column, value)
+    review_row = [
+        None, datetime(2026, 1, 15), "QF-OLD", "ZE-OLD", "PO-OLD",
+        "ALBERTSONS", "W85340", "四层橙色南瓜堆", 50, 1, "=I4/J4",
+        None, None, None, datetime(2026, 4, 22), "客彩贴", "美国标准",
+        "不包电", None, "已上", 288.32, "=I4*U4",
+    ]
+    for column, value in enumerate(review_row, 1):
+        review.cell(4, column, value)
+    review["U6"] = "合计："
+    review["V6"] = "=SUM(V3:V5)"
+
+    order = workbook.create_sheet("吹气、PU接单表")
+    order_headers = [
+        None, "客出单日期", "预备单号（OQF NO）", "O/C NO", "PO.NO",
+        "客名/國家", "產品編號", "產品名称", "數量", "装箱", "单价", "金额",
+        "包装", "備註", "生产车间", "客要求走货期",
+    ]
+    for column, value in enumerate(order_headers, 1):
+        order.cell(2, column, value)
+    for column, value in enumerate([
+        None, datetime(2026, 1, 21), "QF-OLD", "ZE-OLD", "PO-OLD",
+        "ALBERTSONS", "W85340", "四层橙色南瓜堆", 50, 1, 288.32,
+        "=I4*K4", "客彩贴", "不包电", None, datetime(2026, 4, 22),
+    ], 1):
+        order.cell(4, column, value)
+    order["K5"] = "合计"
+    order["L5"] = "=SUM(L4:L4)"
+
+    item = workbook.create_sheet("吹气系列ITEM表")
+    item_headers = [
+        "证书", "客出单日期", "预备单号（OQF NO）", "O/C NO", "PO.NO",
+        "客名/國家", "產品編號", "產品名稱", "數量", "包装", "備註",
+        "生产车间", "客要求走货期",
+    ]
+    for column, value in enumerate(item_headers, 1):
+        item.cell(3, column, value)
+    for column, value in enumerate([
+        None, datetime(2026, 1, 21), "QF-OLD", "ZE-OLD", "PO-OLD",
+        "ALBERTSONS", "W85340", "四层橙色南瓜堆", 50, "客彩贴", "不包电",
+        None, datetime(2026, 4, 22),
+    ], 1):
+        item.cell(4, column, value)
+    item["H5"] = "合计"
+    item["I5"] = "=SUM(I4:I4)"
+
+    source = BytesIO()
+    workbook.save(source)
+    workbook.close()
+    output_path = tmp_path / "SEASONS排期_新单.xlsx"
+    record = {
+        "order_date": "2026-08-14",
+        "oqf_no": "QF16098253",
+        "oc_no": "ZE618957",
+        "po_no": "ZPO1621463",
+        "customer": "ALBERTSONS",
+        "item_no": "W85340",
+        "product_name": "四层橙色南瓜堆",
+        "quantity": 50,
+        "pack_qty": 1,
+        "cartons": 50,
+        "ship_date": "2026-04-22",
+        "packaging": "客彩贴",
+        "standard": "美国标准",
+        "notes": "不包电",
+        "unit_price": 288.32,
+        "amount": 14416,
+    }
+
+    _export_prepared(
+        customer_code="seasons",
+        prepared=PreparedBatch([record], [], "正单评审表"),
+        schedule_file_name="SEASONS排期.xlsx",
+        schedule_content=source.getvalue(),
+        output_path=output_path,
+    )
+
+    rendered = load_workbook(output_path, data_only=False)
+    assert rendered["正单评审表"]["E5"].value == "ZPO1621463"
+    assert rendered["正单评审表"]["V5"].value == "=I5*U5"
+    assert rendered["吹气、PU接单表"]["E5"].value == "ZPO1621463"
+    assert rendered["吹气、PU接单表"]["L5"].value == "=I5*K5"
+    assert rendered["吹气系列ITEM表"]["E5"].value == "ZPO1621463"
+    assert rendered["吹气系列ITEM表"]["G5"].value == "W85340"
+    rendered.close()
+
+
 def test_yinhui_identifiers_are_written_as_text(tmp_path: Path):
     source_path = tmp_path / "银辉排期.xlsx"
     output_path = tmp_path / "银辉排期_新单.xlsx"
@@ -772,7 +1078,7 @@ def test_yinhui_identifiers_are_written_as_text(tmp_path: Path):
     worksheet = rendered["Iteam表"]
     for coordinate in ("B6", "C6", "E6"):
         assert worksheet[coordinate].data_type == "s"
-        assert worksheet[coordinate].number_format == "@"
+        assert worksheet[coordinate].number_format == worksheet[f"{coordinate[0]}5"].number_format
     assert worksheet["I6"].value == '=IFERROR(G6/H6,"")'
     rendered.close()
 

@@ -308,6 +308,100 @@ def test_simba_empty_batch_reports_each_file_parser_failure(monkeypatch) -> None
         )
 
 
+def test_simba_export_adds_one_total_row_after_each_item_group(tmp_path: Path) -> None:
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "2026年排货表"
+    headers = {
+        2: "来单日期",
+        5: "客户PO",
+        6: "合同号",
+        7: "客名",
+        9: "货号",
+        10: "产品名称",
+        11: "数量",
+        13: "外装箱",
+        14: "总箱数",
+    }
+    for column, value in headers.items():
+        worksheet.cell(1, column, value)
+    for column, value in {
+        2: datetime(2026, 7, 1),
+        5: "PO-OLD",
+        6: "OLD/100",
+        7: "SIMBA",
+        9: "ITEM-OLD",
+        10: "旧产品",
+        11: 10,
+        13: 2,
+        14: "=K2/M2",
+    }.items():
+        worksheet.cell(2, column, value)
+    worksheet["J3"] = "合计："
+    worksheet["K3"] = "=SUM(K2:K2)"
+    worksheet["J3"].fill = openpyxl.styles.PatternFill("solid", fgColor="FFF2CC")
+    worksheet["K3"].fill = openpyxl.styles.PatternFill("solid", fgColor="FFF2CC")
+    source = BytesIO()
+    workbook.save(source)
+    workbook.close()
+    output_path = tmp_path / "Simba逐款合计.xlsx"
+
+    records = [
+        {
+            "order_date": "2026-08-14",
+            "customer_po": "PO-A1",
+            "contract_no": "A/100",
+            "customer": "SIMBA",
+            "item_no": "ITEM-A",
+            "product_name": "产品A",
+            "quantity": 12,
+            "outer_pack": 3,
+            "cartons": 4,
+        },
+        {
+            "order_date": "2026-08-14",
+            "customer_po": "PO-A2",
+            "contract_no": "A/200",
+            "customer": "SIMBA",
+            "item_no": "ITEM-A",
+            "product_name": "产品A",
+            "quantity": 18,
+            "outer_pack": 3,
+            "cartons": 6,
+        },
+        {
+            "order_date": "2026-08-14",
+            "customer_po": "PO-B1",
+            "contract_no": "B/100",
+            "customer": "SIMBA",
+            "item_no": "ITEM-B",
+            "product_name": "产品B",
+            "quantity": 20,
+            "outer_pack": 4,
+            "cartons": 5,
+        },
+    ]
+    service._export_prepared(
+        customer_code="simba",
+        prepared=service.PreparedBatch(records, [], "2026年排货表"),
+        schedule_file_name="Simba排期.xlsx",
+        schedule_content=source.getvalue(),
+        output_path=output_path,
+    )
+
+    rendered = openpyxl.load_workbook(output_path, data_only=False)
+    worksheet = rendered["2026年排货表"]
+    assert worksheet["K3"].value == "=SUM(K2:K2)"
+    assert worksheet["I4"].value == worksheet["I5"].value == "ITEM-A"
+    assert worksheet["J6"].value == "合计："
+    assert worksheet["K6"].value == "=SUM(K4:K5)"
+    assert worksheet["I7"].value == "ITEM-B"
+    assert worksheet["J8"].value == "合计："
+    assert worksheet["K8"].value == "=SUM(K7:K7)"
+    assert worksheet["J6"].fill.fgColor.rgb == worksheet["J3"].fill.fgColor.rgb
+    rendered.close()
+
+
 def test_spin_master_uses_independent_schedule_and_composite_dedupe(monkeypatch) -> None:
     monkeypatch.setattr(
         service.spin_master_parser,
