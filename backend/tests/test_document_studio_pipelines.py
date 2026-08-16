@@ -22,6 +22,9 @@ from app.services.document_studio.pipelines.pdf_to_word import (
     convert_pdf_to_layout_preserving_word,
 )
 from app.services.document_studio.pipelines.pdf_translation import translate_snapshot
+from app.services.document_studio.providers import (
+    signed_file_source as signed_file_source_module,
+)
 from app.services.document_studio.providers.qwen_document import (
     QwenDocumentBlock,
     QwenDocumentError,
@@ -37,7 +40,10 @@ from app.services.document_studio.providers.qwen_reconcile import (
     ReconcileResult,
     apply_reconcile_result,
 )
-from app.services.document_studio.providers.signed_file_source import SignedFileLease
+from app.services.document_studio.providers.signed_file_source import (
+    BrokerSignedFileSource,
+    SignedFileLease,
+)
 from app.services.document_studio.renderers import office_pdf_renderer
 from app.services.pdf_to_excel import PdfToExcelResult
 from docx import Document
@@ -440,7 +446,7 @@ def test_qwen_document_provider_uses_responses_file_input_without_storage() -> N
     assert get_document_provider_status(settings).available is True
 
 
-def test_qwen_document_provider_status_rejects_insecure_broker_configuration() -> None:
+def test_qwen_document_provider_status_accepts_explicit_http_broker_configuration() -> None:
     settings = Settings(
         _env_file=None,
         ai_document_cloud_ocr_enabled=True,
@@ -454,8 +460,127 @@ def test_qwen_document_provider_status_rejects_insecure_broker_configuration() -
 
     status = get_document_provider_status(settings)
 
-    assert status.available is False
-    assert status.reason_code == "DOCUMENT_SIGNED_SOURCE_INVALID"
+    assert status.available is True
+    assert status.reason_code == ""
+
+
+def test_qwen_document_provider_uses_inline_images_for_http_broker() -> None:
+    settings = Settings(
+        _env_file=None,
+        ai_document_cloud_ocr_enabled=True,
+        ai_region="cn-beijing",
+        ai_workspace_id="workspace-test",
+        dashscope_api_key="test-secret",
+        ai_document_signed_file_service_url="http://document-broker:8001",
+        ai_document_signed_file_service_token="broker-secret",
+        ai_document_signed_file_allowed_hosts="47.115.217.27",
+    )
+    calls: list[dict[str, object]] = []
+
+    class Responses:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "ocr_result": {
+                                    "processed_text": f"page {len(calls)}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+
+    class Client:
+        responses = Responses()
+
+    class SignedSource:
+        def create(self, **_kwargs):
+            raise AssertionError("HTTP mode must not create a public file lease")
+
+        def revoke(self, _lease):
+            raise AssertionError("HTTP mode must not revoke a lease it did not create")
+
+    result = QwenDocumentProvider(
+        settings,
+        signed_file_source=SignedSource(),
+        client=Client(),
+    ).parse_pdf(
+        artifact_id="aiart-" + "a" * 32,
+        sha256="b" * 64,
+        filename="source.pdf",
+        data=_pdf_bytes(page_count=2),
+        page_count=2,
+    )
+
+    assert [page.page_number for page in result.pages] == [1, 2]
+    assert [page.blocks[0].text for page in result.pages] == ["page 1", "page 2"]
+    assert len(calls) == 2
+    assert all(
+        call["input"][0]["content"][0]["type"] == "input_image"  # type: ignore[index]
+        for call in calls
+    )
+    assert all(
+        call["input"][0]["content"][0]["image_url"].startswith(  # type: ignore[index, union-attr]
+            "data:image/jpeg;base64,"
+        )
+        for call in calls
+    )
+
+
+def test_signed_file_source_accepts_https_lease_from_http_broker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        ai_document_signed_file_service_url="http://document-broker:8001",
+        ai_document_signed_file_service_token="broker-secret",
+        ai_document_signed_file_allowed_hosts="47.115.217.27",
+    )
+    data = b"test-pdf"
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "lease_id": "doclease-" + "1" * 32,
+                "file_url": "https://47.115.217.27/document-leases/source.pdf?token=secret",
+                "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                "sha256": "a" * 64,
+                "size_bytes": len(data),
+            }
+
+    class Client:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def post(self, url: str, **_kwargs) -> Response:
+            assert url == "http://document-broker:8001/leases"
+            return Response()
+
+    monkeypatch.setattr(signed_file_source_module.httpx2, "Client", Client)
+
+    lease = BrokerSignedFileSource(settings).create(
+        artifact_id="aiart-" + "a" * 32,
+        sha256="a" * 64,
+        filename="source.pdf",
+        mime_type="application/pdf",
+        data=data,
+        ttl_seconds=300,
+    )
+
+    assert lease.file_url.startswith("https://47.115.217.27/document-leases/")
 
 
 def test_qwen_document_parser_accepts_single_page_processed_text_only() -> None:

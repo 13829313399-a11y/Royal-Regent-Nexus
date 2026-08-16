@@ -7,7 +7,7 @@ Current repository status after Milestones 0–7 and the repository-side Phase 5
 - One five-tab Document Studio shell for PDF-to-Excel, PDF-to-Word, Word-to-PDF, PDF translation and PDF split. All five default to authenticated request-time local processing; governed Document Jobs are an explicit AI-enhanced option rather than a prerequisite.
 - Closed preflight, job, snapshot, page/block/table/cell evidence, quality, review-patch, event, result and operational-metric contracts. The façade reuses AI Task and AI Artifact; it does not add a second task table or state machine.
 - A fixed six-step Task plan: inspect, extract, reconcile, review, render and verify. Task/plan/input/Snapshot hashes bind human review, and an accepted review resumes the same Task.
-- Native extraction and local OCR evidence, page-level Qwen OCR selection and 50-page chunking, an isolated `qwen3.5-ocr` Responses `input_file` provider, exact signed-file host/TTL/hash/size validation and lease revocation.
+- Native extraction and local OCR evidence, page-level Qwen OCR selection and 50-page chunking, an isolated `qwen3.5-ocr` Responses provider, per-page inline-image transport for HTTP/domainless deployments, and HTTPS signed-file transport with exact host/TTL/hash/size validation and lease revocation.
 - Optional `qwen3.7-plus` strict-JSON cell reconciliation for PDF-to-Excel. It may update only known cell IDs; raw evidence, bbox and source identity remain immutable, and leading-zero identifiers fail into review instead of being rewritten.
 - Evidence-aware Excel output with source mapping, conservative/smart type inference and table/page/same-schema worksheet strategies.
 - Editable and layout-preserving PDF-to-Word modes.
