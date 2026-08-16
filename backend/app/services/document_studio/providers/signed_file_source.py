@@ -53,7 +53,7 @@ class BrokerSignedFileSource:
         )
         parsed = urlparse(self.service_url)
         if (
-            parsed.scheme != "https"
+            parsed.scheme not in {"http", "https"}
             or not parsed.hostname
             or parsed.username
             or parsed.password

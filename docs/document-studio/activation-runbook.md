@@ -12,7 +12,7 @@ Verify PostgreSQL migrations/current schema, the separate AI Task Worker, ClamAV
 
 ## 3. Validate Qwen document processing
 
-Deploy the reviewed HTTPS signing broker. Configure an exact lease host allowlist, a 60–600 second TTL and request-bound deletion/revocation. Configure the Beijing workspace and secret outside Git. Exercise native-only, low-confidence, 50-page and 51–80-page PDFs; timeout, 429, 5xx, invalid schema, expired URL and revocation failure; and confirm that raw content, Base64 and signed URLs do not appear in logs. Confirm `RESTRICTED` and no-consent requests fail before transmission. Only then enable cloud OCR, followed separately by structured reconciliation.
+Deploy the reviewed signing broker. A domainless or IP-only deployment with an explicitly configured HTTP broker uses per-page inline images instead of exposing an HTTP file URL to Qwen; an HTTPS broker continues to use short-lived signed leases whose host must match the exact allowlist. The inline route is a compatibility path and does not satisfy the formal HTTPS production gate. Configure a 60–600 second TTL and request-bound deletion/revocation for the HTTPS route. Configure the Beijing workspace and secret outside Git. Exercise native-only, low-confidence, 50-page and 51–80-page PDFs; timeout, 429, 5xx, invalid schema, expired URL and revocation failure; and confirm that raw content, Base64 and signed URLs do not appear in logs. Confirm `RESTRICTED` and no-consent requests fail before transmission. Only then enable cloud OCR, followed separately by structured reconciliation.
 
 ## 4. Validate Office rendering
 

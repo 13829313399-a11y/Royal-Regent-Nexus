@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import threading
 from dataclasses import dataclass
 from functools import lru_cache
+from io import BytesIO
 from typing import Any
+from urllib.parse import urlparse
 
+import pypdfium2 as pdfium
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -118,6 +122,10 @@ def _ocr_result(response: object) -> object:
             if result is not None:
                 return result
     raise QwenDocumentError("DOCUMENT_OCR_SCHEMA_INVALID", "云 OCR 缺少解析结果。")
+
+
+def _uses_inline_image_transport(settings: Settings) -> bool:
+    return urlparse(settings.ai_document_signed_file_service_url.strip()).scheme == "http"
 
 
 def _parse_result(raw: object, *, expected_pages: int) -> QwenDocumentParseResult:
@@ -233,6 +241,63 @@ class QwenDocumentProvider:
             max_retries=0,
         )
 
+    def _parse_inline_images(
+        self,
+        data: bytes,
+        *,
+        expected_pages: int,
+    ) -> QwenDocumentParseResult:
+        try:
+            document = pdfium.PdfDocument(data)
+        except Exception as exc:
+            raise QwenDocumentError(
+                "DOCUMENT_OCR_RENDER_FAILED", "云 OCR 无法渲染 PDF 页面。"
+            ) from exc
+        if len(document) != expected_pages:
+            raise QwenDocumentError(
+                "DOCUMENT_OCR_PAGE_MISMATCH", "云 OCR 渲染页数与请求分片不一致。"
+            )
+        pages: list[QwenDocumentPage] = []
+        for page_index in range(expected_pages):
+            try:
+                image = document[page_index].render(scale=1.5).to_pil().convert("RGB")
+                output = BytesIO()
+                image.save(output, format="JPEG", quality=82, optimize=True)
+                image_bytes = output.getvalue()
+            except Exception as exc:
+                raise QwenDocumentError(
+                    "DOCUMENT_OCR_RENDER_FAILED", "云 OCR 无法渲染 PDF 页面。"
+                ) from exc
+            if len(image_bytes) > self.settings.ai_document_ocr_max_bytes:
+                raise QwenDocumentError(
+                    "DOCUMENT_OCR_SIZE_LIMIT", "云 OCR 页面图片超过允许上限。"
+                )
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            response = self.client.responses.create(
+                model="qwen3.5-ocr",
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:image/jpeg;base64,{encoded}",
+                            }
+                        ],
+                    }
+                ],
+                store=False,
+                extra_body={"ocr_options": {"task": "document_parsing"}},
+            )
+            parsed = _parse_result(_ocr_result(response), expected_pages=1)
+            pages.append(
+                QwenDocumentPage(
+                    page_number=page_index + 1,
+                    blocks=parsed.pages[0].blocks,
+                )
+            )
+        return QwenDocumentParseResult(pages=tuple(pages))
+
     def parse_pdf(
         self,
         *,
@@ -252,6 +317,9 @@ class QwenDocumentProvider:
             )
         lease = None
         try:
+            if _uses_inline_image_transport(self.settings):
+                with _ocr_semaphore(self.settings.ai_document_ocr_max_concurrency):
+                    return self._parse_inline_images(data, expected_pages=page_count)
             lease = self.signed_file_source.create(
                 artifact_id=artifact_id,
                 sha256=sha256,

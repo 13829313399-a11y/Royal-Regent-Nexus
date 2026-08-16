@@ -640,7 +640,7 @@ def test_non_content_document_jobs_skip_unneeded_extraction_and_review(
     assert reviewed.review_required is False
 
 
-def test_ai_enhanced_extraction_falls_back_when_signed_source_is_invalid(
+def test_ai_enhanced_extraction_falls_back_when_signed_source_scheme_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(
@@ -648,7 +648,7 @@ def test_ai_enhanced_extraction_falls_back_when_signed_source_is_invalid(
         ai_region="cn-beijing",
         ai_workspace_id="workspace-test",
         dashscope_api_key="test-secret",
-        ai_document_signed_file_service_url="http://document-broker",
+        ai_document_signed_file_service_url="ftp://document-broker",
         ai_document_signed_file_service_token="broker-secret",
         ai_document_signed_file_allowed_hosts="lease.example.test",
     )
