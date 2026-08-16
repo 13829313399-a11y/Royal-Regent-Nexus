@@ -42,6 +42,7 @@ from app.services.ai.tools import document_studio_tools
 from app.services.auth import AuthContext, AuthGrantContext
 from app.services.document_studio import orchestrator as document_orchestrator
 from app.services.document_studio.contracts import (
+    DocumentExtractionRoute,
     DocumentJobType,
     DocumentProcessingMode,
     DocumentRouteDecision,
@@ -61,7 +62,11 @@ from app.services.document_studio.orchestrator import (
     retry_document_job,
     review_document_job,
 )
+from app.services.document_studio.providers.qwen_document import QwenDocumentError
 from app.services.document_studio.quality import build_quality_report
+from app.services.document_studio.renderers.office_pdf_renderer import (
+    OfficePdfRenderResult,
+)
 from app.services.document_studio.routing import (
     DOCUMENT_STUDIO_TOOL_NAMES,
     map_task_state,
@@ -245,6 +250,18 @@ def test_document_routing_maps_existing_tools_without_parallel_states() -> None:
     )
     assert translation_route == DocumentRouteDecision.TASK_LOCAL
     assert office_route == DocumentRouteDecision.TASK_LOCAL
+
+    enhanced_office_route, enhanced_office_warnings = route_document_job(
+        job_type=DocumentJobType.WORD_TO_PDF,
+        processing_mode=DocumentProcessingMode.AI_ENHANCED,
+        page_count=1,
+        task_runtime_available=True,
+        cloud_ocr_available=True,
+        local_translation_available=False,
+        office_renderer_available=True,
+    )
+    assert enhanced_office_route == DocumentRouteDecision.TASK_AI_ENHANCED
+    assert enhanced_office_warnings == ()
 
 
 def test_document_job_flag_off_capability_fails_closed_without_500(
@@ -588,7 +605,7 @@ def test_pdf_split_adapter_creates_one_replay_safe_derived_artifact(
     assert db.query(AIArtifact).count() == 2
 
 
-@pytest.mark.parametrize("job_type", ["PDF_TO_WORD", "PDF_SPLIT", "WORD_TO_PDF"])
+@pytest.mark.parametrize("job_type", ["PDF_SPLIT", "WORD_TO_PDF"])
 def test_non_content_document_jobs_skip_unneeded_extraction_and_review(
     monkeypatch: pytest.MonkeyPatch,
     job_type: str,
@@ -638,6 +655,250 @@ def test_non_content_document_jobs_skip_unneeded_extraction_and_review(
     assert reconciled.result_artifact_id == source.id
     assert reviewed.result_artifact_id == source.id
     assert reviewed.review_required is False
+
+
+@pytest.mark.parametrize("job_type", ["PDF_TO_EXCEL", "PDF_TO_WORD"])
+def test_ai_enhanced_pdf_jobs_send_every_native_page_to_qwen(
+    monkeypatch: pytest.MonkeyPatch,
+    job_type: str,
+) -> None:
+    settings = _settings(
+        ai_document_cloud_ocr_enabled=True,
+        ai_region="cn-beijing",
+        ai_workspace_id="workspace-test",
+        dashscope_api_key="test-secret",
+        ai_document_signed_file_service_url="http://document-broker:8001",
+        ai_document_signed_file_service_token="broker-secret",
+        ai_document_signed_file_allowed_hosts="lease.example.test",
+    )
+    db = _database()
+    storage = FakeArtifactStorage()
+    source = _source(db, storage, settings)
+    snapshot = DocumentSnapshot(
+        source_artifact_id=source.id,
+        source_sha256=source.sha256,
+        page_count=1,
+        pages=(
+            DocumentPageSnapshot(
+                page_number=1,
+                width=595,
+                height=842,
+                extraction_route="NATIVE",
+                blocks=(
+                    DocumentBlock(
+                        block_id="p1-b1",
+                        kind="PARAGRAPH",
+                        bbox=(10, 10, 200, 40),
+                        raw_text="原生高置信度文字",
+                        normalized_text="原生高置信度文字",
+                        confidence=0.98,
+                        source="NATIVE_TEXT",
+                    ),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(document_studio_tools, "settings", settings)
+    monkeypatch.setattr(document_studio_tools, "_storage", lambda: storage)
+    monkeypatch.setattr(document_studio_tools, "_scanner", FakeArtifactScanner)
+    monkeypatch.setattr(
+        document_studio_tools,
+        "extract_local_snapshot",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        document_studio_tools,
+        "BrokerSignedFileSource",
+        lambda _settings: object(),
+    )
+    monkeypatch.setattr(
+        document_studio_tools,
+        "QwenDocumentProvider",
+        lambda *_args, **_kwargs: object(),
+    )
+    qwen_calls = []
+
+    def qwen_enhance(value, **kwargs):
+        qwen_calls.append(kwargs["force_all_pages"])
+        page = value.pages[0].model_copy(
+            update={"extraction_route": DocumentExtractionRoute.QWEN_OCR}
+        )
+        return value.model_copy(update={"pages": (page,)})
+
+    monkeypatch.setattr(
+        document_studio_tools,
+        "enhance_snapshot_with_qwen",
+        qwen_enhance,
+    )
+    arguments = DocumentStudioTaskOptions(
+        operation_id="docop-" + "9" * 32,
+        factory_id="huaxing",
+        source_artifact_id=source.id,
+        source_sha256=source.sha256,
+        job_type=job_type,
+        processing_mode="AI_ENHANCED",
+        page_range=DocumentPageRange(),
+        options=DocumentJobOptions(),
+        cloud_consent=DocumentCloudConsent(
+            accepted=True,
+            provider="qwen",
+            region="cn-beijing",
+            purpose="DOCUMENT_PARSE",
+            notice_version="document-cloud-v1",
+        ),
+    )
+    context = ToolExecutionContext(
+        db=db,
+        user=_user(),
+        request_id="pdf-qwen-all-pages",
+    )
+
+    extracted = document_studio_tools.extract_document_task(context, arguments)
+    _, stored = load_metadata_artifact(
+        db,
+        artifact_id=extracted.result_artifact_id,
+        user=_user(),
+        allowed_factory_ids=frozenset({"huaxing"}),
+        storage=storage,
+        model=DocumentSnapshot,
+    )
+
+    assert qwen_calls == [True]
+    assert stored.pages[0].extraction_route == DocumentExtractionRoute.QWEN_OCR
+    assert extracted.metrics.cloud_page_count == 1
+
+
+def test_ai_enhanced_word_to_pdf_uses_qwen_for_result_check_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(
+        ai_document_cloud_ocr_enabled=True,
+        ai_region="cn-beijing",
+        ai_workspace_id="workspace-test",
+        dashscope_api_key="test-secret",
+        ai_document_signed_file_service_url="http://document-broker:8001",
+        ai_document_signed_file_service_token="broker-secret",
+        ai_document_signed_file_allowed_hosts="lease.example.test",
+        document_office_renderer_enabled=True,
+        document_office_renderer_network_isolation_verified=True,
+    )
+    db = _database()
+    storage = FakeArtifactStorage()
+    source = _docx_source(db, storage, settings)
+    monkeypatch.setattr(document_studio_tools, "settings", settings)
+    monkeypatch.setattr(document_studio_tools, "_storage", lambda: storage)
+    monkeypatch.setattr(document_studio_tools, "_scanner", FakeArtifactScanner)
+    monkeypatch.setattr(
+        document_studio_tools,
+        "convert_word_to_pdf",
+        lambda *_args, **_kwargs: OfficePdfRenderResult(
+            content=_pdf_bytes(),
+            output_file_name="订单_转换结果.pdf",
+            page_count=1,
+        ),
+    )
+
+    def local_snapshot(**kwargs):
+        return DocumentSnapshot(
+            source_artifact_id=kwargs["source_artifact_id"],
+            source_sha256=kwargs["source_sha256"],
+            page_count=1,
+            pages=(
+                DocumentPageSnapshot(
+                    page_number=1,
+                    width=595,
+                    height=842,
+                    extraction_route="NATIVE",
+                    blocks=(
+                        DocumentBlock(
+                            block_id="p1-b1",
+                            kind="PARAGRAPH",
+                            bbox=(10, 10, 200, 40),
+                            raw_text="Word 转 PDF",
+                            normalized_text="Word 转 PDF",
+                            confidence=0.98,
+                            source="NATIVE_TEXT",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        document_studio_tools,
+        "extract_local_snapshot",
+        local_snapshot,
+    )
+    monkeypatch.setattr(
+        document_studio_tools,
+        "BrokerSignedFileSource",
+        lambda _settings: object(),
+    )
+    monkeypatch.setattr(
+        document_studio_tools,
+        "QwenDocumentProvider",
+        lambda *_args, **_kwargs: object(),
+    )
+    qwen_calls = []
+
+    def qwen_check(snapshot, **kwargs):
+        qwen_calls.append(kwargs["force_all_pages"])
+        page = snapshot.pages[0].model_copy(
+            update={"extraction_route": DocumentExtractionRoute.QWEN_OCR}
+        )
+        return snapshot.model_copy(update={"pages": (page,)})
+
+    monkeypatch.setattr(
+        document_studio_tools,
+        "enhance_snapshot_with_qwen",
+        qwen_check,
+    )
+    arguments = DocumentStudioTaskOptions(
+        operation_id="docop-" + "8" * 32,
+        factory_id="huaxing",
+        source_artifact_id=source.id,
+        source_sha256=source.sha256,
+        job_type="WORD_TO_PDF",
+        processing_mode="AI_ENHANCED",
+        page_range=DocumentPageRange(),
+        options=DocumentJobOptions(),
+        cloud_consent=DocumentCloudConsent(
+            accepted=True,
+            provider="qwen",
+            region="cn-beijing",
+            purpose="DOCUMENT_PARSE",
+            notice_version="document-cloud-v1",
+        ),
+    )
+    context = ToolExecutionContext(
+        db=db,
+        user=_user(),
+        request_id="word-qwen-check",
+    )
+
+    document_studio_tools.render_document_task(context, arguments)
+    verified = document_studio_tools.verify_document_task(context, arguments)
+
+    assert qwen_calls == [True]
+    assert verified.metrics.cloud_page_count == 1
+    assert verified.metrics.page_count == 1
+
+    def unavailable_qwen(*_args, **_kwargs):
+        raise QwenDocumentError(
+            "DOCUMENT_OCR_TIMEOUT",
+            "timeout",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(
+        document_studio_tools,
+        "enhance_snapshot_with_qwen",
+        unavailable_qwen,
+    )
+    fallback = document_studio_tools.verify_document_task(context, arguments)
+
+    assert fallback.result_artifact_id == verified.result_artifact_id
+    assert fallback.metrics.cloud_page_count == 0
 
 
 def test_ai_enhanced_extraction_falls_back_when_signed_source_scheme_is_invalid(

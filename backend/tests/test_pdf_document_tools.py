@@ -8,7 +8,6 @@ from docx import Document
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
 
-
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 if str(BACKEND_DIR) not in sys.path:
@@ -23,6 +22,8 @@ class FakeTable:
 
 
 class FakeWordPage:
+    height = 842
+
     def extract_text(self, **_kwargs):
         return "采购订单\n物料号 数量\n00125 8\n交货日期：2026-08-20"
 
@@ -102,6 +103,34 @@ def test_pdf_to_word_uses_ocr_when_native_content_is_missing(monkeypatch):
     assert result.ocr_page_count == 1
     document = Document(BytesIO(result.content))
     assert document.paragraphs[0].text == "OCR 文字"
+
+
+def test_pdf_to_word_uses_qwen_page_text_and_keeps_local_tables(monkeypatch):
+    from app.services import pdf_to_word as service
+
+    monkeypatch.setattr(service.pdfplumber, "open", lambda _stream: FakeWordDocument())
+
+    result = service.convert_pdf_to_word(
+        b"%PDF-qwen",
+        "千问增强.pdf",
+        page_text_overrides={
+            1: (
+                (20, 32, "千问识别标题"),
+                (115, 158, "这段与本地表格重叠，不应重复写入"),
+                (220, 232, "千问识别日期 2026-08-20"),
+            )
+        },
+    )
+
+    document = Document(BytesIO(result.content))
+    assert [paragraph.text for paragraph in document.paragraphs if paragraph.text] == [
+        "千问识别标题",
+        "千问识别日期 2026-08-20",
+    ]
+    assert document.tables[0].cell(1, 0).text == "00125"
+    assert result.table_count == 1
+    assert result.text_page_count == 0
+    assert result.ocr_page_count == 1
 
 
 def test_pdf_to_word_embeds_meaningful_images_and_skips_blank_masks(monkeypatch):

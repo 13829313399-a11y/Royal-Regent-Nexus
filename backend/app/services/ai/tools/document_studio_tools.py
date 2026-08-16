@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 
 from app.core.config import settings
 from app.models.ai_artifact import AIArtifact
@@ -84,9 +85,23 @@ from app.services.pdf_split import split_pdf
 
 PARSER_VERSION = "document-studio-deterministic-v1"
 MODEL_VERSION = "none"
-_CONTENT_EXTRACTION_JOB_TYPES = frozenset(
+_ALWAYS_CONTENT_EXTRACTION_JOB_TYPES = frozenset(
     {DocumentJobType.PDF_TO_EXCEL, DocumentJobType.PDF_TRANSLATION}
 )
+_FULL_PAGE_QWEN_JOB_TYPES = frozenset(
+    {DocumentJobType.PDF_TO_EXCEL, DocumentJobType.PDF_TO_WORD}
+)
+logger = logging.getLogger(__name__)
+
+
+def _requires_content_extraction(arguments: DocumentStudioTaskOptions) -> bool:
+    return bool(
+        arguments.job_type in _ALWAYS_CONTENT_EXTRACTION_JOB_TYPES
+        or (
+            arguments.job_type == DocumentJobType.PDF_TO_WORD
+            and arguments.processing_mode == DocumentProcessingMode.AI_ENHANCED
+        )
+    )
 
 
 def _office_renderer_available() -> bool:
@@ -264,7 +279,7 @@ def extract_document_task(
     context: ToolExecutionContext,
     arguments: DocumentStudioTaskOptions,
 ) -> DocumentStudioToolResult:
-    if arguments.job_type not in _CONTENT_EXTRACTION_JOB_TYPES:
+    if not _requires_content_extraction(arguments):
         return _validated_passthrough("EXTRACT", context, arguments)
     db, download = _source_download(context, arguments)
     artifact_id = metadata_artifact_id(
@@ -307,10 +322,14 @@ def extract_document_task(
         document_kind=arguments.options.profile,
     )
     model_version = MODEL_VERSION
+    force_all_pages = arguments.job_type in _FULL_PAGE_QWEN_JOB_TYPES
     if (
         arguments.processing_mode == DocumentProcessingMode.AI_ENHANCED
         and settings.ai_document_cloud_ocr_enabled
-        and cloud_ocr_page_numbers(snapshot)
+        and cloud_ocr_page_numbers(
+            snapshot,
+            force_all_pages=force_all_pages,
+        )
     ):
         warning = ""
         if download.record.classification == "RESTRICTED":
@@ -337,6 +356,7 @@ def extract_document_task(
                         settings,
                         signed_file_source=BrokerSignedFileSource(settings),
                     ),
+                    force_all_pages=force_all_pages,
                 )
                 model_version = settings.ai_document_ocr_model
             except (QwenDocumentError, SignedFileSourceError) as exc:
@@ -402,7 +422,7 @@ def reconcile_document_task(
     context: ToolExecutionContext,
     arguments: DocumentStudioTaskOptions,
 ) -> DocumentStudioToolResult:
-    if arguments.job_type not in _CONTENT_EXTRACTION_JOB_TYPES:
+    if not _requires_content_extraction(arguments):
         return _validated_passthrough("RECONCILE", context, arguments)
     db, download = _source_download(context, arguments)
     snapshot_id = task_step_result_artifact_id(
@@ -491,7 +511,7 @@ def review_document_task(
     context: ToolExecutionContext,
     arguments: DocumentStudioTaskOptions,
 ) -> DocumentStudioToolResult:
-    if arguments.job_type not in _CONTENT_EXTRACTION_JOB_TYPES:
+    if not _requires_content_extraction(arguments):
         return _validated_passthrough("REVIEW", context, arguments)
     db, download = _source_download(context, arguments)
     snapshot_id = _current_snapshot_artifact_id(db, task_id=context.task_id)
@@ -632,10 +652,26 @@ def render_document_task(
             ocr_page_count=converted.ocr_page_count,
         )
     elif arguments.job_type == DocumentJobType.PDF_TO_WORD:
+        snapshot = None
+        if arguments.processing_mode == DocumentProcessingMode.AI_ENHANCED:
+            snapshot_id = _current_snapshot_artifact_id(db, task_id=context.task_id)
+            if snapshot_id is None:
+                raise ArtifactIntegrityError(
+                    "AI 增强 PDF 转 Word 任务缺少已复核 Snapshot。"
+                )
+            _, snapshot = load_metadata_artifact(
+                db,
+                artifact_id=snapshot_id,
+                user=context.user,
+                allowed_factory_ids=_allowed_factories(),
+                storage=_storage(),
+                model=DocumentSnapshot,
+            )
         converted = convert_pdf_to_word(
             download.data,
             source.original_filename,
             mode=arguments.options.word_mode,
+            snapshot=snapshot,
         )
         filename = converted.output_file_name
         mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -645,6 +681,14 @@ def render_document_task(
             table_count=converted.table_count,
             text_page_count=converted.text_page_count,
             ocr_page_count=converted.ocr_page_count,
+            cloud_page_count=(
+                sum(
+                    page.extraction_route.value == "QWEN_OCR"
+                    for page in snapshot.pages
+                )
+                if snapshot is not None
+                else 0
+            ),
             image_count=converted.image_count,
         )
     elif arguments.job_type == DocumentJobType.PDF_SPLIT:
@@ -742,7 +786,7 @@ def verify_document_task(
     context: ToolExecutionContext,
     arguments: DocumentStudioTaskOptions,
 ) -> DocumentStudioToolResult:
-    _, download = _source_download(context, arguments)
+    db, download = _source_download(context, arguments)
     result = _existing_result(
         context,
         artifact_id=_result_id(context, arguments),
@@ -751,12 +795,64 @@ def verify_document_task(
     )
     if result is None:
         raise ArtifactIntegrityError("文档 Task 缺少可验证的派生结果。")
+    metrics = DocumentStudioToolMetrics()
+    if (
+        arguments.job_type == DocumentJobType.WORD_TO_PDF
+        and arguments.processing_mode == DocumentProcessingMode.AI_ENHANCED
+        and arguments.cloud_consent is not None
+        and download.record.classification != "RESTRICTED"
+        and get_document_provider_status(settings).available
+    ):
+        result_download = download_artifact(
+            db,
+            artifact_id=result.id,
+            user=context.user,
+            allowed_factory_ids=_allowed_factories(),
+            storage=_storage(),
+        )
+        snapshot = extract_local_snapshot(
+            data=result_download.data,
+            source_artifact_id=result.id,
+            source_sha256=result.sha256,
+            document_kind=arguments.options.profile,
+        )
+        try:
+            snapshot = enhance_snapshot_with_qwen(
+                snapshot,
+                data=result_download.data,
+                artifact_id=result.id,
+                filename=result.original_filename,
+                provider=QwenDocumentProvider(
+                    settings,
+                    signed_file_source=BrokerSignedFileSource(settings),
+                ),
+                force_all_pages=True,
+            )
+        except (QwenDocumentError, SignedFileSourceError) as exc:
+            logger.warning(
+                "word_to_pdf_qwen_verification_failed code=%s",
+                exc.code,
+            )
+        cloud_pages = sum(
+            page.extraction_route.value == "QWEN_OCR" for page in snapshot.pages
+        )
+        text_pages = sum(bool(page.blocks) for page in snapshot.pages)
+        metrics = DocumentStudioToolMetrics(
+            page_count=snapshot.page_count,
+            blank_page_count=snapshot.page_count - text_pages,
+            text_page_count=text_pages,
+            ocr_page_count=sum(
+                page.extraction_route.value != "NATIVE" for page in snapshot.pages
+            ),
+            cloud_page_count=cloud_pages,
+        )
     return _result(
         stage="VERIFY",
         arguments=arguments,
         source=download.record,
         result=result,
         replay=True,
+        metrics=metrics,
     )
 
 

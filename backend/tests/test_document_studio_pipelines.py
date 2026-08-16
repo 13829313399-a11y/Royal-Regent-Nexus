@@ -16,7 +16,10 @@ from app.schemas.document_studio import (
     DocumentTable,
 )
 from app.services import pdf_translation as local_pdf_translation
-from app.services.document_studio.extractors.qwen_ocr import enhance_snapshot_with_qwen
+from app.services.document_studio.extractors.qwen_ocr import (
+    cloud_ocr_page_numbers,
+    enhance_snapshot_with_qwen,
+)
 from app.services.document_studio.pipelines import pdf_to_excel as excel_pipeline
 from app.services.document_studio.pipelines.pdf_to_word import (
     convert_pdf_to_layout_preserving_word,
@@ -673,6 +676,41 @@ def test_qwen_extractor_chunks_51_pages_and_restores_global_page_numbers() -> No
     assert result.pages[49].blocks[0].block_id == "p50-b1"
     assert result.pages[50].blocks[0].block_id == "p51-b1"
     assert result.pages[50].blocks[0].raw_text == "chunk-page-1"
+
+
+def test_qwen_extractor_force_all_pages_includes_high_confidence_native_pages() -> None:
+    snapshot = _snapshot("原生高置信度文字")
+    calls = []
+
+    class Provider:
+        def parse_pdf(self, **kwargs):
+            calls.append(kwargs["page_count"])
+            return QwenDocumentParseResult(
+                pages=(
+                    QwenDocumentPage(
+                        page_number=1,
+                        blocks=(
+                            QwenDocumentBlock(text="千问全页结果", confidence=0.96),
+                        ),
+                    ),
+                )
+            )
+
+    assert cloud_ocr_page_numbers(snapshot) == ()
+    assert cloud_ocr_page_numbers(snapshot, force_all_pages=True) == (1,)
+
+    result = enhance_snapshot_with_qwen(
+        snapshot,
+        data=_pdf_bytes(),
+        artifact_id=snapshot.source_artifact_id,
+        filename="native.pdf",
+        provider=Provider(),
+        force_all_pages=True,
+    )
+
+    assert calls == [1]
+    assert result.pages[0].extraction_route.value == "QWEN_OCR"
+    assert result.pages[0].blocks[0].raw_text == "千问全页结果"
 
 
 def test_qwen_reconcile_is_closed_and_never_drops_leading_zeroes() -> None:

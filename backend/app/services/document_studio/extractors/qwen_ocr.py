@@ -14,7 +14,13 @@ from app.services.document_studio.contracts import (
 from app.services.document_studio.providers.qwen_document import QwenDocumentProvider
 
 
-def cloud_ocr_page_numbers(snapshot: DocumentSnapshot) -> tuple[int, ...]:
+def cloud_ocr_page_numbers(
+    snapshot: DocumentSnapshot,
+    *,
+    force_all_pages: bool = False,
+) -> tuple[int, ...]:
+    if force_all_pages:
+        return tuple(page.page_number for page in snapshot.pages)
     selected: list[int] = []
     for page in snapshot.pages:
         confidence = (
@@ -58,8 +64,9 @@ def enhance_snapshot_with_qwen(
     artifact_id: str,
     filename: str,
     provider: QwenDocumentProvider,
+    force_all_pages: bool = False,
 ) -> DocumentSnapshot:
-    selected = cloud_ocr_page_numbers(snapshot)
+    selected = cloud_ocr_page_numbers(snapshot, force_all_pages=force_all_pages)
     if not selected:
         return snapshot
     payload = snapshot.model_dump(mode="json")
