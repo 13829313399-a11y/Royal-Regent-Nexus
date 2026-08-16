@@ -14,13 +14,10 @@ def convert_word_to_pdf(
     *,
     settings: Settings,
 ) -> OfficePdfRenderResult:
-    if not (
-        settings.document_office_renderer_enabled
-        and settings.document_office_renderer_network_isolation_verified
-    ):
+    if not settings.document_office_renderer_enabled:
         raise OfficePdfRenderError(
             "DOCUMENT_OFFICE_RENDERER_UNAVAILABLE",
-            "Word 转 PDF 隔离渲染器未开放。",
+            "Word 转 PDF 渲染器未开放。",
         )
     return render_docx_to_pdf(
         content,
@@ -29,5 +26,7 @@ def convert_word_to_pdf(
         timeout_seconds=settings.document_office_renderer_timeout_seconds,
         network_isolation_command=(
             settings.document_office_renderer_network_isolation_command
+            if settings.document_office_renderer_network_isolation_verified
+            else None
         ),
     )
