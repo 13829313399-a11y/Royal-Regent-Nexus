@@ -162,7 +162,7 @@ class QwenOcrService:
                         action="请降低扫描分辨率或先拆分文档。",
                     )
                 encoded = base64.b64encode(image_bytes).decode("ascii")
-                with _semaphore(self.settings.ai_document_ocr_max_concurrency):
+                with _semaphore(self.settings.qwen_ocr_max_concurrency):
                     response = self.client.responses.create(
                         model=self.settings.qwen_ocr_model,
                         input=[

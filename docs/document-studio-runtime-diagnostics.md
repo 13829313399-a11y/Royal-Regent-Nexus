@@ -27,12 +27,12 @@
 
 这意味着本地不能代表生产运行能力，不能仅根据本地开关推断线上工具不可用。
 
-## 生产运行环境（只读检查）
+## Phase 0 生产运行环境（改造前只读检查）
 
 | 检查项 | 结果 |
 | --- | --- |
-| 服务器代码 | 与上述代码基线一致，跟踪文件干净 |
-| API / Worker / PostgreSQL / ClamAV / Broker / Web | 均为健康状态 |
+| 服务器代码 | 与上述 Phase 0 代码基线一致，跟踪文件干净 |
+| API / Worker / PostgreSQL / ClamAV / Broker / Web | 改造前均为健康状态 |
 | 容器重启 / OOM | 0 次 / 未发现 |
 | Alembic | `20260814_0077 (head)` |
 | LibreOffice | `25.2.3.2` |
@@ -45,7 +45,7 @@
 | `/api/tools/capabilities` | HTTP 404，尚未实现 |
 | `/api/tools/diagnostics` | HTTP 404，尚未实现 |
 
-## 五项工具真实 Smoke Test
+## Phase 0 五项工具真实 Smoke Test
 
 使用内存中的两页 PDF 和一份 DOCX 调用生产容器服务，并重新打开输出文件验证格式。随后通过 FastAPI TestClient、真实路由函数和认证依赖覆盖再次验证 HTTP 路由。
 
@@ -81,9 +81,24 @@
 
 基线已满足继续开发的条件：本地转换器、LibreOffice、离线翻译和千问 OCR 的生产可用性均已用真实调用确认。阶段 1 将先统一能力接口和同步主路径，再接入简化的千问服务；在全链路真实文件 Smoke Test 通过前，不执行旧 Document Studio 任务链路和数据库表的删除。
 
-## 开发后本地验证
+## 简化版生产 Smoke Gate 与 Phase 4
 
-- 千问实时链路通过：`qwen3.5-ocr` 识别临时扫描 PDF，`qwen3.7-plus` 返回通过严格契约的表格 JSON，前导零 `00125` 保留，`qwen-mt-plus` 返回非空译文。真实响应暴露了单页表格将 `continuation_key` 返回为 `null` 的情况，已改为与空键等价，行宽、字段类型和置信度仍严格校验。
-- 新实现的临时真实文件测试通过 5 项：PDF 转 Excel（AUTO）、PDF 转 Excel（QWEN）、PDF 转 Word（QWEN）、PDF 翻译（QWEN）、PDF 拆分；生成的 XLSX、DOCX、PDF 和 ZIP 均可重新打开。
-- 本机未安装 LibreOffice，因此新代码的 Word 转 PDF 没有在本机重复运行真实二进制转换；对应服务在生产基线的 LibreOffice 25.2.3.2 中已通过。
-- 由于新实现尚未部署到生产，阶段 4 的旧任务链路/数据库清理门禁未满足，本轮不执行删除。
+简化版五工具在生产合并提交 `6d8ff11b2eb267cf37bb590c6612ad34c5a89c8f`
+完成真实服务级 Smoke Test，所有生成物均重新打开验证：
+
+- PDF 转 Excel `QWEN`：1 页千问 OCR、1 个表格；`qwen3.5-ocr` 与
+  `qwen3.7-plus` 均实际参与，前导零 `00125` 保留。
+- PDF 转 Word `QWEN`：1 页千问 OCR，生成 DOCX 可重新打开。
+- PDF 翻译 `QWEN`：4 个翻译单元，`qwen-mt-plus` 实际参与，生成 PDF
+  可重新打开。
+- Word 转 PDF：生产 LibreOffice `25.2.3.2` 完成转换，生成 PDF 可重新打开。
+- PDF 拆分：生成 2 个安全命名的 PDF，ZIP 和两个 PDF 均可重新打开。
+
+上述门禁通过后执行 Phase 4：移除旧 Document Job API/UI、Review、六步骤
+Task Tool、五个专用 Skill/Prompt 和 Signed File Broker Provider；保留其他模块仍
+使用的通用 AI Task/Artifact/Skill/Tool Registry。生产库中旧五类任务共 13 条，
+检查时全部是 `COMPLETED`、`FAILED` 或 `CANCELLED` 终态，没有活跃任务。
+数据库表、历史数据和 Alembic Migration 保留一个版本周期。
+
+每次部署 Phase 4 及后续版本仍必须重复上述五工具生产 Smoke Gate；仓库测试或
+Mock Provider 不能替代真实 Qwen、LibreOffice 与生成物重开检查。

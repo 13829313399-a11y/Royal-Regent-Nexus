@@ -70,7 +70,8 @@ def test_ai_prompt_runtime_assets_are_complete_and_git_tracked() -> None:
     )
 
     dockerfile = (REPOSITORY_ROOT / "Dockerfile.backend").read_text(encoding="utf-8")
-    assert "build_default_tool_registry(document_studio_enabled=True)" in dockerfile
+    assert "tool_registry = build_default_tool_registry()" in dockerfile
+    assert "document_studio_enabled" not in dockerfile
     assert "registry.prompt_registry.load_core()" in dockerfile
 
     production_requirements = {

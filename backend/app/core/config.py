@@ -62,33 +62,6 @@ class Settings(BaseSettings):
     ai_artifacts_enabled: bool = False
     ai_artifact_workflows_enabled: bool = False
     ai_vision_tool_comparison_enabled: bool = False
-    ai_document_studio_enabled: bool = False
-    ai_document_cloud_ocr_enabled: bool = False
-    ai_document_ocr_model: str = Field(
-        default="qwen3.5-ocr",
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
-    )
-    ai_document_ocr_region: Literal["cn-beijing"] = "cn-beijing"
-    ai_document_ocr_max_pages: int = Field(default=50, ge=1, le=50)
-    ai_document_ocr_max_bytes: int = Field(
-        default=20 * 1024 * 1024,
-        ge=1,
-        le=20 * 1024 * 1024,
-    )
-    ai_document_ocr_max_concurrency: int = Field(default=2, ge=1, le=4)
-    ai_document_reconcile_enabled: bool = False
-    ai_document_reconcile_model: str = Field(
-        default="qwen3.7-plus",
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
-    )
-    ai_document_signed_url_ttl_seconds: int = Field(default=300, ge=60, le=600)
-    ai_document_signed_file_service_url: str = ""
-    ai_document_signed_file_service_token: SecretStr = SecretStr("")
-    ai_document_signed_file_allowed_hosts: str = ""
     document_tools_enabled: bool = True
     document_tool_max_file_bytes: int = Field(
         default=20 * 1024 * 1024,
@@ -104,6 +77,7 @@ class Settings(BaseSettings):
         max_length=128,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
     )
+    qwen_ocr_max_concurrency: int = Field(default=2, ge=1, le=8)
     qwen_table_model: str = Field(
         default="qwen3.7-plus",
         min_length=1,
@@ -140,9 +114,7 @@ class Settings(BaseSettings):
 
     @property
     def effective_qwen_document_enabled(self) -> bool:
-        if self.qwen_document_enabled is not None:
-            return self.qwen_document_enabled
-        return self.ai_document_cloud_ocr_enabled
+        return self.qwen_document_enabled is True
 
     ai_preview_ttl_minutes: int = Field(default=30, ge=5, le=1440)
     ai_artifact_storage_dir: str = str(BACKEND_DIR / "data" / "ai-artifacts")
