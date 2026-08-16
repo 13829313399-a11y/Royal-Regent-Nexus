@@ -364,7 +364,7 @@ def test_word_to_pdf_uses_isolation_only_when_verified(
     assert captured["network_isolation_command"] == expected_isolation_command
 
 
-def test_office_font_preflight_fails_with_stable_code(monkeypatch) -> None:
+def test_office_font_preflight_reports_missing_font_as_warning(monkeypatch) -> None:
     source = BytesIO()
     document = Document()
     run = document.add_paragraph().add_run("custom font")
@@ -372,10 +372,9 @@ def test_office_font_preflight_fails_with_stable_code(monkeypatch) -> None:
     document.save(source)
     monkeypatch.setattr(office_pdf_renderer, "_installed_fonts", lambda: frozenset())
 
-    with pytest.raises(office_pdf_renderer.OfficePdfRenderError) as captured:
-        office_pdf_renderer._validate_fonts(source.getvalue())
+    missing = office_pdf_renderer._validate_fonts(source.getvalue())
 
-    assert captured.value.code == "DOCUMENT_FONT_MISSING"
+    assert "FactoryPrivateFont" in missing
 
 
 def test_office_font_preflight_ignores_east_asia_language_metadata(

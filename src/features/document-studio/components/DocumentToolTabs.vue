@@ -7,10 +7,14 @@ import {
   Scissors,
 } from '@lucide/vue'
 import { computed, nextTick, ref } from 'vue'
+import type { DocumentToolsCapabilities } from '@/api/tools'
 import { DOCUMENT_TOOLS } from '../constants'
 import type { DocumentToolId } from '../types'
 
-const props = defineProps<{ modelValue: DocumentToolId }>()
+const props = defineProps<{
+  modelValue: DocumentToolId
+  capabilities?: DocumentToolsCapabilities | null
+}>()
 const emit = defineEmits<{ 'update:modelValue': [value: DocumentToolId] }>()
 
 const icons = {
@@ -22,6 +26,10 @@ const icons = {
 }
 const activeIndex = computed(() => DOCUMENT_TOOLS.findIndex(tool => tool.id === props.modelValue))
 const tabListRef = ref<HTMLElement | null>(null)
+
+function capability(toolId: DocumentToolId) {
+  return props.capabilities?.tools[toolId]
+}
 
 function moveFocus(offset: number) {
   const nextIndex = (activeIndex.value + offset + DOCUMENT_TOOLS.length) % DOCUMENT_TOOLS.length
@@ -56,10 +64,20 @@ function moveFocus(offset: number) {
         <component :is="icons[tool.id]" class="size-4.5" aria-hidden="true" />
         <span>{{ tool.label }}</span>
         <span
-          v-if="!tool.available"
-          class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500"
+          class="size-2 rounded-full"
+          :class="capability(tool.id)?.available === false
+            ? 'bg-rose-400'
+            : capability(tool.id)?.available === true
+              ? 'bg-emerald-500'
+              : 'animate-pulse bg-slate-300'"
+          :title="capability(tool.id)?.reason || (capability(tool.id)?.available ? '服务器能力可用' : '正在读取服务器能力')"
+          aria-hidden="true"
+        />
+        <span
+          v-if="capability(tool.id)?.available === false"
+          class="rounded-full bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-600"
         >
-          受控开放
+          不可用
         </span>
         <span
           class="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-teal-700 transition-opacity"

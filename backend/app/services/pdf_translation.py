@@ -7,6 +7,7 @@ from io import BytesIO
 from pypdf import PdfReader
 
 from app.core.config import Settings
+from app.schemas.document_studio import DocumentSnapshot
 from app.services.document_studio.contracts import DocumentExtractionRoute
 from app.services.document_studio.evidence import extract_local_snapshot
 from app.services.document_studio.pipelines.pdf_translation import (
@@ -17,6 +18,7 @@ from app.services.document_studio.pipelines.pdf_translation import (
 from app.services.document_studio.renderers.pdf_translation_renderer import (
     render_pdf_translation,
 )
+from app.services.document_tools.contracts import DocumentToolError
 
 MAX_PDF_PAGES = 80
 
@@ -45,6 +47,7 @@ def convert_pdf_translation(
     protected_tokens: tuple[str, ...] = (),
     include_editable_docx: bool = False,
     translator: TranslationBatch | None = None,
+    snapshot_override: DocumentSnapshot | None = None,
 ) -> PdfTranslationResult:
     if requested_direction not in {"AUTO", "ZH_TO_EN", "EN_TO_ZH"}:
         raise PdfTranslationConversionError("PDF 翻译方向无效。")
@@ -54,7 +57,9 @@ def convert_pdf_translation(
     try:
         reader = PdfReader(BytesIO(pdf_bytes), strict=False)
         if reader.is_encrypted:
-            raise PdfTranslationConversionError("PDF 已加密，无法翻译；请先移除打开密码。")
+            raise PdfTranslationConversionError(
+                "PDF 已加密，无法翻译；请先移除打开密码。"
+            )
         page_count = len(reader.pages)
     except PdfTranslationConversionError:
         raise
@@ -70,7 +75,7 @@ def convert_pdf_translation(
 
     source_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
     try:
-        snapshot = extract_local_snapshot(
+        snapshot = snapshot_override or extract_local_snapshot(
             data=pdf_bytes,
             source_artifact_id=f"aiart-{source_sha256[:32]}",
             source_sha256=source_sha256,
@@ -91,6 +96,8 @@ def convert_pdf_translation(
         )
     except PdfTranslationError as exc:
         raise PdfTranslationConversionError(str(exc)) from exc
+    except DocumentToolError:
+        raise
     except PdfTranslationConversionError:
         raise
     except Exception as exc:
@@ -103,11 +110,7 @@ def convert_pdf_translation(
         for page in translated.pages
         for value in (
             *(block.normalized_text for block in page.blocks),
-            *(
-                cell.normalized_value
-                for table in page.tables
-                for cell in table.cells
-            ),
+            *(cell.normalized_value for table in page.tables for cell in table.cells),
         )
         if value.strip()
     )

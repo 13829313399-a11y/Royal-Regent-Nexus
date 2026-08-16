@@ -187,6 +187,7 @@ describe('shared tools api', () => {
     expect(url).toBe('/tools/pdf-to-excel')
     expect(payload).toBeInstanceOf(FormData)
     expect((payload as FormData).get('pdf_file')).toBe(file)
+    expect((payload as FormData).get('processing_mode')).toBe('AUTO')
     expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_TO_EXCEL_TIMEOUT_MS })
     expect(result.fileName).toBe('测试_转换结果.xlsx')
     expect(result.metrics).toEqual({ pageCount: 3, tableCount: 2, textPageCount: 1, ocrPageCount: 0 })
@@ -228,6 +229,8 @@ describe('shared tools api', () => {
     const [url, payload, config] = post.mock.calls[0]!
     expect(url).toBe('/tools/pdf-to-word')
     expect((payload as FormData).get('pdf_file')).toBe(file)
+    expect((payload as FormData).get('processing_mode')).toBe('AUTO')
+    expect((payload as FormData).get('output_mode')).toBe('EDITABLE')
     expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_TO_WORD_TIMEOUT_MS })
     expect(result.fileName).toBe('订单_转换结果.docx')
     expect(result.metrics).toEqual({ pageCount: 4, tableCount: 1, imageCount: 3, textPageCount: 2, ocrPageCount: 2 })
@@ -251,6 +254,7 @@ describe('shared tools api', () => {
     const [url, payload, config] = post.mock.calls[0]!
     expect(url).toBe('/tools/word-to-pdf')
     expect((payload as FormData).get('document_file')).toBe(file)
+    expect((payload as FormData).get('processing_mode')).toBe('AUTO')
     expect(config).toMatchObject({ responseType: 'blob', timeout: WORD_TO_PDF_TIMEOUT_MS })
     expect(result).toMatchObject({ fileName: '订单_转换结果.pdf', pageCount: 3, blankPageCount: 1 })
   })
@@ -282,6 +286,7 @@ describe('shared tools api', () => {
     expect((payload as FormData).get('direction')).toBe('ZH_TO_EN')
     expect((payload as FormData).get('layout')).toBe('SIDE_BY_SIDE')
     expect((payload as FormData).get('protected_tokens')).toBe('["PO-001","0012"]')
+    expect((payload as FormData).get('processing_mode')).toBe('AUTO')
     expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_TRANSLATION_TIMEOUT_MS })
     expect(result).toMatchObject({
       fileName: 'order_translated.pdf',
@@ -311,7 +316,49 @@ describe('shared tools api', () => {
     expect((payload as FormData).get('pdf_file')).toBe(file)
     expect((payload as FormData).get('split_mode')).toBe('ranges')
     expect((payload as FormData).get('page_ranges')).toBe('1-3, 4, 5-8')
+    expect((payload as FormData).get('processing_mode')).toBe('AUTO')
     expect(config).toMatchObject({ responseType: 'blob', timeout: PDF_SPLIT_TIMEOUT_MS })
     expect(result).toMatchObject({ fileName: '订单_拆分结果.zip', pageCount: 8, fileCount: 3 })
+  })
+
+  it('reads runtime capabilities instead of inventing frontend availability', async () => {
+    const get = vi.fn().mockResolvedValue({
+      data: {
+        enabled: true,
+        default_mode: 'AUTO',
+        tools: { 'word-to-pdf': { available: false, reason_code: 'LIBREOFFICE_NOT_INSTALLED' } },
+      },
+    })
+    const api = createSharedToolsApi({ post: vi.fn(), get })
+
+    const result = await api.getCapabilities()
+
+    expect(result.tools['word-to-pdf']?.available).toBe(false)
+    expect(get).toHaveBeenCalledWith('/tools/capabilities', undefined)
+  })
+
+  it('exposes stable document error code and actionable advice', async () => {
+    const post = vi.fn().mockRejectedValue({
+      isAxiosError: true,
+      message: 'Request failed',
+      response: {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+        data: new Blob([JSON.stringify({
+          detail: {
+            code: 'LIBREOFFICE_NOT_INSTALLED',
+            message: '服务器未安装 LibreOffice。',
+            action: '请管理员安装 LibreOffice。',
+            retryable: false,
+          },
+        })], { type: 'application/json' }),
+      },
+    })
+    const api = createSharedToolsApi({ post })
+
+    await expect(api.convertWordToPdf(new File(['docx'], '订单.docx'))).rejects.toMatchObject({
+      code: 'LIBREOFFICE_NOT_INSTALLED',
+      action: '请管理员安装 LibreOffice。',
+    })
   })
 })
