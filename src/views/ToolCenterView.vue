@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { Clock3, ShieldCheck } from '@lucide/vue'
-import { computed, ref, watch } from 'vue'
+import { ShieldCheck } from '@lucide/vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { sharedToolsApi, type DocumentToolsCapabilities } from '@/api/tools'
 import PageHeader from '@/components/common/PageHeader.vue'
-import { Button } from '@/components/ui/button'
-import DocumentJobDrawer from '@/features/document-studio/components/DocumentJobDrawer.vue'
 import DocumentToolTabs from '@/features/document-studio/components/DocumentToolTabs.vue'
 import DocumentWorkspaceShell from '@/features/document-studio/components/DocumentWorkspaceShell.vue'
 import { isDocumentToolId, type DocumentToolId } from '@/features/document-studio/types'
@@ -15,7 +14,19 @@ const route = useRoute()
 const router = useRouter()
 const factoryContextLabel = computed(() => `${appStore.activeProductionFactory.shortName}厂区`)
 const activeTool = ref<DocumentToolId>(isDocumentToolId(route.query.tool) ? route.query.tool : 'pdf-to-excel')
-const jobDrawerOpen = ref(false)
+const capabilities = ref<DocumentToolsCapabilities | null>(null)
+const capabilitiesError = ref('')
+
+onMounted(async () => {
+  try {
+    capabilities.value = await sharedToolsApi.getCapabilities()
+  }
+  catch (error) {
+    capabilitiesError.value = error instanceof Error
+      ? error.message
+      : '无法读取服务器文档工具能力。'
+  }
+})
 
 watch(activeTool, (tool) => {
   if (route.query.tool === tool) return
@@ -28,7 +39,7 @@ watch(() => route.query.tool, (tool) => {
 </script>
 
 <template>
-  <div class="app-page space-y-5">
+  <div class="app-page space-y-3">
     <PageHeader
       eyebrow="Public Document Studio"
       title="智能文档工作台"
@@ -39,26 +50,18 @@ watch(() => route.query.tool, (tool) => {
           <ShieldCheck class="size-4" aria-hidden="true" />
           全厂区共享
         </span>
-        <Button variant="outline" size="lg" @click="jobDrawerOpen = true">
-          <Clock3 class="size-4" aria-hidden="true" />
-          任务记录
-        </Button>
       </template>
     </PageHeader>
 
     <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" aria-label="智能文档工作台">
-      <DocumentToolTabs v-model="activeTool" />
+      <DocumentToolTabs v-model="activeTool" :capabilities="capabilities" />
       <DocumentWorkspaceShell
         :tool-id="activeTool"
         :context-label="factoryContextLabel"
         :factory-id="String(appStore.activeProductionFactory.id)"
+        :capabilities="capabilities"
+        :capabilities-error="capabilitiesError"
       />
     </section>
-
-    <DocumentJobDrawer
-      :open="jobDrawerOpen"
-      :factory-id="String(appStore.activeProductionFactory.id)"
-      @close="jobDrawerOpen = false"
-    />
   </div>
 </template>

@@ -52,6 +52,7 @@ backend/models/document-translation/
 !/docs/document-studio/implementation-status.md
 !/docs/document-studio/activation-runbook.md
 !/docs/document-studio/evaluation.md
+!/docs/document-studio-runtime-diagnostics.md
 !/docs/ai/AI_MODULE_DEVELOPMENT_PLAN.md
 !/docs/ai/nif-18-production-readiness.md
 !/docs/ai/adr/

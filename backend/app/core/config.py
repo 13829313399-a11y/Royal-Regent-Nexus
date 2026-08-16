@@ -89,6 +89,35 @@ class Settings(BaseSettings):
     ai_document_signed_file_service_url: str = ""
     ai_document_signed_file_service_token: SecretStr = SecretStr("")
     ai_document_signed_file_allowed_hosts: str = ""
+    document_tools_enabled: bool = True
+    document_tool_max_file_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        ge=1,
+        le=100 * 1024 * 1024,
+    )
+    document_tool_max_pdf_pages: int = Field(default=80, ge=1, le=200)
+    document_tool_temp_ttl_minutes: int = Field(default=60, ge=5, le=24 * 60)
+    qwen_document_enabled: bool | None = None
+    qwen_ocr_model: str = Field(
+        default="qwen3.5-ocr",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    qwen_table_model: str = Field(
+        default="qwen3.7-plus",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    qwen_translation_model: str = Field(
+        default="qwen-mt-plus",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    qwen_document_timeout_seconds: int = Field(default=180, ge=15, le=1800)
+    qwen_document_batch_pages: int = Field(default=5, ge=1, le=8)
     document_office_renderer_enabled: bool = False
     document_office_renderer_command: str = Field(
         default="libreoffice",
@@ -108,6 +137,13 @@ class Settings(BaseSettings):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
     )
     document_office_renderer_network_isolation_verified: bool = False
+
+    @property
+    def effective_qwen_document_enabled(self) -> bool:
+        if self.qwen_document_enabled is not None:
+            return self.qwen_document_enabled
+        return self.ai_document_cloud_ocr_enabled
+
     ai_preview_ttl_minutes: int = Field(default=30, ge=5, le=1440)
     ai_artifact_storage_dir: str = str(BACKEND_DIR / "data" / "ai-artifacts")
     ai_artifact_scanner_backend: Literal["disabled", "clamav"] = "disabled"

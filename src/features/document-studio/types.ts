@@ -8,17 +8,11 @@ export const DOCUMENT_TOOL_IDS = [
 
 export type DocumentToolId = typeof DOCUMENT_TOOL_IDS[number]
 export type DocumentWorkspaceState =
-  | 'EMPTY'
-  | 'PREFLIGHTING'
-  | 'READY'
-  | 'UPLOADING'
+  | 'IDLE'
+  | 'FILE_SELECTED'
   | 'RUNNING'
-  | 'REVIEW_REQUIRED'
-  | 'VERIFYING'
-  | 'COMPLETED'
-  | 'FAILED'
-  | 'CANCELLED'
-  | 'EXPIRED'
+  | 'SUCCESS'
+  | 'ERROR'
 
 export interface DocumentToolDefinition {
   id: DocumentToolId
@@ -26,7 +20,6 @@ export interface DocumentToolDefinition {
   description: string
   accept: string
   extensionLabel: string
-  available: boolean
 }
 
 export const MAX_DOCUMENT_FILE_BYTES = 20 * 1024 * 1024
