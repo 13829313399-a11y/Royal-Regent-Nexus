@@ -21,6 +21,7 @@ from app.services.document_studio.extractors.qwen_ocr import (
     enhance_snapshot_with_qwen,
 )
 from app.services.document_studio.pipelines import pdf_to_excel as excel_pipeline
+from app.services.document_studio.pipelines import word_to_pdf as word_to_pdf_pipeline
 from app.services.document_studio.pipelines.pdf_to_word import (
     convert_pdf_to_layout_preserving_word,
 )
@@ -327,6 +328,40 @@ def test_office_renderer_uses_temporary_profile_and_validates_output(
     assert len(PdfReader(BytesIO(result.content)).pages) == 1
     assert "--safe-mode" in captured_command
     assert "--norestore" in captured_command
+
+
+@pytest.mark.parametrize(
+    ("isolation_verified", "expected_isolation_command"),
+    [(False, None), (True, "unshare")],
+)
+def test_word_to_pdf_uses_isolation_only_when_verified(
+    monkeypatch,
+    isolation_verified: bool,
+    expected_isolation_command: str | None,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def render(content: bytes, source_filename: str, **kwargs):
+        captured.update(kwargs)
+        return office_pdf_renderer.OfficePdfRenderResult(
+            content=_pdf_bytes(),
+            output_file_name="订单_转换结果.pdf",
+            page_count=1,
+        )
+
+    monkeypatch.setattr(word_to_pdf_pipeline, "render_docx_to_pdf", render)
+    result = word_to_pdf_pipeline.convert_word_to_pdf(
+        b"docx-placeholder",
+        "订单.docx",
+        settings=Settings(
+            _env_file=None,
+            document_office_renderer_enabled=True,
+            document_office_renderer_network_isolation_verified=isolation_verified,
+        ),
+    )
+
+    assert result.page_count == 1
+    assert captured["network_isolation_command"] == expected_isolation_command
 
 
 def test_office_font_preflight_fails_with_stable_code(monkeypatch) -> None:

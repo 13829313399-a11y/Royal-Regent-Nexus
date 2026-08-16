@@ -139,10 +139,7 @@ def task_runtime_available(settings: Settings) -> bool:
 
 
 def office_renderer_available(settings: Settings) -> bool:
-    return bool(
-        settings.document_office_renderer_enabled
-        and settings.document_office_renderer_network_isolation_verified
-    )
+    return settings.document_office_renderer_enabled
 
 
 def _download_preflight(

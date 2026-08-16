@@ -105,10 +105,7 @@ def _requires_content_extraction(arguments: DocumentStudioTaskOptions) -> bool:
 
 
 def _office_renderer_available() -> bool:
-    return bool(
-        settings.document_office_renderer_enabled
-        and settings.document_office_renderer_network_isolation_verified
-    )
+    return settings.document_office_renderer_enabled
 
 
 def _storage() -> ArtifactStorage:
@@ -731,7 +728,7 @@ def render_document_task(
     elif arguments.job_type == DocumentJobType.WORD_TO_PDF:
         if not _office_renderer_available():
             raise ArtifactInvalidError(
-                "Word 转 PDF 隔离渲染器未开放。",
+                "Word 转 PDF 渲染器未开放。",
                 code="DOCUMENT_OFFICE_RENDERER_UNAVAILABLE",
             )
         try:
