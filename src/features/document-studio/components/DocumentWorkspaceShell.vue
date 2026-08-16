@@ -99,8 +99,7 @@ const canStart = computed(() => Boolean(
   selectedFile.value
   && effectiveToolAvailable.value
   && !isBusy.value
-  && !hasActiveJob.value
-  && (processingMode.value !== 'AI_ENHANCED' || cloudConsentAccepted.value),
+  && !hasActiveJob.value,
 ))
 const stateLabel = computed(() => ({
   EMPTY: '等待文件',
@@ -681,7 +680,7 @@ onBeforeUnmount(() => {
                 </div>
                 <p class="mt-1.5 text-xs leading-5 text-teal-800/80">
                   {{ useTaskRuntime
-                    ? `源文件进入受控 Artifact，固定 Task 步骤生成派生结果；云 OCR ${jobCapabilities?.cloud_ocr_available ? '可选且需明确同意' : '未配置'}。`
+                    ? `源文件进入受控 Artifact，固定 Task 步骤生成派生结果；云 OCR ${jobCapabilities?.cloud_ocr_available ? '可选' : '未配置，自动使用本地结果'}。`
                     : taskRuntimeAvailable
                       ? '默认使用不持久化的本地同步接口；只有明确选择 AI 增强时才进入 Artifact / Task。'
                       : '使用不持久化的本地同步接口；AI 增强与云 OCR 保持关闭。' }}
@@ -704,15 +703,14 @@ onBeforeUnmount(() => {
                   type="button"
                   class="rounded-lg border px-3 py-2 text-xs font-semibold"
                   :class="processingMode === 'AI_ENHANCED' ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-200 text-slate-600'"
-                  :disabled="!jobCapabilities?.cloud_ocr_available"
                   @click="processingMode = 'AI_ENHANCED'"
                 >
-                  AI 增强{{ jobCapabilities?.cloud_ocr_available ? '' : '（未配置）' }}
+                  AI 增强{{ jobCapabilities?.cloud_ocr_available ? '' : '（本地兜底）' }}
                 </button>
               </div>
               <label v-if="processingMode === 'AI_ENHANCED'" class="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] leading-5 text-amber-900">
                 <input v-model="cloudConsentAccepted" type="checkbox" class="mt-1">
-                <span>我同意将需要增强识别的页面通过中国北京区域的 Qwen 文档解析服务处理；服务未就绪时保留本地结果并进入质量检查。</span>
+                <span>允许将需要增强识别的页面交给中国北京区域的 Qwen 文档解析服务；不勾选或服务不可用时自动使用本地结果，不影响任务继续处理。</span>
               </label>
             </div>
 

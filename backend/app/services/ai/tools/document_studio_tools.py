@@ -37,7 +37,10 @@ from app.services.document_studio.contracts import (
     DocumentProcessingMode,
 )
 from app.services.document_studio.evidence import extract_local_snapshot
-from app.services.document_studio.extractors.qwen_ocr import enhance_snapshot_with_qwen
+from app.services.document_studio.extractors.qwen_ocr import (
+    cloud_ocr_page_numbers,
+    enhance_snapshot_with_qwen,
+)
 from app.services.document_studio.metadata import (
     create_metadata_artifact,
     load_metadata_artifact,
@@ -67,6 +70,7 @@ from app.services.document_studio.providers.qwen_reconcile import (
 )
 from app.services.document_studio.providers.signed_file_source import (
     BrokerSignedFileSource,
+    SignedFileSourceError,
 )
 from app.services.document_studio.quality import build_quality_report
 from app.services.document_studio.renderers.office_pdf_renderer import (
@@ -80,6 +84,9 @@ from app.services.pdf_split import split_pdf
 
 PARSER_VERSION = "document-studio-deterministic-v1"
 MODEL_VERSION = "none"
+_CONTENT_EXTRACTION_JOB_TYPES = frozenset(
+    {DocumentJobType.PDF_TO_EXCEL, DocumentJobType.PDF_TRANSLATION}
+)
 
 
 def _office_renderer_available() -> bool:
@@ -199,7 +206,7 @@ def inspect_document_task(
         job_type=arguments.job_type,
         processing_mode=arguments.processing_mode,
         task_runtime_available=True,
-        cloud_ocr_available=settings.ai_document_cloud_ocr_enabled,
+        cloud_ocr_available=get_document_provider_status(settings).available,
         local_translation_available=bool(
             document_translation_status(settings.document_translation_model_dir)[
                 "available"
@@ -257,6 +264,8 @@ def extract_document_task(
     context: ToolExecutionContext,
     arguments: DocumentStudioTaskOptions,
 ) -> DocumentStudioToolResult:
+    if arguments.job_type not in _CONTENT_EXTRACTION_JOB_TYPES:
+        return _validated_passthrough("EXTRACT", context, arguments)
     db, download = _source_download(context, arguments)
     artifact_id = metadata_artifact_id(
         user_id=context.user.id,
@@ -301,19 +310,23 @@ def extract_document_task(
     if (
         arguments.processing_mode == DocumentProcessingMode.AI_ENHANCED
         and settings.ai_document_cloud_ocr_enabled
+        and cloud_ocr_page_numbers(snapshot)
     ):
+        warning = ""
         if download.record.classification == "RESTRICTED":
-            raise ArtifactInvalidError(
-                "RESTRICTED 文档禁止发送到云端 OCR。",
-                code="DOCUMENT_CLOUD_RESTRICTED",
+            warning = "云 OCR 已跳过（DOCUMENT_CLOUD_RESTRICTED），已使用本地结果继续处理。"
+        elif arguments.cloud_consent is None:
+            warning = (
+                "云 OCR 已跳过（DOCUMENT_CLOUD_CONSENT_MISSING），"
+                "已使用本地结果继续处理。"
             )
-        if arguments.cloud_consent is None:
-            raise ArtifactInvalidError(
-                "AI 增强文档缺少云端处理同意。",
-                code="DOCUMENT_CLOUD_CONSENT_REQUIRED",
-            )
-        status = get_document_provider_status(settings)
-        if status.available:
+        else:
+            status = get_document_provider_status(settings)
+            if not status.available:
+                warning = (
+                    f"云 OCR 未就绪（{status.reason_code}），已使用本地结果继续处理。"
+                )
+        if not warning:
             try:
                 snapshot = enhance_snapshot_with_qwen(
                     snapshot,
@@ -326,18 +339,15 @@ def extract_document_task(
                     ),
                 )
                 model_version = settings.ai_document_ocr_model
-            except QwenDocumentError as exc:
-                payload = snapshot.model_dump(mode="json")
-                payload["warnings"] = [
-                    *payload["warnings"],
-                    f"云 OCR 未完成（{exc.code}），已保留本地结果并进入质量检查。",
-                ]
-                snapshot = DocumentSnapshot.model_validate(payload)
-        else:
+            except (QwenDocumentError, SignedFileSourceError) as exc:
+                warning = (
+                    f"云 OCR 未完成（{exc.code}），已使用本地结果继续处理。"
+                )
+        if warning:
             payload = snapshot.model_dump(mode="json")
             payload["warnings"] = [
                 *payload["warnings"],
-                f"云 OCR 未就绪（{status.reason_code}），已保留本地结果并进入质量检查。",
+                warning,
             ]
             snapshot = DocumentSnapshot.model_validate(payload)
     if arguments.job_type == DocumentJobType.PDF_TRANSLATION:
@@ -392,6 +402,8 @@ def reconcile_document_task(
     context: ToolExecutionContext,
     arguments: DocumentStudioTaskOptions,
 ) -> DocumentStudioToolResult:
+    if arguments.job_type not in _CONTENT_EXTRACTION_JOB_TYPES:
+        return _validated_passthrough("RECONCILE", context, arguments)
     db, download = _source_download(context, arguments)
     snapshot_id = task_step_result_artifact_id(
         db, task_id=context.task_id, step_key="extract_document"
@@ -479,6 +491,8 @@ def review_document_task(
     context: ToolExecutionContext,
     arguments: DocumentStudioTaskOptions,
 ) -> DocumentStudioToolResult:
+    if arguments.job_type not in _CONTENT_EXTRACTION_JOB_TYPES:
+        return _validated_passthrough("REVIEW", context, arguments)
     db, download = _source_download(context, arguments)
     snapshot_id = _current_snapshot_artifact_id(db, task_id=context.task_id)
     if snapshot_id is None:

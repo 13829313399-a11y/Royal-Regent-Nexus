@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.core.config import Settings
 from app.services.ai.provider_factory import resolve_qwen_base_url
 from app.services.document_studio.providers.signed_file_source import (
+    BrokerSignedFileSource,
     SignedFileSource,
     SignedFileSourceError,
 )
@@ -85,6 +86,11 @@ def get_document_provider_status(settings: Settings) -> DocumentProviderStatus:
         reason = "DOCUMENT_SIGNED_SOURCE_MISSING"
     elif not settings.ai_document_signed_file_allowed_hosts.strip():
         reason = "DOCUMENT_SIGNED_HOSTS_MISSING"
+    else:
+        try:
+            BrokerSignedFileSource(settings)
+        except SignedFileSourceError:
+            reason = "DOCUMENT_SIGNED_SOURCE_INVALID"
     return DocumentProviderStatus(
         available=not reason,
         model=settings.ai_document_ocr_model,
@@ -213,7 +219,9 @@ class QwenDocumentProvider:
     ) -> None:
         status = get_document_provider_status(settings)
         if not status.available:
-            raise QwenDocumentError(status.reason, "云文档 Provider 尚未安全配置。")
+            raise QwenDocumentError(
+                status.reason_code, "云文档 Provider 尚未安全配置。"
+            )
         self.settings = settings
         self.signed_file_source = signed_file_source
         for name in _SENSITIVE_LOGGERS:
