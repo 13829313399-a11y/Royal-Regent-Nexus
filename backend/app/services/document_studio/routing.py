@@ -79,7 +79,11 @@ def route_document_job(
     warnings: list[str] = []
     if job_type == DocumentJobType.WORD_TO_PDF:
         if office_renderer_available and task_runtime_available:
-            return DocumentRouteDecision.TASK_LOCAL, ()
+            if processing_mode == DocumentProcessingMode.AI_ENHANCED:
+                if cloud_ocr_available:
+                    return DocumentRouteDecision.TASK_AI_ENHANCED, ()
+                warnings.append("千问结果检查未开放，将保留本地 LibreOffice 转换结果。")
+            return DocumentRouteDecision.TASK_LOCAL, tuple(warnings)
         return (
             DocumentRouteDecision.UNSUPPORTED,
             ("Word 转 PDF 的受限 Office 渲染器尚未开放。",),

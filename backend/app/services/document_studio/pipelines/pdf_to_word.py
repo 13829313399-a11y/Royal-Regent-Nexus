@@ -10,6 +10,8 @@ from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_BREAK
 from docx.shared import Inches
 
+from app.schemas.document_studio import DocumentSnapshot
+from app.services.document_studio.contracts import DocumentExtractionRoute
 from app.services.pdf_to_word import PdfToWordConversionError, PdfToWordResult
 from app.services.pdf_to_word import convert_pdf_to_word as convert_editable_pdf_to_word
 
@@ -83,7 +85,28 @@ def convert_pdf_to_word(
     source_filename: str,
     *,
     mode: str,
+    snapshot: DocumentSnapshot | None = None,
 ) -> PdfToWordResult:
     if mode == "LAYOUT_PRESERVING":
         return convert_pdf_to_layout_preserving_word(pdf_bytes, source_filename)
-    return convert_editable_pdf_to_word(pdf_bytes, source_filename)
+    page_text_overrides = None
+    if snapshot is not None:
+        page_text_overrides = {
+            page.page_number: tuple(
+                (
+                    float(block.bbox[1]),
+                    float(block.bbox[3]),
+                    block.normalized_text,
+                )
+                for block in page.blocks
+                if block.normalized_text.strip()
+            )
+            for page in snapshot.pages
+            if page.extraction_route == DocumentExtractionRoute.QWEN_OCR
+            and page.blocks
+        }
+    return convert_editable_pdf_to_word(
+        pdf_bytes,
+        source_filename,
+        page_text_overrides=page_text_overrides or None,
+    )
