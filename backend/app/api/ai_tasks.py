@@ -52,7 +52,6 @@ task_tool_registry = build_default_tool_registry(
     semantic_gateway_enabled=settings.ai_semantic_gateway_enabled,
     knowledge_hub_enabled=settings.ai_knowledge_hub_enabled,
     artifact_workflows_enabled=settings.ai_artifact_workflows_enabled,
-    document_studio_enabled=settings.ai_document_studio_enabled,
     vision_tool_comparison_enabled=settings.ai_vision_tool_comparison_enabled,
 )
 
