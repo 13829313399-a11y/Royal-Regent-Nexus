@@ -6,12 +6,6 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from openpyxl import Workbook, load_workbook
-from pypdf import PdfReader, PdfWriter
-
 from app.core.config import Settings
 from app.schemas.document_studio import (
     DocumentBlock,
@@ -46,6 +40,11 @@ from app.services.document_studio.providers.qwen_reconcile import (
 from app.services.document_studio.providers.signed_file_source import SignedFileLease
 from app.services.document_studio.renderers import office_pdf_renderer
 from app.services.pdf_to_excel import PdfToExcelResult
+from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from openpyxl import Workbook, load_workbook
+from pypdf import PdfReader, PdfWriter
 
 
 def _pdf_bytes(page_count: int = 1) -> bytes:
@@ -439,6 +438,24 @@ def test_qwen_document_provider_uses_responses_file_input_without_storage() -> N
     assert calls[0]["input"][0]["content"][0]["type"] == "input_file"
     assert signed_source.revoked is True
     assert get_document_provider_status(settings).available is True
+
+
+def test_qwen_document_provider_status_rejects_insecure_broker_configuration() -> None:
+    settings = Settings(
+        _env_file=None,
+        ai_document_cloud_ocr_enabled=True,
+        ai_region="cn-beijing",
+        ai_workspace_id="workspace-test",
+        dashscope_api_key="test-secret",
+        ai_document_signed_file_service_url="http://document-broker",
+        ai_document_signed_file_service_token="broker-secret",
+        ai_document_signed_file_allowed_hosts="lease.example.test",
+    )
+
+    status = get_document_provider_status(settings)
+
+    assert status.available is False
+    assert status.reason_code == "DOCUMENT_SIGNED_SOURCE_INVALID"
 
 
 def test_qwen_document_parser_accepts_single_page_processed_text_only() -> None:

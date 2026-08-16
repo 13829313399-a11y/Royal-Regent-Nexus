@@ -465,11 +465,6 @@ class DocumentJobCreate(_ClosedDocumentModel):
             and self.cloud_consent is not None
         ):
             raise ValueError("local private jobs must not include cloud consent")
-        if (
-            self.processing_mode == DocumentProcessingMode.AI_ENHANCED
-            and self.cloud_consent is None
-        ):
-            raise ValueError("AI enhanced jobs require explicit cloud consent")
         return self
 
 

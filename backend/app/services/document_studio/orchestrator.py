@@ -62,6 +62,9 @@ from app.services.document_studio.metadata import (
     load_metadata_artifact,
 )
 from app.services.document_studio.preflight import preflight_document
+from app.services.document_studio.providers.qwen_document import (
+    get_document_provider_status,
+)
 from app.services.document_studio.quality import build_quality_report
 from app.services.document_studio.review import (
     DocumentReviewError,
@@ -155,7 +158,7 @@ def _download_preflight(
         job_type=payload.job_type,
         processing_mode=payload.processing_mode,
         task_runtime_available=task_runtime_available(settings),
-        cloud_ocr_available=settings.ai_document_cloud_ocr_enabled,
+        cloud_ocr_available=get_document_provider_status(settings).available,
         local_translation_available=bool(
             document_translation_status(settings.document_translation_model_dir)[
                 "available"

@@ -4,13 +4,6 @@ from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
-from fastapi import HTTPException
-from pydantic import ValidationError
-from pypdf import PdfWriter
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
-
 from app.api import document_jobs as document_jobs_api
 from app.core.config import Settings
 from app.db import Base
@@ -22,6 +15,7 @@ from app.models.auth import AuthAuditLog, AuthUser
 from app.schemas.ai.task import AITaskState, AITaskStepState
 from app.schemas.document_studio import (
     DocumentBlock,
+    DocumentCloudConsent,
     DocumentJobCreate,
     DocumentJobOptions,
     DocumentJobReviewRequest,
@@ -52,7 +46,10 @@ from app.services.document_studio.contracts import (
     DocumentProcessingMode,
     DocumentRouteDecision,
 )
-from app.services.document_studio.metadata import create_metadata_artifact
+from app.services.document_studio.metadata import (
+    create_metadata_artifact,
+    load_metadata_artifact,
+)
 from app.services.document_studio.orchestrator import (
     DocumentJobConflictError,
     cancel_document_job,
@@ -70,6 +67,13 @@ from app.services.document_studio.routing import (
     map_task_state,
     route_document_job,
 )
+from docx import Document
+from fastapi import HTTPException
+from pydantic import ValidationError
+from pypdf import PdfWriter
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 
 def _pdf_bytes(pages: int = 1) -> bytes:
@@ -81,24 +85,26 @@ def _pdf_bytes(pages: int = 1) -> bytes:
     return output.getvalue()
 
 
-def _settings() -> Settings:
-    return Settings(
-        _env_file=None,
-        database_url="postgresql+psycopg://document-studio-test",
-        ai_enabled=True,
-        ai_pilot_enabled=True,
-        ai_pilot_user_ids="owner",
-        ai_pilot_factory_ids="huaxing",
-        ai_nif_runtime_enabled=True,
-        ai_skill_router_enabled=True,
-        ai_evidence_v1_enabled=True,
-        ai_tasks_enabled=True,
-        ai_task_worker_enabled=True,
-        ai_artifacts_enabled=True,
-        ai_artifact_workflows_enabled=True,
-        ai_document_studio_enabled=True,
-        ai_artifact_scanner_backend="clamav",
-    )
+def _settings(**overrides) -> Settings:
+    values = {
+        "_env_file": None,
+        "database_url": "postgresql+psycopg://document-studio-test",
+        "ai_enabled": True,
+        "ai_pilot_enabled": True,
+        "ai_pilot_user_ids": "owner",
+        "ai_pilot_factory_ids": "huaxing",
+        "ai_nif_runtime_enabled": True,
+        "ai_skill_router_enabled": True,
+        "ai_evidence_v1_enabled": True,
+        "ai_tasks_enabled": True,
+        "ai_task_worker_enabled": True,
+        "ai_artifacts_enabled": True,
+        "ai_artifact_workflows_enabled": True,
+        "ai_document_studio_enabled": True,
+        "ai_artifact_scanner_backend": "clamav",
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 def _user() -> AuthContext:
@@ -175,6 +181,28 @@ def _source(db: Session, storage: FakeArtifactStorage, settings: Settings):
         filename="订单.pdf",
         declared_mime_type="application/pdf",
         data=_pdf_bytes(),
+        storage=storage,
+        scanner=FakeArtifactScanner(),
+        settings=settings,
+        allowed_factory_ids=frozenset({"huaxing"}),
+    )
+
+
+def _docx_source(db: Session, storage: FakeArtifactStorage, settings: Settings):
+    output = BytesIO()
+    document = Document()
+    document.add_paragraph("Word 转 PDF")
+    document.save(output)
+    return create_artifact(
+        db,
+        user=_user(),
+        factory_id="huaxing",
+        classification="CONFIDENTIAL_BUSINESS",
+        filename="订单.docx",
+        declared_mime_type=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        data=output.getvalue(),
         storage=storage,
         scanner=FakeArtifactScanner(),
         settings=settings,
@@ -560,6 +588,147 @@ def test_pdf_split_adapter_creates_one_replay_safe_derived_artifact(
     assert db.query(AIArtifact).count() == 2
 
 
+@pytest.mark.parametrize("job_type", ["PDF_TO_WORD", "PDF_SPLIT", "WORD_TO_PDF"])
+def test_non_content_document_jobs_skip_unneeded_extraction_and_review(
+    monkeypatch: pytest.MonkeyPatch,
+    job_type: str,
+) -> None:
+    settings = _settings(ai_document_cloud_ocr_enabled=True)
+    db = _database()
+    storage = FakeArtifactStorage()
+    source = (
+        _docx_source(db, storage, settings)
+        if job_type == "WORD_TO_PDF"
+        else _source(db, storage, settings)
+    )
+    monkeypatch.setattr(document_studio_tools, "settings", settings)
+    monkeypatch.setattr(document_studio_tools, "_storage", lambda: storage)
+    monkeypatch.setattr(document_studio_tools, "_scanner", FakeArtifactScanner)
+    monkeypatch.setattr(
+        document_studio_tools,
+        "extract_local_snapshot",
+        lambda **_kwargs: pytest.fail("content extraction must be skipped"),
+    )
+    arguments = DocumentStudioTaskOptions(
+        operation_id="docop-" + "7" * 32,
+        factory_id="huaxing",
+        source_artifact_id=source.id,
+        source_sha256=source.sha256,
+        job_type=job_type,
+        processing_mode="AI_ENHANCED",
+        page_range=DocumentPageRange(),
+        options=DocumentJobOptions(),
+    )
+    context = ToolExecutionContext(
+        db=db,
+        user=_user(),
+        request_id="document-pass-through-test",
+    )
+
+    extracted = document_studio_tools.extract_document_task(context, arguments)
+    reconciled = document_studio_tools.reconcile_document_task(context, arguments)
+    reviewed = document_studio_tools.review_document_task(context, arguments)
+
+    assert [extracted.stage, reconciled.stage, reviewed.stage] == [
+        "EXTRACT",
+        "RECONCILE",
+        "REVIEW",
+    ]
+    assert extracted.result_artifact_id == source.id
+    assert reconciled.result_artifact_id == source.id
+    assert reviewed.result_artifact_id == source.id
+    assert reviewed.review_required is False
+
+
+def test_ai_enhanced_extraction_falls_back_when_signed_source_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(
+        ai_document_cloud_ocr_enabled=True,
+        ai_region="cn-beijing",
+        ai_workspace_id="workspace-test",
+        dashscope_api_key="test-secret",
+        ai_document_signed_file_service_url="http://document-broker",
+        ai_document_signed_file_service_token="broker-secret",
+        ai_document_signed_file_allowed_hosts="lease.example.test",
+    )
+    db = _database()
+    storage = FakeArtifactStorage()
+    source = _source(db, storage, settings)
+    snapshot = DocumentSnapshot(
+        source_artifact_id=source.id,
+        source_sha256=source.sha256,
+        page_count=1,
+        pages=(
+            DocumentPageSnapshot(
+                page_number=1,
+                width=595,
+                height=842,
+                extraction_route="LOCAL_OCR",
+                blocks=(
+                    DocumentBlock(
+                        block_id="p1-b1",
+                        kind="PARAGRAPH",
+                        bbox=(10, 10, 200, 40),
+                        raw_text="订单 0012",
+                        normalized_text="订单 0012",
+                        confidence=0.8,
+                        source="LOCAL_OCR",
+                        needs_review=True,
+                    ),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(document_studio_tools, "settings", settings)
+    monkeypatch.setattr(document_studio_tools, "_storage", lambda: storage)
+    monkeypatch.setattr(document_studio_tools, "_scanner", FakeArtifactScanner)
+    monkeypatch.setattr(
+        document_studio_tools,
+        "extract_local_snapshot",
+        lambda **_kwargs: snapshot,
+    )
+    arguments = DocumentStudioTaskOptions(
+        operation_id="docop-" + "6" * 32,
+        factory_id="huaxing",
+        source_artifact_id=source.id,
+        source_sha256=source.sha256,
+        job_type="PDF_TO_EXCEL",
+        processing_mode="AI_ENHANCED",
+        page_range=DocumentPageRange(),
+        options=DocumentJobOptions(),
+        cloud_consent=DocumentCloudConsent(
+            accepted=True,
+            provider="qwen",
+            region="cn-beijing",
+            purpose="DOCUMENT_PARSE",
+            notice_version="document-cloud-v1",
+        ),
+    )
+    context = ToolExecutionContext(
+        db=db,
+        user=_user(),
+        request_id="document-local-fallback-test",
+    )
+
+    result = document_studio_tools.extract_document_task(context, arguments)
+    _, stored_snapshot = load_metadata_artifact(
+        db,
+        artifact_id=result.result_artifact_id,
+        user=_user(),
+        allowed_factory_ids=frozenset({"huaxing"}),
+        storage=storage,
+        model=DocumentSnapshot,
+    )
+
+    assert result.stage == "EXTRACT"
+    assert result.model_version == "none"
+    assert stored_snapshot.pages[0].extraction_route.value == "LOCAL_OCR"
+    assert stored_snapshot.warnings == (
+        "云 OCR 未就绪（DOCUMENT_SIGNED_SOURCE_INVALID），已使用本地结果继续处理。",
+    )
+
+
 def test_document_job_request_contract_rejects_open_or_inconsistent_options() -> None:
     with pytest.raises(ValidationError):
         DocumentJobOptions(split_mode="ranges", split_page_ranges="")
@@ -576,6 +745,17 @@ def test_document_job_request_contract_rejects_open_or_inconsistent_options() ->
                 "unknown": True,
             }
         )
+
+    enhanced_without_cloud_consent = DocumentJobCreate(
+        operation_id="docop-" + "b" * 32,
+        idempotency_key="docop-" + "b" * 32,
+        factory_id="huaxing",
+        source_artifact_id="aiart-" + "a" * 32,
+        source_sha256="b" * 64,
+        job_type="PDF_SPLIT",
+        processing_mode="AI_ENHANCED",
+    )
+    assert enhanced_without_cloud_consent.cloud_consent is None
 
 
 def test_review_patch_rebinds_snapshot_and_resumes_the_same_task() -> None:

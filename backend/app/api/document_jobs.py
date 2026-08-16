@@ -48,6 +48,9 @@ from app.services.document_studio.orchestrator import (
     review_document_job,
     task_runtime_available,
 )
+from app.services.document_studio.providers.qwen_document import (
+    get_document_provider_status,
+)
 from app.services.document_studio.routing import available_document_job_types
 from app.services.document_translation import document_translation_status
 
@@ -135,7 +138,7 @@ def get_document_job_capabilities(
         artifact_upload_available=artifact_available,
         task_runtime_available=runtime_available,
         cloud_ocr_available=bool(
-            runtime_available and settings.ai_document_cloud_ocr_enabled
+            runtime_available and get_document_provider_status(settings).available
         ),
         local_translation_available=bool(
             runtime_available and local_translation_available
