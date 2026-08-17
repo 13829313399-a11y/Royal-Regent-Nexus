@@ -228,6 +228,15 @@ def test_pilot_readiness_script_checks_external_and_server_side_gates() -> None:
     assert "AI_ACTION_GATEWAY_ENABLED=false" in backend_example
     assert "AI_OPERATIONAL_ALERTS_ENABLED=false" in production_example
     assert "AI_OPERATIONAL_ALERTS_ENABLED=false" in backend_example
+    for capability_flag in (
+        "AI_ADAPTIVE_SURFACE_ENABLED",
+        "AI_RICH_MESSAGE_RENDERER_ENABLED",
+        "AI_WORKBENCH_V2_ENABLED",
+        "AI_CONVERSATION_CONTEXT_ENABLED",
+        "AI_PRESENTATION_BLOCKS_ENABLED",
+    ):
+        assert f"{capability_flag}=false" in production_example
+        assert f"{capability_flag}=false" in backend_example
 
     auth_tree = ast.parse(
         (REPOSITORY_ROOT / "backend" / "app" / "services" / "auth.py").read_text(
