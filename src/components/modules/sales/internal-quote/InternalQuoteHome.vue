@@ -193,6 +193,19 @@ const statusMeta: Record<InternalQuoteStatus, { label: string; tone: string }> =
   exported: { label: '已导出', tone: 'green' },
   archived: { label: '已归档', tone: 'slate' },
 }
+function quoteStatusLabel(quote: InternalQuote) {
+  if (quote.moduleVersion !== 'v3') return statusMeta[quote.status].label
+  return {
+    drafting: '整单填写中',
+    pending_review: '整单填写中',
+    rejected: '整单已退回',
+    fully_approved: '待整单提交',
+    final_pending: '待整单审核',
+    released: '整单审核通过',
+    exported: '整单已输出',
+    archived: '已归档',
+  }[quote.status]
+}
 
 const managedCustomerNames = computed(() => quoteStore.factoryCustomers.map((customer) => customer.name))
 const customers = computed(() => Array.from(new Set([
@@ -811,7 +824,7 @@ onBeforeUnmount(() => {
 
       <div class="quote-table-scroll">
         <table class="quote-table">
-          <thead><tr><th class="quote-select-column"><span class="sr-only">选择对比</span></th><th>报价号</th><th>产品 / 客户</th><th>发起</th><th>版本</th><th>状态</th><th>分段进度</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
+          <thead><tr><th class="quote-select-column"><span class="sr-only">选择对比</span></th><th>报价号</th><th>产品 / 客户</th><th>发起</th><th>版本</th><th>状态</th><th>部门完成进度</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
           <tbody>
             <template v-if="!quoteStore.listLoading">
             <tr v-for="quote in quoteStore.quotes" :key="quote.id" :class="{ 'comparison-selected': isQuoteSelectedForComparison(quote) }" @dblclick="openQuote(quote)">
@@ -820,7 +833,7 @@ onBeforeUnmount(() => {
               <td><strong>{{ quote.productName }}</strong><span>{{ quote.customer }}</span></td>
               <td><span class="quote-initiator">{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}</span><small>{{ quote.initiatorName }}</small></td>
               <td><span class="quote-version">{{ quote.versionLabel }}</span></td>
-              <td><span class="quote-status" :class="`tone-${statusMeta[quote.status].tone}`"><i />{{ statusMeta[quote.status].label }}</span></td>
+              <td><span class="quote-status" :class="`tone-${statusMeta[quote.status].tone}`"><i />{{ quoteStatusLabel(quote) }}</span></td>
               <td>
                 <div class="quote-progress-cell"><div><span :style="{ width: `${requiredCount(quote) ? approvedCount(quote) / requiredCount(quote) * 100 : 0}%` }" /></div><strong>{{ approvedCount(quote) }}/{{ requiredCount(quote) }}</strong></div>
               </td>

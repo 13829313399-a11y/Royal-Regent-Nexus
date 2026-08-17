@@ -66,6 +66,7 @@ describe('internal quote API adapter', () => {
       version_label: 'V1', initiator_department: 'engineering' as const,
       business_owner_id: 'owner-1', business_owner_name: '负责人', target_customer_price: 'USD 3.50', target_date: '', remark: '',
       participating_sections: ['sales', 'engineering', 'electronic', 'assembly'] as InternalQuoteSectionCode[],
+      workflow_mode: 'whole_quote_review' as const,
     }
 
     await api.create(createPayload)
@@ -106,10 +107,16 @@ describe('internal quote API adapter', () => {
     await api.addParticipation('quote-1', 3, ['painting', 'sewing'])
     await api.removeParticipation('quote-1', 4, ['painting'])
     await api.updateReferenceFx('quote-1', 3, '0.9', '7.9')
+    await api.updateReferenceMaterials('quote-1', {
+      revision: 3,
+      material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '9.25' }],
+    })
     await api.previewImport('quote-1', 'mold', file)
     await api.downloadImportTemplate('quote-1', 'mold')
     await api.confirmImport('quote-1', 'batch-1', 9)
     await api.uploadAttachment('quote-1', 'engineering', file)
+    await api.previewAttachment('quote-1', 'attachment-1')
+    await api.previewAttachmentContent('quote-1', 'attachment-1')
     await api.deleteImportAttachment('quote-1', 'attachment-1', 10)
     await api.submitFinal('quote-1', 3)
     await api.reviewFinal('quote-1', 4, 'approve')
@@ -123,11 +130,17 @@ describe('internal quote API adapter', () => {
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation', { revision: 3, add_sections: ['painting', 'sewing'] })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/participation/remove', { revision: 4, remove_sections: ['painting'] })
     expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/reference-snapshot/fx', { revision: 3, rmb_hkd: '0.9', hkd_usd: '7.9' })
+    expect(http.put).toHaveBeenCalledWith('/internal-quotes/quote-1/reference-snapshot/materials', {
+      revision: 3,
+      material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '9.25' }],
+    })
     expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/mold/template', {
       responseType: 'blob',
       timeout: 60_000,
     })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/batch-1/confirm', { revision: 9 })
+    expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/attachments/attachment-1/preview', { responseType: 'blob' })
+    expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/attachments/attachment-1/content-preview')
     expect(http.delete).toHaveBeenCalledWith('/internal-quotes/quote-1/attachments/attachment-1', {
       params: { revision: 10 },
     })

@@ -27,8 +27,11 @@ from app.models.internal_quote import (
 )
 from app.schemas.internal_quote import (
     MANDATORY_SECTION_CODES,
+    SECTION_CODE_ORDER,
     InternalQuoteArchiveRequest,
     InternalQuoteAuditOut,
+    InternalQuoteBatchCopyRequest,
+    InternalQuoteBatchProductOut,
     InternalQuoteBusinessOwnerOut,
     InternalQuoteCloneRequest,
     InternalQuoteCreateRequest,
@@ -38,8 +41,10 @@ from app.schemas.internal_quote import (
     InternalQuotePageOut,
     InternalQuoteParticipationRemoveRequest,
     InternalQuoteParticipationUpdateRequest,
+    InternalQuoteProductImageOut,
     InternalQuoteReasonRequest,
     InternalQuoteReferenceFxUpdateRequest,
+    InternalQuoteReferenceMaterialsUpdateRequest,
     InternalQuoteReferenceSetOut,
     InternalQuoteReferenceSyncRequest,
     InternalQuoteRevisionOut,
@@ -75,16 +80,19 @@ from app.services.internal_quote_prefill import prefill_molding_from_engineering
 from app.services.permission_codes import INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE
 
 
-SECTION_DEFINITIONS = (
-    ("sales", "业务部", ("sales-business",)),
-    ("engineering", "工程部", ("engineering",)),
-    ("electronic", "电子部", ("electronic",)),
-    ("molding", "啤机部", ("production", "molding")),
-    ("painting", "喷油部", ("production", "painting")),
-    ("slush", "搪胶部", ("slush",)),
-    ("sewing", "车缝部", ("sewing",)),
-    ("hair", "车发部", ("hair",)),
-    ("assembly", "装配部", ("assembly",)),
+SECTION_METADATA = {
+    "sales": ("业务部", ("sales-business",)),
+    "engineering": ("工程部", ("engineering",)),
+    "electronic": ("电子部", ("electronic",)),
+    "molding": ("啤机部", ("production", "molding")),
+    "painting": ("喷油部", ("production", "painting")),
+    "slush": ("搪胶部", ("slush",)),
+    "sewing": ("车缝部", ("sewing",)),
+    "hair": ("车发部", ("hair",)),
+    "assembly": ("装配部", ("assembly",)),
+}
+SECTION_DEFINITIONS = tuple(
+    (code, *SECTION_METADATA[code]) for code in SECTION_CODE_ORDER
 )
 SECTION_NAMES = {code: name for code, name, _ in SECTION_DEFINITIONS}
 SECTION_DEPARTMENTS = {code: departments for code, _, departments in SECTION_DEFINITIONS}
@@ -94,6 +102,8 @@ ALL_QUOTE_DEPARTMENTS = tuple(
 MUTABLE_SECTION_STATUSES = {"draft", "rejected"}
 REVIEWABLE_SECTION_STATUSES = {"pending_review", "na_pending"}
 COMPLETED_SECTION_STATUSES = {"approved", "not_applicable"}
+LEGACY_SECTION_REVIEW_MODULE_VERSION = "v2"
+WHOLE_QUOTE_REVIEW_MODULE_VERSION = "v3"
 VIEW_DEDUP_MINUTES = 5
 SECTION_EDIT_NOTIFICATION_EVENTS = {
     "quote_created",
@@ -108,7 +118,7 @@ FINAL_SUBMIT_NOTIFICATION_EVENTS = {
     "final_release_rejected",
     "final_release_invalidated",
 }
-FINAL_REVIEW_NOTIFICATION_EVENTS = {"final_release_submitted"}
+FINAL_REVIEW_NOTIFICATION_EVENTS = {"final_release_submitted", "whole_quote_submitted"}
 ARTIFACT_NOTIFICATION_EVENTS = {"customer_price_artifact_available"}
 ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS = (
     SECTION_EDIT_NOTIFICATION_EVENTS
@@ -125,6 +135,18 @@ def _json_object(value: str) -> dict[str, object]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def is_whole_quote_review(quote: InternalQuote) -> bool:
+    return quote.module_version == WHOLE_QUOTE_REVIEW_MODULE_VERSION
+
+
+def _ensure_section_review_workflow(quote: InternalQuote) -> None:
+    if is_whole_quote_review(quote):
+        raise HTTPException(
+            status_code=409,
+            detail="当前报价采用整单审核，不支持分段提交、分段审核或分段重开",
+        )
 
 
 def _json_list(value: str) -> list[dict[str, object]]:
@@ -347,6 +369,13 @@ def quote_to_out(
         workshop_name=quote.workshop_name,
         quote_no=quote.quote_no,
         product_name=quote.product_name,
+        quote_type=quote.quote_type or "single",
+        batch_id=quote.batch_id or quote.id,
+        batch_quote_no=quote.batch_quote_no or quote.quote_no,
+        batch_position=quote.batch_position or 1,
+        batch_size=quote.batch_size or 1,
+        baseline_quote_id=quote.baseline_quote_id or quote.id,
+        region_code=quote.region_code or "",
         customer=quote.customer,
         qty=quote.qty,
         version_label=quote.version_label,
@@ -1402,6 +1431,23 @@ def _derive_quote_status(db: Session, quote: InternalQuote) -> None:
             InternalQuoteSection.is_required.is_(True),
         )
     ).all()
+    if is_whole_quote_review(quote):
+        if quote.final_release_status == "pending":
+            quote.status = "final_reviewing"
+        elif quote.final_release_status == "approved":
+            if quote.status != "exported":
+                quote.status = "fully_approved"
+        else:
+            complete = bool(sections) and all(
+                section.filled_at
+                and bool(_json_object(section.payload_json))
+                and section.calculation_status == "valid"
+                and section.dependency_status == "current"
+                for section in sections
+            )
+            quote.status = "ready_for_final_review" if complete else "drafting"
+        quote.updated_at = now_text()
+        return
     statuses = {section.status for section in sections}
     if sections and statuses <= COMPLETED_SECTION_STATUSES:
         quote.status = "ready_for_final_review"
@@ -1468,67 +1514,111 @@ def create_quote(
         payload.initiator_department,
     )
     timestamp = now_text()
-    quote = InternalQuote(
-        id=f"IQ-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:10].upper()}",
+    products = payload.products
+    batch_id = f"IQB-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:12].upper()}"
+    quote_ids = [
+        f"IQ-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:10].upper()}"
+        for _item in products
+    ]
+    baseline_quote_id = quote_ids[0]
+    batch_size = len(products)
+    participating_sections = set(payload.participating_sections)
+    batch_snapshot = build_reference_snapshot(
+        db,
         factory_id=payload.factory_id,
         workshop_code=payload.workshop_code,
-        workshop_name=payload.workshop_name,
-        quote_no=payload.quote_no,
-        product_name=payload.product_name,
-        customer=payload.customer,
-        qty=payload.qty,
-        version_label=payload.version_label,
-        status="drafting",
-        initiator_department=payload.initiator_department,
-        business_owner_id=payload.business_owner_id,
-        business_owner_name=payload.business_owner_name,
-        target_customer_price=payload.target_customer_price,
-        target_date=payload.target_date,
-        remark=payload.remark,
-        module_version="v2",
-        reference_snapshot_id="",
-        formula_version=FORMULA_VERSION,
-        header_revision=1,
-        cloned_from_quote_id="",
-        archived_by="",
-        archived_at="",
-        archive_reason="",
-        created_by=user.id,
-        created_by_name=user.display_name,
-        created_at=timestamp,
-        updated_at=timestamp,
     )
-    db.add(quote)
-    try:
-        db.flush()
-        _create_reference_set(db, quote, user, source_type="create")
-        participating_sections = set(payload.participating_sections)
-        _create_sections(db, quote, user, participating_sections)
-        _add_audit(
-            db,
-            quote,
-            user,
-            "create",
-            department=payload.initiator_department,
-            detail=json.dumps(
-                {
-                    "quote_no": quote.quote_no,
-                    "version_label": quote.version_label,
-                    "target_customer_price": quote.target_customer_price,
-                },
-                ensure_ascii=False,
+    quotes: list[InternalQuote] = []
+    for position, (quote_id, product) in enumerate(zip(quote_ids, products, strict=True), start=1):
+        item_quote_no = payload.quote_no if position == 1 else f"{payload.quote_no[:123]}-P{position:02d}"
+        quote = InternalQuote(
+            id=quote_id,
+            factory_id=payload.factory_id,
+            workshop_code=payload.workshop_code,
+            workshop_name=payload.workshop_name,
+            quote_no=item_quote_no,
+            product_name=product.product_name,
+            quote_type=payload.quote_type,
+            batch_id=batch_id,
+            batch_quote_no=payload.quote_no,
+            batch_position=position,
+            batch_size=batch_size,
+            baseline_quote_id=baseline_quote_id,
+            region_code=product.region_code,
+            customer=payload.customer,
+            qty=product.qty,
+            version_label=payload.version_label,
+            status="drafting",
+            initiator_department=payload.initiator_department,
+            business_owner_id=payload.business_owner_id,
+            business_owner_name=payload.business_owner_name,
+            target_customer_price=payload.target_customer_price,
+            target_date=payload.target_date,
+            remark=payload.remark,
+            module_version=(
+                WHOLE_QUOTE_REVIEW_MODULE_VERSION
+                if payload.workflow_mode == "whole_quote_review"
+                else LEGACY_SECTION_REVIEW_MODULE_VERSION
             ),
-            new_revision=1,
-            request=request,
+            reference_snapshot_id="",
+            formula_version=FORMULA_VERSION,
+            header_revision=1,
+            cloned_from_quote_id="",
+            archived_by="",
+            archived_at="",
+            archive_reason="",
+            created_by=user.id,
+            created_by_name=user.display_name,
+            created_at=timestamp,
+            updated_at=timestamp,
         )
+        quotes.append(quote)
+        db.add(quote)
+    try:
+        for quote in quotes:
+            db.flush()
+            _create_reference_set(
+                db,
+                quote,
+                user,
+                source_type="batch_create" if batch_size > 1 else "create",
+                snapshot=batch_snapshot,
+            )
+            _create_sections(db, quote, user, participating_sections)
+            _add_audit(
+                db,
+                quote,
+                user,
+                "create",
+                department=payload.initiator_department,
+                detail=json.dumps(
+                    {
+                        "quote_no": quote.quote_no,
+                        "version_label": quote.version_label,
+                        "target_customer_price": quote.target_customer_price,
+                        "workflow_mode": payload.workflow_mode,
+                        "quote_type": payload.quote_type,
+                        "batch_id": batch_id,
+                        "batch_position": quote.batch_position,
+                        "batch_size": batch_size,
+                    },
+                    ensure_ascii=False,
+                ),
+                new_revision=1,
+                request=request,
+            )
+        root_quote = quotes[0]
         for section_code, section_name, departments in SECTION_DEFINITIONS:
             if section_code not in participating_sections:
                 continue
             _add_notification(
                 db,
-                quote,
+                root_quote,
                 title=f"新内部报价待{section_name}协作",
-                message=f"{quote.quote_no} / {quote.product_name} 已建单，请进入{section_name}分段处理",
+                message=(
+                    f"{root_quote.batch_quote_no} / {root_quote.product_name} 等 {batch_size} 款已建单，"
+                    f"请进入{section_name}处理"
+                ),
                 event="quote_created",
                 target_permission=f"internal_quote:{section_code}_edit",
                 target_department=departments[0],
@@ -1538,8 +1628,9 @@ def create_quote(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="报价编号与版本已存在") from None
-    db.refresh(quote)
-    return quote_to_out(db, quote)
+    root_quote = quotes[0]
+    db.refresh(root_quote)
+    return quote_to_out(db, root_quote)
 
 
 def _list_quote_sections(
@@ -1568,7 +1659,10 @@ def list_quotes(
     include_sections: bool = False,
 ) -> list[InternalQuoteOut]:
     ensure_quote_read(db, user, factory_id)
-    statement = select(InternalQuote).where(InternalQuote.factory_id == factory_id)
+    statement = select(InternalQuote).where(
+        InternalQuote.factory_id == factory_id,
+        InternalQuote.batch_position == 1,
+    )
     if status:
         statement = statement.where(InternalQuote.status == status)
     if keyword:
@@ -1607,7 +1701,10 @@ def list_quotes_page(
     """Return one factory-scoped page without loading the remaining quote rows."""
 
     ensure_quote_read(db, user, factory_id)
-    statement = select(InternalQuote).where(InternalQuote.factory_id == factory_id)
+    statement = select(InternalQuote).where(
+        InternalQuote.factory_id == factory_id,
+        InternalQuote.batch_position == 1,
+    )
     if status:
         statement = statement.where(InternalQuote.status == status)
     if customer:
@@ -1636,7 +1733,11 @@ def list_quotes_page(
         value
         for value in db.scalars(
             select(InternalQuote.customer)
-            .where(InternalQuote.factory_id == factory_id, InternalQuote.customer != "")
+            .where(
+                InternalQuote.factory_id == factory_id,
+                InternalQuote.batch_position == 1,
+                InternalQuote.customer != "",
+            )
             .distinct()
             .order_by(InternalQuote.customer)
         ).all()
@@ -1714,6 +1815,7 @@ def get_quote_dashboard(
         select(InternalQuote)
         .where(
             InternalQuote.factory_id == factory_id,
+            InternalQuote.batch_position == 1,
             InternalQuote.created_at >= start_text,
             InternalQuote.created_at <= end_text,
         )
@@ -1964,6 +2066,396 @@ def get_quote_detail(
     return quote_to_out(db, quote)
 
 
+def get_quote_batch_rows(db: Session, quote: InternalQuote) -> list[InternalQuote]:
+    """Return the ordered product quotes that participate in one batch decision."""
+
+    if not quote.batch_id:
+        return [quote]
+    rows = list(db.scalars(
+        select(InternalQuote)
+        .where(
+            InternalQuote.factory_id == quote.factory_id,
+            InternalQuote.batch_id == quote.batch_id,
+        )
+        .order_by(InternalQuote.batch_position, InternalQuote.id)
+    ).all())
+    return rows or [quote]
+
+
+def _product_image_out(attachment: InternalQuoteAttachment | None) -> InternalQuoteProductImageOut | None:
+    if attachment is None:
+        return None
+    return InternalQuoteProductImageOut(
+        id=attachment.id,
+        file_name=attachment.file_name,
+        content_type=attachment.content_type,
+        size_bytes=attachment.size_bytes,
+        uploaded_by_name=attachment.uploaded_by_name,
+        uploaded_at=attachment.uploaded_at,
+    )
+
+
+_BATCH_HEADER_DIFFERENCE_FIELDS = (
+    "qty",
+    "customer",
+    "target_customer_price",
+    "target_date",
+    "remark",
+)
+
+_DIFFERENCE_FIELD_LABELS = {
+    "materials": "材料明细", "molds": "模具明细", "cartons": "纸箱明细",
+    "injection_lines": "注塑明细", "blow_lines": "吹气明细", "operations": "工序明细",
+    "products": "产品明细", "components": "零件明细", "groups": "产品组",
+    "processes": "工序", "packaging_materials": "包装材料", "testing_fee_moqs": "测试费 MOQ",
+    "item": "名称", "name": "名称", "specification": "规格", "category": "类别",
+    "quantity": "用量", "qty": "数量", "unit_price_rmb": "RMB 单价",
+    "unit_price_hkd": "HKD 单价", "loss_rate": "损耗率", "tax_rate_percent": "税点",
+    "remark": "备注", "material": "材质", "material_type": "料型", "grade": "料型",
+    "net_weight_g": "净重", "cycle_time_seconds": "周期", "target_output": "目标数",
+    "persons": "人数", "total_persons": "总人数", "production_qty": "生产量",
+    "teams": "小组数", "testing_fee_total_usd": "测试费用",
+}
+
+
+def _difference_path_label(path: tuple[str | int, ...]) -> str:
+    labels: list[str] = []
+    for part in path:
+        if isinstance(part, int):
+            labels.append(f"第 {part + 1} 行")
+        else:
+            labels.append(_DIFFERENCE_FIELD_LABELS.get(part, part.replace("_", " ")))
+    return " · ".join(labels) or "内容"
+
+
+def _payload_difference_details(
+    value: object,
+    baseline_value: object,
+    *,
+    path: tuple[str | int, ...] = (),
+    limit: int = 60,
+) -> list[str]:
+    if value == baseline_value or limit <= 0:
+        return []
+    if isinstance(value, dict) and isinstance(baseline_value, dict):
+        details: list[str] = []
+        for key in sorted(set(value) | set(baseline_value)):
+            details.extend(_payload_difference_details(
+                value.get(key), baseline_value.get(key), path=(*path, key), limit=limit - len(details)
+            ))
+            if len(details) >= limit:
+                break
+        return details
+    if isinstance(value, list) and isinstance(baseline_value, list):
+        details: list[str] = []
+        for index in range(max(len(value), len(baseline_value))):
+            current = value[index] if index < len(value) else None
+            baseline = baseline_value[index] if index < len(baseline_value) else None
+            details.extend(_payload_difference_details(
+                current, baseline, path=(*path, index), limit=limit - len(details)
+            ))
+            if len(details) >= limit:
+                break
+        return details
+    return [_difference_path_label(path)]
+
+
+def _batch_product_differences(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+    reference: InternalQuoteReferenceSet | None,
+    baseline: InternalQuote,
+    baseline_sections: list[InternalQuoteSection],
+    baseline_reference: InternalQuoteReferenceSet | None,
+) -> tuple[list[str], list[str], dict[str, list[str]]]:
+    different_header_fields = [
+        field
+        for field in _BATCH_HEADER_DIFFERENCE_FIELDS
+        if getattr(quote, field) != getattr(baseline, field)
+    ]
+    reference_sha256 = reference.sha256 if reference is not None else ""
+    baseline_reference_sha256 = baseline_reference.sha256 if baseline_reference is not None else ""
+    if reference_sha256 != baseline_reference_sha256:
+        different_header_fields.append("reference_snapshot")
+
+    section_by_code = {section.department: section for section in sections}
+    baseline_section_by_code = {section.department: section for section in baseline_sections}
+    different_sections: list[str] = []
+    different_section_details: dict[str, list[str]] = {}
+    for code in SECTION_CODE_ORDER:
+        section = section_by_code.get(code)
+        baseline_section = baseline_section_by_code.get(code)
+        section_signature = None if section is None else content_hash({
+            "is_required": section.is_required,
+            "payload": _json_object(section.payload_json),
+        })
+        baseline_signature = None if baseline_section is None else content_hash({
+            "is_required": baseline_section.is_required,
+            "payload": _json_object(baseline_section.payload_json),
+        })
+        if section_signature != baseline_signature:
+            different_sections.append(code)
+            if section is None or baseline_section is None or section.is_required != baseline_section.is_required:
+                different_section_details[code] = ["参与状态"]
+            else:
+                different_section_details[code] = _payload_difference_details(
+                    _json_object(section.payload_json),
+                    _json_object(baseline_section.payload_json),
+                ) or ["部门内容"]
+    return different_header_fields, different_sections, different_section_details
+
+
+def list_quote_batch_products(
+    db: Session,
+    quote_id: str,
+    user: AuthContext,
+) -> list[InternalQuoteBatchProductOut]:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_read(db, user, quote.factory_id)
+    rows = get_quote_batch_rows(db, quote)
+    quote_ids = [item.id for item in rows]
+    sections_by_quote = _list_quote_sections(db, rows)
+    references = {
+        item.id: db.get(InternalQuoteReferenceSet, item.reference_snapshot_id)
+        if item.reference_snapshot_id else None
+        for item in rows
+    }
+    images: dict[str, InternalQuoteAttachment] = {}
+    if quote_ids:
+        for attachment in db.scalars(
+            select(InternalQuoteAttachment)
+            .where(
+                InternalQuoteAttachment.quote_id.in_(quote_ids),
+                InternalQuoteAttachment.department == "product-image",
+            )
+            .order_by(
+                InternalQuoteAttachment.quote_id,
+                InternalQuoteAttachment.uploaded_at.desc(),
+                InternalQuoteAttachment.id.desc(),
+            )
+        ).all():
+            images.setdefault(attachment.quote_id, attachment)
+    baseline = next((item for item in rows if item.id == (quote.baseline_quote_id or rows[0].id)), rows[0])
+    baseline_sections = sections_by_quote.get(baseline.id, [])
+    baseline_reference = references.get(baseline.id)
+    output: list[InternalQuoteBatchProductOut] = []
+    for item in rows:
+        different_header_fields, different_sections, different_section_details = (
+            ([], [], {})
+            if item.id == baseline.id
+            else _batch_product_differences(
+                item,
+                sections_by_quote.get(item.id, []),
+                references.get(item.id),
+                baseline,
+                baseline_sections,
+                baseline_reference,
+            )
+        )
+        output.append(InternalQuoteBatchProductOut(
+            quote_id=item.id,
+            quote_no=item.quote_no,
+            product_name=item.product_name,
+            qty=item.qty,
+            position=item.batch_position or 1,
+            batch_size=item.batch_size or len(rows),
+            quote_type=item.quote_type or "single",
+            region_code=item.region_code or "",
+            status=item.status,
+            header_revision=item.header_revision,
+            is_baseline=item.id == baseline.id,
+            differs_from_baseline=bool(different_header_fields or different_sections),
+            different_header_fields=different_header_fields,
+            different_sections=different_sections,
+            different_section_details=different_section_details,
+            main_image=_product_image_out(images.get(item.id)),
+        ))
+    return output
+
+
+def _without_import_batch_ids(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_import_batch_ids(item)
+            for key, item in value.items()
+            if key != "import_batch_id"
+        }
+    if isinstance(value, list):
+        return [_without_import_batch_ids(item) for item in value]
+    return value
+
+
+def copy_batch_baseline_to_product(
+    db: Session,
+    quote_id: str,
+    target_quote_id: str,
+    payload: InternalQuoteBatchCopyRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    context_quote = _get_quote(db, quote_id)
+    target = _get_quote(db, target_quote_id)
+    ensure_quote_read(db, user, context_quote.factory_id)
+    initiator_department = _initiator_department(user, context_quote.factory_id)
+    ensure_permission_in_scope(
+        db,
+        user,
+        "internal_quote:clone",
+        context_quote.factory_id,
+        initiator_department,
+    )
+    rows = get_quote_batch_rows(db, context_quote)
+    baseline = next((item for item in rows if item.id == (context_quote.baseline_quote_id or rows[0].id)), rows[0])
+    if target.factory_id != context_quote.factory_id or target.batch_id != context_quote.batch_id:
+        raise HTTPException(status_code=409, detail="目标产品不属于当前报价批次")
+    if target.id == baseline.id:
+        raise HTTPException(status_code=409, detail="基准款不能复制到自身")
+    _ensure_active(target)
+    if target.status in {"final_reviewing", "fully_approved", "exported"}:
+        raise HTTPException(status_code=409, detail="目标产品已提交审核或完成输出，不能覆盖复制")
+    _check_revision(target.header_revision, payload.revision, "目标产品报价头")
+
+    source_sections = list(db.scalars(
+        select(InternalQuoteSection).where(InternalQuoteSection.quote_id == baseline.id)
+    ).all())
+    target_sections = list(db.scalars(
+        select(InternalQuoteSection).where(InternalQuoteSection.quote_id == target.id)
+    ).all())
+    source_by_code = {section.department: section for section in source_sections}
+    target_by_code = {section.department: section for section in target_sections}
+    timestamp = now_text()
+    old_header_revision = target.header_revision
+    for field in (
+        "customer",
+        "qty",
+        "business_owner_id",
+        "business_owner_name",
+        "target_customer_price",
+        "target_date",
+        "remark",
+        "module_version",
+    ):
+        setattr(target, field, getattr(baseline, field))
+    target.cloned_from_quote_id = baseline.id
+    target.header_revision += 1
+    target.final_release_status = ""
+    target.final_submission_manifest_json = "{}"
+    target.final_submitted_by = ""
+    target.final_submitted_by_name = ""
+    target.final_submitted_at = ""
+    target.final_reviewed_by = ""
+    target.final_reviewed_by_name = ""
+    target.final_reviewed_at = ""
+    target.final_review_comment = ""
+    target.updated_at = timestamp
+
+    source_reference = _find_reference_set(db, baseline)
+    source_snapshot = (
+        _json_object(source_reference.snapshot_json)
+        if source_reference is not None
+        else build_reference_snapshot(
+            db,
+            factory_id=baseline.factory_id,
+            workshop_code=baseline.workshop_code,
+        )
+    )
+    _create_reference_set(db, target, user, source_type="batch_baseline_copy", snapshot=source_snapshot)
+
+    for code in SECTION_NAMES:
+        source_section = source_by_code.get(code)
+        target_section = target_by_code.get(code)
+        if source_section is None or target_section is None:
+            continue
+        old_revision = target_section.revision
+        copied_payload = _without_import_batch_ids(_json_object(source_section.payload_json))
+        target_section.is_required = source_section.is_required
+        target_section.payload_json = canonical_json(copied_payload)
+        target_section.status = "draft"
+        target_section.revision += 1
+        target_section.filled_by = user.display_name if source_section.is_required and copied_payload else ""
+        target_section.filled_at = timestamp if source_section.is_required and copied_payload else ""
+        target_section.submitted_by = ""
+        target_section.submitted_by_id = ""
+        target_section.submitted_at = ""
+        target_section.reviewed_by = ""
+        target_section.reviewed_at = ""
+        target_section.review_comment = ""
+        target_section.updated_at = timestamp
+        if source_section.is_required and copied_payload:
+            _calculate_and_apply(db, target, target_section, user)
+        else:
+            target_section.calculation_json = "{}"
+            target_section.calculation_status = "pending"
+            target_section.calculation_hash = ""
+            target_section.calculation_formula_version = target.formula_version
+            target_section.calculation_reference_snapshot_id = target.reference_snapshot_id
+            target_section.calculated_at = ""
+            target_section.dependency_hash = ""
+            target_section.dependency_status = "current"
+        _add_revision(db, target, target_section, user, reason="batch_baseline_copy")
+        _add_audit(
+            db,
+            target,
+            user,
+            "batch_copy_section",
+            department=code,
+            old_revision=old_revision,
+            new_revision=target_section.revision,
+            request=request,
+        )
+
+    db.execute(delete(InternalQuoteImportBatch).where(InternalQuoteImportBatch.quote_id == target.id))
+    db.execute(
+        delete(InternalQuoteAttachment).where(
+            InternalQuoteAttachment.quote_id == target.id,
+            InternalQuoteAttachment.department != "product-image",
+        )
+    )
+    source_attachments = db.scalars(
+        select(InternalQuoteAttachment).where(
+            InternalQuoteAttachment.quote_id == baseline.id,
+            InternalQuoteAttachment.department != "product-image",
+        )
+    ).all()
+    for attachment in source_attachments:
+        db.add(InternalQuoteAttachment(
+            id=f"IQATT-{uuid4().hex}",
+            quote_id=target.id,
+            factory_id=target.factory_id,
+            department=attachment.department,
+            file_name=attachment.file_name,
+            content_type=attachment.content_type,
+            size_bytes=attachment.size_bytes,
+            sha256=attachment.sha256,
+            content=attachment.content,
+            uploaded_by=user.id,
+            uploaded_by_name=user.display_name,
+            uploaded_at=timestamp,
+        ))
+    _derive_quote_status(db, target)
+    _add_audit(
+        db,
+        target,
+        user,
+        "batch_copy_baseline",
+        detail=json.dumps(
+            {
+                "baseline_quote_id": baseline.id,
+                "target_quote_id": target.id,
+                "copied_attachment_count": len(source_attachments),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        old_revision=old_header_revision,
+        new_revision=target.header_revision,
+        request=request,
+    )
+    db.commit()
+    db.refresh(target)
+    return quote_to_out(db, target)
+
+
 def update_quote_header(
     db: Session,
     quote_id: str,
@@ -1993,7 +2485,9 @@ def update_quote_header(
             ),
         ).limit(1)
     )
-    if started_section is not None:
+    if started_section is not None and not (
+        is_whole_quote_review(quote) and quote.status == "rejected"
+    ):
         raise HTTPException(
             status_code=409,
             detail="已有参与分段开始填写；为避免数量或负责人变更与成本 revision 不一致，报价头只能在协作填写前修改",
@@ -2279,13 +2773,21 @@ def clone_quote(
     ).all()
     payloads = {section.department: section.payload_json for section in source_sections}
     timestamp = now_text()
+    target_id = f"IQ-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:10].upper()}"
     target = InternalQuote(
-        id=f"IQ-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:10].upper()}",
+        id=target_id,
         factory_id=source.factory_id,
         workshop_code=source.workshop_code,
         workshop_name=source.workshop_name,
         quote_no=payload.quote_no,
         product_name=source.product_name,
+        quote_type="single",
+        batch_id=target_id,
+        batch_quote_no=payload.quote_no,
+        batch_position=1,
+        batch_size=1,
+        baseline_quote_id=target_id,
+        region_code=source.region_code,
         customer=source.customer,
         qty=source.qty,
         version_label=payload.version_label,
@@ -2300,7 +2802,13 @@ def clone_quote(
         ),
         target_date=payload.target_date,
         remark=source.remark if payload.remark is None else payload.remark,
-        module_version="v2",
+        module_version=(
+            WHOLE_QUOTE_REVIEW_MODULE_VERSION
+            if payload.workflow_mode == "whole_quote_review"
+            else LEGACY_SECTION_REVIEW_MODULE_VERSION
+            if payload.workflow_mode == "section_review"
+            else source.module_version
+        ),
         reference_snapshot_id="",
         formula_version=FORMULA_VERSION,
         header_revision=1,
@@ -2545,6 +3053,7 @@ def submit_section(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -2621,6 +3130,7 @@ def request_section_na(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -2685,6 +3195,7 @@ def withdraw_section_submission(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -2738,6 +3249,7 @@ def review_section(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_quote_business_reviewer(db, user, quote)
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -2869,6 +3381,7 @@ def reopen_section(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -3268,13 +3781,7 @@ def update_quote_reference_fx(
     request: Request | None = None,
 ) -> InternalQuoteOut:
     quote = _get_quote(db, quote_id)
-    ensure_quote_permission(
-        db,
-        user,
-        "internal_quote:sales_edit",
-        quote.factory_id,
-        ("sales-business",),
-    )
+    ensure_section_permission(db, user, quote.factory_id, "sales", "edit")
     _ensure_active(quote)
     _check_revision(quote.header_revision, payload.revision, "报价头")
 
@@ -3293,7 +3800,7 @@ def update_quote_reference_fx(
     fx["hkd_usd"] = payload.hkd_usd
     snapshot["fx"] = fx
     reason = (
-        f"业务汇率调整：RMB→HKD {format(old_rmb_hkd, 'f')}→{payload.rmb_hkd}；"
+        f"报价汇率调整：RMB→HKD {format(old_rmb_hkd, 'f')}→{payload.rmb_hkd}；"
         f"HKD→USD {format(old_hkd_usd, 'f')}→{payload.hkd_usd}"
     )
     return _replace_quote_reference_set(
@@ -3307,6 +3814,53 @@ def update_quote_reference_fx(
         change_description="参考汇率已调整",
         audit_detail=(
             f"rmb_hkd={payload.rmb_hkd};hkd_usd={payload.hkd_usd};"
+            f"previous_reference={current_reference.id}"
+        ),
+        request=request,
+    )
+
+
+def update_quote_reference_materials(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteReferenceMaterialsUpdateRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    quote = _get_quote(db, quote_id)
+    # Sales and engineering are the two cross-department quotation owners.
+    # Production departments keep their existing section-only edit boundary.
+    ensure_section_permission(db, user, quote.factory_id, "sales", "edit")
+    _ensure_active(quote)
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+
+    current_reference = _ensure_reference_set(db, quote, user)
+    snapshot = _json_object(current_reference.snapshot_json)
+    old_material_prices = snapshot.get("material_prices", {})
+    normalized_material_prices = {
+        f"{row.material}|{row.grade}": row.price_hkd_lb
+        for row in payload.material_prices
+    }
+    if old_material_prices == normalized_material_prices:
+        return quote_to_out(db, quote)
+
+    snapshot["material_prices"] = normalized_material_prices
+    reason = (
+        f"本报价专用料价已更新："
+        f"{len(old_material_prices) if isinstance(old_material_prices, dict) else 0} 项→"
+        f"{len(normalized_material_prices)} 项"
+    )
+    return _replace_quote_reference_set(
+        db,
+        quote,
+        user,
+        source_type="manual_materials",
+        snapshot=snapshot,
+        reason=reason,
+        audit_action="reference_materials_update",
+        change_description="本报价专用料价已调整",
+        audit_detail=(
+            f"material_count={len(normalized_material_prices)};"
             f"previous_reference={current_reference.id}"
         ),
         request=request,
@@ -3367,34 +3921,44 @@ def archive_quote(
         quote.factory_id,
         ("sales-business",),
     )
-    _ensure_active(quote)
+    selected_quote = quote
+    batch_quotes = get_quote_batch_rows(db, quote)
+    for item in batch_quotes:
+        _ensure_active(item)
     _check_revision(quote.header_revision, payload.revision, "报价头")
-    old_revision = quote.header_revision
-    quote.status = "archived"
-    quote.header_revision += 1
-    quote.archived_by = user.id
-    quote.archived_at = now_text()
-    quote.archive_reason = payload.reason
-    quote.updated_at = now_text()
-    _add_audit(
-        db,
-        quote,
-        user,
-        "archive",
-        department="sales",
-        old_revision=old_revision,
-        new_revision=quote.header_revision,
-        reason=payload.reason,
-        request=request,
-    )
-    _mark_quote_notifications_handled(
-        db,
-        quote,
-        events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
-    )
+    timestamp = now_text()
+    for item in batch_quotes:
+        old_revision = item.header_revision
+        item.status = "archived"
+        item.header_revision += 1
+        item.archived_by = user.id
+        item.archived_at = timestamp
+        item.archive_reason = payload.reason
+        item.updated_at = timestamp
+        _add_audit(
+            db,
+            item,
+            user,
+            "archive",
+            department="sales",
+            old_revision=old_revision,
+            new_revision=item.header_revision,
+            reason=payload.reason,
+            detail=json.dumps(
+                {"batch_id": item.batch_id or item.id, "batch_size": len(batch_quotes)},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            request=request,
+        )
+        _mark_quote_notifications_handled(
+            db,
+            item,
+            events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
+        )
     db.commit()
-    db.refresh(quote)
-    return quote_to_out(db, quote)
+    db.refresh(selected_quote)
+    return quote_to_out(db, selected_quote)
 
 
 def delete_quote(
@@ -3418,19 +3982,21 @@ def delete_quote(
         raise HTTPException(status_code=403, detail="仅建单人或本厂区业务主管可删除内部报价")
 
     _check_revision(quote.header_revision, revision, "报价头")
+    batch_quotes = get_quote_batch_rows(db, quote)
+    quote_ids = [item.id for item in batch_quotes]
     has_export = db.scalar(
         select(func.count(InternalQuoteExportFile.id)).where(
-            InternalQuoteExportFile.quote_id == quote.id
+            InternalQuoteExportFile.quote_id.in_(quote_ids)
         )
     )
     has_handoff = db.scalar(
         select(func.count(InternalQuoteArtifactHandoff.id)).where(
-            InternalQuoteArtifactHandoff.quote_id == quote.id
+            InternalQuoteArtifactHandoff.quote_id.in_(quote_ids)
         )
     )
     if (
-        quote.status in {"released", "exported"}
-        or quote.final_release_status == "approved"
+        any(item.status in {"released", "fully_approved", "exported"} for item in batch_quotes)
+        or any(item.final_release_status == "approved" for item in batch_quotes)
         or bool(has_export)
         or bool(has_handoff)
     ):
@@ -3445,16 +4011,17 @@ def delete_quote(
         username=user.username,
         user_id=user.id,
         detail=(
-            f"删除内部报价：{quote.factory_id}/{quote.quote_no}/{quote.version_label}，"
-            f"建单人={quote.created_by_name or quote.created_by}，revision={quote.header_revision}"
+            f"删除内部报价批次：{quote.factory_id}/{quote.batch_quote_no or quote.quote_no}/{quote.version_label}，"
+            f"产品数={len(batch_quotes)}，建单人={quote.created_by_name or quote.created_by}，revision={quote.header_revision}"
         ),
         request=request,
     )
-    _mark_quote_notifications_handled(
-        db,
-        quote,
-        events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
-    )
+    for item in batch_quotes:
+        _mark_quote_notifications_handled(
+            db,
+            item,
+            events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
+        )
 
     # Explicitly remove children so SQLite test/local databases remain correct
     # even when foreign-key cascade enforcement is not enabled on a connection.
@@ -3470,6 +4037,6 @@ def delete_quote(
         InternalQuoteSection,
         InternalQuoteReferenceSet,
     ):
-        db.execute(delete(model).where(model.quote_id == quote.id))
-    db.delete(quote)
+        db.execute(delete(model).where(model.quote_id.in_(quote_ids)))
+    db.execute(delete(InternalQuote).where(InternalQuote.id.in_(quote_ids)))
     db.commit()

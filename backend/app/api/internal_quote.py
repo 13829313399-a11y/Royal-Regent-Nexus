@@ -10,6 +10,9 @@ from app.schemas.internal_quote import (
     InternalQuoteArtifactConsumeRequest,
     InternalQuoteArtifactHandoffOut,
     InternalQuoteAttachmentOut,
+    InternalQuoteAttachmentContentPreviewOut,
+    InternalQuoteBatchCopyRequest,
+    InternalQuoteBatchProductOut,
     InternalQuoteBusinessOwnerOut,
     InternalQuoteCloneRequest,
     InternalQuoteCreateRequest,
@@ -33,6 +36,7 @@ from app.schemas.internal_quote import (
     InternalQuotePricingBaselineUpdateRequest,
     InternalQuoteReasonRequest,
     InternalQuoteReferenceFxUpdateRequest,
+    InternalQuoteReferenceMaterialsUpdateRequest,
     InternalQuoteReferenceSetOut,
     InternalQuoteReferenceSyncRequest,
     InternalQuoteRevisionOut,
@@ -51,6 +55,7 @@ from app.services.internal_quote import (
     add_quote_participation,
     archive_quote,
     clone_quote,
+    copy_batch_baseline_to_product,
     create_quote,
     delete_quote,
     ensure_quote_read,
@@ -62,6 +67,7 @@ from app.services.internal_quote import (
     get_quote_timeline,
     list_quotes,
     list_quotes_page,
+    list_quote_batch_products,
     list_business_owners,
     list_section_revisions,
     preview_section_cost,
@@ -73,6 +79,7 @@ from app.services.internal_quote import (
     submit_section,
     sync_quote_reference_set,
     update_quote_reference_fx,
+    update_quote_reference_materials,
     update_quote_header,
     withdraw_section_submission,
 )
@@ -91,6 +98,7 @@ from app.services.internal_quote_artifacts import (
     create_engineering_workbook_export,
     create_import_preview,
     get_attachment_download,
+    get_attachment_content_preview,
     get_attachment_preview,
     get_export_download,
     list_attachments,
@@ -98,6 +106,7 @@ from app.services.internal_quote_artifacts import (
     list_import_batches,
     delete_import_attachment,
     upload_attachment,
+    upload_product_image,
 )
 from app.services.internal_quote_release import (
     compare_quote_versions,
@@ -277,6 +286,34 @@ def get_internal_quote(
     return get_quote_detail(db, quote_id, current_user, request)
 
 
+@router.get("/{quote_id}/batch-products", response_model=list[InternalQuoteBatchProductOut])
+def get_internal_quote_batch_products(
+    quote_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return list_quote_batch_products(db, quote_id, current_user)
+
+
+@router.post("/{quote_id}/batch-products/{target_quote_id}/copy-baseline", response_model=InternalQuoteOut)
+def post_internal_quote_batch_baseline_copy(
+    quote_id: str,
+    target_quote_id: str,
+    payload: InternalQuoteBatchCopyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return copy_batch_baseline_to_product(
+        db,
+        quote_id,
+        target_quote_id,
+        payload,
+        current_user,
+        request,
+    )
+
+
 @router.delete("/{quote_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_internal_quote(
     quote_id: str,
@@ -351,6 +388,17 @@ def put_internal_quote_reference_snapshot_fx(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return update_quote_reference_fx(db, quote_id, payload, current_user, request)
+
+
+@router.put("/{quote_id}/reference-snapshot/materials", response_model=InternalQuoteOut)
+def put_internal_quote_reference_snapshot_materials(
+    quote_id: str,
+    payload: InternalQuoteReferenceMaterialsUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return update_quote_reference_materials(db, quote_id, payload, current_user, request)
 
 
 @router.post("/{quote_id}/clone", response_model=InternalQuoteOut, status_code=status.HTTP_201_CREATED)
@@ -651,6 +699,29 @@ async def post_internal_quote_attachment(
     )
 
 
+@router.post(
+    "/{quote_id}/product-image",
+    response_model=InternalQuoteAttachmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_internal_quote_product_image(
+    quote_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    content = await file.read()
+    return upload_product_image(
+        db,
+        quote_id,
+        file.filename or "",
+        content,
+        current_user,
+        request,
+    )
+
+
 @router.get("/{quote_id}/attachments", response_model=list[InternalQuoteAttachmentOut])
 def get_internal_quote_attachments(
     quote_id: str,
@@ -703,6 +774,19 @@ def get_internal_quote_attachment_preview(
             "X-Content-SHA256": attachment.sha256,
         },
     )
+
+
+@router.get(
+    "/{quote_id}/attachments/{attachment_id}/content-preview",
+    response_model=InternalQuoteAttachmentContentPreviewOut,
+)
+def get_internal_quote_attachment_content_preview(
+    quote_id: str,
+    attachment_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return get_attachment_content_preview(db, quote_id, attachment_id, current_user)
 
 
 @router.delete(

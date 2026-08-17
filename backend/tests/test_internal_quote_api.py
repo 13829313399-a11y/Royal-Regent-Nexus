@@ -13,15 +13,15 @@ TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 ADMIN_TEST_PASSWORD = "AdminSeed123!"
 ALL_SECTION_CODES = [
-    "sales",
     "engineering",
-    "electronic",
     "molding",
+    "assembly",
     "painting",
+    "electronic",
     "slush",
     "sewing",
     "hair",
-    "assembly",
+    "sales",
 ]
 DEFAULT_FREIGHT_ROUTES = [
     {"route_key": "hk40", "route_name": "HK 40 柜", "capacity_key": "cap_40", "freight_hkd": "8000", "lifting_hkd": "0"},
@@ -237,15 +237,15 @@ def test_sales_create_keeps_all_section_slots_but_only_mandatory_departments_par
         assert quote["target_customer_price"] == "USD 3.50"
         assert len(quote["sections"]) == 9
         assert [section["department"] for section in quote["sections"]] == [
-            "sales",
             "engineering",
-            "electronic",
             "molding",
+            "assembly",
             "painting",
+            "electronic",
             "slush",
             "sewing",
             "hair",
-            "assembly",
+            "sales",
         ]
         assert all(section["status"] == "draft" and section["revision"] == 1 for section in quote["sections"])
         assert {
