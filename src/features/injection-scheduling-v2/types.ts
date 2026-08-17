@@ -6,6 +6,7 @@ export type FitDecision = 'PASS' | 'REVIEW_REQUIRED' | 'FAIL'
 export type PlanSliceKey = 'execution' | 'planning'
 export type ImportDocumentKind = 'DEMAND_ORDER' | 'PLANNED_SCHEDULE' | 'SYSTEM_ROUND_TRIP' | 'MASTER_DATA'
 export type ImportDocumentKindChoice = ImportDocumentKind | 'AUTO'
+export type ImportRecognitionMode = 'AUTO' | 'PROFILE' | 'AI'
 export type ImportBatchState = 'IDENTIFYING' | 'MAPPING_REQUIRED' | 'PROFILE_REVIEW_PENDING' | 'MASTER_REVIEW_REQUIRED' | 'RESOLUTION_REVIEW_REQUIRED' | 'RECONCILIATION_CONFLICT' | 'PREVIEW_READY' | 'PARTIALLY_CONFIRMED' | 'CONFIRMED' | 'FAILED' | string
 export type PlanExportMode = 'SOURCE_COMPATIBLE' | 'SYSTEM_STANDARD'
 
@@ -64,6 +65,7 @@ export interface ImportBatchRecord {
   previewGeneration: number
   documentKind: ImportDocumentKind
   sourceNamespaceId: string
+  recognition: Record<string, unknown> | null
   profile: Record<string, unknown> | null
   sheetRoles: Array<Record<string, unknown>>
   mapping: Array<Record<string, unknown>>

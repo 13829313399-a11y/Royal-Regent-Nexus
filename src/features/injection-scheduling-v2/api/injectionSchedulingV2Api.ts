@@ -8,6 +8,7 @@ import type {
   AuditEvent,
   ImportBatchRecord,
   ImportDocumentKindChoice,
+  ImportRecognitionMode,
   ImportIssueRecord,
   MachineRecord,
   ManualAppendPreviewRecord,
@@ -837,6 +838,7 @@ export function mapImportBatch(source: UnknownRecord): ImportBatchRecord {
     previewGeneration: numberValue(source.preview_generation),
     documentKind: (text(source.document_kind) || 'PLANNED_SCHEDULE') as ImportBatchRecord['documentKind'],
     sourceNamespaceId: text(source.source_namespace_id),
+    recognition: source.recognition && typeof source.recognition === 'object' ? source.recognition as UnknownRecord : null,
     profile: source.profile && typeof source.profile === 'object' ? source.profile as UnknownRecord : null,
     sheetRoles: records(source.sheet_roles), mapping: records(source.mapping),
     scheduledBaselineTasks: records(source.scheduled_baseline_tasks), backlogOrders: records(source.backlog_orders),
@@ -873,11 +875,21 @@ export async function recoverImportBatch(factoryId: string, batchId: string) {
   return mapImportBatch(data as UnknownRecord)
 }
 
-export async function uploadImportPreview(factoryId: string, file: File, documentKind: ImportDocumentKindChoice = 'AUTO') {
+export async function uploadImportPreview(
+  factoryId: string,
+  file: File,
+  documentKind: ImportDocumentKindChoice = 'AUTO',
+  recognitionMode: ImportRecognitionMode = 'AUTO',
+  cloudAiConsent = false,
+  businessDate = '',
+) {
   const body = new FormData()
   body.set('factory_id', factoryId)
   body.set('expected_revision', '0')
   body.set('document_kind', documentKind)
+  body.set('recognition_mode', recognitionMode)
+  body.set('cloud_ai_consent', cloudAiConsent ? 'true' : 'false')
+  if (businessDate) body.set('business_date', businessDate)
   body.set('file', file)
   const { data } = await http.post('/injection-scheduling/imports/preview', body, {
     headers: {

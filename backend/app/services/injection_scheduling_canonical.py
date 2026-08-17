@@ -102,15 +102,24 @@ def _mapping_for_profile(
     if not current["sheet_name"]:
         return [], ["CURRENT_PLAN"]
     header_row = int(current["header_row"] or 1)
-    cells = _row(reader, current["sheet_name"], header_row)
+    header_rows = {int(rule.header_row or header_row) for rule in profile.fields}
+    cells_by_row = {
+        row_number: _row(reader, current["sheet_name"], row_number)
+        for row_number in header_rows
+    }
     mapping: list[dict[str, Any]] = []
     blocking: list[str] = []
-    normalized_header_counts = Counter(
-        normalize_header(reader.identifier(cell))
-        for cell in cells.values()
-        if reader.identifier(cell)
-    )
+    normalized_header_counts = {
+        row_number: Counter(
+            normalize_header(reader.identifier(cell))
+            for cell in cells.values()
+            if reader.identifier(cell)
+        )
+        for row_number, cells in cells_by_row.items()
+    }
     for rule in profile.fields:
+        rule_header_row = int(rule.header_row or header_row)
+        cells = cells_by_row[rule_header_row]
         cell = cells.get(rule.column)
         raw_header = reader.identifier(cell)
         normalized = normalize_header(raw_header)
@@ -120,7 +129,8 @@ def _mapping_for_profile(
         if rule.required and not matched:
             status = (
                 "AMBIGUOUS"
-                if normalized and normalized_header_counts[normalized] > 1
+                if normalized
+                and normalized_header_counts[rule_header_row][normalized] > 1
                 else "MISSING"
             )
             blocking.append(rule.canonical_field)
@@ -130,7 +140,7 @@ def _mapping_for_profile(
                 "rule_revision": profile.revision,
                 "sheet_role": "CURRENT_PLAN",
                 "sheet_name": current["sheet_name"],
-                "header_row": header_row,
+                "header_row": rule_header_row,
                 "column": rule.column,
                 "raw_header": raw_header,
                 "normalized_header": normalized,
@@ -139,9 +149,13 @@ def _mapping_for_profile(
                 "unit": rule.unit,
                 "required": rule.required,
                 "status": status,
-                "mapping_method": "PROFILE_COLUMN_AND_HEADER"
-                if matched
-                else "PROFILE_COLUMN_HINT",
+                "mapping_method": (
+                    "AI_LAYOUT_VALIDATED"
+                    if rule.selector_strategy == "AI_HEADER_CELL" and matched
+                    else "PROFILE_COLUMN_AND_HEADER"
+                    if matched
+                    else "PROFILE_COLUMN_HINT"
+                ),
                 "confidence": "EXACT" if matched else "NONE",
                 "authority": CANONICAL_FIELD_CATALOG[rule.canonical_field].authority,
                 "sample_values": [],
@@ -499,6 +513,7 @@ def _formula_issue(
     source_row: int,
     cell: dict[str, Any] | None,
     issues: list[dict[str, Any]],
+    blocking_override: bool | None = None,
 ) -> bool:
     if not cell or not cell.get("formula"):
         return False
@@ -507,7 +522,11 @@ def _formula_issue(
     if not missing and not error:
         return False
     authority = CANONICAL_FIELD_CATALOG[rule.canonical_field].authority
-    blocking = authority in {"SOURCE_FACT", "BASELINE_DECISION"} and rule.required
+    blocking = (
+        authority in {"SOURCE_FACT", "BASELINE_DECISION"} and rule.required
+        if blocking_override is None
+        else blocking_override
+    )
     issues.append(
         _issue(
             code="FORMULA_CACHE_MISSING" if missing else "FORMULA_ERROR",
@@ -572,6 +591,7 @@ def _parse_plan_rows(
     authoritative_machine_codes: set[str],
     authoritative_mold_nos: set[str],
     issues: list[dict[str, Any]],
+    layout_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     sheet_name = roles["CURRENT_PLAN"]["sheet_name"]
     header_row = int(roles["CURRENT_PLAN"]["header_row"] or 1)
@@ -584,13 +604,33 @@ def _parse_plan_rows(
     current_machine = ""
     sequence_by_machine: defaultdict[str, int] = defaultdict(int)
     running_candidates: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    layout_override = layout_override or {}
+    data_start_row = int(layout_override.get("data_start_row") or header_row + 1)
+    data_end_row = int(layout_override.get("data_end_row") or 1_000_000)
+    row_layout = layout_override.get("row_layout") or {}
+    layout_type = str(row_layout.get("layout_type") or "GROUPED_BY_MACHINE")
+    machine_strategy = str(
+        row_layout.get("machine_code_strategy") or "CURRENT_OR_INHERITED"
+    )
+    machine_header_rule = str(
+        row_layout.get("machine_header_rule") or "MACHINE_CODE_WITHOUT_BUSINESS_IDENTITY"
+    )
+    machine_header_columns = list(row_layout.get("machine_header_columns") or [])
+    task_identity_fields = list(
+        row_layout.get("task_identity_fields") or ["order_no"]
+    )
+    backlog_rule = str(
+        row_layout.get("backlog_rule") or "BUSINESS_ROW_WITHOUT_MACHINE"
+    )
 
     for row_number, cells in reader.rows(sheet_name):
-        if row_number <= header_row:
+        if row_number < data_start_row:
             continue
+        if row_number > data_end_row:
+            break
         values: dict[str, Any] = {}
         field_lineage: dict[str, Any] = {}
-        blocking_formula = False
+        formula_checks: list[tuple[FieldRule, dict[str, Any] | None]] = []
         for rule in profile.fields:
             mapping_item = mapping_by_field[rule.canonical_field]
             cell = cells.get(rule.column)
@@ -603,17 +643,7 @@ def _parse_plan_rows(
                 source_row=row_number,
                 cell=cell,
             )
-            blocking_formula = (
-                _formula_issue(
-                    profile=profile,
-                    rule=rule,
-                    sheet_name=sheet_name,
-                    source_row=row_number,
-                    cell=cell,
-                    issues=issues,
-                )
-                or blocking_formula
-            )
+            formula_checks.append((rule, cell))
             if len(mapping_item["sample_values"]) < 3 and values[
                 rule.canonical_field
             ] not in (None, ""):
@@ -621,22 +651,50 @@ def _parse_plan_rows(
 
         order_quantity = values.get("order_quantity")
         order_no = _clean_text(values.get("order_no"))
-        order_like = bool(
-            order_no
-            and order_quantity is not None
-            and order_quantity > 0
-            and any(
-                _clean_text(values.get(field))
-                for field in ("item_no", "mold_no", "product_name")
+        order_like = (
+            bool(
+                order_no
+                and order_quantity is not None
+                and order_quantity > 0
+                and any(
+                    _clean_text(values.get(field))
+                    for field in ("item_no", "mold_no", "product_name")
+                )
+            )
+            if not layout_override
+            else bool(
+                order_quantity is not None
+                and order_quantity > 0
+                and any(
+                    _clean_text(values.get(field)) for field in task_identity_fields
+                )
             )
         )
         raw_machine = _clean_text(values.get("machine_code"))
-        is_machine_header = bool(
-            raw_machine
-            and raw_machine in known_machine_codes
-            and not order_like
-            and order_quantity is None
-        )
+        header_values = [
+            reader.identifier(cells.get(column)) for column in machine_header_columns
+        ]
+        is_machine_header = False
+        if layout_type == "GROUPED_BY_MACHINE" and not order_like:
+            if machine_header_rule == "SAME_VALUE_IN_TWO_COLUMNS":
+                is_machine_header = bool(
+                    len(header_values) == 2
+                    and header_values[0]
+                    and header_values[0] == header_values[1]
+                )
+                if is_machine_header:
+                    raw_machine = header_values[1]
+            elif machine_header_rule == "MACHINE_CODE_WITHOUT_BUSINESS_IDENTITY":
+                is_machine_header = bool(raw_machine and order_quantity is None)
+            elif machine_header_rule == "NONE":
+                is_machine_header = False
+        if not layout_override:
+            is_machine_header = bool(
+                raw_machine
+                and raw_machine in known_machine_codes
+                and not order_like
+                and order_quantity is None
+            )
         if is_machine_header:
             current_machine = raw_machine
             ignored.append(
@@ -663,16 +721,35 @@ def _parse_plan_rows(
         planned_finish = _clean_text(values.get("planned_finish"))
         inherited_machine = ""
         if (
-            not explicit_machine
+            layout_type == "GROUPED_BY_MACHINE"
+            and machine_strategy in {"INHERIT_FROM_HEADER", "CURRENT_OR_INHERITED"}
+            and not explicit_machine
             and current_machine
             and planned_start
             and planned_finish
         ):
             inherited_machine = current_machine
-        machine_code = explicit_machine or inherited_machine
+        machine_code = (
+            explicit_machine
+            if machine_strategy == "CURRENT_ROW"
+            else inherited_machine
+            if machine_strategy == "INHERIT_FROM_HEADER"
+            else explicit_machine or inherited_machine
+        )
         completed = values.get("completed_quantity")
+        has_window = bool(
+            planned_start and planned_finish and planned_start < planned_finish
+        )
+        is_backlog_candidate = bool(
+            layout_override
+            and backlog_rule != "NONE"
+            and not machine_code
+            and not has_window
+        )
         row_errors: list[str] = []
-        if completed is None or completed < 0:
+        if (completed is None and not is_backlog_candidate) or (
+            completed is not None and completed < 0
+        ):
             row_errors.append("completed_quantity")
         if machine_code and machine_code not in known_machine_codes:
             row_errors.append("machine_code")
@@ -699,9 +776,26 @@ def _parse_plan_rows(
                     "source_row": row_number,
                 },
             )
-        has_window = bool(
-            planned_start and planned_finish and planned_start < planned_finish
-        )
+        blocking_formula = False
+        backlog_date_fields = {
+            "planned_start",
+            "planned_finish",
+        }
+        likely_backlog = not machine_code and not has_window
+        for rule, cell in formula_checks:
+            ignore_backlog_date = likely_backlog and rule.canonical_field in backlog_date_fields
+            blocking_formula = (
+                _formula_issue(
+                    profile=profile,
+                    rule=rule,
+                    sheet_name=sheet_name,
+                    source_row=row_number,
+                    cell=cell,
+                    issues=issues,
+                    blocking_override=False if ignore_backlog_date else None,
+                )
+                or blocking_formula
+            )
         scheduled_evidence = bool(machine_code or planned_start or planned_finish)
         if completed is not None and completed > order_quantity:
             issues.append(
@@ -799,7 +893,11 @@ def _parse_plan_rows(
             scheduled.append(row)
             if row["execution_status"] == "RUNNING":
                 running_candidates[machine_code].append(row)
-        elif not machine_code and not has_window:
+        elif (
+            not machine_code
+            and not has_window
+            and backlog_rule != "NONE"
+        ):
             row["classification"] = "BACKLOG"
             row["execution_status"] = (
                 "COMPLETED"
@@ -953,6 +1051,8 @@ def parse_canonical_workbook(
     system_machine_codes: set[str] | None = None,
     system_mold_nos: set[str] | None = None,
     profiles: Iterable[ImportProfile] | None = None,
+    layout_override: dict[str, Any] | None = None,
+    additional_known_machine_codes: set[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     issues: list[dict[str, Any]] = []
     profile, roles, mapping, mapping_blockers = _select_profile(
@@ -1052,7 +1152,7 @@ def parse_canonical_workbook(
     )
     known_machine_codes = {item["machine_code"] for item in machines} | set(
         system_machine_codes or set()
-    )
+    ) | set(additional_known_machine_codes or set())
     parsed = _parse_plan_rows(
         reader,
         profile=profile,
@@ -1062,6 +1162,7 @@ def parse_canonical_workbook(
         authoritative_machine_codes=set(system_machine_codes or set()),
         authoritative_mold_nos=set(system_mold_nos or set()),
         issues=issues,
+        layout_override=layout_override,
     )
     signature_payload = {
         "profile_family": profile.profile_family,
