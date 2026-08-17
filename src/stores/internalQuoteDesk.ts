@@ -4,6 +4,7 @@ import {
   type ApiInternalQuote,
   type ApiInternalQuoteAttachment,
   type ApiInternalQuoteAudit,
+  type ApiInternalQuoteBatchProduct,
   type ApiInternalQuoteCustomer,
   type ApiInternalQuoteDashboard,
   type ApiInternalQuoteExport,
@@ -27,6 +28,7 @@ import type {
   InternalQuote,
   InternalQuoteActivity,
   InternalQuoteBusinessOwner,
+  InternalQuoteBatchProduct,
   InternalQuoteCostLine,
   InternalQuoteCreatePayload,
   InternalQuoteExportRecord,
@@ -48,6 +50,11 @@ const actionTitles: Record<string, string> = {
   final_reject: '最终放行退回', export: '生成受控导出', download_export: '下载受控导出', archive: '归档报价',
   dependency_invalidated: '下游依赖失效', final_release_invalidated: '最终放行失效',
   participation_added: '添加参与部门',
+  whole_review_lock_section: '整单提交锁定部门内容', whole_review_submit: '提交整单审核',
+  whole_review_approve_section: '整单审核通过部门内容', whole_review_reject_section: '整单审核退回部门内容',
+  whole_review_approve: '整单审核通过', whole_review_reject: '整单审核退回',
+  batch_copy_baseline: '复制基准款整份报价', batch_copy_section: '复制基准款部门内容',
+  upload_product_image: '更新产品主图',
 }
 
 function numberValue(value: unknown, fallback = 0) {
@@ -107,6 +114,24 @@ function definitionFor(code: string) {
   return internalQuoteSectionDefinitions.find((item) => item.code === code) ?? internalQuoteSectionDefinitions[0]
 }
 
+const internalQuoteSectionOrder = new Map(
+  internalQuoteSectionDefinitions.map((definition, index) => [definition.code, index]),
+)
+
+function orderedApiSections(sections: ApiInternalQuoteSection[]) {
+  return [...sections].sort((left, right) => (
+    (internalQuoteSectionOrder.get(left.department as InternalQuoteSectionCode) ?? Number.MAX_SAFE_INTEGER)
+    - (internalQuoteSectionOrder.get(right.department as InternalQuoteSectionCode) ?? Number.MAX_SAFE_INTEGER)
+  ))
+}
+
+function orderedParticipatingSections(sections: InternalQuoteSectionCode[]) {
+  const selected = new Set(sections)
+  return internalQuoteSectionDefinitions
+    .map((definition) => definition.code)
+    .filter((code) => selected.has(code))
+}
+
 function toAttachment(item: ApiInternalQuoteAttachment) {
   return {
     id: item.id,
@@ -152,6 +177,7 @@ function toSection(section: ApiInternalQuoteSection, attachments: ApiInternalQuo
     calculation: section.calculation,
     calculationStatus: section.calculation_status,
     dependencyStatus: section.dependency_status,
+    filledAt: section.filled_at,
   }
 }
 
@@ -331,6 +357,13 @@ function toQuote(
     id: source.id,
     quoteNo: source.quote_no,
     productName: source.product_name,
+    quoteType: source.quote_type ?? 'single',
+    batchId: source.batch_id || source.id,
+    batchQuoteNo: source.batch_quote_no || source.quote_no,
+    batchPosition: source.batch_position || 1,
+    batchSize: source.batch_size || 1,
+    baselineQuoteId: source.baseline_quote_id || source.id,
+    regionCode: source.region_code ?? '',
     customer: source.customer,
     versionLabel: source.version_label,
     factoryId: source.factory_id,
@@ -355,6 +388,7 @@ function toQuote(
     referenceSnapshotId: source.reference_snapshot_id,
     referenceSnapshot: extras.reference?.snapshot ?? {},
     formulaVersion: source.formula_version,
+    moduleVersion: source.module_version,
     headerRevision: source.header_revision,
     finalReleaseStatus: source.final_release_status,
     factoryPriceHkd: numberValue(extras.summary?.factory_price_hkd),
@@ -363,9 +397,11 @@ function toQuote(
     shippingScenarios: shippingScenarios(source),
     rr2CostSummary: rr2CostSummary(extras.summary),
     finalSubmittedBy: source.final_submitted_by_name || undefined,
+    finalSubmittedById: source.final_submitted_by || undefined,
     finalApprovedBy: source.final_reviewed_by_name || undefined,
     finalApprovedAt: source.final_reviewed_at || undefined,
-    sections: source.sections.map((section) => toSection(section, attachments)),
+    finalReviewComment: source.final_review_comment || undefined,
+    sections: orderedApiSections(source.sections).map((section) => toSection(section, attachments)),
     activities: (extras.timeline?.business_events ?? []).map(toActivity),
     comments: [],
     viewRecords: (extras.timeline?.view_records ?? []).map(toViewRecord),
@@ -375,16 +411,44 @@ function toQuote(
 
 function emptyQuote(): InternalQuote {
   return {
-    id: '', quoteNo: '', productName: '正在读取内部报价…', customer: '', versionLabel: '', factoryId: '', factoryName: '',
+    id: '', quoteNo: '', productName: '正在读取内部报价…', quoteType: 'single', batchId: '', batchQuoteNo: '', batchPosition: 1, batchSize: 1, baselineQuoteId: '', regionCode: '', customer: '', versionLabel: '', factoryId: '', factoryName: '',
     workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', createdById: '', initiatorName: '', businessOwnerId: '',
     businessOwner: '', targetCustomerPrice: '无', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
-    fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', referenceSnapshot: {}, formulaVersion: '', headerRevision: 1,
+    fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', referenceSnapshot: {}, formulaVersion: '', moduleVersion: 'v2', headerRevision: 1,
     finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [], rr2CostSummary: rr2CostSummary(),
     sections: internalQuoteSectionDefinitions.map((definition) => ({
       ...definition, status: 'draft', isRequired: true, revision: 1, totalHkd: 0, updatedAt: '', warnings: [], lines: [],
-      attachments: [], payload: {}, calculation: {}, calculationStatus: 'pending', dependencyStatus: 'current',
+      attachments: [], payload: {}, calculation: {}, calculationStatus: 'pending', dependencyStatus: 'current', filledAt: '',
     })),
     activities: [], comments: [], viewRecords: [], exports: [],
+  }
+}
+
+function toBatchProduct(source: ApiInternalQuoteBatchProduct): InternalQuoteBatchProduct {
+  return {
+    quoteId: source.quote_id,
+    quoteNo: source.quote_no,
+    productName: source.product_name,
+    quantity: source.qty,
+    position: source.position,
+    batchSize: source.batch_size,
+    quoteType: source.quote_type,
+    regionCode: source.region_code,
+    status: uiStatus(source.status),
+    headerRevision: source.header_revision,
+    isBaseline: source.is_baseline,
+    differsFromBaseline: source.differs_from_baseline,
+    differentHeaderFields: source.different_header_fields ?? [],
+    differentSections: source.different_sections ?? [],
+    differentSectionDetails: source.different_section_details ?? {},
+    mainImage: source.main_image ? {
+      id: source.main_image.id,
+      fileName: source.main_image.file_name,
+      contentType: source.main_image.content_type,
+      sizeBytes: source.main_image.size_bytes,
+      uploadedByName: source.main_image.uploaded_by_name,
+      uploadedAt: source.main_image.uploaded_at,
+    } : null,
   }
 }
 
@@ -427,6 +491,7 @@ function triggerDownload(blob: Blob, fileName: string) {
 export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
   state: () => ({
     quotes: [] as InternalQuote[],
+    batchProductsByQuoteId: {} as Record<string, InternalQuoteBatchProduct[]>,
     quoteListTotal: 0,
     quoteListPage: 1,
     quoteListPageSize: 10,
@@ -493,6 +558,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.factoryContextGeneration += 1
       this.currentFactoryId = factoryId
       this.quotes = []
+      this.batchProductsByQuoteId = {}
       this.quoteListTotal = 0
       this.quoteListPage = 1
       this.quoteListPageSize = 10
@@ -963,15 +1029,52 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       const requestSequence = ++this.quoteMutationRequestSequence
       this.submitting = true
       try {
+        const products = payload.products?.length
+          ? payload.products
+          : [{ productName: payload.productName, quantity: payload.quantity, regionCode: '' as const, imageFile: null, documentFiles: [] }]
         const created = await internalQuoteApi.create({
           factory_id: factoryId, workshop_code: `${factoryId}-workshop`, workshop_name: factoryName,
-          quote_no: payload.quoteNo.trim(), product_name: payload.productName.trim(), customer: payload.customer.trim(),
-          qty: payload.quantity, version_label: payload.versionLabel.trim(), initiator_department: payload.initiatorDepartment,
+          quote_no: payload.quoteNo.trim(), product_name: products[0]!.productName.trim(), customer: payload.customer.trim(),
+          qty: products[0]!.quantity, version_label: payload.versionLabel.trim(), initiator_department: payload.initiatorDepartment,
           business_owner_id: payload.businessOwnerId, business_owner_name: payload.businessOwner.trim(),
           target_customer_price: payload.targetCustomerPrice.trim(), target_date: payload.targetDate,
-          remark: payload.remark, participating_sections: payload.participatingSections,
+          remark: payload.remark, participating_sections: orderedParticipatingSections(payload.participatingSections),
+          workflow_mode: 'whole_quote_review',
+          quote_type: payload.quoteType ?? 'single',
+          products: products.map((product) => ({
+            product_name: product.productName.trim(),
+            qty: Number(product.quantity),
+            region_code: product.regionCode,
+          })),
         })
         const quote = toQuote(created)
+        let batchProducts = products.length > 1
+          ? (await internalQuoteApi.listBatchProducts(created.id)).map(toBatchProduct)
+          : []
+        const assetErrors: string[] = []
+        for (const [index, product] of products.entries()) {
+          const targetQuoteId = batchProducts[index]?.quoteId ?? (index === 0 ? created.id : '')
+          if (!targetQuoteId) continue
+          if (product.imageFile) {
+            try {
+              await internalQuoteApi.uploadProductImage(targetQuoteId, product.imageFile)
+            } catch (error) {
+              assetErrors.push(`${product.productName}主图：${getApiErrorMessage(error)}`)
+            }
+          }
+          for (const document of product.documentFiles ?? []) {
+            try {
+              await internalQuoteApi.uploadAttachment(targetQuoteId, document.department, document.file)
+            } catch (error) {
+              assetErrors.push(`${product.productName}资料“${document.file.name}”：${getApiErrorMessage(error)}`)
+            }
+          }
+        }
+        if (products.some((product) => product.imageFile)) {
+          batchProducts = (await internalQuoteApi.listBatchProducts(created.id)).map(toBatchProduct)
+        }
+        for (const item of batchProducts) this.batchProductsByQuoteId[item.quoteId] = batchProducts
+        if (assetErrors.length) this.errorMessage = `报价已创建，但部分产品资料上传失败：${assetErrors.join('；')}`
         if (
           quote.factoryId === factoryId
           && requestSequence === this.quoteMutationRequestSequence
@@ -987,6 +1090,39 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         ) {
           this.submitting = false
         }
+      }
+    },
+    async loadBatchProducts(quoteId: string) {
+      if (!quoteId) return [] as InternalQuoteBatchProduct[]
+      try {
+        const products = (await internalQuoteApi.listBatchProducts(quoteId)).map(toBatchProduct)
+        for (const item of products) this.batchProductsByQuoteId[item.quoteId] = products
+        this.batchProductsByQuoteId[quoteId] = products
+        return products
+      } catch (error) {
+        this.errorMessage = getApiErrorMessage(error)
+        return [] as InternalQuoteBatchProduct[]
+      }
+    },
+    async copyBatchBaseline(quoteId: string, targetQuoteId: string, revision: number) {
+      await this.executeMutation(
+        targetQuoteId,
+        () => internalQuoteApi.copyBatchBaseline(quoteId, targetQuoteId, revision),
+      )
+      return this.loadBatchProducts(targetQuoteId)
+    },
+    async uploadProductImage(quoteId: string, file: File) {
+      this.fileBusy = true
+      try {
+        const result = await internalQuoteApi.uploadProductImage(quoteId, file)
+        await this.loadBatchProducts(quoteId)
+        return result
+      } catch (error) {
+        const message = mutationMessage(error)
+        this.errorMessage = message
+        throw new Error(message)
+      } finally {
+        this.fileBusy = false
       }
     },
     async cloneQuote(sourceQuoteId: string, payload: InternalQuoteCreatePayload, contextFactoryId?: string) {
@@ -1007,7 +1143,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           quote_no: payload.quoteNo.trim(), version_label: payload.versionLabel.trim(), business_owner_id: payload.businessOwnerId,
           business_owner_name: payload.businessOwner.trim(), target_customer_price: payload.targetCustomerPrice.trim(),
           target_date: payload.targetDate, remark: payload.remark,
-          participating_sections: payload.participatingSections,
+          participating_sections: orderedParticipatingSections(payload.participatingSections),
+          workflow_mode: 'whole_quote_review',
         })
         const quote = toQuote(cloned)
         if (
@@ -1097,6 +1234,16 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     updateReferenceFx(quoteId: string, revision: number, rmbHkd: string, hkdUsd: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.updateReferenceFx(quoteId, revision, rmbHkd, hkdUsd))
+    },
+    updateReferenceMaterials(
+      quoteId: string,
+      revision: number,
+      materialPrices: Array<{ material: string; grade: string; price_hkd_lb: string }>,
+    ) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.updateReferenceMaterials(quoteId, {
+        revision,
+        material_prices: materialPrices,
+      }))
     },
     async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File) {
       this.fileBusy = true

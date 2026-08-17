@@ -18,6 +18,7 @@ from app.models.internal_quote import (
     InternalQuoteAttachment,
     InternalQuoteSection,
 )
+from app.schemas.internal_quote import SECTION_CODE_ORDER
 
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
@@ -33,17 +34,7 @@ ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
 TEMPLATE_VERSION = P3_TEMPLATE_VERSION
 STRUCTURED_DATA_SCHEMA_VERSION = "internal-quote-structured-data-v1"
 STRUCTURED_DATA_CHUNK_SIZE = 30000
-SECTION_ORDER = (
-    "sales",
-    "engineering",
-    "electronic",
-    "molding",
-    "painting",
-    "slush",
-    "sewing",
-    "hair",
-    "assembly",
-)
+SECTION_ORDER = SECTION_CODE_ORDER
 
 NAVY = "17324D"
 TEAL = "0F766E"
@@ -417,6 +408,8 @@ def _testing_fee_values(
     sales_section: InternalQuoteSection | None,
     sales_payload: dict[str, Any],
 ) -> tuple[float, list[dict[str, object]]]:
+    if sales_payload.get("testing_fee_enabled", True) is False:
+        return 0.0, []
     totals = _dict_value(_section_calculation(sales_section).get("totals", {}))
     total_usd = _float_value(
         totals.get(

@@ -302,6 +302,8 @@ export interface AssemblyGroup {
   category: 'assembly' | 'packaging'
   production_qty: number
   teams: number
+  /** Manually entered only while the group has no process rows. */
+  total_persons: number | null
   processes: AssemblyProcessRow[]
 }
 export interface AssemblyPayload { groups: AssemblyGroup[]; labor_base_hkd: number; standard_work_hours: number }
@@ -459,6 +461,7 @@ export interface SalesShippingPricing {
 export interface SalesPayload {
   paper_price_factor: number
   flat_card_price_factor?: number
+  testing_fee_enabled: boolean
   testing_fee_total_usd: number
   testing_fee_moqs: number[]
   testing_fee_moq?: number
@@ -1078,6 +1081,7 @@ export function calculateSewingTotalHkd(payload: SewingPayload, rmbHkdRate: unkn
 }
 
 export function calculateAssemblyGroupPeople(group: AssemblyGroup) {
+  if (!group.processes.length) return positivePreviewNumber(group.total_persons)
   return group.processes.reduce((total, row) => total + positivePreviewNumber(row.persons), 0)
 }
 
@@ -1293,12 +1297,17 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         const legacyReference = processes.find((row) => numberValue(row.production_qty) > 0 || numberValue(row.teams) > 0)
         const productionQty = numberValue(group.production_qty ?? legacyReference?.production_qty)
         const teams = numberValue(group.teams ?? legacyReference?.teams, 1)
+        const manualPeopleValue = group.total_persons ?? group.total_people
+        const totalPersons = processes.length || manualPeopleValue == null || manualPeopleValue === ''
+          ? null
+          : numberValue(manualPeopleValue)
         return {
           ...importBatchMetadata(group),
           name: textValue(group.name),
           category: textValue(group.category) === 'packaging' ? 'packaging' : 'assembly',
           production_qty: productionQty,
           teams,
+          total_persons: totalPersons,
           processes: processes.map((row) => ({
             name: textValue(row.name),
             persons: numberValue(row.persons),
@@ -1341,6 +1350,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   return {
     paper_price_factor: paperPriceFactor,
     ...(hasFlatCardPriceFactor ? { flat_card_price_factor: numberValue(source.flat_card_price_factor, paperPriceFactor) } : {}),
+    testing_fee_enabled: booleanValue(source.testing_fee_enabled, true),
     testing_fee_total_usd: numberValue(source.testing_fee_total_usd),
     testing_fee_moqs: testingFeeMoqValues(source.testing_fee_moqs, source.testing_fee_moq),
     packaging_materials: packagingMaterialRows(source.packaging_materials),

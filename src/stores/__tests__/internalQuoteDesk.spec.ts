@@ -32,6 +32,7 @@ const apiMock = vi.hoisted(() => ({
   reopenSection: vi.fn(),
   syncReferenceSnapshot: vi.fn(),
   updateReferenceFx: vi.fn(),
+  updateReferenceMaterials: vi.fn(),
   previewImport: vi.fn(),
   confirmImport: vi.fn(),
   uploadAttachment: vi.fn(),
@@ -47,7 +48,7 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock('@/api/internalQuote', () => ({ internalQuoteApi: apiMock }))
 
-const sectionCodes = ['sales', 'engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'assembly']
+const sectionCodes = ['sales', 'engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'hair', 'assembly']
 
 function section(code: string, index: number): ApiInternalQuoteSection {
   return {
@@ -193,8 +194,10 @@ describe('internal quote desk real API state', () => {
     await Promise.all([store.loadQuotes('huaxing'), store.loadBusinessOwners('huaxing')])
 
     expect(apiMock.list).toHaveBeenCalledWith('huaxing')
-    expect(store.quotes[0].sections).toHaveLength(8)
-    expect(store.quotes[0].sections[0].lines[0]).toMatchObject({ item: '后端行', amountHkd: 12.5 })
+    expect(store.quotes[0].sections.map((item) => item.code)).toEqual([
+      'engineering', 'molding', 'assembly', 'painting', 'electronic', 'slush', 'sewing', 'hair', 'sales',
+    ])
+    expect(store.quotes[0].sections.find((item) => item.code === 'sales')?.lines[0]).toMatchObject({ item: '后端行', amountHkd: 12.5 })
     expect(store.businessOwners).toEqual([{ id: 'owner-1', username: 'owner', displayName: '业务负责人' }])
   })
 
@@ -247,7 +250,7 @@ describe('internal quote desk real API state', () => {
 
     expect(loaded?.factoryPriceHkd).toBe(88.8)
     expect(loaded?.fxRmbHkd).toBe(0.86)
-    expect(loaded?.sections[0].attachments[0]).toMatchObject({ id: 'attachment-1', fileName: '核价依据.xlsx', sha256: 'attachment-sha' })
+    expect(loaded?.sections.find((item) => item.code === 'sales')?.attachments[0]).toMatchObject({ id: 'attachment-1', fileName: '核价依据.xlsx', sha256: 'attachment-sha' })
     expect(loaded?.exports[0]).toMatchObject({ id: 'export-1', status: 'current' })
     expect(loaded?.activities.map((item) => item.action)).toEqual(['create'])
     expect(loaded?.viewRecords.map((item) => item.viewer)).toEqual(['浏览人'])
@@ -312,9 +315,34 @@ describe('internal quote desk real API state', () => {
     const created = await store.createQuote(payload)
     const cloned = await store.cloneQuote(created.id, { ...payload, quoteNo: 'IQ-CLONE' })
 
-    expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['sales', 'engineering', 'electronic', 'assembly'] })
-    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['sales', 'engineering', 'electronic', 'assembly'] }))
+    expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'whole_quote_review' })
+    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'whole_quote_review' }))
     expect(cloned.id).toBe('clone-1')
+  })
+
+  it('uploads create-time product documents to their assigned departments', async () => {
+    const store = useInternalQuoteDeskStore()
+    const engineeringFile = new File(['PK-engineering'], '模具映射.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const salesFile = new File(['%PDF-sales'], '客户资料.pdf', { type: 'application/pdf' })
+
+    await store.createQuote({
+      quoteNo: 'IQ-CREATED-DOCS', productName: '产品', customer: 'Disney', versionLabel: 'V1',
+      initiatorDepartment: 'engineering', businessOwnerId: 'owner-1', businessOwner: '业务负责人',
+      targetCustomerPrice: 'USD 3.50', quantity: 1000, targetDate: '2026-08-31', remark: '',
+      participatingSections: ['sales', 'engineering', 'electronic', 'assembly'],
+      products: [{
+        productName: '产品', quantity: 1000, regionCode: '', imageFile: null,
+        documentFiles: [
+          { file: engineeringFile, department: 'engineering' },
+          { file: salesFile, department: 'sales' },
+        ],
+      }],
+    })
+
+    expect(apiMock.uploadAttachment).toHaveBeenNthCalledWith(1, 'created-1', 'engineering', engineeringFile)
+    expect(apiMock.uploadAttachment).toHaveBeenNthCalledWith(2, 'created-1', 'sales', salesFile)
   })
 
   it('loads and saves the pricing baseline with its optimistic revision', async () => {

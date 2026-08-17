@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 InitiatorDepartment = Literal["sales-business", "engineering"]
 ReviewDecision = Literal["approve", "reject"]
+InternalQuoteWorkflowMode = Literal["section_review", "whole_quote_review"]
+InternalQuoteType = Literal["single", "series", "multi_region"]
+InternalQuoteRegionCode = Literal["", "mainland", "indonesia"]
 InternalQuoteImportType = Literal["mold", "hardware", "electronic", "molding", "painting", "slush", "sewing", "assembly"]
 InternalQuoteSectionCode = Literal[
     "sales",
@@ -20,7 +23,17 @@ InternalQuoteSectionCode = Literal[
 ]
 MANDATORY_SECTION_CODES = ("sales", "engineering", "assembly")
 OPTIONAL_SECTION_CODES = ("electronic", "molding", "painting", "slush", "sewing", "hair")
-SECTION_CODE_ORDER = MANDATORY_SECTION_CODES[:2] + OPTIONAL_SECTION_CODES + MANDATORY_SECTION_CODES[2:]
+SECTION_CODE_ORDER = (
+    "engineering",
+    "molding",
+    "assembly",
+    "painting",
+    "electronic",
+    "slush",
+    "sewing",
+    "hair",
+    "sales",
+)
 
 
 def _normalize_section_codes(values: list[InternalQuoteSectionCode]) -> list[InternalQuoteSectionCode]:
@@ -59,6 +72,17 @@ def _nonnegative_decimal_text(value: str, field_name: str) -> str:
     return format(parsed, "f")
 
 
+class InternalQuoteProductCreateRequest(BaseModel):
+    product_name: str = Field(min_length=1, max_length=255)
+    qty: int = Field(gt=0)
+    region_code: InternalQuoteRegionCode = ""
+
+    @field_validator("product_name")
+    @classmethod
+    def strip_product_name(cls, value: str) -> str:
+        return value.strip()
+
+
 class InternalQuoteCreateRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     workshop_code: str = Field(default="huaxing-workshop", min_length=1, max_length=64)
@@ -74,8 +98,13 @@ class InternalQuoteCreateRequest(BaseModel):
     target_customer_price: str = Field(default="无", min_length=1, max_length=128)
     target_date: str = Field(default="", max_length=32)
     remark: str = Field(default="", max_length=4000)
+    workflow_mode: InternalQuoteWorkflowMode = "section_review"
+    quote_type: InternalQuoteType = "single"
+    products: list[InternalQuoteProductCreateRequest] = Field(default_factory=list, max_length=20)
     participating_sections: list[InternalQuoteSectionCode] = Field(
-        default_factory=lambda: list(MANDATORY_SECTION_CODES)
+        default_factory=lambda: [
+            code for code in SECTION_CODE_ORDER if code in MANDATORY_SECTION_CODES
+        ]
     )
 
     @field_validator(
@@ -109,6 +138,27 @@ class InternalQuoteCreateRequest(BaseModel):
         cls, values: list[InternalQuoteSectionCode]
     ) -> list[InternalQuoteSectionCode]:
         return _validate_participating_sections(values)
+
+    @model_validator(mode="after")
+    def validate_products(self):
+        products = self.products or [
+            InternalQuoteProductCreateRequest(
+                product_name=self.product_name,
+                qty=self.qty,
+            )
+        ]
+        if len(products) > 20:
+            raise ValueError("一批内部报价最多包含 20 款产品")
+        if self.quote_type == "single" and len(products) != 1:
+            raise ValueError("单款报价只能包含 1 款产品")
+        if self.quote_type == "multi_region" and len(products) < 2:
+            raise ValueError("多地区报价至少需要大陆价和印尼价两款")
+        self.products = products
+        return self
+
+
+class InternalQuoteBatchCopyRequest(BaseModel):
+    revision: int = Field(ge=1)
 
 
 class InternalQuoteBusinessOwnerOut(BaseModel):
@@ -305,6 +355,7 @@ class InternalQuoteCloneRequest(BaseModel):
     target_customer_price: str | None = Field(default=None, min_length=1, max_length=128)
     target_date: str = Field(default="", max_length=32)
     remark: str | None = Field(default=None, max_length=4000)
+    workflow_mode: InternalQuoteWorkflowMode | None = None
     participating_sections: list[InternalQuoteSectionCode] | None = None
 
     @field_validator(
@@ -525,6 +576,20 @@ class InternalQuoteReferenceFxUpdateRequest(BaseModel):
         return format(parsed, "f")
 
 
+class InternalQuoteReferenceMaterialsUpdateRequest(BaseModel):
+    revision: int = Field(ge=1)
+    material_prices: list[InternalQuoteMaterialBaselineRow] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_unique_rows(self):
+        material_keys = [
+            (row.material.casefold(), row.grade.casefold()) for row in self.material_prices
+        ]
+        if len(material_keys) != len(set(material_keys)):
+            raise ValueError("本报价专用料价存在重复的材质和料型")
+        return self
+
+
 class InternalQuoteSectionOut(BaseModel):
     id: str
     department: str
@@ -559,6 +624,13 @@ class InternalQuoteOut(BaseModel):
     workshop_name: str
     quote_no: str
     product_name: str
+    quote_type: str
+    batch_id: str
+    batch_quote_no: str
+    batch_position: int
+    batch_size: int
+    baseline_quote_id: str
+    region_code: str
     customer: str
     qty: int
     version_label: str
@@ -595,6 +667,34 @@ class InternalQuoteOut(BaseModel):
     created_at: str
     updated_at: str
     sections: list[InternalQuoteSectionOut] = Field(default_factory=list)
+
+
+class InternalQuoteProductImageOut(BaseModel):
+    id: str
+    file_name: str
+    content_type: str
+    size_bytes: int
+    uploaded_by_name: str
+    uploaded_at: str
+
+
+class InternalQuoteBatchProductOut(BaseModel):
+    quote_id: str
+    quote_no: str
+    product_name: str
+    qty: int
+    position: int
+    batch_size: int
+    quote_type: str
+    region_code: str
+    status: str
+    header_revision: int
+    is_baseline: bool
+    differs_from_baseline: bool
+    different_header_fields: list[str] = Field(default_factory=list)
+    different_sections: list[str] = Field(default_factory=list)
+    different_section_details: dict[str, list[str]] = Field(default_factory=dict)
+    main_image: InternalQuoteProductImageOut | None = None
 
 
 class InternalQuotePageOut(BaseModel):
@@ -709,6 +809,22 @@ class InternalQuoteAttachmentOut(BaseModel):
     is_import_source: bool = False
     import_batch_id: str = ""
     import_type: str = ""
+
+
+class InternalQuoteAttachmentPreviewSheetOut(BaseModel):
+    name: str
+    rows: list[list[Any]]
+    total_rows: int
+    total_columns: int
+    truncated: bool = False
+
+
+class InternalQuoteAttachmentContentPreviewOut(BaseModel):
+    file_name: str
+    kind: str
+    sheets: list[InternalQuoteAttachmentPreviewSheetOut] = Field(default_factory=list)
+    paragraphs: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class InternalQuoteExportFileOut(BaseModel):

@@ -232,12 +232,12 @@ function normalizeMiscInput() {
 }
 
 function selectMarkupTier(index: number) {
-  if (index < 0 || index >= quoteMarkupTiers.value.length || props.busy) return
+  if (index < 0 || index >= quoteMarkupTiers.value.length || !props.canEditMarkup || props.markupBlockedReason || props.busy) return
   selectedMarkupTierIndex.value = index
 }
 
 function saveFx() {
-  if (fxValidationMessage.value || !fxDirty.value || props.busy) return
+  if (!props.canEditFx || fxValidationMessage.value || !fxDirty.value || props.busy) return
   emit('updateFx', {
     rmbHkd: Number(fxRmbHkd.value).toFixed(2),
     hkdUsd: Number(fxHkdUsd.value).toFixed(2),
@@ -245,7 +245,7 @@ function saveFx() {
 }
 
 function saveMarkup() {
-  if (pricingValidationMessage.value || !pricingDirty.value || props.markupBlockedReason || props.busy) return
+  if (!props.canEditMarkup || pricingValidationMessage.value || !pricingDirty.value || props.markupBlockedReason || props.busy) return
   emit('updateMarkup', {
     markupTiers: quoteMarkupTiers.value.map((tier) => ({
       moq: String(Math.round(Number(tier.moq))),
@@ -291,7 +291,7 @@ function addComment() {
             {{ previewStatus }}
           </em>
         </div>
-        <span class="quote-live-main-label">预览报价（实时成本 × 本单选用码数）</span>
+        <span class="quote-live-main-label">预览报价（根据实时成本与本单设置计算）</span>
         <strong data-testid="live-quote-hkd">HKD {{ quoteHkd.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong>
         <div class="quote-live-conversions"><span>RMB {{ quoteRmb.toFixed(2) }}</span><span>USD {{ quoteUsd.toFixed(2) }}</span></div>
         <div class="quote-markup-tier-control">
@@ -312,9 +312,10 @@ function addComment() {
               max="100000000"
               step="1"
               inputmode="numeric"
+              :disabled="!canEditMarkup || busy || !!markupBlockedReason"
               @blur="normalizeMarkupMoq(index)"
             >
-            <span>×</span>
+            <span>倍率</span>
             <input
               :id="`quote-live-markup-${index}`"
               v-model="tier.markup"
@@ -324,6 +325,7 @@ function addComment() {
               max="9.99"
               step="0.01"
               inputmode="decimal"
+              :disabled="!canEditMarkup || busy || !!markupBlockedReason"
               @blur="normalizeMarkupInput(index)"
             >
             <button
@@ -332,14 +334,14 @@ function addComment() {
               :class="{ selected: activeMarkupTierIndex === index }"
               :data-testid="`select-quote-markup-tier-${index}`"
               :aria-pressed="activeMarkupTierIndex === index"
-              :disabled="busy"
+              :disabled="!canEditMarkup || busy || !!markupBlockedReason"
               @click="selectMarkupTier(index)"
             >{{ activeMarkupTierIndex === index ? '本单采用' : '选择此档' }}</button>
           </div>
         </div>
         <div class="quote-markup-control quote-misc-control">
           <label for="quote-live-misc"><span>杂项</span><small>当前保存 {{ (savedMiscRatio * 100).toFixed(2) }}%</small></label>
-          <div class="quote-markup-input"><input id="quote-live-misc" v-model="quoteMiscPercent" data-testid="live-quote-misc" type="number" min="0" max="100" step="0.01" inputmode="decimal" @blur="normalizeMiscInput"><span>%</span></div>
+          <div class="quote-markup-input"><input id="quote-live-misc" v-model="quoteMiscPercent" data-testid="live-quote-misc" type="number" min="0" max="100" step="0.01" inputmode="decimal" :disabled="!canEditMarkup || busy || !!markupBlockedReason" @blur="normalizeMiscInput"><span>%</span></div>
         </div>
         <button
           v-if="canEditMarkup"

@@ -163,6 +163,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     "sales": {
         "paper_price_factor": "decimal>0; default 2.75",
         "flat_card_price_factor": "decimal>0; defaults to paper_price_factor",
+        "testing_fee_enabled": "boolean; default true; false preserves inputs but returns zero testing fee",
         "testing_fee_total_usd": "decimal>=0; optional business testing-fee total",
         "testing_fee_moqs": "list of positive integer MOQ tiers when testing_fee_total_usd>0",
         "testing_fee_moq": "legacy single MOQ; read when testing_fee_moqs is absent",
@@ -282,7 +283,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices; detail mode price RMB = usage * material price * markup, then HKD = RMB / frozen rate"},
     "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
     "assembly": {
-        "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "processes": [{"name": "text", "persons": "decimal>=0", "remark": "text"}]}],
+        "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "total_persons": "decimal>0 when processes is empty", "processes": [{"name": "text", "persons": "decimal>=0", "remark": "text"}]}],
         "labor_base_hkd": "default 260; adjustable",
         "standard_work_hours": "default 11; adjustable reference value",
         "formula": "labor HKD/PCS = labor base HKD/person * total persons * teams / production quantity",
@@ -1384,6 +1385,43 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
                 "formula": "人工基数 × 人数 × 小组数 ÷ 生产量",
                 "amount_hkd_pcs": decimal_text(process_total),
             })
+        if not processes:
+            total_persons = decimal_value(
+                group.get("total_persons"),
+                f"装配第 {group_index + 1} 组总人数",
+            )
+            if total_persons < ZERO:
+                raise CalculationInputError(
+                    f"装配第 {group_index + 1} 组总人数不能小于 0"
+                )
+            if total_persons > ZERO:
+                group_total = labor_base * total_persons * group_teams / group_production_qty
+                result["line_breakdown"].append({
+                    "kind": "assembly_manual_total",
+                    "group": str(group.get("name", "")),
+                    "category": category,
+                    "process": "无工序手工总人数",
+                    "persons": decimal_text(total_persons),
+                    "teams": decimal_text(group_teams),
+                    "production_qty": decimal_text(group_production_qty),
+                    "remark": "",
+                    "formula": "人工基数 × 手工总人数 × 小组数 ÷ 生产量",
+                    "amount_hkd_pcs": decimal_text(group_total),
+                })
+            else:
+                result["warnings"].append(
+                    _warning(
+                        "assembly_total_persons_missing",
+                        f"{str(group.get('name', '')).strip() or f'第 {group_index + 1} 组'}没有工序明细，请填写总人数",
+                    )
+                )
+        elif total_persons <= ZERO:
+            result["warnings"].append(
+                _warning(
+                    "assembly_process_persons_missing",
+                    f"{str(group.get('name', '')).strip() or f'第 {group_index + 1} 组'}的工序人数合计必须大于 0",
+                )
+            )
         result["group_summaries"].append({
             "category": category,
             "group": str(group.get("name", "")),
@@ -1730,11 +1768,18 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
     misc_ratio = decimal_value(shipping_source.get("misc_ratio"), "杂项系数", str(snapshot.get("misc_ratio", "0.02")))
     if misc_ratio < 0 or misc_ratio > 1:
         raise CalculationInputError("杂项系数必须在 0% 至 100% 之间")
-    testing_fee_total_usd = decimal_value(payload.get("testing_fee_total_usd"), "业务部测试费用 USD")
+    testing_fee_enabled = payload.get("testing_fee_enabled", True)
+    if not isinstance(testing_fee_enabled, bool):
+        raise CalculationInputError("是否启用测试费计算必须为布尔值")
+    testing_fee_total_usd = (
+        decimal_value(payload.get("testing_fee_total_usd"), "业务部测试费用 USD")
+        if testing_fee_enabled
+        else ZERO
+    )
     if testing_fee_total_usd < ZERO:
         raise CalculationInputError("业务部测试费用 USD 不能小于 0")
-    testing_fee_moq_sources = payload.get("testing_fee_moqs")
-    if testing_fee_moq_sources is None:
+    testing_fee_moq_sources = payload.get("testing_fee_moqs") if testing_fee_enabled else []
+    if testing_fee_enabled and testing_fee_moq_sources is None:
         legacy_testing_fee_moq = payload.get("testing_fee_moq")
         testing_fee_moq_sources = [] if legacy_testing_fee_moq in (None, "") else [legacy_testing_fee_moq]
     if not isinstance(testing_fee_moq_sources, list):
@@ -1852,6 +1897,7 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
         "packaging_material_rmb": decimal_text(packaging_material_total_rmb),
         "carton_hkd": decimal_text(carton_total_hkd),
         "carton_cuft": decimal_text(carton_cuft),
+        "testing_fee_enabled": testing_fee_enabled,
         "testing_fee_total_usd": decimal_text(testing_fee_total_usd),
         "testing_fee_moqs": [tier["moq"] for tier in testing_fee_tiers],
         "testing_fee_tiers": testing_fee_tiers,

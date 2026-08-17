@@ -63,7 +63,6 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(wrapper.text()).toContain('已同步 1 项模具')
     expect(textarea.attributes('disabled')).toBeDefined()
     expect(textarea.classes()).toContain('engineering-prefilled')
-    expect(row.find('input').attributes('disabled')).toBeDefined()
     expect(selects[0].attributes('disabled')).toBeUndefined()
     expect(selects[1].attributes('disabled')).toBeUndefined()
     expect(selects[1].text()).toContain('7032 E3')
@@ -85,9 +84,15 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
 
     expect(modelValue.injection_lines[0].machine_code).toBe('18A')
     expect(modelValue.injection_lines[0].machine_name).toBe('180T')
+    const injectionHeader = wrapper.get('.moldingInjectionTable thead').text()
+    for (const hiddenField of ['模号', '颜色', '含损耗重量', '机台']) expect(injectionHeader).not.toContain(hiddenField)
+    expect(injectionHeader).toContain('机型 A码')
     const values = wrapper.findAll('.moldingInjectionTable .snapshot-cell').map((cell) => cell.text())
     expect(values).toEqual(['0.019', '2.603', '0.675', '3.278'])
-    expect(wrapper.text()).toContain('注塑实时合计 HKD 3.278')
+    expect(wrapper.text()).toContain('重量汇总（含损耗）139.0500 g')
+    expect(wrapper.text()).toContain('料价汇总 HKD 2.603')
+    expect(wrapper.text()).toContain('啤工汇总 HKD 0.675')
+    expect(wrapper.text()).toContain('注塑合计 HKD 3.278')
     expect(wrapper.text()).not.toContain('保存后计算')
   })
 
@@ -165,12 +170,10 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(rows[1].find('textarea').attributes('disabled')).toBeUndefined()
     await rows[0].find('textarea').setValue('挂钩左件')
     await rows[1].find('textarea').setValue('挂钩右件')
-    await rows[0].find('input').setValue('M12-A')
-    await rows[1].find('input').setValue('M12-B')
 
     expect(modelValue.injection_lines.map((row) => [row.item, row.mold_no])).toEqual([
-      ['挂钩左件', 'M12-A'],
-      ['挂钩右件', 'M12-B'],
+      ['挂钩左件', 'M12'],
+      ['挂钩右件', 'M12'],
     ])
   })
 })

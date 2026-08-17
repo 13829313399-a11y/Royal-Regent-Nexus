@@ -23,6 +23,7 @@ describe('internal quote section payload normalization', () => {
     })
     expect(fresh).toMatchObject({
       paper_price_factor: 2.75,
+      testing_fee_enabled: true,
       testing_fee_total_usd: 0,
       testing_fee_moqs: [0],
       packaging_materials: [],
@@ -67,9 +68,11 @@ describe('internal quote section payload normalization', () => {
       testing_fee_moqs: [5000],
     })
     expect(normalizeInternalQuotePayload('sales', {
+      testing_fee_enabled: false,
       testing_fee_total_usd: '1250',
       testing_fee_moqs: ['3000', '5000', 10000],
     })).toMatchObject({
+      testing_fee_enabled: false,
       testing_fee_total_usd: 1250,
       testing_fee_moqs: [3000, 5000, 10000],
     })
@@ -370,6 +373,23 @@ describe('internal quote section payload normalization', () => {
     expect(calculateAssemblyGroupLaborHkd(payload.groups[0], payload.labor_base_hkd)).toBe(26)
     expect(calculateAssemblyCategoryLaborHkd(payload, 'assembly')).toBe(26)
     expect(calculateAssemblyCategoryLaborHkd(payload, 'packaging')).toBe(5.2)
+  })
+
+  it('uses a manual total person count only while an assembly group has no process rows', () => {
+    const manual = normalizeInternalQuotePayload('assembly', {
+      labor_base_hkd: 260,
+      groups: [{ name: '成品组装', category: 'assembly', production_qty: 100, teams: 1, total_persons: '6', processes: [] }],
+    }) as AssemblyPayload
+
+    expect(manual.groups[0].total_persons).toBe(6)
+    expect(calculateAssemblyGroupPeople(manual.groups[0])).toBe(6)
+    expect(calculateAssemblyGroupLaborHkd(manual.groups[0], manual.labor_base_hkd)).toBeCloseTo(15.6)
+
+    const withProcesses = normalizeInternalQuotePayload('assembly', {
+      groups: [{ name: '成品组装', category: 'assembly', total_persons: 99, processes: [{ name: '装配', persons: 3 }] }],
+    }) as AssemblyPayload
+    expect(withProcesses.groups[0].total_persons).toBeNull()
+    expect(calculateAssemblyGroupPeople(withProcesses.groups[0])).toBe(3)
   })
 
   it('copies product-group capacity into legacy assembly process fields when saving', () => {

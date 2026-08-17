@@ -561,7 +561,9 @@ function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixty
   const exFactoryUsd = round(basicTotalUsd + materialScrapUsd + markupUsd)
   const transportationUsd = round(numberValue(freight.freight_per_piece_hkd) / THREE_SIXTY_HKD_USD)
   const totalFobUsd = round(exFactoryUsd + transportationUsd)
-  const testingTotalUsd = numberValue(salesPayload.testing_fee_total_usd)
+  const testingTotalUsd = salesPayload.testing_fee_enabled === false
+    ? 0
+    : numberValue(salesPayload.testing_fee_total_usd)
   const testingPerUnitUsd = round(testingTotalUsd / artifact.quantity)
   const totalWithTestingUsd = round(totalFobUsd + testingPerUnitUsd)
   const toolingTotalUsd = round(toolingFx > 0 ? toolingTotalRmb / toolingFx : 0)
