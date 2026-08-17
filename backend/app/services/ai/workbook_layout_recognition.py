@@ -80,6 +80,13 @@ def _normalize_tool_arguments(arguments_json: str) -> str:
         if isinstance(decoded, expected_type):
             payload[key] = decoded
             changed = True
+
+    plan_sheet = payload.get("plan_sheet")
+    if isinstance(plan_sheet, dict):
+        header_rows = plan_sheet.get("header_rows")
+        if isinstance(header_rows, int) and not isinstance(header_rows, bool):
+            plan_sheet["header_rows"] = [header_rows]
+            changed = True
     return _json(payload) if changed else arguments_json
 
 
@@ -104,7 +111,9 @@ def _prompt(packet: AIWorkbookRecognitionPacketV1, repair_error: str = "") -> st
         "canonical_field、source_column、header_cell、transformer、confidence、reason；"
         "shift_grid 只允许 enabled、start_column、end_column、day_header_row、shift_header_row、"
         "calendar_month、day_shift_aliases、quantity_semantics。嵌套对象和数组必须保持 JSON 类型，"
-        "不要再次编码成字符串。至少映射 machine_code、mold_no、order_no、order_quantity、"
+        "不要再次编码成字符串；header_rows 必须是整数数组（例如 [3]），machine_header_columns、"
+        "task_identity_fields、field_mappings 和 warnings 也必须是数组。至少映射 machine_code、"
+        "mold_no、order_no、order_quantity、"
         "completed_quantity、planned_start、planned_finish。layout_type 只能是 GROUPED_BY_MACHINE "
         "或 FLAT_ROWS；machine_code_strategy 只能是 CURRENT_ROW、INHERIT_FROM_HEADER 或 "
         "CURRENT_OR_INHERITED；machine_header_rule 只能是 SAME_VALUE_IN_TWO_COLUMNS、"
