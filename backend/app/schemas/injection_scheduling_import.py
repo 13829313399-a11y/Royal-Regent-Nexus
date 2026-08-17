@@ -60,6 +60,7 @@ class InjectionSchedulingImportBatchOut(BaseModel):
         "MASTER_DATA",
     ]
     source_namespace_id: str
+    recognition: dict[str, Any] | None
     profile: dict[str, Any] | None
     sheet_roles: list[dict[str, Any]]
     mapping: list[dict[str, Any]]

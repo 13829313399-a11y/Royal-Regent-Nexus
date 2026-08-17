@@ -33,6 +33,7 @@ class FieldRule:
     required: bool = False
     unit: str = ""
     selector_strategy: str = "FIXED_COLUMN_HEADER"
+    header_row: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,7 +315,9 @@ ALLOWED_SHEET_ROLES = frozenset(
 ALLOWED_DOCUMENT_KINDS = frozenset(
     {"DEMAND_ORDER", "PLANNED_SCHEDULE", "SYSTEM_ROUND_TRIP", "MASTER_DATA"}
 )
-ALLOWED_SELECTOR_STRATEGIES = frozenset({"FIXED_COLUMN_HEADER", "HEADER_ALIAS"})
+ALLOWED_SELECTOR_STRATEGIES = frozenset(
+    {"FIXED_COLUMN_HEADER", "HEADER_ALIAS", "AI_HEADER_CELL"}
+)
 
 
 def normalize_header(value: Any) -> str:
@@ -753,6 +756,7 @@ def profile_config(profile: ImportProfile) -> dict[str, Any]:
                     if item.selector_strategy != "FIXED_COLUMN_HEADER"
                     else {}
                 ),
+                **({"header_row": item.header_row} if item.header_row else {}),
             }
             for item in profile.fields
         ],
@@ -890,6 +894,7 @@ def profile_from_config(config: dict[str, Any]) -> ImportProfile:
                 selector_strategy=str(
                     item.get("selector_strategy", "FIXED_COLUMN_HEADER")
                 ),
+                header_row=int(item["header_row"]) if item.get("header_row") else None,
             )
         )
     roles = tuple(

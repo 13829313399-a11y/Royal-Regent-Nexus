@@ -24,4 +24,15 @@ describe('AI-B10/B11 workbook preview and mapping boundaries', () => {
     expect(wizard).toContain('mappingProposal.preview_manifest')
     expect(wizard).toContain('<PreviewCard')
   })
+
+  it('offers guarded AI layout fallback inside the existing import preview flow', () => {
+    expect(api).toContain("body.set('recognition_mode', recognitionMode)")
+    expect(api).toContain("body.set('cloud_ai_consent', cloudAiConsent ? 'true' : 'false')")
+    expect(api).toContain("body.set('business_date', businessDate)")
+    expect(wizard).toContain('固定模板优先，必要时 AI（推荐）')
+    expect(wizard).toContain('直接使用 AI 识别布局')
+    expect(wizard).toContain('有限工作簿结构')
+    expect(wizard).toContain('AI 布局已通过后端来源校验')
+    expect(wizard).toContain('确定性服务完成')
+  })
 })

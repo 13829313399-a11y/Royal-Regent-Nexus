@@ -27,7 +27,7 @@ import {
   inspectWorkbookArtifact,
   type AIWorkbookMappingProposal,
 } from '../api/injectionSchedulingV2Api'
-import type { FactoryId, ImportBatchRecord, ImportDocumentKindChoice, ImportIssueRecord } from '../types'
+import type { FactoryId, ImportBatchRecord, ImportDocumentKindChoice, ImportIssueRecord, ImportRecognitionMode } from '../types'
 import { useDialogFocus } from '../composables/useDialogFocus'
 import {
   factoryMeta,
@@ -77,6 +77,8 @@ const { announcement: dialogAnnouncement } = useDialogFocus(() => props.open, di
 const masterReason = ref('')
 const issueQuery = ref('')
 const documentKind = ref<ImportDocumentKindChoice>('AUTO')
+const layoutRecognitionMode = ref<ImportRecognitionMode>('AUTO')
+const layoutCloudConsent = ref(false)
 const selectedRowIds = ref<string[]>([])
 const mappingDraft = ref<Record<string, string>>({})
 const profileProposalName = ref('')
@@ -159,6 +161,9 @@ const batchTechnicalItems = computed(() => batch.value ? technicalItems([
   ['批次原始状态', batch.value.batchState],
   ['预览 generation', batch.value.previewGeneration],
   ['批次 revision', batch.value.revision],
+  ['识别模式', batch.value.recognition?.mode],
+  ['识别模型', batch.value.recognition?.model],
+  ['布局摘要', batch.value.recognition?.layout_digest],
   ['Profile code', batch.value.profile?.profile_code],
   ['Profile revision', batch.value.profile?.revision],
   ['来源命名空间', batch.value.sourceNamespaceId],
@@ -227,6 +232,8 @@ watch(() => [props.open, props.factoryId, props.initialBatchId] as const, async 
   semanticSnapshot.value = null
   mappingProposal.value = null
   cloudMappingConsent.value = false
+  layoutRecognitionMode.value = 'AUTO'
+  layoutCloudConsent.value = false
   sourceArtifact.value = null
   error.value = ''
   masterReason.value = ''
@@ -329,7 +336,17 @@ async function upload() {
   busy.value = true
   error.value = ''
   try {
-    adoptBatch(await uploadImportPreview(props.factoryId, file.value, documentKind.value))
+    const effectiveRecognitionMode: ImportRecognitionMode = ['DEMAND_ORDER', 'MASTER_DATA', 'SYSTEM_ROUND_TRIP'].includes(documentKind.value)
+      ? 'PROFILE'
+      : layoutRecognitionMode.value
+    adoptBatch(await uploadImportPreview(
+      props.factoryId,
+      file.value,
+      documentKind.value,
+      effectiveRecognitionMode,
+      layoutCloudConsent.value,
+      props.businessDate,
+    ))
     await loadRecent()
   } catch (cause) {
     error.value = `导入预览失败：${getApiErrorMessage(cause)}`
@@ -463,6 +480,8 @@ async function confirm() {
 
       <div v-if="!batch" class="wizard-upload-step">
         <label class="document-kind"><span>文件类型</span><select v-model="documentKind" :disabled="busy"><option value="AUTO">自动识别（推荐）</option><option value="DEMAND_ORDER">客户下单表</option><option value="PLANNED_SCHEDULE">已排计划表</option><option value="SYSTEM_ROUND_TRIP">系统回写文件</option><option value="MASTER_DATA">共享模具 / 单价主数据</option></select><small>自动识别只接受已登记的文档签名或导入模板；不确定的文件会停在预览，不会写入排产。</small></label>
+        <label class="document-kind"><span>计划表识别</span><select v-model="layoutRecognitionMode" :disabled="busy || ['DEMAND_ORDER', 'MASTER_DATA', 'SYSTEM_ROUND_TRIP'].includes(documentKind)"><option value="AUTO">固定模板优先，必要时 AI（推荐）</option><option value="PROFILE">只用已登记固定模板</option><option value="AI">直接使用 AI 识别布局</option></select><small>AI 只提出 Sheet、表头、列、机台分组和班次矩阵的读取方式；后端会重新校验来源并用确定性解析器生成预览。</small></label>
+        <label v-if="layoutRecognitionMode !== 'PROFILE' && !['DEMAND_ORDER', 'MASTER_DATA', 'SYSTEM_ROUND_TRIP'].includes(documentKind)" class="cloud-mapping-consent"><input v-model="layoutCloudConsent" type="checkbox" :disabled="busy" /><span>当固定模板无法识别时，我同意将有限工作簿结构（Sheet 名、表头、代表性行、公式与缓存状态）发送到已批准的云端模型；不发送整个 Excel，模型不能写库或发布计划。</span></label>
         <label class="file-picker"><Upload :size="26" /><strong>选择 .xlsx/.xlsm 计划或下单文件</strong><span>{{ file?.name || '先做本地只读语义检查；确认导入后才按批次隔离保存 72 小时' }}</span><input type="file" accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12" :disabled="!canImport || busy || preflightBusy" @change="selectFile" /></label>
         <section v-if="semanticSnapshot" class="semantic-snapshot" data-testid="workbook-semantic-snapshot">
           <div><CheckCircle2 :size="16" /><strong>本地只读语义检查通过</strong></div>
@@ -477,7 +496,7 @@ async function confirm() {
           <p>建议 {{ Array.isArray(mappingProposal.proposal) ? mappingProposal.proposal.length : 0 }} 项；缺失必填 {{ Array.isArray(mappingProposal.missing_required_fields) ? mappingProposal.missing_required_fields.length : 0 }} 项。只能保存到现有 PROFILE_DRAFT，不能自动激活。</p>
           <PreviewCard v-if="mappingProposal.preview_manifest" :manifest="mappingProposal.preview_manifest" />
         </section>
-        <button class="wizard-primary" :disabled="!file || !canImport || busy" @click="upload"><RefreshCw v-if="busy" :size="16" class="spinning" /><Upload v-else :size="16" />{{ busy ? '识别中' : '生成预览' }}</button>
+        <button class="wizard-primary" :disabled="!file || !canImport || busy || (layoutRecognitionMode === 'AI' && !layoutCloudConsent && !['DEMAND_ORDER', 'MASTER_DATA', 'SYSTEM_ROUND_TRIP'].includes(documentKind))" @click="upload"><RefreshCw v-if="busy" :size="16" class="spinning" /><Upload v-else :size="16" />{{ busy ? '提取结构并生成预览' : '生成预览' }}</button>
         <div v-if="recent.length" class="recent-batches"><strong>恢复最近批次</strong><button v-for="item in recent" :key="item.id" @click="recover(item.id)"><span>{{ item.sourceFileName }}</span><b>{{ importBatchStateMeta(item.batchState).label }}</b></button></div>
         <details v-if="canReviewSharedMolds || canActivateSharedMolds || canManageFactoryCapabilities || canManageSharedMoldPrices" open><summary>已整理主数据提案（{{ governanceProposals.length }}）</summary><div class="mapping-editor"><p><AlertTriangle :size="15" />无需重复上传源表。公司模具与{{ factoryMeta(props.factoryId).label }}机安能力独立治理；单价按原表值，以人民币、每啤/每模次、当前厂区全客户全合同口径激活。</p><input v-model="governanceReason" placeholder="审核或激活依据（至少 4 个字符）" /><div class="action-list"><p v-for="proposal in governanceProposals" :key="String(proposal.id)"><b>{{ masterDataEntityMeta(proposal.entity_type).label }} · {{ proposalActionMeta(proposal.action_type).label }}</b><span>{{ masterProposalStatusMeta(proposal.status).label }} · {{ proposalEntryCount(proposal) }} 条来源 · {{ proposal.proposed_by_name || '提案人信息待补充' }}</span><SchedulingTechnicalDetails :items="proposalTechnicalItems(proposal)" summary="提案技术信息" /><small><button v-if="proposal.status === 'PROPOSED' && (proposal.entity_type !== 'FACTORY_MOLD_CAPABILITY_BUNDLE' ? canReviewSharedMolds : canManageFactoryCapabilities)" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'approve')">独立批准</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'MOLD_DEFINITION_BUNDLE' && canActivateSharedMolds" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活公司模具</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'FACTORY_MOLD_CAPABILITY_BUNDLE' && canManageFactoryCapabilities" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活{{ factoryMeta(props.factoryId).label }}机安能力</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'COMMERCIAL_RATE_RULE' && canManageSharedMoldPrices" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活人民币单价</button></small></p></div></div></details>
       </div>
@@ -486,6 +505,11 @@ async function confirm() {
         <nav class="wizard-steps" aria-label="导入步骤"><span class="done">1 选择文件</span><span class="done">2 模板映射</span><span :class="{ done: batch.batchState === 'PREVIEW_READY' || batch.status === 'CONFIRMED' }">3 解析对账</span><span :class="{ done: batch.status === 'CONFIRMED' }">4 确认接管</span></nav>
         <div class="batch-heading"><div><strong>{{ batch.sourceFileName }}</strong><span>{{ importDocumentKindMeta(batch.documentKind).label }} · 当前预览</span></div><em :class="batch.batchState.toLowerCase()">{{ importBatchStateMeta(batch.batchState).label }}</em></div>
         <SchedulingTechnicalDetails :items="batchTechnicalItems" summary="批次技术信息" />
+        <section v-if="batch.recognition?.mode === 'AI_LAYOUT'" class="mapping-proposal" data-testid="ai-layout-recognition-result">
+          <div><CheckCircle2 :size="16" /><strong>AI 布局已通过后端来源校验</strong></div>
+          <p>Sheet {{ batch.recognition.sheet_name }} · 总体置信度 {{ Math.round(Number(batch.recognition.overall_confidence || 0) * 100) }}% · {{ batch.recognition.cache_hit ? '复用相同文件的已验证布局' : '本次新识别' }}</p>
+          <p>这里只锁定读取布局；行解析、数量与日期转换、对账、DRAFT 接管继续由现有确定性服务完成。</p>
+        </section>
         <div class="preview-cards"><article><span>导入模板</span><strong>{{ profileName }}</strong><small>已绑定当前识别规则</small></article><article><span>{{ isDemandOrder ? '需求行' : '已排基线' }}</span><strong>{{ isDemandOrder ? batch.demandRows.length : batch.scheduledBaselineTasks.length }}</strong><small>{{ isDemandOrder ? `可确认 ${pendingReadyRows.length} 行` : '原计划锁定接管' }}</small></article><article><span>{{ isDemandOrder ? '已选行' : '待排订单' }}</span><strong>{{ isDemandOrder ? selectedRowIds.length : batch.backlogOrders.length }}</strong><small>{{ isDemandOrder ? '只进入排产草案 / 待排池' : '不自动创建待排任务' }}</small></article><article><span>阻断问题</span><strong>{{ blockingIssues.length }}</strong><small>不可一键绕过</small></article></div>
 
         <details v-if="isDemandOrder" open><summary>需求接收与模具补齐（{{ batch.demandRows.length }}）</summary><div class="demand-toolbar"><label><input type="checkbox" :checked="pendingReadyRows.length > 0 && selectedRowIds.length === pendingReadyRows.length" :disabled="!pendingReadyRows.length" @change="toggleAllReady(($event.target as HTMLInputElement).checked)" />选择全部可导入行</label><span>先导入有效下单行，再从模具库补齐；客户、价格和暂时未匹配的模具都不阻断进入待排池。</span></div><div class="demand-table"><div class="demand-head"><span>选择</span><span>源行</span><span>单号</span><span>款号 / 模号 / 产品</span><span>数量 / 交期</span><span>模具补齐</span><span>导入状态</span></div><div v-for="row in batch.demandRows" :key="row.rowId" class="demand-row"><span><input type="checkbox" :checked="selectedRowIds.includes(row.rowId)" :disabled="row.resolutionStatus !== 'READY' || row.confirmationState !== 'PENDING'" @change="toggleRow(row.rowId, ($event.target as HTMLInputElement).checked)" /></span><span>{{ displayValue(row.source.source_row) }}</span><span>{{ displayValue(row.canonical.source_document_no) }}</span><span>{{ displayValue(row.canonical.product_group_no) }} · {{ displayValue(row.canonical.source_mold_no) }}<small>{{ displayValue(row.canonical.product_name) }}</small></span><span>{{ displayValue(row.canonical.order_quantity) }}<small>{{ displayValue(row.canonical.delivery_due_date) }}</small></span><span>{{ moldEnrichmentStatusMeta(row.resolvedValues.mold_enrichment_status).label }}<small>{{ factoryReadinessStatusMeta(row.resolvedValues.factory_readiness_status).label }}</small></span><span><b>{{ row.confirmationState === 'PENDING' ? importRowResolutionMeta(row.resolutionStatus).label : importConfirmationStateMeta(row.confirmationState).label }}</b><small>{{ row.resolutionReasons.join('、') || '可进入待排' }}</small></span></div></div></details>
