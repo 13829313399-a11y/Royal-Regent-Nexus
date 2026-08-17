@@ -32,18 +32,21 @@ describe('adaptive AI surface', () => {
     store.setGeometry({ x: 4_000, y: -100, width: 2_000, height: 2_000 })
     store.setMode('DOCKED_LEFT')
     store.minimize()
-    const saved = JSON.parse(localStorage.getItem('rr:nexus-ai-surface:v2') ?? '{}')
+    const saved = JSON.parse(localStorage.getItem('rr:nexus-ai-surface:v3') ?? '{}')
     expect(Object.keys(saved).sort()).toEqual(['dockWidth', 'edgeY', 'geometry', 'lastDesktopMode', 'mode', 'version'])
-    expect(saved.version).toBe(2)
+    expect(saved.version).toBe(3)
     expect(JSON.stringify(saved)).not.toMatch(/message|prompt|tool|evidence|token|secret/i)
     expect(saved.geometry.x + saved.geometry.width).toBeLessThanOrEqual(window.innerWidth)
     store.open()
     expect(store.mode).toBe('DOCKED_LEFT')
   })
 
-  it('migrates the ambiguous v1 floating default to the canonical right drawer', () => {
-    localStorage.setItem('rr:nexus-ai-surface:v1', JSON.stringify({
-      version: 1,
+  it.each([
+    ['v1', 1],
+    ['v2', 2],
+  ])('migrates %s origin-scoped geometry to the canonical right drawer', (suffix, version) => {
+    localStorage.setItem(`rr:nexus-ai-surface:${suffix}`, JSON.stringify({
+      version,
       mode: 'EDGE',
       lastDesktopMode: 'FLOATING',
       edgeY: 220,
@@ -56,11 +59,13 @@ describe('adaptive AI surface', () => {
     store.open()
 
     expect(store.mode).toBe('DOCKED_RIGHT')
-    expect(store.dockWidth).toBe(520)
-    expect(JSON.parse(localStorage.getItem('rr:nexus-ai-surface:v2') ?? '{}')).toMatchObject({
-      version: 2,
+    expect(store.dockWidth).toBe(376)
+    expect(JSON.parse(localStorage.getItem('rr:nexus-ai-surface:v3') ?? '{}')).toMatchObject({
+      version: 3,
       lastDesktopMode: 'DOCKED_RIGHT',
+      dockWidth: 376,
     })
+    expect(localStorage.getItem(`rr:nexus-ai-surface:${suffix}`)).toBeNull()
   })
 
   it('preserves the desktop dock preference while the surface is mobile fullscreen', () => {
