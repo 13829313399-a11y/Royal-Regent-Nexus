@@ -602,7 +602,7 @@ onMounted(() => {
       </section>
 
       <div v-if="canManageUsers" class="stats">
-        <article class="stat">
+        <article class="stat stat-pending">
           <div class="row">
             <span class="ic amber"><Clock3 class="size-5" aria-hidden="true" /></span>
             <span class="delta up">{{ requests.length ? '待处理' : '清空' }}</span>
@@ -610,7 +610,7 @@ onMounted(() => {
           <div class="n">{{ requests.length }}</div>
           <div class="lb">待审批申请</div>
         </article>
-        <article class="stat">
+        <article class="stat stat-active">
           <div class="row">
             <span class="ic teal"><CheckCircle2 class="size-5" aria-hidden="true" /></span>
             <span class="delta up">已开通</span>
@@ -618,7 +618,7 @@ onMounted(() => {
           <div class="n">{{ activeUsers.length }}</div>
           <div class="lb">在用账号</div>
         </article>
-        <article class="stat">
+        <article class="stat stat-users">
           <div class="row">
             <span class="ic blue"><Users class="size-5" aria-hidden="true" /></span>
             <span class="delta mut">6 厂区</span>
@@ -626,7 +626,7 @@ onMounted(() => {
           <div class="n">{{ users.length }}</div>
           <div class="lb">账号总数</div>
         </article>
-        <article class="stat">
+        <article class="stat stat-reset">
           <div class="row">
             <span class="ic slate"><KeyRound class="size-5" aria-hidden="true" /></span>
             <span class="delta mut">待核验</span>
@@ -649,11 +649,14 @@ onMounted(() => {
       <div v-if="isLoading" class="empty-card">正在加载账号申请...</div>
       <div v-else-if="!requests.length" class="empty-card">当前没有待审批账号。</div>
       <template v-else>
-        <aside class="panel">
+        <aside class="panel queue-panel">
           <div class="panel-head">
-            <div class="panel-heading-copy">
-              <h2>待审批账号</h2>
-              <p>{{ pendingFootText }}</p>
+            <div class="panel-heading-group">
+              <span class="panel-heading-icon"><ClipboardCheck class="size-4" aria-hidden="true" /></span>
+              <div class="panel-heading-copy">
+                <h2>待审批队列</h2>
+                <p>{{ pendingFootText }}</p>
+              </div>
             </div>
             <span class="cnt">{{ requests.length }} 待处理</span>
           </div>
@@ -682,7 +685,7 @@ onMounted(() => {
         </aside>
 
         <article v-if="selectedRequest" class="panel detail">
-          <div class="applicant">
+          <div class="applicant applicant-hero">
             <span class="av">{{ avatarText(selectedRequest.display_name, selectedRequest.username) }}</span>
             <div class="h">
               <div><b>{{ selectedRequest.display_name }}</b><span class="uid">{{ selectedRequest.username }}</span></div>
@@ -695,47 +698,52 @@ onMounted(() => {
             </div>
           </div>
 
-          <section class="section position-review-section">
+          <section class="section position-review-section approval-surface-section">
             <div class="sec-title">
               <span class="st-ic"><BriefcaseBusiness class="size-4" aria-hidden="true" /></span>
-              <h3>注册资料核验</h3>
-              <span class="hint">资料填错可直接修正；账号 / 工号保持不变</span>
+              <div class="sec-title-copy">
+                <h3>注册资料核验</h3>
+                <span class="hint">资料填错可直接修正；账号 / 工号保持唯一防篡改</span>
+              </div>
             </div>
             <div class="registration-review-grid">
               <label class="position-confirm-field">
-                <span>姓名</span>
+                <span class="field-label"><span>姓名</span><small>员工真实姓名</small></span>
                 <input v-model="approvalProfile(selectedRequest).display_name" aria-label="确认姓名" autocomplete="name" type="text">
               </label>
-              <label class="position-confirm-field">
-                <span>账号 / 工号</span>
+              <label class="position-confirm-field immutable-field">
+                <span class="field-label"><span>账号 / 工号</span><small>只读防篡改</small></span>
                 <input :value="selectedRequest.username" aria-label="账号或工号" disabled type="text">
               </label>
               <label class="position-confirm-field">
-                <span>电话</span>
+                <span class="field-label"><span>电话号码</span><small>手机或座机</small></span>
                 <input v-model="approvalProfile(selectedRequest).phone" aria-label="确认电话" autocomplete="tel" type="tel">
               </label>
               <label class="position-confirm-field">
-                <span>邮箱</span>
+                <span class="field-label"><span>企业邮箱</span><small>业务通知接收</small></span>
                 <input v-model="approvalProfile(selectedRequest).email" aria-label="确认邮箱" autocomplete="email" type="email">
               </label>
               <label class="position-confirm-field">
-                <span>厂区</span>
+                <span class="field-label"><span>所属厂区</span><small>主生产基地</small></span>
                 <select v-model="approvalProfile(selectedRequest).factory_id" aria-label="确认厂区">
                   <option v-for="factory in factoryOptions" :key="factory.id" :value="factory.id">{{ factory.shortName }}</option>
                 </select>
               </label>
               <label class="position-confirm-field">
-                <span>部门</span>
+                <span class="field-label"><span>所属部门</span><small>业务归属</small></span>
                 <select v-model="approvalProfile(selectedRequest).department" aria-label="确认部门" @change="handleProfileDepartmentChange(selectedRequest)">
                   <option v-for="department in registrationDepartments" :key="department.id" :value="department.id">{{ department.name }}</option>
                 </select>
               </label>
               <label class="position-confirm-field registration-position-field">
-                <span>真实职位（可修改）</span>
+                <span class="field-label"><span>真实职位（可修改）</span><small>用于名片与通讯录展示</small></span>
                 <input v-model="approvalProfile(selectedRequest).position" aria-label="确认职位" autocomplete="organization-title" list="approval-position-suggestions" maxlength="128" placeholder="请核对或修正员工填写的真实职位" type="text">
                 <datalist id="approval-position-suggestions">
                   <option v-for="item in selectedPositionSuggestions" :key="item" :value="item"></option>
                 </datalist>
+                <span v-if="selectedPositionSuggestions.length" class="position-suggestion-chips" aria-label="真实职位建议">
+                  <span v-for="item in selectedPositionSuggestions.slice(0, 4)" :key="item">+ {{ item }}</span>
+                </span>
               </label>
             </div>
             <p class="position-role-note">
@@ -743,26 +751,32 @@ onMounted(() => {
             </p>
           </section>
 
-          <section class="section">
+          <section class="section approval-surface-section permission-position-section">
             <div class="sec-title">
-              <span class="st-ic"><Users class="size-4" aria-hidden="true" /></span>
-              <h3>内置权限职位</h3>
-              <span class="hint">只需选择一个；系统会统一处理底层授权</span>
+              <span class="st-ic permission-icon"><ShieldCheck class="size-4" aria-hidden="true" /></span>
+              <div class="sec-title-copy">
+                <h3>内置权限职位授权</h3>
+                <span class="hint">核心安全机制：由系统内置职位决定具体业务模块操作权限</span>
+              </div>
             </div>
             <p class="system-position-department-label">
               员工资料部门：<strong>{{ departmentLabel(approvalProfile(selectedRequest).department) }}</strong>；可从全部内置职位中选择权限职位
             </p>
             <div
               v-if="recommendedApprovalSystemPosition && !selectedApprovalSystemPosition"
-              class="position-role-note"
+              class="recommendation-banner"
               data-testid="registration-position-recommendation"
             >
-              <strong>推荐：{{ recommendedApprovalSystemPosition.position_department_name }} · {{ recommendedApprovalSystemPosition.name }}</strong>
-              <span>推荐仅用于提示，不会自动选中或授权；请管理员核对后主动选择。</span>
+              <span class="recommendation-icon"><Sparkles class="size-4" aria-hidden="true" /></span>
+              <span class="recommendation-copy">
+                <strong>系统推荐：{{ recommendedApprovalSystemPosition.position_department_name }} · {{ recommendedApprovalSystemPosition.name }}</strong>
+                <span>推荐仅用于提示，不会自动选中或授权；请管理员核对后主动选择。</span>
+              </span>
+              <span class="recommendation-state">需人工确认</span>
             </div>
             <template v-if="allSystemPositions.length">
               <label class="system-position-picker">
-                <span>选择内置权限职位</span>
+                <span class="picker-label"><span>选择内置权限职位</span><small>单选机制 · 统一下发</small></span>
                 <select
                   :value="getSelectedSystemPositionId(selectedRequest)"
                   aria-label="选择内置权限职位"
@@ -801,21 +815,24 @@ onMounted(() => {
             </div>
           </section>
 
-          <div class="actions">
-            <input
-              v-model="approvalComments[selectedRequest.id]"
-              class="note-in"
-              placeholder="审批备注（可选，驳回时建议填写原因）"
-              type="text"
-            >
+          <div class="actions action-dock">
+            <label class="action-note-wrap">
+              <span>审批备注</span>
+              <input
+                v-model="approvalComments[selectedRequest.id]"
+                class="note-in"
+                placeholder="可选，例如：资料已与 HR 核对一致"
+                type="text"
+              >
+            </label>
             <button type="button" class="btn btn-reject" :disabled="Boolean(actionKey)" @click="rejectRequest(selectedRequest)">
               <XCircle class="size-4" aria-hidden="true" />
-              驳回
+              驳回申请
             </button>
             <button type="button" class="btn btn-approve" :disabled="Boolean(actionKey)" @click="approveRequest(selectedRequest)">
               <LoaderCircle v-if="actionKey === `approve:${selectedRequest.id}`" class="size-4 animate-spin" aria-hidden="true" />
               <Check v-else class="size-4" aria-hidden="true" />
-              通过并开通
+              <span>{{ actionKey === `approve:${selectedRequest.id}` ? '正在开通...' : '通过并开通账号' }}</span>
             </button>
           </div>
         </article>
@@ -3513,6 +3530,1057 @@ onMounted(() => {
   .note-in,
   .actions .btn {
     width: 100%;
+  }
+}
+
+/* Gemini reference redesign: presentation-only overrides. */
+.permission-approval-page {
+  --primary-deep: oklch(0.42 0.12 185);
+  --primary-brand: oklch(0.48 0.12 182);
+  --primary-bright: oklch(0.56 0.14 180);
+  --primary-soft: oklch(0.95 0.025 182);
+  --canvas: #f4f8f9;
+  --surface: #ffffff;
+  --surface-subtle: #f8fafb;
+  --surface-hover: #f1f5f7;
+  --border-soft: #e2e8eb;
+  --border-strong: #cbd5e1;
+  --shadow-panel: 0 16px 38px -22px rgb(15 23 42 / 26%), 0 2px 8px rgb(15 23 42 / 4%);
+  --shadow-float: 0 22px 50px -28px rgb(15 23 42 / 34%), 0 8px 20px rgb(15 23 42 / 5%);
+
+  background:
+    radial-gradient(circle at 0 0, oklch(0.94 0.025 184 / 58%), transparent 34%),
+    radial-gradient(circle at 100% 0, oklch(0.95 0.018 220 / 62%), transparent 32%),
+    linear-gradient(180deg, #f7fafb 0%, var(--canvas) 44%, #f0f7f7 100%);
+}
+
+.wrap {
+  max-width: 1540px;
+  padding: 24px 32px 64px;
+}
+
+.topbar {
+  top: 16px;
+  flex-wrap: nowrap;
+  gap: 14px;
+  margin: 0 0 28px;
+  border: 1px solid rgb(255 255 255 / 92%);
+  border-radius: 24px;
+  background: rgb(255 255 255 / 88%);
+  box-shadow: 0 12px 34px -20px rgb(15 23 42 / 28%), 0 2px 8px rgb(15 23 42 / 4%);
+  padding: 14px 18px;
+  backdrop-filter: blur(18px) saturate(145%);
+}
+
+.topbar-left {
+  gap: 16px;
+}
+
+.home-exit-link {
+  min-height: 42px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  box-shadow: none;
+  padding: 0 16px;
+}
+
+.home-exit-link:hover {
+  border-color: color-mix(in oklch, var(--primary-brand), white 72%);
+  background: white;
+  color: var(--primary-deep);
+  box-shadow: 0 8px 18px -13px rgb(15 118 110 / 55%);
+  transform: translateX(-2px);
+}
+
+.brand {
+  gap: 14px;
+  border-left: 1px solid var(--border-soft);
+  padding-left: 16px;
+}
+
+.brand .logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  background: linear-gradient(145deg, var(--primary-bright), var(--primary-deep));
+  box-shadow: 0 10px 22px -11px rgb(0 101 89 / 72%), inset 0 1px 0 rgb(255 255 255 / 28%);
+}
+
+.brand h1 {
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+.brand p {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.topbar-actions {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.view-tabs {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  min-width: 340px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  border-color: #edf1f3;
+  background: #edf2f4;
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 5%);
+}
+
+.view-tabs::before {
+  position: absolute;
+  z-index: -1;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc((100% - 8px) / 3);
+  border: 1px solid rgb(226 232 240 / 82%);
+  border-radius: 999px;
+  background: white;
+  box-shadow: 0 5px 14px -8px rgb(15 23 42 / 38%), 0 1px 3px rgb(15 23 42 / 8%);
+  content: "";
+  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.view-tabs:has(button:nth-child(2).active)::before {
+  transform: translateX(100%);
+}
+
+.view-tabs:has(button:nth-child(3).active)::before {
+  transform: translateX(200%);
+}
+
+.view-tabs button {
+  z-index: 1;
+  min-width: 0;
+  min-height: 36px;
+  border-radius: 999px;
+  color: #64748b;
+  padding: 0 13px;
+  white-space: nowrap;
+}
+
+.view-tabs button.active {
+  background: transparent;
+  color: var(--primary-deep);
+}
+
+.view-tabs button:hover {
+  background: transparent;
+  color: #0f172a;
+}
+
+.view-tabs span {
+  background: #dfe7e9;
+  color: #64748b;
+  transition: background 180ms ease, color 180ms ease;
+}
+
+.view-tabs button.active span {
+  background: var(--primary-soft);
+  color: var(--primary-deep);
+}
+
+.ghost-link {
+  min-height: 38px;
+  border-color: var(--border-soft);
+  background: rgb(255 255 255 / 78%);
+  box-shadow: none;
+  padding: 0 13px;
+}
+
+.ghost-link:hover {
+  border-color: color-mix(in oklch, var(--primary-brand), white 70%);
+  background: var(--primary-soft);
+  color: var(--primary-deep);
+}
+
+.admin {
+  border-color: var(--border-soft);
+  box-shadow: none;
+}
+
+.admin .av {
+  background: linear-gradient(145deg, var(--primary-bright), var(--primary-deep));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 28%);
+}
+
+.stats {
+  gap: 20px;
+  margin-bottom: 28px;
+}
+
+.stat {
+  position: relative;
+  overflow: hidden;
+  min-height: 152px;
+  border-color: rgb(218 227 230 / 88%);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgb(255 255 255 / 98%), rgb(250 253 253 / 94%));
+  box-shadow: var(--shadow-panel);
+  padding: 24px 26px;
+  transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.stat::after {
+  position: absolute;
+  width: 118px;
+  height: 118px;
+  right: -38px;
+  bottom: -54px;
+  border-radius: 999px;
+  background: var(--stat-glow, rgb(148 163 184 / 10%));
+  content: "";
+  filter: blur(2px);
+}
+
+.stat:hover {
+  border-color: color-mix(in oklch, var(--stat-accent, var(--primary-brand)), white 72%);
+  box-shadow: var(--shadow-float);
+  transform: translateY(-3px);
+}
+
+.stat-pending {
+  --stat-accent: #f59e0b;
+  --stat-glow: rgb(245 158 11 / 11%);
+}
+
+.stat-active {
+  --stat-accent: #10b981;
+  --stat-glow: rgb(16 185 129 / 11%);
+}
+
+.stat-users {
+  --stat-accent: #3b82f6;
+  --stat-glow: rgb(59 130 246 / 10%);
+}
+
+.stat-reset {
+  --stat-accent: #64748b;
+  --stat-glow: rgb(100 116 139 / 10%);
+}
+
+.stat .ic {
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+}
+
+.stat .n {
+  position: relative;
+  z-index: 1;
+  margin-top: 19px;
+  font-size: 34px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
+}
+
+.stat .lb {
+  position: relative;
+  z-index: 1;
+  margin-top: -22px;
+  color: #52606d;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.stat .delta {
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 7%, white);
+  padding: 3px 8px;
+}
+
+.grid {
+  grid-template-columns: 470px minmax(0, 1fr);
+  gap: 24px;
+}
+
+.panel {
+  border-color: rgb(218 227 230 / 92%);
+  border-radius: 20px;
+  box-shadow: var(--shadow-panel);
+}
+
+.queue-panel {
+  position: sticky;
+  top: 116px;
+}
+
+.panel-head {
+  min-height: 88px;
+  border-bottom-color: #e8eef0;
+  background: linear-gradient(180deg, #fff, #fbfcfd);
+  padding: 18px 20px;
+}
+
+.panel-heading-group {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.panel-heading-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--primary-soft);
+  color: var(--primary-deep);
+}
+
+.panel-head h2 {
+  font-size: 16px;
+}
+
+.panel-heading-copy p {
+  margin-top: 4px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-head .cnt {
+  flex: none;
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #b45309;
+  padding: 4px 10px;
+}
+
+.queue {
+  max-height: 688px;
+  background: #fbfcfd;
+  padding: 12px;
+}
+
+.q-item {
+  position: relative;
+  overflow: hidden;
+  align-items: flex-start;
+  margin-bottom: 10px;
+  border: 1px solid var(--border-soft);
+  border-left: 1px solid var(--border-soft);
+  border-radius: 15px;
+  background: white;
+  padding: 15px 16px;
+  transition: border-color 200ms ease, background 200ms ease, box-shadow 200ms ease, transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.q-item:last-child {
+  margin-bottom: 0;
+}
+
+.q-item::before {
+  position: absolute;
+  inset: 10px auto 10px 0;
+  width: 4px;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(180deg, var(--primary-bright), var(--primary-deep));
+  content: "";
+  opacity: 0;
+  transform: scaleY(0.5);
+  transition: opacity 180ms ease, transform 220ms ease;
+}
+
+.q-item:hover {
+  border-color: #cbd5e1;
+  background: white;
+  box-shadow: 0 10px 24px -18px rgb(15 23 42 / 50%);
+  transform: translateX(3px);
+}
+
+.q-item.active {
+  border-color: var(--primary-brand);
+  background: linear-gradient(100deg, var(--primary-soft), white 66%);
+  box-shadow: 0 12px 28px -20px rgb(0 101 89 / 60%), 0 0 0 1px rgb(15 118 110 / 8%);
+  transform: translateX(3px);
+}
+
+.q-item.active::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.q-item .av {
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  background: linear-gradient(145deg, var(--primary-bright), var(--primary-deep));
+  box-shadow: 0 8px 18px -11px rgb(0 101 89 / 76%);
+}
+
+.q-item .nm b {
+  font-size: 14px;
+}
+
+.q-item .pos {
+  border-color: color-mix(in oklch, var(--primary-brand), white 78%);
+  background: var(--primary-soft);
+  padding: 3px 9px;
+}
+
+.q-item .time {
+  font-variant-numeric: tabular-nums;
+}
+
+.badge-dot {
+  box-shadow: 0 0 0 4px rgb(245 158 11 / 12%);
+  animation: approval-pulse 2.4s ease-in-out infinite;
+}
+
+.detail {
+  overflow: visible;
+  background: rgb(255 255 255 / 92%);
+}
+
+.applicant-hero {
+  position: relative;
+  overflow: hidden;
+  align-items: center;
+  margin: 24px;
+  border: 1px solid color-mix(in oklch, var(--primary-brand), white 80%);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 92% 18%, rgb(13 148 136 / 9%), transparent 34%),
+    linear-gradient(135deg, var(--primary-soft), #f8fafc 58%, white);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 80%);
+  padding: 24px;
+}
+
+.applicant-hero::after {
+  position: absolute;
+  width: 180px;
+  height: 180px;
+  right: -86px;
+  bottom: -120px;
+  border: 28px solid rgb(15 118 110 / 5%);
+  border-radius: 999px;
+  content: "";
+  pointer-events: none;
+}
+
+.applicant .av {
+  width: 68px;
+  height: 68px;
+  border-radius: 18px;
+  background: linear-gradient(145deg, var(--primary-bright), var(--primary-deep));
+  box-shadow: 0 16px 28px -14px rgb(0 101 89 / 72%), inset 0 1px 0 rgb(255 255 255 / 30%);
+  font-size: 24px;
+}
+
+.applicant .h b {
+  font-size: 21px;
+  letter-spacing: -0.025em;
+}
+
+.applicant .h .uid {
+  display: inline-flex;
+  border: 1px solid color-mix(in oklch, var(--primary-brand), white 72%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 82%);
+  color: var(--primary-deep);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 9px;
+  vertical-align: 2px;
+}
+
+.applicant .tags {
+  margin-top: 12px;
+}
+
+.applicant .tag {
+  border-radius: 999px;
+  background: rgb(255 255 255 / 84%);
+  box-shadow: 0 2px 5px rgb(15 23 42 / 3%);
+  padding: 5px 10px;
+}
+
+.applicant .tag svg {
+  color: var(--primary-brand);
+}
+
+.approval-surface-section {
+  margin: 0 24px 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 8px 24px -22px rgb(15 23 42 / 42%);
+  padding: 0;
+}
+
+.approval-surface-section .sec-title {
+  margin: 0;
+  border-bottom: 1px solid #edf1f3;
+  padding: 17px 18px;
+}
+
+.sec-title .st-ic {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 10px;
+}
+
+.sec-title-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sec-title h3 {
+  font-size: 15px;
+}
+
+.sec-title .hint {
+  max-width: 58%;
+  color: #64748b;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.registration-review-grid {
+  gap: 16px 18px;
+  padding: 20px 18px 8px;
+}
+
+.position-confirm-field {
+  gap: 8px;
+}
+
+.field-label,
+.picker-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.field-label > span,
+.picker-label > span {
+  color: #334155;
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.field-label small,
+.picker-label small {
+  color: #94a3b8;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.position-confirm-field input,
+.position-confirm-field select,
+.system-position-picker select {
+  height: 46px;
+  border-color: #dbe3e6;
+  border-radius: 12px;
+  background: #fafcfd;
+  padding-inline: 14px;
+  transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.position-confirm-field input:hover,
+.position-confirm-field select:hover,
+.system-position-picker select:hover {
+  border-color: #cbd5e1;
+  background: white;
+}
+
+.position-confirm-field input:focus,
+.position-confirm-field select:focus,
+.system-position-picker select:focus,
+.note-in:focus {
+  border-color: var(--primary-brand);
+  background: white;
+  box-shadow: 0 0 0 4px rgb(15 118 110 / 13%);
+}
+
+.immutable-field input:disabled {
+  border-style: dashed;
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.position-suggestion-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.position-suggestion-chips > span {
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 4px 9px;
+}
+
+.approval-surface-section > .position-role-note {
+  margin: 8px 18px 18px;
+  border-left: 3px solid color-mix(in oklch, var(--primary-brand), white 48%);
+  border-radius: 0 8px 8px 0;
+  background: #f8fafc;
+  padding: 8px 10px;
+}
+
+.permission-position-section {
+  padding-bottom: 18px;
+}
+
+.permission-position-section .system-position-department-label,
+.permission-position-section .recommendation-banner,
+.permission-position-section .system-position-picker,
+.permission-position-section .selected-system-position-summary,
+.permission-position-section .empty-system-positions {
+  margin-right: 18px;
+  margin-left: 18px;
+}
+
+.permission-position-section .system-position-department-label {
+  margin-top: 16px;
+  margin-bottom: 12px;
+}
+
+.recommendation-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  margin-top: 0;
+  margin-bottom: 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  background: linear-gradient(105deg, #eff6ff, #f8fbff 72%);
+  color: #1e40af;
+  padding: 12px 14px;
+}
+
+.recommendation-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  background: white;
+  color: #2563eb;
+  box-shadow: 0 4px 12px -8px rgb(37 99 235 / 60%);
+}
+
+.recommendation-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recommendation-copy strong {
+  overflow: hidden;
+  color: #1d4ed8;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recommendation-copy > span {
+  color: #64748b;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.recommendation-state {
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: white;
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.system-position-picker {
+  gap: 8px;
+}
+
+.selected-system-position-summary {
+  margin-top: 12px;
+  border-color: color-mix(in oklch, var(--primary-brand), white 70%);
+  border-radius: 14px;
+  background: linear-gradient(105deg, var(--primary-soft), #fbfefd);
+  padding: 13px 14px;
+}
+
+.selected-system-position-check {
+  width: 30px;
+  height: 30px;
+  background: linear-gradient(145deg, var(--primary-bright), var(--primary-deep));
+  box-shadow: 0 8px 16px -11px rgb(0 101 89 / 80%);
+}
+
+.selected-system-position-title {
+  font-size: 13px;
+}
+
+.selected-system-position-copy p {
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.selected-system-position-count {
+  border-radius: 999px;
+  background: white;
+  color: var(--primary-deep);
+  padding: 5px 9px;
+}
+
+.action-dock {
+  position: sticky;
+  z-index: 10;
+  bottom: 12px;
+  gap: 10px;
+  margin: 0 12px 12px;
+  border: 1px solid rgb(226 232 235 / 88%);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 90%);
+  box-shadow: 0 18px 42px -24px rgb(15 23 42 / 52%), 0 4px 14px rgb(15 23 42 / 6%);
+  padding: 12px;
+  backdrop-filter: blur(16px) saturate(140%);
+}
+
+.action-note-wrap {
+  display: grid;
+  min-width: 220px;
+  flex: 1;
+  gap: 5px;
+}
+
+.action-note-wrap > span {
+  color: #64748b;
+  font-size: 10.5px;
+  font-weight: 800;
+}
+
+.note-in {
+  width: 100%;
+  height: 42px;
+  border-color: #dbe3e6;
+  border-radius: 11px;
+  background: #fafcfd;
+}
+
+.action-dock .btn {
+  position: relative;
+  overflow: hidden;
+  height: 44px;
+  align-self: end;
+  border-radius: 12px;
+  padding: 0 18px;
+  transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease, color 180ms ease, transform 120ms ease;
+}
+
+.btn-reject {
+  border-color: #fecdd3;
+  color: #be123c;
+}
+
+.btn-reject:hover {
+  border-color: #fda4af;
+  background: #fff1f2;
+  box-shadow: 0 8px 18px -13px rgb(225 29 72 / 55%);
+}
+
+.btn-approve {
+  min-width: 174px;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--primary-bright), var(--primary-deep));
+  box-shadow: 0 9px 20px -12px rgb(0 101 89 / 85%), inset 0 1px 0 rgb(255 255 255 / 25%);
+}
+
+.btn-approve::before {
+  position: absolute;
+  inset: 0 auto 0 -70%;
+  width: 52%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 28%), transparent);
+  content: "";
+  pointer-events: none;
+  transform: skewX(-18deg);
+  transition: left 760ms ease;
+}
+
+.btn-approve:hover {
+  border-color: transparent;
+  background: linear-gradient(135deg, oklch(0.57 0.15 180), oklch(0.4 0.12 185));
+  box-shadow: 0 13px 26px -14px rgb(0 101 89 / 90%), inset 0 1px 0 rgb(255 255 255 / 28%);
+  transform: translateY(-1px);
+}
+
+.btn-approve:hover::before {
+  left: 125%;
+}
+
+.action-dock .btn:active {
+  transform: scale(0.98);
+}
+
+.request-card,
+.users-panel {
+  border-color: rgb(218 227 230 / 92%);
+  border-radius: 18px;
+  box-shadow: var(--shadow-panel);
+}
+
+.message {
+  border-radius: 14px;
+  box-shadow: 0 8px 22px -18px rgb(15 23 42 / 45%);
+}
+
+@keyframes approval-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgb(245 158 11 / 10%);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgb(245 158 11 / 4%);
+  }
+}
+
+@media (max-width: 1200px) {
+  .topbar {
+    flex-wrap: wrap;
+  }
+
+  .topbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .admin {
+    margin-left: auto;
+  }
+
+  .queue-panel {
+    top: 170px;
+  }
+}
+
+@media (max-width: 1120px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .queue-panel {
+    position: static;
+  }
+
+  .queue {
+    display: grid;
+    max-height: none;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .q-item {
+    margin-bottom: 0;
+  }
+}
+
+@media (max-width: 820px) {
+  .wrap {
+    padding: 16px 14px 40px;
+  }
+
+  .topbar {
+    top: 8px;
+    margin-bottom: 20px;
+    padding: 12px;
+  }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+
+  .view-tabs {
+    width: 100%;
+    min-width: 0;
+    grid-column: 1 / -1;
+  }
+
+  .iam-console-entry {
+    justify-self: start;
+  }
+
+  .admin {
+    justify-self: end;
+    margin-left: 0;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .stat {
+    min-height: 132px;
+    padding: 18px;
+  }
+
+  .stat .n {
+    margin-top: 15px;
+    font-size: 30px;
+  }
+
+  .queue {
+    grid-template-columns: 1fr;
+  }
+
+  .applicant-hero,
+  .approval-surface-section {
+    margin-right: 14px;
+    margin-left: 14px;
+  }
+
+  .applicant-hero {
+    margin-top: 14px;
+    padding: 18px;
+  }
+
+  .sec-title-copy {
+    display: grid;
+    justify-content: stretch;
+  }
+
+  .sec-title .hint {
+    max-width: none;
+    text-align: left;
+  }
+
+  .registration-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .registration-position-field {
+    grid-column: auto;
+  }
+
+  .action-dock {
+    position: static;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .action-dock .btn,
+  .action-note-wrap {
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .home-exit-link {
+    width: 42px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .brand {
+    min-width: 0;
+    padding-left: 10px;
+  }
+
+  .brand .logo {
+    width: 40px;
+    height: 40px;
+  }
+
+  .brand h1 {
+    overflow: hidden;
+    font-size: 15px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .brand p,
+  .admin .t {
+    display: none;
+  }
+
+  .ghost-link {
+    padding: 0 10px;
+  }
+
+  .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .stat {
+    min-height: 122px;
+  }
+
+  .panel-head {
+    align-items: flex-start;
+  }
+
+  .q-item .time {
+    display: none;
+  }
+
+  .applicant-hero {
+    align-items: flex-start;
+    padding: 16px;
+  }
+
+  .applicant .av {
+    width: 52px;
+    height: 52px;
+    border-radius: 14px;
+    font-size: 19px;
+  }
+
+  .applicant .h b {
+    font-size: 18px;
+  }
+
+  .recommendation-banner,
+  .selected-system-position-summary {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .recommendation-state,
+  .selected-system-position-count {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .permission-approval-page *,
+  .permission-approval-page *::before,
+  .permission-approval-page *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 </style>
