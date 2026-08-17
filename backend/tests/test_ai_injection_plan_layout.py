@@ -259,6 +259,7 @@ def test_provider_normalizes_one_json_layer_on_known_container_arguments() -> No
         business_date=date(2026, 8, 17),
     )
     encoded = _model_layout(content).model_dump(mode="json")
+    encoded["plan_sheet"]["header_rows"] = 3
     for key in (
         "plan_sheet",
         "row_layout",
