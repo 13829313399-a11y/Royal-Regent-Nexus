@@ -105,7 +105,15 @@ def _prompt(packet: AIWorkbookRecognitionPacketV1, repair_error: str = "") -> st
         "shift_grid 只允许 enabled、start_column、end_column、day_header_row、shift_header_row、"
         "calendar_month、day_shift_aliases、quantity_semantics。嵌套对象和数组必须保持 JSON 类型，"
         "不要再次编码成字符串。至少映射 machine_code、mold_no、order_no、order_quantity、"
-        "completed_quantity、planned_start、planned_finish。"
+        "completed_quantity、planned_start、planned_finish。layout_type 只能是 GROUPED_BY_MACHINE "
+        "或 FLAT_ROWS；machine_code_strategy 只能是 CURRENT_ROW、INHERIT_FROM_HEADER 或 "
+        "CURRENT_OR_INHERITED；machine_header_rule 只能是 SAME_VALUE_IN_TWO_COLUMNS、"
+        "MACHINE_CODE_WITHOUT_BUSINESS_IDENTITY 或 NONE；backlog_rule 只能是 "
+        "BUSINESS_ROW_WITHOUT_MACHINE、EXPLICIT_BACKLOG_SECTION 或 NONE；transformer 只能是 "
+        "trim、identifier、number、date、datetime、percent 或 text。未启用班次矩阵时，"
+        "shift_grid 必须使用 enabled=false、start_column 和 end_column 为空字符串、"
+        "day_header_row 和 shift_header_row 为 null、calendar_month 为空字符串、"
+        "day_shift_aliases 为空对象、quantity_semantics=COMPLETED_OR_PLANNED_OUTPUT。"
     )
     if repair_error:
         instruction += (

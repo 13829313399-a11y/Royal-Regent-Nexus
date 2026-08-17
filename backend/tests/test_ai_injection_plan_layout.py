@@ -245,6 +245,8 @@ def test_provider_uses_one_controlled_repair_and_ignores_workbook_instructions()
     assert provider.requests[0].tool_choice_policy.value == "REQUIRED"
     assert provider.requests[0].parallel_tool_policy.value == "DISABLED"
     assert provider.requests[0].data_classification.value == "CONFIDENTIAL"
+    assert "GROUPED_BY_MACHINE" in first_prompt
+    assert "COMPLETED_OR_PLANNED_OUTPUT" in first_prompt
     assert "Sheet" in provider.requests[1].input[1].content
 
 
