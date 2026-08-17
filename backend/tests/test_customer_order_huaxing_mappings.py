@@ -38,7 +38,7 @@ from app.services.huaxing_order_legacy import (
 )
 
 
-def test_huaxing_customer_order_center_exposes_exactly_six_new_mappings():
+def test_huaxing_customer_order_center_exposes_all_mapped_customers():
     assert set(HUAXING_CUSTOMER_MAPPINGS) == {
         "edu",
         "360",
@@ -46,6 +46,7 @@ def test_huaxing_customer_order_center_exposes_exactly_six_new_mappings():
         "seasons",
         "maxx",
         "shushupapa",
+        "disney",
     }
     assert all(spec.target_template.endswith("_SCHEDULE_APPEND_V2") for spec in HUAXING_CUSTOMER_MAPPINGS.values())
 
@@ -1121,6 +1122,7 @@ def test_common_preview_contract_maps_each_customer_and_blocks_high_risk_flags()
     assert _record_fields("seasons", {"oqf_no": "QF-1"})["po_no"] == "QF-1"
     assert _record_fields("maxx", {"po_number": "M-1"})["po_no"] == "M-1"
     assert _record_fields("shushupapa", {"po_number": "S-1"})["po_no"] == "S-1"
+    assert _record_fields("disney", {"po_number": "D-1"})["po_no"] == "D-1"
 
     issues = _issues(
         {"flags": [{"level": "high", "code": "missing_item", "text": "缺货号"}]},

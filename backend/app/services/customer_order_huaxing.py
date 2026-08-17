@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from io import BytesIO
@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
 from app.services.huaxing_order_legacy import (
+    disney_schedule,
     edu_po_parser,
     edu_schedule,
     multi_po_parser,
@@ -86,6 +87,11 @@ HUAXING_CUSTOMER_MAPPINGS: dict[str, HuaxingCustomerMappingSpec] = {
         "shushupapa", "Shushupapa", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
         "HUAXING_SHUSHUPAPA_ORDER_V1", "HUAXING_SHUSHUPAPA_SCHEDULE_APPEND_V2",
         "严格识别 Shushupapa 客户并隔离客户数据；按 PO 修订版去重，验货日期为走货期前 7 天。",
+    ),
+    "disney": HuaxingCustomerMappingSpec(
+        "disney", "迪士尼", (".pdf",), (".xlsx", ".xlsm"),
+        "HUAXING_DISNEY_PO_V1", "HUAXING_DISNEY_SCHEDULE_APPEND_V2",
+        "支持 DLR、WDW、TDSE、国际 F 单及日本 V 单；按货号分组并同步写入 ITEM表、正单评审表和接单表。",
     ),
 }
 
@@ -168,6 +174,18 @@ def _safe_output_name(schedule_file_name: str, customer_name: str) -> str:
     stem = re.sub(r"[\\/:*?\"<>|]+", "_", Path(schedule_file_name).stem).strip(" ._")
     suffix = ".xlsm" if Path(schedule_file_name).suffix.lower() == ".xlsm" else ".xlsx"
     return f"{stem or '华兴客户排期'}_{customer_name}新单{suffix}"
+
+
+def _disney_download_name(
+    output_file_name: str,
+    po_number: str,
+    *,
+    generated_at: datetime | None = None,
+) -> str:
+    path = Path(output_file_name)
+    safe_po = re.sub(r"[\\/:*?\"<>|]+", "_", _text(po_number)).strip(" ._")
+    timestamp = (generated_at or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return f"{path.stem}_{safe_po or '本批'}_{timestamp}{path.suffix or '.xlsx'}"
 
 
 def _schedule_kind(parsed: dict[str, Any], file_name: str) -> str:
@@ -332,6 +350,42 @@ def _prepare_yinhui(
     return PreparedBatch(records, warnings, _text(schedule.get("sheet")) or "银辉排期")
 
 
+def _prepare_disney(
+    po_files: list[tuple[str, bytes]], schedule_file_name: str, schedule_content: bytes,
+) -> PreparedBatch:
+    schedule = disney_schedule.read_schedule(
+        schedule_content,
+        filename=schedule_file_name,
+    )
+    documents: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for file_name, content in po_files:
+        try:
+            document = disney_schedule.parse_po(content, file_name)
+        except Exception as exc:
+            raise HuaxingCustomerOrderError(f"{file_name}：无法读取迪士尼 PO：{exc}") from exc
+        warnings.extend(f"{file_name}：{item}" for item in document.get("warnings", []))
+        for row in document.get("rows", []):
+            row["_source_po_file_name"] = file_name
+        documents.append(document)
+    records, revision_warnings = disney_schedule.merge_revisions(documents)
+    warnings.extend(revision_warnings)
+    if not records:
+        raise HuaxingCustomerOrderError("本批文件未识别到可生成的迪士尼新单明细")
+    records = [disney_schedule.add_schedule_fields(record, schedule) for record in records]
+    duplicate_count, conflict_count = _mark_existing_order_lines(
+        records,
+        schedule["records"],
+        identity_fields=("po_number", "item"),
+    )
+    if duplicate_count:
+        warnings.append(f"当前迪士尼排期已有 {duplicate_count} 行相同订单，测试阶段需逐项确认。")
+    if conflict_count:
+        warnings.append(f"当前迪士尼排期有 {conflict_count} 行相同订单但数量不同，已按修改/补单阻断。")
+    warnings.append("PO不提供完期和出厂价；日期码、出厂价可逐行人工补录，或人工确认暂缺后放行。")
+    return PreparedBatch(records, warnings, disney_schedule.ITEM_SHEET)
+
+
 def _prepare_seasons(
     po_files: list[tuple[str, bytes]], schedule_file_name: str, schedule_content: bytes,
 ) -> PreparedBatch:
@@ -477,6 +531,7 @@ def _prepare_batch(
         "360": _prepare_360,
         "yinhui": _prepare_yinhui,
         "seasons": _prepare_seasons,
+        "disney": _prepare_disney,
     }
     if customer_code in {"maxx", "shushupapa"}:
         return _prepare_multi(customer_code, po_files, schedule_file_name, schedule_content)
@@ -564,6 +619,24 @@ def _record_fields(customer_code: str, record: dict[str, Any]) -> dict[str, Any]
             "packaging": record.get("packaging"),
             "line_q": record.get("factory_inspection"),
             "customer_q": record.get("customer_inspection"),
+            "requested_ship_date": record.get("ship_date"),
+        }
+    if customer_code == "disney":
+        return {
+            "po_no": record.get("po_number"),
+            "contract_no": record.get("po_number"),
+            "customer_name": record.get("customer"),
+            "country": record.get("country"),
+            "product_no": record.get("item"),
+            "product_name_zh": record.get("product_name_zh"),
+            "product_name_en": record.get("description"),
+            "quantity": record.get("quantity"),
+            "units_per_carton": record.get("case_pack"),
+            "carton_count": record.get("cartons"),
+            "standard": record.get("country"),
+            "unit_price_hkd": record.get("unit_price_hkd"),
+            "amount_hkd": record.get("amount_hkd"),
+            "line_q": record.get("inspection_date"),
             "requested_ship_date": record.get("ship_date"),
         }
     return {
@@ -881,6 +954,14 @@ def _export_prepared(
             template_filename=schedule_file_name,
         )
         return
+    if customer_code == "disney":
+        disney_schedule.create_export(
+            prepared.records,
+            output_path,
+            schedule_content,
+            template_filename=schedule_file_name,
+        )
+        return
     if customer_code == "seasons":
         aliases: dict[str, list[str]] = {}
         for label, field in shixin_schedule.FIELDS.items():
@@ -961,6 +1042,9 @@ def export_huaxing_customer_schedule(
     if not preview["rows"]:
         raise HuaxingCustomerOrderError("本批文件没有可安全生成的新单明细，请查看预览告警")
     prepared = _prepare_batch(customer_code, po_files, schedule_file_name, schedule_content)
+    if customer_code == "disney":
+        for record in prepared.records:
+            record["received_date"] = received_date
     apply_overrides_to_records(
         prepared.records,
         [str(row["id"]) for row in preview["rows"]],
@@ -977,4 +1061,10 @@ def export_huaxing_customer_schedule(
         except Exception as exc:
             name = get_huaxing_customer_mapping(customer_code).name
             raise HuaxingCustomerOrderError(f"生成 {name} 新单失败：{exc}") from exc
-        return output_path.read_bytes(), preview["output_file_name"], preview
+        download_file_name = preview["output_file_name"]
+        if customer_code == "disney":
+            download_file_name = _disney_download_name(
+                download_file_name,
+                _text(prepared.records[0].get("po_number")) if prepared.records else "",
+            )
+        return output_path.read_bytes(), download_file_name, preview
