@@ -38,12 +38,16 @@ const comparison = ref<ApiInternalQuoteVersionComparison>()
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
 const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
+const batchProducts = computed(() => quoteStore.batchProductsByQuoteId[quoteId.value] ?? [])
+const isWholeQuoteReview = computed(() => quote.value.moduleVersion === 'v3')
 const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
 const totalHkd = computed(() => quote.value.factoryPriceHkd)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
-const missingSections = computed(() => participatingSections.value.filter((section) => !['approved', 'not_applicable'].includes(section.status)))
+const missingSections = computed(() => participatingSections.value.filter((section) => isWholeQuoteReview.value
+  ? !(section.filledAt && section.calculationStatus === 'valid' && section.dependencyStatus === 'current')
+  : !['approved', 'not_applicable'].includes(section.status)))
 const allSectionsReady = computed(() => missingSections.value.length === 0)
 const isReleased = computed(() => ['released', 'exported'].includes(quote.value.status))
 const canExport = computed(() => authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
@@ -57,6 +61,20 @@ const canResponsibleRelease = computed(() => (
   && Boolean(responsibleFollowupId.value)
   && responsibleFollowupId.value === authStore.currentUser?.id
 ))
+const finalPanelTitle = computed(() => {
+  if (!isWholeQuoteReview.value) return allSectionsReady.value
+    ? (quote.value.status === 'final_pending' ? '等待负责跟客确认放行' : canOpenExport.value ? '已放行，可查看受控导出' : isReleased.value && !canExport.value ? (isForeignQuote.value ? '已放行，跨厂仅供查看' : '已放行，当前账号无受控导出权限') : '整单已准备就绪')
+    : '等待全部责任分段完成'
+  if (quote.value.status === 'final_pending') return `等待整单审核人 ${quote.value.businessOwner} 处理`
+  if (quote.value.status === 'rejected') return '整单已退回，请返回连续协作页修改'
+  if (canOpenExport.value) return '整单审核通过，可生成受控输出'
+  if (isReleased.value && !canExport.value) return isForeignQuote.value ? '整单审核通过，跨厂仅供查看' : '整单审核通过，当前账号无受控导出权限'
+  if (allSectionsReady.value) return '部门资料已就绪，请返回连续协作页提交整单'
+  return '等待全部参与部门保存有效内容'
+})
+const finalPanelDescription = computed(() => isWholeQuoteReview.value
+  ? '整份报价只提交一次，并且只能由创建时指定的整单审核人统一通过或退回；审核通过后才开放受控输出。'
+  : '全部参与分段完成审批后，由业务部分段的提交跟客一人确认放行；请求携带报价头 revision，服务端冻结完整放行清单并生成受控文件。')
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignQuote = computed(() => isForeignFactory(authStore, quote.value.factoryId))
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignQuote.value)
@@ -129,6 +147,10 @@ async function runFinalAction() {
     if (isReleased.value && !canExport.value) {
       throw new Error(isForeignQuote.value ? '跨厂报价仅供查看，不能导出。' : '当前账号没有受控导出权限。')
     }
+    if (isWholeQuoteReview.value) {
+      void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.value.id}/collaboration`))
+      return
+    }
     if (quote.value.status === 'fully_approved') {
       if (!canResponsibleRelease.value) throw new Error('仅负责本单的业务跟客可确认最终放行。')
       await quoteStore.submitFinal(quote.value.id, quote.value.headerRevision)
@@ -185,6 +207,11 @@ async function compareSelectedVersion() {
 }
 
 function finalActionLabel() {
+  if (isWholeQuoteReview.value) {
+    if (canOpenExport.value) return '进入受控输出'
+    if (isReleased.value && !canExport.value) return isForeignQuote.value ? '跨厂只读，不能导出' : '无受控导出权限'
+    return '返回整单协作'
+  }
   if (quote.value.status === 'fully_approved') return canResponsibleRelease.value ? '负责跟客确认放行' : '仅负责跟客可放行'
   if (quote.value.status === 'final_pending') return canResponsibleRelease.value ? '负责跟客确认放行' : '等待负责跟客放行'
   if (canOpenExport.value) return '进入导出汇总'
@@ -193,8 +220,16 @@ function finalActionLabel() {
 }
 
 async function loadQuote() {
-  await quoteStore.loadQuote(quoteId.value)
+  await Promise.all([
+    quoteStore.loadQuote(quoteId.value),
+    quoteStore.loadBatchProducts(quoteId.value),
+  ])
   await quoteStore.loadVersionCandidates(quoteId.value).catch(() => [])
+}
+
+function switchSummaryProduct(targetQuoteId: string) {
+  if (targetQuoteId === quoteId.value) return
+  void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${targetQuoteId}/summary`))
 }
 
 onMounted(loadQuote)
@@ -216,13 +251,18 @@ watch([quoteId, canFinalApprove], () => {
       <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft aria-hidden="true" />报价首页</RouterLink>
       <ChevronRight aria-hidden="true" />
       <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`)">{{ quote.quoteNo }} · 协作</RouterLink>
-      <ChevronRight aria-hidden="true" /><strong>汇总与放行</strong>
+      <ChevronRight aria-hidden="true" /><strong>{{ isWholeQuoteReview ? '汇总与输出' : '汇总与放行' }}</strong>
     </nav>
 
     <header class="quote-summary-head">
-      <div><span class="quote-eyebrow">内部成本汇总</span><h1>汇总与最终放行</h1><p>{{ quote.quoteNo }} · {{ quote.productName }} · {{ quote.customer }} · {{ quote.versionLabel }}</p></div>
+      <div><span class="quote-eyebrow">内部成本汇总</span><h1>{{ isWholeQuoteReview ? '汇总与受控输出' : '汇总与最终放行' }}</h1><p>{{ quote.quoteNo }} · {{ quote.productName }} · {{ quote.customer }} · {{ quote.versionLabel }}</p></div>
       <div class="quote-total-card"><span>整单工厂成本</span><strong>HKD {{ totalHkd.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong><small>RMB {{ (totalHkd * quote.fxRmbHkd).toFixed(2) }} · USD {{ (totalHkd / quote.fxHkdUsd).toFixed(2) }}</small></div>
     </header>
+
+    <nav v-if="batchProducts.length > 1" class="quote-summary-products" aria-label="批次产品汇总切换">
+      <span>本批 {{ batchProducts.length }} 款，每款独立汇总与输出</span>
+      <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" @click="switchSummaryProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b>{{ product.productName }}<small>{{ product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准' }}</small></button>
+    </nav>
 
     <p v-if="message" class="quote-page-message success">{{ message }}</p>
     <p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p>
@@ -248,14 +288,14 @@ watch([quoteId, canFinalApprove], () => {
 
     <section v-if="shippingPricing.enabled" class="quote-logistics-panel">
       <header><div><Ship aria-hidden="true" /><span><strong>出货价算价</strong><small>已启用：{{ [shippingPricing.freightEnabled ? '运费' : '', shippingPricing.liftingEnabled ? '吊柜费' : ''].filter(Boolean).join('、') }}</small></span></div><em>出货数量 {{ quote.quantity.toLocaleString('zh-CN') }} PCS</em></header>
-      <p class="shipping-formula">出货底价 = 出厂价 {{ shippingPricing.factoryPriceHkd.toFixed(4) }} + 附加税 {{ shippingPricing.additionalTaxHkd.toFixed(4) }} = <b>{{ shippingPricing.shippingFloorHkd.toFixed(4) }} HKD</b>；各场景再 × 码点 ÷ 找数，模具分摊在 USD 层加入。</p>
+      <p class="shipping-formula">出货报价由冻结参考快照和当前整单设置统一计算；以下仅展示各阶段金额，当前出货底价为 <b>{{ shippingPricing.shippingFloorHkd.toFixed(4) }} HKD</b>。</p>
       <div class="business-table-scroll shipping-price-scroll"><table class="business-summary-table shipping-price-table"><thead><tr><th>项</th><th v-for="row in shippingPricing.rows" :key="row.name">{{ row.name }}</th></tr></thead><tbody>
         <tr><th>出货底价 HKD</th><td v-for="row in shippingPricing.rows" :key="`floor-${row.name}`">{{ row.shippingFloorHkd.toFixed(4) }}</td></tr>
         <tr v-if="shippingPricing.freightEnabled"><th>运费（{{ shippingPricing.freightSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`freight-${row.name}`">{{ row.freightHkd.toFixed(4) }}</td></tr>
         <tr v-if="shippingPricing.liftingEnabled"><th>吊柜费（{{ shippingPricing.liftSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`lift-${row.name}`">{{ row.liftHkd.toFixed(4) }}</td></tr>
         <tr class="calculated"><th>含运 HKD</th><td v-for="row in shippingPricing.rows" :key="`ship-${row.name}`">{{ row.withFreightHkd.toFixed(4) }}</td></tr>
-        <tr><th>码点 ×（{{ shippingPricing.markup.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`markup-${row.name}`">{{ row.afterMarkupHkd.toFixed(4) }}</td></tr>
-        <tr><th>找数 ÷（{{ shippingPricing.settlement.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`settlement-${row.name}`">{{ row.afterSettlementHkd.toFixed(4) }}</td></tr>
+        <tr><th>码点结果（{{ shippingPricing.markup.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`markup-${row.name}`">{{ row.afterMarkupHkd.toFixed(4) }}</td></tr>
+        <tr><th>找数结果（{{ shippingPricing.settlement.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`settlement-${row.name}`">{{ row.afterSettlementHkd.toFixed(4) }}</td></tr>
         <tr class="calculated"><th>TOTAL（HKD）</th><td v-for="row in shippingPricing.rows" :key="`hkd-${row.name}`">{{ row.totalHkd.toFixed(4) }}</td></tr>
         <tr><th>（USD）= HKD / {{ shippingPricing.hkdUsd.toFixed(2) }}</th><td v-for="row in shippingPricing.rows" :key="`usd-${row.name}`">{{ row.totalUsd.toFixed(4) }}</td></tr>
         <tr><th>模具分摊（USD）</th><td v-for="row in shippingPricing.rows" :key="`mold-${row.name}`">{{ row.moldAmortizationUsd.toFixed(4) }}</td></tr>
@@ -264,13 +304,13 @@ watch([quoteId, canFinalApprove], () => {
     </section>
 
     <section class="quote-tax-summary-panel">
-      <header><div><FileSpreadsheet aria-hidden="true" /><span><strong>减税明细 / 成本汇总</strong><small>字段顺序和公式与 rr2 汇总页一致；金额由服务端按分段快照生成</small></span></div><em>HKD / PCS</em></header>
-      <div class="indonesia-freight-note"><strong>印尼运费（HKD）</strong><b>{{ summaryValue(costSummary.indonesiaFreightHkd, undefined, true) }}</b><span>杂项 = 印尼运费 + 附加税</span></div>
+      <header><div><FileSpreadsheet aria-hidden="true" /><span><strong>减税明细 / 成本汇总</strong><small>字段顺序和计算口径与 rr2 汇总页一致；金额由服务端按分段快照生成</small></span></div><em>HKD / PCS</em></header>
+      <div class="indonesia-freight-note"><strong>印尼运费（HKD）</strong><b>{{ summaryValue(costSummary.indonesiaFreightHkd, undefined, true) }}</b><span>杂项包含印尼运费和附加税</span></div>
 
       <article class="business-summary-block"><h3>一、出厂货价核</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t1" :key="item.key">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t1" :key="item.key">{{ summaryValue(item.value, item.format, true) }}</td></tr></tbody></table></div></article>
       <article class="business-summary-block"><h3>二、包装 / 外购</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t2" :key="item.key">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t2" :key="item.key">{{ summaryValue(item.value, item.format, true) }}</td></tr></tbody></table></div></article>
       <article class="business-summary-block"><h3>三、人工 &amp; 成本汇总</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t3" :key="item.key" :class="{ emphasized: item.key === 'no_labor_cost' }">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t3" :key="item.key" :class="{ calculated: ['no_labor_cost','total_cost'].includes(item.key) }">{{ summaryValue(item.value, item.format, directLaborKeys.has(item.key)) }}</td></tr></tbody></table></div></article>
-      <article class="business-summary-block tax-detail-block"><h3>四、减税明细 <small>1 = 金额；2 = 税率%；3 = 减税额 = 金额 × 税率；合计减税 = Σ减税额；减税后成本 = 总成本 − 合计减税</small></h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t4" :key="item.key">{{ item.label }}</th><th class="total">合计减税</th><th class="after-tax">减税后成本</th></tr></thead><tbody>
+      <article class="business-summary-block tax-detail-block"><h3>四、减税明细 <small>金额、税率、减税额及减税后成本均由系统统一计算</small></h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t4" :key="item.key">{{ item.label }}</th><th class="total">合计减税</th><th class="after-tax">减税后成本</th></tr></thead><tbody>
         <tr><td v-for="item in costSummary.t4" :key="`amount-${item.key}`">{{ summaryValue(item.amountHkd, undefined, true) }}</td><td /><td /></tr>
         <tr><td v-for="item in costSummary.t4" :key="`rate-${item.key}`">{{ item.ratePercent == null ? '' : `${item.ratePercent.toFixed(2)}%` }}</td><td /><td /></tr>
         <tr class="calculated"><td v-for="item in costSummary.t4" :key="`deduction-${item.key}`">{{ item.deductionHkd == null ? '—' : item.deductionHkd.toFixed(4) }}</td><td class="total">{{ costSummary.totalDeductionHkd.toFixed(4) }}</td><td class="after-tax">{{ costSummary.afterDeductionCostHkd.toFixed(4) }}</td></tr>
@@ -287,14 +327,15 @@ watch([quoteId, canFinalApprove], () => {
 
     <section class="quote-final-grid">
       <article class="quote-export-history"><header><FileClock aria-hidden="true" /><span><strong>受控导出记录</strong><small>重开后旧文件保留但标记已取代</small></span></header><div v-if="quote.exports.length"><p v-for="record in quote.exports" :key="record.id"><FileSpreadsheet aria-hidden="true" /><span><strong>{{ record.fileName }}</strong><small>{{ record.exportedBy }} · {{ record.exportedAt }}</small></span><em :class="record.status">{{ record.status === 'current' ? '当前版本' : '已取代' }}</em></p></div><div v-else class="empty">最终放行后才可生成受控 XLSX。</div></article>
-      <article class="quote-final-release" :class="{ ready: allSectionsReady }"><Rocket aria-hidden="true" /><div><span>业务跟客最终放行</span><h2>{{ allSectionsReady ? (quote.status === 'final_pending' ? '等待负责跟客确认放行' : canOpenExport ? '已放行，可查看受控导出' : isReleased && !canExport ? (isForeignQuote ? '已放行，跨厂仅供查看' : '已放行，当前账号无受控导出权限') : '整单已准备就绪') : '等待全部责任分段完成' }}</h2><p>全部参与分段完成审批后，由业务部分段的提交跟客一人确认放行；请求携带报价头 revision，服务端冻结完整放行清单并生成受控文件。</p><div v-if="quote.finalReleaseStatus === 'rejected'" class="final-rejected">上一轮最终放行已退回，可修正后由负责跟客重新放行。</div></div><div class="final-buttons"><button v-if="quote.status === 'final_pending' && canFinalApprove" type="button" class="reject" @click="toggleFinalReject">退回历史待审放行</button><button type="button" :disabled="!allSectionsReady || (['fully_approved','final_pending'].includes(quote.status) && !canResponsibleRelease) || (isReleased && !canExport)" @click="runFinalAction"><Download v-if="canOpenExport" aria-hidden="true" /><Rocket v-else aria-hidden="true" />{{ finalActionLabel() }}</button></div></article>
+      <article class="quote-final-release" :class="{ ready: allSectionsReady }"><Rocket aria-hidden="true" /><div><span>{{ isWholeQuoteReview ? '整单审核与受控输出' : '业务跟客最终放行' }}</span><h2>{{ finalPanelTitle }}</h2><p>{{ finalPanelDescription }}</p><div v-if="quote.finalReleaseStatus === 'rejected'" class="final-rejected">{{ isWholeQuoteReview ? '上一轮整单审核已退回，报价头及全部部门内容已解锁。' : '上一轮最终放行已退回，可修正后由负责跟客重新放行。' }}</div></div><div class="final-buttons"><button v-if="!isWholeQuoteReview && quote.status === 'final_pending' && canFinalApprove" type="button" class="reject" @click="toggleFinalReject">退回历史待审放行</button><button type="button" :disabled="isWholeQuoteReview ? (isReleased && !canExport) : (!allSectionsReady || (['fully_approved','final_pending'].includes(quote.status) && !canResponsibleRelease) || (isReleased && !canExport))" @click="runFinalAction"><Download v-if="canOpenExport" aria-hidden="true" /><Rocket v-else aria-hidden="true" />{{ finalActionLabel() }}</button></div></article>
     </section>
-    <section v-if="finalRejectOpen && canFinalApprove" class="quote-final-reason"><div><strong>退回最终放行</strong><span>原因将写入不可变最终审核记录并通知提交人。</span></div><textarea v-model="finalReason" rows="2" placeholder="必须填写退回原因" /><button type="button" @click="finalRejectOpen = false">取消</button><button type="button" class="primary" :disabled="!finalReason.trim() || quoteStore.submitting || !canFinalApprove" @click="rejectFinal">{{ quoteStore.submitting ? '退回中…' : '确认退回' }}</button><p v-if="finalRejectError" class="quote-final-inline-error" role="alert">{{ finalRejectError }}</p></section>
+    <section v-if="!isWholeQuoteReview && finalRejectOpen && canFinalApprove" class="quote-final-reason"><div><strong>退回最终放行</strong><span>原因将写入不可变最终审核记录并通知提交人。</span></div><textarea v-model="finalReason" rows="2" placeholder="必须填写退回原因" /><button type="button" @click="finalRejectOpen = false">取消</button><button type="button" class="primary" :disabled="!finalReason.trim() || quoteStore.submitting || !canFinalApprove" @click="rejectFinal">{{ quoteStore.submitting ? '退回中…' : '确认退回' }}</button><p v-if="finalRejectError" class="quote-final-inline-error" role="alert">{{ finalRejectError }}</p></section>
   </div>
 </template>
 
 <style scoped>
 .quote-summary-page{display:grid;gap:14px;padding-bottom:32px}.quote-breadcrumb{display:flex;align-items:center;gap:7px;color:#94a3b8;font-size:9px}.quote-breadcrumb a{display:inline-flex;align-items:center;gap:5px;color:#475569;font-weight:800}.quote-breadcrumb a:hover{color:#0f766e}.quote-breadcrumb svg{width:12px}.quote-breadcrumb strong{color:#0f766e}.quote-summary-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.quote-eyebrow{color:#0f766e;font-size:10px;font-weight:900;letter-spacing:.08em}.quote-summary-head h1{margin:5px 0 0;color:#0f172a;font-size:30px;font-weight:950;letter-spacing:-.04em}.quote-summary-head p{margin:7px 0 0;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px}.quote-total-card{display:grid;min-width:280px;border:1px solid #99f6e4;border-radius:13px;background:#f0fdfa;padding:13px 16px;text-align:right}.quote-total-card span{color:#0f766e;font-size:9px;font-weight:900}.quote-total-card strong{margin-top:5px;color:#115e59;font-size:21px}.quote-total-card small{margin-top:4px;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}.quote-page-message{margin:0;border-radius:8px;padding:8px 11px;font-size:9px}.quote-page-message.success{border:1px solid #a7f3d0;background:#ecfdf5;color:#047857}.quote-page-message.error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}.quote-readonly-banner{display:flex;align-items:center;gap:7px;margin:0;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:9px 11px;color:#0f766e;font-size:11px}.quote-readonly-banner svg{width:15px;flex:0 0 auto}
+.quote-summary-products{display:flex;align-items:center;gap:7px;overflow:auto;border:1px solid #dbe5ea;border-radius:11px;background:#fff;padding:9px}.quote-summary-products>span{flex:0 0 auto;margin-right:4px;color:#64748b;font-size:10px}.quote-summary-products button{display:flex;flex:0 0 auto;align-items:center;gap:5px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;padding:7px 9px;color:#475569;font-size:10px}.quote-summary-products button.active{border-color:#14b8a6;background:#f0fdfa;color:#0f766e}.quote-summary-products b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.quote-summary-products small{border-radius:999px;background:#e2e8f0;padding:2px 4px;font-size:8px}.quote-summary-products button.active small{background:#ccfbf1}
 .quote-summary-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(250px,.7fr);gap:12px}.quote-cost-table-panel,.quote-distribution-panel,.quote-logistics-panel,.quote-release-status,.quote-export-history,.quote-final-release{overflow:hidden;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 10px 28px rgb(15 23 42/.045)}.quote-cost-table-panel>header,.quote-logistics-panel>header,.quote-release-status>header,.quote-export-history>header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #e2e8f0;padding:13px 15px;background:#f8fafc}.quote-cost-table-panel>header>div,.quote-logistics-panel>header>div,.quote-release-status>header>div,.quote-export-history>header{display:flex;align-items:center;gap:8px}.quote-cost-table-panel header svg,.quote-logistics-panel header svg,.quote-release-status header svg,.quote-export-history header svg{width:17px;color:#0f766e}.quote-cost-table-panel header span,.quote-logistics-panel header span,.quote-release-status header span,.quote-export-history header span{display:grid}.quote-cost-table-panel header strong,.quote-logistics-panel header strong,.quote-release-status header strong,.quote-export-history header strong{color:#334155;font-size:11px}.quote-cost-table-panel header small,.quote-logistics-panel header small,.quote-release-status header small,.quote-export-history header small{margin-top:2px;color:#94a3b8;font-size:8px}.quote-cost-table-panel>header>span{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}.quote-summary-table-scroll{overflow:auto}.quote-cost-table-panel table{width:100%;min-width:750px;border-collapse:collapse}.quote-cost-table-panel th{background:#eef2f6;padding:8px;color:#64748b;font-size:8px;text-align:left}.quote-cost-table-panel td{border-top:1px solid #eef2f6;padding:8px;color:#475569;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}.quote-cost-table-panel td:first-child strong{display:block;color:#334155;font-family:'Microsoft YaHei','PingFang SC',sans-serif;font-size:9px}.quote-cost-table-panel td:first-child span{display:block;margin-top:2px;color:#94a3b8;font-family:'Microsoft YaHei','PingFang SC',sans-serif;font-size:7px}.quote-cost-table-panel .money{color:#0f172a;font-weight:900;text-align:right}.quote-cost-table-panel tfoot td{background:#f8fafc;color:#0f766e;font-weight:900}.section-status{display:inline-flex;align-items:center;gap:4px;border-radius:999px;background:color-mix(in srgb,var(--tone) 10%,white);padding:4px 6px;color:var(--tone);font-family:'Microsoft YaHei','PingFang SC',sans-serif;font-size:7px;font-weight:900}.section-status i{width:5px;height:5px;border-radius:99px;background:currentColor}.tone-slate{--tone:#64748b}.tone-amber{--tone:#d97706}.tone-green{--tone:#059669}.tone-red{--tone:#dc2626}.tone-blue{--tone:#2563eb}.tone-teal{--tone:#0f766e}
 .quote-distribution-panel{padding:15px}.quote-distribution-panel>header{display:flex;justify-content:space-between}.quote-distribution-panel header strong{color:#334155;font-size:11px}.quote-distribution-panel header span{color:#94a3b8;font-size:8px}.quote-donut-wrap{display:grid;place-items:center;padding:18px 0}.quote-donut{display:grid;width:150px;height:150px;place-items:center;border-radius:50%;background:conic-gradient(#0f766e 0 64%,#475569 64% 88%,#cbd5e1 88% 100%);box-shadow:inset 0 0 0 23px #fff}.quote-donut span{display:grid;color:#0f172a;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px;font-weight:900;text-align:center}.quote-donut b{color:#94a3b8;font-size:8px}.quote-distribution-panel dl{display:grid;gap:7px;margin:0}.quote-distribution-panel dl div{display:flex;justify-content:space-between;gap:8px}.quote-distribution-panel dt{display:flex;align-items:center;gap:6px;color:#64748b;font-size:8px}.quote-distribution-panel dd{margin:0;color:#334155;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}.quote-distribution-panel i{width:7px;height:7px;border-radius:99px}.quote-distribution-panel i.material{background:#0f766e}.quote-distribution-panel i.labor{background:#475569}.quote-distribution-panel i.overhead{background:#cbd5e1}.quote-distribution-panel>section{display:flex;align-items:center;gap:8px;margin-top:14px;border-radius:9px;background:#f1f5f9;padding:9px}.quote-distribution-panel section svg{width:16px;color:#64748b}.quote-distribution-panel section div{display:grid;min-width:0}.quote-distribution-panel section strong{color:#475569;font-size:8px}.quote-distribution-panel section span{overflow:hidden;margin-top:2px;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:7px;text-overflow:ellipsis;white-space:nowrap}
 .quote-cost-overview,.quote-tax-summary-panel{overflow:hidden;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 10px 28px rgb(15 23 42/.045)}.quote-cost-overview>header,.quote-tax-summary-panel>header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:12px 15px}.quote-cost-overview>header>div,.quote-tax-summary-panel>header>div{display:flex;align-items:center;gap:8px}.quote-cost-overview header svg,.quote-tax-summary-panel header svg{width:17px;color:#0f766e}.quote-cost-overview header span,.quote-tax-summary-panel header span{display:grid}.quote-cost-overview header strong,.quote-tax-summary-panel header strong{color:#334155;font-size:12px}.quote-cost-overview header small,.quote-tax-summary-panel header small{margin-top:2px;color:#94a3b8;font-size:9px}.quote-cost-overview header em,.quote-tax-summary-panel header em{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px;font-style:normal}.quote-cost-overview-body{display:grid;grid-template-columns:190px minmax(0,1fr) 230px;align-items:center;gap:16px;padding:12px 15px}.quote-cost-overview .quote-donut-wrap{padding:0}.quote-cost-overview .quote-donut{width:132px;height:132px;box-shadow:inset 0 0 0 22px #fff}.quote-cost-overview .quote-donut span{font-size:12px}.compact-cost-list{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:6px;margin:0}.compact-cost-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid #eef2f6;border-radius:7px;background:#fafcfd;padding:7px 8px}.compact-cost-list dt{display:flex;align-items:center;gap:6px;min-width:0;color:#475569;font-size:10px}.compact-cost-list dt i{width:7px;height:7px;flex:0 0 auto;border-radius:99px}.compact-cost-list dd{margin:0;color:#0f172a;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;font-weight:900}.cost-snapshot-note{display:flex;align-items:center;gap:9px;border-radius:9px;background:#f1f5f9;padding:10px}.cost-snapshot-note>svg{width:17px;flex:0 0 auto;color:#64748b}.cost-snapshot-note>span{display:grid;min-width:0}.cost-snapshot-note strong{color:#475569;font-size:10px}.cost-snapshot-note small{overflow:hidden;margin-top:3px;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;text-overflow:ellipsis;white-space:nowrap}

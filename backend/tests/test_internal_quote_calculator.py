@@ -465,6 +465,61 @@ def test_assembly_group_inputs_follow_reference_summary_formula():
     assert [row["amount_hkd_pcs"] for row in assembly["line_breakdown"]] == ["15.6000", "10.4000"]
 
 
+def test_assembly_manual_total_persons_is_authoritative_only_without_process_rows():
+    manual = calculate(
+        "assembly",
+        {
+            "labor_base_hkd": "260",
+            "standard_work_hours": "11",
+            "groups": [{
+                "name": "成品组装",
+                "category": "assembly",
+                "production_qty": "100",
+                "teams": "2",
+                "total_persons": "6",
+                "processes": [],
+            }],
+        },
+    )
+
+    assert manual["status"] == "valid"
+    assert manual["totals"]["assembly_hkd"] == "31.2000"
+    assert manual["group_summaries"][0]["total_persons"] == "6.0000"
+    assert manual["line_breakdown"][0]["kind"] == "assembly_manual_total"
+
+    missing = calculate(
+        "assembly",
+        {
+            "groups": [{
+                "name": "成品组装",
+                "category": "assembly",
+                "production_qty": "100",
+                "teams": "1",
+                "processes": [],
+            }],
+        },
+    )
+    assert missing["status"] == "blocked"
+    assert missing["warnings"][0]["code"] == "assembly_total_persons_missing"
+
+    empty_process = calculate(
+        "assembly",
+        {
+            "groups": [{
+                "name": "成品组装",
+                "category": "assembly",
+                "production_qty": "100",
+                "teams": "1",
+                "total_persons": "99",
+                "processes": [{"name": "装配", "persons": "0"}],
+            }],
+        },
+    )
+    assert empty_process["status"] == "blocked"
+    assert empty_process["totals"]["assembly_hkd"] == "0.0000"
+    assert empty_process["warnings"][0]["code"] == "assembly_process_persons_missing"
+
+
 def test_engineering_mold_detail_and_production_allocations_follow_rr2_fields_and_formulas():
     engineering = calculate(
         "engineering",
@@ -1032,6 +1087,17 @@ def test_sales_testing_fee_calculates_multiple_moq_unit_prices_without_changing_
     )
     assert legacy["totals"]["testing_fee_moqs"] == ["5000.0000"]
     assert legacy["totals"]["testing_fee_unit_usd"] == "0.2500"
+
+    disabled = calculate(
+        "sales",
+        {**payload, "testing_fee_enabled": False, "testing_fee_moqs": ["保留但不校验"]},
+        factory_price_hkd="20",
+    )
+    assert disabled["currency_totals"]["USD"] == "0.0000"
+    assert disabled["totals"]["testing_fee_enabled"] is False
+    assert disabled["totals"]["testing_fee_total_usd"] == "0.0000"
+    assert disabled["totals"]["testing_fee_tiers"] == []
+    assert all(row.get("kind") != "sales_testing_fee" for row in disabled["line_breakdown"])
 
     with pytest.raises(CalculationInputError, match="第 2 档 MOQ 必须大于 0"):
         calculate(

@@ -333,6 +333,13 @@ describe('360 P4 customer converter', () => {
     expect(data.metadata.quantityPerContainer).toBe(1700)
   })
 
+  it('omits a preserved testing fee when testing-fee calculation is disabled', () => {
+    const source = artifact()
+    source.sections.sales!.payload.testing_fee_enabled = false
+    const result = convertThreeSixtyP4InternalQuote(source, 'IQ-HKA-360-001.xlsx')
+    expect(result.sheets[0].quoteData.testingPerUnitUsd).toBe(0)
+  })
+
   it('outputs only the sanitized Breakdown sheet with auditable same-sheet formulas', () => {
     const result = convertThreeSixtyP4InternalQuote(artifact(), 'IQ-HKA-360-001.xlsx')
     const template = readFileSync('public/templates/360-customer-quote-template.bin')

@@ -18,6 +18,7 @@ import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAc
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
+import type { InternalQuoteStatus } from '@/types/internalQuoteDesk'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,6 +28,7 @@ const appStore = useAppStore()
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
 const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
+const batchProducts = computed(() => quoteStore.batchProductsByQuoteId[quoteId.value] ?? [])
 const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
@@ -54,6 +56,17 @@ const componentLabels: Record<string, string> = { molding_hkd: '啤机', paintin
 const visibleComponents = computed(() => Object.entries(quote.value.summaryComponents).map(([key, amount]) => ({ key, label: componentLabels[key] ?? key, amount })).filter((item) => item.amount !== 0).slice(0, 3))
 const workbookSheets = ['报价明细', '电子明细', '车缝明细', '车发明细', '装配明细', '审批与版本']
 const engineeringWorkbookSheets = ['排摸表', '外购清单']
+const statusLabels: Record<InternalQuoteStatus, string> = {
+  drafting: '填写中',
+  pending_review: '填写中',
+  fully_approved: '可提交',
+  final_pending: '待审核',
+  rejected: '已退回',
+  released: '已通过',
+  exported: '已输出',
+  archived: '已归档',
+}
+const batchOutputReadyCount = computed(() => batchProducts.value.filter((product) => ['released', 'exported'].includes(product.status)).length)
 
 async function confirmExport() {
   message.value = ''
@@ -95,8 +108,19 @@ async function downloadRecord(id: string, fileName: string) {
   catch (error) { errorMessage.value = error instanceof Error ? error.message : '下载失败。' }
 }
 
-function loadQuote() {
-  void quoteStore.loadQuote(quoteId.value)
+async function loadQuote() {
+  confirmChecked.value = false
+  message.value = ''
+  errorMessage.value = ''
+  await Promise.all([
+    quoteStore.loadQuote(quoteId.value),
+    quoteStore.loadBatchProducts(quoteId.value),
+  ])
+}
+
+function switchOutputProduct(targetQuoteId: string) {
+  if (targetQuoteId === quoteId.value) return
+  void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${targetQuoteId}/export`))
 }
 
 onMounted(loadQuote)
@@ -118,6 +142,11 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
       <div><span>XLSX 导出</span><h1>报价与工程资料导出汇总</h1><p>{{ quote.quoteNo }} · {{ quote.productName }} · {{ quote.customer }} · {{ quote.versionLabel }}</p></div>
       <span class="quote-export-ready" :class="{ blocked: !eligible || !canExport }"><CheckCircle2 v-if="eligible && canExport" aria-hidden="true" /><LockKeyhole v-else aria-hidden="true" />{{ exportStatusLabel }}</span>
     </header>
+
+    <nav v-if="batchProducts.length > 1" class="quote-export-products" aria-label="批次产品正式输出切换">
+      <div><strong>本批 {{ batchProducts.length }} 款，逐款独立输出</strong><small>整批共用一次审核结果；当前已有 {{ batchOutputReadyCount }}/{{ batchProducts.length }} 款可生成正式文件</small></div>
+      <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" :aria-current="product.quoteId === quote.id ? 'page' : undefined" @click="switchOutputProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b><span>{{ product.productName }}<small>{{ product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准' }}</small></span><em :class="product.status">{{ statusLabels[product.status] }}</em></button>
+    </nav>
 
     <p v-if="message" class="quote-page-message success">{{ message }}</p>
     <p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p>
@@ -162,6 +191,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
 
 <style scoped>
 .quote-export-page{display:grid;gap:14px;padding-bottom:32px}.quote-breadcrumb{display:flex;align-items:center;gap:7px;color:#94a3b8;font-size:9px}.quote-breadcrumb a{display:inline-flex;align-items:center;gap:5px;color:#475569;font-weight:800}.quote-breadcrumb a:hover{color:#0f766e}.quote-breadcrumb svg{width:12px}.quote-breadcrumb strong{color:#0f766e}.quote-export-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.quote-export-head>div>span{color:#0f766e;font-size:10px;font-weight:900;letter-spacing:.08em}.quote-export-head h1{margin:5px 0 0;color:#0f172a;font-size:30px;font-weight:950;letter-spacing:-.04em}.quote-export-head p{margin:7px 0 0;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px}.quote-export-ready{display:inline-flex;align-items:center;gap:6px;border:1px solid #a7f3d0;border-radius:999px;background:#ecfdf5;padding:8px 11px;color:#047857;font-size:9px;font-weight:900}.quote-export-ready.blocked{border-color:#fed7aa;background:#fff7ed;color:#c2410c}.quote-export-ready svg{width:15px}.quote-page-message{margin:0;border-radius:8px;padding:8px 11px;font-size:9px}.quote-page-message.success{border:1px solid #a7f3d0;background:#ecfdf5;color:#047857}.quote-page-message.error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}.quote-readonly-banner{display:flex;align-items:center;gap:7px;margin:0;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:9px 11px;color:#0f766e;font-size:11px}.quote-readonly-banner svg{width:15px;flex:0 0 auto}
+.quote-export-products{display:flex;align-items:stretch;gap:7px;overflow:auto;border:1px solid #dbe5ea;border-radius:11px;background:#fff;padding:9px}.quote-export-products>div{display:grid;min-width:190px;align-content:center;margin-right:3px}.quote-export-products>div strong{color:#334155;font-size:10px}.quote-export-products>div small{margin-top:3px;color:#94a3b8;font-size:8px}.quote-export-products>button{display:grid;min-width:190px;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:7px;border:1px solid #e2e8f0;border-radius:9px;background:#f8fafc;padding:8px;color:#475569;text-align:left}.quote-export-products>button.active{border-color:#14b8a6;background:#f0fdfa;color:#0f766e;box-shadow:0 0 0 1px rgb(20 184 166/.12)}.quote-export-products button>b{display:grid;width:24px;height:24px;place-items:center;border-radius:7px;background:#e2e8f0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px}.quote-export-products button.active>b{background:#ccfbf1}.quote-export-products button>span{display:grid;min-width:0;overflow:hidden;font-size:10px;font-weight:900;text-overflow:ellipsis;white-space:nowrap}.quote-export-products button>span small{margin-top:2px;color:#94a3b8;font-size:7px;font-weight:700}.quote-export-products button>em{border-radius:999px;background:#e2e8f0;padding:3px 6px;color:#64748b;font-size:7px;font-style:normal;font-weight:900}.quote-export-products button>em.released,.quote-export-products button>em.exported{background:#d1fae5;color:#047857}.quote-export-products button>em.final_pending{background:#fef3c7;color:#b45309}.quote-export-products button>em.rejected{background:#fee2e2;color:#b91c1c}
 .quote-export-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.quote-export-kpis article{display:grid;gap:5px;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:12px}.quote-export-kpis span{color:#64748b;font-size:8px;font-weight:900}.quote-export-kpis strong{color:#334155;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.quote-export-kpis article.primary{border-color:#99f6e4;background:#f0fdfa}.quote-export-kpis article.primary span,.quote-export-kpis article.primary strong{color:#0f766e}
 .quote-export-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(280px,.65fr);gap:12px}.quote-export-preview,.quote-export-controls,.quote-export-history{overflow:hidden;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 12px 28px rgb(15 23 42/.05)}.quote-export-preview>header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:13px 15px}.quote-export-preview>header>div{display:flex;align-items:center;gap:8px}.quote-export-preview>header svg{width:18px;color:#0f766e}.quote-export-preview>header span{display:grid}.quote-export-preview>header strong{color:#334155;font-size:11px}.quote-export-preview>header small{margin-top:2px;color:#94a3b8;font-size:8px}.quote-export-preview>header em{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;font-style:normal}.quote-workbook-card{display:grid;gap:14px;margin:15px;border:1px solid #cbd5e1;border-radius:12px;background:linear-gradient(145deg,#fff,#f8fafc);padding:16px}.quote-workbook-title{display:flex;align-items:center;gap:10px}.quote-workbook-title>span{display:grid;width:40px;height:40px;place-items:center;border-radius:11px;background:#dcfce7;color:#15803d}.quote-workbook-title svg{width:21px}.quote-workbook-title>div{display:grid}.quote-workbook-title strong{color:#0f172a;font-size:11px}.quote-workbook-title small{margin-top:3px;color:#64748b;font-size:8px}.quote-sheet-list{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}.quote-sheet-list span{display:grid;grid-template-columns:18px 1fr 13px;align-items:center;gap:5px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;padding:8px}.quote-sheet-list b{display:grid;width:17px;height:17px;place-items:center;border-radius:5px;background:#ccfbf1;color:#0f766e;font-size:7px}.quote-sheet-list strong{color:#475569;font-size:8px}.quote-sheet-list svg{width:12px;color:#059669}.quote-revision-matrix{padding:0 15px 15px}.quote-revision-matrix h2{margin:0 0 9px;color:#334155;font-size:10px}.quote-revision-matrix>div{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.quote-revision-matrix article{display:grid;grid-template-columns:1fr auto 14px;align-items:center;gap:5px;border:1px solid #e2e8f0;border-radius:8px;padding:8px}.quote-revision-matrix article span{display:grid;min-width:0}.quote-revision-matrix strong{color:#334155;font-size:8px}.quote-revision-matrix small{overflow:hidden;margin-top:2px;color:#94a3b8;font-size:6px;text-overflow:ellipsis;white-space:nowrap}.quote-revision-matrix b{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}.quote-revision-matrix svg{width:12px;color:#059669}
 .quote-export-controls{display:grid;align-content:start;gap:13px;padding:15px}.quote-integrity-card{display:flex;align-items:center;gap:10px;border:1px solid #a7f3d0;border-radius:10px;background:#ecfdf5;padding:12px}.quote-integrity-card>svg{width:27px;color:#059669}.quote-integrity-card div{display:grid;min-width:0}.quote-integrity-card span{color:#047857;font-size:8px;font-weight:900}.quote-integrity-card strong{margin-top:2px;color:#065f46;font-size:12px}.quote-integrity-card small{overflow:hidden;margin-top:3px;color:#047857;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:6px;text-overflow:ellipsis;white-space:nowrap}.quote-export-controls>label:not(.quote-confirm-check){display:grid;gap:6px}.quote-export-controls label>span{color:#475569;font-size:9px;font-weight:900}.quote-export-controls select{height:36px;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 9px;color:#334155;font-size:9px}.quote-export-controls label small{color:#94a3b8;font-size:7px;line-height:1.5}.quote-export-checklist{display:grid;gap:7px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;padding:11px}.quote-export-checklist h2{display:flex;align-items:center;gap:5px;margin:0 0 2px;color:#334155;font-size:9px}.quote-export-checklist h2 svg{width:14px;color:#0f766e}.quote-export-checklist p{display:flex;align-items:center;gap:5px;margin:0;color:#64748b;font-size:8px}.quote-export-checklist p svg{width:12px;color:#059669}.quote-confirm-check{display:flex;align-items:flex-start;gap:7px}.quote-confirm-check input{margin-top:2px}.quote-confirm-check span{color:#475569;font-size:8px!important;line-height:1.5}.quote-export-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.quote-export-button{display:flex;min-height:40px;align-items:center;justify-content:center;gap:7px;border:1px solid #0f766e;border-radius:9px;background:#0f766e;color:#fff;font-size:9px;font-weight:900}.quote-export-button.engineering{border-color:#2563eb;background:#2563eb}.quote-export-button:disabled{cursor:not-allowed;border-color:#cbd5e1;background:#e2e8f0;color:#94a3b8}.quote-export-button svg{width:15px}.quote-backend-note{margin:0;border-radius:8px;background:#eff6ff;padding:8px;color:#1d4ed8;font-size:7px;line-height:1.55}

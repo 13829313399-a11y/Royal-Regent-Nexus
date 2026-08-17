@@ -76,7 +76,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     const liveQuote = quote()
     liveQuote.targetCustomerPrice = 'USD 20'
 
-    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: liveQuote } })
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: liveQuote, canEditMarkup: true } })
 
     expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 140.40')
     expect(wrapper.get('[data-testid="live-cost-hkd"]').text()).toBe('HKD 117.00')
@@ -159,5 +159,8 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
 
     const viewer = mount(InternalQuoteActivityPanel, { props: { quote: quote() } })
     expect(viewer.find('[data-testid="save-quote-markup"]').exists()).toBe(false)
+    for (const testId of ['live-quote-markup-moq-0', 'live-quote-markup-0', 'select-quote-markup-tier-0', 'live-quote-misc']) {
+      expect(viewer.get(`[data-testid="${testId}"]`).attributes('disabled')).toBeDefined()
+    }
   })
 })

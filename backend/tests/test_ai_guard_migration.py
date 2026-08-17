@@ -76,7 +76,7 @@ def test_ai_guard_migration_has_metadata_only_tables_and_single_head(tmp_path):
     with engine.connect() as connection:
         assert connection.execute(
             sa.text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "20260814_0077"
+        ).scalar_one() == "20260817_0078"
 
 
 def test_ai_guard_migration_refuses_downgrade_with_shared_state(tmp_path):

@@ -7,6 +7,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as WorksheetImage
 from openpyxl.styles import Font
 from PIL import Image as PillowImage
+from docx import Document
 
 from app.services.internal_quote_excel import ENGINEERING_WORKBOOK_TEMPLATE_PATH
 from test_internal_quote_api import ALL_SECTION_CODES, create_payload, login, logout, make_client
@@ -21,6 +22,15 @@ def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> byt
     output = BytesIO()
     workbook.save(output)
     workbook.close()
+    return output.getvalue()
+
+
+def document_bytes(paragraphs: list[str]) -> bytes:
+    document = Document()
+    for paragraph in paragraphs:
+        document.add_paragraph(paragraph)
+    output = BytesIO()
+    document.save(output)
     return output.getvalue()
 
 
@@ -136,6 +146,39 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
             "模具报价.xlsx",
             "模具图片-U2-1.png",
         }
+        source_attachment = next(
+            item for item in attachments if item["file_name"] == "模具报价.xlsx"
+        )
+        workbook_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/{source_attachment['id']}/preview"
+        )
+        assert workbook_preview.status_code == 200
+        assert workbook_preview.headers["content-type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert workbook_preview.headers["content-disposition"].startswith("inline;")
+        assert workbook_preview.content == source
+        workbook_content_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/{source_attachment['id']}/content-preview"
+        )
+        assert workbook_content_preview.status_code == 200
+        assert workbook_content_preview.json()["kind"] == "excel"
+        assert workbook_content_preview.json()["sheets"][0]["name"] == "报价明细"
+        assert workbook_content_preview.json()["sheets"][0]["rows"][0][:2] == ["模号", "产品名称"]
+
+        word_source = document_bytes(["工程资料说明", "只用于当前部门核价。"])
+        word_upload = client.post(
+            f"/api/internal-quotes/{quote_id}/attachments",
+            data={"department": "engineering"},
+            files={"file": ("工程说明.docx", word_source, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        )
+        assert word_upload.status_code == 201, word_upload.text
+        word_content_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/{word_upload.json()['id']}/content-preview"
+        )
+        assert word_content_preview.status_code == 200
+        assert word_content_preview.json()["kind"] == "word"
+        assert word_content_preview.json()["paragraphs"] == ["工程资料说明", "只用于当前部门核价。"]
         image_preview = client.get(
             f"/api/internal-quotes/{quote_id}/attachments/{attachment_ids[0]}/preview"
         )
@@ -517,6 +560,52 @@ def test_p3_attachment_validates_magic_deduplicates_and_downloads(monkeypatch):
         )
         assert late_upload.status_code == 409
         assert "重开" in late_upload.json()["detail"]
+
+
+def test_p3_production_attachment_reads_are_scoped_to_its_department(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_attachment_scope_owner", "sales_customer_owner", "sales-business")
+        quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="ATTACHMENT-SCOPE", participating_sections=ALL_SECTION_CODES),
+        ).json()
+        quote_id = quote["id"]
+        engineering_image = b"\x89PNG\r\n\x1a\n" + b"engineering-document"
+        molding_image = b"\x89PNG\r\n\x1a\n" + b"molding-document"
+        engineering_upload = client.post(
+            f"/api/internal-quotes/{quote_id}/attachments",
+            data={"department": "engineering"},
+            files={"file": ("工程资料.png", engineering_image, "image/png")},
+        )
+        molding_upload = client.post(
+            f"/api/internal-quotes/{quote_id}/attachments",
+            data={"department": "molding"},
+            files={"file": ("啤机资料.png", molding_image, "image/png")},
+        )
+        assert engineering_upload.status_code == 201, engineering_upload.text
+        assert molding_upload.status_code == 201, molding_upload.text
+
+        logout(client)
+        login(client, "iq_attachment_scope_molding", "molding_clerk", "molding")
+        listed = client.get(f"/api/internal-quotes/{quote_id}/attachments")
+        assert listed.status_code == 200, listed.text
+        assert [item["file_name"] for item in listed.json()] == ["啤机资料.png"]
+
+        forbidden_list = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments?department=engineering"
+        )
+        assert forbidden_list.status_code == 403
+        forbidden_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/"
+            f"{engineering_upload.json()['id']}/preview"
+        )
+        assert forbidden_preview.status_code == 403
+        own_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/"
+            f"{molding_upload.json()['id']}/preview"
+        )
+        assert own_preview.status_code == 200
+        assert own_preview.content == molding_image
 
 
 def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatch):
@@ -923,7 +1012,13 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [electronic_sheet.cell(3, column).value for column in range(1, 11)] == [
             "父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源",
         ]
-        assert [electronic_sheet.cell(5, column).value for column in range(1, 5)] == ["电子成本汇总", "RMB", "HKD", "公式口径"]
+        electronic_summary_row = next(
+            row for row in range(4, electronic_sheet.max_row + 1)
+            if electronic_sheet.cell(row, 1).value == "电子成本汇总"
+        )
+        assert [electronic_sheet.cell(electronic_summary_row, column).value for column in range(1, 5)] == [
+            "电子成本汇总", "RMB", "HKD", "公式口径",
+        ]
         assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 15)] == [
             "产品组", "类型", "#", "布料名称", "部位", "工艺", "裁片数", "用量/码",
             "物料价(RMB)", "价钱(RMB)", "码点", "总价钱(RMB)", "备注", "来源行",

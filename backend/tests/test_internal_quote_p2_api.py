@@ -203,7 +203,7 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
             assert old.superseded_at
 
 
-def test_sales_customer_owner_can_adjust_quote_fx_with_revision_and_recalculation(monkeypatch):
+def test_engineering_and_sales_can_adjust_quote_fx_with_revision_and_recalculation(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_fx_owner", "sales_customer_owner", "sales-business")
         created = client.post(
@@ -224,19 +224,14 @@ def test_sales_customer_owner_can_adjust_quote_fx_with_revision_and_recalculatio
         assert engineering.status_code == 200, engineering.text
         assert engineering.json()["calculation"]["totals"]["hardware_hkd"] == "20.0000"
 
-        forbidden = client.put(
-            f"/api/internal-quotes/{quote_id}/reference-snapshot/fx",
-            json={"revision": 1, "rmb_hkd": "0.9", "hkd_usd": "7.9"},
-        )
-        assert forbidden.status_code == 403
-
-        logout(client)
-        login(client, "iq_fx_owner", "sales_customer_owner", "sales-business")
         updated = client.put(
             f"/api/internal-quotes/{quote_id}/reference-snapshot/fx",
             json={"revision": 1, "rmb_hkd": "0.9", "hkd_usd": "7.9"},
         )
         assert updated.status_code == 200, updated.text
+
+        logout(client)
+        login(client, "iq_fx_owner", "sales_customer_owner", "sales-business")
         result = updated.json()
         assert result["header_revision"] == 2
         assert result["reference_snapshot_id"] != old_reference_id
@@ -284,6 +279,80 @@ def test_sales_customer_owner_can_adjust_quote_fx_with_revision_and_recalculatio
             json={"revision": 2, "rmb_hkd": "0.851", "hkd_usd": "7.9"},
         )
         assert excessive_precision.status_code == 422
+
+        sales_updated = client.put(
+            f"/api/internal-quotes/{quote_id}/reference-snapshot/fx",
+            json={"revision": 2, "rmb_hkd": "0.91", "hkd_usd": "7.9"},
+        )
+        assert sales_updated.status_code == 200, sales_updated.text
+        assert sales_updated.json()["header_revision"] == 3
+
+
+def test_engineering_can_set_quote_material_prices_and_production_cannot(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_material_owner", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="MATERIAL-UPDATE", participating_sections=ALL_SECTION_CODES),
+        )
+        assert created.status_code == 201, created.text
+        quote = created.json()
+        quote_id = quote["id"]
+        old_reference_id = quote["reference_snapshot_id"]
+
+        logout(client)
+        login(client, "iq_material_engineer", "engineer", "engineering")
+        molding = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/molding",
+            json={"revision": 1, "payload": MOLDING_PAYLOAD},
+        )
+        assert molding.status_code == 200, molding.text
+        assert molding.json()["calculation"]["totals"]["total_hkd"] == "26.9100"
+
+        updated = client.put(
+            f"/api/internal-quotes/{quote_id}/reference-snapshot/materials",
+            json={
+                "revision": 1,
+                "material_prices": [
+                    {"material": "ABS", "grade": "750SW", "price_hkd_lb": "20"},
+                ],
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        result = updated.json()
+        assert result["header_revision"] == 2
+        assert result["reference_snapshot_id"] != old_reference_id
+        recalculated = next(
+            section for section in result["sections"] if section["department"] == "molding"
+        )
+        assert recalculated["calculation"]["totals"]["total_hkd"] == "50.6000"
+
+        reference = client.get(
+            f"/api/internal-quotes/{quote_id}/reference-snapshot"
+        )
+        assert reference.status_code == 200
+        assert reference.json()["source_type"] == "manual_materials"
+        assert reference.json()["snapshot"]["material_prices"] == {"ABS|750SW": "20"}
+
+        timeline = client.get(f"/api/internal-quotes/{quote_id}/timeline")
+        assert timeline.status_code == 200
+        assert any(
+            event["action"] == "reference_materials_update"
+            for event in timeline.json()["business_events"]
+        )
+
+        logout(client)
+        login(client, "iq_material_molding", "molding_clerk", "molding")
+        forbidden = client.put(
+            f"/api/internal-quotes/{quote_id}/reference-snapshot/materials",
+            json={
+                "revision": 2,
+                "material_prices": [
+                    {"material": "ABS", "grade": "750SW", "price_hkd_lb": "21"},
+                ],
+            },
+        )
+        assert forbidden.status_code == 403
 
 
 def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monkeypatch):

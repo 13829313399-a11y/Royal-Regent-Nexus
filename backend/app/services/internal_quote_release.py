@@ -38,14 +38,19 @@ from app.services.internal_quote import (
     SECTION_NAMES,
     _add_audit,
     _add_notification,
+    _add_revision,
+    _can_self_review_own_quote,
     _check_revision,
     _cost_context,
     _ensure_active,
     _get_quote,
     _json_object,
     _mark_quote_notifications_handled,
+    ensure_quote_business_reviewer,
     ensure_quote_permission,
     ensure_quote_read,
+    get_quote_batch_rows,
+    is_whole_quote_review,
     quote_to_out,
 )
 from app.services.internal_quote_artifacts import create_controlled_export
@@ -144,6 +149,90 @@ def _release_manifest(
     return manifest
 
 
+def _whole_review_required_sections(
+    sections: list[InternalQuoteSection],
+) -> list[InternalQuoteSection]:
+    return [section for section in sections if section.is_required]
+
+
+def _validate_whole_review_submission(
+    sections: list[InternalQuoteSection],
+) -> list[InternalQuoteSection]:
+    required = _whole_review_required_sections(sections)
+    incomplete = [
+        section.department
+        for section in required
+        if not section.filled_at or not _json_object(section.payload_json)
+    ]
+    invalid = [
+        section.department
+        for section in required
+        if section.calculation_status != "valid" or section.dependency_status != "current"
+    ]
+    locked = [
+        section.department
+        for section in required
+        if section.status not in {"draft", "rejected"}
+    ]
+    if incomplete or invalid or locked:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "全部参与部门完成填写且计算有效后才能提交整单审核",
+                "incomplete_sections": incomplete,
+                "invalid_calculations": invalid,
+                "locked_sections": locked,
+            },
+        )
+    return required
+
+
+def _whole_review_manifest(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+) -> dict[str, Any]:
+    required = _whole_review_required_sections(sections)
+    invalid = [
+        section.department
+        for section in required
+        if section.status != "pending_review"
+        or section.calculation_status != "valid"
+        or section.dependency_status != "current"
+    ]
+    if invalid:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "整单审核中的部门状态或计算快照已变化，请退回后重新提交",
+                "invalid_sections": invalid,
+            },
+        )
+    manifest: dict[str, Any] = {
+        "schema_version": "internal-quote-whole-review-v1",
+        "workflow_mode": "whole_quote_review",
+        "quote_id": quote.id,
+        "factory_id": quote.factory_id,
+        "workshop_code": quote.workshop_code,
+        "quote_no": quote.quote_no,
+        "version_label": quote.version_label,
+        "product_name": quote.product_name,
+        "customer": quote.customer,
+        "qty": quote.qty,
+        "target_customer_price": quote.target_customer_price,
+        "business_owner_id": quote.business_owner_id,
+        "header_revision": quote.header_revision,
+        "formula_version": quote.formula_version,
+        "reference_snapshot_id": quote.reference_snapshot_id,
+        "section_revisions": {section.department: section.revision for section in sections},
+        "section_statuses": {section.department: section.status for section in sections},
+        "section_calculation_hashes": {
+            section.department: section.calculation_hash for section in sections
+        },
+    }
+    manifest["manifest_sha256"] = content_hash(manifest)
+    return manifest
+
+
 def _review_out(record: InternalQuoteFinalReview) -> InternalQuoteFinalReviewOut:
     return InternalQuoteFinalReviewOut(
         id=record.id,
@@ -167,6 +256,309 @@ def _review_out(record: InternalQuoteFinalReview) -> InternalQuoteFinalReviewOut
     )
 
 
+def _submit_whole_quote_review(
+    db: Session,
+    quote: InternalQuote,
+    payload: InternalQuoteRevisionRequest,
+    user: AuthContext,
+    request: Request | None,
+) -> InternalQuoteFinalReleaseOut:
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:final_submit",
+        quote.factory_id,
+        ("sales-business",),
+    )
+    selected_quote = quote
+    batch_quotes = get_quote_batch_rows(db, quote)
+    root_quote = next((item for item in batch_quotes if item.batch_position == 1), batch_quotes[0])
+    reviewer_ids = {item.business_owner_id for item in batch_quotes}
+    if len(reviewer_ids) != 1:
+        raise HTTPException(status_code=409, detail="同批产品的整单审核人不一致，请先统一审核人")
+    _ensure_active(selected_quote)
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+    prepared: list[tuple[InternalQuote, list[InternalQuoteSection], list[InternalQuoteSection]]] = []
+    incomplete_products: list[str] = []
+    for item in batch_quotes:
+        _ensure_active(item)
+        if item.status != "ready_for_final_review":
+            incomplete_products.append(item.product_name)
+            continue
+        sections = _quote_sections(db, item.id)
+        required = _validate_whole_review_submission(sections)
+        prepared.append((item, sections, required))
+    if incomplete_products:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "批次内全部产品完成填写后才能一次提交整批审核",
+                "incomplete_products": incomplete_products,
+            },
+        )
+
+    timestamp = now_text()
+    manifests: dict[str, dict[str, Any]] = {}
+    for item, sections, required in prepared:
+        for section in required:
+            old_revision = section.revision
+            section.status = "pending_review"
+            section.revision += 1
+            section.submitted_by = user.display_name
+            section.submitted_by_id = user.id
+            section.submitted_at = timestamp
+            section.reviewed_by = ""
+            section.reviewed_at = ""
+            section.review_comment = ""
+            section.updated_at = timestamp
+            _add_revision(db, item, section, user, reason="whole_quote_submit")
+            _add_audit(
+                db,
+                item,
+                user,
+                "whole_review_lock_section",
+                department=section.department,
+                old_revision=old_revision,
+                new_revision=section.revision,
+                request=request,
+            )
+
+        old_header_revision = item.header_revision
+        item.header_revision += 1
+        manifest = _whole_review_manifest(item, sections)
+        manifests[item.id] = manifest
+        item.status = "final_reviewing"
+        item.final_release_status = "pending"
+        item.final_submission_revision += 1
+        item.final_submission_manifest_json = canonical_json(manifest)
+        item.final_submitted_by = user.id
+        item.final_submitted_by_name = user.display_name
+        item.final_submitted_at = timestamp
+        item.final_reviewed_by = ""
+        item.final_reviewed_by_name = ""
+        item.final_reviewed_at = ""
+        item.final_review_comment = ""
+        item.final_release_invalidated_at = ""
+        item.final_release_invalidation_reason = ""
+        item.updated_at = timestamp
+        _add_audit(
+            db,
+            item,
+            user,
+            "whole_review_submit",
+            department="",
+            old_revision=old_header_revision,
+            new_revision=item.header_revision,
+            detail=json.dumps(
+                {
+                    "submission_revision": item.final_submission_revision,
+                    "manifest_sha256": manifest["manifest_sha256"],
+                    "batch_id": item.batch_id or item.id,
+                    "batch_size": len(batch_quotes),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            request=request,
+        )
+        _mark_quote_notifications_handled(
+            db,
+            item,
+            events=FINAL_SUBMIT_NOTIFICATION_EVENTS,
+        )
+    _add_notification(
+        db,
+        root_quote,
+        title="内部报价批次待整单审核",
+        message=(
+            f"{root_quote.batch_quote_no or root_quote.quote_no} 的 {len(batch_quotes)} 款产品已完成填写，"
+            f"请 {root_quote.business_owner_name} 一次审核整批"
+        ),
+        event="whole_quote_submitted",
+        target_user_id=root_quote.business_owner_id,
+        department="",
+        extra={
+            "batch_id": root_quote.batch_id or root_quote.id,
+            "batch_size": len(batch_quotes),
+            "manifest_sha256": manifests[root_quote.id]["manifest_sha256"],
+        },
+    )
+    db.commit()
+    db.refresh(selected_quote)
+    return InternalQuoteFinalReleaseOut(quote=quote_to_out(db, selected_quote))
+
+
+def _review_whole_quote(
+    db: Session,
+    quote: InternalQuote,
+    payload: InternalQuoteFinalReviewRequest,
+    user: AuthContext,
+    request: Request | None,
+) -> InternalQuoteFinalReleaseOut:
+    selected_quote = quote
+    batch_quotes = get_quote_batch_rows(db, quote)
+    root_quote = next((item for item in batch_quotes if item.batch_position == 1), batch_quotes[0])
+    reviewer_ids = {item.business_owner_id for item in batch_quotes}
+    if len(reviewer_ids) != 1:
+        raise HTTPException(status_code=409, detail="同批产品的整单审核人不一致，请先统一审核人")
+    ensure_quote_business_reviewer(db, user, root_quote)
+    if any(item.final_submitted_by == user.id for item in batch_quotes) and not _can_self_review_own_quote(user, root_quote):
+        raise HTTPException(status_code=403, detail="整单提交人不能审核自己的报价")
+    _ensure_active(selected_quote)
+    _check_revision(selected_quote.header_revision, payload.revision, "报价头")
+    prepared: list[tuple[InternalQuote, list[InternalQuoteSection], dict[str, Any]]] = []
+    for item in batch_quotes:
+        _ensure_active(item)
+        if item.status != "final_reviewing" or item.final_release_status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"产品“{item.product_name}”不在整单审核中，不能处理整批",
+            )
+        sections = _quote_sections(db, item.id)
+        live_manifest = _whole_review_manifest(item, sections)
+        submitted_manifest = _json_object(item.final_submission_manifest_json)
+        if live_manifest.get("manifest_sha256") != submitted_manifest.get("manifest_sha256"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": f"产品“{item.product_name}”提交后的 revision 或计算快照已变化，请退回后重新提交",
+                    "submitted_manifest_sha256": submitted_manifest.get("manifest_sha256", ""),
+                    "current_manifest_sha256": live_manifest.get("manifest_sha256", ""),
+                },
+            )
+        prepared.append((item, sections, submitted_manifest))
+
+    timestamp = now_text()
+    section_status = "approved" if payload.decision == "approve" else "rejected"
+    selected_review: InternalQuoteFinalReview | None = None
+    for item, sections, submitted_manifest in prepared:
+        for section in _whole_review_required_sections(sections):
+            old_revision = section.revision
+            section.status = section_status
+            section.revision += 1
+            section.reviewed_by = user.display_name
+            section.reviewed_at = timestamp
+            section.review_comment = payload.reason
+            section.updated_at = timestamp
+            _add_revision(
+                db,
+                item,
+                section,
+                user,
+                reason=payload.reason or f"whole_quote_{payload.decision}",
+            )
+            _add_audit(
+                db,
+                item,
+                user,
+                "whole_review_approve_section" if payload.decision == "approve" else "whole_review_reject_section",
+                department=section.department,
+                old_revision=old_revision,
+                new_revision=section.revision,
+                reason=payload.reason,
+                request=request,
+            )
+
+        old_header_revision = item.header_revision
+        item.header_revision += 1
+        item.final_reviewed_by = user.id
+        item.final_reviewed_by_name = user.display_name
+        item.final_reviewed_at = timestamp
+        item.final_review_comment = payload.reason
+        item.updated_at = timestamp
+        if payload.decision == "approve":
+            item.status = "fully_approved"
+            item.final_release_status = "approved"
+            item.final_release_revision += 1
+        else:
+            item.status = "rejected"
+            item.final_release_status = "rejected"
+
+        review = InternalQuoteFinalReview(
+            id=f"IQFINAL-{uuid4().hex}",
+            quote_id=item.id,
+            factory_id=item.factory_id,
+            submission_revision=item.final_submission_revision,
+            decision=payload.decision,
+            header_revision=old_header_revision,
+            section_revisions_json=canonical_json(submitted_manifest.get("section_revisions", {})),
+            release_manifest_json=canonical_json(submitted_manifest),
+            release_manifest_sha256=str(submitted_manifest.get("manifest_sha256", "")),
+            submitted_by=item.final_submitted_by,
+            submitted_by_name=item.final_submitted_by_name,
+            submitted_at=item.final_submitted_at,
+            actor_id=user.id,
+            actor_name=user.display_name,
+            reason=payload.reason,
+            created_at=timestamp,
+        )
+        db.add(review)
+        if item.id == selected_quote.id:
+            selected_review = review
+        _add_audit(
+            db,
+            item,
+            user,
+            "whole_review_approve" if payload.decision == "approve" else "whole_review_reject",
+            department="",
+            old_revision=old_header_revision,
+            new_revision=item.header_revision,
+            reason=payload.reason,
+            detail=json.dumps(
+                {
+                    "submission_revision": item.final_submission_revision,
+                    "release_revision": item.final_release_revision,
+                    "manifest_sha256": submitted_manifest.get("manifest_sha256", ""),
+                    "batch_id": item.batch_id or item.id,
+                    "batch_size": len(batch_quotes),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            request=request,
+        )
+        _mark_quote_notifications_handled(
+            db,
+            item,
+            events=FINAL_REVIEW_NOTIFICATION_EVENTS,
+        )
+    if payload.decision == "reject":
+        _add_notification(
+            db,
+            root_quote,
+            title="内部报价整批审核已退回",
+            message=f"{root_quote.batch_quote_no or root_quote.quote_no} 的 {len(batch_quotes)} 款已全部退回并解锁：{payload.reason}",
+            event="final_release_rejected",
+            target_user_id=root_quote.final_submitted_by,
+            department="",
+            reason=payload.reason,
+            extra={"batch_id": root_quote.batch_id or root_quote.id, "batch_size": len(batch_quotes)},
+        )
+    else:
+        _add_notification(
+            db,
+            root_quote,
+            title="内部报价整批审核通过",
+            message=(
+                f"{root_quote.batch_quote_no or root_quote.quote_no} 的 {len(batch_quotes)} 款已由 "
+                f"{user.display_name} 一次审核通过，可分别生成正式报价输出"
+            ),
+            event="final_release_approved",
+            target_user_id=root_quote.final_submitted_by,
+            department="",
+            extra={"batch_id": root_quote.batch_id or root_quote.id, "batch_size": len(batch_quotes)},
+        )
+    db.commit()
+    db.refresh(selected_quote)
+    if selected_review is None:
+        raise RuntimeError("整批审核未生成当前产品的审核记录")
+    db.refresh(selected_review)
+    return InternalQuoteFinalReleaseOut(
+        quote=quote_to_out(db, selected_quote),
+        review=_review_out(selected_review),
+    )
+
+
 def submit_final_release(
     db: Session,
     quote_id: str,
@@ -175,6 +567,8 @@ def submit_final_release(
     request: Request | None = None,
 ) -> InternalQuoteFinalReleaseOut:
     quote = _get_quote(db, quote_id)
+    if is_whole_quote_review(quote):
+        return _submit_whole_quote_review(db, quote, payload, user, request)
     ensure_quote_permission(
         db,
         user,
@@ -254,6 +648,8 @@ def review_final_release(
     request: Request | None = None,
 ) -> InternalQuoteFinalReleaseOut:
     quote = _get_quote(db, quote_id)
+    if is_whole_quote_review(quote):
+        return _review_whole_quote(db, quote, payload, user, request)
     sections = _quote_sections(db, quote.id)
     if payload.decision == "approve":
         ensure_quote_permission(

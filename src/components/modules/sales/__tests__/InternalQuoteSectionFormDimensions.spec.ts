@@ -80,6 +80,16 @@ describe('InternalQuoteSectionForm dimension units', () => {
     expect(wrapper.get('[aria-label="业务部测试费单价 USD 1"]').text()).toBe('0.2500')
     expect(wrapper.get('[aria-label="业务部测试费单价 USD 2"]').text()).toBe('0.1250')
 
+    await wrapper.get('input[aria-label="启用测试费计算"]').setValue(false)
+    expect(payload.testing_fee_enabled).toBe(false)
+    expect(wrapper.text()).toContain('本单不计算测试费')
+    expect(wrapper.find('input[aria-label="业务部测试费用 USD"]').exists()).toBe(false)
+    expect(payload.testing_fee_total_usd).toBe(1250)
+    expect(payload.testing_fee_moqs).toEqual([5000, 10000])
+
+    await wrapper.get('input[aria-label="启用测试费计算"]').setValue(true)
+    expect(wrapper.get('[aria-label="业务部测试费单价 USD 2"]').text()).toBe('0.1250')
+
     await wrapper.get('button[aria-label="删除业务部测试费 MOQ 2"]').trigger('click')
     expect(payload.testing_fee_moqs).toEqual([5000])
   })
