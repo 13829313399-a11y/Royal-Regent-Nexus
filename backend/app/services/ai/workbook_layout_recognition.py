@@ -38,6 +38,13 @@ PROMPT_VERSION = "injection-plan-layout-v1"
 TOOL_NAME = "workbook.submit_injection_plan_layout"
 MAX_RECOGNITION_PACKET_CHARS = 750_000
 MAX_TOOL_ARGUMENT_CHARS = 100_000
+_JSON_CONTAINER_ARGUMENTS: dict[str, type[dict | list]] = {
+    "plan_sheet": dict,
+    "row_layout": dict,
+    "field_mappings": list,
+    "shift_grid": dict,
+    "warnings": list,
+}
 
 
 class WorkbookLayoutRecognitionError(ValueError):
@@ -50,6 +57,30 @@ class WorkbookLayoutRecognitionError(ValueError):
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _normalize_tool_arguments(arguments_json: str) -> str:
+    """Decode one provider-added JSON layer on known container fields only."""
+    try:
+        payload = json.loads(arguments_json)
+    except json.JSONDecodeError:
+        return arguments_json
+    if not isinstance(payload, dict):
+        return arguments_json
+
+    changed = False
+    for key, expected_type in _JSON_CONTAINER_ARGUMENTS.items():
+        value = payload.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, expected_type):
+            payload[key] = decoded
+            changed = True
+    return _json(payload) if changed else arguments_json
 
 
 def _column_number(column: str) -> int:
@@ -65,6 +96,16 @@ def _prompt(packet: AIWorkbookRecognitionPacketV1, repair_error: str = "") -> st
         "你只能调用 workbook.submit_injection_plan_layout，且只能引用数据包中真实存在的 Sheet、"
         "列和表头单元格。不要逐行抄写订单，不要生成业务 ID、任务、机台、日期或表达式。"
         "请只识别 PLANNED_SCHEDULE 的布局；字段只能使用工具 Schema 中的受控规范字段和转换器。"
+        "工具参数的根对象只允许 schema_version、document_kind、source_sha256、plan_sheet、"
+        "row_layout、field_mappings、shift_grid、warnings、overall_confidence。"
+        "plan_sheet 只允许 sheet_name、header_rows、data_start_row、data_end_row；"
+        "row_layout 只允许 layout_type、machine_code_strategy、machine_header_rule、"
+        "machine_header_columns、task_identity_fields、backlog_rule；field_mappings 每项只允许"
+        "canonical_field、source_column、header_cell、transformer、confidence、reason；"
+        "shift_grid 只允许 enabled、start_column、end_column、day_header_row、shift_header_row、"
+        "calendar_month、day_shift_aliases、quantity_semantics。嵌套对象和数组必须保持 JSON 类型，"
+        "不要再次编码成字符串。至少映射 machine_code、mold_no、order_no、order_quantity、"
+        "completed_quantity、planned_start、planned_finish。"
     )
     if repair_error:
         instruction += (
@@ -208,8 +249,11 @@ async def recognize_workbook_layout(
             validation_error = "模型工具参数超过安全上限"
         else:
             try:
-                model_layout = AIModelInjectionPlanLayout.model_validate_json(
+                normalized_arguments = _normalize_tool_arguments(
                     response.tool_calls[0].arguments_json
+                )
+                model_layout = AIModelInjectionPlanLayout.model_validate_json(
+                    normalized_arguments
                 )
                 validate_layout_sources(model_layout, packet)
             except ValueError as exc:
