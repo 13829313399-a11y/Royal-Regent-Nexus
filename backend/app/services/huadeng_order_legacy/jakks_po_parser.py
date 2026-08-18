@@ -146,31 +146,131 @@ def _validate_lines(lines: list[dict[str, Any]]) -> list[str]:
     return warnings
 
 
+def _parse_standard_contract_pdf_fields(text: str) -> dict[str, Any]:
+    """Read the header fields from JAKKS' native text-layer CONTRACT PDF."""
+    fields = _parse_text_fields(text)
+    customer_po_match = re.search(
+        r"Customer\s*PO\s*[:：]\s*([^\s\r\n]+)",
+        text,
+        re.I,
+    )
+    confirmation_match = re.search(
+        r"Confirmation\s*No\.?\s*[:：]\s*([^\r\n]+)",
+        text,
+        re.I,
+    )
+    confirmation_no = ""
+    country = ""
+    if confirmation_match:
+        confirmation_text = _clean(confirmation_match.group(1))
+        parsed_confirmation = re.match(r"([A-Z0-9./-]+)(?:\s+(.+))?", confirmation_text, re.I)
+        if parsed_confirmation:
+            confirmation_no = parsed_confirmation.group(1)
+            country = _clean(parsed_confirmation.group(2) or "")
+
+    consignee_match = re.search(
+        r"Ultimate\s*Consignee\s*Name\s*[:：]\s*([^\r\n]+)",
+        text,
+        re.I,
+    )
+    customer = _clean(consignee_match.group(1)) if consignee_match else ""
+    if customer and country and country.upper() not in customer.upper():
+        customer = f"{customer} {country}"
+
+    fields.update({
+        "customer_po": _clean(customer_po_match.group(1)) if customer_po_match else "",
+        "confirmation_no": confirmation_no,
+        "country": country,
+    })
+    if customer:
+        fields["customer"] = customer
+    return fields
+
+
+def _parse_standard_contract_pdf_rows(text: str) -> list[dict[str, Any]]:
+    """Parse native JAKKS CONTRACT rows whose currency marker follows the amount."""
+    row_pattern = re.compile(
+        r"(?m)^\s*([A-Z0-9]{5,}(?:-[A-Z0-9]+){0,6})\s+(.+?)\s+"
+        r"([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+USD\s*$",
+        re.I,
+    )
+    matches = list(row_pattern.finditer(text))
+    lines: list[dict[str, Any]] = []
+    for index, match in enumerate(matches):
+        block_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        block = text[match.end():block_end]
+        # The last item block includes the document totals and terms.  Metadata
+        # searches below are deliberately label-bound so they cannot consume them.
+        cartons_match = re.search(
+            r"Customer\s*Item\s*No\.?\s*:[^\r\n]*?([\d,.]+)\s+CA\b",
+            block,
+            re.I,
+        )
+        outer_pack_match = re.search(r"Outer\s*Pack\s*:\s*([\d,.]+)", block, re.I)
+        request_date_match = re.search(
+            r"Request\s*Date\s*:\s*([^\r\n]+)",
+            block,
+            re.I,
+        )
+        notes_match = re.search(r"(?m)^\s*NOTES\s*:\s*([^\r\n]+)", block, re.I)
+        description = _clean(match.group(2))
+        lines.append({
+            "item_no": match.group(1).upper(),
+            "product_name": description,
+            "po_description": description,
+            "product_name_source": "PO英文品名",
+            "quantity": _number(match.group(3)),
+            "unit": "PCS",
+            "inner_pack": "",
+            "outer_pack": _number(outer_pack_match.group(1)) if outer_pack_match else "",
+            "cartons": _number(cartons_match.group(1)) if cartons_match else "",
+            "unit_price_usd": _number(match.group(4)),
+            "total_usd": _number(match.group(5)),
+            "ship_date": (
+                _english_date(request_date_match.group(1))
+                if request_date_match
+                else ""
+            ),
+            "special_note": _clean(notes_match.group(1)) if notes_match else "",
+        })
+    return lines
+
+
 def _parse_pdf_po(path: Path) -> dict[str, Any]:
     text, used_ocr = extract_text(path)
-    fields = _parse_text_fields(text)
-    lines = []
+    is_standard_contract = bool(
+        re.search(r"JAKKS\s+PACIFIC", text, re.I)
+        and re.search(r"\bCONTRACT\b", text, re.I)
+        and re.search(r"ITEM\s+NUMBER", text, re.I)
+    )
+    fields = (
+        _parse_standard_contract_pdf_fields(text)
+        if is_standard_contract
+        else _parse_text_fields(text)
+    )
+    lines = _parse_standard_contract_pdf_rows(text) if is_standard_contract else []
     row_pattern = re.compile(
         r"(?m)^\s*([A-Z0-9]+(?:-[A-Z0-9]+){1,6})\s+(.+?)\s+"
         r"([\d,.]+)\s+(KGM|KG|PCE|PCS)\s+US?[$S]\s*([\d,.]+)\s+US?[$S]\s*([\d,.]+)\s*$",
         re.I,
     )
-    for match in row_pattern.finditer(text):
-        qty = _number(match.group(3))
-        unit_price = _number(match.group(5))
-        amount = _number(match.group(6))
-        description = _clean(match.group(2))
-        lines.append({
-            "item_no": match.group(1).upper(),
-            "product_name": _product_name_from_description(description),
-            "po_description": description,
-            "product_name_source": "PO中文品名",
-            "quantity": qty,
-            "unit": match.group(4).upper(),
-            "unit_price_usd": unit_price,
-            "total_usd": amount,
-            "special_note": "",
-        })
+    if not lines:
+        for match in row_pattern.finditer(text):
+            qty = _number(match.group(3))
+            unit_price = _number(match.group(5))
+            amount = _number(match.group(6))
+            description = _clean(match.group(2))
+            lines.append({
+                "item_no": match.group(1).upper(),
+                "product_name": _product_name_from_description(description),
+                "po_description": description,
+                "product_name_source": "PO中文品名",
+                "quantity": qty,
+                "unit": match.group(4).upper(),
+                "unit_price_usd": unit_price,
+                "total_usd": amount,
+                "special_note": "",
+            })
     if not lines:
         # OCR often breaks one table row into two lines.  Join adjacent lines and retry.
         joined = re.sub(r"\n(?!(?:[A-Z0-9]+(?:-[A-Z0-9]+){1,6})\b)", " ", text)
@@ -188,6 +288,10 @@ def _parse_pdf_po(path: Path) -> dict[str, Any]:
                 "special_note": "",
             })
     warnings = []
+    if is_standard_contract and lines:
+        warnings.append(
+            "已识别 Jakks 标准 CONTRACT PDF；关键字段已按标签与产品块定位并执行数量×单价复核。"
+        )
     if used_ocr:
         warnings.append("扫描版 PDF 已使用 OCR；合同号、货号、数量和金额需做算术复核。")
     if not fields["contract_no"]:

@@ -864,6 +864,7 @@ def append_records_to_workbook(
     sheet_names: Sequence[str] = (),
     field_formats: Mapping[str, str] | None = None,
     formula_fallback_fields: Collection[str] = (),
+    record_overrides_formula_fields: Collection[str] = (),
     new_row_font_color: str = "",
     group_key_factory: Callable[[Mapping[str, Any]], str] | None = None,
     group_row_values_factory: Callable[[Mapping[str, Any], int], Mapping[int, Any]] | None = None,
@@ -1065,9 +1066,16 @@ def append_records_to_workbook(
                 record = payload
                 for col_no, field in column_map.items():
                     cell = target.cell(row_no, col_no)
-                    # A template formula is authoritative for calculated fields.
+                    # A template formula is authoritative for calculated fields unless
+                    # this customer explicitly identifies the field as PO-owned input.
                     has_formula = isinstance(cell.value, str) and cell.value.startswith("=")
-                    if has_formula and field in formula_fallback_fields:
+                    if has_formula and field in record_overrides_formula_fields:
+                        inherited_number_format = cell.number_format
+                        safe_value = _safe_record_value(field, record.get(field, ""))
+                        cell.value = safe_value
+                        if isinstance(safe_value, datetime) and inherited_number_format == "General":
+                            cell.number_format = "yyyy-mm-dd"
+                    elif has_formula and field in formula_fallback_fields:
                         fallback = _safe_record_value(field, record.get(field, ""))
                         if fallback in (None, ""):
                             fallback_formula = '""'
