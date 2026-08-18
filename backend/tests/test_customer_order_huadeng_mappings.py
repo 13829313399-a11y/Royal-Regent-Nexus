@@ -177,6 +177,98 @@ def test_jakks_blocks_change_orders_and_dedupes_batch(monkeypatch) -> None:
     assert any("完全重复" in warning for warning in prepared.warnings)
 
 
+def test_jakks_native_contract_pdf_accepts_plain_item_and_trailing_usd(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract_text = """CONTRACT
+JAKKS PACIFIC (H.K. ) LIMITED
+Contract #: 811626
+Printed Date: 11-Aug-2026 Order Date: 11-Aug-2026
+Customer PO: 236856
+Confirmation No: 67078 UNITED STATES
+Ultimate Consignee Name: JAKKS PACIFIC, INC.
+ITEM NUMBER DESCRIPTION QUANTITY PRICE EXTENDED PRICE
+10022J CHARMING CUPID CUTIE PLUSH 5L 5L 100 3.0670 306.70 USD
+Customer Item No.: 10022J 25 CA
+UPC: 199460000214 Outer Pack: 4
+Stock #: 10022J
+Country of Origin: CHINA Line#: 1.000 Request Date: 13-Oct-2026
+NOTES: OPEN WINDOW BOX
+TOTAL USD 306.70
+"""
+    monkeypatch.setattr(
+        service.jakks_po_parser,
+        "extract_text",
+        lambda _path: (contract_text, False),
+    )
+
+    parsed = service.jakks_po_parser.parse_po(tmp_path / "JDCUS-SI67078-OK811626-HE.pdf")
+
+    assert parsed["contract_no"] == "811626"
+    assert parsed["order_date"] == "2026-08-11"
+    assert parsed["customer_po"] == "236856"
+    assert parsed["confirmation_no"] == "67078"
+    assert parsed["country"] == "UNITED STATES"
+    assert parsed["customer"] == "JAKKS PACIFIC, INC. UNITED STATES"
+    assert parsed["source_format"] == "pdf"
+    assert parsed["used_ocr"] is False
+    assert len(parsed["lines"]) == 1
+    line = parsed["lines"][0]
+    assert line == {
+        "item_no": "10022J",
+        "product_name": "CHARMING CUPID CUTIE PLUSH 5L 5L",
+        "po_description": "CHARMING CUPID CUTIE PLUSH 5L 5L",
+        "product_name_source": "PO英文品名",
+        "quantity": 100,
+        "unit": "PCS",
+        "inner_pack": "",
+        "outer_pack": 4,
+        "cartons": 25,
+        "unit_price_usd": 3.067,
+        "total_usd": 306.7,
+        "ship_date": "2026-10-13",
+        "special_note": "OPEN WINDOW BOX",
+    }
+    assert any("标准 CONTRACT PDF" in warning for warning in parsed["warnings"])
+
+
+def test_jakks_export_overwrites_copied_po_field_formula(tmp_path: Path) -> None:
+    schedule = _workbook_bytes(
+        "26-Jakks排货表",
+        {1: "来单日期", 5: "客户PO", 6: "合同号", 7: "客名", 9: "货号", 10: "产品名称", 11: "数量"},
+        {5: "OLD", 6: "OLD", 7: "JAKKS", 9: "J-OLD", 10: "旧品名", 11: "=5000-4999"},
+    )
+    line = {
+        "order_date": "2026-08-18", "customer_po": "236856", "contract_no": "811626",
+        "customer": "JAKKS PACIFIC, INC. UNITED STATES", "item_no": "10022J",
+        "product_name": "CHARMING CUPID CUTIE PLUSH 5L 5L", "quantity": 100,
+        "unit": "PCS", "unit_price_usd": 3.067, "total_usd": 306.7,
+        "source_file": "JDCUS-SI67078-OK811626-HE.pdf",
+    }
+    output = tmp_path / "jakks-formula-override.xlsx"
+
+    service._export_prepared(
+        customer_code="jakks",
+        prepared=service.PreparedBatch(
+            [line], [], "26-Jakks排货表总 Ai",
+            export_payload={"filename": "Jakks批量", "lines": [line]},
+        ),
+        schedule_file_name="2026年Jakks排货表.xlsx",
+        schedule_content=schedule,
+        output_path=output,
+    )
+
+    workbook = openpyxl.load_workbook(output, data_only=False)
+    try:
+        worksheet = workbook["26-Jakks排货表"]
+        assert worksheet.cell(3, 6).value == "811626"
+        assert worksheet.cell(3, 9).value == "10022J"
+        assert worksheet.cell(3, 11).value == 100
+    finally:
+        workbook.close()
+
+
 def test_simba_prefers_same_name_excel_and_inherits_schedule(monkeypatch) -> None:
     parsed_names: list[str] = []
     monkeypatch.setattr(

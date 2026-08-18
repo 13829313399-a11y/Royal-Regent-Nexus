@@ -1077,6 +1077,13 @@ def _export_prepared(
             jakks_new_order_writer.ALIASES,
             filename=schedule_file_name,
             sheet_names=(prepared.sheet_name, "Sheet1"),
+            record_overrides_formula_fields=(
+                "order_date", "contact", "customer_po", "confirmation_no", "contract_no",
+                "customer", "version", "item_no", "product_name", "po_description",
+                "product_name_source", "quantity", "unit", "inner_pack", "outer_pack",
+                "cartons", "special_notes", "ship_date", "unit_price_hkd",
+                "unit_price_usd", "total_hkd", "total_usd", "country", "source_file",
+            ),
         )
         return
     if customer_code == "simba":
