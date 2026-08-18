@@ -2103,20 +2103,23 @@ def submit_password_reset_request(
         "matched_user_id": matched_user.id if matched_user else "",
     }
 
-    db.add(
-        SystemNotification(
-            id=notification_id,
-            target_permission="system:user_manage",
-            target_factory_id=target_factory_id,
-            target_department=target_department,
-            type="password_reset",
-            title="密码重置待处理",
-            message="收到新的密码重置申请，请进入账号管理页核验申请资料。",
-            payload_json=json.dumps(payload_json, ensure_ascii=False),
-            status="unread",
-            created_at=now,
-        )
+    notification = SystemNotification(
+        id=notification_id,
+        target_permission="system:user_manage",
+        target_factory_id=target_factory_id,
+        target_department=target_department,
+        type="password_reset",
+        title="密码重置待处理",
+        message="收到新的密码重置申请，请进入账号管理页核验申请资料。",
+        payload_json=json.dumps(payload_json, ensure_ascii=False),
+        status="unread",
+        created_at=now,
     )
+    db.add(notification)
+    # The reset request owns a foreign key to this notification. Flush the
+    # notification first so SQLAlchemy cannot issue the link UPDATE before the
+    # referenced row exists on databases with immediate FK enforcement.
+    db.flush()
     reset_request.notification_id = notification_id
     add_auth_audit(
         db,
