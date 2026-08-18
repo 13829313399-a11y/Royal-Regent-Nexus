@@ -183,6 +183,19 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       targetTemplate: 'HUAXING_SHUSHUPAPA_NEW_ORDER_V1',
       ruleDescription: '严格隔离客户数据并按 PO 修订版、当前及已走货排期去重；验货日期为走货期前 7 天。',
     },
+    {
+      code: 'disney',
+      name: '迪士尼',
+      version: 'V1',
+      poAccept: '.pdf',
+      poExtensions: ['.pdf'],
+      scheduleAccept: '.xlsx,.xlsm',
+      scheduleExtensions: ['.xlsx', '.xlsm'],
+      poDescription: 'DLR、WDW、TDSE、国际 F 单及日本 V 单 PDF',
+      templateDescription: '华兴迪士尼 ITEM表 / 正单评审表 / 接单表',
+      targetTemplate: 'HUAXING_DISNEY_SCHEDULE_APPEND_V2',
+      ruleDescription: '按货号分组写入 ITEM表并生成分组合计，同步新增正单评审表和接单表公式行；验货期为走货期前 5 天，日期码及出厂价保留人工补录。',
+    },
   ],
   'huakang-a': [
     {
@@ -336,7 +349,7 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
 }
 
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
-  'edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa',
+  'edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'disney',
   'casdon', 'jakks', 'simba', 'spin', 'spin-master',
   'index', 'jazwares', 'strottman', 'jp',
 ])
@@ -1994,7 +2007,7 @@ onBeforeUnmount(() => {
               <div><dt>输入模板</dt><dd>{{ previewBatch?.input_template }}</dd></div>
               <div><dt>输出模板</dt><dd>{{ previewBatch?.target_template }}</dd></div>
               <div><dt>订单明细</dt><dd>{{ orderSummary.total }} 条 · 17个统一字段</dd></div>
-              <div><dt>文件名</dt><dd>保持上传排期原名 · 浏览器下载新文件</dd></div>
+              <div><dt>文件名</dt><dd>按本批次生成独立文件 · 不覆盖原排期</dd></div>
             </dl>
           </div>
           <div class="generated-output-card__actions">

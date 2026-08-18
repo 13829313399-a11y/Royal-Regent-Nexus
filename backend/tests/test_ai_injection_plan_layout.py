@@ -245,7 +245,44 @@ def test_provider_uses_one_controlled_repair_and_ignores_workbook_instructions()
     assert provider.requests[0].tool_choice_policy.value == "REQUIRED"
     assert provider.requests[0].parallel_tool_policy.value == "DISABLED"
     assert provider.requests[0].data_classification.value == "CONFIDENTIAL"
+    assert "GROUPED_BY_MACHINE" in first_prompt
+    assert "COMPLETED_OR_PLANNED_OUTPUT" in first_prompt
     assert "Sheet" in provider.requests[1].input[1].content
+
+
+def test_provider_normalizes_one_json_layer_on_known_container_arguments() -> None:
+    content = _workbook_bytes()
+    packet = build_workbook_recognition_packet(
+        source_file_name="华康A.xlsx",
+        content=content,
+        factory_id="huakang-a",
+        business_date=date(2026, 8, 17),
+    )
+    encoded = _model_layout(content).model_dump(mode="json")
+    encoded["plan_sheet"]["header_rows"] = 3
+    for key in (
+        "plan_sheet",
+        "row_layout",
+        "field_mappings",
+        "shift_grid",
+        "warnings",
+    ):
+        encoded[key] = json.dumps(encoded[key], ensure_ascii=False)
+    provider = _SequenceProvider([_response(encoded, "encoded-layout")])
+
+    result = asyncio.run(
+        recognize_workbook_layout(
+            packet=packet,
+            provider=provider,
+            settings=_settings(),
+            request_id="layout-recognition-json-layer-test",
+        )
+    )
+
+    assert result.plan_sheet.sheet_name == "8月"
+    assert result.row_layout.layout_type == "GROUPED_BY_MACHINE"
+    assert len(result.field_mappings) == 7
+    assert len(provider.requests) == 1
 
 
 def test_provider_fails_closed_after_the_single_repair_attempt() -> None:
