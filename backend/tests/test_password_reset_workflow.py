@@ -59,6 +59,7 @@ def create_user(
                 updated_at=now,
             )
         )
+        db.flush()
         binding_id = f"{user_id}:{role_id}:{factory_id}:{department}"
         db.add(
             auth_models.AuthUserRole(
@@ -69,6 +70,7 @@ def create_user(
                 department=department,
             )
         )
+        db.flush()
         db.add(
             auth_models.AuthRoleBindingMetadata(
                 user_role_id=binding_id,
@@ -136,6 +138,33 @@ def approve_reset(client: TestClient, request_id: str):
         f"/api/system/password-reset-requests/{request_id}/approve",
         json={"review_comment": "已电话核验员工身份"},
     )
+
+
+def test_public_submission_persists_a_notification_visible_to_the_superadmin(monkeypatch):
+    with make_client(monkeypatch) as client:
+        response = submit_reset(client, "unmatched-reset-applicant")
+
+        assert response.status_code == 200, response.text
+        request_id = response.json()["request_id"]
+
+        db_module = importlib.import_module("app.db")
+        auth_models = importlib.import_module("app.models.auth")
+        with db_module.SessionLocal() as db:
+            reset_request = db.get(auth_models.AuthPasswordResetRequest, request_id)
+            assert reset_request is not None
+            assert reset_request.notification_id
+            notification = db.get(auth_models.SystemNotification, reset_request.notification_id)
+            assert notification is not None
+            assert notification.type == "password_reset"
+            assert notification.status == "unread"
+
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        notifications = client.get("/api/system/notifications")
+        assert notifications.status_code == 200, notifications.text
+        assert any(
+            item["payload"].get("password_reset_request_id") == request_id
+            for item in notifications.json()
+        )
 
 
 def test_public_submission_is_non_enumerating_deduplicated_and_notification_is_redacted(monkeypatch):

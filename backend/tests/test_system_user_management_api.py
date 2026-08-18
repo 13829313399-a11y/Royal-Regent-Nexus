@@ -142,6 +142,7 @@ def create_scoped_permission_manager(
                 updated_at=now,
             )
         )
+        db.flush()
         binding_id = f"{user_id}:factory_permission_admin:{factory_id}:{department}"
         db.add(
             auth_models.AuthUserRole(
@@ -152,6 +153,7 @@ def create_scoped_permission_manager(
                 department=department,
             )
         )
+        db.flush()
         db.add(
             auth_models.AuthRoleBindingMetadata(
                 user_role_id=binding_id,

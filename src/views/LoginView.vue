@@ -59,10 +59,15 @@ const passwordResetForm = ref({
 const isPasswordResetSubmitting = ref(false)
 const passwordResetSubmitted = ref(false)
 const passwordResetRequestId = ref('')
+const passwordResetInvalidField = ref<'username' | 'display_name' | 'contact' | ''>('')
+const passwordResetUsernameInput = ref<HTMLInputElement | null>(null)
+const passwordResetDisplayNameInput = ref<HTMLInputElement | null>(null)
+const passwordResetContactInput = ref<HTMLInputElement | null>(null)
 
 const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g
 const passwordChineseMessage = '密码不能包含中文，请使用英文、数字或符号'
+const brandLogoUrl = '/brand/huadeng_group_dynamic_logo.svg'
 
 const recentAccountTitle = computed(() => {
   if (!recentAccount.value) {
@@ -213,6 +218,7 @@ function focusPasswordInput(event: KeyboardEvent) {
 
 function openPasswordHelp() {
   passwordHelpMessage.value = ''
+  passwordResetInvalidField.value = ''
   passwordResetSubmitted.value = false
   passwordResetRequestId.value = ''
   passwordResetForm.value = {
@@ -226,8 +232,25 @@ function openPasswordHelp() {
 function closePasswordHelp() {
   showPasswordHelp.value = false
   passwordHelpMessage.value = ''
+  passwordResetInvalidField.value = ''
   passwordResetSubmitted.value = false
   passwordResetRequestId.value = ''
+}
+
+function showPasswordResetValidation(
+  field: 'username' | 'display_name' | 'contact',
+  message: string,
+  input: () => HTMLInputElement | null,
+) {
+  passwordResetInvalidField.value = field
+  passwordHelpMessage.value = message
+  requestAnimationFrame(() => input()?.focus())
+}
+
+function clearPasswordResetValidation(field: 'username' | 'display_name' | 'contact') {
+  if (passwordResetInvalidField.value !== field) return
+  passwordResetInvalidField.value = ''
+  passwordHelpMessage.value = ''
 }
 
 async function submitPasswordResetRequest() {
@@ -239,18 +262,31 @@ async function submitPasswordResetRequest() {
   }
 
   passwordHelpMessage.value = ''
+  passwordResetInvalidField.value = ''
   passwordResetSubmitted.value = false
 
   if (!payload.username) {
-    passwordHelpMessage.value = '请先填写需要重置密码的企业账号'
+    showPasswordResetValidation(
+      'username',
+      '请先填写需要重置密码的企业账号',
+      () => passwordResetUsernameInput.value,
+    )
     return
   }
   if (!payload.display_name) {
-    passwordHelpMessage.value = '请填写姓名，方便管理员核验身份'
+    showPasswordResetValidation(
+      'display_name',
+      '请填写姓名，方便管理员核验身份',
+      () => passwordResetDisplayNameInput.value,
+    )
     return
   }
   if (!payload.contact) {
-    passwordHelpMessage.value = '请填写联系电话或邮箱，方便管理员核验'
+    showPasswordResetValidation(
+      'contact',
+      '请填写联系电话或邮箱，方便管理员核验',
+      () => passwordResetContactInput.value,
+    )
     return
   }
 
@@ -325,7 +361,7 @@ onMounted(() => {
       <div class="relative z-10 flex items-center gap-4 px-14 pt-12">
         <span class="flex size-20 shrink-0 items-center justify-center rounded-xl bg-white/95 p-2 shadow-lg shadow-black/20">
           <img
-            src="/brand/huadeng_group_dynamic_logo.svg"
+            :src="brandLogoUrl"
             alt="华登集团"
             class="h-full w-full object-contain"
           >
@@ -377,7 +413,7 @@ onMounted(() => {
     <section class="flex w-full flex-col lg:w-[44%]">
       <div class="flex items-center gap-3 border-b border-slate-800 bg-slate-950 px-6 py-3 text-white lg:hidden">
         <span class="flex size-12 shrink-0 items-center justify-center rounded-lg bg-white/95 p-1.5">
-          <img src="/brand/huadeng_group_dynamic_logo.svg" alt="华登集团" class="h-full w-full object-contain">
+          <img :src="brandLogoUrl" alt="华登集团" class="h-full w-full object-contain">
         </span>
         <div>
           <div class="text-[16px] font-semibold leading-tight">Royal Regent Nexus</div>
@@ -602,31 +638,49 @@ onMounted(() => {
             <label class="grid gap-1.5">
               <span class="text-[12px] font-bold text-slate-600">企业账号 / 工号</span>
               <input
+                ref="passwordResetUsernameInput"
                 v-model="passwordResetForm.username"
                 class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                :class="{ 'border-red-300 bg-red-50/40 focus:border-red-500 focus:ring-red-500/15': passwordResetInvalidField === 'username' }"
                 autocomplete="username"
+                :aria-describedby="passwordHelpMessage ? 'password-reset-feedback' : undefined"
+                :aria-invalid="passwordResetInvalidField === 'username'"
                 placeholder="请输入需要重置的账号"
+                required
                 type="text"
+                @input="clearPasswordResetValidation('username')"
               >
             </label>
             <label class="grid gap-1.5">
               <span class="text-[12px] font-bold text-slate-600">姓名</span>
               <input
+                ref="passwordResetDisplayNameInput"
                 v-model="passwordResetForm.display_name"
                 class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                :class="{ 'border-red-300 bg-red-50/40 focus:border-red-500 focus:ring-red-500/15': passwordResetInvalidField === 'display_name' }"
                 autocomplete="name"
+                :aria-describedby="passwordHelpMessage ? 'password-reset-feedback' : undefined"
+                :aria-invalid="passwordResetInvalidField === 'display_name'"
                 placeholder="便于管理员核验身份"
+                required
                 type="text"
+                @input="clearPasswordResetValidation('display_name')"
               >
             </label>
             <label class="grid gap-1.5">
               <span class="text-[12px] font-bold text-slate-600">联系电话或邮箱</span>
               <input
+                ref="passwordResetContactInput"
                 v-model="passwordResetForm.contact"
                 class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                :class="{ 'border-red-300 bg-red-50/40 focus:border-red-500 focus:ring-red-500/15': passwordResetInvalidField === 'contact' }"
                 autocomplete="email"
+                :aria-describedby="passwordHelpMessage ? 'password-reset-feedback' : undefined"
+                :aria-invalid="passwordResetInvalidField === 'contact'"
                 placeholder="例如手机号或企业邮箱"
+                required
                 type="text"
+                @input="clearPasswordResetValidation('contact')"
               >
             </label>
             <label class="grid gap-1.5">
@@ -637,6 +691,17 @@ onMounted(() => {
                 placeholder="可填写厂区、部门或其他核验说明"
               ></textarea>
             </label>
+
+            <p
+              v-if="passwordHelpMessage && !passwordResetSubmitted"
+              id="password-reset-feedback"
+              aria-live="polite"
+              class="flex items-start gap-1.5 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-600"
+              role="alert"
+            >
+              <CircleAlert class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              <span>{{ passwordHelpMessage }}</span>
+            </p>
 
             <button
               class="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-teal-700 text-[13px] font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -649,13 +714,6 @@ onMounted(() => {
               {{ isPasswordResetSubmitting ? '提交中...' : passwordResetSubmitted ? '申请已提交' : '提交重置申请' }}
             </button>
           </form>
-          <p
-            v-if="passwordHelpMessage && !passwordResetSubmitted"
-            class="rounded-lg border px-3 py-2 text-[12px] font-medium"
-            :class="passwordResetSubmitted ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-600'"
-          >
-            {{ passwordHelpMessage }}
-          </p>
         </div>
       </section>
     </div>
