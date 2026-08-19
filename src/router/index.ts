@@ -42,6 +42,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/reset-password',
+    name: 'reset-password',
+    component: () => import('@/views/PasswordResetCompleteView.vue'),
+    meta: {
+      title: '设置新密码',
+      fullPage: true,
+      requiresAuth: false,
+    },
+  },
+  {
     path: '/',
     name: 'dashboard',
     component: DashboardView,

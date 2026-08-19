@@ -109,7 +109,8 @@ INJECTION_SCHEDULING_DEMAND_SHARED_MIGRATION_REVISION = "20260809_0059"
 INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
 PROTECTED_DOWNGRADE_PREFLIGHT_REVISION = "20260810_0061"
 CARTON_CLOSING_CURRENCY_MIGRATION_REVISION = "20260810_0064"
-HEAD_MIGRATION_REVISION = "20260817_0078"
+PASSWORD_RESET_CLAIM_MIGRATION_REVISION = "20260819_0079"
+HEAD_MIGRATION_REVISION = PASSWORD_RESET_CLAIM_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -233,6 +234,21 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+
+    password_reset_claim_revision = script.get_revision(
+        PASSWORD_RESET_CLAIM_MIGRATION_REVISION
+    )
+    assert password_reset_claim_revision.down_revision == "20260817_0078"
+    password_reset_claim_content = Path(password_reset_claim_revision.path).read_text(
+        encoding="utf-8"
+    )
+    for expected in (
+        "claim_token_hash",
+        "ix_auth_password_reset_requests_claim_token_hash",
+        "unique=True",
+        'batch_op.drop_column("claim_token_hash")',
+    ):
+        assert expected in password_reset_claim_content
 
     manual_override_revision = script.get_revision(
         CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION

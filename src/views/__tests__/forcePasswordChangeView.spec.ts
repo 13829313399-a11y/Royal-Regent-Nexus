@@ -9,11 +9,11 @@ const notificationSource = readFileSync(join(process.cwd(), 'src/composables/use
 describe('forced password change workflow source contract', () => {
   it('collects and validates all password fields before calling the Pinia action', () => {
     for (const expected of [
-      '当前临时密码',
+      '当前密码',
       '新密码',
       '确认新密码',
       '密码不能包含中文',
-      '新密码不能与当前临时密码相同',
+      '新密码不能与当前密码相同',
       'authStore.changePassword',
       'resolvePostLoginRedirect',
       'showCurrentPassword',

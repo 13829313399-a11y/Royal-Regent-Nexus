@@ -19,7 +19,6 @@ from app.models.auth import (
     AuthRoleBindingMetadata,
     AuthRoleMetadata,
     AuthRolePermission,
-    AuthSession,
     AuthUser,
     AuthUserAuthorizationRevision,
     AuthUserPermissionOverride,
@@ -50,12 +49,9 @@ from app.services.auth import (
     add_auth_audit,
     build_auth_context,
     can,
-    generate_temporary_password,
-    make_password_hash,
     mark_password_reset_notification_handled,
     now_text,
     time_window_is_active,
-    validate_password_characters,
 )
 from app.services.iam_scope import OWN_FACTORY_SCOPE
 from app.services.permission_scope_policy import role_scope_policy, scope_is_applicable
@@ -68,8 +64,15 @@ from app.services.system_positions import (
 
 
 logger = logging.getLogger(__name__)
-PASSWORD_RESET_STATUSES = {"pending", "approved", "rejected", "completed", "expired"}
-PASSWORD_RESET_TEMPORARY_HOURS = 24
+PASSWORD_RESET_STATUSES = {
+    "pending",
+    "approved",
+    "rejected",
+    "completed",
+    "expired",
+    "legacy_invalid",
+}
+PASSWORD_RESET_CLAIM_HOURS = 4
 
 
 def is_superadmin(current_user: AuthContext) -> bool:
@@ -903,10 +906,10 @@ def expire_stale_password_reset_requests(db: Session) -> None:
         user = db.get(AuthUser, reset_request.user_id) if reset_request.user_id else None
         add_auth_audit(
             db,
-            "password_reset_expired",
+            "password_reset_claim_expired",
             username=user.username if user else reset_request.username,
             user_id=user.id if user else "",
-            detail=f"密码重置申请 {reset_request.id} 的临时密码已过期",
+            detail=f"密码重置申请 {reset_request.id} 的原设备改密时限已过期",
         )
     db.commit()
 
@@ -925,7 +928,17 @@ def list_password_reset_requests(
         AuthPasswordResetRequest.submitted_at.desc(),
         AuthPasswordResetRequest.id.desc(),
     )
-    if normalized_status:
+    if normalized_status == "legacy_invalid":
+        statement = statement.where(
+            AuthPasswordResetRequest.claim_token_hash.is_(None),
+            AuthPasswordResetRequest.status.in_({"pending", "approved", "expired"}),
+        )
+    elif normalized_status in {"pending", "approved", "expired"}:
+        statement = statement.where(
+            AuthPasswordResetRequest.status == normalized_status,
+            AuthPasswordResetRequest.claim_token_hash.is_not(None),
+        )
+    elif normalized_status:
         statement = statement.where(AuthPasswordResetRequest.status == normalized_status)
     return [
         password_reset_request_to_out(db, item)
@@ -959,7 +972,7 @@ def load_password_reset_request_for_update(
     return reset_request
 
 
-def issue_password_reset_temporary_password(
+def open_password_reset_claim_window(
     db: Session,
     current_user: AuthContext,
     request_id: str,
@@ -968,19 +981,36 @@ def issue_password_reset_temporary_password(
     request: Request | None = None,
 ) -> PasswordResetApproveOut:
     reset_request = load_password_reset_request_for_update(db, current_user, request_id)
-    expected_status = "pending" if action == "approve" else "approved"
-    if reset_request.status != expected_status:
+    if not reset_request.claim_token_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="该申请来自旧版流程，请申请人重新提交密码重置申请",
+        )
+    if not payload.identity_verified:
+        raise HTTPException(status_code=400, detail="批准前必须确认已完成申请人身份核验")
+
+    now_datetime = datetime.now()
+    current_expires_at = reset_request.expires_at.strip()
+    reopenable = reset_request.status == "expired" or (
+        reset_request.status == "approved"
+        and current_expires_at
+        and current_expires_at <= now_datetime.strftime("%Y-%m-%d %H:%M:%S")
+    )
+    expected_status = reset_request.status
+    if (action == "approve" and reset_request.status != "pending") or (
+        action == "reopen" and not reopenable
+    ):
         raise HTTPException(
             status_code=409,
             detail=(
                 "仅待审核申请可以批准"
                 if action == "approve"
-                else "仅已批准且未完成的申请可以重新生成临时密码"
+                else "仅已过期的申请可以重新开放改密时限"
             ),
         )
     review_comment = payload.review_comment.strip()
     if not review_comment:
-        raise HTTPException(status_code=400, detail="请填写身份核验或重新签发说明")
+        raise HTTPException(status_code=400, detail="请填写身份核验或重新开放说明")
     if not reset_request.user_id:
         raise HTTPException(status_code=409, detail="未匹配系统账号的申请不能批准")
 
@@ -989,7 +1019,7 @@ def issue_password_reset_temporary_password(
         raise HTTPException(status_code=409, detail="申请关联账号已不存在")
     ensure_manage_target_user(db, current_user, user.id)
     if user.status != "active":
-        raise HTTPException(status_code=409, detail="仅正常状态账号可以签发临时密码")
+        raise HTTPException(status_code=409, detail="仅正常状态账号可以开放自助改密")
 
     now = now_text()
     claim = db.execute(
@@ -1009,21 +1039,9 @@ def issue_password_reset_temporary_password(
             detail=(
                 "仅待审核申请可以批准"
                 if action == "approve"
-                else "仅已批准且未完成的申请可以重新生成临时密码"
+                else "仅已过期的申请可以重新开放改密时限"
             ),
         )
-    temporary_password = generate_temporary_password()
-    validate_password_characters(temporary_password)
-    salt, password_hash = make_password_hash(temporary_password)
-    user.password_salt = salt
-    user.password_hash = password_hash
-    user.force_password_change = 1
-    user.updated_at = now
-    for session in db.scalars(
-        select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.status == "active")
-    ).all():
-        session.status = "revoked"
-        session.revoked_at = now
 
     reset_request.status = "approved"
     reset_request.reviewer_user_id = current_user.id
@@ -1031,27 +1049,31 @@ def issue_password_reset_temporary_password(
     reset_request.approved_at = reset_request.approved_at or now
     reset_request.last_issued_at = now
     reset_request.expires_at = (
-        datetime.now() + timedelta(hours=PASSWORD_RESET_TEMPORARY_HOURS)
+        now_datetime + timedelta(hours=PASSWORD_RESET_CLAIM_HOURS)
     ).strftime("%Y-%m-%d %H:%M:%S")
     reset_request.issue_count += 1
     reset_request.updated_at = now
     mark_password_reset_notification_handled(db, reset_request, now)
     add_auth_audit(
         db,
-        "password_reset_approved" if action == "approve" else "password_reset_reissued",
+        "password_reset_approved" if action == "approve" else "password_reset_reopened",
         username=user.username,
         user_id=user.id,
         detail=(
-            f"管理员 {current_user.username} 处理申请 {reset_request.id}；"
-            f"签发次数 {reset_request.issue_count}"
+            f"管理员 {current_user.username} 处理原设备改密申请 {reset_request.id}；"
+            f"开放次数 {reset_request.issue_count}"
         ),
         request=request,
     )
     db.commit()
     return PasswordResetApproveOut(
         request=password_reset_request_to_out(db, reset_request),
-        temporary_password=temporary_password,
         expires_at=reset_request.expires_at,
+        message=(
+            "已批准。申请人可在提交申请的原浏览器中设置新密码。"
+            if action == "approve"
+            else "已重新开放 4 小时。申请人可在原浏览器中设置新密码。"
+        ),
     )
 
 
@@ -1062,7 +1084,7 @@ def approve_password_reset_request(
     payload: PasswordResetReviewRequest,
     request: Request | None = None,
 ) -> PasswordResetApproveOut:
-    return issue_password_reset_temporary_password(
+    return open_password_reset_claim_window(
         db, current_user, request_id, payload, "approve", request=request
     )
 
@@ -1074,8 +1096,8 @@ def reissue_password_reset_request(
     payload: PasswordResetReviewRequest,
     request: Request | None = None,
 ) -> PasswordResetApproveOut:
-    return issue_password_reset_temporary_password(
-        db, current_user, request_id, payload, "reissue", request=request
+    return open_password_reset_claim_window(
+        db, current_user, request_id, payload, "reopen", request=request
     )
 
 
@@ -1567,6 +1589,9 @@ def password_reset_request_to_out(
         and profile.primary_factory_id == reset_request.factory_id
         and profile.primary_department == reset_request.department,
     }
+    output_status = reset_request.status
+    if reset_request.claim_token_hash is None and output_status in {"pending", "approved", "expired"}:
+        output_status = "legacy_invalid"
     return PasswordResetRequestOut(
         id=reset_request.id,
         user_id=reset_request.user_id,
@@ -1576,7 +1601,7 @@ def password_reset_request_to_out(
         note=reset_request.note,
         factory_id=reset_request.factory_id,
         department=reset_request.department,
-        status=reset_request.status,
+        status=output_status,
         reviewer_user_id=reset_request.reviewer_user_id,
         review_comment=reset_request.review_comment,
         notification_id=reset_request.notification_id,

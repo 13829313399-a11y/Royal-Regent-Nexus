@@ -115,7 +115,7 @@ def test_ai_task_migration_upgrades_sqlite_with_single_head(tmp_path: Path) -> N
             connection.execute(
                 sa.text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            == "20260817_0078"
+            == "20260819_0079"
         )
 
 
