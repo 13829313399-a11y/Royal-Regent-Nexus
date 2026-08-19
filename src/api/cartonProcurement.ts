@@ -483,6 +483,11 @@ export const cartonProcurementApi = {
     })
     return response.data
   },
+  async deleteReceiptImport(factoryId: string, batchId: string) {
+    await http.delete(`/carton-procurement/receipt-imports/${batchId}`, {
+      params: { factory_id: factoryId },
+    })
+  },
   async uploadWeeklySchedule(factoryId: string, file: File) {
     const form = new FormData()
     form.append('file', file)

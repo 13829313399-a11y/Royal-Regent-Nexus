@@ -66,6 +66,37 @@ def test_library_assigns_versions_stores_all_outcomes_and_rejects_duplicate_hash
         )
 
         with db_module.SessionLocal() as db:
+            db.add_all(
+                [
+                    models.CartonMarkCustomer(
+                        id="CMC-SERVICE-A",
+                        factory_id="huaxing",
+                        name="客人 A",
+                        normalized_name="客人 a",
+                        revision=1,
+                        created_by="seed",
+                        created_by_name="测试初始化",
+                        created_at="2026-08-19T09:00:00+08:00",
+                        updated_by="seed",
+                        updated_by_name="测试初始化",
+                        updated_at="2026-08-19T09:00:00+08:00",
+                    ),
+                    models.CartonMarkCustomer(
+                        id="CMC-SERVICE-B",
+                        factory_id="huaxing",
+                        name="另一个名字也不能绕过文档去重",
+                        normalized_name="另一个名字也不能绕过文档去重",
+                        revision=1,
+                        created_by="seed",
+                        created_by_name="测试初始化",
+                        created_at="2026-08-19T09:00:00+08:00",
+                        updated_by="seed",
+                        updated_by_name="测试初始化",
+                        updated_at="2026-08-19T09:00:00+08:00",
+                    ),
+                ]
+            )
+            db.commit()
             first = library.create_carton_mark_template(
                 db,
                 user,

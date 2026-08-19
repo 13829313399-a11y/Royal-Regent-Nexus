@@ -63,7 +63,15 @@ HISTORY_ORDER_ALIASES = {
     "paper_quality": {"纸质", "材质", "paperquality"},
     "specification": {"规格", "尺寸", "specification"},
     "dimension_unit": {"规格单位", "尺寸单位", "dimensionunit"},
-    "usage_quantity": {"单件用量", "用量", "usagequantity"},
+    "usage_quantity": {
+        "每箱个数",
+        "每箱数量",
+        "装箱数量",
+        "unitspercarton",
+        "单件用量",
+        "用量",
+        "usagequantity",
+    },
     "unit": {"纸品单位", "单位", "unit"},
     "unit_price": {"单价", "unitprice"},
     "currency": {"币种", "currency"},
@@ -118,6 +126,24 @@ def _required_text(
     return value
 
 
+def _legacy_usage_header(
+    rows: list[list[Any]],
+    header_index: int,
+    mapping: dict[str, int],
+) -> bool:
+    label = _text(_cell(rows[header_index], mapping, "usage_quantity"))
+    normalized = "".join(character for character in label.casefold() if character.isalnum())
+    return "单件用量" in label or normalized in {"用量", "usagequantity"}
+
+
+def _convert_legacy_usage_to_units_per_carton(value: Decimal) -> Decimal:
+    converted = Decimal(1) / value
+    nearest_integer = converted.to_integral_value(rounding=ROUND_HALF_UP)
+    if abs(converted - nearest_integer) <= Decimal("0.0001"):
+        converted = nearest_integer
+    return converted.quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+
+
 def _parse_rows(filename: str, content: bytes) -> tuple[list[dict[str, Any]], list[str]]:
     worksheets = _sheet_rows(filename, content)
     worksheets.sort(key=lambda item: 0 if item[0].strip() == "历史订单导入" else 1)
@@ -135,6 +161,11 @@ def _parse_rows(filename: str, content: bytes) -> tuple[list[dict[str, Any]], li
             continue
         found_header = True
         header_index, mapping = header
+        legacy_usage = _legacy_usage_header(rows, header_index, mapping)
+        if legacy_usage:
+            warnings.append(
+                f"工作表“{sheet_name}”使用旧版“单件用量”列，系统已自动换算为“每箱个数”"
+            )
         for row_number, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
             if not any(_text(_cell(row, mapping, field)) for field in HISTORY_ORDER_ALIASES):
                 continue
@@ -166,7 +197,10 @@ def _parse_rows(filename: str, content: bytes) -> tuple[list[dict[str, Any]], li
                 product_quantity = product_quantity.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
             usage_quantity = _number(_cell(row, mapping, "usage_quantity"))
             if usage_quantity is None or usage_quantity <= 0:
-                errors.append(f"{source} 的“单件用量”必须是大于 0 的数字")
+                label = "单件用量" if legacy_usage else "每箱个数"
+                errors.append(f"{source} 的“{label}”必须是大于 0 的数字")
+            elif legacy_usage:
+                usage_quantity = _convert_legacy_usage_to_units_per_carton(usage_quantity)
             elif usage_quantity.as_tuple().exponent < -8:
                 usage_quantity = usage_quantity.quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
             unit_price = _number(_cell(row, mapping, "unit_price"))
