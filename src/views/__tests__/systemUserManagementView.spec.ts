@@ -64,9 +64,9 @@ describe('SystemUserManagementView source contract', () => {
       'systemApi.reissuePasswordResetRequest',
       'PasswordResetRequestDetail',
       '密码重置',
-      '通过并生成临时密码',
-      '一次性临时密码',
-      '只在当前弹窗展示一次',
+      '批准并开放自助改密',
+      '重新开放 4 小时',
+      '系统不会生成或显示临时密码',
       'UserAvatar',
       'user.avatar_url',
       '停用',
@@ -98,11 +98,11 @@ describe('SystemUserManagementView source contract', () => {
     expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canManageUsers\.value\) \{[\s\S]*?return\s+\}/)
   })
 
-  it('never hard-codes or persists a temporary password', () => {
-    expect(source).not.toContain("temporary_password: '123456'")
-    expect(source).not.toContain('已重置为临时密码 123456')
-    expect(source).toContain("oneTimeTemporaryPassword.value = ''")
-    expect(source).toContain('navigator.clipboard.writeText(oneTimeTemporaryPassword.value)')
+  it('never receives, displays, copies, or persists a temporary password', () => {
+    expect(source).not.toContain('oneTimeTemporaryPassword')
+    expect(source).not.toContain('temporary_password')
+    expect(source).not.toContain('navigator.clipboard.writeText')
+    expect(source).not.toContain('一次性临时密码')
     expect(source).not.toContain('localStorage.setItem')
     expect(source).not.toContain('sessionStorage.setItem')
   })

@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   CircleAlert,
   Clock3,
-  Copy,
   Factory,
   KeyRound,
   LifeBuoy,
@@ -62,10 +61,6 @@ const passwordResetReviewTarget = ref<PasswordResetRequestDetail | null>(null)
 const passwordResetReviewMode = ref<'approve' | 'reject' | 'reissue' | ''>('')
 const passwordResetReviewComment = ref('')
 const passwordResetIdentityVerified = ref(false)
-const oneTimeTemporaryPassword = ref('')
-const oneTimePasswordExpiresAt = ref('')
-const oneTimePasswordRequestId = ref('')
-const temporaryPasswordCopied = ref(false)
 const selectedSystemPositions = ref<Record<string, string>>({})
 const approvalProfiles = ref<Record<string, RegistrationProfileRequest>>({})
 const approvalComments = ref<Record<string, string>>({})
@@ -212,6 +207,7 @@ const passwordResetStatusOptions: Array<{ value: PasswordResetStatus; label: str
   { value: 'completed', label: '已完成' },
   { value: 'rejected', label: '已驳回' },
   { value: 'expired', label: '已过期' },
+  { value: 'legacy_invalid', label: '旧版申请' },
 ]
 
 function passwordResetStatusLabel(status: PasswordResetStatus) {
@@ -225,6 +221,7 @@ function passwordResetStatusTone(status: PasswordResetStatus) {
     completed: 'pill-green',
     rejected: 'pill-red',
     expired: 'pill-slate',
+    legacy_invalid: 'pill-slate',
   }[status]
 }
 
@@ -468,8 +465,8 @@ async function submitPasswordResetReview() {
     errorMessage.value = '驳回申请时必须填写原因'
     return
   }
-  if (mode !== 'reject' && !comment && !passwordResetIdentityVerified.value) {
-    errorMessage.value = '请填写审核说明，或确认已完成员工身份核验'
+  if (mode !== 'reject' && !passwordResetIdentityVerified.value) {
+    errorMessage.value = '批准或重新开放前，必须确认已完成申请人身份核验'
     return
   }
   const reviewComment = comment || '已确认完成员工身份核验'
@@ -482,12 +479,15 @@ async function submitPasswordResetReview() {
       successMessage.value = `已驳回密码重置申请 ${target.id}`
     } else {
       const response = mode === 'approve'
-        ? await systemApi.approvePasswordResetRequest(target.id, { review_comment: reviewComment })
-        : await systemApi.reissuePasswordResetRequest(target.id, { review_comment: reviewComment })
-      oneTimeTemporaryPassword.value = response.temporary_password
-      oneTimePasswordExpiresAt.value = response.expires_at
-      oneTimePasswordRequestId.value = response.request.id
-      temporaryPasswordCopied.value = false
+        ? await systemApi.approvePasswordResetRequest(target.id, {
+          review_comment: reviewComment,
+          identity_verified: true,
+        })
+        : await systemApi.reissuePasswordResetRequest(target.id, {
+          review_comment: reviewComment,
+          identity_verified: true,
+        })
+      successMessage.value = response.message
     }
     passwordResetReviewTarget.value = null
     passwordResetReviewMode.value = ''
@@ -499,23 +499,6 @@ async function submitPasswordResetReview() {
   } finally {
     actionKey.value = ''
   }
-}
-
-async function copyTemporaryPassword() {
-  if (!oneTimeTemporaryPassword.value) return
-  try {
-    await navigator.clipboard.writeText(oneTimeTemporaryPassword.value)
-    temporaryPasswordCopied.value = true
-  } catch {
-    errorMessage.value = '复制失败，请手动选择临时密码复制'
-  }
-}
-
-function closeTemporaryPasswordDialog() {
-  oneTimeTemporaryPassword.value = ''
-  oneTimePasswordExpiresAt.value = ''
-  oneTimePasswordRequestId.value = ''
-  temporaryPasswordCopied.value = false
 }
 
 async function initializeData() {
@@ -902,7 +885,11 @@ onMounted(() => {
             </div>
           </div>
 
-          <div v-if="resetRequest.matched_user" class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[12px] text-slate-600">
+          <div v-if="resetRequest.status === 'legacy_invalid'" class="recommend-box">
+            <CircleAlert class="size-4 shrink-0 text-amber-700" aria-hidden="true" />
+            <b>该申请来自旧版流程，不能批准或重新开放。请申请人在原浏览器重新提交密码重置申请。</b>
+          </div>
+          <div v-else-if="resetRequest.matched_user" class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[12px] text-slate-600">
             <div class="flex items-center gap-2 font-bold text-slate-800">
               <UserCheck class="size-4 text-teal-700" aria-hidden="true" />
               系统员工资料
@@ -935,7 +922,7 @@ onMounted(() => {
               @click.stop="openPasswordResetReview(resetRequest, 'approve')"
             >
               <KeyRound class="size-4" aria-hidden="true" />
-              通过并生成临时密码
+              批准并开放自助改密
             </button>
             <button
               v-if="resetRequest.status === 'pending'"
@@ -948,14 +935,14 @@ onMounted(() => {
               驳回
             </button>
             <button
-              v-if="resetRequest.status === 'approved' && resetRequest.matched_user"
+              v-if="resetRequest.status === 'expired' && resetRequest.matched_user"
               type="button"
               class="btn btn-primary"
               :disabled="Boolean(actionKey)"
               @click.stop="openPasswordResetReview(resetRequest, 'reissue')"
             >
               <RefreshCw class="size-4" aria-hidden="true" />
-              重新生成临时密码
+              重新开放 4 小时
             </button>
           </div>
         </article>
@@ -1091,13 +1078,16 @@ onMounted(() => {
           </span>
           <div class="min-w-0 flex-1">
             <h2 id="password-reset-review-title" class="text-base font-bold text-slate-950">
-              {{ passwordResetReviewMode === 'reject' ? '驳回密码重置申请' : passwordResetReviewMode === 'reissue' ? '重新生成临时密码' : '通过并生成临时密码' }}
+              {{ passwordResetReviewMode === 'reject' ? '驳回密码重置申请' : passwordResetReviewMode === 'reissue' ? '重新开放改密时限' : '批准并开放自助改密' }}
             </h2>
             <p class="mt-1 text-xs leading-5 text-slate-500">申请 {{ passwordResetReviewTarget.id }} · {{ passwordResetReviewTarget.display_name || passwordResetReviewTarget.username }}</p>
           </div>
         </div>
         <div v-if="passwordResetReviewMode === 'reissue'" class="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-          重新生成后，旧临时密码与该用户所有现有会话将立即失效。新密码仍只展示一次。
+          将仅把原设备自助改密时限重新开放 4 小时，不会生成密码、修改用户密码或撤销现有会话。
+        </div>
+        <div v-else-if="passwordResetReviewMode === 'approve'" class="mt-4 rounded-xl border border-teal-100 bg-teal-50 px-3 py-2 text-xs leading-5 text-teal-900">
+          审核通过后，申请人只能在提交申请的原浏览器中设置新密码。系统不会生成或显示临时密码。
         </div>
         <label class="mt-4 block">
           <span class="mb-1.5 block text-xs font-bold text-slate-700">{{ passwordResetReviewMode === 'reject' ? '驳回原因' : '审核 / 核验说明' }}</span>
@@ -1105,54 +1095,19 @@ onMounted(() => {
         </label>
         <label v-if="passwordResetReviewMode !== 'reject'" class="mt-3 flex cursor-pointer items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-700">
           <input v-model="passwordResetIdentityVerified" class="mt-0.5 size-4" type="checkbox">
-          <span>我确认已按内部流程核验员工身份，并会通过线下或企业内部可信渠道传达临时密码。</span>
+          <span>我已通过内部资料或本人确认，核验申请人与账号本人一致。</span>
         </label>
         <div class="mt-5 flex justify-end gap-2">
           <button type="button" class="btn" :disabled="Boolean(actionKey)" @click="closePasswordResetReview">取消</button>
-          <button type="button" class="btn" :class="passwordResetReviewMode === 'reject' ? 'btn-danger' : 'btn-primary'" :disabled="Boolean(actionKey)" @click="submitPasswordResetReview">
+          <button type="button" class="btn" :class="passwordResetReviewMode === 'reject' ? 'btn-danger' : 'btn-primary'" :disabled="Boolean(actionKey) || (passwordResetReviewMode !== 'reject' && !passwordResetIdentityVerified)" @click="submitPasswordResetReview">
             <LoaderCircle v-if="actionKey.startsWith('password-reset:')" class="size-4 animate-spin" aria-hidden="true" />
             <CheckCircle2 v-else class="size-4" aria-hidden="true" />
-            确认{{ passwordResetReviewMode === 'reject' ? '驳回' : passwordResetReviewMode === 'reissue' ? '重新生成' : '批准' }}
+            确认{{ passwordResetReviewMode === 'reject' ? '驳回' : passwordResetReviewMode === 'reissue' ? '重新开放' : '批准' }}
           </button>
         </div>
       </section>
     </div>
 
-    <div
-      v-if="oneTimeTemporaryPassword"
-      class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="temporary-password-title"
-      @click.self="closeTemporaryPasswordDialog"
-    >
-      <section class="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-        <div class="flex items-start gap-3">
-          <span class="flex size-11 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
-            <KeyRound class="size-5" aria-hidden="true" />
-          </span>
-          <div>
-            <h2 id="temporary-password-title" class="text-lg font-bold text-slate-950">一次性临时密码</h2>
-            <p class="mt-1 text-xs leading-5 text-slate-500">申请 {{ oneTimePasswordRequestId }} · 此密码只在当前弹窗展示一次。</p>
-          </div>
-        </div>
-        <div class="mt-5 rounded-2xl border border-teal-100 bg-teal-50 px-4 py-4">
-          <div class="flex items-center justify-between gap-3">
-            <code class="select-all break-all font-mono text-lg font-bold tracking-[0.08em] text-teal-950">{{ oneTimeTemporaryPassword }}</code>
-            <button type="button" class="btn btn-primary btn-sm shrink-0" @click="copyTemporaryPassword">
-              <CheckCircle2 v-if="temporaryPasswordCopied" class="size-4" aria-hidden="true" />
-              <Copy v-else class="size-4" aria-hidden="true" />
-              {{ temporaryPasswordCopied ? '已复制' : '复制' }}
-            </button>
-          </div>
-          <p class="mt-3 text-xs text-teal-800">到期时间：{{ formatBusinessDateTime(oneTimePasswordExpiresAt, { includeSeconds: true }) }}</p>
-        </div>
-        <div class="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-900">
-          请通过线下或企业内部可信渠道传达给员工。关闭后前端会立即清除密码；如遗失，只能重新生成。
-        </div>
-        <button type="button" class="btn btn-primary mt-5 w-full justify-center" @click="closeTemporaryPasswordDialog">我已安全记录，关闭并清除</button>
-      </section>
-    </div>
     </div>
   </main>
 </template>

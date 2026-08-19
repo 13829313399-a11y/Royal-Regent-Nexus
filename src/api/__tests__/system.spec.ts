@@ -25,9 +25,15 @@ describe('systemApi', () => {
     await api.updateNotification('notice-1', { status: 'handled' })
     await api.listPasswordResetRequests('pending')
     await api.getPasswordResetRequest('password-reset-1')
-    await api.approvePasswordResetRequest('password-reset-1', { review_comment: '已核验' })
+    await api.approvePasswordResetRequest('password-reset-1', {
+      review_comment: '已核验',
+      identity_verified: true,
+    })
     await api.rejectPasswordResetRequest('password-reset-2', { review_comment: '无法核验' })
-    await api.reissuePasswordResetRequest('password-reset-3', { review_comment: '重新核验' })
+    await api.reissuePasswordResetRequest('password-reset-3', {
+      review_comment: '重新核验',
+      identity_verified: true,
+    })
     await api.listRegistrationRequests('pending')
     await api.approveRegistrationRequest('registration-1', {
       system_position_role_id: 'engineer',
@@ -76,6 +82,6 @@ describe('systemApi', () => {
       },
       review_comment: '资料完整',
     })
-    expect(calls[5].data).toEqual({ review_comment: '已核验' })
+    expect(calls[5].data).toEqual({ review_comment: '已核验', identity_verified: true })
   })
 })

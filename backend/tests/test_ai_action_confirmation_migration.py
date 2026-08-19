@@ -109,7 +109,7 @@ def test_ai_action_confirmation_migration_upgrades_sqlite(tmp_path: Path) -> Non
     assert "CONSEQUENTIAL_WRITE" in checks
     with engine.connect() as connection:
         assert connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "20260817_0078"
+            "20260819_0079"
         )
 
 
