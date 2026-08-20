@@ -3,27 +3,35 @@ import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LoginView from '../LoginView.vue'
 
-const requestPasswordResetMock = vi.hoisted(() => vi.fn())
+const authMocks = vi.hoisted(() => ({
+  requestPasswordReset: vi.fn(),
+  getPasswordResetClaim: vi.fn(),
+}))
+const routerPushMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/auth', () => ({
   authApi: {
-    requestPasswordReset: requestPasswordResetMock,
+    requestPasswordReset: authMocks.requestPasswordReset,
+    getPasswordResetClaim: authMocks.getPasswordResetClaim,
   },
 }))
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} }),
-  useRouter: () => ({ replace: vi.fn() }),
+  useRouter: () => ({ replace: vi.fn(), push: routerPushMock }),
 }))
 
 describe('LoginView password reset request', () => {
   beforeEach(() => {
     localStorage.clear()
-    requestPasswordResetMock.mockReset()
-    requestPasswordResetMock.mockResolvedValue({
+    vi.clearAllMocks()
+    authMocks.requestPasswordReset.mockResolvedValue({
       status: 'submitted',
-      message: '密码重置申请已提交，请等待管理员核验处理',
+      message: '申请已提交。请保留当前浏览器，管理员审核通过后可在此直接设置新密码。',
       request_id: 'password-reset-1',
+    })
+    authMocks.getPasswordResetClaim.mockResolvedValue({
+      status: 'none', request_id: '', can_complete: false, expires_at: '', message: '未找到凭证',
     })
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0)
@@ -60,7 +68,7 @@ describe('LoginView password reset request', () => {
 
     const contactInput = dialog.get('input[autocomplete="email"]')
     const feedback = dialog.get('#password-reset-feedback')
-    expect(requestPasswordResetMock).not.toHaveBeenCalled()
+    expect(authMocks.requestPasswordReset).not.toHaveBeenCalled()
     expect(feedback.attributes('role')).toBe('alert')
     expect(feedback.text()).toContain('请填写联系电话或邮箱，方便管理员核验')
     expect(contactInput.attributes('aria-invalid')).toBe('true')
@@ -70,13 +78,39 @@ describe('LoginView password reset request', () => {
     await dialog.get('form').trigger('submit')
     await flushPromises()
 
-    expect(requestPasswordResetMock).toHaveBeenCalledWith({
+    expect(authMocks.requestPasswordReset).toHaveBeenCalledWith({
       username: 'admin',
       display_name: '系统管理员',
       contact: '13800000000',
       note: '',
     })
     expect(dialog.text()).toContain('申请已提交')
+    expect(dialog.text()).toContain('请保留当前浏览器')
     expect(dialog.text()).toContain('password-reset-1')
+    wrapper.unmount()
+  })
+
+  it('shows an approved same-browser claim and opens the public completion page', async () => {
+    authMocks.getPasswordResetClaim.mockResolvedValue({
+      status: 'approved',
+      request_id: 'password-reset-approved',
+      can_complete: true,
+      expires_at: '2026-08-19T18:00:00+08:00',
+      message: '申请已通过，请在有效期内设置新密码',
+    })
+    const wrapper = mount(LoginView, {
+      attachTo: document.body,
+      global: {
+        plugins: [createPinia()],
+        stubs: { AuthAmbientGrid: true, RouterLink: { template: '<a><slot /></a>' } },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('密码重置申请已通过')
+    const completionButton = wrapper.findAll('button').find((button) => button.text().includes('立即设置新密码'))
+    await completionButton!.trigger('click')
+    expect(routerPushMock).toHaveBeenCalledWith({ name: 'reset-password' })
+    wrapper.unmount()
   })
 })

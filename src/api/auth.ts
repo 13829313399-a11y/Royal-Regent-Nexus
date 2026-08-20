@@ -45,6 +45,33 @@ export interface PasswordResetResponse {
   request_id?: string | null
 }
 
+export type PasswordResetClaimStatus =
+  | 'none'
+  | 'pending'
+  | 'approved'
+  | 'completed'
+  | 'rejected'
+  | 'expired'
+  | 'legacy_invalid'
+
+export interface PasswordResetClaimResponse {
+  status: PasswordResetClaimStatus
+  request_id: string
+  can_complete: boolean
+  expires_at: string
+  message: string
+}
+
+export interface PasswordResetClaimCompleteRequest {
+  new_password: string
+  confirm_password: string
+}
+
+export interface PasswordResetClaimCompleteResponse {
+  status: 'completed'
+  message: string
+}
+
 export interface ChangePasswordRequest {
   current_password: string
   new_password: string
@@ -115,6 +142,17 @@ export function createAuthApi(client: AuthHttpClient = http) {
     },
     async requestPasswordReset(payload: PasswordResetRequest) {
       const response = await client.post<PasswordResetResponse>('/auth/password-reset-requests', payload)
+      return response.data
+    },
+    async getPasswordResetClaim() {
+      const response = await client.get<PasswordResetClaimResponse>('/auth/password-reset-claim')
+      return response.data
+    },
+    async completePasswordResetClaim(payload: PasswordResetClaimCompleteRequest) {
+      const response = await client.post<PasswordResetClaimCompleteResponse>(
+        '/auth/password-reset-claim/complete',
+        payload,
+      )
       return response.data
     },
     async getMe() {

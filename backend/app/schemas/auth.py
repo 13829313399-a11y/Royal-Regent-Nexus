@@ -38,6 +38,32 @@ class PasswordResetResponse(BaseModel):
     request_id: str | None = None
 
 
+class PasswordResetClaimResponse(BaseModel):
+    status: Literal[
+        "none",
+        "pending",
+        "approved",
+        "completed",
+        "rejected",
+        "expired",
+        "legacy_invalid",
+    ]
+    request_id: str = ""
+    can_complete: bool = False
+    expires_at: str = ""
+    message: str
+
+
+class PasswordResetClaimCompleteRequest(BaseModel):
+    new_password: str = Field(min_length=1, max_length=256)
+    confirm_password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordResetClaimCompleteResponse(BaseModel):
+    status: Literal["completed"]
+    message: str
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=1, max_length=256)

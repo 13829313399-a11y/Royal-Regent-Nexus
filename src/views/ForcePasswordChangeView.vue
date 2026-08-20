@@ -35,7 +35,7 @@ const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 async function submitPasswordChange() {
   errorMessage.value = ''
   if (!currentPassword.value || !newPassword.value || !confirmPassword.value) {
-    errorMessage.value = '请完整填写当前临时密码、新密码和确认密码'
+    errorMessage.value = '请完整填写当前密码、新密码和确认密码'
     return
   }
   if (
@@ -55,7 +55,7 @@ async function submitPasswordChange() {
     return
   }
   if (newPassword.value === currentPassword.value) {
-    errorMessage.value = '新密码不能与当前临时密码相同'
+    errorMessage.value = '新密码不能与当前密码相同'
     return
   }
 
@@ -98,7 +98,7 @@ onBeforeUnmount(() => {
           <div>
             <p class="text-[11px] font-bold uppercase tracking-[0.18em] text-teal-700">Royal Regent Nexus</p>
             <h1 class="mt-1 text-[22px] font-bold text-slate-950">设置正式密码</h1>
-            <p class="mt-1 text-[13px] leading-5 text-slate-500">当前账号正在使用临时密码。完成修改前，系统业务功能保持锁定。</p>
+            <p class="mt-1 text-[13px] leading-5 text-slate-500">当前账号需要先更新密码。完成修改前，系统业务功能保持锁定。</p>
           </div>
         </div>
       </header>
@@ -107,12 +107,12 @@ onBeforeUnmount(() => {
         <div class="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12.5px] leading-5 text-amber-900">
           <div class="flex gap-2">
             <KeyRound class="mt-0.5 size-4 shrink-0 text-amber-700" aria-hidden="true" />
-            <span>请重新输入管理员提供的临时密码，再设置仅由你本人掌握的正式密码。</span>
+            <span>请重新输入当前密码，再设置仅由你本人掌握的正式密码。</span>
           </div>
         </div>
 
         <label class="block">
-          <span class="mb-1.5 block text-[12.5px] font-semibold text-slate-700">当前临时密码</span>
+          <span class="mb-1.5 block text-[12.5px] font-semibold text-slate-700">当前密码</span>
           <span class="flex h-11 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 focus-within:border-teal-700 focus-within:bg-white focus-within:ring-[3px] focus-within:ring-teal-700/15">
             <LockKeyhole class="size-4 text-slate-400" aria-hidden="true" />
             <input v-model="currentPassword" class="ml-2.5 h-full min-w-0 flex-1 bg-transparent text-[14px] outline-none" autocomplete="current-password" :type="showCurrentPassword ? 'text' : 'password'">
@@ -147,7 +147,7 @@ onBeforeUnmount(() => {
           </span>
         </label>
 
-        <p class="text-[11.5px] leading-5 text-slate-500">至少 6 位，不允许中文；新密码必须与临时密码不同。最终规则以后端校验为准。</p>
+        <p class="text-[11.5px] leading-5 text-slate-500">至少 6 位，不允许中文；新密码必须与当前密码不同。最终规则以后端校验为准。</p>
 
         <div v-if="errorMessage" class="flex items-center gap-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2.5 text-[12.5px] font-medium text-red-700">
           <CircleAlert class="size-4 shrink-0" aria-hidden="true" />

@@ -7,6 +7,7 @@ const source = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
 for (const requiredImplementation of [
   '/login',
   '/register',
+  '/reset-password',
   '/change-password',
   '/system/users',
   'useAuthStore',
@@ -21,6 +22,7 @@ for (const requiredImplementation of [
 
 assert.match(source, /path:\s*'\/login'[\s\S]{0,220}fullPage:\s*true/)
 assert.match(source, /path:\s*'\/register'[\s\S]{0,260}fullPage:\s*true/)
+assert.match(source, /path:\s*'\/reset-password'[\s\S]{0,260}requiresAuth:\s*false/)
 assert.match(source, /path:\s*'\/change-password'[\s\S]{0,260}requiresAuth:\s*true/)
 assert.match(source, /currentUser\?\.force_password_change/)
 assert.match(source, /path:\s*'\/system\/users'[\s\S]{0,360}permissions:\s*\[['"]system:user_manage['"]\]/)

@@ -1668,7 +1668,10 @@ def test_password_reset_request_creates_admin_system_notification(monkeypatch):
         assert reset_response.status_code == 200
         reset_payload = reset_response.json()
         assert reset_payload["status"] == "submitted"
-        assert reset_payload["message"] == "申请已提交。如账号资料有效，管理员会进行核验处理。"
+        assert reset_payload["message"] == (
+            "申请已提交。请保留当前浏览器，管理员审核通过后可在此直接设置新密码。"
+        )
+        assert reset_response.cookies.get("rr_password_reset_claim")
         assert reset_payload["request_id"].startswith("password-reset-")
 
         client.post("/api/auth/login", json={"username": "admin", "password": ADMIN_TEST_PASSWORD})

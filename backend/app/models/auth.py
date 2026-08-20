@@ -141,6 +141,12 @@ class AuthPasswordResetRequest(Base):
     )
     request_ip: Mapped[str] = mapped_column(String(128), default="", index=True)
     user_agent: Mapped[str] = mapped_column(Text, default="")
+    claim_token_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
     issue_count: Mapped[int] = mapped_column(Integer, default=0)
     submitted_at: Mapped[str] = mapped_column(String(32), default="", index=True)
     approved_at: Mapped[str] = mapped_column(String(32), default="")

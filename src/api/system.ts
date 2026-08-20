@@ -39,10 +39,17 @@ export interface UserStatusUpdateRequest {
   status: 'active' | 'suspended'
 }
 
-export type PasswordResetStatus = 'pending' | 'approved' | 'rejected' | 'completed' | 'expired'
+export type PasswordResetStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'completed'
+  | 'expired'
+  | 'legacy_invalid'
 
 export interface PasswordResetReviewRequest {
   review_comment: string
+  identity_verified?: boolean
 }
 
 export interface SystemNotificationUpdateRequest {
@@ -168,8 +175,8 @@ export interface PasswordResetRequestDetail {
 
 export interface PasswordResetApproveResponse {
   request: PasswordResetRequestDetail
-  temporary_password: string
   expires_at: string
+  message: string
 }
 
 export interface SystemNotificationFilters {
