@@ -579,7 +579,6 @@ def _parse_with_ai_layout(
     content: bytes,
     business_date: date,
     recognition_mode: str,
-    cloud_ai_consent: bool,
     request_id: str,
     settings: Settings | None,
     cached_layout: dict[str, Any] | None,
@@ -616,14 +615,6 @@ def _parse_with_ai_layout(
                 layout = candidate
                 cache_hit = True
     if layout is None:
-        if not cloud_ai_consent:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "AI_CONSENT_REQUIRED",
-                    "message": "该模板需要云端 AI 布局识别，请确认有限工作簿结构传输说明后重试",
-                },
-            )
         try:
             layout = recognize_workbook_layout_sync(
                 packet=packet,
@@ -652,7 +643,6 @@ def _parse_with_ai_layout(
             packet_digest=packet.packet_sha256,
             business_date=business_date.isoformat(),
             requested_mode=recognition_mode,
-            cloud_ai_consent=cloud_ai_consent,
             cache_hit=cache_hit,
             system_machine_codes=system_machine_codes,
             system_mold_nos=system_mold_nos,
@@ -675,7 +665,6 @@ def _parse_and_reconcile(
     content: bytes,
     document_kind: str | None,
     recognition_mode: str = "AUTO",
-    cloud_ai_consent: bool = False,
     business_date: date | None = None,
     request_id: str = "",
     settings: Settings | None = None,
@@ -702,14 +691,6 @@ def _parse_and_reconcile(
             detail={
                 "code": "AI_LAYOUT_DOCUMENT_KIND_UNSUPPORTED",
                 "message": "AI 布局识别 MVP 仅支持 PLANNED_SCHEDULE",
-            },
-        )
-    if recognition_mode == "AI" and not cloud_ai_consent:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "AI_CONSENT_REQUIRED",
-                "message": "AI 识别需要先确认有限工作簿结构传输说明",
             },
         )
     if recognition_mode == "AI" and requested_kind == "AUTO":
@@ -856,7 +837,6 @@ def _parse_and_reconcile(
             content=content,
             business_date=business_date or business_now().date(),
             recognition_mode=recognition_mode,
-            cloud_ai_consent=cloud_ai_consent,
             request_id=request_id,
             settings=settings,
             cached_layout=cached_layout,
@@ -883,7 +863,6 @@ def _parse_and_reconcile(
                 content=content,
                 business_date=business_date or business_now().date(),
                 recognition_mode=recognition_mode,
-                cloud_ai_consent=cloud_ai_consent,
                 request_id=request_id,
                 settings=settings,
                 cached_layout=cached_layout,
@@ -974,7 +953,6 @@ def preview_import(
     user: AuthContext,
     document_kind: str | None = None,
     recognition_mode: str = "AUTO",
-    cloud_ai_consent: bool = False,
     business_date: date | None = None,
     settings: Settings | None = None,
 ) -> tuple[InjectionSchedulingImportBatch, bool]:
@@ -1003,7 +981,6 @@ def preview_import(
         content=content,
         document_kind=document_kind,
         recognition_mode=recognition_mode,
-        cloud_ai_consent=cloud_ai_consent,
         business_date=effective_business_date,
         request_id=preview_request_id,
         settings=settings,
@@ -1269,7 +1246,6 @@ def preview_import(
                         "business_date",
                         "overall_confidence",
                         "cache_hit",
-                        "cloud_ai_consent",
                     }
                 },
             },
@@ -1393,7 +1369,6 @@ def retry_import_batch(
         content=content,
         document_kind=batch.document_kind,
         recognition_mode=requested_recognition_mode,
-        cloud_ai_consent=bool(cached_layout),
         business_date=recognition_business_date,
         request_id=payload.request_id,
         settings=settings,

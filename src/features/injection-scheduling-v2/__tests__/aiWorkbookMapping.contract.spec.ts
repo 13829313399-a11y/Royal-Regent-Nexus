@@ -7,12 +7,12 @@ const wizard = fs.readFileSync(path.join(root, 'src/features/injection-schedulin
 const api = fs.readFileSync(path.join(root, 'src/features/injection-scheduling-v2/api/injectionSchedulingV2Api.ts'), 'utf8')
 
 describe('AI-B10/B11 workbook preview and mapping boundaries', () => {
-  it('runs local inspection before import and discloses cloud snapshot use', () => {
-    expect(api).toContain("http.post('/ai/workbooks/inspect'")
+  it('selects a workbook without an Artifact, scanner, or Pilot preflight', () => {
+    expect(api).not.toContain("http.post('/ai/workbooks/inspect'")
+    expect(wizard).not.toContain('uploadAIArtifact')
     expect(api).toContain("http.post('/ai/workbooks/mapping-proposal'")
-    expect(wizard).toContain('本地只读语义检查通过')
-    expect(wizard).toContain('原始 Excel 不发送')
-    expect(wizard).toContain('不会创建 Import Batch、订单、Task 或 Profile')
+    expect(wizard).toContain('选择后可直接生成预览')
+    expect(wizard).toContain('无需额外确认，可直接生成预览')
   })
 
   it('keeps AI mappings in the existing human-reviewed profile draft flow', () => {
@@ -25,13 +25,14 @@ describe('AI-B10/B11 workbook preview and mapping boundaries', () => {
     expect(wizard).toContain('<PreviewCard')
   })
 
-  it('offers guarded AI layout fallback inside the existing import preview flow', () => {
+  it('offers AI layout fallback without a consent gate', () => {
     expect(api).toContain("body.set('recognition_mode', recognitionMode)")
-    expect(api).toContain("body.set('cloud_ai_consent', cloudAiConsent ? 'true' : 'false')")
+    expect(api).not.toContain('cloud_ai_consent')
+    expect(api).not.toContain('cloud_consent')
     expect(api).toContain("body.set('business_date', businessDate)")
     expect(wizard).toContain('固定模板优先，必要时 AI（推荐）')
     expect(wizard).toContain('直接使用 AI 识别布局')
-    expect(wizard).toContain('有限工作簿结构')
+    expect(wizard).not.toContain('有限工作簿结构')
     expect(wizard).toContain('AI 布局已通过后端来源校验')
     expect(wizard).toContain('确定性服务完成')
   })

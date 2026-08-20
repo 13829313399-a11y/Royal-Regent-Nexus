@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import inspect
 import json
 from datetime import date
 from io import BytesIO
@@ -146,6 +147,20 @@ def mapping_settings() -> Settings:
         ai_default_model="qwen3.7-plus",
         ai_cloud_workbook_mapping_enabled=True,
     )
+
+
+def test_mapping_endpoint_has_no_pilot_artifact_or_consent_gate() -> None:
+    from app.api.ai import workbook_mapping_proposal_endpoint
+
+    signature = inspect.signature(workbook_mapping_proposal_endpoint)
+    assert "cloud_consent" not in signature.parameters
+    assert "storage" not in signature.parameters
+    assert "scanner" not in signature.parameters
+    source = inspect.getsource(workbook_mapping_proposal_endpoint)
+    assert "pilot_guard" not in source
+    assert "_legacy_workbook_artifact" not in source
+    assert "cloud_consent" not in source
+    assert "relaxed_limits=True" in source
 
 
 def test_mapping_proposal_uses_existing_catalog_and_stays_profile_draft() -> None:

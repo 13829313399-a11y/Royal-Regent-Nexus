@@ -114,7 +114,10 @@ from app.services.auth import (
     AuthContext,
     get_current_user,
 )
-from app.services.business_authz import ensure_permission_for_departments
+from app.services.business_authz import (
+    ensure_permission_for_departments,
+    is_wildcard_super_admin,
+)
 from app.services.injection_scheduling import SCHEDULING_DEPARTMENTS
 
 router = APIRouter(prefix="/api/ai")
@@ -149,6 +152,8 @@ def _ensure_workbook_permission(
     factory_id: str,
 ) -> str:
     normalized = factory_id.strip()
+    if is_wildcard_super_admin(current_user):
+        return normalized
     ensure_permission_for_departments(
         db,
         current_user,
@@ -958,29 +963,18 @@ async def workbook_mapping_proposal_endpoint(
     request: Request,
     factory_id: Annotated[str, Form()],
     document_kind: Annotated[str, Form()],
-    cloud_consent: Annotated[bool, Form()],
     file: Annotated[UploadFile, File()],
-    storage: ArtifactStorageDependency,
-    scanner: ArtifactScannerDependency,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[AuthContext, Depends(get_current_user)],
 ) -> AIWorkbookMappingProposal:
     verified_factory_id = _ensure_workbook_permission(db, current_user, factory_id)
-    ensure_permission_for_departments(
-        db,
-        current_user,
-        "injection_scheduling:propose_import_profiles",
-        verified_factory_id,
-        SCHEDULING_DEPARTMENTS,
-    )
-    if not cloud_consent:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "AI_CLOUD_CONSENT_REQUIRED",
-                "message": "生成 AI 映射建议前必须明确同意发送脱敏语义快照",
-                "retryable": False,
-            },
+    if not is_wildcard_super_admin(current_user):
+        ensure_permission_for_departments(
+            db,
+            current_user,
+            "injection_scheduling:propose_import_profiles",
+            verified_factory_id,
+            SCHEDULING_DEPARTMENTS,
         )
     allowed_kinds = {
         "DEMAND_ORDER",
@@ -990,40 +984,14 @@ async def workbook_mapping_proposal_endpoint(
     }
     if document_kind not in allowed_kinds:
         raise HTTPException(status_code=422, detail="document_kind 无效")
+    content = file.file.read()
     try:
-        pilot_guard.evaluate_access(current_user, settings)
-    except AIPilotGuardError as exc:
-        raise _pilot_http_exception(
-            exc,
-            request=request,
-            user=current_user,
-        ) from None
-    content = file.file.read(MAX_WORKBOOK_BYTES + 1)
-    try:
-        artifact = _legacy_workbook_artifact(
-            db,
+        snapshot = inspect_workbook(
+            source_file_name=file.filename or "upload.xlsx",
             content=content,
-            filename=file.filename or "upload.xlsx",
             factory_id=verified_factory_id,
-            user=current_user,
-            storage=storage,
-            scanner=scanner,
+            relaxed_limits=True,
         )
-        if artifact is None:
-            snapshot = inspect_workbook(
-                source_file_name=file.filename or "upload.xlsx",
-                content=content,
-                factory_id=verified_factory_id,
-            )
-        else:
-            snapshot, artifact = inspect_workbook_artifact(
-                db,
-                artifact_id=artifact.id,
-                user=current_user,
-                factory_id=verified_factory_id,
-                allowed_factory_ids=_require_artifacts(current_user),
-                storage=storage,
-            )
         provider = build_provider(settings)
         try:
             proposal = await propose_workbook_mapping(
@@ -1036,11 +1004,6 @@ async def workbook_mapping_proposal_endpoint(
             )
         finally:
             await provider.aclose()
-        if artifact is not None:
-            artifact.model_version = proposal.generated_by_model
-            db.commit()
-    except ArtifactError as exc:
-        raise _artifact_error(exc) from exc
     except (WorkbookInspectionError, WorkbookMappingError) as exc:
         workbook_logger.info(
             "workbook.mapping_proposal request_id=%s user_id=%s factory_id=%s status=failed code=%s",

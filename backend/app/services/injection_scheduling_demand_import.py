@@ -24,7 +24,6 @@ from app.models.injection_scheduling_shared import (
 )
 from app.services.injection_scheduling_canonical import _convert
 from app.services.injection_scheduling_excel import (
-    MAX_SOURCE_BYTES,
     _clean_text,
     _issue,
     _WorkbookReader,
@@ -639,8 +638,6 @@ def parse_demand_order_workbook(
     factory_id: str,
     profile: ImportProfile,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if len(content) > MAX_SOURCE_BYTES:
-        raise HTTPException(status_code=413, detail="Excel 文件超过 50 MB 限制")
     source_file_hash = hashlib.sha256(content).hexdigest()
     company_scope_id = _company_scope_id(db, factory_id)
     source_namespace_id = f"{profile.source_namespace_id}:{factory_id}"

@@ -22,11 +22,11 @@ from app.services.auth import (
     get_current_user,
     has_permission_in_scope,
 )
+from app.services.business_authz import is_wildcard_super_admin
 from app.services.injection_scheduling import (
     SCHEDULING_DEPARTMENTS,
     require_injection_scheduling_factory,
 )
-from app.services.injection_scheduling_excel import MAX_SOURCE_BYTES
 from app.services.injection_scheduling_import import (
     approve_master_differences,
     confirm_import,
@@ -60,6 +60,8 @@ def _ensure_permission(
     factory_id: str,
 ) -> str:
     factory_id = require_injection_scheduling_factory(factory_id)
+    if is_wildcard_super_admin(user):
+        return factory_id
     if any(
         has_permission_in_scope(user, permission, factory_id, department)
         for department in SCHEDULING_DEPARTMENTS
@@ -121,7 +123,6 @@ def post_import_preview(
     expected_revision: Annotated[int, Form()] = 0,
     document_kind: Annotated[str | None, Form()] = None,
     recognition_mode: Annotated[str, Form()] = "AUTO",
-    cloud_ai_consent: Annotated[bool, Form()] = False,
     business_date: Annotated[date | None, Form()] = None,
 ):
     factory_id = _ensure_permission(
@@ -130,7 +131,7 @@ def post_import_preview(
         "injection_scheduling:import",
         factory_id,
     )
-    content = file.file.read(MAX_SOURCE_BYTES + 1)
+    content = file.file.read()
     record, replay = preview_import(
         db,
         factory_id=factory_id,
@@ -141,7 +142,6 @@ def post_import_preview(
         user=current_user,
         document_kind=document_kind,
         recognition_mode=recognition_mode,
-        cloud_ai_consent=cloud_ai_consent,
         business_date=business_date,
         settings=settings,
     )

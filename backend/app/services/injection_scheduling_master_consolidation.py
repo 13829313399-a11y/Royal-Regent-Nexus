@@ -23,7 +23,6 @@ from app.models.injection_scheduling_shared import (
 )
 from app.services.injection_scheduling_demand_import import normalize_identifier
 from app.services.injection_scheduling_excel import (
-    MAX_SOURCE_BYTES,
     _arm_type,
     _fixture_type,
     _WorkbookReader,
@@ -245,10 +244,6 @@ def consolidate_master_data_workbook(
     this function deliberately does not guess currency, tax mode or applicability.
     """
 
-    if not source_file_name.lower().endswith(".xlsx"):
-        raise HTTPException(status_code=422, detail="仅支持 .xlsx 主数据文件")
-    if len(content) > MAX_SOURCE_BYTES:
-        raise HTTPException(status_code=413, detail="Excel 文件超过 50 MB 限制")
     source_file_hash = hashlib.sha256(content).hexdigest()
     reader = _WorkbookReader(content)
     try:
