@@ -275,7 +275,7 @@ export interface HairPayload { lines: HairRow[] }
 export interface SewingMaterialRow {
   item: string
   part: string
-  craft: '' | '电绣'
+  craft: '' | '电绣' | '丝印'
   pieces: number
   usage: number
   unit_price_rmb: number
@@ -460,6 +460,7 @@ export interface SalesShippingPricing {
 }
 export interface SalesPayload {
   paper_price_factor: number
+  inner_paper_price_factor?: number
   flat_card_price_factor?: number
   testing_fee_enabled: boolean
   testing_fee_total_usd: number
@@ -494,6 +495,59 @@ function rows(value: unknown) {
 function numberValue(value: unknown, fallback = 0) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
+}
+
+export const defaultSalesMiscRatio = .02
+export const defaultSalesSettlementDivisor = .98
+
+export function salesSettlementDivisorForMiscRatio(miscRatio: number) {
+  if (!Number.isFinite(miscRatio) || miscRatio < 0 || miscRatio >= 1) {
+    throw new RangeError('杂项率必须大于等于 0 且小于 1。')
+  }
+  return Number((1 - miscRatio).toFixed(4))
+}
+
+export function salesMiscRatioForSettlementDivisor(divisor: number) {
+  if (!Number.isFinite(divisor) || divisor <= 0 || divisor > 1) {
+    throw new RangeError('报表找数系数必须大于 0 且小于等于 1。')
+  }
+  return Number((1 - divisor).toFixed(4))
+}
+
+function normalizedSalesMiscPricing(
+  shippingSource: Record<string, unknown>,
+  legacySettlement: unknown,
+) {
+  const miscRatioSource = shippingSource.misc_ratio
+  const miscRatio = Number(miscRatioSource)
+  if (Object.prototype.hasOwnProperty.call(shippingSource, 'misc_ratio')
+    && miscRatioSource !== '' && miscRatioSource != null
+    && Number.isFinite(miscRatio) && miscRatio >= 0 && miscRatio < 1) {
+    const normalizedMiscRatio = Number(miscRatio.toFixed(4))
+    return {
+      misc_ratio: normalizedMiscRatio,
+      divisor: salesSettlementDivisorForMiscRatio(normalizedMiscRatio),
+    }
+  }
+
+  const divisorCandidates = [
+    Object.prototype.hasOwnProperty.call(shippingSource, 'divisor') ? shippingSource.divisor : undefined,
+    legacySettlement,
+  ]
+  for (const candidate of divisorCandidates) {
+    const divisor = Number(candidate)
+    if (!Number.isFinite(divisor) || divisor <= 0 || divisor > 1) continue
+    const normalizedDivisor = Number(divisor.toFixed(4))
+    return {
+      misc_ratio: salesMiscRatioForSettlementDivisor(normalizedDivisor),
+      divisor: normalizedDivisor,
+    }
+  }
+
+  return {
+    misc_ratio: defaultSalesMiscRatio,
+    divisor: defaultSalesSettlementDivisor,
+  }
 }
 
 function multiplierValue(value: unknown, fallback = 1) {
@@ -1276,7 +1330,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         materials: rows(group.materials ?? group.items).map((row) => ({
           item: textValue(row.item ?? row.fabric ?? row.material),
           part: textValue(row.part),
-          craft: textValue(row.craft) === '电绣' ? '电绣' : '',
+          craft: ['电绣', '丝印'].includes(textValue(row.craft)) ? textValue(row.craft) as SewingMaterialRow['craft'] : '',
           pieces: numberValue(row.pieces),
           usage: numberValue(row.usage ?? row.qty),
           unit_price_rmb: numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
@@ -1325,7 +1379,14 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   }
   const hasLegacySalesCostFields = ['additional_tax_hkd', 'indonesia_freight_hkd', 'tax_categories', 'scenarios']
     .some((key) => Object.prototype.hasOwnProperty.call(source, key))
+  const legacyScenarioRows = rows(source.scenarios)
+  const legacyScenarioWithSettlement = legacyScenarioRows.find((row) => (
+    Object.prototype.hasOwnProperty.call(row, 'settlement')
+  ))
   const paperPriceFactor = numberValue(source.paper_price_factor, 2.75)
+  const hasInnerPaperPriceFactor = Object.prototype.hasOwnProperty.call(source, 'inner_paper_price_factor')
+    && source.inner_paper_price_factor !== ''
+    && source.inner_paper_price_factor != null
   const hasFlatCardPriceFactor = Object.prototype.hasOwnProperty.call(source, 'flat_card_price_factor')
     && source.flat_card_price_factor !== ''
     && source.flat_card_price_factor != null
@@ -1346,9 +1407,11 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       .map(([key, value]) => [key, positiveIntegerValue(value, 0)]),
   )
   const shippingSource = objectValue(source.shipping)
-  const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping')
+  const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping') || Boolean(legacyScenarioWithSettlement)
+  const miscPricing = normalizedSalesMiscPricing(shippingSource, legacyScenarioWithSettlement?.settlement)
   return {
     paper_price_factor: paperPriceFactor,
+    ...(hasInnerPaperPriceFactor ? { inner_paper_price_factor: numberValue(source.inner_paper_price_factor, paperPriceFactor) } : {}),
     ...(hasFlatCardPriceFactor ? { flat_card_price_factor: numberValue(source.flat_card_price_factor, paperPriceFactor) } : {}),
     testing_fee_enabled: booleanValue(source.testing_fee_enabled, true),
     testing_fee_total_usd: numberValue(source.testing_fee_total_usd),
@@ -1382,8 +1445,8 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'selected_markup_moq')
           ? { selected_markup_moq: numberValue(shippingSource.selected_markup_moq) }
           : {}),
-        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'misc_ratio') ? { misc_ratio: numberValue(shippingSource.misc_ratio, .02) } : {}),
-        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'divisor') ? { divisor: numberValue(shippingSource.divisor, .98) } : {}),
+        misc_ratio: miscPricing.misc_ratio,
+        divisor: miscPricing.divisor,
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'freight_pct') ? { freight_pct: numberValue(shippingSource.freight_pct, 48) } : {}),
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'lifting_pct') ? { lifting_pct: numberValue(shippingSource.lifting_pct, 52) } : {}),
       },
@@ -1392,7 +1455,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       additional_tax_hkd: numberValue(source.additional_tax_hkd),
       indonesia_freight_hkd: numberValue(source.indonesia_freight_hkd),
       tax_categories: rows(source.tax_categories).map((row) => ({ code: textValue(row.code), amount_hkd: numberValue(row.amount_hkd), rate: row.rate === '' || row.rate == null ? '' : numberValue(row.rate) })),
-      scenarios: rows(source.scenarios).map((row) => ({ name: textValue(row.name), capacity_cuft: numberValue(row.capacity_cuft), freight_cost_hkd: numberValue(row.freight_cost_hkd), carton_cuft: numberValue(row.carton_cuft), qty_per_carton: numberValue(row.qty_per_carton), freight_share: numberValue(row.freight_share, .48), lift_share: numberValue(row.lift_share, .52), markup: numberValue(row.markup, 1.2), settlement: numberValue(row.settlement, .98) })),
+      scenarios: legacyScenarioRows.map((row) => ({ name: textValue(row.name), capacity_cuft: numberValue(row.capacity_cuft), freight_cost_hkd: numberValue(row.freight_cost_hkd), carton_cuft: numberValue(row.carton_cuft), qty_per_carton: numberValue(row.qty_per_carton), freight_share: numberValue(row.freight_share, .48), lift_share: numberValue(row.lift_share, .52), markup: numberValue(row.markup, 1.2), settlement: numberValue(row.settlement, .98) })),
     } : {}),
     customer_quote_fields: {
       buzzbee: {

@@ -688,6 +688,22 @@ def test_sewing_import_maps_screenshot_fields_multiple_groups_and_ignores_derive
     assert any("总价钱和合计仅用于核对" in warning for warning in parsed.warnings)
 
 
+def test_sewing_import_preserves_screen_printing_craft():
+    parsed = parse_internal_quote_workbook(
+        workbook_bytes(
+                [
+                    ["布料名称", "部位", "工艺", "裁片数", "用量/码", "物料价(RMB)", "价钱(RMB)", "码点"],
+                    ["网布", "正面", "丝印", 1, 0.5, 6, 3, 1],
+            ],
+            title="车缝报价",
+        ),
+        "sewing",
+    )
+
+    material = parsed.payload_fragment["groups"][0]["materials"][0]
+    assert material["craft"] == "丝印"
+
+
 def test_assembly_import_builds_process_groups_and_uses_quote_qty_fallback():
     parsed = parse_internal_quote_workbook(
         workbook_bytes(

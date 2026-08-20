@@ -74,6 +74,7 @@ from app.services.internal_quote_calculator import (
     content_hash,
     decimal_text,
     decimal_value,
+    resolve_sales_misc_and_settlement,
     total_from_calculation,
 )
 from app.services.internal_quote_prefill import prefill_molding_from_engineering
@@ -120,6 +121,7 @@ FINAL_SUBMIT_NOTIFICATION_EVENTS = {
 }
 FINAL_REVIEW_NOTIFICATION_EVENTS = {"final_release_submitted", "whole_quote_submitted"}
 ARTIFACT_NOTIFICATION_EVENTS = {"customer_price_artifact_available"}
+SEWING_TAX_REFUND_FACTORY_IDS = frozenset({"huakang-c", "huakang-d"})
 ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS = (
     SECTION_EDIT_NOTIFICATION_EVENTS
     | SECTION_REVIEW_NOTIFICATION_EVENTS
@@ -785,7 +787,15 @@ def _cost_context(
         sales_payload = _json_object(by_code["sales"].payload_json) if "sales" in by_code else {}
     sales_has_cartons = bool(sales_payload.get("cartons"))
     sales_has_packaging_materials = bool(sales_payload.get("packaging_materials"))
-    indonesia_freight = decimal_value(sales_payload.get("indonesia_freight_hkd"), "印尼运费")
+    # Indonesia freight is a destination-specific direct cost. Historical and
+    # copied payloads may still carry the field on mainland/unspecified quotes;
+    # keep the stored evidence intact but never let it enter an inapplicable
+    # quote's authoritative cost context.
+    indonesia_freight = (
+        decimal_value(sales_payload.get("indonesia_freight_hkd"), "印尼运费")
+        if quote.region_code == "indonesia"
+        else Decimal("0")
+    )
     components = {
         "molding_hkd": value("molding"),
         "painting_hkd": value("painting"),
@@ -871,6 +881,7 @@ def _rr2_cost_summary(
     cost_context: dict[str, Decimal],
     snapshot: dict[str, object],
     quote_quantity: object = 10000,
+    factory_id: str = "huaxing",
 ) -> dict[str, object]:
     """Build the four rr2 summary tables from saved authoritative calculations.
 
@@ -909,6 +920,9 @@ def _rr2_cost_summary(
     fx_hkd_usd = _summary_decimal(fx_values.get("hkd_usd"), "7.8")
     if fx_hkd_usd <= 0:
         fx_hkd_usd = Decimal("7.8")
+    fx_rmb_hkd = _summary_decimal(fx_values.get("rmb_hkd"), "0.85")
+    if fx_rmb_hkd <= 0:
+        fx_rmb_hkd = Decimal("0.85")
 
     sales_payload = payload("sales")
     sales_totals = totals("sales")
@@ -963,21 +977,50 @@ def _rr2_cost_summary(
         if text_matches(name, r"吸塑|blister"):
             electronic_blister += amount
 
-    import_material = Decimal("0")
-    domestic_material = Decimal("0")
-    injection_labor = Decimal("0")
-    for line in lines("molding", "injection"):
-        quantity = _summary_decimal(line.get("quantity"), "1")
-        material_amount = _summary_decimal(line.get("material_cost_hkd")) * quantity
-        process_amount = _summary_decimal(line.get("molding_cost_hkd")) * quantity
-        if text_matches(line.get("material"), r"^(POM|PVC|C[- ]?PVC)"):
-            domestic_material += material_amount
-        elif str(line.get("material") or "").strip():
-            import_material += material_amount
-        injection_labor += process_amount
+    molding_totals = totals("molding")
+    has_authoritative_material_split = (
+        molding_totals.get("injection_imported_material_hkd") is not None
+        and molding_totals.get("injection_domestic_material_hkd") is not None
+    )
+    import_material = _summary_decimal(molding_totals.get("injection_imported_material_hkd"))
+    domestic_material = _summary_decimal(molding_totals.get("injection_domestic_material_hkd"))
+    injection_labor = _summary_decimal(molding_totals.get("injection_labor_hkd"))
+    if not has_authoritative_material_split or molding_totals.get("injection_labor_hkd") is None:
+        legacy_import_material = Decimal("0")
+        legacy_domestic_material = Decimal("0")
+        legacy_injection_labor = Decimal("0")
+        for line in lines("molding", "injection"):
+            quantity = _summary_decimal(line.get("quantity"), "1")
+            material_amount = (
+                _summary_decimal(line.get("material_amount_hkd"))
+                if line.get("material_amount_hkd") is not None
+                else _summary_decimal(line.get("material_cost_hkd")) * quantity
+            )
+            process_amount = (
+                _summary_decimal(line.get("molding_amount_hkd"))
+                if line.get("molding_amount_hkd") is not None
+                else _summary_decimal(line.get("molding_cost_hkd")) * quantity
+            )
+            material_origin = str(line.get("material_origin") or "").strip().lower()
+            if material_origin == "domestic" or (
+                not material_origin and text_matches(line.get("material"), r"^(POM|PVC|C[- ]?PVC)")
+            ):
+                legacy_domestic_material += material_amount
+            elif material_origin == "imported" or str(line.get("material") or "").strip():
+                legacy_import_material += material_amount
+            legacy_injection_labor += process_amount
+        if not has_authoritative_material_split:
+            import_material = legacy_import_material
+            domestic_material = legacy_domestic_material
+        if molding_totals.get("injection_labor_hkd") is None:
+            injection_labor = legacy_injection_labor
+    molding_material = (
+        _summary_decimal(molding_totals.get("injection_material_hkd"))
+        if molding_totals.get("injection_material_hkd") is not None
+        else import_material + domestic_material
+    )
 
     factory_price = cost_context.get("factory_price_hkd", Decimal("0"))
-    molding_totals = totals("molding")
     painting_totals = totals("painting")
     painting_total = _summary_decimal(painting_totals.get("total_hkd"))
     painting_labor = _summary_decimal(painting_totals.get("painting_labor_hkd"))
@@ -987,6 +1030,24 @@ def _rr2_cost_summary(
         paint_material = painting_total * Decimal("0.30")
     slush_total = _summary_decimal(totals("slush").get("total_hkd"))
     sewing_totals = totals("sewing")
+    sewing_clothes_total = _summary_decimal(sewing_totals.get("clothes_hkd"))
+    if sewing_totals.get("clothes_material_hkd") is not None:
+        sewing_clothes_material = _summary_decimal(sewing_totals.get("clothes_material_hkd"))
+    else:
+        # Older calculations only stored line-level RMB amounts. Rebuild the
+        # refundable material conservatively, never treating labour as material.
+        sewing_clothes_material = Decimal("0")
+        for line in lines("sewing", "sewing_material"):
+            if str(line.get("category") or "clothes") != "clothes":
+                continue
+            cost_kind = str(line.get("cost_kind") or line.get("cost_type") or "")
+            is_labor = cost_kind == "labor" or "人工" in f"{line.get('item', '')}{line.get('part', '')}"
+            if is_labor:
+                continue
+            if line.get("amount_hkd") is not None:
+                sewing_clothes_material += _summary_decimal(line.get("amount_hkd"))
+            else:
+                sewing_clothes_material += _summary_decimal(line.get("amount_rmb")) / fx_rmb_hkd
     hair_section = by_code.get("hair")
     hair_total = (
         _summary_decimal(totals("hair").get("total_hkd"))
@@ -998,7 +1059,10 @@ def _rr2_cost_summary(
     electronic_total = _summary_decimal(totals("electronic").get("total_hkd"))
     assembly_total = _summary_decimal(assembly_totals.get("total_hkd"))
     carton_total = cost_context.get("carton_hkd", Decimal("0"))
-    indonesia_freight = _summary_decimal(sales_payload.get("indonesia_freight_hkd"))
+    # `_cost_context` is the authoritative, region-gated source. Do not read
+    # the raw Sales payload here or a stale/copied mainland value can bypass
+    # the destination rule in the summary and exported workbook.
+    indonesia_freight = _summary_decimal(cost_context.get("indonesia_freight_hkd"))
     additional_tax = _summary_decimal(sales_payload.get("additional_tax_hkd"))
 
     shipping_source = sales_payload.get("shipping", {})
@@ -1015,15 +1079,17 @@ def _rr2_cost_summary(
         fallback_markup,
         quote_quantity,
     )
-    misc_ratio = _summary_decimal(shipping_source.get("misc_ratio", snapshot.get("misc_ratio", "0.02")), "0.02")
-    if misc_ratio < 0 or misc_ratio > 1:
+    try:
+        misc_ratio, settlement = resolve_sales_misc_and_settlement(
+            shipping_source,
+            legacy_scenarios,
+            snapshot,
+        )
+    except CalculationInputError:
+        # Saved historical payloads must remain readable even if an obsolete
+        # divisor is malformed. Save/preview paths enforce the strict bounds.
         misc_ratio = Decimal("0.02")
-    settlement = _summary_decimal(
-        shipping_source.get("divisor", first_scenario.get("settlement", snapshot.get("settlement", "0.98"))),
-        "0.98",
-    )
-    if settlement <= 0:
-        settlement = Decimal("0.98")
+        settlement = Decimal("1") - misc_ratio
     freight_share = _summary_decimal(
         shipping_source.get("freight_pct", first_scenario.get("freight_share", snapshot.get("freight_share", "0.48"))),
         "0.48",
@@ -1063,14 +1129,31 @@ def _rr2_cost_summary(
     ), None)
     freight, cabinet = transport_parts(yt40) if freight_enabled and yt40 else (Decimal("0"), Decimal("0"))
 
+    # The misc ratio is a share of the grossed-up quote, not a replacement for
+    # direct costs such as Indonesia freight and additional tax.  This mirrors
+    # the released workbook formulas:
+    #
+    #   quoted price = shipping floor * markup / (1 - misc ratio)
+    #   misc amount  = quoted price * misc ratio
+    #
+    # Consequently ``quoted price - misc amount`` always equals the price
+    # before the misc gross-up.  Keep the direct miscellaneous costs separate
+    # so they remain in cost totals exactly once without being displayed as the
+    # percentage-based ``t2.misc`` amount.
+    direct_misc_cost = indonesia_freight + additional_tax
+    shipping_floor = factory_price + additional_tax
+    base_price = shipping_floor * markup / settlement
+    percentage_misc = base_price * misc_ratio
+
     t1_values = {
-        "base_price": factory_price * markup,
+        "base_price": base_price,
+        "material": molding_material,
         "imp_mat": import_material,
         "dom_mat": domestic_material,
         "blow": _summary_decimal(molding_totals.get("blow_hkd")),
         "slush": slush_total,
         "sewing_hair": hair_total,
-        "sewing_cloth": _summary_decimal(sewing_totals.get("clothes_hkd")),
+        "sewing_cloth": sewing_clothes_total,
         "hardware": max(hardware_total - hardware_motor, Decimal("0")),
         "electronic": max(electronic_total - electronic_motor, Decimal("0")),
         "motor": hardware_motor + electronic_motor,
@@ -1088,7 +1171,7 @@ def _rr2_cost_summary(
         "carton": carton_total,
         "freight": freight,
         "cabinet": cabinet,
-        "misc": indonesia_freight + additional_tax,
+        "misc": percentage_misc,
     }
     t3_values = {
         "injection_labor": injection_labor,
@@ -1098,9 +1181,16 @@ def _rr2_cost_summary(
     }
 
     no_labor_cost = (
-        sum((value for key, value in t1_values.items() if key != "base_price"), Decimal("0"))
+        # ``material`` is the visible combined injection-resin cost.  The two
+        # legacy split keys remain in the API solely for tax/Excel compatibility
+        # and must not be counted a second time.
+        sum((
+            value for key, value in t1_values.items()
+            if key not in {"base_price", "imp_mat", "dom_mat"}
+        ), Decimal("0"))
         + sum((value for key, value in t2_values.items() if key not in {"code_before", "code_after"}), Decimal("0"))
         + t3_values["injection_labor"]
+        + direct_misc_cost
     )
     labor_cost = t3_values["painting_labor"] + t3_values["paint_material"] + t3_values["assembly_labor"]
     total_cost = no_labor_cost + labor_cost
@@ -1109,12 +1199,18 @@ def _rr2_cost_summary(
     profit = base_price - total_cost
 
     tax_13_cost = (
-        t1_values["dom_mat"] + t1_values["hardware"] + t1_values["motor"]
+        domestic_material + t1_values["hardware"] + t1_values["motor"]
         + t2_values["color_box"] + t2_values["battery"] + t2_values["libao"]
         + t2_values["other_buy"] + t3_values["paint_material"] + t1_values["glue_bag"]
     )
     tax_rates = snapshot.get("tax_rates", {})
     tax_rates = tax_rates if isinstance(tax_rates, dict) else {}
+    sewing_tax_refund_enabled = str(factory_id or "").strip().lower() in SEWING_TAX_REFUND_FACTORY_IDS
+    sewing_clothes_rate = (
+        _summary_decimal(tax_rates.get("sewing_clothes"), "0.115") * 100
+        if sewing_tax_refund_enabled
+        else None
+    )
     tax_specs = (
         ("tax13", "含税13%类成本", tax_13_cost, None),
         ("labor13", "人工类13%", injection_labor + t3_values["painting_labor"] + t3_values["assembly_labor"], None),
@@ -1124,7 +1220,12 @@ def _rr2_cost_summary(
         ("tax1", "含税1%", t2_values["plating"], _summary_decimal(tax_rates.get("tax_1_percent"), "0.0099") * 100),
         ("slush3", "搪胶类3%", t1_values["slush"], _summary_decimal(tax_rates.get("slush"), "0.03") * 100),
         ("sewhair13", "车发类13%", t1_values["sewing_hair"], _summary_decimal(tax_rates.get("sewing_hair"), "0.115") * 100),
-        ("sewcloth13", "车衣类13%", t1_values["sewing_cloth"], _summary_decimal(tax_rates.get("sewing_clothes"), "0.115") * 100),
+        (
+            "sewcloth13",
+            "车衣物料退税（仅华康C/D）",
+            sewing_clothes_material,
+            sewing_clothes_rate,
+        ),
         ("suction6", "吸塑类6%", t1_values["suction"], _summary_decimal(tax_rates.get("blister"), "0.06") * 100),
         ("freight9", "运费类9%", t2_values["freight"], _summary_decimal(tax_rates.get("freight_tax_9"), "0.0826") * 100),
         ("tax13b", "含税13%类", tax_13_cost, _summary_decimal(tax_rates.get("tax_13_percent"), "0.115") * 100),
@@ -1147,10 +1248,16 @@ def _rr2_cost_summary(
     def rows_from(values: dict[str, Decimal], definitions: tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
         return [{"key": key, "label": label, "value": decimal_text(values[key])} for key, label in definitions]
 
-    t1_rows = rows_from(t1_values, (
-        ("base_price", "货价"), ("imp_mat", "进口料"), ("dom_mat", "国内料"), ("blow", "吹气"),
+    t1_rows: list[dict[str, object]] = rows_from(t1_values, (
+        ("base_price", "货价"), ("material", "料价"), ("blow", "吹气"),
         ("slush", "搪胶"), ("sewing_hair", "车发"), ("sewing_cloth", "车衣"), ("hardware", "五金"),
         ("electronic", "电子"), ("motor", "马达"), ("suction", "吸塑"), ("glue_bag", "胶袋"),
+    ))
+    # Transitional compatibility for released Excel code and older clients.
+    # New UI consumers hide these rows and use the combined ``material`` row.
+    t1_rows.extend((
+        {"key": "imp_mat", "label": "进口料", "value": decimal_text(import_material), "display": False},
+        {"key": "dom_mat", "label": "国内料", "value": decimal_text(domestic_material), "display": False},
     ))
     t2_rows = rows_from(t2_values, (
         ("color_box", "彩盒/内咭"), ("code_before", "未减税前码数"), ("code_after", "减税后码数"),
@@ -1169,7 +1276,6 @@ def _rr2_cost_summary(
     ]
 
     mold_share_usd = cost_context.get("mold_amortization_usd", Decimal("0"))
-    shipping_floor = factory_price + additional_tax
     shipping_rows: list[dict[str, str]] = []
     if freight_enabled:
         option_rows: list[tuple[str, Decimal, Decimal, Decimal]] = [
@@ -1210,13 +1316,19 @@ def _rr2_cost_summary(
         "t2": t2_rows,
         "t3": t3_rows,
         "t4": tax_rows,
+        "molding_material_breakdown": {
+            "total_hkd": decimal_text(molding_material),
+            "imported_hkd": decimal_text(import_material),
+            "domestic_hkd": decimal_text(domestic_material),
+        },
         "totals": {
             "rmb_purchase_cost_hkd": decimal_text(
-                t1_values["dom_mat"] + t1_values["sewing_hair"] + t1_values["sewing_cloth"]
+                domestic_material + t1_values["sewing_hair"] + t1_values["sewing_cloth"]
                 + t1_values["hardware"] + t1_values["electronic"] + t1_values["motor"]
                 + t2_values["color_box"] + t2_values["battery"] + t2_values["libao"]
                 + t2_values["plating"] + t2_values["other_buy"] + t2_values["carton"]
                 + t2_values["misc"] + t1_values["glue_bag"] + t3_values["paint_material"]
+                + direct_misc_cost
             ),
             "total_deduction_hkd": decimal_text(total_deduction),
             "after_deduction_cost_hkd": decimal_text(after_deduction),
@@ -2368,6 +2480,16 @@ def copy_batch_baseline_to_product(
             continue
         old_revision = target_section.revision
         copied_payload = _without_import_batch_ids(_json_object(source_section.payload_json))
+        if code == "sales" and baseline.region_code != target.region_code:
+            # Indonesia freight belongs to the destination-specific product,
+            # not to the batch baseline.  Preserve an Indonesia target's own
+            # value when copying common fields, and never carry the field into
+            # a mainland/unspecified target.
+            target_payload = _json_object(target_section.payload_json)
+            target_indonesia_freight = target_payload.get("indonesia_freight_hkd")
+            copied_payload.pop("indonesia_freight_hkd", None)
+            if target.region_code == "indonesia" and target_indonesia_freight is not None:
+                copied_payload["indonesia_freight_hkd"] = target_indonesia_freight
         target_section.is_required = source_section.is_required
         target_section.payload_json = canonical_json(copied_payload)
         target_section.status = "draft"
@@ -3517,6 +3639,7 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
         cost_context,
         _json_object(reference.snapshot_json),
         quote.qty,
+        factory_id=quote.factory_id,
     )
     section_summaries: list[dict[str, object]] = []
     warnings: list[dict[str, object]] = []

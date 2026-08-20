@@ -1683,7 +1683,13 @@ def create_controlled_export(
     )
     reference_snapshot = _json_object(reference_set.snapshot_json) if reference_set else {}
     cost_context = _cost_context(db, quote)
-    rr2_cost_summary = _rr2_cost_summary(sections, cost_context, reference_snapshot, quote.qty)
+    rr2_cost_summary = _rr2_cost_summary(
+        sections,
+        cost_context,
+        reference_snapshot,
+        quote.qty,
+        factory_id=quote.factory_id,
+    )
     content = build_internal_quote_workbook(
         quote,
         sections,

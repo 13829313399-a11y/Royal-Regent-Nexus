@@ -889,7 +889,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
-        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v9"
+        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v10"
         assert first["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
 
         download = client.get(
@@ -922,18 +922,30 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [quote_sheet.cell(8, column).value for column in range(3, 13)] == [
             "名称", "料型", "料重(G)", "料价(G)", "机型", "1出几套", "目标数", "啤工", "料金额", "报价啤工",
         ]
-        misc_row = next(row for row in range(1, quote_sheet.max_row + 1) if quote_sheet.cell(row, 2).value == "杂项")
-        assert [quote_sheet.cell(misc_row, column).value for column in (5, 6)] == ["HK 40 柜", "YT 20 柜"]
-        assert [quote_sheet.cell(misc_row + 1, column).value for column in (5, 6)] == [2.06, 3.01]
-        assert [quote_sheet.cell(misc_row + 2, column).value for column in (5, 6)] == [3.71, 1.97]
-        subtotal_row = misc_row + 3
-        assert quote_sheet.cell(subtotal_row, 4).value == f"=SUM(D19:D{misc_row})"
+        route_header_row = next(
+            row
+            for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 2).value == "运输方案"
+        )
+        assert [quote_sheet.cell(route_header_row, column).value for column in (5, 6)] == ["HK 40 柜", "YT 20 柜"]
+        assert [quote_sheet.cell(route_header_row + 1, column).value for column in (5, 6)] == [2.06, 3.01]
+        assert [quote_sheet.cell(route_header_row + 2, column).value for column in (5, 6)] == [3.71, 1.97]
+        subtotal_row = route_header_row + 3
+        assert quote_sheet.cell(subtotal_row, 4).value == f"=SUM(D19:D{route_header_row})"
         quote_rows = {
             quote_sheet.cell(row, 2).value: row
             for row in range(1, quote_sheet.max_row + 1)
             if str(quote_sheet.cell(row, 2).value or "").startswith("报价（MOQ")
         }
         assert set(quote_rows) == {"报价（MOQ3K）", "报价（MOQ5K）", "报价（MOQ10K）"}
+        for quote_row in quote_rows.values():
+            settlement_row = quote_row - 1
+            assert quote_sheet.cell(settlement_row, 3).value == "÷"
+            assert all(
+                quote_sheet.cell(settlement_row, column).value == "=1-$Q$6"
+                and quote_sheet.cell(settlement_row, column).number_format == "0.0000"
+                for column in (4, 5, 6)
+            )
         assert quote_sheet.cell(quote_rows["报价（MOQ3K）"], 4).value == (
             f"=D{subtotal_row}*D{quote_rows['报价（MOQ3K）'] - 2}/D{quote_rows['报价（MOQ3K）'] - 1}"
         )

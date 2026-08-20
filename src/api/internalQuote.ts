@@ -148,9 +148,10 @@ export interface ApiInternalQuoteSummary {
   rr2_cost_summary?: {
     currency: string
     indonesia_freight_hkd: string
-    t1: Array<{ key: string; label: string; value: string; format?: string }>
-    t2: Array<{ key: string; label: string; value: string; format?: string }>
-    t3: Array<{ key: string; label: string; value: string; format?: string }>
+    t1: Array<{ key: string; label: string; value: string; format?: string; display?: boolean }>
+    t2: Array<{ key: string; label: string; value: string; format?: string; display?: boolean }>
+    t3: Array<{ key: string; label: string; value: string; format?: string; display?: boolean }>
+    molding_material_breakdown?: { total_hkd: string; imported_hkd: string; domestic_hkd: string }
     t4: Array<{ key: string; label: string; amount_hkd: string; rate_percent: string | null; deduction_hkd: string | null }>
     totals: { rmb_purchase_cost_hkd: string; total_deduction_hkd: string; after_deduction_cost_hkd: string }
     shipping_pricing: {

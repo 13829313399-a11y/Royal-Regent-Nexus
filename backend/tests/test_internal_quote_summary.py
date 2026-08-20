@@ -2,6 +2,8 @@ import json
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.internal_quote import _rr2_cost_summary
 
 
@@ -74,7 +76,7 @@ def summary_sections(*, freight_enabled: bool):
 
 
 SNAPSHOT = {
-    "fx": {"hkd_usd": "7.8"},
+    "fx": {"rmb_hkd": "0.85", "hkd_usd": "7.8"},
     "freight_share": "0.48",
     "tax_rates": {
         "carton": "0.10",
@@ -93,6 +95,126 @@ def rows_by_key(rows: list[dict]):
     return {row["key"]: row for row in rows}
 
 
+@pytest.mark.parametrize(
+    ("factory_id", "expected_rate", "expected_deduction"),
+    [
+        ("huaxing", None, None),
+        ("huadeng", None, None),
+        ("huakang-a", None, None),
+        ("huakang-b", None, None),
+        ("huakang-c", "11.5000", "1.7250"),
+        ("huakang-d", "11.5000", "1.7250"),
+    ],
+)
+def test_rr2_sewing_tax_refund_is_material_only_and_limited_to_huakang_c_d(
+    factory_id: str,
+    expected_rate: str | None,
+    expected_deduction: str | None,
+):
+    sections = summary_sections(freight_enabled=False)
+    sewing = next(item for item in sections if item.department == "sewing")
+    sewing.calculation_json = json.dumps(
+        {
+            "totals": {
+                "quote_mode": "detail",
+                "clothes_material_hkd": "15",
+                "clothes_labor_hkd": "3",
+                "clothes_hkd": "18",
+                "hair_hkd": "0",
+                "total_hkd": "18",
+            },
+            "line_breakdown": [],
+        },
+        ensure_ascii=False,
+    )
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
+        SNAPSHOT,
+        factory_id=factory_id,
+    )
+
+    assert rows_by_key(result["t1"])["sewing_cloth"]["value"] == "18.0000"
+    tax_row = rows_by_key(result["t4"])["sewcloth13"]
+    assert tax_row == {
+        "key": "sewcloth13",
+        "label": "车衣物料退税（仅华康C/D）",
+        "amount_hkd": "15.0000",
+        "rate_percent": expected_rate,
+        "deduction_hkd": expected_deduction,
+    }
+
+
+def test_rr2_sewing_tax_refund_rebuilds_material_only_basis_from_legacy_lines():
+    sections = summary_sections(freight_enabled=False)
+    sewing = next(item for item in sections if item.department == "sewing")
+    sewing.calculation_json = json.dumps(
+        {
+            "totals": {"clothes_hkd": "18", "hair_hkd": "0", "total_hkd": "18"},
+            "line_breakdown": [
+                {
+                    "kind": "sewing_material",
+                    "category": "clothes",
+                    "item": "棉布",
+                    "part": "身体",
+                    "amount_rmb": "12.75",
+                },
+                {
+                    "kind": "sewing_material",
+                    "category": "clothes",
+                    "item": "车缝人工",
+                    "part": "",
+                    "amount_rmb": "1.70",
+                },
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
+        SNAPSHOT,
+        factory_id="huakang-c",
+    )
+
+    tax_row = rows_by_key(result["t4"])["sewcloth13"]
+    assert tax_row["amount_hkd"] == "15.0000"
+    assert tax_row["deduction_hkd"] == "1.7250"
+
+
+def test_rr2_sewing_quick_quote_never_assumes_an_unknown_total_is_refundable_material():
+    sections = summary_sections(freight_enabled=False)
+    sewing = next(item for item in sections if item.department == "sewing")
+    sewing.calculation_json = json.dumps(
+        {
+            "totals": {
+                "quote_mode": "quick",
+                "clothes_material_hkd": "0",
+                "clothes_labor_hkd": "18",
+                "clothes_hkd": "18",
+                "hair_hkd": "0",
+                "total_hkd": "18",
+            },
+            "line_breakdown": [{"kind": "sewing_quick", "category": "clothes", "amount_hkd": "18"}],
+        },
+        ensure_ascii=False,
+    )
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
+        SNAPSHOT,
+        factory_id="huakang-d",
+    )
+
+    tax_row = rows_by_key(result["t4"])["sewcloth13"]
+    assert tax_row["amount_hkd"] == "0.0000"
+    assert tax_row["rate_percent"] == "11.5000"
+    assert tax_row["deduction_hkd"] == "0.0000"
+
+
 def test_rr2_cost_summary_keeps_exact_four_table_fields_and_reference_tax_columns():
     result = _rr2_cost_summary(
         summary_sections(freight_enabled=False),
@@ -100,9 +222,19 @@ def test_rr2_cost_summary_keeps_exact_four_table_fields_and_reference_tax_column
         SNAPSHOT,
     )
 
-    assert [row["label"] for row in result["t1"]] == [
-        "货价", "进口料", "国内料", "吹气", "搪胶", "车发", "车衣", "五金", "电子", "马达", "吸塑", "胶袋",
+    assert [row["label"] for row in result["t1"] if row.get("display", True)] == [
+        "货价", "料价", "吹气", "搪胶", "车发", "车衣", "五金", "电子", "马达", "吸塑", "胶袋",
     ]
+    hidden_material_rows = [row for row in result["t1"] if row.get("display") is False]
+    assert [(row["key"], row["value"]) for row in hidden_material_rows] == [
+        ("imp_mat", "0.0000"),
+        ("dom_mat", "2.0000"),
+    ]
+    assert result["molding_material_breakdown"] == {
+        "total_hkd": "2.0000",
+        "imported_hkd": "0.0000",
+        "domestic_hkd": "2.0000",
+    }
     assert [row["label"] for row in result["t2"]] == [
         "彩盒/内咭", "未减税前码数", "减税后码数", "电池", "利宝", "电镀", "其他外购", "纸箱", "运费", "吊柜费", "杂项",
     ]
@@ -117,11 +249,183 @@ def test_rr2_cost_summary_keeps_exact_four_table_fields_and_reference_tax_column
     assert tax_rows["carton"]["deduction_hkd"] is None
     assert tax_rows["tax1"]["rate_percent"] == "0.9900"
     assert tax_rows["freight9"]["amount_hkd"] == "0.0000"
-    assert rows_by_key(result["t1"])["base_price"]["value"] == "60.0000"
+    assert rows_by_key(result["t1"])["base_price"]["value"] == "61.8367"
     assert rows_by_key(result["t3"])["painting_labor"]["value"] == "7.0000"
     assert rows_by_key(result["t3"])["paint_material"]["value"] == "3.0000"
     assert result["shipping_pricing"]["enabled"] is False
     assert result["shipping_pricing"]["rows"] == []
+
+
+def test_rr2_material_price_uses_authoritative_molding_totals_and_keeps_purchase_split_internal():
+    def build(imported: str, domestic: str, material_total: str = "5"):
+        sections = summary_sections(freight_enabled=False)
+        molding = next(item for item in sections if item.department == "molding")
+        molding.calculation_json = json.dumps(
+            {
+                "totals": {
+                    "injection_hkd": "8",
+                    "injection_material_hkd": material_total,
+                    "injection_imported_material_hkd": imported,
+                    "injection_domestic_material_hkd": domestic,
+                    "injection_labor_hkd": "3",
+                    "blow_hkd": "1",
+                    "total_hkd": "9",
+                },
+                # Deliberately inconsistent legacy evidence proves that the
+                # current calculator totals, rather than another department or
+                # an obsolete browser formula, are authoritative.
+                "line_breakdown": [
+                    {
+                        "kind": "injection",
+                        "material": "POM",
+                        "quantity": "100",
+                        "material_cost_hkd": "100",
+                        "molding_cost_hkd": "100",
+                    },
+                    {"kind": "blow", "material_cost_hkd": "999"},
+                ],
+            },
+            ensure_ascii=False,
+        )
+        return _rr2_cost_summary(
+            sections,
+            {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
+            SNAPSHOT,
+        )
+
+    imported_result = build("5", "0")
+    domestic_result = build("0", "5")
+
+    for result in (imported_result, domestic_result):
+        t1 = rows_by_key(result["t1"])
+        assert t1["material"]["value"] == "5.0000"
+        assert t1["blow"]["value"] == "1.0000"
+        assert rows_by_key(result["t3"])["injection_labor"]["value"] == "3.0000"
+        assert result["molding_material_breakdown"]["total_hkd"] == "5.0000"
+
+    # Reclassifying the same HKD 5 material does not change cost, but domestic
+    # resin remains in the RMB-purchase and 13%-tax bases used by exports.
+    assert (
+        rows_by_key(imported_result["t3"])["total_cost"]["value"]
+        == rows_by_key(domestic_result["t3"])["total_cost"]["value"]
+    )
+    assert (
+        Decimal(domestic_result["totals"]["rmb_purchase_cost_hkd"])
+        - Decimal(imported_result["totals"]["rmb_purchase_cost_hkd"])
+    ) == Decimal("5.0000")
+    assert (
+        Decimal(rows_by_key(domestic_result["t4"])["tax13"]["amount_hkd"])
+        - Decimal(rows_by_key(imported_result["t4"])["tax13"]["amount_hkd"])
+    ) == Decimal("5.0000")
+
+    # The combined total is authoritative even if a future/legacy origin is
+    # not represented by either tax bucket.  Tax and RMB purchase still use
+    # only the explicit domestic split.
+    unclassified_result = build("3", "2", material_total="7")
+    assert rows_by_key(unclassified_result["t1"])["material"]["value"] == "7.0000"
+    assert unclassified_result["molding_material_breakdown"] == {
+        "total_hkd": "7.0000",
+        "imported_hkd": "3.0000",
+        "domestic_hkd": "2.0000",
+    }
+
+
+@pytest.mark.parametrize(
+    ("misc_ratio", "expected_base_price", "expected_misc", "expected_total_cost", "expected_rmb_purchase"),
+    [
+        ("0", "60.6000", "0.0000", "46.5000", "28.5000"),
+        ("0.02", "61.8367", "1.2367", "47.7367", "29.7367"),
+        ("0.03", "62.4742", "1.8742", "48.3742", "30.3742"),
+        ("0.035", "62.7979", "2.1979", "48.6979", "30.6979"),
+    ],
+)
+def test_rr2_cost_summary_books_misc_as_a_share_of_the_grossed_up_quote(
+    misc_ratio: str,
+    expected_base_price: str,
+    expected_misc: str,
+    expected_total_cost: str,
+    expected_rmb_purchase: str,
+):
+    sections = summary_sections(freight_enabled=False)
+    sales = next(item for item in sections if item.department == "sales")
+    sales_payload = json.loads(sales.payload_json)
+    sales_payload["shipping"] = {"misc_ratio": misc_ratio}
+    sales.payload_json = json.dumps(sales_payload, ensure_ascii=False)
+
+    result = _rr2_cost_summary(
+        sections,
+        {
+            "factory_price_hkd": Decimal("50"),
+            "carton_hkd": Decimal("1"),
+            "indonesia_freight_hkd": Decimal("1"),
+        },
+        SNAPSHOT,
+    )
+
+    t1 = rows_by_key(result["t1"])
+    t2 = rows_by_key(result["t2"])
+    t3 = rows_by_key(result["t3"])
+    assert t1["base_price"]["value"] == expected_base_price
+    assert t2["misc"]["value"] == expected_misc
+    assert t3["total_cost"]["value"] == expected_total_cost
+    assert result["totals"]["rmb_purchase_cost_hkd"] == expected_rmb_purchase
+
+    # The settlement gross-up only finances the misc share.  It must not alter
+    # the pre-misc gross margin or profit.
+    assert Decimal(t1["base_price"]["value"]) - Decimal(t2["misc"]["value"]) == Decimal("60.6000")
+    assert t3["gross"]["value"] == "29.1000"
+    assert t3["profit"]["value"] == "14.1000"
+
+
+def test_rr2_cost_summary_keeps_direct_misc_costs_once_when_percentage_misc_is_zero():
+    with_direct_sections = summary_sections(freight_enabled=False)
+    with_direct_sales = next(item for item in with_direct_sections if item.department == "sales")
+    with_direct_payload = json.loads(with_direct_sales.payload_json)
+    with_direct_payload["shipping"] = {"misc_ratio": "0"}
+    with_direct_sales.payload_json = json.dumps(with_direct_payload, ensure_ascii=False)
+    with_direct = _rr2_cost_summary(
+        with_direct_sections,
+        {
+            "factory_price_hkd": Decimal("50"),
+            "carton_hkd": Decimal("1"),
+            "indonesia_freight_hkd": Decimal("1"),
+        },
+        SNAPSHOT,
+    )
+
+    without_direct_sections = summary_sections(freight_enabled=False)
+    without_direct_sales = next(item for item in without_direct_sections if item.department == "sales")
+    without_direct_payload = json.loads(without_direct_sales.payload_json)
+    without_direct_payload.update({
+        "indonesia_freight_hkd": "0",
+        "additional_tax_hkd": "0",
+        "shipping": {"misc_ratio": "0"},
+    })
+    without_direct_sales.payload_json = json.dumps(without_direct_payload, ensure_ascii=False)
+    without_direct = _rr2_cost_summary(
+        without_direct_sections,
+        # The normal cost context already contains Indonesia freight, so remove
+        # the fixture's HKD 1 when its source payload is removed.
+        {
+            "factory_price_hkd": Decimal("49"),
+            "carton_hkd": Decimal("1"),
+            "indonesia_freight_hkd": Decimal("0"),
+        },
+        SNAPSHOT,
+    )
+
+    with_t2 = rows_by_key(with_direct["t2"])
+    without_t2 = rows_by_key(without_direct["t2"])
+    assert with_t2["misc"]["value"] == "0.0000"
+    assert without_t2["misc"]["value"] == "0.0000"
+    assert (
+        Decimal(rows_by_key(with_direct["t3"])["total_cost"]["value"])
+        - Decimal(rows_by_key(without_direct["t3"])["total_cost"]["value"])
+    ) == Decimal("1.5000")
+    assert (
+        Decimal(with_direct["totals"]["rmb_purchase_cost_hkd"])
+        - Decimal(without_direct["totals"]["rmb_purchase_cost_hkd"])
+    ) == Decimal("1.5000")
 
 
 def test_rr2_cost_summary_prefers_standalone_hair_and_falls_back_to_legacy_sewing_hair():
@@ -170,6 +474,8 @@ def test_rr2_shipping_price_uses_48_52_markup_settlement_and_mold_share_when_ena
     assert shipping["enabled"] is True
     assert shipping["freight_share_percent"] == "48.0000"
     assert shipping["lift_share_percent"] == "52.0000"
+    assert shipping["misc_ratio"] == "0.0200"
+    assert shipping["settlement"] == "0.9800"
     assert [row["name"] for row in shipping["rows"]] == ["出厂价", "YT 40 柜"]
     yt40 = shipping["rows"][1]
     assert yt40["freight_hkd"] == "4.8000"
@@ -212,7 +518,12 @@ def test_rr2_shipping_price_uses_markup_and_misc_ratio_saved_in_the_sales_sectio
     sections = summary_sections(freight_enabled=True)
     sales = next(item for item in sections if item.department == "sales")
     sales_payload = json.loads(sales.payload_json)
-    sales_payload["shipping"] = {"markup_x": "1.15", "misc_ratio": "0.035"}
+    sales_payload["shipping"] = {
+        "markup_x": "1.15",
+        "misc_ratio": "0.035",
+        "divisor": "0.80",
+    }
+    sales_payload["scenarios"] = [{"settlement": "0.70"}]
     sales.payload_json = json.dumps(sales_payload, ensure_ascii=False)
 
     result = _rr2_cost_summary(
@@ -224,7 +535,41 @@ def test_rr2_shipping_price_uses_markup_and_misc_ratio_saved_in_the_sales_sectio
     shipping = result["shipping_pricing"]
     assert shipping["markup"] == "1.1500"
     assert shipping["misc_ratio"] == "0.0350"
+    assert shipping["settlement"] == "0.9650"
     assert shipping["rows"][1]["after_markup_hkd"] == "69.5750"
+    assert shipping["rows"][1]["after_settlement_hkd"] == "72.0984"
+
+
+@pytest.mark.parametrize(
+    ("shipping_payload", "legacy_scenarios", "expected_misc", "expected_settlement"),
+    [
+        ({"divisor": "0.96"}, [{"settlement": "0.70"}], "0.0400", "0.9600"),
+        ({}, [{"settlement": "0.95"}], "0.0500", "0.9500"),
+        ({}, [], "0.0200", "0.9800"),
+    ],
+)
+def test_rr2_shipping_price_reverse_derives_misc_from_legacy_settlement_only_when_missing(
+    shipping_payload: dict,
+    legacy_scenarios: list[dict],
+    expected_misc: str,
+    expected_settlement: str,
+):
+    sections = summary_sections(freight_enabled=True)
+    sales = next(item for item in sections if item.department == "sales")
+    sales_payload = json.loads(sales.payload_json)
+    sales_payload["shipping"] = shipping_payload
+    sales_payload["scenarios"] = legacy_scenarios
+    sales.payload_json = json.dumps(sales_payload, ensure_ascii=False)
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
+        SNAPSHOT,
+    )
+
+    shipping = result["shipping_pricing"]
+    assert shipping["misc_ratio"] == expected_misc
+    assert shipping["settlement"] == expected_settlement
 
 
 def test_rr2_shipping_price_selects_the_highest_moq_tier_reached_by_quote_quantity():

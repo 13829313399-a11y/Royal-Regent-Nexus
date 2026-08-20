@@ -86,6 +86,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-2"]').element.value).toBe('1.20')
     expect(wrapper.get('.quote-markup-tier-row.active').text()).toContain('本单采用')
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-misc"]').element.value).toBe('2.00')
+    expect(wrapper.get('[data-testid="live-quote-settlement"]').text()).toBe('0.9800')
     expect(wrapper.text()).toContain('实时试算 · 未保存')
     expect(wrapper.text()).toContain('RMB 119.34')
     expect(wrapper.text()).toContain('USD 18.00')
@@ -119,6 +120,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     await wrapper.get('[data-testid="select-quote-markup-tier-0"]').trigger('click')
     await wrapper.get('[data-testid="live-quote-markup-0"]').setValue('1.15')
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('3.5')
+    expect(wrapper.get('[data-testid="live-quote-settlement"]').text()).toBe('0.9650')
     expect(saveButton.attributes('disabled')).toBeUndefined()
     await saveButton.trigger('click')
 
@@ -145,11 +147,16 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
 
     await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.20')
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('2.555')
-    expect(wrapper.text()).toContain('杂项系数最多保留 2 位小数')
+    expect(wrapper.text()).toContain('杂项率最多保留 2 位小数')
     expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('101')
-    expect(wrapper.text()).toContain('杂项系数必须在 0% 至 100% 之间')
+    expect(wrapper.text()).toContain('杂项率必须大于等于 0% 且小于 100%')
+    expect(wrapper.get('[data-testid="live-quote-settlement"]').text()).toBe('—')
+
+    await wrapper.get('[data-testid="live-quote-misc"]').setValue('100')
+    expect(wrapper.text()).toContain('杂项率必须大于等于 0% 且小于 100%')
+    expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('2.00')
     await wrapper.setProps({ markupBlockedReason: '请先重开业务部分段。' })

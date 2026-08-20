@@ -53,7 +53,10 @@ from app.schemas.carton_procurement import (
     CartonReceiptOut,
 )
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
-from app.services.carton_procurement_imports import parse_carton_import
+from app.services.carton_procurement_imports import (
+    DELIVERY_IMPORT_PARSER_VERSION,
+    parse_carton_import,
+)
 
 
 CARTON_DEPARTMENTS = ("pmc-warehouse", "carton")
@@ -62,7 +65,7 @@ CARTON_DEFAULT_SUPPLIER_NAME = "河源东康纸品有限公司"
 QUANTITY_QUANTUM = Decimal("0.0001")
 MONEY_QUANTUM = Decimal("0.0001")
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
-ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg"}
+ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".heic", ".heif"}
 CURRENCY_ALIASES = {
     "RMB": "CNY",
     "人民币": "CNY",
@@ -1508,15 +1511,18 @@ def create_import_batch(
     filename = Path(upload.filename or "未命名文件").name
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_IMPORT_SUFFIXES:
-        raise HTTPException(status_code=422, detail="仅支持 Excel、PDF、PNG 或 JPG 文件")
+        raise HTTPException(status_code=422, detail="仅支持 Excel、PDF、PNG、JPG 或 HEIC 文件")
     if not content:
         raise HTTPException(status_code=422, detail="导入文件不能为空")
     if len(content) > MAX_IMPORT_BYTES:
         raise HTTPException(status_code=413, detail="导入文件不能超过 20 MB")
     sha256 = hashlib.sha256(content).hexdigest()
+    effective_profile = dict(import_profile or {})
+    if import_type == "DELIVERY_NOTE":
+        effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
     profile_text = (
-        json.dumps(import_profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        if import_profile
+        json.dumps(effective_profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        if effective_profile
         else ""
     )
     existing = db.scalar(
@@ -1529,7 +1535,7 @@ def create_import_batch(
     )
     if existing is not None:
         return import_batch_out(existing, duplicate=True)
-    parse_options = dict(import_profile or {})
+    parse_options = dict(effective_profile)
     parse_options["reference_date"] = business_now().date().isoformat()
     parse_summary = parse_carton_import(
         db,

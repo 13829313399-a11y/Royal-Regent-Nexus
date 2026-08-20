@@ -19,7 +19,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v19"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v20"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -659,7 +659,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="carton",
         department_name="纸箱部",
         sort_order=800,
-        description="纸箱箱唛模板、采购仓务与客户主数据管理",
+        description="跨厂操作纸箱箱唛模板、采购仓务与客户主数据管理",
+        scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=CARTON_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(

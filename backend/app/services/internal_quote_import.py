@@ -1131,11 +1131,12 @@ def _parse_sewing(
         if unit is None:
             unit = (price / usage_value / markup_value) if price is not None and usage_value > 0 else Decimal("0")
             warnings.append(f"第 {source_index} 行 {material} 未识别物料价，已按源表总价反算或按 0 预览")
+        craft_text = text(value_at(row, columns["craft"]))
         current["materials"].append(
             {
                 "item": material,
                 "part": part,
-                "craft": "电绣" if "电绣" in text(value_at(row, columns["craft"])) else "",
+                "craft": "电绣" if "电绣" in craft_text else "丝印" if "丝印" in craft_text else "",
                 "pieces": decimal_text(max(number(value_at(row, columns["pieces"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
                 "supplier": text(value_at(row, columns["supplier"])),
                 "usage": precise_decimal_text(usage_value),

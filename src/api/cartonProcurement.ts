@@ -230,6 +230,7 @@ export interface CartonImportBatchResponse {
     due_soon_count?: number
     ready_count?: number
     advance_days?: number | null
+    parser_version?: string | null
     warnings?: string[]
     document?: { delivery_note_no?: string; delivery_date?: string; raw_text_excerpt?: string }
     rows?: CartonImportPreviewRow[]

@@ -6,7 +6,7 @@ import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/a
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
-import { cloneInternalQuotePayload, normalizeInternalQuotePayload, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
+import { cloneInternalQuotePayload, normalizeInternalQuotePayload, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
@@ -241,6 +241,7 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
       markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)) })),
       selected_markup_moq: selectedMoq,
       misc_ratio: Number(miscRatio.toFixed(4)),
+      divisor: salesSettlementDivisorForMiscRatio(miscRatio),
     },
   })
   const result = await saveDraft(false, '在协作侧栏保存分段 MOQ 码数与杂项系数')

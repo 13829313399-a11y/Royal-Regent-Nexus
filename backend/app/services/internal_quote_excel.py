@@ -9,9 +9,14 @@ from typing import Any, Iterable
 from zipfile import BadZipFile
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter, quote_sheetname
 from openpyxl.utils.exceptions import InvalidFileException
+from openpyxl.utils.units import pixels_to_EMU
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from PIL import Image as PillowImage, ImageOps
 
 from app.models.internal_quote import (
     InternalQuote,
@@ -23,7 +28,7 @@ from app.schemas.internal_quote import SECTION_CODE_ORDER
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v9"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v10"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -300,6 +305,135 @@ def _apply_outline_border(
     for row in range(min_row, max_row + 1):
         _replace_border_sides(sheet.cell(row, min_column), left=side)
         _replace_border_sides(sheet.cell(row, max_column), right=side)
+
+
+def _apply_table_borders(
+    sheet,
+    min_row: int,
+    max_row: int,
+    min_column: int,
+    max_column: int,
+    *,
+    outline: Side = TEMPLATE_MEDIUM,
+) -> None:
+    """Give every visible table cell a printable grid plus a clear outline."""
+
+    if min_row > max_row or min_column > max_column:
+        return
+    for row in range(min_row, max_row + 1):
+        for column in range(min_column, max_column + 1):
+            sheet.cell(row, column).border = TEMPLATE_BORDER
+    _apply_outline_border(
+        sheet,
+        min_row,
+        max_row,
+        min_column,
+        max_column,
+        outline,
+    )
+
+
+def _excel_column_pixels(width: float | None) -> int:
+    """Approximate Excel column width in pixels using the OOXML convention."""
+
+    value = 8.43 if width is None else max(float(width), 0.0)
+    return int(value * 12) if value < 1 else int(value * 7 + 5)
+
+
+def _excel_row_pixels(height: float | None) -> int:
+    points = 15.0 if height is None else max(float(height), 0.0)
+    return int(round(points * 96 / 72))
+
+
+def _latest_product_image_attachment(
+    attachments: list[InternalQuoteAttachment] | None,
+) -> InternalQuoteAttachment | None:
+    candidates = [
+        attachment
+        for attachment in attachments or []
+        if getattr(attachment, "department", "") == "product-image"
+        and str(getattr(attachment, "content_type", "")).lower().startswith("image/")
+        and bool(getattr(attachment, "content", b""))
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            str(getattr(item, "uploaded_at", "")),
+            str(getattr(item, "id", "")),
+        ),
+    )
+
+
+def _add_product_image_to_region(
+    sheet,
+    attachments: list[InternalQuoteAttachment] | None,
+    *,
+    min_row: int,
+    max_row: int,
+    min_column: int,
+    max_column: int,
+) -> bool:
+    """Fit the current product image into the blank block above carton data."""
+
+    attachment = _latest_product_image_attachment(attachments)
+    if attachment is None or min_row > max_row or min_column > max_column:
+        return False
+
+    image_buffer = BytesIO()
+    try:
+        with PillowImage.open(BytesIO(attachment.content)) as source:
+            normalized = ImageOps.exif_transpose(source)
+            if normalized.mode not in {"RGB", "RGBA"}:
+                normalized = normalized.convert("RGBA")
+            normalized.save(image_buffer, format="PNG")
+            source_width, source_height = normalized.size
+    except (OSError, ValueError):
+        return False
+    if source_width <= 0 or source_height <= 0:
+        return False
+
+    region_width = sum(
+        _excel_column_pixels(
+            sheet.column_dimensions[get_column_letter(column)].width
+        )
+        for column in range(min_column, max_column + 1)
+    )
+    region_height = sum(
+        _excel_row_pixels(sheet.row_dimensions[row].height)
+        for row in range(min_row, max_row + 1)
+    )
+    padding = 8
+    available_width = max(region_width - padding * 2, 1)
+    available_height = max(region_height - padding * 2, 1)
+    scale = min(
+        available_width / source_width,
+        available_height / source_height,
+    )
+    target_width = max(1, int(round(source_width * scale)))
+    target_height = max(1, int(round(source_height * scale)))
+    horizontal_offset = max((region_width - target_width) // 2, 0)
+    vertical_offset = max((region_height - target_height) // 2, 0)
+
+    image_buffer.seek(0)
+    image = OpenpyxlImage(image_buffer)
+    image.width = target_width
+    image.height = target_height
+    image.anchor = OneCellAnchor(
+        _from=AnchorMarker(
+            col=min_column - 1,
+            colOff=pixels_to_EMU(horizontal_offset),
+            row=min_row - 1,
+            rowOff=pixels_to_EMU(vertical_offset),
+        ),
+        ext=XDRPositiveSize2D(
+            cx=pixels_to_EMU(target_width),
+            cy=pixels_to_EMU(target_height),
+        ),
+    )
+    sheet.add_image(image)
+    return True
 
 
 def _positive_integer(value: object) -> int | None:
@@ -1471,6 +1605,7 @@ def _build_summary_sheet(
     reference_snapshot: dict[str, Any],
     rr2_cost_summary: dict[str, Any],
     cost_context: dict[str, Any],
+    attachments: list[InternalQuoteAttachment] | None = None,
 ) -> None:
     """Render the current internal-quote template with dynamic detail anchors."""
 
@@ -1485,6 +1620,13 @@ def _build_summary_sheet(
     t2 = _rr2_values(rr2_cost_summary, "t2")
     t3 = _rr2_values(rr2_cost_summary, "t3")
     t4 = _rr2_tax_rows(rr2_cost_summary)
+    sewing_clothes_tax = t4.get("sewcloth13", {})
+    sewing_clothes_rate_percent = sewing_clothes_tax.get("rate_percent")
+    sewing_clothes_rate = (
+        ""
+        if sewing_clothes_rate_percent in (None, "")
+        else _percent_fraction(sewing_clothes_rate_percent)
+    )
     markup_tiers = _shipping_markup_tiers(shipping)
     active_tier = next((row for row in markup_tiers if row.get("is_active")), markup_tiers[-1])
     testing_fee_total_usd, testing_fee_tiers = _testing_fee_values(
@@ -1552,7 +1694,10 @@ def _build_summary_sheet(
                 ("含税1%", _tax_rate(reference_snapshot, "tax_1_percent", 0.0099)),
                 ("搪胶类3%", _tax_rate(reference_snapshot, "slush", 0.03)),
                 ("车发类5%", _tax_rate(reference_snapshot, "sewing_hair", 0.05)),
-                ("车衣类", _tax_rate(reference_snapshot, "sewing_clothes", 0.0)),
+                (
+                    _safe_text(sewing_clothes_tax.get("label")) or "车衣类",
+                    sewing_clothes_rate,
+                ),
             ),
         ),
         (
@@ -1718,7 +1863,23 @@ def _build_summary_sheet(
         if abs(numeric) >= 0.0005:
             detail_rows.append((tax_tag, category, description, numeric))
 
-    molding_material = t1.get("imp_mat", 0.0) + t1.get("dom_mat", 0.0)
+    # The user-facing summary intentionally exposes one molding-material total
+    # ("料价").  Keep the imported/domestic split authoritative underneath so
+    # the domestic-material tax base is not widened to the combined amount.
+    molding_material_breakdown = _dict_value(
+        rr2_cost_summary.get("molding_material_breakdown", {})
+    )
+    legacy_molding_material = (
+        _float_value(t1.get("imp_mat")) + _float_value(t1.get("dom_mat"))
+    )
+    molding_material = _float_value(
+        molding_material_breakdown.get("total_hkd"),
+        _float_value(t1.get("material"), legacy_molding_material),
+    )
+    domestic_molding_material = _float_value(
+        molding_material_breakdown.get("domestic_hkd"),
+        _float_value(t1.get("dom_mat")),
+    )
     molding_labor = t3.get("injection_labor", 0.0)
     molding_blow = t1.get("blow", 0.0)
     molding_adjustment = (
@@ -1736,17 +1897,20 @@ def _build_summary_sheet(
     )
     sewing_hair = t1.get("sewing_hair", 0.0)
     sewing_cloth = t1.get("sewing_cloth", 0.0)
+    sewing_cloth_material = min(
+        max(_float_value(sewing_clothes_tax.get("amount_hkd")), 0.0),
+        max(sewing_cloth, 0.0),
+    )
+    sewing_cloth_labor = max(sewing_cloth - sewing_cloth_material, 0.0)
+    sewing_cloth_material_tax_tag = (
+        "¥13%" if sewing_clothes_rate_percent not in (None, "") else ""
+    )
     sewing_adjustment = (
         _float_value(cost_context.get("sewing_hkd"))
         - sewing_hair
         - sewing_cloth
     )
-    packaging_total = _float_value(cost_context.get("packaging_material_hkd"))
-    color_box_amount = min(
-        max(t2.get("color_box", 0.0), 0.0),
-        max(packaging_total, 0.0),
-    )
-    packaging_auxiliary = packaging_total - color_box_amount
+    color_box_amount = max(_float_value(t2.get("color_box")), 0.0)
 
     add_detail("¥13%", "料价", "料价", molding_material)
     add_detail("", "啤工", "啤工", molding_labor)
@@ -1771,15 +1935,25 @@ def _build_summary_sheet(
     add_detail("¥13%", "油漆", "油漆", paint_material)
     add_detail("¥3%", "搪胶", "搪胶", cost_context.get("slush_hkd"))
     add_detail("", "吹气", "吹气", molding_blow)
-    add_detail("¥13%", "五金", "五金", cost_context.get("hardware_hkd"))
-    add_detail("¥13%", "其他外购", "电子", cost_context.get("electronic_hkd"))
-    add_detail("¥13%", "其他外购", "车发", sewing_hair)
-    add_detail("¥13%", "其他外购", "车衣", sewing_cloth)
-    add_detail("", "其他外购", "车缝未分类成本", sewing_adjustment)
-    add_detail("¥13%", "其他外购", "工程辅料/外购", cost_context.get("auxiliary_hkd"))
-    add_detail("¥13%", "其他外购", "包装辅材", packaging_auxiliary)
+    # Keep every summary category as an explicit detail-table category.  The
+    # released workbook uses SUMIF against column B, so classifying sewing and
+    # hair as generic purchases both hides their business meaning and breaks
+    # the summary formulas.
+    add_detail("¥13%", "五金", "五金", t1.get("hardware"))
+    add_detail("¥13%", "电子", "电子", t1.get("electronic"))
+    add_detail("¥13%", "马达", "马达", t1.get("motor"))
+    add_detail("¥6%", "吸塑", "吸塑", t1.get("suction"))
+    add_detail("¥13%", "车发", "车发", sewing_hair)
+    add_detail(sewing_cloth_material_tax_tag, "车衣", "车衣物料", sewing_cloth_material)
+    add_detail("", "车衣", "车衣人工", sewing_cloth_labor)
+    add_detail("", "车衣", "车缝未分类成本", sewing_adjustment)
+    add_detail("¥13%", "电池", "电池", t2.get("battery"))
+    add_detail("¥13%", "利宝/说明书", "利宝/说明书", t2.get("libao"))
+    add_detail("¥1%", "电镀", "电镀", t2.get("plating"))
+    add_detail("¥13%", "其他外购", "其他外购", t2.get("other_buy"))
+    add_detail("¥13%", "其他外购", "胶袋", t1.get("glue_bag"))
     add_detail("¥13%", "彩盒/内卡", "彩盒/内卡", color_box_amount)
-    add_detail("", "纸箱", "纸箱", cost_context.get("carton_hkd"))
+    add_detail("", "纸箱", "纸箱", t2.get("carton", cost_context.get("carton_hkd")))
 
     detail_start_row = mold_total_row + 4
     detail_slots = max(1, len(detail_rows))
@@ -1886,6 +2060,13 @@ def _build_summary_sheet(
                 ),
                 font_name="Times New Roman" if column in dimension_columns and offset < 3 else "宋体",
             )
+    _apply_table_borders(
+        sheet,
+        packaging_start_row,
+        packaging_start_row + len(packaging_rows) - 1,
+        side_start_column,
+        side_end_column,
+    )
 
     function_start_row = packaging_start_row + len(packaging_rows) + 1
     function_end_row = function_start_row + 7
@@ -1910,7 +2091,13 @@ def _build_summary_sheet(
         vertical="center",
         wrap_text=True,
     )
-    function_cell.border = TEMPLATE_BORDER
+    _apply_table_borders(
+        sheet,
+        function_start_row,
+        function_end_row,
+        side_start_column,
+        side_end_column,
+    )
 
     color_box = _dict_value(
         _dict_value(sales_payload.get("customer_quote_fields", {})).get("buzzbee", {})
@@ -1919,6 +2106,13 @@ def _build_summary_sheet(
     # Match the reference template: keep one completely blank row between
     # the function-introduction box and the color-box quotation block.
     color_title_row = function_end_row + 2
+    _template_style_range(
+        sheet,
+        color_title_row,
+        color_title_row,
+        side_start_column,
+        side_start_column + 2,
+    )
     sheet.merge_cells(
         start_row=color_title_row,
         start_column=side_start_column,
@@ -1963,6 +2157,13 @@ def _build_summary_sheet(
                 ),
             )
     color_end_row = color_header_row + 2
+    _apply_table_borders(
+        sheet,
+        color_title_row,
+        color_end_row,
+        side_start_column,
+        side_start_column + 2,
+    )
 
     testing_display_rows = testing_fee_tiers or [
         {"moq": int(tier["moq"]), "unit_price_usd": 0.0}
@@ -1992,38 +2193,57 @@ def _build_summary_sheet(
         wrap_text=False,
     )
 
-    misc_row = detail_data_end_row + 1
-    for column, value in enumerate(
-        (
-            "",
-            "杂项",
-            "杂项",
-            _float_value(cost_context.get("indonesia_freight_hkd"))
-            + _float_value(shipping.get("additional_tax_hkd")),
-        ),
-        start=1,
-    ):
+    # Additional tax and Indonesia freight are direct costs.  They must remain
+    # auditable as separate rows and must not be labelled as the percentage-
+    # based miscellaneous charge calculated later from ``price * Q6``.  The
+    # cost context has already applied the quote-region rule, so a mainland
+    # quote reaches the exporter with an effective Indonesia freight of zero.
+    direct_cost_rows = [
+        ("附加税", _float_value(shipping.get("additional_tax_hkd"))),
+        ("印尼运费", _float_value(cost_context.get("indonesia_freight_hkd"))),
+    ]
+    direct_cost_rows = [
+        (label, amount)
+        for label, amount in direct_cost_rows
+        if amount > 0
+    ]
+    next_detail_row = detail_data_end_row + 1
+    for label, amount in direct_cost_rows:
+        for column, value in enumerate(("", label, label, amount), start=1):
+            _template_cell(
+                sheet,
+                next_detail_row,
+                column,
+                value,
+                horizontal="left" if column in {2, 3} else "center",
+                wrap_text=False,
+                number_format="0.000" if column == 4 else None,
+                border=Border(left=TEMPLATE_MEDIUM) if column == 1 else None,
+            )
+        next_detail_row += 1
+
+    route_header_row = next_detail_row
+    for column, value in enumerate(("", "运输方案", "运输方案", ""), start=1):
         _template_cell(
             sheet,
-            misc_row,
+            route_header_row,
             column,
             value,
             horizontal="left" if column in {2, 3} else "center",
             wrap_text=False,
-            number_format="0.000" if column == 4 else None,
             border=Border(left=TEMPLATE_MEDIUM) if column == 1 else None,
         )
     for offset, route in enumerate(route_rows):
         _template_cell(
             sheet,
-            misc_row,
+            route_header_row,
             route_start_column + offset,
             _safe_text(route.get("name") or route.get("item") or f"运输方案{offset + 1}"),
             wrap_text=False,
             border=None,
         )
-    freight_row = misc_row + 1
-    lifting_row = misc_row + 2
+    freight_row = route_header_row + 1
+    lifting_row = route_header_row + 2
     for row_index, label, value_key in (
         (freight_row, "运费", "freight_hkd"),
         (lifting_row, "吊柜费", "lift_hkd"),
@@ -2071,14 +2291,13 @@ def _build_summary_sheet(
             number_format="0.00",
             border=Border(bottom=TEMPLATE_THIN),
         )
-    sheet.cell(subtotal_row, 4).value = f"=SUM(D{detail_start_row}:D{misc_row})"
+    sheet.cell(subtotal_row, 4).value = f"=SUM(D{detail_start_row}:D{route_header_row})"
     for column in range(route_start_column, route_end_column + 1):
         letter = get_column_letter(column)
         sheet.cell(subtotal_row, column).value = (
             f"=$D${subtotal_row}+{letter}{freight_row}+{letter}{lifting_row}"
         )
 
-    settlement = _float_value(shipping.get("settlement"), 0.98)
     pricing_rows: list[dict[str, int | float]] = []
     pricing_start_row = subtotal_row + 1
     for index, tier in enumerate(markup_tiers):
@@ -2133,9 +2352,9 @@ def _build_summary_sheet(
                 sheet,
                 settlement_row,
                 column,
-                settlement,
+                "=1-$Q$6",
                 wrap_text=False,
-                number_format="0.00",
+                number_format="0.0000",
                 border=Border(bottom=TEMPLATE_THIN),
             )
             _template_cell(
@@ -2215,6 +2434,13 @@ def _build_summary_sheet(
             f"${get_column_letter(side_start_column + 2)}${row_index}"
         )
     test_end_row = test_header_row + len(testing_display_rows)
+    _apply_table_borders(
+        sheet,
+        test_header_row,
+        test_end_row,
+        side_start_column,
+        side_start_column + 2,
+    )
     for pricing in pricing_rows:
         adjusted_reference = test_adjusted_cells.get(int(pricing["moq"]))
         if adjusted_reference is None:
@@ -2234,22 +2460,12 @@ def _build_summary_sheet(
         function_end_row,
     ) + 2
     amount_format = "0.00_);[Red]\\(0.00\\)"
-    detail_category_range = f"$B${detail_start_row}:$B${misc_row}"
-    detail_description_range = f"$C${detail_start_row}:$C${misc_row}"
-    detail_amount_range = f"$D${detail_start_row}:$D${misc_row}"
+    detail_category_range = f"$B${detail_start_row}:$B${route_header_row}"
+    detail_description_range = f"$C${detail_start_row}:$C${route_header_row}"
+    detail_amount_range = f"$D${detail_start_row}:$D${route_header_row}"
 
     def sum_category(label_cell: str) -> str:
         return f"=SUMIF({detail_category_range},{label_cell},{detail_amount_range})"
-
-    def sum_description(description: str) -> str:
-        return f'=SUMIF({detail_description_range},"{description}",{detail_amount_range})'
-
-    def sum_category_or_authoritative(label_cell: str, fallback: object) -> str:
-        fallback_value = format(_float_value(fallback), ".10g")
-        return (
-            f"=IF(COUNTIF({detail_category_range},{label_cell})>0,"
-            f"SUMIF({detail_category_range},{label_cell},{detail_amount_range}),{fallback_value})"
-        )
 
     def style_summary_pair(
         header_row: int,
@@ -2302,12 +2518,12 @@ def _build_summary_sheet(
             sum_category(f"E{first_header_row}"),
             sum_category(f"F{first_header_row}"),
             sum_category(f"G{first_header_row}"),
-            sum_description("车发"),
-            sum_description("车衣"),
+            sum_category(f"H{first_header_row}"),
+            sum_category(f"I{first_header_row}"),
             sum_category(f"J{first_header_row}"),
-            sum_description("电子"),
-            t1.get("motor", 0.0),
-            t1.get("suction", 0.0),
+            sum_category(f"K{first_header_row}"),
+            sum_category(f"L{first_header_row}"),
+            sum_category(f"M{first_header_row}"),
             sum_category(f"N{first_header_row}"),
         ],
         first_header_fill="FFC000",
@@ -2326,15 +2542,20 @@ def _build_summary_sheet(
             f'=SUMIF($D${mold_start_row}:$D${mold_end_row},"*ABS*",$K${mold_start_row}:$K${mold_end_row})',
             f"=IFERROR(D{first_value_row}/N{third_value_row},0)",
             f"=IFERROR(D{first_value_row}/P{deduction_row},0)",
-            sum_category_or_authoritative(f"F{second_header_row}", t2.get("battery", 0.0)),
-            sum_category_or_authoritative(f"G{second_header_row}", t2.get("libao", 0.0)),
-            t2.get("plating", 0.0),
-            t2.get("other_buy", 0.0),
+            sum_category(f"F{second_header_row}"),
+            sum_category(f"G{second_header_row}"),
+            sum_category(f"H{second_header_row}"),
+            sum_category(f"I{second_header_row}"),
             sum_category(f"J{second_header_row}"),
             0.0,
             0.0,
             f"=D{first_value_row}*$Q$6",
-            f"=SUM(E{first_value_row}:N{first_value_row},F{second_value_row}:M{second_value_row},G{third_value_row})",
+            (
+                f"=SUM(E{first_value_row}:N{first_value_row},"
+                f"F{second_value_row}:M{second_value_row},G{third_value_row})"
+                f'+SUMIF({detail_description_range},"附加税",{detail_amount_range})'
+                f'+SUMIF({detail_description_range},"印尼运费",{detail_amount_range})'
+            ),
         ],
     )
     sheet.cell(second_header_row, 3).fill = PatternFill(fill_type=None)
@@ -2397,13 +2618,15 @@ def _build_summary_sheet(
         )
 
     tax_amount_row = tax_header_row + 1
-    domestic_material_literal = format(_float_value(t1.get("dom_mat", 0.0)), ".10g")
+    domestic_material_literal = format(domestic_molding_material, ".10g")
     glue_bag_literal = format(_float_value(t1.get("glue_bag", 0.0)), ".10g")
     rmb_purchase_formula = (
         f"=SUM({domestic_material_literal},H{first_value_row},I{first_value_row},"
         f"J{first_value_row},K{first_value_row},L{first_value_row},N{first_value_row},"
         f"F{second_value_row},G{second_value_row},H{second_value_row},I{second_value_row},"
         f"J{second_value_row},M{second_value_row},G{third_value_row},{glue_bag_literal})"
+        f'+SUMIF({detail_description_range},"附加税",{detail_amount_range})'
+        f'+SUMIF({detail_description_range},"印尼运费",{detail_amount_range})'
     )
     tax_13_formula = (
         f"=SUM({domestic_material_literal},J{first_value_row},L{first_value_row},"
@@ -2425,7 +2648,7 @@ def _build_summary_sheet(
             rate_percent = t4.get(key, {}).get("rate_percent")
             value = (
                 ""
-                if key == "carton"
+                if key == "carton" or (key == "sewcloth13" and rate_percent in (None, ""))
                 else _percent_fraction(rate_percent)
             )
             number_format = "0.00%"
@@ -2465,7 +2688,6 @@ def _build_summary_sheet(
         "tax1": f"H{second_value_row}",
         "slush3": f"G{first_value_row}",
         "sewhair13": f"H{first_value_row}",
-        "sewcloth13": f"I{first_value_row}",
         "suction6": f"M{first_value_row}",
         "freight9": f"K{second_value_row}",
         "tax13b": f"D{tax_amount_row}",
@@ -2473,10 +2695,15 @@ def _build_summary_sheet(
         "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
     }
     for column, key in enumerate(tax_keys, start=6):
-        if key == "carton":
+        rate_percent = t4.get(key, {}).get("rate_percent")
+        if key == "carton" or (key == "sewcloth13" and rate_percent in (None, "")):
             sheet.cell(deduction_row, column).value = ""
         else:
-            amount_reference = tax_amount_references[key]
+            amount_reference = (
+                format(_float_value(t4.get(key, {}).get("amount_hkd")), ".10g")
+                if key == "sewcloth13"
+                else tax_amount_references[key]
+            )
             sheet.cell(deduction_row, column).value = (
                 f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
             )
@@ -2508,6 +2735,14 @@ def _build_summary_sheet(
         sheet.column_dimensions[column].width = width
     for column in range(19, outer_right_column + 1):
         sheet.column_dimensions[get_column_letter(column)].width = 13
+    _add_product_image_to_region(
+        sheet,
+        attachments,
+        min_row=8,
+        max_row=packaging_start_row - 1,
+        min_column=side_start_column,
+        max_column=side_end_column,
+    )
     for row in range(summary_start_row, deduction_row + 1):
         sheet.row_dimensions[row].height = 15
     for row in (summary_start_row + 2, summary_start_row + 5, summary_start_row + 8):
@@ -3077,6 +3312,7 @@ def build_internal_quote_workbook(
         reference_snapshot or {},
         rr2_cost_summary or {},
         cost_context or {},
+        attachments or [],
     )
     by_code = {section.department: section for section in sections}
     _build_electronic_sheet(workbook, by_code.get("electronic"), reference_snapshot or {})

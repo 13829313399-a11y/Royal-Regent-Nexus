@@ -134,6 +134,7 @@ export interface InternalQuoteRr2SummaryValue {
   label: string
   value: number
   format?: string
+  display?: boolean
 }
 
 export interface InternalQuoteTaxSummaryValue {
@@ -171,6 +172,7 @@ export interface InternalQuoteRr2CostSummary {
   t1: InternalQuoteRr2SummaryValue[]
   t2: InternalQuoteRr2SummaryValue[]
   t3: InternalQuoteRr2SummaryValue[]
+  moldingMaterialBreakdown?: { totalHkd: number; importedHkd: number; domesticHkd: number }
   t4: InternalQuoteTaxSummaryValue[]
   rmbPurchaseCostHkd: number
   totalDeductionHkd: number

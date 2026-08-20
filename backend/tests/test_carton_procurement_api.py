@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -681,6 +682,8 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         assert first.json()["parse_summary"]["row_count"] == 2
         assert first.json()["parse_summary"]["matched_count"] == 1
         assert first.json()["parse_summary"]["issue_count"] == 1
+        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-qwen-v4"
+        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-qwen-v4"
         matched = first.json()["parse_summary"]["rows"][0]
         assert matched["match_status"] == "MATCHED"
         assert matched["order_line_id"] == order["lines"][0]["id"]
@@ -749,7 +752,53 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         ).json()["total"] == 0
 
 
-def test_delivery_photo_uses_quality_and_specification_to_select_order_line(monkeypatch):
+def test_delivery_import_parser_version_reprocesses_an_older_file(monkeypatch):
+    with make_client(monkeypatch) as client:
+        import app.services.carton_procurement as service
+        import app.services.carton_procurement_imports as imports
+
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        _create_order(client)
+        content = _workbook_bytes(
+            ["日期", "入库单号", "PO", "货号", "外箱", "纸质"],
+            [["2026-08-05", "DN-PARSER-VERSION", "SC700145365", "203302044", 10, "A33+B外箱"]],
+        )
+
+        monkeypatch.setattr(service, "DELIVERY_IMPORT_PARSER_VERSION", "delivery-note-v1")
+        monkeypatch.setattr(imports, "DELIVERY_IMPORT_PARSER_VERSION", "delivery-note-v1")
+        first = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-PARSER-VERSION.xlsx", content)},
+        )
+        assert first.status_code == 201, first.text
+        assert first.json()["duplicate"] is False
+        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-v1"
+
+        monkeypatch.setattr(service, "DELIVERY_IMPORT_PARSER_VERSION", "delivery-note-v2")
+        monkeypatch.setattr(imports, "DELIVERY_IMPORT_PARSER_VERSION", "delivery-note-v2")
+        reprocessed = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-PARSER-VERSION.xlsx", content)},
+        )
+        assert reprocessed.status_code == 201, reprocessed.text
+        assert reprocessed.json()["duplicate"] is False
+        assert reprocessed.json()["id"] != first.json()["id"]
+        assert reprocessed.json()["parse_summary"]["parser_version"] == "delivery-note-v2"
+
+        duplicate = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-PARSER-VERSION.xlsx", content)},
+        )
+        assert duplicate.status_code == 201, duplicate.text
+        assert duplicate.json()["duplicate"] is True
+        assert duplicate.json()["id"] == reprocessed.json()["id"]
+
+
+def test_delivery_heic_photo_uses_quality_and_specification_to_select_order_line(monkeypatch):
     with make_client(monkeypatch) as client:
         import app.services.carton_procurement_imports as imports
 
@@ -790,7 +839,7 @@ def test_delivery_photo_uses_quality_and_specification_to_select_order_line(monk
         response = client.post(
             "/api/carton-procurement/receipt-imports",
             params={"factory_id": "huaxing"},
-            files={"file": ("DN26061301.jpg", b"delivery-photo", "image/jpeg")},
+            files={"file": ("DN26061301.heic", b"delivery-photo", "image/heic")},
         )
 
         assert response.status_code == 201, response.text

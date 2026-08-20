@@ -74,10 +74,10 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poExtensions: ['.xls', '.xlsx'],
       scheduleAccept: '.xlsx',
       scheduleExtensions: ['.xlsx'],
-      poDescription: '普通合同与 WMC 首页内嵌 Excel PO',
+      poDescription: '普通合同、WMC 首页内嵌 PO 与 WMU 的 PO Attached 子订单',
       templateDescription: '2026年 BUZZ BEE 生产排期表',
       targetTemplate: 'BUZZBEE_PRODUCTION_SCHEDULE_V1',
-      ruleDescription: 'WMC读取首页双语PO区且P/O#必填；普通合同扫描标签和唛头区，P/O#允许为空。印尼WMU资料另行处理。',
+      ruleDescription: 'WMC读取首页双语PO区；WMU从首页复用货号、品名及装箱数，并按PO Attached逐行生成S/C与Walmart PO子订单；WM客P/O#必填。仅明确标注印尼的资料另行处理。',
     },
     {
       code: 'dickie',
@@ -969,7 +969,7 @@ const previewRuleNotice = computed(() => {
     : customerCode === 'dickie'
       ? '当前 Dickie 输入规则已启用'
       : customerCode === 'buzzbee'
-        ? '当前 BuzzBee 两套输入规则已区分'
+        ? '当前 BuzzBee 三套输入规则已区分'
         : `当前${profile?.name ?? '客户'}输入规则已启用`
   return {
     title,
@@ -1001,10 +1001,13 @@ const traceFields = computed(() => {
   if (!row) return []
   const isDickie = row.inputTemplate.includes('DICKIE')
   const isCaixing = row.inputTemplate.includes('CAIXING')
+  const isWmu = row.inputTemplate.includes('WMU_ATTACHED')
   const sheetName = isDickie
     ? 'Dickie PDF'
     : isCaixing
       ? 'Playmates PDF'
+      : isWmu
+        ? 'PO Attached'
       : row.inputTemplate.includes('WMC')
         ? 'Sheet1'
         : 'SHEET'
@@ -1012,6 +1015,8 @@ const traceFields = computed(() => {
     ? 'Simba Dickie Release Order PDF规则'
     : isCaixing
       ? '彩星 Playmates PDF规则'
+      : isWmu
+        ? 'WMU PO Attached子订单规则'
       : row.inputTemplate.includes('WMC')
         ? 'WMC首页内嵌规则'
         : '普通合同标签规则'

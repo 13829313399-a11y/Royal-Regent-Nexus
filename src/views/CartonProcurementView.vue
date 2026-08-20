@@ -592,7 +592,10 @@ const receiptImportStats = computed(() => ({
   matched: receiptImportBatch.value?.parse_summary.matched_count ?? 0,
   issues: receiptImportBatch.value?.parse_summary.issue_count ?? 0,
 }))
+const receiptImportNeedsReview = computed(() => receiptImportStats.value.total === 0 || receiptImportStats.value.matched === 0 || receiptImportStats.value.issues > 0)
 const receiptImportPreviewRows = computed(() => receiptImportRows.value.slice(0, 50))
+const receiptImportWarnings = computed(() => receiptImportBatch.value?.parse_summary.warnings ?? [])
+const receiptImportRawText = computed(() => receiptImportBatch.value?.parse_summary.document?.raw_text_excerpt?.trim() ?? '')
 
 watch(selectedFactoryId, (factoryId) => {
   appStore.setActiveFactory(factoryId)
@@ -2508,7 +2511,7 @@ function refreshDemo() {
           <button type="button" :disabled="!apiConnected || manualReceiptOrders.length === 0" class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 text-[12px] font-bold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400" @click="openManualReceipt()">
             <Plus class="size-4" aria-hidden="true" />人工录入收料
           </button>
-          <input ref="receiptFileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls" class="hidden" aria-label="选择送货单文件" @change="handleReceiptFile">
+          <input ref="receiptFileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,image/heic,image/heif,.xlsx,.xls" class="hidden" aria-label="选择送货单文件" @change="handleReceiptFile">
           <button type="button" :disabled="importingReceipt" class="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white transition hover:bg-teal-800 disabled:opacity-60" @click="triggerReceiptImport">
             <Upload class="size-4" aria-hidden="true" />{{ importingReceipt ? '正在识别…' : '导入送货单' }}
           </button>
@@ -2537,14 +2540,14 @@ function refreshDemo() {
           </div>
         </article>
 
-        <article v-if="receiptImportBatch" class="overflow-hidden rounded-xl border bg-white shadow-sm" :class="receiptImportStats.issues ? 'border-amber-300' : 'border-emerald-300'">
-          <div class="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3" :class="receiptImportStats.issues ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'">
+        <article v-if="receiptImportBatch" class="overflow-hidden rounded-xl border bg-white shadow-sm" :class="receiptImportNeedsReview ? 'border-amber-300' : 'border-emerald-300'">
+          <div class="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3" :class="receiptImportNeedsReview ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'">
             <div>
-              <div class="flex flex-wrap items-center gap-2 font-bold" :class="receiptImportStats.issues ? 'text-amber-950' : 'text-emerald-950'">
+              <div class="flex flex-wrap items-center gap-2 font-bold" :class="receiptImportNeedsReview ? 'text-amber-950' : 'text-emerald-950'">
                 <CheckCircle2 class="size-4" />送货单识别完成
                 <span v-if="receiptImportBatch.duplicate" class="rounded-full bg-white px-2 py-0.5 text-[9px] font-bold text-slate-600 ring-1 ring-inset ring-slate-200">重复文件 · 已恢复原结果</span>
               </div>
-              <p class="mt-1 text-[11px]" :class="receiptImportStats.issues ? 'text-amber-800' : 'text-emerald-800'">{{ receiptImportBatch.original_filename }} · {{ receiptImportBatch.parse_summary.engine || '文件解析' }} · 批次 {{ receiptImportBatch.id }}</p>
+              <p class="mt-1 text-[11px]" :class="receiptImportNeedsReview ? 'text-amber-800' : 'text-emerald-800'">{{ receiptImportBatch.original_filename }} · {{ receiptImportBatch.parse_summary.engine || '文件解析' }} · 批次 {{ receiptImportBatch.id }}</p>
             </div>
             <div class="flex flex-wrap gap-2">
               <button v-if="receiptImportStats.issues" type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 text-[11px] font-bold text-amber-800 hover:bg-amber-100" @click="setActiveTab('exceptions')"><AlertTriangle class="size-3.5" />前往异常中心</button>
@@ -2556,11 +2559,30 @@ function refreshDemo() {
             <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><div class="text-[10px] text-emerald-700">已匹配正式订单</div><div class="mt-1 text-xl font-bold text-emerald-900">{{ receiptImportStats.matched }} 行</div></div>
             <div class="rounded-lg border border-amber-200 bg-amber-50 p-3"><div class="text-[10px] text-amber-700">需要人工处理</div><div class="mt-1 text-xl font-bold text-amber-900">{{ receiptImportStats.issues }} 行</div></div>
           </div>
-          <div v-if="receiptImportStats.matched === 0" class="border-b border-red-200 bg-red-50 px-4 py-3 text-[11px] leading-5 text-red-800"><strong>文件已成功导入，但没有找到可关联的正式纸箱订单。</strong> 系统没有生成收料明细或库存；可以先补建订单并重新导入，也可以删除本次导入及其派生异常。</div>
-          <div v-if="receiptImportBatch.parse_summary.warnings?.length" class="border-b border-blue-200 bg-blue-50 px-4 py-3 text-[10px] leading-5 text-blue-800"><div v-for="warning in receiptImportBatch.parse_summary.warnings.slice(0, 3)" :key="warning">• {{ warning }}</div></div>
+          <div v-if="receiptImportStats.matched === 0" class="border-b border-red-200 bg-red-50 px-4 py-3 text-[11px] leading-5 text-red-800">
+            <strong v-if="receiptImportStats.total > 0">已识别 {{ receiptImportStats.total }} 行送货明细，但没有找到可关联的正式纸箱订单。</strong>
+            <strong v-else>文件已成功导入，但未解析出结构化送货明细。</strong>
+            系统没有生成收料明细或库存；请在下方核对识别详情，确认是 OCR 识别问题还是订单关联问题，也可以删除本次导入及其派生异常。
+          </div>
+          <details v-if="receiptImportWarnings.length || receiptImportRawText || receiptImportStats.total === 0" class="border-b border-blue-200 bg-blue-50 px-4 py-3 text-[10px] leading-5 text-blue-900" :open="receiptImportStats.matched === 0">
+            <summary class="cursor-pointer select-none font-bold">识别诊断详情（OCR 原文、引擎与警告）</summary>
+            <div class="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-blue-800">
+              <span>识别引擎：<strong>{{ receiptImportBatch.parse_summary.engine || '未返回' }}</strong></span>
+              <span v-if="receiptImportBatch.parse_summary.parser_version">解析版本：<strong>{{ receiptImportBatch.parse_summary.parser_version }}</strong></span>
+              <span>结构化明细：<strong>{{ receiptImportStats.total }} 行</strong></span>
+            </div>
+            <div v-if="receiptImportWarnings.length" class="mt-2 rounded-lg border border-blue-200 bg-white/70 px-3 py-2">
+              <div v-for="warning in receiptImportWarnings" :key="warning">• {{ warning }}</div>
+            </div>
+            <div class="mt-2">
+              <div class="font-bold text-blue-950">OCR 识别原文</div>
+              <pre v-if="receiptImportRawText" class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-blue-200 bg-white p-3 font-mono text-[10px] leading-5 text-slate-700">{{ receiptImportRawText }}</pre>
+              <div v-else class="mt-1 rounded-lg border border-blue-200 bg-white/70 px-3 py-2 text-blue-700">OCR 未返回可展示原文。请检查图片清晰度、方向和表格边界，或删除后重新上传。</div>
+            </div>
+          </details>
           <div class="overflow-x-auto">
-            <table class="min-w-[1050px] w-full text-left">
-              <thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-3 py-2.5">来源</th><th class="px-3 py-2.5">送货单 / 日期</th><th class="px-3 py-2.5">合同号</th><th class="px-3 py-2.5">货号</th><th class="px-3 py-2.5">识别纸品</th><th class="px-3 py-2.5 text-right">数量</th><th class="px-3 py-2.5">匹配结果</th><th class="px-3 py-2.5">处理建议</th></tr></thead>
+            <table class="min-w-[1180px] w-full text-left">
+              <thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-3 py-2.5">来源</th><th class="px-3 py-2.5">送货单 / 日期</th><th class="px-3 py-2.5">合同号</th><th class="px-3 py-2.5">货号</th><th class="px-3 py-2.5">品名（类型 / 纸质）</th><th class="px-3 py-2.5">规格</th><th class="px-3 py-2.5 text-right">数量</th><th class="px-3 py-2.5">匹配结果</th><th class="px-3 py-2.5">处理建议</th></tr></thead>
               <tbody class="divide-y divide-slate-100">
                 <tr v-for="(row, index) in receiptImportPreviewRows" :key="`${row.source_sheet}-${row.source_row}-${index}`" class="hover:bg-slate-50/70">
                   <td class="px-3 py-2.5 text-[10px] text-slate-500">{{ row.source_sheet || '文件' }} · 第 {{ row.source_row || index + 1 }} 行</td>
@@ -2568,11 +2590,12 @@ function refreshDemo() {
                   <td class="px-3 py-2.5 font-mono text-[11px] font-semibold">{{ row.contract_no || row.reference || '待识别' }}</td>
                   <td class="px-3 py-2.5 font-mono text-[11px]">{{ row.item_no || '待识别' }}</td>
                   <td class="px-3 py-2.5 text-[11px]"><div class="font-semibold">{{ row.packaging_type || '待复核' }}</div><div class="text-[9px] text-slate-400">{{ row.paper_quality || '' }}</div></td>
+                  <td class="px-3 py-2.5 text-[10px] text-slate-600">{{ row.specification || '待识别' }}</td>
                   <td class="px-3 py-2.5 text-right font-semibold tabular-nums">{{ importQuantityLabel(row) }}</td>
                   <td class="px-3 py-2.5"><span class="rounded-full px-2 py-0.5 text-[9px] font-bold ring-1 ring-inset" :class="importMatchTone(row.match_status)">{{ importMatchLabel(row.match_status) }}</span></td>
                   <td class="max-w-[260px] px-3 py-2.5 text-[10px] text-slate-500">{{ row.suggestion || '请人工复核识别结果' }}</td>
                 </tr>
-                <tr v-if="receiptImportPreviewRows.length === 0"><td colspan="8" class="px-4 py-10 text-center text-slate-400">文件已登记，但没有识别到可展示的明细行</td></tr>
+                <tr v-if="receiptImportPreviewRows.length === 0"><td colspan="9" class="px-4 py-10 text-center text-slate-400">未解析出结构化明细；请查看上方“识别诊断详情”中的 OCR 原文和警告</td></tr>
               </tbody>
             </table>
           </div>
