@@ -23,7 +23,6 @@ from app.schemas.ai.workbook import (
 from app.services.injection_scheduling_excel import (
     CELL_REF_RE,
     MAIN_NS,
-    MAX_SOURCE_BYTES,
     _clean_text,
     _column_from_ref,
     _excel_datetime,
@@ -292,15 +291,10 @@ def build_workbook_recognition_packet(
 ) -> AIWorkbookRecognitionPacketV1:
     if not content:
         raise HTTPException(status_code=422, detail="上传的 Excel 文件为空")
-    if len(content) > MAX_SOURCE_BYTES:
-        raise HTTPException(status_code=413, detail="Excel 文件超过 50 MB 限制")
     portable_name = source_file_name.strip().replace("\\", "/")
     if PurePosixPath(portable_name).name != portable_name:
         raise HTTPException(status_code=422, detail="Excel 文件名或路径不安全")
     suffix = PurePosixPath(portable_name).suffix.lower()
-    if suffix not in {".xlsx", ".xlsm"}:
-        raise HTTPException(status_code=422, detail="只支持 .xlsx/.xlsm 计划表")
-
     reader = _WorkbookReader(content)
     try:
         if not 1 <= len(reader.sheet_paths) <= MAX_SHEETS:

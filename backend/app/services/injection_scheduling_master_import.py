@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from app.services.injection_scheduling_demand_import import master_revision_digest
 from app.services.injection_scheduling_excel import (
-    MAX_SOURCE_BYTES,
     _clean_text,
     _issue,
     _WorkbookReader,
@@ -238,11 +237,6 @@ def parse_master_data_workbook(
     profile: ImportProfile,
     auto_detection: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if not source_file_name.lower().endswith(".xlsx"):
-        raise HTTPException(status_code=422, detail="仅支持 .xlsx 主数据文件")
-    if len(content) > MAX_SOURCE_BYTES:
-        raise HTTPException(status_code=413, detail="Excel 文件超过 50 MB 限制")
-
     reader = _WorkbookReader(content)
     try:
         if auto_detection and any(
