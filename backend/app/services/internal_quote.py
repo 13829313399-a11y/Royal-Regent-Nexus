@@ -836,7 +836,7 @@ def _summary_markup_tiers(
 ) -> tuple[list[dict[str, object]], Decimal, Decimal]:
     default_moqs = (Decimal("3000"), Decimal("5000"), Decimal("10000"))
     raw_tiers = shipping_source.get("markup_tiers", [])
-    tiers: list[tuple[Decimal, Decimal]] = []
+    tiers: list[tuple[Decimal, Decimal, bool]] = []
     if isinstance(raw_tiers, list):
         for item in raw_tiers:
             if not isinstance(item, dict):
@@ -847,19 +847,19 @@ def _summary_markup_tiers(
             if moq <= 0 or moq != moq.to_integral_value() or markup < Decimal("0.01") or markup > Decimal("9.99"):
                 tiers = []
                 break
-            tiers.append((moq, markup))
+            tiers.append((moq, markup, item.get("include_in_output", True) is not False))
     tiers.sort(key=lambda item: item[0])
     if not tiers or any(tiers[index][0] <= tiers[index - 1][0] for index in range(1, len(tiers))):
-        tiers = [(moq, fallback_markup) for moq in default_moqs]
+        tiers = [(moq, fallback_markup, True) for moq in default_moqs]
 
     selected_moq = _summary_decimal(shipping_source.get("selected_markup_moq"))
-    selected_tier = next(((moq, markup) for moq, markup in tiers if moq == selected_moq), None)
+    selected_tier = next(((moq, markup) for moq, markup, _include in tiers if moq == selected_moq), None)
     if selected_tier is not None:
         active_moq, active_markup = selected_tier
     else:
         quote_quantity = _summary_decimal(quantity, "10000")
-        active_moq, active_markup = tiers[0]
-        for moq, markup in tiers:
+        active_moq, active_markup, _include = tiers[0]
+        for moq, markup, _include in tiers:
             if moq <= quote_quantity:
                 active_moq, active_markup = moq, markup
     return (
@@ -868,8 +868,9 @@ def _summary_markup_tiers(
                 "moq": decimal_text(moq),
                 "markup": decimal_text(markup),
                 "is_active": moq == active_moq,
+                "include_in_output": include_in_output,
             }
-            for moq, markup in tiers
+            for moq, markup, include_in_output in tiers
         ],
         active_moq,
         active_markup,

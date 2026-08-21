@@ -597,9 +597,9 @@ def test_rr2_shipping_price_selects_the_highest_moq_tier_reached_by_quote_quanti
     assert shipping["markup"] == "1.2500"
     assert shipping["active_markup_moq"] == "5000.0000"
     assert shipping["markup_tiers"] == [
-        {"moq": "3000.0000", "markup": "1.3000", "is_active": False},
-        {"moq": "5000.0000", "markup": "1.2500", "is_active": True},
-        {"moq": "10000.0000", "markup": "1.1500", "is_active": False},
+        {"moq": "3000.0000", "markup": "1.3000", "is_active": False, "include_in_output": True},
+        {"moq": "5000.0000", "markup": "1.2500", "is_active": True, "include_in_output": True},
+        {"moq": "10000.0000", "markup": "1.1500", "is_active": False, "include_in_output": True},
     ]
     assert shipping["rows"][1]["after_markup_hkd"] == "75.6250"
 

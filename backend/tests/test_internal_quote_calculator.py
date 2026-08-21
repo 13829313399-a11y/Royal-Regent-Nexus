@@ -391,7 +391,7 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
     assert sewing_line["pieces"] == "4.0000"
     assert sewing_line["price_rmb"] == "33.6000"
     assert sewing_line["amount_rmb"] == "35.2800"
-    assert sewing_line["formula"] == "usage * unit_price_rmb * markup"
+    assert sewing_line["formula"] == "usage * unit_price_rmb / exchange_rate * markup"
 
     assembly = calculate(
         "assembly",
@@ -510,6 +510,47 @@ def test_sewing_tax_basis_splits_material_rows_labor_rows_and_legacy_group_labor
     assert sewing["totals"]["clothes_hkd"] == "18.0000"
     assert sewing["totals"]["total_hkd"] == "18.0000"
     assert [row["cost_kind"] for row in sewing["line_breakdown"]] == ["material", "labor", "material"]
+
+
+def test_sewing_detail_uses_row_exchange_rate_for_authoritative_hkd_amounts():
+    sewing = calculate(
+        "sewing",
+        {
+            "groups": [{
+                "name": "土豆蝙蝠",
+                "category": "clothes",
+                "materials": [
+                    {
+                        "item": "莱卡布",
+                        "part": "前身",
+                        "usage": "0.084",
+                        "unit_price_rmb": "93.2",
+                        "exchange_rate": "0.8",
+                        "markup": "1.1",
+                    },
+                    {
+                        "item": "车缝人工",
+                        "usage": "1",
+                        "unit_price_rmb": "1.7",
+                        "markup": "1",
+                    },
+                ],
+            }],
+        },
+    )
+
+    material, labor = sewing["line_breakdown"]
+    assert material["exchange_rate"] == "0.8000"
+    assert material["cost_rmb"] == "7.8288"
+    assert material["cost_hkd"] == "9.7860"
+    assert material["amount_hkd"] == "10.7646"
+    assert material["formula"] == "usage * unit_price_rmb / exchange_rate * markup"
+    assert labor["exchange_rate"] == "0.8500"
+    assert labor["amount_hkd"] == "2.0000"
+    assert sewing["totals"]["clothes_material_hkd"] == "10.7646"
+    assert sewing["totals"]["clothes_labor_hkd"] == "2.0000"
+    assert sewing["totals"]["total_hkd"] == "12.7646"
+    assert sewing["totals"]["total_rmb"] == "10.3117"
 
 
 def test_incomplete_quick_quotes_can_be_saved_but_block_submission():
@@ -910,6 +951,29 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert baseline_sz40["lifting_per_piece_hkd"] == "0.4968"
     assert baseline_sz40["per_piece_hkd"] == "3.4327"
     assert baseline_sz40["formula"] == "已启用的运费与吊柜费分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量；未启用项按 0 计算"
+
+    selected_freight = calculate_section(
+        "sales",
+        {
+            "freight_calc": {"cap_40": "1980", "cap_20": "883", "selected_route_keys": ["sz20"]},
+            "cartons": [{
+                "item": "主纸箱", "length_in": "14", "width_in": "9.25", "height_in": "23.875",
+                "qty_per_carton": "2", "flat_cards": [],
+            }],
+        },
+        {
+            **SNAPSHOT,
+            "freight": {
+                "routes": [
+                    {"route_key": "sz40", "route_name": "深圳 40 柜", "capacity_key": "cap_40", "freight_hkd": "6500", "lifting_hkd": "1100"},
+                    {"route_key": "sz20", "route_name": "深圳 20 柜", "capacity_key": "cap_20", "freight_hkd": "4200", "lifting_hkd": "700"},
+                ],
+            },
+        },
+        "IQREF-FREIGHT-SELECTED",
+        context={"factory_price_hkd": "0"},
+    )
+    assert [row["route_key"] for row in selected_freight["totals"]["freight_options"]] == ["sz20"]
 
     custom_capacity_freight = calculate_section(
         "sales",
@@ -1353,6 +1417,37 @@ def test_sales_scenario_and_blocking_reference_warnings():
         factory_price_hkd="10",
     )
     assert tiered_markup["totals"]["total_hkd"] == "0.0000"
+
+    selective_tiers = calculate(
+        "sales",
+        {
+            "shipping": {
+                "markup_tiers": [
+                    {"moq": 3000, "markup_x": "1.30", "include_in_output": False},
+                    {"moq": 5000, "markup_x": "1.25", "include_in_output": True},
+                ],
+                "selected_markup_moq": 5000,
+            },
+            "freight_calc": {"enabled": False},
+        },
+        factory_price_hkd="10",
+    )
+    assert selective_tiers["status"] == "valid"
+
+    with pytest.raises(CalculationInputError, match="至少要输出一个 MOQ"):
+        calculate(
+            "sales",
+            {
+                "shipping": {
+                    "markup_tiers": [
+                        {"moq": 3000, "markup_x": "1.30", "include_in_output": False},
+                        {"moq": 5000, "markup_x": "1.25", "include_in_output": False},
+                    ],
+                },
+                "freight_calc": {"enabled": False},
+            },
+            factory_price_hkd="10",
+        )
 
     with pytest.raises(CalculationInputError, match="MOQ 必须由小到大排列"):
         calculate(

@@ -118,6 +118,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(saveButton.attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-testid="select-quote-markup-tier-0"]').trigger('click')
+    await wrapper.get('[data-testid="output-quote-markup-tier-1"]').setValue(false)
     await wrapper.get('[data-testid="live-quote-markup-0"]').setValue('1.15')
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('3.5')
     expect(wrapper.get('[data-testid="live-quote-settlement"]').text()).toBe('0.9650')
@@ -127,9 +128,9 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(wrapper.emitted('updateMarkup')).toEqual([[
       {
         markupTiers: [
-          { moq: '3000', markup: '1.15' },
-          { moq: '5000', markup: '1.20' },
-          { moq: '10000', markup: '1.20' },
+          { moq: '3000', markup: '1.15', includeInOutput: true },
+          { moq: '5000', markup: '1.20', includeInOutput: false },
+          { moq: '10000', markup: '1.20', includeInOutput: true },
         ],
         selectedMoq: '3000',
         miscRatio: '0.0350',

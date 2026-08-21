@@ -1,3 +1,4 @@
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -55,7 +56,7 @@ def _find_cell(sheet, value: object):
 
 
 @pytest.mark.parametrize(
-    ("t1_rows", "breakdown", "expected_total", "expected_domestic"),
+    ("t1_rows", "breakdown", "expected_total"),
     [
         (
             [
@@ -67,7 +68,6 @@ def _find_cell(sheet, value: object):
             ],
             {"total_hkd": "7.25", "imported_hkd": "2.75", "domestic_hkd": "4.5"},
             7.25,
-            4.5,
         ),
         (
             [
@@ -77,7 +77,6 @@ def _find_cell(sheet, value: object):
             ],
             None,
             8.25,
-            3.0,
         ),
         (
             [
@@ -86,15 +85,13 @@ def _find_cell(sheet, value: object):
             ],
             None,
             4.0,
-            2.75,
         ),
     ],
 )
-def test_excel_unifies_molding_imported_and_domestic_material_but_keeps_domestic_tax_base(
+def test_excel_unifies_molding_material_and_builds_tax_costs_from_detail_tax_tags(
     t1_rows: list[dict[str, object]],
     breakdown: dict[str, object] | None,
     expected_total: float,
-    expected_domestic: float,
 ):
     workbook, sheet = _build_molding_material_sheet(
         t1_rows=t1_rows,
@@ -121,10 +118,27 @@ def test_excel_unifies_molding_imported_and_domestic_material_but_keeps_domestic
 
         tax_header = _find_cell(sheet, "人民币外购件成本")
         rmb_purchase_formula = sheet.cell(tax_header.row + 1, tax_header.column).value
-        domestic_literal = format(expected_domestic, ".10g")
-        assert rmb_purchase_formula.startswith(f"=SUM({domestic_literal},")
-
         tax_13_formula = sheet.cell(tax_header.row + 1, tax_header.column + 1).value
-        assert tax_13_formula.startswith(f"=SUM({domestic_literal},")
+        subtotal_formula = next(
+            sheet.cell(row, 4).value
+            for row in range(material_detail_row, tax_header.row)
+            if str(sheet.cell(row, 4).value).startswith(
+                f"=SUM(D{material_detail_row}:D"
+            )
+        )
+        detail_end_match = re.fullmatch(
+            rf"=SUM\(D{material_detail_row}:D(\d+)\)", subtotal_formula
+        )
+        assert detail_end_match is not None
+        detail_end_row = int(detail_end_match.group(1))
+        detail_tax_range = f"$A${material_detail_row}:$A${detail_end_row}"
+        detail_amount_range = f"$D${material_detail_row}:$D${detail_end_row}"
+        assert tax_13_formula == (
+            f'=SUMIF({detail_tax_range},"¥13%",{detail_amount_range})'
+        )
+        assert rmb_purchase_formula == (
+            f'=D{tax_header.row + 1}'
+            f'+SUMIF({detail_tax_range},"¥1%",{detail_amount_range})'
+        )
     finally:
         workbook.close()

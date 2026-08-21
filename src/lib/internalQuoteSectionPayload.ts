@@ -277,11 +277,14 @@ export interface SewingMaterialRow {
   part: string
   craft: '' | '电绣' | '丝印'
   pieces: number
+  supplier?: string
+  fabric_moq_y?: number
+  below_moq_fee_rmb?: number
   usage: number
   unit_price_rmb: number
+  exchange_rate?: number
   markup: number
   remark: string
-  supplier?: string
   source_row?: number
 }
 export interface SewingGroup { name: string; category: 'clothes' | 'hair'; materials: SewingMaterialRow[]; labor_rmb: number }
@@ -316,8 +319,9 @@ export type SalesFreightCalculation = {
   enabled: boolean
   freight_enabled?: boolean
   lifting_enabled?: boolean
+  selected_route_keys?: string[]
 } & Record<SalesFreightCapacityKey, number>
-  & Record<string, number | boolean | undefined>
+  & Record<string, number | boolean | string[] | undefined>
 export interface SalesFreightRouteDefinition {
   key: string
   label: string
@@ -448,6 +452,7 @@ export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorB
 export interface SalesMarkupTier {
   moq: number
   markup_x: number
+  include_in_output?: boolean
 }
 export interface SalesShippingPricing {
   markup_x?: number
@@ -558,7 +563,7 @@ export const defaultSalesMarkupMoqs = [3000, 5000, 10000] as const
 
 export function createDefaultSalesMarkupTiers(markup = 1.2): SalesMarkupTier[] {
   const normalizedMarkup = Number.isFinite(markup) && markup > 0 ? markup : 1.2
-  return defaultSalesMarkupMoqs.map((moq) => ({ moq, markup_x: normalizedMarkup }))
+  return defaultSalesMarkupMoqs.map((moq) => ({ moq, markup_x: normalizedMarkup, include_in_output: true }))
 }
 
 export function normalizeSalesMarkupTiers(value: unknown, fallbackMarkup = 1.2): SalesMarkupTier[] {
@@ -568,6 +573,7 @@ export function normalizeSalesMarkupTiers(value: unknown, fallbackMarkup = 1.2):
     return {
       moq: numberValue(row.moq),
       markup_x: numberValue(row.markup_x, fallbackMarkup),
+      include_in_output: booleanValue(row.include_in_output, true),
     }
   })
 }
@@ -1111,6 +1117,20 @@ export function calculateSewingRowTotalRmb(row: SewingMaterialRow) {
   return calculateSewingBasePriceRmb(row) * markup
 }
 
+export function calculateSewingExchangeRate(row: SewingMaterialRow, rmbHkdRate: unknown) {
+  return positivePreviewNumber(row.exchange_rate) || positivePreviewNumber(rmbHkdRate)
+}
+
+export function calculateSewingBasePriceHkd(row: SewingMaterialRow, rmbHkdRate: unknown) {
+  const rate = calculateSewingExchangeRate(row, rmbHkdRate)
+  return rate ? calculateSewingBasePriceRmb(row) / rate : 0
+}
+
+export function calculateSewingRowTotalHkd(row: SewingMaterialRow, rmbHkdRate: unknown) {
+  const markup = Math.max(Number(row.markup) || 0, 0) || 1
+  return calculateSewingBasePriceHkd(row, rmbHkdRate) * markup
+}
+
 export function sewingGroupHasLaborLine(group: SewingGroup) {
   return group.materials.some((row) => `${row.item}${row.part}`.includes('人工'))
 }
@@ -1118,6 +1138,18 @@ export function sewingGroupHasLaborLine(group: SewingGroup) {
 export function calculateSewingGroupTotalRmb(group: SewingGroup) {
   const materialTotal = group.materials.reduce((total, row) => total + calculateSewingRowTotalRmb(row), 0)
   return materialTotal + (sewingGroupHasLaborLine(group) ? 0 : Math.max(Number(group.labor_rmb) || 0, 0))
+}
+
+export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unknown) {
+  const materialTotal = group.materials.reduce(
+    (total, row) => total + calculateSewingRowTotalHkd(row, rmbHkdRate),
+    0,
+  )
+  const rate = positivePreviewNumber(rmbHkdRate)
+  const legacyLaborHkd = !sewingGroupHasLaborLine(group) && rate
+    ? Math.max(Number(group.labor_rmb) || 0, 0) / rate
+    : 0
+  return materialTotal + legacyLaborHkd
 }
 
 export function calculateSewingTotalRmb(payload: SewingPayload) {
@@ -1130,8 +1162,10 @@ export function calculateSewingQuickTotalHkd(payload: SewingPayload) {
 
 export function calculateSewingTotalHkd(payload: SewingPayload, rmbHkdRate: unknown) {
   if (payload.quote_mode === 'quick') return calculateSewingQuickTotalHkd(payload)
-  const rate = positivePreviewNumber(rmbHkdRate)
-  return rate ? calculateSewingTotalRmb(payload) / rate : 0
+  return payload.groups.reduce(
+    (total, group) => total + calculateSewingGroupTotalHkd(group, rmbHkdRate),
+    0,
+  )
 }
 
 export function calculateAssemblyGroupPeople(group: AssemblyGroup) {
@@ -1332,11 +1366,14 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
           part: textValue(row.part),
           craft: ['电绣', '丝印'].includes(textValue(row.craft)) ? textValue(row.craft) as SewingMaterialRow['craft'] : '',
           pieces: numberValue(row.pieces),
+          ...(Object.prototype.hasOwnProperty.call(row, 'supplier') ? { supplier: textValue(row.supplier) } : {}),
+          ...(Object.prototype.hasOwnProperty.call(row, 'fabric_moq_y') ? { fabric_moq_y: numberValue(row.fabric_moq_y) } : {}),
+          ...(Object.prototype.hasOwnProperty.call(row, 'below_moq_fee_rmb') ? { below_moq_fee_rmb: numberValue(row.below_moq_fee_rmb) } : {}),
           usage: numberValue(row.usage ?? row.qty),
           unit_price_rmb: numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
+          ...(Object.prototype.hasOwnProperty.call(row, 'exchange_rate') ? { exchange_rate: numberValue(row.exchange_rate) } : {}),
           markup: numberValue(row.markup, 1),
           remark: textValue(row.remark ?? row.note),
-          ...(Object.prototype.hasOwnProperty.call(row, 'supplier') ? { supplier: textValue(row.supplier) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
         })),
       })),
@@ -1398,6 +1435,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     'enabled',
     'freight_enabled',
     'lifting_enabled',
+    'selected_route_keys',
     ...salesFreightCapacityDefinitions.map(({ key }) => key),
     ...salesFreightRouteDefinitions.map(({ key }) => key),
   ])
@@ -1406,6 +1444,10 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       .filter(([key, value]) => key.trim() && !standardFreightKeys.has(key) && typeof value !== 'boolean')
       .map(([key, value]) => [key, positiveIntegerValue(value, 0)]),
   )
+  const hasSelectedFreightRoutes = Object.prototype.hasOwnProperty.call(freightSource, 'selected_route_keys')
+  const selectedFreightRouteKeys = Array.isArray(freightSource.selected_route_keys)
+    ? Array.from(new Set(freightSource.selected_route_keys.map((key) => String(key).trim()).filter(Boolean)))
+    : []
   const shippingSource = objectValue(source.shipping)
   const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping') || Boolean(legacyScenarioWithSettlement)
   const miscPricing = normalizedSalesMiscPricing(shippingSource, legacyScenarioWithSettlement?.settlement)
@@ -1428,6 +1470,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       enabled: normalizedFreightEnabled || normalizedLiftingEnabled,
       freight_enabled: normalizedFreightEnabled,
       lifting_enabled: normalizedLiftingEnabled,
+      ...(hasSelectedFreightRoutes ? { selected_route_keys: selectedFreightRouteKeys } : {}),
       ...customFreightCapacityValues,
       ...Object.fromEntries(salesFreightCapacityDefinitions
         .map(({ key }) => [key, positiveIntegerValue(freightSource[key], defaultSalesFreightCalculation[key])])),

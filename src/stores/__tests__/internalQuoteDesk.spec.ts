@@ -533,6 +533,49 @@ describe('internal quote desk real API state', () => {
     expect(() => store.addComment('quote-1', '本地评论')).toThrow('尚未提供协作评论接口')
   })
 
+  it('can defer the authoritative refresh while a whole-product save writes every dirty section', async () => {
+    const store = useInternalQuoteDeskStore()
+    apiMock.get.mockClear()
+
+    await store.saveSection(
+      'quote-1',
+      'engineering',
+      1,
+      { molds: [{ item: '模具A' }] },
+      '整单连续保存',
+      false,
+    )
+    await store.saveSection(
+      'quote-1',
+      'assembly',
+      1,
+      { rows: [{ item: '装配工序A' }] },
+      '整单连续保存',
+      false,
+    )
+
+    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
+      1,
+      'quote-1',
+      'engineering',
+      1,
+      { molds: [{ item: '模具A' }] },
+      '整单连续保存',
+    )
+    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
+      2,
+      'quote-1',
+      'assembly',
+      1,
+      { rows: [{ item: '装配工序A' }] },
+      '整单连续保存',
+    )
+    expect(apiMock.get).not.toHaveBeenCalled()
+
+    await store.loadQuote('quote-1')
+    expect(apiMock.get).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the saved miscellaneous ratio and selected markup tier after the authoritative refresh', async () => {
     const salesPayload = {
       shipping: {

@@ -378,7 +378,7 @@ async function updateReferenceFx(payload: { rmbHkd: string; hkdUsd: string }) {
   }
 }
 
-async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; markup: string }>; selectedMoq: string; miscRatio: string }) {
+async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string }) {
   markupMessage.value = ''
   markupError.value = ''
   message.value = ''
@@ -390,6 +390,7 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
   const markupTiers: SalesMarkupTier[] = payload.markupTiers.map((tier) => ({
     moq: Number(tier.moq),
     markup_x: Number(tier.markup),
+    include_in_output: tier.includeInOutput,
   }))
   const selectedMoq = Number(payload.selectedMoq)
   const miscRatio = Number(payload.miscRatio)
@@ -400,11 +401,16 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
     markupError.value = '请完整填写三档递增的 MOQ 区间和 0.01 至 9.99 的码数。'
     return
   }
+  if (!markupTiers.some((tier) => tier.include_in_output !== false)) {
+    markupError.value = '内部报价表至少要输出一个 MOQ 价格。'
+    return
+  }
   const selectedTier = markupTiers.find((tier) => tier.moq === selectedMoq)
   if (!selectedTier) {
     markupError.value = '请选择本单采用的 MOQ 档位。'
     return
   }
+  selectedTier.include_in_output = true
   if (!Number.isFinite(miscRatio) || miscRatio < 0 || miscRatio >= 1) {
     markupError.value = '杂项率必须大于等于 0% 且小于 100%。'
     return
@@ -426,7 +432,7 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
         shipping: {
           ...sourceShipping,
           markup_x: Number(activeMarkup.toFixed(2)),
-          markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)) })),
+          markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)), include_in_output: tier.include_in_output !== false })),
           selected_markup_moq: selectedMoq,
           misc_ratio: Number(miscRatio.toFixed(4)),
           divisor: salesSettlementDivisorForMiscRatio(miscRatio),
@@ -566,16 +572,17 @@ async function saveWholeProductDraft() {
     message.value = `“${quote.value.productName}”当前没有需要保存的修改。`
     return
   }
-
   wholeProductSaving.value = true
   const savedLabels: string[] = []
   try {
     for (const section of dirtySections) {
       const editor = sectionEditors.value[section.code]
       if (!editor) throw new Error(`${section.label}编辑器尚未就绪。`)
-      await editor.saveWholeQuoteDraft()
+      await editor.saveWholeQuoteDraft(false)
       savedLabels.push(section.label)
     }
+    const refreshed = await quoteStore.loadQuote(quote.value.id)
+    if (!refreshed) throw new Error('全部分部已写入服务器，但页面未能读取最新报价，请点击“重新读取最新 revision”。')
     message.value = `“${quote.value.productName}”已统一保存：${savedLabels.join('、')}。`
   } catch (error) {
     const savedNote = savedLabels.length ? `；此前已保存：${savedLabels.join('、')}` : ''

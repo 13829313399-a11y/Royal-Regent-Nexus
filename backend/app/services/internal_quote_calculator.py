@@ -177,6 +177,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "cartons": [{"item": "text", "size_unit": "cm|inch display/input preference", "length_in": "decimal>0 canonical inch", "width_in": "decimal>0 canonical inch", "height_in": "decimal>0 canonical inch", "qty_per_carton": "decimal>0", "flat_cards": [{"name": "text", "length_in": "decimal>0", "width_in": "decimal>0", "quantity": "decimal>0; default 1 for legacy rows; price = length × width × flat-card price factor × quantity ÷ 1000"}]}],
         "freight_calc": {
             "enabled": "boolean; default true",
+            "selected_route_keys": "optional route-key list; absent means all frozen routes are exported",
             "capacity type keys": "decimal>0 CUFT; defaults include cap_10t|cap_5t|cap_40|cap_20 and pricing-baseline custom labels",
             "route key fields": "legacy quote override decimal>=0 HKD; absent uses frozen pricing-baseline route list and freight",
             "source": "first sales carton CUFT and qty_per_carton",
@@ -282,7 +283,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     },
     "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "fixed 13"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
     "slush": {"lines": [{"product_code": "text", "item": "glue part name", "material": "record only", "weight_g": "record only decimal>=0", "daily_output_24h": "record only decimal>=0", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "remark": "text"}], "formula": "line total HKD = quantity * unit price HKD; total RMB = total HKD * frozen RMB/HKD rate"},
-    "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode price RMB = usage * material price * markup, rows whose item/part contains 人工 and legacy labor_rmb are labor, then HKD = RMB / frozen rate"},
+    "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0", "exchange_rate": "optional row RMB/HKD rate; defaults frozen rate", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode cost HKD = usage * RMB unit price / row exchange rate and price HKD = cost HKD * markup; old rows without a row rate use the frozen RMB/HKD rate"},
     "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
     "assembly": {
         "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "total_persons": "decimal>0 when processes is empty", "processes": [{"name": "text", "persons": "decimal>=0", "remark": "text"}]}],
@@ -1385,15 +1386,19 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
         }
         return
     category_rmb = {"clothes": ZERO, "hair": ZERO}
+    category_hkd = {"clothes": ZERO, "hair": ZERO}
     category_material_rmb = {"clothes": ZERO, "hair": ZERO}
+    category_material_hkd = {"clothes": ZERO, "hair": ZERO}
     category_labor_rmb = {"clothes": ZERO, "hair": ZERO}
+    category_labor_hkd = {"clothes": ZERO, "hair": ZERO}
     for group_index, group in enumerate(payload.get("groups", []) or []):
         if not isinstance(group, dict):
             raise CalculationInputError(f"车缝产品组第 {group_index + 1} 组格式无效")
         category = str(group.get("category", "clothes"))
         if category not in category_rmb:
             raise CalculationInputError(f"车缝产品组第 {group_index + 1} 组分类无效")
-        group_total = ZERO
+        group_total_rmb = ZERO
+        group_total_hkd = ZERO
         contains_labor_line = False
         for row_index, row in enumerate(group.get("materials", []) or []):
             if not isinstance(row, dict):
@@ -1405,16 +1410,22 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
             pieces = decimal_value(row.get("pieces"), "车缝裁片数")
             usage = decimal_value(row.get("usage"), "车缝用量")
             unit_price = decimal_value(row.get("unit_price_rmb"), "车缝物料价")
+            exchange_rate = positive_value(row.get("exchange_rate"), "车缝行汇率", str(fx))
             markup = decimal_value(row.get("markup"), "车缝码点", "1")
             if markup <= ZERO:
                 markup = Decimal("1")
-            price_rmb = usage * unit_price
-            line_total = price_rmb * markup
-            group_total += line_total
+            cost_rmb = usage * unit_price
+            cost_hkd = cost_rmb / exchange_rate
+            line_total_rmb = cost_rmb * markup
+            line_total_hkd = cost_hkd * markup
+            group_total_rmb += line_total_rmb
+            group_total_hkd += line_total_hkd
             if is_labor_line:
-                category_labor_rmb[category] += line_total
+                category_labor_rmb[category] += line_total_rmb
+                category_labor_hkd[category] += line_total_hkd
             else:
-                category_material_rmb[category] += line_total
+                category_material_rmb[category] += line_total_rmb
+                category_material_hkd[category] += line_total_hkd
             result["line_breakdown"].append({
                 "kind": "sewing_material",
                 "group": str(group.get("name", "")),
@@ -1425,41 +1436,50 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
                 "pieces": decimal_text(pieces),
                 "usage": decimal_text(usage),
                 "unit_price_rmb": decimal_text(unit_price),
-                "price_rmb": decimal_text(price_rmb),
+                "exchange_rate": decimal_text(exchange_rate),
+                "cost_rmb": decimal_text(cost_rmb),
+                "price_rmb": decimal_text(cost_rmb),
+                "cost_hkd": decimal_text(cost_hkd),
                 "markup": decimal_text(markup),
                 "cost_kind": "labor" if is_labor_line else "material",
                 "remark": str(row.get("remark") or row.get("note") or ""),
                 "source_row": row.get("source_row", ""),
-                "formula": "usage * unit_price_rmb * markup",
-                "amount_rmb": decimal_text(line_total),
-                "amount_hkd": decimal_text(line_total / fx),
+                "formula": "usage * unit_price_rmb / exchange_rate * markup",
+                "amount_rmb": decimal_text(line_total_rmb),
+                "amount_hkd": decimal_text(line_total_hkd),
             })
         labor = ZERO if contains_labor_line else decimal_value(group.get("labor_rmb"), "车缝产品组人工")
-        group_total += labor
+        labor_hkd = labor / fx
+        group_total_rmb += labor
+        group_total_hkd += labor_hkd
         category_labor_rmb[category] += labor
-        category_rmb[category] += group_total
+        category_labor_hkd[category] += labor_hkd
+        category_rmb[category] += group_total_rmb
+        category_hkd[category] += group_total_hkd
     total_rmb = sum(category_rmb.values(), ZERO)
-    total_hkd = total_rmb / fx
+    total_hkd = sum(category_hkd.values(), ZERO)
     material_rmb = sum(category_material_rmb.values(), ZERO)
+    material_hkd = sum(category_material_hkd.values(), ZERO)
     labor_rmb = sum(category_labor_rmb.values(), ZERO)
+    labor_hkd = sum(category_labor_hkd.values(), ZERO)
     result["currency_totals"] = {"HKD": decimal_text(total_hkd), "RMB": decimal_text(total_rmb), "USD": "0.0000"}
     result["totals"] = {
         "clothes_rmb": decimal_text(category_rmb["clothes"]),
         "hair_rmb": decimal_text(category_rmb["hair"]),
-        "clothes_hkd": decimal_text(category_rmb["clothes"] / fx),
-        "hair_hkd": decimal_text(category_rmb["hair"] / fx),
+        "clothes_hkd": decimal_text(category_hkd["clothes"]),
+        "hair_hkd": decimal_text(category_hkd["hair"]),
         "clothes_material_rmb": decimal_text(category_material_rmb["clothes"]),
         "clothes_labor_rmb": decimal_text(category_labor_rmb["clothes"]),
         "hair_material_rmb": decimal_text(category_material_rmb["hair"]),
         "hair_labor_rmb": decimal_text(category_labor_rmb["hair"]),
         "material_rmb": decimal_text(material_rmb),
         "labor_rmb": decimal_text(labor_rmb),
-        "clothes_material_hkd": decimal_text(category_material_rmb["clothes"] / fx),
-        "clothes_labor_hkd": decimal_text(category_labor_rmb["clothes"] / fx),
-        "hair_material_hkd": decimal_text(category_material_rmb["hair"] / fx),
-        "hair_labor_hkd": decimal_text(category_labor_rmb["hair"] / fx),
-        "material_hkd": decimal_text(material_rmb / fx),
-        "labor_hkd": decimal_text(labor_rmb / fx),
+        "clothes_material_hkd": decimal_text(category_material_hkd["clothes"]),
+        "clothes_labor_hkd": decimal_text(category_labor_hkd["clothes"]),
+        "hair_material_hkd": decimal_text(category_material_hkd["hair"]),
+        "hair_labor_hkd": decimal_text(category_labor_hkd["hair"]),
+        "material_hkd": decimal_text(material_hkd),
+        "labor_hkd": decimal_text(labor_hkd),
         "total_rmb": decimal_text(total_rmb),
         "total_hkd": decimal_text(total_hkd),
     }
@@ -1750,6 +1770,16 @@ def _sales_freight_options(
         raise CalculationInputError("是否启用吊柜费计算必须为布尔值")
     if not freight_enabled and not lifting_enabled:
         return []
+    selected_route_keys_source = freight_source.get("selected_route_keys")
+    selected_route_keys: set[str] | None = None
+    if selected_route_keys_source is not None:
+        if not isinstance(selected_route_keys_source, list):
+            raise CalculationInputError("输出运输规格必须为路线编号列表")
+        selected_route_keys = {
+            str(value).strip()
+            for value in selected_route_keys_source
+            if str(value).strip()
+        }
     cartons = payload.get("cartons", []) or []
     if not cartons:
         return []
@@ -1797,6 +1827,8 @@ def _sales_freight_options(
         capacity_key = str(row.get("capacity_key", "")).strip()
         default_capacity_key = FREIGHT_CAPACITY_DEFAULT_KEYS.get(capacity_key)
         if not route_key or not label or not capacity_key:
+            continue
+        if selected_route_keys is not None and route_key not in selected_route_keys:
             continue
         capacity_default = (
             capacity_defaults.get(
@@ -1882,6 +1914,7 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
             raise CalculationInputError("当前码数必须在 0.01 至 9.99 之间")
     markup_tiers = shipping_source.get("markup_tiers")
     tier_moqs: list[Decimal] = []
+    output_tier_moqs: set[Decimal] = set()
     if markup_tiers is not None:
         if not isinstance(markup_tiers, list) or not 1 <= len(markup_tiers) <= 10:
             raise CalculationInputError("分段码数必须包含 1 至 10 个 MOQ 档位")
@@ -1897,12 +1930,21 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
                 raise CalculationInputError("分段码数 MOQ 必须由小到大排列，且不能重复")
             if markup_x < Decimal("0.01") or markup_x > Decimal("9.99"):
                 raise CalculationInputError(f"分段码数第 {index + 1} 档码数必须在 0.01 至 9.99 之间")
+            include_in_output = tier.get("include_in_output", True)
+            if not isinstance(include_in_output, bool):
+                raise CalculationInputError(f"分段码数第 {index + 1} 档输出状态必须为布尔值")
+            if include_in_output:
+                output_tier_moqs.add(moq)
             previous_moq = moq
             tier_moqs.append(moq)
+        if not output_tier_moqs:
+            raise CalculationInputError("内部报价表至少要输出一个 MOQ 价格")
     if "selected_markup_moq" in shipping_source:
         selected_moq = decimal_value(shipping_source.get("selected_markup_moq"), "本单采用 MOQ")
         if selected_moq not in tier_moqs:
             raise CalculationInputError("本单采用的 MOQ 必须来自分段码数档位")
+        if selected_moq not in output_tier_moqs:
+            raise CalculationInputError("本单采用的 MOQ 必须同时设为输出")
     scenarios = payload.get("scenarios", []) or []
     misc_ratio, settlement = resolve_sales_misc_and_settlement(
         shipping_source,

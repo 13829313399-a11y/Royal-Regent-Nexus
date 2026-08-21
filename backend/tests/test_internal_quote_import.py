@@ -66,6 +66,24 @@ def test_downloadable_import_template_uses_a_header_recognized_by_its_parser(imp
     assert header_index == 0
 
 
+def test_downloadable_sewing_template_is_the_exchange_rate_reference_workbook():
+    content, file_name = build_internal_quote_import_template("sewing")
+    workbook = load_workbook(BytesIO(content), data_only=False, read_only=True)
+    try:
+        assert file_name == "车缝报价单.xlsx"
+        assert workbook.sheetnames == ["总表260707", "明细260707"]
+        detail = workbook["明细260707"]
+        assert [detail.cell(1, column).value for column in range(1, 13)] == [
+            "物料名称", "裁片部位", "供应商", "布料MOQ/Y", "低于MOQ/每色产生费用",
+            "用量/码", "单价", "汇率", "成本", "码点", "价钱", "备注",
+        ]
+        assert detail["I3"].value == "=F3*G3/H3"
+        assert detail["K3"].value == "=I3*J3"
+        assert detail["K28"].value == "=SUM(K3:K27)"
+    finally:
+        workbook.close()
+
+
 def water_table_workbook_with_image() -> bytes:
     workbook = Workbook()
     sheet = workbook.active
@@ -579,6 +597,32 @@ def test_sewing_import_keeps_usage_rmb_price_markup_and_labor_line():
     assert group["materials"][0]["markup"] == "1.1000"
     assert group["materials"][1]["item"] == "车缝人工"
     assert group["labor_rmb"] == "0.0000"
+
+
+def test_sewing_import_maps_reference_template_exchange_rate_and_record_fields():
+    parsed = parse_internal_quote_workbook(
+        workbook_bytes(
+            [
+                ["物料名称", "裁片部位", "供应商", "布料MOQ/Y", "低于MOQ/每色产生费用", "用量/码", "单价", "汇率", "成本", "码点", "价钱", "备注"],
+                ["8寸紫色土豆蝙蝠"],
+                ['58"270G白色莱卡布', "前身", "恒欣", 500, 20, 0.084, 93.2, 0.85, 9.2075, 1.1, 10.1282, "感温变色"],
+            ],
+            title="明细260707",
+        ),
+        "sewing",
+    )
+
+    row = parsed.payload_fragment["groups"][0]["materials"][0]
+    assert parsed.sheet_name == "明细260707"
+    assert parsed.payload_fragment["groups"][0]["name"] == "8寸紫色土豆蝙蝠"
+    assert row["supplier"] == "恒欣"
+    assert row["fabric_moq_y"] == "500.0000"
+    assert row["below_moq_fee_rmb"] == "20.0000"
+    assert row["usage"] == "0.0840"
+    assert row["unit_price_rmb"] == "93.2000"
+    assert row["exchange_rate"] == "0.8500"
+    assert row["markup"] == "1.1000"
+    assert any("单价 RMB ÷ 行汇率" in warning for warning in parsed.warnings)
 
 
 def test_sewing_import_forward_fills_material_for_following_cutting_parts():

@@ -162,7 +162,7 @@ export interface ApiInternalQuoteSummary {
       lift_share_percent: string
       markup: string
       active_markup_moq?: string
-      markup_tiers?: Array<{ moq: string; markup: string; is_active: boolean }>
+      markup_tiers?: Array<{ moq: string; markup: string; is_active: boolean; include_in_output?: boolean }>
       misc_ratio: string
       settlement: string
       factory_price_hkd: string

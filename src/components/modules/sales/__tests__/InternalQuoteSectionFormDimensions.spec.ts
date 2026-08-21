@@ -184,7 +184,7 @@ describe('InternalQuoteSectionForm dimension units', () => {
     expect(calculateCartonCuft(payload.cartons[0])).toBeCloseTo(originalCuft / 2)
   })
 
-  it('shows freight and lifting HKD from the frozen pricing baseline without quote-level editors', () => {
+  it('shows freight and lifting HKD from the frozen pricing baseline and lets the quote select output routes', async () => {
     const payload = normalizeInternalQuotePayload('sales', {
       cartons: [{ item: '主纸箱', length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2, flat_cards: [] }],
     }) as unknown as SalesPayload
@@ -207,6 +207,12 @@ describe('InternalQuoteSectionForm dimension units', () => {
     expect(wrapper.find('input[aria-label="深圳 40 柜吊柜费"]').exists()).toBe(false)
     expect(wrapper.find('output[aria-label="HK 20 尺柜运费"]').exists()).toBe(false)
     expect(payload.freight_calc).not.toHaveProperty('hk40')
+    const outputToggle = wrapper.get<HTMLInputElement>('input[aria-label="输出运输规格 深圳 40 柜"]')
+    expect(outputToggle.element.checked).toBe(true)
+    await outputToggle.setValue(false)
+    expect(payload.freight_calc.selected_route_keys).toEqual([])
+    await outputToggle.setValue(true)
+    expect(payload.freight_calc.selected_route_keys).toEqual(['sz40'])
   })
 
   it('shows an editable CUFT field for a custom capacity type and uses it in freight calculation', async () => {
@@ -230,12 +236,12 @@ describe('InternalQuoteSectionForm dimension units', () => {
     const capacityInput = wrapper.get('input[aria-label="8 吨车容量"]')
     expect(capacityInput.element).toHaveProperty('value', '1200')
     expect(wrapper.text()).toContain('HK 8 吨车')
-    expect(wrapper.get('.freightTable tbody tr').findAll('td')[4].text()).toBe('1200')
+    expect(wrapper.get('.freightTable tbody tr').findAll('td')[5].text()).toBe('1200')
 
     await capacityInput.setValue('1000')
     await capacityInput.trigger('blur')
     expect(payload.freight_calc['8 吨车容量']).toBe(1000)
-    expect(wrapper.get('.freightTable tbody tr').findAll('td')[4].text()).toBe('1000')
+    expect(wrapper.get('.freightTable tbody tr').findAll('td')[5].text()).toBe('1000')
   })
 
   it('switches independently between both fees, freight only, and neither fee', async () => {

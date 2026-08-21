@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceRmb, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   it('omits retired sales cost fields for new forms while preserving historical payloads', () => {
@@ -160,10 +160,10 @@ describe('internal quote section payload normalization', () => {
     tiers[1]!.markup_x = 1.25
     tiers[2]!.markup_x = 1.15
     expect(tiers.map((tier) => tier.moq)).toEqual([3000, 5000, 10000])
-    expect(salesMarkupTierForQuantity(tiers, 2000)).toEqual({ moq: 3000, markup_x: 1.3 })
-    expect(salesMarkupTierForQuantity(tiers, 7000)).toEqual({ moq: 5000, markup_x: 1.25 })
-    expect(salesMarkupTierForQuantity(tiers, 10000)).toEqual({ moq: 10000, markup_x: 1.15 })
-    expect(salesMarkupTierForQuantity(tiers, 50000)).toEqual({ moq: 10000, markup_x: 1.15 })
+    expect(salesMarkupTierForQuantity(tiers, 2000)).toEqual({ moq: 3000, markup_x: 1.3, include_in_output: true })
+    expect(salesMarkupTierForQuantity(tiers, 7000)).toEqual({ moq: 5000, markup_x: 1.25, include_in_output: true })
+    expect(salesMarkupTierForQuantity(tiers, 10000)).toEqual({ moq: 10000, markup_x: 1.15, include_in_output: true })
+    expect(salesMarkupTierForQuantity(tiers, 50000)).toEqual({ moq: 10000, markup_x: 1.15, include_in_output: true })
   })
 
   it('preserves cm/inch display units while keeping calculation dimensions in canonical inches', () => {
@@ -526,6 +526,27 @@ describe('internal quote section payload normalization', () => {
     expect(calculateSewingGroupTotalRmb(payload.groups[1])).toBeCloseTo(5)
     expect(calculateSewingTotalRmb(payload)).toBeCloseTo(20.3)
     expect(calculateSewingTotalHkd(payload, .85)).toBeCloseTo(23.88235294)
+  })
+
+  it('uses each sewing row exchange rate for HKD cost and price while old rows fall back to the frozen rate', () => {
+    const payload = normalizeInternalQuotePayload('sewing', {
+      groups: [{
+        name: '土豆蝙蝠',
+        materials: [
+          { item: '莱卡布', supplier: '恒欣', fabric_moq_y: 500, below_moq_fee_rmb: 20, usage: .084, unit_price_rmb: 93.2, exchange_rate: .8, markup: 1.1 },
+          { item: '车缝人工', usage: 1, unit_price_rmb: 1.7, markup: 1 },
+        ],
+      }],
+    }) as unknown as SewingPayload
+
+    const material = payload.groups[0].materials[0]
+    expect(material).toMatchObject({ supplier: '恒欣', fabric_moq_y: 500, below_moq_fee_rmb: 20, exchange_rate: .8 })
+    expect(calculateSewingExchangeRate(material, .85)).toBe(.8)
+    expect(calculateSewingBasePriceHkd(material, .85)).toBeCloseTo(9.786)
+    expect(calculateSewingRowTotalHkd(material, .85)).toBeCloseTo(10.7646)
+    expect(calculateSewingExchangeRate(payload.groups[0].materials[1], .85)).toBe(.85)
+    expect(calculateSewingGroupTotalHkd(payload.groups[0], .85)).toBeCloseTo(12.7646)
+    expect(calculateSewingTotalHkd(payload, .85)).toBeCloseTo(12.7646)
   })
 
   it('previews the electronic RMB, tax-credit and frozen-rate formulas', () => {

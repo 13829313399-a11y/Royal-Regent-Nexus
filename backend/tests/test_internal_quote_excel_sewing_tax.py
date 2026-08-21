@@ -146,11 +146,20 @@ def test_direct_cost_rows_keep_additional_tax_and_effective_indonesia_freight_se
         # Direct costs are part of the pre-markup subtotal exactly once.  They
         # are no longer written into a second detail row named "杂项".
         assert "杂项" not in direct_labels
-        route_header = _find_cell(sheet, "运输方案")
-        subtotal_row = route_header.row + 3
+        assert "运输方案" not in direct_labels
+        subtotal_row = next(
+            row
+            for row in range(additional_tax_row + 1, sheet.max_row + 1)
+            if str(sheet.cell(row, 4).value).startswith("=SUM(D")
+        )
         subtotal_formula = sheet.cell(subtotal_row, 4).value
         assert subtotal_formula.startswith("=SUM(D")
-        assert subtotal_formula.endswith(f":D{route_header.row})")
+        last_direct_cost_row = (
+            direct_labels.index("印尼运费") + 1
+            if expects_indonesia_freight
+            else additional_tax_row
+        )
+        assert subtotal_formula.endswith(f":D{last_direct_cost_row})")
 
         settlement_label = _find_cell(sheet, "÷")
         assert sheet.cell(settlement_label.row, 4).value == "=1-$Q$6"

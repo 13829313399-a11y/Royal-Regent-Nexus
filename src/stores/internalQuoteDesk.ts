@@ -370,6 +370,7 @@ function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
         moq: numberValue(tier.moq),
         markup: numberValue(tier.markup),
         isActive: Boolean(tier.is_active),
+        includeInOutput: tier.include_in_output !== false,
       })),
       miscRatio,
       settlement,
@@ -1046,16 +1047,18 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       const detail = await internalQuoteApi.get(quoteId)
       return toQuote(detail)
     },
-    async executeMutation(quoteId: string, operation: () => Promise<unknown>) {
+    async executeMutation(quoteId: string, operation: () => Promise<unknown>, refreshQuote = true) {
       this.clearLiveCostPreview(quoteId)
       this.submitting = true
       this.errorMessage = ''
       this.conflictMessage = ''
       try {
         const result = await operation()
-        const refreshed = await this.loadQuote(quoteId)
-        if (!refreshed) {
-          throw new Error(`操作已在服务端成功，但页面未能读取最新报价。${this.errorMessage || '请重新读取最新 revision 后继续。'}`)
+        if (refreshQuote) {
+          const refreshed = await this.loadQuote(quoteId)
+          if (!refreshed) {
+            throw new Error(`操作已在服务端成功，但页面未能读取最新报价。${this.errorMessage || '请重新读取最新 revision 后继续。'}`)
+          }
         }
         return result
       } catch (error) {
@@ -1217,10 +1220,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
       }
     },
-    async saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '') {
+    async saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '', refreshQuote = true) {
       const result = await this.executeMutation(
         quoteId,
         () => internalQuoteApi.saveSection(quoteId, sectionCode, revision, payload, reason),
+        refreshQuote,
       ) as ApiInternalQuoteSection
       if (sectionCode === 'sales') {
         const quote = this.getQuoteById(quoteId)
@@ -1244,7 +1248,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           const moq = Number(row.moq)
           const markup = Number(row.markup_x)
           return Number.isFinite(moq) && moq > 0 && Number.isFinite(markup) && markup > 0
-            ? [{ moq, markup }]
+            ? [{ moq, markup, includeInOutput: row.include_in_output !== false }]
             : []
         })
         const selectedMoq = Number(shipping.selected_markup_moq)

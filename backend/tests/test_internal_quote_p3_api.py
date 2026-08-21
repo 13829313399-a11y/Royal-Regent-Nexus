@@ -889,7 +889,11 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
-        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v10"
+        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v12"
+        assert first["export_manifest"]["export_file_name_version"] == "quote-product-date-v1"
+        assert first["file_name"] == (
+            f"{quote['quote_no']}_{quote['product_name']}_{first['exported_at'][:10]}.xlsx"
+        )
         assert first["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
 
         download = client.get(
@@ -957,15 +961,11 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
             row for row in range(1, quote_sheet.max_row + 1)
             if str(quote_sheet.cell(row, 14).value or "").startswith("功能介绍：")
         )
-        color_title_row = next(
-            row for row in range(1, quote_sheet.max_row + 1)
-            if quote_sheet.cell(row, 14).value == "彩盒价格"
-        )
-        assert color_title_row == function_row + 9
         assert all(
-            quote_sheet.cell(function_row + 8, column).value is None
-            for column in range(14, 18)
+            label not in packaging_labels
+            for label in ("彩盒价格", "报客彩盒", "报客彩盒FSC")
         )
+        assert test_header_row == function_row + 9
         carton_detail_row = next(
             row for row in range(1, quote_sheet.max_row + 1)
             if quote_sheet.cell(row, 2).value == "纸箱"
@@ -990,7 +990,14 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [
             quote_sheet.cell(row, 4).value
             for row in assembly_detail_rows
-        ] == [1.4733, 0.6067, 0.2167, 1.1267, 1.1267, 3.4667]
+        ] == [
+            "=17*$M$4/3000",
+            "=7*$M$4/3000",
+            "=5*$M$4/6000",
+            "=13*$M$4/3000",
+            "=13*$M$4/3000",
+            "=40*$M$4/3000",
+        ]
         assert all(
             quote_sheet.cell(row, 1).value in (None, "")
             for row in assembly_detail_rows
@@ -1031,9 +1038,9 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [electronic_sheet.cell(electronic_summary_row, column).value for column in range(1, 5)] == [
             "电子成本汇总", "RMB", "HKD", "公式口径",
         ]
-        assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 15)] == [
-            "产品组", "类型", "#", "布料名称", "部位", "工艺", "裁片数", "用量/码",
-            "物料价(RMB)", "价钱(RMB)", "码点", "总价钱(RMB)", "备注", "来源行",
+        assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 13)] == [
+            "物料名称", "裁片部位", "供应商", "布料MOQ/Y", "低于MOQ/每色费用 RMB",
+            "用量/码", "单价 RMB", "汇率", "成本 HKD", "码点", "价钱 HKD", "备注",
         ]
         assert [workbook["车发明细"].cell(3, column).value for column in range(1, 9)] == [
             "#", "名称", "工艺", "重量(g)", "单价(HKD)", "单位", "备注", "金额(HKD)",

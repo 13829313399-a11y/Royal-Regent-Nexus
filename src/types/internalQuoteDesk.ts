@@ -164,6 +164,7 @@ export interface InternalQuoteMarkupTier {
   moq: number
   markup: number
   isActive: boolean
+  includeInOutput: boolean
 }
 
 export interface InternalQuoteRr2CostSummary {
