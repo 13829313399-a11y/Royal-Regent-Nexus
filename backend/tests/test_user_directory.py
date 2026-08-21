@@ -227,6 +227,26 @@ def test_presence_thresholds_stable_order_filters_and_pagination(monkeypatch):
         assert [item["id"] for item in filtered["items"]] == ["online-a"]
         assert filtered["total"] == 1
         assert filtered["total_pages"] == 1
+
+        factory_search = client.get(
+            "/api/directory/members",
+            params={"q": "华康A", "page_size": 50},
+        ).json()
+        assert {item["id"] for item in factory_search["items"]} >= {
+            "online-a",
+            "away-b",
+        }
+        assert "offline-c" not in {item["id"] for item in factory_search["items"]}
+
+        department_search = client.get(
+            "/api/directory/members",
+            params={"q": "工程部", "page_size": 50},
+        ).json()
+        assert {item["id"] for item in department_search["items"]} >= {
+            "online-a",
+            "offline-c",
+        }
+        assert "away-b" not in {item["id"] for item in department_search["items"]}
         assert client.get("/api/directory/members?page_size=51").status_code == 422
         assert client.get(f"/api/directory/members?q={'x' * 65}").status_code == 422
 

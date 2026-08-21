@@ -8,6 +8,12 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import type { DirectoryMember, DirectoryStateCounts, PresenceFilter } from '@/api/directory'
 import { directoryApi } from '@/api/directory'
+import {
+  directoryDepartmentLabel,
+  directoryDepartmentOptions,
+  directoryFactoryLabel,
+  directoryFactoryOptions,
+} from '@/lib/directoryLabels'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -51,6 +57,8 @@ let requestSequence = 0
 
 const currentFactoryId = computed(() => authStore.currentUser?.profile?.primary_factory_id ?? '')
 const currentDepartment = computed(() => authStore.currentUser?.profile?.primary_department ?? '')
+const currentFactoryLabel = computed(() => directoryFactoryLabel(currentFactoryId.value))
+const currentDepartmentLabel = computed(() => directoryDepartmentLabel(currentDepartment.value))
 const allCount = computed(() => counts.value.online + counts.value.away + counts.value.offline)
 
 function routeQuery() {
@@ -143,7 +151,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="app-page space-y-6">
     <PageHeader
-      eyebrow="Organization Directory"
+      eyebrow="企业成员目录"
       title="成员目录"
       description="按姓名、职位、厂区、部门和近期连接状态查找企业中台成员。"
     />
@@ -184,25 +192,31 @@ onBeforeUnmount(() => {
         </label>
         <label>
           <span class="sr-only">厂区筛选</span>
-          <input
-            v-model.trim="factoryFilter"
-            type="text"
-            maxlength="64"
-            placeholder="厂区"
+          <select
+            v-model="factoryFilter"
+            aria-label="按厂区筛选"
             class="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
             @change="applyFilters"
           >
+            <option value="">全部厂区</option>
+            <option v-for="option in directoryFactoryOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
         </label>
         <label>
           <span class="sr-only">部门筛选</span>
-          <input
-            v-model.trim="departmentFilter"
-            type="text"
-            maxlength="64"
-            placeholder="部门"
+          <select
+            v-model="departmentFilter"
+            aria-label="按部门筛选"
             class="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
             @change="applyFilters"
           >
+            <option value="">全部部门</option>
+            <option v-for="option in directoryDepartmentOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
         </label>
       </div>
 
@@ -215,7 +229,7 @@ onBeforeUnmount(() => {
           :aria-pressed="factoryFilter === currentFactoryId"
           @click="setCurrentFactory"
         >
-          当前厂区 · {{ currentFactoryId }}
+          当前厂区 · {{ currentFactoryLabel }}
         </button>
         <button
           v-if="currentDepartment"
@@ -225,7 +239,7 @@ onBeforeUnmount(() => {
           :aria-pressed="departmentFilter === currentDepartment"
           @click="setCurrentDepartment"
         >
-          当前部门 · {{ currentDepartment }}
+          当前部门 · {{ currentDepartmentLabel }}
         </button>
       </div>
 

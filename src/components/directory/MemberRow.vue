@@ -2,6 +2,7 @@
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import PresenceBadge from '@/components/directory/PresenceBadge.vue'
 import type { DirectoryMember } from '@/api/directory'
+import { directoryDepartmentLabel, directoryFactoryLabel } from '@/lib/directoryLabels'
 
 const props = withDefaults(defineProps<{
   member: DirectoryMember
@@ -44,7 +45,7 @@ const emit = defineEmits<{
       </div>
       <p class="mt-1 truncate text-xs text-slate-600">{{ member.position }}</p>
       <p v-if="props.variant !== 'drawer'" class="mt-1 truncate text-[11px] text-slate-500">
-        {{ member.primary_factory_id }} · {{ member.primary_department }}
+        {{ directoryFactoryLabel(member.primary_factory_id) }} · {{ directoryDepartmentLabel(member.primary_department) }}
       </p>
     </div>
   </article>
