@@ -4,7 +4,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -36,7 +35,7 @@ def test_carton_mark_library_migration_upgrades_fresh_sqlite(tmp_path: Path) -> 
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260813_0075",
+            "20260820_0080",
         )
         tables = {
             row[0]

@@ -1,6 +1,7 @@
 import { shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import MemberDirectoryEntry from '@/components/directory/MemberDirectoryEntry.vue'
 import TopBar from '@/components/layout/TopBar.vue'
 import { factoryContexts, productionFactoryContextIds } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
@@ -40,6 +41,30 @@ describe('TopBar factory switcher', () => {
     expect(productionFactoryContextIds).toEqual(physicalFactoryIds)
     expect(productionFactoryContextIds).toContain('huakang-c')
     expect(productionFactoryContextIds).toContain('huakang-d')
+  })
+
+  it('places the member directory in the global header with the current scope', () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useAppStore()
+    store.setActiveFactory('huakang-b')
+    store.setActiveDepartment('qc')
+
+    const wrapper = shallowMount(TopBar, {
+      global: {
+        plugins: [pinia],
+        stubs: {
+          AccountMenu: true,
+          NotificationCenter: true,
+          RouteLoadingBar: true,
+        },
+      },
+    })
+
+    const entry = wrapper.getComponent(MemberDirectoryEntry)
+    expect(wrapper.get('[data-testid="topbar-member-directory-slot"]').exists()).toBe(true)
+    expect(entry.props('currentFactoryId')).toBe('huakang-b')
+    expect(entry.props('currentDepartment')).toBe('qc')
   })
 
   it.each([

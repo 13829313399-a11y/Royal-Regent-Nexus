@@ -76,7 +76,7 @@ def test_ai_artifact_migration_contract_and_single_head(tmp_path) -> None:
     with engine.connect() as connection:
         assert connection.execute(
             sa.text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "20260819_0079"
+        ).scalar_one() == "20260820_0080"
 
 
 def test_ai_artifact_migration_refuses_downgrade_with_data(tmp_path) -> None:

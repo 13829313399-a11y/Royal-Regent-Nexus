@@ -5,8 +5,10 @@ import SidebarNav from '@/components/layout/SidebarNav.vue'
 import TopBar from '@/components/layout/TopBar.vue'
 import AiAssistantDrawer from '@/features/ai-assistant/AiAssistantDrawer.vue'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
+import { usePresenceHeartbeat } from '@/composables/usePresenceHeartbeat'
 
 const route = useRoute()
+usePresenceHeartbeat()
 const isMobileNavigationOpen = ref(false)
 let releaseNavigationScrollLock: BodyScrollLockRelease | null = null
 let desktopMediaQuery: MediaQueryList | null = null

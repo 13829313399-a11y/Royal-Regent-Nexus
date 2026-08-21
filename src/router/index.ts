@@ -61,6 +61,15 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/people',
+    name: 'people-directory',
+    component: () => import('@/views/PeopleDirectoryView.vue'),
+    meta: {
+      title: '成员目录',
+      requiresAuth: true,
+    },
+  },
+  {
     path: '/modules',
     redirect: '/modules/engineering',
   },

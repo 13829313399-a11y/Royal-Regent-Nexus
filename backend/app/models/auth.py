@@ -71,6 +71,18 @@ class AuthSession(Base):
     revoked_at: Mapped[str] = mapped_column(String(32), default="")
 
 
+class AuthUserPresence(Base):
+    __tablename__ = "auth_user_presence"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("auth_users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    last_seen_at: Mapped[str] = mapped_column(String(32), default="", index=True)
+    created_at: Mapped[str] = mapped_column(String(32), default="")
+    updated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
 class AuthAuditLog(Base):
     __tablename__ = "auth_audit_logs"
 

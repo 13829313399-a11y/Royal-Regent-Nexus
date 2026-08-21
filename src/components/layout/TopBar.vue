@@ -4,6 +4,7 @@ import { Menu, Search } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { factoryContexts, type FactoryContextId } from '@/data/enterpriseMock'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import MemberDirectoryEntry from '@/components/directory/MemberDirectoryEntry.vue'
 import NotificationCenter from '@/components/notifications/NotificationCenter.vue'
 import RouteLoadingBar from '@/components/layout/RouteLoadingBar.vue'
 import { useAppStore } from '@/stores/app'
@@ -102,7 +103,14 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         <span class="truncate text-sm text-slate-500">{{ searchPlaceholder }}</span>
       </div>
 
-      <div class="ml-auto hidden min-w-0 max-w-[40vw] items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden xl:flex">
+      <div data-testid="topbar-member-directory-slot" class="ml-auto shrink-0 lg:ml-0">
+        <MemberDirectoryEntry
+          :current-factory-id="appStore.activeProductionFactory.id"
+          :current-department="appStore.activeDepartmentId"
+        />
+      </div>
+
+      <div data-testid="topbar-factory-switcher" class="hidden min-w-0 max-w-[40vw] items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden xl:flex">
         <div class="flex min-w-max items-center gap-1.5 pr-1">
           <button
             v-for="factory in topBarFactoryContexts"

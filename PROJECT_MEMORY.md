@@ -65,7 +65,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
   applies a selected scheduling run to DRAFT only; it never Publishes or Rolls Back. Vision code is present
   behind Pilot, consent and configuration boundaries, but it is not production-ready until the recorded
   TLS, Secure-cookie, secret-rotation and field gates pass.
-- Alembic has one current head: `20260819_0079`.
+- Alembic has one current head: `20260820_0080`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -128,6 +128,8 @@ For internal-quote business context, consult `docs/business/internal-quote-colla
 ### Accounts and IAM
 
 The backend exposes account login/session behavior, registration and same-browser password-reset claim workflows, forced password change for independently flagged accounts, user management, role management, fixed system positions, effective-access calculation and permission administration. Password-reset requests have their own persisted state and notification linkage; notifications are navigation signals rather than the workflow source of truth. The public claim status and completion endpoints reveal no employee profile or review detail, and losing the original-browser Cookie requires a new application. IAM changes must follow the configured authorization rollout mode. Default grants and code-owned system positions are reconciled from code rather than edited as arbitrary database records.
+
+The authenticated organization directory is a separate read-only contract under `/api/directory`; it does not reuse the permission-controlled `/api/system/users` administration payload. It exposes only active-account display fields from `AuthUser` and `EmployeeProfile`, with no login identifier, contact, role, permission, session or exact activity timestamp. `AuthUserPresence` stores only a coalesced server-time heartbeat: at most one write per user per 45 seconds, with online at 120 seconds or less, away through 15 minutes and offline thereafter. Frontend heartbeats and directory polling run only for an authenticated, online, visible page; the module-center summary and open drawer use low-frequency polling while `/people` provides the complete paginated directory.
 
 ### Molding-Sample Production and Raw Materials
 

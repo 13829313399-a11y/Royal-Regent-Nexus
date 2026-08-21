@@ -110,7 +110,8 @@ INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
 PROTECTED_DOWNGRADE_PREFLIGHT_REVISION = "20260810_0061"
 CARTON_CLOSING_CURRENCY_MIGRATION_REVISION = "20260810_0064"
 PASSWORD_RESET_CLAIM_MIGRATION_REVISION = "20260819_0079"
-HEAD_MIGRATION_REVISION = PASSWORD_RESET_CLAIM_MIGRATION_REVISION
+USER_PRESENCE_MIGRATION_REVISION = "20260820_0080"
+HEAD_MIGRATION_REVISION = USER_PRESENCE_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -242,6 +243,11 @@ def test_alembic_has_single_molding_sample_head():
     password_reset_claim_content = Path(password_reset_claim_revision.path).read_text(
         encoding="utf-8"
     )
+    user_presence_revision = script.get_revision(USER_PRESENCE_MIGRATION_REVISION)
+    assert user_presence_revision.down_revision == PASSWORD_RESET_CLAIM_MIGRATION_REVISION
+    user_presence_content = Path(user_presence_revision.path).read_text(encoding="utf-8")
+    assert "auth_user_presence" in user_presence_content
+    assert "last_seen_at" in user_presence_content
     for expected in (
         "claim_token_hash",
         "ix_auth_password_reset_requests_claim_token_hash",
