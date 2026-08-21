@@ -3,9 +3,9 @@ import { X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import type { DirectoryMember } from '@/api/directory'
-import { departmentMap, factoryContexts } from '@/data/enterpriseMock'
 import { useDialogFocus } from '@/features/injection-scheduling-v2/composables/useDialogFocus'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
+import { directoryDepartmentLabel, directoryFactoryLabel } from '@/lib/directoryLabels'
 
 const props = defineProps<{
   member: DirectoryMember | null
@@ -18,16 +18,6 @@ const emit = defineEmits<{
 const dialogRoot = ref<HTMLElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
 const isOpen = computed(() => Boolean(props.member))
-const factoryLabel = computed(() => {
-  const factoryId = props.member?.primary_factory_id
-  if (!factoryId) return ''
-  return factoryContexts.find((factory) => factory.id === factoryId)?.shortName ?? factoryId
-})
-const departmentLabel = computed(() => {
-  const departmentId = props.member?.primary_department
-  if (!departmentId) return ''
-  return departmentMap[departmentId as keyof typeof departmentMap]?.name ?? departmentId
-})
 let releaseScrollLock: BodyScrollLockRelease | null = null
 
 useDialogFocus(
@@ -72,7 +62,7 @@ onBeforeUnmount(() => {
         >
           <header class="flex items-start justify-between gap-4">
             <div>
-              <p class="text-[11px] font-bold uppercase tracking-[0.16em] text-teal-700">Member Avatar</p>
+              <p class="text-[11px] font-bold tracking-[0.16em] text-teal-700">成员头像</p>
               <h2 id="directory-avatar-title" class="mt-1 text-lg font-semibold text-slate-950">
                 {{ member.display_name }}
               </h2>
@@ -97,7 +87,7 @@ onBeforeUnmount(() => {
             />
           </div>
           <p class="mt-4 text-center text-sm text-slate-600">
-            {{ member.position }} · {{ factoryLabel }} · {{ departmentLabel }}
+            {{ member.position }} · {{ directoryFactoryLabel(member.primary_factory_id) }} · {{ directoryDepartmentLabel(member.primary_department) }}
           </p>
         </section>
       </div>

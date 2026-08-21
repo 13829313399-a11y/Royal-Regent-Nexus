@@ -253,7 +253,7 @@ onBeforeUnmount(() => {
             <div class="flex items-start justify-between gap-4">
               <div class="min-w-0">
                 <div class="flex items-center gap-2">
-                  <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-teal-700">Organization</p>
+                  <p class="text-[10px] font-bold tracking-[0.2em] text-teal-700">组织目录</p>
                   <Transition name="directory-crossfade" mode="out-in">
                     <span
                       v-if="loading"

@@ -5,6 +5,7 @@ import { nextTick } from 'vue'
 import AvatarPreviewDialog from '@/components/directory/AvatarPreviewDialog.vue'
 import MemberDirectoryDrawer from '@/components/directory/MemberDirectoryDrawer.vue'
 import MemberDirectoryEntry from '@/components/directory/MemberDirectoryEntry.vue'
+import MemberRow from '@/components/directory/MemberRow.vue'
 import type { DirectoryMember } from '@/api/directory'
 
 const apiMocks = vi.hoisted(() => ({
@@ -147,5 +148,13 @@ describe('member directory experience', () => {
     await nextTick()
     expect(document.activeElement).toBe(trigger)
     wrapper.unmount()
+  })
+
+  it('renders internal factory and department codes as Chinese labels', () => {
+    const wrapper = mount(MemberRow, { props: { member: onlineMember } })
+
+    expect(wrapper.text()).toContain('华康A · 工程部')
+    expect(wrapper.text()).not.toContain('huakang-a')
+    expect(wrapper.text()).not.toContain('engineering')
   })
 })

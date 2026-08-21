@@ -31,6 +31,49 @@ FALLBACK_POSITION = "职位待完善"
 FALLBACK_FACTORY = "未确认厂区"
 FALLBACK_DEPARTMENT = "未确认部门"
 
+FACTORY_SEARCH_ALIASES = {
+    "huakang-a": ("华康A", "华康A厂"),
+    "huakang-b": ("华康B", "华康B厂"),
+    "huakang-c": ("华康C", "华康C厂"),
+    "huakang-d": ("华康D", "华康D厂"),
+    "huadeng": ("华登", "华登厂"),
+    "huaxing": ("华兴", "华兴厂"),
+}
+
+DEPARTMENT_SEARCH_ALIASES = {
+    "assembly": ("装配部", "装配"),
+    "carton": ("纸箱部", "纸箱"),
+    "electronic": ("电子部", "电子"),
+    "engineering": ("工程部", "工程"),
+    "hair": ("植发部", "植发"),
+    "management": ("总务", "综合管理"),
+    "molding": ("啤机部", "啤机"),
+    "painting": ("喷油部", "喷油"),
+    "pmc-warehouse": ("PMC仓库", "PMC/仓库", "仓库"),
+    "production": ("生产部", "啤喷装", "生产部啤喷装"),
+    "qa": ("QA部", "品质部"),
+    "qc": ("QC部", "品检部"),
+    "sales-business": ("业务部", "营业部", "业务"),
+    "sewing": ("车缝部", "车缝"),
+    "slush": ("搪胶部", "搪胶"),
+    "system": ("系统管理",),
+    "three-d-printing": ("3D打印部", "3D打印"),
+    "warehouse": ("仓管部", "仓管"),
+}
+
+
+def _normalized_search_label(value: str) -> str:
+    return "".join(value.casefold().split()).replace("/", "")
+
+
+def _matching_alias_codes(query: str, aliases: dict[str, tuple[str, ...]]) -> list[str]:
+    normalized_query = _normalized_search_label(query)
+    return [
+        code
+        for code, labels in aliases.items()
+        if any(normalized_query in _normalized_search_label(label) for label in labels)
+    ]
+
 
 def _timestamp(value) -> str:
     return value.isoformat(timespec="seconds")
@@ -82,13 +125,28 @@ def _base_conditions(
     normalized_query = q.strip()
     if normalized_query:
         pattern = f"%{normalized_query}%"
-        conditions.append(
-            or_(
-                display_name.ilike(pattern),
-                position.ilike(pattern),
-                factory.ilike(pattern),
-                profile_department.ilike(pattern),
+        search_conditions = [
+            display_name.ilike(pattern),
+            position.ilike(pattern),
+            factory.ilike(pattern),
+            profile_department.ilike(pattern),
+        ]
+        matching_factories = _matching_alias_codes(
+            normalized_query, FACTORY_SEARCH_ALIASES
+        )
+        matching_departments = _matching_alias_codes(
+            normalized_query, DEPARTMENT_SEARCH_ALIASES
+        )
+        if matching_factories:
+            search_conditions.append(
+                EmployeeProfile.primary_factory_id.in_(matching_factories)
             )
+        if matching_departments:
+            search_conditions.append(
+                EmployeeProfile.primary_department.in_(matching_departments)
+            )
+        conditions.append(
+            or_(*search_conditions)
         )
     if factory_id.strip():
         conditions.append(EmployeeProfile.primary_factory_id == factory_id.strip())
