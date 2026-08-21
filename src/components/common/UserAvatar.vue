@@ -10,12 +10,14 @@ const props = withDefaults(defineProps<{
   size?: AvatarSize
   shape?: AvatarShape
   alt?: string
+  loading?: 'eager' | 'lazy'
 }>(), {
   src: '',
   name: '当前账号',
   size: 'md',
   shape: 'circle',
   alt: '',
+  loading: 'lazy',
 })
 
 const hasLoadedImage = ref(Boolean(props.src))
@@ -53,6 +55,8 @@ function showFallback() {
       v-if="hasLoadedImage && src"
       :src="src"
       :alt="imageAlt"
+      :loading="loading"
+      decoding="async"
       class="h-full w-full object-cover"
       @error="showFallback"
     >

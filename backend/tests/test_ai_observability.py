@@ -373,7 +373,7 @@ def test_ai_observability_migration_and_protected_downgrade(tmp_path: Path) -> N
             connection.execute(
                 sa.text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            == "20260820_0081"
+            == "20260821_0082"
         )
         connection.execute(
             sa.text(
