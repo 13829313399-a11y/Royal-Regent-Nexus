@@ -794,14 +794,13 @@ def test_phase4_auto_known_profile_does_not_call_ai(monkeypatch):
                 "expected_revision": "0",
                 "document_kind": "PLANNED_SCHEDULE",
                 "recognition_mode": "AUTO",
-                "cloud_ai_consent": "true",
                 "business_date": "2026-08-17",
             },
             files={
                 "file": (
-                    "known-profile.xlsx",
+                    "known-profile.upload",
                     source,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/octet-stream",
                 )
             },
             headers={"x-request-id": "phase4-auto-known-profile-0001"},
@@ -810,25 +809,10 @@ def test_phase4_auto_known_profile_does_not_call_ai(monkeypatch):
         assert preview.json()["recognition"]["mode"] == "PROFILE"
 
 
-def test_phase4_ai_mode_requires_consent_and_enabled_feature(monkeypatch):
+def test_phase4_ai_mode_still_requires_enabled_feature(monkeypatch):
     source = build_workbook()
     with make_client(monkeypatch) as client:
         login(client, "admin", ADMIN_TEST_PASSWORD)
-        no_consent = client.post(
-            "/api/injection-scheduling/imports/preview",
-            data={
-                "factory_id": "huaxing",
-                "expected_revision": "0",
-                "document_kind": "PLANNED_SCHEDULE",
-                "recognition_mode": "AI",
-                "business_date": "2026-08-17",
-            },
-            files={"file": ("ai.xlsx", source)},
-            headers={"x-request-id": "phase4-ai-no-consent-0001"},
-        )
-        assert no_consent.status_code == 409
-        assert no_consent.json()["detail"]["code"] == "AI_CONSENT_REQUIRED"
-
         importlib.import_module(
             "app.core.config"
         ).settings.ai_cloud_workbook_mapping_enabled = False
@@ -839,7 +823,6 @@ def test_phase4_ai_mode_requires_consent_and_enabled_feature(monkeypatch):
                 "expected_revision": "0",
                 "document_kind": "PLANNED_SCHEDULE",
                 "recognition_mode": "AI",
-                "cloud_ai_consent": "true",
                 "business_date": "2026-08-17",
             },
             files={"file": ("ai.xlsx", source)},
@@ -847,44 +830,6 @@ def test_phase4_ai_mode_requires_consent_and_enabled_feature(monkeypatch):
         )
         assert disabled.status_code == 503
         assert disabled.json()["detail"]["code"] == "AI_WORKBOOK_MAPPING_DISABLED"
-
-        unknown_workbook = Workbook()
-        unknown_sheet = unknown_workbook.active
-        unknown_sheet.title = "陌生排期"
-        unknown_sheet["B3"] = "机位"
-        unknown_sheet["F3"] = "啤模"
-        unknown_sheet["I3"] = "订单号"
-        unknown_sheet["K3"] = "订单数"
-        unknown_sheet["L3"] = "已啤数"
-        unknown_sheet["AD3"] = "计划啤货期"
-        unknown_sheet["AE3"] = "计划完成期"
-        unknown_sheet["F4"] = "M-001"
-        unknown_sheet["I4"] = "O-001"
-        unknown_sheet["K4"] = 100
-        unknown_sheet["L4"] = 0
-        unknown_output = BytesIO()
-        unknown_workbook.save(unknown_output)
-        unknown_workbook.close()
-        importlib.import_module(
-            "app.core.config"
-        ).settings.ai_cloud_workbook_mapping_enabled = True
-        auto_without_consent = client.post(
-            "/api/injection-scheduling/imports/preview",
-            data={
-                "factory_id": "huaxing",
-                "expected_revision": "0",
-                "document_kind": "PLANNED_SCHEDULE",
-                "recognition_mode": "AUTO",
-                "business_date": "2026-08-17",
-            },
-            files={"file": ("unknown.xlsx", unknown_output.getvalue())},
-            headers={"x-request-id": "phase4-auto-no-consent-0001"},
-        )
-        assert auto_without_consent.status_code == 409
-        assert (
-            auto_without_consent.json()["detail"]["code"]
-            == "AI_CONSENT_REQUIRED"
-        )
 
 
 def test_phase4_ai_layout_creates_preview_without_writing_tasks(monkeypatch):
@@ -970,7 +915,6 @@ def test_phase4_ai_layout_creates_preview_without_writing_tasks(monkeypatch):
                 "expected_revision": "0",
                 "document_kind": "PLANNED_SCHEDULE",
                 "recognition_mode": "AI",
-                "cloud_ai_consent": "true",
                 "business_date": "2026-08-17",
             },
             files={"file": ("ai-layout.xlsx", source)},
@@ -979,6 +923,7 @@ def test_phase4_ai_layout_creates_preview_without_writing_tasks(monkeypatch):
         assert preview.status_code == 201, preview.text
         payload = preview.json()
         assert payload["recognition"]["mode"] == "AI_LAYOUT"
+        assert "cloud_ai_consent" not in payload["recognition"]
         assert payload["recognition"]["source_sha256"] == source_hash
         assert payload["profile"]["profile_id"] is None
         assert len(payload["scheduled_baseline_tasks"]) == 1

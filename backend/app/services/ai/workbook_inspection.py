@@ -46,7 +46,12 @@ class WorkbookInspectionError(ValueError):
         self.status_code = status_code
 
 
-def _validate_source(source_file_name: str, content: bytes) -> tuple[str, str]:
+def _validate_source(
+    source_file_name: str,
+    content: bytes,
+    *,
+    relaxed_limits: bool = False,
+) -> tuple[str, str]:
     normalized_name = source_file_name.strip()
     portable = normalized_name.replace("\\", "/")
     if (
@@ -56,14 +61,14 @@ def _validate_source(source_file_name: str, content: bytes) -> tuple[str, str]:
     ):
         raise WorkbookInspectionError("WORKBOOK_UNSAFE_PATH", "文件名或路径不安全")
     suffix = PurePosixPath(portable).suffix.lower()
-    if suffix not in {".xlsx", ".xlsm"}:
+    if not relaxed_limits and suffix not in {".xlsx", ".xlsm"}:
         raise WorkbookInspectionError(
             "WORKBOOK_UNSUPPORTED_FORMAT",
             "只支持 .xlsx/.xlsm；旧 .xls 请先另存为 xlsx",
         )
     if not content:
         raise WorkbookInspectionError("WORKBOOK_EMPTY", "工作簿内容为空")
-    if len(content) > MAX_WORKBOOK_BYTES:
+    if not relaxed_limits and len(content) > MAX_WORKBOOK_BYTES:
         raise WorkbookInspectionError(
             "WORKBOOK_TOO_LARGE",
             f"工作簿超过 {MAX_WORKBOOK_BYTES // 1024 // 1024} MB 安全上限",
@@ -74,11 +79,11 @@ def _validate_source(source_file_name: str, content: bytes) -> tuple[str, str]:
     return normalized_name, "XLSM" if suffix == ".xlsm" else "XLSX"
 
 
-def _validate_zip(content: bytes) -> tuple[bool, bool]:
+def _validate_zip(content: bytes, *, relaxed_limits: bool = False) -> tuple[bool, bool]:
     try:
         with ZipFile(BytesIO(content)) as archive:
             entries = archive.infolist()
-            if len(entries) > MAX_ZIP_ENTRIES:
+            if not relaxed_limits and len(entries) > MAX_ZIP_ENTRIES:
                 raise WorkbookInspectionError(
                     "WORKBOOK_TOO_COMPLEX", "工作簿压缩条目过多，已阻断"
                 )
@@ -95,12 +100,16 @@ def _validate_zip(content: bytes) -> tuple[bool, bool]:
                         "WORKBOOK_ENCRYPTED", "不支持加密工作簿"
                     )
                 total_uncompressed += entry.file_size
-                if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
+                if not relaxed_limits and total_uncompressed > MAX_UNCOMPRESSED_BYTES:
                     raise WorkbookInspectionError(
                         "WORKBOOK_ZIP_BOMB", "工作簿解压后超过安全上限，已阻断"
                     )
                 ratio = entry.file_size / max(entry.compress_size, 1)
-                if entry.file_size > 1_000_000 and ratio > MAX_COMPRESSION_RATIO:
+                if (
+                    not relaxed_limits
+                    and entry.file_size > 1_000_000
+                    and ratio > MAX_COMPRESSION_RATIO
+                ):
                     raise WorkbookInspectionError(
                         "WORKBOOK_ZIP_BOMB", "工作簿压缩比异常，已阻断"
                     )
@@ -220,9 +229,17 @@ def inspect_workbook(
     source_file_name: str,
     content: bytes,
     factory_id: str,
+    relaxed_limits: bool = False,
 ) -> AIWorkbookSemanticSnapshot:
-    source_file_name, detected_format = _validate_source(source_file_name, content)
-    has_macros, zip_has_drawings = _validate_zip(content)
+    source_file_name, detected_format = _validate_source(
+        source_file_name,
+        content,
+        relaxed_limits=relaxed_limits,
+    )
+    has_macros, zip_has_drawings = _validate_zip(
+        content,
+        relaxed_limits=relaxed_limits,
+    )
     keep_vba = detected_format == "XLSM"
     try:
         workbook = load_workbook(BytesIO(content), data_only=False, keep_vba=keep_vba)
@@ -232,12 +249,14 @@ def inspect_workbook(
             "WORKBOOK_INVALID_OOXML", "无法安全读取该工作簿"
         ) from exc
     try:
-        if not workbook.worksheets or len(workbook.worksheets) > MAX_SHEETS:
+        if not workbook.worksheets or (
+            not relaxed_limits and len(workbook.worksheets) > MAX_SHEETS
+        ):
             raise WorkbookInspectionError(
                 "WORKBOOK_SHEET_LIMIT", f"Sheet 数必须在 1 到 {MAX_SHEETS} 之间"
             )
         style_count = len(getattr(workbook, "_cell_styles", ()))
-        if style_count > MAX_STYLES:
+        if not relaxed_limits and style_count > MAX_STYLES:
             raise WorkbookInspectionError(
                 "WORKBOOK_TOO_COMPLEX", "样式数量超过安全上限，已阻断"
             )
@@ -249,13 +268,13 @@ def inspect_workbook(
         ):
             max_row = max(sheet.max_row or 1, 1)
             max_column = max(sheet.max_column or 1, 1)
-            if max_row > MAX_ROWS or max_column > MAX_COLUMNS:
+            if not relaxed_limits and (max_row > MAX_ROWS or max_column > MAX_COLUMNS):
                 raise WorkbookInspectionError(
                     "WORKBOOK_DIMENSION_LIMIT",
                     f"Sheet {sheet.title} 超过 {MAX_ROWS} 行或 {MAX_COLUMNS} 列安全上限",
                 )
             merged = [str(item) for item in sheet.merged_cells.ranges]
-            if len(merged) > MAX_MERGED_REGIONS:
+            if not relaxed_limits and len(merged) > MAX_MERGED_REGIONS:
                 raise WorkbookInspectionError(
                     "WORKBOOK_TOO_COMPLEX",
                     f"Sheet {sheet.title} 合并区域过多，已阻断",
@@ -266,14 +285,14 @@ def inspect_workbook(
                 if isinstance(cell.value, str) and cell.value.startswith("=")
             )
             total_formulas += formula_count
-            if total_formulas > MAX_FORMULA_CELLS:
+            if not relaxed_limits and total_formulas > MAX_FORMULA_CELLS:
                 raise WorkbookInspectionError(
                     "WORKBOOK_TOO_COMPLEX", "公式单元格超过安全上限，已阻断"
                 )
             total_drawings += len(getattr(sheet, "_images", ())) + len(
                 getattr(sheet, "_charts", ())
             )
-            if total_drawings > MAX_DRAWINGS:
+            if not relaxed_limits and total_drawings > MAX_DRAWINGS:
                 raise WorkbookInspectionError(
                     "WORKBOOK_TOO_COMPLEX", "图片或图表数量超过安全上限，已阻断"
                 )

@@ -147,7 +147,6 @@ def parse_ai_layout_workbook(
     packet_digest: str,
     business_date: str,
     requested_mode: str,
-    cloud_ai_consent: bool = False,
     cache_hit: bool = False,
     system_machine_codes: set[str] | None = None,
     system_mold_nos: set[str] | None = None,
@@ -193,7 +192,6 @@ def parse_ai_layout_workbook(
         "sheet_name": layout.plan_sheet.sheet_name,
         "overall_confidence": layout.overall_confidence,
         "cache_hit": cache_hit,
-        "cloud_ai_consent": cloud_ai_consent,
         "layout": layout.model_dump(mode="json"),
     }
     normalized["parser_version"] = AI_LAYOUT_PARSER_VERSION

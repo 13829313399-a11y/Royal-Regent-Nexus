@@ -4,11 +4,6 @@ import { AlertTriangle, CheckCircle2, FileSpreadsheet, RefreshCw, Upload, X } fr
 import { getApiErrorMessage } from '@/lib/http'
 import PreviewCard from '@/features/nexus-copilot/components/PreviewCard.vue'
 import {
-  isArtifactWorkflowUnavailable,
-  uploadAIArtifact,
-  type AIArtifactData,
-} from '@/api/aiArtifacts'
-import {
   approveImportMasterDifferences,
   confirmImportBatch,
   listImportBatches,
@@ -16,15 +11,12 @@ import {
   listMasterDataProposals,
   proposeImportProfile,
   proposeWorkbookFieldMapping,
-  proposeWorkbookArtifactFieldMapping,
   recoverImportBatch,
   retryImportPreview,
   reviewMasterDataProposal,
   transitionImportProfile,
   updateImportMappingDraft,
   uploadImportPreview,
-  inspectWorkbookSemanticSnapshot,
-  inspectWorkbookArtifact,
   type AIWorkbookMappingProposal,
 } from '../api/injectionSchedulingV2Api'
 import type { FactoryId, ImportBatchRecord, ImportDocumentKindChoice, ImportIssueRecord, ImportRecognitionMode } from '../types'
@@ -78,7 +70,6 @@ const masterReason = ref('')
 const issueQuery = ref('')
 const documentKind = ref<ImportDocumentKindChoice>('AUTO')
 const layoutRecognitionMode = ref<ImportRecognitionMode>('AUTO')
-const layoutCloudConsent = ref(false)
 const selectedRowIds = ref<string[]>([])
 const mappingDraft = ref<Record<string, string>>({})
 const profileProposalName = ref('')
@@ -87,11 +78,8 @@ const profiles = ref<Array<Record<string, unknown>>>([])
 const profileTransitionReason = ref('')
 const governanceProposals = ref<Array<Record<string, unknown>>>([])
 const governanceReason = ref('')
-const semanticSnapshot = ref<Record<string, unknown> | null>(null)
 const mappingProposal = ref<AIWorkbookMappingProposal | null>(null)
-const cloudMappingConsent = ref(false)
-const preflightBusy = ref(false)
-const sourceArtifact = ref<AIArtifactData | null>(null)
+const mappingBusy = ref(false)
 
 const blockingIssues = computed(() => batch.value?.issues.filter((item) => item.blocking) ?? [])
 const filteredIssues = computed(() => {
@@ -229,12 +217,8 @@ watch(() => [props.open, props.factoryId, props.initialBatchId] as const, async 
   if (!open) return
   file.value = null
   batch.value = null
-  semanticSnapshot.value = null
   mappingProposal.value = null
-  cloudMappingConsent.value = false
   layoutRecognitionMode.value = 'AUTO'
-  layoutCloudConsent.value = false
-  sourceArtifact.value = null
   error.value = ''
   masterReason.value = ''
   await loadRecent()
@@ -243,62 +227,30 @@ watch(() => [props.open, props.factoryId, props.initialBatchId] as const, async 
   if (props.initialBatchId) await recover(props.initialBatchId)
 }, { immediate: true })
 
-async function selectFile(event: Event) {
+function selectFile(event: Event) {
   file.value = (event.target as HTMLInputElement).files?.[0] ?? null
-  semanticSnapshot.value = null
   mappingProposal.value = null
-  cloudMappingConsent.value = false
-  sourceArtifact.value = null
-  if (!file.value) return
-  preflightBusy.value = true
   error.value = ''
-  try {
-    try {
-      const artifact = await uploadAIArtifact(
-        file.value,
-        props.factoryId,
-        'CONFIDENTIAL_BUSINESS',
-      )
-      semanticSnapshot.value = await inspectWorkbookArtifact(props.factoryId, artifact.id)
-      sourceArtifact.value = artifact
-    } catch (cause) {
-      if (!isArtifactWorkflowUnavailable(cause)) throw cause
-      semanticSnapshot.value = await inspectWorkbookSemanticSnapshot(props.factoryId, file.value)
-    }
-  } catch (cause) {
-    error.value = `工作簿安全检查失败：${getApiErrorMessage(cause)}`
-  } finally {
-    preflightBusy.value = false
-  }
 }
 
 async function generateMappingProposal() {
   if (
     !file.value
-    || !semanticSnapshot.value
-    || !cloudMappingConsent.value
     || documentKind.value === 'AUTO'
-    || preflightBusy.value
+    || mappingBusy.value
   ) return
-  preflightBusy.value = true
+  mappingBusy.value = true
   error.value = ''
   try {
-    mappingProposal.value = sourceArtifact.value
-      ? await proposeWorkbookArtifactFieldMapping(
-          props.factoryId,
-          sourceArtifact.value.id,
-          semanticSnapshot.value,
-          documentKind.value,
-        )
-      : await proposeWorkbookFieldMapping(
-          props.factoryId,
-          file.value,
-          documentKind.value,
-        )
+    mappingProposal.value = await proposeWorkbookFieldMapping(
+      props.factoryId,
+      file.value,
+      documentKind.value,
+    )
   } catch (cause) {
     error.value = `AI 映射建议生成失败：${getApiErrorMessage(cause)}`
   } finally {
-    preflightBusy.value = false
+    mappingBusy.value = false
   }
 }
 
@@ -344,7 +296,6 @@ async function upload() {
       file.value,
       documentKind.value,
       effectiveRecognitionMode,
-      layoutCloudConsent.value,
       props.businessDate,
     ))
     await loadRecent()
@@ -480,23 +431,20 @@ async function confirm() {
 
       <div v-if="!batch" class="wizard-upload-step">
         <label class="document-kind"><span>文件类型</span><select v-model="documentKind" :disabled="busy"><option value="AUTO">自动识别（推荐）</option><option value="DEMAND_ORDER">客户下单表</option><option value="PLANNED_SCHEDULE">已排计划表</option><option value="SYSTEM_ROUND_TRIP">系统回写文件</option><option value="MASTER_DATA">共享模具 / 单价主数据</option></select><small>自动识别只接受已登记的文档签名或导入模板；不确定的文件会停在预览，不会写入排产。</small></label>
-        <label class="document-kind"><span>计划表识别</span><select v-model="layoutRecognitionMode" :disabled="busy || ['DEMAND_ORDER', 'MASTER_DATA', 'SYSTEM_ROUND_TRIP'].includes(documentKind)"><option value="AUTO">固定模板优先，必要时 AI（推荐）</option><option value="PROFILE">只用已登记固定模板</option><option value="AI">直接使用 AI 识别布局</option></select><small>AI 只提出 Sheet、表头、列、机台分组和班次矩阵的读取方式；后端会重新校验来源并用确定性解析器生成预览。</small></label>
-        <label v-if="layoutRecognitionMode !== 'PROFILE' && !['DEMAND_ORDER', 'MASTER_DATA', 'SYSTEM_ROUND_TRIP'].includes(documentKind)" class="cloud-mapping-consent"><input v-model="layoutCloudConsent" type="checkbox" :disabled="busy" /><span>当固定模板无法识别时，我同意将有限工作簿结构（Sheet 名、表头、代表性行、公式与缓存状态）发送到已批准的云端模型；不发送整个 Excel，模型不能写库或发布计划。</span></label>
-        <label class="file-picker"><Upload :size="26" /><strong>选择 .xlsx/.xlsm 计划或下单文件</strong><span>{{ file?.name || '先做本地只读语义检查；确认导入后才按批次隔离保存 72 小时' }}</span><input type="file" accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12" :disabled="!canImport || busy || preflightBusy" @change="selectFile" /></label>
-        <section v-if="semanticSnapshot" class="semantic-snapshot" data-testid="workbook-semantic-snapshot">
-          <div><CheckCircle2 :size="16" /><strong>本地只读语义检查通过</strong></div>
-          <p>{{ semanticSnapshot.sheet_count }} 个 Sheet · {{ semanticSnapshot.formula_cell_count }} 个公式单元格 · SHA-256 {{ String((semanticSnapshot.source_lineage as Record<string, unknown>)?.source_sha256 ?? '').slice(0, 12) }}…</p>
-          <p>样例已脱敏；检查不会创建 Import Batch、订单、Task 或 Profile，也不会修改源文件。</p>
-          <label class="cloud-mapping-consent"><input v-model="cloudMappingConsent" type="checkbox" :disabled="documentKind === 'AUTO' || !canProposeProfile" /><span>我同意仅将脱敏语义快照发送到已批准的云端模型；原始 Excel 不发送。</span></label>
-          <button type="button" :disabled="!cloudMappingConsent || documentKind === 'AUTO' || !canProposeProfile || preflightBusy" @click="generateMappingProposal">{{ preflightBusy ? '生成中…' : '生成 AI 字段映射建议' }}</button>
-          <small v-if="documentKind === 'AUTO'">生成建议前请明确选择文件类型。</small>
+        <label class="document-kind"><span>计划表识别</span><select v-model="layoutRecognitionMode" :disabled="busy || ['DEMAND_ORDER', 'MASTER_DATA', 'SYSTEM_ROUND_TRIP'].includes(documentKind)"><option value="AUTO">固定模板优先，必要时 AI（推荐）</option><option value="PROFILE">只用已登记固定模板</option><option value="AI">直接使用 AI 识别布局</option></select><small>选择 AUTO 或 AI 后会直接识别布局；后端仍用确定性解析器生成预览。</small></label>
+        <label class="file-picker"><Upload :size="26" /><strong>选择计划或下单文件</strong><span>{{ file?.name || '选择后可直接生成预览' }}</span><input type="file" :disabled="!canImport || busy" @change="selectFile" /></label>
+        <section v-if="file && canProposeProfile" class="semantic-snapshot" data-testid="workbook-mapping-action">
+          <div><CheckCircle2 :size="16" /><strong>文件已选择</strong></div>
+          <p>无需额外确认，可直接生成预览或可选的 AI 字段建议。</p>
+          <button type="button" :disabled="documentKind === 'AUTO' || mappingBusy" @click="generateMappingProposal">{{ mappingBusy ? '生成中…' : '生成 AI 字段映射建议（可选）' }}</button>
+          <small v-if="documentKind === 'AUTO'">生成字段建议前请明确选择文件类型。</small>
         </section>
         <section v-if="mappingProposal" class="mapping-proposal" data-testid="workbook-mapping-proposal">
           <div><AlertTriangle :size="16" /><strong>AI 建议仅供人工预览</strong></div>
           <p>建议 {{ Array.isArray(mappingProposal.proposal) ? mappingProposal.proposal.length : 0 }} 项；缺失必填 {{ Array.isArray(mappingProposal.missing_required_fields) ? mappingProposal.missing_required_fields.length : 0 }} 项。只能保存到现有 PROFILE_DRAFT，不能自动激活。</p>
           <PreviewCard v-if="mappingProposal.preview_manifest" :manifest="mappingProposal.preview_manifest" />
         </section>
-        <button class="wizard-primary" :disabled="!file || !canImport || busy || (layoutRecognitionMode === 'AI' && !layoutCloudConsent && !['DEMAND_ORDER', 'MASTER_DATA', 'SYSTEM_ROUND_TRIP'].includes(documentKind))" @click="upload"><RefreshCw v-if="busy" :size="16" class="spinning" /><Upload v-else :size="16" />{{ busy ? '提取结构并生成预览' : '生成预览' }}</button>
+        <button class="wizard-primary" :disabled="!file || !canImport || busy" @click="upload"><RefreshCw v-if="busy" :size="16" class="spinning" /><Upload v-else :size="16" />{{ busy ? '提取结构并生成预览' : '生成预览' }}</button>
         <div v-if="recent.length" class="recent-batches"><strong>恢复最近批次</strong><button v-for="item in recent" :key="item.id" @click="recover(item.id)"><span>{{ item.sourceFileName }}</span><b>{{ importBatchStateMeta(item.batchState).label }}</b></button></div>
         <details v-if="canReviewSharedMolds || canActivateSharedMolds || canManageFactoryCapabilities || canManageSharedMoldPrices" open><summary>已整理主数据提案（{{ governanceProposals.length }}）</summary><div class="mapping-editor"><p><AlertTriangle :size="15" />无需重复上传源表。公司模具与{{ factoryMeta(props.factoryId).label }}机安能力独立治理；单价按原表值，以人民币、每啤/每模次、当前厂区全客户全合同口径激活。</p><input v-model="governanceReason" placeholder="审核或激活依据（至少 4 个字符）" /><div class="action-list"><p v-for="proposal in governanceProposals" :key="String(proposal.id)"><b>{{ masterDataEntityMeta(proposal.entity_type).label }} · {{ proposalActionMeta(proposal.action_type).label }}</b><span>{{ masterProposalStatusMeta(proposal.status).label }} · {{ proposalEntryCount(proposal) }} 条来源 · {{ proposal.proposed_by_name || '提案人信息待补充' }}</span><SchedulingTechnicalDetails :items="proposalTechnicalItems(proposal)" summary="提案技术信息" /><small><button v-if="proposal.status === 'PROPOSED' && (proposal.entity_type !== 'FACTORY_MOLD_CAPABILITY_BUNDLE' ? canReviewSharedMolds : canManageFactoryCapabilities)" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'approve')">独立批准</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'MOLD_DEFINITION_BUNDLE' && canActivateSharedMolds" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活公司模具</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'FACTORY_MOLD_CAPABILITY_BUNDLE' && canManageFactoryCapabilities" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活{{ factoryMeta(props.factoryId).label }}机安能力</button><button v-if="proposal.status === 'APPROVED' && proposal.entity_type === 'COMMERCIAL_RATE_RULE' && canManageSharedMoldPrices" :disabled="busy || governanceReason.trim().length < 4" @click="reviewProposal(proposal, 'activate')">激活人民币单价</button></small></p></div></div></details>
       </div>
