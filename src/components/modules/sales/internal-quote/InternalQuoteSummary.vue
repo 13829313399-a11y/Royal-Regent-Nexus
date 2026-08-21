@@ -11,17 +11,20 @@ import {
   FileSpreadsheet,
   LockKeyhole,
   Rocket,
+  Save,
   Ship,
 } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ApiInternalQuoteVersionComparison } from '@/api/internalQuote'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
-import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
+import { canEditAllInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
+import { cloneInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
+import InternalQuoteInteractiveDonut from './InternalQuoteInteractiveDonut.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,6 +38,9 @@ const finalReason = ref('')
 const finalRejectError = ref('')
 const versionBaseId = ref('')
 const comparison = ref<ApiInternalQuoteVersionComparison>()
+const indonesiaFreightDraft = ref<string | number>('0.0000')
+const indonesiaFreightMessage = ref('')
+const indonesiaFreightError = ref('')
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
 const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
@@ -55,6 +61,33 @@ const canOpenExport = computed(() => isReleased.value && canExport.value)
 const canFinalSubmit = computed(() => authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
 const canFinalApprove = computed(() => authStore.can('internal_quote:final_approve', quote.value.factoryId, 'sales-business'))
 const salesSection = computed(() => quote.value.sections.find((section) => section.code === 'sales'))
+const costSummary = computed(() => quote.value.rr2CostSummary)
+const visibleT1Summary = computed(() => costSummary.value.t1.filter((item) => item.display !== false))
+const isIndonesiaQuote = computed(() => quote.value.regionCode === 'indonesia')
+const canEditIndonesiaFreight = computed(() => Boolean(
+  isIndonesiaQuote.value
+  && salesSection.value?.isRequired
+  && ['draft', 'rejected'].includes(salesSection.value.status)
+  && !['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)
+  && canEditAllInternalQuoteSections(authStore, quote.value.factoryId),
+))
+const indonesiaFreightReadOnlyReason = computed(() => {
+  if (!salesSection.value?.isRequired) return '业务部分段未参与本报价，无法修改印尼运费。'
+  if (['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)) return '整单已锁定，印尼运费仅供查看。'
+  if (!['draft', 'rejected'].includes(salesSection.value.status)) return '业务部分段已锁定，请先退回或合法重开后修改。'
+  if (!canEditAllInternalQuoteSections(authStore, quote.value.factoryId)) return '仅业务部或工程部有权限修改印尼运费。'
+  return '印尼运费当前仅供查看。'
+})
+const parsedIndonesiaFreight = computed(() => Number(indonesiaFreightDraft.value))
+const indonesiaFreightValidationError = computed(() => {
+  if (!String(indonesiaFreightDraft.value).trim() || !Number.isFinite(parsedIndonesiaFreight.value)) return '请输入有效的印尼运费。'
+  if (parsedIndonesiaFreight.value < 0) return '印尼运费不能小于 0。'
+  return ''
+})
+const indonesiaFreightChanged = computed(() => (
+  !indonesiaFreightValidationError.value
+  && Math.abs(parsedIndonesiaFreight.value - costSummary.value.indonesiaFreightHkd) > 0.0000001
+))
 const responsibleFollowupId = computed(() => salesSection.value?.submittedById || quote.value.createdById)
 const canResponsibleRelease = computed(() => (
   canFinalSubmit.value
@@ -88,41 +121,73 @@ const componentLabels: Record<string, string> = {
   packaging_material_hkd: '包装材料', assembly_hkd: '组装人工', packing_labor_hkd: '包装人工', indonesia_freight_hkd: '印尼运费',
   slush_hkd: '搪胶', sewing_hkd: '车缝', hair_hkd: '车发', carton_hkd: '纸箱',
 }
-const costColors = ['#0f766e', '#14b8a6', '#2563eb', '#7c3aed', '#d97706', '#dc2626', '#0891b2', '#65a30d', '#475569', '#c2410c', '#0d9488', '#64748b']
+const costColors = ['#2563eb', '#dc2626', '#7c3aed', '#d97706', '#0891b2', '#65a30d', '#c2410c', '#db2777', '#0f766e', '#4f46e5', '#ea580c', '#475569']
 const departmentColors: Record<string, string> = {
-  sales: '#0f766e', engineering: '#2563eb', electronic: '#7c3aed', molding: '#d97706',
-  painting: '#dc2626', slush: '#0891b2', sewing: '#65a30d', hair: '#c2410c', assembly: '#475569',
+  engineering: '#2563eb', molding: '#f59e0b', assembly: '#8b5cf6', painting: '#ef4444',
+  electronic: '#06b6d4', slush: '#ec4899', sewing: '#22c55e', hair: '#f97316', sales: '#0f766e',
+}
+const componentColors: Record<string, string> = {
+  molding_hkd: '#2563eb', painting_hkd: '#ef4444', electronic_hkd: '#8b5cf6', hardware_hkd: '#f59e0b',
+  auxiliary_hkd: '#14b8a6', packaging_material_hkd: '#dc2626', assembly_hkd: '#7c3aed', packing_labor_hkd: '#0ea5e9',
+  indonesia_freight_hkd: '#06b6d4', slush_hkd: '#ec4899', sewing_hkd: '#16a34a', hair_hkd: '#f97316', carton_hkd: '#475569',
 }
 const componentEntries = computed(() => Object.entries(quote.value.summaryComponents)
-  .map(([key, amount], index) => ({ key, label: componentLabels[key] ?? key, amount, color: costColors[index % costColors.length] }))
-  .filter((item) => item.amount !== 0))
+  .map(([key, amount], index) => ({
+    key,
+    label: componentLabels[key] ?? key,
+    amount,
+    color: componentColors[key] ?? costColors[index % costColors.length],
+    detail: '服务端成本明细',
+  }))
+  .filter((item) => item.amount !== 0 && (item.key !== 'indonesia_freight_hkd' || isIndonesiaQuote.value)))
 const departmentEntries = computed(() => quote.value.sections.map((section, index) => ({
   key: section.code,
   label: section.label,
   amount: section.isRequired && section.calculationStatus === 'valid' ? section.totalHkd : 0,
   color: departmentColors[section.code] ?? costColors[index % costColors.length],
   isRequired: section.isRequired,
+  inactive: !section.isRequired || section.calculationStatus !== 'valid' || section.totalHkd === 0,
+  detail: !section.isRequired ? '未参与' : section.calculationStatus === 'valid' ? '有效计算' : '尚无有效计算',
 })))
-function distributionDonutStyle(entries: Array<{ amount: number; color: string }>) {
-  const total = entries.reduce((sum, item) => sum + Math.max(item.amount, 0), 0)
-  if (!total) return { background: 'conic-gradient(#cbd5e1 0 100%)' }
-  let cursor = 0
-  const stops = entries.filter((item) => item.amount > 0).map((item) => {
-    const start = cursor
-    cursor += Math.max(item.amount, 0) / total * 100
-    return `${item.color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`
-  })
-  return { background: `conic-gradient(${stops.join(',')})` }
-}
-const componentDonutStyle = computed(() => distributionDonutStyle(componentEntries.value))
-const departmentDonutStyle = computed(() => distributionDonutStyle(departmentEntries.value))
 const departmentTotalHkd = computed(() => departmentEntries.value.reduce((sum, item) => sum + item.amount, 0))
-const costSummary = computed(() => quote.value.rr2CostSummary)
+const componentTotalHkd = computed(() => componentEntries.value.reduce((sum, item) => sum + Math.max(item.amount, 0), 0))
 const shippingPricing = computed(() => costSummary.value.shippingPricing)
 
 function summaryValue(value: number, format?: string, blankWhenZero = false) {
   if (blankWhenZero && value === 0) return ''
   return format === 'percent' ? `${value.toFixed(1)}%` : value.toFixed(4)
+}
+
+async function saveIndonesiaFreight() {
+  indonesiaFreightMessage.value = ''
+  indonesiaFreightError.value = ''
+  const section = salesSection.value
+  if (!canEditIndonesiaFreight.value || !section) {
+    indonesiaFreightError.value = indonesiaFreightReadOnlyReason.value
+    return
+  }
+  if (indonesiaFreightValidationError.value) {
+    indonesiaFreightError.value = indonesiaFreightValidationError.value
+    return
+  }
+  const amount = Number(parsedIndonesiaFreight.value.toFixed(4))
+  const nextPayload = cloneInternalQuotePayload('sales', {
+    ...section.payload,
+    indonesia_freight_hkd: amount,
+  })
+  try {
+    await quoteStore.saveSection(
+      quote.value.id,
+      'sales',
+      section.revision,
+      nextPayload,
+      '在汇总页修改印尼价运费',
+    )
+    indonesiaFreightDraft.value = amount.toFixed(4)
+    indonesiaFreightMessage.value = '印尼运费已保存，服务端已生成业务部新 revision 并重新计算整单。'
+  } catch (error) {
+    indonesiaFreightError.value = error instanceof Error ? error.message : '印尼运费保存失败。'
+  }
 }
 
 const directLaborKeys = new Set(['injection_labor', 'painting_labor', 'paint_material', 'assembly_labor'])
@@ -243,6 +308,11 @@ watch([quoteId, canFinalApprove], () => {
   finalReason.value = ''
   finalRejectError.value = ''
 })
+watch([quoteId, () => costSummary.value.indonesiaFreightHkd], ([, amount]) => {
+  indonesiaFreightDraft.value = Number(amount || 0).toFixed(4)
+  indonesiaFreightMessage.value = ''
+  indonesiaFreightError.value = ''
+}, { immediate: true })
 </script>
 
 <template>
@@ -273,14 +343,24 @@ watch([quoteId, canFinalApprove], () => {
       <header><div><CircleDollarSign aria-hidden="true" /><span><strong>权威成本分布</strong><small>分部门金额与成本项目并列展示；正式数据均读取服务端计算快照</small></span></div><em>{{ quote.formulaVersion }}</em></header>
       <div class="quote-cost-overview-body">
         <article class="quote-distribution-card department-distribution-card">
-          <header><span><strong>部门金额分布</strong><small>九个责任分段固定展示，未参与或尚未形成有效计算时金额为 0</small></span><em>HKD / PCS</em></header>
-          <div class="quote-donut-wrap"><div class="quote-donut" :style="departmentDonutStyle"><span><b>部门合计</b>{{ departmentTotalHkd.toFixed(2) }}</span></div></div>
-          <dl class="compact-cost-list"><div v-for="item in departmentEntries" :key="item.key" :class="{ inactive: !item.isRequired || item.amount === 0 }"><dt><i :style="{ background: item.color }" />{{ item.label }}<small v-if="!item.isRequired">未参与</small></dt><dd>{{ item.amount.toFixed(4) }}</dd></div></dl>
+          <header><span><strong>部门金额分布</strong><small>悬停扇区或部门明细可联动高亮，点击可固定当前部门</small></span><em>HKD / PCS</em></header>
+          <InternalQuoteInteractiveDonut
+            class="quote-distribution-visual"
+            :entries="departmentEntries"
+            total-label="部门合计"
+            :display-total="departmentTotalHkd"
+            empty-label="尚无有效部门成本"
+          />
         </article>
         <article class="quote-distribution-card component-distribution-card">
-          <header><span><strong>成本项目分布</strong><small>保留包装、纸箱、人工、加工等服务端成本组成</small></span><em>HKD / PCS</em></header>
-          <div class="quote-donut-wrap"><div class="quote-donut" :style="componentDonutStyle"><span><b>整单成本</b>{{ totalHkd.toFixed(2) }}</span></div></div>
-          <dl class="compact-cost-list"><div v-for="item in componentEntries" :key="item.key"><dt><i :style="{ background: item.color }" />{{ item.label }}</dt><dd>{{ item.amount.toFixed(4) }}</dd></div><div v-if="!componentEntries.length"><dt>尚无有效成本组件</dt><dd>0.0000</dd></div></dl>
+          <header><span><strong>成本项目分布</strong><small>悬停查看包装、纸箱、人工及加工项目的金额与占比</small></span><em>HKD / PCS</em></header>
+          <InternalQuoteInteractiveDonut
+            class="quote-distribution-visual"
+            :entries="componentEntries"
+            total-label="项目合计"
+            :display-total="componentTotalHkd"
+            empty-label="尚无有效成本项目"
+          />
         </article>
         <div class="cost-snapshot-note"><LockKeyhole aria-hidden="true" /><span><strong>冻结参考快照</strong><small>{{ quote.referenceSnapshotId }}</small></span></div>
       </div>
@@ -305,10 +385,22 @@ watch([quoteId, canFinalApprove], () => {
 
     <section class="quote-tax-summary-panel">
       <header><div><FileSpreadsheet aria-hidden="true" /><span><strong>减税明细 / 成本汇总</strong><small>字段顺序和计算口径与 rr2 汇总页一致；金额由服务端按分段快照生成</small></span></div><em>HKD / PCS</em></header>
-      <div class="indonesia-freight-note"><strong>印尼运费（HKD）</strong><b>{{ summaryValue(costSummary.indonesiaFreightHkd, undefined, true) }}</b><span>杂项包含印尼运费和附加税</span></div>
+      <div v-if="isIndonesiaQuote" class="indonesia-freight-note" data-testid="indonesia-freight-panel">
+        <strong>印尼运费（HKD）</strong>
+        <template v-if="canEditIndonesiaFreight">
+          <input v-model="indonesiaFreightDraft" data-testid="indonesia-freight-input" aria-label="印尼运费 HKD" type="number" min="0" step="0.0001">
+          <button type="button" data-testid="save-indonesia-freight" :disabled="!indonesiaFreightChanged || Boolean(indonesiaFreightValidationError) || quoteStore.submitting" @click="saveIndonesiaFreight"><Save aria-hidden="true" />{{ quoteStore.submitting ? '保存中…' : '保存运费' }}</button>
+        </template>
+        <b v-else data-testid="indonesia-freight-readonly">{{ summaryValue(costSummary.indonesiaFreightHkd) }}</b>
+        <span>本项仅用于印尼价，作为直接成本单独计入，不属于杂项率金额。</span>
+        <small v-if="!canEditIndonesiaFreight">{{ indonesiaFreightReadOnlyReason }}</small>
+        <small v-if="indonesiaFreightValidationError && canEditIndonesiaFreight" class="error">{{ indonesiaFreightValidationError }}</small>
+        <small v-if="indonesiaFreightMessage" class="success">{{ indonesiaFreightMessage }}</small>
+        <small v-if="indonesiaFreightError" class="error">{{ indonesiaFreightError }}</small>
+      </div>
 
-      <article class="business-summary-block"><h3>一、出厂货价核</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t1" :key="item.key">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t1" :key="item.key">{{ summaryValue(item.value, item.format, true) }}</td></tr></tbody></table></div></article>
-      <article class="business-summary-block"><h3>二、包装 / 外购</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t2" :key="item.key">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t2" :key="item.key">{{ summaryValue(item.value, item.format, true) }}</td></tr></tbody></table></div></article>
+      <article class="business-summary-block"><h3>一、出厂货价核</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in visibleT1Summary" :key="item.key">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in visibleT1Summary" :key="item.key">{{ summaryValue(item.value, item.format, true) }}</td></tr></tbody></table></div></article>
+      <article class="business-summary-block"><h3>二、包装 / 外购 <small>杂项金额 = 货价 × 杂项率；附加税独立计入；仅印尼价另计印尼运费</small></h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t2" :key="item.key">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t2" :key="item.key">{{ summaryValue(item.value, item.format, true) }}</td></tr></tbody></table></div></article>
       <article class="business-summary-block"><h3>三、人工 &amp; 成本汇总</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t3" :key="item.key" :class="{ emphasized: item.key === 'no_labor_cost' }">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t3" :key="item.key" :class="{ calculated: ['no_labor_cost','total_cost'].includes(item.key) }">{{ summaryValue(item.value, item.format, directLaborKeys.has(item.key)) }}</td></tr></tbody></table></div></article>
       <article class="business-summary-block tax-detail-block"><h3>四、减税明细 <small>金额、税率、减税额及减税后成本均由系统统一计算</small></h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t4" :key="item.key">{{ item.label }}</th><th class="total">合计减税</th><th class="after-tax">减税后成本</th></tr></thead><tbody>
         <tr><td v-for="item in costSummary.t4" :key="`amount-${item.key}`">{{ summaryValue(item.amountHkd, undefined, true) }}</td><td /><td /></tr>
@@ -340,9 +432,9 @@ watch([quoteId, canFinalApprove], () => {
 .quote-distribution-panel{padding:15px}.quote-distribution-panel>header{display:flex;justify-content:space-between}.quote-distribution-panel header strong{color:#334155;font-size:11px}.quote-distribution-panel header span{color:#94a3b8;font-size:8px}.quote-donut-wrap{display:grid;place-items:center;padding:18px 0}.quote-donut{display:grid;width:150px;height:150px;place-items:center;border-radius:50%;background:conic-gradient(#0f766e 0 64%,#475569 64% 88%,#cbd5e1 88% 100%);box-shadow:inset 0 0 0 23px #fff}.quote-donut span{display:grid;color:#0f172a;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px;font-weight:900;text-align:center}.quote-donut b{color:#94a3b8;font-size:8px}.quote-distribution-panel dl{display:grid;gap:7px;margin:0}.quote-distribution-panel dl div{display:flex;justify-content:space-between;gap:8px}.quote-distribution-panel dt{display:flex;align-items:center;gap:6px;color:#64748b;font-size:8px}.quote-distribution-panel dd{margin:0;color:#334155;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}.quote-distribution-panel i{width:7px;height:7px;border-radius:99px}.quote-distribution-panel i.material{background:#0f766e}.quote-distribution-panel i.labor{background:#475569}.quote-distribution-panel i.overhead{background:#cbd5e1}.quote-distribution-panel>section{display:flex;align-items:center;gap:8px;margin-top:14px;border-radius:9px;background:#f1f5f9;padding:9px}.quote-distribution-panel section svg{width:16px;color:#64748b}.quote-distribution-panel section div{display:grid;min-width:0}.quote-distribution-panel section strong{color:#475569;font-size:8px}.quote-distribution-panel section span{overflow:hidden;margin-top:2px;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:7px;text-overflow:ellipsis;white-space:nowrap}
 .quote-cost-overview,.quote-tax-summary-panel{overflow:hidden;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 10px 28px rgb(15 23 42/.045)}.quote-cost-overview>header,.quote-tax-summary-panel>header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:12px 15px}.quote-cost-overview>header>div,.quote-tax-summary-panel>header>div{display:flex;align-items:center;gap:8px}.quote-cost-overview header svg,.quote-tax-summary-panel header svg{width:17px;color:#0f766e}.quote-cost-overview header span,.quote-tax-summary-panel header span{display:grid}.quote-cost-overview header strong,.quote-tax-summary-panel header strong{color:#334155;font-size:12px}.quote-cost-overview header small,.quote-tax-summary-panel header small{margin-top:2px;color:#94a3b8;font-size:9px}.quote-cost-overview header em,.quote-tax-summary-panel header em{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px;font-style:normal}.quote-cost-overview-body{display:grid;grid-template-columns:190px minmax(0,1fr) 230px;align-items:center;gap:16px;padding:12px 15px}.quote-cost-overview .quote-donut-wrap{padding:0}.quote-cost-overview .quote-donut{width:132px;height:132px;box-shadow:inset 0 0 0 22px #fff}.quote-cost-overview .quote-donut span{font-size:12px}.compact-cost-list{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:6px;margin:0}.compact-cost-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid #eef2f6;border-radius:7px;background:#fafcfd;padding:7px 8px}.compact-cost-list dt{display:flex;align-items:center;gap:6px;min-width:0;color:#475569;font-size:10px}.compact-cost-list dt i{width:7px;height:7px;flex:0 0 auto;border-radius:99px}.compact-cost-list dd{margin:0;color:#0f172a;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;font-weight:900}.cost-snapshot-note{display:flex;align-items:center;gap:9px;border-radius:9px;background:#f1f5f9;padding:10px}.cost-snapshot-note>svg{width:17px;flex:0 0 auto;color:#64748b}.cost-snapshot-note>span{display:grid;min-width:0}.cost-snapshot-note strong{color:#475569;font-size:10px}.cost-snapshot-note small{overflow:hidden;margin-top:3px;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;text-overflow:ellipsis;white-space:nowrap}
 /* Department and component distributions use separate authoritative totals and donuts. */
-.quote-cost-overview-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:10px;padding:12px 15px}.quote-distribution-card{display:grid;grid-template-columns:112px minmax(0,1fr);align-items:center;gap:10px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;padding:10px}.quote-distribution-card>header{display:flex;grid-column:1/-1;align-items:flex-start;justify-content:space-between;gap:10px;border-bottom:1px solid #eef2f6;padding:0 1px 8px}.quote-distribution-card>header span{display:grid}.quote-distribution-card>header strong{color:#334155;font-size:11px}.quote-distribution-card>header small{margin-top:2px;color:#94a3b8;font-size:8px}.quote-distribution-card>header em{flex:0 0 auto;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;font-style:normal}.quote-cost-overview .quote-donut-wrap{padding:0}.quote-cost-overview .quote-donut{width:104px;height:104px;box-shadow:inset 0 0 0 17px #fff}.quote-cost-overview .quote-donut span{font-size:11px}.quote-cost-overview .quote-donut b{font-size:7px}.compact-cost-list{display:grid;grid-template-columns:repeat(2,minmax(105px,1fr));gap:5px;margin:0}.compact-cost-list>div{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;border:1px solid #eef2f6;border-radius:7px;background:#fafcfd;padding:5px 6px}.compact-cost-list>div.inactive{opacity:.55}.compact-cost-list dt{display:flex;align-items:center;gap:5px;min-width:0;color:#475569;font-size:9px;white-space:nowrap}.compact-cost-list dt i{width:6px;height:6px;flex:0 0 auto;border-radius:99px}.compact-cost-list dt small{border-radius:999px;background:#e2e8f0;padding:1px 4px;color:#64748b;font-size:7px}.compact-cost-list dd{margin:0;color:#0f172a;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px;font-weight:900}.cost-snapshot-note{display:flex;grid-column:1/-1;align-items:center;gap:9px;border-radius:9px;background:#f1f5f9;padding:8px 10px}.cost-snapshot-note>svg{width:15px;flex:0 0 auto;color:#64748b}.cost-snapshot-note>span{display:flex;min-width:0;align-items:center;gap:8px}.cost-snapshot-note strong{color:#475569;font-size:9px}.cost-snapshot-note small{overflow:hidden;margin-top:0;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;text-overflow:ellipsis;white-space:nowrap}
+.quote-cost-overview-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:12px;padding:14px 15px}.quote-distribution-card{display:grid;min-width:0;border:1px solid #dbe5ea;border-radius:12px;background:linear-gradient(145deg,#fff 0%,#fbfdff 100%);padding:14px;box-shadow:0 8px 22px rgb(15 23 42/.04)}.quote-distribution-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;border-bottom:1px solid #e2e8f0;padding:0 1px 10px}.quote-distribution-card>header span{display:grid}.quote-distribution-card>header strong{color:#1e293b;font-size:12px}.quote-distribution-card>header small{margin-top:3px;color:#64748b;font-size:9px}.quote-distribution-card>header em{flex:0 0 auto;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px;font-style:normal}.quote-distribution-visual{margin-top:12px}.cost-snapshot-note{display:flex;grid-column:1/-1;align-items:center;gap:9px;border-radius:9px;background:#f1f5f9;padding:8px 10px}.cost-snapshot-note>svg{width:15px;flex:0 0 auto;color:#64748b}.cost-snapshot-note>span{display:flex;min-width:0;align-items:center;gap:8px}.cost-snapshot-note strong{color:#475569;font-size:9px}.cost-snapshot-note small{overflow:hidden;margin-top:0;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;text-overflow:ellipsis;white-space:nowrap}
 .shipping-formula{margin:0;border-bottom:1px solid #e2e8f0;background:#f0fdfa;padding:10px 14px;color:#475569;font-size:10px;line-height:1.6}.shipping-formula b{color:#0f766e}.business-table-scroll{overflow:auto}.shipping-price-scroll{padding:12px}.business-summary-table{width:100%;min-width:1040px;border-collapse:collapse}.business-summary-table th,.business-summary-table td{border:1px solid #e2e8f0;padding:8px 9px;text-align:center;white-space:nowrap}.business-summary-table thead th{background:#eef2f6;color:#475569;font-size:10px;font-weight:900}.business-summary-table tbody th{position:sticky;left:0;z-index:1;background:#f8fafc;color:#475569;font-size:10px;text-align:left}.business-summary-table td{color:#334155;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;font-weight:700}.business-summary-table tr.calculated th,.business-summary-table tr.calculated td,.business-summary-table td.calculated{background:#eff6ff;color:#1d4ed8;font-weight:900}.shipping-price-table{min-width:1700px}.shipping-price-table th:first-child{min-width:190px}.shipping-price-table thead th:not(:first-child){min-width:145px}
-.indonesia-freight-note{display:flex;align-items:center;gap:14px;margin:12px 14px 0;border:1px solid #fde68a;border-radius:8px;background:#fffbeb;padding:9px 12px;color:#475569;font-size:10px}.indonesia-freight-note strong{color:#92400e}.indonesia-freight-note b{display:inline-block;min-width:72px;min-height:28px;border:1px solid #dbe5ea;border-radius:6px;background:#fff;padding:6px 8px;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.indonesia-freight-note span{color:#78716c}.business-summary-block{padding:12px 14px 0}.business-summary-block:last-child{padding-bottom:14px}.business-summary-block h3{margin:0 0 7px;color:#334155;font-size:11px}.business-summary-block h3 small{margin-left:6px;color:#94a3b8;font-size:9px;font-weight:500}.business-summary-block .business-table-scroll{border-radius:7px}.business-summary-block .business-summary-table{min-width:1180px}.business-summary-block .business-summary-table th.emphasized{background:#fef3c7}.tax-detail-block .business-summary-table{min-width:1320px}.tax-detail-block th.total,.tax-detail-block td.total{background:#fef3c7!important;color:#92400e!important;font-weight:900}.tax-detail-block th.after-tax,.tax-detail-block td.after-tax{background:#dcfce7!important;color:#166534!important;font-weight:900}
+.indonesia-freight-note{display:flex;align-items:center;gap:10px;margin:12px 14px 0;border:1px solid #fde68a;border-radius:8px;background:#fffbeb;padding:9px 12px;color:#475569;font-size:10px}.indonesia-freight-note strong{color:#92400e}.indonesia-freight-note input,.indonesia-freight-note b{display:inline-block;box-sizing:border-box;width:112px;min-height:30px;border:1px solid #dbe5ea;border-radius:6px;background:#fff;padding:6px 8px;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.indonesia-freight-note button{display:inline-flex;min-height:30px;align-items:center;gap:5px;border:1px solid #0f766e;border-radius:7px;background:#0f766e;padding:0 10px;color:#fff;font-size:10px;font-weight:900}.indonesia-freight-note button:disabled{cursor:not-allowed;opacity:.45}.indonesia-freight-note button svg{width:13px}.indonesia-freight-note span{color:#78716c}.indonesia-freight-note small{color:#64748b}.indonesia-freight-note small.success{color:#047857}.indonesia-freight-note small.error{color:#b91c1c}.business-summary-block{padding:12px 14px 0}.business-summary-block:last-child{padding-bottom:14px}.business-summary-block h3{margin:0 0 7px;color:#334155;font-size:11px}.business-summary-block h3 small{margin-left:6px;color:#94a3b8;font-size:9px;font-weight:500}.business-summary-block .business-table-scroll{border-radius:7px}.business-summary-block .business-summary-table{min-width:1180px}.business-summary-block .business-summary-table th.emphasized{background:#fef3c7}.tax-detail-block .business-summary-table{min-width:1320px}.tax-detail-block th.total,.tax-detail-block td.total{background:#fef3c7!important;color:#92400e!important;font-weight:900}.tax-detail-block th.after-tax,.tax-detail-block td.after-tax{background:#dcfce7!important;color:#166534!important;font-weight:900}
 .quote-logistics-panel>header em{color:#64748b;font-size:8px;font-style:normal}.quote-logistics-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;padding:12px}.quote-logistics-grid article{display:grid;grid-template-columns:32px 1fr;gap:8px;border:1px solid #e2e8f0;border-left:3px solid var(--tone);border-radius:9px;padding:11px}.quote-logistics-grid article>svg{width:20px;color:var(--tone)}.quote-logistics-grid article>div{display:grid}.quote-logistics-grid article strong{color:#334155;font-size:10px}.quote-logistics-grid article span{margin-top:2px;color:#94a3b8;font-size:7px}.quote-logistics-grid dl{grid-column:1/-1;display:grid;grid-template-columns:1fr auto;gap:5px;margin:4px 0 0;border-top:1px solid #eef2f6;padding-top:8px}.quote-logistics-grid dt{color:#64748b;font-size:8px}.quote-logistics-grid dd{margin:0;color:#334155;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;font-weight:900}.quote-logistics-empty{margin:0;padding:22px;color:#94a3b8;font-size:11px;text-align:center}.quote-version-panel{overflow:hidden;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 10px 28px rgb(15 23 42/.045)}.quote-version-panel>header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:12px 14px}.quote-version-panel>header>div{display:flex;align-items:center;gap:8px}.quote-version-panel header svg{width:17px;color:#0f766e}.quote-version-panel header span{display:grid}.quote-version-panel header strong{color:#334155;font-size:11px}.quote-version-panel header small{margin-top:2px;color:#94a3b8;font-size:8px}.quote-version-panel select{height:34px;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:0 8px;font-size:11px}.quote-version-panel button{height:34px;border:1px solid #0f766e;border-radius:7px;background:#0f766e;padding:0 10px;color:#fff;font-size:11px;font-weight:900}.quote-version-panel button:disabled{opacity:.4}.quote-comparison{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;padding:12px}.quote-comparison>article{display:grid;border:1px solid #e2e8f0;border-radius:8px;padding:10px}.quote-comparison article span{color:#64748b;font-size:10px}.quote-comparison article strong{margin-top:4px;color:#0f172a;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px}.quote-comparison>div{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.quote-comparison p{display:flex;justify-content:space-between;gap:8px;margin:0;border-radius:7px;background:#f8fafc;padding:8px;color:#475569;font-size:10px}.quote-comparison p b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .quote-release-status>header a{color:#0f766e;font-size:8px;font-weight:900}.quote-release-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:12px}.quote-release-grid article{display:grid;grid-template-columns:28px 1fr auto;align-items:center;gap:7px;border:1px solid #e2e8f0;border-radius:9px;padding:9px}.quote-release-grid article>span{display:grid;width:26px;height:26px;place-items:center;border-radius:8px;background:#fef3c7;color:#d97706}.quote-release-grid article.approved>span,.quote-release-grid article.not_applicable>span{background:#d1fae5;color:#059669}.quote-release-grid article svg{width:13px}.quote-release-grid article div{display:grid}.quote-release-grid strong{color:#334155;font-size:9px}.quote-release-grid small{margin-top:2px;color:#94a3b8;font-size:7px}.quote-release-grid em{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;font-style:normal}.quote-release-warning{display:flex;align-items:flex-start;gap:8px;border-top:1px solid #fed7aa;background:#fff7ed;padding:10px 13px;color:#9a3412}.quote-release-warning svg{width:15px}.quote-release-warning span{display:grid;font-size:8px}.quote-release-warning strong{font-size:9px}
 .quote-final-grid{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:12px}.quote-export-history>div{padding:12px}.quote-export-history p{display:flex;align-items:center;gap:8px;margin:0 0 7px;border:1px solid #e2e8f0;border-radius:8px;padding:8px}.quote-export-history p>svg{width:16px;color:#0f766e}.quote-export-history p>span{display:grid;min-width:0;flex:1}.quote-export-history p strong{overflow:hidden;color:#334155;font-size:8px;text-overflow:ellipsis;white-space:nowrap}.quote-export-history p small{margin-top:2px;color:#94a3b8;font-size:7px}.quote-export-history p em{border-radius:999px;padding:3px 6px;font-size:7px;font-style:normal;font-weight:900}.quote-export-history p em.current{background:#d1fae5;color:#047857}.quote-export-history p em.superseded{background:#e2e8f0;color:#64748b}.quote-export-history .empty{color:#94a3b8;font-size:9px;text-align:center}.quote-final-release{display:grid;grid-template-columns:44px 1fr auto;align-items:center;gap:13px;border-style:dashed;padding:18px;background:#f8fafc}.quote-final-release.ready{border-color:#2dd4bf;background:#f0fdfa}.quote-final-release>svg{width:40px;color:#94a3b8}.quote-final-release.ready>svg{color:#0f766e}.quote-final-release>div>span{color:#0f766e;font-size:8px;font-weight:900}.quote-final-release h2{margin:4px 0 0;color:#0f172a;font-size:16px}.quote-final-release p{max-width:580px;margin:6px 0 0;color:#64748b;font-size:8px;line-height:1.6}.final-rejected{margin-top:7px;color:#b91c1c;font-size:10px}.final-buttons{display:flex!important;align-items:center;gap:7px}.quote-final-release button{display:inline-flex;min-height:38px;align-items:center;gap:6px;border:1px solid #0f766e;border-radius:9px;background:#0f766e;padding:0 13px;color:#fff;font-size:9px;font-weight:900}.quote-final-release button.reject{border-color:#fecaca;background:#fff;color:#dc2626}.quote-final-release button:disabled{cursor:not-allowed;border-color:#cbd5e1;background:#e2e8f0;color:#94a3b8}.quote-final-release button svg{width:14px}.quote-final-reason{display:grid;grid-template-columns:minmax(180px,1fr) minmax(260px,2fr) auto auto;align-items:center;gap:9px;border:1px solid #fecaca;border-radius:11px;background:#fef2f2;padding:11px 13px}.quote-final-reason>div{display:grid}.quote-final-reason strong{color:#991b1b;font-size:12px}.quote-final-reason span{margin-top:2px;color:#b91c1c;font-size:10px}.quote-final-reason textarea{border:1px solid #fca5a5;border-radius:7px;padding:7px 9px;font-size:13px;resize:none}.quote-final-reason button{height:33px;border:1px solid #fca5a5;border-radius:7px;background:#fff;padding:0 10px;color:#991b1b;font-size:11px;font-weight:900}.quote-final-reason button.primary{border-color:#b91c1c;background:#b91c1c;color:#fff}.quote-final-inline-error{grid-column:2/-1;margin:0;color:#b91c1c;font-size:10px;font-weight:700}

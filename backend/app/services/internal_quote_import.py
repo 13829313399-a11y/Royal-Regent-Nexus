@@ -134,11 +134,11 @@ def workbook_rows(content: bytes) -> list[tuple[str, list[list[object]]]]:
     try:
         for sheet in workbook.worksheets:
             rows = [
-                list(row[:MAX_WORKBOOK_COLUMNS])
-                for row in sheet.iter_rows(
-                    min_row=1,
-                    max_row=min(sheet.max_row, MAX_WORKBOOK_ROWS),
-                    values_only=True,
+                    list(row[:MAX_WORKBOOK_COLUMNS])
+                    for row in sheet.iter_rows(
+                        min_row=1,
+                        max_row=min(sheet.max_row or MAX_WORKBOOK_ROWS, MAX_WORKBOOK_ROWS),
+                        values_only=True,
                 )
             ]
             if any(any(text(cell) for cell in row) for row in rows):
@@ -1058,8 +1058,14 @@ def _parse_sewing(
                 "craft": preferred_column_index(row, ("工艺",)),
                 "pieces": preferred_column_index(row, ("裁片数",)),
                 "supplier": column_index(row, ("供应商",)),
+                "fabric_moq_y": preferred_column_index(row, ("布料MOQ/Y", "MOQ/Y", "布料MOQ")),
+                "below_moq_fee_rmb": preferred_column_index(
+                    row,
+                    ("低于MOQ/每色产生费用", "低于MOQ每色产生费用", "低于MOQ费用"),
+                ),
                 "usage": column_index(row, ("用量",)),
                 "unit": preferred_column_index(row, ("物料价(RMB)", "物料价", "单价(RMB)", "单价")),
+                "exchange_rate": preferred_column_index(row, ("汇率", "RMB/HKD汇率", "RMB→HKD汇率")),
                 "markup": column_index(row, ("码点",)),
                 "price": total_price_column,
                 "note": column_index(row, ("备注",)),
@@ -1087,6 +1093,7 @@ def _parse_sewing(
         raw_material = text(value_at(row, columns["material"]))
         usage = number(value_at(row, columns["usage"]))
         unit = number(value_at(row, columns["unit"]))
+        exchange_rate = number(value_at(row, columns["exchange_rate"]))
         price = number(value_at(row, columns["price"]))
         part = text(value_at(row, columns["part"]))
         if any("合计" in value for value in nonempty):
@@ -1129,17 +1136,39 @@ def _parse_sewing(
         if markup_value <= 0:
             markup_value = Decimal("1")
         if unit is None:
-            unit = (price / usage_value / markup_value) if price is not None and usage_value > 0 else Decimal("0")
+            price_to_rmb = exchange_rate if exchange_rate is not None and exchange_rate > 0 else Decimal("1")
+            unit = (
+                price * price_to_rmb / usage_value / markup_value
+                if price is not None and usage_value > 0
+                else Decimal("0")
+            )
             warnings.append(f"第 {source_index} 行 {material} 未识别物料价，已按源表总价反算或按 0 预览")
+        craft_text = text(value_at(row, columns["craft"]))
         current["materials"].append(
             {
                 "item": material,
                 "part": part,
-                "craft": "电绣" if "电绣" in text(value_at(row, columns["craft"])) else "",
+                "craft": "电绣" if "电绣" in craft_text else "丝印" if "丝印" in craft_text else "",
                 "pieces": decimal_text(max(number(value_at(row, columns["pieces"]), Decimal("0")) or Decimal("0"), Decimal("0"))),
                 "supplier": text(value_at(row, columns["supplier"])),
+                **(
+                    {"fabric_moq_y": precise_decimal_text(
+                        max(number(value_at(row, columns["fabric_moq_y"]), Decimal("0")) or Decimal("0"), Decimal("0"))
+                    )}
+                    if columns["fabric_moq_y"] is not None else {}
+                ),
+                **(
+                    {"below_moq_fee_rmb": precise_decimal_text(
+                        max(number(value_at(row, columns["below_moq_fee_rmb"]), Decimal("0")) or Decimal("0"), Decimal("0"))
+                    )}
+                    if columns["below_moq_fee_rmb"] is not None else {}
+                ),
                 "usage": precise_decimal_text(usage_value),
                 "unit_price_rmb": precise_decimal_text(max(unit, Decimal("0"))),
+                **(
+                    {"exchange_rate": precise_decimal_text(max(exchange_rate or Decimal("0"), Decimal("0")))}
+                    if columns["exchange_rate"] is not None and exchange_rate is not None and exchange_rate > 0 else {}
+                ),
                 "markup": precise_decimal_text(markup_value),
                 "remark": text(value_at(row, columns["note"])),
                 "source_row": source_index,
@@ -1149,7 +1178,9 @@ def _parse_sewing(
     groups = [group for group in groups if group["materials"]]
     if not groups:
         raise ValueError("已识别车缝表头，但没有解析到车缝产品分组")
-    warnings.append("源表价钱、总价钱和合计仅用于核对；保存后按用量/码 × 物料价 × 码点由服务端重算，裁片数不参与金额")
+    warnings.append(
+        "源表成本、总价钱和合计仅用于核对；保存后按用量/码 × 单价 RMB ÷ 行汇率 × 码点由服务端重算 HKD，裁片数不参与金额"
+    )
     return {"groups": groups}, total_rows, warnings
 
 

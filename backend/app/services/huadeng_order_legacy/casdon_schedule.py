@@ -423,9 +423,10 @@ def _compose_row(order: dict, line: dict, idx: MasterIndex) -> dict[int, Any]:
         COL["item"]: item_value,
         COL["cn_name"]: cn_name,
         COL["qty"]: qty,
-        # 批注表明确这些字段新单留空，不能从历史订单猜。
+        # 内箱没有明确继承规则，继续留空；外箱按反馈从同客户、同货号
+        # 的排期主数据继承，总箱由导出层按“数量 / 外箱”写公式。
         COL["inner"]: "",
-        COL["outer"]: "",
+        COL["outer"]: "" if line.get("is_charge") else cat.get("outer", ""),
         COL["special_note"]: "",
         COL["carton_mark"]: "" if line.get("is_charge") else carton_mark,
         COL["customer_label"]: "" if line.get("is_charge") else customer_label,

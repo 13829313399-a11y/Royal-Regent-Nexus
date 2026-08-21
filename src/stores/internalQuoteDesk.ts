@@ -23,6 +23,7 @@ import {
 } from '@/api/internalQuote'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { getApiErrorMessage } from '@/lib/http'
+import { defaultSalesMiscRatio, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio } from '@/lib/internalQuoteSectionPayload'
 import { useAppStore } from '@/stores/app'
 import type {
   InternalQuote,
@@ -245,7 +246,8 @@ function shippingScenarios(source: ApiInternalQuote) {
 }
 
 const rr2T1Fields = [
-  ['base_price', '货价'], ['imp_mat', '进口料'], ['dom_mat', '国内料'], ['blow', '吹气'],
+  ['base_price', '货价'], ['material', '料价', undefined, true],
+  ['imp_mat', '进口料', undefined, false], ['dom_mat', '国内料', undefined, false], ['blow', '吹气'],
   ['slush', '搪胶'], ['sewing_hair', '车发'], ['sewing_cloth', '车衣'], ['hardware', '五金'],
   ['electronic', '电子'], ['motor', '马达'], ['suction', '吸塑'], ['glue_bag', '胶袋'],
 ] as const
@@ -265,41 +267,92 @@ const rr2T3Fields = [
 const rr2T4Fields = [
   ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', null],
   ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类13%', 11.5],
-  ['sewcloth13', '车衣类13%', 11.5], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
+  ['sewcloth13', '车衣物料退税（仅华康C/D）', null], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
   ['tax13b', '含税13%类', 11.5],
 ] as const
 
 function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
   const source = summary?.rr2_cost_summary
   const shipping = source?.shipping_pricing
+  const miscRatioSource = shipping?.misc_ratio
+  const miscRatioValue = Number(miscRatioSource)
+  const hasMiscRatio = miscRatioSource != null && miscRatioSource !== ''
+    && Number.isFinite(miscRatioValue) && miscRatioValue >= 0 && miscRatioValue < 1
+  const settlementSource = shipping?.settlement
+  const settlementValue = Number(settlementSource)
+  const hasLegacySettlement = settlementSource != null && settlementSource !== ''
+    && Number.isFinite(settlementValue) && settlementValue > 0 && settlementValue <= 1
+  const miscRatio = hasMiscRatio
+    ? miscRatioValue
+    : (hasLegacySettlement
+        ? salesMiscRatioForSettlementDivisor(settlementValue)
+        : defaultSalesMiscRatio)
+  // The miscellaneous rate is authoritative. A stale settlement returned by
+  // an older service must not override the current `1 - misc_ratio` rule.
+  const settlement = hasMiscRatio
+    ? salesSettlementDivisorForMiscRatio(miscRatio)
+    : (hasLegacySettlement ? settlementValue : salesSettlementDivisorForMiscRatio(miscRatio))
   const fixedValues = (
-    rows: Array<{ key: string; label: string; value: string; format?: string }> | undefined,
-    fields: readonly (readonly [string, string, string?])[],
+    rows: Array<{ key: string; label: string; value: string; format?: string; display?: boolean }> | undefined,
+    fields: readonly (readonly [string, string, string?, boolean?])[],
   ) => {
     const rowsByKey = new Map((rows ?? []).map((row) => [row.key, row]))
-    return fields.map(([key, label, format]) => ({
-      key,
-      label,
-      value: numberValue(rowsByKey.get(key)?.value),
-      format,
-    }))
+    return fields.map(([key, label, format, forcedDisplay]) => {
+      const row = rowsByKey.get(key)
+      return {
+        key,
+        label,
+        value: numberValue(row?.value),
+        format,
+        display: forcedDisplay ?? row?.display ?? true,
+      }
+    })
   }
+  const sourceT1 = source?.t1 ?? []
+  const importedMaterialHkd = numberValue(sourceT1.find((row) => row.key === 'imp_mat')?.value)
+  const domesticMaterialHkd = numberValue(sourceT1.find((row) => row.key === 'dom_mat')?.value)
+  const materialRow = sourceT1.find((row) => row.key === 'material')
+  const materialHkd = materialRow
+    ? numberValue(materialRow.value)
+    : importedMaterialHkd + domesticMaterialHkd
+  const normalizedT1 = materialRow
+    ? sourceT1
+    : [
+        ...sourceT1,
+        {
+          key: 'material',
+          label: '料价',
+          value: String(materialHkd),
+          display: true,
+        },
+      ]
   const taxRowsByKey = new Map((source?.t4 ?? []).map((row) => [row.key, row]))
   return {
     currency: source?.currency || 'HKD',
     indonesiaFreightHkd: numberValue(source?.indonesia_freight_hkd),
-    t1: fixedValues(source?.t1, rr2T1Fields),
+    t1: fixedValues(normalizedT1, rr2T1Fields),
     t2: fixedValues(source?.t2, rr2T2Fields),
     t3: fixedValues(source?.t3, rr2T3Fields),
+    moldingMaterialBreakdown: {
+      totalHkd: numberValue(source?.molding_material_breakdown?.total_hkd, materialHkd),
+      importedHkd: numberValue(source?.molding_material_breakdown?.imported_hkd, importedMaterialHkd),
+      domesticHkd: numberValue(source?.molding_material_breakdown?.domestic_hkd, domesticMaterialHkd),
+    },
     t4: rr2T4Fields.map(([key, label, defaultRate]) => {
       const row = taxRowsByKey.get(key)
-      const ratePercent = row?.rate_percent == null ? defaultRate : numberValue(row.rate_percent)
+      // An authoritative null means that this tax category does not apply to
+      // the current quote.  Do not replace it with a browser-side default.
+      const ratePercent = row
+        ? (row.rate_percent == null ? null : numberValue(row.rate_percent))
+        : defaultRate
       return {
         key,
         label,
         amountHkd: numberValue(row?.amount_hkd),
         ratePercent,
-        deductionHkd: row?.deduction_hkd == null ? (ratePercent == null ? null : 0) : numberValue(row.deduction_hkd),
+        deductionHkd: row
+          ? (row.deduction_hkd == null ? null : numberValue(row.deduction_hkd))
+          : (ratePercent == null ? null : 0),
       }
     }),
     rmbPurchaseCostHkd: numberValue(source?.totals.rmb_purchase_cost_hkd),
@@ -317,9 +370,10 @@ function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
         moq: numberValue(tier.moq),
         markup: numberValue(tier.markup),
         isActive: Boolean(tier.is_active),
+        includeInOutput: tier.include_in_output !== false,
       })),
-      miscRatio: numberValue(shipping?.misc_ratio, .02),
-      settlement: numberValue(shipping?.settlement),
+      miscRatio,
+      settlement,
       factoryPriceHkd: numberValue(shipping?.factory_price_hkd),
       additionalTaxHkd: numberValue(shipping?.additional_tax_hkd),
       shippingFloorHkd: numberValue(shipping?.shipping_floor_hkd),
@@ -993,16 +1047,18 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       const detail = await internalQuoteApi.get(quoteId)
       return toQuote(detail)
     },
-    async executeMutation(quoteId: string, operation: () => Promise<unknown>) {
+    async executeMutation(quoteId: string, operation: () => Promise<unknown>, refreshQuote = true) {
       this.clearLiveCostPreview(quoteId)
       this.submitting = true
       this.errorMessage = ''
       this.conflictMessage = ''
       try {
         const result = await operation()
-        const refreshed = await this.loadQuote(quoteId)
-        if (!refreshed) {
-          throw new Error(`操作已在服务端成功，但页面未能读取最新报价。${this.errorMessage || '请重新读取最新 revision 后继续。'}`)
+        if (refreshQuote) {
+          const refreshed = await this.loadQuote(quoteId)
+          if (!refreshed) {
+            throw new Error(`操作已在服务端成功，但页面未能读取最新报价。${this.errorMessage || '请重新读取最新 revision 后继续。'}`)
+          }
         }
         return result
       } catch (error) {
@@ -1164,10 +1220,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
       }
     },
-    async saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '') {
+    async saveSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>, reason = '', refreshQuote = true) {
       const result = await this.executeMutation(
         quoteId,
         () => internalQuoteApi.saveSection(quoteId, sectionCode, revision, payload, reason),
+        refreshQuote,
       ) as ApiInternalQuoteSection
       if (sectionCode === 'sales') {
         const quote = this.getQuoteById(quoteId)
@@ -1176,8 +1233,12 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           : {}
         if (quote && Object.prototype.hasOwnProperty.call(shipping, 'misc_ratio')) {
           const miscRatio = Number(shipping.misc_ratio)
-          if (Number.isFinite(miscRatio) && miscRatio >= 0 && miscRatio <= 1) {
+          if (Number.isFinite(miscRatio) && miscRatio >= 0 && miscRatio < 1) {
             quote.rr2CostSummary.shippingPricing.miscRatio = miscRatio
+            const divisor = Number(shipping.divisor)
+            quote.rr2CostSummary.shippingPricing.settlement = Number.isFinite(divisor) && divisor > 0
+              ? divisor
+              : salesSettlementDivisorForMiscRatio(miscRatio)
           }
         }
         const tierRows = Array.isArray(shipping.markup_tiers) ? shipping.markup_tiers : []
@@ -1187,7 +1248,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           const moq = Number(row.moq)
           const markup = Number(row.markup_x)
           return Number.isFinite(moq) && moq > 0 && Number.isFinite(markup) && markup > 0
-            ? [{ moq, markup }]
+            ? [{ moq, markup, includeInOutput: row.include_in_output !== false }]
             : []
         })
         const selectedMoq = Number(shipping.selected_markup_moq)

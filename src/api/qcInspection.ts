@@ -1,6 +1,15 @@
 import { http } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 
+export const QC_SCHEDULE_IMPORT_MAX_FILE_MEGABYTES = 35
+export const QC_SCHEDULE_IMPORT_MAX_FILE_BYTES = QC_SCHEDULE_IMPORT_MAX_FILE_MEGABYTES * 1024 * 1024
+
+export function validateQcScheduleImportFile(file: Pick<File, 'size'>): string {
+  return file.size > QC_SCHEDULE_IMPORT_MAX_FILE_BYTES
+    ? `排期文件不能超过 ${QC_SCHEDULE_IMPORT_MAX_FILE_MEGABYTES} MB`
+    : ''
+}
+
 export interface QcEntityBase {
   id: string
   factory_id: string

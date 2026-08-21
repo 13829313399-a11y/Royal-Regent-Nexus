@@ -230,6 +230,7 @@ export interface CartonImportBatchResponse {
     due_soon_count?: number
     ready_count?: number
     advance_days?: number | null
+    parser_version?: string | null
     warnings?: string[]
     document?: { delivery_note_no?: string; delivery_date?: string; raw_text_excerpt?: string }
     rows?: CartonImportPreviewRow[]
@@ -482,6 +483,11 @@ export const cartonProcurementApi = {
       params: { factory_id: factoryId },
     })
     return response.data
+  },
+  async deleteReceiptImport(factoryId: string, batchId: string) {
+    await http.delete(`/carton-procurement/receipt-imports/${batchId}`, {
+      params: { factory_id: factoryId },
+    })
   },
   async uploadWeeklySchedule(factoryId: string, file: File) {
     const form = new FormData()

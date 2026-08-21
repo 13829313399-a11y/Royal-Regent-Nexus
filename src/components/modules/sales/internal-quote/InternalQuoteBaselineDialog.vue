@@ -266,7 +266,7 @@ function save() {
                     <tr v-for="(row, index) in form.material_prices" :key="`material-${index}`">
                       <td><input v-model="row.material" :disabled="!canEdit" maxlength="64" aria-label="材质"></td>
                       <td><input v-model="row.grade" :disabled="!canEdit" maxlength="128" aria-label="料型"></td>
-                      <td><input v-model="row.price_hkd_lb" :data-testid="`material-price-${index}`" :disabled="!canEdit" type="number" min="0.0001" step="0.01" aria-label="材料价格 HKD/Lb"></td>
+                      <td><input v-model="row.price_hkd_lb" :data-testid="`material-price-${index}`" :disabled="!canEdit" type="number" min="0.001" step="0.001" aria-label="材料价格 HKD/Lb"></td>
                       <td v-if="canEdit"><button type="button" class="quote-baseline-delete" :disabled="form.material_prices.length === 1" aria-label="删除材料" @click="form.material_prices.splice(index, 1)"><Trash2 aria-hidden="true" /></button></td>
                     </tr>
                   </tbody>
@@ -328,7 +328,7 @@ function save() {
                     <tr v-for="(row, index) in form.machine_prices" :key="`machine-${index}`">
                       <td><input v-model="row.machine_range" :disabled="!canEdit" maxlength="64" aria-label="机型范围"></td>
                       <td><input v-model="row.machine" :disabled="!canEdit" maxlength="128" aria-label="机型"></td>
-                      <td><input v-model="row.shift_price_hkd" :data-testid="`machine-price-${index}`" :disabled="!canEdit" type="number" min="0.0001" step="1" aria-label="机型每班价格"></td>
+                      <td><input v-model="row.shift_price_hkd" :data-testid="`machine-price-${index}`" :disabled="!canEdit" type="number" min="0.001" step="0.001" aria-label="机型每班价格"></td>
                       <td v-if="canEdit"><button type="button" class="quote-baseline-delete" :disabled="form.machine_prices.length === 1" aria-label="删除机型" @click="form.machine_prices.splice(index, 1)"><Trash2 aria-hidden="true" /></button></td>
                     </tr>
                   </tbody>

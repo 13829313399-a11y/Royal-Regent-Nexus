@@ -7,12 +7,13 @@ import {
   type CartonMarkAutoCheckResponse,
   type CartonMarkBatchCheckResponse,
   type CartonMarkComparisonItem,
-  type CartonMarkCustomerOption,
+  type CartonMarkCustomer,
   type CartonMarkDocumentContentComparison,
   type CartonMarkDocumentContentCheckResponse,
   type CartonMarkTemplateDocumentKind,
   type CartonMarkTemplateRecordResponse,
 } from '@/api/cartonMark'
+import CartonMarkCustomerDialog from '@/components/modules/qa/CartonMarkCustomerDialog.vue'
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
 import {
@@ -134,7 +135,7 @@ const photoForm = reactive({
 
 const allRecords = ref<CartonMarkTemplateRecord[]>([])
 const allPhotoRecords = ref<CartonMarkPhotoRecord[]>([])
-const customerOptions = ref<CartonMarkCustomerOption[]>([])
+const customerOptions = ref<CartonMarkCustomer[]>([])
 const selectedFile = ref<File | null>(null)
 const selectedExcelFile = ref<File | null>(null)
 const selectedFrontPhotoFile = ref<File | null>(null)
@@ -174,6 +175,9 @@ const photoErrorMessage = ref('')
 const photoSuccessMessage = ref('')
 const isLoading = ref(false)
 const isLoadingCustomerOptions = ref(false)
+const customerDialogOpen = ref(false)
+const customerMutationBusy = ref(false)
+const customerMutationError = ref('')
 const isSaving = ref(false)
 const isSavingPhoto = ref(false)
 const isSavingBatchPhoto = ref(false)
@@ -216,6 +220,7 @@ const canInCurrentWorkspace = (permission: string) => {
 }
 const isAdmin = computed(() => canInCurrentWorkspace('system:user_manage'))
 const canUploadTemplate = computed(() => isAdmin.value || canInCurrentWorkspace('carton_mark:template_upload'))
+const canManageCustomers = computed(() => isAdmin.value || canInCurrentWorkspace('carton_mark:customer_manage'))
 const canUploadPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:photo_upload', activeFactoryId.value, currentDepartmentId.value))
 const canReviewPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:review', activeFactoryId.value, currentDepartmentId.value))
 const canDeleteTemplate = computed(() => isWarehouseWorkspace.value && canUploadTemplate.value)
@@ -548,7 +553,7 @@ async function loadCustomerOptions(factoryId: ProductionFactoryContextId, genera
   customerOptionsErrorMessage.value = ''
 
   try {
-    const nextCustomerOptions = await cartonMarkApi.listCustomerOptions(factoryId, controller.signal)
+    const nextCustomerOptions = await cartonMarkApi.listCustomers(factoryId, controller.signal)
     if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted) return
     customerOptions.value = nextCustomerOptions
     if (!nextCustomerOptions.some((customer) => normalizeKey(customer.name) === normalizeKey(form.customerName))) {
@@ -558,7 +563,7 @@ async function loadCustomerOptions(factoryId: ProductionFactoryContextId, genera
     if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted || controller.signal.aborted) return
     customerOptions.value = []
     form.customerName = ''
-    customerOptionsErrorMessage.value = `内部报价台客户读取失败：${getApiErrorMessage(error)}`
+    customerOptionsErrorMessage.value = `箱唛客户资料读取失败：${getApiErrorMessage(error)}`
   } finally {
     if (isCurrentFactoryTask(factoryId, generation) && isPanelMounted) {
       isLoadingCustomerOptions.value = false
@@ -568,6 +573,78 @@ async function loadCustomerOptions(factoryId: ProductionFactoryContextId, genera
 
 function reloadCustomerOptions() {
   void loadCustomerOptions(activeFactoryId.value, factoryGeneration)
+}
+
+async function createManagedCustomer(name: string) {
+  if (!canManageCustomers.value || customerMutationBusy.value) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = factoryGeneration
+  customerMutationBusy.value = true
+  customerMutationError.value = ''
+  try {
+    const customer = await cartonMarkApi.createCustomer(requestedFactoryId, name)
+    await loadCustomerOptions(requestedFactoryId, requestedGeneration)
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      form.customerName = customer.name
+    }
+  } catch (error) {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationError.value = getApiErrorMessage(error)
+    }
+  } finally {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationBusy.value = false
+    }
+  }
+}
+
+async function updateManagedCustomer(customer: CartonMarkCustomer, name: string) {
+  if (!canManageCustomers.value || customerMutationBusy.value) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = factoryGeneration
+  const wasSelected = normalizeKey(form.customerName) === normalizeKey(customer.name)
+  customerMutationBusy.value = true
+  customerMutationError.value = ''
+  try {
+    const updated = await cartonMarkApi.updateCustomer(
+      requestedFactoryId,
+      customer.id,
+      name,
+      customer.revision,
+    )
+    await loadCustomerOptions(requestedFactoryId, requestedGeneration)
+    if (wasSelected && isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      form.customerName = updated.name
+    }
+  } catch (error) {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationError.value = getApiErrorMessage(error)
+    }
+  } finally {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationBusy.value = false
+    }
+  }
+}
+
+async function deleteManagedCustomer(customer: CartonMarkCustomer) {
+  if (!canManageCustomers.value || customerMutationBusy.value) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = factoryGeneration
+  customerMutationBusy.value = true
+  customerMutationError.value = ''
+  try {
+    await cartonMarkApi.deleteCustomer(requestedFactoryId, customer.id, customer.revision)
+    await loadCustomerOptions(requestedFactoryId, requestedGeneration)
+  } catch (error) {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationError.value = getApiErrorMessage(error)
+    }
+  } finally {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationBusy.value = false
+    }
+  }
 }
 
 function revokeTemplateUrls() {
@@ -590,6 +667,9 @@ watch(activeFactoryId, () => {
   revokeTemplateUrls()
   allRecords.value = []
   customerOptions.value = []
+  customerDialogOpen.value = false
+  customerMutationBusy.value = false
+  customerMutationError.value = ''
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryName = activeFactory.value.shortName
   const requestedFactoryGeneration = factoryGeneration
@@ -2366,7 +2446,17 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 
         <div class="mt-6 grid gap-4 md:grid-cols-3">
           <div class="block">
-            <label for="carton-mark-customer" class="text-sm font-medium text-slate-700">客名</label>
+            <div class="flex items-center justify-between gap-2">
+              <label for="carton-mark-customer" class="text-sm font-medium text-slate-700">客名</label>
+              <button
+                v-if="canManageCustomers"
+                type="button"
+                class="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-700 transition hover:bg-teal-100"
+                @click="customerMutationError = ''; customerDialogOpen = true"
+              >
+                维护客户
+              </button>
+            </div>
             <select
               id="carton-mark-customer"
               v-model="form.customerName"
@@ -2394,10 +2484,10 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               <button type="button" class="font-semibold underline underline-offset-2" @click="reloadCustomerOptions">重试</button>
             </p>
             <p v-else-if="!isLoadingCustomerOptions && !customerOptions.length" id="carton-mark-customer-help" class="mt-1 text-xs text-amber-700">
-              当前厂区尚未在内部报价台添加客户，请先到内部报价台维护客户名。
+              当前厂区尚未添加箱唛客户，请联系纸箱部主管或经理维护。
             </p>
             <p v-else id="carton-mark-customer-help" class="mt-1 text-xs text-slate-500">
-              客名来自当前厂区内部报价台客户库，并作为右侧客户资料集合的归档名称。
+              客名由当前厂区纸箱部主管以上维护，并作为右侧客户资料集合的归档名称。
             </p>
           </div>
           <label class="block">
@@ -3708,5 +3798,16 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
         </div>
       </section>
     </div>
+    <CartonMarkCustomerDialog
+      :open="customerDialogOpen"
+      :customers="customerOptions"
+      :busy="customerMutationBusy"
+      :factory-name="activeFactory.shortName"
+      :external-error="customerMutationError"
+      @close="customerDialogOpen = false"
+      @create="createManagedCustomer"
+      @update="updateManagedCustomer"
+      @delete="deleteManagedCustomer"
+    />
   </div>
 </template>

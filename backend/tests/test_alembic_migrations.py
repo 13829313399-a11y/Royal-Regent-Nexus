@@ -2,6 +2,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -109,8 +110,11 @@ INJECTION_SCHEDULING_DEMAND_SHARED_MIGRATION_REVISION = "20260809_0059"
 INJECTION_SCHEDULING_ROLLOUT_POLICY_MIGRATION_REVISION = "20260809_0060"
 PROTECTED_DOWNGRADE_PREFLIGHT_REVISION = "20260810_0061"
 CARTON_CLOSING_CURRENCY_MIGRATION_REVISION = "20260810_0064"
+CARTON_UNITS_PER_CARTON_MIGRATION_REVISION = "20260818_0079"
+CARTON_MARK_CUSTOMER_MIGRATION_REVISION = "20260819_0080"
 PASSWORD_RESET_CLAIM_MIGRATION_REVISION = "20260819_0079"
-USER_PRESENCE_MIGRATION_REVISION = "20260820_0080"
+CURRENT_HEAD_MERGE_MIGRATION_REVISION = "20260820_0081"
+USER_PRESENCE_MIGRATION_REVISION = "20260821_0082"
 HEAD_MIGRATION_REVISION = USER_PRESENCE_MIGRATION_REVISION
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
@@ -244,7 +248,7 @@ def test_alembic_has_single_molding_sample_head():
         encoding="utf-8"
     )
     user_presence_revision = script.get_revision(USER_PRESENCE_MIGRATION_REVISION)
-    assert user_presence_revision.down_revision == PASSWORD_RESET_CLAIM_MIGRATION_REVISION
+    assert user_presence_revision.down_revision == CURRENT_HEAD_MERGE_MIGRATION_REVISION
     user_presence_content = Path(user_presence_revision.path).read_text(encoding="utf-8")
     assert "auth_user_presence" in user_presence_content
     assert "last_seen_at" in user_presence_content
@@ -255,6 +259,14 @@ def test_alembic_has_single_molding_sample_head():
         'batch_op.drop_column("claim_token_hash")',
     ):
         assert expected in password_reset_claim_content
+
+    current_head_revision = script.get_revision(
+        CURRENT_HEAD_MERGE_MIGRATION_REVISION
+    )
+    assert set(current_head_revision.down_revision) == {
+        PASSWORD_RESET_CLAIM_MIGRATION_REVISION,
+        CARTON_MARK_CUSTOMER_MIGRATION_REVISION,
+    }
 
     manual_override_revision = script.get_revision(
         CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION
@@ -4683,6 +4695,69 @@ def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_MIGRATION_REVISION,)
+
+
+def test_carton_units_per_carton_migration_preserves_required_quantity(tmp_path):
+    database_path = tmp_path / "carton_units_per_carton_0079.db"
+    base = _run_dispatch_alembic(database_path, "upgrade", "20260817_0078")
+    assert base.returncode == 0, base.stderr
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO carton_orders(
+                id, factory_id, order_no, customer_code, customer_name,
+                supplier_id, supplier_name_snapshot, contract_no, item_no,
+                product_name, product_order_quantity, order_date, due_date,
+                status, note, revision, created_by, created_by_name,
+                updated_by, updated_by_name, created_at, updated_at
+            ) VALUES (
+                'CTO-LEGACY', 'huaxing', 'CT-LEGACY', 'DICKIE', 'Dickie',
+                'SUPPLIER-1', '河源东康纸品有限公司', 'SC-LEGACY', 'ITEM-1',
+                '产品', 3600, '2026-08-01', '2026-08-08',
+                'CONFIRMED', '', 1, 'admin', '管理员',
+                'admin', '管理员', '2026-08-01T00:00:00+08:00', '2026-08-01T00:00:00+08:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO carton_order_lines(
+                id, factory_id, order_id, line_no, customer_code,
+                contract_no, item_no, packaging_type, paper_quality,
+                specification, dimension_unit, usage_quantity,
+                required_quantity, unit, unit_price, currency,
+                price_source, note
+            ) VALUES (
+                'CTL-LEGACY', 'huaxing', 'CTO-LEGACY', 1, 'DICKIE',
+                'SC-LEGACY', 'ITEM-1', '外箱', 'A33+B',
+                '31.5 × 11.125 × 11.25', 'in', 0.00833333,
+                30, '个', 3.46, 'CNY', '历史合同', ''
+            )
+            """
+        )
+        connection.commit()
+
+    upgraded = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        CARTON_UNITS_PER_CARTON_MIGRATION_REVISION,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        usage_quantity, required_quantity = connection.execute(
+            "SELECT usage_quantity, required_quantity FROM carton_order_lines WHERE id = 'CTL-LEGACY'"
+        ).fetchone()
+        assert Decimal(str(usage_quantity)) == Decimal("120")
+        assert Decimal(str(required_quantity)) == Decimal("30")
+
+    downgraded = _run_dispatch_alembic(database_path, "downgrade", "20260817_0078")
+    assert downgraded.returncode == 0, downgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        usage_quantity, required_quantity = connection.execute(
+            "SELECT usage_quantity, required_quantity FROM carton_order_lines WHERE id = 'CTL-LEGACY'"
+        ).fetchone()
+        assert Decimal(str(usage_quantity)) == Decimal("0.00833333")
+        assert Decimal(str(required_quantity)) == Decimal("30")
 
 
 def test_carton_closing_currency_migration_backfills_without_changing_locked_values(tmp_path):

@@ -14,7 +14,7 @@ import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { canEditAllInternalQuoteSections, canReviewInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { consumeInternalQuoteProductScroll, rememberInternalQuoteProductScroll } from '@/lib/internalQuoteProductScroll'
-import { cloneInternalQuotePayload, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
+import { cloneInternalQuotePayload, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { internalQuoteApi, internalQuoteAttachmentPreviewUrl, type InternalQuoteHeaderUpdateRequest } from '@/api/internalQuote'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
@@ -58,6 +58,7 @@ const productImagePreviewOpen = ref(false)
 const wholeProductSaving = ref(false)
 const materialsDialogOpen = ref(false)
 const materialsDialogBusy = ref(false)
+const materialsDialogError = ref('')
 
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
@@ -377,7 +378,7 @@ async function updateReferenceFx(payload: { rmbHkd: string; hkdUsd: string }) {
   }
 }
 
-async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; markup: string }>; selectedMoq: string; miscRatio: string }) {
+async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string }) {
   markupMessage.value = ''
   markupError.value = ''
   message.value = ''
@@ -389,6 +390,7 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
   const markupTiers: SalesMarkupTier[] = payload.markupTiers.map((tier) => ({
     moq: Number(tier.moq),
     markup_x: Number(tier.markup),
+    include_in_output: tier.includeInOutput,
   }))
   const selectedMoq = Number(payload.selectedMoq)
   const miscRatio = Number(payload.miscRatio)
@@ -399,13 +401,18 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
     markupError.value = '请完整填写三档递增的 MOQ 区间和 0.01 至 9.99 的码数。'
     return
   }
+  if (!markupTiers.some((tier) => tier.include_in_output !== false)) {
+    markupError.value = '内部报价表至少要输出一个 MOQ 价格。'
+    return
+  }
   const selectedTier = markupTiers.find((tier) => tier.moq === selectedMoq)
   if (!selectedTier) {
     markupError.value = '请选择本单采用的 MOQ 档位。'
     return
   }
-  if (!Number.isFinite(miscRatio) || miscRatio < 0 || miscRatio > 1) {
-    markupError.value = '杂项系数必须在 0% 至 100% 之间。'
+  selectedTier.include_in_output = true
+  if (!Number.isFinite(miscRatio) || miscRatio < 0 || miscRatio >= 1) {
+    markupError.value = '杂项率必须大于等于 0% 且小于 100%。'
     return
   }
   const activeMarkup = selectedTier.markup_x
@@ -425,9 +432,10 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
         shipping: {
           ...sourceShipping,
           markup_x: Number(activeMarkup.toFixed(2)),
-          markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)) })),
+          markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)), include_in_output: tier.include_in_output !== false })),
           selected_markup_moq: selectedMoq,
           misc_ratio: Number(miscRatio.toFixed(4)),
+          divisor: salesSettlementDivisorForMiscRatio(miscRatio),
         },
       })
       await quoteStore.saveSection(quote.value.id, 'sales', section.revision, nextPayload, '在协作侧栏保存分段 MOQ 码数与杂项系数')
@@ -503,6 +511,17 @@ function closeHeaderDialog() {
   headerDialogError.value = ''
 }
 
+function openMaterialsDialog() {
+  materialsDialogError.value = ''
+  materialsDialogOpen.value = true
+}
+
+function closeMaterialsDialog() {
+  if (materialsDialogBusy.value) return
+  materialsDialogOpen.value = false
+  materialsDialogError.value = ''
+}
+
 async function saveHeader(payload: InternalQuoteHeaderUpdateRequest) {
   if (!canEditHeader.value) return
   headerDialogBusy.value = true
@@ -518,18 +537,24 @@ async function saveHeader(payload: InternalQuoteHeaderUpdateRequest) {
   }
 }
 
-async function saveReferenceMaterials(rows: Array<{ material: string; grade: string; price_hkd_lb: string }>) {
+async function saveReferenceMaterials(
+  rows: Array<{ material: string; grade: string; price_hkd_lb: string }>,
+  options: { closeAfter: boolean },
+) {
   if (!canEditMaterials.value) return
   materialsDialogBusy.value = true
+  materialsDialogError.value = ''
   message.value = ''
   errorMessage.value = ''
   try {
     await quoteStore.updateReferenceMaterials(quote.value.id, quote.value.headerRevision, rows)
     await quoteStore.loadBatchProducts(quote.value.id)
-    materialsDialogOpen.value = false
+    if (options.closeAfter) materialsDialogOpen.value = false
     message.value = '本报价专用料价已保存；所有依赖部门已由服务器重新计算。'
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '保存本报价专用料价失败。'
+    const saveError = error instanceof Error ? error.message : '保存本报价专用料价失败。'
+    materialsDialogError.value = saveError
+    errorMessage.value = saveError
   } finally {
     materialsDialogBusy.value = false
   }
@@ -547,16 +572,17 @@ async function saveWholeProductDraft() {
     message.value = `“${quote.value.productName}”当前没有需要保存的修改。`
     return
   }
-
   wholeProductSaving.value = true
   const savedLabels: string[] = []
   try {
     for (const section of dirtySections) {
       const editor = sectionEditors.value[section.code]
       if (!editor) throw new Error(`${section.label}编辑器尚未就绪。`)
-      await editor.saveWholeQuoteDraft()
+      await editor.saveWholeQuoteDraft(false)
       savedLabels.push(section.label)
     }
+    const refreshed = await quoteStore.loadQuote(quote.value.id)
+    if (!refreshed) throw new Error('全部分部已写入服务器，但页面未能读取最新报价，请点击“重新读取最新 revision”。')
     message.value = `“${quote.value.productName}”已统一保存：${savedLabels.join('、')}。`
   } catch (error) {
     const savedNote = savedLabels.length ? `；此前已保存：${savedLabels.join('、')}` : ''
@@ -695,7 +721,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ collaborationStatusLabel }}</span><b v-if="isMultiProduct">第 {{ quote.batchPosition }}/{{ quote.batchSize }} 款</b><em v-if="baselineDifferenceLabel" class="quote-baseline-comparison" :class="{ same: !currentBatchProduct?.differsFromBaseline }">{{ baselineDifferenceLabel }}</em></div><p>{{ quote.batchQuoteNo || quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />{{ isWholeQuoteReview ? '整批审核人' : '全部分段审核' }} · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
       </div>
-      <div class="quote-head-progress"><div><span>{{ isWholeQuoteReview ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="materialsDialogOpen = true"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && availableOptionalSections.length && (!isWholeQuoteReview || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
+      <div class="quote-head-progress"><div><span>{{ isWholeQuoteReview ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="openMaterialsDialog"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && availableOptionalSections.length && (!isWholeQuoteReview || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
     <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；部门编辑、整单审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的部门编辑、整单审核或参考同步权限。' }}</p>
@@ -790,7 +816,8 @@ onBeforeUnmount(() => {
       :product-name="quote.productName"
       :snapshot="quote.referenceSnapshot"
       :busy="materialsDialogBusy"
-      @close="materialsDialogOpen = false"
+      :external-error="materialsDialogError"
+      @close="closeMaterialsDialog"
       @save="saveReferenceMaterials"
     />
   </div>

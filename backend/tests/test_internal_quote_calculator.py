@@ -144,6 +144,10 @@ def test_engineering_electronic_and_molding_decimal_vectors():
     assert molding["status"] == "valid"
     assert molding["totals"] == {
         "injection_hkd": "26.9100",
+        "injection_material_hkd": "17.5100",
+        "injection_imported_material_hkd": "17.5100",
+        "injection_domestic_material_hkd": "0.0000",
+        "injection_labor_hkd": "9.4000",
         "blow_hkd": "10.5000",
         "total_hkd": "37.4100",
     }
@@ -151,13 +155,54 @@ def test_engineering_electronic_and_molding_decimal_vectors():
     assert injection_line["loss_weight_g"] == "467.6200"
     assert injection_line["material_price_hkd_g"] == "0.0187"
     assert injection_line["material_cost_hkd"] == "8.7550"
+    assert injection_line["material_amount_hkd"] == "17.5100"
+    assert injection_line["material_origin"] == "imported"
     assert injection_line["molding_cost_hkd"] == "4.7000"
+    assert injection_line["molding_amount_hkd"] == "9.4000"
     assert injection_line["unit_amount_hkd"] == "13.4550"
     assert "台班价 ÷ 套数 ÷ 目标数" in injection_line["formula"]
     blow_line = molding["line_breakdown"][1]
     assert blow_line["subtotal_hkd"] == "10.0000"
     assert blow_line["unit_amount_hkd"] == "10.5000"
     assert "吹工 + 披锋" in blow_line["formula"]
+
+
+def test_molding_totals_keep_domestic_material_split_without_mixing_in_process_cost():
+    result = calculate_section(
+        "molding",
+        {
+            "injection_lines": [
+                {
+                    "item": "齿轮",
+                    "material": "POM",
+                    "grade": "F3003/M9044",
+                    "net_weight_g": "454",
+                    "machine_code": "5A",
+                    "sets": "1",
+                    "target_output": "100",
+                    "quantity": "2",
+                }
+            ]
+        },
+        {
+            **SNAPSHOT,
+            "material_prices": {
+                **SNAPSHOT["material_prices"],
+                "POM|F3003/M9044": "16.50",
+            },
+        },
+        "IQREF-TEST",
+    )
+
+    assert result["status"] == "valid"
+    line = result["line_breakdown"][0]
+    assert line["material_origin"] == "domestic"
+    assert line["material_amount_hkd"] == "33.9900"
+    assert line["molding_amount_hkd"] == "18.8000"
+    assert result["totals"]["injection_material_hkd"] == "33.9900"
+    assert result["totals"]["injection_imported_material_hkd"] == "0.0000"
+    assert result["totals"]["injection_domestic_material_hkd"] == "33.9900"
+    assert result["totals"]["injection_labor_hkd"] == "18.8000"
 
 
 def test_electronic_rmb_contract_recalculates_tax_and_hkd_quote_from_snapshot():
@@ -324,15 +369,29 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
     )
     assert sewing["totals"]["clothes_rmb"] == "47.2800"
     assert sewing["totals"]["hair_rmb"] == "5.0000"
+    assert sewing["totals"]["clothes_material_rmb"] == "35.2800"
+    assert sewing["totals"]["clothes_labor_rmb"] == "12.0000"
+    assert sewing["totals"]["hair_material_rmb"] == "0.0000"
+    assert sewing["totals"]["hair_labor_rmb"] == "5.0000"
+    assert sewing["totals"]["material_rmb"] == "35.2800"
+    assert sewing["totals"]["labor_rmb"] == "17.0000"
+    assert sewing["totals"]["clothes_material_hkd"] == "41.5059"
+    assert sewing["totals"]["clothes_labor_hkd"] == "14.1176"
+    assert sewing["totals"]["hair_material_hkd"] == "0.0000"
+    assert sewing["totals"]["hair_labor_hkd"] == "5.8824"
+    assert sewing["totals"]["material_hkd"] == "41.5059"
+    assert sewing["totals"]["labor_hkd"] == "20.0000"
     assert sewing["totals"]["total_rmb"] == "52.2800"
     assert sewing["totals"]["total_hkd"] == "61.5059"
     sewing_line = sewing["line_breakdown"][0]
+    assert sewing_line["cost_kind"] == "material"
+    assert sewing_line["amount_hkd"] == "41.5059"
     assert sewing_line["part"] == "身体"
     assert sewing_line["craft"] == "电绣"
     assert sewing_line["pieces"] == "4.0000"
     assert sewing_line["price_rmb"] == "33.6000"
     assert sewing_line["amount_rmb"] == "35.2800"
-    assert sewing_line["formula"] == "usage * unit_price_rmb * markup"
+    assert sewing_line["formula"] == "usage * unit_price_rmb / exchange_rate * markup"
 
     assembly = calculate(
         "assembly",
@@ -408,7 +467,90 @@ def test_painting_and_sewing_quick_quotes_are_authoritative_hkd_totals():
     assert sewing["totals"]["total_hkd"] == "10.0000"
     assert sewing["totals"]["total_rmb"] == "8.5000"
     assert sewing["totals"]["clothes_hkd"] == "10.0000"
+    assert sewing["totals"]["clothes_material_hkd"] == "0.0000"
+    assert sewing["totals"]["clothes_labor_hkd"] == "10.0000"
+    assert sewing["totals"]["material_hkd"] == "0.0000"
+    assert sewing["totals"]["labor_hkd"] == "10.0000"
     assert [row["item"] for row in sewing["line_breakdown"]] == ["公仔 A", "公仔 B"]
+
+
+def test_sewing_tax_basis_splits_material_rows_labor_rows_and_legacy_group_labor():
+    sewing = calculate(
+        "sewing",
+        {
+            "groups": [
+                {
+                    "name": "布衣",
+                    "category": "clothes",
+                    "materials": [
+                        {"item": "棉布", "part": "身体", "usage": "1", "unit_price_rmb": "8.5", "markup": "1"},
+                        {"item": "人工车缝", "part": "", "usage": "1", "unit_price_rmb": "1.7", "markup": "1"},
+                    ],
+                    # An explicit labor detail line suppresses this legacy fallback.
+                    "labor_rmb": "99",
+                },
+                {
+                    "name": "帽子",
+                    "category": "clothes",
+                    "materials": [
+                        {"item": "绒布", "part": "外层", "usage": "1", "unit_price_rmb": "4.25", "markup": "1"},
+                    ],
+                    "labor_rmb": "0.85",
+                },
+            ]
+        },
+    )
+
+    assert sewing["totals"]["clothes_material_rmb"] == "12.7500"
+    assert sewing["totals"]["clothes_labor_rmb"] == "2.5500"
+    assert sewing["totals"]["clothes_material_hkd"] == "15.0000"
+    assert sewing["totals"]["clothes_labor_hkd"] == "3.0000"
+    assert sewing["totals"]["material_hkd"] == "15.0000"
+    assert sewing["totals"]["labor_hkd"] == "3.0000"
+    assert sewing["totals"]["clothes_hkd"] == "18.0000"
+    assert sewing["totals"]["total_hkd"] == "18.0000"
+    assert [row["cost_kind"] for row in sewing["line_breakdown"]] == ["material", "labor", "material"]
+
+
+def test_sewing_detail_uses_row_exchange_rate_for_authoritative_hkd_amounts():
+    sewing = calculate(
+        "sewing",
+        {
+            "groups": [{
+                "name": "土豆蝙蝠",
+                "category": "clothes",
+                "materials": [
+                    {
+                        "item": "莱卡布",
+                        "part": "前身",
+                        "usage": "0.084",
+                        "unit_price_rmb": "93.2",
+                        "exchange_rate": "0.8",
+                        "markup": "1.1",
+                    },
+                    {
+                        "item": "车缝人工",
+                        "usage": "1",
+                        "unit_price_rmb": "1.7",
+                        "markup": "1",
+                    },
+                ],
+            }],
+        },
+    )
+
+    material, labor = sewing["line_breakdown"]
+    assert material["exchange_rate"] == "0.8000"
+    assert material["cost_rmb"] == "7.8288"
+    assert material["cost_hkd"] == "9.7860"
+    assert material["amount_hkd"] == "10.7646"
+    assert material["formula"] == "usage * unit_price_rmb / exchange_rate * markup"
+    assert labor["exchange_rate"] == "0.8500"
+    assert labor["amount_hkd"] == "2.0000"
+    assert sewing["totals"]["clothes_material_hkd"] == "10.7646"
+    assert sewing["totals"]["clothes_labor_hkd"] == "2.0000"
+    assert sewing["totals"]["total_hkd"] == "12.7646"
+    assert sewing["totals"]["total_rmb"] == "10.3117"
 
 
 def test_incomplete_quick_quotes_can_be_saved_but_block_submission():
@@ -810,6 +952,29 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     assert baseline_sz40["per_piece_hkd"] == "3.4327"
     assert baseline_sz40["formula"] == "已启用的运费与吊柜费分别 ÷ ROUND(柜/车容量 ÷ 主纸箱 CUFT) ÷ 每箱数量；未启用项按 0 计算"
 
+    selected_freight = calculate_section(
+        "sales",
+        {
+            "freight_calc": {"cap_40": "1980", "cap_20": "883", "selected_route_keys": ["sz20"]},
+            "cartons": [{
+                "item": "主纸箱", "length_in": "14", "width_in": "9.25", "height_in": "23.875",
+                "qty_per_carton": "2", "flat_cards": [],
+            }],
+        },
+        {
+            **SNAPSHOT,
+            "freight": {
+                "routes": [
+                    {"route_key": "sz40", "route_name": "深圳 40 柜", "capacity_key": "cap_40", "freight_hkd": "6500", "lifting_hkd": "1100"},
+                    {"route_key": "sz20", "route_name": "深圳 20 柜", "capacity_key": "cap_20", "freight_hkd": "4200", "lifting_hkd": "700"},
+                ],
+            },
+        },
+        "IQREF-FREIGHT-SELECTED",
+        context={"factory_price_hkd": "0"},
+    )
+    assert [row["route_key"] for row in selected_freight["totals"]["freight_options"]] == ["sz20"]
+
     custom_capacity_freight = calculate_section(
         "sales",
         {
@@ -923,6 +1088,81 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     )
     assert missing["status"] == "blocked"
     assert missing["warnings"][0]["code"] == "sales_carton_missing"
+
+
+def test_sales_uses_separate_main_and_inner_carton_factors_with_legacy_fallback():
+    cartons = [
+        {
+            "item": "主纸箱",
+            "length_in": "10",
+            "width_in": "5",
+            "height_in": "4",
+            "qty_per_carton": "10",
+            "flat_cards": [],
+        },
+        {
+            "item": "内纸箱 1",
+            "length_in": "8",
+            "width_in": "4",
+            "height_in": "3",
+            "qty_per_carton": "2",
+            "flat_cards": [],
+        },
+    ]
+    separated = calculate(
+        "sales",
+        {
+            "paper_price_factor": "2.75",
+            "inner_paper_price_factor": "1.5",
+            "freight_calc": {"enabled": False},
+            "cartons": cartons,
+        },
+        factory_price_hkd="0",
+    )
+    separated_lines = [row for row in separated["line_breakdown"] if row["kind"] == "carton"]
+    assert [row["paper_price_factor"] for row in separated_lines] == ["2.7500", "1.5000"]
+    assert [row["carton_price_hkd"] for row in separated_lines] == ["0.9350", "0.3360"]
+    assert [row["per_piece_hkd"] for row in separated_lines] == ["0.0935", "0.1680"]
+    assert separated["totals"]["carton_hkd"] == "0.2615"
+    assert separated["totals"]["carton_cuft"] == "0.1713"
+
+    legacy = calculate(
+        "sales",
+        {
+            "paper_price_factor": "2.75",
+            "freight_calc": {"enabled": False},
+            "cartons": cartons,
+        },
+        factory_price_hkd="0",
+    )
+    legacy_lines = [row for row in legacy["line_breakdown"] if row["kind"] == "carton"]
+    assert [row["paper_price_factor"] for row in legacy_lines] == ["2.7500", "2.7500"]
+    assert [row["carton_price_hkd"] for row in legacy_lines] == ["0.9350", "0.6160"]
+    assert legacy["totals"]["carton_hkd"] == "0.4015"
+
+    with pytest.raises(CalculationInputError, match="内纸箱纸价系数 必须大于 0"):
+        calculate(
+            "sales",
+            {
+                "paper_price_factor": "2.75",
+                "inner_paper_price_factor": "0",
+                "freight_calc": {"enabled": False},
+                "cartons": cartons,
+            },
+            factory_price_hkd="0",
+        )
+
+    main_only = calculate(
+        "sales",
+        {
+            "paper_price_factor": "2.75",
+            "inner_paper_price_factor": "0",
+            "freight_calc": {"enabled": False},
+            "cartons": cartons[:1],
+        },
+        factory_price_hkd="0",
+    )
+    assert main_only["totals"]["carton_hkd"] == "0.0935"
 
 
 def test_auxiliary_and_packaging_materials_accept_hkd_source_prices():
@@ -1178,6 +1418,37 @@ def test_sales_scenario_and_blocking_reference_warnings():
     )
     assert tiered_markup["totals"]["total_hkd"] == "0.0000"
 
+    selective_tiers = calculate(
+        "sales",
+        {
+            "shipping": {
+                "markup_tiers": [
+                    {"moq": 3000, "markup_x": "1.30", "include_in_output": False},
+                    {"moq": 5000, "markup_x": "1.25", "include_in_output": True},
+                ],
+                "selected_markup_moq": 5000,
+            },
+            "freight_calc": {"enabled": False},
+        },
+        factory_price_hkd="10",
+    )
+    assert selective_tiers["status"] == "valid"
+
+    with pytest.raises(CalculationInputError, match="至少要输出一个 MOQ"):
+        calculate(
+            "sales",
+            {
+                "shipping": {
+                    "markup_tiers": [
+                        {"moq": 3000, "markup_x": "1.30", "include_in_output": False},
+                        {"moq": 5000, "markup_x": "1.25", "include_in_output": False},
+                    ],
+                },
+                "freight_calc": {"enabled": False},
+            },
+            factory_price_hkd="10",
+        )
+
     with pytest.raises(CalculationInputError, match="MOQ 必须由小到大排列"):
         calculate(
             "sales",
@@ -1216,12 +1487,16 @@ def test_sales_scenario_and_blocking_reference_warnings():
     )
     assert historical_empty_shipping["totals"]["misc_ratio"] == "0.0200"
 
-    with pytest.raises(CalculationInputError, match="杂项系数必须在 0% 至 100% 之间"):
-        calculate(
-            "sales",
-            {"shipping": {"misc_ratio": "1.01"}, "freight_calc": {"enabled": False}},
-            factory_price_hkd="10",
-        )
+    for invalid_misc_ratio in ("1", "1.01"):
+        with pytest.raises(CalculationInputError, match="杂项系数必须在 0% 至 100% 之间"):
+            calculate(
+                "sales",
+                {
+                    "shipping": {"misc_ratio": invalid_misc_ratio},
+                    "freight_calc": {"enabled": False},
+                },
+                factory_price_hkd="10",
+            )
 
     missing_reference = calculate(
         "molding",
@@ -1243,6 +1518,41 @@ def test_sales_scenario_and_blocking_reference_warnings():
         "material_price_missing",
         "machine_price_missing",
     }
+
+
+@pytest.mark.parametrize(
+    ("shipping", "legacy_settlement", "expected_misc", "expected_after_settlement"),
+    [
+        ({"misc_ratio": "0.03", "divisor": "0.80"}, "0.70", "0.0300", "18.5567"),
+        ({"divisor": "0.96"}, "0.70", "0.0400", "18.7500"),
+        ({}, "0.95", "0.0500", "18.9474"),
+        ({}, None, "0.0200", "18.3673"),
+    ],
+)
+def test_sales_scenario_settlement_is_always_derived_from_resolved_misc_ratio(
+    shipping: dict,
+    legacy_settlement: str | None,
+    expected_misc: str,
+    expected_after_settlement: str,
+):
+    scenario = {
+        "name": "兼容场景",
+        "capacity_cuft": "100",
+        "freight_cost_hkd": "100",
+        "carton_cuft": "10",
+        "qty_per_carton": "2",
+    }
+    if legacy_settlement is not None:
+        scenario["settlement"] = legacy_settlement
+
+    result = calculate(
+        "sales",
+        {"shipping": shipping, "scenarios": [scenario]},
+        factory_price_hkd="10",
+    )
+
+    assert result["totals"]["misc_ratio"] == expected_misc
+    assert result["totals"]["scenarios"][0]["after_settlement_hkd"] == expected_after_settlement
 
 
 def test_real_buzzbee_18a_machine_code_is_present_in_the_authoritative_reference_table():

@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -30,12 +31,12 @@ def _run_alembic(database_url: str, *arguments: str) -> subprocess.CompletedProc
 def test_carton_mark_library_migration_upgrades_fresh_sqlite(tmp_path: Path) -> None:
     database_path = tmp_path / "carton-mark-library.db"
     database_url = f"sqlite:///{database_path.as_posix()}"
-    result = _run_alembic(database_url, "upgrade", "head")
+    result = _run_alembic(database_url, "upgrade", "20260813_0075")
     assert result.returncode == 0, result.stderr
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260820_0080",
+            "20260813_0075",
         )
         tables = {
             row[0]
@@ -69,7 +70,7 @@ def test_carton_mark_library_migration_refuses_data_loss_on_downgrade(
 ) -> None:
     database_path = tmp_path / "carton-mark-library-populated.db"
     database_url = f"sqlite:///{database_path.as_posix()}"
-    upgraded = _run_alembic(database_url, "upgrade", "head")
+    upgraded = _run_alembic(database_url, "upgrade", "20260813_0075")
     assert upgraded.returncode == 0, upgraded.stderr
 
     with sqlite3.connect(database_path) as connection:

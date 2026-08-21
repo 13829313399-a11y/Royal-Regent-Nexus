@@ -34,6 +34,7 @@ from app.services.huadeng_order_legacy import (
 from app.services.huaxing_order_legacy.new_order_excel import (
     append_column_records_to_workbook,
     append_records_to_workbook,
+    insert_column_records_after_matching_groups,
 )
 
 
@@ -70,7 +71,8 @@ HUADENG_CUSTOMER_MAPPINGS: dict[str, HuadengCustomerMappingSpec] = {
     "casdon": HuadengCustomerMappingSpec(
         "casdon", "Casdon", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
         "HUADENG_CASDON_PO_V1", "HUADENG_CASDON_SCHEDULE_APPEND_V2",
-        "按 PO 修订版和字段完整度去重；USD 按 7.75 换算 HKD，验货期为走货期前 7 天并避开周末。",
+        "按 PO 修订版和字段完整度去重；新单插入同货号最后一行并继承外箱，总箱按数量除以外箱；"
+        "USD 按 7.75 换算 HKD，验货期为走货期前 7 天并避开周末。",
     ),
     "jakks": HuadengCustomerMappingSpec(
         "jakks", "Jakks", (".pdf", ".xlsx", ".xlsm"), (".xls", ".xlsx"),
@@ -993,6 +995,13 @@ def create_huadeng_customer_preview(
     ]
     file_names = [name for name, _ in po_files]
     po_hashes = [sha256(content).hexdigest() for _, content in po_files]
+    export_position_rule = (
+        "Casdon 新单按货号插入该货号最后一条历史明细之后、小计之前，并继承同货号外箱；"
+        "总箱使用数量除以外箱的行公式。"
+        if customer_code == "casdon"
+        else "仅在对应目标表明细末尾/合计行之前插入本批新单，并从插入点向上选择最近的"
+        "正常明细行继承格式、字体和公式逻辑，跳过合计/小计、分组标题和空白分隔行。"
+    )
     return {
         "preview_schema_version": PREVIEW_SCHEMA_VERSION,
         "customer_code": customer_code,
@@ -1017,8 +1026,7 @@ def create_huadeng_customer_preview(
         "warnings": list(dict.fromkeys([
             spec.rule_summary,
             "导出结果完整保留当前排期的所有 Sheet、历史数据、格式、公式、图片和打印设置；"
-            "仅在对应目标表明细末尾/合计行之前插入本批新单，并从插入点向上选择最近的"
-            "正常明细行继承格式、字体和公式逻辑，跳过合计/小计、分组标题和空白分隔行；"
+            f"{export_position_rule}"
             "另存为新文件，不覆盖原排期。",
             *prepared.warnings,
         ])),
@@ -1052,21 +1060,39 @@ def _export_prepared(
                 values[total_col] = f'=IF({outer}{row_no}=0,"",{qty}{row_no}/{outer}{row_no})'
             return values
 
-        append_column_records_to_workbook(
-            schedule_content,
-            output_path,
-            prepared.legacy_rows,
-            filename=schedule_file_name,
-            sheet_names=(prepared.sheet_name,),
-            header_row=prepared.header_row,
-            max_col=schedule_module.EXPORT_END_COL,
-            detail_columns=(
+        export_kwargs = {
+            "filename": schedule_file_name,
+            "sheet_names": (prepared.sheet_name,),
+            "header_row": prepared.header_row,
+            "max_col": schedule_module.EXPORT_END_COL,
+            "detail_columns": (
                 schedule_module.COL["contract"],
                 schedule_module.COL["item"],
                 schedule_module.COL["qty"],
             ),
-            row_values_factory=row_values,
-        )
+            "row_values_factory": row_values,
+        }
+        if customer_code == "casdon":
+            item_col = schedule_module.COL["item"]
+            insert_column_records_after_matching_groups(
+                schedule_content,
+                output_path,
+                prepared.legacy_rows,
+                existing_row_key_factory=lambda worksheet, row_no: (
+                    casdon_schedule.item_base(worksheet.cell(row_no, item_col).value)
+                ),
+                record_key_factory=lambda record: casdon_schedule.item_base(
+                    record.get(item_col)
+                ),
+                **export_kwargs,
+            )
+        else:
+            append_column_records_to_workbook(
+                schedule_content,
+                output_path,
+                prepared.legacy_rows,
+                **export_kwargs,
+            )
         return
     if customer_code == "jakks":
         rows = jakks_new_order_writer.records_from_order(prepared.export_payload)

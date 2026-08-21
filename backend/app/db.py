@@ -447,8 +447,9 @@ QC_INSPECTION_REQUIRED_TABLES = {
     "qc_inspection_audit_events",
     "qc_inspection_idempotency_records",
 }
-CARTON_MARK_LIBRARY_REVISION = "20260813_0075"
+CARTON_MARK_LIBRARY_REVISION = "20260819_0080"
 CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
+    "carton_mark_customers",
     "carton_mark_templates",
     "carton_mark_documents",
 }

@@ -137,6 +137,10 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
             "hair",
             "assembly",
         }
+        sales_contract = contract.json()["sections"]["sales"]
+        assert "inner_paper_price_factor" in sales_contract
+        assert "defaults to paper_price_factor" in sales_contract["inner_paper_price_factor"]
+        assert "first carton is the non-deletable main carton" in sales_contract["carton_order"]
 
         created_response = client.post(
             "/api/internal-quotes",

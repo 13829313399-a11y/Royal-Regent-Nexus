@@ -6,7 +6,7 @@ import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/a
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
-import { cloneInternalQuotePayload, normalizeInternalQuotePayload, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
+import { cloneInternalQuotePayload, normalizeInternalQuotePayload, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
@@ -211,11 +211,11 @@ onBeforeUnmount(() => {
 function resetFeedback() { localMessage.value = ''; localError.value = '' }
 function errorText(error: unknown) { return error instanceof Error ? error.message : '操作失败。' }
 
-async function saveDraft(showMessage = true, reason = '') {
+async function saveDraft(showMessage = true, reason = '', refreshQuote = true) {
   resetFeedback()
   try {
     const requestedRevision = props.section.revision
-    const result = await quoteStore.saveSection(props.quote.id, props.section.code, requestedRevision, cloneInternalQuotePayload(props.section.code, draftPayload.value), reason) as ApiInternalQuoteSection
+    const result = await quoteStore.saveSection(props.quote.id, props.section.code, requestedRevision, cloneInternalQuotePayload(props.section.code, draftPayload.value), reason, refreshQuote) as ApiInternalQuoteSection
     baselinePayload.value = JSON.stringify(draftPayload.value)
     if (showMessage) localMessage.value = result.revision === requestedRevision
       ? `${props.section.label}内容没有变化，沿用 revision ${result.revision}。`
@@ -238,9 +238,10 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
     shipping: {
       ...shipping,
       markup_x: Number(activeMarkup.toFixed(2)),
-      markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)) })),
+      markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)), include_in_output: tier.include_in_output !== false })),
       selected_markup_moq: selectedMoq,
       misc_ratio: Number(miscRatio.toFixed(4)),
+      divisor: salesSettlementDivisorForMiscRatio(miscRatio),
     },
   })
   const result = await saveDraft(false, '在协作侧栏保存分段 MOQ 码数与杂项系数')
@@ -253,9 +254,9 @@ function hasUnsavedChanges() {
   return isDirty.value
 }
 
-async function saveWholeQuoteDraft() {
+async function saveWholeQuoteDraft(refreshQuote = true) {
   if (!editable.value) throw new Error(`${props.section.label}当前不可编辑，无法统一保存。`)
-  const result = await saveDraft(false, '在连续报价页统一保存当前产品')
+  const result = await saveDraft(false, '在连续报价页统一保存当前产品', refreshQuote)
   if (!result) throw new Error(localError.value || `${props.section.label}保存失败。`)
   return result
 }

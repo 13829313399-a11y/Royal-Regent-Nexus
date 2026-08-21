@@ -66,7 +66,8 @@ QC_DEPARTMENTS = ("qc",)
 QC_REPORT_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-MAX_SCHEDULE_IMPORT_BYTES = 20 * 1024 * 1024
+MAX_SCHEDULE_IMPORT_MEGABYTES = 35
+MAX_SCHEDULE_IMPORT_BYTES = MAX_SCHEDULE_IMPORT_MEGABYTES * 1024 * 1024
 SCHEDULE_IMPORT_SUFFIXES = {".xls", ".xlsx", ".xlsm"}
 REPORT_TYPES = {
     "CUSTOMER_SUMMARY",
@@ -1179,7 +1180,10 @@ def preview_schedule_import(
     if not content:
         raise HTTPException(status_code=422, detail="排期文件不能为空")
     if len(content) > MAX_SCHEDULE_IMPORT_BYTES:
-        raise HTTPException(status_code=413, detail="排期文件不能超过 20 MB")
+        raise HTTPException(
+            status_code=413,
+            detail=f"排期文件不能超过 {MAX_SCHEDULE_IMPORT_MEGABYTES} MB",
+        )
     source_hash = hashlib.sha256(content).hexdigest()
     payload_hash = _payload_sha256(
         {

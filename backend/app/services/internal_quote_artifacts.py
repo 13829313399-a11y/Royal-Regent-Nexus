@@ -88,6 +88,7 @@ OOXML_EXTENSIONS = {".xlsx", ".xlsm", ".docx"}
 OLE_EXTENSIONS = {".xls", ".doc"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 EXPORT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+EXPORT_FILE_NAME_VERSION = "quote-product-date-v1"
 IMPORT_LIST_FIELDS = {
     "mold": ("molds",),
     "hardware": ("materials",),
@@ -120,6 +121,27 @@ def safe_file_name(value: str) -> str:
     if not name or name in {".", ".."}:
         raise HTTPException(status_code=400, detail="文件名无效")
     return name[:255]
+
+
+def internal_quote_export_file_name(
+    quote: InternalQuote,
+    exported_at: str,
+) -> str:
+    """Build the user-facing XLSX name from quote number, product and export date."""
+
+    def clean_component(value: object, fallback: str) -> str:
+        cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(value or ""))
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._")
+        return cleaned or fallback
+
+    quote_no = clean_component(quote.quote_no, "未编号报价")
+    product_name = clean_component(quote.product_name, "未命名产品")
+    date_match = re.match(r"\d{4}-\d{2}-\d{2}", str(exported_at or ""))
+    export_date = date_match.group(0) if date_match else "未注明日期"
+    suffix = f"_{export_date}.xlsx"
+    stem = f"{quote_no}_{product_name}"
+    stem = stem[: 255 - len(suffix)].rstrip(" ._")
+    return safe_file_name(f"{stem}{suffix}")
 
 
 def _validate_file_size(content: bytes, limit: int, label: str) -> None:
@@ -1525,6 +1547,7 @@ def _handoff_manifest(
         "file_sha256": record.sha256,
         "template_version": record.template_version,
         "workbook_layout_version": export_manifest.get("workbook_layout_version", ""),
+        "export_file_name_version": export_manifest.get("export_file_name_version", ""),
         "formula_version": record.formula_version,
         "reference_snapshot_id": record.reference_snapshot_id,
         "section_revisions": _json_object(record.section_revisions_json),
@@ -1613,6 +1636,7 @@ def create_controlled_export(
             current_manifest = _json_object(current_export.export_manifest_json)
             if (
                 current_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION
+                and current_manifest.get("export_file_name_version") == EXPORT_FILE_NAME_VERSION
                 and str(current_manifest.get("final_release_revision") or "0")
                 == str(quote.final_release_revision)
             ):
@@ -1627,7 +1651,10 @@ def create_controlled_export(
             existing_export = db.get(InternalQuoteExportFile, existing_handoff.export_id)
             if existing_export is not None and existing_export.release_stage == "p4_final_approved":
                 existing_manifest = _json_object(existing_export.export_manifest_json)
-                if existing_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION:
+                if (
+                    existing_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION
+                    and existing_manifest.get("export_file_name_version") == EXPORT_FILE_NAME_VERSION
+                ):
                     return _export_out(existing_export)
                 # The final-release business payload remains immutable.  A
                 # presentation-only refresh gets a new export record while the
@@ -1641,6 +1668,7 @@ def create_controlled_export(
     manifest = {
         "template_version": template_version,
         "workbook_layout_version": WORKBOOK_LAYOUT_VERSION,
+        "export_file_name_version": EXPORT_FILE_NAME_VERSION,
         "formula_version": quote.formula_version,
         "reference_snapshot_id": quote.reference_snapshot_id,
         "header_revision": quote.header_revision,
@@ -1683,7 +1711,13 @@ def create_controlled_export(
     )
     reference_snapshot = _json_object(reference_set.snapshot_json) if reference_set else {}
     cost_context = _cost_context(db, quote)
-    rr2_cost_summary = _rr2_cost_summary(sections, cost_context, reference_snapshot, quote.qty)
+    rr2_cost_summary = _rr2_cost_summary(
+        sections,
+        cost_context,
+        reference_snapshot,
+        quote.qty,
+        factory_id=quote.factory_id,
+    )
     content = build_internal_quote_workbook(
         quote,
         sections,
@@ -1693,14 +1727,12 @@ def create_controlled_export(
         cost_context,
         attachments,
     )
+    exported_at = now_text()
     record = InternalQuoteExportFile(
         id=f"IQEXP-{uuid4().hex}",
         quote_id=quote.id,
         factory_id=quote.factory_id,
-        file_name=safe_file_name(
-            f"{quote.quote_no}_{quote.version_label}_内部报价"
-            f"{'_最终放行' if is_final_release else ''}.xlsx"
-        ),
+        file_name=internal_quote_export_file_name(quote, exported_at),
         content_type=EXPORT_CONTENT_TYPE,
         size_bytes=len(content),
         sha256=digest(content),
@@ -1715,7 +1747,7 @@ def create_controlled_export(
         export_manifest_json=canonical_json(manifest),
         exported_by=user.id,
         exported_by_name=user.display_name,
-        exported_at=now_text(),
+        exported_at=exported_at,
         superseded_at="",
     )
     previous = db.scalars(

@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -37,7 +38,7 @@ def _order_payload() -> dict[str, object]:
                 "paper_quality": "A33+B",
                 "specification": "31.5 × 11.125 × 11.25",
                 "dimension_unit": "in",
-                "usage_quantity": "0.00833333",
+                "usage_quantity": "120",
                 "unit": "个",
                 "unit_price": "3.46",
             },
@@ -210,7 +211,11 @@ def _workbook_bytes(headers: list[str], rows: list[list[object]]) -> bytes:
     return output.getvalue()
 
 
-def _history_workbook_bytes(rows: list[list[object]]) -> bytes:
+def _history_workbook_bytes(
+    rows: list[list[object]],
+    *,
+    units_per_carton_header: str = "每箱个数*",
+) -> bytes:
     headers = [
         "历史订单号（选填）",
         "合同号*",
@@ -225,13 +230,13 @@ def _history_workbook_bytes(rows: list[list[object]]) -> bytes:
         "纸质*",
         "规格*",
         "规格单位",
-        "单件用量*",
+        units_per_carton_header,
         "纸品单位*",
         "单价",
         "币种",
         "价格来源",
         "明细备注",
-        "需求数量（自动校验）",
+        "纸箱数量（自动校验）",
     ]
     workbook = Workbook()
     sheet = workbook.active
@@ -323,6 +328,25 @@ def test_grouped_order_calculation_and_factory_scope(monkeypatch):
         assert forbidden.status_code == 403
 
 
+def test_carton_quantity_divides_by_units_per_carton_and_rounds_up(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        _ensure_dickie_customer(client)
+        payload = _order_payload()
+        payload["contract_no"] = "SC700145366"
+        payload["item_no"] = "203302045"
+        payload["product_order_quantity"] = "3601"
+        payload["lines"] = [payload["lines"][0]]
+
+        response = client.post("/api/carton-procurement/orders", json=payload)
+
+        assert response.status_code == 201, response.text
+        line = response.json()["lines"][0]
+        assert Decimal(line["usage_quantity"]) == Decimal("120.00000000")
+        assert Decimal(line["required_quantity"]) == Decimal("31.0000")
+
+
 def test_order_update_and_cancel_are_controlled_by_revision_and_business_activity(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "warehouse_keeper")
@@ -340,7 +364,7 @@ def test_order_update_and_cancel_are_controlled_by_revision_and_business_activit
                 "note": "经纸箱部复核后修订",
             }
         )
-        update_payload["lines"][0]["usage_quantity"] = "0.01"
+        update_payload["lines"][0]["usage_quantity"] = "100"
         updated = client.patch(
             f"/api/carton-procurement/orders/{order['order_no']}",
             json=update_payload,
@@ -445,7 +469,9 @@ def test_purchase_order_export_contains_grouped_lines_and_formula(monkeypatch):
         assert sheet["A9"].value == "序号"
         assert sheet["B10"].value == "外箱"
         assert sheet["B11"].value == "滑板纸"
-        assert sheet["G10"].value == "=ROUND(E10*F10,4)"
+        assert sheet["E9"].value == "每箱个数"
+        assert sheet["G9"].value == "纸箱数量"
+        assert sheet["G10"].value == "=ROUNDUP(F10/E10,0)"
         assert "无需供应商回签确认" in sheet[f"A{sheet.max_row}"].value
         workbook.close()
 
@@ -656,6 +682,8 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         assert first.json()["parse_summary"]["row_count"] == 2
         assert first.json()["parse_summary"]["matched_count"] == 1
         assert first.json()["parse_summary"]["issue_count"] == 1
+        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-qwen-v4"
+        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-qwen-v4"
         matched = first.json()["parse_summary"]["rows"][0]
         assert matched["match_status"] == "MATCHED"
         assert matched["order_line_id"] == order["lines"][0]["id"]
@@ -722,6 +750,191 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
             "/api/carton-procurement/inventory/movements",
             params={"factory_id": "huaxing"},
         ).json()["total"] == 0
+
+
+def test_delivery_import_parser_version_reprocesses_an_older_file(monkeypatch):
+    with make_client(monkeypatch) as client:
+        import app.services.carton_procurement as service
+        import app.services.carton_procurement_imports as imports
+
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        _create_order(client)
+        content = _workbook_bytes(
+            ["日期", "入库单号", "PO", "货号", "外箱", "纸质"],
+            [["2026-08-05", "DN-PARSER-VERSION", "SC700145365", "203302044", 10, "A33+B外箱"]],
+        )
+
+        monkeypatch.setattr(service, "DELIVERY_IMPORT_PARSER_VERSION", "delivery-note-v1")
+        monkeypatch.setattr(imports, "DELIVERY_IMPORT_PARSER_VERSION", "delivery-note-v1")
+        first = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-PARSER-VERSION.xlsx", content)},
+        )
+        assert first.status_code == 201, first.text
+        assert first.json()["duplicate"] is False
+        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-v1"
+
+        monkeypatch.setattr(service, "DELIVERY_IMPORT_PARSER_VERSION", "delivery-note-v2")
+        monkeypatch.setattr(imports, "DELIVERY_IMPORT_PARSER_VERSION", "delivery-note-v2")
+        reprocessed = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-PARSER-VERSION.xlsx", content)},
+        )
+        assert reprocessed.status_code == 201, reprocessed.text
+        assert reprocessed.json()["duplicate"] is False
+        assert reprocessed.json()["id"] != first.json()["id"]
+        assert reprocessed.json()["parse_summary"]["parser_version"] == "delivery-note-v2"
+
+        duplicate = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-PARSER-VERSION.xlsx", content)},
+        )
+        assert duplicate.status_code == 201, duplicate.text
+        assert duplicate.json()["duplicate"] is True
+        assert duplicate.json()["id"] == reprocessed.json()["id"]
+
+
+def test_delivery_heic_photo_uses_quality_and_specification_to_select_order_line(monkeypatch):
+    with make_client(monkeypatch) as client:
+        import app.services.carton_procurement_imports as imports
+
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        order = _create_order(client)
+        monkeypatch.setattr(
+            imports,
+            "_parse_delivery_image_table",
+            lambda _content: {
+                "rows": [
+                    {
+                        "source_sheet": "OCR四列表格",
+                        "source_row": 1,
+                        "delivery_note_no": "DN26061301",
+                        "delivery_date": "2026-06-13",
+                        "order_reference": "SC700145365-203302044",
+                        "contract_no": "SC700145365",
+                        "item_no": "203302044",
+                        "packaging_type": "普通箱",
+                        "paper_quality": "A33+B",
+                        "specification": "31.5 × 11.125 × 11.25 in",
+                        "delivered_quantity": 10,
+                        "unit_price": 0,
+                        "location": "",
+                    }
+                ],
+                "warnings": ["四列表格识别"],
+                "engine": "rapidocr-delivery-table-v1",
+                "document": {
+                    "delivery_note_no": "DN26061301",
+                    "delivery_date": "2026-06-13",
+                    "raw_text_excerpt": "DN26061301",
+                },
+            },
+        )
+
+        response = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN26061301.heic", b"delivery-photo", "image/heic")},
+        )
+
+        assert response.status_code == 201, response.text
+        summary = response.json()["parse_summary"]
+        assert summary["engine"] == "rapidocr-delivery-table-v1"
+        assert summary["row_count"] == 1
+        assert summary["matched_count"] == 1
+        row = summary["rows"][0]
+        assert row["match_status"] == "MATCHED"
+        assert row["order_line_id"] == order["lines"][0]["id"]
+        assert row["packaging_type"] == "外箱"
+        assert row["paper_quality"] == "A33+B"
+        assert row["specification"] == "31.5 × 11.125 × 11.25"
+        assert "纸质" in row["match_basis"]
+        assert "规格" in row["match_basis"]
+        assert summary["document"]["delivery_note_no"] == "DN26061301"
+
+
+def test_unmatched_delivery_import_can_be_deleted_with_derived_exceptions(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        content = _workbook_bytes(
+            ["日期", "入库单号", "PO", "货号", "外箱", "纸质"],
+            [["2026-08-05", "DN-UNMATCHED-001", "SC-NOT-ORDERED", "209999999", 5, "B3B内箱"]],
+        )
+        imported = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-UNMATCHED-001.xlsx", content)},
+        )
+        assert imported.status_code == 201, imported.text
+        batch = imported.json()
+        assert batch["parse_summary"]["matched_count"] == 0
+        assert client.get(
+            "/api/carton-procurement/exceptions",
+            params={"factory_id": "huaxing"},
+        ).json()["total"] == 1
+
+        deleted = client.delete(
+            f"/api/carton-procurement/receipt-imports/{batch['id']}",
+            params={"factory_id": "huaxing"},
+        )
+        assert deleted.status_code == 204, deleted.text
+        assert client.get(
+            f"/api/carton-procurement/imports/{batch['id']}",
+            params={"factory_id": "huaxing"},
+        ).status_code == 404
+        assert client.get(
+            "/api/carton-procurement/exceptions",
+            params={"factory_id": "huaxing"},
+        ).json()["total"] == 0
+        assert client.get(
+            "/api/carton-procurement/receipt-imports/latest",
+            params={"factory_id": "huaxing"},
+        ).json() is None
+
+        reimported = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-UNMATCHED-001.xlsx", content)},
+        )
+        assert reimported.status_code == 201, reimported.text
+        assert reimported.json()["id"] != batch["id"]
+        assert reimported.json()["duplicate"] is False
+
+
+def test_matched_delivery_import_cannot_be_deleted(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        _create_order(client)
+        content = _workbook_bytes(
+            ["日期", "入库单号", "PO", "货号", "外箱", "纸质"],
+            [["2026-08-05", "DN-MATCHED-001", "SC700145365", "203302044", 10, "A33+B外箱"]],
+        )
+        imported = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("DN-MATCHED-001.xlsx", content)},
+        )
+        assert imported.status_code == 201, imported.text
+        batch = imported.json()
+        assert batch["parse_summary"]["matched_count"] == 1
+
+        blocked = client.delete(
+            f"/api/carton-procurement/receipt-imports/{batch['id']}",
+            params={"factory_id": "huaxing"},
+        )
+        assert blocked.status_code == 409
+        assert "匹配正式订单" in blocked.json()["detail"]
+        assert client.get(
+            f"/api/carton-procurement/imports/{batch['id']}",
+            params={"factory_id": "huaxing"},
+        ).status_code == 200
 
 
 def test_weekly_schedule_import_never_creates_formal_orders(monkeypatch):
@@ -844,8 +1057,8 @@ def test_history_order_import_groups_lines_skips_duplicates_and_validates(monkey
         ]
         content = _history_workbook_bytes(
             [
-                [*common, "外箱", "A33+B", "31.5 × 11.125 × 11.25", "in", 1 / 120, "个", 3.46, "CNY", "历史合同", "", None],
-                [*common, "内箱", "B3B", "15.5 × 10.625 × 5.25", "in", 1 / 30, "个", 0.96, "CNY", "历史合同", "", None],
+                [*common, "外箱", "A33+B", "31.5 × 11.125 × 11.25", "in", 120, "个", 3.46, "CNY", "历史合同", "", None],
+                [*common, "内箱", "B3B", "15.5 × 10.625 × 5.25", "in", 30, "个", 0.96, "CNY", "历史合同", "", None],
                 [*common, "滑板纸", "A9A", "30.75 × 10.5", "in", 1, "张", 0.96, "CNY", "历史合同", "", None],
                 [*common, "卡纸", "250g 灰底白", "8.5 × 5.5", "in", 1, "张", 0.45, "CNY", "历史合同", "", None],
             ]
@@ -887,6 +1100,43 @@ def test_history_order_import_groups_lines_skips_duplicates_and_validates(monkey
         assert client.get(
             "/api/carton-procurement/orders", params={"factory_id": "huaxing"}
         ).json()["total"] == 1
+
+        legacy_common = list(common)
+        legacy_common[0] = "HIST-2025-LEGACY"
+        legacy_common[1] = "SC700145367"
+        legacy_common[2] = "Dickie"
+        legacy_content = _history_workbook_bytes(
+            [[
+                *legacy_common,
+                "外箱",
+                "A33+B",
+                "31.5 × 11.125 × 11.25",
+                "in",
+                1 / 120,
+                "个",
+                3.46,
+                "CNY",
+                "历史合同",
+                "",
+                None,
+            ]],
+            units_per_carton_header="单件用量*",
+        )
+        legacy = client.post(
+            "/api/carton-procurement/orders/history-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("旧版纸箱历史订单.xlsx", legacy_content)},
+        )
+        assert legacy.status_code == 201, legacy.text
+        assert any("自动换算" in warning for warning in legacy.json()["warnings"])
+        imported_orders = client.get(
+            "/api/carton-procurement/orders", params={"factory_id": "huaxing"}
+        ).json()["items"]
+        legacy_order = next(
+            order for order in imported_orders if order["order_no"] == "HIST-2025-LEGACY"
+        )
+        assert Decimal(legacy_order["lines"][0]["usage_quantity"]) == Decimal("120")
+        assert Decimal(legacy_order["lines"][0]["required_quantity"]) == Decimal("30.0000")
 
         first_conflict = list(common)
         second_conflict = list(common)

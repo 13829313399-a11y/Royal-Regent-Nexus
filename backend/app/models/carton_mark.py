@@ -14,6 +14,35 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
 
+class CartonMarkCustomer(Base):
+    __tablename__ = "carton_mark_customers"
+    __table_args__ = (
+        UniqueConstraint(
+            "factory_id",
+            "normalized_name",
+            name="uq_carton_mark_customer_factory_name",
+        ),
+        Index(
+            "ix_carton_mark_customer_factory_name",
+            "factory_id",
+            "normalized_name",
+        ),
+        CheckConstraint("revision >= 1", name="ck_carton_mark_customer_revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    normalized_name: Mapped[str] = mapped_column(String(128))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(64), index=True)
+    created_by_name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_by: Mapped[str] = mapped_column(String(64), index=True)
+    updated_by_name: Mapped[str] = mapped_column(String(128), default="")
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+
 class CartonMarkTemplate(Base):
     __tablename__ = "carton_mark_templates"
     __table_args__ = (
