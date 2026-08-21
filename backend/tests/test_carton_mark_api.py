@@ -33,53 +33,70 @@ def _pdf_bytes() -> bytes:
     return output.getvalue()
 
 
-def test_customer_options_read_internal_quote_names_for_the_authorized_factory(monkeypatch):
+def _seed_carton_mark_customer(
+    db,
+    model,
+    *,
+    customer_id: str,
+    factory_id: str = "huaxing",
+    name: str = "客人 A",
+):
+    db.add(
+        model.CartonMarkCustomer(
+            id=customer_id,
+            factory_id=factory_id,
+            name=name,
+            normalized_name=" ".join(name.split()).casefold(),
+            revision=1,
+            created_by="seed",
+            created_by_name="测试初始化",
+            created_at="2026-08-19T09:00:00+08:00",
+            updated_by="seed",
+            updated_by_name="测试初始化",
+            updated_at="2026-08-19T09:00:00+08:00",
+        )
+    )
+
+
+def test_customer_options_read_independent_carton_mark_names_for_the_authorized_factory(monkeypatch):
     with make_client(monkeypatch) as client:
         db_module = importlib.import_module("app.db")
-        model = importlib.import_module("app.models.internal_quote")
+        model = importlib.import_module("app.models.carton_mark")
+        internal_quote_model = importlib.import_module("app.models.internal_quote")
         with db_module.SessionLocal() as db:
-            db.add_all(
-                [
-                    model.InternalQuoteCustomer(
-                        id="IQC-HUAXING-ZURU",
-                        factory_id="huaxing",
-                        name="ZURU",
-                        normalized_name="zuru",
-                        revision=1,
-                        created_by="sales-user",
-                        created_by_name="业务员",
-                        created_at="2026-08-14T09:00:00+08:00",
-                        updated_by="sales-user",
-                        updated_by_name="业务员",
-                        updated_at="2026-08-14T09:00:00+08:00",
-                    ),
-                    model.InternalQuoteCustomer(
-                        id="IQC-HUAXING-DICKIE",
-                        factory_id="huaxing",
-                        name="Dickie",
-                        normalized_name="dickie",
-                        revision=1,
-                        created_by="sales-user",
-                        created_by_name="业务员",
-                        created_at="2026-08-14T09:01:00+08:00",
-                        updated_by="sales-user",
-                        updated_by_name="业务员",
-                        updated_at="2026-08-14T09:01:00+08:00",
-                    ),
-                    model.InternalQuoteCustomer(
-                        id="IQC-HUAKANG-OTHER",
-                        factory_id="huakang-c",
-                        name="外厂客户",
-                        normalized_name="外厂客户",
-                        revision=1,
-                        created_by="sales-user",
-                        created_by_name="业务员",
-                        created_at="2026-08-14T09:02:00+08:00",
-                        updated_by="sales-user",
-                        updated_by_name="业务员",
-                        updated_at="2026-08-14T09:02:00+08:00",
-                    ),
-                ]
+            _seed_carton_mark_customer(
+                db,
+                model,
+                customer_id="CMC-HUAXING-ZURU",
+                name="ZURU",
+            )
+            _seed_carton_mark_customer(
+                db,
+                model,
+                customer_id="CMC-HUAXING-DICKIE",
+                name="Dickie",
+            )
+            _seed_carton_mark_customer(
+                db,
+                model,
+                customer_id="CMC-HUAKANG-OTHER",
+                factory_id="huakang-c",
+                name="外厂客户",
+            )
+            db.add(
+                internal_quote_model.InternalQuoteCustomer(
+                    id="IQC-DECOY",
+                    factory_id="huaxing",
+                    name="内部报价独有客户",
+                    normalized_name="内部报价独有客户",
+                    revision=1,
+                    created_by="sales-user",
+                    created_by_name="业务员",
+                    created_at="2026-08-14T09:00:00+08:00",
+                    updated_by="sales-user",
+                    updated_by_name="业务员",
+                    updated_at="2026-08-14T09:00:00+08:00",
+                )
             )
             db.commit()
 
@@ -90,8 +107,8 @@ def test_customer_options_read_internal_quote_names_for_the_authorized_factory(m
         )
         assert response.status_code == 200, response.text
         assert response.json() == [
-            {"id": "IQC-HUAXING-DICKIE", "name": "Dickie"},
-            {"id": "IQC-HUAXING-ZURU", "name": "ZURU"},
+            {"id": "CMC-HUAXING-DICKIE", "name": "Dickie"},
+            {"id": "CMC-HUAXING-ZURU", "name": "ZURU"},
         ]
 
         wrong_factory = client.get(
@@ -106,6 +123,62 @@ def test_customer_options_read_internal_quote_names_for_the_authorized_factory(m
             params={"factory_id": "huaxing"},
         )
         assert forbidden.status_code == 403
+
+
+def test_carton_mark_customer_crud_requires_supervisor_permission(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "carton_warehouse")
+        forbidden = client.post(
+            "/api/carton-mark/customers",
+            params={"factory_id": "huaxing"},
+            json={"name": "ZURU"},
+        )
+        assert forbidden.status_code == 403
+
+        login_as(client, "admin")
+        created = client.post(
+            "/api/carton-mark/customers",
+            params={"factory_id": "huaxing"},
+            json={"name": "  ZURU  "},
+        )
+        assert created.status_code == 201, created.text
+        customer = created.json()
+        assert customer["name"] == "ZURU"
+        assert customer["factory_id"] == "huaxing"
+        assert customer["revision"] == 1
+
+        duplicate = client.post(
+            "/api/carton-mark/customers",
+            params={"factory_id": "huaxing"},
+            json={"name": "zuru"},
+        )
+        assert duplicate.status_code == 409
+
+        updated = client.put(
+            f"/api/carton-mark/customers/{customer['id']}",
+            params={"factory_id": "huaxing"},
+            json={"name": "ZURU Toys", "revision": 1},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["revision"] == 2
+        assert updated.json()["name"] == "ZURU Toys"
+
+        listed = client.get(
+            "/api/carton-mark/customers",
+            params={"factory_id": "huaxing"},
+        )
+        assert listed.status_code == 200
+        assert [item["name"] for item in listed.json()] == ["ZURU Toys"]
+
+        deleted = client.delete(
+            f"/api/carton-mark/customers/{customer['id']}",
+            params={"factory_id": "huaxing", "revision": 2},
+        )
+        assert deleted.status_code == 204
+        assert client.get(
+            "/api/carton-mark/customers",
+            params={"factory_id": "huaxing"},
+        ).json() == []
 
 
 def test_document_content_check_requires_template_upload_and_returns_stable_schema(monkeypatch):
@@ -241,6 +314,16 @@ def test_persisted_templates_support_qc_read_download_duplicate_and_soft_archive
         login_as(client, "carton_warehouse")
         api = importlib.import_module("app.api.carton_mark")
         schema = importlib.import_module("app.schemas.carton_mark")
+        db_module = importlib.import_module("app.db")
+        customer_model = importlib.import_module("app.models.carton_mark")
+        with db_module.SessionLocal() as db:
+            _seed_carton_mark_customer(
+                db,
+                customer_model,
+                customer_id="CMC-TEMPLATE-CUSTOMER-A",
+                name="客人 A",
+            )
+            db.commit()
 
         def checked_result(**kwargs):
             return schema.CartonMarkDocumentCheckResponse(

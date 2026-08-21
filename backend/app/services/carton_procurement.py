@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections import defaultdict
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
 from uuid import uuid4
 
@@ -53,7 +53,10 @@ from app.schemas.carton_procurement import (
     CartonReceiptOut,
 )
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
-from app.services.carton_procurement_imports import parse_carton_import
+from app.services.carton_procurement_imports import (
+    DELIVERY_IMPORT_PARSER_VERSION,
+    parse_carton_import,
+)
 
 
 CARTON_DEPARTMENTS = ("pmc-warehouse", "carton")
@@ -62,7 +65,7 @@ CARTON_DEFAULT_SUPPLIER_NAME = "河源东康纸品有限公司"
 QUANTITY_QUANTUM = Decimal("0.0001")
 MONEY_QUANTUM = Decimal("0.0001")
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
-ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg"}
+ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".heic", ".heif"}
 CURRENCY_ALIASES = {
     "RMB": "CNY",
     "人民币": "CNY",
@@ -81,6 +84,19 @@ def now_text() -> str:
 
 def quantity(value: Decimal | int | str) -> Decimal:
     return Decimal(value).quantize(QUANTITY_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def required_carton_quantity(
+    product_order_quantity: Decimal | int | str,
+    units_per_carton: Decimal | int | str,
+) -> Decimal:
+    normalized_units_per_carton = Decimal(units_per_carton)
+    if normalized_units_per_carton <= 0:
+        raise ValueError("每箱个数必须大于 0")
+    cartons = (Decimal(product_order_quantity) / normalized_units_per_carton).to_integral_value(
+        rounding=ROUND_CEILING
+    )
+    return quantity(cartons)
 
 
 def normalize_currency(value: str) -> str:
@@ -400,7 +416,10 @@ def create_order(
     )
     db.add(order)
     for index, line in enumerate(payload.lines, start=1):
-        required_quantity = quantity(payload.product_order_quantity * line.usage_quantity)
+        required_quantity = required_carton_quantity(
+            payload.product_order_quantity,
+            line.usage_quantity,
+        )
         if required_quantity <= 0:
             raise HTTPException(status_code=422, detail=f"第 {index} 行计算后的需求数量必须大于 0")
         db.add(
@@ -595,7 +614,10 @@ def update_order(
         order.product_order_quantity = payload.product_order_quantity
         order.order_date = payload.order_date
         for index, input_line in enumerate(payload.lines, start=1):
-            required_quantity = quantity(payload.product_order_quantity * input_line.usage_quantity)
+            required_quantity = required_carton_quantity(
+                payload.product_order_quantity,
+                input_line.usage_quantity,
+            )
             if required_quantity <= 0:
                 raise HTTPException(status_code=422, detail=f"第 {index} 行计算后的需求数量必须大于 0")
             line = existing_lines[index - 1] if index <= len(existing_lines) else CartonOrderLine(
@@ -1489,15 +1511,18 @@ def create_import_batch(
     filename = Path(upload.filename or "未命名文件").name
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_IMPORT_SUFFIXES:
-        raise HTTPException(status_code=422, detail="仅支持 Excel、PDF、PNG 或 JPG 文件")
+        raise HTTPException(status_code=422, detail="仅支持 Excel、PDF、PNG、JPG 或 HEIC 文件")
     if not content:
         raise HTTPException(status_code=422, detail="导入文件不能为空")
     if len(content) > MAX_IMPORT_BYTES:
         raise HTTPException(status_code=413, detail="导入文件不能超过 20 MB")
     sha256 = hashlib.sha256(content).hexdigest()
+    effective_profile = dict(import_profile or {})
+    if import_type == "DELIVERY_NOTE":
+        effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
     profile_text = (
-        json.dumps(import_profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        if import_profile
+        json.dumps(effective_profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        if effective_profile
         else ""
     )
     existing = db.scalar(
@@ -1510,7 +1535,7 @@ def create_import_batch(
     )
     if existing is not None:
         return import_batch_out(existing, duplicate=True)
-    parse_options = dict(import_profile or {})
+    parse_options = dict(effective_profile)
     parse_options["reference_date"] = business_now().date().isoformat()
     parse_summary = parse_carton_import(
         db,
@@ -1567,6 +1592,80 @@ def get_import_batch(
     if batch is None or batch.factory_id != require_carton_factory(factory_id):
         raise HTTPException(status_code=404, detail="导入批次不存在")
     return import_batch_out(batch)
+
+
+def delete_unmatched_delivery_import(
+    db: Session,
+    factory_id: str,
+    batch_id: str,
+    user: AuthContext,
+) -> None:
+    factory_id = require_carton_factory(factory_id)
+    batch = db.scalar(
+        select(CartonImportBatch)
+        .where(
+            CartonImportBatch.id == batch_id,
+            CartonImportBatch.factory_id == factory_id,
+        )
+        .with_for_update()
+    )
+    if batch is None:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    if batch.import_type != "DELIVERY_NOTE":
+        raise HTTPException(status_code=409, detail="只有送货单导入批次可以在收料平台删除")
+    if batch.status != "REQUIRES_REVIEW":
+        raise HTTPException(status_code=409, detail="已确认或已拒绝的送货单导入批次不能删除")
+
+    receipt_count = db.scalar(
+        select(func.count(CartonReceipt.id)).where(
+            CartonReceipt.factory_id == factory_id,
+            CartonReceipt.import_batch_id == batch.id,
+        )
+    ) or 0
+    if receipt_count:
+        raise HTTPException(status_code=409, detail="该导入批次已经生成收料单，不能删除")
+
+    parse_summary = import_batch_out(batch).parse_summary
+    rows = parse_summary.get("rows", [])
+    matched_count = sum(
+        1
+        for row in rows
+        if isinstance(row, dict) and row.get("match_status") == "MATCHED"
+    )
+    try:
+        matched_count = max(matched_count, int(parse_summary.get("matched_count", 0) or 0))
+    except (TypeError, ValueError):
+        pass
+    if matched_count:
+        raise HTTPException(status_code=409, detail="该送货单已有明细匹配正式订单，不能删除")
+
+    exceptions = list(
+        db.scalars(
+            select(CartonException).where(
+                CartonException.factory_id == factory_id,
+                CartonException.source_type == "DELIVERY_NOTE",
+                CartonException.source_id == batch.id,
+            )
+        ).all()
+    )
+    _audit(
+        db,
+        user,
+        factory_id,
+        "UNMATCHED_DELIVERY_IMPORT_DELETED",
+        "carton_import_batch",
+        batch.id,
+        {
+            "filename": batch.original_filename,
+            "sha256": batch.source_sha256,
+            "row_count": parse_summary.get("row_count", 0),
+            "exception_count": len(exceptions),
+        },
+    )
+    for exception in exceptions:
+        db.delete(exception)
+    db.delete(batch)
+    db.commit()
 
 
 def get_latest_import_batch(

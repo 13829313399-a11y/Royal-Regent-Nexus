@@ -13,11 +13,12 @@ const props = withDefaults(defineProps<{
   productName: string
   snapshot: Record<string, unknown>
   busy?: boolean
-}>(), { busy: false })
+  externalError?: string
+}>(), { busy: false, externalError: '' })
 
 const emit = defineEmits<{
   close: []
-  save: [rows: MaterialRow[]]
+  save: [rows: MaterialRow[], options: { closeAfter: boolean }]
 }>()
 
 const rows = ref<MaterialRow[]>([])
@@ -121,7 +122,7 @@ function removeRow(index: number) {
   errorMessage.value = ''
 }
 
-function save() {
+function save(closeAfter = true) {
   errorMessage.value = ''
   if (!finishEditing()) return
   const normalized = rows.value.map(normalizeRow)
@@ -134,7 +135,12 @@ function save() {
     errorMessage.value = '材质和料型组合不能重复。'
     return
   }
-  emit('save', normalized)
+  emit('save', normalized, { closeAfter })
+}
+
+function finishEditingAndSave() {
+  if (!finishEditing()) return
+  save(false)
 }
 </script>
 
@@ -149,7 +155,7 @@ function save() {
         <div class="quote-material-body">
           <div class="quote-material-notice">保存后服务器会建立新的报价快照，并重新计算所有依赖这些料价的部门内容。</div>
           <div class="quote-material-toolbar">
-            <div><strong>料价清单（{{ rows.length }}/200）</strong><span>新增、修改和删除会在“保存并重算”后写入服务器。</span></div>
+            <div><strong>料价清单（{{ rows.length }}/200）</strong><span>编辑或新增后点“完成并保存”会立即写入；批量删除后点底部“保存并重算”。</span></div>
             <button type="button" class="add" data-testid="add-quote-material" :disabled="busy || rows.length >= 200" @click="addRow"><Plus />新增料价</button>
           </div>
           <div class="quote-material-table-wrap">
@@ -160,10 +166,10 @@ function save() {
                   <td>{{ index + 1 }}</td>
                   <td><input v-if="editingIndex === index" v-model="row.material" :disabled="busy" :data-testid="`quote-material-name-${index}`" aria-label="专用料价材质"><span v-else class="cell-value">{{ row.material }}</span></td>
                   <td><input v-if="editingIndex === index" v-model="row.grade" :disabled="busy" :data-testid="`quote-material-grade-${index}`" aria-label="专用料价料型"><span v-else class="cell-value">{{ row.grade }}</span></td>
-                  <td><input v-if="editingIndex === index" v-model="row.price_hkd_lb" :disabled="busy" type="number" min="0.0001" step="0.0001" :data-testid="`quote-material-price-${index}`" aria-label="专用料价 HKD/Lb"><span v-else class="cell-value price">{{ row.price_hkd_lb }}</span></td>
+                  <td><input v-if="editingIndex === index" v-model="row.price_hkd_lb" :disabled="busy" type="number" min="0.001" step="0.001" :data-testid="`quote-material-price-${index}`" aria-label="专用料价 HKD/Lb"><span v-else class="cell-value price">{{ row.price_hkd_lb }}</span></td>
                   <td>
                     <div v-if="editingIndex === index" class="row-actions">
-                      <button type="button" class="done" :disabled="busy" :data-testid="`finish-quote-material-${index}`" aria-label="完成编辑专用料价" @click="finishEditing"><Check />完成</button>
+                      <button type="button" class="done" :disabled="busy" :data-testid="`finish-quote-material-${index}`" aria-label="完成并保存专用料价" @click="finishEditingAndSave"><Check />完成并保存</button>
                       <button type="button" class="cancel-edit" :disabled="busy" :data-testid="`cancel-quote-material-${index}`" aria-label="取消编辑专用料价" @click="cancelEditing"><Undo2 />取消</button>
                     </div>
                     <div v-else class="row-actions">
@@ -176,9 +182,9 @@ function save() {
               </tbody>
             </table>
           </div>
-          <p v-if="errorMessage" class="error" role="alert">{{ errorMessage }}</p>
+          <p v-if="errorMessage || externalError" class="error" role="alert">{{ errorMessage || externalError }}</p>
         </div>
-        <footer><button type="button" class="secondary" :disabled="busy" @click="emit('close')">取消</button><button type="button" class="primary" data-testid="save-quote-materials" :disabled="busy" @click="save"><Save />{{ busy ? '保存并重算中…' : '保存并重算' }}</button></footer>
+        <footer><button type="button" class="secondary" :disabled="busy" @click="emit('close')">取消</button><button type="button" class="primary" data-testid="save-quote-materials" :disabled="busy" @click="save(true)"><Save />{{ busy ? '保存并重算中…' : '保存并重算' }}</button></footer>
       </section>
     </div>
   </Teleport>

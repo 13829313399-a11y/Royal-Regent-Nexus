@@ -130,7 +130,12 @@ class CartonOrderLineCreate(BaseModel):
     paper_quality: str = Field(min_length=1, max_length=128)
     specification: str = Field(min_length=1, max_length=255)
     dimension_unit: str = Field(default="", max_length=16)
-    usage_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=8)
+    usage_quantity: Decimal = Field(
+        gt=0,
+        max_digits=18,
+        decimal_places=8,
+        description="每箱个数；纸箱数量按产品订单数量除以每箱个数并向上取整",
+    )
     unit: str = Field(min_length=1, max_length=32)
     unit_price: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=6)
     currency: str = Field(default="CNY", min_length=3, max_length=8)

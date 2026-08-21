@@ -5,7 +5,7 @@ export interface CartonMaterialLine {
   packagingType: string
   paperQuality: string
   specification: string
-  usage: number
+  unitsPerCarton: number
   unit: string
 }
 
@@ -117,10 +117,10 @@ export const cartonOrders: CartonOrderRow[] = [
     itemNo: '203302044',
     orderQuantity: 3600,
     materials: [
-      { id: 'CT-260805-006-01', packagingType: '外箱', paperQuality: 'A33+B', specification: '31.5 × 11.125 × 11.25 in', usage: 1 / 120, unit: '个' },
-      { id: 'CT-260805-006-02', packagingType: '内箱', paperQuality: 'B3B', specification: '15.5 × 10.625 × 5.25 in', usage: 1 / 30, unit: '个' },
-      { id: 'CT-260805-006-03', packagingType: '滑板纸', paperQuality: 'A9A', specification: '30.75 × 10.5 in', usage: 1, unit: '张' },
-      { id: 'CT-260805-006-04', packagingType: '卡纸', paperQuality: '250g 灰底白', specification: '8.5 × 5.5 in', usage: 1, unit: '张' },
+      { id: 'CT-260805-006-01', packagingType: '外箱', paperQuality: 'A33+B', specification: '31.5 × 11.125 × 11.25 in', unitsPerCarton: 120, unit: '个' },
+      { id: 'CT-260805-006-02', packagingType: '内箱', paperQuality: 'B3B', specification: '15.5 × 10.625 × 5.25 in', unitsPerCarton: 30, unit: '个' },
+      { id: 'CT-260805-006-03', packagingType: '滑板纸', paperQuality: 'A9A', specification: '30.75 × 10.5 in', unitsPerCarton: 1, unit: '张' },
+      { id: 'CT-260805-006-04', packagingType: '卡纸', paperQuality: '250g 灰底白', specification: '8.5 × 5.5 in', unitsPerCarton: 1, unit: '张' },
     ],
     dueDate: '2026-08-12',
     status: '待供应商确认',
@@ -135,9 +135,9 @@ export const cartonOrders: CartonOrderRow[] = [
     itemNo: '203302028',
     orderQuantity: 3600,
     materials: [
-      { id: 'CT-260804-011-01', packagingType: '外箱', paperQuality: 'A33+B', specification: '31.5 × 11.125 × 11.25 in', usage: 1 / 60, unit: '个' },
-      { id: 'CT-260804-011-02', packagingType: '内箱', paperQuality: 'B3B', specification: '15.5 × 10.625 × 5.25 in', usage: 1 / 15, unit: '个' },
-      { id: 'CT-260804-011-03', packagingType: '滑板纸', paperQuality: 'A9A', specification: '14.75 × 10.25 in', usage: 1, unit: '张' },
+      { id: 'CT-260804-011-01', packagingType: '外箱', paperQuality: 'A33+B', specification: '31.5 × 11.125 × 11.25 in', unitsPerCarton: 60, unit: '个' },
+      { id: 'CT-260804-011-02', packagingType: '内箱', paperQuality: 'B3B', specification: '15.5 × 10.625 × 5.25 in', unitsPerCarton: 15, unit: '个' },
+      { id: 'CT-260804-011-03', packagingType: '滑板纸', paperQuality: 'A9A', specification: '14.75 × 10.25 in', unitsPerCarton: 1, unit: '张' },
     ],
     dueDate: '2026-08-10',
     status: '部分收料',
@@ -152,8 +152,8 @@ export const cartonOrders: CartonOrderRow[] = [
     itemNo: '203302038',
     orderQuantity: 1800,
     materials: [
-      { id: 'CT-260802-004-01', packagingType: '外箱', paperQuality: 'A33+B', specification: '31.5 × 11.125 × 11.25 in', usage: 1 / 40, unit: '个' },
-      { id: 'CT-260802-004-02', packagingType: '卡纸', paperQuality: '300g 白卡', specification: '9.25 × 6.75 in', usage: 1, unit: '张' },
+      { id: 'CT-260802-004-01', packagingType: '外箱', paperQuality: 'A33+B', specification: '31.5 × 11.125 × 11.25 in', unitsPerCarton: 40, unit: '个' },
+      { id: 'CT-260802-004-02', packagingType: '卡纸', paperQuality: '300g 白卡', specification: '9.25 × 6.75 in', unitsPerCarton: 1, unit: '张' },
     ],
     dueDate: '2026-08-09',
     status: '已确认交期',
@@ -168,9 +168,9 @@ export const cartonOrders: CartonOrderRow[] = [
     itemNo: '203302058',
     orderQuantity: 2400,
     materials: [
-      { id: 'CT-260731-018-01', packagingType: '外箱', paperQuality: 'A33+B', specification: '31.5 × 11.125 × 11.25 in', usage: 1 / 60, unit: '个' },
-      { id: 'CT-260731-018-02', packagingType: '内箱', paperQuality: 'B3B', specification: '15.5 × 10.625 × 5.25 in', usage: 1 / 15, unit: '个' },
-      { id: 'CT-260731-018-03', packagingType: '卡纸', paperQuality: '250g 灰底白', specification: '8.75 × 5.25 in', usage: 1, unit: '张' },
+      { id: 'CT-260731-018-01', packagingType: '外箱', paperQuality: 'A33+B', specification: '31.5 × 11.125 × 11.25 in', unitsPerCarton: 60, unit: '个' },
+      { id: 'CT-260731-018-02', packagingType: '内箱', paperQuality: 'B3B', specification: '15.5 × 10.625 × 5.25 in', unitsPerCarton: 15, unit: '个' },
+      { id: 'CT-260731-018-03', packagingType: '卡纸', paperQuality: '250g 灰底白', specification: '8.75 × 5.25 in', unitsPerCarton: 1, unit: '张' },
     ],
     dueDate: '2026-08-08',
     status: '逾期未齐',

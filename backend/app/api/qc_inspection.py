@@ -38,6 +38,7 @@ from app.services.auth import (
 )
 from app.services.qc_inspection import (
     MAX_SCHEDULE_IMPORT_BYTES,
+    MAX_SCHEDULE_IMPORT_MEGABYTES,
     QC_DEPARTMENTS,
     confirm_schedule_import,
     create_customer_config,
@@ -237,7 +238,10 @@ def post_schedule_preview(
             if len(content_buffer) > MAX_SCHEDULE_IMPORT_BYTES:
                 from fastapi import HTTPException
 
-                raise HTTPException(status_code=413, detail="排期文件不能超过 20 MB")
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"排期文件不能超过 {MAX_SCHEDULE_IMPORT_MEGABYTES} MB",
+                )
     finally:
         file.file.close()
     content = bytes(content_buffer)

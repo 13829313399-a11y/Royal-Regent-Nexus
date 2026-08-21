@@ -125,6 +125,17 @@ export interface CartonMarkCustomerOption {
   name: string
 }
 
+export interface CartonMarkCustomer extends CartonMarkCustomerOption {
+  factory_id: string
+  revision: number
+  created_by: string
+  created_by_name: string
+  created_at: string
+  updated_by: string
+  updated_by_name: string
+  updated_at: string
+}
+
 export interface CartonMarkTemplateRecordResponse {
   id: string
   factory_id: string
@@ -166,6 +177,37 @@ export function createCartonMarkApi(client = http) {
         signal,
       })
       return response.data
+    },
+
+    async listCustomers(factoryId: string, signal?: AbortSignal) {
+      const response = await client.get<CartonMarkCustomer[]>('/carton-mark/customers', {
+        params: { factory_id: factoryId },
+        signal,
+      })
+      return response.data
+    },
+
+    async createCustomer(factoryId: string, name: string) {
+      const response = await client.post<CartonMarkCustomer>('/carton-mark/customers', { name }, {
+        params: { factory_id: factoryId },
+      })
+      return response.data
+    },
+
+    async updateCustomer(factoryId: string, customerId: string, name: string, revision: number) {
+      const response = await client.put<CartonMarkCustomer>(`/carton-mark/customers/${customerId}`, {
+        name,
+        revision,
+      }, {
+        params: { factory_id: factoryId },
+      })
+      return response.data
+    },
+
+    async deleteCustomer(factoryId: string, customerId: string, revision: number) {
+      await client.delete(`/carton-mark/customers/${customerId}`, {
+        params: { factory_id: factoryId, revision },
+      })
     },
 
     async createTemplate(payload: CartonMarkTemplateCreateRequest) {

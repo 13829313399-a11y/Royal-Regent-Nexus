@@ -24,6 +24,10 @@ describe('InternalQuoteSectionForm dual-currency material prices', () => {
       },
     })
 
+    expect(wrapper.get('input[aria-label="包装材料原单价 RMB"]').attributes('step')).toBe('0.001')
+    expect(wrapper.get('input[aria-label="包装材料原单价 HKD"]').attributes('step')).toBe('0.001')
+    expect(wrapper.get('input[aria-label="包装材料用量"]').attributes('step')).toBe('1')
+    expect(wrapper.get('input[aria-label="包装材料损耗率"]').attributes('step')).toBe('0.1')
     expect(wrapper.get('input[aria-label="包装材料原单价 HKD"]').element).toHaveProperty('value', '4')
     await wrapper.get('input[aria-label="包装材料原单价 HKD"]').setValue('5.2')
 
@@ -63,9 +67,13 @@ describe('InternalQuoteSectionForm dual-currency material prices', () => {
       },
     })
 
-    expect(wrapper.get('input[aria-label="辅助材料原单价 RMB"]').element).toHaveProperty('value', '1.275')
-    expect(wrapper.get('input[aria-label="辅助材料原单价 HKD"]').element).toHaveProperty('value', '1.5')
-    await wrapper.get('input[aria-label="辅助材料原单价 HKD"]').setValue('2')
+    expect(wrapper.get('input[aria-label="辅助材料/外购件原单价 RMB"]').attributes('step')).toBe('0.001')
+    expect(wrapper.get('input[aria-label="辅助材料/外购件原单价 HKD"]').attributes('step')).toBe('0.001')
+    expect(wrapper.get('input[aria-label="辅助材料/外购件用量"]').attributes('step')).toBe('1')
+    expect(wrapper.get('input[aria-label="辅助材料/外购件损耗率"]').attributes('step')).toBe('0.1')
+    expect(wrapper.get('input[aria-label="辅助材料/外购件原单价 RMB"]').element).toHaveProperty('value', '1.275')
+    expect(wrapper.get('input[aria-label="辅助材料/外购件原单价 HKD"]').element).toHaveProperty('value', '1.5')
+    await wrapper.get('input[aria-label="辅助材料/外购件原单价 HKD"]').setValue('2')
 
     expect(payload.materials[0]).toMatchObject({
       unit_price_source_currency: 'HKD',

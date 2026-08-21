@@ -37,19 +37,47 @@ const persistedTemplate: CartonMarkTemplateRecordResponse = {
 }
 
 describe('carton-mark persisted template API', () => {
-  it('loads customer options from the current factory quote customer library', async () => {
-    const customerOptions = [
-      { id: 'IQC-DICKIE', name: 'Dickie' },
-      { id: 'IQC-ZURU', name: 'ZURU' },
+  it('loads and maintains the independent factory carton-mark customer library', async () => {
+    const customers = [
+      {
+        id: 'CMC-DICKIE',
+        factory_id: 'huaxing',
+        name: 'Dickie',
+        revision: 1,
+        created_by: 'manager',
+        created_by_name: '纸箱经理',
+        created_at: '2026-08-19T09:00:00+08:00',
+        updated_by: 'manager',
+        updated_by_name: '纸箱经理',
+        updated_at: '2026-08-19T09:00:00+08:00',
+      },
     ]
-    const get = vi.fn().mockResolvedValue({ data: customerOptions })
-    const api = createCartonMarkApi({ get } as Parameters<typeof createCartonMarkApi>[0])
+    const get = vi.fn().mockResolvedValue({ data: customers })
+    const post = vi.fn().mockResolvedValue({ data: customers[0] })
+    const put = vi.fn().mockResolvedValue({ data: { ...customers[0], name: 'Dickie Toys', revision: 2 } })
+    const remove = vi.fn().mockResolvedValue({ status: 204 })
+    const api = createCartonMarkApi({ get, post, put, delete: remove } as Parameters<typeof createCartonMarkApi>[0])
     const controller = new AbortController()
 
-    await expect(api.listCustomerOptions('huaxing', controller.signal)).resolves.toEqual(customerOptions)
-    expect(get).toHaveBeenCalledWith('/carton-mark/customer-options', {
+    await expect(api.listCustomers('huaxing', controller.signal)).resolves.toEqual(customers)
+    expect(get).toHaveBeenCalledWith('/carton-mark/customers', {
       params: { factory_id: 'huaxing' },
       signal: controller.signal,
+    })
+    await api.createCustomer('huaxing', 'Dickie')
+    expect(post).toHaveBeenCalledWith('/carton-mark/customers', { name: 'Dickie' }, {
+      params: { factory_id: 'huaxing' },
+    })
+    await api.updateCustomer('huaxing', 'CMC-DICKIE', 'Dickie Toys', 1)
+    expect(put).toHaveBeenCalledWith('/carton-mark/customers/CMC-DICKIE', {
+      name: 'Dickie Toys',
+      revision: 1,
+    }, {
+      params: { factory_id: 'huaxing' },
+    })
+    await api.deleteCustomer('huaxing', 'CMC-DICKIE', 2)
+    expect(remove).toHaveBeenCalledWith('/carton-mark/customers/CMC-DICKIE', {
+      params: { factory_id: 'huaxing', revision: 2 },
     })
   })
 

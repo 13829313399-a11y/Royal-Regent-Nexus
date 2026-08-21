@@ -416,3 +416,69 @@ def test_batch_baseline_copy_keeps_target_identity_and_then_diverges_independent
             "包装材料" in detail and "名称" in detail
             for detail in diverged_products[1]["different_section_details"]["sales"]
         )
+
+
+def test_batch_baseline_copy_does_not_cross_copy_indonesia_freight(monkeypatch):
+    with make_client(monkeypatch) as client:
+        owner = login(
+            client,
+            "iq_region_copy_owner",
+            "sales_customer_supervisor",
+            "sales-business",
+        )
+        payload = whole_review_payload(
+            "WHOLE-REGION-COPY",
+            owner["id"],
+            owner["display_name"],
+        )
+        payload.update(
+            {
+                "quote_type": "multi_region",
+                "products": [
+                    {"product_name": "复制基准—大陆价", "qty": 5000, "region_code": "mainland"},
+                    {"product_name": "复制目标—印尼价", "qty": 5000, "region_code": "indonesia"},
+                ],
+            }
+        )
+        created = client.post("/api/internal-quotes", json=payload)
+        assert created.status_code == 201, created.text
+        root = created.json()
+        products = client.get(f"/api/internal-quotes/{root['id']}/batch-products").json()
+        target_id = products[1]["quote_id"]
+
+        root_sales = next(section for section in root["sections"] if section["department"] == "sales")
+        saved_root = client.put(
+            f"/api/internal-quotes/{root['id']}/sections/sales",
+            json={
+                "revision": root_sales["revision"],
+                "payload": {"indonesia_freight_hkd": 99, "additional_tax_hkd": 2},
+            },
+        )
+        assert saved_root.status_code == 200, saved_root.text
+
+        target = client.get(f"/api/internal-quotes/{target_id}").json()
+        target_sales = next(section for section in target["sections"] if section["department"] == "sales")
+        saved_target = client.put(
+            f"/api/internal-quotes/{target_id}/sections/sales",
+            json={
+                "revision": target_sales["revision"],
+                "payload": {"indonesia_freight_hkd": 3.25},
+            },
+        )
+        assert saved_target.status_code == 200, saved_target.text
+
+        refreshed_target = client.get(f"/api/internal-quotes/{target_id}").json()
+        copied = client.post(
+            f"/api/internal-quotes/{root['id']}/batch-products/{target_id}/copy-baseline",
+            json={"revision": refreshed_target["header_revision"]},
+        )
+        assert copied.status_code == 200, copied.text
+        copied_sales = next(
+            section for section in copied.json()["sections"] if section["department"] == "sales"
+        )
+        assert copied_sales["payload"]["indonesia_freight_hkd"] == 3.25
+        assert copied_sales["payload"]["additional_tax_hkd"] == 2
+
+        summary = client.get(f"/api/internal-quotes/{target_id}/summary")
+        assert summary.status_code == 200, summary.text
+        assert summary.json()["rr2_cost_summary"]["indonesia_freight_hkd"] == "3.2500"

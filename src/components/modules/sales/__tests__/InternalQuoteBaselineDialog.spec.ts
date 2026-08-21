@@ -73,6 +73,13 @@ describe('InternalQuoteBaselineDialog', () => {
       },
     })
 
+    expect(wrapper.get('[data-testid="material-price-0"]').attributes('step')).toBe('0.001')
+    expect(wrapper.get('[data-testid="material-price-0"]').attributes('min')).toBe('0.001')
+    await wrapper.get('[data-testid="baseline-tab-machines"]').trigger('click')
+    expect(wrapper.get('[data-testid="machine-price-0"]').attributes('step')).toBe('0.001')
+    expect(wrapper.get('[data-testid="machine-price-0"]').attributes('min')).toBe('0.001')
+    await wrapper.get('[data-testid="baseline-tab-materials"]').trigger('click')
+
     await wrapper.get('[data-testid="material-price-0"]').setValue('9')
     await wrapper.get('[data-testid="machine-price-0"]').setValue('950')
     await wrapper.get('[data-testid="freight-name-0"]').setValue('香港 40 柜')

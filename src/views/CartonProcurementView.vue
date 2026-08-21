@@ -133,6 +133,7 @@ const selectedInspectionFileName = ref('')
 const inspectionAdvanceDays = ref(3)
 const importingInspection = ref(false)
 const importingReceipt = ref(false)
+const deletingReceiptImport = ref(false)
 const savingReceipt = ref(false)
 const confirmingReceipt = ref(false)
 const receiptBatchId = ref('')
@@ -249,7 +250,7 @@ const orderForm = reactive({
       packagingType: '外箱',
       paperQuality: 'A33+B',
       specification: '',
-      usage: 1 / 120,
+      unitsPerCarton: 120,
       unit: '个',
       dimensionUnit: '',
       unitPrice: 0,
@@ -591,7 +592,10 @@ const receiptImportStats = computed(() => ({
   matched: receiptImportBatch.value?.parse_summary.matched_count ?? 0,
   issues: receiptImportBatch.value?.parse_summary.issue_count ?? 0,
 }))
+const receiptImportNeedsReview = computed(() => receiptImportStats.value.total === 0 || receiptImportStats.value.matched === 0 || receiptImportStats.value.issues > 0)
 const receiptImportPreviewRows = computed(() => receiptImportRows.value.slice(0, 50))
+const receiptImportWarnings = computed(() => receiptImportBatch.value?.parse_summary.warnings ?? [])
+const receiptImportRawText = computed(() => receiptImportBatch.value?.parse_summary.document?.raw_text_excerpt?.trim() ?? '')
 
 watch(selectedFactoryId, (factoryId) => {
   appStore.setActiveFactory(factoryId)
@@ -709,27 +713,22 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
-function formatUsage(value: number) {
-  const normalized = Number(value || 0)
-  if (normalized > 0 && normalized < 1) {
-    const reciprocal = 1 / normalized
-    if (Math.abs(reciprocal - Math.round(reciprocal)) < 1e-8) {
-      return `1/${Math.round(reciprocal)}`
-    }
-  }
-  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 6 }).format(normalized)
+function formatUnitsPerCarton(value: number) {
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 8 }).format(Number(value || 0))
 }
 
-function calculateRequiredQuantity(usage: number, orderQuantity: number) {
-  const result = Number(usage || 0) * Number(orderQuantity || 0)
-  return Math.abs(result - Math.round(result)) < 1e-8
-    ? Math.round(result)
-    : Number(result.toFixed(4))
+function calculateRequiredQuantity(unitsPerCarton: number, orderQuantity: number) {
+  const normalizedUnitsPerCarton = Number(unitsPerCarton || 0)
+  const normalizedOrderQuantity = Number(orderQuantity || 0)
+  if (normalizedUnitsPerCarton <= 0 || normalizedOrderQuantity <= 0) return 0
+  const result = normalizedOrderQuantity / normalizedUnitsPerCarton
+  const nearestInteger = Math.round(result)
+  return Math.abs(result - nearestInteger) < 1e-8 ? nearestInteger : Math.ceil(result)
 }
 
-function formatRequiredQuantity(usage: number, orderQuantity: number) {
-  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(
-    calculateRequiredQuantity(usage, orderQuantity),
+function formatRequiredQuantity(unitsPerCarton: number, orderQuantity: number) {
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(
+    calculateRequiredQuantity(unitsPerCarton, orderQuantity),
   )
 }
 
@@ -836,7 +835,7 @@ function mapOrder(row: CartonOrderResponse): CartonOrderRow {
       packagingType: line.packaging_type,
       paperQuality: line.paper_quality,
       specification: `${line.specification}${line.dimension_unit ? ` ${line.dimension_unit}` : ''}`,
-      usage: Number(line.usage_quantity),
+      unitsPerCarton: Number(line.usage_quantity),
       unit: line.unit,
     })),
     dueDate: row.due_date,
@@ -1113,7 +1112,7 @@ async function createLocalOrder() {
     material.packagingType.trim()
     && material.paperQuality.trim()
     && material.specification.trim()
-    && Number(material.usage) > 0,
+    && Number(material.unitsPerCarton) > 0,
   )
   const currentOrder = editingOrderRecord.value
   const selectedCustomer = selectedOrderCustomer.value
@@ -1126,7 +1125,7 @@ async function createLocalOrder() {
     return
   }
   if (!orderForm.contractNo.trim() || !orderForm.itemNo.trim() || validMaterials.length !== orderForm.materials.length) {
-    actionMessage.value = '请填写合同号、货号，并补齐每条纸品明细的类型、纸质、规格和单件用量。'
+    actionMessage.value = '请填写合同号、货号，并补齐每条纸品明细的类型、纸质、规格和每箱个数。'
     return
   }
   if (currentOrder && orderChangeReason.value.trim().length < 4) {
@@ -1153,7 +1152,7 @@ async function createLocalOrder() {
         paper_quality: material.paperQuality.trim(),
         specification: material.specification.trim(),
         dimension_unit: material.dimensionUnit,
-        usage_quantity: Number(material.usage),
+        usage_quantity: Number(material.unitsPerCarton),
         unit: material.unit,
         unit_price: Number(material.unitPrice),
         currency: material.currency,
@@ -1550,7 +1549,7 @@ function resetOrderForm() {
     packagingType: '外箱',
     paperQuality: 'A33+B',
     specification: '',
-    usage: 1 / 120,
+    unitsPerCarton: 120,
     unit: '个',
     dimensionUnit: '',
     unitPrice: 0,
@@ -1587,7 +1586,7 @@ function openEditOrderModal(orderNo: string) {
     packagingType: line.packaging_type,
     paperQuality: line.paper_quality,
     specification: line.specification,
-    usage: Number(line.usage_quantity),
+    unitsPerCarton: Number(line.usage_quantity),
     unit: line.unit,
     dimensionUnit: line.dimension_unit,
     unitPrice: Number(line.unit_price),
@@ -1604,7 +1603,7 @@ function addOrderMaterialLine() {
     packagingType: '滑板纸',
     paperQuality: '',
     specification: '',
-    usage: 1,
+    unitsPerCarton: 1,
     unit: '张',
     dimensionUnit: '',
     unitPrice: 0,
@@ -1644,6 +1643,33 @@ async function handleReceiptFile(event: Event) {
     actionMessage.value = `送货单导入失败：${getApiErrorMessage(error)}`
   } finally {
     importingReceipt.value = false
+  }
+}
+
+async function removeUnmatchedReceiptImport() {
+  const batch = receiptImportBatch.value
+  if (!batch || receiptImportStats.value.matched > 0) return
+  if (!window.confirm(`确定删除送货单导入“${batch.original_filename}”吗？\n\n系统会同时删除本批次生成的异常记录；正式订单、收料单和库存不会受影响。`)) return
+  deletingReceiptImport.value = true
+  try {
+    await cartonProcurementApi.deleteReceiptImport(selectedFactoryId.value, batch.id)
+    receiptImportBatch.value = null
+    receiptImportRows.value = []
+    receiptLines.splice(0)
+    receiptBatchId.value = ''
+    selectedReceiptFileName.value = ''
+    receiptDeliveryNoteNo.value = ''
+    receiptDeliveryDate.value = ''
+    currentReceipt.value = null
+    receiptFeedbackMessage.value = ''
+    const exceptions = await cartonProcurementApi.listExceptions(selectedFactoryId.value)
+    exceptionRecords.value = exceptions
+    localExceptions.splice(0, localExceptions.length, ...exceptions.map(mapException))
+    actionMessage.value = `送货单导入“${batch.original_filename}”已删除；其派生异常已清理，订单、收料和库存未受影响。`
+  } catch (error) {
+    actionMessage.value = `送货单导入未删除：${getApiErrorMessage(error)}`
+  } finally {
+    deletingReceiptImport.value = false
   }
 }
 
@@ -2306,14 +2332,14 @@ function refreshDemo() {
               <div class="overflow-x-auto border-y border-slate-200">
                 <table class="w-full min-w-[760px] table-fixed text-left">
                   <colgroup><col class="w-[16%]"><col class="w-[18%]"><col class="w-[28%]"><col class="w-[11%]"><col class="w-[20%]"><col class="w-[7%]"></colgroup>
-                  <thead class="bg-slate-50 text-[9px] font-bold uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-1.5">纸品类型</th><th class="px-3 py-1.5">纸质</th><th class="px-3 py-1.5">规格</th><th class="px-3 py-1.5 text-right">单件用量</th><th class="px-3 py-1.5 text-right">需求数量（自动）</th><th class="px-3 py-1.5">单位</th></tr></thead>
+                  <thead class="bg-slate-50 text-[9px] font-bold uppercase tracking-wide text-slate-500"><tr><th class="px-3 py-1.5">纸品类型</th><th class="px-3 py-1.5">纸质</th><th class="px-3 py-1.5">规格</th><th class="px-3 py-1.5 text-right">每箱个数</th><th class="px-3 py-1.5 text-right">纸箱数量（自动）</th><th class="px-3 py-1.5">单位</th></tr></thead>
                   <tbody class="divide-y divide-slate-100">
                     <tr v-for="material in row.materials" :key="material.id">
                       <td class="truncate px-3 py-2 text-[12px] font-semibold text-slate-900">{{ material.packagingType }}</td>
                       <td class="truncate px-3 py-2 text-[12px] font-semibold text-teal-700">{{ material.paperQuality }}</td>
                       <td class="truncate px-3 py-2 text-[11px] text-slate-600" :title="material.specification">{{ material.specification }}</td>
-                      <td class="px-3 py-2 text-right text-[12px] font-semibold tabular-nums">{{ formatUsage(material.usage) }}</td>
-                      <td class="px-3 py-2 text-right text-[12px] font-bold tabular-nums text-teal-700" :title="`用量 × ${formatNumber(row.orderQuantity)}`">{{ formatRequiredQuantity(material.usage, row.orderQuantity) }}</td>
+                      <td class="px-3 py-2 text-right text-[12px] font-semibold tabular-nums">{{ formatUnitsPerCarton(material.unitsPerCarton) }}</td>
+                      <td class="px-3 py-2 text-right text-[12px] font-bold tabular-nums text-teal-700" :title="`${formatNumber(row.orderQuantity)} ÷ 每箱 ${formatUnitsPerCarton(material.unitsPerCarton)} 个，向上取整`">{{ formatRequiredQuantity(material.unitsPerCarton, row.orderQuantity) }}</td>
                       <td class="px-3 py-2 text-[11px] text-slate-500">{{ material.unit }}</td>
                     </tr>
                   </tbody>
@@ -2485,7 +2511,7 @@ function refreshDemo() {
           <button type="button" :disabled="!apiConnected || manualReceiptOrders.length === 0" class="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 text-[12px] font-bold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400" @click="openManualReceipt()">
             <Plus class="size-4" aria-hidden="true" />人工录入收料
           </button>
-          <input ref="receiptFileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls" class="hidden" aria-label="选择送货单文件" @change="handleReceiptFile">
+          <input ref="receiptFileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,image/heic,image/heif,.xlsx,.xls" class="hidden" aria-label="选择送货单文件" @change="handleReceiptFile">
           <button type="button" :disabled="importingReceipt" class="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white transition hover:bg-teal-800 disabled:opacity-60" @click="triggerReceiptImport">
             <Upload class="size-4" aria-hidden="true" />{{ importingReceipt ? '正在识别…' : '导入送货单' }}
           </button>
@@ -2514,27 +2540,49 @@ function refreshDemo() {
           </div>
         </article>
 
-        <article v-if="receiptImportBatch" class="overflow-hidden rounded-xl border bg-white shadow-sm" :class="receiptImportStats.issues ? 'border-amber-300' : 'border-emerald-300'">
-          <div class="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3" :class="receiptImportStats.issues ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'">
+        <article v-if="receiptImportBatch" class="overflow-hidden rounded-xl border bg-white shadow-sm" :class="receiptImportNeedsReview ? 'border-amber-300' : 'border-emerald-300'">
+          <div class="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3" :class="receiptImportNeedsReview ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'">
             <div>
-              <div class="flex flex-wrap items-center gap-2 font-bold" :class="receiptImportStats.issues ? 'text-amber-950' : 'text-emerald-950'">
+              <div class="flex flex-wrap items-center gap-2 font-bold" :class="receiptImportNeedsReview ? 'text-amber-950' : 'text-emerald-950'">
                 <CheckCircle2 class="size-4" />送货单识别完成
                 <span v-if="receiptImportBatch.duplicate" class="rounded-full bg-white px-2 py-0.5 text-[9px] font-bold text-slate-600 ring-1 ring-inset ring-slate-200">重复文件 · 已恢复原结果</span>
               </div>
-              <p class="mt-1 text-[11px]" :class="receiptImportStats.issues ? 'text-amber-800' : 'text-emerald-800'">{{ receiptImportBatch.original_filename }} · {{ receiptImportBatch.parse_summary.engine || '文件解析' }} · 批次 {{ receiptImportBatch.id }}</p>
+              <p class="mt-1 text-[11px]" :class="receiptImportNeedsReview ? 'text-amber-800' : 'text-emerald-800'">{{ receiptImportBatch.original_filename }} · {{ receiptImportBatch.parse_summary.engine || '文件解析' }} · 批次 {{ receiptImportBatch.id }}</p>
             </div>
-            <button v-if="receiptImportStats.issues" type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 text-[11px] font-bold text-amber-800 hover:bg-amber-100" @click="setActiveTab('exceptions')"><AlertTriangle class="size-3.5" />前往异常中心</button>
+            <div class="flex flex-wrap gap-2">
+              <button v-if="receiptImportStats.issues" type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 text-[11px] font-bold text-amber-800 hover:bg-amber-100" @click="setActiveTab('exceptions')"><AlertTriangle class="size-3.5" />前往异常中心</button>
+              <button v-if="receiptImportStats.matched === 0" type="button" :disabled="deletingReceiptImport" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 text-[11px] font-bold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50" @click="removeUnmatchedReceiptImport"><Trash2 class="size-3.5" />{{ deletingReceiptImport ? '正在删除…' : '删除本次导入' }}</button>
+            </div>
           </div>
           <div class="grid gap-3 border-b border-slate-200 p-4 sm:grid-cols-3">
             <div class="rounded-lg border border-slate-200 bg-slate-50 p-3"><div class="text-[10px] text-slate-500">识别总行数</div><div class="mt-1 text-xl font-bold text-slate-950">{{ receiptImportStats.total }} 行</div></div>
             <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><div class="text-[10px] text-emerald-700">已匹配正式订单</div><div class="mt-1 text-xl font-bold text-emerald-900">{{ receiptImportStats.matched }} 行</div></div>
             <div class="rounded-lg border border-amber-200 bg-amber-50 p-3"><div class="text-[10px] text-amber-700">需要人工处理</div><div class="mt-1 text-xl font-bold text-amber-900">{{ receiptImportStats.issues }} 行</div></div>
           </div>
-          <div v-if="receiptImportStats.matched === 0" class="border-b border-red-200 bg-red-50 px-4 py-3 text-[11px] leading-5 text-red-800"><strong>文件已成功导入，但没有找到可关联的正式纸箱订单。</strong> 系统没有生成收料明细或库存；识别行已保存到异常中心，请先补建订单或人工核对关联关系。</div>
-          <div v-if="receiptImportBatch.parse_summary.warnings?.length" class="border-b border-blue-200 bg-blue-50 px-4 py-3 text-[10px] leading-5 text-blue-800"><div v-for="warning in receiptImportBatch.parse_summary.warnings.slice(0, 3)" :key="warning">• {{ warning }}</div></div>
+          <div v-if="receiptImportStats.matched === 0" class="border-b border-red-200 bg-red-50 px-4 py-3 text-[11px] leading-5 text-red-800">
+            <strong v-if="receiptImportStats.total > 0">已识别 {{ receiptImportStats.total }} 行送货明细，但没有找到可关联的正式纸箱订单。</strong>
+            <strong v-else>文件已成功导入，但未解析出结构化送货明细。</strong>
+            系统没有生成收料明细或库存；请在下方核对识别详情，确认是 OCR 识别问题还是订单关联问题，也可以删除本次导入及其派生异常。
+          </div>
+          <details v-if="receiptImportWarnings.length || receiptImportRawText || receiptImportStats.total === 0" class="border-b border-blue-200 bg-blue-50 px-4 py-3 text-[10px] leading-5 text-blue-900" :open="receiptImportStats.matched === 0">
+            <summary class="cursor-pointer select-none font-bold">识别诊断详情（OCR 原文、引擎与警告）</summary>
+            <div class="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-blue-800">
+              <span>识别引擎：<strong>{{ receiptImportBatch.parse_summary.engine || '未返回' }}</strong></span>
+              <span v-if="receiptImportBatch.parse_summary.parser_version">解析版本：<strong>{{ receiptImportBatch.parse_summary.parser_version }}</strong></span>
+              <span>结构化明细：<strong>{{ receiptImportStats.total }} 行</strong></span>
+            </div>
+            <div v-if="receiptImportWarnings.length" class="mt-2 rounded-lg border border-blue-200 bg-white/70 px-3 py-2">
+              <div v-for="warning in receiptImportWarnings" :key="warning">• {{ warning }}</div>
+            </div>
+            <div class="mt-2">
+              <div class="font-bold text-blue-950">OCR 识别原文</div>
+              <pre v-if="receiptImportRawText" class="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-blue-200 bg-white p-3 font-mono text-[10px] leading-5 text-slate-700">{{ receiptImportRawText }}</pre>
+              <div v-else class="mt-1 rounded-lg border border-blue-200 bg-white/70 px-3 py-2 text-blue-700">OCR 未返回可展示原文。请检查图片清晰度、方向和表格边界，或删除后重新上传。</div>
+            </div>
+          </details>
           <div class="overflow-x-auto">
-            <table class="min-w-[1050px] w-full text-left">
-              <thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-3 py-2.5">来源</th><th class="px-3 py-2.5">送货单 / 日期</th><th class="px-3 py-2.5">合同号</th><th class="px-3 py-2.5">货号</th><th class="px-3 py-2.5">识别纸品</th><th class="px-3 py-2.5 text-right">数量</th><th class="px-3 py-2.5">匹配结果</th><th class="px-3 py-2.5">处理建议</th></tr></thead>
+            <table class="min-w-[1180px] w-full text-left">
+              <thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-3 py-2.5">来源</th><th class="px-3 py-2.5">送货单 / 日期</th><th class="px-3 py-2.5">合同号</th><th class="px-3 py-2.5">货号</th><th class="px-3 py-2.5">品名（类型 / 纸质）</th><th class="px-3 py-2.5">规格</th><th class="px-3 py-2.5 text-right">数量</th><th class="px-3 py-2.5">匹配结果</th><th class="px-3 py-2.5">处理建议</th></tr></thead>
               <tbody class="divide-y divide-slate-100">
                 <tr v-for="(row, index) in receiptImportPreviewRows" :key="`${row.source_sheet}-${row.source_row}-${index}`" class="hover:bg-slate-50/70">
                   <td class="px-3 py-2.5 text-[10px] text-slate-500">{{ row.source_sheet || '文件' }} · 第 {{ row.source_row || index + 1 }} 行</td>
@@ -2542,11 +2590,12 @@ function refreshDemo() {
                   <td class="px-3 py-2.5 font-mono text-[11px] font-semibold">{{ row.contract_no || row.reference || '待识别' }}</td>
                   <td class="px-3 py-2.5 font-mono text-[11px]">{{ row.item_no || '待识别' }}</td>
                   <td class="px-3 py-2.5 text-[11px]"><div class="font-semibold">{{ row.packaging_type || '待复核' }}</div><div class="text-[9px] text-slate-400">{{ row.paper_quality || '' }}</div></td>
+                  <td class="px-3 py-2.5 text-[10px] text-slate-600">{{ row.specification || '待识别' }}</td>
                   <td class="px-3 py-2.5 text-right font-semibold tabular-nums">{{ importQuantityLabel(row) }}</td>
                   <td class="px-3 py-2.5"><span class="rounded-full px-2 py-0.5 text-[9px] font-bold ring-1 ring-inset" :class="importMatchTone(row.match_status)">{{ importMatchLabel(row.match_status) }}</span></td>
                   <td class="max-w-[260px] px-3 py-2.5 text-[10px] text-slate-500">{{ row.suggestion || '请人工复核识别结果' }}</td>
                 </tr>
-                <tr v-if="receiptImportPreviewRows.length === 0"><td colspan="8" class="px-4 py-10 text-center text-slate-400">文件已登记，但没有识别到可展示的明细行</td></tr>
+                <tr v-if="receiptImportPreviewRows.length === 0"><td colspan="9" class="px-4 py-10 text-center text-slate-400">未解析出结构化明细；请查看上方“识别诊断详情”中的 OCR 原文和警告</td></tr>
               </tbody>
             </table>
           </div>
@@ -2863,7 +2912,7 @@ function refreshDemo() {
 
           <section class="rounded-xl border border-slate-200">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div><div class="font-bold text-slate-950">合同内纸品明细</div><p class="mt-0.5 text-[10px] text-slate-500">每行填写单件用量，需求数量自动按“用量 × 产品订单数量”计算。</p></div>
+              <div><div class="font-bold text-slate-950">合同内纸品明细</div><p class="mt-0.5 text-[10px] text-slate-500">每行填写每箱个数，纸箱数量自动按“产品订单数量 ÷ 每箱个数”计算，不足一箱向上取整。</p></div>
               <button type="button" :disabled="editingOrderHasPostedReceipts" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="addOrderMaterialLine"><Plus class="size-3.5" />新增纸品明细</button>
             </div>
             <div class="space-y-3 p-4">
@@ -2871,8 +2920,8 @@ function refreshDemo() {
                 <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">纸品类型 *</span><select v-model="material.packagingType" :aria-label="`纸品类型 ${index + 1}`" :disabled="editingOrderHasPostedReceipts" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 outline-none focus:border-teal-500 disabled:bg-slate-100"><option>外箱</option><option>内箱</option><option>滑板纸</option><option>卡纸</option><option>展示盒</option><option>其他</option></select></label>
                 <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">纸质 *</span><input v-model="material.paperQuality" :aria-label="`纸质 ${index + 1}`" :disabled="editingOrderHasPostedReceipts" placeholder="如 A33+B" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 outline-none focus:border-teal-500 disabled:bg-slate-100"></label>
                 <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">规格 *</span><input v-model="material.specification" :aria-label="`规格 ${index + 1}`" :disabled="editingOrderHasPostedReceipts" placeholder="长 × 宽 × 高；保留单位" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 outline-none focus:border-teal-500 disabled:bg-slate-100"></label>
-                <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">单件用量 *</span><input v-model.number="material.usage" :aria-label="`单件用量 ${index + 1}`" type="number" min="0.000001" step="0.000001" :disabled="editingOrderHasPostedReceipts" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-100"></label>
-                <div class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">需求数量（自动）</span><output :aria-label="`需求数量 ${index + 1}`" class="flex h-9 w-full items-center justify-end rounded-lg border border-teal-200 bg-teal-50 px-2 font-bold text-teal-700 tabular-nums">{{ formatRequiredQuantity(material.usage, orderForm.orderQuantity) }}</output></div>
+                <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">每箱个数 *</span><input v-model.number="material.unitsPerCarton" :aria-label="`每箱个数 ${index + 1}`" type="number" min="0.00000001" step="any" :disabled="editingOrderHasPostedReceipts" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-100"></label>
+                <div class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">纸箱数量（自动）</span><output :aria-label="`纸箱数量 ${index + 1}`" class="flex h-9 w-full items-center justify-end rounded-lg border border-teal-200 bg-teal-50 px-2 font-bold text-teal-700 tabular-nums">{{ formatRequiredQuantity(material.unitsPerCarton, orderForm.orderQuantity) }}</output></div>
                 <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">单位</span><select v-model="material.unit" :aria-label="`纸品单位 ${index + 1}`" :disabled="editingOrderHasPostedReceipts" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 outline-none focus:border-teal-500 disabled:bg-slate-100"><option>个</option><option>张</option><option>套</option></select></label>
                 <button type="button" :disabled="editingOrderHasPostedReceipts" :aria-label="`删除纸品明细 ${index + 1}`" class="flex size-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition hover:border-red-200 hover:text-red-600 disabled:cursor-not-allowed disabled:bg-slate-100" @click="removeOrderMaterialLine(index)"><X class="size-4" /></button>
               </div>

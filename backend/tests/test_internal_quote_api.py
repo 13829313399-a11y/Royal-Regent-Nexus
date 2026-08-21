@@ -510,9 +510,69 @@ def test_sales_markup_selection_and_misc_ratio_survive_save_detail_and_summary_r
         assert summary.status_code == 200, summary.text
         pricing = summary.json()["rr2_cost_summary"]["shipping_pricing"]
         assert pricing["misc_ratio"] == "0.0350"
+        assert pricing["settlement"] == "0.9650"
         assert pricing["active_markup_moq"] == "3000.0000"
         assert pricing["markup"] == "1.2500"
         assert [item["is_active"] for item in pricing["markup_tiers"]] == [True, False, False]
+
+
+def test_indonesia_freight_only_applies_to_explicit_indonesia_quotes(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_region_specific_freight", "sales_customer_owner", "sales-business")
+
+        multi_region_payload = create_payload(suffix="REGION-FREIGHT")
+        multi_region_payload.update({
+            "quote_type": "multi_region",
+            "products": [
+                {"product_name": "地区报价—大陆价", "qty": 5000, "region_code": "mainland"},
+                {"product_name": "地区报价—印尼价", "qty": 5000, "region_code": "indonesia"},
+            ],
+        })
+        created = client.post("/api/internal-quotes", json=multi_region_payload)
+        assert created.status_code == 201, created.text
+        batch_products = client.get(
+            f"/api/internal-quotes/{created.json()['id']}/batch-products"
+        )
+        assert batch_products.status_code == 200, batch_products.text
+        quote_ids_by_region = {
+            item["region_code"]: item["quote_id"]
+            for item in batch_products.json()
+        }
+
+        unspecified_payload = create_payload(suffix="REGION-FREIGHT-LEGACY")
+        unspecified = client.post("/api/internal-quotes", json=unspecified_payload)
+        assert unspecified.status_code == 201, unspecified.text
+        quote_ids_by_region[""] = unspecified.json()["id"]
+
+        sales_payload = {
+            "indonesia_freight_hkd": "10",
+            "additional_tax_hkd": "2",
+            "freight_calc": {"enabled": False},
+            "shipping": {"markup_x": "1", "misc_ratio": "0"},
+        }
+        expectations = {
+            "mainland": ("0.0000", "0.0000", "2.0000"),
+            "": ("0.0000", "0.0000", "2.0000"),
+            "indonesia": ("10.0000", "10.0000", "12.0000"),
+        }
+        for region_code, quote_id in quote_ids_by_region.items():
+            saved = client.put(
+                f"/api/internal-quotes/{quote_id}/sections/sales",
+                json={"revision": 1, "payload": sales_payload},
+            )
+            assert saved.status_code == 200, saved.text
+
+            summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
+            assert summary.status_code == 200, summary.text
+            expected_factory_price, expected_freight, expected_total_cost = expectations[region_code]
+            body = summary.json()
+            rr2 = body["rr2_cost_summary"]
+            assert body["factory_price_hkd"] == expected_factory_price
+            assert rr2["indonesia_freight_hkd"] == expected_freight
+            assert rr2["shipping_pricing"]["additional_tax_hkd"] == "2.0000"
+            t3_rows = {row["key"]: row for row in rr2["t3"]}
+            assert t3_rows["total_cost"]["value"] == expected_total_cost
+            assert rr2["totals"]["rmb_purchase_cost_hkd"] == expected_total_cost
 
 
 def test_factory_customers_are_readable_but_only_managed_by_local_sales_or_engineering_supervisor(monkeypatch):

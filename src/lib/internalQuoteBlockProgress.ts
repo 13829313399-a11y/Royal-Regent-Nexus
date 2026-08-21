@@ -73,7 +73,7 @@ function engineeringBlocks(payload: EngineeringPayload): InternalQuoteFormBlock[
     && positive(payload.mold_fx_rmb_usd)
   return [
     block('hardware', '五金部分', 'optional', hardware.length > 0, hardware.length > 0 && hardware.every(materialComplete), '可选；填写时名称、用量、RMB 原单价及大于 0 的损耗率必填'),
-    block('auxiliary', '辅助材料部分', 'optional', auxiliary.length > 0, auxiliary.length > 0 && auxiliary.every(materialComplete), '可选；填写时名称、类别、用量、RMB/HKD 任一原单价及大于 0 的损耗率必填'),
+    block('auxiliary', '辅助材料/外购件部分', 'optional', auxiliary.length > 0, auxiliary.length > 0 && auxiliary.every(materialComplete), '可选；填写时名称、类别、用量、RMB/HKD 任一原单价及大于 0 的损耗率必填'),
     block('molds', '模具部分', 'optional', payload.molds.length > 0, payload.molds.length > 0 && moldComplete, '可选；填写时模具名称、套数、模价 RMB 必填'),
     block('mold-allocation', '生产模具费用与分摊部分', 'optional', hasAllocation, hasAllocation && allocationComplete, '可选；可关闭分摊，启用且有费用时金额、对应分摊套数和 RMB→USD 汇率必填'),
   ]

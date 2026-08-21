@@ -3,7 +3,12 @@ import { AlertTriangle, FileSpreadsheet, Search, Upload } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { Tone } from '@/data/enterpriseMock'
-import { qcInspectionApi, type QcScheduleImport } from '@/api/qcInspection'
+import {
+  QC_SCHEDULE_IMPORT_MAX_FILE_MEGABYTES,
+  qcInspectionApi,
+  type QcScheduleImport,
+  validateQcScheduleImportFile,
+} from '@/api/qcInspection'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import { Button } from '@/components/ui/button'
@@ -79,12 +84,18 @@ function candidateLabel(change: QcScheduleImport['rows'][number], candidateId: s
 
 function onFileChange(event: Event) {
   const files = (event.target as HTMLInputElement).files
-  selectedFile.value = files?.[0] ?? null
+  const file = files?.[0] ?? null
+  selectedFile.value = file
   previewBatch.value = null
   decisions.value = {}
   targetOrderIds.value = {}
   actionError.value = ''
   actionMessage.value = ''
+  const fileError = file ? validateQcScheduleImportFile(file) : ''
+  if (fileError) {
+    selectedFile.value = null
+    actionError.value = fileError
+  }
 }
 
 async function previewImport() {
@@ -168,6 +179,7 @@ async function confirmImport() {
               class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-teal-50 file:px-3 file:py-1.5 file:font-semibold file:text-teal-800"
               @change="onFileChange"
             >
+            <span class="text-xs text-slate-500">支持 .xls、.xlsx，单个文件最大 {{ QC_SCHEDULE_IMPORT_MAX_FILE_MEGABYTES }} MB</span>
           </label>
           <Button type="button" :disabled="!selectedFile || previewing" @click="previewImport">
             <Upload class="size-4" aria-hidden="true" />

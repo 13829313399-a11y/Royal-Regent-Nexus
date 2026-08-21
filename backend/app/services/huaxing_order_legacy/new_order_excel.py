@@ -1337,6 +1337,182 @@ def append_column_records_to_workbook(
         workbook.close()
 
 
+def insert_column_records_after_matching_groups(
+    template: str | Path | bytes | BinaryIO,
+    output_path: str | Path | BinaryIO,
+    records: Iterable[Any],
+    *,
+    filename: str = "",
+    sheet_names: Sequence[str],
+    header_row: int,
+    max_col: int,
+    existing_row_key_factory: Callable[[Any, int], str],
+    record_key_factory: Callable[[Any], str],
+    detail_columns: Sequence[int] = (),
+    row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
+    column_formats: Mapping[int, str] | None = None,
+) -> dict[str, Any]:
+    """Insert fixed-column records after the last matching detail row.
+
+    Records with the same non-empty key are inserted together immediately after
+    the last existing row carrying that key, which keeps item-based schedules in
+    ``detail... + subtotal`` order. Records without a matching key retain the
+    established global append fallback. Formulas and workbook structures are
+    shifted with Excel-like row insertion semantics.
+    """
+    workbook = load_complete_workbook_compatible(template, filename=filename)
+    rows = list(records)
+    try:
+        target = next(
+            (workbook[name] for name in sheet_names if name in workbook.sheetnames),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"模板缺少目标工作表：{' / '.join(sheet_names)}")
+
+        grouped_records: dict[str, list[Any]] = {}
+        for index, record in enumerate(rows):
+            key = str(record_key_factory(record) or "").strip()
+            grouped_records.setdefault(key or f"__unmatched_{index}", []).append(record)
+
+        last_matching_rows: dict[str, int] = {}
+        for row_no in range(header_row + 1, (target.max_row or header_row) + 1):
+            key = str(existing_row_key_factory(target, row_no) or "").strip()
+            if key:
+                last_matching_rows[key] = row_no
+
+        global_append_row = _find_append_row(
+            target,
+            header_row,
+            max_col,
+            detail_columns=detail_columns,
+        )
+        fallback_style_row = _nearest_detail_row(
+            target,
+            header_row,
+            global_append_row,
+            max_col,
+        )
+        placements: dict[int, dict[str, Any]] = {}
+        matched_groups = 0
+        unmatched_groups = 0
+        for key, grouped in grouped_records.items():
+            matching_row = last_matching_rows.get(key)
+            if matching_row is not None:
+                insert_row = matching_row + 1
+                style_row = matching_row
+                matched_groups += 1
+            else:
+                insert_row = global_append_row
+                style_row = fallback_style_row
+                unmatched_groups += 1
+            placement = placements.setdefault(
+                insert_row,
+                {"style_row": style_row, "records": []},
+            )
+            placement["records"].extend(grouped)
+
+        inserted_rows = 0
+        insertion_rows: list[int] = []
+        for insert_row in sorted(placements, reverse=True):
+            placement = placements[insert_row]
+            placement_rows = placement["records"]
+            amount = len(placement_rows)
+            if not amount:
+                continue
+            style_row = int(placement["style_row"])
+            formulas = [
+                (sheet, cell.row, cell.column, cell.value)
+                for sheet in workbook.worksheets
+                for cell in sheet._cells.values()
+                if isinstance(cell.value, str) and cell.value.startswith("=")
+            ]
+            moved_merges = [
+                CellRange(str(value))
+                for value in target.merged_cells.ranges
+                if value.max_row >= insert_row
+            ]
+            for merged in moved_merges:
+                target.unmerge_cells(str(merged))
+            target.insert_rows(insert_row, amount)
+            _shift_target_sheet_structures(target, insert_row, amount, moved_merges)
+
+            for sheet, old_row, column, formula in formulas:
+                destination_row = (
+                    old_row + amount
+                    if sheet is target and old_row >= insert_row
+                    else old_row
+                )
+                sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
+                    formula,
+                    formula_sheet=sheet.title,
+                    target_sheet=target.title,
+                    formula_row=old_row,
+                    insert_row=insert_row,
+                    amount=amount,
+                )
+
+            source_dimension = target.row_dimensions[style_row]
+            for offset, record in enumerate(placement_rows):
+                row_no = insert_row + offset
+                if source_dimension.height:
+                    target.row_dimensions[row_no].height = source_dimension.height
+                for col_no in range(1, max_col + 1):
+                    source_cell = target.cell(style_row, col_no)
+                    destination = target.cell(row_no, col_no)
+                    _copy_style(source_cell, destination)
+                    if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
+                        try:
+                            destination.value = Translator(
+                                source_cell.value,
+                                origin=source_cell.coordinate,
+                            ).translate_formula(destination.coordinate)
+                        except (TypeError, ValueError):
+                            destination.value = source_cell.value
+
+                values = row_values_factory(record, row_no) if row_values_factory else record
+                if not isinstance(values, Mapping):
+                    raise ValueError("固定列写入记录必须是列号到值的映射")
+                for col_no, value in values.items():
+                    if value in (None, ""):
+                        continue
+                    cell = target.cell(row_no, int(col_no))
+                    cell.value = _safe_value(value)
+                    if isinstance(value, (date, datetime)) and cell.number_format == "General":
+                        cell.number_format = "yyyy-mm-dd"
+                    if column_formats and int(col_no) in column_formats:
+                        cell.number_format = column_formats[int(col_no)]
+
+            inserted_rows += amount
+            insertion_rows.append(insert_row)
+
+        workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
+        workbook.calculation.calcMode = "auto"
+
+        if hasattr(output_path, "write"):
+            workbook.save(output_path)
+            output_reference = "<memory>"
+        else:
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(output_file)
+            output_reference = str(output_file)
+        return {
+            "path": output_reference,
+            "template_sheet": target.title,
+            "header_row": header_row,
+            "insert_rows": sorted(insertion_rows),
+            "rows": len(rows),
+            "matched_groups": matched_groups,
+            "unmatched_groups": unmatched_groups,
+            "inserted_rows": inserted_rows,
+            "mode": "full_workbook_matching_group_insert",
+        }
+    finally:
+        workbook.close()
+
+
 def append_grouped_column_records_to_workbook(
     template: str | Path | bytes | BinaryIO,
     output_path: str | Path | BinaryIO,

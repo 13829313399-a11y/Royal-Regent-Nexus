@@ -41,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v18"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v20"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 122
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 115
+    assert len(registered_codes) == 123
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 116
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -86,7 +86,7 @@ def test_fixed_system_position_definition_contract():
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 87
+    assert len(general_manager.permission_codes) == 88
     assert (
         set(general_manager.permission_codes)
         | positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
@@ -288,10 +288,20 @@ def test_fixed_system_position_definition_contract():
         )
     )
     customer_manage = "carton_procurement:customer_manage"
-    assert customer_manage in positions.get_system_position("position_carton_manager").permission_codes
-    assert customer_manage in positions.get_system_position("position_carton_supervisor").permission_codes
-    assert customer_manage not in positions.get_system_position("position_carton_warehouse_keeper").permission_codes
+    carton_manager = positions.get_system_position("position_carton_manager")
+    carton_supervisor = positions.get_system_position("position_carton_supervisor")
+    carton_warehouse_keeper = positions.get_system_position("position_carton_warehouse_keeper")
+    assert carton_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
+    assert carton_supervisor.scope_mode == positions.OWN_FACTORY_SCOPE
+    assert carton_warehouse_keeper.scope_mode == positions.OWN_FACTORY_SCOPE
+    assert customer_manage in carton_manager.permission_codes
+    assert customer_manage in carton_supervisor.permission_codes
+    assert customer_manage not in carton_warehouse_keeper.permission_codes
     assert customer_manage not in positions.get_system_position("position_warehouse_keeper").permission_codes
+    carton_mark_customer_manage = "carton_mark:customer_manage"
+    assert carton_mark_customer_manage in carton_manager.permission_codes
+    assert carton_mark_customer_manage in carton_supervisor.permission_codes
+    assert carton_mark_customer_manage not in carton_warehouse_keeper.permission_codes
 
     qc_inspector = positions.get_system_position("position_qc_inspector")
     qc_supervisor = positions.get_system_position("position_qc_supervisor")
@@ -326,6 +336,11 @@ def test_fixed_system_position_definition_contract():
         "warehouse",
         "carton",
     )
+    assert carton_scope_policy.permission_scope_policy("carton_mark:customer_manage").departments == (
+        "pmc-warehouse",
+        "warehouse",
+        "carton",
+    )
     assert carton_scope_policy.permission_scope_policy("carton_mark:review").departments == (
         "qa",
         "qc",
@@ -334,6 +349,7 @@ def test_fixed_system_position_definition_contract():
     assert {
         "carton_mark:read",
         "carton_mark:template_upload",
+        "carton_mark:customer_manage",
         "carton_mark:photo_upload",
         "carton_mark:review",
     } <= auth_service.POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES

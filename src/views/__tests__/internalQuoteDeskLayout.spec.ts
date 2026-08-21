@@ -25,6 +25,20 @@ const comparisonSource = read('src/lib/internalQuoteComparison.ts')
 const backendSummarySource = read('backend/app/services/internal_quote.py')
 
 describe('internal quote desk frontend layout', () => {
+  it('uses integer spin-button steps for quantity and usage inputs', () => {
+    const quantityInputs = sectionFormSource.match(/<input\b[^>]*v-model\.number="[^"]*(?:quantity|usage)[^"]*"[^>]*>/g) ?? []
+
+    expect(quantityInputs.length).toBeGreaterThanOrEqual(10)
+    for (const input of quantityInputs) expect(input).toContain('step="1"')
+  })
+
+  it('uses one-decimal spin-button steps for loss-rate inputs', () => {
+    const lossRateInputs = sectionFormSource.match(/<input\b[^>]*v-model\.number="[^"]*(?:loss_rate|LossRate)[^"]*"[^>]*>/g) ?? []
+
+    expect(lossRateInputs).toHaveLength(4)
+    for (const input of lossRateInputs) expect(input).toContain('step="0.1"')
+  })
+
   it('registers the new module under the business department without replacing customer conversion', () => {
     expect(enterpriseSource).toContain("id: 'internal-quote-desk'")
     expect(enterpriseSource).toContain("title: '内部报价台'")
@@ -73,6 +87,8 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['baselineDifferentSections', 'baselineDifferenceLabel', '与基准款不同', '全部内容沿用基准款', ':different-section-codes="baselineDifferentSections"', ':differs-from-baseline="baselineDifferentSections.includes(section.code)"']) expect(collaborationSource).toContain(text)
     expect(sectionEditorSource).toContain('class="baseline-difference"')
     for (const text of ['整单操作', '查看汇总与输出', 'saveWholeProductDraft', 'quote-whole-product-actions', 'quote-whole-product-workflow']) expect(collaborationSource).toContain(text)
+    expect(collaborationSource).toContain('saveWholeQuoteDraft(false)')
+    expect(collaborationSource).toContain('await quoteStore.loadQuote(quote.value.id)')
     expect(collaborationSource).toContain("<Save />{{ wholeProductSaving ? '保存中…' : '保存' }}")
     expect(collaborationSource).toContain("{{ quoteStore.submitting ? '提交中…' : '提交审核' }}")
     for (const text of ['rememberInternalQuoteProductScroll', 'consumeInternalQuoteProductScroll', 'loadSwitchedProduct', "window.scrollTo({ top: scrollTop, behavior: 'auto' })"]) expect(collaborationSource).toContain(text)
@@ -96,10 +112,10 @@ describe('internal quote desk frontend layout', () => {
     expect(apiSource).toContain('customer: options.customer')
     for (const text of ['自动识别', '预览不会修改正式数据', '申请不适用', '合法重开', '分段附件']) expect(sectionEditorSource).toContain(text)
     for (const text of ['移除该部门报价', 'v-if="props.canRemove"', '当前分段数据和未保存修改将不再生效', '历史 revision 和审计记录仍会保留', '以后可再次添加该部门']) expect(sectionEditorSource).toContain(text)
-    for (const text of ['五金部分', '辅助材料部分', '五金报价单', '电子零件部分', '电子报价单', '注塑部分', '喷油/移印/UV部分', '喷油报价单', '搪胶部分', '搪胶报价单', '车缝部分', '车缝报价单', '总表部分', '组装部分', '包装部分']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
+    for (const text of ['五金部分', '辅助材料/外购件部分', '五金报价单', '电子零件部分', '电子报价单', '注塑部分', '喷油/移印/UV部分', '喷油报价单', '搪胶部分', '搪胶报价单', '车缝部分', '车缝报价单', '总表部分', '组装部分', '包装部分']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
     for (const text of ['电子快捷报价部分', '电子快捷报价零件名称', '电子快捷报价单价 RMB', '电子快捷报价税点', '电子快捷报价备注']) expect(sectionFormSource).toContain(text)
     expect(sectionEditorSource).toContain("['electronic', 'painting', 'sewing']")
-    for (const title of ['五金部分', '辅助材料部分', '模具部分', '生产模具费用与分摊部分', '电子零件部分', '电子成本汇总部分', '注塑部分', '吹气部分', '喷油/移印/UV部分', '搪胶部分', '车缝部分', '总表部分', '组装部分', '包装部分', '包装材料部分', '纸箱计算与包装尺寸部分', '运费计算部分']) expect(sectionFormSource).toContain(`<strong>${title}</strong>`)
+    for (const title of ['五金部分', '辅助材料/外购件部分', '模具部分', '生产模具费用与分摊部分', '电子零件部分', '电子成本汇总部分', '注塑部分', '吹气部分', '喷油/移印/UV部分', '搪胶部分', '车缝部分', '总表部分', '组装部分', '包装部分', '包装材料部分', '纸箱计算与包装尺寸部分', '运费计算部分']) expect(sectionFormSource).toContain(`<strong>${title}</strong>`)
       expect(sectionFormSource).toContain('.electronicSummaryTable th,.electronicSummaryTable td')
       expect(sectionFormSource).toContain('width:14.2857%')
       expect(sectionFormSource).toContain('text-align:center;vertical-align:middle')
@@ -108,7 +124,7 @@ describe('internal quote desk frontend layout', () => {
       expect(sectionFormSource).toContain('function measured(value: number) { return value.toFixed(4) }')
       expect(sectionEditorSource).toContain('detailAmount(line.amountHkd)')
       expect(sectionEditorSource).toContain('detailAmount(section.totalHkd)')
-    for (const text of ['布料名称', '部位', '工艺', '裁片数', '用量/码', '物料价 (RMB)', '价钱 (RMB，自动)', '码点', '总价钱 (RMB，自动)', '含电绣']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
+    for (const text of ['物料名称', '裁片部位', '工艺', '裁片数', '供应商', '布料 MOQ/Y', '低于 MOQ/每色费用 RMB', '用量/码', '单价 RMB', '汇率', '成本 HKD（自动）', '码点', '价钱 HKD（自动）', '含电绣', '<option value="丝印">丝印</option>']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
     for (const text of ['产品编号', '胶件名称', '材料', '料重 (g)', '日产量 24H', '用量 (PC)', '单价 HKD', '总价 HKD（自动）']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
     for (const text of ['图片 / 附件引用', '名称', '位置', '夹模', '移印', '散枪', '边模', '油色', '浸油', '抹油', '擦PP水', '报价 HKD', '备注', '二、喷油/移印/UV成本汇总']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
     for (const text of ['啤机报价单', '注塑部分', '模具名称', '料价 HKD/g（快照）', '原料单价 HKD（自动）', '啤价 HKD/啤（自动）', '出模数', '机型 A码', '目标数', '周期 (秒)', '重量汇总（含损耗）', '料价汇总 HKD', '啤工汇总 HKD', '吹气部分', '日产量 / 22H', '产品料价 HKD（自动）', '吹工 HKD', '披锋 HKD', '利润倍率', '出数', '模价 RMB']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
@@ -153,13 +169,13 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionFormSource).toContain('grid-template-columns:repeat(7,minmax(0,1fr))')
     for (const text of ['engineering.mold_allocation_enabled', '计算分摊', '暂不分摊', '暂时取消生产模具费用与分摊', '服务端分摊结果归零']) expect(sectionFormSource).toContain(text)
     for (const text of ['附加税与印尼运费', '减税分类', '出货场景']) expect(sectionFormSource).not.toContain(text)
-    for (const text of ['纸箱计算与包装尺寸', '产品尺寸 (in，可不填)', '彩盒尺寸', '彩盒尺寸单位', '尺寸单位', '<option value="inch">inch</option>', '<option value="cm">cm</option>', '纸价系数（箱价基数）', '平卡报价系数（默认同箱价）', '一箱装的个数', '平卡价 HKD（自动）', '平卡 ${flatIndex + 1} 用量']) expect(sectionFormSource).toContain(text)
+    for (const text of ['纸箱计算与包装尺寸', '产品尺寸 (in，可不填)', '彩盒尺寸', '彩盒尺寸单位', '尺寸单位', '<option value="inch">inch</option>', '<option value="cm">cm</option>', '主纸箱系数（箱价基数）', '内纸箱系数（新增后可调）', '平卡报价系数（默认同箱价）', '新增纸箱', '一箱装的个数', '平卡价 HKD（自动）', '平卡 ${flatIndex + 1} 用量']) expect(sectionFormSource).toContain(text)
     expect(sectionFormSource.indexOf('产品尺寸 (in，可不填)')).toBeLessThan(sectionFormSource.indexOf('<strong>彩盒尺寸</strong>'))
     for (const text of ['产品长度 IN', '产品宽度 IN', '产品高度 IN', 'updateColorBoxDimension', 'updateCartonDimension', 'dimensionValueToInches']) expect(sectionFormSource).toContain(text)
     expect(sectionFormSource).toContain('.dimension-grid{display:grid;grid-template-columns:1fr;')
     for (const text of ['测试费部分', '启用测试费计算', '计算测试费', '不计测试费', '本单不计算测试费', '新增业务部测试费 MOQ', '新增 MOQ', 'sales.testing_fee_moqs', '业务部测试费用 USD', '业务部测试费 MOQ', '业务部测试费单价 USD']) expect(sectionFormSource).toContain(text)
     for (const text of ['包装材料', '零件名称', '规格', '用量', '单价 RMB', '单价 HKD（自动）', '成品金额 HKD（自动）', '税点 %', '备注', '吸塑', '彩盒/内卡', '利宝/说明书', '其他外购']) expect(sectionFormSource).toContain(text)
-    for (const label of ['辅助材料原单价 HKD', '包装材料原单价 HKD']) expect(sectionFormSource).toContain(`aria-label="${label}"`)
+    for (const label of ['辅助材料/外购件原单价 HKD', '包装材料原单价 HKD']) expect(sectionFormSource).toContain(`aria-label="${label}"`)
     expect(sectionFormSource).toContain("setEngineeringMaterialUnitPrice(row, 'HKD', $event)")
     expect(sectionFormSource).toContain("setPackagingMaterialUnitPrice(row, 'HKD', $event)")
     for (const text of ['运费计算', '主纸箱 CU.FT', '柜/车容量 CUFT', '运费 HKD（报价基数）', '吊柜费 HKD（报价基数）', '总箱数（自动）', '运费 HKD/PCS（自动）', '吊柜费 HKD/PCS（自动）', '合计 HKD/PCS（自动）', '冻结的报价基数', '启用运费计算', '启用吊柜费计算', '本单不计算运费和吊柜费', 'CUFT，整数']) expect(sectionFormSource).toContain(text)
@@ -168,7 +184,7 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionFormSource).toContain('calculateSalesFreightOptions(sales.value.freight_calc, primaryCarton.value, referenceFreightRoutes.value)')
     expect(sectionFormSource.indexOf('sales-packaging-materials')).toBeLessThan(sectionFormSource.indexOf('class="payload-block sales-packaging"'))
     const engineeringFormSource = sectionFormSource.slice(sectionFormSource.indexOf("props.code === 'engineering'"), sectionFormSource.indexOf("props.code === 'electronic'"))
-    const hardwareFormSource = engineeringFormSource.slice(engineeringFormSource.indexOf('<strong>五金部分</strong>'), engineeringFormSource.indexOf('<strong>辅助材料部分</strong>'))
+    const hardwareFormSource = engineeringFormSource.slice(engineeringFormSource.indexOf('<strong>五金部分</strong>'), engineeringFormSource.indexOf('<strong>辅助材料/外购件部分</strong>'))
     for (const text of ['零件名称', '规格', '类别', '用量', '单价 RMB', '单价 HKD（自动）', '金额 HKD（自动）', '税点 %', '备注']) expect(hardwareFormSource).toContain(text)
     for (const text of ['配件用处', '单位', '材质', '表面处理', '供应商', '联系人/电话']) expect(hardwareFormSource).not.toContain(text)
     expect(hardwareFormSource).toContain('class="fixed-field" aria-label="五金类别">五金</span>')
@@ -179,6 +195,11 @@ describe('internal quote desk frontend layout', () => {
     expect(engineeringFormSource).not.toContain('<option value="packaging">包装材料</option>')
     expect(sectionEditorSource).toContain(':rmb-hkd-rate="quote.fxRmbHkd"')
     expect(sectionFormSource).toContain('const flatCardPriceFactor = computed<number>')
+    expect(sectionFormSource).toContain('const innerPaperPriceFactor = computed<number>')
+    expect(sectionFormSource).toContain(':disabled="disabled || !hasInnerCarton"')
+    expect(sectionFormSource).toContain('cartonPaperPriceFactor(index)')
+    expect(sectionFormSource).toContain('data-testid="add-sales-carton"')
+    expect(sectionFormSource).toContain(':disabled="disabled || index === 0"')
     expect(sectionFormSource).toContain('else delete sales.value.flat_card_price_factor')
     expect(sectionFormSource).not.toContain('engineering.cartons')
     expect(sectionFormSource).not.toContain('addEngineeringCarton')
@@ -209,14 +230,31 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['迪士尼采购件客户字段部分', '迪士尼模具客户字段部分', '迪士尼注塑客户参数部分', '迪士尼包装件客户字段部分', 'row.disney_unit_price_usd', 'carton.disney_unit_price_usd']) expect(sectionFormSource).toContain(text)
     for (const text of ['协作评论', '业务操作时间线', '浏览记录', '短时间刷新会去重', '客人目标价', 'quote.targetCustomerPrice']) expect(activitySource).toContain(text)
     for (const text of ['调整汇率', '保存汇率', '保存会生成新 revision', 'updateFx']) expect(activitySource).toContain(text)
-    for (const text of ['保存分段码数与杂项', '选择此档', '本单采用', 'select-quote-markup-tier-', 'save-quote-markup', 'live-quote-markup-moq-', 'live-quote-misc', 'updateMarkup', 'MOQ 区间必须由小到大排列', '码数最多保留 2 位小数', '杂项系数最多保留 2 位小数']) expect(activitySource).toContain(text)
-    for (const text of ['updateQuoteMarkup', 'saveSalesMarkup', '在协作侧栏保存分段 MOQ 码数与杂项系数', '请先重开业务部分段']) expect(`${collaborationSource}\n${sectionEditorSource}`).toContain(text)
-    for (const text of ['markup_x?: number', 'markup_tiers?: SalesMarkupTier[]', 'selected_markup_moq?: number', 'misc_ratio?: number']) expect(payloadSource).toContain(text)
+    for (const text of ['保存分段码数与杂项', '选择此档', '本单采用', 'select-quote-markup-tier-', 'save-quote-markup', 'live-quote-markup-moq-', 'live-quote-misc', 'live-quote-settlement', '报表找数系数', 'updateMarkup', 'MOQ 区间必须由小到大排列', '码数最多保留 2 位小数', '杂项率最多保留 2 位小数']) expect(activitySource).toContain(text)
+    for (const text of ['updateQuoteMarkup', 'saveSalesMarkup', 'salesSettlementDivisorForMiscRatio', '在协作侧栏保存分段 MOQ 码数与杂项系数', '请先重开业务部分段']) expect(`${collaborationSource}\n${sectionEditorSource}`).toContain(text)
+    expect(collaborationSource).toContain('divisor: salesSettlementDivisorForMiscRatio(miscRatio)')
+    expect(sectionEditorSource).toContain('divisor: salesSettlementDivisorForMiscRatio(miscRatio)')
+    for (const text of ['markup_x?: number', 'markup_tiers?: SalesMarkupTier[]', 'selected_markup_moq?: number', 'misc_ratio?: number', 'divisor?: number']) expect(payloadSource).toContain(text)
     for (const permission of ['internal_quote:sales_edit', 'internal_quote:engineering_edit']) expect(collaborationSource).toContain(permission)
     expect(collaborationSource).toContain('updateReferenceFx')
-    for (const text of ['汇总与最终放行', '权威成本分布', '部门金额分布', '成本项目分布', 'departmentEntries', 'departmentDonutStyle', 'componentDonutStyle', '出货价算价', '已启用：', '减税明细 / 成本汇总', '一、出厂货价核', '二、包装 / 外购', '三、人工 &amp; 成本汇总', '四、减税明细', '减税后成本', '分段放行状态', '业务跟客最终放行', '由业务部分段的提交跟客一人确认放行', 'canResponsibleRelease', '负责跟客确认放行', 'finalRejectError', '退回中…']) expect(summarySource).toContain(text)
+    for (const text of ['汇总与最终放行', '权威成本分布', '部门金额分布', '成本项目分布', 'departmentEntries', 'InternalQuoteInteractiveDonut', 'display-total', '悬停扇区或部门明细可联动高亮', '出货价算价', '已启用：', '减税明细 / 成本汇总', '一、出厂货价核', '二、包装 / 外购', '三、人工 &amp; 成本汇总', '四、减税明细', '减税后成本', '分段放行状态', '业务跟客最终放行', '由业务部分段的提交跟客一人确认放行', 'canResponsibleRelease', '负责跟客确认放行', 'finalRejectError', '退回中…']) expect(summarySource).toContain(text)
+    for (const text of [
+      "quote.value.regionCode === 'indonesia'",
+      'canEditAllInternalQuoteSections',
+      'data-testid="indonesia-freight-panel"',
+      'data-testid="indonesia-freight-input"',
+      'data-testid="save-indonesia-freight"',
+      "cloneInternalQuotePayload('sales'",
+      'quoteStore.saveSection(',
+      'section.revision,',
+      '在汇总页修改印尼价运费',
+      '本项仅用于印尼价，作为直接成本单独计入，不属于杂项率金额。',
+      '杂项金额 = 货价 × 杂项率；附加税独立计入；仅印尼价另计印尼运费',
+    ]) expect(summarySource).toContain(text)
+    expect(summarySource).toContain("item.key !== 'indonesia_freight_hkd' || isIndonesiaQuote.value")
+    expect(summarySource).not.toContain('杂项包含印尼运费和附加税')
     for (const text of ['等待第二名业务主管复核', '另一名业务主管批准放行', '最终提交人与最终放行人不得相同']) expect(summarySource).not.toContain(text)
-    for (const text of ['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣类13%', '吸塑类6%', '运费类9%', '含税13%类']) expect(backendSummarySource).toContain(text)
+    for (const text of ['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣物料退税（仅华康C/D）', '吸塑类6%', '运费类9%', '含税13%类']) expect(backendSummarySource).toContain(text)
     expect(summarySource).toContain('v-if="shippingPricing.enabled"')
     expect(summarySource).toContain('金额、税率、减税额及减税后成本均由系统统一计算')
     expect(summarySource).not.toContain('减税额 = 金额 × 税率')

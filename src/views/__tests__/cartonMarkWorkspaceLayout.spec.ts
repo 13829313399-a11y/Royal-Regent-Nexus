@@ -141,12 +141,14 @@ describe('carton mark standalone workspaces', () => {
     }
 
     expect(cartonPanelSource).not.toContain('采购订单号')
-    expect(cartonPanelSource).toContain('客名来自当前厂区内部报价台客户库')
-    expect(cartonPanelSource).not.toContain('新增客名')
-    expect(cartonPanelSource).toContain('cartonMarkApi.listCustomerOptions')
+    expect(cartonPanelSource).toContain('客名由当前厂区纸箱部主管以上维护')
+    expect(cartonPanelSource).toContain('维护客户')
+    expect(cartonPanelSource).toContain('cartonMarkApi.listCustomers')
+    expect(cartonPanelSource).toContain("carton_mark:customer_manage")
     expect(cartonPanelSource).toContain('v-model="form.customerName"')
     expect(cartonPanelSource).toContain('v-for="customer in customerOptions"')
-    expect(cartonPanelSource).toContain('当前厂区尚未在内部报价台添加客户')
+    expect(cartonPanelSource).toContain('当前厂区尚未添加箱唛客户')
+    expect(cartonPanelSource).not.toContain('内部报价台客户读取失败')
     expect(cartonPanelSource).toContain('customerOptionsRequestController?.abort()')
     expect(cartonPanelSource).toContain("if (props.workspaceMode) return props.workspaceMode === 'warehouse'")
     expect(cartonPanelSource).toContain('form.contractNumber')

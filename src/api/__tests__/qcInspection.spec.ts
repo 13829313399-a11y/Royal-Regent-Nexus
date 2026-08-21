@@ -1,7 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createQcInspectionApi } from '@/api/qcInspection'
+import {
+  QC_SCHEDULE_IMPORT_MAX_FILE_BYTES,
+  QC_SCHEDULE_IMPORT_MAX_FILE_MEGABYTES,
+  createQcInspectionApi,
+  validateQcScheduleImportFile,
+} from '@/api/qcInspection'
 
 describe('QC inspection API', () => {
+  it('uses the 35 MB schedule import limit required by QC', () => {
+    expect(QC_SCHEDULE_IMPORT_MAX_FILE_MEGABYTES).toBe(35)
+    expect(QC_SCHEDULE_IMPORT_MAX_FILE_BYTES).toBe(35 * 1024 * 1024)
+    expect(validateQcScheduleImportFile({ size: QC_SCHEDULE_IMPORT_MAX_FILE_BYTES })).toBe('')
+    expect(validateQcScheduleImportFile({ size: QC_SCHEDULE_IMPORT_MAX_FILE_BYTES + 1 }))
+      .toBe('排期文件不能超过 35 MB')
+  })
+
   it('loads a factory-scoped weekly workspace', async () => {
     const get = vi.fn().mockResolvedValue({
       data: {

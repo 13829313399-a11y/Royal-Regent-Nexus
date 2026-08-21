@@ -350,6 +350,9 @@ def test_schedule_history_is_not_candidate_and_stale_candidate_is_rejected(monke
 
 
 def test_schedule_preview_raw_form_validation(monkeypatch):
+    from app.services.qc_inspection import MAX_SCHEDULE_IMPORT_BYTES
+
+    assert MAX_SCHEDULE_IMPORT_BYTES == 35 * 1024 * 1024
     with make_client(monkeypatch) as client:
         login_as(client, "qc_inspector")
         content = _schedule_bytes(
@@ -371,6 +374,7 @@ def test_schedule_preview_raw_form_validation(monkeypatch):
             files={"file": ("排期.xlsx", b"x" * 17, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
         assert oversized.status_code == 413
+        assert oversized.json()["detail"] == "排期文件不能超过 35 MB"
 
 
 def test_schedule_all_unchanged_preview_is_immediately_confirmed(monkeypatch):
