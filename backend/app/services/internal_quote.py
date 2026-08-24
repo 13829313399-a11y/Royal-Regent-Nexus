@@ -1228,6 +1228,9 @@ def _rr2_cost_summary(
             pricing_entries.append({
                 "section": section_code,
                 "label": section_labels[section_code],
+                "kind": "",
+                "category": "",
+                "auxiliary_category": "",
                 "amount_hkd": target,
                 "pricing_component_id": "",
                 "markup_override": None,
@@ -1239,6 +1242,9 @@ def _rr2_cost_summary(
             pricing_entries.append({
                 "section": section_code,
                 "label": label or section_labels[section_code],
+                "kind": str(line.get("kind") or ""),
+                "category": str(line.get("category") or ""),
+                "auxiliary_category": str(line.get("auxiliary_category") or ""),
                 "amount_hkd": amount * allocation_factor,
                 "pricing_component_id": str(line.get("pricing_component_id") or "").strip(),
                 "markup_override": (
@@ -1262,6 +1268,9 @@ def _rr2_cost_summary(
         pricing_entries.append({
             "section": "other",
             "label": "主体未分配成本",
+            "kind": "",
+            "category": "",
+            "auxiliary_category": "",
             "amount_hkd": unallocated_factory_cost,
             "pricing_component_id": "",
             "markup_override": None,
@@ -1293,11 +1302,44 @@ def _rr2_cost_summary(
 
     pricing_mode = "component" if component_definitions else "standard"
     base_pricing_groups: list[dict[str, object]] = []
+    global_pricing_entries: list[dict[str, object]] = []
+    component_pricing_entries = pricing_entries
+    global_pricing_cost = Decimal("0")
     if component_definitions:
+        def is_global_packaging_entry(entry: dict[str, object]) -> bool:
+            section_code = str(entry.get("section") or "")
+            kind = str(entry.get("kind") or "")
+            category = str(entry.get("category") or "")
+            label = str(entry.get("label") or "")
+            if section_code == "sales":
+                return True
+            if section_code == "engineering" and (
+                kind == "carton" or category == "packaging"
+            ):
+                return True
+            return section_code == "assembly" and bool(
+                re.search(r"包装|pack", label, flags=re.IGNORECASE)
+            )
+
+        global_pricing_entries = [
+            entry for entry in pricing_entries if is_global_packaging_entry(entry)
+        ]
+        component_pricing_entries = [
+            entry for entry in pricing_entries if not is_global_packaging_entry(entry)
+        ]
+        for entry in pricing_entries:
+            entry["is_global"] = is_global_packaging_entry(entry)
+        global_pricing_cost = sum(
+            (
+                _summary_decimal(entry.get("amount_hkd"))
+                for entry in global_pricing_entries
+            ),
+            Decimal("0"),
+        )
         default_component_id = str(component_definitions[0]["id"])
         component_ids = {str(item["id"]) for item in component_definitions}
         component_costs = {component_id: Decimal("0") for component_id in component_ids}
-        for entry in pricing_entries:
+        for entry in component_pricing_entries:
             component_id = str(entry.get("pricing_component_id") or "")
             if component_id not in component_ids:
                 component_id = default_component_id
@@ -1348,7 +1390,7 @@ def _rr2_cost_summary(
         for group in base_pricing_groups:
             pricing_base = _summary_decimal(group["cost_hkd"])
             if group.get("is_main"):
-                pricing_base += additional_tax + extra_main_cost
+                pricing_base += global_pricing_cost + additional_tax + extra_main_cost
             group_markup = _summary_decimal(group["markup"], decimal_text(markup))
             after_markup = pricing_base * group_markup
             after_settlement = after_markup / settlement
@@ -1366,6 +1408,17 @@ def _rr2_cost_summary(
         return rows_out, after_markup_total, after_markup_total / settlement
 
     pricing_groups, _base_after_markup, base_price = priced_groups()
+    global_pricing_markup = (
+        _summary_decimal(base_pricing_groups[0].get("markup"), decimal_text(markup))
+        if base_pricing_groups
+        else markup
+    )
+    global_pricing_base = global_pricing_cost + additional_tax
+    global_pricing_quote = (
+        global_pricing_base * global_pricing_markup / settlement
+        if settlement > 0
+        else Decimal("0")
+    )
     percentage_misc = base_price * misc_ratio
 
     t1_values = {
@@ -1574,6 +1627,37 @@ def _rr2_cost_summary(
             "mold_amortization_usd": decimal_text(mold_share_usd),
             "pricing_mode": pricing_mode,
             "pricing_groups": pricing_groups,
+            "pricing_entries": [
+                {
+                    **entry,
+                    "amount_hkd": decimal_text(entry.get("amount_hkd")),
+                    "markup_override": (
+                        None
+                        if entry.get("markup_override") is None
+                        else decimal_text(entry.get("markup_override"))
+                    ),
+                }
+                for entry in pricing_entries
+            ],
+            "global_pricing": {
+                "cost_hkd": decimal_text(global_pricing_cost),
+                "pricing_base_hkd": decimal_text(global_pricing_base),
+                "markup": decimal_text(global_pricing_markup),
+                "settlement": decimal_text(settlement),
+                "quoted_hkd": decimal_text(global_pricing_quote),
+                "entries": [
+                    {
+                        **entry,
+                        "amount_hkd": decimal_text(entry.get("amount_hkd")),
+                        "markup_override": (
+                            None
+                            if entry.get("markup_override") is None
+                            else decimal_text(entry.get("markup_override"))
+                        ),
+                    }
+                    for entry in global_pricing_entries
+                ],
+            },
             "rows": shipping_rows,
         },
     }
