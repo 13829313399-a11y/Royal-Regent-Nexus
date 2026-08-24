@@ -87,6 +87,11 @@ describe('carton mark standalone workspaces', () => {
       'switchActiveBatchPhoto',
       'getBatchPhotoPositionLabel',
       'handleBatchPhotoFileChange',
+      'handleBatchPhotoDrop',
+      'rotateActiveBatchPhoto',
+      'rotateImageBlob',
+      '当前正唛向左旋转 90 度',
+      '当前侧唛向右旋转 90 度',
       'submitBatchPhoto',
       'batchAutoCheck',
     ]) {
@@ -98,6 +103,9 @@ describe('carton mark standalone workspaces', () => {
     expect(cartonPanelSource).toContain('batchPhotoCount.value === 1')
     expect(cartonPanelSource).toContain('当前照片可框选箱唛区域')
     expect(cartonPanelSource).toContain('files[getActiveBatchPhotoIndex(side)] = croppedFile')
+    expect(cartonPanelSource).toContain("@drop.prevent=\"handleBatchPhotoDrop($event, 'front')\"")
+    expect(cartonPanelSource).toContain("@drop.prevent=\"handleBatchPhotoDrop($event, 'side')\"")
+    expect(cartonPanelSource).toContain('files[requestedIndex] = rotatedFile')
     expect(cartonPanelSource).not.toContain('selectedFrontBatchFiles.value = [croppedFile]')
     expect(cartonPanelSource).not.toContain('selectedSideBatchFiles.value = [croppedFile]')
     expect(cartonPanelSource).not.toContain('批量核验同一箱唛')
@@ -144,6 +152,8 @@ describe('carton mark standalone workspaces', () => {
     expect(cartonPanelSource).toContain('客名由当前厂区纸箱部主管以上维护')
     expect(cartonPanelSource).toContain('维护客户')
     expect(cartonPanelSource).toContain('cartonMarkApi.listCustomers')
+    expect(cartonPanelSource).toContain('for (const customer of customerOptions.value)')
+    expect(cartonPanelSource).toContain('count: 0')
     expect(cartonPanelSource).toContain("carton_mark:customer_manage")
     expect(cartonPanelSource).toContain('v-model="form.customerName"')
     expect(cartonPanelSource).toContain('v-for="customer in customerOptions"')
@@ -158,6 +168,8 @@ describe('carton mark standalone workspaces', () => {
     for (const requiredContract of [
       'selectedExcelFile',
       'excelFileInput',
+      'handleExcelFileDrop',
+      'handlePdfFileDrop',
       'isExcelFile',
       '客人提供的 PO 箱唛 Excel',
       '选择打印 PDF',
@@ -179,6 +191,8 @@ describe('carton mark standalone workspaces', () => {
     }
 
     expect(cartonPanelSource).toContain('accept=".xls,.xlsx,.xlsm,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"')
+    expect(cartonPanelSource).toContain('可点击选择或拖拽 Excel 到此处')
+    expect(cartonPanelSource).toContain('可点击选择或拖拽 PDF 到此处')
     expect(cartonPanelSource).toContain('只有核对通过的 PDF 才可供 QC 现场核验')
     expect(cartonPanelSource).toContain('图形内文字不参与比较')
     expect(cartonPanelSource).toContain('排版与图形内文字不报差异')

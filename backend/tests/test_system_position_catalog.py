@@ -41,7 +41,7 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v20"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v21"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
@@ -302,6 +302,16 @@ def test_fixed_system_position_definition_contract():
     assert carton_mark_customer_manage in carton_manager.permission_codes
     assert carton_mark_customer_manage in carton_supervisor.permission_codes
     assert carton_mark_customer_manage not in carton_warehouse_keeper.permission_codes
+    assert {
+        "carton_mark:photo_upload",
+        "carton_mark:review",
+    } <= set(carton_manager.permission_codes)
+    assert {
+        "carton_mark:photo_upload",
+        "carton_mark:review",
+    } <= set(carton_supervisor.permission_codes)
+    assert "carton_mark:photo_upload" not in carton_warehouse_keeper.permission_codes
+    assert "carton_mark:review" not in carton_warehouse_keeper.permission_codes
 
     qc_inspector = positions.get_system_position("position_qc_inspector")
     qc_supervisor = positions.get_system_position("position_qc_supervisor")
@@ -342,6 +352,7 @@ def test_fixed_system_position_definition_contract():
         "carton",
     )
     assert carton_scope_policy.permission_scope_policy("carton_mark:review").departments == (
+        "carton",
         "qa",
         "qc",
     )

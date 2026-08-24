@@ -12,6 +12,14 @@ export interface ContainedImageFrame {
   height: number
 }
 
+export function getRotatedImageSize(width: number, height: number, degrees: number) {
+  const normalizedDegrees = ((degrees % 360) + 360) % 360
+  const swapsAxes = normalizedDegrees === 90 || normalizedDegrees === 270
+  return swapsAxes
+    ? { width: height, height: width }
+    : { width, height }
+}
+
 export function clampRatio(value: number) {
   if (!Number.isFinite(value)) return 0
   return Math.min(1, Math.max(0, value))
@@ -128,6 +136,45 @@ export async function cropImageBlob(
 
   return new File([croppedBlob], fileName, {
     type: croppedBlob.type || outputType,
+    lastModified: Date.now(),
+  })
+}
+
+export async function rotateImageBlob(
+  imageBlob: Blob,
+  degrees: -90 | 90 | 180,
+  fileName: string,
+  outputType = 'image/png',
+) {
+  const imageBitmap = await createImageBitmap(imageBlob)
+  const outputSize = getRotatedImageSize(imageBitmap.width, imageBitmap.height, degrees)
+  const canvas = document.createElement('canvas')
+  canvas.width = outputSize.width
+  canvas.height = outputSize.height
+
+  const context = canvas.getContext('2d')
+  if (!context) {
+    imageBitmap.close()
+    throw new Error('当前浏览器无法创建图片旋转画布')
+  }
+
+  context.translate(canvas.width / 2, canvas.height / 2)
+  context.rotate((degrees * Math.PI) / 180)
+  context.drawImage(imageBitmap, -imageBitmap.width / 2, -imageBitmap.height / 2)
+  imageBitmap.close()
+
+  const rotatedBlob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob)
+        return
+      }
+      reject(new Error('图片旋转失败，请重新选择照片'))
+    }, outputType, 0.94)
+  })
+
+  return new File([rotatedBlob], fileName, {
+    type: rotatedBlob.type || outputType,
     lastModified: Date.now(),
   })
 }

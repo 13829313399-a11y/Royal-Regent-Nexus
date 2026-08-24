@@ -42,6 +42,17 @@ const positionDepartmentSensitivePermissions = new Set([
   'carton_mark:review',
 ])
 
+const cartonQcWorkspacePositionRoles = new Set([
+  'position_carton_manager',
+  'position_carton_supervisor',
+])
+
+const cartonQcWorkspacePermissions = new Set([
+  'carton_mark:read',
+  'carton_mark:photo_upload',
+  'carton_mark:review',
+])
+
 function grantDepartmentMatches(grant: AuthGrant, permission: string, department?: string) {
   if (!grant.unrestricted_department) {
     return scopeValueMatches(grant.department, department)
@@ -50,6 +61,13 @@ function grantDepartmentMatches(grant: AuthGrant, permission: string, department
     return true
   }
   if (grant.role_id === 'position_general_manager' || grant.department === '*') {
+    return true
+  }
+  if (
+    department === 'qc'
+    && cartonQcWorkspacePositionRoles.has(grant.role_id)
+    && cartonQcWorkspacePermissions.has(permission)
+  ) {
     return true
   }
   if (grant.department === department) {

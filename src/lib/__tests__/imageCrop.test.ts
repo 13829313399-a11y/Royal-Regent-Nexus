@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   getContainedImageFrame,
+  getRotatedImageSize,
   isUsableCropSelection,
   normalizeCropSelection,
   selectionToImagePixels,
@@ -25,6 +26,10 @@ assert.deepEqual(getContainedImageFrame(400, 200, 1000, 1000), {
   width: 200,
   height: 200,
 })
+
+assert.deepEqual(getRotatedImageSize(1600, 900, 90), { width: 900, height: 1600 })
+assert.deepEqual(getRotatedImageSize(1600, 900, -90), { width: 900, height: 1600 })
+assert.deepEqual(getRotatedImageSize(1600, 900, 180), { width: 1600, height: 900 })
 
 assert.deepEqual(selectionToImagePixels({ x: 0.25, y: 0.1, width: 0.5, height: 0.4 }, 2000, 1000, 0), {
   x: 500,

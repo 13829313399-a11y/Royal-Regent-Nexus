@@ -1136,6 +1136,38 @@ def test_carton_manager_operates_carton_modules_across_factories_only(
                 "carton",
             )
 
+        for permission in (
+            "carton_mark:read",
+            "carton_mark:photo_upload",
+            "carton_mark:review",
+        ):
+            allowed, source_type, _, _ = auth_service.authorization_decision(
+                carton_manager,
+                permission,
+                "huadeng",
+                "qc",
+            )
+            assert allowed is True
+            assert source_type == "role_binding_cross_operate"
+            assert auth_service.has_permission_in_scope(
+                carton_supervisor,
+                permission,
+                "huaxing",
+                "qc",
+            )
+            assert not auth_service.has_permission_in_scope(
+                carton_supervisor,
+                permission,
+                "huadeng",
+                "qc",
+            )
+            assert not auth_service.has_permission_in_scope(
+                carton_keeper,
+                permission,
+                "huaxing",
+                "qc",
+            )
+
 
 @pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
 def test_molding_sample_dispatch_fixed_positions_keep_source_factory_and_department_scope(

@@ -163,7 +163,7 @@ def get_carton_mark_customer_options(
         current_user,
         "carton_mark:read",
         factory_id,
-        CARTON_MARK_WRITE_DEPARTMENTS,
+        CARTON_MARK_READ_DEPARTMENTS,
     )
     return list_carton_mark_customer_options(db, factory_id)
 
@@ -182,7 +182,7 @@ def get_carton_mark_customers(
         current_user,
         "carton_mark:read",
         factory_id,
-        CARTON_MARK_WRITE_DEPARTMENTS,
+        CARTON_MARK_READ_DEPARTMENTS,
     )
     return list_carton_mark_customers(db, factory_id=factory_id)
 
