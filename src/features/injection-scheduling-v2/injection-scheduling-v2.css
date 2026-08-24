@@ -256,5 +256,6 @@
 .column-resizer[role="separator"]:focus-visible { width: 7px; right: 0; background: #2e6ee6; }
 .machine-plan-scroll:focus-visible { outline: 2px solid #2e6ee6; outline-offset: -2px; }
 .schedule-task-row:focus-visible { z-index: 28; outline: 2px solid #2e6ee6; outline-offset: -2px; }
-.grid-keyboard-help { width: max-content; max-width: calc(100% - 20px); margin: -30px 8px 8px; padding: 4px 8px; border: 1px solid #cad7df; border-radius: 999px; position: sticky; z-index: 42; bottom: 8px; left: 8px; overflow: hidden; background: rgba(248,250,251,.94); color: #607486; font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; box-shadow: 0 2px 7px rgba(20,42,65,.09); }
+.grid-keyboard-help { width: max-content; max-width: calc(100% - 20px); margin: -30px 8px 8px; padding: 4px 8px; border: 1px solid #cad7df; border-radius: 999px; position: sticky; z-index: 42; bottom: 8px; left: 8px; overflow: hidden; opacity: 0; transform: translateY(4px); background: rgba(248,250,251,.96); color: #607486; font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; box-shadow: 0 2px 7px rgba(20,42,65,.09); transition: opacity 140ms ease, transform 140ms ease; }
+.machine-plan-scroll:focus-visible .grid-keyboard-help { opacity: 1; transform: translateY(0); }
 .scheduling-sr-only { width: 1px; height: 1px; padding: 0; margin: -1px; border: 0; position: absolute; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }

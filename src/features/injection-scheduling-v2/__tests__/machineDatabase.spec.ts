@@ -26,6 +26,14 @@ describe('factory machine database workspace', () => {
     expect(apiSource).toContain('http.put(`/injection-scheduling/machines/${machine.id}`')
   })
 
+  it('uses compact command zones for factory, search and navigation controls', () => {
+    expect(featureSource).toContain('data-command-zone="context"')
+    expect(featureSource).toMatch(/data-command-zone="context"[\s\S]*class="command-field factory-field"/)
+    expect(featureSource).toContain('data-command-zone="search"')
+    expect(featureSource).toContain('aria-label="搜索厂区机台"')
+    expect(featureSource).toMatch(/data-command-zone="actions"[\s\S]*返回排产[\s\S]*共享模具库[\s\S]*刷新数据[\s\S]*新增机台/)
+  })
+
   it('round-trips equipment details and remarks', () => {
     expect(apiSource).toContain('equipment_details: input.equipmentDetails')
     expect(apiSource).toContain('remarks: input.remarks')

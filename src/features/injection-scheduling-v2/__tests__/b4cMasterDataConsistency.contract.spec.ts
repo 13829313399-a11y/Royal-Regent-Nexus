@@ -35,4 +35,15 @@ describe('B4c master-data consistency contracts', () => {
     expect(moldSource.match(/useDialogFocus\(/g)).toHaveLength(2)
     expect(machineSource.match(/useDialogFocus\(/g)).toHaveLength(1)
   })
+
+  it('keeps mold detail records complete and scrollable at short viewport heights', () => {
+    expect(moldSource).toContain('机安能力明细')
+    expect(moldSource).toContain('v-for="capability in detail.capabilities"')
+    expect(moldSource).toContain('实体模具明细')
+    expect(moldSource).toContain('v-for="asset in detail.assets"')
+    expect(moldSource).toContain('availableDetailAssets')
+    expect(sharedStyles).toMatch(/\.mold-detail-body\s*>\s*\*\s*\{[^}]*flex:\s*0\s+0\s+auto/)
+    expect(sharedStyles).toMatch(/\.detail-summary-cards small\s*\{[^}]*white-space:\s*normal/)
+    expect(sharedStyles).toMatch(/\.factory-detail-columns\s*\{[^}]*grid-template-columns:\s*1fr\s+1fr/)
+  })
 })

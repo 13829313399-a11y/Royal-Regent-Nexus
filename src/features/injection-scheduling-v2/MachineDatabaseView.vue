@@ -263,13 +263,19 @@ onBeforeUnmount(() => {
       <div class="topbar-live"><span class="live-dot"></span><span>厂区机台主数据在线</span><b>正式数据</b></div><AccountMenu compact class="scheduling-account-menu" />
     </header>
     <section class="scheduling-commandbar mold-commandbar" aria-label="机台数据库命令栏">
-      <div class="page-identity"><span class="eyebrow">生产部 / 注塑排产 / 机台数据库</span><strong>厂区机台数据库</strong><span class="readonly-badge editable">按厂区隔离</span></div>
-      <button class="command-button is-secondary" @click="router.push({ name: 'injection-scheduling-v2', query: { factory: factoryId } })"><ArrowLeft :size="15" />返回排产</button>
-      <button class="command-button is-secondary" @click="router.push({ name: 'injection-scheduling-mold-database', query: { factory: factoryId } })"><Database :size="15" />共享模具库</button>
-      <label class="command-field factory-field"><span>厂区</span><select :value="factoryId" @change="changeFactory(($event.target as HTMLSelectElement).value)"><option v-for="(name, id) in factoryNames" :key="id" :value="id">{{ name }}</option></select></label>
-      <label class="command-search"><Search :size="16" /><input v-model="search" placeholder="搜索机号、车间、型号、备注…" /></label>
-      <button class="command-button is-secondary" :disabled="loading" @click="loadMachines"><RefreshCw :size="15" :class="{ spinning: loading }" />刷新数据</button>
-      <button class="command-button auto" :disabled="!canManage" :title="canManage ? '新增厂区机台' : '缺少机台主数据维护权限'" @click="openCreate"><Plus :size="15" />新增机台</button>
+      <div class="command-zone command-context" data-command-zone="context">
+        <div class="page-identity"><span class="eyebrow">生产部 / 注塑排产 / 机台数据库</span><strong>厂区机台数据库</strong><span class="readonly-badge editable">按厂区隔离</span></div>
+        <label class="command-field factory-field"><span>厂区</span><select :value="factoryId" aria-label="厂区" @change="changeFactory(($event.target as HTMLSelectElement).value)"><option v-for="(name, id) in factoryNames" :key="id" :value="id">{{ name }}</option></select></label>
+      </div>
+      <div class="command-zone command-center" data-command-zone="search">
+        <label class="command-search"><Search :size="16" /><input v-model="search" type="search" aria-label="搜索厂区机台" placeholder="搜索机号、车间、型号、备注…" /></label>
+      </div>
+      <div class="command-zone command-actions" data-command-zone="actions">
+        <button class="command-button is-secondary" @click="router.push({ name: 'injection-scheduling-v2', query: { factory: factoryId } })"><ArrowLeft :size="15" />返回排产</button>
+        <button class="command-button is-secondary" @click="router.push({ name: 'injection-scheduling-mold-database', query: { factory: factoryId } })"><Database :size="15" />共享模具库</button>
+        <button class="command-button is-secondary" :disabled="loading" @click="loadMachines"><RefreshCw :size="15" :class="{ spinning: loading }" />刷新数据</button>
+        <button class="command-button auto" :disabled="!canManage" :title="canManage ? '新增厂区机台' : '缺少机台主数据维护权限'" @click="openCreate"><Plus :size="15" />新增机台</button>
+      </div>
     </section>
     <main>
       <section class="mold-kpi-strip">
