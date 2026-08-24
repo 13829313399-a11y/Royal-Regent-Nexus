@@ -171,4 +171,43 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
       expect(viewer.get(`[data-testid="${testId}"]`).attributes('disabled')).toBeDefined()
     }
   })
+
+  it('replaces MOQ editing with JustPlay component multipliers', async () => {
+    const componentQuote = quote()
+    componentQuote.sections = [{ code: 'sales', payload: {
+      pricing_mode: 'component',
+      pricing_components: [
+        { id: 'component-01', name: '主体', markup_x: 1.15 },
+        { id: 'component-02', name: '镜子' },
+      ],
+    } }] as InternalQuote['sections']
+    componentQuote.rr2CostSummary = {
+      shippingPricing: {
+        markup: 1.15,
+        miscRatio: .03,
+        markupTiers: [],
+        activeMarkupMoq: 10000,
+        pricingMode: 'component',
+        pricingGroups: [
+          { id: 'component-01', name: '主体', costHkd: 60, pricingBaseHkd: 60, markup: 1.15, settlement: .97, quotedHkd: 71.134, inheritsMainMarkup: false },
+          { id: 'component-02', name: '镜子', costHkd: 40, pricingBaseHkd: 40, markup: 1.15, settlement: .97, quotedHkd: 47.423, inheritsMainMarkup: true },
+        ],
+      },
+    } as InternalQuote['rr2CostSummary']
+
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: componentQuote, canEditMarkup: true } })
+    expect(wrapper.find('[data-testid="live-quote-markup-moq-0"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('JustPlay 分项倍率')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-component-markup-1"]').element.value).toBe('1.15')
+
+    await wrapper.get('[data-testid="live-quote-component-markup-1"]').setValue('1.05')
+    await wrapper.get('[data-testid="save-quote-markup"]').trigger('click')
+    expect(wrapper.emitted('updateMarkup')?.[0]?.[0]).toMatchObject({
+      miscRatio: '0.0300',
+      componentMarkups: [
+        { id: 'component-01', markup: '1.15' },
+        { id: 'component-02', markup: '1.05' },
+      ],
+    })
+  })
 })

@@ -554,6 +554,7 @@ def _base_result(section_code: str, payload: dict[str, Any], reference_snapshot_
         "input_hash": content_hash(payload),
         "reference_snapshot_id": reference_snapshot_id,
         "line_breakdown": [],
+        "pricing_breakdown": [],
         "currency_totals": {"HKD": "0.0000", "RMB": "0.0000", "USD": "0.0000"},
         "totals": {},
         "warnings": [],
@@ -609,6 +610,7 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
         category_hkd[category] += line_hkd
         material_rmb += line_rmb
         result["line_breakdown"].append({
+            **_pricing_metadata(row),
             "kind": "material",
             "item": str(row.get("item", "")),
             "category": category,
@@ -751,6 +753,7 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
         carton_total_hkd += per_piece
         carton_cuft += length * width * height / 1728
         result["line_breakdown"].append({
+            **_pricing_metadata(row),
             "kind": "carton",
             "item": str(row.get("item", "")),
             "carton_price_hkd": decimal_text(carton_price),
@@ -787,7 +790,12 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
     }
 
 
-def _component_cost(rows: Any, path: str, breakdown: list[dict[str, Any]]) -> Decimal:
+def _component_cost(
+    rows: Any,
+    path: str,
+    breakdown: list[dict[str, Any]],
+    inherited_pricing: dict[str, str] | None = None,
+) -> Decimal:
     total = ZERO
     for index, row in enumerate(rows or []):
         if not isinstance(row, dict):
@@ -795,9 +803,11 @@ def _component_cost(rows: Any, path: str, breakdown: list[dict[str, Any]]) -> De
         quantity = decimal_value(row.get("quantity"), f"{path}第 {index + 1} 行用量")
         unit_price = decimal_value(row.get("unit_price_hkd"), f"{path}第 {index + 1} 行单价")
         line_total = quantity * unit_price
-        child_total = _component_cost(row.get("children", []), f"{path}子项", breakdown)
+        pricing = _pricing_metadata(row, inherited=inherited_pricing)
+        child_total = _component_cost(row.get("children", []), f"{path}子项", breakdown, pricing)
         total += line_total + child_total
         breakdown.append({
+            **pricing,
             "kind": "electronic_component",
             "item": str(row.get("item", "")),
             "line_hkd": decimal_text(line_total),
@@ -820,6 +830,7 @@ def _component_cost_rmb(
     path: str,
     fx: Decimal,
     breakdown: list[dict[str, Any]],
+    inherited_pricing: dict[str, str] | None = None,
 ) -> tuple[Decimal, Decimal]:
     total_rmb = ZERO
     deductible_input_tax_rmb = ZERO
@@ -836,15 +847,18 @@ def _component_cost_rmb(
             raise CalculationInputError(f"{path}第 {index + 1} 行税点不能大于 100%")
         line_rmb = quantity * unit_price_rmb
         line_input_tax_rmb = line_rmb * tax_rate / (100 + tax_rate) if tax_rate else ZERO
+        pricing = _pricing_metadata(row, inherited=inherited_pricing)
         child_rmb, child_input_tax_rmb = _component_cost_rmb(
             row.get("children", []),
             f"{path}第 {index + 1} 行子项",
             fx,
             breakdown,
+            pricing,
         )
         total_rmb += line_rmb + child_rmb
         deductible_input_tax_rmb += line_input_tax_rmb + child_input_tax_rmb
         breakdown.append({
+            **pricing,
             "kind": "electronic_component",
             "item": str(row.get("item", "")),
             "specification": str(row.get("specification", "")),
@@ -1016,7 +1030,7 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         if machine_price is None:
             result["warnings"].append(_warning("machine_price_missing", f"注塑第 {index + 1} 行未匹配机型价：{machine_code}"))
         if material_price is None or machine_price is None:
-            result["line_breakdown"].append({"kind": "injection", "item": str(row.get("item", "")), "amount_hkd": None})
+            result["line_breakdown"].append({**_pricing_metadata(row, allow_markup_override=False), "kind": "injection", "item": str(row.get("item", "")), "amount_hkd": None})
             continue
         net_weight = decimal_value(row.get("net_weight_g"), "啤净重")
         loss_rate = decimal_value(
@@ -1042,6 +1056,7 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         elif material_origin == "imported":
             injection_imported_material_total += material_amount
         result["line_breakdown"].append({
+            **_pricing_metadata(row, allow_markup_override=False),
             "kind": "injection",
             "item": str(row.get("item", "")),
             "mold_no": str(row.get("mold_no", "")),
@@ -1077,7 +1092,7 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         material_price = _material_price(snapshot, material, grade)
         if material_price is None:
             result["warnings"].append(_warning("material_price_missing", f"吹气第 {index + 1} 行未匹配材料价：{material} + {grade}"))
-            result["line_breakdown"].append({"kind": "blow", "item": str(row.get("item", "")), "amount_hkd": None})
+            result["line_breakdown"].append({**_pricing_metadata(row, allow_markup_override=False), "kind": "blow", "item": str(row.get("item", "")), "amount_hkd": None})
             continue
         weight = decimal_value(row.get("estimated_weight_g"), "吹气预估料重")
         labor = decimal_value(row.get("labor_hkd"), "吹气人工")
@@ -1094,6 +1109,7 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         line_total = unit_total * quantity
         blow_total += line_total
         result["line_breakdown"].append({
+            **_pricing_metadata(row, allow_markup_override=False),
             "kind": "blow",
             "item": str(row.get("item", "")),
             "daily_capacity": str(row.get("daily_capacity", "")),
@@ -1189,20 +1205,24 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
         paint_tax = paint_base * paint_tax_rate / Decimal("100")
         paint_with_tax = paint_base + paint_tax
         total = spray_labor + paint_with_tax
+        pricing = _pricing_metadata(quick)
         result["line_breakdown"].extend((
             {
+                **pricing,
                 "kind": "painting_quick_labor",
                 "item": "喷油工",
                 "formula": "快捷报价：喷油工 HKD",
                 "amount_hkd": decimal_text(spray_labor),
             },
             {
+                **pricing,
                 "kind": "painting_quick_paint",
                 "item": "油漆",
                 "formula": "快捷报价：油漆 HKD",
                 "amount_hkd": decimal_text(paint_base),
             },
             {
+                **pricing,
                 "kind": "painting_quick_paint_tax",
                 "item": "油漆税金 13%",
                 "formula": "油漆 HKD × 13%",
@@ -1242,6 +1262,7 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
         name = str(row.get("name") or row.get("item") or "")
         position = str(row.get("position") or "")
         result["line_breakdown"].append({
+            **_pricing_metadata(row),
             "kind": "painting",
             "item": position or name,
             "name": name,
@@ -1268,6 +1289,7 @@ def _slush(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
         line_total = quantity * unit_price
         total += line_total
         result["line_breakdown"].append({
+            **_pricing_metadata(row),
             "kind": "slush",
             "product_code": str(row.get("product_code", "")),
             "item": str(row.get("item", "")),
@@ -1318,6 +1340,7 @@ def _hair(payload: dict[str, Any], result: dict[str, Any]) -> None:
             )
         total += unit_price_hkd
         result["line_breakdown"].append({
+            **_pricing_metadata(row),
             "kind": "hair",
             "item": name,
             "craft": craft,
@@ -1353,6 +1376,7 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
                 )
             total_hkd += unit_price_hkd
             result["line_breakdown"].append({
+                **_pricing_metadata(row),
                 "kind": "sewing_quick",
                 "item": doll_name or f"公仔 {index + 1}",
                 "category": "clothes",
@@ -1397,6 +1421,7 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
         category = str(group.get("category", "clothes"))
         if category not in category_rmb:
             raise CalculationInputError(f"车缝产品组第 {group_index + 1} 组分类无效")
+        pricing = _pricing_metadata(group)
         group_total_rmb = ZERO
         group_total_hkd = ZERO
         contains_labor_line = False
@@ -1427,6 +1452,7 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
                 category_material_rmb[category] += line_total_rmb
                 category_material_hkd[category] += line_total_hkd
             result["line_breakdown"].append({
+                **pricing,
                 "kind": "sewing_material",
                 "group": str(group.get("name", "")),
                 "category": category,
@@ -1450,6 +1476,18 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
             })
         labor = ZERO if contains_labor_line else decimal_value(group.get("labor_rmb"), "车缝产品组人工")
         labor_hkd = labor / fx
+        if labor_hkd > ZERO:
+            result["pricing_breakdown"].append({
+                **pricing,
+                "kind": "sewing_labor",
+                "group": str(group.get("name", "")),
+                "category": category,
+                "item": "车缝人工",
+                "cost_kind": "labor",
+                "amount_rmb": decimal_text(labor),
+                "amount_hkd": decimal_text(labor_hkd),
+                "formula": "产品组人工 RMB ÷ 冻结 RMB/HKD 汇率",
+            })
         group_total_rmb += labor
         group_total_hkd += labor_hkd
         category_labor_rmb[category] += labor
@@ -1485,6 +1523,24 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
     }
 
 
+def _pricing_metadata(
+    source: dict[str, Any],
+    *,
+    allow_markup_override: bool = True,
+    inherited: dict[str, str] | None = None,
+) -> dict[str, str]:
+    metadata = dict(inherited or {})
+    component_id = str(source.get("pricing_component_id") or "").strip()
+    if component_id:
+        metadata["pricing_component_id"] = component_id
+    if allow_markup_override and source.get("markup_override") not in (None, ""):
+        markup = decimal_value(source.get("markup_override"), "明细倍率")
+        if markup <= ZERO or markup > Decimal("9.99"):
+            raise CalculationInputError("明细倍率必须大于 0 且不超过 9.99")
+        metadata["markup_override"] = decimal_text(markup)
+    return metadata
+
+
 def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
     labor_base = decimal_value(
         payload.get("labor_base_hkd"),
@@ -1504,6 +1560,7 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
         category = str(group.get("category", "assembly"))
         if category not in category_total:
             raise CalculationInputError(f"装配产品组第 {group_index + 1} 组分类无效")
+        pricing = _pricing_metadata(group)
         processes = group.get("processes", []) or []
         first_process = processes[0] if processes and isinstance(processes[0], dict) else {}
         uses_group_inputs = group.get("teams") not in (None, "") or group.get("production_qty") not in (None, "")
@@ -1524,6 +1581,7 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
             process_total = labor_base * persons * teams / production_qty
             group_total += process_total
             result["line_breakdown"].append({
+                **pricing,
                 "kind": "assembly_process",
                 "group": str(group.get("name", "")),
                 "category": category,
@@ -1547,6 +1605,7 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
             if total_persons > ZERO:
                 group_total = labor_base * total_persons * group_teams / group_production_qty
                 result["line_breakdown"].append({
+                    **pricing,
                     "kind": "assembly_manual_total",
                     "group": str(group.get("name", "")),
                     "category": category,
@@ -1666,6 +1725,7 @@ def _sales_packaging(
         carton_total_hkd += per_piece
         carton_cuft += cuft
         result["line_breakdown"].append({
+            **_pricing_metadata(row),
             "kind": "carton",
             "owner": "sales",
             "item": str(row.get("item", "")),
@@ -1724,6 +1784,7 @@ def _sales_packaging_materials(
         total_rmb += amount_rmb
         total_hkd += amount_hkd
         result["line_breakdown"].append({
+            **_pricing_metadata(row),
             "kind": "packaging_material",
             "owner": "sales",
             "item": item,

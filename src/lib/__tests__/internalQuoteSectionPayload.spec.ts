@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
+import type { MoldingPayload } from '@/lib/internalQuoteSectionPayload'
 import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
@@ -789,5 +790,32 @@ describe('internal quote section payload normalization', () => {
     expect((normalizeInternalQuotePayload('sales', {
       customer_quote_fields: { three_sixty: { carton_length_in: 24.75 } },
     }) as SalesPayload).customer_quote_fields.three_sixty).not.toHaveProperty('carton_length_in')
+  })
+
+  it('preserves ordinary detail overrides and JustPlay component metadata without adding them to glue-row multipliers', () => {
+    expect(normalizeInternalQuotePayload('engineering', {
+      materials: [{ item: '车衣', category: 'hardware', quantity: 1, unit_price_rmb: 10, markup_override: '1.03', pricing_component_id: 'component-02' }],
+    })).toMatchObject({ materials: [{ item: '车衣', markup_override: 1.03, pricing_component_id: 'component-02' }] })
+
+    expect(normalizeInternalQuotePayload('molding', {
+      injection_lines: [{ item: '镜框', pricing_component_id: 'component-02', markup_override: '1.35' }],
+    })).toMatchObject({ injection_lines: [{ item: '镜框', pricing_component_id: 'component-02' }] })
+    expect((normalizeInternalQuotePayload('molding', {
+      injection_lines: [{ item: '镜框', pricing_component_id: 'component-02', markup_override: '1.35' }],
+    }) as MoldingPayload).injection_lines[0]).not.toHaveProperty('markup_override')
+
+    expect(normalizeInternalQuotePayload('sales', {
+      pricing_mode: 'component',
+      pricing_components: [
+        { id: 'component-01', name: '主体', markup_x: '1.15' },
+        { id: 'component-02', name: '镜子' },
+      ],
+    })).toMatchObject({
+      pricing_mode: 'component',
+      pricing_components: [
+        { id: 'component-01', name: '主体', markup_x: 1.15 },
+        { id: 'component-02', name: '镜子' },
+      ],
+    })
   })
 })

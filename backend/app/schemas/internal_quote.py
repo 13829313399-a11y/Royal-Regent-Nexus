@@ -101,6 +101,7 @@ class InternalQuoteCreateRequest(BaseModel):
     workflow_mode: InternalQuoteWorkflowMode = "section_review"
     quote_type: InternalQuoteType = "single"
     products: list[InternalQuoteProductCreateRequest] = Field(default_factory=list, max_length=20)
+    pricing_components: list[str] = Field(default_factory=list, max_length=50)
     participating_sections: list[InternalQuoteSectionCode] = Field(
         default_factory=lambda: [
             code for code in SECTION_CODE_ORDER if code in MANDATORY_SECTION_CODES
@@ -153,6 +154,19 @@ class InternalQuoteCreateRequest(BaseModel):
             raise ValueError("单款报价只能包含 1 款产品")
         if self.quote_type == "multi_region" and len(products) < 2:
             raise ValueError("多地区报价至少需要大陆价和印尼价两款")
+        normalized_factory = "".join(character for character in self.factory_id.lower() if character.isalnum())
+        normalized_customer = "".join(character for character in self.customer.lower() if character.isalnum())
+        is_justplay = normalized_factory == "huakangb" and normalized_customer == "justplay"
+        component_names = [name.strip() for name in self.pricing_components if name.strip()]
+        if len(component_names) != len({name.casefold() for name in component_names}):
+            raise ValueError("JustPlay 分项名称不能重复")
+        if any(len(name) > 64 for name in component_names):
+            raise ValueError("JustPlay 分项名称不能超过 64 个字符")
+        if is_justplay and not component_names:
+            raise ValueError("华康B JustPlay 报价至少要建立一个分项")
+        if not is_justplay and component_names:
+            raise ValueError("只有华康B JustPlay 报价可以在建单时建立分项")
+        self.pricing_components = component_names
         self.products = products
         return self
 

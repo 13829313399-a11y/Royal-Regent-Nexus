@@ -167,6 +167,17 @@ export interface InternalQuoteMarkupTier {
   includeInOutput: boolean
 }
 
+export interface InternalQuotePricingGroup {
+  id: string
+  name: string
+  costHkd: number
+  pricingBaseHkd: number
+  markup: number
+  settlement: number
+  quotedHkd: number
+  inheritsMainMarkup: boolean
+}
+
 export interface InternalQuoteRr2CostSummary {
   currency: string
   indonesiaFreightHkd: number
@@ -194,6 +205,8 @@ export interface InternalQuoteRr2CostSummary {
     shippingFloorHkd: number
     hkdUsd: number
     moldAmortizationUsd: number
+    pricingMode: 'standard' | 'component'
+    pricingGroups: InternalQuotePricingGroup[]
     rows: InternalQuoteShippingPriceRow[]
   }
 }
@@ -268,6 +281,7 @@ export interface InternalQuoteCreatePayload {
   participatingSections: InternalQuoteSectionCode[]
   quoteType?: 'single' | 'series' | 'multi_region'
   products?: InternalQuoteCreateProduct[]
+  pricingComponents?: string[]
 }
 
 export interface InternalQuoteCreateProduct {

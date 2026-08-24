@@ -64,6 +64,7 @@ const form = reactive<QuoteCreateForm>({
   participatingSections: [...mandatorySectionCodes],
   quoteType: 'single',
   products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
+  pricingComponents: [],
 })
 const selectedDepartmentDefinitions = computed(() => internalQuoteSectionDefinitions.filter((item) => (
   normalizeParticipation(form.participatingSections).includes(item.code)
@@ -74,6 +75,16 @@ const customerOptions = computed(() => Array.from(new Set([
   ...(props.sourceQuote?.customer ? [props.sourceQuote.customer] : []),
   ...props.customers,
 ])))
+const isJustPlay = computed(() => (
+  props.mode === 'create'
+  && String(props.factoryId).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'huakangb'
+  && String(form.customer).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'justplay'
+))
+
+watch(isJustPlay, (enabled) => {
+  if (enabled && !form.pricingComponents?.length) form.pricingComponents = ['主体', '配件1']
+  if (!enabled) form.pricingComponents = []
+}, { immediate: true })
 
 watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners[0]?.id, props.customers[0]] as const, ([open]) => {
   closeDocumentPreview()
@@ -105,6 +116,7 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
         imageFile: null,
         documentFiles: [],
       }],
+      pricingComponents: [],
     })
     return
   }
@@ -123,6 +135,7 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
     participatingSections: [...mandatorySectionCodes],
     quoteType: 'single',
     products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
+    pricingComponents: [],
   })
 }, { immediate: true })
 
@@ -160,6 +173,18 @@ function submit() {
   if (form.products.some((product) => !Number.isFinite(Number(product.quantity)) || Number(product.quantity) <= 0)) {
     errorMessage.value = '每款产品的出货数量都必须大于 0。'
     return
+  }
+  if (isJustPlay.value) {
+    const componentNames = (form.pricingComponents ?? []).map((name) => name.trim()).filter(Boolean)
+    if (!componentNames.length) {
+      errorMessage.value = '华康B JustPlay 报价至少要建立一个分项。'
+      return
+    }
+    if (componentNames.length !== new Set(componentNames.map((name) => name.toLocaleLowerCase())).size) {
+      errorMessage.value = 'JustPlay 分项名称不能重复。'
+      return
+    }
+    form.pricingComponents = componentNames
   }
   const participating = new Set(normalizeParticipation(form.participatingSections))
   if (form.products.some((product) => (product.documentFiles ?? []).some((document) => !participating.has(document.department)))) {
@@ -210,6 +235,17 @@ function addProduct() {
 function removeProduct(index: number) {
   if (form.products.length <= 1 || form.quoteType !== 'series') return
   form.products.splice(index, 1)
+}
+
+function addPricingComponent() {
+  if (!isJustPlay.value || (form.pricingComponents?.length ?? 0) >= 50) return
+  form.pricingComponents ??= []
+  form.pricingComponents.push(`配件${form.pricingComponents.length}`)
+}
+
+function removePricingComponent(index: number) {
+  if (!isJustPlay.value || (form.pricingComponents?.length ?? 0) <= 1) return
+  form.pricingComponents?.splice(index, 1)
 }
 
 function selectProductImage(index: number, event: Event) {
@@ -353,6 +389,21 @@ onBeforeUnmount(closeDocumentPreview)
               </label>
             </div>
 
+            <section v-if="isJustPlay" class="quote-product-list quote-pricing-component-list">
+              <div class="quote-product-list-head">
+                <div><strong>JustPlay 报价分项</strong><span>建单时确定主体与配件；各部门报价时直接选择归属，输出仍使用现有字段映射。</span></div>
+                <button type="button" :disabled="(form.pricingComponents?.length ?? 0) >= 50" @click="addPricingComponent"><Plus />新增配件</button>
+              </div>
+              <div class="quote-pricing-component-rows">
+                <label v-for="(_component, index) in form.pricingComponents" :key="index">
+                  <span>{{ index === 0 ? '主分项' : `配件 ${index}` }}</span>
+                  <input v-model="form.pricingComponents![index]" type="text" maxlength="64" :placeholder="index === 0 ? '例如：主体' : `例如：配件${index}`">
+                  <button type="button" :disabled="(form.pricingComponents?.length ?? 0) <= 1" :aria-label="`移除分项 ${index + 1}`" @click="removePricingComponent(index)"><Trash2 /></button>
+                </label>
+              </div>
+              <p>第一个分项是未选择明细的默认归属；创建后右侧原 MOQ 区域会改为各分项倍率。</p>
+            </section>
+
             <section class="quote-product-list">
               <div class="quote-product-list-head">
                 <div><strong>产品清单</strong><span>第 1 款为基准款；创建后可把整份部门报价复制到其他款。</span></div>
@@ -459,12 +510,13 @@ onBeforeUnmount(closeDocumentPreview)
 .quote-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.quote-form-grid label{display:grid;gap:6px}.quote-form-grid label.wide{grid-column:1/-1}.quote-form-grid label>span{color:#475569;font-size:11px;font-weight:800}.quote-form-grid b{color:#dc2626}.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{width:100%;border:1px solid #dbe5ea;border-radius:9px;background:#fff;padding:9px 11px;color:#0f172a;font-size:13px;outline:none}.quote-form-grid textarea{resize:vertical}
 .quote-owner-hint{color:#64748b;font-size:11px;line-height:1.5}
 .quote-product-list{display:grid;gap:10px;border:1px solid #dbe5ea;border-radius:12px;background:#f8fafc;padding:14px}.quote-product-list-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.quote-product-list-head>div{display:grid;gap:3px}.quote-product-list-head strong{color:#0f172a;font-size:14px}.quote-product-list-head span,.quote-product-list>p{margin:0;color:#64748b;font-size:11px;line-height:1.5}.quote-product-list-head button{display:inline-flex;align-items:center;gap:5px;border:1px solid #99f6e4;border-radius:8px;background:#fff;padding:7px 10px;color:#0f766e;font-size:11px;font-weight:900}.quote-product-list-head button svg{width:14px}.quote-product-rows{display:grid;gap:8px}.quote-product-row{position:relative;display:grid;grid-template-columns:34px minmax(170px,1.35fr) minmax(95px,.55fr) minmax(330px,2fr) auto;align-items:start;gap:9px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;padding:10px}.quote-product-number{align-self:center;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:900}.quote-product-row label{display:grid;gap:5px}.quote-product-row label>span{color:#475569;font-size:10px;font-weight:800}.quote-product-row label b{color:#dc2626}.quote-product-row input[type=text],.quote-product-row input[type=number]{min-width:0;width:100%;border:1px solid #dbe5ea;border-radius:8px;padding:8px 9px;color:#0f172a;font-size:12px}.quote-product-image input,.quote-product-documents input{position:absolute;width:1px;height:1px;opacity:0}.quote-product-image small,.quote-product-documents small{display:flex;min-width:0;align-items:center;justify-content:center;gap:5px;overflow:hidden;border:1px dashed #99f6e4;border-radius:8px;padding:8px 9px;color:#0f766e;font-size:11px;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}.quote-product-image small svg,.quote-product-documents small svg{width:14px;flex:0 0 auto}.quote-product-assets{display:grid;gap:7px}.quote-product-asset-pickers{display:grid;grid-template-columns:minmax(120px,1fr) auto minmax(105px,.7fr);align-items:end;gap:6px}.quote-asset-preview{display:inline-flex;height:34px;align-items:center;gap:4px;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:0 8px;color:#0f766e;font-size:10px;font-weight:900}.quote-asset-preview svg{width:13px}.quote-product-document-list{display:grid;gap:5px}.quote-product-document-list>div{display:grid;grid-template-columns:minmax(0,1fr) 86px 28px;gap:5px}.quote-document-name{display:flex;min-width:0;align-items:center;gap:5px;overflow:hidden;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:6px 7px;color:#475569;font-size:10px;text-align:left;text-overflow:ellipsis;white-space:nowrap}.quote-document-name svg{width:12px;flex:0 0 auto}.quote-product-document-list select{min-width:0;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:5px;color:#0f766e;font-size:10px;font-weight:800}.quote-document-remove{display:grid;place-items:center;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#dc2626}.quote-document-remove svg{width:12px}.quote-baseline-badge,.quote-region-badge{position:absolute;top:6px;right:8px;border-radius:999px;padding:3px 6px;font-size:9px}.quote-baseline-badge{background:#ccfbf1;color:#0f766e}.quote-region-badge{right:62px;background:#eff6ff;color:#1d4ed8}.quote-remove-product{display:grid;width:30px;height:30px;place-items:center;border:1px solid #fecaca;border-radius:8px;background:#fff;color:#dc2626}.quote-remove-product svg{width:14px}
+.quote-pricing-component-list{border-color:#99f6e4;background:#f0fdfa}.quote-pricing-component-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.quote-pricing-component-rows label{display:grid;grid-template-columns:auto minmax(0,1fr) 30px;align-items:center;gap:8px;border:1px solid #ccfbf1;border-radius:9px;background:#fff;padding:8px}.quote-pricing-component-rows label>span{color:#0f766e;font-size:11px;font-weight:900}.quote-pricing-component-rows input{min-width:0;border:1px solid #dbe5ea;border-radius:7px;padding:7px 8px;color:#0f172a;font-size:12px}.quote-pricing-component-rows label>button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#dc2626}.quote-pricing-component-rows label>button svg{width:13px}
 .quote-create-preview-backdrop{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:28px;background:rgb(15 23 42/.66)}.quote-create-preview{display:grid;width:min(900px,100%);max-height:calc(100vh - 56px);overflow:hidden;border:1px solid #cbd5e1;border-radius:16px;background:#fff;box-shadow:0 28px 80px rgb(15 23 42/.35)}.quote-create-preview header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:12px 14px}.quote-create-preview header>div{display:grid;min-width:0}.quote-create-preview header strong{overflow:hidden;color:#0f172a;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.quote-create-preview header span{margin-top:2px;color:#64748b;font-size:10px}.quote-create-preview header button{display:grid;width:32px;height:32px;place-items:center;border:0;border-radius:8px;background:#fff;color:#64748b}.quote-create-preview header svg{width:16px}.quote-create-preview>img{display:block;max-width:100%;max-height:calc(100vh - 150px);margin:auto;object-fit:contain}.quote-create-preview>iframe{width:min(900px,90vw);height:calc(100vh - 150px);border:0}.quote-create-file-preview{display:grid;min-height:280px;place-items:center;align-content:center;gap:9px;padding:30px;color:#64748b;text-align:center}.quote-create-file-preview>svg{width:44px;color:#0d9488}.quote-create-file-preview strong{color:#0f172a;font-size:15px}.quote-create-file-preview span{max-width:480px;font-size:12px;line-height:1.6}
 .quote-create-baseline{display:grid;gap:12px;border:1px solid #dbe5ea;border-radius:12px;background:#f8fafc;padding:15px}.quote-baseline-title{display:flex;align-items:center;gap:9px}.quote-baseline-title>svg{width:20px;color:#0f766e}.quote-baseline-title div{display:grid}.quote-baseline-title strong{color:#0f172a;font-size:13px}.quote-baseline-title span{margin-top:2px;color:#64748b;font-size:11px}.quote-segment-pills{display:flex;flex-wrap:wrap;gap:7px}.quote-segment-pills span{display:inline-flex;align-items:center;gap:4px;border:1px solid #ccfbf1;border-radius:999px;background:#fff;padding:5px 8px;color:#0f766e;font-size:10px;font-weight:800}.quote-segment-pills svg{width:12px;height:12px}.quote-create-baseline p{display:flex;align-items:flex-start;gap:6px;margin:0;color:#64748b;font-size:11px;line-height:1.5}.quote-create-baseline p svg{width:15px;height:15px;flex:0 0 auto;color:#0d9488}.quote-form-error{margin:0;border-radius:8px;background:#fef2f2;padding:9px 11px;color:#b91c1c;font-size:12px}
 .quote-primary-button,.quote-secondary-button{display:inline-flex;min-height:38px;align-items:center;justify-content:center;gap:7px;border-radius:9px;padding:0 16px;font-size:12px;font-weight:900}.quote-primary-button{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-primary-button:hover{background:#115e59}.quote-secondary-button{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-primary-button svg{width:16px;height:16px}.quote-dialog-enter-active,.quote-dialog-leave-active{transition:opacity .16s ease}.quote-dialog-enter-active .quote-dialog,.quote-dialog-leave-active .quote-dialog{transition:transform .18s ease}.quote-dialog-enter-from,.quote-dialog-leave-to{opacity:0}.quote-dialog-enter-from .quote-dialog,.quote-dialog-leave-to .quote-dialog{transform:translateY(8px) scale(.985)}
 .quote-department-choice small,.quote-form-grid label>span,.quote-baseline-title span,.quote-create-baseline p{font-size:12px}.quote-segment-pills span{font-size:11px}.quote-primary-button,.quote-secondary-button{font-size:13px}.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label{transition:color .18s ease,background-color .18s ease,border-color .18s ease,box-shadow .18s ease,transform .18s ease}.quote-icon-button:hover,.quote-primary-button:hover,.quote-secondary-button:hover{transform:translateY(-1px)}.quote-icon-button:active,.quote-primary-button:active,.quote-secondary-button:active{transform:translateY(0) scale(.98)}.quote-secondary-button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-department-choice label:hover{border-color:#99f6e4;box-shadow:0 8px 18px rgb(15 118 110/.08)}.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:border-color .18s ease,box-shadow .18s ease,background-color .18s ease}.quote-form-grid input:hover,.quote-form-grid select:hover,.quote-form-grid textarea:hover{border-color:#94a3b8}.quote-form-grid input:focus,.quote-form-grid select:focus,.quote-form-grid textarea:focus{border-color:#14b8a6;box-shadow:0 0 0 3px rgb(20 184 166/.1)}
 .quote-participation-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.quote-participation-heading strong{color:#0f172a;font-size:13px}.quote-participation-heading span{color:#64748b;font-size:12px}.quote-segment-pills.mandatory span{border-color:#99f6e4;background:#f0fdfa;padding:6px 9px;font-size:11px}.quote-optional-segments{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px}.quote-optional-segments label{position:relative;display:flex;align-items:center;gap:7px;min-width:0;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:9px;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,box-shadow .18s ease,transform .18s ease}.quote-optional-segments label:hover{border-color:#5eead4;box-shadow:0 7px 16px rgb(15 118 110/.08);transform:translateY(-1px)}.quote-optional-segments label.active{border-color:#14b8a6;background:#f0fdfa;box-shadow:0 0 0 2px rgb(20 184 166/.08)}.quote-optional-segments input{position:absolute;opacity:0}.quote-optional-segments>label>svg{width:16px;height:16px;flex:0 0 auto;color:#cbd5e1}.quote-optional-segments label.active>svg{color:#0f766e}.quote-optional-segments label span{display:grid;min-width:0}.quote-optional-segments strong{overflow:hidden;color:#0f172a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.quote-optional-segments small{margin-top:2px;color:#64748b;font-size:10px;white-space:nowrap}.quote-create-baseline .quote-participation-note{border-radius:8px;background:#fff7ed;padding:8px 10px;color:#9a3412;font-size:12px}
 @media(max-width:760px){.quote-optional-segments{grid-template-columns:repeat(2,minmax(0,1fr))}.quote-type-choice{grid-template-columns:1fr}.quote-product-row{grid-template-columns:30px 1fr}.quote-product-row label,.quote-product-assets{grid-column:2}.quote-product-asset-pickers{grid-template-columns:1fr auto}.quote-product-documents{grid-column:1/-1}.quote-remove-product{grid-column:2}.quote-region-badge{right:8px;top:32px}}
-@media(max-width:650px){.quote-dialog-backdrop{padding:0}.quote-dialog{max-height:100vh;border-radius:0}.quote-department-choice,.quote-form-grid{grid-template-columns:1fr}.quote-form-grid label.wide{grid-column:auto}.quote-dialog-actions{position:sticky;bottom:0}.quote-participation-heading{align-items:flex-start;flex-direction:column;gap:3px}}
+@media(max-width:650px){.quote-dialog-backdrop{padding:0}.quote-dialog{max-height:100vh;border-radius:0}.quote-department-choice,.quote-form-grid,.quote-pricing-component-rows{grid-template-columns:1fr}.quote-form-grid label.wide{grid-column:auto}.quote-dialog-actions{position:sticky;bottom:0}.quote-participation-heading{align-items:flex-start;flex-direction:column;gap:3px}}
 @media(prefers-reduced-motion:reduce){.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label,.quote-optional-segments label,.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:none}}
 </style>

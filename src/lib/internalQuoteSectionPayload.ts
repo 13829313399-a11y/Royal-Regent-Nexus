@@ -4,7 +4,16 @@ export type DisneyPurchasedSection = 'product' | 'package'
 export type EngineeringMaterialCategory = 'hardware' | 'auxiliary' | 'packaging'
 export type EngineeringAuxiliaryCategory = '五金' | '吸塑' | '胶袋' | '彩盒/内卡' | '电池' | '利宝' | '电镀' | '其他外购'
 export type UnitPriceSourceCurrency = 'RMB' | 'HKD'
-export interface EngineeringMaterialRow {
+export interface QuotePricingMetadata {
+  pricing_component_id?: string
+  markup_override?: number
+}
+export interface SalesPricingComponent {
+  id: string
+  name: string
+  markup_x?: number
+}
+export interface EngineeringMaterialRow extends QuotePricingMetadata {
   item: string
   category: EngineeringMaterialCategory
   purpose: string
@@ -84,7 +93,7 @@ export interface EngineeringMoldRow {
 export interface EngineeringProductionMoldCostRow { item: string; cost_rmb: number }
 export interface SalesDimensions { length: number; width: number; height: number }
 export type SalesPackagingCategory = 'blister' | 'color_box_inner_card' | 'leaflet_manual' | 'other_purchase'
-export interface SalesPackagingMaterialRow {
+export interface SalesPackagingMaterialRow extends QuotePricingMetadata {
   item: string
   specification: string
   category: SalesPackagingCategory
@@ -101,7 +110,7 @@ export interface SalesPackagingMaterialRow {
 }
 export type SalesDimensionUnit = 'cm' | 'inch'
 export interface SalesFlatCardRow { name: string; length_in: number; width_in: number; quantity: number }
-export interface SalesCartonRow { item: string; size_unit?: SalesDimensionUnit; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
+export interface SalesCartonRow extends QuotePricingMetadata { item: string; size_unit?: SalesDimensionUnit; length_in: number; width_in: number; height_in: number; qty_per_carton: number; flat_cards: SalesFlatCardRow[]; disney_unit_price_usd?: number }
 export type EngineeringFlatCardRow = SalesFlatCardRow
 export type EngineeringCartonRow = SalesCartonRow
 export interface EngineeringPayload {
@@ -121,14 +130,14 @@ export interface EngineeringPayload {
 
 export type InternalQuoteEntryMode = 'detail' | 'quick'
 
-export interface ElectronicQuickQuoteRow {
+export interface ElectronicQuickQuoteRow extends QuotePricingMetadata {
   item: string
   unit_price_rmb: number
   tax_rate_percent: number
   remark: string
 }
 
-export interface ElectronicComponentRow {
+export interface ElectronicComponentRow extends QuotePricingMetadata {
   item: string
   specification: string
   quantity: number
@@ -170,7 +179,7 @@ export interface ElectronicSummary {
   quoteHkd: number
 }
 
-export interface InjectionRow {
+export interface InjectionRow extends Omit<QuotePricingMetadata, 'markup_override'> {
   engineering_source_key?: string
   engineering_synced_fields?: string[]
   engineering_sync_disabled?: boolean
@@ -213,7 +222,7 @@ export interface CaixingToolPlanRow {
   cycle_time_seconds: number
   process_cost_hkd: number
 }
-export interface BlowRow {
+export interface BlowRow extends Omit<QuotePricingMetadata, 'markup_override'> {
   item: string
   daily_capacity: string
   material: string
@@ -232,7 +241,7 @@ export interface MoldingPayload { injection_loss_rate_percent: number; injection
 export type PaintingOperationCode = 'clamp' | 'pad_print' | 'spray' | 'edge' | 'paint' | 'dip' | 'wipe' | 'pp_water'
 export interface PaintingOperationValue { quantity: number; unit_price_hkd: number }
 export type PaintingOperations = Record<PaintingOperationCode, PaintingOperationValue>
-export interface PaintingRow {
+export interface PaintingRow extends QuotePricingMetadata {
   image_reference: string
   name: string
   position: string
@@ -241,7 +250,7 @@ export interface PaintingRow {
   source_row?: number
 }
 export interface DisneyDecorationRow { application_type: string; rate_per_op_usd: number; operations: number }
-export interface PaintingQuickQuote { spray_labor_hkd: number; paint_hkd: number; paint_tax_rate_percent: 13 }
+export interface PaintingQuickQuote extends QuotePricingMetadata { spray_labor_hkd: number; paint_hkd: number; paint_tax_rate_percent: 13 }
 export interface PaintingPayload {
   quote_mode: InternalQuoteEntryMode
   quick_quote: PaintingQuickQuote
@@ -249,7 +258,7 @@ export interface PaintingPayload {
   disney_decorations: DisneyDecorationRow[]
 }
 
-export interface SlushRow {
+export interface SlushRow extends QuotePricingMetadata {
   product_code: string
   item: string
   material: string
@@ -262,7 +271,7 @@ export interface SlushRow {
 }
 export interface SlushPayload { lines: SlushRow[] }
 
-export interface HairRow {
+export interface HairRow extends QuotePricingMetadata {
   name: string
   craft: string
   weight_g: number
@@ -287,8 +296,8 @@ export interface SewingMaterialRow {
   remark: string
   source_row?: number
 }
-export interface SewingGroup { name: string; category: 'clothes' | 'hair'; materials: SewingMaterialRow[]; labor_rmb: number }
-export interface SewingQuickQuoteRow { doll_name: string; unit_price_hkd: number }
+export interface SewingGroup extends QuotePricingMetadata { name: string; category: 'clothes' | 'hair'; materials: SewingMaterialRow[]; labor_rmb: number }
+export interface SewingQuickQuoteRow extends QuotePricingMetadata { doll_name: string; unit_price_hkd: number }
 export interface SewingPayload { quote_mode: InternalQuoteEntryMode; quick_quotes: SewingQuickQuoteRow[]; groups: SewingGroup[] }
 
 export interface AssemblyProcessRow {
@@ -300,7 +309,7 @@ export interface AssemblyProcessRow {
   teams?: number
   source_row?: number
 }
-export interface AssemblyGroup {
+export interface AssemblyGroup extends QuotePricingMetadata {
   name: string
   category: 'assembly' | 'packaging'
   production_qty: number
@@ -478,6 +487,8 @@ export interface SalesPayload {
   cartons: SalesCartonRow[]
   freight_calc: SalesFreightCalculation
   shipping?: SalesShippingPricing
+  pricing_mode?: 'component'
+  pricing_components?: SalesPricingComponent[]
   additional_tax_hkd?: number
   indonesia_freight_hkd?: number
   tax_categories?: SalesTaxRow[]
@@ -627,6 +638,7 @@ function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
     const category = textValue(row.category)
     const unitPriceSourceCurrency = normalizeUnitPriceSourceCurrency(row)
     return {
+      ...pricingMetadata(row),
       item: textValue(row.item),
       specification: textValue(row.specification),
       category: ['blister', 'color_box_inner_card', 'leaflet_manual'].includes(category)
@@ -648,6 +660,7 @@ function packagingMaterialRows(value: unknown): SalesPackagingMaterialRow[] {
 
 function cartonRows(value: unknown): SalesCartonRow[] {
   return rows(value).map((row) => ({
+    ...pricingMetadata(row),
     item: textValue(row.item),
     size_unit: normalizeSalesDimensionUnit(row.size_unit),
     length_in: numberValue(row.length_in),
@@ -925,6 +938,7 @@ function electronicRowsSummary(rows: ElectronicComponentRow[], rmbHkdRate: unkno
 function electronicCalculationRows(payload: ElectronicPayload): ElectronicComponentRow[] {
   if (payload.quote_mode !== 'quick') return payload.components
   return (payload.quick_quotes ?? []).map((row) => ({
+    ...pricingMetadata(row),
     item: row.item,
     specification: '',
     quantity: 1,
@@ -999,6 +1013,36 @@ function textValue(value: unknown) {
   return value == null ? '' : String(value)
 }
 
+function pricingMetadata(row: Partial<QuotePricingMetadata>, allowMarkupOverride = true): QuotePricingMetadata {
+  const pricingComponentId = textValue(row.pricing_component_id).trim()
+  const markupOverride = Number(row.markup_override)
+  return {
+    ...(pricingComponentId ? { pricing_component_id: pricingComponentId } : {}),
+    ...(allowMarkupOverride && Number.isFinite(markupOverride) && markupOverride > 0 && markupOverride <= 9.99
+      ? { markup_override: Number(markupOverride.toFixed(2)) }
+      : {}),
+  }
+}
+
+function pricingComponents(value: unknown): SalesPricingComponent[] {
+  const seen = new Set<string>()
+  return rows(value).flatMap((row) => {
+    const id = textValue(row.id).trim()
+    const name = textValue(row.name).trim()
+    const key = id.toLocaleLowerCase()
+    if (!id || !name || seen.has(key)) return []
+    seen.add(key)
+    const markup = Number(row.markup_x)
+    return [{
+      id,
+      name,
+      ...(Number.isFinite(markup) && markup > 0 && markup <= 9.99
+        ? { markup_x: Number(markup.toFixed(2)) }
+        : {}),
+    }]
+  })
+}
+
 function importBatchMetadata(row: Record<string, unknown>) {
   const importBatchId = textValue(row.import_batch_id).trim()
   return importBatchId ? { import_batch_id: importBatchId } : {}
@@ -1035,6 +1079,7 @@ function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPart
 function electronicRows(value: unknown): ElectronicComponentRow[] {
   return rows(value).map((row) => ({
     ...importBatchMetadata(row),
+    ...pricingMetadata(row),
     item: textValue(row.item),
     specification: textValue(row.specification ?? row.spec),
     quantity: numberValue(row.quantity),
@@ -1223,6 +1268,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
             : '其他外购'
         return {
           ...importBatchMetadata(row),
+          ...pricingMetadata(row),
           item: textValue(row.item), category, purpose: textValue(row.purpose), specification: textValue(row.specification ?? row.spec),
           quantity: numberValue(row.quantity ?? row.qty), unit: textValue(row.unit), unit_price_rmb: numberValue(row.unit_price_rmb),
           loss_rate: multiplierValue(row.loss_rate),
@@ -1257,6 +1303,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     return {
       quote_mode: source.quote_mode === 'quick' ? 'quick' : 'detail',
       quick_quotes: rows(source.quick_quotes).map((row) => ({
+        ...pricingMetadata(row),
         item: textValue(row.item ?? row.name),
         unit_price_rmb: numberValue(row.unit_price_rmb ?? row.price_rmb),
         tax_rate_percent: numberValue(row.tax_rate_percent, 13),
@@ -1283,6 +1330,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       injection_loss_rate_percent: injectionLossRate,
       injection_lines: rows(source.injection_lines).map((row) => ({
         ...importBatchMetadata(row),
+        ...pricingMetadata(row, false),
         engineering_source_key: textValue(row.engineering_source_key),
         engineering_synced_fields: Array.isArray(row.engineering_synced_fields)
           ? row.engineering_synced_fields.filter((field): field is string => typeof field === 'string')
@@ -1297,6 +1345,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       })),
       blow_lines: rows(source.blow_lines).map((row) => ({
         ...importBatchMetadata(row),
+        ...pricingMetadata(row, false),
         item: textValue(row.item ?? row.name), daily_capacity: textValue(row.daily_capacity ?? row.capacity), material: textValue(row.material), grade: textValue(row.grade),
         estimated_weight_g: numberValue(row.estimated_weight_g ?? row.weight_g), labor_hkd: numberValue(row.labor_hkd ?? row.blow_labor), burr_hkd: numberValue(row.burr_hkd ?? row.flash),
         profit_multiplier: numberValue(row.profit_multiplier ?? row.profit_x, 1.05), quantity: numberValue(row.quantity, 1),
@@ -1310,12 +1359,14 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   if (code === 'painting') return {
     quote_mode: source.quote_mode === 'quick' ? 'quick' : 'detail',
     quick_quote: {
+      ...pricingMetadata(objectValue(source.quick_quote)),
       spray_labor_hkd: numberValue(objectValue(source.quick_quote).spray_labor_hkd),
       paint_hkd: numberValue(objectValue(source.quick_quote).paint_hkd),
       paint_tax_rate_percent: 13,
     },
     rows: rows(source.rows).map((row) => ({
       ...importBatchMetadata(row),
+      ...pricingMetadata(row),
       image_reference: textValue(row.image_reference ?? row.image),
       name: textValue(row.name ?? row.item),
       position: textValue(row.position),
@@ -1328,6 +1379,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   if (code === 'slush') return {
     lines: rows(source.lines).map((row) => ({
       ...importBatchMetadata(row),
+      ...pricingMetadata(row),
       product_code: textValue(row.product_code ?? row.product_no),
       item: textValue(row.item ?? row.name),
       material: textValue(row.material),
@@ -1341,6 +1393,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   }
   if (code === 'hair') return {
     lines: rows(source.lines).map((row) => ({
+      ...pricingMetadata(row),
       name: textValue(row.name ?? row.item),
       craft: textValue(row.craft ?? row.process),
       weight_g: numberValue(row.weight_g ?? row.net_weight_g),
@@ -1353,11 +1406,13 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     return {
       quote_mode: source.quote_mode === 'quick' ? 'quick' : 'detail',
       quick_quotes: rows(source.quick_quotes).map((row) => ({
+        ...pricingMetadata(row),
         doll_name: textValue(row.doll_name ?? row.name),
         unit_price_hkd: numberValue(row.unit_price_hkd ?? row.price_hkd),
       })),
       groups: rows(source.groups).map((group) => ({
         ...importBatchMetadata(group),
+        ...pricingMetadata(group),
         name: textValue(group.name),
         category: ['hair', '车发'].includes(textValue(group.category)) ? 'hair' : 'clothes',
         labor_rmb: numberValue(group.labor_rmb ?? group.labor_amount),
@@ -1394,6 +1449,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
           : numberValue(manualPeopleValue)
         return {
           ...importBatchMetadata(group),
+          ...pricingMetadata(group),
           name: textValue(group.name),
           category: textValue(group.category) === 'packaging' ? 'packaging' : 'assembly',
           production_qty: productionQty,
@@ -1451,6 +1507,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   const shippingSource = objectValue(source.shipping)
   const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping') || Boolean(legacyScenarioWithSettlement)
   const miscPricing = normalizedSalesMiscPricing(shippingSource, legacyScenarioWithSettlement?.settlement)
+  const normalizedPricingComponents = pricingComponents(source.pricing_components)
   return {
     paper_price_factor: paperPriceFactor,
     ...(hasInnerPaperPriceFactor ? { inner_paper_price_factor: numberValue(source.inner_paper_price_factor, paperPriceFactor) } : {}),
@@ -1494,6 +1551,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'lifting_pct') ? { lifting_pct: numberValue(shippingSource.lifting_pct, 52) } : {}),
       },
     } : {}),
+    ...(source.pricing_mode === 'component' && normalizedPricingComponents.length
+      ? { pricing_mode: 'component', pricing_components: normalizedPricingComponents }
+      : {}),
     ...(hasLegacySalesCostFields ? {
       additional_tax_hkd: numberValue(source.additional_tax_hkd),
       indonesia_freight_hkd: numberValue(source.indonesia_freight_hkd),
