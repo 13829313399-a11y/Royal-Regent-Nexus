@@ -216,6 +216,54 @@ def test_rr2_justplay_component_multipliers_group_department_costs_once():
     assert rows_by_key(result["t1"])["base_price"]["value"] == "11.4433"
 
 
+def test_rr2_justplay_keeps_packaging_global_and_prices_it_once_with_main_markup():
+    sections = [
+        section(
+            "sales",
+            {
+                "pricing_mode": "component",
+                "pricing_components": [
+                    {"id": "component-01", "name": "主体", "markup_x": "1.15"},
+                    {"id": "component-02", "name": "镜子", "markup_x": "1.05"},
+                ],
+                "shipping": {"markup_x": "1.15", "misc_ratio": "0.03"},
+                "packaging_materials": [{"item": "彩盒"}],
+                "cartons": [{"item": "外箱"}],
+            },
+            {"packaging_material_hkd": "3", "carton_hkd": "1"},
+            [
+                {"kind": "packaging_material", "item": "彩盒", "category": "color_box_inner_card", "amount_hkd": "3"},
+                {"kind": "carton", "item": "外箱", "per_piece_hkd": "1"},
+            ],
+        ),
+        section(
+            "engineering",
+            {"materials": []},
+            {"hardware_hkd": "10", "auxiliary_hkd": "0", "packaging_hkd": "0", "carton_hkd": "0", "total_hkd": "10"},
+            [
+                {"kind": "material", "item": "主体件", "category": "hardware", "amount_hkd": "6", "pricing_component_id": "component-01"},
+                {"kind": "material", "item": "镜子件", "category": "hardware", "amount_hkd": "4", "pricing_component_id": "component-02"},
+            ],
+        ),
+    ]
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("14"), "carton_hkd": Decimal("1")},
+        SNAPSHOT,
+        factory_id="huakang-b",
+    )
+
+    pricing = result["shipping_pricing"]
+    assert [(row["name"], row["cost_hkd"], row["pricing_base_hkd"]) for row in pricing["pricing_groups"]] == [
+        ("主体", "6.0000", "10.0000"),
+        ("镜子", "4.0000", "4.0000"),
+    ]
+    assert pricing["global_pricing"]["cost_hkd"] == "4.0000"
+    assert [row["label"] for row in pricing["global_pricing"]["entries"]] == ["彩盒", "外箱"]
+    assert rows_by_key(result["t1"])["base_price"]["value"] == "16.1856"
+
+
 @pytest.mark.parametrize(
     ("factory_id", "expected_rate", "expected_deduction"),
     [

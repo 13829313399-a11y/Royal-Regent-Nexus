@@ -274,5 +274,120 @@ def test_export_renders_formula_driven_split_pricing_groups():
         assert sheet.cell(main_cost_row + 3, 4).value == f"=D{main_cost_row}*D{main_cost_row + 1}/D{main_cost_row + 2}"
         assert sheet.cell(detail_cost_row + 1, 4).value == 1.03
         assert sheet.cell(total_quote_row, 4).value == f"=D{main_cost_row + 3}+D{detail_cost_row + 3}"
+        assert sheet.cell(main_cost_row, 2).border.top.style == "medium"
+        assert sheet.cell(main_cost_row + 3, 4).border.bottom.style == "medium"
+        assert sheet.cell(detail_cost_row, 2).border.top.style == "medium"
+        assert sheet.cell(detail_cost_row + 3, 4).border.bottom.style == "medium"
+    finally:
+        workbook.close()
+
+
+def test_export_renders_justplay_components_before_one_global_packaging_block():
+    workbook = Workbook()
+    quote = SimpleNamespace(
+        product_name="JustPlay 分配输出测试",
+        quote_no="IQ-JUSTPLAY-LAYOUT",
+        customer="JustPlay",
+        region_code="mainland",
+        remark="",
+    )
+    sales = _section(
+        "sales",
+        payload={
+            "pricing_mode": "component",
+            "pricing_components": [
+                {"id": "component-01", "name": "主体", "markup_x": "1.15"},
+                {"id": "component-02", "name": "镜子", "markup_x": "1.05"},
+            ],
+            "testing_fee_enabled": False,
+        },
+        calculation={"line_breakdown": [], "totals": {}},
+    )
+    molding = _section(
+        "molding",
+        calculation={
+            "line_breakdown": [
+                {
+                    "kind": "injection",
+                    "item": "主体胶壳",
+                    "material": "PP",
+                    "material_cost_hkd": "1.2",
+                    "molding_cost_hkd": "0.8",
+                    "amount_hkd": "2",
+                    "pricing_component_id": "component-01",
+                },
+                {
+                    "kind": "injection",
+                    "item": "镜框",
+                    "material": "ABS",
+                    "material_cost_hkd": "0.6",
+                    "molding_cost_hkd": "0.4",
+                    "amount_hkd": "1",
+                    "pricing_component_id": "component-02",
+                },
+            ],
+            "totals": {},
+        },
+    )
+    summary = {
+        "t1": [],
+        "t2": [],
+        "t3": [],
+        "t4": [],
+        "shipping_pricing": {
+            "markup": "1.15",
+            "active_markup_moq": "10000",
+            "markup_tiers": [],
+            "misc_ratio": "0.03",
+            "pricing_mode": "component",
+            "pricing_groups": [
+                {"id": "component-01", "name": "主体", "cost_hkd": "2", "pricing_base_hkd": "3.5", "markup": "1.15"},
+                {"id": "component-02", "name": "镜子", "cost_hkd": "1", "pricing_base_hkd": "1", "markup": "1.05"},
+            ],
+            "pricing_entries": [
+                {"section": "molding", "kind": "injection", "label": "主体胶壳", "amount_hkd": "2", "pricing_component_id": "component-01", "is_global": False},
+                {"section": "molding", "kind": "injection", "label": "镜框", "amount_hkd": "1", "pricing_component_id": "component-02", "is_global": False},
+                {"section": "sales", "kind": "packaging_material", "category": "color_box_inner_card", "label": "彩盒/内卡", "amount_hkd": "0.8", "is_global": True},
+                {"section": "sales", "kind": "carton", "label": "外箱", "amount_hkd": "0.7", "is_global": True},
+            ],
+            "global_pricing": {
+                "cost_hkd": "1.5",
+                "pricing_base_hkd": "1.5",
+                "markup": "1.15",
+                "settlement": "0.97",
+                "entries": [
+                    {"section": "sales", "kind": "packaging_material", "category": "color_box_inner_card", "label": "彩盒/内卡", "amount_hkd": "0.8", "is_global": True},
+                    {"section": "sales", "kind": "carton", "label": "外箱", "amount_hkd": "0.7", "is_global": True},
+                ],
+            },
+            "rows": [],
+        },
+    }
+    _build_summary_sheet(
+        workbook,
+        quote,
+        [sales, molding],
+        {"fx": {"rmb_hkd": "0.85", "hkd_usd": "7.8"}},
+        summary,
+        {},
+    )
+    sheet = workbook["报价明细"]
+    try:
+        assert workbook.sheetnames[:2] == ["报价明细", "_报价明细计算"]
+        main_title_row = _find_row(sheet, 1, "主体-明细")
+        mirror_title_row = _find_row(sheet, 1, "镜子-明细")
+        component_total_row = _find_row(sheet, 3, "配件总价（USD）：")
+        packaging_title_row = _find_row(sheet, 3, "包装明细")
+        assert main_title_row < mirror_title_row < component_total_row < packaging_title_row
+        assert _find_row(sheet, 3, "主体胶壳") < mirror_title_row
+        assert _find_row(sheet, 3, "镜框") > mirror_title_row
+        assert sum(
+            1
+            for row in range(1, sheet.max_row + 1)
+            if sheet.cell(row, 3).value == "包装明细"
+        ) == 1
+        packaging_cost_row = _find_row(sheet, 3, "彩盒/内卡")
+        assert packaging_cost_row > packaging_title_row
+        assert sheet.cell(packaging_cost_row, 4).value == 0.8
     finally:
         workbook.close()
