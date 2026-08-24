@@ -1,3 +1,7 @@
+// @ts-expect-error Vitest executes this source-contract assertion in Node without exposing Node globals to application types.
+import { readFileSync } from 'node:fs'
+// @ts-expect-error Vitest executes this source-contract assertion in Node without exposing Node globals to application types.
+import { join } from 'node:path'
 import { computed, nextTick, unref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
@@ -6,6 +10,9 @@ import MachinePlanGrid from '../components/MachinePlanGrid.vue'
 import type { ScheduleGridRow } from '../types'
 import { createBusinessSchedulingBaselineFixture } from './fixtures/schedulingBaselineFixture'
 import { seedSchedulingBaselineStore } from './helpers/seedSchedulingBaselineStore'
+
+// @ts-expect-error The source-contract read runs under Vitest's Node process while application types intentionally omit Node globals.
+const featureStyles = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/injection-scheduling-v2.css'), 'utf8')
 
 interface VirtualizerOptions {
   count: number
@@ -94,7 +101,7 @@ describe('B2d keyboard and virtual table accessibility', () => {
     wrapper.unmount()
   })
 
-  it('publishes virtual row indices, column indices and visible keyboard guidance', async () => {
+  it('publishes virtual row indices, column indices and associated keyboard guidance', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const store = seedSchedulingBaselineStore(pinia, createBusinessSchedulingBaselineFixture())
@@ -107,10 +114,19 @@ describe('B2d keyboard and virtual table accessibility', () => {
     expect(firstTask.attributes('aria-rowindex')).toBe('4')
     expect(firstTask.attributes('aria-label')).toContain('正在生产')
     expect(firstTask.findAll('td').map((cell) => cell.attributes('aria-colindex')).slice(0, 4)).toEqual(['1', '2', '3', '4'])
-    expect(wrapper.get('.grid-keyboard-help').text()).toContain('Alt + 方向键移动')
-    expect(wrapper.get('.grid-keyboard-help').text()).toContain('左右方向键调列宽')
+    const scroll = wrapper.get('.machine-plan-scroll')
+    const keyboardHelp = wrapper.get('.grid-keyboard-help')
+    expect(scroll.attributes('aria-describedby')).toBe('grid-keyboard-help')
+    expect(keyboardHelp.attributes('id')).toBe('grid-keyboard-help')
+    expect(keyboardHelp.text()).toContain('Alt + 方向键移动')
+    expect(keyboardHelp.text()).toContain('左右方向键调列宽')
 
     wrapper.unmount()
+  })
+
+  it('keeps the keyboard guide unobtrusive until the grid receives keyboard focus', () => {
+    expect(featureStyles).toMatch(/\.grid-keyboard-help\s*\{[^}]*opacity:\s*0/)
+    expect(featureStyles).toMatch(/\.machine-plan-scroll:focus-visible \.grid-keyboard-help\s*\{[^}]*opacity:\s*1/)
   })
 
   it('announces drag and keyboard movement and restores focus when a virtual row unloads', async () => {
