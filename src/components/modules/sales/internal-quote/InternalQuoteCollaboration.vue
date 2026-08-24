@@ -378,7 +378,7 @@ async function updateReferenceFx(payload: { rmbHkd: string; hkdUsd: string }) {
   }
 }
 
-async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string }) {
+async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string; componentMarkups?: Array<{ id: string; markup: string }> }) {
   markupMessage.value = ''
   markupError.value = ''
   message.value = ''
@@ -415,20 +415,39 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
     markupError.value = '杂项率必须大于等于 0% 且小于 100%。'
     return
   }
-  const activeMarkup = selectedTier.markup_x
+  const componentMarkups = (payload.componentMarkups ?? []).map((row) => ({ id: row.id, markup: Number(row.markup) }))
+  if (componentMarkups.some((row) => !row.id || !Number.isFinite(row.markup) || row.markup < .01 || row.markup > 9.99)) {
+    markupError.value = 'JustPlay 分项倍率必须在 0.01 至 9.99 之间。'
+    return
+  }
+  const activeMarkup = componentMarkups[0]?.markup ?? selectedTier.markup_x
+  if (componentMarkups.length) selectedTier.markup_x = activeMarkup
   try {
     const salesEditor = sectionEditors.value.sales
     if (salesEditor) {
-      await salesEditor.saveSalesMarkup(markupTiers, selectedMoq, activeMarkup, miscRatio)
-      markupMessage.value = `已选择 MOQ ${selectedMoq.toLocaleString('zh-CN')} 档；三档码数、杂项系数及当前业务部草稿已保存并重新计算。`
+      await salesEditor.saveSalesMarkup(markupTiers, selectedMoq, activeMarkup, miscRatio, componentMarkups.length ? componentMarkups : undefined)
+      markupMessage.value = componentMarkups.length
+        ? 'JustPlay 各分项倍率、杂项系数及当前业务部草稿已保存并重新计算。'
+        : `已选择 MOQ ${selectedMoq.toLocaleString('zh-CN')} 档；三档码数、杂项系数及当前业务部草稿已保存并重新计算。`
     } else {
       const section = salesSection.value
       if (!section) throw new Error('业务部分段不存在，暂时无法保存码数与杂项。')
       const sourceShipping = section.payload.shipping && typeof section.payload.shipping === 'object' && !Array.isArray(section.payload.shipping)
         ? section.payload.shipping as Record<string, unknown>
         : {}
+      const componentMarkupById = new Map(componentMarkups.map((row) => [row.id, row.markup]))
+      const sourcePricingComponents = Array.isArray(section.payload.pricing_components) ? section.payload.pricing_components : []
+      const nextPricingComponents = sourcePricingComponents.flatMap((value, index) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+        const row = value as Record<string, unknown>
+        const id = String(row.id ?? '').trim()
+        const name = String(row.name ?? '').trim()
+        const componentMarkup = componentMarkupById.get(id)
+        return id && name ? [{ id, name, ...(componentMarkup != null && (index === 0 || Math.abs(componentMarkup - activeMarkup) > .000001) ? { markup_x: Number(componentMarkup.toFixed(2)) } : {}) }] : []
+      })
       const nextPayload = cloneInternalQuotePayload('sales', {
         ...section.payload,
+        ...(componentMarkups.length ? { pricing_mode: 'component', pricing_components: nextPricingComponents } : {}),
         shipping: {
           ...sourceShipping,
           markup_x: Number(activeMarkup.toFixed(2)),
@@ -438,8 +457,10 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
           divisor: salesSettlementDivisorForMiscRatio(miscRatio),
         },
       })
-      await quoteStore.saveSection(quote.value.id, 'sales', section.revision, nextPayload, '在协作侧栏保存分段 MOQ 码数与杂项系数')
-      markupMessage.value = `MOQ ${selectedMoq.toLocaleString('zh-CN')} 档已设为本单采用；分段码数与杂项系数已保存为业务部新 revision。`
+      await quoteStore.saveSection(quote.value.id, 'sales', section.revision, nextPayload, componentMarkups.length ? '在协作侧栏保存 JustPlay 分项倍率与杂项系数' : '在协作侧栏保存分段 MOQ 码数与杂项系数')
+      markupMessage.value = componentMarkups.length
+        ? 'JustPlay 分项倍率与杂项系数已保存为业务部新 revision。'
+        : `MOQ ${selectedMoq.toLocaleString('zh-CN')} 档已设为本单采用；分段码数与杂项系数已保存为业务部新 revision。`
     }
     message.value = markupMessage.value
   } catch (error) {

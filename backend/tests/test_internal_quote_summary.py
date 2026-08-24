@@ -3,8 +3,10 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
-from app.services.internal_quote import _rr2_cost_summary
+from app.schemas.internal_quote import InternalQuoteCreateRequest
+from app.services.internal_quote import _initial_section_payloads, _rr2_cost_summary
 
 
 def section(code: str, payload: dict, totals: dict, lines: list[dict] | None = None):
@@ -93,6 +95,125 @@ SNAPSHOT = {
 
 def rows_by_key(rows: list[dict]):
     return {row["key"]: row for row in rows}
+
+
+def create_request(**overrides):
+    values = {
+        "factory_id": "huakang-b",
+        "quote_no": "IQ-JP-001",
+        "product_name": "JustPlay 套装",
+        "customer": "JustPlay",
+        "qty": 10000,
+        "initiator_department": "sales-business",
+        "business_owner_id": "owner-1",
+        "business_owner_name": "业务员",
+        "pricing_components": ["主体", "镜子"],
+    }
+    values.update(overrides)
+    return InternalQuoteCreateRequest(**values)
+
+
+def test_justplay_components_are_created_only_for_huakang_b_and_seed_sales_payload():
+    payload = create_request()
+    seeded = json.loads(_initial_section_payloads(payload)["sales"])
+    assert seeded == {
+        "pricing_mode": "component",
+        "pricing_components": [
+            {"id": "component-01", "name": "主体"},
+            {"id": "component-02", "name": "镜子"},
+        ],
+    }
+    with pytest.raises(ValidationError, match="只有华康B JustPlay"):
+        create_request(factory_id="huaxing")
+
+
+def test_rr2_standard_detail_multiplier_detaches_from_main_multiplier_pool():
+    sections = [
+        section(
+            "sales",
+            {"shipping": {"markup_x": "1.16", "misc_ratio": "0.02"}},
+            {},
+        ),
+        section(
+            "engineering",
+            {"materials": [{"item": "车衣", "category": "hardware"}]},
+            {"hardware_hkd": "12.66", "auxiliary_hkd": "0", "packaging_hkd": "0", "carton_hkd": "0", "total_hkd": "12.66"},
+            [{"kind": "material", "item": "车衣", "category": "hardware", "amount_hkd": "12.66", "markup_override": "1.03"}],
+        ),
+    ]
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("14.79"), "carton_hkd": Decimal("0")},
+        SNAPSHOT,
+    )
+
+    pricing = result["shipping_pricing"]
+    assert pricing["pricing_mode"] == "standard"
+    assert pricing["pricing_groups"] == [
+        {
+            "id": "main",
+            "name": "主倍率汇总",
+            "cost_hkd": "2.1300",
+            "pricing_base_hkd": "2.1300",
+            "markup": "1.1600",
+            "settlement": "0.9800",
+            "quoted_hkd": "2.5212",
+            "inherits_main_markup": "true",
+        },
+        {
+            "id": "detail-01",
+            "name": "车衣",
+            "cost_hkd": "12.6600",
+            "pricing_base_hkd": "12.6600",
+            "markup": "1.0300",
+            "settlement": "0.9800",
+            "quoted_hkd": "13.3059",
+            "inherits_main_markup": "false",
+        },
+    ]
+    assert rows_by_key(result["t1"])["base_price"]["value"] == "15.8271"
+
+
+def test_rr2_justplay_component_multipliers_group_department_costs_once():
+    sections = [
+        section(
+            "sales",
+            {
+                "pricing_mode": "component",
+                "pricing_components": [
+                    {"id": "component-01", "name": "主体", "markup_x": "1.15"},
+                    {"id": "component-02", "name": "镜子", "markup_x": "1.05"},
+                ],
+                "shipping": {"markup_x": "1.15", "misc_ratio": "0.03"},
+            },
+            {},
+        ),
+        section(
+            "engineering",
+            {"materials": []},
+            {"hardware_hkd": "10", "auxiliary_hkd": "0", "packaging_hkd": "0", "carton_hkd": "0", "total_hkd": "10"},
+            [
+                {"kind": "material", "item": "主体件", "category": "hardware", "amount_hkd": "6", "pricing_component_id": "component-01"},
+                {"kind": "material", "item": "镜子件", "category": "hardware", "amount_hkd": "4", "pricing_component_id": "component-02"},
+            ],
+        ),
+    ]
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("10"), "carton_hkd": Decimal("0")},
+        SNAPSHOT,
+        factory_id="huakang-b",
+    )
+
+    pricing = result["shipping_pricing"]
+    assert pricing["pricing_mode"] == "component"
+    assert [(row["name"], row["cost_hkd"], row["markup"]) for row in pricing["pricing_groups"]] == [
+        ("主体", "6.0000", "1.1500"),
+        ("镜子", "4.0000", "1.0500"),
+    ]
+    assert rows_by_key(result["t1"])["base_price"]["value"] == "11.4433"
 
 
 @pytest.mark.parametrize(

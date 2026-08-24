@@ -33,6 +33,7 @@ import type {
   InternalQuoteCostLine,
   InternalQuoteCreatePayload,
   InternalQuoteExportRecord,
+  InternalQuoteRr2CostSummary,
   InternalQuoteSection,
   InternalQuoteSectionCode,
   InternalQuoteSectionStatus,
@@ -271,7 +272,7 @@ const rr2T4Fields = [
   ['tax13b', '含税13%类', 11.5],
 ] as const
 
-function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
+function rr2CostSummary(summary?: ApiInternalQuoteSummary): InternalQuoteRr2CostSummary {
   const source = summary?.rr2_cost_summary
   const shipping = source?.shipping_pricing
   const miscRatioSource = shipping?.misc_ratio
@@ -379,6 +380,17 @@ function rr2CostSummary(summary?: ApiInternalQuoteSummary) {
       shippingFloorHkd: numberValue(shipping?.shipping_floor_hkd),
       hkdUsd: numberValue(shipping?.hkd_usd, 7.8),
       moldAmortizationUsd: numberValue(shipping?.mold_amortization_usd),
+      pricingMode: shipping?.pricing_mode === 'component' ? 'component' : 'standard',
+      pricingGroups: (shipping?.pricing_groups ?? []).map((item) => ({
+        id: String(item.id ?? ''),
+        name: String(item.name ?? '分项'),
+        costHkd: numberValue(item.cost_hkd),
+        pricingBaseHkd: numberValue(item.pricing_base_hkd),
+        markup: numberValue(item.markup),
+        settlement: numberValue(item.settlement),
+        quotedHkd: numberValue(item.quoted_hkd),
+        inheritsMainMarkup: String(item.inherits_main_markup) === 'true',
+      })),
       rows: (shipping?.rows ?? []).map((item) => ({
         name: String(item.name ?? '出货场景'),
         totalCartons: numberValue(item.total_cartons),
@@ -1102,6 +1114,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
             qty: Number(product.quantity),
             region_code: product.regionCode,
           })),
+          pricing_components: payload.pricingComponents ?? [],
         })
         const quote = toQuote(created)
         let batchProducts = products.length > 1

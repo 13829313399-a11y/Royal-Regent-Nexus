@@ -913,6 +913,12 @@ def _rr2_cost_summary(
         rows = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
         return [item for item in rows if item.get("kind") == kind] if kind else rows
 
+    def pricing_lines(code: str) -> list[dict[str, object]]:
+        calculation_value = calculation(code)
+        extra = calculation_value.get("pricing_breakdown", [])
+        extra_rows = [item for item in extra if isinstance(item, dict)] if isinstance(extra, list) else []
+        return [*lines(code), *extra_rows]
+
     def text_matches(value: object, pattern: str) -> bool:
         return bool(re.search(pattern, str(value or ""), flags=re.IGNORECASE))
 
@@ -1143,7 +1149,223 @@ def _rr2_cost_summary(
     # percentage-based ``t2.misc`` amount.
     direct_misc_cost = indonesia_freight + additional_tax
     shipping_floor = factory_price + additional_tax
-    base_price = shipping_floor * markup / settlement
+    sales_has_cartons = bool(sales_payload.get("cartons"))
+    sales_has_packaging_materials = bool(sales_payload.get("packaging_materials"))
+    section_labels = {
+        "engineering": "工程采购",
+        "electronic": "电子",
+        "molding": "胶件",
+        "painting": "喷油",
+        "slush": "搪胶",
+        "sewing": "车缝",
+        "hair": "车发",
+        "assembly": "装配",
+        "sales": "包装材料",
+    }
+    amount_fields = {
+        "material": "amount_hkd",
+        "carton": "per_piece_hkd",
+        "electronic_component": "amount_hkd",
+        "injection": "amount_hkd",
+        "blow": "amount_hkd",
+        "painting": "amount_hkd",
+        "painting_quick_labor": "amount_hkd",
+        "painting_quick_paint": "amount_hkd",
+        "painting_quick_paint_tax": "amount_hkd",
+        "slush": "amount_hkd",
+        "hair": "amount_hkd",
+        "sewing_quick": "amount_hkd",
+        "sewing_material": "amount_hkd",
+        "sewing_labor": "amount_hkd",
+        "assembly_process": "amount_hkd_pcs",
+        "assembly_manual_total": "amount_hkd_pcs",
+        "packaging_material": "amount_hkd",
+    }
+
+    def section_pricing_target(code: str) -> Decimal:
+        if code == "engineering":
+            value = _summary_decimal(totals(code).get("hardware_hkd")) + _summary_decimal(totals(code).get("auxiliary_hkd"))
+            if not sales_has_packaging_materials:
+                value += _summary_decimal(totals(code).get("packaging_hkd"))
+            if not sales_has_cartons:
+                value += _summary_decimal(totals(code).get("carton_hkd"))
+            return value
+        if code == "sales":
+            value = _summary_decimal(totals(code).get("packaging_material_hkd")) if sales_has_packaging_materials else Decimal("0")
+            if sales_has_cartons:
+                value += _summary_decimal(totals(code).get("carton_hkd"))
+            return value
+        return _summary_decimal(totals(code).get("total_hkd"))
+
+    def pricing_line_allowed(code: str, line: dict[str, object]) -> bool:
+        kind = str(line.get("kind") or "")
+        if kind not in amount_fields:
+            return False
+        if code == "engineering" and kind == "material":
+            return str(line.get("category") or "auxiliary") != "packaging" or not sales_has_packaging_materials
+        if code == "engineering" and kind == "carton":
+            return not sales_has_cartons
+        if code == "sales" and kind == "packaging_material":
+            return sales_has_packaging_materials
+        if code == "sales" and kind == "carton":
+            return sales_has_cartons
+        return True
+
+    pricing_entries: list[dict[str, object]] = []
+    for section_code in section_labels:
+        target = section_pricing_target(section_code)
+        if target <= 0:
+            continue
+        candidates: list[tuple[dict[str, object], Decimal]] = []
+        for line in pricing_lines(section_code):
+            if not pricing_line_allowed(section_code, line):
+                continue
+            amount = _summary_decimal(line.get(amount_fields[str(line.get("kind"))]))
+            if amount > 0:
+                candidates.append((line, amount))
+        candidate_total = sum((amount for _line, amount in candidates), Decimal("0"))
+        if candidate_total <= 0:
+            pricing_entries.append({
+                "section": section_code,
+                "label": section_labels[section_code],
+                "amount_hkd": target,
+                "pricing_component_id": "",
+                "markup_override": None,
+            })
+            continue
+        allocation_factor = target / candidate_total
+        for line, amount in candidates:
+            label = str(line.get("group") or line.get("item") or line.get("process") or section_labels[section_code]).strip()
+            pricing_entries.append({
+                "section": section_code,
+                "label": label or section_labels[section_code],
+                "amount_hkd": amount * allocation_factor,
+                "pricing_component_id": str(line.get("pricing_component_id") or "").strip(),
+                "markup_override": (
+                    _summary_decimal(line.get("markup_override"))
+                    if line.get("markup_override") not in (None, "")
+                    else None
+                ),
+            })
+
+    allocated_factory_cost = sum(
+        (_summary_decimal(entry.get("amount_hkd")) for entry in pricing_entries),
+        Decimal("0"),
+    )
+    if allocated_factory_cost > factory_price > 0:
+        allocation_factor = factory_price / allocated_factory_cost
+        for entry in pricing_entries:
+            entry["amount_hkd"] = _summary_decimal(entry.get("amount_hkd")) * allocation_factor
+        allocated_factory_cost = factory_price
+    unallocated_factory_cost = factory_price - allocated_factory_cost
+    if unallocated_factory_cost > Decimal("0.000001"):
+        pricing_entries.append({
+            "section": "other",
+            "label": "主体未分配成本",
+            "amount_hkd": unallocated_factory_cost,
+            "pricing_component_id": "",
+            "markup_override": None,
+        })
+
+    raw_component_rows = sales_payload.get("pricing_components", [])
+    raw_component_rows = raw_component_rows if isinstance(raw_component_rows, list) else []
+    component_definitions: list[dict[str, object]] = []
+    seen_component_ids: set[str] = set()
+    if sales_payload.get("pricing_mode") == "component":
+        for item in raw_component_rows:
+            if not isinstance(item, dict):
+                continue
+            component_id = str(item.get("id") or "").strip()
+            component_name = str(item.get("name") or "").strip()
+            key = component_id.casefold()
+            if not component_id or not component_name or key in seen_component_ids:
+                continue
+            seen_component_ids.add(key)
+            component_markup = _summary_decimal(item.get("markup_x"), decimal_text(markup))
+            if component_markup <= 0 or component_markup > Decimal("9.99"):
+                component_markup = markup
+            component_definitions.append({
+                "id": component_id,
+                "name": component_name,
+                "markup": component_markup,
+                "inherits_main_markup": item.get("markup_x") in (None, ""),
+            })
+
+    pricing_mode = "component" if component_definitions else "standard"
+    base_pricing_groups: list[dict[str, object]] = []
+    if component_definitions:
+        default_component_id = str(component_definitions[0]["id"])
+        component_ids = {str(item["id"]) for item in component_definitions}
+        component_costs = {component_id: Decimal("0") for component_id in component_ids}
+        for entry in pricing_entries:
+            component_id = str(entry.get("pricing_component_id") or "")
+            if component_id not in component_ids:
+                component_id = default_component_id
+            component_costs[component_id] += _summary_decimal(entry.get("amount_hkd"))
+        base_pricing_groups = [
+            {
+                "id": str(item["id"]),
+                "name": str(item["name"]),
+                "cost_hkd": component_costs[str(item["id"])],
+                "markup": _summary_decimal(item["markup"]),
+                "is_main": index == 0,
+                "inherits_main_markup": bool(item.get("inherits_main_markup")),
+            }
+            for index, item in enumerate(component_definitions)
+        ]
+    else:
+        detached: dict[tuple[str, str], dict[str, object]] = {}
+        detached_total = Decimal("0")
+        for entry in pricing_entries:
+            override = entry.get("markup_override")
+            override = _summary_decimal(override) if override is not None else None
+            if override is None or override == markup:
+                continue
+            amount = _summary_decimal(entry.get("amount_hkd"))
+            key = (str(entry.get("label") or "明细"), decimal_text(override))
+            row = detached.setdefault(key, {
+                "id": f"detail-{len(detached) + 1:02d}",
+                "name": key[0],
+                "cost_hkd": Decimal("0"),
+                "markup": override,
+                "is_main": False,
+                "inherits_main_markup": False,
+            })
+            row["cost_hkd"] = _summary_decimal(row["cost_hkd"]) + amount
+            detached_total += amount
+        base_pricing_groups = [{
+            "id": "main",
+            "name": "主倍率汇总",
+            "cost_hkd": max(factory_price - detached_total, Decimal("0")),
+            "markup": markup,
+            "is_main": True,
+            "inherits_main_markup": True,
+        }, *detached.values()]
+
+    def priced_groups(extra_main_cost: Decimal = Decimal("0")) -> tuple[list[dict[str, str]], Decimal, Decimal]:
+        rows_out: list[dict[str, str]] = []
+        after_markup_total = Decimal("0")
+        for group in base_pricing_groups:
+            pricing_base = _summary_decimal(group["cost_hkd"])
+            if group.get("is_main"):
+                pricing_base += additional_tax + extra_main_cost
+            group_markup = _summary_decimal(group["markup"], decimal_text(markup))
+            after_markup = pricing_base * group_markup
+            after_settlement = after_markup / settlement
+            after_markup_total += after_markup
+            rows_out.append({
+                "id": str(group["id"]),
+                "name": str(group["name"]),
+                "cost_hkd": decimal_text(group["cost_hkd"]),
+                "pricing_base_hkd": decimal_text(pricing_base),
+                "markup": decimal_text(group_markup),
+                "settlement": decimal_text(settlement),
+                "quoted_hkd": decimal_text(after_settlement),
+                "inherits_main_markup": "true" if group.get("inherits_main_markup") else "false",
+            })
+        return rows_out, after_markup_total, after_markup_total / settlement
+
+    pricing_groups, _base_after_markup, base_price = priced_groups()
     percentage_misc = base_price * misc_ratio
 
     t1_values = {
@@ -1292,8 +1514,7 @@ def _rr2_cost_summary(
         )
         for name, row_freight, row_lift, total_cartons in option_rows:
             with_freight = shipping_floor + row_freight + row_lift
-            after_markup = with_freight * markup
-            after_settlement = after_markup / settlement
+            row_pricing_groups, after_markup, after_settlement = priced_groups(row_freight + row_lift)
             total_usd = after_settlement / fx_hkd_usd
             shipping_rows.append({
                 "name": name,
@@ -1308,6 +1529,7 @@ def _rr2_cost_summary(
                 "total_usd": decimal_text(total_usd),
                 "mold_amortization_usd": decimal_text(mold_share_usd),
                 "total_with_mold_usd": decimal_text(total_usd + mold_share_usd),
+                "pricing_groups": row_pricing_groups,
             })
 
     return {
@@ -1350,6 +1572,8 @@ def _rr2_cost_summary(
             "shipping_floor_hkd": decimal_text(shipping_floor),
             "hkd_usd": decimal_text(fx_hkd_usd),
             "mold_amortization_usd": decimal_text(mold_share_usd),
+            "pricing_mode": pricing_mode,
+            "pricing_groups": pricing_groups,
             "rows": shipping_rows,
         },
     }
@@ -1613,6 +1837,22 @@ def _create_sections(
         _add_revision(db, quote, section, user, reason="initial")
 
 
+def _initial_section_payloads(payload: InternalQuoteCreateRequest) -> dict[str, str]:
+    if not payload.pricing_components:
+        return {}
+    components = [
+        {"id": f"component-{index:02d}", "name": name}
+        for index, name in enumerate(payload.pricing_components, start=1)
+    ]
+    return {
+        "sales": json.dumps(
+            {"pricing_mode": "component", "pricing_components": components},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    }
+
+
 def create_quote(
     db: Session,
     payload: InternalQuoteCreateRequest,
@@ -1636,6 +1876,7 @@ def create_quote(
     baseline_quote_id = quote_ids[0]
     batch_size = len(products)
     participating_sections = set(payload.participating_sections)
+    initial_section_payloads = _initial_section_payloads(payload)
     batch_snapshot = build_reference_snapshot(
         db,
         factory_id=payload.factory_id,
@@ -1697,7 +1938,13 @@ def create_quote(
                 source_type="batch_create" if batch_size > 1 else "create",
                 snapshot=batch_snapshot,
             )
-            _create_sections(db, quote, user, participating_sections)
+            _create_sections(
+                db,
+                quote,
+                user,
+                participating_sections,
+                initial_section_payloads,
+            )
             _add_audit(
                 db,
                 quote,

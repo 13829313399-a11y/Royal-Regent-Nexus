@@ -2514,15 +2514,66 @@ def _build_summary_sheet(
 
     pricing_rows: list[dict[str, int | float]] = []
     pricing_start_row = subtotal_row + 1
-    pricing_row_stride = 6 if testing_fee_enabled else 5
-    for index, tier in enumerate(markup_tiers):
-        markup_row = pricing_start_row + index * pricing_row_stride
-        settlement_row = markup_row + 1
-        quote_row = markup_row + 2
-        usd_row = markup_row + 3
-        included_row = markup_row + 4 if testing_fee_enabled else usd_row
-        pricing_rows.append(
-            {
+    pricing_groups = _list_of_dicts(shipping.get("pricing_groups", []))
+    split_pricing = shipping.get("pricing_mode") == "component" or len(pricing_groups) > 1
+    if split_pricing:
+        group_quote_rows: list[int] = []
+        first_markup_row = pricing_start_row + 1
+        for index, group in enumerate(pricing_groups):
+            cost_row = pricing_start_row + index * 4
+            markup_row = cost_row + 1
+            settlement_row = cost_row + 2
+            quote_row = cost_row + 3
+            group_quote_rows.append(quote_row)
+            group_name = _safe_text(group.get("name")) or f"分项 {index + 1}"
+            _template_cell(sheet, cost_row, 2, group_name, horizontal="left", wrap_text=False, border=None)
+            _template_cell(sheet, cost_row, 3, "成本", horizontal="right", wrap_text=False, border=None)
+            _template_cell(sheet, markup_row, 3, "×", horizontal="right", wrap_text=False, border=None)
+            _template_cell(sheet, settlement_row, 3, "÷", horizontal="right", wrap_text=False, border=None)
+            _template_cell(sheet, quote_row, 2, f"{group_name}报价", horizontal="left", wrap_text=False, border=Border(bottom=TEMPLATE_THIN))
+            for column in price_columns:
+                letter = get_column_letter(column)
+                pricing_base = _float_value(group.get("pricing_base_hkd", group.get("cost_hkd")))
+                cost_value: object = pricing_base
+                if index == 0 and column != 4 and rendered_route_fee_rows:
+                    route_fee_terms = "+".join(f"{letter}{row}" for row in rendered_route_fee_rows)
+                    cost_value = f"=$D${cost_row}+{route_fee_terms}"
+                _template_cell(sheet, cost_row, column, cost_value, wrap_text=False, number_format="0.000", border=None)
+                _template_cell(sheet, markup_row, column, _float_value(group.get("markup")), wrap_text=False, number_format="0.00", border=None)
+                _template_cell(sheet, settlement_row, column, "=1-$Q$6", wrap_text=False, number_format="0.0000", border=Border(bottom=TEMPLATE_THIN))
+                _template_cell(sheet, quote_row, column, f"={letter}{cost_row}*{letter}{markup_row}/{letter}{settlement_row}", bold=True, wrap_text=False, number_format="0.00", border=Border(bottom=TEMPLATE_THIN))
+
+        total_quote_row = pricing_start_row + len(pricing_groups) * 4
+        usd_row = total_quote_row + 1
+        included_row = total_quote_row + 2 if testing_fee_enabled else usd_row
+        _template_cell(sheet, total_quote_row, 2, "报价合计", horizontal="left", wrap_text=False, bold=True, border=Border(bottom=TEMPLATE_THIN))
+        if testing_fee_enabled:
+            _template_cell(sheet, included_row, 2, "包含测试费用（US）：", horizontal="left", wrap_text=False, border=None)
+        for column in price_columns:
+            letter = get_column_letter(column)
+            quote_terms = "+".join(f"{letter}{row}" for row in group_quote_rows) or "0"
+            _template_cell(sheet, total_quote_row, column, f"={quote_terms}", bold=True, wrap_text=False, number_format="0.00", border=Border(bottom=TEMPLATE_THIN))
+            _template_cell(sheet, usd_row, column, f"={letter}{total_quote_row}/$R$4", bold=True, wrap_text=False, number_format="0.00", border=None)
+            if testing_fee_enabled:
+                _template_cell(sheet, included_row, column, f"={letter}{usd_row}", bold=True, wrap_text=False, number_format="0.00", border=None)
+        pricing_rows.append({
+            "moq": int(active_tier["moq"]),
+            "markup": float(active_tier["markup"]),
+            "markup_row": first_markup_row,
+            "settlement_row": first_markup_row + 1,
+            "quote_row": total_quote_row,
+            "usd_row": usd_row,
+            "included_row": included_row,
+        })
+    else:
+        pricing_row_stride = 6 if testing_fee_enabled else 5
+        for index, tier in enumerate(markup_tiers):
+            markup_row = pricing_start_row + index * pricing_row_stride
+            settlement_row = markup_row + 1
+            quote_row = markup_row + 2
+            usd_row = markup_row + 3
+            included_row = markup_row + 4 if testing_fee_enabled else usd_row
+            pricing_rows.append({
                 "moq": int(tier["moq"]),
                 "markup": float(tier["markup"]),
                 "markup_row": markup_row,
@@ -2530,80 +2581,20 @@ def _build_summary_sheet(
                 "quote_row": quote_row,
                 "usd_row": usd_row,
                 "included_row": included_row,
-            }
-        )
-        _template_cell(sheet, markup_row, 3, "×", border=None, horizontal="right")
-        _template_cell(sheet, settlement_row, 3, "÷", border=None, horizontal="right")
-        _template_cell(
-            sheet,
-            quote_row,
-            2,
-            f"报价（{_moq_label(tier['moq'])}）",
-            horizontal="left",
-            wrap_text=False,
-            border=Border(bottom=TEMPLATE_THIN),
-        )
-        if testing_fee_enabled:
-            _template_cell(
-                sheet,
-                included_row,
-                2,
-                "包含测试费用（US）：",
-                horizontal="left",
-                wrap_text=False,
-                border=None,
-            )
-        for column in price_columns:
-            letter = get_column_letter(column)
-            _template_cell(
-                sheet,
-                markup_row,
-                column,
-                float(tier["markup"]),
-                wrap_text=False,
-                number_format="0.00",
-                border=None,
-            )
-            _template_cell(
-                sheet,
-                settlement_row,
-                column,
-                "=1-$Q$6",
-                wrap_text=False,
-                number_format="0.0000",
-                border=Border(bottom=TEMPLATE_THIN),
-            )
-            _template_cell(
-                sheet,
-                quote_row,
-                column,
-                f"={letter}{subtotal_row}*{letter}{markup_row}/{letter}{settlement_row}",
-                bold=True,
-                wrap_text=False,
-                number_format="0.00",
-                border=Border(bottom=TEMPLATE_THIN),
-            )
-            _template_cell(
-                sheet,
-                usd_row,
-                column,
-                f"={letter}{quote_row}/$R$4",
-                bold=True,
-                wrap_text=False,
-                number_format="0.00",
-                border=None,
-            )
+            })
+            _template_cell(sheet, markup_row, 3, "×", border=None, horizontal="right")
+            _template_cell(sheet, settlement_row, 3, "÷", border=None, horizontal="right")
+            _template_cell(sheet, quote_row, 2, f"报价（{_moq_label(tier['moq'])}）", horizontal="left", wrap_text=False, border=Border(bottom=TEMPLATE_THIN))
             if testing_fee_enabled:
-                _template_cell(
-                    sheet,
-                    included_row,
-                    column,
-                    f"={letter}{usd_row}",
-                    bold=True,
-                    wrap_text=False,
-                    number_format="0.00",
-                    border=None,
-                )
+                _template_cell(sheet, included_row, 2, "包含测试费用（US）：", horizontal="left", wrap_text=False, border=None)
+            for column in price_columns:
+                letter = get_column_letter(column)
+                _template_cell(sheet, markup_row, column, float(tier["markup"]), wrap_text=False, number_format="0.00", border=None)
+                _template_cell(sheet, settlement_row, column, "=1-$Q$6", wrap_text=False, number_format="0.0000", border=Border(bottom=TEMPLATE_THIN))
+                _template_cell(sheet, quote_row, column, f"={letter}{subtotal_row}*{letter}{markup_row}/{letter}{settlement_row}", bold=True, wrap_text=False, number_format="0.00", border=Border(bottom=TEMPLATE_THIN))
+                _template_cell(sheet, usd_row, column, f"={letter}{quote_row}/$R$4", bold=True, wrap_text=False, number_format="0.00", border=None)
+                if testing_fee_enabled:
+                    _template_cell(sheet, included_row, column, f"={letter}{usd_row}", bold=True, wrap_text=False, number_format="0.00", border=None)
     pricing_end_row = pricing_rows[-1]["included_row"]
     pricing_by_moq = {int(row["moq"]): row for row in pricing_rows}
     active_pricing = pricing_by_moq.get(int(active_tier["moq"]), pricing_rows[-1])

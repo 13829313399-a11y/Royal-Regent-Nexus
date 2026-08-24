@@ -170,7 +170,9 @@ export interface ApiInternalQuoteSummary {
       shipping_floor_hkd: string
       hkd_usd: string
       mold_amortization_usd: string
-      rows: Array<Record<string, string>>
+      pricing_mode?: 'standard' | 'component'
+      pricing_groups?: Array<Record<string, string>>
+      rows: Array<Record<string, unknown>>
     }
   }
   sections: Array<Record<string, unknown>>
@@ -442,6 +444,7 @@ export interface InternalQuoteCreateRequest {
     qty: number
     region_code: '' | 'mainland' | 'indonesia'
   }>
+  pricing_components?: string[]
 }
 
 export interface ApiInternalQuoteAttachmentPreviewSheet {

@@ -10,6 +10,7 @@ import { cloneInternalQuotePayload, normalizeInternalQuotePayload, salesSettleme
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
+import type { SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 
 const props = withDefaults(defineProps<{
   quote: InternalQuote
@@ -42,6 +43,26 @@ const actionReason = ref('')
 const reasonAction = ref<'reject' | 'na' | 'reopen'>()
 const localMessage = ref('')
 const localError = ref('')
+const salesPricingPayload = computed(() => {
+  const salesSection = props.quote.sections.find((section) => section.code === 'sales')
+  return salesSection?.payload && typeof salesSection.payload === 'object' ? salesSection.payload : {}
+})
+const pricingComponents = computed<SalesPricingComponent[]>(() => {
+  const source = salesPricingPayload.value.pricing_components
+  if (!Array.isArray(source)) return []
+  return source.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const row = value as Record<string, unknown>
+    const id = String(row.id ?? '').trim()
+    const name = String(row.name ?? '').trim()
+    const markup = Number(row.markup_x)
+    return id && name ? [{ id, name, ...(Number.isFinite(markup) && markup > 0 ? { markup_x: markup } : {}) }] : []
+  })
+})
+const pricingMode = computed<'standard' | 'component'>(() => (
+  salesPricingPayload.value.pricing_mode === 'component' && pricingComponents.value.length ? 'component' : 'standard'
+))
+const mainMarkup = computed(() => Number(props.quote.rr2CostSummary.shippingPricing.markup) || 1.2)
 const supportsQuickQuote = computed(() => ['electronic', 'painting', 'sewing'].includes(props.section.code))
 const isQuickQuoteMode = computed(() => draftPayload.value.quote_mode === 'quick')
 const quickQuoteButtonLabel = computed(() => {
@@ -227,14 +248,26 @@ async function saveDraft(showMessage = true, reason = '', refreshQuote = true) {
   }
 }
 
-async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: number, activeMarkup: number, miscRatio: number) {
+async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: number, activeMarkup: number, miscRatio: number, componentMarkups?: Array<{ id: string; markup: number }>) {
   if (props.section.code !== 'sales') throw new Error('当前不是业务部分段，无法合并保存码数与杂项。')
   if (!editable.value) throw new Error('业务部分段当前不可编辑，请先重开后再保存码数与杂项。')
   const shipping = draftPayload.value.shipping && typeof draftPayload.value.shipping === 'object' && !Array.isArray(draftPayload.value.shipping)
     ? draftPayload.value.shipping as Record<string, unknown>
     : {}
+  const componentMarkupById = new Map((componentMarkups ?? []).map((row) => [row.id, row.markup]))
+  const sourcePricingComponents = Array.isArray(draftPayload.value.pricing_components) ? draftPayload.value.pricing_components : []
+  const nextPricingComponents = sourcePricingComponents.flatMap((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const row = value as Record<string, unknown>
+    const id = String(row.id ?? '').trim()
+    const name = String(row.name ?? '').trim()
+    const componentMarkup = componentMarkupById.get(id)
+    if (!id || !name) return []
+    return [{ id, name, ...(componentMarkup != null && (index === 0 || Math.abs(componentMarkup - activeMarkup) > .000001) ? { markup_x: Number(componentMarkup.toFixed(2)) } : {}) }]
+  })
   draftPayload.value = normalizeInternalQuotePayload('sales', {
     ...draftPayload.value,
+    ...(componentMarkups?.length ? { pricing_mode: 'component', pricing_components: nextPricingComponents } : {}),
     shipping: {
       ...shipping,
       markup_x: Number(activeMarkup.toFixed(2)),
@@ -244,7 +277,7 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
       divisor: salesSettlementDivisorForMiscRatio(miscRatio),
     },
   })
-  const result = await saveDraft(false, '在协作侧栏保存分段 MOQ 码数与杂项系数')
+  const result = await saveDraft(false, componentMarkups?.length ? '在协作侧栏保存 JustPlay 分项倍率与杂项系数' : '在协作侧栏保存分段 MOQ 码数与杂项系数')
   if (!result) throw new Error(localError.value || '保存码数与杂项失败。')
   localMessage.value = `业务部当前草稿、分段 MOQ 码数与杂项系数已保存，服务端已生成 revision ${result.revision} 并重新计算。`
   return result
@@ -520,7 +553,7 @@ function confirmRemoveParticipation() {
       <footer><strong class="replace-only-note">确认后按模板负责的数据区域更新；重复导入不会累计金额</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable" @click="confirmImport">确认导入</button></footer>
     </section>
 
-    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :disabled="!editable" @block-progress="emit('block-progress', section.code, $event)" @preview-attachment="previewAttachment" />
+    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :main-markup="mainMarkup" :disabled="!editable" @block-progress="emit('block-progress', section.code, $event)" @preview-attachment="previewAttachment" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"

@@ -231,3 +231,48 @@ def test_export_links_molding_assembly_cartons_and_flat_cards_to_source_cells():
         )
     finally:
         workbook.close()
+
+
+def test_export_renders_formula_driven_split_pricing_groups():
+    workbook = Workbook()
+    quote = SimpleNamespace(product_name="分项倍率测试", quote_no="IQ-SPLIT-PRICING", region_code="mainland", remark="")
+    sales = _section("sales", payload={"testing_fee_enabled": False}, calculation={"line_breakdown": [], "totals": {}})
+    summary = {
+        "t1": [],
+        "t2": [],
+        "t3": [],
+        "t4": [],
+        "shipping_pricing": {
+            "markup": "1.16",
+            "active_markup_moq": "10000",
+            "markup_tiers": [],
+            "misc_ratio": "0.02",
+            "pricing_mode": "standard",
+            "pricing_groups": [
+                {"id": "main", "name": "主倍率汇总", "cost_hkd": "2.13", "pricing_base_hkd": "2.13", "markup": "1.16"},
+                {"id": "detail-01", "name": "车衣", "cost_hkd": "12.66", "pricing_base_hkd": "12.66", "markup": "1.03"},
+            ],
+            "rows": [],
+        },
+    }
+    _build_summary_sheet(
+        workbook,
+        quote,
+        [sales],
+        {"fx": {"rmb_hkd": "0.85", "hkd_usd": "7.8"}},
+        summary,
+        {},
+    )
+    sheet = workbook.active
+    try:
+        main_cost_row = _find_row(sheet, 2, "主倍率汇总")
+        detail_cost_row = _find_row(sheet, 2, "车衣")
+        total_quote_row = _find_row(sheet, 2, "报价合计")
+        assert sheet.cell(main_cost_row, 4).value == 2.13
+        assert sheet.cell(main_cost_row + 1, 4).value == 1.16
+        assert sheet.cell(main_cost_row + 2, 4).value == "=1-$Q$6"
+        assert sheet.cell(main_cost_row + 3, 4).value == f"=D{main_cost_row}*D{main_cost_row + 1}/D{main_cost_row + 2}"
+        assert sheet.cell(detail_cost_row + 1, 4).value == 1.03
+        assert sheet.cell(total_quote_row, 4).value == f"=D{main_cost_row + 3}+D{detail_cost_row + 3}"
+    finally:
+        workbook.close()

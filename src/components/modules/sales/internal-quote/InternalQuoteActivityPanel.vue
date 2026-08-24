@@ -17,7 +17,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   updateFx: [payload: { rmbHkd: string; hkdUsd: string }]
-  updateMarkup: [payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string }]
+  updateMarkup: [payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string; componentMarkups?: Array<{ id: string; markup: string }> }]
 }>()
 const quoteStore = useInternalQuoteDeskStore()
 const activeTab = ref<'summary' | 'activity' | 'views'>('summary')
@@ -39,6 +39,23 @@ const savedMiscRatio = computed(() => {
   const value = Number(props.quote.rr2CostSummary?.shippingPricing.miscRatio)
   return Number.isFinite(value) && value >= 0 && value < 1 ? value : .02
 })
+const salesPricingPayload = computed(() => props.quote.sections?.find((section) => section.code === 'sales')?.payload ?? {})
+const savedComponentMarkups = computed(() => {
+  const source = salesPricingPayload.value.pricing_components
+  if (!Array.isArray(source) || salesPricingPayload.value.pricing_mode !== 'component') return []
+  const summaryById = new Map((props.quote.rr2CostSummary?.shippingPricing.pricingGroups ?? []).map((row) => [row.id, row]))
+  return source.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const row = value as Record<string, unknown>
+    const id = String(row.id ?? '').trim()
+    const name = String(row.name ?? '').trim()
+    const summaryMarkup = summaryById.get(id)?.markup
+    const markup = Number(row.markup_x ?? summaryMarkup ?? savedMarkup.value)
+    return id && name && Number.isFinite(markup) && markup > 0 ? [{ id, name, markup }] : []
+  })
+})
+const isComponentPricing = computed(() => savedComponentMarkups.value.length > 0)
+const componentMarkupRows = ref(savedComponentMarkups.value.map((row) => ({ ...row, markup: row.markup.toFixed(2) })))
 const quoteMarkupTiers = ref(savedMarkupTiers.value.map((tier) => ({
   moq: String(tier.moq),
   markup: tier.markup_x.toFixed(2),
@@ -87,11 +104,21 @@ const activeMarkupTier = computed(() => (
   ?? salesMarkupTierForQuantity(editableMarkupTiers.value, quoteQuantity.value)
 ))
 const normalizedMarkup = computed(() => {
-  const value = activeMarkupTier.value.markup_x
+  const value = isComponentPricing.value ? Number(componentMarkupRows.value[0]?.markup) : activeMarkupTier.value.markup_x
   return Number.isFinite(value) && value > 0 ? Math.min(value, 9.99) : savedMarkup.value
 })
 const activeMarkupTierIndex = computed(() => selectedMarkupTierIndex.value)
 const markupValidationMessage = computed(() => {
+  if (isComponentPricing.value) {
+    if (!componentMarkupRows.value.length) return 'JustPlay 至少要保留一个报价分项。'
+    for (const [index, row] of componentMarkupRows.value.entries()) {
+      const value = String(row.markup).trim()
+      const parsed = Number(value)
+      if (!value || !Number.isFinite(parsed) || parsed < .01 || parsed > 9.99) return `第 ${index + 1} 个分项倍率必须在 0.01 至 9.99 之间。`
+      if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return '分项倍率最多保留 2 位小数。'
+    }
+    return ''
+  }
   if (quoteMarkupTiers.value.length !== 3) return '分段码数必须保留 3 档。'
   if (!quoteMarkupTiers.value.some((tier) => tier.includeInOutput)) return '内部报价表至少要输出一个 MOQ 价格。'
   let previousMoq = 0
@@ -111,12 +138,14 @@ const markupValidationMessage = computed(() => {
 })
 const markupDirty = computed(() => (
   !markupValidationMessage.value && (
-    selectedMarkupTierIndex.value !== savedActiveMarkupTierIndex.value
-    || quoteMarkupTiers.value.some((tier, index) => (
-      Number(tier.moq) !== savedMarkupTiers.value[index]?.moq
-      || Number(tier.markup) !== Number(savedMarkupTiers.value[index]?.markup_x.toFixed(2))
-      || tier.includeInOutput !== (savedMarkupTiers.value[index]?.include_in_output !== false)
-    ))
+    isComponentPricing.value
+      ? componentMarkupRows.value.some((row, index) => Number(row.markup) !== Number(savedComponentMarkups.value[index]?.markup.toFixed(2)))
+      : selectedMarkupTierIndex.value !== savedActiveMarkupTierIndex.value
+        || quoteMarkupTiers.value.some((tier, index) => (
+          Number(tier.moq) !== savedMarkupTiers.value[index]?.moq
+          || Number(tier.markup) !== Number(savedMarkupTiers.value[index]?.markup_x.toFixed(2))
+          || tier.includeInOutput !== (savedMarkupTiers.value[index]?.include_in_output !== false)
+        ))
   )
 ))
 const miscValidationMessage = computed(() => {
@@ -132,7 +161,23 @@ const miscDirty = computed(() => (
 ))
 const pricingValidationMessage = computed(() => markupValidationMessage.value || miscValidationMessage.value)
 const pricingDirty = computed(() => markupDirty.value || miscDirty.value)
-const quoteHkd = computed(() => costHkd.value * normalizedMarkup.value)
+const quoteHkd = computed(() => {
+  const miscRatio = Number(quoteMiscPercent.value) / 100
+  const settlement = Number.isFinite(miscRatio) && miscRatio >= 0 && miscRatio < 1
+    ? salesSettlementDivisorForMiscRatio(miscRatio)
+    : Math.max(1 - savedMiscRatio.value, .0001)
+  const groups = props.quote.rr2CostSummary?.shippingPricing.pricingGroups ?? []
+  if (!groups.length) return costHkd.value * normalizedMarkup.value
+  const componentMarkupById = new Map(componentMarkupRows.value.map((row) => [row.id, Number(row.markup)]))
+  const liveDelta = costHkd.value - props.quote.factoryPriceHkd
+  return groups.reduce((total, group, index) => {
+    const pricingBase = group.pricingBaseHkd + (index === 0 ? liveDelta : 0)
+    const groupMarkup = isComponentPricing.value
+      ? componentMarkupById.get(group.id) ?? normalizedMarkup.value
+      : index === 0 ? normalizedMarkup.value : group.markup
+    return total + pricingBase * groupMarkup / settlement
+  }, 0)
+})
 const quoteRmb = computed(() => quoteHkd.value * props.quote.fxRmbHkd)
 const quoteUsd = computed(() => props.quote.fxHkdUsd ? quoteHkd.value / props.quote.fxHkdUsd : 0)
 const previewDeltaHkd = computed(() => Number(livePreview.value?.delta_hkd ?? 0) || 0)
@@ -233,6 +278,15 @@ function normalizeMarkupMoq(index: number) {
     : saved)
 }
 
+function normalizeComponentMarkup(index: number) {
+  const row = componentMarkupRows.value[index]
+  if (!row) return
+  const parsed = Number(row.markup)
+  row.markup = (Number.isFinite(parsed) && parsed > 0
+    ? Math.min(Math.max(parsed, .01), 9.99)
+    : savedComponentMarkups.value[index]?.markup ?? savedMarkup.value).toFixed(2)
+}
+
 function normalizeMiscInput() {
   const value = Number(quoteMiscPercent.value)
   quoteMiscPercent.value = (Number.isFinite(value) && value >= 0 && value < 100
@@ -270,11 +324,14 @@ function saveMarkup() {
     })),
     selectedMoq: String(Math.round(Number(quoteMarkupTiers.value[selectedMarkupTierIndex.value]?.moq))),
     miscRatio: (Number(quoteMiscPercent.value) / 100).toFixed(4),
+    ...(isComponentPricing.value ? {
+      componentMarkups: componentMarkupRows.value.map((row) => ({ id: row.id, markup: Number(row.markup).toFixed(2) })),
+    } : {}),
   })
 }
 
 watch(() => props.quote.referenceSnapshotId, () => resetFxEditor())
-watch(() => [props.quote.id, JSON.stringify(savedMarkupTiers.value), savedActiveMarkupTierIndex.value, savedMiscRatio.value] as const, () => {
+watch(() => [props.quote.id, JSON.stringify(savedMarkupTiers.value), JSON.stringify(savedComponentMarkups.value), savedActiveMarkupTierIndex.value, savedMiscRatio.value] as const, () => {
   quoteMarkupTiers.value = savedMarkupTiers.value.map((tier) => ({
     moq: String(tier.moq),
     markup: tier.markup_x.toFixed(2),
@@ -282,6 +339,7 @@ watch(() => [props.quote.id, JSON.stringify(savedMarkupTiers.value), savedActive
   }))
   selectedMarkupTierIndex.value = savedActiveMarkupTierIndex.value
   quoteMiscPercent.value = (savedMiscRatio.value * 100).toFixed(2)
+  componentMarkupRows.value = savedComponentMarkups.value.map((row) => ({ ...row, markup: row.markup.toFixed(2) }))
 })
 
 function addComment() {
@@ -312,7 +370,7 @@ function addComment() {
         <span class="quote-live-main-label">预览报价（根据实时成本与本单设置计算）</span>
         <strong data-testid="live-quote-hkd">HKD {{ quoteHkd.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong>
         <div class="quote-live-conversions"><span>RMB {{ quoteRmb.toFixed(2) }}</span><span>USD {{ quoteUsd.toFixed(2) }}</span></div>
-        <div class="quote-markup-tier-control">
+        <div v-if="!isComponentPricing" class="quote-markup-tier-control">
           <header><span>分段码数</span><small>本单数量 {{ quoteQuantity.toLocaleString('zh-CN') }} PCS（仅参考）</small></header>
           <div
             v-for="(tier, index) in quoteMarkupTiers"
@@ -367,6 +425,14 @@ function addComment() {
             </label>
           </div>
         </div>
+        <div v-else class="quote-markup-tier-control quote-component-markup-control">
+          <header><span>JustPlay 分项倍率</span><small>配件统一取本行倍率，部门明细无需重复填写</small></header>
+          <div v-for="(component,index) in componentMarkupRows" :key="component.id" class="quote-markup-tier-row quote-component-markup-row">
+            <label :for="`quote-component-markup-${component.id}`">{{ component.name }}</label>
+            <span>倍率</span>
+            <input :id="`quote-component-markup-${component.id}`" v-model="component.markup" :data-testid="`live-quote-component-markup-${index}`" type="number" min="0.01" max="9.99" step="0.01" inputmode="decimal" :disabled="!canEditMarkup || busy || !!markupBlockedReason" @blur="normalizeComponentMarkup(index)">
+          </div>
+        </div>
         <div class="quote-markup-control quote-misc-control">
           <label for="quote-live-misc"><span>杂项率</span><small>当前保存 {{ (savedMiscRatio * 100).toFixed(2) }}%</small></label>
           <div class="quote-markup-input"><input id="quote-live-misc" v-model="quoteMiscPercent" data-testid="live-quote-misc" type="number" min="0" max="99.99" step="0.01" inputmode="decimal" :disabled="!canEditMarkup || busy || !!markupBlockedReason" @blur="normalizeMiscInput"><span>%</span></div>
@@ -382,7 +448,7 @@ function addComment() {
           data-testid="save-quote-markup"
           :disabled="busy || !!pricingValidationMessage || !pricingDirty || !!markupBlockedReason"
           @click="saveMarkup"
-        ><Save aria-hidden="true" />{{ busy ? '保存中…' : '保存分段码数与杂项' }}</button>
+        ><Save aria-hidden="true" />{{ busy ? '保存中…' : isComponentPricing ? '保存分项倍率与杂项' : '保存分段码数与杂项' }}</button>
         <p v-if="pricingValidationMessage" class="quote-markup-feedback error">{{ pricingValidationMessage }}</p>
         <p v-else-if="markupBlockedReason" class="quote-markup-feedback blocked">{{ markupBlockedReason }}</p>
         <p v-else-if="markupError" class="quote-markup-feedback error">{{ markupError }}</p>
@@ -401,7 +467,7 @@ function addComment() {
         </p>
         <p v-else-if="previewError" class="quote-live-preview-warning">实时试算暂不可用，当前显示最近保存金额。</p>
         <p v-else-if="livePreview && livePreview.calculation_status !== 'valid'" class="quote-live-preview-warning">当前字段尚未完整，暂显示最近保存金额。</p>
-        <p class="quote-live-preview-note">跟客可主动选择本单采用的 MOQ 档，并决定哪些 MOQ 价格输出到内部报价表；本单采用档会固定输出。保存后会生成业务部新 revision、重新计算并用于后续导出。</p>
+        <p class="quote-live-preview-note">{{ isComponentPricing ? '每个分项只在这里维护一次倍率；部门中的胶件和其他成本按已选归属汇总，保存后生成业务部新 revision 并用于导出。' : '跟客可主动选择本单采用的 MOQ 档，并决定哪些 MOQ 价格输出到内部报价表；本单采用档会固定输出。保存后会生成业务部新 revision、重新计算并用于后续导出。' }}</p>
       </section>
       <section class="quote-side-section">
         <h3 class="quote-fx-heading"><span><ShieldCheck aria-hidden="true" />冻结参考快照</span><button v-if="canEditFx && !fxEditing" type="button" data-testid="edit-reference-fx" @click="beginFxEdit"><Pencil aria-hidden="true" />调整汇率</button></h3>
@@ -472,6 +538,7 @@ function addComment() {
 @keyframes quote-live-spin{to{transform:rotate(360deg)}}
 .quote-live-main-label{color:#a7f3d0;font-size:8px;font-weight:800}.quote-markup-control{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:4px;border-top:1px solid rgb(204 251 241/.28);padding-top:9px}.quote-markup-control label{display:grid;gap:1px;color:#fff;font-size:10px;font-weight:900}.quote-markup-control label small{color:#a7f3d0;font-size:7px;font-weight:700}.quote-markup-input{display:flex;align-items:center;gap:4px;border:1px solid rgb(255 255 255/.35);border-radius:8px;background:rgb(255 255 255/.12);padding:3px 5px 3px 7px;color:#d1fae5;font-size:11px;font-weight:900}.quote-markup-input input{width:62px;border:0;border-radius:5px;background:#fff;padding:5px 4px;color:#115e59;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;font-weight:900;text-align:right}.quote-markup-input input:focus{outline:3px solid rgb(167 243 208/.35)}.quote-settlement-control>span{display:grid;gap:1px}.quote-settlement-control b{color:#fff;font-size:10px}.quote-settlement-control small{color:#a7f3d0;font-size:7px}.quote-settlement-control output{border:1px solid rgb(255 255 255/.35);border-radius:8px;background:rgb(255 255 255/.12);padding:7px 9px;color:#ecfdf5;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;font-weight:900}.quote-markup-save{display:flex;align-items:center;justify-content:center;gap:5px;width:100%;border:1px solid rgb(255 255 255/.65);border-radius:8px;background:#fff;padding:7px 9px;color:#0f766e;font-size:9px;font-weight:950;box-shadow:0 4px 12px rgb(6 78 59/.16);transition:transform .18s ease,box-shadow .18s ease}.quote-markup-save:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 7px 16px rgb(6 78 59/.2)}.quote-markup-save:disabled{cursor:not-allowed;opacity:.5}.quote-markup-save svg{width:12px;height:12px}.quote-markup-feedback{margin:0;border-radius:6px;padding:5px 7px;font-size:7.5px;line-height:1.45}.quote-markup-feedback.success{background:rgb(236 253 245/.18);color:#d1fae5}.quote-markup-feedback.error{background:rgb(254 226 226/.18);color:#fee2e2}.quote-markup-feedback.blocked{background:rgb(255 247 237/.18);color:#ffedd5}.quote-live-cost-base{display:flex;align-items:center;justify-content:space-between;gap:8px;border-radius:7px;background:rgb(6 78 59/.22);padding:6px 8px}.quote-live-cost-base span{color:#a7f3d0;font-size:8px;font-weight:800}.quote-live-cost-base strong{color:#ecfdf5;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px}.quote-live-comparison{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:2px}.quote-live-price-cell{display:grid;gap:3px;min-width:0;border:1px solid var(--proximity-border,#d1fae5);border-radius:7px;background:var(--proximity-surface,#ecfdf5);padding:7px;color:var(--proximity-ink,#065f46);transition:background-color .2s ease,border-color .2s ease,color .2s ease}.quote-live-price-cell span{font-size:7px;font-weight:800;opacity:.78}.quote-live-price-cell strong{overflow-wrap:anywhere;font-size:9px;line-height:1.3}.quote-live-price-cell.gap{grid-column:1/-1;grid-template-columns:1fr auto;align-items:center}.quote-live-price-cell.gap strong{text-align:right}.quote-live-cost.proximity-0{--proximity-surface:#f0fdfa;--proximity-border:#ccfbf1;--proximity-ink:#0f766e}.quote-live-cost.proximity-1{--proximity-surface:#ccfbf1;--proximity-border:#99f6e4;--proximity-ink:#0f766e}.quote-live-cost.proximity-2{--proximity-surface:#99f6e4;--proximity-border:#5eead4;--proximity-ink:#115e59}.quote-live-cost.proximity-3{--proximity-surface:#2dd4bf;--proximity-border:#14b8a6;--proximity-ink:#134e4a}.quote-live-cost.proximity-4{--proximity-surface:#115e59;--proximity-border:#0f766e;--proximity-ink:#fff}.quote-live-cost.over.proximity-0{--proximity-surface:#fff7ed;--proximity-border:#ffedd5;--proximity-ink:#9a3412}.quote-live-cost.over.proximity-1{--proximity-surface:#ffedd5;--proximity-border:#fed7aa;--proximity-ink:#9a3412}.quote-live-cost.over.proximity-2{--proximity-surface:#fed7aa;--proximity-border:#fdba74;--proximity-ink:#9a3412}.quote-live-cost.over.proximity-3{--proximity-surface:#fb923c;--proximity-border:#f97316;--proximity-ink:#7c2d12}.quote-live-cost.over.proximity-4{--proximity-surface:#c2410c;--proximity-border:#9a3412;--proximity-ink:#fff}
 .quote-markup-tier-control{display:grid;gap:5px;margin-top:4px;border-top:1px solid rgb(204 251 241/.28);padding-top:9px}.quote-markup-tier-control>header{display:flex;align-items:center;justify-content:space-between;gap:8px}.quote-markup-tier-control>header span{font-size:10px;font-weight:900}.quote-markup-tier-control>header small{color:#a7f3d0;font-size:7px;font-weight:700}.quote-markup-tier-row{display:grid;grid-template-columns:auto minmax(54px,1fr) auto minmax(48px,.75fr) auto auto;align-items:center;gap:4px;border:1px solid rgb(255 255 255/.2);border-radius:7px;background:rgb(255 255 255/.08);padding:4px 5px}.quote-markup-tier-row.active{border-color:#a7f3d0;background:rgb(236 253 245/.18);box-shadow:inset 3px 0 #a7f3d0}.quote-markup-tier-row label,.quote-markup-tier-row>span{color:#d1fae5;font-size:8px;font-weight:900}.quote-markup-tier-row>input{min-width:0;width:100%;border:0;border-radius:5px;background:#fff;padding:5px 4px;color:#115e59;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px;font-weight:900;text-align:right}.quote-markup-tier-row>input:focus{outline:3px solid rgb(167 243 208/.35)}.quote-markup-tier-select{border:1px solid rgb(255 255 255/.38);border-radius:99px;background:rgb(255 255 255/.1);padding:3px 5px;color:#d1fae5;font-size:6px;font-weight:950;white-space:nowrap}.quote-markup-tier-select.selected{border-color:#ecfdf5;background:#ecfdf5;color:#047857}.quote-markup-tier-select:not(:disabled):hover{background:#fff;color:#047857}.quote-markup-tier-select:disabled{opacity:.55}.quote-markup-tier-output{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}.quote-markup-tier-output input{width:11px;height:11px;accent-color:#a7f3d0}.quote-markup-tier-output span{color:#d1fae5;font-size:7px;font-weight:900}
+.quote-component-markup-row{grid-template-columns:minmax(0,1fr) auto minmax(70px,.75fr)}.quote-component-markup-row>label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .quote-mini-timeline,.quote-full-timeline{display:grid;gap:0;margin:0;padding:0;list-style:none}.quote-mini-timeline li,.quote-full-timeline li{position:relative;display:grid;grid-template-columns:12px 1fr;gap:8px;padding-bottom:13px}.quote-mini-timeline li:not(:last-child)::before,.quote-full-timeline li:not(:last-child)::before{position:absolute;top:8px;bottom:-1px;left:4px;width:1px;background:#cbd5e1;content:''}.quote-mini-timeline i,.quote-full-timeline i{z-index:1;width:9px;height:9px;margin-top:2px;border:2px solid #fff;border-radius:99px;background:#0d9488;box-shadow:0 0 0 1px #99f6e4}.quote-mini-timeline div,.quote-full-timeline div{display:grid}.quote-mini-timeline strong,.quote-full-timeline strong{color:#334155;font-size:9px}.quote-mini-timeline span,.quote-full-timeline span{margin-top:3px;color:#94a3b8;font-size:8px}.quote-full-timeline p{margin:4px 0 0;color:#64748b;font-size:9px;line-height:1.45}
 .quote-comment-list{display:grid;gap:11px}.quote-comment-list article{display:flex;align-items:flex-start;gap:8px}.quote-comment-list article>span{display:grid;width:25px;height:25px;flex:0 0 auto;place-items:center;border-radius:8px;background:#ccfbf1;color:#0f766e;font-size:9px;font-weight:900}.quote-comment-list article>div{min-width:0;flex:1}.quote-comment-list header{display:flex;justify-content:space-between;gap:6px}.quote-comment-list strong{color:#334155;font-size:9px}.quote-comment-list small{color:#94a3b8;font-size:8px}.quote-comment-list p{margin:4px 0 0;border-radius:0 8px 8px 8px;background:#f1f5f9;padding:7px;color:#475569;font-size:9px;line-height:1.5}.quote-comment-form{display:flex;gap:6px;margin-top:12px}.quote-comment-form input{min-width:0;flex:1;border:1px solid #dbe5ea;border-radius:8px;padding:7px 8px;font-size:9px}.quote-comment-form button{display:grid;width:31px;height:31px;place-items:center;border:0;border-radius:8px;background:#0f766e;color:#fff}.quote-comment-form button:disabled{cursor:not-allowed;opacity:.4}.quote-comment-form svg{width:13px}.quote-side-hint{margin:-4px 0 12px;color:#94a3b8;font-size:8px;line-height:1.5}.quote-view-records article{display:flex;gap:9px;border-top:1px solid #f1f5f9;padding:11px 0}.quote-view-avatar{display:grid;width:30px;height:30px;flex:0 0 auto;place-items:center;border-radius:9px;background:#f1f5f9;color:#64748b}.quote-view-avatar svg{width:14px}.quote-view-records article div{min-width:0}.quote-view-records article strong{color:#334155;font-size:10px}.quote-view-records article p{margin:3px 0;color:#64748b;font-size:8px}.quote-view-records article small{color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}
 @media(max-width:1280px){.quote-activity-panel{position:static}.quote-activity-body{max-height:none}}
