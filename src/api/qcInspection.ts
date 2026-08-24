@@ -128,12 +128,119 @@ export type QcReportType =
   | 'HUAXING_CUSTOMER_WEEKLY_DETAIL'
   | 'HUAXING_WEEKLY_AGGREGATE'
   | 'GROUP_SUMMARY'
+  | 'WEEKLY_INSPECTION_SCHEDULE'
+  | 'DAILY_INSPECTION_LEDGER'
+  | 'WEEKLY_PROBLEM_DETAIL'
+  | 'WEEKLY_RETURN_SUMMARY'
+  | 'INSPECTION_PASS_RATE'
+  | 'ANNUAL_INSPECTION_STATISTICS'
+  | 'PRODUCT_QUALITY_LEDGER'
+  | 'INSPECTION_DOCUMENT_INDEX'
+  | 'ORDER_INSPECTION_REPORT'
+
+export type QcReportPeriodMode = 'WEEK' | 'MONTH' | 'YEAR' | 'EVENT'
+
+export interface QcInspectionLine {
+  id?: string
+  line_no?: number
+  customer_po_no: string
+  release_no: string
+  customer_item_no: string
+  internal_item_no: string
+  batch_no: string
+  date_code: string
+  product_name: string
+  order_quantity: number | string | null
+  inspected_quantity: number | string | null
+  packing: string
+  carton_count: string
+  upc_ean: string
+}
+
+export interface QcInspectionDefect {
+  id?: string
+  event_line_id: string
+  category: string
+  severity: 'CRITICAL' | 'MAJOR' | 'MINOR' | 'OBSERVATION'
+  quantity: number
+  defect_location: string
+  description: string
+  production_department: string
+  photo_reference: string
+}
+
+export interface QcInspectionTestRecord {
+  id?: string
+  test_item: string
+  method_standard: string
+  specification: string
+  measured_value: string
+  unit: string
+  sample_size: number
+  result: 'PENDING' | 'PASS' | 'FAIL' | 'NA'
+  operator_name: string
+  reviewer_name: string
+}
+
+export interface QcInspectionDisposition {
+  id?: string
+  disposition_type: 'RETURN' | 'REWORK' | 'AOD' | 'CONCESSION_ACCEPTED' | 'ON_HOLD' | 'NO_ACTION'
+  return_quantity: number | string | null
+  rework_quantity: number | string | null
+  reason: string
+  approved_by: string
+  approved_date: string
+  verification_result: string
+}
+
+export interface QcInspectionEvent extends QcEntityBase {
+  inspection_order_id: string
+  attempt_no: number
+  event_type: 'CUSTOMER' | 'THIRD_PARTY' | 'LINE' | 'SELF' | 'REINSPECTION' | 'SAMPLE'
+  actual_inspection_date: string
+  inspector_name: string
+  inspection_agency: string
+  inspection_location: string
+  sampling_standard: string
+  inspection_level: string
+  aql_critical: string
+  aql_major: string
+  aql_minor: string
+  lot_size: number
+  sample_size: number
+  critical_defect_count: number
+  major_defect_count: number
+  minor_defect_count: number
+  inspection_result: string
+  document_status: 'DRAFT' | 'FINAL' | 'REVISED'
+  manual_has_problem: boolean
+  report_number: string
+  note: string
+  lines: QcInspectionLine[]
+  defects: QcInspectionDefect[]
+  tests: QcInspectionTestRecord[]
+  dispositions: QcInspectionDisposition[]
+  created_by: string
+  created_by_name: string
+  updated_by: string
+  updated_by_name: string
+}
+
+export type QcInspectionEventPayload = Omit<
+  QcInspectionEvent,
+  'id' | 'revision' | 'created_at' | 'updated_at' | 'attempt_no' | 'created_by' | 'created_by_name' | 'updated_by' | 'updated_by_name'
+>
 
 export interface QcGeneratedReport {
   id: string
   factory_id: string
   report_type: QcReportType | string
   week_key: string
+  period_mode: QcReportPeriodMode
+  period_key: string
+  metric_version: string
+  inspection_order_id: string
+  inspection_event_id: string
   artifact_file_name: string
   status: string
   is_formal_snapshot: boolean
@@ -222,6 +329,8 @@ export interface QcReportGeneratePayload {
   week_key: string
   report_type: QcReportType
   is_formal_snapshot?: boolean
+  period_mode?: QcReportPeriodMode
+  period_key?: string
   request_id: string
 }
 
@@ -382,6 +491,42 @@ export function createQcInspectionApi(client: QcInspectionHttpClient = http) {
       const response = await client.patch<QcInspectionOrder>(
         `/qc-inspections/orders/${encodeURIComponent(orderId)}`,
         { ...payload, request_id: createQcRequestId() },
+      )
+      return response.data
+    },
+
+    async listInspectionEvents(orderId: string, factoryId: string) {
+      const response = await client.get<{ items: QcInspectionEvent[] }>(
+        `/qc-inspections/orders/${encodeURIComponent(orderId)}/events`,
+        { params: { factory_id: factoryId } },
+      )
+      return response.data.items
+    },
+
+    async createInspectionEvent(orderId: string, payload: QcInspectionEventPayload) {
+      const response = await client.post<QcInspectionEvent>(
+        `/qc-inspections/orders/${encodeURIComponent(orderId)}/events`,
+        { ...payload, request_id: createQcRequestId() },
+      )
+      return response.data
+    },
+
+    async updateInspectionEvent(
+      orderId: string,
+      eventId: string,
+      payload: QcInspectionEventPayload & { expected_revision: number; reason: string },
+    ) {
+      const response = await client.patch<QcInspectionEvent>(
+        `/qc-inspections/orders/${encodeURIComponent(orderId)}/events/${encodeURIComponent(eventId)}`,
+        { ...payload, request_id: createQcRequestId() },
+      )
+      return response.data
+    },
+
+    async generateOrderReport(orderId: string, eventId: string, factoryId: string) {
+      const response = await client.post<QcGeneratedReport>(
+        `/qc-inspections/orders/${encodeURIComponent(orderId)}/reports/generate`,
+        { factory_id: factoryId, inspection_event_id: eventId, request_id: createQcRequestId() },
       )
       return response.data
     },

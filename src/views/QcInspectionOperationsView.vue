@@ -164,7 +164,7 @@ watch([factoryId, weekKey], () => {
       <PageHeader
         eyebrow="QC Inspection Operations"
         :title="`${factoryName} · QC 验货运营中心`"
-        description="生产排期、验货主单、问题单点录入、五类汇总和报告文件治理使用同一条厂区隔离业务链。"
+        description="生产排期、逐单验货与复验、问题处置、多维报表和报告文件治理使用同一条厂区隔离业务链。"
       >
         <template #actions>
           <Button as-child variant="outline">

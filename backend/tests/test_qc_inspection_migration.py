@@ -41,8 +41,23 @@ def test_qc_inspection_migration_upgrades_fresh_sqlite_and_seeds_permissions(
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260821_0082",
+            "20260824_0082",
         )
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert {
+            "qc_inspection_events",
+            "qc_inspection_event_lines",
+            "qc_inspection_defects",
+            "qc_inspection_test_results",
+            "qc_inspection_dispositions",
+            "qc_inspection_report_packages",
+            "qc_inspection_report_documents",
+        } <= table_names
         qc_permissions = connection.execute(
             "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'qc_inspection:%'"
         ).fetchone()

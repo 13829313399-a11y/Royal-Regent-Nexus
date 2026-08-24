@@ -12,9 +12,14 @@ from app.schemas.qc_inspection import (
     QcCustomerConfigCreate,
     QcCustomerConfigOut,
     QcCustomerConfigUpdate,
+    QcInspectionEventCreate,
+    QcInspectionEventListOut,
+    QcInspectionEventOut,
+    QcInspectionEventUpdate,
     QcOrderCreate,
     QcOrderListOut,
     QcOrderOut,
+    QcOrderReportGenerateRequest,
     QcOrderUpdate,
     QcProblemCreate,
     QcProblemListOut,
@@ -42,16 +47,19 @@ from app.services.qc_inspection import (
     QC_DEPARTMENTS,
     confirm_schedule_import,
     create_customer_config,
+    create_inspection_event,
     create_order,
     create_problem,
     execute_rename_batch,
     generate_report,
+    generate_order_report,
     get_rename_archive,
     get_rename_batch,
     get_report_artifact,
     get_schedule_batch,
     list_audit_events,
     list_customer_configs,
+    list_inspection_events,
     list_orders,
     list_problems,
     list_reports,
@@ -59,6 +67,7 @@ from app.services.qc_inspection import (
     preview_schedule_import,
     require_qc_factory,
     update_customer_config,
+    update_inspection_event,
     update_order,
     update_problem,
     workspace,
@@ -176,6 +185,69 @@ def patch_order(
     )
     _ensure_permission(db, current_user, permission, payload.factory_id)
     return update_order(db, order_id, payload, current_user)
+
+
+@router.get("/orders/{order_id}/events", response_model=QcInspectionEventListOut)
+def get_order_events(
+    order_id: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "qc_inspection:read", factory_id)
+    items = list_inspection_events(db, factory_id, order_id)
+    return QcInspectionEventListOut(
+        factory_id=factory_id,
+        inspection_order_id=order_id,
+        total=len(items),
+        items=items,
+    )
+
+
+@router.post("/orders/{order_id}/events", response_model=QcInspectionEventOut, status_code=201)
+def post_order_event(
+    order_id: str,
+    payload: QcInspectionEventCreate,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    if payload.inspection_order_id != order_id:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="路径主单与请求主单不一致")
+    _ensure_permission(db, current_user, "qc_inspection:result_write", payload.factory_id)
+    return create_inspection_event(db, payload, current_user)
+
+
+@router.patch("/orders/{order_id}/events/{event_id}", response_model=QcInspectionEventOut)
+def patch_order_event(
+    order_id: str,
+    event_id: str,
+    payload: QcInspectionEventUpdate,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    if payload.inspection_order_id != order_id:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="路径主单与请求主单不一致")
+    _ensure_permission(db, current_user, "qc_inspection:result_write", payload.factory_id)
+    return update_inspection_event(db, event_id, payload, current_user)
+
+
+@router.post(
+    "/orders/{order_id}/reports/generate",
+    response_model=QcReportOut,
+    status_code=201,
+)
+def post_order_report_generate(
+    order_id: str,
+    payload: QcOrderReportGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "qc_inspection:report_export", payload.factory_id)
+    return generate_order_report(db, order_id, payload, current_user)
 
 
 @router.get("/problems", response_model=QcProblemListOut)
