@@ -231,6 +231,297 @@ class QcInspectionOrder(Base):
     __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
 
 
+class QcInspectionEvent(Base):
+    __tablename__ = "qc_inspection_events"
+    __table_args__ = (
+        UniqueConstraint("id", "factory_id", name="uq_qc_event_id_factory"),
+        UniqueConstraint(
+            "inspection_order_id",
+            "attempt_no",
+            name="uq_qc_event_order_attempt",
+        ),
+        ForeignKeyConstraint(
+            ["inspection_order_id", "factory_id"],
+            ["qc_inspection_orders.id", "qc_inspection_orders.factory_id"],
+            name="fk_qc_event_order_factory",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("attempt_no >= 1", name="ck_qc_event_attempt"),
+        CheckConstraint("revision >= 1", name="ck_qc_event_revision"),
+        CheckConstraint(
+            "event_type IN ('CUSTOMER', 'THIRD_PARTY', 'LINE', 'SELF', "
+            "'REINSPECTION', 'SAMPLE')",
+            name="ck_qc_event_type",
+        ),
+        CheckConstraint(
+            "inspection_result IN ('PENDING', 'PASS', 'FAIL', 'REJECTED', "
+            "'CONDITIONAL_PASS', 'CANCELLED')",
+            name="ck_qc_event_result",
+        ),
+        CheckConstraint(
+            "document_status IN ('DRAFT', 'FINAL', 'REVISED')",
+            name="ck_qc_event_document_status",
+        ),
+        CheckConstraint(
+            "lot_size >= 0 AND sample_size >= 0 AND critical_defect_count >= 0 "
+            "AND major_defect_count >= 0 AND minor_defect_count >= 0",
+            name="ck_qc_event_counts",
+        ),
+        Index(
+            "ix_qc_event_factory_date_result",
+            "factory_id",
+            "actual_inspection_date",
+            "inspection_result",
+        ),
+        Index(
+            "ix_qc_event_order_created",
+            "inspection_order_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    inspection_order_id: Mapped[str] = mapped_column(String(96))
+    attempt_no: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(32), default="CUSTOMER")
+    actual_inspection_date: Mapped[str] = mapped_column(String(10))
+    inspector_name: Mapped[str] = mapped_column(String(128), default="")
+    inspection_agency: Mapped[str] = mapped_column(String(255), default="")
+    inspection_location: Mapped[str] = mapped_column(String(255), default="")
+    sampling_standard: Mapped[str] = mapped_column(String(128), default="")
+    inspection_level: Mapped[str] = mapped_column(String(64), default="")
+    aql_critical: Mapped[str] = mapped_column(String(32), default="")
+    aql_major: Mapped[str] = mapped_column(String(32), default="")
+    aql_minor: Mapped[str] = mapped_column(String(32), default="")
+    lot_size: Mapped[int] = mapped_column(Integer, default=0)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    critical_defect_count: Mapped[int] = mapped_column(Integer, default=0)
+    major_defect_count: Mapped[int] = mapped_column(Integer, default=0)
+    minor_defect_count: Mapped[int] = mapped_column(Integer, default=0)
+    inspection_result: Mapped[str] = mapped_column(String(32), default="PENDING")
+    document_status: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    manual_has_problem: Mapped[bool] = mapped_column(Boolean, default=False)
+    report_number: Mapped[str] = mapped_column(String(128), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_by_name: Mapped[str] = mapped_column(String(128), default="")
+    updated_by: Mapped[str] = mapped_column(String(64))
+    updated_by_name: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+
+
+class QcInspectionEventLine(Base):
+    __tablename__ = "qc_inspection_event_lines"
+    __table_args__ = (
+        UniqueConstraint("id", "factory_id", name="uq_qc_event_line_id_factory"),
+        UniqueConstraint("inspection_event_id", "line_no", name="uq_qc_event_line_no"),
+        ForeignKeyConstraint(
+            ["inspection_event_id", "factory_id"],
+            ["qc_inspection_events.id", "qc_inspection_events.factory_id"],
+            name="fk_qc_event_line_event_factory",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("line_no >= 1", name="ck_qc_event_line_no"),
+        CheckConstraint(
+            "(order_quantity IS NULL OR order_quantity >= 0) AND "
+            "(inspected_quantity IS NULL OR inspected_quantity >= 0)",
+            name="ck_qc_event_line_quantities",
+        ),
+        Index("ix_qc_event_line_event", "inspection_event_id", "line_no"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    inspection_event_id: Mapped[str] = mapped_column(String(96))
+    line_no: Mapped[int] = mapped_column(Integer)
+    customer_po_no: Mapped[str] = mapped_column(String(128))
+    release_no: Mapped[str] = mapped_column(String(128), default="")
+    customer_item_no: Mapped[str] = mapped_column(String(128))
+    internal_item_no: Mapped[str] = mapped_column(String(128), default="")
+    batch_no: Mapped[str] = mapped_column(String(128), default="")
+    date_code: Mapped[str] = mapped_column(String(128), default="")
+    product_name: Mapped[str] = mapped_column(String(255), default="")
+    order_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    inspected_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    packing: Mapped[str] = mapped_column(String(255), default="")
+    carton_count: Mapped[str] = mapped_column(String(64), default="")
+    upc_ean: Mapped[str] = mapped_column(String(64), default="")
+
+
+class QcInspectionDefect(Base):
+    __tablename__ = "qc_inspection_defects"
+    __table_args__ = (
+        UniqueConstraint("id", "factory_id", name="uq_qc_defect_id_factory"),
+        ForeignKeyConstraint(
+            ["inspection_event_id", "factory_id"],
+            ["qc_inspection_events.id", "qc_inspection_events.factory_id"],
+            name="fk_qc_defect_event_factory",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("quantity >= 0", name="ck_qc_defect_quantity"),
+        CheckConstraint(
+            "severity IN ('CRITICAL', 'MAJOR', 'MINOR', 'OBSERVATION')",
+            name="ck_qc_defect_severity",
+        ),
+        Index("ix_qc_defect_event_severity", "inspection_event_id", "severity"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    inspection_event_id: Mapped[str] = mapped_column(String(96))
+    event_line_id: Mapped[str] = mapped_column(String(96), default="")
+    category: Mapped[str] = mapped_column(String(128), default="")
+    severity: Mapped[str] = mapped_column(String(32), default="OBSERVATION")
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    defect_location: Mapped[str] = mapped_column(String(255), default="")
+    description: Mapped[str] = mapped_column(Text)
+    production_department: Mapped[str] = mapped_column(String(128), default="")
+    photo_reference: Mapped[str] = mapped_column(String(512), default="")
+
+
+class QcInspectionTestResult(Base):
+    __tablename__ = "qc_inspection_test_results"
+    __table_args__ = (
+        UniqueConstraint("id", "factory_id", name="uq_qc_test_result_id_factory"),
+        ForeignKeyConstraint(
+            ["inspection_event_id", "factory_id"],
+            ["qc_inspection_events.id", "qc_inspection_events.factory_id"],
+            name="fk_qc_test_result_event_factory",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "result IN ('PENDING', 'PASS', 'FAIL', 'NA')",
+            name="ck_qc_test_result_result",
+        ),
+        CheckConstraint("sample_size >= 0", name="ck_qc_test_result_sample_size"),
+        Index("ix_qc_test_result_event", "inspection_event_id", "test_item"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    inspection_event_id: Mapped[str] = mapped_column(String(96))
+    test_item: Mapped[str] = mapped_column(String(255))
+    method_standard: Mapped[str] = mapped_column(String(255), default="")
+    specification: Mapped[str] = mapped_column(String(255), default="")
+    measured_value: Mapped[str] = mapped_column(String(255), default="")
+    unit: Mapped[str] = mapped_column(String(32), default="")
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str] = mapped_column(String(16), default="PENDING")
+    operator_name: Mapped[str] = mapped_column(String(128), default="")
+    reviewer_name: Mapped[str] = mapped_column(String(128), default="")
+
+
+class QcInspectionDisposition(Base):
+    __tablename__ = "qc_inspection_dispositions"
+    __table_args__ = (
+        UniqueConstraint("id", "factory_id", name="uq_qc_disposition_id_factory"),
+        ForeignKeyConstraint(
+            ["inspection_event_id", "factory_id"],
+            ["qc_inspection_events.id", "qc_inspection_events.factory_id"],
+            name="fk_qc_disposition_event_factory",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "disposition_type IN ('RETURN', 'REWORK', 'AOD', "
+            "'CONCESSION_ACCEPTED', 'ON_HOLD', 'NO_ACTION')",
+            name="ck_qc_disposition_type",
+        ),
+        CheckConstraint(
+            "(return_quantity IS NULL OR return_quantity >= 0) AND "
+            "(rework_quantity IS NULL OR rework_quantity >= 0)",
+            name="ck_qc_disposition_quantities",
+        ),
+        Index(
+            "ix_qc_disposition_event_type",
+            "inspection_event_id",
+            "disposition_type",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    inspection_event_id: Mapped[str] = mapped_column(String(96))
+    disposition_type: Mapped[str] = mapped_column(String(32))
+    return_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    rework_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    approved_by: Mapped[str] = mapped_column(String(128), default="")
+    approved_date: Mapped[str] = mapped_column(String(10), default="")
+    verification_result: Mapped[str] = mapped_column(Text, default="")
+
+
+class QcInspectionReportPackage(Base):
+    __tablename__ = "qc_inspection_report_packages"
+    __table_args__ = (
+        UniqueConstraint("id", "factory_id", name="uq_qc_package_id_factory"),
+        UniqueConstraint("factory_id", "package_no", name="uq_qc_package_factory_no"),
+        ForeignKeyConstraint(
+            ["inspection_event_id", "factory_id"],
+            ["qc_inspection_events.id", "qc_inspection_events.factory_id"],
+            name="fk_qc_package_event_factory",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("revision >= 1", name="ck_qc_package_revision"),
+        CheckConstraint(
+            "document_status IN ('DRAFT', 'FINAL', 'REVISED')",
+            name="ck_qc_package_document_status",
+        ),
+        Index("ix_qc_package_event", "inspection_event_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    inspection_event_id: Mapped[str] = mapped_column(String(96))
+    package_no: Mapped[str] = mapped_column(String(64))
+    report_type: Mapped[str] = mapped_column(String(64), default="INTERNAL")
+    external_report_no: Mapped[str] = mapped_column(String(128), default="")
+    external_inspection_no: Mapped[str] = mapped_column(String(128), default="")
+    issuing_organization: Mapped[str] = mapped_column(String(255), default="")
+    document_status: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    issued_date: Mapped[str] = mapped_column(String(10), default="")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+    __mapper_args__ = {"version_id_col": revision, "version_id_generator": False}
+
+
+class QcInspectionReportDocument(Base):
+    __tablename__ = "qc_inspection_report_documents"
+    __table_args__ = (
+        UniqueConstraint("id", "factory_id", name="uq_qc_document_id_factory"),
+        ForeignKeyConstraint(
+            ["package_id", "factory_id"],
+            ["qc_inspection_report_packages.id", "qc_inspection_report_packages.factory_id"],
+            name="fk_qc_document_package_factory",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("size_bytes >= 0", name="ck_qc_document_size"),
+        Index("ix_qc_document_package", "package_id", "created_at"),
+        Index("ix_qc_document_sha256", "sha256"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    package_id: Mapped[str] = mapped_column(String(96))
+    document_role: Mapped[str] = mapped_column(String(64), default="ATTACHMENT")
+    original_file_name: Mapped[str] = mapped_column(String(255))
+    original_relative_path: Mapped[str] = mapped_column(String(1024), default="")
+    media_type: Mapped[str] = mapped_column(String(128), default="")
+    extension: Mapped[str] = mapped_column(String(16), default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str] = mapped_column(String(64))
+    source_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40))
+
+
 class QcInspectionProblem(Base):
     __tablename__ = "qc_inspection_problems"
     __table_args__ = (
@@ -343,7 +634,11 @@ class QcInspectionReport(Base):
         CheckConstraint(
             "report_type IN ('CUSTOMER_SUMMARY', 'WEEKLY_STATISTICS', "
             "'HUAXING_CUSTOMER_WEEKLY_DETAIL', 'HUAXING_WEEKLY_AGGREGATE', "
-            "'GROUP_SUMMARY')",
+            "'GROUP_SUMMARY', 'WEEKLY_INSPECTION_SCHEDULE', "
+            "'DAILY_INSPECTION_LEDGER', 'WEEKLY_PROBLEM_DETAIL', "
+            "'WEEKLY_RETURN_SUMMARY', 'INSPECTION_PASS_RATE', "
+            "'ANNUAL_INSPECTION_STATISTICS', 'PRODUCT_QUALITY_LEDGER', "
+            "'INSPECTION_DOCUMENT_INDEX', 'ORDER_INSPECTION_REPORT')",
             name="ck_qc_report_type",
         ),
         CheckConstraint("status IN ('GENERATED', 'FAILED')", name="ck_qc_report_status"),
@@ -363,6 +658,11 @@ class QcInspectionReport(Base):
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     factory_id: Mapped[str] = mapped_column(String(64))
     week_key: Mapped[str] = mapped_column(String(10))
+    period_mode: Mapped[str] = mapped_column(String(16), default="WEEK")
+    period_key: Mapped[str] = mapped_column(String(16), default="")
+    metric_version: Mapped[str] = mapped_column(String(32), default="qc-metrics-v1")
+    inspection_order_id: Mapped[str] = mapped_column(String(96), default="")
+    inspection_event_id: Mapped[str] = mapped_column(String(96), default="")
     report_type: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16))
     is_formal_snapshot: Mapped[bool] = mapped_column(Boolean, default=False)

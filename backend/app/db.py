@@ -432,12 +432,19 @@ INJECTION_SCHEDULING_DEMAND_SHARED_REQUIRED_COLUMNS = {
         "factory_readiness_status",
     },
 }
-QC_INSPECTION_REVISION = "20260812_0067"
+QC_INSPECTION_REVISION = "20260824_0082"
 QC_INSPECTION_REQUIRED_TABLES = {
     "qc_customer_configs",
     "qc_schedule_import_batches",
     "qc_schedule_import_rows",
     "qc_inspection_orders",
+    "qc_inspection_events",
+    "qc_inspection_event_lines",
+    "qc_inspection_defects",
+    "qc_inspection_test_results",
+    "qc_inspection_dispositions",
+    "qc_inspection_report_packages",
+    "qc_inspection_report_documents",
     "qc_inspection_problems",
     "qc_schedule_change_decisions",
     "qc_inspection_reports",
