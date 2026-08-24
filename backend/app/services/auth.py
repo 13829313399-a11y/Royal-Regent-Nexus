@@ -64,6 +64,8 @@ from app.services.permission_codes import (
     INTERNAL_QUOTE_SECTION_CODES,
 )
 from app.services.system_positions import (
+    CARTON_QC_WORKSPACE_PERMISSION_CODES,
+    CARTON_QC_WORKSPACE_POSITION_ROLE_IDS,
     SYSTEM_POSITION_DEFINITIONS,
     get_system_position,
 )
@@ -647,6 +649,12 @@ def system_position_grant_department_matches(
     if permission not in POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES or department in {None, "*"}:
         return True
     if grant.role_id == "position_general_manager" or grant.department == "*":
+        return True
+    if (
+        department == "qc"
+        and grant.role_id in CARTON_QC_WORKSPACE_POSITION_ROLE_IDS
+        and permission in CARTON_QC_WORKSPACE_PERMISSION_CODES
+    ):
         return True
     if grant.department == department:
         return True

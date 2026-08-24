@@ -210,6 +210,86 @@ describe('authStore scoped permission decisions', () => {
   )
 
   it.each(['legacy', 'shadow', 'enforce'] as const)(
+    'lets carton supervisors operate the home-factory QC carton workspace without granting carton keepers access in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      const permissions = [
+        'carton_mark:read',
+        'carton_mark:photo_upload',
+        'carton_mark:review',
+      ]
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions,
+        factory_scopes: ['huaxing'],
+        department_scopes: ['carton'],
+        grants: [{
+          role_id: 'position_carton_supervisor',
+          role_code: 'position_carton_supervisor',
+          role_name: '纸箱部主管',
+          factory_id: 'huaxing',
+          department: 'carton',
+          permissions,
+          scope_mode: 'own_factory',
+          read_permission_codes: ['carton_mark:read'],
+          unrestricted_department: true,
+          data_scope: 'department',
+        }],
+        effective_access: authzMode === 'enforce'
+          ? permissions.map((permission) => ({
+              permission_code: permission,
+              factory_id: 'huaxing',
+              department: 'carton',
+              effect: 'allow' as const,
+              allowed: true,
+              source_type: 'role_binding',
+              source_ids: ['position-carton-supervisor'],
+            }))
+          : undefined,
+      }))
+
+      for (const permission of permissions) {
+        expect(store.can(permission, 'huaxing', 'qc')).toBe(true)
+        expect(store.can(permission, 'huadeng', 'qc')).toBe(false)
+      }
+
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions: ['carton_mark:read', 'carton_mark:template_upload'],
+        factory_scopes: ['huaxing'],
+        department_scopes: ['carton'],
+        grants: [{
+          role_id: 'position_carton_warehouse_keeper',
+          role_code: 'position_carton_warehouse_keeper',
+          role_name: '纸箱仓管',
+          factory_id: 'huaxing',
+          department: 'carton',
+          permissions: ['carton_mark:read', 'carton_mark:template_upload'],
+          scope_mode: 'own_factory',
+          read_permission_codes: ['carton_mark:read'],
+          unrestricted_department: true,
+          data_scope: 'department',
+        }],
+        effective_access: authzMode === 'enforce'
+          ? [{
+              permission_code: 'carton_mark:read',
+              factory_id: 'huaxing',
+              department: 'carton',
+              effect: 'allow',
+              allowed: true,
+              source_type: 'role_binding',
+              source_ids: ['position-carton-keeper'],
+            }]
+          : undefined,
+      }))
+
+      expect(store.can('carton_mark:read', 'huaxing', 'qc')).toBe(false)
+      expect(store.can('carton_mark:photo_upload', 'huaxing', 'qc')).toBe(false)
+      expect(store.can('carton_mark:review', 'huaxing', 'qc')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow', 'enforce'] as const)(
     'lets fixed sales positions read other factories but initiate quotes only for their home factory and department in %s mode',
     (authzMode) => {
       const store = useAuthStore()

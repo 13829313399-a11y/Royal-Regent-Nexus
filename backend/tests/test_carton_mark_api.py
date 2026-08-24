@@ -118,11 +118,28 @@ def test_customer_options_read_independent_carton_mark_names_for_the_authorized_
         assert wrong_factory.status_code == 403
 
         login_as(client, "qc_inspector")
-        forbidden = client.get(
+        qc_options = client.get(
             "/api/carton-mark/customer-options",
             params={"factory_id": "huaxing"},
         )
-        assert forbidden.status_code == 403
+        assert qc_options.status_code == 200
+        assert qc_options.json() == [
+            {"id": "CMC-HUAXING-DICKIE", "name": "Dickie"},
+            {"id": "CMC-HUAXING-ZURU", "name": "ZURU"},
+        ]
+
+        qc_customers = client.get(
+            "/api/carton-mark/customers",
+            params={"factory_id": "huaxing"},
+        )
+        assert qc_customers.status_code == 200
+        assert [item["name"] for item in qc_customers.json()] == ["Dickie", "ZURU"]
+
+        qc_wrong_factory = client.get(
+            "/api/carton-mark/customers",
+            params={"factory_id": "huakang-c"},
+        )
+        assert qc_wrong_factory.status_code == 403
 
 
 def test_carton_mark_customer_crud_requires_supervisor_permission(monkeypatch):
