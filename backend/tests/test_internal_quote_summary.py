@@ -216,6 +216,56 @@ def test_rr2_justplay_component_multipliers_group_department_costs_once():
     assert rows_by_key(result["t1"])["base_price"]["value"] == "11.4433"
 
 
+def test_rr2_justplay_pricing_entries_keep_assembly_formula_inputs():
+    sections = [
+        section(
+            "sales",
+            {
+                "pricing_mode": "component",
+                "pricing_components": [
+                    {"id": "component-01", "name": "主体", "markup_x": "1.15"},
+                ],
+                "shipping": {"markup_x": "1.15", "misc_ratio": "0.03"},
+            },
+            {},
+        ),
+        section(
+            "assembly",
+            {"labor_base_hkd": "260"},
+            {"assembly_hkd": "0.52", "packaging_hkd": "0", "total_hkd": "0.52"},
+            [
+                {
+                    "kind": "assembly_process",
+                    "group": "主体组装",
+                    "process": "锁螺丝",
+                    "persons": "7",
+                    "teams": "1",
+                    "production_qty": "3500",
+                    "amount_hkd_pcs": "0.52",
+                    "pricing_component_id": "component-01",
+                }
+            ],
+        ),
+    ]
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("0.52"), "assembly_hkd": Decimal("0.52")},
+        SNAPSHOT,
+        factory_id="huakang-b",
+    )
+
+    entry = next(
+        row
+        for row in result["shipping_pricing"]["pricing_entries"]
+        if row["section"] == "assembly"
+    )
+    assert entry["persons"] == "7"
+    assert entry["teams"] == "1"
+    assert entry["production_qty"] == "3500"
+    assert entry["formula_allocation_factor"] == "1.0000"
+
+
 def test_rr2_justplay_keeps_packaging_global_and_prices_it_once_with_main_markup():
     sections = [
         section(
