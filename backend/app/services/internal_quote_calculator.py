@@ -1063,6 +1063,7 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
             "material": material,
             "grade": grade,
             "color": str(row.get("color", "")),
+            "net_weight_g": decimal_text(net_weight),
             "loss_rate_percent": decimal_text(loss_rate),
             "loss_weight_g": decimal_text(net_weight * (1 + loss_rate / 100)),
             "material_price_hkd_lb": decimal_text(material_price),
