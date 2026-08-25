@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CheckCircle2, ChevronLeft, ChevronRight, Crop, Eye, FileSpreadsheet, FileText, Image as ImageIcon, RefreshCw, RotateCcw, RotateCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   cartonMarkApi,
@@ -51,6 +51,11 @@ interface CartonMarkTemplateRecord {
   checkStatus: string
   qcReady: boolean
   createdByName: string
+  manualReleased: boolean
+  manualReleaseReason: string
+  manualReleaseSourceStatus: string
+  manualReleasedByName: string
+  manualReleasedAt: string
 }
 
 interface CartonMarkPhotoRecord {
@@ -177,6 +182,10 @@ const photoSuccessMessage = ref('')
 const isLoading = ref(false)
 const isLoadingCustomerOptions = ref(false)
 const customerDialogOpen = ref(false)
+const manualReleaseRecord = ref<CartonMarkTemplateRecord | null>(null)
+const manualReleaseReason = ref('')
+const manualReleaseError = ref('')
+const isManualReleasing = ref(false)
 const customerMutationBusy = ref(false)
 const customerMutationError = ref('')
 const isSaving = ref(false)
@@ -226,6 +235,9 @@ const canInCurrentWorkspace = (permission: string) => {
 const isAdmin = computed(() => canInCurrentWorkspace('system:user_manage'))
 const canUploadTemplate = computed(() => isAdmin.value || canInCurrentWorkspace('carton_mark:template_upload'))
 const canManageCustomers = computed(() => isAdmin.value || canInCurrentWorkspace('carton_mark:customer_manage'))
+const canReleaseTemplate = computed(() => isAdmin.value || warehousePermissionDepartments.some(
+  (department) => authStore.can('carton_mark:template_release', activeFactoryId.value, department),
+))
 const canUploadPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:photo_upload', activeFactoryId.value, currentDepartmentId.value))
 const canReviewPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:review', activeFactoryId.value, currentDepartmentId.value))
 const canDeleteTemplate = computed(() => isWarehouseWorkspace.value && canUploadTemplate.value)
@@ -678,6 +690,10 @@ watch(activeFactoryId, () => {
   allRecords.value = []
   customerOptions.value = []
   customerDialogOpen.value = false
+  manualReleaseRecord.value = null
+  manualReleaseReason.value = ''
+  manualReleaseError.value = ''
+  isManualReleasing.value = false
   customerMutationBusy.value = false
   customerMutationError.value = ''
   const requestedFactoryId = activeFactoryId.value
@@ -1164,6 +1180,11 @@ function mapTemplateRecord(record: CartonMarkTemplateRecordResponse, factoryName
     checkStatus: record.check_status,
     qcReady: record.qc_ready,
     createdByName: record.created_by_name,
+    manualReleased: record.manual_released,
+    manualReleaseReason: record.manual_release_reason,
+    manualReleaseSourceStatus: record.manual_release_source_status,
+    manualReleasedByName: record.manual_released_by_name,
+    manualReleasedAt: record.manual_released_at,
   }
 }
 
@@ -1718,6 +1739,85 @@ async function recheckTemplateRecord(record: CartonMarkTemplateRecord) {
     }
     if (documentRecheckRequestController === controller) {
       documentRecheckRequestController = null
+    }
+  }
+}
+
+function openManualRelease(record: CartonMarkTemplateRecord) {
+  manualReleaseError.value = ''
+  if (!canReleaseTemplate.value) {
+    const message = '当前账号无权人工放行箱唛模板，请联系纸箱部主管、经理或系统管理员。'
+    if (isWarehouseWorkspace.value) errorMessage.value = message
+    else photoErrorMessage.value = message
+    return
+  }
+  if (record.qcReady) return
+
+  manualReleaseRecord.value = record
+  manualReleaseReason.value = ''
+}
+
+function closeManualRelease() {
+  if (isManualReleasing.value) return
+  manualReleaseRecord.value = null
+  manualReleaseReason.value = ''
+  manualReleaseError.value = ''
+}
+
+async function confirmManualRelease() {
+  const record = manualReleaseRecord.value
+  const reason = manualReleaseReason.value.trim()
+  manualReleaseError.value = ''
+
+  if (!record || !canReleaseTemplate.value) {
+    manualReleaseError.value = '当前账号无权人工放行箱唛模板。'
+    return
+  }
+  if (reason.length < 5) {
+    manualReleaseError.value = '请填写至少 5 个字符的放行理由。'
+    return
+  }
+
+  const requestedFactoryId = activeFactoryId.value
+  const requestedFactoryName = activeFactory.value.shortName
+  const requestedGeneration = factoryGeneration
+  if (record.factoryId !== requestedFactoryId) {
+    manualReleaseError.value = '这份箱唛资料不属于当前厂区，请切换厂区后再操作。'
+    return
+  }
+
+  isManualReleasing.value = true
+  try {
+    const persistedRecord = await cartonMarkApi.manualReleaseTemplate(record.id, requestedFactoryId, reason)
+    if (!isCurrentFactoryTask(requestedFactoryId, requestedGeneration) || !isPanelMounted) return
+
+    const releasedRecord = {
+      ...mapTemplateRecord(persistedRecord, requestedFactoryName),
+      pdfUrl: record.pdfUrl,
+      fileBlob: record.fileBlob,
+      excelUrl: record.excelUrl,
+    }
+    allRecords.value = sortRecords(allRecords.value.map((item) => item.id === record.id ? releasedRecord : item))
+    if (documentComparisonRecord.value?.id === record.id) {
+      documentComparisonRecord.value = releasedRecord
+    }
+    if (!isWarehouseWorkspace.value) {
+      photoForm.customerName = releasedRecord.customerName
+      await nextTick()
+      photoForm.templateId = releasedRecord.id
+      photoSuccessMessage.value = `${releasedRecord.customerName} · ITEM：${releasedRecord.item} 已人工审核放行并自动选中，可上传现场箱唛照片。`
+    } else {
+      successMessage.value = `${releasedRecord.customerName} · ITEM：${releasedRecord.item} 已人工审核放行，可供 QC 选择。`
+    }
+    manualReleaseRecord.value = null
+    manualReleaseReason.value = ''
+  } catch (error) {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration) && isPanelMounted) {
+      manualReleaseError.value = getApiErrorMessage(error)
+    }
+  } finally {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration) && isPanelMounted) {
+      isManualReleasing.value = false
     }
   }
 }
@@ -2678,7 +2778,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
         </button>
 
         <p class="mt-4 text-xs leading-5 text-slate-500">
-          Excel、打印 PDF 和核对结果会保存到公司资料库；只有核对通过的 PDF 才可供 QC 现场核验。
+          Excel、打印 PDF 和核对结果会保存到公司资料库；自动核对通过，或经纸箱部主管以上填写理由人工放行后，PDF 才可供 QC 现场核验。
         </p>
         </form>
 
@@ -3783,7 +3883,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           <div>
             <h2 class="text-xl font-semibold tracking-tight text-slate-950">{{ isWarehouseWorkspace ? '客户箱唛集合' : '已上传箱唛资料库' }}</h2>
             <p class="mt-1 text-sm text-slate-500">
-              {{ isWarehouseWorkspace ? '按客户查看客人 Excel、打印 PDF 与纸箱部文字核对记录。' : '只选用纸箱部核对通过的打印 PDF，与 QC 现场照片核验' }}
+              {{ isWarehouseWorkspace ? '按客户查看客人 Excel、打印 PDF、自动核对与人工放行记录。' : '只选用自动核对通过或已人工审核放行的打印 PDF，与 QC 现场照片核验' }}
             </p>
           </div>
           <input
@@ -3885,6 +3985,21 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 >
                   {{ record.documentCheckResult?.summary.overall_status || '待补 Excel 核对' }}
                 </span>
+                <span
+                  v-if="record.manualReleased"
+                  class="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 font-semibold text-emerald-700"
+                >
+                  人工放行
+                </span>
+                <button
+                  v-if="canReleaseTemplate && !record.qcReady"
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 font-semibold text-amber-800 transition hover:bg-amber-100"
+                  @click="openManualRelease(record)"
+                >
+                  <CheckCircle2 class="size-4" aria-hidden="true" />
+                  人工审核放行
+                </button>
                 <button
                   v-if="isWarehouseWorkspace"
                   type="button"
@@ -3932,6 +4047,13 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               <span>上传：{{ formatDate(record.uploadedAt) }}</span>
               <span>纸箱部核对：{{ record.documentCheckedAt ? formatDate(record.documentCheckedAt) : '待补' }}</span>
             </div>
+            <div
+              v-if="record.manualReleased"
+              class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800"
+            >
+              <p class="font-semibold">人工放行：{{ record.manualReleasedByName }} · {{ formatDate(record.manualReleasedAt) }}</p>
+              <p class="mt-1">自动核对状态：{{ record.manualReleaseSourceStatus || record.checkStatus }}；理由：{{ record.manualReleaseReason }}</p>
+            </div>
           </article>
         </div>
 
@@ -3939,6 +4061,82 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
             <p class="text-sm font-semibold text-slate-700">暂无箱唛资料</p>
             <p class="mt-2 text-sm text-slate-500">上传后会按客名进入对应资料库。</p>
           </div>
+        </div>
+      </section>
+    </div>
+    <div
+      v-if="manualReleaseRecord"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
+      role="presentation"
+      @click.self="closeManualRelease"
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="carton-mark-manual-release-title"
+        class="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-6 shadow-2xl"
+      >
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">MANUAL RELEASE</p>
+            <h2 id="carton-mark-manual-release-title" class="mt-2 text-xl font-semibold text-slate-950">人工审核放行箱唛模板</h2>
+            <p class="mt-2 text-sm text-slate-600">
+              {{ manualReleaseRecord.customerName }} · 合同：{{ manualReleaseRecord.contractNumber || '未填写' }} · ITEM：{{ manualReleaseRecord.item }}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭人工放行窗口"
+            :disabled="isManualReleasing"
+            class="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-50 disabled:opacity-50"
+            @click="closeManualRelease"
+          >
+            <XCircle class="size-5" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div class="mt-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+          当前自动核对结果为“{{ manualReleaseRecord.checkStatus || '需复核' }}”。人工放行不会改写该结果，但会允许 QC 选用此模板；重新自动核对后，本次放行将自动撤销。
+        </div>
+
+        <label class="mt-5 block" for="carton-mark-manual-release-reason">
+          <span class="text-sm font-semibold text-slate-800">放行理由 <span class="text-red-600">*</span></span>
+          <textarea
+            id="carton-mark-manual-release-reason"
+            v-model="manualReleaseReason"
+            rows="4"
+            maxlength="500"
+            :disabled="isManualReleasing"
+            class="mt-2 w-full resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:ring-4 focus:ring-amber-50 disabled:bg-slate-100"
+            placeholder="请说明已人工核对的内容、差异可接受原因或现场处置依据（至少 5 个字符）"
+          />
+        </label>
+        <div class="mt-1 flex items-start justify-between gap-3 text-xs">
+          <p class="text-slate-500">审核人：{{ currentUserName }}；系统将记录理由、时间和原自动核对状态。</p>
+          <span class="shrink-0 text-slate-400">{{ manualReleaseReason.length }}/500</span>
+        </div>
+        <p v-if="manualReleaseError" role="alert" class="mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {{ manualReleaseError }}
+        </p>
+
+        <div class="mt-6 flex justify-end gap-3">
+          <button
+            type="button"
+            :disabled="isManualReleasing"
+            class="h-10 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            @click="closeManualRelease"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            :disabled="isManualReleasing || manualReleaseReason.trim().length < 5"
+            class="inline-flex h-10 items-center gap-2 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            @click="confirmManualRelease"
+          >
+            <CheckCircle2 class="size-4" aria-hidden="true" />
+            {{ isManualReleasing ? '正在放行' : '确认人工放行' }}
+          </button>
         </div>
       </section>
     </div>

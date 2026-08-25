@@ -73,6 +73,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'carton_mark:read': '查看箱唛',
   'carton_mark:review': '复核箱唛',
   'carton_mark:template_upload': '维护箱唛模板',
+  'carton_mark:template_release': '人工放行箱唛模板',
   'carton_mark:customer_manage': '维护箱唛客户',
   'carton_procurement:read': '查看纸箱采购台账',
   'carton_procurement:order_write': '维护纸箱订单',

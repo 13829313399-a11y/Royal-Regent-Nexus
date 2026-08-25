@@ -34,6 +34,11 @@ const persistedTemplate: CartonMarkTemplateRecordResponse = {
   updated_at: '2026-08-13T10:00:00Z',
   created_by_name: '纸箱仓管',
   qc_ready: true,
+  manual_released: false,
+  manual_release_reason: '',
+  manual_release_source_status: '',
+  manual_released_by_name: '',
+  manual_released_at: '',
 }
 
 describe('carton-mark persisted template API', () => {
@@ -146,6 +151,35 @@ describe('carton-mark persisted template API', () => {
     expect(post).toHaveBeenCalledWith('/carton-mark/templates/cm-1/recheck', undefined, {
       params: { factory_id: 'huaxing' },
       timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS,
+      signal: controller.signal,
+    })
+  })
+
+  it('manually releases a checked template with an auditable reason', async () => {
+    const releasedTemplate = {
+      ...persistedTemplate,
+      check_status: '发现差异',
+      qc_ready: true,
+      manual_released: true,
+      manual_release_reason: '已核对客户确认的允许差异',
+      manual_release_source_status: '发现差异',
+      manual_released_by_name: '纸箱主管',
+      manual_released_at: '2026-08-25T10:00:00+08:00',
+    }
+    const post = vi.fn().mockResolvedValue({ data: releasedTemplate })
+    const api = createCartonMarkApi({ post } as Parameters<typeof createCartonMarkApi>[0])
+    const controller = new AbortController()
+
+    await expect(api.manualReleaseTemplate(
+      'cm-1',
+      'huaxing',
+      '已核对客户确认的允许差异',
+      controller.signal,
+    )).resolves.toEqual(releasedTemplate)
+    expect(post).toHaveBeenCalledWith('/carton-mark/templates/cm-1/manual-release', {
+      reason: '已核对客户确认的允许差异',
+    }, {
+      params: { factory_id: 'huaxing' },
       signal: controller.signal,
     })
   })

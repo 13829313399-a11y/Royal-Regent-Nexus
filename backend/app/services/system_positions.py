@@ -19,7 +19,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v21"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v22"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -77,6 +77,7 @@ INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
 )
 CARTON_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_procurement:customer_manage"
 CARTON_MARK_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_mark:customer_manage"
+CARTON_MARK_TEMPLATE_RELEASE_PERMISSION_CODE = "carton_mark:template_release"
 CARTON_QC_WORKSPACE_POSITION_ROLE_IDS = frozenset(
     {
         "position_carton_manager",
@@ -152,6 +153,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "molding_sample:notification_read",
     "carton_mark:read",
     "carton_mark:template_upload",
+    CARTON_MARK_TEMPLATE_RELEASE_PERMISSION_CODE,
     CARTON_MARK_CUSTOMER_MANAGE_PERMISSION_CODE,
     "carton_mark:photo_upload",
     "carton_mark:review",
@@ -396,6 +398,7 @@ CARTON_SUPERVISOR_PERMISSION_CODES = (
     *CARTON_WAREHOUSE_PERMISSION_CODES,
     CARTON_CUSTOMER_MANAGE_PERMISSION_CODE,
     CARTON_MARK_CUSTOMER_MANAGE_PERMISSION_CODE,
+    CARTON_MARK_TEMPLATE_RELEASE_PERMISSION_CODE,
     "carton_mark:photo_upload",
     "carton_mark:review",
 )

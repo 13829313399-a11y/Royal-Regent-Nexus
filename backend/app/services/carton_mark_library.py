@@ -211,7 +211,15 @@ def _template_out(
         created_at=template.created_at,
         updated_at=template.updated_at,
         created_by_name=template.created_by_name,
-        qc_ready=template.check_status == "核对通过",
+        qc_ready=(
+            template.check_status == "核对通过"
+            or bool(template.manual_released_at)
+        ),
+        manual_released=bool(template.manual_released_at),
+        manual_release_reason=template.manual_release_reason,
+        manual_release_source_status=template.manual_release_source_status,
+        manual_released_by_name=template.manual_released_by_name,
+        manual_released_at=template.manual_released_at,
     )
 
 
@@ -425,6 +433,7 @@ def update_carton_mark_document_check_result(
     if check_status not in {"核对通过", "发现差异", "需复核"}:
         raise HTTPException(status_code=422, detail="箱唛核对结果状态无效")
 
+    manual_release_revoked = bool(template.manual_released_at)
     template.check_status = check_status
     template.check_result_json = json.dumps(
         check_result.model_dump(mode="json"),
@@ -432,6 +441,11 @@ def update_carton_mark_document_check_result(
         sort_keys=True,
         separators=(",", ":"),
     )
+    template.manual_release_reason = ""
+    template.manual_release_source_status = ""
+    template.manual_released_by = ""
+    template.manual_released_by_name = ""
+    template.manual_released_at = ""
     template.updated_at = _now_text()
     _audit(
         db,
@@ -442,6 +456,53 @@ def update_carton_mark_document_check_result(
         detail={
             "version": template.version,
             "check_status": check_status,
+            "manual_release_revoked": manual_release_revoked,
+            "excel_sha256": template.excel_sha256,
+            "pdf_sha256": template.pdf_sha256,
+        },
+    )
+    db.commit()
+    db.refresh(template)
+    documents = _documents_for_templates(db, [template.id])
+    return _template_out(template, documents.get(template.id, {}))
+
+
+def manually_release_carton_mark_template(
+    db: Session,
+    user: AuthContext,
+    *,
+    factory_id: str,
+    template_id: str,
+    reason: str,
+) -> CartonMarkTemplateOut:
+    factory_id = require_carton_factory(factory_id)
+    template = _active_template(db, factory_id, template_id)
+    if template.check_status == "核对通过":
+        raise HTTPException(status_code=409, detail="该模板已经自动核对通过，无需人工放行")
+    if template.manual_released_at:
+        raise HTTPException(status_code=409, detail="该模板已经人工放行，请勿重复操作")
+
+    normalized_reason = _normalize_required(reason, "人工放行理由", 500)
+    if len(normalized_reason) < 5:
+        raise HTTPException(status_code=422, detail="人工放行理由至少需要 5 个字符")
+
+    timestamp = _now_text()
+    template.manual_release_reason = normalized_reason
+    template.manual_release_source_status = template.check_status
+    template.manual_released_by = user.id
+    template.manual_released_by_name = user.display_name
+    template.manual_released_at = timestamp
+    template.updated_at = timestamp
+    _audit(
+        db,
+        user,
+        factory_id=factory_id,
+        event_type="CARTON_MARK_TEMPLATE_MANUALLY_RELEASED",
+        template_id=template.id,
+        detail={
+            "version": template.version,
+            "source_check_status": template.check_status,
+            "reason": normalized_reason,
             "excel_sha256": template.excel_sha256,
             "pdf_sha256": template.pdf_sha256,
         },
