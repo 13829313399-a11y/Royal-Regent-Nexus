@@ -88,6 +88,7 @@ from app.services.injection_scheduling_master_import import (
 )
 from app.services.injection_scheduling_profile_registry import (
     active_profiles_for_factory,
+    create_active_workbench_profile_revision,
     create_profile_revision,
     profile_revision_for_factory,
 )
@@ -1712,6 +1713,165 @@ def update_import_mapping_draft(
     return batch
 
 
+def apply_workbench_import_mapping(
+    db: Session,
+    *,
+    batch_id: str,
+    factory_id: str,
+    expected_revision: int,
+    request_id: str,
+    mappings: dict[str, str],
+    user: AuthContext,
+    settings: Settings | None = None,
+) -> InjectionSchedulingImportBatch:
+    """Activate clerk mapping corrections and rebuild the preview in one screen."""
+
+    factory_id = require_injection_scheduling_factory(factory_id)
+    operation_hash = _payload_hash(
+        {
+            "batch_id": batch_id,
+            "expected_revision": expected_revision,
+            "mappings": mappings,
+        }
+    )
+    replay_event = db.scalar(
+        select(InjectionSchedulingAuditEvent).where(
+            InjectionSchedulingAuditEvent.factory_id == factory_id,
+            InjectionSchedulingAuditEvent.entity_id == batch_id,
+            InjectionSchedulingAuditEvent.event_type
+            == "workbench_import_mapping_applied",
+            InjectionSchedulingAuditEvent.request_id == request_id,
+        )
+    )
+    if replay_event is not None:
+        detail = _load_json(replay_event.detail_json, {})
+        if detail.get("operation_hash") != operation_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="相同 request_id 已用于其他字段映射",
+            )
+        return get_import_batch(db, factory_id=factory_id, batch_id=batch_id)
+
+    batch = db.scalar(
+        select(InjectionSchedulingImportBatch)
+        .where(
+            InjectionSchedulingImportBatch.id == batch_id,
+            InjectionSchedulingImportBatch.factory_id == factory_id,
+        )
+        .with_for_update()
+    )
+    if batch is None:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    if batch.revision != expected_revision:
+        raise HTTPException(status_code=409, detail="导入批次已变化，请重新加载")
+    if batch.status != "PREVIEW" or batch.document_kind not in {
+        "DEMAND_ORDER",
+        "PLANNED_SCHEDULE",
+    }:
+        raise HTTPException(
+            status_code=409,
+            detail="只有未确认的需求单或生产计划预览可修正字段映射",
+        )
+    unknown_fields = set(mappings) - set(CANONICAL_FIELD_CATALOG)
+    if unknown_fields:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "存在未知规范字段", "fields": sorted(unknown_fields)},
+        )
+    if not mappings or any(not key.strip() or not value.strip() for key, value in mappings.items()):
+        raise HTTPException(status_code=422, detail="映射字段和来源表头不能为空")
+    if len(set(mappings.values())) != len(mappings):
+        raise HTTPException(status_code=422, detail="同一来源表头不能映射到多个字段")
+
+    normalized = _load_json(batch.normalized_json, {})
+    available_headers = {
+        str(item.get("raw_header", "")).strip()
+        for item in normalized.get("mapping", [])
+        if str(item.get("raw_header", "")).strip()
+    }
+    unknown_headers = set(mappings.values()) - available_headers
+    if unknown_headers:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "来源表头不属于当前预览",
+                "headers": sorted(unknown_headers),
+            },
+        )
+    base = db.get(InjectionSchedulingImportProfile, batch.profile_id)
+    if base is None or base.document_kind != batch.document_kind:
+        raise HTTPException(status_code=409, detail="当前预览没有可复用的基础模板")
+    config = _load_json(base.config_json, {})
+    fields = list(config.get("fields", []))
+    by_name = {str(item.get("canonical_field", "")): item for item in fields}
+    for canonical_field, raw_header in mappings.items():
+        field = by_name.get(canonical_field)
+        if field is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"基础模板不支持字段 {canonical_field}",
+            )
+        headers = [str(item) for item in field.get("headers", [])]
+        if raw_header not in headers:
+            field["headers"] = [*headers, raw_header]
+
+    latest_revision = int(
+        db.scalar(
+            select(func.max(InjectionSchedulingImportProfile.revision)).where(
+                InjectionSchedulingImportProfile.profile_family == base.profile_family
+            )
+        )
+        or 0
+    )
+    profile_code = (
+        f"{base.profile_family}-wb-r{latest_revision + 1}-{batch.id[-6:]}"
+    )[:96]
+    create_active_workbench_profile_revision(
+        db,
+        factory_id=factory_id,
+        profile_family=base.profile_family,
+        profile_code=profile_code,
+        name=f"{base.name}（工作台修正）",
+        description="文员在简化工作台同屏修正字段映射",
+        expected_family_revision=latest_revision,
+        request_id=request_id,
+        config=config,
+        user=user,
+    )
+
+    current = get_import_batch(db, factory_id=factory_id, batch_id=batch_id)
+    retry_request_id = f"{request_id[:120]}-retry"
+    rebuilt, _ = retry_import_batch(
+        db,
+        batch_id=batch_id,
+        payload=InjectionSchedulingImportRetry(
+            factory_id=factory_id,
+            expected_revision=current.revision,
+            request_id=retry_request_id,
+        ),
+        user=user,
+        settings=settings,
+    )
+    _audit(
+        db,
+        factory_id=factory_id,
+        event_type="workbench_import_mapping_applied",
+        entity_type="import_batch",
+        entity_id=rebuilt.id,
+        entity_revision=rebuilt.revision,
+        request_id=request_id,
+        detail={
+            "operation_hash": operation_hash,
+            "mappings": dict(sorted(mappings.items())),
+            "profile_id": rebuilt.profile_id,
+            "preview_generation": rebuilt.preview_generation,
+        },
+        user=user,
+    )
+    db.commit()
+    return rebuilt
+
+
 def propose_import_profile_from_batch(
     db: Session,
     *,
@@ -3223,6 +3383,10 @@ def _confirm_master_data(
             reviewed_at="",
         )
         db.add(proposal)
+        # Field evidence has a strict foreign key to the proposal. Flush the
+        # parent explicitly so SQLite and PostgreSQL do not depend on ORM
+        # insertion ordering when no relationship is mapped between them.
+        db.flush()
         for field_name, evidence in row.get("source_lineage", {}).items():
             if not evidence.get("displayed_value") and not evidence.get("raw_value"):
                 continue

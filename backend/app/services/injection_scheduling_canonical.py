@@ -688,15 +688,29 @@ def _parse_plan_rows(
                 is_machine_header = bool(raw_machine and order_quantity is None)
             elif machine_header_rule == "NONE":
                 is_machine_header = False
+        fixed_group_header = (
+            profile.profile_code
+            in {
+                "huakang_a_daily_plan_v1",
+                "huakang_b_daily_plan_v1",
+                "huakang_b_plan_only_v1",
+            }
+            and reader.identifier(cells.get("A")) == raw_machine
+        )
         if not layout_override:
             is_machine_header = bool(
                 raw_machine
-                and raw_machine in known_machine_codes
+                and (raw_machine in known_machine_codes or fixed_group_header)
                 and not order_like
                 and order_quantity is None
             )
         if is_machine_header:
             current_machine = raw_machine
+            # The duplicated A/B group title is assignment evidence, not master
+            # data. It may classify following rows while still creating a
+            # MISSING_IN_SYSTEM_MASTER difference against authoritative machines.
+            if fixed_group_header:
+                known_machine_codes.add(raw_machine)
             ignored.append(
                 {
                     "classification": "MACHINE_HEADER",

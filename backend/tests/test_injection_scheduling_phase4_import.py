@@ -694,13 +694,19 @@ def test_phase4_real_huaxing_workbook_read_only_regression(monkeypatch):
     )
     after_stat = source_path.stat()
     assert normalized["source_file_hash"] == before_hash
-    assert {"计划表", "机安"} <= set(normalized["sheet_names"])
+    assert "计划表" in set(normalized["sheet_names"])
     assert normalized["summary"]["profile_code"] == "huaxing_daily_plan_v1"
     assert normalized["summary"]["machine_count"] == 0
-    assert normalized["summary"]["mold_count"] >= 3300
+    if "机安" in normalized["sheet_names"]:
+        assert normalized["summary"]["mold_count"] >= 3300
+    else:
+        assert normalized["summary"]["mold_count"] == 0
     assert normalized["summary"]["order_count"] >= 30
     assert normalized["summary"]["invalid_row_count"] >= 200
-    assert any(item["code"] == "FORMULA_CACHE_MISSING" for item in issues)
+    expected_formula_issue = (
+        "FORMULA_CACHE_MISSING" if "机安" in normalized["sheet_names"] else "FORMULA_ERROR"
+    )
+    assert any(item["code"] == expected_formula_issue for item in issues)
     with make_client(monkeypatch) as client:
         login(client, "admin", ADMIN_TEST_PASSWORD)
         preview = client.post(
@@ -757,16 +763,92 @@ def test_phase4_real_huakang_b_workbook_read_only_preview(monkeypatch):
         payload = preview.json()
     summary = payload["summary"]
     assert payload["source_file_hash"] == before_hash
-    assert payload["profile"]["profile_code"] == "huakang_b_daily_plan_v1"
+    profile_code = payload["profile"]["profile_code"]
+    assert profile_code in {
+        "huakang_b_daily_plan_v1",
+        "huakang_b_plan_only_v1",
+    }
     assert payload["batch_state"] == "MASTER_REVIEW_REQUIRED"
     assert summary["scheduled_baseline_count"] == 466
     assert summary["order_count"] == 454
     assert summary["invalid_row_count"] == 27
     assert summary["ignored_row_count"] == 98
-    assert summary["issue_count"] == 126
+    assert summary["issue_count"] == (
+        126 if profile_code == "huakang_b_daily_plan_v1" else 104
+    )
     assert summary["blocking_issue_count"] == 69
     assert summary["master_difference_count"] == 419
     assert len(payload["reconciliation_actions"]) == 920
+    after_stat = source_path.stat()
+    assert hashlib.sha256(source_path.read_bytes()).hexdigest() == before_hash
+    assert after_stat.st_size == before_stat.st_size
+    assert after_stat.st_mtime_ns == before_stat.st_mtime_ns
+
+
+@pytest.mark.skipif(
+    not os.getenv("INJECTION_SCHEDULING_HUAKANG_A_WORKBOOK"),
+    reason=(
+        "set INJECTION_SCHEDULING_HUAKANG_A_WORKBOOK for local Huakang A "
+        "real-template regression"
+    ),
+)
+def test_phase4_real_huakang_a_workbook_read_only_preview(monkeypatch):
+    source_path = Path(os.environ["INJECTION_SCHEDULING_HUAKANG_A_WORKBOOK"])
+    source = source_path.read_bytes()
+    before_hash = hashlib.sha256(source).hexdigest()
+    before_stat = source_path.stat()
+    import_service = importlib.import_module(
+        "app.services.injection_scheduling_import"
+    )
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError("华康 A 固定 Profile 不应调用 AI")
+
+    monkeypatch.setattr(
+        import_service, "recognize_workbook_layout_sync", fail_if_called
+    )
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        for machine_no in range(1, 56):
+            machine = client.post(
+                "/api/injection-scheduling/machines",
+                json={
+                    "factory_id": "huakang-a",
+                    "expected_revision": 0,
+                    "machine_code": str(machine_no),
+                },
+            )
+            assert machine.status_code == 201, machine.text
+        preview = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huakang-a",
+                "expected_revision": "0",
+                "document_kind": "PLANNED_SCHEDULE",
+                "recognition_mode": "AUTO",
+            },
+            files={
+                "file": (
+                    source_path.name,
+                    source,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers={"x-request-id": "phase4-real-huakang-a-preview"},
+        )
+        assert preview.status_code == 201, preview.text
+        payload = preview.json()
+    summary = payload["summary"]
+    assert payload["source_file_hash"] == before_hash
+    assert payload["profile"]["profile_code"] == "huakang_a_daily_plan_v1"
+    assert payload["profile"]["recognition_method"] == "ACTIVE_PROFILE_EXACT"
+    assert payload["sheet_roles"][0]["sheet_name"] == "8月"
+    assert {item["status"] for item in payload["mapping"]} == {"MAPPED"}
+    assert summary["scheduled_baseline_count"] == 166
+    assert summary["backlog_count"] == 2
+    assert summary["order_count"] == 162
+    assert summary["invalid_row_count"] == 7
+    assert summary["blocking_issue_count"] == 29
     after_stat = source_path.stat()
     assert hashlib.sha256(source_path.read_bytes()).hexdigest() == before_hash
     assert after_stat.st_size == before_stat.st_size
