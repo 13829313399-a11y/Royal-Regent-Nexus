@@ -83,14 +83,18 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).toContain('HUADENG_SPIN_MASTER_NEW_ORDER_V1')
   })
 
-  it('registers an independently mapped 360 customer under Huakang A', () => {
+  it('registers independent 360, Green Toys and HeadStart mappings under Huakang A', () => {
     expect(workspaceSource).toContain("'huakang-a': [")
     expect(workspaceSource).toContain('HUAKANG_A_360_SCHEDULE_APPEND_V3')
+    expect(workspaceSource).toContain('HUAKANG_A_GREEN_TOYS_SCHEDULE_APPEND_V1')
+    expect(workspaceSource).toContain('HUAKANG_A_HEADSTART_SCHEDULE_APPEND_V1')
     expect(workspaceSource).toContain('ThreeSixty PURCHASE ORDER RELEASE')
+    expect(workspaceSource).toContain('Green Toys Purchase Order 图片')
+    expect(workspaceSource).toContain('HeadStart 文本型 PURCHASE ORDER PDF')
     expect(workspaceSource).toContain('每个货号先按现有产品标题行写入货号和名称')
   })
 
-  it('shows only 360 in Huakang A and routes it with the Huakang A factory id', async () => {
+  it('shows three independent customers in Huakang A and routes 360 with the Huakang A factory id', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-huakang-a-mapped-preview-v1',
       customer_code: '360',
@@ -118,8 +122,14 @@ describe('customer order center static frontend', () => {
     })
 
     const customerButtons = wrapper.findAll('[data-testid^="customer-choice-"]')
-    expect(customerButtons).toHaveLength(1)
-    expect(customerButtons[0]!.text()).toContain('360')
+    expect(customerButtons).toHaveLength(3)
+    expect(customerButtons.map((button) => button.text())).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('360'),
+        expect.stringContaining('Green Toys'),
+        expect.stringContaining('HeadStart'),
+      ]),
+    )
     expect(wrapper.text()).not.toContain('BuzzBee')
 
     await wrapper.get('[data-testid="customer-choice-360"]').trigger('click')
@@ -145,8 +155,30 @@ describe('customer order center static frontend', () => {
     )
   })
 
-  it('registers INDEX, JAZAWARES, MAXX, STROTTMAN and JP under Huakang C', () => {
+  it('uses image PO input for Green Toys and PDF input for HeadStart', async () => {
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huakang-a',
+        factoryName: '华康A厂',
+      },
+    })
+
+    await wrapper.get('[data-testid="customer-choice-green-toys"]').trigger('click')
+    let inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toBe('.png,.jpg,.jpeg')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx,.xlsm')
+
+    await wrapper.get('[data-testid="customer-choice-headstart"]').trigger('click')
+    inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toBe('.pdf')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx,.xlsm')
+  })
+
+  it('moves INDEX, JAZAWARES, MAXX, STROTTMAN and JP external orders to Huakang D', () => {
     expect(workspaceSource).toContain("'huakang-c': [")
+    expect(workspaceSource).toContain("CUSTOMER_PROFILES_BY_FACTORY['huakang-d'] = CUSTOMER_PROFILES_BY_FACTORY['huakang-c']")
+    expect(workspaceSource).toContain("CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] = []")
     for (const template of [
       'HUAKANG_C_INDEX_NEW_ORDER_V1',
       'HUAKANG_C_JAZWARES_NEW_ORDER_V1',
@@ -159,11 +191,11 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).toContain('旧系统无真实样例验收，结果必须逐字段复核')
   })
 
-  it('shows only the five Huakang C customers and routes INDEX with Huakang C scope', async () => {
+  it('shows the five external customers in Huakang D and routes INDEX with Huakang D scope', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-huakang-c-mapped-preview-v1',
       customer_code: 'index',
-      factory_id: 'huakang-c',
+      factory_id: 'huakang-d',
       po_file_name: 'INDEX PO.pdf',
       po_file_names: ['INDEX PO.pdf'],
       po_file_count: 1,
@@ -181,8 +213,8 @@ describe('customer order center static frontend', () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: {
         activeSection: 'import',
-        factoryId: 'huakang-c',
-        factoryName: '华康C厂',
+        factoryId: 'huakang-d',
+        factoryName: '华康D厂',
       },
     })
 
@@ -218,8 +250,20 @@ describe('customer order center static frontend', () => {
       [po],
       schedule,
       expect.any(String),
-      'huakang-c',
+      'huakang-d',
     )
+  })
+
+  it('does not offer external customer profiles from the Huakang C workspace', () => {
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'import',
+        factoryId: 'huakang-c',
+        factoryName: '华康C厂',
+      },
+    })
+
+    expect(wrapper.findAll('[data-testid^="customer-choice-"]')).toHaveLength(0)
   })
 
   it('shows only the five Huadeng customers and routes Spin Master through mapped APIs', async () => {
@@ -523,6 +567,7 @@ describe('customer order center static frontend', () => {
     expect(resolutionDialog.attributes('role')).toBe('dialog')
     expect(resolutionDialog.text()).toContain('补录缺失内容或人工确认放行')
     expect(resolutionDialog.text()).toContain('确认缺失并放行')
+    expect(resolutionDialog.get('[data-testid="select-all-skippable-issues"]').text()).toContain('全选可放行项（1）')
     expect(wrapper.text()).toContain('2 份PO')
     expect(wrapper.text()).toContain('单价及金额留空，稍后由跟客补充')
     const manualInput = resolutionDialog.get('.manual-override-field input')

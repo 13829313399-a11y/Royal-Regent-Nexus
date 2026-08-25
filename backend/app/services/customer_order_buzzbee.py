@@ -250,7 +250,7 @@ def _ordinary_customer_metadata(
     if "DOLLAR GENERAL" in probe:
         customer_name, country, profile_standard = "Dollar General", "美国", "美国标准"
         profile_source = "客户规则 · Dollar General"
-    elif "AAFES" in probe:
+    elif re.search(r"\bA{2,3}FE(?:S)?\b", probe):
         customer_name, country, profile_standard = "AAFES", "美国", "美国标准"
         profile_source = "客户规则 · AAFES"
     elif re.search(r"\bWMU\b", probe):

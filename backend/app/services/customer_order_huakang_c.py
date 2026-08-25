@@ -500,9 +500,9 @@ def create_huakang_c_customer_preview(
     schedule_content: bytes,
 ) -> dict[str, Any]:
     spec = get_huakang_c_customer_mapping(customer_code)
-    if factory_id != "huakang-c":
+    if factory_id not in {"huakang-c", "huakang-d"}:
         raise HuakangCCustomerOrderError(
-            f"{spec.name}的这套映射只属于华康C厂区，不能导入其他厂区"
+            f"{spec.name}外部单映射只属于华康D（保留华康C历史兼容），不能导入其他厂区"
         )
     if not po_files:
         raise HuakangCCustomerOrderError(f"请至少上传一份{spec.name} PO")

@@ -1,0 +1,169 @@
+.injection-workbench .wb-fade-up-enter-active,
+.injection-workbench .wb-fade-up-leave-active,
+.injection-workbench .wb-view-morph-enter-active,
+.injection-workbench .wb-view-morph-leave-active,
+.wb-modal-pop-enter-active,
+.wb-modal-pop-leave-active,
+.wb-drawer-slide-enter-active,
+.wb-drawer-slide-leave-active {
+  transition:
+    opacity var(--wb-medium, 220ms) var(--wb-standard, ease),
+    transform var(--wb-medium, 220ms) var(--wb-spring, ease);
+}
+
+.injection-workbench .wb-fade-up-enter-from,
+.injection-workbench .wb-fade-up-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.injection-workbench .wb-view-morph-enter-from {
+  opacity: 0;
+  transform: translateX(4px);
+}
+
+.injection-workbench .wb-view-morph-leave-to {
+  opacity: 0;
+  transform: translateX(-4px);
+}
+
+.wb-modal-pop-enter-from,
+.wb-modal-pop-leave-to {
+  opacity: 0;
+}
+
+.wb-modal-pop-enter-from .wb-modal,
+.wb-modal-pop-leave-to .wb-modal {
+  opacity: 0;
+  transform: translateY(8px) scale(0.985);
+}
+
+.wb-drawer-slide-enter-from,
+.wb-drawer-slide-leave-to {
+  opacity: 0;
+}
+
+.wb-drawer-slide-enter-from .wb-detail-drawer,
+.wb-drawer-slide-leave-to .wb-detail-drawer {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+.injection-workbench .wb-kpi-card {
+  animation: wb-fade-up 320ms both var(--wb-spring);
+  animation-delay: var(--wb-stagger, 0ms);
+}
+
+.injection-workbench .wb-metric-enter-active,
+.injection-workbench .wb-metric-leave-active,
+.injection-workbench .wb-icon-morph-enter-active,
+.injection-workbench .wb-icon-morph-leave-active {
+  transition:
+    opacity 140ms var(--wb-standard),
+    transform 140ms var(--wb-standard);
+}
+
+.injection-workbench .wb-metric-enter-from,
+.injection-workbench .wb-icon-morph-enter-from {
+  opacity: 0;
+  transform: translateY(2px);
+}
+
+.injection-workbench .wb-metric-leave-to,
+.injection-workbench .wb-icon-morph-leave-to {
+  opacity: 0;
+  transform: translateY(-2px);
+}
+
+.injection-workbench .wb-action__ripple {
+  position: absolute;
+  z-index: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.32);
+  pointer-events: none;
+  transform: scale(0);
+  animation: wb-ripple 460ms ease-out forwards;
+}
+
+.injection-workbench .wb-spin {
+  animation: wb-spin 760ms linear infinite;
+}
+
+.injection-workbench .wb-live-dot.is-active::after {
+  position: absolute;
+  inset: -4px;
+  border: 1px solid currentcolor;
+  border-radius: 50%;
+  content: '';
+  opacity: 0;
+  animation: wb-live-pulse 2.4s ease-out infinite;
+}
+
+.injection-workbench .wb-skeleton-line::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.74), transparent);
+  content: '';
+  transform: translateX(-100%);
+  animation: wb-shimmer 1.5s ease-in-out infinite;
+}
+
+.injection-workbench .wb-accordion-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--wb-emphasis) var(--wb-spring);
+}
+
+.injection-workbench .wb-accordion-grid.is-open {
+  grid-template-rows: 1fr;
+}
+
+.injection-workbench .wb-accordion-grid > div {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@keyframes wb-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes wb-ripple {
+  to { opacity: 0; transform: scale(1); }
+}
+
+@keyframes wb-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes wb-live-pulse {
+  0% { opacity: 0.55; transform: scale(0.72); }
+  70%, 100% { opacity: 0; transform: scale(1.75); }
+}
+
+@keyframes wb-shimmer {
+  to { background-position: -220% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .injection-workbench *,
+  .injection-workbench *::before,
+  .injection-workbench *::after,
+  .wb-modal-layer *,
+  .wb-modal-layer *::before,
+  .wb-modal-layer *::after,
+  .wb-drawer-layer *,
+  .wb-drawer-layer *::before,
+  .wb-drawer-layer *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .injection-workbench .wb-action__ripple,
+  .injection-workbench .wb-live-dot.is-active::after,
+  .injection-workbench .wb-skeleton-line::after {
+    display: none;
+  }
+}

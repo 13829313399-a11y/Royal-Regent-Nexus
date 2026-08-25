@@ -76,7 +76,7 @@ ASSORTMENT_LINE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 PCS_PER_CARTON_PATTERN = re.compile(r"\b(\d+)\s+PCS/CTN\b", re.IGNORECASE)
-PACK_SUFFIX_PATTERN = re.compile(r"E(\d+)$", re.IGNORECASE)
+PACK_SUFFIX_PATTERN = re.compile(r"(?:E|CO|GU)(\d+)$", re.IGNORECASE)
 
 NOISE_PATTERN = re.compile(
     r"^(Page\s*:|PRODUCT\s+NO|DESCRIPTION|REF|C\.O\.|U/M|ORDER\s+QTY|"

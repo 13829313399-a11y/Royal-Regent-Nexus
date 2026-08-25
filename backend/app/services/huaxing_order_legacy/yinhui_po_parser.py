@@ -132,7 +132,15 @@ def _shipping_mark_from_remarks(remarks: str) -> str | None:
 
 def _so_no(text: str) -> str | None:
     """Return the schedule SO, excluding Silverlit's line suffix (-780/-790)."""
-    match = re.search(r"\bS(?:O|0O|0)\s*[:：]\s*([A-Z0-9]+)", text, re.I)
+    # OCR commonly renders the printed ``SO:`` label as ``$0:``, ``S0:`` or
+    # ``5O:``.  Accept only those label-shaped variants and still stop before
+    # Silverlit's separate line suffix (for example ``-10`` or ``-780``).
+    match = re.search(
+        r"(?<![A-Z0-9])(?:S\s*(?:O|0O|0)|5\s*(?:O|0)|\$\s*(?:O|0))"
+        r"\s*[:：]\s*([A-Z0-9]+)",
+        text,
+        re.I,
+    )
     return match.group(1).strip() if match else None
 
 

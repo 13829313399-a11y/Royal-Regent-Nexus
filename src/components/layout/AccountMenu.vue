@@ -22,8 +22,10 @@ import { useAuthStore } from '@/stores/auth'
 
 withDefaults(defineProps<{
   compact?: boolean
+  variant?: 'light' | 'obsidian'
 }>(), {
   compact: false,
+  variant: 'light',
 })
 
 const MAX_AVATAR_FILE_SIZE = 2 * 1024 * 1024
@@ -251,24 +253,32 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="menuRoot" class="relative" @keydown.esc="isMenuOpen = false">
+  <div
+    ref="menuRoot"
+    class="account-menu relative"
+    :class="`account-menu--${variant}`"
+    :data-variant="variant"
+    @keydown.esc="isMenuOpen = false"
+  >
     <button
       type="button"
-      class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1 text-slate-700 transition hover:border-teal-200 hover:bg-teal-50/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+      class="account-menu__trigger inline-flex h-9 items-center gap-2 rounded-lg border px-2 py-1 transition-[transform,border-color,background-color,box-shadow,color] duration-150 focus-visible:outline-none focus-visible:ring-2 active:scale-[0.98]"
+      :class="variant === 'obsidian'
+        ? 'border-white/15 bg-white/[0.065] text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-cyan-200/30 hover:bg-white/[0.11] focus-visible:ring-cyan-300/35'
+        : 'border-slate-200 bg-white text-slate-700 hover:border-teal-200 hover:bg-teal-50/60 focus-visible:ring-teal-500/30'"
       aria-label="账号与头像设置"
       aria-haspopup="menu"
       :aria-expanded="isMenuOpen"
       @click="toggleMenu"
     >
       <UserAvatar :src="avatarUrl" :name="displayName" size="sm" />
-      <span v-if="!compact" class="hidden min-w-0 text-left leading-tight sm:block">
-        <span class="block max-w-28 truncate text-[12px] font-semibold text-slate-800">{{ displayName }}</span>
+      <span v-if="!compact" class="account-menu__details hidden min-w-0 text-left leading-tight sm:block">
+        <span class="block max-w-28 truncate text-[12px] font-semibold" :class="variant === 'obsidian' ? 'text-white' : 'text-slate-800'">{{ displayName }}</span>
         <span class="block max-w-28 truncate text-[10px] text-slate-400">{{ roleLabel }}</span>
       </span>
       <ChevronDown
-        v-if="!compact"
-        class="hidden size-3.5 text-slate-400 transition sm:block"
-        :class="isMenuOpen ? 'rotate-180' : ''"
+        class="account-menu__chevron size-3.5 shrink-0 transition-transform"
+        :class="[isMenuOpen ? 'rotate-180' : '', variant === 'obsidian' ? 'text-slate-300' : 'text-slate-400']"
         aria-hidden="true"
       />
     </button>

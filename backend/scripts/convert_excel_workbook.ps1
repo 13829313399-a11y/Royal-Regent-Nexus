@@ -111,11 +111,8 @@ try {
             $converted = $true
         } catch {
             $wpsFailure = $_.Exception.Message
-            throw (
-                "Microsoft Excel 转换失败：{0}；WPS 表格后备转换也失败：{1}" -f
-                $excelFailure,
-                $wpsFailure
-            )
+            $combinedFailure = "Microsoft Excel 转换失败：$excelFailure；WPS 表格后备转换也失败：$wpsFailure"
+            throw $combinedFailure
         } finally {
             if ($null -ne $workbook) {
                 try { $workbook.Close($false) } catch {}

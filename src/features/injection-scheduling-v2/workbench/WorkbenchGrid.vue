@@ -2,7 +2,11 @@
 import { computed, nextTick, ref } from 'vue'
 import { createColumnHelper, getCoreRowModel, useVueTable, type ColumnDef } from '@tanstack/vue-table'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import { FileSpreadsheet, PencilLine, SearchX } from '@lucide/vue'
+import StatusPill from '@/components/common/StatusPill.vue'
 import { buildPasteChanges, formatWorkbenchCell, normalizeWorkbenchEdit } from './columns'
+import { dueSlackPresentation, formatAClass, priorityPresentation, statusPresentation } from './presentation'
+import WorkbenchActionButton from './ui/WorkbenchActionButton.vue'
 import type { WorkbenchCellChange, WorkbenchColumn, WorkbenchJob } from './types'
 
 const props = defineProps<{
@@ -16,6 +20,8 @@ const emit = defineEmits<{
   select: [jobId: string]
   stage: [changes: WorkbenchCellChange[]]
   error: [message: string]
+  clearFilters: []
+  import: []
 }>()
 
 const scrollElement = ref<HTMLElement | null>(null)
@@ -119,6 +125,22 @@ function inputValue(job: WorkbenchJob, column: WorkbenchColumn) {
   const value = job[column.key]
   return value == null ? '' : String(value)
 }
+
+function cellTone(job: WorkbenchJob, column: WorkbenchColumn) {
+  if (column.key === 'status') return statusPresentation(job.status)
+  if (column.key === 'priority') return priorityPresentation(job.priority)
+  if (column.key === 'deliverySlackDays') return dueSlackPresentation(job.deliverySlackDays)
+  return null
+}
+
+function semanticCellClass(column: WorkbenchColumn) {
+  return {
+    numeric: ['orderQuantity', 'outstandingQuantity', 'shiftTargetQuantity', 'todayDayQuantity', 'todayNightQuantity', 'completedQuantity', 'reportedQuantity'].includes(String(column.key)),
+    'cell-status': column.key === 'status',
+    'cell-priority': column.key === 'priority',
+    'cell-slack': column.key === 'deliverySlackDays',
+  }
+}
 </script>
 
 <template>
@@ -141,7 +163,7 @@ function inputValue(job: WorkbenchJob, column: WorkbenchColumn) {
           :style="cellStyle(column)"
           role="columnheader"
         >
-          {{ column.label }}<span v-if="column.editable" aria-label="可编辑"> ·</span>
+          <span>{{ column.label }}</span><PencilLine v-if="column.editable" :size="11" aria-label="可编辑" />
         </div>
       </div>
       <div class="wb-grid-body" :style="{ height: `${virtualizer.getTotalSize()}px` }">
@@ -153,12 +175,13 @@ function inputValue(job: WorkbenchJob, column: WorkbenchColumn) {
           :style="{ transform: `translateY(${virtualRow.start}px)`, width: `${totalWidth}px` }"
           role="row"
           :aria-rowindex="virtualRow.index + 2"
+          :aria-selected="jobs[virtualRow.index]?.id === selectedJobId"
         >
           <div
             v-for="(column, columnIndex) in columns"
             :key="column.key"
             class="wb-grid-cell"
-            :class="{ frozen: column.frozen, editable: canEdit(jobs[virtualRow.index]!, column), pending: pending(jobs[virtualRow.index]!, column) }"
+            :class="[{ frozen: column.frozen, editable: canEdit(jobs[virtualRow.index]!, column), pending: pending(jobs[virtualRow.index]!, column) }, semanticCellClass(column)]"
             :style="cellStyle(column)"
             role="gridcell"
             tabindex="0"
@@ -186,6 +209,13 @@ function inputValue(job: WorkbenchJob, column: WorkbenchColumn) {
             >
               <option>否</option><option>是</option>
             </select>
+            <StatusPill
+              v-else-if="cellTone(jobs[virtualRow.index]!, column)"
+              :label="cellTone(jobs[virtualRow.index]!, column)!.label"
+              :tone="cellTone(jobs[virtualRow.index]!, column)!.tone"
+              compact
+            />
+            <span v-else-if="column.key === 'requiredMachineA'" class="wb-a-class">{{ formatAClass(jobs[virtualRow.index]!.requiredMachineA) }}</span>
             <input
               v-else-if="canEdit(jobs[virtualRow.index]!, column)"
               :value="inputValue(jobs[virtualRow.index]!, column)"
@@ -199,6 +229,11 @@ function inputValue(job: WorkbenchJob, column: WorkbenchColumn) {
         </div>
       </div>
     </div>
-    <div v-if="!jobs.length" class="wb-grid-empty">没有符合当前筛选条件的生产任务</div>
+    <div v-if="!jobs.length" class="wb-grid-empty">
+      <span class="wb-empty-icon"><SearchX :size="24" /></span>
+      <h3>没有符合当前条件的任务</h3>
+      <p>可以清除筛选条件，或导入新的需求表与生产日计划表。</p>
+      <div><WorkbenchActionButton variant="secondary" @click="emit('clearFilters')">清除筛选</WorkbenchActionButton><WorkbenchActionButton variant="primary" @click="emit('import')"><template #icon><FileSpreadsheet :size="15" /></template>导入 Excel</WorkbenchActionButton></div>
+    </div>
   </div>
 </template>
