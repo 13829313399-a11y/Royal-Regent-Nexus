@@ -14,3 +14,15 @@ def test_document_translation_proxy_has_route_specific_half_hour_timeout():
     translation_block = config[translation_start:generic_api_start]
     assert "proxy_send_timeout 1800s;" in translation_block
     assert "proxy_read_timeout 1800s;" in translation_block
+
+
+def test_customer_order_proxy_accepts_real_batches_and_long_running_excel_work():
+    config = (REPOSITORY_ROOT / "nginx.prod.conf").read_text(encoding="utf-8")
+    customer_order_start = config.index("location ~ ^/api/customer-orders/")
+    generic_api_start = config.index("location /api/")
+    customer_order_block = config[customer_order_start:generic_api_start]
+
+    assert "client_max_body_size 128m;" in config
+    assert customer_order_start < generic_api_start
+    assert "proxy_send_timeout 600s;" in customer_order_block
+    assert "proxy_read_timeout 600s;" in customer_order_block

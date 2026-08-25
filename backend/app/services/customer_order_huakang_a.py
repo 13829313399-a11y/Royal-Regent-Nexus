@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from app.services.huakang_a_order_legacy import schedule_parser
+from app.services.huakang_a_order_legacy import green_toys_headstart
 from app.services.huaxing_order_legacy.new_order_excel import (
     append_records_to_workbook,
 )
@@ -59,6 +60,32 @@ HUAKANG_A_CUSTOMER_MAPPINGS: dict[str, HuakangACustomerMappingSpec] = {
             "读取 ThreeSixty PURCHASE ORDER RELEASE 的 RL 合同号、修订日期、客户 PO、"
             "货号、数量、装箱、验货日、FCD、柜型和卸货港；每个货号先新增一行与"
             "现有产品标题行一致的货号/名称，再在下一行写入 PO 明细。"
+        ),
+    ),
+    "green-toys": HuakangACustomerMappingSpec(
+        code="green-toys",
+        name="Green Toys",
+        po_extensions=(".png", ".jpg", ".jpeg"),
+        schedule_extensions=(".xlsx", ".xlsm"),
+        input_template="HUAKANG_A_GREEN_TOYS_IMAGE_PO_V1",
+        target_template="HUAKANG_A_GREEN_TOYS_SCHEDULE_APPEND_V1",
+        rule_summary=(
+            "OCR读取 Green Toys 图片 PO 的 PO号、来单日、Deliver By Date、货号、"
+            "英文品名、数量和USD单价；按现有排期同货号唯一继承中文品名、箱规、"
+            "国家和落货港，走货方式固定为40'YT，USD按7.8换算HKD。"
+        ),
+    ),
+    "headstart": HuakangACustomerMappingSpec(
+        code="headstart",
+        name="HeadStart",
+        po_extensions=(".pdf",),
+        schedule_extensions=(".xlsx", ".xlsm"),
+        input_template="HUAKANG_A_HEADSTART_TEXT_PO_V1",
+        target_template="HUAKANG_A_HEADSTART_SCHEDULE_APPEND_V1",
+        rule_summary=(
+            "读取 HeadStart PDF 的 Order No、Item Code、Item Description、数量、"
+            "Delivery Date、APN、外箱装箱数、箱数、日期码及USD价格；走货期按"
+            "验货日期后7天计算，USD按7.8换算HKD。"
         ),
     ),
 }
@@ -126,10 +153,13 @@ def _quantity_key(value: Any) -> str:
         return _text(value)
 
 
-def _safe_output_name(schedule_file_name: str) -> str:
+def _safe_output_name(
+    schedule_file_name: str,
+    spec: HuakangACustomerMappingSpec,
+) -> str:
     stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(schedule_file_name).stem).strip(" ._")
     suffix = ".xlsm" if Path(schedule_file_name).suffix.lower() == ".xlsm" else ".xlsx"
-    return f"{stem or '华康A排期'}_360新单{suffix}"
+    return f"{stem or '华康A排期'}_{spec.name}新单{suffix}"
 
 
 def _temporary_name(index: int, file_name: str) -> str:
@@ -137,7 +167,7 @@ def _temporary_name(index: int, file_name: str) -> str:
     return f"{index:03d}_{safe_name}"
 
 
-def _prepare_batch(
+def _prepare_360_batch(
     po_files: list[tuple[str, bytes]],
     schedule_file_name: str,
     schedule_content: bytes,
@@ -198,6 +228,30 @@ def _prepare_batch(
     )
 
 
+def _prepare_batch(
+    customer_code: str,
+    po_files: list[tuple[str, bytes]],
+    schedule_file_name: str,
+    schedule_content: bytes,
+) -> PreparedBatch:
+    if customer_code == "360":
+        return _prepare_360_batch(po_files, schedule_file_name, schedule_content)
+    try:
+        prepared = green_toys_headstart.prepare_special_batch(
+            customer_code,
+            po_files,
+            schedule_file_name,
+            schedule_content,
+        )
+    except green_toys_headstart.HuakangASpecialCustomerError as exc:
+        raise HuakangACustomerOrderError(str(exc)) from exc
+    return PreparedBatch(
+        records=prepared.records,
+        warnings=prepared.warnings,
+        sheet_name=prepared.sheet_name,
+    )
+
+
 def _total_cartons(record: dict[str, Any]) -> int | str:
     quantity = schedule_parser._number(record.get("quantity"))
     carton_qty = schedule_parser._number(record.get("master_carton_qty"))
@@ -206,7 +260,12 @@ def _total_cartons(record: dict[str, Any]) -> int | str:
     return math.ceil(float(quantity) / float(carton_qty))
 
 
-def _record_fields(record: dict[str, Any]) -> dict[str, Any]:
+def _record_fields(
+    spec: HuakangACustomerMappingSpec,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    if spec.code != "360":
+        return green_toys_headstart.preview_fields(spec.code, record)
     return {
         "po_no": record.get("customer_po"),
         "contract_no": record.get("contract_no"),
@@ -232,7 +291,19 @@ def _record_fields(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _issues(record: dict[str, Any], row_id: str) -> list[dict[str, Any]]:
+def _issues(
+    record: dict[str, Any],
+    row_id: str,
+    spec: HuakangACustomerMappingSpec | None = None,
+) -> list[dict[str, Any]]:
+    spec = spec or HUAKANG_A_CUSTOMER_MAPPINGS["360"]
+    if spec.code != "360":
+        return green_toys_headstart.issues_for_record(
+            spec.code,
+            spec.name,
+            record,
+            row_id,
+        )
     field_by_message = {
         "未识别合同号": "contract_no",
         "未识别货号": "product_no",
@@ -297,8 +368,8 @@ def _preview_row(
     index: int,
     sheet_name: str,
 ) -> dict[str, Any]:
-    row_id = f"huakang-a-360-{index}"
-    issues = _issues(record, row_id)
+    row_id = f"huakang-a-{spec.code}-{index}"
+    issues = _issues(record, row_id, spec)
     status = (
         "blocked"
         if any(issue["severity"] == "blocked" for issue in issues)
@@ -340,7 +411,7 @@ def _preview_row(
         },
         "issues": issues,
     }
-    for field_name, value in _record_fields(record).items():
+    for field_name, value in _record_fields(spec, record).items():
         common[field_name] = _text(value)
     common["customer_country"] = _joined(common["customer_name"], common["country"])
     return common
@@ -361,13 +432,18 @@ def create_huakang_a_customer_preview(
             f"{spec.name} 的这套映射只属于华康A厂区，不能导入其他厂区"
         )
     if not po_files:
-        raise HuakangACustomerOrderError("请至少上传一份华康A 360 PO")
+        raise HuakangACustomerOrderError(f"请至少上传一份华康A {spec.name} PO")
     try:
         normalized_received_date = date.fromisoformat(received_date).isoformat()
     except ValueError as exc:
         raise HuakangACustomerOrderError("来单日期必须是 YYYY-MM-DD") from exc
 
-    prepared = _prepare_batch(po_files, schedule_file_name, schedule_content)
+    prepared = _prepare_batch(
+        customer_code,
+        po_files,
+        schedule_file_name,
+        schedule_content,
+    )
     rows = [
         _preview_row(
             spec=spec,
@@ -393,7 +469,7 @@ def create_huakang_a_customer_preview(
         "source_schedule_sha256": sha256(schedule_content).hexdigest(),
         "input_template": spec.input_template,
         "target_template": spec.target_template,
-        "output_file_name": _safe_output_name(schedule_file_name),
+        "output_file_name": _safe_output_name(schedule_file_name, spec),
         "summary": {
             "total": len(rows),
             "valid": sum(row["status"] == "valid" for row in rows),
@@ -403,12 +479,21 @@ def create_huakang_a_customer_preview(
         "rows": rows,
         "warnings": list(dict.fromkeys([
             spec.rule_summary,
-            "入单日期沿用 PO 的 Revision Date；来单日期仅作为本次导入追踪日期。",
-            "导出结果完整保留当前排期的所有 Sheet、历史数据、格式、公式、图片和打印设置；"
-            "仅在“360客排期表”最后一张已录入 PO 后插入本批新单。每个货号先复制"
-            "最近的产品标题行（如第 265、267 行）的合并方式、字体、字号、加粗、边框和行高，"
-            "在合并的 A:C 写货号、D:H 写产品名称；下一行再复制最近的正常明细行并写入 PO，"
-            "现有待排产品标题和后续内容整体下移；另存为新文件，不覆盖原排期。",
+            (
+                "入单日期沿用 PO 的 Revision Date；来单日期仅作为本次导入追踪日期。"
+                if customer_code == "360"
+                else "入单日期使用本次选择的来单日期；PO日期保留用于来源核对。"
+            ),
+            (
+                "导出结果完整保留当前排期的所有 Sheet、历史数据、格式、公式、图片和打印设置；"
+                "仅在“360客排期表”最后一张已录入 PO 后插入本批新单。每个货号先复制"
+                "最近的产品标题行（如第 265、267 行）的合并方式、字体、字号、加粗、边框和行高，"
+                "在合并的 A:C 写货号、D:H 写产品名称；下一行再复制最近的正常明细行并写入 PO，"
+                "现有待排产品标题和后续内容整体下移；另存为新文件，不覆盖原排期。"
+                if customer_code == "360"
+                else "导出结果完整保留当前排期所有 Sheet、历史数据、格式和公式；本批明细按货号"
+                "分组追加到现有排期末尾，每组自动复制标题行，新增行以浅绿色标识并另存为新文件。"
+            ),
             *prepared.warnings,
         ])),
     }
@@ -493,7 +578,12 @@ def export_huakang_a_customer_schedule(
     if not preview["rows"]:
         raise HuakangACustomerOrderError("本批文件没有可安全生成的新单明细")
 
-    prepared = _prepare_batch(po_files, schedule_file_name, schedule_content)
+    prepared = _prepare_batch(
+        customer_code,
+        po_files,
+        schedule_file_name,
+        schedule_content,
+    )
     apply_overrides_to_records(
         prepared.records,
         [str(row["id"]) for row in preview["rows"]],
@@ -505,8 +595,28 @@ def export_huakang_a_customer_schedule(
             "line_q": "planned_inspection_date",
             "requested_ship_date": "factory_commit_date",
             "po_no": "customer_po",
+            "unit_price_hkd": "unit_price_hkd",
+            "amount_hkd": "amount_hkd",
         },
     )
+    if customer_code != "360":
+        with TemporaryDirectory(prefix=f"huakang-a-{customer_code}-output-") as temp_dir:
+            output_path = Path(temp_dir) / preview["output_file_name"]
+            try:
+                green_toys_headstart.export_special_schedule(
+                    customer_code,
+                    prepared.records,
+                    received_date=received_date,
+                    schedule_file_name=schedule_file_name,
+                    schedule_content=schedule_content,
+                    output_path=output_path,
+                )
+            except Exception as exc:
+                raise HuakangACustomerOrderError(
+                    f"生成华康A {get_huakang_a_customer_mapping(customer_code).name}新单失败：{exc}"
+                ) from exc
+            return output_path.read_bytes(), preview["output_file_name"], preview
+
     records = [_new_order_record(record) for record in prepared.records]
     with TemporaryDirectory(prefix="huakang-a-360-output-") as temp_dir:
         output_path = Path(temp_dir) / preview["output_file_name"]

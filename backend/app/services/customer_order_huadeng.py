@@ -34,6 +34,7 @@ from app.services.huadeng_order_legacy import (
 from app.services.huaxing_order_legacy.new_order_excel import (
     append_column_records_to_workbook,
     append_records_to_workbook,
+    insert_column_records_by_matching_key,
 )
 
 
@@ -475,12 +476,16 @@ def _jakks_text_key(value: Any) -> str:
 
 def _apply_jakks_schedule_data(order: dict[str, Any], dataset: dict[str, Any]) -> None:
     candidates: dict[str, dict[str, str]] = {}
+    date_code_candidates: dict[str, set[str]] = defaultdict(set)
     records = dataset.get("records") or []
     for record in records:
         key = _jakks_item_key(record.get("sku"))
         name = _text(record.get("product"))
         if key and name:
             candidates.setdefault(key, {})[re.sub(r"\s+", "", name).casefold()] = name
+        date_code = _text(record.get("date_code"))
+        if key and date_code:
+            date_code_candidates[key].add(date_code)
     warnings = order.setdefault("warnings", [])
     for line in order.get("lines") or []:
         names = candidates.get(_jakks_item_key(line.get("item_no")), {})
@@ -493,6 +498,24 @@ def _apply_jakks_schedule_data(order: dict[str, Any], dataset: dict[str, Any]) -
         else:
             line["product_name_source"] = "PO原始品名（当前排期无此货号）"
             warnings.append(f"{line.get('item_no')}：当前 Jakks 排期没有该货号，保留 PO 品名。")
+        date_codes = date_code_candidates.get(_jakks_item_key(line.get("item_no")), set())
+        if not line.get("date_code") and len(date_codes) == 1:
+            line["date_code"] = next(iter(date_codes))
+        flags = line.setdefault("flags", [])
+        if not re.search(r"[\u3400-\u9fff]", _text(line.get("product_name"))):
+            flags.append({
+                "level": "high",
+                "code": "missing_product_name_zh",
+                "field": "product_name_zh",
+                "text": "当前排期未找到完整中文品名，请人工补录后导出",
+            })
+        if not _text(line.get("date_code")):
+            flags.append({
+                "level": "high",
+                "code": "missing_date_code",
+                "field": "date_code",
+                "text": "当前排期未找到可唯一继承的日期码，请人工补录后导出",
+            })
     if _text(order.get("contact")):
         return
     order_contract = _jakks_text_key(order.get("contract_no"))
@@ -646,6 +669,13 @@ def _simba_priority(file_name: str, row: dict[str, Any]) -> tuple[int, int]:
     return revision + file_type, completeness
 
 
+def _simba_first_english_sentence(value: Any) -> str:
+    text = re.sub(r"\s+", " ", _text(value)).strip()
+    if not text:
+        return ""
+    return re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+
+
 def _prepare_simba(
     po_files: list[tuple[str, bytes]], schedule_file_name: str, schedule_content: bytes,
     received_date: str,
@@ -690,6 +720,11 @@ def _prepare_simba(
         file_name = _text(parsed.get("filename")) or "PO"
         for source in parsed.get("rows") or []:
             row = dict(source)
+            # User-confirmed Simba output rule: PO carton dimensions must not
+            # populate the schedule's AK–AM dimension cells.
+            for field_name in ("outer_length_cm", "outer_width_cm", "outer_height_cm"):
+                row.pop(field_name, None)
+            row["english_name"] = _simba_first_english_sentence(row.get("english_name"))
             row["source_file"] = file_name
             row["_source_po_file_name"] = file_name
             row["order_date"] = received_date
@@ -1052,7 +1087,9 @@ def _export_prepared(
                 values[total_col] = f'=IF({outer}{row_no}=0,"",{qty}{row_no}/{outer}{row_no})'
             return values
 
-        append_column_records_to_workbook(
+        item_column = schedule_module.COL["item"]
+        item_key_factory = casdon_schedule.item_base if customer_code == "casdon" else spin_schedule.item_key
+        insert_column_records_by_matching_key(
             schedule_content,
             output_path,
             prepared.legacy_rows,
@@ -1062,8 +1099,12 @@ def _export_prepared(
             max_col=schedule_module.EXPORT_END_COL,
             detail_columns=(
                 schedule_module.COL["contract"],
-                schedule_module.COL["item"],
+                item_column,
                 schedule_module.COL["qty"],
+            ),
+            record_key_factory=lambda record: item_key_factory(record.get(item_column)),
+            row_key_factory=lambda worksheet, row_no: item_key_factory(
+                worksheet.cell(row_no, item_column).value
             ),
             row_values_factory=row_values,
         )
@@ -1157,10 +1198,40 @@ def export_huadeng_customer_schedule(
     prepared = _prepare_batch(
         customer_code, po_files, schedule_file_name, schedule_content, received_date,
     )
+    field_aliases = {
+        "jakks": {
+            "product_name_zh": "product_name",
+            "product_name_en": "po_description",
+            "units_per_carton": "outer_pack",
+            "carton_count": "cartons",
+            "packaging": "special_note",
+            "line_q": "inspection_date",
+            "requested_ship_date": "ship_date",
+        },
+        "simba": {
+            "product_name_zh": "product_name",
+            "product_name_en": "english_name",
+            "units_per_carton": "outer_pack",
+            "carton_count": "cartons",
+            "packaging": "special_remark",
+            "line_q": "inspection_date",
+            "requested_ship_date": "po_ship_date",
+        },
+        "spin-master": {
+            "product_name_zh": "product_name",
+            "product_name_en": "english_name",
+            "units_per_carton": "outer_pack",
+            "carton_count": "cartons",
+            "packaging": "special_notes",
+            "line_q": "inspection_date",
+            "requested_ship_date": "ship_date",
+        },
+    }.get(customer_code, {})
     apply_overrides_to_records(
         prepared.records,
         [str(row["id"]) for row in preview["rows"]],
         manual_overrides or [],
+        field_aliases=field_aliases,
     )
     if customer_code in {"casdon", "spin"}:
         schedule_module = casdon_schedule if customer_code == "casdon" else spin_schedule

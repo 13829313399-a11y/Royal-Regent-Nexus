@@ -31,6 +31,7 @@ MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
     "fcd_date": {"label": "FCD期", "input_type": "date"},
     "po_ship_date": {"label": "走货期", "input_type": "date"},
     "date_code": {"label": "日期码", "input_type": "text"},
+    "factory_price_hkd": {"label": "出厂价 HKD", "input_type": "number"},
     "outer_pack": {"label": "外箱装箱数", "input_type": "number"},
     "cartons": {"label": "箱数", "input_type": "number"},
     "customer_release_no": {"label": "客户 Release 号", "input_type": "text"},

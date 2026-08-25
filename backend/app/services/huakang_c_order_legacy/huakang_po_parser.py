@@ -302,25 +302,42 @@ class HuakangPOParser:
         contract = shipping.group(2) if shipping else po
         ship_to = _match(r"VENDOR\s+SHIP TO\s*\n.+?\s+(JAZWARES\s*-\s*[^\n]+)", text, flags=re.I | re.S)
         lines = []
-        pattern = re.compile(
-            r"(?m)^([A-Z][A-Z0-9-]{4,})\s+([0-9]{3}(?:-[0-9]{2,})+)\s+(.+?)\s+"
-            r"([\d,]+)\s+([\d,]+)\s+([\d,.]+)\s+([\d,]+\.\d{2})\s*$"
+        product_start = re.compile(
+            r"^([A-Z][A-Z0-9-]{4,})\s+([0-9][0-9-]{5,})\s+(.+)$",
+            re.I,
         )
-        for found in pattern.finditer(text):
-            qty = _int_number(found.group(4))
-            pcs = _int_number(found.group(5))
-            description = _clean(found.group(3))
-            following = text[found.end():].lstrip().splitlines()
-            if following:
-                continuation = _clean(following[0])
-                if continuation and not continuation.startswith("****") and not pattern.match(continuation):
-                    description = f"{description} {continuation}".strip()
+        product_tail = re.compile(
+            r"^(.+?)\s+([\d,]+)\s+([\d,]+)\s+([\d,.]+)\s+([\d,]+\.\d{2})$"
+        )
+        source_lines = [_clean(value) for value in text.splitlines()]
+        for index, source_line in enumerate(source_lines):
+            start = product_start.match(source_line)
+            if not start:
+                continue
+            payload = start.group(3)
+            found_tail = None
+            # Long JAZWARES descriptions can wrap before the numeric columns.
+            # Join only a small, bounded continuation window and stop at the
+            # next product/section marker so unrelated footer text is excluded.
+            for offset in range(0, 5):
+                if offset:
+                    candidate = source_lines[index + offset] if index + offset < len(source_lines) else ""
+                    if not candidate or candidate.startswith("****") or product_start.match(candidate):
+                        break
+                    payload = f"{payload} {candidate}".strip()
+                found_tail = product_tail.match(payload)
+                if found_tail:
+                    break
+            if not found_tail:
+                continue
+            qty = _int_number(found_tail.group(2))
+            pcs = _int_number(found_tail.group(3))
             lines.append(_line(
-                found.group(1),
-                description,
+                start.group(1),
+                found_tail.group(1),
                 qty,
-                unit_price_usd=_number(found.group(6)),
-                amount_usd=_number(found.group(7)),
+                unit_price_usd=_number(found_tail.group(4)),
+                amount_usd=_number(found_tail.group(5)),
                 pcs_per_carton=pcs,
                 carton_qty=round(qty / pcs) if pcs else 0,
                 version=version,

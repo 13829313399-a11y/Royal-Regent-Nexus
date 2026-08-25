@@ -27,6 +27,7 @@ XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml
 PREVIEW_SCHEMA_VERSION = "customer-order-buzzbee-preview-v1"
 STANDARD_TEMPLATE = "BUZZBEE_STANDARD_CONTRACT_V1"
 WMC_TEMPLATE = "BUZZBEE_WALMART_WMC_INLINE_V1"
+WMU_TEMPLATE = "BUZZBEE_WALMART_WMU_PO_ATTACHED_V1"
 TARGET_TEMPLATE = "BUZZBEE_PRODUCTION_SCHEDULE_V1"
 SCHEDULE_PASSWORD = "2026"
 MAX_PO_BYTES = 12 * 1024 * 1024
@@ -246,7 +247,7 @@ def _ordinary_customer_metadata(
     if "DOLLAR GENERAL" in probe:
         customer_name, country, profile_standard = "Dollar General", "美国", "美国标准"
         profile_source = "客户规则 · Dollar General"
-    elif "AAFES" in probe:
+    elif re.search(r"\bA{2,3}FE(?:S)?\b", probe):
         customer_name, country, profile_standard = "AAFES", "美国", "美国标准"
         profile_source = "客户规则 · AAFES"
     elif "SAFARI HOUSE" in probe:
@@ -508,6 +509,91 @@ def _parse_wmc_xlsx_sheet(
     return [ParsedPoLine(values=values, lineage=lineage, input_template=WMC_TEMPLATE)]
 
 
+def _parse_wmu_xlsx_workbook(
+    workbook: openpyxl.Workbook,
+) -> list[ParsedPoLine]:
+    """Expand a mainland Walmart WMU workbook from its PO Attached sheet."""
+    attached = next(
+        (sheet for sheet in workbook.worksheets if sheet.title.strip().lower() == "po attached"),
+        None,
+    )
+    if attached is None:
+        raise CustomerOrderWorkbookError("WMU 合同缺少 PO Attached 子订单页")
+
+    main = workbook.worksheets[0]
+    product_no = _clean_identifier(main["E14"].value or attached["B2"].value)
+    product_name_en = _clean_text(main["E17"].value or attached["B3"].value)
+    units_per_carton = _decimal(main["E25"].value)
+    packaging_refs = [
+        _clean_text(main.cell(row=row_number, column=1).value)
+        for row_number in range(1, main.max_row + 1)
+    ]
+    packaging = " / ".join(
+        value for value in packaging_refs if re.search(r"\d{4,}-\d{2}-\d{2}-WM", value, re.I)
+    )
+
+    header_row = next(
+        (
+            row_number
+            for row_number in range(1, min(attached.max_row, 20) + 1)
+            if "WALMART PO" in _clean_text(attached.cell(row_number, 2).value).upper()
+            and "ORDERED QTY" in _clean_text(attached.cell(row_number, 6).value).upper()
+        ),
+        None,
+    )
+    if header_row is None:
+        raise CustomerOrderWorkbookError("WMU PO Attached 页未识别到子订单表头")
+
+    lines: list[ParsedPoLine] = []
+    for row_number in range(header_row + 1, attached.max_row + 1):
+        contract_no = _clean_identifier(attached.cell(row_number, 1).value)
+        po_no = _clean_text(attached.cell(row_number, 2).value)
+        quantity = _decimal(attached.cell(row_number, 6).value)
+        carton_count = _decimal(attached.cell(row_number, 7).value)
+        if not contract_no and not po_no:
+            continue
+        if not contract_no or not po_no or quantity is None or quantity <= 0:
+            continue
+        row_pack = units_per_carton
+        if row_pack is None and carton_count is not None and carton_count > 0:
+            row_pack = quantity / carton_count
+        values = {
+            "contract_no": contract_no,
+            "po_no": po_no,
+            "customer_name": "WALMART USA",
+            "country": "美国",
+            "product_no": product_no,
+            "product_name_en": product_name_en,
+            "quantity": quantity,
+            "units_per_carton": row_pack,
+            "standard": "美国标准",
+            "packaging": packaging or "Walmart USA / RFID",
+            "requested_ship_date": _format_iso_date(attached.cell(row_number, 4).value),
+            "inspection_raw": _clean_text(attached.cell(row_number, 8).value),
+            "inspection_date": _format_iso_date(attached.cell(row_number, 8).value),
+            "ship_via": _clean_text(attached.cell(row_number, 3).value),
+        }
+        lineage = {
+            "contract_no": f"{attached.title}!A{row_number}",
+            "po_no": f"{attached.title}!B{row_number}",
+            "customer_name": f"{attached.title}!A1",
+            "country": "模板规则 · WALMART USA → 美国",
+            "product_no": f"{main.title}!E14",
+            "product_name_en": f"{main.title}!E17",
+            "quantity": f"{attached.title}!F{row_number}",
+            "units_per_carton": f"{main.title}!E25",
+            "standard": "模板规则 · WALMART USA → 美国标准",
+            "packaging": f"{main.title}!A52:A53" if packaging else "模板规则 · WMU RFID",
+            "requested_ship_date": f"{attached.title}!D{row_number}",
+            "inspection_date": f"{attached.title}!H{row_number}",
+        }
+        lines.append(ParsedPoLine(values=values, lineage=lineage, input_template=WMU_TEMPLATE))
+
+    if not lines:
+        raise CustomerOrderWorkbookError("WMU PO Attached 页没有可用的子订单明细")
+    return lines
+
+
 def _parse_xlsx_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
     try:
         workbook = openpyxl.load_workbook(BytesIO(content), data_only=True, read_only=True)
@@ -528,8 +614,14 @@ def _parse_xlsx_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
                 if _clean_text(value)
             ]
         ).upper()
-        if "WMU" in identity_probe or "INDONESIA" in identity_probe or "印尼" in identity_probe:
-            raise CustomerOrderWorkbookError("WMU/印尼合同不属于当前 BuzzBee 映射范围")
+        if "WMU" in identity_probe and any(
+            item.title.strip().lower() == "po attached" for item in workbook.worksheets
+        ):
+            return _parse_wmu_xlsx_workbook(workbook)
+        if "INDONESIA" in identity_probe or "印尼" in identity_probe:
+            raise CustomerOrderWorkbookError("印尼合同不属于当前 BuzzBee 映射范围")
+        if "WMU" in identity_probe:
+            raise CustomerOrderWorkbookError("WMU 合同缺少 PO Attached 子订单页")
         return _parse_ordinary_po_rows(file_name, sheet.title, rows)
     finally:
         workbook.close()

@@ -67,6 +67,19 @@ interface CustomerOrderCustomerProfile {
 const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[]> = {
   huaxing: [
     {
+      code: 'disney',
+      name: 'Disney',
+      version: 'V1',
+      poAccept: '.pdf',
+      poExtensions: ['.pdf'],
+      scheduleAccept: '.xlsx,.xlsm',
+      scheduleExtensions: ['.xlsx', '.xlsm'],
+      poDescription: 'Disney Theme Park / Store / F 系列 / D11 PDF PO',
+      templateDescription: 'Disney ITEM表 / 正单评审表 / 接单表',
+      targetTemplate: 'HUAXING_DISNEY_SCHEDULE_APPEND_V2',
+      ruleDescription: '按货号从现有排期唯一继承中文品名；出厂价不从客户 PO 推算，必须人工填写后导出。',
+    },
+    {
       code: 'buzzbee',
       name: 'BuzzBee',
       version: 'V1',
@@ -77,7 +90,7 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poDescription: '普通合同与 WMC 首页内嵌 Excel PO',
       templateDescription: '2026年 BUZZ BEE 生产排期表',
       targetTemplate: 'BUZZBEE_PRODUCTION_SCHEDULE_V1',
-      ruleDescription: 'WMC读取首页双语PO区且P/O#必填；普通合同扫描标签和唛头区，P/O#允许为空。印尼WMU资料另行处理。',
+      ruleDescription: 'WMC读取首页双语PO区且P/O#必填；大陆WMU从 PO Attached 展开实际子订单；普通合同扫描标签和唛头区，P/O#允许为空。印尼合同仍不进入当前映射。',
     },
     {
       code: 'dickie',
@@ -197,6 +210,32 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       templateDescription: '华康A 360客排期表',
       targetTemplate: 'HUAKANG_A_360_SCHEDULE_APPEND_V3',
       ruleDescription: '读取 RL 合同号、Revision Date、客户 PO、货号、数量、装箱、验货日、FCD、柜型及卸货港；每个货号先按现有产品标题行写入货号和名称，下一行再写 PO 明细。',
+    },
+    {
+      code: 'green-toys',
+      name: 'Green Toys',
+      version: 'V1·OCR复核',
+      poAccept: '.png,.jpg,.jpeg',
+      poExtensions: ['.png', '.jpg', '.jpeg'],
+      scheduleAccept: '.xlsx,.xlsm',
+      scheduleExtensions: ['.xlsx', '.xlsm'],
+      poDescription: 'Green Toys Purchase Order 图片（PNG / JPG）',
+      templateDescription: '河源华康A Green Toys 客排货表',
+      targetTemplate: 'HUAKANG_A_GREEN_TOYS_SCHEDULE_APPEND_V1',
+      ruleDescription: "OCR读取PO号、货号、数量、Deliver By Date及USD单价；按同货号继承中文品名、箱规、国家和落货港，走货方式固定40'YT，USD按7.8换算HKD。",
+    },
+    {
+      code: 'headstart',
+      name: 'HeadStart',
+      version: 'V1',
+      poAccept: '.pdf',
+      poExtensions: ['.pdf'],
+      scheduleAccept: '.xlsx,.xlsm',
+      scheduleExtensions: ['.xlsx', '.xlsm'],
+      poDescription: 'HeadStart 文本型 PURCHASE ORDER PDF',
+      templateDescription: 'HeadStart 客排期表',
+      targetTemplate: 'HUAKANG_A_HEADSTART_SCHEDULE_APPEND_V1',
+      ruleDescription: '读取Order No、货号、品名、数量、Delivery Date、APN、箱规、日期码及USD单价；走货期按验货日期后7天计算，USD按7.8换算HKD。',
     },
   ],
   'huakang-c': [
@@ -335,8 +374,14 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
   ],
 }
 
+// External customer orders are now owned by Huakang D.  Keep the backend's
+// Huakang C route compatible for saved historical previews, but do not offer
+// those external profiles from the Huakang C customer-order workspace.
+CUSTOMER_PROFILES_BY_FACTORY['huakang-d'] = CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] ?? []
+CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] = []
+
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
-  'edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa',
+  'disney', 'edu', '360', 'green-toys', 'headstart', 'yinhui', 'seasons', 'maxx', 'shushupapa',
   'casdon', 'jakks', 'simba', 'spin', 'spin-master',
   'index', 'jazwares', 'strottman', 'jp',
 ])
@@ -752,6 +797,16 @@ const blockingResolutionItems = computed(() => (
   (previewBatch.value?.rows ?? []).flatMap((row) => row.issues
     .filter((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue))
     .map((issue) => ({ row, issue })))
+))
+const bulkSkippableIssueKeys = computed(() => [...new Set(
+  blockingResolutionItems.value
+    .map(({ issue }) => issue)
+    .filter((issue) => issue.can_skip && !isIssueManuallyOverridden(issue))
+    .map((issue) => issue.skip_key),
+)])
+const allSkippableIssuesSelected = computed(() => (
+  bulkSkippableIssueKeys.value.length > 0
+  && bulkSkippableIssueKeys.value.every((key) => skippedIssueKeys.value.includes(key))
 ))
 
 const scheduleReferenceDate = (() => {
@@ -1307,6 +1362,19 @@ function toggleIssueSkip(issue: CustomerOrderIssue) {
   skippedIssueKeys.value = isIssueSkipped(issue)
     ? skippedIssueKeys.value.filter((key) => key !== issue.skip_key)
     : [...skippedIssueKeys.value, issue.skip_key]
+  if (skippedIssueKeys.value.length === 0) confirmationReason.value = ''
+  scheduleGenerated.value = false
+  generatedScheduleBlob.value = null
+  generatedScheduleFileName.value = ''
+  generatedPasswordRequired.value = false
+  exportFailureMessage.value = ''
+}
+
+function toggleAllSkippableIssues() {
+  const keys = new Set(bulkSkippableIssueKeys.value)
+  skippedIssueKeys.value = allSkippableIssuesSelected.value
+    ? skippedIssueKeys.value.filter((key) => !keys.has(key))
+    : [...new Set([...skippedIssueKeys.value, ...keys])]
   if (skippedIssueKeys.value.length === 0) confirmationReason.value = ''
   scheduleGenerated.value = false
   generatedScheduleBlob.value = null
@@ -1933,7 +2001,12 @@ onBeforeUnmount(() => {
                     :key="row.id"
                     :class="[`row-${row.status}`, { 'row-parent-product': row.rowRole === 'parent' }]"
                   >
-                    <td class="sticky-left"><span :class="['status-chip', `status-chip--${row.status}`]">{{ row.statusLabel }}</span></td>
+                    <td class="sticky-left preview-row-status">
+                      <span :class="['status-chip', `status-chip--${row.status}`]">{{ row.statusLabel }}</span>
+                      <ul v-if="row.issues?.length" class="preview-row-issue-summary">
+                        <li v-for="issue in row.issues" :key="`${row.id}-status-${issue.code}-${issue.field}`">{{ issue.message }}</li>
+                      </ul>
+                    </td>
                     <td class="resolution-column">
                       <div v-if="row.issues?.some((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue))" class="issue-resolution-list">
                         <template v-for="issue in (row.issues ?? []).filter((item) => item.severity === 'blocked' || isConfirmationIssue(item))" :key="`${row.id}-${issue.code}-${issue.field}`">
@@ -2341,7 +2414,16 @@ onBeforeUnmount(() => {
               <span :class="{ done: blockingIssueDetails.length === 0 }">
                 {{ blockingIssueDetails.length === 0 ? '全部处理完成' : `仍有 ${blockingIssueDetails.length} 类问题待处理` }}
               </span>
-              <small>每一订单行都需要分别补录或确认</small>
+              <small>可批量确认允许放行的项目；必须补录的业务字段仍需逐行填写</small>
+              <button
+                v-if="bulkSkippableIssueKeys.length"
+                type="button"
+                class="button button--ghost blocker-resolution-select-all"
+                data-testid="select-all-skippable-issues"
+                @click="toggleAllSkippableIssues"
+              >
+                {{ allSkippableIssuesSelected ? '取消全选可放行项' : `全选可放行项（${bulkSkippableIssueKeys.length}）` }}
+              </button>
             </div>
 
             <div class="blocker-resolution-list">
@@ -2744,6 +2826,25 @@ onBeforeUnmount(() => {
 .status-chip--valid { border-color: #71dba6; background: #d5f9e6; color: #005235; }
 .status-chip--warning { border-color: #ffb950; background: #ffddb3; color: #624000; }
 .status-chip--blocked { border-color: #ffb4ab; background: #ffdad6; color: #93000a; }
+
+.preview-row-status {
+  min-width: 210px;
+  white-space: normal;
+}
+
+.preview-row-issue-summary {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding-left: 16px;
+  color: #6b3d00;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.row-blocked .preview-row-issue-summary {
+  color: #8c1d18;
+}
 
 .flow-card__title {
   align-items: flex-start;
@@ -5757,6 +5858,7 @@ tbody tr:hover td {
 .blocker-resolution-progress {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
@@ -5779,6 +5881,12 @@ tbody tr:hover td {
 .blocker-resolution-progress small {
   color: #737685;
   font-size: 9px;
+}
+
+.blocker-resolution-select-all {
+  flex: 0 0 100%;
+  justify-content: center;
+  margin-top: 4px;
 }
 
 .blocker-resolution-list {

@@ -19,6 +19,7 @@ from app.services.customer_order_huaxing import (
     _export_prepared,
     _issues,
     _record_fields,
+    _seasons_lane_records,
     _validate_skips,
     create_huaxing_customer_preview,
     export_huaxing_customer_schedule,
@@ -28,6 +29,7 @@ from app.services.customer_order_manual import (
     decorate_manual_resolution_policy,
 )
 from app.services.huaxing_order_legacy import (
+    disney_order,
     edu_schedule,
     multi_schedule,
     new_order_excel,
@@ -38,8 +40,9 @@ from app.services.huaxing_order_legacy import (
 )
 
 
-def test_huaxing_customer_order_center_exposes_exactly_six_new_mappings():
+def test_huaxing_customer_order_center_exposes_supported_mappings():
     assert set(HUAXING_CUSTOMER_MAPPINGS) == {
+        "disney",
         "edu",
         "360",
         "yinhui",
@@ -48,6 +51,99 @@ def test_huaxing_customer_order_center_exposes_exactly_six_new_mappings():
         "shushupapa",
     }
     assert all(spec.target_template.endswith("_SCHEDULE_APPEND_V2") for spec in HUAXING_CUSTOMER_MAPPINGS.values())
+
+
+@pytest.mark.parametrize(
+    ("filename", "text", "po_no", "quantity", "price"),
+    (
+        (
+            "WDW_PO_W-9743421 (R1).pdf",
+            """ROYAL REGENT PRODUCTS (HK) LTD (SZ) W-9743421 10/30/2026 11/6/2026 2
+1000128076 3504 EA 1/EA 2.1400 401060937150 14.99
+INNER/PK: 6/EA\nCASE/PK: 6\nMM ASTRONAUT PULLBACK""",
+            "W-9743421", 3504, 2.14,
+        ),
+        (
+            "F00000000014373 (R0).pdf",
+            """TYPE PAGE P.O. Original 1 F00000000014373
+ORDERED SHIP ON ANTICIPATE CANCEL AFTER
+06/18/26 12/09/26 12/18/26 12/15/26
+1000128131 MNSTRS INC PULLBACK
+Case Pack = 6, Inner Pack = 6
+2.82 NOT SIZED 990""",
+            "F00000000014373", 990, 2.82,
+        ),
+        (
+            "PO#W5897 (R0).pdf",
+            """Disney Store Purchase Order
+PO Number\nW5897
+OrderDate ShipDate Anticipate Cancel Date
+29-APR-2026 03-OCT-2026 02-DEC-2026 09-OCT-2026
+1 1000128076
+MM ASTRO PULLBACK\n6 / 1
+360 2.14
+Comments:""",
+            "W5897", 360, 2.14,
+        ),
+        (
+            "D11_ROYAL REGENT PRODUCTS(HK)_V2176.pdf",
+            """ORIGINAL 1 V2176
+6/24/26 10/15/26 11/06/26 10/21/26
+1000128076 Q227 PLBK MM ASTRO NO COLOR
+CASE PACK = 6, INNER PACK = 6
+2.24 NO SIZE 3000""",
+            "V2176", 3000, 2.24,
+        ),
+    ),
+)
+def test_disney_parser_supports_four_customer_po_families(monkeypatch, filename, text, po_no, quantity, price):
+    monkeypatch.setattr(disney_order, "_pdf_text", lambda _content: text)
+
+    parsed = disney_order.parse_po(b"pdf", filename)
+
+    assert parsed["po_no"] == po_no
+    assert parsed["rows"][0]["quantity"] == quantity
+    assert parsed["rows"][0]["unit_price_usd"] == price
+    assert parsed["rows"][0]["outer_pack"] == 6
+
+
+def test_disney_schedule_reads_item_sheet_without_loading_the_full_workbook():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "ITEM表"
+    sheet.append([
+        None, "客出单日期", "PO号", "客名", "產品編號", "产品名称", "产品名称中文",
+        None, "PO数量", "外箱装箱数", "说明书", "彩盒", "日期码", "验货日期",
+        "走货期", None, None, None, None, None, None, None, None, "订单单价USD",
+    ])
+    sheet.append([
+        None, "2026-08-20", "F00000000014867", "DISNEY", "1000128073",
+        "MICKEY FLYING DISC", "米奇飞碟", None, 204, 6, "EN", "4C", "2620",
+        "2026-11-30", "2026-12-09", None, None, None, None, None, None, None,
+        None, 2.22, None, 16.5,
+    ])
+    buffer = BytesIO()
+    workbook.save(buffer)
+
+    parsed = disney_order.parse_schedule(buffer.getvalue(), "Disney排期.xlsx")
+
+    assert parsed["sheet"] == "ITEM表"
+    assert parsed["records"] == [{
+        "po_no": "F00000000014867",
+        "customer": "DISNEY",
+        "item_no": "1000128073",
+        "product_name_en": "MICKEY FLYING DISC",
+        "product_name_zh": "米奇飞碟",
+        "quantity": 204,
+        "outer_pack": 6,
+        "manual": "EN",
+        "artwork": "4C",
+        "date_code": "2620",
+        "inspection_date": "2026-11-30",
+        "ship_date": "2026-12-09",
+        "unit_price_usd": 2.22,
+        "factory_price_hkd": 16.5,
+    }]
 
 
 def test_edu_inspection_date_is_seven_days_before_ship_date_and_avoids_weekend():
@@ -845,6 +941,92 @@ def test_seasons_composite_pack_uses_outer_carton_quantity():
     assert shixin_schedule.outer_pack_number("4P/16") == 16
     assert shixin_schedule.outer_pack_number("3P/12") == 12
     assert shixin_schedule.outer_pack_number("24/144") == 144
+
+
+def test_yinhui_so_number_accepts_dollar_zero_ocr_variant():
+    assert yinhui_po_parser._so_no("Color/Style: GREY $0:2300000763 -10") == "2300000763"
+
+
+def test_seasons_current_batch_qf_replaces_old_schedule_qf_for_formal_po():
+    qf = {
+        "document_type": "QF预备单",
+        "oqf_no": "QF16098138",
+        "po_no": "",
+        "customer": "SEASONS USA",
+        "item_no": "W85340",
+        "quantity": 101,
+        "ship_date": "2026-10-30",
+        "product_name": "PUMPKIN",
+    }
+    formal = {
+        "document_type": "正式PO",
+        "oqf_no": "QF16097578",
+        "po_no": "MPO1609793",
+        "oc_no": "ZE618957",
+        "customer": "SEASONS USA",
+        "item_no": "W85340",
+        "quantity": 101,
+        "ship_date": "2026-10-30",
+        "product_name": "PUMPKIN",
+    }
+
+    reconciled = shixin_schedule.reconcile_documents(
+        [
+            {"filename": "QF16098138.pdf", "status": "success", "records": [qf], "warnings": []},
+            {"filename": "MPO1609793.pdf", "status": "success", "records": [formal], "warnings": []},
+        ],
+        [],
+    )
+
+    formal_result = next(record for record in reconciled["records"] if record.get("po_no"))
+    assert formal_result["oqf_no"] == "QF16098138"
+    assert formal_result["remaining_qf"] == 0
+    assert formal_result.get("risk_text") != "QF数量不足，正式PO累计超扣"
+
+
+def test_seasons_new_item_uses_explicit_other_item_lane() -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "其它款ITEM"
+    worksheet.append(["產品編號", "產品名稱"])
+    worksheet.append(["KNOWN-1", "历史其它款"])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+
+    lanes = _seasons_lane_records(
+        buffer.getvalue(),
+        "SEASONS排期.xlsx",
+        [{"item_no": "NEW-2026", "product_name": "新款产品"}],
+        {"item_no": ["產品編號"]},
+    )
+
+    assert lanes == [(
+        "其它款ITEM",
+        "其它接单表",
+        [{"item_no": "NEW-2026", "product_name": "新款产品"}],
+    )]
+
+
+def test_seasons_new_item_uses_only_lane_in_single_lane_template() -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "吹气系列ITEM表"
+    worksheet.append(["產品編號", "產品名稱"])
+    worksheet.append(["KNOWN-1", "历史吹气产品"])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+
+    record = {"item_no": "W70357", "product_name": "SINISTER SKULL"}
+    lanes = _seasons_lane_records(
+        buffer.getvalue(),
+        "SEASONS排期.xlsx",
+        [record],
+        {"item_no": ["產品編號"]},
+    )
+
+    assert lanes == [("吹气系列ITEM表", "吹气、PU接单表", [record])]
 
 
 def test_seasons_appends_to_reserved_rows_before_first_total_and_stays_in_first_section(

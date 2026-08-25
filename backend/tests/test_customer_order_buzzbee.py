@@ -173,6 +173,37 @@ def build_tottus_po() -> bytes:
     return output.getvalue()
 
 
+def build_wmu_po() -> bytes:
+    workbook = openpyxl.Workbook()
+    main = workbook.active
+    main.title = "11019 Dept 07"
+    main["E14"] = 11019
+    main["E17"] = "PD T-REX SQUIRTER"
+    main["E25"] = 8
+    main["N6"] = "WMU"
+    main["A52"] = "11019-07-24-WM-PDQ"
+    main["A53"] = "11019-07-24-WM-HT"
+    attached = workbook.create_sheet("PO Attached")
+    attached["A1"] = "WALMART USA"
+    headers = (
+        "S/C NO.", "Walmart PO#", "SHIP VIA", "Ship Window", "Cancel Date",
+        "Ordered Qty\n(PCS)", "Total Ctns ", "Inspection Date", "Remark",
+    )
+    for column, header in enumerate(headers, 1):
+        attached.cell(6, column, header)
+    attached.append([None] * 9)
+    for row_number, values in enumerate((
+        (53284, "0105570339", "STATESBORO", date(2026, 10, 25), date(2026, 11, 1), 2040, 255, date(2026, 10, 8), None),
+        (53281, "0105570336", "RIDGEVILLE", date(2026, 10, 31), date(2026, 11, 7), 2344, 293, date(2026, 10, 20), None),
+    ), 7):
+        for column, value in enumerate(values, 1):
+            attached.cell(row_number, column, value)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
 def build_schedule(*, include_price: bool = True) -> bytes:
     workbook = openpyxl.Workbook()
     order = workbook.active
@@ -716,11 +747,66 @@ def test_ordinary_xlsx_contract_uses_labels_instead_of_aafes_or_wmc_gate():
     assert parsed.lineage["standard"] == "合同条款 · European Standard"
 
 
-def test_wmu_xlsx_contract_remains_out_of_scope():
+def test_aafe_filename_typo_still_uses_aafes_customer_profile():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet["M8"] = "Contract No.:"
+    sheet["O8"] = 53080
+    sheet["A12"] = "Date of Loading:"
+    sheet["F12"] = date(2026, 10, 1)
+    sheet["A16"] = "Our Item# :"
+    sheet["F16"] = 40210
+    sheet["A18"] = "Goods:"
+    sheet["C18"] = "MAYHEM OUTRAGE"
+    sheet["A20"] = "Quantity:"
+    sheet["F20"] = 80
+    sheet["A26"] = "Shipping Carton Packing"
+    sheet["F26"] = 4
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+
+    parsed = service.parse_po("AAAFE SC# 53080 - 40210 WH 2 Rev 1.xlsx", output.getvalue())[0]
+
+    assert parsed.values["customer_name"] == "AAFES"
+    assert parsed.values["country"] == "美国"
+    assert parsed.values["standard"] == "美国标准"
+
+
+def test_wmu_xlsx_contract_expands_po_attached_child_orders():
     service = importlib.import_module("app.services.customer_order_buzzbee")
 
-    with pytest.raises(service.CustomerOrderWorkbookError, match="WMU/印尼合同"):
-        service.parse_po("WMU Indonesia schedule.xlsx", build_tottus_po())
+    parsed = service.parse_po("WMU 11019 (DEPT 07) 40 - 53284 WH.xlsx", build_wmu_po())
+
+    assert len(parsed) == 2
+    assert parsed[0].input_template == service.WMU_TEMPLATE
+    assert parsed[0].values == {
+        "contract_no": "53284",
+        "po_no": "0105570339",
+        "customer_name": "WALMART USA",
+        "country": "美国",
+        "product_no": "11019",
+        "product_name_en": "PD T-REX SQUIRTER",
+        "quantity": Decimal("2040"),
+        "units_per_carton": Decimal("8"),
+        "standard": "美国标准",
+        "packaging": "11019-07-24-WM-PDQ / 11019-07-24-WM-HT",
+        "requested_ship_date": "2026-10-25",
+        "inspection_raw": "2026-10-08 00:00:00",
+        "inspection_date": "2026-10-08",
+        "ship_via": "STATESBORO",
+    }
+    assert parsed[1].values["po_no"] == "0105570336"
+    assert parsed[1].values["contract_no"] == "53281"
+    assert parsed[0].lineage["po_no"] == "PO Attached!B7"
+
+
+def test_indonesia_xlsx_contract_remains_out_of_scope():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+
+    with pytest.raises(service.CustomerOrderWorkbookError, match="印尼合同"):
+        service.parse_po("Indonesia schedule.xlsx", build_tottus_po())
 
 
 def test_po_number_is_optional_for_standard_customer_but_required_for_walmart():

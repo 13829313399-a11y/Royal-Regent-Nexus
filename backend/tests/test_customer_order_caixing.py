@@ -14,6 +14,14 @@ from app.services.legacy_excel_bridge import LEGACY_XLS_MAGIC
 from starlette.datastructures import UploadFile
 
 
+@pytest.mark.parametrize(
+    ("product_no", "expected"),
+    (("40624CO3", Decimal("3")), ("40636 CO4", Decimal("4")), ("57810GU8", Decimal("8"))),
+)
+def test_caixing_pack_suffix_supports_customer_code_families(product_no, expected):
+    assert service._infer_pack_from_product_code(product_no) == expected
+
+
 PLAYMATES_PO_TEXT = """
 Page: 1 of 8
 OG-1931815 DATE: 2026/01/23

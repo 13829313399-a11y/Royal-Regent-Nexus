@@ -12,6 +12,7 @@ from typing import Any, BinaryIO, Callable, Collection, Iterable, Mapping, Seque
 import openpyxl
 import xlrd
 from openpyxl import Workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
@@ -1025,6 +1026,8 @@ def append_records_to_workbook(
                 for col_no in range(1, max_col + 1):
                     source_cell = target.cell(source_row, col_no)
                     destination = target.cell(row_no, col_no)
+                    if isinstance(destination, MergedCell):
+                        continue
                     _copy_style(source_cell, destination)
                     if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
                         try:
@@ -1065,6 +1068,8 @@ def append_records_to_workbook(
                 record = payload
                 for col_no, field in column_map.items():
                     cell = target.cell(row_no, col_no)
+                    if isinstance(cell, MergedCell):
+                        continue
                     # A template formula is authoritative for calculated fields.
                     has_formula = isinstance(cell.value, str) and cell.value.startswith("=")
                     if has_formula and field in formula_fallback_fields:
@@ -1155,6 +1160,7 @@ def append_column_records_to_workbook(
     group_key_factory: Callable[[Any], str] | None = None,
     group_row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
     column_formats: Mapping[int, str] | None = None,
+    new_row_fill_color: str = "",
 ) -> dict[str, Any]:
     """Copy the complete workbook and append fixed-column records to one sheet.
 
@@ -1209,6 +1215,11 @@ def append_column_records_to_workbook(
             group_count = len(grouped_records)
         else:
             grouped_layout = [("detail", record) for record in rows]
+        highlight_fill = (
+            PatternFill(fill_type="solid", fgColor=new_row_fill_color)
+            if new_row_fill_color
+            else None
+        )
 
         formulas = []
         for sheet in workbook.worksheets:
@@ -1252,6 +1263,8 @@ def append_column_records_to_workbook(
                     source_cell = target.cell(source_row, col_no)
                     destination = target.cell(row_no, col_no)
                     _copy_style(source_cell, destination)
+                    if highlight_fill is not None:
+                        destination.fill = copy(highlight_fill)
                     if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
                         try:
                             destination.value = Translator(
@@ -1324,6 +1337,214 @@ def append_column_records_to_workbook(
             "group_rows": group_count,
             "inserted_rows": len(grouped_layout),
             "mode": "full_workbook_append",
+        }
+    finally:
+        workbook.close()
+
+
+def insert_column_records_by_matching_key(
+    template: str | Path | bytes | BinaryIO,
+    output_path: str | Path | BinaryIO,
+    records: Iterable[Any],
+    *,
+    filename: str = "",
+    sheet_names: Sequence[str],
+    header_row: int,
+    max_col: int,
+    detail_columns: Sequence[int],
+    record_key_factory: Callable[[Any], str],
+    row_key_factory: Callable[[Any, int], str],
+    row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
+    group_row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
+    new_row_fill_color: str = "",
+) -> dict[str, Any]:
+    """Insert new detail rows after the last existing row with the same key.
+
+    Existing rows are never sorted or rewritten.  Incoming rows sharing an
+    existing item are placed at the end of that item's current block; entirely
+    new item groups are appended at the normal detail boundary in key order.
+    When ``group_row_values_factory`` is supplied, a copied merged title row is
+    inserted before every entirely new item group.  ``new_row_fill_color`` can
+    mark all inserted rows without changing their inherited borders or fonts.
+    """
+    workbook = load_complete_workbook_compatible(template, filename=filename)
+    rows = list(records)
+    try:
+        target = next(
+            (workbook[name] for name in sheet_names if name in workbook.sheetnames),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"模板缺少目标工作表：{' / '.join(sheet_names)}")
+        append_row = _find_append_row(
+            target,
+            header_row,
+            max_col,
+            detail_columns=detail_columns,
+        )
+        existing_last_rows: dict[str, int] = {}
+        for row_no in range(header_row + 1, append_row):
+            if not any(target.cell(row_no, column).value not in (None, "") for column in detail_columns):
+                continue
+            key = str(row_key_factory(target, row_no) or "").strip()
+            if key:
+                existing_last_rows[key] = row_no
+
+        grouped: dict[str, list[Any]] = {}
+        for index, record in enumerate(rows):
+            key = str(record_key_factory(record) or "").strip() or f"__row_{index}"
+            grouped.setdefault(key, []).append(record)
+        plans: list[tuple[int, str, list[tuple[str, Any]]]] = []
+        new_groups: list[tuple[str, list[Any]]] = []
+        for key, grouped_rows in grouped.items():
+            if key in existing_last_rows:
+                plans.append((
+                    existing_last_rows[key] + 1,
+                    key,
+                    [("detail", record) for record in grouped_rows],
+                ))
+            else:
+                new_groups.append((key, grouped_rows))
+        if new_groups:
+            new_groups.sort(key=lambda item: item[0])
+            new_layout: list[tuple[str, Any]] = []
+            for _key, grouped_rows in new_groups:
+                if group_row_values_factory:
+                    new_layout.append(("group", grouped_rows[0]))
+                new_layout.extend(("detail", record) for record in grouped_rows)
+            plans.append((append_row, "__new_items__", new_layout))
+
+        group_style_row: int | None = None
+        group_merges: list[CellRange] = []
+        if group_row_values_factory and new_groups:
+            detail_style_row = _nearest_detail_row(
+                target,
+                header_row,
+                append_row,
+                max_col,
+            )
+            group_style_row, group_merges = _nearest_group_title_row(
+                target,
+                header_row,
+                detail_style_row,
+                max_col,
+            )
+        highlight_fill = (
+            PatternFill(fill_type="solid", fgColor=new_row_fill_color)
+            if new_row_fill_color
+            else None
+        )
+
+        inserted_rows = 0
+        inserted_group_rows = 0
+        for insert_row, _key, layout_rows in sorted(plans, key=lambda item: item[0], reverse=True):
+            style_row = _nearest_detail_row(target, header_row, insert_row, max_col)
+            if style_row is None:
+                raise ValueError("当前排期没有可复用的明细行")
+            formulas = [
+                (sheet, cell.row, cell.column, cell.value)
+                for sheet in workbook.worksheets
+                for cell in sheet._cells.values()
+                if isinstance(cell.value, str) and cell.value.startswith("=")
+            ]
+            moved_merges = [
+                CellRange(str(value))
+                for value in target.merged_cells.ranges
+                if value.max_row >= insert_row
+            ]
+            for merged in moved_merges:
+                target.unmerge_cells(str(merged))
+            amount = len(layout_rows)
+            target.insert_rows(insert_row, amount)
+            _shift_target_sheet_structures(target, insert_row, amount, moved_merges)
+            for sheet, old_row, column, formula in formulas:
+                destination_row = old_row + amount if sheet is target and old_row >= insert_row else old_row
+                sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
+                    formula,
+                    formula_sheet=sheet.title,
+                    target_sheet=target.title,
+                    formula_row=old_row,
+                    insert_row=insert_row,
+                    amount=amount,
+                )
+            pending_group_rows: list[int] = []
+            for offset, (row_kind, record) in enumerate(layout_rows):
+                row_no = insert_row + offset
+                source_row = group_style_row if row_kind == "group" else style_row
+                if source_row is None:
+                    raise ValueError("当前排期没有可复用的分组标题行")
+                if target.row_dimensions[source_row].height:
+                    target.row_dimensions[row_no].height = target.row_dimensions[source_row].height
+                for column in range(1, max_col + 1):
+                    source_cell = target.cell(source_row, column)
+                    destination = target.cell(row_no, column)
+                    _copy_style(source_cell, destination)
+                    if highlight_fill is not None:
+                        destination.fill = copy(highlight_fill)
+                    if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
+                        try:
+                            destination.value = Translator(
+                                source_cell.value,
+                                origin=source_cell.coordinate,
+                            ).translate_formula(destination.coordinate)
+                        except (TypeError, ValueError):
+                            destination.value = source_cell.value
+                if row_kind == "group":
+                    values = group_row_values_factory(record, row_no)
+                    pending_group_rows.append(row_no)
+                    inserted_group_rows += 1
+                else:
+                    values = row_values_factory(record, row_no) if row_values_factory else record
+                if not isinstance(values, Mapping):
+                    raise ValueError("固定列写入记录必须是列号到值的映射")
+                for column, value in values.items():
+                    if value in (None, ""):
+                        continue
+                    cell = target.cell(row_no, int(column))
+                    cell.value = _safe_value(value)
+                    if isinstance(value, (date, datetime)) and cell.number_format == "General":
+                        cell.number_format = "yyyy-mm-dd"
+
+            for row_no in pending_group_rows:
+                for merged in group_merges:
+                    target.merge_cells(
+                        start_row=row_no,
+                        end_row=row_no,
+                        start_column=merged.min_col,
+                        end_column=merged.max_col,
+                    )
+                    if group_style_row is not None:
+                        _copy_style(
+                            target.cell(group_style_row, merged.min_col),
+                            target.cell(row_no, merged.min_col),
+                        )
+                        if highlight_fill is not None:
+                            target.cell(row_no, merged.min_col).fill = copy(highlight_fill)
+                        if highlight_fill is not None:
+                            target.cell(row_no, merged.min_col).fill = copy(highlight_fill)
+            inserted_rows += amount
+
+        workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
+        workbook.calculation.calcMode = "auto"
+        if hasattr(output_path, "write"):
+            workbook.save(output_path)
+            output_reference = "<memory>"
+        else:
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(output_file)
+            output_reference = str(output_file)
+        return {
+            "path": output_reference,
+            "template_sheet": target.title,
+            "header_row": header_row,
+            "rows": len(rows),
+            "inserted_rows": inserted_rows,
+            "group_rows": inserted_group_rows,
+            "matched_groups": sum(key in existing_last_rows for key in grouped),
+            "new_groups": sum(key not in existing_last_rows for key in grouped),
+            "mode": "full_workbook_insert_by_matching_key",
         }
     finally:
         workbook.close()

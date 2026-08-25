@@ -16,6 +16,7 @@
       "buzzbee",
       "dickie",
       "caixing",
+      "disney",
       "edu",
       "360",
       "yinhui",
@@ -24,7 +25,8 @@
       "shushupapa"
     ],
     "huadeng": ["casdon", "jakks", "simba", "spin", "spin-master"],
-    "huakang-a": ["360"],
-    "huakang-c": ["index", "jazwares", "maxx", "strottman", "jp"]
+    "huakang-a": ["360", "green-toys", "headstart"],
+    "huakang-c": ["index", "jazwares", "maxx", "strottman", "jp"],
+    "huakang-d": ["index", "jazwares", "maxx", "strottman", "jp"]
   }
 }

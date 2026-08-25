@@ -14,6 +14,7 @@ export interface CustomerOrderHttpClient {
 }
 
 export type HuaxingMappedCustomerCode =
+  | 'disney'
   | 'edu'
   | '360'
   | 'yinhui'
@@ -28,7 +29,10 @@ export type HuadengMappedCustomerCode =
   | 'spin'
   | 'spin-master'
 
-export type HuakangAMappedCustomerCode = '360'
+export type HuakangAMappedCustomerCode =
+  | '360'
+  | 'green-toys'
+  | 'headstart'
 
 export type HuakangCMappedCustomerCode =
   | 'index'
