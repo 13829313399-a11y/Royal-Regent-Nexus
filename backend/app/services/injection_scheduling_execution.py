@@ -1189,6 +1189,8 @@ def update_order(
     payload: InjectionSchedulingOrderUpdate,
     user: AuthContext,
     request_id: str,
+    *,
+    commit: bool = True,
 ) -> tuple[InjectionSchedulingOrder, int]:
     factory_id = require_injection_scheduling_factory(payload.factory_id)
     record = _require_order(db, factory_id, order_id)
@@ -1250,7 +1252,10 @@ def update_order(
         },
         user=user,
     )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return refreshed, audit.sequence
 
 
@@ -2485,6 +2490,7 @@ def update_task(
     request_id: str,
     *,
     can_override_baseline: bool = False,
+    commit: bool = True,
 ) -> tuple[InjectionSchedulingPlan, InjectionSchedulingTask, int]:
     factory_id = require_injection_scheduling_factory(payload.factory_id)
     plan = _require_plan(db, factory_id, plan_id)
@@ -2665,7 +2671,10 @@ def update_task(
             },
             user=user,
         )
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(

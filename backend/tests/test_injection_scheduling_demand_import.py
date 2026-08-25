@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
+import os
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
+import pytest
 from openpyxl import Workbook
 from sqlalchemy import func, select
 from test_injection_scheduling_phase3_api import (
@@ -157,9 +161,10 @@ def _seed_shared_resolution_data() -> None:
             valid_from="2026-01-01",
             created_at=timestamp,
         )
+        db.add_all([customer, definition])
+        db.flush()
         db.add_all(
             [
-                customer,
                 shared.InjectionSchedulingCustomerAlias(
                     id="customer-alias:test",
                     company_scope_id="company:royal-regent",
@@ -172,7 +177,6 @@ def _seed_shared_resolution_data() -> None:
                     revision=1,
                     created_at=timestamp,
                 ),
-                definition,
                 shared.InjectionSchedulingMoldAlias(
                     id="mold-alias:test-001",
                     company_scope_id="company:royal-regent",
@@ -187,7 +191,11 @@ def _seed_shared_resolution_data() -> None:
                     created_at=timestamp,
                 ),
                 output,
-                shared.InjectionSchedulingCommercialRateRule(
+            ]
+        )
+        db.flush()
+        db.add(
+            shared.InjectionSchedulingCommercialRateRule(
                     id="rate:test-001",
                     owner_scope_type="COMPANY",
                     owner_scope_id="company:royal-regent",
@@ -211,8 +219,7 @@ def _seed_shared_resolution_data() -> None:
                     approved_by="system-test-approver",
                     created_at=timestamp,
                     approved_at=timestamp,
-                ),
-            ]
+            )
         )
         db.commit()
 
@@ -383,6 +390,117 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
         assert proposed_profile.status_code == 200, proposed_profile.text
         assert proposed_profile.json()["batch_state"] == "PROFILE_REVIEW_PENDING"
         assert proposed_profile.json()["mapping_draft"]["proposal_profile_id"]
+
+        workbench_mapping_response = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huaxing",
+                "expected_revision": "0",
+                "document_kind": "DEMAND_ORDER",
+            },
+            files={
+                "file": (
+                    "unknown-header-workbench.xlsx",
+                    _demand_workbook(unknown_quantity_header=True),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers={"x-request-id": "workbench-demand-preview-0001"},
+        )
+        assert workbench_mapping_response.status_code == 201
+        workbench_mapping_preview = workbench_mapping_response.json()
+        assert workbench_mapping_preview["batch_state"] == "MAPPING_REQUIRED"
+
+        applied_mapping = client.post(
+            "/api/injection-scheduling/workbench/imports/"
+            f"{workbench_mapping_preview['id']}/apply-mapping",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": workbench_mapping_preview["revision"],
+                "request_id": "workbench-demand-mapping-0001",
+                "mappings": {"order_quantity": "订单数量新口径"},
+            },
+        )
+        assert applied_mapping.status_code == 200, applied_mapping.text
+        corrected_preview = applied_mapping.json()
+        assert corrected_preview["batch_state"] == "PREVIEW_READY"
+        assert corrected_preview["preview_generation"] == 2
+        assert corrected_preview["demand_rows"][0]["canonical"]["order_quantity"] == 1000
+
+        mapping_replay = client.post(
+            "/api/injection-scheduling/workbench/imports/"
+            f"{workbench_mapping_preview['id']}/apply-mapping",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": workbench_mapping_preview["revision"],
+                "request_id": "workbench-demand-mapping-0001",
+                "mappings": {"order_quantity": "订单数量新口径"},
+            },
+        )
+        assert mapping_replay.status_code == 200, mapping_replay.text
+        assert mapping_replay.json()["revision"] == corrected_preview["revision"]
+
+        workbench_confirm = client.post(
+            f"/api/injection-scheduling/imports/{corrected_preview['id']}/confirm",
+            json={
+                "factory_id": "huaxing",
+                "document_kind": "DEMAND_ORDER",
+                "expected_revision": corrected_preview["revision"],
+                "expected_plan_revision": corrected_preview["plan_context"][
+                    "target_draft_plan_revision"
+                ],
+                "expected_preview_generation": corrected_preview[
+                    "preview_generation"
+                ],
+                "expected_resolution_digest": corrected_preview[
+                    "resolution_digest"
+                ],
+                "request_id": "workbench-demand-confirm-0001",
+                "confirm_mode": "merge_draft",
+                "confirm_scope": "SELECTED",
+                "selected_row_ids": [corrected_preview["demand_rows"][0]["row_id"]],
+                "business_date": "2026-08-09",
+            },
+        )
+        assert workbench_confirm.status_code == 200, workbench_confirm.text
+        assert workbench_confirm.json()["status"] == "CONFIRMED"
+
+        import_models = importlib.import_module(
+            "app.models.injection_scheduling_import"
+        )
+        profile_registry = importlib.import_module(
+            "app.services.injection_scheduling_profile_registry"
+        )
+        with db_module.SessionLocal() as db:
+            profile_registry.seed_builtin_import_profiles(db)
+            workbench_profile = db.scalar(
+                select(import_models.InjectionSchedulingImportProfile)
+                .where(
+                    import_models.InjectionSchedulingImportProfile.profile_family
+                    == "demand_order_shared",
+                    import_models.InjectionSchedulingImportProfile.status == "ACTIVE",
+                    import_models.InjectionSchedulingImportProfile.profile_code.like(
+                        "%demand_order_shared-wb-r%"
+                    ),
+                )
+                .order_by(
+                    import_models.InjectionSchedulingImportProfile.revision.desc()
+                )
+            )
+            assert workbench_profile is not None
+            assert "订单数量新口径" in workbench_profile.config_json
+            huaxing_demand_profiles = profile_registry.active_profiles_for_factory(
+                db, "huaxing", "DEMAND_ORDER"
+            )
+            other_factory_profiles = profile_registry.active_profiles_for_factory(
+                db, "huakang-b", "DEMAND_ORDER"
+            )
+            assert [item.profile_id for item in huaxing_demand_profiles] == [
+                workbench_profile.id
+            ]
+            assert [item.profile_id for item in other_factory_profiles] == [
+                "isprofile-demand-order-shared-v1"
+            ]
 
         partial_response = client.post(
             "/api/injection-scheduling/imports/preview",
@@ -781,7 +899,11 @@ def test_shared_master_enrichment_does_not_require_legacy_or_physical_mold(
                 created_at=timestamp,
                 approved_at=timestamp,
             )
-            db.add_all([definition, output, capability, rate])
+            db.add(definition)
+            db.flush()
+            db.add(output)
+            db.flush()
+            db.add_all([capability, rate])
             db.commit()
 
         enrichment_response = client.post(
@@ -891,6 +1013,8 @@ def test_master_data_preview_only_creates_governed_proposals(monkeypatch):
                 )
                 == 0
             )
+
+
             mold_proposal = next(
                 item
                 for item in proposals
@@ -935,3 +1059,45 @@ def test_master_data_preview_only_creates_governed_proposals(monkeypatch):
                 )
                 == 0
             )
+
+
+@pytest.mark.skipif(
+    not os.getenv("INJECTION_SCHEDULING_DEMAND_WORKBOOK"),
+    reason="set INJECTION_SCHEDULING_DEMAND_WORKBOOK for local demand-template regression",
+)
+def test_real_demand_workbook_read_only_preview(monkeypatch):
+    source_path = Path(os.environ["INJECTION_SCHEDULING_DEMAND_WORKBOOK"])
+    source = source_path.read_bytes()
+    before_hash = hashlib.sha256(source).hexdigest()
+    before_stat = source_path.stat()
+    with make_migrated_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        response = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huaxing",
+                "expected_revision": "0",
+                "document_kind": "DEMAND_ORDER",
+            },
+            files={
+                "file": (
+                    source_path.name,
+                    source,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers={"x-request-id": "real-demand-read-only-preview"},
+        )
+        assert response.status_code == 201, response.text
+        payload = response.json()
+        assert payload["document_kind"] == "DEMAND_ORDER"
+        assert payload["source_file_hash"] == before_hash
+        assert payload["demand_rows"]
+        assert all(
+            "machine_code" not in row["canonical"]
+            for row in payload["demand_rows"]
+        )
+    after_stat = source_path.stat()
+    assert hashlib.sha256(source_path.read_bytes()).hexdigest() == before_hash
+    assert after_stat.st_size == before_stat.st_size
+    assert after_stat.st_mtime_ns == before_stat.st_mtime_ns
