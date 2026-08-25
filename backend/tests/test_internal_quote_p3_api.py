@@ -889,7 +889,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
-        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v13"
+        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v16"
         assert first["export_manifest"]["export_file_name_version"] == "quote-product-date-v1"
         assert first["file_name"] == (
             f"{quote['quote_no']}_{quote['product_name']}_{first['exported_at'][:10]}.xlsx"

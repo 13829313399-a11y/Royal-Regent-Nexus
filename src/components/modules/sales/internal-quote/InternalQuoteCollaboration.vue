@@ -32,6 +32,8 @@ const syncPanelOpen = ref(false)
 const syncReason = ref('')
 const participationPanelOpen = ref(false)
 const selectedParticipation = ref<InternalQuoteSectionCode[]>([])
+const initialParticipation = ref<InternalQuoteSectionCode[]>([])
+const participationRemovalConfirmOpen = ref(false)
 const activeContinuousSectionCode = ref<InternalQuoteSectionCode>('sales')
 const sectionEditors = ref<Partial<Record<InternalQuoteSectionCode, InstanceType<typeof InternalQuoteSectionEditor> | null>>>({})
 const sectionNodes = ref<Partial<Record<InternalQuoteSectionCode, HTMLElement>>>({})
@@ -88,7 +90,16 @@ const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   : appStore.activeFactory.id)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
 const optionalSectionCodes: InternalQuoteSectionCode[] = ['electronic', 'molding', 'painting', 'slush', 'sewing', 'hair']
-const availableOptionalSections = computed(() => quote.value.sections.filter((section) => !section.isRequired && optionalSectionCodes.includes(section.code)))
+const manageableOptionalSections = computed(() => quote.value.sections.filter((section) => optionalSectionCodes.includes(section.code)))
+const participationChanges = computed(() => {
+  const initial = new Set(initialParticipation.value)
+  const selected = new Set(selectedParticipation.value)
+  return {
+    additions: manageableOptionalSections.value.filter((section) => selected.has(section.code) && !initial.has(section.code)),
+    removals: manageableOptionalSections.value.filter((section) => initial.has(section.code) && !selected.has(section.code)),
+  }
+})
+const hasParticipationChanges = computed(() => participationChanges.value.additions.length > 0 || participationChanges.value.removals.length > 0)
 const activeSectionCode = computed<InternalQuoteSectionCode>(() => {
   if (isWholeQuoteReview.value) return activeContinuousSectionCode.value
   const requested = String(route.query.section ?? '') as InternalQuoteSectionCode
@@ -469,22 +480,71 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
 }
 
 function toggleParticipationPanel() {
-  selectedParticipation.value = []
-  participationPanelOpen.value = !participationPanelOpen.value
+  if (participationPanelOpen.value) {
+    selectedParticipation.value = []
+    initialParticipation.value = []
+    participationRemovalConfirmOpen.value = false
+    participationPanelOpen.value = false
+    return
+  }
+  const current = manageableOptionalSections.value
+    .filter((section) => section.isRequired)
+    .map((section) => section.code)
+  selectedParticipation.value = [...current]
+  initialParticipation.value = [...current]
+  participationRemovalConfirmOpen.value = false
+  participationPanelOpen.value = true
 }
 
-async function addParticipation() {
-  if (!selectedParticipation.value.length) return
+async function saveParticipationChanges(confirmRemovals = false) {
+  if (!hasParticipationChanges.value) {
+    message.value = '参与部门没有变化，已保留当前设置。'
+    errorMessage.value = ''
+    toggleParticipationPanel()
+    return
+  }
+  const additions = participationChanges.value.additions
+  const removals = participationChanges.value.removals
+  if (removals.length && !confirmRemovals) {
+    participationRemovalConfirmOpen.value = true
+    return
+  }
   message.value = ''
   errorMessage.value = ''
-  const firstAdded = selectedParticipation.value[0]
   try {
-    await quoteStore.addParticipation(quote.value.id, quote.value.headerRevision, selectedParticipation.value)
-    message.value = '参与部门已添加；新部门已收到填写任务并纳入协作进度与最终放行。'
+    if (additions.length) {
+      await quoteStore.addParticipation(
+        quote.value.id,
+        quote.value.headerRevision,
+        additions.map((section) => section.code),
+      )
+    }
+    if (removals.length) {
+      await quoteStore.removeParticipation(
+        quote.value.id,
+        quote.value.headerRevision,
+        removals.map((section) => section.code),
+      )
+    }
+    const changeMessages = [
+      additions.length ? `已添加：${additions.map((section) => section.label).join('、')}` : '',
+      removals.length ? `已移除：${removals.map((section) => section.label).join('、')}` : '',
+    ].filter(Boolean)
+    message.value = `参与部门已更新；${changeMessages.join('；')}。协作进度、成本汇总和最终放行已同步调整。`
     selectedParticipation.value = []
+    initialParticipation.value = []
+    participationRemovalConfirmOpen.value = false
     participationPanelOpen.value = false
-    if (firstAdded) selectSection(firstAdded)
-  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '添加参与部门失败。' }
+    const currentActiveCode = activeContinuousSectionCode.value
+    if (removals.some((section) => section.code === currentActiveCode)) {
+      activeContinuousSectionCode.value = participatingSections.value[0]?.code ?? 'sales'
+    } else if (additions[0]) {
+      selectSection(additions[0].code)
+    }
+  } catch (error) {
+    participationRemovalConfirmOpen.value = false
+    errorMessage.value = error instanceof Error ? error.message : '更新参与部门失败。'
+  }
 }
 
 async function removeParticipation(sectionCode: InternalQuoteSectionCode) {
@@ -742,7 +802,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ collaborationStatusLabel }}</span><b v-if="isMultiProduct">第 {{ quote.batchPosition }}/{{ quote.batchSize }} 款</b><em v-if="baselineDifferenceLabel" class="quote-baseline-comparison" :class="{ same: !currentBatchProduct?.differsFromBaseline }">{{ baselineDifferenceLabel }}</em></div><p>{{ quote.batchQuoteNo || quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />{{ isWholeQuoteReview ? '整批审核人' : '全部分段审核' }} · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
       </div>
-      <div class="quote-head-progress"><div><span>{{ isWholeQuoteReview ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="openMaterialsDialog"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && availableOptionalSections.length && (!isWholeQuoteReview || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
+      <div class="quote-head-progress"><div><span>{{ isWholeQuoteReview ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="openMaterialsDialog"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isWholeQuoteReview || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
     <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；部门编辑、整单审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的部门编辑、整单审核或参考同步权限。' }}</p>
@@ -755,15 +815,21 @@ onBeforeUnmount(() => {
     <div class="quote-snapshot-banner"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>同步最新参考表将产生新 revision，并使受影响审批失效</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">同步最新参考表</button></div>
     <section v-if="syncPanelOpen && canSyncReference" class="quote-sync-panel"><div><strong>同步最新参考表</strong><span>将重算已填写分段，并使受影响的审批、最终放行和 artifact 失效。</span></div><textarea v-model="syncReason" rows="2" placeholder="必须填写同步原因" /><button type="button" class="secondary" @click="syncPanelOpen = false">取消</button><button type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting || !canSyncReference" @click="syncReference">确认同步</button></section>
     <section v-if="participationPanelOpen" class="quote-participation-panel">
-      <div class="quote-participation-copy"><UserPlus /><span><strong>添加参与部门</strong><small>{{ isWholeQuoteReview ? '添加后会立即出现在连续报价页并纳入整单提交校验；可选部门也可由业务或工程移除。' : '添加后会立即生成填写任务并纳入审批与最终放行；可选部门也可由业务或工程在其明细底部移除。' }}</small></span></div>
+      <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部、工程部和装配部固定参与；勾选可选部门表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>
       <div class="quote-participation-options">
-        <label v-for="section in availableOptionalSections" :key="section.code" :class="{ active: selectedParticipation.includes(section.code) }">
-          <input v-model="selectedParticipation" type="checkbox" :value="section.code">
+        <label v-for="section in manageableOptionalSections" :key="section.code" :class="{ active: selectedParticipation.includes(section.code) }">
+          <input v-model="selectedParticipation" type="checkbox" :value="section.code" @change="participationRemovalConfirmOpen = false">
           <CheckCircle2 />
-          <span>{{ section.label }}</span>
+          <span>{{ section.label }}<small>{{ selectedParticipation.includes(section.code) ? '已参与' : '未参与' }}</small></span>
         </label>
       </div>
-      <div class="quote-participation-actions"><button type="button" class="secondary" @click="toggleParticipationPanel">取消</button><button type="button" class="primary" :disabled="!selectedParticipation.length || quoteStore.submitting" @click="addParticipation">确认添加 {{ selectedParticipation.length ? `(${selectedParticipation.length})` : '' }}</button></div>
+      <div class="quote-participation-actions"><button type="button" class="secondary" @click="toggleParticipationPanel">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting" @click="saveParticipationChanges()">{{ quoteStore.submitting ? '保存中…' : '保存参与部门' }}</button></div>
+      <div v-if="participationRemovalConfirmOpen" class="quote-participation-confirm" role="alert">
+        <AlertTriangle />
+        <span><strong>确认移除 {{ participationChanges.removals.map((section) => section.label).join('、') }}？</strong><small>这些部门当前填写内容和未保存修改将不再计入本报价；历史 revision 和审计记录仍会保留，以后仍可重新添加。</small></span>
+        <button type="button" class="secondary" @click="participationRemovalConfirmOpen = false">返回选择</button>
+        <button type="button" class="danger" :disabled="quoteStore.submitting" @click="saveParticipationChanges(true)">{{ quoteStore.submitting ? '保存中…' : '确认移除并保存' }}</button>
+      </div>
     </section>
 
     <p v-if="message" class="quote-page-message success">{{ message }}</p><p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
@@ -852,7 +918,7 @@ onBeforeUnmount(() => {
 .quote-snapshot-banner{display:flex;align-items:center;gap:8px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:9px 12px;color:#0369a1}.quote-snapshot-banner>svg{width:16px;flex:0 0 auto}.quote-snapshot-banner>span{display:flex;gap:7px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}.quote-snapshot-banner strong{font-family:'Microsoft YaHei','PingFang SC',sans-serif}.quote-snapshot-banner em{margin-left:auto;color:#0284c7;font-size:11px;font-style:normal}.quote-snapshot-banner button{border:1px solid #7dd3fc;border-radius:7px;background:#fff;padding:6px 9px;color:#0369a1;font-size:11px;font-weight:900}.quote-sync-panel{display:grid;grid-template-columns:minmax(200px,1fr) minmax(260px,2fr) auto auto;align-items:center;gap:9px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:10px 12px}.quote-sync-panel>div{display:grid}.quote-sync-panel strong{color:#075985;font-size:12px}.quote-sync-panel span{margin-top:2px;color:#0369a1;font-size:11px}.quote-sync-panel textarea{border:1px solid #7dd3fc;border-radius:7px;padding:7px 9px;font-size:13px;resize:none}.quote-sync-panel button{height:32px;border-radius:7px;padding:0 10px;font-size:11px;font-weight:900}.quote-sync-panel .secondary{border:1px solid #7dd3fc;background:#fff;color:#0369a1}.quote-sync-panel .primary{border:1px solid #0369a1;background:#0369a1;color:#fff}.quote-page-message{margin:0;border-radius:8px;padding:8px 11px;font-size:11px}.quote-page-message.success{border:1px solid #a7f3d0;background:#ecfdf5;color:#047857}.quote-page-message.error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}.quote-page-message.conflict{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #fdba74;background:#fff7ed;color:#9a3412}.quote-page-message.conflict button{border:1px solid #fb923c;border-radius:7px;background:#fff;padding:6px 9px;color:#9a3412;font-size:11px;font-weight:900}.quote-collaboration-grid{display:grid;grid-template-columns:190px minmax(0,1fr) clamp(290px,18vw,320px);align-items:start;gap:11px}.quote-collaboration-grid.focus-entry-mode{grid-template-columns:minmax(0,1fr)}.quote-collaboration-grid.focus-entry-mode>:first-child,.quote-collaboration-grid.focus-entry-mode>:last-child{display:none}.focus-entry-toggle{border-color:#0f766e!important;background:#0f766e!important;color:#fff!important}.focus-entry-toggle[aria-pressed="true"]{border-color:#99f6e4!important;background:#f0fdfa!important;color:#0f766e!important}
 .quote-navigation-stack{display:grid;gap:10px;min-width:0}
 .quote-whole-review-panel{display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:14px;border:1px solid #99f6e4;border-radius:14px;background:linear-gradient(110deg,#f0fdfa,#ecfeff);padding:15px 17px;box-shadow:0 10px 24px rgb(15 118 110/.08)}.quote-whole-review-panel.final_pending{border-color:#fcd34d;background:linear-gradient(110deg,#fffbeb,#fff)}.quote-whole-review-panel.rejected{border-color:#fca5a5;background:linear-gradient(110deg,#fef2f2,#fff)}.quote-whole-review-panel.released,.quote-whole-review-panel.exported{border-color:#6ee7b7;background:linear-gradient(110deg,#ecfdf5,#fff)}.quote-whole-review-icon{display:grid;width:46px;height:46px;place-items:center;border-radius:13px;background:#0f766e;color:#fff}.quote-whole-review-panel.final_pending .quote-whole-review-icon{background:#d97706}.quote-whole-review-panel.rejected .quote-whole-review-icon{background:#dc2626}.quote-whole-review-panel.released .quote-whole-review-icon,.quote-whole-review-panel.exported .quote-whole-review-icon{background:#059669}.quote-whole-review-icon svg{width:23px}.quote-whole-review-copy{display:grid}.quote-whole-review-copy>span{color:#0f766e;font-size:10px;font-weight:950;letter-spacing:.08em}.quote-whole-review-copy h2{margin:2px 0 0;color:#0f172a;font-size:18px}.quote-whole-review-copy p{margin:5px 0 0;color:#64748b;font-size:11px;line-height:1.55}.quote-whole-review-copy>div{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}.quote-whole-review-copy b{border-radius:999px;background:rgb(255 255 255/.8);padding:4px 7px;color:#475569;font-size:10px}.quote-whole-review-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px;max-width:340px}.quote-whole-review-actions button,.quote-whole-review-actions a{display:inline-flex;min-height:36px;align-items:center;justify-content:center;gap:6px;border:1px solid #0f766e;border-radius:9px;background:#fff;padding:0 12px;color:#0f766e;font-size:11px;font-weight:950}.quote-whole-review-actions button.primary{background:#0f766e;color:#fff}.quote-whole-review-actions button.reject{border-color:#fca5a5;color:#dc2626}.quote-whole-review-actions button:disabled{cursor:not-allowed;border-color:#cbd5e1;background:#e2e8f0;color:#94a3b8}.quote-whole-review-actions svg{width:15px}.quote-whole-review-actions>span{color:#92400e;font-size:11px;font-weight:900}.quote-whole-reject-panel{display:grid;grid-template-columns:minmax(220px,1fr) minmax(300px,2fr) auto auto;align-items:center;gap:9px;border:1px solid #fecaca;border-radius:11px;background:#fef2f2;padding:11px 13px}.quote-whole-reject-panel>div{display:grid}.quote-whole-reject-panel strong{color:#991b1b;font-size:12px}.quote-whole-reject-panel span{margin-top:3px;color:#b91c1c;font-size:10px}.quote-whole-reject-panel textarea{border:1px solid #fca5a5;border-radius:7px;padding:7px 9px;font-size:13px;resize:none}.quote-whole-reject-panel button{height:33px;border:1px solid #fca5a5;border-radius:7px;background:#fff;padding:0 10px;color:#991b1b;font-size:11px;font-weight:900}.quote-whole-reject-panel button.primary{border-color:#b91c1c;background:#b91c1c;color:#fff}.quote-continuous-sections{display:grid;min-width:0;gap:16px}.quote-continuous-section{min-width:0;scroll-margin-top:92px}.quote-continuous-section :deep(.quote-section-editor){box-shadow:0 10px 24px rgb(15 23 42/.05)}.quote-whole-product-actions{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:16px;border:1px solid #5eead4;border-radius:13px;background:linear-gradient(110deg,#f0fdfa,#fff);padding:14px 15px;box-shadow:0 10px 24px rgb(15 118 110/.08)}.quote-whole-product-actions-copy{display:grid;min-width:190px}.quote-whole-product-actions-copy strong{color:#134e4a;font-size:14px}.quote-whole-product-actions-copy span{margin-top:3px;color:#47716d;font-size:11px}.quote-whole-product-actions-copy small{margin-top:6px;color:#94a3b8;font-size:10px}.quote-whole-product-actions-controls{display:flex;min-width:0;align-items:center;justify-content:flex-end;gap:8px}.quote-whole-product-save{display:inline-flex;height:36px;flex:0 0 auto;align-items:center;justify-content:center;gap:5px;border:1px solid #0f766e;border-radius:8px;background:#0f766e;padding:0 12px;color:#fff;font-size:11px;font-weight:950}.quote-whole-product-save svg{width:14px}.quote-whole-product-save:disabled{cursor:wait;opacity:.5}
-.quote-participation-panel{display:grid;grid-template-columns:minmax(240px,1.2fr) minmax(320px,2fr) auto;align-items:center;gap:14px;border:1px solid #99f6e4;border-radius:12px;background:#f0fdfa;padding:13px 14px;box-shadow:0 10px 22px rgb(15 118 110/.07)}.quote-participation-copy{display:flex;align-items:flex-start;gap:9px}.quote-participation-copy>svg{width:19px;flex:0 0 auto;color:#0f766e}.quote-participation-copy span{display:grid}.quote-participation-copy strong{color:#134e4a;font-size:13px}.quote-participation-copy small{margin-top:3px;color:#47716d;font-size:11px;line-height:1.45}.quote-participation-options{display:flex;flex-wrap:wrap;gap:7px}.quote-participation-options label{position:relative;display:inline-flex;align-items:center;gap:5px;border:1px solid #bae6df;border-radius:999px;background:#fff;padding:7px 10px;color:#475569;font-size:12px;font-weight:900;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,color .18s ease,transform .18s ease}.quote-participation-options label:hover{border-color:#2dd4bf;transform:translateY(-1px)}.quote-participation-options label.active{border-color:#0d9488;background:#ccfbf1;color:#0f766e}.quote-participation-options input{position:absolute;opacity:0}.quote-participation-options svg{width:14px;height:14px;color:#cbd5e1}.quote-participation-options label.active svg{color:#0f766e}.quote-participation-actions{display:flex;gap:7px}.quote-participation-actions button{height:34px;border-radius:8px;padding:0 11px;font-size:12px;font-weight:900}.quote-participation-actions .secondary{border:1px solid #99f6e4;background:#fff;color:#0f766e}.quote-participation-actions .primary{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-participation-actions .primary:disabled{opacity:.45}
+.quote-participation-panel{display:grid;grid-template-columns:minmax(240px,1.2fr) minmax(320px,2fr) auto;align-items:center;gap:14px;border:1px solid #99f6e4;border-radius:12px;background:#f0fdfa;padding:13px 14px;box-shadow:0 10px 22px rgb(15 118 110/.07)}.quote-participation-copy{display:flex;align-items:flex-start;gap:9px}.quote-participation-copy>svg{width:19px;flex:0 0 auto;color:#0f766e}.quote-participation-copy span{display:grid}.quote-participation-copy strong{color:#134e4a;font-size:13px}.quote-participation-copy small{margin-top:3px;color:#47716d;font-size:11px;line-height:1.45}.quote-participation-options{display:flex;flex-wrap:wrap;gap:7px}.quote-participation-options label{position:relative;display:inline-flex;align-items:center;gap:5px;border:1px solid #bae6df;border-radius:999px;background:#fff;padding:7px 10px;color:#475569;font-size:12px;font-weight:900;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,color .18s ease,transform .18s ease}.quote-participation-options label:hover{border-color:#2dd4bf;transform:translateY(-1px)}.quote-participation-options label.active{border-color:#0d9488;background:#ccfbf1;color:#0f766e}.quote-participation-options input{position:absolute;opacity:0}.quote-participation-options svg{width:14px;height:14px;color:#cbd5e1}.quote-participation-options label.active svg{color:#0f766e}.quote-participation-options label>span{display:grid;line-height:1.1}.quote-participation-options label>span small{margin-top:2px;color:#94a3b8;font-size:9px;font-weight:800}.quote-participation-options label.active>span small{color:#0f766e}.quote-participation-actions{display:flex;gap:7px}.quote-participation-actions button{height:34px;border-radius:8px;padding:0 11px;font-size:12px;font-weight:900}.quote-participation-actions .secondary{border:1px solid #99f6e4;background:#fff;color:#0f766e}.quote-participation-actions .primary{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-participation-actions .primary:disabled{opacity:.45}.quote-participation-confirm{grid-column:1/-1;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:9px;border:1px solid #fca5a5;border-radius:9px;background:#fff7ed;padding:9px 10px;color:#991b1b}.quote-participation-confirm>svg{width:18px}.quote-participation-confirm>span{display:grid}.quote-participation-confirm strong{font-size:12px}.quote-participation-confirm small{margin-top:2px;color:#b45309;font-size:10px;line-height:1.4}.quote-participation-confirm button{height:32px;border-radius:7px;padding:0 10px;font-size:11px;font-weight:900}.quote-participation-confirm .secondary{border:1px solid #fdba74;background:#fff;color:#9a3412}.quote-participation-confirm .danger{border:1px solid #b91c1c;background:#b91c1c;color:#fff}.quote-participation-confirm button:disabled{opacity:.45}
 @media(max-width:1280px){.quote-collaboration-grid{grid-template-columns:190px minmax(0,1fr)}.quote-collaboration-grid>*:last-child{grid-column:1/-1}.quote-participation-panel{grid-template-columns:1fr 1.6fr}.quote-participation-actions{grid-column:1/-1;justify-content:flex-end}.quote-whole-review-panel{grid-template-columns:48px minmax(0,1fr)}.quote-whole-review-actions{grid-column:1/-1;max-width:none;justify-content:flex-end}.quote-whole-product-actions{align-items:stretch;flex-direction:column}.quote-whole-product-actions-controls{justify-content:flex-start}}@media(max-width:980px){.quote-collaboration-grid{grid-template-columns:1fr}.quote-collaboration-grid>*:last-child{grid-column:auto}.quote-collaboration-head{align-items:stretch;flex-direction:column}.quote-head-progress{width:100%}.quote-snapshot-banner{align-items:flex-start;flex-wrap:wrap}.quote-sync-panel,.quote-participation-panel,.quote-whole-reject-panel{grid-template-columns:1fr}.quote-snapshot-banner em{width:100%;margin-left:24px}.quote-participation-actions{grid-column:auto}.quote-whole-review-actions{justify-content:flex-start}.quote-whole-product-actions-controls{align-items:stretch;flex-direction:column}.quote-whole-product-save{width:100%}}@media(max-width:600px){.focus-entry-float{right:12px;bottom:14px;width:36px;height:36px;border-radius:10px}.focus-entry-float::after{right:44px}.quote-whole-review-panel{grid-template-columns:1fr}.quote-whole-review-icon{width:40px;height:40px}.quote-whole-review-actions>*{width:100%}}
 
 /* The quote sheet is always full width; auxiliary panels live on the viewport edges. */

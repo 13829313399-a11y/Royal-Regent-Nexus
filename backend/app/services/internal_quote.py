@@ -1239,7 +1239,7 @@ def _rr2_cost_summary(
         allocation_factor = target / candidate_total
         for line, amount in candidates:
             label = str(line.get("group") or line.get("item") or line.get("process") or section_labels[section_code]).strip()
-            pricing_entries.append({
+            entry: dict[str, object] = {
                 "section": section_code,
                 "label": label or section_labels[section_code],
                 "kind": str(line.get("kind") or ""),
@@ -1247,12 +1247,24 @@ def _rr2_cost_summary(
                 "auxiliary_category": str(line.get("auxiliary_category") or ""),
                 "amount_hkd": amount * allocation_factor,
                 "pricing_component_id": str(line.get("pricing_component_id") or "").strip(),
+                "formula_allocation_factor": decimal_text(allocation_factor),
                 "markup_override": (
                     _summary_decimal(line.get("markup_override"))
                     if line.get("markup_override") not in (None, "")
                     else None
                 ),
-            })
+            }
+            for field in (
+                "process",
+                "persons",
+                "total_persons",
+                "teams",
+                "production_qty",
+                "standard_work_hours",
+            ):
+                if line.get(field) not in (None, ""):
+                    entry[field] = line.get(field)
+            pricing_entries.append(entry)
 
     allocated_factory_cost = sum(
         (_summary_decimal(entry.get("amount_hkd")) for entry in pricing_entries),
@@ -1262,6 +1274,11 @@ def _rr2_cost_summary(
         allocation_factor = factory_price / allocated_factory_cost
         for entry in pricing_entries:
             entry["amount_hkd"] = _summary_decimal(entry.get("amount_hkd")) * allocation_factor
+            if entry.get("formula_allocation_factor") not in (None, ""):
+                entry["formula_allocation_factor"] = decimal_text(
+                    _summary_decimal(entry.get("formula_allocation_factor"), "1")
+                    * allocation_factor
+                )
         allocated_factory_cost = factory_price
     unallocated_factory_cost = factory_price - allocated_factory_cost
     if unallocated_factory_cost > Decimal("0.000001"):
