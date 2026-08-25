@@ -324,6 +324,119 @@ def test_document_content_check_maps_server_parser_configuration_to_503(monkeypa
         assert response.json()["detail"] == "服务器未配置 PDF 文字读取组件"
 
 
+def test_manual_release_requires_privileged_reviewer_and_records_audit(monkeypatch):
+    with make_client(monkeypatch) as client:
+        db_module = importlib.import_module("app.db")
+        auth = importlib.import_module("app.services.auth")
+        schema = importlib.import_module("app.schemas.carton_mark")
+        library = importlib.import_module("app.services.carton_mark_library")
+        model = importlib.import_module("app.models.carton_mark")
+        carton_model = importlib.import_module("app.models.carton_procurement")
+        seed_user = auth.AuthContext(
+            id="manual-release-seed",
+            username="manual-release-seed",
+            display_name="人工放行测试",
+            roles=("纸箱主管",),
+            role_codes=("position_carton_supervisor",),
+            permissions=frozenset({"carton_mark:template_upload"}),
+            factory_scopes=("huaxing",),
+            department_scopes=("carton",),
+        )
+        check_result = schema.CartonMarkDocumentCheckResponse(
+            excel_file_name="contract.xlsx",
+            pdf_file_name="print.pdf",
+            summary=schema.CartonMarkDocumentCheckSummary(
+                overall_status="发现差异",
+                pass_count=0,
+                changed_count=1,
+                missing_count=0,
+                unexpected_count=0,
+                review_count=0,
+            ),
+            excel_items=[schema.CartonMarkDocumentTextItem(text="ABC", location="箱唛!A1")],
+            pdf_items=[schema.CartonMarkDocumentTextItem(text="ABD", location="第 1 页 · 第 1 行")],
+            comparisons=[
+                schema.CartonMarkDocumentComparisonItem(
+                    status="changed",
+                    expected="ABC",
+                    actual="ABD",
+                )
+            ],
+            extraction=[
+                schema.CartonMarkExtractionStatus(source="source_excel", ok=True, engine="test"),
+                schema.CartonMarkExtractionStatus(source="print_pdf", ok=True, engine="test"),
+            ],
+        )
+        with db_module.SessionLocal() as db:
+            _seed_carton_mark_customer(
+                db,
+                model,
+                customer_id="CMC-API-MANUAL-RELEASE",
+                name="人工放行客户",
+            )
+            db.commit()
+            template = library.create_carton_mark_template(
+                db,
+                seed_user,
+                factory_id="huaxing",
+                customer_name="人工放行客户",
+                po="PO-RELEASE",
+                item="ITEM-RELEASE",
+                contract_number="C-RELEASE",
+                excel_file_name="contract.xlsx",
+                excel_bytes=b"api-manual-excel",
+                pdf_file_name="print.pdf",
+                pdf_bytes=b"api-manual-pdf",
+                check_result=check_result,
+            )
+            template_id = template.id
+
+        login_as(client, "carton_warehouse")
+        forbidden = client.post(
+            f"/api/carton-mark/templates/{template_id}/manual-release",
+            params={"factory_id": "huaxing"},
+            json={"reason": "仓管不能自行放行"},
+        )
+        assert forbidden.status_code == 403
+
+        login_as(client, "admin")
+        short_reason = client.post(
+            f"/api/carton-mark/templates/{template_id}/manual-release",
+            params={"factory_id": "huaxing"},
+            json={"reason": "不足"},
+        )
+        assert short_reason.status_code == 422
+
+        released = client.post(
+            f"/api/carton-mark/templates/{template_id}/manual-release",
+            params={"factory_id": "huaxing"},
+            json={"reason": "已依据客户书面确认逐项人工核对"},
+        )
+        assert released.status_code == 200, released.text
+        payload = released.json()
+        assert payload["check_status"] == "发现差异"
+        assert payload["qc_ready"] is True
+        assert payload["manual_released"] is True
+        assert payload["manual_release_source_status"] == "发现差异"
+        assert payload["manual_released_by_name"] == "系统管理员"
+
+        duplicate = client.post(
+            f"/api/carton-mark/templates/{template_id}/manual-release",
+            params={"factory_id": "huaxing"},
+            json={"reason": "尝试重复人工放行"},
+        )
+        assert duplicate.status_code == 409
+
+        with db_module.SessionLocal() as db:
+            event = db.query(carton_model.CartonAuditEvent).filter_by(
+                entity_type="carton_mark_template",
+                entity_id=template_id,
+                event_type="CARTON_MARK_TEMPLATE_MANUALLY_RELEASED",
+            ).one()
+            assert event.actor_name == "系统管理员"
+            assert "客户书面确认" in event.detail_json
+
+
 def test_persisted_templates_support_qc_read_download_duplicate_and_soft_archive(
     monkeypatch,
 ):

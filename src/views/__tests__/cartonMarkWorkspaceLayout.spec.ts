@@ -141,7 +141,7 @@ describe('carton mark standalone workspaces', () => {
       'ITEM',
       '合同号',
       '客户箱唛集合',
-      '按客户查看客人 Excel、打印 PDF 与纸箱部文字核对记录。',
+      '按客户查看客人 Excel、打印 PDF、自动核对与人工放行记录。',
       '请选择一个客户',
       '查看核对',
     ]) {
@@ -193,7 +193,7 @@ describe('carton mark standalone workspaces', () => {
     expect(cartonPanelSource).toContain('accept=".xls,.xlsx,.xlsm,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"')
     expect(cartonPanelSource).toContain('可点击选择或拖拽 Excel 到此处')
     expect(cartonPanelSource).toContain('可点击选择或拖拽 PDF 到此处')
-    expect(cartonPanelSource).toContain('只有核对通过的 PDF 才可供 QC 现场核验')
+    expect(cartonPanelSource).toContain('自动核对通过，或经纸箱部主管以上填写理由人工放行后')
     expect(cartonPanelSource).toContain('图形内文字不参与比较')
     expect(cartonPanelSource).toContain('排版与图形内文字不报差异')
     expect(cartonPanelSource).toContain("recheckingDocumentId === documentComparisonRecord.id ? '核对中' : '重新核对'")
@@ -225,6 +225,24 @@ describe('carton mark standalone workspaces', () => {
     expect(cartonPanelSource).toContain('border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700')
     expect(cartonPanelSource).toContain('border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700')
     expect(cartonPanelSource).toContain('return records.value.filter((record) => record.qcReady)')
+  })
+
+  it('adds an audited supervisor-only manual release path without overwriting automatic results', () => {
+    for (const requiredContract of [
+      "carton_mark:template_release",
+      'manualReleaseTemplate',
+      '人工审核放行',
+      '放行理由',
+      'manualReleaseSourceStatus',
+      'manualReleasedByName',
+      '重新自动核对后，本次放行将自动撤销',
+      'reason.length < 5',
+    ]) {
+      expect(cartonPanelSource).toContain(requiredContract)
+    }
+    expect(cartonPanelSource).toContain('canReleaseTemplate && !record.qcReady')
+    expect(cartonPanelSource).toContain('record.manualReleased')
+    expect(cartonPanelSource).toContain('photoForm.templateId = releasedRecord.id')
   })
 
   it('separates successful page-match extraction information from warnings', () => {

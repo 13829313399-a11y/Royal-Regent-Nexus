@@ -37,6 +37,7 @@ const positionDepartmentSensitivePermissions = new Set([
   'internal_quote:clone',
   'carton_mark:read',
   'carton_mark:template_upload',
+  'carton_mark:template_release',
   'carton_mark:customer_manage',
   'carton_mark:photo_upload',
   'carton_mark:review',

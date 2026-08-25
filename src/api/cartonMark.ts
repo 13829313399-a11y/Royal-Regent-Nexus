@@ -154,6 +154,11 @@ export interface CartonMarkTemplateRecordResponse {
   updated_at: string
   created_by_name: string
   qc_ready: boolean
+  manual_released: boolean
+  manual_release_reason: string
+  manual_release_source_status: string
+  manual_released_by_name: string
+  manual_released_at: string
 }
 
 export interface CartonMarkTemplateCreateRequest {
@@ -250,6 +255,16 @@ export function createCartonMarkApi(client = http) {
       const response = await client.post<CartonMarkTemplateRecordResponse>(`/carton-mark/templates/${templateId}/recheck`, undefined, {
         params: { factory_id: factoryId },
         timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS,
+        signal,
+      })
+      return response.data
+    },
+
+    async manualReleaseTemplate(templateId: string, factoryId: string, reason: string, signal?: AbortSignal) {
+      const response = await client.post<CartonMarkTemplateRecordResponse>(`/carton-mark/templates/${templateId}/manual-release`, {
+        reason,
+      }, {
+        params: { factory_id: factoryId },
         signal,
       })
       return response.data
