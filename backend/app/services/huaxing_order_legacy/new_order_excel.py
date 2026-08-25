@@ -865,6 +865,7 @@ def append_records_to_workbook(
     sheet_names: Sequence[str] = (),
     field_formats: Mapping[str, str] | None = None,
     formula_fallback_fields: Collection[str] = (),
+    record_overrides_formula_fields: Collection[str] = (),
     new_row_font_color: str = "",
     group_key_factory: Callable[[Mapping[str, Any]], str] | None = None,
     group_row_values_factory: Callable[[Mapping[str, Any], int], Mapping[int, Any]] | None = None,
@@ -1070,9 +1071,16 @@ def append_records_to_workbook(
                     cell = target.cell(row_no, col_no)
                     if isinstance(cell, MergedCell):
                         continue
-                    # A template formula is authoritative for calculated fields.
+                    # A template formula is authoritative for calculated fields unless
+                    # this customer explicitly identifies the field as PO-owned input.
                     has_formula = isinstance(cell.value, str) and cell.value.startswith("=")
-                    if has_formula and field in formula_fallback_fields:
+                    if has_formula and field in record_overrides_formula_fields:
+                        inherited_number_format = cell.number_format
+                        safe_value = _safe_record_value(field, record.get(field, ""))
+                        cell.value = safe_value
+                        if isinstance(safe_value, datetime) and inherited_number_format == "General":
+                            cell.number_format = "yyyy-mm-dd"
+                    elif has_formula and field in formula_fallback_fields:
                         fallback = _safe_record_value(field, record.get(field, ""))
                         if fallback in (None, ""):
                             fallback_formula = '""'
@@ -1342,7 +1350,7 @@ def append_column_records_to_workbook(
         workbook.close()
 
 
-def insert_column_records_by_matching_key(
+def insert_column_records_after_matching_groups(
     template: str | Path | bytes | BinaryIO,
     output_path: str | Path | BinaryIO,
     records: Iterable[Any],
@@ -1351,21 +1359,19 @@ def insert_column_records_by_matching_key(
     sheet_names: Sequence[str],
     header_row: int,
     max_col: int,
-    detail_columns: Sequence[int],
+    existing_row_key_factory: Callable[[Any, int], str],
     record_key_factory: Callable[[Any], str],
-    row_key_factory: Callable[[Any, int], str],
+    detail_columns: Sequence[int] = (),
     row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
-    group_row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
-    new_row_fill_color: str = "",
+    column_formats: Mapping[int, str] | None = None,
 ) -> dict[str, Any]:
-    """Insert new detail rows after the last existing row with the same key.
+    """Insert fixed-column records after the last matching detail row.
 
-    Existing rows are never sorted or rewritten.  Incoming rows sharing an
-    existing item are placed at the end of that item's current block; entirely
-    new item groups are appended at the normal detail boundary in key order.
-    When ``group_row_values_factory`` is supplied, a copied merged title row is
-    inserted before every entirely new item group.  ``new_row_fill_color`` can
-    mark all inserted rows without changing their inherited borders or fonts.
+    Records with the same non-empty key are inserted together immediately after
+    the last existing row carrying that key, which keeps item-based schedules in
+    ``detail... + subtotal`` order. Records without a matching key retain the
+    established global append fallback. Formulas and workbook structures are
+    shifted with Excel-like row insertion semantics.
     """
     workbook = load_complete_workbook_compatible(template, filename=filename)
     rows = list(records)
@@ -1376,71 +1382,58 @@ def insert_column_records_by_matching_key(
         )
         if target is None:
             raise ValueError(f"模板缺少目标工作表：{' / '.join(sheet_names)}")
-        append_row = _find_append_row(
+
+        grouped_records: dict[str, list[Any]] = {}
+        for index, record in enumerate(rows):
+            key = str(record_key_factory(record) or "").strip()
+            grouped_records.setdefault(key or f"__unmatched_{index}", []).append(record)
+
+        last_matching_rows: dict[str, int] = {}
+        for row_no in range(header_row + 1, (target.max_row or header_row) + 1):
+            key = str(existing_row_key_factory(target, row_no) or "").strip()
+            if key:
+                last_matching_rows[key] = row_no
+
+        global_append_row = _find_append_row(
             target,
             header_row,
             max_col,
             detail_columns=detail_columns,
         )
-        existing_last_rows: dict[str, int] = {}
-        for row_no in range(header_row + 1, append_row):
-            if not any(target.cell(row_no, column).value not in (None, "") for column in detail_columns):
-                continue
-            key = str(row_key_factory(target, row_no) or "").strip()
-            if key:
-                existing_last_rows[key] = row_no
-
-        grouped: dict[str, list[Any]] = {}
-        for index, record in enumerate(rows):
-            key = str(record_key_factory(record) or "").strip() or f"__row_{index}"
-            grouped.setdefault(key, []).append(record)
-        plans: list[tuple[int, str, list[tuple[str, Any]]]] = []
-        new_groups: list[tuple[str, list[Any]]] = []
-        for key, grouped_rows in grouped.items():
-            if key in existing_last_rows:
-                plans.append((
-                    existing_last_rows[key] + 1,
-                    key,
-                    [("detail", record) for record in grouped_rows],
-                ))
-            else:
-                new_groups.append((key, grouped_rows))
-        if new_groups:
-            new_groups.sort(key=lambda item: item[0])
-            new_layout: list[tuple[str, Any]] = []
-            for _key, grouped_rows in new_groups:
-                if group_row_values_factory:
-                    new_layout.append(("group", grouped_rows[0]))
-                new_layout.extend(("detail", record) for record in grouped_rows)
-            plans.append((append_row, "__new_items__", new_layout))
-
-        group_style_row: int | None = None
-        group_merges: list[CellRange] = []
-        if group_row_values_factory and new_groups:
-            detail_style_row = _nearest_detail_row(
-                target,
-                header_row,
-                append_row,
-                max_col,
-            )
-            group_style_row, group_merges = _nearest_group_title_row(
-                target,
-                header_row,
-                detail_style_row,
-                max_col,
-            )
-        highlight_fill = (
-            PatternFill(fill_type="solid", fgColor=new_row_fill_color)
-            if new_row_fill_color
-            else None
+        fallback_style_row = _nearest_detail_row(
+            target,
+            header_row,
+            global_append_row,
+            max_col,
         )
+        placements: dict[int, dict[str, Any]] = {}
+        matched_groups = 0
+        unmatched_groups = 0
+        for key, grouped in grouped_records.items():
+            matching_row = last_matching_rows.get(key)
+            if matching_row is not None:
+                insert_row = matching_row + 1
+                style_row = matching_row
+                matched_groups += 1
+            else:
+                insert_row = global_append_row
+                style_row = fallback_style_row
+                unmatched_groups += 1
+            placement = placements.setdefault(
+                insert_row,
+                {"style_row": style_row, "records": []},
+            )
+            placement["records"].extend(grouped)
 
         inserted_rows = 0
-        inserted_group_rows = 0
-        for insert_row, _key, layout_rows in sorted(plans, key=lambda item: item[0], reverse=True):
-            style_row = _nearest_detail_row(target, header_row, insert_row, max_col)
-            if style_row is None:
-                raise ValueError("当前排期没有可复用的明细行")
+        insertion_rows: list[int] = []
+        for insert_row in sorted(placements, reverse=True):
+            placement = placements[insert_row]
+            placement_rows = placement["records"]
+            amount = len(placement_rows)
+            if not amount:
+                continue
+            style_row = int(placement["style_row"])
             formulas = [
                 (sheet, cell.row, cell.column, cell.value)
                 for sheet in workbook.worksheets
@@ -1454,11 +1447,15 @@ def insert_column_records_by_matching_key(
             ]
             for merged in moved_merges:
                 target.unmerge_cells(str(merged))
-            amount = len(layout_rows)
             target.insert_rows(insert_row, amount)
             _shift_target_sheet_structures(target, insert_row, amount, moved_merges)
+
             for sheet, old_row, column, formula in formulas:
-                destination_row = old_row + amount if sheet is target and old_row >= insert_row else old_row
+                destination_row = (
+                    old_row + amount
+                    if sheet is target and old_row >= insert_row
+                    else old_row
+                )
                 sheet.cell(destination_row, column).value = _rewrite_formula_for_insert(
                     formula,
                     formula_sheet=sheet.title,
@@ -1467,20 +1464,16 @@ def insert_column_records_by_matching_key(
                     insert_row=insert_row,
                     amount=amount,
                 )
-            pending_group_rows: list[int] = []
-            for offset, (row_kind, record) in enumerate(layout_rows):
+
+            source_dimension = target.row_dimensions[style_row]
+            for offset, record in enumerate(placement_rows):
                 row_no = insert_row + offset
-                source_row = group_style_row if row_kind == "group" else style_row
-                if source_row is None:
-                    raise ValueError("当前排期没有可复用的分组标题行")
-                if target.row_dimensions[source_row].height:
-                    target.row_dimensions[row_no].height = target.row_dimensions[source_row].height
-                for column in range(1, max_col + 1):
-                    source_cell = target.cell(source_row, column)
-                    destination = target.cell(row_no, column)
+                if source_dimension.height:
+                    target.row_dimensions[row_no].height = source_dimension.height
+                for col_no in range(1, max_col + 1):
+                    source_cell = target.cell(style_row, col_no)
+                    destination = target.cell(row_no, col_no)
                     _copy_style(source_cell, destination)
-                    if highlight_fill is not None:
-                        destination.fill = copy(highlight_fill)
                     if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
                         try:
                             destination.value = Translator(
@@ -1489,44 +1482,27 @@ def insert_column_records_by_matching_key(
                             ).translate_formula(destination.coordinate)
                         except (TypeError, ValueError):
                             destination.value = source_cell.value
-                if row_kind == "group":
-                    values = group_row_values_factory(record, row_no)
-                    pending_group_rows.append(row_no)
-                    inserted_group_rows += 1
-                else:
-                    values = row_values_factory(record, row_no) if row_values_factory else record
+
+                values = row_values_factory(record, row_no) if row_values_factory else record
                 if not isinstance(values, Mapping):
                     raise ValueError("固定列写入记录必须是列号到值的映射")
-                for column, value in values.items():
+                for col_no, value in values.items():
                     if value in (None, ""):
                         continue
-                    cell = target.cell(row_no, int(column))
+                    cell = target.cell(row_no, int(col_no))
                     cell.value = _safe_value(value)
                     if isinstance(value, (date, datetime)) and cell.number_format == "General":
                         cell.number_format = "yyyy-mm-dd"
+                    if column_formats and int(col_no) in column_formats:
+                        cell.number_format = column_formats[int(col_no)]
 
-            for row_no in pending_group_rows:
-                for merged in group_merges:
-                    target.merge_cells(
-                        start_row=row_no,
-                        end_row=row_no,
-                        start_column=merged.min_col,
-                        end_column=merged.max_col,
-                    )
-                    if group_style_row is not None:
-                        _copy_style(
-                            target.cell(group_style_row, merged.min_col),
-                            target.cell(row_no, merged.min_col),
-                        )
-                        if highlight_fill is not None:
-                            target.cell(row_no, merged.min_col).fill = copy(highlight_fill)
-                        if highlight_fill is not None:
-                            target.cell(row_no, merged.min_col).fill = copy(highlight_fill)
             inserted_rows += amount
+            insertion_rows.append(insert_row)
 
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True
         workbook.calculation.calcMode = "auto"
+
         if hasattr(output_path, "write"):
             workbook.save(output_path)
             output_reference = "<memory>"
@@ -1539,12 +1515,12 @@ def insert_column_records_by_matching_key(
             "path": output_reference,
             "template_sheet": target.title,
             "header_row": header_row,
+            "insert_rows": sorted(insertion_rows),
             "rows": len(rows),
+            "matched_groups": matched_groups,
+            "unmatched_groups": unmatched_groups,
             "inserted_rows": inserted_rows,
-            "group_rows": inserted_group_rows,
-            "matched_groups": sum(key in existing_last_rows for key in grouped),
-            "new_groups": sum(key not in existing_last_rows for key in grouped),
-            "mode": "full_workbook_insert_by_matching_key",
+            "mode": "full_workbook_matching_group_insert",
         }
     finally:
         workbook.close()

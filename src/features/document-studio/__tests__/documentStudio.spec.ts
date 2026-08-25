@@ -10,11 +10,6 @@ import {
 describe('document studio closed frontend contracts', () => {
   it('exposes exactly the five documented primary tools', () => {
     expect(DOCUMENT_TOOLS.map(tool => tool.id)).toEqual(DOCUMENT_TOOL_IDS)
-    expect(DOCUMENT_TOOLS.filter(tool => tool.available).map(tool => tool.id)).toEqual([
-      'pdf-to-excel',
-      'pdf-to-word',
-      'pdf-split',
-    ])
   })
 
   it('accepts only closed tool query values', () => {

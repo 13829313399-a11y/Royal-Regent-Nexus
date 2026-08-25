@@ -41,6 +41,86 @@ def _order_payload(request_id: str = "order-1") -> dict[str, object]:
     }
 
 
+def _event_payload(order_id: str, request_id: str = "event-1") -> dict[str, object]:
+    return {
+        "factory_id": "huaxing",
+        "inspection_order_id": order_id,
+        "event_type": "CUSTOMER",
+        "actual_inspection_date": "2026-08-12",
+        "inspector_name": "验货员甲",
+        "inspection_agency": "QC",
+        "inspection_location": "华兴成品仓",
+        "sampling_standard": "ANSI/ASQ Z1.4",
+        "inspection_level": "II",
+        "aql_critical": "0",
+        "aql_major": "2.5",
+        "aql_minor": "4.0",
+        "lot_size": 1200,
+        "sample_size": 80,
+        "critical_defect_count": 0,
+        "major_defect_count": 2,
+        "minor_defect_count": 0,
+        "inspection_result": "FAIL",
+        "document_status": "FINAL",
+        "manual_has_problem": True,
+        "report_number": "CS-260812-001",
+        "note": "真实验货记录样例",
+        "lines": [
+            {
+                "customer_po_no": "001234",
+                "release_no": "REL-01",
+                "customer_item_no": "ITEM001",
+                "internal_item_no": "HX-ITEM-001",
+                "batch_no": "BATCH-2608",
+                "date_code": "2026-08",
+                "product_name": "测试产品",
+                "order_quantity": "1200",
+                "inspected_quantity": "80",
+                "packing": "12件/箱",
+                "carton_count": "100",
+                "upc_ean": "012345678901",
+            }
+        ],
+        "defects": [
+            {
+                "event_line_id": "",
+                "category": "包装",
+                "severity": "MAJOR",
+                "quantity": 2,
+                "defect_location": "外箱",
+                "description": "外箱破损",
+                "production_department": "华兴生产部",
+                "photo_reference": "IMG-001.jpg",
+            }
+        ],
+        "tests": [
+            {
+                "test_item": "跌落测试",
+                "method_standard": "客户标准",
+                "specification": "1 米",
+                "measured_value": "1 米",
+                "unit": "m",
+                "sample_size": 3,
+                "result": "PASS",
+                "operator_name": "验货员甲",
+                "reviewer_name": "主管乙",
+            }
+        ],
+        "dispositions": [
+            {
+                "disposition_type": "RETURN",
+                "return_quantity": "1200",
+                "rework_quantity": None,
+                "reason": "包装不合格",
+                "approved_by": "",
+                "approved_date": "",
+                "verification_result": "待返工后复验",
+            }
+        ],
+        "request_id": request_id,
+    }
+
+
 def _schedule_bytes(rows: list[list[object]]) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
@@ -350,6 +430,9 @@ def test_schedule_history_is_not_candidate_and_stale_candidate_is_rejected(monke
 
 
 def test_schedule_preview_raw_form_validation(monkeypatch):
+    from app.services.qc_inspection import MAX_SCHEDULE_IMPORT_BYTES
+
+    assert MAX_SCHEDULE_IMPORT_BYTES == 35 * 1024 * 1024
     with make_client(monkeypatch) as client:
         login_as(client, "qc_inspector")
         content = _schedule_bytes(
@@ -371,6 +454,7 @@ def test_schedule_preview_raw_form_validation(monkeypatch):
             files={"file": ("排期.xlsx", b"x" * 17, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
         assert oversized.status_code == 413
+        assert oversized.json()["detail"] == "排期文件不能超过 35 MB"
 
 
 def test_schedule_all_unchanged_preview_is_immediately_confirmed(monkeypatch):
@@ -688,7 +772,7 @@ def test_qc_schema_guard_rejects_existing_unmigrated_alembic_database(monkeypatc
             connection.close()
         guard_engine = create_engine(f"sqlite:///{database_path}", future=True)
         monkeypatch.setattr(db_module, "engine", guard_engine)
-        with pytest.raises(RuntimeError, match="20260812_0067"):
+        with pytest.raises(RuntimeError, match="20260824_0082"):
             db_module.ensure_qc_inspection_schema_ready()
         guard_engine.dispose()
         database_path.unlink(missing_ok=True)
@@ -915,3 +999,136 @@ def test_five_reports_are_real_xlsx_with_expected_layout_and_formal_permission(m
         assert group_sheet.cell(group_sheet.max_row, 1).value == "总计"
         assert group_sheet.cell(group_sheet.max_row, 5).value == 1
         group_workbook.close()
+
+
+def test_per_order_inspection_events_and_all_v3_reports(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "qc_inspector")
+        order = client.post(
+            "/api/qc-inspections/orders",
+            json=_order_payload("v3-report-order"),
+        ).json()
+
+        invalid = _event_payload(order["id"], "v3-invalid-count")
+        invalid["major_defect_count"] = 1
+        invalid_response = client.post(
+            f"/api/qc-inspections/orders/{order['id']}/events",
+            json=invalid,
+        )
+        assert invalid_response.status_code == 422
+        assert "缺陷汇总数量" in invalid_response.text
+
+        created = client.post(
+            f"/api/qc-inspections/orders/{order['id']}/events",
+            json=_event_payload(order["id"]),
+        )
+        assert created.status_code == 201, created.text
+        first_event = created.json()
+        assert first_event["attempt_no"] == 1
+        assert first_event["lines"][0]["customer_po_no"] == "001234"
+        assert first_event["defects"][0]["severity"] == "MAJOR"
+        assert first_event["tests"][0]["test_item"] == "跌落测试"
+        assert first_event["dispositions"][0]["disposition_type"] == "RETURN"
+
+        order_report = client.post(
+            f"/api/qc-inspections/orders/{order['id']}/reports/generate",
+            json={
+                "factory_id": "huaxing",
+                "inspection_event_id": first_event["id"],
+                "request_id": "v3-order-report",
+            },
+        )
+        assert order_report.status_code == 201, order_report.text
+        assert order_report.json()["inspection_event_id"] == first_event["id"]
+        assert order_report.json()["period_mode"] == "EVENT"
+        downloaded = client.get(
+            f"/api/qc-inspections/reports/{order_report.json()['id']}/download",
+            params={"factory_id": "huaxing"},
+        )
+        assert downloaded.status_code == 200
+        workbook = load_workbook(BytesIO(downloaded.content), data_only=False)
+        assert workbook.sheetnames == ["验货结论", "PO与货号", "缺陷明细", "测试记录", "处置记录"]
+        assert workbook["验货结论"]["A1"].value.startswith("验货报告")
+        assert workbook["缺陷明细"]["A3"].value == "MAJOR"
+        workbook.close()
+
+        reinspection = _event_payload(order["id"], "v3-reinspection")
+        reinspection.update(
+            {
+                "event_type": "REINSPECTION",
+                "inspection_result": "PASS",
+                "document_status": "FINAL",
+                "critical_defect_count": 0,
+                "major_defect_count": 0,
+                "minor_defect_count": 0,
+                "defects": [],
+                "dispositions": [],
+                "report_number": "CS-260812-002",
+            }
+        )
+        second = client.post(
+            f"/api/qc-inspections/orders/{order['id']}/events",
+            json=reinspection,
+        )
+        assert second.status_code == 201, second.text
+        assert second.json()["attempt_no"] == 2
+        events = client.get(
+            f"/api/qc-inspections/orders/{order['id']}/events",
+            params={"factory_id": "huaxing"},
+        ).json()["items"]
+        assert [item["attempt_no"] for item in events] == [2, 1]
+
+        report_types = {
+            "WEEKLY_INSPECTION_SCHEDULE": "验货排期",
+            "DAILY_INSPECTION_LEDGER": "验货台账",
+            "WEEKLY_PROBLEM_DETAIL": "问题明细",
+            "WEEKLY_RETURN_SUMMARY": "退货汇总",
+            "INSPECTION_PASS_RATE": "合格率",
+            "PRODUCT_QUALITY_LEDGER": "产品质量台账",
+            "INSPECTION_DOCUMENT_INDEX": "报告文件索引",
+        }
+        generated_reports = {}
+        for report_type, sheet_name in report_types.items():
+            response = client.post(
+                "/api/qc-inspections/reports/generate",
+                json={
+                    "factory_id": "huaxing",
+                    "week_key": "2026-W33",
+                    "period_mode": "WEEK",
+                    "period_key": "2026-W33",
+                    "report_type": report_type,
+                    "request_id": f"v3-{report_type.lower()}",
+                },
+            )
+            assert response.status_code == 201, response.text
+            generated_reports[report_type] = response.json()
+            artifact = client.get(
+                f"/api/qc-inspections/reports/{response.json()['id']}/download",
+                params={"factory_id": "huaxing"},
+            )
+            workbook = load_workbook(BytesIO(artifact.content), data_only=False)
+            assert workbook.sheetnames == [sheet_name]
+            workbook.close()
+
+        return_artifact = client.get(
+            f"/api/qc-inspections/reports/{generated_reports['WEEKLY_RETURN_SUMMARY']['id']}/download",
+            params={"factory_id": "huaxing"},
+        )
+        return_workbook = load_workbook(BytesIO(return_artifact.content), data_only=False)
+        assert return_workbook["退货汇总"].max_row == 3
+        assert return_workbook["退货汇总"]["F3"].value == 1200
+        return_workbook.close()
+
+        annual = client.post(
+            "/api/qc-inspections/reports/generate",
+            json={
+                "factory_id": "huaxing",
+                "week_key": "2026-W33",
+                "period_mode": "YEAR",
+                "period_key": "2026",
+                "report_type": "ANNUAL_INSPECTION_STATISTICS",
+                "request_id": "v3-annual",
+            },
+        )
+        assert annual.status_code == 201, annual.text
+        assert annual.json()["period_key"] == "2026"

@@ -29,7 +29,6 @@ from app.services.customer_order_manual import (
     decorate_manual_resolution_policy,
 )
 from app.services.huaxing_order_legacy import (
-    disney_order,
     edu_schedule,
     multi_schedule,
     new_order_excel,
@@ -40,7 +39,7 @@ from app.services.huaxing_order_legacy import (
 )
 
 
-def test_huaxing_customer_order_center_exposes_supported_mappings():
+def test_huaxing_customer_order_center_exposes_all_mapped_customers():
     assert set(HUAXING_CUSTOMER_MAPPINGS) == {
         "disney",
         "edu",
@@ -49,101 +48,9 @@ def test_huaxing_customer_order_center_exposes_supported_mappings():
         "seasons",
         "maxx",
         "shushupapa",
+        "disney",
     }
     assert all(spec.target_template.endswith("_SCHEDULE_APPEND_V2") for spec in HUAXING_CUSTOMER_MAPPINGS.values())
-
-
-@pytest.mark.parametrize(
-    ("filename", "text", "po_no", "quantity", "price"),
-    (
-        (
-            "WDW_PO_W-9743421 (R1).pdf",
-            """ROYAL REGENT PRODUCTS (HK) LTD (SZ) W-9743421 10/30/2026 11/6/2026 2
-1000128076 3504 EA 1/EA 2.1400 401060937150 14.99
-INNER/PK: 6/EA\nCASE/PK: 6\nMM ASTRONAUT PULLBACK""",
-            "W-9743421", 3504, 2.14,
-        ),
-        (
-            "F00000000014373 (R0).pdf",
-            """TYPE PAGE P.O. Original 1 F00000000014373
-ORDERED SHIP ON ANTICIPATE CANCEL AFTER
-06/18/26 12/09/26 12/18/26 12/15/26
-1000128131 MNSTRS INC PULLBACK
-Case Pack = 6, Inner Pack = 6
-2.82 NOT SIZED 990""",
-            "F00000000014373", 990, 2.82,
-        ),
-        (
-            "PO#W5897 (R0).pdf",
-            """Disney Store Purchase Order
-PO Number\nW5897
-OrderDate ShipDate Anticipate Cancel Date
-29-APR-2026 03-OCT-2026 02-DEC-2026 09-OCT-2026
-1 1000128076
-MM ASTRO PULLBACK\n6 / 1
-360 2.14
-Comments:""",
-            "W5897", 360, 2.14,
-        ),
-        (
-            "D11_ROYAL REGENT PRODUCTS(HK)_V2176.pdf",
-            """ORIGINAL 1 V2176
-6/24/26 10/15/26 11/06/26 10/21/26
-1000128076 Q227 PLBK MM ASTRO NO COLOR
-CASE PACK = 6, INNER PACK = 6
-2.24 NO SIZE 3000""",
-            "V2176", 3000, 2.24,
-        ),
-    ),
-)
-def test_disney_parser_supports_four_customer_po_families(monkeypatch, filename, text, po_no, quantity, price):
-    monkeypatch.setattr(disney_order, "_pdf_text", lambda _content: text)
-
-    parsed = disney_order.parse_po(b"pdf", filename)
-
-    assert parsed["po_no"] == po_no
-    assert parsed["rows"][0]["quantity"] == quantity
-    assert parsed["rows"][0]["unit_price_usd"] == price
-    assert parsed["rows"][0]["outer_pack"] == 6
-
-
-def test_disney_schedule_reads_item_sheet_without_loading_the_full_workbook():
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "ITEM表"
-    sheet.append([
-        None, "客出单日期", "PO号", "客名", "產品編號", "产品名称", "产品名称中文",
-        None, "PO数量", "外箱装箱数", "说明书", "彩盒", "日期码", "验货日期",
-        "走货期", None, None, None, None, None, None, None, None, "订单单价USD",
-    ])
-    sheet.append([
-        None, "2026-08-20", "F00000000014867", "DISNEY", "1000128073",
-        "MICKEY FLYING DISC", "米奇飞碟", None, 204, 6, "EN", "4C", "2620",
-        "2026-11-30", "2026-12-09", None, None, None, None, None, None, None,
-        None, 2.22, None, 16.5,
-    ])
-    buffer = BytesIO()
-    workbook.save(buffer)
-
-    parsed = disney_order.parse_schedule(buffer.getvalue(), "Disney排期.xlsx")
-
-    assert parsed["sheet"] == "ITEM表"
-    assert parsed["records"] == [{
-        "po_no": "F00000000014867",
-        "customer": "DISNEY",
-        "item_no": "1000128073",
-        "product_name_en": "MICKEY FLYING DISC",
-        "product_name_zh": "米奇飞碟",
-        "quantity": 204,
-        "outer_pack": 6,
-        "manual": "EN",
-        "artwork": "4C",
-        "date_code": "2620",
-        "inspection_date": "2026-11-30",
-        "ship_date": "2026-12-09",
-        "unit_price_usd": 2.22,
-        "factory_price_hkd": 16.5,
-    }]
 
 
 def test_edu_inspection_date_is_seven_days_before_ship_date_and_avoids_weekend():
@@ -1303,6 +1210,7 @@ def test_common_preview_contract_maps_each_customer_and_blocks_high_risk_flags()
     assert _record_fields("seasons", {"oqf_no": "QF-1"})["po_no"] == "QF-1"
     assert _record_fields("maxx", {"po_number": "M-1"})["po_no"] == "M-1"
     assert _record_fields("shushupapa", {"po_number": "S-1"})["po_no"] == "S-1"
+    assert _record_fields("disney", {"po_number": "D-1"})["po_no"] == "D-1"
 
     issues = _issues(
         {"flags": [{"level": "high", "code": "missing_item", "text": "缺货号"}]},

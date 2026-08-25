@@ -91,7 +91,7 @@ def build_purchase_order_workbook(
         "#,##0" if order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
     )
 
-    headers = ["序号", "纸品类型", "纸质", "规格", "单件用量", "产品订单数量", "需求数量", "单位"]
+    headers = ["序号", "纸品类型", "纸质", "规格", "每箱个数", "产品订单数量", "纸箱数量", "单位"]
     for column, header in enumerate(headers, start=1):
         cell = sheet.cell(row=9, column=column, value=header)
         cell.font = Font(name="Microsoft YaHei", size=9, bold=True, color=white)
@@ -124,16 +124,14 @@ def build_purchase_order_workbook(
             cell.border = Border(left=thin, right=thin, bottom=thin)
             if index % 2 == 0:
                 cell.fill = PatternFill("solid", fgColor="F8FAFC")
-        sheet.cell(row=row, column=7, value=f"=ROUND(E{row}*F{row},4)")
+        sheet.cell(row=row, column=7, value=f"=ROUNDUP(F{row}/E{row},0)")
         sheet.cell(row=row, column=5).number_format = (
             "#,##0" if line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
         )
         sheet.cell(row=row, column=6).number_format = (
             "#,##0" if order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
         )
-        sheet.cell(row=row, column=7).number_format = (
-            "#,##0" if line.required_quantity == line.required_quantity.to_integral_value() else "#,##0.######"
-        )
+        sheet.cell(row=row, column=7).number_format = "#,##0"
         sheet.row_dimensions[row].height = 24
 
     footer_row = first_line_row + len(lines) + 1

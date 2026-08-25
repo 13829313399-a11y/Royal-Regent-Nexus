@@ -1,10 +1,12 @@
 import re
+from datetime import date
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db import get_db
 from app.schemas.injection_scheduling_import import (
     InjectionSchedulingImportBatchOut,
@@ -20,11 +22,11 @@ from app.services.auth import (
     get_current_user,
     has_permission_in_scope,
 )
+from app.services.business_authz import is_wildcard_super_admin
 from app.services.injection_scheduling import (
     SCHEDULING_DEPARTMENTS,
     require_injection_scheduling_factory,
 )
-from app.services.injection_scheduling_excel import MAX_SOURCE_BYTES
 from app.services.injection_scheduling_import import (
     approve_master_differences,
     confirm_import,
@@ -58,6 +60,8 @@ def _ensure_permission(
     factory_id: str,
 ) -> str:
     factory_id = require_injection_scheduling_factory(factory_id)
+    if is_wildcard_super_admin(user):
+        return factory_id
     if any(
         has_permission_in_scope(user, permission, factory_id, department)
         for department in SCHEDULING_DEPARTMENTS
@@ -118,6 +122,8 @@ def post_import_preview(
     current_user: Annotated[AuthContext, Depends(get_current_user)],
     expected_revision: Annotated[int, Form()] = 0,
     document_kind: Annotated[str | None, Form()] = None,
+    recognition_mode: Annotated[str, Form()] = "AUTO",
+    business_date: Annotated[date | None, Form()] = None,
 ):
     factory_id = _ensure_permission(
         db,
@@ -125,7 +131,7 @@ def post_import_preview(
         "injection_scheduling:import",
         factory_id,
     )
-    content = file.file.read(MAX_SOURCE_BYTES + 1)
+    content = file.file.read()
     record, replay = preview_import(
         db,
         factory_id=factory_id,
@@ -135,6 +141,9 @@ def post_import_preview(
         preview_request_id=_request_id(request),
         user=current_user,
         document_kind=document_kind,
+        recognition_mode=recognition_mode,
+        business_date=business_date,
+        settings=settings,
     )
     return import_batch_out(db, record, idempotent_replay=replay)
 
@@ -270,6 +279,7 @@ def post_import_retry(
         batch_id=batch_id,
         payload=payload,
         user=current_user,
+        settings=settings,
     )
     return import_batch_out(db, record, idempotent_replay=replay)
 

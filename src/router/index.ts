@@ -42,11 +42,30 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/reset-password',
+    name: 'reset-password',
+    component: () => import('@/views/PasswordResetCompleteView.vue'),
+    meta: {
+      title: '设置新密码',
+      fullPage: true,
+      requiresAuth: false,
+    },
+  },
+  {
     path: '/',
     name: 'dashboard',
     component: DashboardView,
     meta: {
       title: '集团运营总览',
+      requiresAuth: true,
+    },
+  },
+  {
+    path: '/people',
+    name: 'people-directory',
+    component: () => import('@/views/PeopleDirectoryView.vue'),
+    meta: {
+      title: '成员目录',
       requiresAuth: true,
     },
   },

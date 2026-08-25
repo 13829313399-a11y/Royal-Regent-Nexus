@@ -74,40 +74,31 @@ describe('password reset management runtime', () => {
     apiMocks.getPasswordResetRequest.mockResolvedValue(matchedRequest)
     apiMocks.approvePasswordResetRequest.mockResolvedValue({
       request: { ...matchedRequest, status: 'approved', issue_count: 1 },
-      temporary_password: 'T3mp!Safe-Only',
       expires_at: '2026-08-03T10:00:00+08:00',
+      message: '已批准。申请人可在提交申请的原浏览器中设置新密码。',
     })
   })
 
-  it('shows the one-time password after approval, copies it, and clears it on close', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText },
-    })
+  it('requires identity confirmation and approves without displaying any secret', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const approveButton = wrapper.findAll('button').find((button) => button.text().includes('通过并生成临时密码'))
+    const approveButton = wrapper.findAll('button').find((button) => button.text().includes('批准并开放自助改密'))
     await approveButton!.trigger('click')
     await wrapper.get('textarea[placeholder="例如：已电话核验员工身份"]').setValue('已电话核验员工身份')
     const confirmButton = wrapper.findAll('button').find((button) => button.text().includes('确认批准'))
+    expect(confirmButton!.attributes('disabled')).toBeDefined()
+    await wrapper.get('input[type="checkbox"]').setValue(true)
     await confirmButton!.trigger('click')
     await flushPromises()
 
     expect(apiMocks.approvePasswordResetRequest).toHaveBeenCalledWith(
       'password-reset-1',
-      { review_comment: '已电话核验员工身份' },
+      { review_comment: '已电话核验员工身份', identity_verified: true },
     )
-    expect(wrapper.text()).toContain('T3mp!Safe-Only')
-    const copyButton = wrapper.findAll('button').find((button) => button.text().includes('复制'))
-    await copyButton!.trigger('click')
-    await flushPromises()
-    expect(writeText).toHaveBeenCalledWith('T3mp!Safe-Only')
-
-    const closeButton = wrapper.findAll('button').find((button) => button.text().includes('关闭并清除'))
-    await closeButton!.trigger('click')
-    expect(wrapper.text()).not.toContain('T3mp!Safe-Only')
+    expect(wrapper.text()).toContain('已批准。申请人可在提交申请的原浏览器中设置新密码。')
+    expect(wrapper.text()).not.toContain('复制临时密码')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('复制'))).toBe(false)
   })
 
   it('never offers approval when the request has no matched system user', async () => {
@@ -118,7 +109,19 @@ describe('password reset management runtime', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('未匹配系统账号，不能批准')
-    expect(wrapper.findAll('button').some((button) => button.text().includes('通过并生成临时密码'))).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text().includes('批准并开放自助改密'))).toBe(false)
     expect(wrapper.findAll('button').some((button) => button.text().includes('驳回'))).toBe(true)
+  })
+
+  it('labels legacy requests as requiring a fresh submission', async () => {
+    const legacy = { ...matchedRequest, status: 'legacy_invalid' }
+    apiMocks.getPasswordResetRequest.mockResolvedValue(legacy)
+    apiMocks.listPasswordResetRequests.mockResolvedValue([legacy])
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('旧版流程')
+    expect(wrapper.text()).toContain('重新提交密码重置申请')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('批准并开放自助改密'))).toBe(false)
   })
 })

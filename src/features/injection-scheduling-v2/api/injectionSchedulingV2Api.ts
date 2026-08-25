@@ -8,6 +8,7 @@ import type {
   AuditEvent,
   ImportBatchRecord,
   ImportDocumentKindChoice,
+  ImportRecognitionMode,
   ImportIssueRecord,
   MachineRecord,
   ManualAppendPreviewRecord,
@@ -837,6 +838,7 @@ export function mapImportBatch(source: UnknownRecord): ImportBatchRecord {
     previewGeneration: numberValue(source.preview_generation),
     documentKind: (text(source.document_kind) || 'PLANNED_SCHEDULE') as ImportBatchRecord['documentKind'],
     sourceNamespaceId: text(source.source_namespace_id),
+    recognition: source.recognition && typeof source.recognition === 'object' ? source.recognition as UnknownRecord : null,
     profile: source.profile && typeof source.profile === 'object' ? source.profile as UnknownRecord : null,
     sheetRoles: records(source.sheet_roles), mapping: records(source.mapping),
     scheduledBaselineTasks: records(source.scheduled_baseline_tasks), backlogOrders: records(source.backlog_orders),
@@ -873,11 +875,19 @@ export async function recoverImportBatch(factoryId: string, batchId: string) {
   return mapImportBatch(data as UnknownRecord)
 }
 
-export async function uploadImportPreview(factoryId: string, file: File, documentKind: ImportDocumentKindChoice = 'AUTO') {
+export async function uploadImportPreview(
+  factoryId: string,
+  file: File,
+  documentKind: ImportDocumentKindChoice = 'AUTO',
+  recognitionMode: ImportRecognitionMode = 'AUTO',
+  businessDate = '',
+) {
   const body = new FormData()
   body.set('factory_id', factoryId)
   body.set('expected_revision', '0')
   body.set('document_kind', documentKind)
+  body.set('recognition_mode', recognitionMode)
+  if (businessDate) body.set('business_date', businessDate)
   body.set('file', file)
   const { data } = await http.post('/injection-scheduling/imports/preview', body, {
     headers: {
@@ -888,26 +898,6 @@ export async function uploadImportPreview(factoryId: string, file: File, documen
   return mapImportBatch(data as UnknownRecord)
 }
 
-export async function inspectWorkbookSemanticSnapshot(factoryId: string, file: File) {
-  const body = new FormData()
-  body.set('factory_id', factoryId)
-  body.set('file', file)
-  const { data } = await http.post('/ai/workbooks/inspect', body, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
-  return data as UnknownRecord
-}
-
-export async function inspectWorkbookArtifact(factoryId: string, artifactId: string) {
-  const body = new FormData()
-  body.set('factory_id', factoryId)
-  body.set('artifact_id', artifactId)
-  const { data } = await http.post('/ai/workbooks/inspect/artifact', body, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
-  return data as UnknownRecord
-}
-
 export async function proposeWorkbookFieldMapping(
   factoryId: string,
   file: File,
@@ -916,36 +906,8 @@ export async function proposeWorkbookFieldMapping(
   const body = new FormData()
   body.set('factory_id', factoryId)
   body.set('document_kind', documentKind)
-  body.set('cloud_consent', 'true')
   body.set('file', file)
   const { data } = await http.post('/ai/workbooks/mapping-proposal', body, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
-  return parseWorkbookMappingProposal(data)
-}
-
-export async function proposeWorkbookArtifactFieldMapping(
-  factoryId: string,
-  artifactId: string,
-  semanticSnapshot: UnknownRecord,
-  documentKind: Exclude<ImportDocumentKindChoice, 'AUTO'>,
-) {
-  const body = new FormData()
-  const classification = 'CONFIDENTIAL_BUSINESS'
-  body.set('factory_id', factoryId)
-  body.set('artifact_id', artifactId)
-  body.set('document_kind', documentKind)
-  body.set('snapshot_json', JSON.stringify(semanticSnapshot))
-  body.set('cloud_consent_json', JSON.stringify({
-    accepted: true,
-    notice_version: 'aliyun-cn-beijing-workbook-v1',
-    provider: 'qwen',
-    region: 'cn-beijing',
-    classification,
-    content_class: 'WORKBOOK',
-    artifact_ids: [artifactId],
-  }))
-  const { data } = await http.post('/ai/workbooks/mapping-proposal/artifact', body, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return parseWorkbookMappingProposal(data)

@@ -874,10 +874,6 @@ def parse_injection_scheduling_workbook(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if not content:
         raise HTTPException(status_code=422, detail="上传的 Excel 文件为空")
-    if len(content) > MAX_SOURCE_BYTES:
-        raise HTTPException(status_code=413, detail="Excel 文件超过 50 MB 限制")
-    if not source_file_name.lower().endswith(".xlsx"):
-        raise HTTPException(status_code=422, detail="仅支持 .xlsx 格式的注塑排产文件")
     source_hash = hashlib.sha256(content).hexdigest()
     try:
         reader = _WorkbookReader(content)

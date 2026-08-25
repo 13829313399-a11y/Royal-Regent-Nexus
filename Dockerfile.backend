@@ -21,6 +21,8 @@ RUN apt-get update \
         fonts-noto-cjk \
         python3-uno \
         tesseract-ocr \
+        tesseract-ocr-chi-sim \
+        tesseract-ocr-chi-tra \
         tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --upgrade pip \
@@ -39,7 +41,7 @@ COPY src/ /app/src/
 
 # Fail the image build when a reviewed Skill manifest references a Prompt
 # fragment that is absent from the packaged runtime filesystem.
-RUN python -c "from app.services.ai.skills.registry import SkillRegistry; from app.services.ai.tool_registry import build_default_tool_registry; tool_registry = build_default_tool_registry(document_studio_enabled=True); registry = SkillRegistry(tool_registry); core = registry.prompt_registry.load_core(); print(f'validated {len(registry.skills)} AI Skill Prompt fragments, {len(tool_registry.specs)} Tools and {core.fragment_id}')"
+RUN python -c "from app.services.ai.skills.registry import SkillRegistry; from app.services.ai.tool_registry import build_default_tool_registry; tool_registry = build_default_tool_registry(); registry = SkillRegistry(tool_registry); core = registry.prompt_registry.load_core(); print(f'validated {len(registry.skills)} AI Skill Prompt fragments, {len(tool_registry.specs)} Tools and {core.fragment_id}')"
 
 EXPOSE 8000
 

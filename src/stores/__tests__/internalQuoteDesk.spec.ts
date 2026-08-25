@@ -32,6 +32,7 @@ const apiMock = vi.hoisted(() => ({
   reopenSection: vi.fn(),
   syncReferenceSnapshot: vi.fn(),
   updateReferenceFx: vi.fn(),
+  updateReferenceMaterials: vi.fn(),
   previewImport: vi.fn(),
   confirmImport: vi.fn(),
   uploadAttachment: vi.fn(),
@@ -47,7 +48,7 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock('@/api/internalQuote', () => ({ internalQuoteApi: apiMock }))
 
-const sectionCodes = ['sales', 'engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'assembly']
+const sectionCodes = ['sales', 'engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'hair', 'assembly']
 
 function section(code: string, index: number): ApiInternalQuoteSection {
   return {
@@ -193,8 +194,10 @@ describe('internal quote desk real API state', () => {
     await Promise.all([store.loadQuotes('huaxing'), store.loadBusinessOwners('huaxing')])
 
     expect(apiMock.list).toHaveBeenCalledWith('huaxing')
-    expect(store.quotes[0].sections).toHaveLength(8)
-    expect(store.quotes[0].sections[0].lines[0]).toMatchObject({ item: '后端行', amountHkd: 12.5 })
+    expect(store.quotes[0].sections.map((item) => item.code)).toEqual([
+      'engineering', 'molding', 'assembly', 'painting', 'electronic', 'slush', 'sewing', 'hair', 'sales',
+    ])
+    expect(store.quotes[0].sections.find((item) => item.code === 'sales')?.lines[0]).toMatchObject({ item: '后端行', amountHkd: 12.5 })
     expect(store.businessOwners).toEqual([{ id: 'owner-1', username: 'owner', displayName: '业务负责人' }])
   })
 
@@ -247,15 +250,157 @@ describe('internal quote desk real API state', () => {
 
     expect(loaded?.factoryPriceHkd).toBe(88.8)
     expect(loaded?.fxRmbHkd).toBe(0.86)
-    expect(loaded?.sections[0].attachments[0]).toMatchObject({ id: 'attachment-1', fileName: '核价依据.xlsx', sha256: 'attachment-sha' })
+    expect(loaded?.sections.find((item) => item.code === 'sales')?.attachments[0]).toMatchObject({ id: 'attachment-1', fileName: '核价依据.xlsx', sha256: 'attachment-sha' })
     expect(loaded?.exports[0]).toMatchObject({ id: 'export-1', status: 'current' })
     expect(loaded?.activities.map((item) => item.action)).toEqual(['create'])
     expect(loaded?.viewRecords.map((item) => item.viewer)).toEqual(['浏览人'])
-    expect(loaded?.rr2CostSummary.t1.map((item) => item.label)).toEqual(['货价', '进口料', '国内料', '吹气', '搪胶', '车发', '车衣', '五金', '电子', '马达', '吸塑', '胶袋'])
+    expect(loaded?.rr2CostSummary.t1.map((item) => item.label)).toEqual(['货价', '料价', '进口料', '国内料', '吹气', '搪胶', '车发', '车衣', '五金', '电子', '马达', '吸塑', '胶袋'])
+    expect(loaded?.rr2CostSummary.t1.filter((item) => item.display !== false).map((item) => item.label)).toEqual(['货价', '料价', '吹气', '搪胶', '车发', '车衣', '五金', '电子', '马达', '吸塑', '胶袋'])
     expect(loaded?.rr2CostSummary.t2.map((item) => item.label)).toEqual(['彩盒/内咭', '未减税前码数', '减税后码数', '电池', '利宝', '电镀', '其他外购', '纸箱', '运费', '吊柜费', '杂项'])
     expect(loaded?.rr2CostSummary.t3.map((item) => item.label)).toEqual(['啤工', '喷油工', '油漆', '装配工', '不含人工成本', '人工比例', '毛利', '毛利率', '利润', '利润率', '总成本'])
-    expect(loaded?.rr2CostSummary.t4.map((item) => item.label)).toEqual(['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣类13%', '吸塑类6%', '运费类9%', '含税13%类'])
-    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, null, .99, 3, 11.5, 11.5, 6, 8.26, 11.5])
+    expect(loaded?.rr2CostSummary.t4.map((item) => item.label)).toEqual(['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣物料退税（仅华康C/D）', '吸塑类6%', '运费类9%', '含税13%类'])
+    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, null, .99, 3, 11.5, null, 6, 8.26, 11.5])
+  })
+
+  it('merges legacy imported and domestic molding material values into one visible material price', async () => {
+    apiMock.getSummary.mockResolvedValueOnce({
+      factory_price_hkd: '88.8000',
+      rr2_cost_summary: {
+        currency: 'HKD',
+        indonesia_freight_hkd: '0.0000',
+        t1: [
+          { key: 'base_price', label: '货价', value: '20.0000' },
+          { key: 'imp_mat', label: '进口料', value: '1.2500' },
+          { key: 'dom_mat', label: '国内料', value: '2.5000' },
+          { key: 'blow', label: '吹气', value: '0.5000' },
+        ],
+        t2: [],
+        t3: [],
+        t4: [],
+        totals: {
+          rmb_purchase_cost_hkd: '0.0000',
+          total_deduction_hkd: '0.0000',
+          after_deduction_cost_hkd: '0.0000',
+        },
+        shipping_pricing: { enabled: false },
+      },
+    })
+    const store = useInternalQuoteDeskStore()
+
+    const loaded = await store.loadQuote('quote-1')
+    const visibleT1 = loaded?.rr2CostSummary.t1.filter((item) => item.display !== false) ?? []
+
+    expect(visibleT1.map((item) => item.label).slice(0, 3)).toEqual(['货价', '料价', '吹气'])
+    expect(visibleT1.find((item) => item.key === 'material')?.value).toBe(3.75)
+    expect(loaded?.rr2CostSummary.moldingMaterialBreakdown).toEqual({
+      totalHkd: 3.75,
+      importedHkd: 1.25,
+      domesticHkd: 2.5,
+    })
+    expect(loaded?.rr2CostSummary.t1.find((item) => item.key === 'imp_mat')?.display).toBe(false)
+    expect(loaded?.rr2CostSummary.t1.find((item) => item.key === 'dom_mat')?.display).toBe(false)
+  })
+
+  it('preserves an authoritative non-applicable sewing material tax row', async () => {
+    apiMock.getSummary.mockResolvedValueOnce({
+      factory_price_hkd: '88.8000',
+      rr2_cost_summary: {
+        currency: 'HKD',
+        indonesia_freight_hkd: '0.0000',
+        t1: [],
+        t2: [],
+        t3: [],
+        t4: [{
+          key: 'sewcloth13',
+          label: '车衣类13%',
+          amount_hkd: '10.0000',
+          rate_percent: null,
+          deduction_hkd: null,
+        }],
+        totals: {
+          rmb_purchase_cost_hkd: '10.0000',
+          total_deduction_hkd: '0.0000',
+          after_deduction_cost_hkd: '10.0000',
+        },
+        shipping_pricing: { enabled: false },
+      },
+    })
+    const store = useInternalQuoteDeskStore()
+
+    const loaded = await store.loadQuote('quote-1')
+    const sewingTax = loaded?.rr2CostSummary.t4.find((item) => item.key === 'sewcloth13')
+
+    expect(sewingTax).toEqual({
+      key: 'sewcloth13',
+      label: '车衣物料退税（仅华康C/D）',
+      amountHkd: 10,
+      ratePercent: null,
+      deductionHkd: null,
+    })
+  })
+
+  it('preserves an authoritative Huakang C/D sewing material rebate', async () => {
+    apiMock.getSummary.mockResolvedValueOnce({
+      factory_price_hkd: '88.8000',
+      rr2_cost_summary: {
+        currency: 'HKD',
+        indonesia_freight_hkd: '0.0000',
+        t1: [],
+        t2: [],
+        t3: [],
+        t4: [{
+          key: 'sewcloth13',
+          label: '车衣物料退税（仅华康C/D）',
+          amount_hkd: '15.0000',
+          rate_percent: '11.5000',
+          deduction_hkd: '1.7250',
+        }],
+        totals: {
+          rmb_purchase_cost_hkd: '18.0000',
+          total_deduction_hkd: '1.7250',
+          after_deduction_cost_hkd: '16.2750',
+        },
+        shipping_pricing: { enabled: false },
+      },
+    })
+    const store = useInternalQuoteDeskStore()
+
+    const loaded = await store.loadQuote('quote-1')
+    const sewingTax = loaded?.rr2CostSummary.t4.find((item) => item.key === 'sewcloth13')
+
+    expect(sewingTax).toEqual({
+      key: 'sewcloth13',
+      label: '车衣物料退税（仅华康C/D）',
+      amountHkd: 15,
+      ratePercent: 11.5,
+      deductionHkd: 1.725,
+    })
+  })
+
+  it('derives summary settlement from the authoritative miscellaneous rate instead of a stale value', async () => {
+    apiMock.getSummary.mockResolvedValueOnce({
+      factory_price_hkd: '88.8000',
+      rr2_cost_summary: {
+        currency: 'HKD',
+        indonesia_freight_hkd: '0.0000',
+        t1: [],
+        t2: [],
+        t3: [],
+        t4: [],
+        totals: {
+          rmb_purchase_cost_hkd: '0.0000',
+          total_deduction_hkd: '0.0000',
+          after_deduction_cost_hkd: '0.0000',
+        },
+        shipping_pricing: { enabled: false, misc_ratio: '0.0300', settlement: '0.9800' },
+      },
+    })
+    const store = useInternalQuoteDeskStore()
+
+    const loaded = await store.loadQuote('quote-1')
+
+    expect(loaded?.rr2CostSummary.shippingPricing.miscRatio).toBe(.03)
+    expect(loaded?.rr2CostSummary.shippingPricing.settlement).toBe(.97)
   })
 
   it('does not publish a detail view when the authoritative summary fails', async () => {
@@ -312,9 +457,34 @@ describe('internal quote desk real API state', () => {
     const created = await store.createQuote(payload)
     const cloned = await store.cloneQuote(created.id, { ...payload, quoteNo: 'IQ-CLONE' })
 
-    expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['sales', 'engineering', 'electronic', 'assembly'] })
-    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['sales', 'engineering', 'electronic', 'assembly'] }))
+    expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'whole_quote_review' })
+    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'whole_quote_review' }))
     expect(cloned.id).toBe('clone-1')
+  })
+
+  it('uploads create-time product documents to their assigned departments', async () => {
+    const store = useInternalQuoteDeskStore()
+    const engineeringFile = new File(['PK-engineering'], '模具映射.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const salesFile = new File(['%PDF-sales'], '客户资料.pdf', { type: 'application/pdf' })
+
+    await store.createQuote({
+      quoteNo: 'IQ-CREATED-DOCS', productName: '产品', customer: 'Disney', versionLabel: 'V1',
+      initiatorDepartment: 'engineering', businessOwnerId: 'owner-1', businessOwner: '业务负责人',
+      targetCustomerPrice: 'USD 3.50', quantity: 1000, targetDate: '2026-08-31', remark: '',
+      participatingSections: ['sales', 'engineering', 'electronic', 'assembly'],
+      products: [{
+        productName: '产品', quantity: 1000, regionCode: '', imageFile: null,
+        documentFiles: [
+          { file: engineeringFile, department: 'engineering' },
+          { file: salesFile, department: 'sales' },
+        ],
+      }],
+    })
+
+    expect(apiMock.uploadAttachment).toHaveBeenNthCalledWith(1, 'created-1', 'engineering', engineeringFile)
+    expect(apiMock.uploadAttachment).toHaveBeenNthCalledWith(2, 'created-1', 'sales', salesFile)
   })
 
   it('loads and saves the pricing baseline with its optimistic revision', async () => {
@@ -363,6 +533,49 @@ describe('internal quote desk real API state', () => {
     expect(() => store.addComment('quote-1', '本地评论')).toThrow('尚未提供协作评论接口')
   })
 
+  it('can defer the authoritative refresh while a whole-product save writes every dirty section', async () => {
+    const store = useInternalQuoteDeskStore()
+    apiMock.get.mockClear()
+
+    await store.saveSection(
+      'quote-1',
+      'engineering',
+      1,
+      { molds: [{ item: '模具A' }] },
+      '整单连续保存',
+      false,
+    )
+    await store.saveSection(
+      'quote-1',
+      'assembly',
+      1,
+      { rows: [{ item: '装配工序A' }] },
+      '整单连续保存',
+      false,
+    )
+
+    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
+      1,
+      'quote-1',
+      'engineering',
+      1,
+      { molds: [{ item: '模具A' }] },
+      '整单连续保存',
+    )
+    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
+      2,
+      'quote-1',
+      'assembly',
+      1,
+      { rows: [{ item: '装配工序A' }] },
+      '整单连续保存',
+    )
+    expect(apiMock.get).not.toHaveBeenCalled()
+
+    await store.loadQuote('quote-1')
+    expect(apiMock.get).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the saved miscellaneous ratio and selected markup tier after the authoritative refresh', async () => {
     const salesPayload = {
       shipping: {
@@ -374,6 +587,7 @@ describe('internal quote desk real API state', () => {
         ],
         selected_markup_moq: 10000,
         misc_ratio: .035,
+        divisor: .965,
       },
     }
     apiMock.saveSection.mockResolvedValue({
@@ -387,6 +601,7 @@ describe('internal quote desk real API state', () => {
 
     const saved = store.getQuoteById('quote-1')!
     expect(saved.rr2CostSummary.shippingPricing.miscRatio).toBe(.035)
+    expect(saved.rr2CostSummary.shippingPricing.settlement).toBe(.965)
     expect(saved.rr2CostSummary.shippingPricing.activeMarkupMoq).toBe(10000)
     expect(saved.rr2CostSummary.shippingPricing.markup).toBe(1.15)
     expect(saved.rr2CostSummary.shippingPricing.markupTiers.map((tier) => tier.isActive)).toEqual([false, false, true])

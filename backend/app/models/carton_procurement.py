@@ -137,6 +137,7 @@ class CartonOrderLine(Base):
     paper_quality: Mapped[str] = mapped_column(String(128), index=True)
     specification: Mapped[str] = mapped_column(String(255), index=True)
     dimension_unit: Mapped[str] = mapped_column(String(16), default="")
+    # 兼容历史数据库列名；自迁移 20260818_0079 起保存“每箱个数”。
     usage_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 8))
     required_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4))
     unit: Mapped[str] = mapped_column(String(32))

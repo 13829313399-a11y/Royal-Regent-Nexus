@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from app.core.config import Settings
 from app.schemas.document_studio import DocumentSnapshot
@@ -19,6 +20,14 @@ _AUTO_PROTECTED = re.compile(
 class PdfTranslationError(RuntimeError):
     code = "DOCUMENT_TRANSLATION_FAILED"
     retryable = False
+
+
+@dataclass(frozen=True)
+class _TranslationFragment:
+    literal: str = ""
+    request_index: int | None = None
+    leading_whitespace: str = ""
+    trailing_whitespace: str = ""
 
 
 def _direction(snapshot: DocumentSnapshot, requested: str) -> str:
@@ -48,23 +57,73 @@ def _protected(text: str, configured: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _mask(text: str, tokens: tuple[str, ...]) -> tuple[str, dict[str, str]]:
-    masked = text
-    placeholders: dict[str, str] = {}
-    for index, token in enumerate(sorted(tokens, key=len, reverse=True)):
-        placeholder = f"RRNPROTECTEDTOKEN{index:04d}"
-        masked = masked.replace(token, placeholder)
-        placeholders[placeholder] = token
-    return masked, placeholders
+def _split_protected(
+    text: str,
+    tokens: tuple[str, ...],
+) -> tuple[tuple[str, bool], ...]:
+    if not tokens:
+        return ((text, False),)
+    escaped_tokens = (
+        re.escape(token) for token in sorted(tokens, key=len, reverse=True)
+    )
+    pattern = re.compile("|".join(escaped_tokens))
+    fragments: list[tuple[str, bool]] = []
+    cursor = 0
+    for match in pattern.finditer(text):
+        if match.start() > cursor:
+            fragments.append((text[cursor : match.start()], False))
+        fragments.append((match.group(0), True))
+        cursor = match.end()
+    if cursor < len(text):
+        fragments.append((text[cursor:], False))
+    return tuple(fragments)
 
 
-def _restore(text: str, placeholders: dict[str, str]) -> str:
-    restored = text
-    for placeholder, token in placeholders.items():
-        if placeholder not in restored:
-            raise PdfTranslationError("翻译结果丢失了受保护的数字或业务代码。")
-        restored = restored.replace(placeholder, token)
-    return restored
+def _queue_translation_fragments(
+    text: str,
+    tokens: tuple[str, ...],
+    requests: list[str],
+) -> tuple[_TranslationFragment, ...]:
+    fragments: list[_TranslationFragment] = []
+    for value, is_protected in _split_protected(text, tokens):
+        if is_protected or not any(char.isalpha() for char in value):
+            fragments.append(_TranslationFragment(literal=value))
+            continue
+        leading = value[: len(value) - len(value.lstrip())]
+        trailing = value[len(value.rstrip()) :]
+        core_end = len(value) - len(trailing) if trailing else len(value)
+        core = value[len(leading) : core_end]
+        if not core:
+            fragments.append(_TranslationFragment(literal=value))
+            continue
+        request_index = len(requests)
+        requests.append(core)
+        fragments.append(
+            _TranslationFragment(
+                request_index=request_index,
+                leading_whitespace=leading,
+                trailing_whitespace=trailing,
+            )
+        )
+    return tuple(fragments)
+
+
+def _restore_fragments(
+    fragments: tuple[_TranslationFragment, ...],
+    translated: Sequence[str],
+) -> str:
+    restored: list[str] = []
+    for fragment in fragments:
+        if fragment.request_index is None:
+            restored.append(fragment.literal)
+            continue
+        value = translated[fragment.request_index].strip()
+        if not value:
+            raise PdfTranslationError("翻译结果包含空白文本单元。")
+        restored.append(
+            fragment.leading_whitespace + value + fragment.trailing_whitespace
+        )
+    return "".join(restored)
 
 
 def _overflow(source: str, target: str, bbox: list[float]) -> bool:
@@ -94,48 +153,56 @@ def translate_snapshot(
 
     payload = snapshot.model_dump(mode="json")
     units: list[
-        tuple[dict[str, object], str, str, dict[str, str], list[float]]
+        tuple[
+            dict[str, object],
+            str,
+            str,
+            tuple[_TranslationFragment, ...],
+            list[float],
+        ]
     ] = []
-    masked_texts: list[str] = []
+    translation_requests: list[str] = []
     for page in payload["pages"]:
         for block in page["blocks"]:
             source_text = str(block["raw_text"])
             if not source_text.strip():
                 continue
-            masked, placeholders = _mask(
+            fragments = _queue_translation_fragments(
                 source_text,
                 _protected(source_text, protected_tokens),
+                translation_requests,
             )
-            units.append((block, "normalized_text", source_text, placeholders, block["bbox"]))
-            masked_texts.append(masked)
+            units.append(
+                (block, "normalized_text", source_text, fragments, block["bbox"])
+            )
         for table in page["tables"]:
             for cell in table["cells"]:
                 source_text = str(cell["raw_text"])
                 if not source_text.strip():
                     continue
-                masked, placeholders = _mask(
+                fragments = _queue_translation_fragments(
                     source_text,
                     _protected(source_text, protected_tokens),
+                    translation_requests,
                 )
                 units.append(
                     (
                         cell,
                         "normalized_value",
                         source_text,
-                        placeholders,
+                        fragments,
                         cell["source_bbox"],
                     )
                 )
-                masked_texts.append(masked)
     if not units:
         raise PdfTranslationError("文档没有可翻译的文本单元。")
-    translated = translator(masked_texts, direction)
-    if len(translated) != len(units):
+    translated = (
+        translator(translation_requests, direction) if translation_requests else []
+    )
+    if len(translated) != len(translation_requests):
         raise PdfTranslationError("翻译单元数量与源文档不一致。")
-    for (target, output_key, source_text, placeholders, bbox), value in zip(
-        units, translated, strict=True
-    ):
-        restored = _restore(value, placeholders)
+    for target, output_key, source_text, fragments, bbox in units:
+        restored = _restore_fragments(fragments, translated)
         target[output_key] = restored
         overflow = _overflow(source_text, restored, bbox)
         if output_key == "normalized_text":

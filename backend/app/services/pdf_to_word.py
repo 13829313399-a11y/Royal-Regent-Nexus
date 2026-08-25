@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
 import pdfplumber
+import pypdfium2 as pdfium
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.text import WD_BREAK
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Emu, Pt
@@ -16,7 +17,6 @@ from PIL import ImageStat
 from pypdf import PdfReader
 
 from app.services import pdf_to_excel as pdf_extraction
-
 
 MAX_PDF_PAGES = 80
 _TABLE_SETTINGS = {
@@ -82,37 +82,52 @@ def _join_words(words: list[dict]) -> str:
             continue
         if not text:
             text = token
-        elif token[0] in ",.;:!?%)]}>，。：；、）》】" or text[-1] in "([{</《【":
-            text += token
-        elif pdf_extraction._is_cjk_character(text[-1]) and pdf_extraction._is_cjk_character(token[0]):
+        elif (
+            token[0] in ",.;:!?%)]}>，。：；、）》】"
+            or text[-1] in "([{</《【"
+            or pdf_extraction._is_cjk_character(text[-1])
+            and pdf_extraction._is_cjk_character(token[0])
+        ):
             text += token
         else:
             text += f" {token}"
     return text
 
 
-def _word_inside_table(word: dict, table_boxes: list[tuple[float, float, float, float]]) -> bool:
+def _word_inside_table(
+    word: dict, table_boxes: list[tuple[float, float, float, float]]
+) -> bool:
     try:
         center_x = (float(word["x0"]) + float(word["x1"])) / 2
         center_y = (float(word["top"]) + float(word["bottom"])) / 2
     except (KeyError, TypeError, ValueError):
         return False
-    return any(x0 <= center_x <= x1 and top <= center_y <= bottom for x0, top, x1, bottom in table_boxes)
+    return any(
+        x0 <= center_x <= x1 and top <= center_y <= bottom
+        for x0, top, x1, bottom in table_boxes
+    )
 
 
-def _paragraph_blocks(words: list[dict], table_boxes: list[tuple[float, float, float, float]]) -> list[_PageBlock]:
+def _paragraph_blocks(
+    words: list[dict], table_boxes: list[tuple[float, float, float, float]]
+) -> list[_PageBlock]:
     usable = [
         word
         for word in words
-        if _clean_text(word.get("text", "")) and not _word_inside_table(word, table_boxes)
+        if _clean_text(word.get("text", ""))
+        and not _word_inside_table(word, table_boxes)
     ]
     lines: list[list[dict]] = []
     line_tops: list[float] = []
-    for word in sorted(usable, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
+    for word in sorted(
+        usable, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))
+    ):
         top = float(word.get("top", 0))
         if lines and abs(top - line_tops[-1]) <= 3.5:
             lines[-1].append(word)
-            line_tops[-1] = sum(float(item.get("top", 0)) for item in lines[-1]) / len(lines[-1])
+            line_tops[-1] = sum(float(item.get("top", 0)) for item in lines[-1]) / len(
+                lines[-1]
+            )
         else:
             lines.append([word])
             line_tops.append(top)
@@ -125,7 +140,14 @@ def _paragraph_blocks(words: list[dict], table_boxes: list[tuple[float, float, f
     return blocks
 
 
-def _extract_native_blocks(page) -> tuple[list[_PageBlock], int, str]:
+def _extract_native_blocks(
+    page,
+) -> tuple[
+    list[_PageBlock],
+    int,
+    str,
+    list[tuple[float, float, float, float]],
+]:
     native_text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
     tables: list[tuple[tuple[float, float, float, float], list[list[str]]]] = []
     try:
@@ -138,14 +160,16 @@ def _extract_native_blocks(page) -> tuple[list[_PageBlock], int, str]:
 
     table_boxes = [bbox for bbox, _rows in tables]
     try:
-        words = page.extract_words(x_tolerance=2, y_tolerance=2, keep_blank_chars=False) or []
+        words = (
+            page.extract_words(x_tolerance=2, y_tolerance=2, keep_blank_chars=False)
+            or []
+        )
     except Exception:
         words = []
 
     blocks = _paragraph_blocks(words, table_boxes)
     blocks.extend(
-        _PageBlock(top=bbox[1], kind="table", value=rows)
-        for bbox, rows in tables
+        _PageBlock(top=bbox[1], kind="table", value=rows) for bbox, rows in tables
     )
     blocks.sort(key=lambda block: block.top)
 
@@ -155,7 +179,7 @@ def _extract_native_blocks(page) -> tuple[list[_PageBlock], int, str]:
             for index, line in enumerate(native_text.splitlines())
             if line.strip()
         ]
-    return blocks, len(tables), native_text
+    return blocks, len(tables), native_text, table_boxes
 
 
 def _image_is_meaningful(image, *, display_width: float, display_height: float) -> bool:
@@ -176,7 +200,9 @@ def _image_is_meaningful(image, *, display_width: float, display_height: float) 
 def _image_as_png(image) -> bytes:
     pil_image = image.image
     if pil_image.mode not in {"RGB", "RGBA", "L", "LA"}:
-        pil_image = pil_image.convert("RGBA" if "transparency" in pil_image.info else "RGB")
+        pil_image = pil_image.convert(
+            "RGBA" if "transparency" in pil_image.info else "RGB"
+        )
     output = BytesIO()
     pil_image.save(output, format="PNG")
     return output.getvalue()
@@ -299,7 +325,9 @@ def _append_table(document: Document, rows: list[list[str]]) -> None:
 
 def _append_image(document: Document, image: _PageImage) -> None:
     section = document.sections[-1]
-    available_width = int(section.page_width - section.left_margin - section.right_margin)
+    available_width = int(
+        section.page_width - section.left_margin - section.right_margin
+    )
     if image.page_width > 0:
         width_ratio = min(max(image.display_width / image.page_width, 0.12), 1.0)
     else:
@@ -317,15 +345,28 @@ def _append_image(document: Document, image: _PageImage) -> None:
 
 def _output_file_name(source_file_name: str) -> str:
     source_name = Path(source_file_name or "PDF文件.pdf").name
-    stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(source_name).stem).strip(" .") or "PDF文件"
+    stem = (
+        re.sub(r'[\\/:*?"<>|]+', "_", Path(source_name).stem).strip(" .") or "PDF文件"
+    )
     return f"{stem}_转换结果.docx"
 
 
-def convert_pdf_to_word(pdf_bytes: bytes, source_file_name: str) -> PdfToWordResult:
+def convert_pdf_to_word(
+    pdf_bytes: bytes,
+    source_file_name: str,
+    *,
+    page_text_overrides: Mapping[
+        int,
+        Sequence[tuple[float, float, str]],
+    ]
+    | None = None,
+) -> PdfToWordResult:
     try:
         pdf = pdfplumber.open(BytesIO(pdf_bytes))
     except Exception as exc:
-        raise PdfToWordConversionError("PDF 无法读取；请确认文件未加密、未损坏。") from exc
+        raise PdfToWordConversionError(
+            "PDF 无法读取；请确认文件未加密、未损坏。"
+        ) from exc
 
     document = Document()
     _configure_document(document)
@@ -349,17 +390,59 @@ def convert_pdf_to_word(pdf_bytes: bytes, source_file_name: str) -> PdfToWordRes
             raise PdfToWordConversionError(f"单次最多转换 {MAX_PDF_PAGES} 页 PDF。")
 
         for page_index, page in enumerate(pdf.pages):
-            blocks, page_table_count, native_text = _extract_native_blocks(page)
+            blocks, page_table_count, native_text, table_boxes = _extract_native_blocks(
+                page
+            )
             if pdf_extraction._native_text_is_unreliable(native_text):
                 blocks = []
                 page_table_count = 0
+                table_boxes = []
             used_native_content = bool(blocks)
 
             used_ocr = False
-            if not blocks:
+            page_override = (
+                page_text_overrides.get(page_index + 1)
+                if page_text_overrides is not None
+                else None
+            )
+            if page_override:
+                overrides = [
+                    (float(top), float(bottom), text)
+                    for top, bottom, text in page_override
+                    if text.strip()
+                ]
+                full_page_text = any(
+                    top <= 1 and bottom >= float(page.height) - 1
+                    for top, bottom, _text in overrides
+                )
+                if full_page_text:
+                    blocks = [
+                        _PageBlock(top=top, kind="paragraph", value=text)
+                        for top, _bottom, text in overrides
+                    ]
+                    page_table_count = 0
+                else:
+                    table_blocks = [block for block in blocks if block.kind == "table"]
+                    blocks = [
+                        _PageBlock(top=top, kind="paragraph", value=text)
+                        for top, bottom, text in overrides
+                        if not any(
+                            table_top <= (top + bottom) / 2 <= table_bottom
+                            for _left, table_top, _right, table_bottom in table_boxes
+                        )
+                    ]
+                    blocks.extend(table_blocks)
+                blocks.sort(key=lambda block: block.top)
+                used_native_content = False
+                used_ocr = True
+            elif not blocks:
                 ocr_rows = pdf_extraction._ocr_page(pdf_bytes, page_index)
                 blocks = [
-                    _PageBlock(float(index), "paragraph", " ".join(cell for cell in row if cell))
+                    _PageBlock(
+                        float(index),
+                        "paragraph",
+                        " ".join(cell for cell in row if cell),
+                    )
                     for index, row in enumerate(ocr_rows)
                     if any(row)
                 ]
@@ -416,5 +499,58 @@ def convert_pdf_to_word(pdf_bytes: bytes, source_file_name: str) -> PdfToWordRes
         image_count=image_count,
         text_page_count=text_page_count,
         ocr_page_count=ocr_page_count,
+        output_file_name=_output_file_name(source_file_name),
+    )
+
+
+def convert_pdf_to_word_layout(
+    pdf_bytes: bytes,
+    source_file_name: str,
+) -> PdfToWordResult:
+    """Create a layout-faithful DOCX with one rendered source page per Word page."""
+    try:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        page_count = len(pdf)
+    except Exception as exc:
+        raise PdfToWordConversionError(
+            "PDF 无法读取；请确认文件未加密、未损坏。"
+        ) from exc
+    if page_count < 1:
+        raise PdfToWordConversionError("PDF 中没有可转换的页面。")
+    if page_count > MAX_PDF_PAGES:
+        raise PdfToWordConversionError(f"单次最多转换 {MAX_PDF_PAGES} 页 PDF。")
+
+    document = Document()
+    _configure_document(document)
+    document.core_properties.title = Path(source_file_name or "PDF文件.pdf").name
+    for page_index in range(page_count):
+        if page_index:
+            document.paragraphs[-1].add_run().add_break(WD_BREAK.PAGE)
+        try:
+            image = pdf[page_index].render(scale=1.6).to_pil().convert("RGB")
+            image_bytes = BytesIO()
+            image.save(image_bytes, format="JPEG", quality=88, optimize=True)
+        except Exception as exc:
+            raise PdfToWordConversionError(
+                f"第 {page_index + 1} 页无法渲染为版式保真页面。"
+            ) from exc
+        section = document.sections[-1]
+        available_width = Emu(
+            int(section.page_width - section.left_margin - section.right_margin)
+        )
+        paragraph = document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.add_run().add_picture(image_bytes, width=available_width)
+
+    output = BytesIO()
+    document.save(output)
+    return PdfToWordResult(
+        content=output.getvalue(),
+        page_count=page_count,
+        table_count=0,
+        image_count=page_count,
+        text_page_count=0,
+        ocr_page_count=0,
         output_file_name=_output_file_name(source_file_name),
     )

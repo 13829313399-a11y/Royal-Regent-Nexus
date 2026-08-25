@@ -7,6 +7,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as WorksheetImage
 from openpyxl.styles import Font
 from PIL import Image as PillowImage
+from docx import Document
 
 from app.services.internal_quote_excel import ENGINEERING_WORKBOOK_TEMPLATE_PATH
 from test_internal_quote_api import ALL_SECTION_CODES, create_payload, login, logout, make_client
@@ -21,6 +22,15 @@ def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> byt
     output = BytesIO()
     workbook.save(output)
     workbook.close()
+    return output.getvalue()
+
+
+def document_bytes(paragraphs: list[str]) -> bytes:
+    document = Document()
+    for paragraph in paragraphs:
+        document.add_paragraph(paragraph)
+    output = BytesIO()
+    document.save(output)
     return output.getvalue()
 
 
@@ -136,6 +146,39 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
             "模具报价.xlsx",
             "模具图片-U2-1.png",
         }
+        source_attachment = next(
+            item for item in attachments if item["file_name"] == "模具报价.xlsx"
+        )
+        workbook_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/{source_attachment['id']}/preview"
+        )
+        assert workbook_preview.status_code == 200
+        assert workbook_preview.headers["content-type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert workbook_preview.headers["content-disposition"].startswith("inline;")
+        assert workbook_preview.content == source
+        workbook_content_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/{source_attachment['id']}/content-preview"
+        )
+        assert workbook_content_preview.status_code == 200
+        assert workbook_content_preview.json()["kind"] == "excel"
+        assert workbook_content_preview.json()["sheets"][0]["name"] == "报价明细"
+        assert workbook_content_preview.json()["sheets"][0]["rows"][0][:2] == ["模号", "产品名称"]
+
+        word_source = document_bytes(["工程资料说明", "只用于当前部门核价。"])
+        word_upload = client.post(
+            f"/api/internal-quotes/{quote_id}/attachments",
+            data={"department": "engineering"},
+            files={"file": ("工程说明.docx", word_source, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        )
+        assert word_upload.status_code == 201, word_upload.text
+        word_content_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/{word_upload.json()['id']}/content-preview"
+        )
+        assert word_content_preview.status_code == 200
+        assert word_content_preview.json()["kind"] == "word"
+        assert word_content_preview.json()["paragraphs"] == ["工程资料说明", "只用于当前部门核价。"]
         image_preview = client.get(
             f"/api/internal-quotes/{quote_id}/attachments/{attachment_ids[0]}/preview"
         )
@@ -519,6 +562,52 @@ def test_p3_attachment_validates_magic_deduplicates_and_downloads(monkeypatch):
         assert "重开" in late_upload.json()["detail"]
 
 
+def test_p3_production_attachment_reads_are_scoped_to_its_department(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_attachment_scope_owner", "sales_customer_owner", "sales-business")
+        quote = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="ATTACHMENT-SCOPE", participating_sections=ALL_SECTION_CODES),
+        ).json()
+        quote_id = quote["id"]
+        engineering_image = b"\x89PNG\r\n\x1a\n" + b"engineering-document"
+        molding_image = b"\x89PNG\r\n\x1a\n" + b"molding-document"
+        engineering_upload = client.post(
+            f"/api/internal-quotes/{quote_id}/attachments",
+            data={"department": "engineering"},
+            files={"file": ("工程资料.png", engineering_image, "image/png")},
+        )
+        molding_upload = client.post(
+            f"/api/internal-quotes/{quote_id}/attachments",
+            data={"department": "molding"},
+            files={"file": ("啤机资料.png", molding_image, "image/png")},
+        )
+        assert engineering_upload.status_code == 201, engineering_upload.text
+        assert molding_upload.status_code == 201, molding_upload.text
+
+        logout(client)
+        login(client, "iq_attachment_scope_molding", "molding_clerk", "molding")
+        listed = client.get(f"/api/internal-quotes/{quote_id}/attachments")
+        assert listed.status_code == 200, listed.text
+        assert [item["file_name"] for item in listed.json()] == ["啤机资料.png"]
+
+        forbidden_list = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments?department=engineering"
+        )
+        assert forbidden_list.status_code == 403
+        forbidden_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/"
+            f"{engineering_upload.json()['id']}/preview"
+        )
+        assert forbidden_preview.status_code == 403
+        own_preview = client.get(
+            f"/api/internal-quotes/{quote_id}/attachments/"
+            f"{molding_upload.json()['id']}/preview"
+        )
+        assert own_preview.status_code == 200
+        assert own_preview.content == molding_image
+
+
 def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatch):
     with make_client(monkeypatch) as client:
         profile = login(
@@ -800,7 +889,11 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
-        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v9"
+        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v16"
+        assert first["export_manifest"]["export_file_name_version"] == "quote-product-date-v1"
+        assert first["file_name"] == (
+            f"{quote['quote_no']}_{quote['product_name']}_{first['exported_at'][:10]}.xlsx"
+        )
         assert first["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
 
         download = client.get(
@@ -833,18 +926,30 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [quote_sheet.cell(8, column).value for column in range(3, 13)] == [
             "名称", "料型", "料重(G)", "料价(G)", "机型", "1出几套", "目标数", "啤工", "料金额", "报价啤工",
         ]
-        misc_row = next(row for row in range(1, quote_sheet.max_row + 1) if quote_sheet.cell(row, 2).value == "杂项")
-        assert [quote_sheet.cell(misc_row, column).value for column in (5, 6)] == ["HK 40 柜", "YT 20 柜"]
-        assert [quote_sheet.cell(misc_row + 1, column).value for column in (5, 6)] == [2.06, 3.01]
-        assert [quote_sheet.cell(misc_row + 2, column).value for column in (5, 6)] == [3.71, 1.97]
-        subtotal_row = misc_row + 3
-        assert quote_sheet.cell(subtotal_row, 4).value == f"=SUM(D19:D{misc_row})"
+        route_header_row = next(
+            row
+            for row in range(1, quote_sheet.max_row + 1)
+            if quote_sheet.cell(row, 2).value == "运输方案"
+        )
+        assert [quote_sheet.cell(route_header_row, column).value for column in (5, 6)] == ["HK 40 柜", "YT 20 柜"]
+        assert [quote_sheet.cell(route_header_row + 1, column).value for column in (5, 6)] == [2.06, 3.01]
+        assert [quote_sheet.cell(route_header_row + 2, column).value for column in (5, 6)] == [3.71, 1.97]
+        subtotal_row = route_header_row + 3
+        assert quote_sheet.cell(subtotal_row, 4).value == f"=SUM(D19:D{route_header_row})"
         quote_rows = {
             quote_sheet.cell(row, 2).value: row
             for row in range(1, quote_sheet.max_row + 1)
             if str(quote_sheet.cell(row, 2).value or "").startswith("报价（MOQ")
         }
         assert set(quote_rows) == {"报价（MOQ3K）", "报价（MOQ5K）", "报价（MOQ10K）"}
+        for quote_row in quote_rows.values():
+            settlement_row = quote_row - 1
+            assert quote_sheet.cell(settlement_row, 3).value == "÷"
+            assert all(
+                quote_sheet.cell(settlement_row, column).value == "=1-$Q$6"
+                and quote_sheet.cell(settlement_row, column).number_format == "0.0000"
+                for column in (4, 5, 6)
+            )
         assert quote_sheet.cell(quote_rows["报价（MOQ3K）"], 4).value == (
             f"=D{subtotal_row}*D{quote_rows['报价（MOQ3K）'] - 2}/D{quote_rows['报价（MOQ3K）'] - 1}"
         )
@@ -856,15 +961,11 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
             row for row in range(1, quote_sheet.max_row + 1)
             if str(quote_sheet.cell(row, 14).value or "").startswith("功能介绍：")
         )
-        color_title_row = next(
-            row for row in range(1, quote_sheet.max_row + 1)
-            if quote_sheet.cell(row, 14).value == "彩盒价格"
-        )
-        assert color_title_row == function_row + 9
         assert all(
-            quote_sheet.cell(function_row + 8, column).value is None
-            for column in range(14, 18)
+            label not in packaging_labels
+            for label in ("彩盒价格", "报客彩盒", "报客彩盒FSC")
         )
+        assert test_header_row == function_row + 9
         carton_detail_row = next(
             row for row in range(1, quote_sheet.max_row + 1)
             if quote_sheet.cell(row, 2).value == "纸箱"
@@ -889,7 +990,14 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [
             quote_sheet.cell(row, 4).value
             for row in assembly_detail_rows
-        ] == [1.4733, 0.6067, 0.2167, 1.1267, 1.1267, 3.4667]
+        ] == [
+            "=17*$M$4/3000",
+            "=7*$M$4/3000",
+            "=5*$M$4/6000",
+            "=13*$M$4/3000",
+            "=13*$M$4/3000",
+            "=40*$M$4/3000",
+        ]
         assert all(
             quote_sheet.cell(row, 1).value in (None, "")
             for row in assembly_detail_rows
@@ -923,10 +1031,16 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert [electronic_sheet.cell(3, column).value for column in range(1, 11)] == [
             "父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源",
         ]
-        assert [electronic_sheet.cell(5, column).value for column in range(1, 5)] == ["电子成本汇总", "RMB", "HKD", "公式口径"]
-        assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 15)] == [
-            "产品组", "类型", "#", "布料名称", "部位", "工艺", "裁片数", "用量/码",
-            "物料价(RMB)", "价钱(RMB)", "码点", "总价钱(RMB)", "备注", "来源行",
+        electronic_summary_row = next(
+            row for row in range(4, electronic_sheet.max_row + 1)
+            if electronic_sheet.cell(row, 1).value == "电子成本汇总"
+        )
+        assert [electronic_sheet.cell(electronic_summary_row, column).value for column in range(1, 5)] == [
+            "电子成本汇总", "RMB", "HKD", "公式口径",
+        ]
+        assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 13)] == [
+            "物料名称", "裁片部位", "供应商", "布料MOQ/Y", "低于MOQ/每色费用 RMB",
+            "用量/码", "单价 RMB", "汇率", "成本 HKD", "码点", "价钱 HKD", "备注",
         ]
         assert [workbook["车发明细"].cell(3, column).value for column in range(1, 9)] == [
             "#", "名称", "工艺", "重量(g)", "单价(HKD)", "单位", "备注", "金额(HKD)",

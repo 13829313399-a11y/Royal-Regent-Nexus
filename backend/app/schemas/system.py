@@ -34,6 +34,7 @@ class UserStatusUpdateRequest(BaseModel):
 
 class PasswordResetReviewRequest(BaseModel):
     review_comment: str = Field(min_length=1, max_length=1000)
+    identity_verified: bool = False
 
 
 class SystemNotificationUpdateRequest(BaseModel):
@@ -143,8 +144,8 @@ class PasswordResetRequestOut(BaseModel):
 
 class PasswordResetApproveOut(BaseModel):
     request: PasswordResetRequestOut
-    temporary_password: str
     expires_at: str
+    message: str
 
 
 class SystemNotificationOut(BaseModel):

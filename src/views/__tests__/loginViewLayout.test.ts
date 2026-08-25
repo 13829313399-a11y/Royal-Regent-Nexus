@@ -23,10 +23,10 @@ for (const requiredCopy of [
   '联系电话或邮箱',
   '补充说明',
   '提交重置申请',
-  '临时密码',
+  '请保留当前浏览器',
   '1. 提交申请',
   '2. 管理员核验',
-  '3. 获取临时密码',
+  '3. 原浏览器领取',
   '4. 设置正式密码',
   '申请编号',
   '没有企业账号？',
@@ -51,6 +51,10 @@ for (const requiredImplementation of [
   'openPasswordHelp',
   'submitPasswordResetRequest',
   'authApi.requestPasswordReset',
+  'authApi.getPasswordResetClaim',
+  '立即设置新密码',
+  '15_000',
+  'visibilitychange',
   'passwordResetForm',
   'max-h-\\[calc\\(100vh-32px\\)\\]',
   'overflow-y-auto',
@@ -93,3 +97,5 @@ assert.doesNotMatch(source, /华兴试点账号/)
 assert.doesNotMatch(source, /默认密码 123456/)
 assert.doesNotMatch(source, /trialAccounts/)
 assert.doesNotMatch(source, /7 天内免登录/)
+assert.doesNotMatch(source, /获取临时密码/)
+assert.doesNotMatch(source, /传达临时密码/)

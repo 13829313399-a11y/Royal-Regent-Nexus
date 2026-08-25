@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const featureSource = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/SharedMoldDatabaseView.vue'), 'utf8')
+const featureStyles = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/shared-mold-database.css'), 'utf8')
 const apiSource = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/api/injectionSchedulingV2Api.ts'), 'utf8')
 const commandSource = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/components/SchedulingCommandBar.vue'), 'utf8')
 const routerSource = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
@@ -41,5 +42,16 @@ describe('shared mold database workspace', () => {
     expect(apiSource).toContain('`/injection-scheduling/shared-molds/catalog/${definitionId}`')
     expect(apiSource).toContain("'/injection-scheduling/shared-molds/proposals'")
     expect(apiSource).not.toContain("http.get('/injection-scheduling/shared-molds/definitions'")
+  })
+
+  it('uses compact command zones for factory, search and navigation controls', () => {
+    expect(featureSource).toContain('data-command-zone="context"')
+    expect(featureSource).toMatch(/data-command-zone="context"[\s\S]*class="command-field factory-field"/)
+    expect(featureSource).toContain('data-command-zone="search"')
+    expect(featureSource).toContain('aria-label="搜索共享模具"')
+    expect(featureSource).toMatch(/data-command-zone="actions"[\s\S]*返回排产[\s\S]*厂区机台库[\s\S]*刷新数据[\s\S]*新增模具提案/)
+    expect(featureStyles).toMatch(/\.shared-mold-database \.mold-commandbar \.command-context \.page-identity\s*\{[^}]*min-width:\s*188px/)
+    expect(featureStyles).toMatch(/\.shared-mold-database \.mold-commandbar \.command-center \.command-search\s*\{[^}]*max-width:\s*none/)
+    expect(featureStyles).toMatch(/\.shared-mold-database \.mold-commandbar \.command-actions\s*\{[^}]*white-space:\s*nowrap/)
   })
 })

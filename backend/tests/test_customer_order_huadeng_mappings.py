@@ -86,7 +86,10 @@ def test_casdon_preview_and_export_use_received_date_and_seven_day_rule(monkeypa
     schedule = _workbook_bytes(
         "Casdon 排货表-总",
         headers,
-        {6: "OLD", 7: "CASDON UK", 8: "A", 9: "1234(A)", 10: "玩具厨房", 11: 12, 37: "Toy Kitchen"},
+        {
+            6: "OLD", 7: "CASDON UK", 8: "A", 9: "1234(A)",
+            10: "玩具厨房", 11: 12, 13: 8, 37: "Toy Kitchen",
+        },
     )
     schedule_book = openpyxl.load_workbook(BytesIO(schedule))
     schedule_sheet = schedule_book["Casdon 排货表-总"]
@@ -133,6 +136,8 @@ def test_casdon_preview_and_export_use_received_date_and_seven_day_rule(monkeypa
     assert row["requested_ship_date"] == "2026-08-10"
     assert row["unit_price_hkd"] == "77.5"
     assert row["amount_hkd"] == "1860"
+    assert row["units_per_carton"] == "8"
+    assert row["carton_count"] == "3"
 
     output, file_name, exported_preview = service.export_huadeng_customer_schedule(
         customer_code="casdon",
@@ -150,10 +155,102 @@ def test_casdon_preview_and_export_use_received_date_and_seven_day_rule(monkeypa
         assert workbook["Casdon 排货表-总"].cell(3, 2).value == datetime(2026, 8, 3)
         assert workbook["Casdon 排货表-总"].cell(4, 6).value == "OTHER"
         assert workbook["Casdon 排货表-总"].cell(4, 9).value == "9999"
+        assert workbook["Casdon 排货表-总"].cell(3, 13).value == 8
+        assert workbook["Casdon 排货表-总"].cell(3, 14).value == '=IF(M3=0,"",K3/M3)'
     finally:
         workbook.close()
     assert file_name == preview["output_file_name"]
     assert exported_preview["summary"]["total"] == 1
+
+
+def test_casdon_export_inserts_before_matching_item_subtotal(monkeypatch) -> None:
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Casdon 排货表-总"
+    headers = {
+        2: "来单日期", 4: "合同联系人", 5: "客户PO", 6: "合同号", 7: "客名",
+        8: "版本", 9: "货号", 10: "产品名称", 11: "数量", 13: "外装箱",
+        14: "总箱", 27: "验货期", 29: "PO走货期", 32: "单价/港币",
+        33: "单价/美金", 34: "总货价/港币", 35: "总货价/美金",
+        37: "英文品名", 47: "走货国家",
+    }
+    for column, value in headers.items():
+        worksheet.cell(1, column, value)
+    existing_rows = (
+        {6: "OLD-1", 7: "CASDON UK", 8: "A", 9: "31650(A)", 10: "玩具厨房", 11: 100, 13: 8},
+        {6: "OLD-2", 7: "CASDON UK", 8: "A", 9: "31650(A)", 10: "玩具厨房", 11: 200, 13: 8},
+        {10: "合计：", 11: "=SUM(K2:K3)", 14: "=SUM(N2:N3)"},
+        {6: "OLD-3", 7: "CASDON UK", 8: "A", 9: "32050(A)", 10: "玩具厨房", 11: 300, 13: 4},
+        {10: "合计：", 11: "=SUM(K5:K5)", 14: "=SUM(N5:N5)"},
+    )
+    for row_no, values in enumerate(existing_rows, start=2):
+        for column, value in values.items():
+            worksheet.cell(row_no, column, value)
+    notes = workbook.create_sheet("说明")
+    notes["A1"] = "保留工作表"
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    schedule = output.getvalue()
+
+    def parse(_self, _path: str):
+        return {
+            "po_number": "NEW-31650",
+            "po_date": "2026-08-01",
+            "ship_date": "2026-09-01",
+            "customer": "CASDON UK",
+            "customer_po_header": "UK-PO-31650",
+            "version": "A",
+            "lines": [
+                {
+                    "line_no": "1", "item_code": "31650", "description_en": "Toy Kitchen",
+                    "qty": 24, "unit": "PCS", "unit_price": 2, "total_usd": 48,
+                    "is_charge": False,
+                },
+                {
+                    "line_no": "2", "item_code": "32050", "description_en": "Toy Kitchen",
+                    "qty": 12, "unit": "PCS", "unit_price": 2, "total_usd": 24,
+                    "is_charge": False,
+                },
+            ],
+            "raw_text": "",
+        }
+
+    monkeypatch.setattr(service.casdon_po_parser.CasdonPOParser, "parse", parse)
+    exported, _file_name, preview = service.export_huadeng_customer_schedule(
+        customer_code="casdon",
+        factory_id="huadeng",
+        received_date="2026-08-03",
+        po_files=[("PO NEW-31650.pdf", b"pdf")],
+        schedule_file_name="2026年Casdon排期.xlsx",
+        schedule_content=schedule,
+    )
+
+    result = openpyxl.load_workbook(BytesIO(exported), data_only=False)
+    try:
+        sheet = result["Casdon 排货表-总"]
+        assert result.sheetnames == ["Casdon 排货表-总", "说明"]
+        assert sheet.cell(4, 6).value == "NEW-31650"
+        assert sheet.cell(4, 9).value == "31650(A)"
+        assert sheet.cell(4, 13).value == 8
+        assert sheet.cell(4, 14).value == '=IF(M4=0,"",K4/M4)'
+        assert sheet.cell(5, 10).value == "合计："
+        assert sheet.cell(5, 11).value == "=SUM(K2:K4)"
+        assert sheet.cell(5, 14).value == "=SUM(N2:N4)"
+        assert sheet.cell(6, 9).value == "32050(A)"
+        assert sheet.cell(7, 6).value == "NEW-31650"
+        assert sheet.cell(7, 9).value == "32050(A)"
+        assert sheet.cell(7, 13).value == 4
+        assert sheet.cell(7, 14).value == '=IF(M7=0,"",K7/M7)'
+        assert sheet.cell(8, 11).value == "=SUM(K6:K7)"
+        assert result["说明"]["A1"].value == "保留工作表"
+    finally:
+        result.close()
+    assert preview["rows"][0]["units_per_carton"] == "8"
+    assert preview["rows"][0]["carton_count"] == "3"
+    assert preview["rows"][1]["units_per_carton"] == "4"
+    assert preview["rows"][1]["carton_count"] == "3"
+    assert any("插入该货号最后一条历史明细之后" in warning for warning in preview["warnings"])
 
 
 def test_jakks_blocks_change_orders_and_dedupes_batch(monkeypatch) -> None:
@@ -251,6 +348,98 @@ def test_jakks_inherits_unique_date_code_and_blocks_missing_chinese_name() -> No
     assert line["date_code"] == "2628"
     assert any(flag["code"] == "missing_product_name_zh" for flag in line["flags"])
     assert not any(flag["code"] == "missing_date_code" for flag in line["flags"])
+
+
+def test_jakks_native_contract_pdf_accepts_plain_item_and_trailing_usd(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract_text = """CONTRACT
+JAKKS PACIFIC (H.K. ) LIMITED
+Contract #: 811626
+Printed Date: 11-Aug-2026 Order Date: 11-Aug-2026
+Customer PO: 236856
+Confirmation No: 67078 UNITED STATES
+Ultimate Consignee Name: JAKKS PACIFIC, INC.
+ITEM NUMBER DESCRIPTION QUANTITY PRICE EXTENDED PRICE
+10022J CHARMING CUPID CUTIE PLUSH 5L 5L 100 3.0670 306.70 USD
+Customer Item No.: 10022J 25 CA
+UPC: 199460000214 Outer Pack: 4
+Stock #: 10022J
+Country of Origin: CHINA Line#: 1.000 Request Date: 13-Oct-2026
+NOTES: OPEN WINDOW BOX
+TOTAL USD 306.70
+"""
+    monkeypatch.setattr(
+        service.jakks_po_parser,
+        "extract_text",
+        lambda _path: (contract_text, False),
+    )
+
+    parsed = service.jakks_po_parser.parse_po(tmp_path / "JDCUS-SI67078-OK811626-HE.pdf")
+
+    assert parsed["contract_no"] == "811626"
+    assert parsed["order_date"] == "2026-08-11"
+    assert parsed["customer_po"] == "236856"
+    assert parsed["confirmation_no"] == "67078"
+    assert parsed["country"] == "UNITED STATES"
+    assert parsed["customer"] == "JAKKS PACIFIC, INC. UNITED STATES"
+    assert parsed["source_format"] == "pdf"
+    assert parsed["used_ocr"] is False
+    assert len(parsed["lines"]) == 1
+    line = parsed["lines"][0]
+    assert line == {
+        "item_no": "10022J",
+        "product_name": "CHARMING CUPID CUTIE PLUSH 5L 5L",
+        "po_description": "CHARMING CUPID CUTIE PLUSH 5L 5L",
+        "product_name_source": "PO英文品名",
+        "quantity": 100,
+        "unit": "PCS",
+        "inner_pack": "",
+        "outer_pack": 4,
+        "cartons": 25,
+        "unit_price_usd": 3.067,
+        "total_usd": 306.7,
+        "ship_date": "2026-10-13",
+        "special_note": "OPEN WINDOW BOX",
+    }
+    assert any("标准 CONTRACT PDF" in warning for warning in parsed["warnings"])
+
+
+def test_jakks_export_overwrites_copied_po_field_formula(tmp_path: Path) -> None:
+    schedule = _workbook_bytes(
+        "26-Jakks排货表",
+        {1: "来单日期", 5: "客户PO", 6: "合同号", 7: "客名", 9: "货号", 10: "产品名称", 11: "数量"},
+        {5: "OLD", 6: "OLD", 7: "JAKKS", 9: "J-OLD", 10: "旧品名", 11: "=5000-4999"},
+    )
+    line = {
+        "order_date": "2026-08-18", "customer_po": "236856", "contract_no": "811626",
+        "customer": "JAKKS PACIFIC, INC. UNITED STATES", "item_no": "10022J",
+        "product_name": "CHARMING CUPID CUTIE PLUSH 5L 5L", "quantity": 100,
+        "unit": "PCS", "unit_price_usd": 3.067, "total_usd": 306.7,
+        "source_file": "JDCUS-SI67078-OK811626-HE.pdf",
+    }
+    output = tmp_path / "jakks-formula-override.xlsx"
+
+    service._export_prepared(
+        customer_code="jakks",
+        prepared=service.PreparedBatch(
+            [line], [], "26-Jakks排货表总 Ai",
+            export_payload={"filename": "Jakks批量", "lines": [line]},
+        ),
+        schedule_file_name="2026年Jakks排货表.xlsx",
+        schedule_content=schedule,
+        output_path=output,
+    )
+
+    workbook = openpyxl.load_workbook(output, data_only=False)
+    try:
+        worksheet = workbook["26-Jakks排货表"]
+        assert worksheet.cell(3, 6).value == "811626"
+        assert worksheet.cell(3, 9).value == "10022J"
+        assert worksheet.cell(3, 11).value == 100
+    finally:
+        workbook.close()
 
 
 def test_simba_prefers_same_name_excel_and_inherits_schedule(monkeypatch) -> None:

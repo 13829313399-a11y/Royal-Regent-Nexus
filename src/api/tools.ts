@@ -6,10 +6,68 @@ import {
 } from '@/api/aiArtifacts'
 
 
-export const PDF_TO_EXCEL_TIMEOUT_MS = 180_000
-export const PDF_TO_WORD_TIMEOUT_MS = 180_000
-export const PDF_SPLIT_TIMEOUT_MS = 60_000
+export const PDF_TO_EXCEL_TIMEOUT_MS = 900_000
+export const PDF_TO_WORD_TIMEOUT_MS = 900_000
+export const WORD_TO_PDF_TIMEOUT_MS = 300_000
+export const PDF_TRANSLATION_TIMEOUT_MS = 1_800_000
+export const PDF_SPLIT_TIMEOUT_MS = 300_000
 export const DOCUMENT_TRANSLATION_TIMEOUT_MS = 1_800_000
+
+export type DocumentProcessingMode = 'AUTO' | 'LOCAL' | 'QWEN'
+
+export interface DocumentToolModeCapability {
+  available: boolean
+  reason_code: string
+  reason: string
+}
+
+export interface DocumentToolCapability {
+  available: boolean
+  reason_code: string
+  reason: string
+  modes: Record<DocumentProcessingMode, DocumentToolModeCapability>
+}
+
+export interface DocumentToolsCapabilities {
+  enabled: boolean
+  default_mode: DocumentProcessingMode
+  tools: Record<string, DocumentToolCapability>
+  providers: {
+    qwen: {
+      configured: boolean
+      available: boolean
+      region: string
+      ocr_model: string
+      table_model: string
+      translation_model: string
+      reason_code: string
+    }
+    libreoffice: { available: boolean; version: string; reason_code: string }
+    local_translation: { available: boolean }
+  }
+  limits: { max_file_bytes: number; max_pdf_pages: number; temp_ttl_minutes: number }
+}
+
+export interface DocumentProcessingMetadata {
+  mode: DocumentProcessingMode
+  localPageCount: number
+  qwenPageCount: number
+  lowConfidenceCount: number
+  providerModel: string
+  warnings: string[]
+}
+
+export class DocumentToolApiError extends Error {
+  constructor(
+    message: string,
+    readonly code = 'DOCUMENT_TOOL_FAILED',
+    readonly action = '',
+    readonly retryable = false,
+  ) {
+    super(message)
+    this.name = 'DocumentToolApiError'
+  }
+}
 
 export type DocumentTranslationDirection = 'zh_to_en' | 'en_to_zh'
 export type DocumentTranslationMode = 'local_private' | 'ai_smart_cloud'
@@ -48,6 +106,7 @@ export interface PdfToExcelResult {
   blob: Blob
   fileName: string
   metrics: PdfToExcelMetrics
+  processing: DocumentProcessingMetadata
 }
 
 export interface PdfToWordMetrics extends PdfToExcelMetrics {
@@ -58,6 +117,7 @@ export interface PdfToWordResult {
   blob: Blob
   fileName: string
   metrics: PdfToWordMetrics
+  processing: DocumentProcessingMetadata
 }
 
 export interface PdfSplitOptions {
@@ -70,6 +130,35 @@ export interface PdfSplitResult {
   fileName: string
   pageCount: number
   fileCount: number
+  processing: DocumentProcessingMetadata
+}
+
+export interface WordToPdfResult {
+  blob: Blob
+  fileName: string
+  pageCount: number
+  blankPageCount: number
+  processing: DocumentProcessingMetadata
+}
+
+export interface PdfTranslationOptions {
+  direction: 'AUTO' | 'ZH_TO_EN' | 'EN_TO_ZH'
+  layout: 'TRANSLATED_ONLY' | 'SIDE_BY_SIDE' | 'STACKED'
+  protectedTokens?: string[]
+  includeEditableDocx?: boolean
+  processingMode?: DocumentProcessingMode
+  glossary?: Array<{ source: string; target: string }>
+  translationMemory?: Array<{ source: string; target: string }>
+  domainPrompt?: string
+}
+
+export interface PdfTranslationResult {
+  blob: Blob
+  fileName: string
+  pageCount: number
+  translatedUnitCount: number
+  ocrPageCount: number
+  processing: DocumentProcessingMetadata
 }
 
 export interface SharedToolsHttpClient {
@@ -101,7 +190,43 @@ function headerCount(headers: Record<string, unknown> | undefined, name: string)
   return Number.isFinite(value) && value >= 0 ? value : 0
 }
 
+function processingMetadata(
+  headers: Record<string, unknown> | undefined,
+  fallbackMode: DocumentProcessingMode,
+): DocumentProcessingMetadata {
+  let warnings: string[] = []
+  const encoded = String(headers?.['x-document-warnings'] ?? '')
+  if (encoded) {
+    try {
+      const parsed = JSON.parse(decodeURIComponent(encoded))
+      if (Array.isArray(parsed)) warnings = parsed.filter(item => typeof item === 'string')
+    }
+    catch {
+      warnings = []
+    }
+  }
+  const headerMode = String(headers?.['x-processing-mode'] ?? fallbackMode).toUpperCase()
+  const mode: DocumentProcessingMode = ['AUTO', 'LOCAL', 'QWEN'].includes(headerMode)
+    ? headerMode as DocumentProcessingMode
+    : fallbackMode
+  return {
+    mode,
+    localPageCount: headerCount(headers, 'x-local-page-count'),
+    qwenPageCount: headerCount(headers, 'x-qwen-page-count'),
+    lowConfidenceCount: headerCount(headers, 'x-low-confidence-count'),
+    providerModel: String(headers?.['x-provider-model'] ?? ''),
+    warnings,
+  }
+}
+
 async function parseBlobError(error: unknown): Promise<never> {
+  if (axios.isCancel(error)) {
+    throw new DocumentToolApiError(
+      '本次处理已取消。',
+      'DOCUMENT_REQUEST_CANCELLED',
+      '可调整设置后重新处理。',
+    )
+  }
   if (!axios.isAxiosError(error) || !(error.response?.data instanceof Blob)) {
     throw error
   }
@@ -109,11 +234,29 @@ async function parseBlobError(error: unknown): Promise<never> {
   const raw = await error.response.data.text()
   const status = error.response.status
   try {
-    const payload = JSON.parse(raw) as { detail?: unknown; message?: unknown }
+    const payload = JSON.parse(raw) as {
+      detail?: unknown
+      message?: unknown
+      code?: unknown
+      action?: unknown
+      retryable?: unknown
+    }
+    const detail = payload.detail && typeof payload.detail === 'object'
+      ? payload.detail as Record<string, unknown>
+      : null
     const message = typeof payload.detail === 'string'
       ? payload.detail
-      : typeof payload.message === 'string' ? payload.message : ''
-    throw new Error(message || error.message)
+      : typeof detail?.message === 'string'
+        ? detail.message
+        : typeof payload.message === 'string' ? payload.message : ''
+    const code = typeof detail?.code === 'string'
+      ? detail.code
+      : typeof payload.code === 'string' ? payload.code : 'DOCUMENT_TOOL_FAILED'
+    const action = typeof detail?.action === 'string'
+      ? detail.action
+      : typeof payload.action === 'string' ? payload.action : ''
+    const retryable = detail?.retryable === true || payload.retryable === true
+    throw new DocumentToolApiError(message || error.message, code, action, retryable)
   }
   catch (parseError) {
     if (parseError instanceof SyntaxError) {
@@ -138,6 +281,15 @@ export function createSharedToolsApi(
   artifactUploader = uploadAIArtifact,
 ) {
   return {
+    async getCapabilities(signal?: AbortSignal): Promise<DocumentToolsCapabilities> {
+      if (!client.get) throw new Error('当前 HTTP 客户端不支持读取工具能力。')
+      const response = await client.get<DocumentToolsCapabilities>(
+        '/tools/capabilities',
+        signal ? { signal } : undefined,
+      )
+      return response.data
+    },
+
     async getDocumentTranslationStatus(): Promise<DocumentTranslationStatus> {
       if (!client.get) throw new Error('当前 HTTP 客户端不支持读取翻译服务状态。')
       const response = await client.get<DocumentTranslationStatus>('/tools/document-translation/status')
@@ -238,9 +390,14 @@ export function createSharedToolsApi(
       }
     },
 
-    async convertPdfToExcel(pdfFile: File): Promise<PdfToExcelResult> {
+    async convertPdfToExcel(
+      pdfFile: File,
+      processingMode: DocumentProcessingMode = 'AUTO',
+      signal?: AbortSignal,
+    ): Promise<PdfToExcelResult> {
       const payload = new FormData()
       payload.append('pdf_file', pdfFile)
+      payload.append('processing_mode', processingMode)
       const fallbackFileName = `${pdfFile.name.replace(/\.pdf$/i, '') || 'PDF文件'}_转换结果.xlsx`
 
       try {
@@ -248,6 +405,7 @@ export function createSharedToolsApi(
           headers: { 'Content-Type': 'multipart/form-data' },
           responseType: 'blob',
           timeout: PDF_TO_EXCEL_TIMEOUT_MS,
+          signal,
         })
         return {
           blob: response.data,
@@ -258,6 +416,7 @@ export function createSharedToolsApi(
             textPageCount: headerCount(response.headers, 'x-pdf-text-page-count'),
             ocrPageCount: headerCount(response.headers, 'x-pdf-ocr-page-count'),
           },
+          processing: processingMetadata(response.headers, processingMode),
         }
       }
       catch (error) {
@@ -265,9 +424,16 @@ export function createSharedToolsApi(
       }
     },
 
-    async convertPdfToWord(pdfFile: File): Promise<PdfToWordResult> {
+    async convertPdfToWord(
+      pdfFile: File,
+      processingMode: DocumentProcessingMode = 'AUTO',
+      signal?: AbortSignal,
+      outputMode: 'EDITABLE' | 'LAYOUT_PRESERVING' = 'EDITABLE',
+    ): Promise<PdfToWordResult> {
       const payload = new FormData()
       payload.append('pdf_file', pdfFile)
+      payload.append('processing_mode', processingMode)
+      payload.append('output_mode', outputMode)
       const fallbackFileName = `${pdfFile.name.replace(/\.pdf$/i, '') || 'PDF文件'}_转换结果.docx`
 
       try {
@@ -275,6 +441,7 @@ export function createSharedToolsApi(
           headers: { 'Content-Type': 'multipart/form-data' },
           responseType: 'blob',
           timeout: PDF_TO_WORD_TIMEOUT_MS,
+          signal,
         })
         return {
           blob: response.data,
@@ -286,6 +453,7 @@ export function createSharedToolsApi(
             textPageCount: headerCount(response.headers, 'x-pdf-text-page-count'),
             ocrPageCount: headerCount(response.headers, 'x-pdf-ocr-page-count'),
           },
+          processing: processingMetadata(response.headers, processingMode),
         }
       }
       catch (error) {
@@ -293,11 +461,82 @@ export function createSharedToolsApi(
       }
     },
 
-    async splitPdf(pdfFile: File, options: PdfSplitOptions): Promise<PdfSplitResult> {
+    async convertWordToPdf(documentFile: File, signal?: AbortSignal): Promise<WordToPdfResult> {
+      const payload = new FormData()
+      payload.append('document_file', documentFile)
+      payload.append('processing_mode', 'AUTO')
+      const fallbackFileName = `${documentFile.name.replace(/\.docx$/i, '') || 'Word文档'}_转换结果.pdf`
+
+      try {
+        const response = await client.post<Blob>('/tools/word-to-pdf', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: WORD_TO_PDF_TIMEOUT_MS,
+          signal,
+        })
+        return {
+          blob: response.data,
+          fileName: responseFileName(response.headers, fallbackFileName),
+          pageCount: headerCount(response.headers, 'x-word-page-count'),
+          blankPageCount: headerCount(response.headers, 'x-word-blank-page-count'),
+          processing: processingMetadata(response.headers, 'AUTO'),
+        }
+      }
+      catch (error) {
+        return parseBlobError(error)
+      }
+    },
+
+    async translatePdf(
+      pdfFile: File,
+      options: PdfTranslationOptions,
+      signal?: AbortSignal,
+    ): Promise<PdfTranslationResult> {
+      const payload = new FormData()
+      payload.append('pdf_file', pdfFile)
+      payload.append('direction', options.direction)
+      payload.append('layout', options.layout)
+      payload.append('protected_tokens', JSON.stringify(options.protectedTokens ?? []))
+      payload.append('include_editable_docx', String(options.includeEditableDocx ?? false))
+      const processingMode = options.processingMode ?? 'AUTO'
+      payload.append('processing_mode', processingMode)
+      payload.append('glossary_json', JSON.stringify(options.glossary ?? []))
+      payload.append('translation_memory_json', JSON.stringify(options.translationMemory ?? []))
+      payload.append('domain_prompt', options.domainPrompt?.trim() ?? '')
+      const suffix = options.includeEditableDocx ? '.zip' : '.pdf'
+      const fallbackFileName = `${pdfFile.name.replace(/\.pdf$/i, '') || 'PDF文件'}_translated${suffix}`
+
+      try {
+        const response = await client.post<Blob>('/tools/pdf-translation', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: PDF_TRANSLATION_TIMEOUT_MS,
+          signal,
+        })
+        return {
+          blob: response.data,
+          fileName: responseFileName(response.headers, fallbackFileName),
+          pageCount: headerCount(response.headers, 'x-pdf-page-count'),
+          translatedUnitCount: headerCount(response.headers, 'x-translation-unit-count'),
+          ocrPageCount: headerCount(response.headers, 'x-pdf-ocr-page-count'),
+          processing: processingMetadata(response.headers, processingMode),
+        }
+      }
+      catch (error) {
+        return parseBlobError(error)
+      }
+    },
+
+    async splitPdf(
+      pdfFile: File,
+      options: PdfSplitOptions,
+      signal?: AbortSignal,
+    ): Promise<PdfSplitResult> {
       const payload = new FormData()
       payload.append('pdf_file', pdfFile)
       payload.append('split_mode', options.mode)
       payload.append('page_ranges', options.pageRanges?.trim() ?? '')
+      payload.append('processing_mode', 'AUTO')
       const fallbackFileName = `${pdfFile.name.replace(/\.pdf$/i, '') || 'PDF文件'}_拆分结果.zip`
 
       try {
@@ -305,12 +544,14 @@ export function createSharedToolsApi(
           headers: { 'Content-Type': 'multipart/form-data' },
           responseType: 'blob',
           timeout: PDF_SPLIT_TIMEOUT_MS,
+          signal,
         })
         return {
           blob: response.data,
           fileName: responseFileName(response.headers, fallbackFileName),
           pageCount: headerCount(response.headers, 'x-pdf-page-count'),
           fileCount: headerCount(response.headers, 'x-pdf-split-file-count'),
+          processing: processingMetadata(response.headers, 'AUTO'),
         }
       }
       catch (error) {

@@ -142,6 +142,7 @@ def create_scoped_permission_manager(
                 updated_at=now,
             )
         )
+        db.flush()
         binding_id = f"{user_id}:factory_permission_admin:{factory_id}:{department}"
         db.add(
             auth_models.AuthUserRole(
@@ -152,6 +153,7 @@ def create_scoped_permission_manager(
                 department=department,
             )
         )
+        db.flush()
         db.add(
             auth_models.AuthRoleBindingMetadata(
                 user_role_id=binding_id,
@@ -1223,7 +1225,7 @@ def test_unmatched_password_reset_is_superadmin_only_even_in_legacy_mode(monkeyp
         assert notification["id"] not in visible_ids
 
 
-def test_admin_can_reset_user_password_from_password_reset_notification(monkeypatch):
+def test_admin_can_approve_same_browser_password_reset_from_notification(monkeypatch):
     with make_client(monkeypatch) as client:
         ensure_test_user("engineer")
 
@@ -1253,11 +1255,13 @@ def test_admin_can_reset_user_password_from_password_reset_notification(monkeypa
         request_id = request_response.json()["request_id"]
         reset_response = client.post(
             f"/api/system/password-reset-requests/{request_id}/approve",
-            json={"review_comment": "已电话核验员工身份"},
+            json={
+                "review_comment": "已电话核验员工身份",
+                "identity_verified": True,
+            },
         )
         assert reset_response.status_code == 200
-        temporary_password = reset_response.json()["temporary_password"]
-        assert temporary_password != "123456"
+        assert "temporary_password" not in reset_response.json()
         assert reset_response.json()["request"]["status"] == "approved"
         password_reset_notification = next(
             notification
@@ -1275,11 +1279,27 @@ def test_admin_can_reset_user_password_from_password_reset_notification(monkeypa
 
         logout(client)
         old_password_login = client.post("/api/auth/login", json={"username": "engineer", "password": "OldStrong123"})
-        assert old_password_login.status_code == 401
+        assert old_password_login.status_code == 200
+        logout(client)
 
-        temporary_password_login = client.post(
-            "/api/auth/login",
-            json={"username": "engineer", "password": temporary_password},
+        claim_status = client.get("/api/auth/password-reset-claim")
+        assert claim_status.status_code == 200
+        assert claim_status.json()["can_complete"] is True
+        completed = client.post(
+            "/api/auth/password-reset-claim/complete",
+            json={
+                "new_password": "NewStrong456!",
+                "confirm_password": "NewStrong456!",
+            },
         )
-        assert temporary_password_login.status_code == 200
-        assert temporary_password_login.json()["force_password_change"] is True
+        assert completed.status_code == 200
+        assert client.post(
+            "/api/auth/login",
+            json={"username": "engineer", "password": "OldStrong123"},
+        ).status_code == 401
+        new_password_login = client.post(
+            "/api/auth/login",
+            json={"username": "engineer", "password": "NewStrong456!"},
+        )
+        assert new_password_login.status_code == 200
+        assert new_password_login.json()["force_password_change"] is False

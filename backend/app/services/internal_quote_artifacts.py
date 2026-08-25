@@ -4,8 +4,10 @@ import base64
 import binascii
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -25,6 +27,8 @@ from app.models.internal_quote import (
 )
 from app.schemas.internal_quote import (
     InternalQuoteAttachmentOut,
+    InternalQuoteAttachmentContentPreviewOut,
+    InternalQuoteAttachmentPreviewSheetOut,
     InternalQuoteExportFileOut,
     InternalQuoteImportConfirmOut,
     InternalQuoteImportConfirmRequest,
@@ -33,6 +37,7 @@ from app.schemas.internal_quote import (
 from app.services.auth import AuthContext, has_permission_in_scope, now_text
 from app.services.internal_quote import (
     MUTABLE_SECTION_STATUSES,
+    SECTION_DEPARTMENTS,
     _add_audit,
     _add_revision,
     _calculate_and_apply,
@@ -83,6 +88,7 @@ OOXML_EXTENSIONS = {".xlsx", ".xlsm", ".docx"}
 OLE_EXTENSIONS = {".xls", ".doc"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 EXPORT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+EXPORT_FILE_NAME_VERSION = "quote-product-date-v1"
 IMPORT_LIST_FIELDS = {
     "mold": ("molds",),
     "hardware": ("materials",),
@@ -115,6 +121,27 @@ def safe_file_name(value: str) -> str:
     if not name or name in {".", ".."}:
         raise HTTPException(status_code=400, detail="文件名无效")
     return name[:255]
+
+
+def internal_quote_export_file_name(
+    quote: InternalQuote,
+    exported_at: str,
+) -> str:
+    """Build the user-facing XLSX name from quote number, product and export date."""
+
+    def clean_component(value: object, fallback: str) -> str:
+        cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(value or ""))
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._")
+        return cleaned or fallback
+
+    quote_no = clean_component(quote.quote_no, "未编号报价")
+    product_name = clean_component(quote.product_name, "未命名产品")
+    date_match = re.match(r"\d{4}-\d{2}-\d{2}", str(exported_at or ""))
+    export_date = date_match.group(0) if date_match else "未注明日期"
+    suffix = f"_{export_date}.xlsx"
+    stem = f"{quote_no}_{product_name}"
+    stem = stem[: 255 - len(suffix)].rstrip(" ._")
+    return safe_file_name(f"{stem}{suffix}")
 
 
 def _validate_file_size(content: bytes, limit: int, label: str) -> None:
@@ -846,6 +873,41 @@ def _attachment_out(
     )
 
 
+def _can_access_attachment_department(
+    user: AuthContext,
+    quote: InternalQuote,
+    department: str,
+) -> bool:
+    if department == "product-image":
+        return True
+    if any(
+        has_permission_in_scope(user, permission, quote.factory_id, scope_department)
+        for permission, scope_department in (
+            ("internal_quote:sales_edit", "sales-business"),
+            ("internal_quote:engineering_edit", "engineering"),
+        )
+    ):
+        return True
+    return any(
+        has_permission_in_scope(
+            user,
+            f"internal_quote:{department}_edit",
+            quote.factory_id,
+            scope_department,
+        )
+        for scope_department in SECTION_DEPARTMENTS.get(department, ())
+    )
+
+
+def _ensure_attachment_access(
+    user: AuthContext,
+    quote: InternalQuote,
+    department: str,
+) -> None:
+    if not _can_access_attachment_department(user, quote, department):
+        raise HTTPException(status_code=403, detail="当前账号只能访问分配给本部门的报价资料")
+
+
 def upload_attachment(
     db: Session,
     quote_id: str,
@@ -910,6 +972,71 @@ def upload_attachment(
     return _attachment_out(attachment)
 
 
+def upload_product_image(
+    db: Session,
+    quote_id: str,
+    file_name: str,
+    content: bytes,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteAttachmentOut:
+    quote = _get_quote(db, quote_id)
+    _ensure_active(quote)
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:create",
+        quote.factory_id,
+        ("sales-business", "engineering"),
+    )
+    if quote.status in {"final_reviewing", "fully_approved", "exported"}:
+        raise HTTPException(status_code=409, detail="产品已提交审核或完成输出，不能更换主图")
+    clean_name = safe_file_name(file_name)
+    extension, content_type = _validate_attachment(clean_name, content)
+    if extension not in IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="产品主图仅支持 JPG/JPEG/PNG/WEBP 图片")
+    sha256 = digest(content)
+    duplicate = db.scalar(
+        select(InternalQuoteAttachment.id).where(
+            InternalQuoteAttachment.quote_id == quote.id,
+            InternalQuoteAttachment.department == "product-image",
+            InternalQuoteAttachment.sha256 == sha256,
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="该产品已使用相同主图")
+    attachment = InternalQuoteAttachment(
+        id=f"IQATT-{uuid4().hex}",
+        quote_id=quote.id,
+        factory_id=quote.factory_id,
+        department="product-image",
+        file_name=clean_name,
+        content_type=content_type,
+        size_bytes=len(content),
+        sha256=sha256,
+        content=content,
+        uploaded_by=user.id,
+        uploaded_by_name=user.display_name,
+        uploaded_at=now_text(),
+    )
+    db.add(attachment)
+    _add_audit(
+        db,
+        quote,
+        user,
+        "upload_product_image",
+        detail=json.dumps(
+            {"attachment_id": attachment.id, "file_name": clean_name, "sha256": sha256},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        request=request,
+    )
+    db.commit()
+    db.refresh(attachment)
+    return _attachment_out(attachment)
+
+
 def list_attachments(
     db: Session,
     quote_id: str,
@@ -918,11 +1045,16 @@ def list_attachments(
 ) -> list[InternalQuoteAttachmentOut]:
     quote = _get_quote(db, quote_id)
     ensure_quote_read(db, user, quote.factory_id)
+    if department:
+        _ensure_attachment_access(user, quote, department)
     statement = select(InternalQuoteAttachment).where(InternalQuoteAttachment.quote_id == quote.id)
     if department:
         statement = statement.where(InternalQuoteAttachment.department == department)
     statement = statement.order_by(InternalQuoteAttachment.uploaded_at.desc(), InternalQuoteAttachment.id.desc())
-    attachments = list(db.scalars(statement).all())
+    attachments = [
+        item for item in db.scalars(statement).all()
+        if _can_access_attachment_department(user, quote, item.department)
+    ]
     batches = list(db.scalars(
         select(InternalQuoteImportBatch)
         .where(
@@ -1099,6 +1231,7 @@ def get_attachment_download(
     )
     if attachment is None:
         raise HTTPException(status_code=404, detail="附件不存在")
+    _ensure_attachment_access(user, quote, attachment.department)
     _add_audit(
         db,
         quote,
@@ -1128,9 +1261,155 @@ def get_attachment_preview(
     )
     if attachment is None:
         raise HTTPException(status_code=404, detail="附件不存在")
-    if not attachment.content_type.startswith("image/"):
-        raise HTTPException(status_code=415, detail="该附件不是可预览图片")
+    _ensure_attachment_access(user, quote, attachment.department)
+    if Path(attachment.file_name).suffix.lower() not in ATTACHMENT_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="该附件不支持在线预览")
     return attachment
+
+
+def _preview_cell(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _trim_preview_rows(rows: list[list[Any]]) -> tuple[list[list[Any]], int]:
+    while rows and not any(value not in (None, "") for value in rows[-1]):
+        rows.pop()
+    total_columns = max((len(row) for row in rows), default=0)
+    while total_columns and all(
+        len(row) < total_columns or row[total_columns - 1] in (None, "")
+        for row in rows
+    ):
+        total_columns -= 1
+    return [row[:total_columns] for row in rows], total_columns
+
+
+def _xlsx_content_preview(attachment: InternalQuoteAttachment) -> InternalQuoteAttachmentContentPreviewOut:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(BytesIO(attachment.content), read_only=True, data_only=True)
+    sheets: list[InternalQuoteAttachmentPreviewSheetOut] = []
+    try:
+        for worksheet in workbook.worksheets:
+            total_rows = int(worksheet.max_row or 0)
+            total_columns = int(worksheet.max_column or 0)
+            rows = [
+                [_preview_cell(value) for value in row]
+                for row in worksheet.iter_rows(
+                    min_row=1,
+                    max_row=min(total_rows, 200),
+                    min_col=1,
+                    max_col=min(total_columns, 40),
+                    values_only=True,
+                )
+            ] if total_rows and total_columns else []
+            rows, _ = _trim_preview_rows(rows)
+            sheets.append(InternalQuoteAttachmentPreviewSheetOut(
+                name=worksheet.title,
+                rows=rows,
+                total_rows=total_rows,
+                total_columns=total_columns,
+                truncated=total_rows > 200 or total_columns > 40,
+            ))
+    finally:
+        workbook.close()
+    return InternalQuoteAttachmentContentPreviewOut(
+        file_name=attachment.file_name,
+        kind="excel",
+        sheets=sheets,
+    )
+
+
+def _xls_content_preview(attachment: InternalQuoteAttachment) -> InternalQuoteAttachmentContentPreviewOut:
+    import xlrd
+
+    workbook = xlrd.open_workbook(file_contents=attachment.content, on_demand=True)
+    sheets: list[InternalQuoteAttachmentPreviewSheetOut] = []
+    try:
+        for worksheet in workbook.sheets():
+            total_rows = int(worksheet.nrows)
+            total_columns = int(worksheet.ncols)
+            rows = [
+                [_preview_cell(worksheet.cell_value(row_index, column_index)) for column_index in range(min(total_columns, 40))]
+                for row_index in range(min(total_rows, 200))
+            ]
+            rows, _ = _trim_preview_rows(rows)
+            sheets.append(InternalQuoteAttachmentPreviewSheetOut(
+                name=worksheet.name,
+                rows=rows,
+                total_rows=total_rows,
+                total_columns=total_columns,
+                truncated=total_rows > 200 or total_columns > 40,
+            ))
+    finally:
+        workbook.release_resources()
+    return InternalQuoteAttachmentContentPreviewOut(
+        file_name=attachment.file_name,
+        kind="excel",
+        sheets=sheets,
+    )
+
+
+def _docx_content_preview(attachment: InternalQuoteAttachment) -> InternalQuoteAttachmentContentPreviewOut:
+    from docx import Document
+
+    document = Document(BytesIO(attachment.content))
+    paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+    for table in document.tables:
+        for row in table.rows:
+            text = " ｜ ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+            if text:
+                paragraphs.append(text)
+    truncated = len(paragraphs) > 500
+    return InternalQuoteAttachmentContentPreviewOut(
+        file_name=attachment.file_name,
+        kind="word",
+        paragraphs=paragraphs[:500],
+        warnings=["文档内容较长，当前仅显示前 500 段；完整内容请下载原文件。"] if truncated else [],
+    )
+
+
+def _legacy_doc_content_preview(attachment: InternalQuoteAttachment) -> InternalQuoteAttachmentContentPreviewOut:
+    decoded = attachment.content.decode("utf-16le", errors="ignore")
+    candidates = re.findall(r"[\u3400-\u9fffA-Za-z0-9，。；：、（）()《》“”‘’\-_/ .]{4,}", decoded)
+    paragraphs = []
+    for candidate in candidates:
+        text = re.sub(r"\s+", " ", candidate).strip(" \x00")
+        if text and text not in paragraphs:
+            paragraphs.append(text)
+        if len(paragraphs) >= 500:
+            break
+    return InternalQuoteAttachmentContentPreviewOut(
+        file_name=attachment.file_name,
+        kind="word",
+        paragraphs=paragraphs,
+        warnings=["旧版 DOC 采用只读文本提取预览，原始排版、图片和部分文字可能无法还原；请下载原文件核对。"],
+    )
+
+
+def get_attachment_content_preview(
+    db: Session,
+    quote_id: str,
+    attachment_id: str,
+    user: AuthContext,
+) -> InternalQuoteAttachmentContentPreviewOut:
+    attachment = get_attachment_preview(db, quote_id, attachment_id, user)
+    extension = Path(attachment.file_name).suffix.lower()
+    try:
+        if extension in {".xlsx", ".xlsm"}:
+            return _xlsx_content_preview(attachment)
+        if extension == ".xls":
+            return _xls_content_preview(attachment)
+        if extension == ".docx":
+            return _docx_content_preview(attachment)
+        if extension == ".doc":
+            return _legacy_doc_content_preview(attachment)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="附件内容无法解析，请下载原文件核对") from exc
+    raise HTTPException(status_code=415, detail="该附件使用原文件在线预览")
 
 
 def _export_out(record: InternalQuoteExportFile) -> InternalQuoteExportFileOut:
@@ -1268,6 +1547,7 @@ def _handoff_manifest(
         "file_sha256": record.sha256,
         "template_version": record.template_version,
         "workbook_layout_version": export_manifest.get("workbook_layout_version", ""),
+        "export_file_name_version": export_manifest.get("export_file_name_version", ""),
         "formula_version": record.formula_version,
         "reference_snapshot_id": record.reference_snapshot_id,
         "section_revisions": _json_object(record.section_revisions_json),
@@ -1356,6 +1636,7 @@ def create_controlled_export(
             current_manifest = _json_object(current_export.export_manifest_json)
             if (
                 current_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION
+                and current_manifest.get("export_file_name_version") == EXPORT_FILE_NAME_VERSION
                 and str(current_manifest.get("final_release_revision") or "0")
                 == str(quote.final_release_revision)
             ):
@@ -1370,7 +1651,10 @@ def create_controlled_export(
             existing_export = db.get(InternalQuoteExportFile, existing_handoff.export_id)
             if existing_export is not None and existing_export.release_stage == "p4_final_approved":
                 existing_manifest = _json_object(existing_export.export_manifest_json)
-                if existing_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION:
+                if (
+                    existing_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION
+                    and existing_manifest.get("export_file_name_version") == EXPORT_FILE_NAME_VERSION
+                ):
                     return _export_out(existing_export)
                 # The final-release business payload remains immutable.  A
                 # presentation-only refresh gets a new export record while the
@@ -1384,6 +1668,7 @@ def create_controlled_export(
     manifest = {
         "template_version": template_version,
         "workbook_layout_version": WORKBOOK_LAYOUT_VERSION,
+        "export_file_name_version": EXPORT_FILE_NAME_VERSION,
         "formula_version": quote.formula_version,
         "reference_snapshot_id": quote.reference_snapshot_id,
         "header_revision": quote.header_revision,
@@ -1426,7 +1711,13 @@ def create_controlled_export(
     )
     reference_snapshot = _json_object(reference_set.snapshot_json) if reference_set else {}
     cost_context = _cost_context(db, quote)
-    rr2_cost_summary = _rr2_cost_summary(sections, cost_context, reference_snapshot, quote.qty)
+    rr2_cost_summary = _rr2_cost_summary(
+        sections,
+        cost_context,
+        reference_snapshot,
+        quote.qty,
+        factory_id=quote.factory_id,
+    )
     content = build_internal_quote_workbook(
         quote,
         sections,
@@ -1436,14 +1727,12 @@ def create_controlled_export(
         cost_context,
         attachments,
     )
+    exported_at = now_text()
     record = InternalQuoteExportFile(
         id=f"IQEXP-{uuid4().hex}",
         quote_id=quote.id,
         factory_id=quote.factory_id,
-        file_name=safe_file_name(
-            f"{quote.quote_no}_{quote.version_label}_内部报价"
-            f"{'_最终放行' if is_final_release else ''}.xlsx"
-        ),
+        file_name=internal_quote_export_file_name(quote, exported_at),
         content_type=EXPORT_CONTENT_TYPE,
         size_bytes=len(content),
         sha256=digest(content),
@@ -1458,7 +1747,7 @@ def create_controlled_export(
         export_manifest_json=canonical_json(manifest),
         exported_by=user.id,
         exported_by_name=user.display_name,
-        exported_at=now_text(),
+        exported_at=exported_at,
         superseded_at="",
     )
     previous = db.scalars(

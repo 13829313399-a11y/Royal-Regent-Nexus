@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   ArrowRight,
   Building2,
@@ -14,6 +14,7 @@ import {
   LifeBuoy,
   LoaderCircle,
   Lock,
+  RefreshCw,
   ShieldCheck,
   ShieldQuestion,
   UserPlus,
@@ -21,7 +22,7 @@ import {
   X,
 } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
-import { authApi } from '@/api/auth'
+import { authApi, type PasswordResetClaimResponse } from '@/api/auth'
 import AuthAmbientGrid from '@/components/auth/AuthAmbientGrid.vue'
 import { getApiErrorMessage } from '@/lib/http'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
@@ -59,10 +60,18 @@ const passwordResetForm = ref({
 const isPasswordResetSubmitting = ref(false)
 const passwordResetSubmitted = ref(false)
 const passwordResetRequestId = ref('')
+const passwordResetInvalidField = ref<'username' | 'display_name' | 'contact' | ''>('')
+const passwordResetUsernameInput = ref<HTMLInputElement | null>(null)
+const passwordResetDisplayNameInput = ref<HTMLInputElement | null>(null)
+const passwordResetContactInput = ref<HTMLInputElement | null>(null)
+const passwordResetClaim = ref<PasswordResetClaimResponse | null>(null)
+const isPasswordResetClaimRefreshing = ref(false)
+let passwordResetPollTimer: ReturnType<typeof window.setTimeout> | undefined
 
 const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g
 const passwordChineseMessage = '密码不能包含中文，请使用英文、数字或符号'
+const brandLogoUrl = '/brand/huadeng_group_dynamic_logo.svg'
 
 const recentAccountTitle = computed(() => {
   if (!recentAccount.value) {
@@ -98,6 +107,26 @@ const passwordModel = computed({
     passwordInputMessage.value = normalizedValue === value ? '' : passwordChineseMessage
   },
 })
+
+const passwordResetClaimTitle = computed(() => ({
+  pending: '密码重置申请',
+  approved: '密码重置申请已通过',
+  completed: '密码已成功重置',
+  rejected: '密码重置申请未通过',
+  expired: '本次改密时限已过期',
+  legacy_invalid: '旧版申请需重新提交',
+  none: '',
+}[passwordResetClaim.value?.status ?? 'none']))
+
+const passwordResetClaimTone = computed(() => ({
+  pending: 'border-amber-100 bg-amber-50 text-amber-900',
+  approved: 'border-emerald-100 bg-emerald-50 text-emerald-900',
+  completed: 'border-emerald-100 bg-emerald-50 text-emerald-900',
+  rejected: 'border-red-100 bg-red-50 text-red-900',
+  expired: 'border-slate-200 bg-slate-50 text-slate-800',
+  legacy_invalid: 'border-slate-200 bg-slate-50 text-slate-800',
+  none: '',
+}[passwordResetClaim.value?.status ?? 'none']))
 
 const brandFeatures = [
   {
@@ -213,6 +242,7 @@ function focusPasswordInput(event: KeyboardEvent) {
 
 function openPasswordHelp() {
   passwordHelpMessage.value = ''
+  passwordResetInvalidField.value = ''
   passwordResetSubmitted.value = false
   passwordResetRequestId.value = ''
   passwordResetForm.value = {
@@ -226,8 +256,25 @@ function openPasswordHelp() {
 function closePasswordHelp() {
   showPasswordHelp.value = false
   passwordHelpMessage.value = ''
+  passwordResetInvalidField.value = ''
   passwordResetSubmitted.value = false
   passwordResetRequestId.value = ''
+}
+
+function showPasswordResetValidation(
+  field: 'username' | 'display_name' | 'contact',
+  message: string,
+  input: () => HTMLInputElement | null,
+) {
+  passwordResetInvalidField.value = field
+  passwordHelpMessage.value = message
+  requestAnimationFrame(() => input()?.focus())
+}
+
+function clearPasswordResetValidation(field: 'username' | 'display_name' | 'contact') {
+  if (passwordResetInvalidField.value !== field) return
+  passwordResetInvalidField.value = ''
+  passwordHelpMessage.value = ''
 }
 
 async function submitPasswordResetRequest() {
@@ -239,18 +286,31 @@ async function submitPasswordResetRequest() {
   }
 
   passwordHelpMessage.value = ''
+  passwordResetInvalidField.value = ''
   passwordResetSubmitted.value = false
 
   if (!payload.username) {
-    passwordHelpMessage.value = '请先填写需要重置密码的企业账号'
+    showPasswordResetValidation(
+      'username',
+      '请先填写需要重置密码的企业账号',
+      () => passwordResetUsernameInput.value,
+    )
     return
   }
   if (!payload.display_name) {
-    passwordHelpMessage.value = '请填写姓名，方便管理员核验身份'
+    showPasswordResetValidation(
+      'display_name',
+      '请填写姓名，方便管理员核验身份',
+      () => passwordResetDisplayNameInput.value,
+    )
     return
   }
   if (!payload.contact) {
-    passwordHelpMessage.value = '请填写联系电话或邮箱，方便管理员核验'
+    showPasswordResetValidation(
+      'contact',
+      '请填写联系电话或邮箱，方便管理员核验',
+      () => passwordResetContactInput.value,
+    )
     return
   }
 
@@ -260,11 +320,50 @@ async function submitPasswordResetRequest() {
     passwordResetSubmitted.value = true
     passwordResetRequestId.value = response.request_id ?? ''
     passwordHelpMessage.value = response.message
+    await refreshPasswordResetClaim()
   } catch (error) {
     passwordHelpMessage.value = getApiErrorMessage(error)
   } finally {
     isPasswordResetSubmitting.value = false
   }
+}
+
+function clearPasswordResetPoll() {
+  if (!passwordResetPollTimer) return
+  window.clearTimeout(passwordResetPollTimer)
+  passwordResetPollTimer = undefined
+}
+
+function schedulePasswordResetPoll() {
+  clearPasswordResetPoll()
+  if (passwordResetClaim.value?.status !== 'pending' || document.visibilityState !== 'visible') return
+  passwordResetPollTimer = window.setTimeout(() => {
+    void refreshPasswordResetClaim(true)
+  }, 15_000)
+}
+
+async function refreshPasswordResetClaim(quiet = false) {
+  if (!quiet) isPasswordResetClaimRefreshing.value = true
+  try {
+    passwordResetClaim.value = await authApi.getPasswordResetClaim()
+  } catch {
+    if (!quiet) passwordResetClaim.value = null
+  } finally {
+    if (!quiet) isPasswordResetClaimRefreshing.value = false
+    schedulePasswordResetPoll()
+  }
+}
+
+function handlePasswordResetVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    void refreshPasswordResetClaim(true)
+  } else {
+    clearPasswordResetPoll()
+  }
+}
+
+function openPasswordResetCompletion() {
+  void router.push({ name: 'reset-password' })
 }
 
 async function submitLogin() {
@@ -313,6 +412,13 @@ onMounted(() => {
   if (recentAccount.value && !username.value.trim()) {
     username.value = recentAccount.value.username
   }
+  document.addEventListener('visibilitychange', handlePasswordResetVisibilityChange)
+  void refreshPasswordResetClaim()
+})
+
+onBeforeUnmount(() => {
+  clearPasswordResetPoll()
+  document.removeEventListener('visibilitychange', handlePasswordResetVisibilityChange)
 })
 </script>
 
@@ -325,7 +431,7 @@ onMounted(() => {
       <div class="relative z-10 flex items-center gap-4 px-14 pt-12">
         <span class="flex size-20 shrink-0 items-center justify-center rounded-xl bg-white/95 p-2 shadow-lg shadow-black/20">
           <img
-            src="/brand/huadeng_group_dynamic_logo.svg"
+            :src="brandLogoUrl"
             alt="华登集团"
             class="h-full w-full object-contain"
           >
@@ -377,7 +483,7 @@ onMounted(() => {
     <section class="flex w-full flex-col lg:w-[44%]">
       <div class="flex items-center gap-3 border-b border-slate-800 bg-slate-950 px-6 py-3 text-white lg:hidden">
         <span class="flex size-12 shrink-0 items-center justify-center rounded-lg bg-white/95 p-1.5">
-          <img src="/brand/huadeng_group_dynamic_logo.svg" alt="华登集团" class="h-full w-full object-contain">
+          <img :src="brandLogoUrl" alt="华登集团" class="h-full w-full object-contain">
         </span>
         <div>
           <div class="text-[16px] font-semibold leading-tight">Royal Regent Nexus</div>
@@ -419,6 +525,54 @@ onMounted(() => {
               切换账号
             </button>
           </div>
+
+          <section
+            v-if="passwordResetClaim && passwordResetClaim.status !== 'none'"
+            class="mb-5 rounded-xl border p-4"
+            :class="passwordResetClaimTone"
+            aria-live="polite"
+          >
+            <div class="flex items-start gap-3">
+              <span class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-white/80">
+                <CheckCircle2 v-if="passwordResetClaim.status === 'approved' || passwordResetClaim.status === 'completed'" class="size-4" aria-hidden="true" />
+                <KeyRound v-else class="size-4" aria-hidden="true" />
+              </span>
+              <div class="min-w-0 flex-1">
+                <h3 class="text-[13px] font-bold">{{ passwordResetClaimTitle }}</h3>
+                <p class="mt-1 text-[12px] leading-5 opacity-80">{{ passwordResetClaim.message }}</p>
+                <p v-if="passwordResetClaim.request_id" class="mt-1 truncate font-mono text-[10.5px] opacity-70">申请编号：{{ passwordResetClaim.request_id }}</p>
+              </div>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button
+                v-if="passwordResetClaim.can_complete"
+                class="rounded-lg bg-teal-700 px-3 py-2 text-[12px] font-bold text-white hover:bg-teal-800"
+                type="button"
+                @click="openPasswordResetCompletion"
+              >
+                立即设置新密码
+              </button>
+              <button
+                v-if="passwordResetClaim.status === 'pending'"
+                class="flex items-center gap-1.5 rounded-lg border border-current/15 bg-white/70 px-3 py-2 text-[12px] font-semibold"
+                type="button"
+                :disabled="isPasswordResetClaimRefreshing"
+                @click="refreshPasswordResetClaim()"
+              >
+                <LoaderCircle v-if="isPasswordResetClaimRefreshing" class="size-3.5 animate-spin" aria-hidden="true" />
+                <RefreshCw v-else class="size-3.5" aria-hidden="true" />
+                刷新状态
+              </button>
+              <button
+                v-if="['rejected', 'expired', 'legacy_invalid'].includes(passwordResetClaim.status)"
+                class="rounded-lg border border-current/15 bg-white/70 px-3 py-2 text-[12px] font-semibold"
+                type="button"
+                @click="openPasswordHelp"
+              >
+                重新申请
+              </button>
+            </div>
+          </section>
 
           <form class="space-y-4" novalidate @submit.prevent="submitLogin">
             <label class="block">
@@ -542,7 +696,7 @@ onMounted(() => {
             </span>
             <span>
               <span id="password-help-title" class="block text-[16px] font-bold text-slate-950">密码重置协助</span>
-              <span class="mt-1 block text-[12.5px] leading-5 text-slate-500">提交后由管理员核验，并通过可信内部渠道传达临时密码。</span>
+              <span class="mt-1 block text-[12.5px] leading-5 text-slate-500">提交后由管理员核验，通过后可在当前浏览器直接设置新密码。</span>
             </span>
           </span>
           <button
@@ -557,7 +711,7 @@ onMounted(() => {
 
         <div class="password-help-body space-y-3 overflow-y-auto px-5 py-3">
           <div class="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[12.5px] leading-5 text-amber-800">
-            为保护内部系统账号安全，系统不会透露账号是否匹配，也不会自动发送短信或邮件。管理员核验后会通过线下或企业内部可信渠道传达临时密码。
+            为保护内部系统账号安全，系统不会透露账号是否匹配，也不会发送短信、邮件或临时密码。请保留当前浏览器，审核通过后可在此直接设置新密码。
           </div>
 
           <div class="grid gap-2">
@@ -578,15 +732,15 @@ onMounted(() => {
             <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
               <CheckCircle2 class="mt-0.5 size-4 shrink-0 text-emerald-700" aria-hidden="true" />
               <span>
-                <span class="block text-[12.5px] font-bold text-slate-900">3. 获取临时密码</span>
-                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">通过线下或企业内部可信渠道接收一次性临时密码。</span>
+                <span class="block text-[12.5px] font-bold text-slate-900">3. 原浏览器领取</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">管理员批准后，当前浏览器会显示设置新密码入口。</span>
               </span>
             </div>
             <div class="flex gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5">
               <ShieldCheck class="mt-0.5 size-4 shrink-0 text-teal-700" aria-hidden="true" />
               <span>
                 <span class="block text-[12.5px] font-bold text-slate-900">4. 设置正式密码</span>
-                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">使用临时密码登录后，必须先设置正式密码才能进入系统。</span>
+                <span class="mt-0.5 block text-[12px] leading-5 text-slate-500">无需旧密码或临时密码，直接设置仅由本人掌握的新密码。</span>
               </span>
             </div>
           </div>
@@ -595,6 +749,7 @@ onMounted(() => {
             <CheckCircle2 class="mx-auto size-8 text-emerald-700" aria-hidden="true" />
             <h3 class="mt-2 text-[14px] font-bold text-emerald-900">申请已提交</h3>
             <p class="mt-1 text-[12px] leading-5 text-emerald-800">{{ passwordHelpMessage }}</p>
+            <p class="mt-2 text-[12px] font-semibold leading-5 text-emerald-900">请保留当前浏览器。审核通过后，本页面会显示“设置新密码”入口。</p>
             <p v-if="passwordResetRequestId" class="mt-2 font-mono text-[11.5px] text-emerald-700">申请编号：{{ passwordResetRequestId }}</p>
           </div>
 
@@ -602,31 +757,49 @@ onMounted(() => {
             <label class="grid gap-1.5">
               <span class="text-[12px] font-bold text-slate-600">企业账号 / 工号</span>
               <input
+                ref="passwordResetUsernameInput"
                 v-model="passwordResetForm.username"
                 class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                :class="{ 'border-red-300 bg-red-50/40 focus:border-red-500 focus:ring-red-500/15': passwordResetInvalidField === 'username' }"
                 autocomplete="username"
+                :aria-describedby="passwordHelpMessage ? 'password-reset-feedback' : undefined"
+                :aria-invalid="passwordResetInvalidField === 'username'"
                 placeholder="请输入需要重置的账号"
+                required
                 type="text"
+                @input="clearPasswordResetValidation('username')"
               >
             </label>
             <label class="grid gap-1.5">
               <span class="text-[12px] font-bold text-slate-600">姓名</span>
               <input
+                ref="passwordResetDisplayNameInput"
                 v-model="passwordResetForm.display_name"
                 class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                :class="{ 'border-red-300 bg-red-50/40 focus:border-red-500 focus:ring-red-500/15': passwordResetInvalidField === 'display_name' }"
                 autocomplete="name"
+                :aria-describedby="passwordHelpMessage ? 'password-reset-feedback' : undefined"
+                :aria-invalid="passwordResetInvalidField === 'display_name'"
                 placeholder="便于管理员核验身份"
+                required
                 type="text"
+                @input="clearPasswordResetValidation('display_name')"
               >
             </label>
             <label class="grid gap-1.5">
               <span class="text-[12px] font-bold text-slate-600">联系电话或邮箱</span>
               <input
+                ref="passwordResetContactInput"
                 v-model="passwordResetForm.contact"
                 class="h-9 rounded-lg border border-slate-200 bg-slate-50 px-3 text-[13px] outline-none transition focus:border-teal-700 focus:bg-white focus:ring-[3px] focus:ring-teal-700/15"
+                :class="{ 'border-red-300 bg-red-50/40 focus:border-red-500 focus:ring-red-500/15': passwordResetInvalidField === 'contact' }"
                 autocomplete="email"
+                :aria-describedby="passwordHelpMessage ? 'password-reset-feedback' : undefined"
+                :aria-invalid="passwordResetInvalidField === 'contact'"
                 placeholder="例如手机号或企业邮箱"
+                required
                 type="text"
+                @input="clearPasswordResetValidation('contact')"
               >
             </label>
             <label class="grid gap-1.5">
@@ -637,6 +810,17 @@ onMounted(() => {
                 placeholder="可填写厂区、部门或其他核验说明"
               ></textarea>
             </label>
+
+            <p
+              v-if="passwordHelpMessage && !passwordResetSubmitted"
+              id="password-reset-feedback"
+              aria-live="polite"
+              class="flex items-start gap-1.5 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-600"
+              role="alert"
+            >
+              <CircleAlert class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              <span>{{ passwordHelpMessage }}</span>
+            </p>
 
             <button
               class="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-teal-700 text-[13px] font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -649,13 +833,6 @@ onMounted(() => {
               {{ isPasswordResetSubmitting ? '提交中...' : passwordResetSubmitted ? '申请已提交' : '提交重置申请' }}
             </button>
           </form>
-          <p
-            v-if="passwordHelpMessage && !passwordResetSubmitted"
-            class="rounded-lg border px-3 py-2 text-[12px] font-medium"
-            :class="passwordResetSubmitted ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-600'"
-          >
-            {{ passwordHelpMessage }}
-          </p>
         </div>
       </section>
     </div>

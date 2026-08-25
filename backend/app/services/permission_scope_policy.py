@@ -238,13 +238,17 @@ CARTON_MARK_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         (*WAREHOUSE_DEPARTMENTS, "carton"),
         guidance="仅纸箱部或 PMC/仓管范围可上传 Excel、打印 PDF 并核对",
     ),
+    "carton_mark:customer_manage": ScopePolicy(
+        (*WAREHOUSE_DEPARTMENTS, "carton"),
+        guidance="仅纸箱部主管、经理或更高权限可维护本厂箱唛客户主数据",
+    ),
     "carton_mark:photo_upload": ScopePolicy(
-        ("qa", "qc"),
-        guidance="QA 旧入口和 QC 部可上传现场箱唛照片",
+        ("carton", "qa", "qc"),
+        guidance="纸箱部主管以上、QA 旧入口和 QC 部可上传现场箱唛照片",
     ),
     "carton_mark:review": ScopePolicy(
-        ("qa", "qc"),
-        guidance="QA 旧入口和 QC 部可复核打印 PDF 与现场照片",
+        ("carton", "qa", "qc"),
+        guidance="纸箱部主管以上、QA 旧入口和 QC 部可复核打印 PDF 与现场照片",
     ),
 }
 

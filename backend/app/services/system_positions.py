@@ -19,7 +19,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v18"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v21"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -76,6 +76,20 @@ INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
     "factory_mold_capability:manage",
 )
 CARTON_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_procurement:customer_manage"
+CARTON_MARK_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_mark:customer_manage"
+CARTON_QC_WORKSPACE_POSITION_ROLE_IDS = frozenset(
+    {
+        "position_carton_manager",
+        "position_carton_supervisor",
+    }
+)
+CARTON_QC_WORKSPACE_PERMISSION_CODES = frozenset(
+    {
+        "carton_mark:read",
+        "carton_mark:photo_upload",
+        "carton_mark:review",
+    }
+)
 CARTON_OPERATION_PERMISSION_CODES = tuple(
     code
     for code in CARTON_PROCUREMENT_PERMISSION_CODES
@@ -138,6 +152,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "molding_sample:notification_read",
     "carton_mark:read",
     "carton_mark:template_upload",
+    CARTON_MARK_CUSTOMER_MANAGE_PERMISSION_CODE,
     "carton_mark:photo_upload",
     "carton_mark:review",
     *CARTON_PROCUREMENT_PERMISSION_CODES,
@@ -380,6 +395,9 @@ CARTON_WAREHOUSE_PERMISSION_CODES = (
 CARTON_SUPERVISOR_PERMISSION_CODES = (
     *CARTON_WAREHOUSE_PERMISSION_CODES,
     CARTON_CUSTOMER_MANAGE_PERMISSION_CODE,
+    CARTON_MARK_CUSTOMER_MANAGE_PERMISSION_CODE,
+    "carton_mark:photo_upload",
+    "carton_mark:review",
 )
 CARTON_EXTERNAL_PERMISSION_CODES = (
     PRODUCTION_TASK_READ_PERMISSION_CODE,
@@ -656,7 +674,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="carton",
         department_name="纸箱部",
         sort_order=800,
-        description="纸箱箱唛模板、采购仓务与客户主数据管理",
+        description="跨厂操作纸箱箱唛模板、采购仓务与客户主数据，并执行 QC 箱唛核验",
+        scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=CARTON_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -665,7 +684,7 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="carton",
         department_name="纸箱部",
         sort_order=810,
-        description="纸箱箱唛模板、采购仓务与客户主数据管理",
+        description="维护本厂纸箱箱唛模板、采购仓务与客户主数据，并执行 QC 箱唛核验",
         permission_codes=CARTON_SUPERVISOR_PERMISSION_CODES,
     ),
     SystemPositionDefinition(

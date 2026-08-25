@@ -32,6 +32,7 @@ const cartonApiMock = vi.hoisted(() => ({
   uploadHistoryInventory: vi.fn(),
   exportPurchaseOrder: vi.fn(),
   uploadReceipt: vi.fn(),
+  deleteReceiptImport: vi.fn(),
   latestReceiptImport: vi.fn(),
   listImports: vi.fn(),
   listReceipts: vi.fn(),
@@ -150,6 +151,7 @@ describe('CartonProcurementView frontend workspace', () => {
     cartonApiMock.listClosings.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listExceptions.mockRejectedValue(new Error('offline test'))
     cartonApiMock.latestReceiptImport.mockResolvedValue(null)
+    cartonApiMock.deleteReceiptImport.mockResolvedValue(undefined)
     cartonApiMock.exportPurchaseOrder.mockResolvedValue(new Blob(['xlsx']))
     Object.defineProperty(window.URL, 'createObjectURL', {
       configurable: true,
@@ -190,9 +192,9 @@ describe('CartonProcurementView frontend workspace', () => {
         specification: line.specification,
         dimension_unit: line.dimension_unit,
         usage_quantity: String(line.usage_quantity),
-        required_quantity: String(line.usage_quantity * payload.product_order_quantity),
+        required_quantity: String(Math.ceil(payload.product_order_quantity / line.usage_quantity)),
         received_quantity: '0',
-        remaining_quantity: String(line.usage_quantity * payload.product_order_quantity),
+        remaining_quantity: String(Math.ceil(payload.product_order_quantity / line.usage_quantity)),
         unit: line.unit,
         unit_price: '0',
         currency: 'CNY',
@@ -337,8 +339,8 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('纸品类型')
     expect(wrapper.text()).toContain('纸质')
     expect(wrapper.text()).toContain('规格')
-    expect(wrapper.text()).toContain('单件用量')
-    expect(wrapper.text()).toContain('需求数量（自动）')
+    expect(wrapper.text()).toContain('每箱个数')
+    expect(wrapper.text()).toContain('纸箱数量（自动）')
     expect(wrapper.text()).toContain('滑板纸')
     expect(wrapper.text()).toContain('卡纸')
 
@@ -347,12 +349,15 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('input[aria-label="合同号"]').setValue('SC-DEMO-001')
     await wrapper.get('input[aria-label="货号"]').setValue('203399999')
     await wrapper.get('input[aria-label="规格 1"]').setValue('30 × 20 × 15 cm')
-    expect(wrapper.get('output[aria-label="需求数量 1"]').text()).toBe('30')
+    expect(wrapper.get('output[aria-label="纸箱数量 1"]').text()).toBe('30')
+    await wrapper.get('input[aria-label="订单数量"]').setValue('3601')
+    expect(wrapper.get('output[aria-label="纸箱数量 1"]').text()).toBe('31')
+    await wrapper.get('input[aria-label="订单数量"]').setValue('3600')
     await findButton(wrapper, '新增纸品明细').trigger('click')
     await wrapper.get('input[aria-label="纸质 2"]').setValue('A9A')
     await wrapper.get('input[aria-label="规格 2"]').setValue('29 × 19 cm')
-    await wrapper.get('input[aria-label="单件用量 2"]').setValue('0.5')
-    expect(wrapper.get('output[aria-label="需求数量 2"]').text()).toBe('1,800')
+    await wrapper.get('input[aria-label="每箱个数 2"]').setValue('2')
+    expect(wrapper.get('output[aria-label="纸箱数量 2"]').text()).toBe('1,800')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -474,7 +479,7 @@ describe('CartonProcurementView frontend workspace', () => {
         paper_quality: 'A33+B',
         specification: '31.5 × 11.125 × 11.25',
         dimension_unit: 'in',
-        usage_quantity: '0.00833333',
+        usage_quantity: '120',
         required_quantity: '30',
         received_quantity: '0',
         remaining_quantity: '30',
@@ -684,11 +689,12 @@ describe('CartonProcurementView frontend workspace', () => {
       duplicate: false,
       parse_summary: {
         engine: 'rapidocr-pp-ocrv6',
+        parser_version: 'delivery-note-qwen-v4',
         row_count: 18,
         matched_count: 0,
         issue_count: 18,
         warnings: ['图片/PDF 仅作为 OCR 预览，数量和纸品字段必须逐行人工复核'],
-        document: { delivery_note_no: 'DN26061301', delivery_date: '2013-06-26' },
+        document: { delivery_note_no: 'DN26061301', delivery_date: '2013-06-26', raw_text_excerpt: 'SC700145011/3600 203302038 外箱 A33+B 31.5 x 11.125 x 11.25 10' },
         rows: [{
           source_sheet: 'OCR',
           source_row: 1,
@@ -697,6 +703,7 @@ describe('CartonProcurementView frontend workspace', () => {
           item_no: '203302038',
           packaging_type: '待复核',
           paper_quality: '待复核',
+          specification: '31.5 × 11.125 × 11.25 in',
           delivered_quantity: 0,
           match_status: 'MISSING_ORDER',
           suggestion: '未找到可关联的正式订单明细',
@@ -717,10 +724,71 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('识别总行数18 行')
     expect(wrapper.text()).toContain('已匹配正式订单0 行')
     expect(wrapper.text()).toContain('需要人工处理18 行')
-    expect(wrapper.text()).toContain('文件已成功导入，但没有找到可关联的正式纸箱订单')
+    expect(wrapper.text()).toContain('已识别 18 行送货明细，但没有找到可关联的正式纸箱订单')
     expect(wrapper.text()).toContain('SC700145011/3600')
+    expect(wrapper.text()).toContain('31.5 × 11.125 × 11.25 in')
+    expect(wrapper.text()).toContain('识别诊断详情（OCR 原文、引擎与警告）')
+    expect(wrapper.text()).toContain('delivery-note-qwen-v4')
     expect(wrapper.text()).toContain('前往异常中心')
+    expect(wrapper.text()).toContain('删除本次导入')
     expect(wrapper.text()).not.toContain('等待导入并复核送货单')
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await findButton(wrapper, '删除本次导入').trigger('click')
+    await flushPromises()
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('DN26061301.jpg'))
+    expect(cartonApiMock.deleteReceiptImport).toHaveBeenCalledWith('huaxing', 'CIB-REAL-IMAGE')
+    expect(wrapper.text()).toContain('派生异常已清理，订单、收料和库存未受影响')
+    expect(wrapper.text()).not.toContain('送货单识别完成')
+    expect(wrapper.text()).toContain('等待导入并复核送货单')
+  })
+
+  it('shows OCR raw text and warnings when an imported image has zero structured rows', async () => {
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.uploadReceipt.mockResolvedValue({
+      id: 'CIB-ZERO-ROWS',
+      factory_id: 'huaxing',
+      import_type: 'DELIVERY_NOTE',
+      original_filename: '微信图片.jpg',
+      source_sha256: 'zero-rows',
+      status: 'REQUIRES_REVIEW',
+      duplicate: false,
+      parse_summary: {
+        engine: 'rapidocr-pp-ocrv6+pytesseract-fallback',
+        parser_version: 'delivery-note-qwen-v4',
+        row_count: 0,
+        matched_count: 0,
+        issue_count: 0,
+        warnings: ['未找到四列表格边界，请核对图片方向和清晰度'],
+        document: {
+          delivery_note_no: 'DN26061301',
+          delivery_date: '2026-06-13',
+          raw_text_excerpt: 'DN26061301\nSC700145011/3600-203302038\n普通箱 A33+B\n31.5 x 11.125 x 11.25\n6',
+        },
+        rows: [],
+      },
+    })
+
+    const wrapper = mountView('receipts')
+    await flushPromises()
+    const input = wrapper.get('input[aria-label="选择送货单文件"]')
+    expect(input.attributes('accept')).toContain('.heic')
+    const file = new File(['unstructured-delivery-note'], '微信图片.jpg', { type: 'image/jpeg' })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('文件已成功导入，但未解析出结构化送货明细')
+    expect(wrapper.text()).toContain('OCR 识别原文')
+    expect(wrapper.text()).toContain('SC700145011/3600-203302038')
+    expect(wrapper.text()).toContain('未找到四列表格边界')
+    expect(wrapper.text()).toContain('未解析出结构化明细；请查看上方“识别诊断详情”')
+    expect(wrapper.text()).toContain('删除本次导入')
   })
 
   it('separates realtime inventory operations from period-end reconciliation', () => {

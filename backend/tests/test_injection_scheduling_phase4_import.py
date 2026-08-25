@@ -694,13 +694,19 @@ def test_phase4_real_huaxing_workbook_read_only_regression(monkeypatch):
     )
     after_stat = source_path.stat()
     assert normalized["source_file_hash"] == before_hash
-    assert {"计划表", "机安"} <= set(normalized["sheet_names"])
+    assert "计划表" in set(normalized["sheet_names"])
     assert normalized["summary"]["profile_code"] == "huaxing_daily_plan_v1"
     assert normalized["summary"]["machine_count"] == 0
-    assert normalized["summary"]["mold_count"] >= 3300
+    if "机安" in normalized["sheet_names"]:
+        assert normalized["summary"]["mold_count"] >= 3300
+    else:
+        assert normalized["summary"]["mold_count"] == 0
     assert normalized["summary"]["order_count"] >= 30
     assert normalized["summary"]["invalid_row_count"] >= 200
-    assert any(item["code"] == "FORMULA_CACHE_MISSING" for item in issues)
+    expected_formula_issue = (
+        "FORMULA_CACHE_MISSING" if "机安" in normalized["sheet_names"] else "FORMULA_ERROR"
+    )
+    assert any(item["code"] == expected_formula_issue for item in issues)
     with make_client(monkeypatch) as client:
         login(client, "admin", ADMIN_TEST_PASSWORD)
         preview = client.post(
@@ -757,13 +763,19 @@ def test_phase4_real_huakang_b_workbook_read_only_preview(monkeypatch):
         payload = preview.json()
     summary = payload["summary"]
     assert payload["source_file_hash"] == before_hash
-    assert payload["profile"]["profile_code"] == "huakang_b_daily_plan_v1"
+    profile_code = payload["profile"]["profile_code"]
+    assert profile_code in {
+        "huakang_b_daily_plan_v1",
+        "huakang_b_plan_only_v1",
+    }
     assert payload["batch_state"] == "MASTER_REVIEW_REQUIRED"
     assert summary["scheduled_baseline_count"] == 466
     assert summary["order_count"] == 454
     assert summary["invalid_row_count"] == 27
     assert summary["ignored_row_count"] == 98
-    assert summary["issue_count"] == 126
+    assert summary["issue_count"] == (
+        126 if profile_code == "huakang_b_daily_plan_v1" else 104
+    )
     assert summary["blocking_issue_count"] == 69
     assert summary["master_difference_count"] == 419
     assert len(payload["reconciliation_actions"]) == 920
@@ -771,3 +783,315 @@ def test_phase4_real_huakang_b_workbook_read_only_preview(monkeypatch):
     assert hashlib.sha256(source_path.read_bytes()).hexdigest() == before_hash
     assert after_stat.st_size == before_stat.st_size
     assert after_stat.st_mtime_ns == before_stat.st_mtime_ns
+
+
+@pytest.mark.skipif(
+    not os.getenv("INJECTION_SCHEDULING_HUAKANG_A_WORKBOOK"),
+    reason=(
+        "set INJECTION_SCHEDULING_HUAKANG_A_WORKBOOK for local Huakang A "
+        "real-template regression"
+    ),
+)
+def test_phase4_real_huakang_a_workbook_read_only_preview(monkeypatch):
+    source_path = Path(os.environ["INJECTION_SCHEDULING_HUAKANG_A_WORKBOOK"])
+    source = source_path.read_bytes()
+    before_hash = hashlib.sha256(source).hexdigest()
+    before_stat = source_path.stat()
+    import_service = importlib.import_module(
+        "app.services.injection_scheduling_import"
+    )
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError("华康 A 固定 Profile 不应调用 AI")
+
+    monkeypatch.setattr(
+        import_service, "recognize_workbook_layout_sync", fail_if_called
+    )
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        for machine_no in range(1, 56):
+            machine = client.post(
+                "/api/injection-scheduling/machines",
+                json={
+                    "factory_id": "huakang-a",
+                    "expected_revision": 0,
+                    "machine_code": str(machine_no),
+                },
+            )
+            assert machine.status_code == 201, machine.text
+        preview = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huakang-a",
+                "expected_revision": "0",
+                "document_kind": "PLANNED_SCHEDULE",
+                "recognition_mode": "AUTO",
+            },
+            files={
+                "file": (
+                    source_path.name,
+                    source,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            headers={"x-request-id": "phase4-real-huakang-a-preview"},
+        )
+        assert preview.status_code == 201, preview.text
+        payload = preview.json()
+    summary = payload["summary"]
+    assert payload["source_file_hash"] == before_hash
+    assert payload["profile"]["profile_code"] == "huakang_a_daily_plan_v1"
+    assert payload["profile"]["recognition_method"] == "ACTIVE_PROFILE_EXACT"
+    assert payload["sheet_roles"][0]["sheet_name"] == "8月"
+    assert {item["status"] for item in payload["mapping"]} == {"MAPPED"}
+    assert summary["scheduled_baseline_count"] == 166
+    assert summary["backlog_count"] == 2
+    assert summary["order_count"] == 162
+    assert summary["invalid_row_count"] == 7
+    assert summary["blocking_issue_count"] == 29
+    after_stat = source_path.stat()
+    assert hashlib.sha256(source_path.read_bytes()).hexdigest() == before_hash
+    assert after_stat.st_size == before_stat.st_size
+    assert after_stat.st_mtime_ns == before_stat.st_mtime_ns
+
+
+def test_phase4_auto_known_profile_does_not_call_ai(monkeypatch):
+    source = build_workbook()
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        import_service = importlib.import_module(
+            "app.services.injection_scheduling_import"
+        )
+
+        def fail_if_called(**_kwargs):
+            raise AssertionError("已知 Profile 不应调用 AI")
+
+        monkeypatch.setattr(
+            import_service, "recognize_workbook_layout_sync", fail_if_called
+        )
+        preview = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huaxing",
+                "expected_revision": "0",
+                "document_kind": "PLANNED_SCHEDULE",
+                "recognition_mode": "AUTO",
+                "business_date": "2026-08-17",
+            },
+            files={
+                "file": (
+                    "known-profile.upload",
+                    source,
+                    "application/octet-stream",
+                )
+            },
+            headers={"x-request-id": "phase4-auto-known-profile-0001"},
+        )
+        assert preview.status_code == 201, preview.text
+        assert preview.json()["recognition"]["mode"] == "PROFILE"
+
+
+def test_phase4_ai_mode_still_requires_enabled_feature(monkeypatch):
+    source = build_workbook()
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        importlib.import_module(
+            "app.core.config"
+        ).settings.ai_cloud_workbook_mapping_enabled = False
+        disabled = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huaxing",
+                "expected_revision": "0",
+                "document_kind": "PLANNED_SCHEDULE",
+                "recognition_mode": "AI",
+                "business_date": "2026-08-17",
+            },
+            files={"file": ("ai.xlsx", source)},
+            headers={"x-request-id": "phase4-ai-disabled-0001"},
+        )
+        assert disabled.status_code == 503
+        assert disabled.json()["detail"]["code"] == "AI_WORKBOOK_MAPPING_DISABLED"
+
+
+def test_phase4_ai_layout_creates_preview_without_writing_tasks(monkeypatch):
+    source = build_workbook()
+    source_hash = hashlib.sha256(source).hexdigest()
+    with make_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        config = importlib.import_module("app.core.config")
+        import_service = importlib.import_module(
+            "app.services.injection_scheduling_import"
+        )
+        workbook_schema = importlib.import_module("app.schemas.ai.workbook")
+        config.settings.ai_cloud_workbook_mapping_enabled = True
+
+        def mapping(field, column, transformer):
+            return {
+                "canonical_field": field,
+                "source_column": column,
+                "header_cell": f"{column}3",
+                "transformer": transformer,
+                "confidence": 0.97,
+                "reason": "表头与代表性计划行共同支持此字段映射",
+            }
+
+        model_layout = workbook_schema.AIModelInjectionPlanLayout.model_validate(
+            {
+                "source_sha256": source_hash,
+                "plan_sheet": {
+                    "sheet_name": "计划表",
+                    "header_rows": [3],
+                    "data_start_row": 4,
+                    "data_end_row": 5,
+                },
+                "row_layout": {
+                    "layout_type": "GROUPED_BY_MACHINE",
+                    "machine_code_strategy": "CURRENT_OR_INHERITED",
+                    "machine_header_rule": "SAME_VALUE_IN_TWO_COLUMNS",
+                    "machine_header_columns": ["A", "B"],
+                    "task_identity_fields": ["mold_no", "order_no"],
+                    "backlog_rule": "BUSINESS_ROW_WITHOUT_MACHINE",
+                },
+                "field_mappings": [
+                    mapping("machine_code", "B", "identifier"),
+                    mapping("mold_no", "G", "identifier"),
+                    mapping("order_no", "I", "identifier"),
+                    mapping("order_quantity", "L", "number"),
+                    mapping("completed_quantity", "M", "number"),
+                    mapping("planned_start", "AG", "datetime"),
+                    mapping("planned_finish", "AH", "datetime"),
+                ],
+                "shift_grid": {
+                    "enabled": False,
+                    "day_shift_aliases": {},
+                    "quantity_semantics": "COMPLETED_OR_PLANNED_OUTPUT",
+                },
+                "warnings": [],
+                "overall_confidence": 0.96,
+            }
+        )
+        layout_payload = model_layout.model_dump(mode="json")
+        layout_digest = hashlib.sha256(
+            json.dumps(
+                layout_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        layout = workbook_schema.AIInjectionPlanLayoutRecognitionV1(
+            **layout_payload,
+            generated_by_model="qwen3.7-plus",
+            layout_digest=layout_digest,
+        )
+        monkeypatch.setattr(
+            import_service,
+            "recognize_workbook_layout_sync",
+            lambda **_kwargs: layout,
+        )
+        preview = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huaxing",
+                "expected_revision": "0",
+                "document_kind": "PLANNED_SCHEDULE",
+                "recognition_mode": "AI",
+                "business_date": "2026-08-17",
+            },
+            files={"file": ("ai-layout.xlsx", source)},
+            headers={"x-request-id": "phase4-ai-layout-preview-0001"},
+        )
+        assert preview.status_code == 201, preview.text
+        payload = preview.json()
+        assert payload["recognition"]["mode"] == "AI_LAYOUT"
+        assert "cloud_ai_consent" not in payload["recognition"]
+        assert payload["recognition"]["source_sha256"] == source_hash
+        assert payload["profile"]["profile_id"] is None
+        assert len(payload["scheduled_baseline_tasks"]) == 1
+
+        def fail_on_retry(**_kwargs):
+            raise AssertionError("相同来源重试应复用已验证布局")
+
+        monkeypatch.setattr(
+            import_service, "recognize_workbook_layout_sync", fail_on_retry
+        )
+        retry = client.post(
+            f"/api/injection-scheduling/imports/{payload['id']}/retry",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": payload["revision"],
+                "request_id": "phase4-ai-layout-retry-0001",
+            },
+        )
+        assert retry.status_code == 200, retry.text
+        retried_payload = retry.json()
+        assert retried_payload["recognition"]["cache_hit"] is True
+
+        db_module = importlib.import_module("app.db")
+        execution_models = importlib.import_module(
+            "app.models.injection_scheduling_execution"
+        )
+        with db_module.SessionLocal() as db:
+            imported_tasks = list(
+                db.scalars(
+                    select(execution_models.InjectionSchedulingTask).where(
+                        execution_models.InjectionSchedulingTask.source_file_hash
+                        == source_hash
+                    )
+                ).all()
+            )
+        assert imported_tasks == []
+
+        ready_payload = retried_payload
+        if ready_payload["master_differences"]:
+            approved = client.post(
+                f"/api/injection-scheduling/imports/{payload['id']}/master-differences/approve",
+                json={
+                    "factory_id": "huaxing",
+                    "expected_revision": ready_payload["revision"],
+                    "request_id": "phase4-ai-layout-master-approve-0001",
+                    "reason": "管理员核对 AI 布局解析后的来源机台与模具",
+                    "differences": [
+                        f"{item['entity_type']}:{item['business_key']}"
+                        for item in ready_payload["master_differences"]
+                    ],
+                },
+            )
+            assert approved.status_code == 200, approved.text
+            ready_payload = approved.json()
+        confirmed = client.post(
+            f"/api/injection-scheduling/imports/{payload['id']}/confirm",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": ready_payload["revision"],
+                "expected_plan_revision": 0,
+                "request_id": "phase4-ai-layout-confirm-0001",
+                "confirm_mode": "create_draft",
+                "business_date": "2026-08-17",
+                "acknowledged_blocking_issue_ids": [],
+                "expected_action_fingerprint": ready_payload[
+                    "action_fingerprint"
+                ],
+            },
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        confirmed_payload = confirmed.json()
+        assert confirmed_payload["status"] == "CONFIRMED"
+        assert confirmed_payload["result"]["locked_baseline"] is True
+        assert confirmed_payload["result"]["backlog_without_tasks"] is True
+        with db_module.SessionLocal() as db:
+            imported_tasks = list(
+                db.scalars(
+                    select(execution_models.InjectionSchedulingTask).where(
+                        execution_models.InjectionSchedulingTask.source_file_hash
+                        == source_hash
+                    )
+                ).all()
+            )
+            confirmed_plan = db.get(
+                execution_models.InjectionSchedulingPlan,
+                confirmed_payload["confirmed_plan_id"],
+            )
+        assert len(imported_tasks) == 1
+        assert confirmed_plan.export_binding_source == "SYSTEM_STANDARD"

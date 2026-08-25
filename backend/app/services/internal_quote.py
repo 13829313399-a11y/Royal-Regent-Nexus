@@ -27,8 +27,11 @@ from app.models.internal_quote import (
 )
 from app.schemas.internal_quote import (
     MANDATORY_SECTION_CODES,
+    SECTION_CODE_ORDER,
     InternalQuoteArchiveRequest,
     InternalQuoteAuditOut,
+    InternalQuoteBatchCopyRequest,
+    InternalQuoteBatchProductOut,
     InternalQuoteBusinessOwnerOut,
     InternalQuoteCloneRequest,
     InternalQuoteCreateRequest,
@@ -38,8 +41,10 @@ from app.schemas.internal_quote import (
     InternalQuotePageOut,
     InternalQuoteParticipationRemoveRequest,
     InternalQuoteParticipationUpdateRequest,
+    InternalQuoteProductImageOut,
     InternalQuoteReasonRequest,
     InternalQuoteReferenceFxUpdateRequest,
+    InternalQuoteReferenceMaterialsUpdateRequest,
     InternalQuoteReferenceSetOut,
     InternalQuoteReferenceSyncRequest,
     InternalQuoteRevisionOut,
@@ -69,22 +74,26 @@ from app.services.internal_quote_calculator import (
     content_hash,
     decimal_text,
     decimal_value,
+    resolve_sales_misc_and_settlement,
     total_from_calculation,
 )
 from app.services.internal_quote_prefill import prefill_molding_from_engineering
 from app.services.permission_codes import INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE
 
 
-SECTION_DEFINITIONS = (
-    ("sales", "业务部", ("sales-business",)),
-    ("engineering", "工程部", ("engineering",)),
-    ("electronic", "电子部", ("electronic",)),
-    ("molding", "啤机部", ("production", "molding")),
-    ("painting", "喷油部", ("production", "painting")),
-    ("slush", "搪胶部", ("slush",)),
-    ("sewing", "车缝部", ("sewing",)),
-    ("hair", "车发部", ("hair",)),
-    ("assembly", "装配部", ("assembly",)),
+SECTION_METADATA = {
+    "sales": ("业务部", ("sales-business",)),
+    "engineering": ("工程部", ("engineering",)),
+    "electronic": ("电子部", ("electronic",)),
+    "molding": ("啤机部", ("production", "molding")),
+    "painting": ("喷油部", ("production", "painting")),
+    "slush": ("搪胶部", ("slush",)),
+    "sewing": ("车缝部", ("sewing",)),
+    "hair": ("车发部", ("hair",)),
+    "assembly": ("装配部", ("assembly",)),
+}
+SECTION_DEFINITIONS = tuple(
+    (code, *SECTION_METADATA[code]) for code in SECTION_CODE_ORDER
 )
 SECTION_NAMES = {code: name for code, name, _ in SECTION_DEFINITIONS}
 SECTION_DEPARTMENTS = {code: departments for code, _, departments in SECTION_DEFINITIONS}
@@ -94,6 +103,8 @@ ALL_QUOTE_DEPARTMENTS = tuple(
 MUTABLE_SECTION_STATUSES = {"draft", "rejected"}
 REVIEWABLE_SECTION_STATUSES = {"pending_review", "na_pending"}
 COMPLETED_SECTION_STATUSES = {"approved", "not_applicable"}
+LEGACY_SECTION_REVIEW_MODULE_VERSION = "v2"
+WHOLE_QUOTE_REVIEW_MODULE_VERSION = "v3"
 VIEW_DEDUP_MINUTES = 5
 SECTION_EDIT_NOTIFICATION_EVENTS = {
     "quote_created",
@@ -108,8 +119,9 @@ FINAL_SUBMIT_NOTIFICATION_EVENTS = {
     "final_release_rejected",
     "final_release_invalidated",
 }
-FINAL_REVIEW_NOTIFICATION_EVENTS = {"final_release_submitted"}
+FINAL_REVIEW_NOTIFICATION_EVENTS = {"final_release_submitted", "whole_quote_submitted"}
 ARTIFACT_NOTIFICATION_EVENTS = {"customer_price_artifact_available"}
+SEWING_TAX_REFUND_FACTORY_IDS = frozenset({"huakang-c", "huakang-d"})
 ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS = (
     SECTION_EDIT_NOTIFICATION_EVENTS
     | SECTION_REVIEW_NOTIFICATION_EVENTS
@@ -125,6 +137,18 @@ def _json_object(value: str) -> dict[str, object]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def is_whole_quote_review(quote: InternalQuote) -> bool:
+    return quote.module_version == WHOLE_QUOTE_REVIEW_MODULE_VERSION
+
+
+def _ensure_section_review_workflow(quote: InternalQuote) -> None:
+    if is_whole_quote_review(quote):
+        raise HTTPException(
+            status_code=409,
+            detail="当前报价采用整单审核，不支持分段提交、分段审核或分段重开",
+        )
 
 
 def _json_list(value: str) -> list[dict[str, object]]:
@@ -347,6 +371,13 @@ def quote_to_out(
         workshop_name=quote.workshop_name,
         quote_no=quote.quote_no,
         product_name=quote.product_name,
+        quote_type=quote.quote_type or "single",
+        batch_id=quote.batch_id or quote.id,
+        batch_quote_no=quote.batch_quote_no or quote.quote_no,
+        batch_position=quote.batch_position or 1,
+        batch_size=quote.batch_size or 1,
+        baseline_quote_id=quote.baseline_quote_id or quote.id,
+        region_code=quote.region_code or "",
         customer=quote.customer,
         qty=quote.qty,
         version_label=quote.version_label,
@@ -756,7 +787,15 @@ def _cost_context(
         sales_payload = _json_object(by_code["sales"].payload_json) if "sales" in by_code else {}
     sales_has_cartons = bool(sales_payload.get("cartons"))
     sales_has_packaging_materials = bool(sales_payload.get("packaging_materials"))
-    indonesia_freight = decimal_value(sales_payload.get("indonesia_freight_hkd"), "印尼运费")
+    # Indonesia freight is a destination-specific direct cost. Historical and
+    # copied payloads may still carry the field on mainland/unspecified quotes;
+    # keep the stored evidence intact but never let it enter an inapplicable
+    # quote's authoritative cost context.
+    indonesia_freight = (
+        decimal_value(sales_payload.get("indonesia_freight_hkd"), "印尼运费")
+        if quote.region_code == "indonesia"
+        else Decimal("0")
+    )
     components = {
         "molding_hkd": value("molding"),
         "painting_hkd": value("painting"),
@@ -797,7 +836,7 @@ def _summary_markup_tiers(
 ) -> tuple[list[dict[str, object]], Decimal, Decimal]:
     default_moqs = (Decimal("3000"), Decimal("5000"), Decimal("10000"))
     raw_tiers = shipping_source.get("markup_tiers", [])
-    tiers: list[tuple[Decimal, Decimal]] = []
+    tiers: list[tuple[Decimal, Decimal, bool]] = []
     if isinstance(raw_tiers, list):
         for item in raw_tiers:
             if not isinstance(item, dict):
@@ -808,19 +847,19 @@ def _summary_markup_tiers(
             if moq <= 0 or moq != moq.to_integral_value() or markup < Decimal("0.01") or markup > Decimal("9.99"):
                 tiers = []
                 break
-            tiers.append((moq, markup))
+            tiers.append((moq, markup, item.get("include_in_output", True) is not False))
     tiers.sort(key=lambda item: item[0])
     if not tiers or any(tiers[index][0] <= tiers[index - 1][0] for index in range(1, len(tiers))):
-        tiers = [(moq, fallback_markup) for moq in default_moqs]
+        tiers = [(moq, fallback_markup, True) for moq in default_moqs]
 
     selected_moq = _summary_decimal(shipping_source.get("selected_markup_moq"))
-    selected_tier = next(((moq, markup) for moq, markup in tiers if moq == selected_moq), None)
+    selected_tier = next(((moq, markup) for moq, markup, _include in tiers if moq == selected_moq), None)
     if selected_tier is not None:
         active_moq, active_markup = selected_tier
     else:
         quote_quantity = _summary_decimal(quantity, "10000")
-        active_moq, active_markup = tiers[0]
-        for moq, markup in tiers:
+        active_moq, active_markup, _include = tiers[0]
+        for moq, markup, _include in tiers:
             if moq <= quote_quantity:
                 active_moq, active_markup = moq, markup
     return (
@@ -829,8 +868,9 @@ def _summary_markup_tiers(
                 "moq": decimal_text(moq),
                 "markup": decimal_text(markup),
                 "is_active": moq == active_moq,
+                "include_in_output": include_in_output,
             }
-            for moq, markup in tiers
+            for moq, markup, include_in_output in tiers
         ],
         active_moq,
         active_markup,
@@ -842,6 +882,7 @@ def _rr2_cost_summary(
     cost_context: dict[str, Decimal],
     snapshot: dict[str, object],
     quote_quantity: object = 10000,
+    factory_id: str = "huaxing",
 ) -> dict[str, object]:
     """Build the four rr2 summary tables from saved authoritative calculations.
 
@@ -872,6 +913,12 @@ def _rr2_cost_summary(
         rows = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
         return [item for item in rows if item.get("kind") == kind] if kind else rows
 
+    def pricing_lines(code: str) -> list[dict[str, object]]:
+        calculation_value = calculation(code)
+        extra = calculation_value.get("pricing_breakdown", [])
+        extra_rows = [item for item in extra if isinstance(item, dict)] if isinstance(extra, list) else []
+        return [*lines(code), *extra_rows]
+
     def text_matches(value: object, pattern: str) -> bool:
         return bool(re.search(pattern, str(value or ""), flags=re.IGNORECASE))
 
@@ -880,6 +927,9 @@ def _rr2_cost_summary(
     fx_hkd_usd = _summary_decimal(fx_values.get("hkd_usd"), "7.8")
     if fx_hkd_usd <= 0:
         fx_hkd_usd = Decimal("7.8")
+    fx_rmb_hkd = _summary_decimal(fx_values.get("rmb_hkd"), "0.85")
+    if fx_rmb_hkd <= 0:
+        fx_rmb_hkd = Decimal("0.85")
 
     sales_payload = payload("sales")
     sales_totals = totals("sales")
@@ -934,21 +984,50 @@ def _rr2_cost_summary(
         if text_matches(name, r"吸塑|blister"):
             electronic_blister += amount
 
-    import_material = Decimal("0")
-    domestic_material = Decimal("0")
-    injection_labor = Decimal("0")
-    for line in lines("molding", "injection"):
-        quantity = _summary_decimal(line.get("quantity"), "1")
-        material_amount = _summary_decimal(line.get("material_cost_hkd")) * quantity
-        process_amount = _summary_decimal(line.get("molding_cost_hkd")) * quantity
-        if text_matches(line.get("material"), r"^(POM|PVC|C[- ]?PVC)"):
-            domestic_material += material_amount
-        elif str(line.get("material") or "").strip():
-            import_material += material_amount
-        injection_labor += process_amount
+    molding_totals = totals("molding")
+    has_authoritative_material_split = (
+        molding_totals.get("injection_imported_material_hkd") is not None
+        and molding_totals.get("injection_domestic_material_hkd") is not None
+    )
+    import_material = _summary_decimal(molding_totals.get("injection_imported_material_hkd"))
+    domestic_material = _summary_decimal(molding_totals.get("injection_domestic_material_hkd"))
+    injection_labor = _summary_decimal(molding_totals.get("injection_labor_hkd"))
+    if not has_authoritative_material_split or molding_totals.get("injection_labor_hkd") is None:
+        legacy_import_material = Decimal("0")
+        legacy_domestic_material = Decimal("0")
+        legacy_injection_labor = Decimal("0")
+        for line in lines("molding", "injection"):
+            quantity = _summary_decimal(line.get("quantity"), "1")
+            material_amount = (
+                _summary_decimal(line.get("material_amount_hkd"))
+                if line.get("material_amount_hkd") is not None
+                else _summary_decimal(line.get("material_cost_hkd")) * quantity
+            )
+            process_amount = (
+                _summary_decimal(line.get("molding_amount_hkd"))
+                if line.get("molding_amount_hkd") is not None
+                else _summary_decimal(line.get("molding_cost_hkd")) * quantity
+            )
+            material_origin = str(line.get("material_origin") or "").strip().lower()
+            if material_origin == "domestic" or (
+                not material_origin and text_matches(line.get("material"), r"^(POM|PVC|C[- ]?PVC)")
+            ):
+                legacy_domestic_material += material_amount
+            elif material_origin == "imported" or str(line.get("material") or "").strip():
+                legacy_import_material += material_amount
+            legacy_injection_labor += process_amount
+        if not has_authoritative_material_split:
+            import_material = legacy_import_material
+            domestic_material = legacy_domestic_material
+        if molding_totals.get("injection_labor_hkd") is None:
+            injection_labor = legacy_injection_labor
+    molding_material = (
+        _summary_decimal(molding_totals.get("injection_material_hkd"))
+        if molding_totals.get("injection_material_hkd") is not None
+        else import_material + domestic_material
+    )
 
     factory_price = cost_context.get("factory_price_hkd", Decimal("0"))
-    molding_totals = totals("molding")
     painting_totals = totals("painting")
     painting_total = _summary_decimal(painting_totals.get("total_hkd"))
     painting_labor = _summary_decimal(painting_totals.get("painting_labor_hkd"))
@@ -958,6 +1037,24 @@ def _rr2_cost_summary(
         paint_material = painting_total * Decimal("0.30")
     slush_total = _summary_decimal(totals("slush").get("total_hkd"))
     sewing_totals = totals("sewing")
+    sewing_clothes_total = _summary_decimal(sewing_totals.get("clothes_hkd"))
+    if sewing_totals.get("clothes_material_hkd") is not None:
+        sewing_clothes_material = _summary_decimal(sewing_totals.get("clothes_material_hkd"))
+    else:
+        # Older calculations only stored line-level RMB amounts. Rebuild the
+        # refundable material conservatively, never treating labour as material.
+        sewing_clothes_material = Decimal("0")
+        for line in lines("sewing", "sewing_material"):
+            if str(line.get("category") or "clothes") != "clothes":
+                continue
+            cost_kind = str(line.get("cost_kind") or line.get("cost_type") or "")
+            is_labor = cost_kind == "labor" or "人工" in f"{line.get('item', '')}{line.get('part', '')}"
+            if is_labor:
+                continue
+            if line.get("amount_hkd") is not None:
+                sewing_clothes_material += _summary_decimal(line.get("amount_hkd"))
+            else:
+                sewing_clothes_material += _summary_decimal(line.get("amount_rmb")) / fx_rmb_hkd
     hair_section = by_code.get("hair")
     hair_total = (
         _summary_decimal(totals("hair").get("total_hkd"))
@@ -969,7 +1066,10 @@ def _rr2_cost_summary(
     electronic_total = _summary_decimal(totals("electronic").get("total_hkd"))
     assembly_total = _summary_decimal(assembly_totals.get("total_hkd"))
     carton_total = cost_context.get("carton_hkd", Decimal("0"))
-    indonesia_freight = _summary_decimal(sales_payload.get("indonesia_freight_hkd"))
+    # `_cost_context` is the authoritative, region-gated source. Do not read
+    # the raw Sales payload here or a stale/copied mainland value can bypass
+    # the destination rule in the summary and exported workbook.
+    indonesia_freight = _summary_decimal(cost_context.get("indonesia_freight_hkd"))
     additional_tax = _summary_decimal(sales_payload.get("additional_tax_hkd"))
 
     shipping_source = sales_payload.get("shipping", {})
@@ -986,15 +1086,17 @@ def _rr2_cost_summary(
         fallback_markup,
         quote_quantity,
     )
-    misc_ratio = _summary_decimal(shipping_source.get("misc_ratio", snapshot.get("misc_ratio", "0.02")), "0.02")
-    if misc_ratio < 0 or misc_ratio > 1:
+    try:
+        misc_ratio, settlement = resolve_sales_misc_and_settlement(
+            shipping_source,
+            legacy_scenarios,
+            snapshot,
+        )
+    except CalculationInputError:
+        # Saved historical payloads must remain readable even if an obsolete
+        # divisor is malformed. Save/preview paths enforce the strict bounds.
         misc_ratio = Decimal("0.02")
-    settlement = _summary_decimal(
-        shipping_source.get("divisor", first_scenario.get("settlement", snapshot.get("settlement", "0.98"))),
-        "0.98",
-    )
-    if settlement <= 0:
-        settlement = Decimal("0.98")
+        settlement = Decimal("1") - misc_ratio
     freight_share = _summary_decimal(
         shipping_source.get("freight_pct", first_scenario.get("freight_share", snapshot.get("freight_share", "0.48"))),
         "0.48",
@@ -1034,14 +1136,317 @@ def _rr2_cost_summary(
     ), None)
     freight, cabinet = transport_parts(yt40) if freight_enabled and yt40 else (Decimal("0"), Decimal("0"))
 
+    # The misc ratio is a share of the grossed-up quote, not a replacement for
+    # direct costs such as Indonesia freight and additional tax.  This mirrors
+    # the released workbook formulas:
+    #
+    #   quoted price = shipping floor * markup / (1 - misc ratio)
+    #   misc amount  = quoted price * misc ratio
+    #
+    # Consequently ``quoted price - misc amount`` always equals the price
+    # before the misc gross-up.  Keep the direct miscellaneous costs separate
+    # so they remain in cost totals exactly once without being displayed as the
+    # percentage-based ``t2.misc`` amount.
+    direct_misc_cost = indonesia_freight + additional_tax
+    shipping_floor = factory_price + additional_tax
+    sales_has_cartons = bool(sales_payload.get("cartons"))
+    sales_has_packaging_materials = bool(sales_payload.get("packaging_materials"))
+    section_labels = {
+        "engineering": "工程采购",
+        "electronic": "电子",
+        "molding": "胶件",
+        "painting": "喷油",
+        "slush": "搪胶",
+        "sewing": "车缝",
+        "hair": "车发",
+        "assembly": "装配",
+        "sales": "包装材料",
+    }
+    amount_fields = {
+        "material": "amount_hkd",
+        "carton": "per_piece_hkd",
+        "electronic_component": "amount_hkd",
+        "injection": "amount_hkd",
+        "blow": "amount_hkd",
+        "painting": "amount_hkd",
+        "painting_quick_labor": "amount_hkd",
+        "painting_quick_paint": "amount_hkd",
+        "painting_quick_paint_tax": "amount_hkd",
+        "slush": "amount_hkd",
+        "hair": "amount_hkd",
+        "sewing_quick": "amount_hkd",
+        "sewing_material": "amount_hkd",
+        "sewing_labor": "amount_hkd",
+        "assembly_process": "amount_hkd_pcs",
+        "assembly_manual_total": "amount_hkd_pcs",
+        "packaging_material": "amount_hkd",
+    }
+
+    def section_pricing_target(code: str) -> Decimal:
+        if code == "engineering":
+            value = _summary_decimal(totals(code).get("hardware_hkd")) + _summary_decimal(totals(code).get("auxiliary_hkd"))
+            if not sales_has_packaging_materials:
+                value += _summary_decimal(totals(code).get("packaging_hkd"))
+            if not sales_has_cartons:
+                value += _summary_decimal(totals(code).get("carton_hkd"))
+            return value
+        if code == "sales":
+            value = _summary_decimal(totals(code).get("packaging_material_hkd")) if sales_has_packaging_materials else Decimal("0")
+            if sales_has_cartons:
+                value += _summary_decimal(totals(code).get("carton_hkd"))
+            return value
+        return _summary_decimal(totals(code).get("total_hkd"))
+
+    def pricing_line_allowed(code: str, line: dict[str, object]) -> bool:
+        kind = str(line.get("kind") or "")
+        if kind not in amount_fields:
+            return False
+        if code == "engineering" and kind == "material":
+            return str(line.get("category") or "auxiliary") != "packaging" or not sales_has_packaging_materials
+        if code == "engineering" and kind == "carton":
+            return not sales_has_cartons
+        if code == "sales" and kind == "packaging_material":
+            return sales_has_packaging_materials
+        if code == "sales" and kind == "carton":
+            return sales_has_cartons
+        return True
+
+    pricing_entries: list[dict[str, object]] = []
+    for section_code in section_labels:
+        target = section_pricing_target(section_code)
+        if target <= 0:
+            continue
+        candidates: list[tuple[dict[str, object], Decimal]] = []
+        for line in pricing_lines(section_code):
+            if not pricing_line_allowed(section_code, line):
+                continue
+            amount = _summary_decimal(line.get(amount_fields[str(line.get("kind"))]))
+            if amount > 0:
+                candidates.append((line, amount))
+        candidate_total = sum((amount for _line, amount in candidates), Decimal("0"))
+        if candidate_total <= 0:
+            pricing_entries.append({
+                "section": section_code,
+                "label": section_labels[section_code],
+                "kind": "",
+                "category": "",
+                "auxiliary_category": "",
+                "amount_hkd": target,
+                "pricing_component_id": "",
+                "markup_override": None,
+            })
+            continue
+        allocation_factor = target / candidate_total
+        for line, amount in candidates:
+            label = str(line.get("group") or line.get("item") or line.get("process") or section_labels[section_code]).strip()
+            entry: dict[str, object] = {
+                "section": section_code,
+                "label": label or section_labels[section_code],
+                "kind": str(line.get("kind") or ""),
+                "category": str(line.get("category") or ""),
+                "auxiliary_category": str(line.get("auxiliary_category") or ""),
+                "amount_hkd": amount * allocation_factor,
+                "pricing_component_id": str(line.get("pricing_component_id") or "").strip(),
+                "formula_allocation_factor": decimal_text(allocation_factor),
+                "markup_override": (
+                    _summary_decimal(line.get("markup_override"))
+                    if line.get("markup_override") not in (None, "")
+                    else None
+                ),
+            }
+            for field in (
+                "process",
+                "persons",
+                "total_persons",
+                "teams",
+                "production_qty",
+                "standard_work_hours",
+            ):
+                if line.get(field) not in (None, ""):
+                    entry[field] = line.get(field)
+            pricing_entries.append(entry)
+
+    allocated_factory_cost = sum(
+        (_summary_decimal(entry.get("amount_hkd")) for entry in pricing_entries),
+        Decimal("0"),
+    )
+    if allocated_factory_cost > factory_price > 0:
+        allocation_factor = factory_price / allocated_factory_cost
+        for entry in pricing_entries:
+            entry["amount_hkd"] = _summary_decimal(entry.get("amount_hkd")) * allocation_factor
+            if entry.get("formula_allocation_factor") not in (None, ""):
+                entry["formula_allocation_factor"] = decimal_text(
+                    _summary_decimal(entry.get("formula_allocation_factor"), "1")
+                    * allocation_factor
+                )
+        allocated_factory_cost = factory_price
+    unallocated_factory_cost = factory_price - allocated_factory_cost
+    if unallocated_factory_cost > Decimal("0.000001"):
+        pricing_entries.append({
+            "section": "other",
+            "label": "主体未分配成本",
+            "kind": "",
+            "category": "",
+            "auxiliary_category": "",
+            "amount_hkd": unallocated_factory_cost,
+            "pricing_component_id": "",
+            "markup_override": None,
+        })
+
+    raw_component_rows = sales_payload.get("pricing_components", [])
+    raw_component_rows = raw_component_rows if isinstance(raw_component_rows, list) else []
+    component_definitions: list[dict[str, object]] = []
+    seen_component_ids: set[str] = set()
+    if sales_payload.get("pricing_mode") == "component":
+        for item in raw_component_rows:
+            if not isinstance(item, dict):
+                continue
+            component_id = str(item.get("id") or "").strip()
+            component_name = str(item.get("name") or "").strip()
+            key = component_id.casefold()
+            if not component_id or not component_name or key in seen_component_ids:
+                continue
+            seen_component_ids.add(key)
+            component_markup = _summary_decimal(item.get("markup_x"), decimal_text(markup))
+            if component_markup <= 0 or component_markup > Decimal("9.99"):
+                component_markup = markup
+            component_definitions.append({
+                "id": component_id,
+                "name": component_name,
+                "markup": component_markup,
+                "inherits_main_markup": item.get("markup_x") in (None, ""),
+            })
+
+    pricing_mode = "component" if component_definitions else "standard"
+    base_pricing_groups: list[dict[str, object]] = []
+    global_pricing_entries: list[dict[str, object]] = []
+    component_pricing_entries = pricing_entries
+    global_pricing_cost = Decimal("0")
+    if component_definitions:
+        def is_global_packaging_entry(entry: dict[str, object]) -> bool:
+            section_code = str(entry.get("section") or "")
+            kind = str(entry.get("kind") or "")
+            category = str(entry.get("category") or "")
+            label = str(entry.get("label") or "")
+            if section_code == "sales":
+                return True
+            if section_code == "engineering" and (
+                kind == "carton" or category == "packaging"
+            ):
+                return True
+            return section_code == "assembly" and bool(
+                re.search(r"包装|pack", label, flags=re.IGNORECASE)
+            )
+
+        global_pricing_entries = [
+            entry for entry in pricing_entries if is_global_packaging_entry(entry)
+        ]
+        component_pricing_entries = [
+            entry for entry in pricing_entries if not is_global_packaging_entry(entry)
+        ]
+        for entry in pricing_entries:
+            entry["is_global"] = is_global_packaging_entry(entry)
+        global_pricing_cost = sum(
+            (
+                _summary_decimal(entry.get("amount_hkd"))
+                for entry in global_pricing_entries
+            ),
+            Decimal("0"),
+        )
+        default_component_id = str(component_definitions[0]["id"])
+        component_ids = {str(item["id"]) for item in component_definitions}
+        component_costs = {component_id: Decimal("0") for component_id in component_ids}
+        for entry in component_pricing_entries:
+            component_id = str(entry.get("pricing_component_id") or "")
+            if component_id not in component_ids:
+                component_id = default_component_id
+            component_costs[component_id] += _summary_decimal(entry.get("amount_hkd"))
+        base_pricing_groups = [
+            {
+                "id": str(item["id"]),
+                "name": str(item["name"]),
+                "cost_hkd": component_costs[str(item["id"])],
+                "markup": _summary_decimal(item["markup"]),
+                "is_main": index == 0,
+                "inherits_main_markup": bool(item.get("inherits_main_markup")),
+            }
+            for index, item in enumerate(component_definitions)
+        ]
+    else:
+        detached: dict[tuple[str, str], dict[str, object]] = {}
+        detached_total = Decimal("0")
+        for entry in pricing_entries:
+            override = entry.get("markup_override")
+            override = _summary_decimal(override) if override is not None else None
+            if override is None or override == markup:
+                continue
+            amount = _summary_decimal(entry.get("amount_hkd"))
+            key = (str(entry.get("label") or "明细"), decimal_text(override))
+            row = detached.setdefault(key, {
+                "id": f"detail-{len(detached) + 1:02d}",
+                "name": key[0],
+                "cost_hkd": Decimal("0"),
+                "markup": override,
+                "is_main": False,
+                "inherits_main_markup": False,
+            })
+            row["cost_hkd"] = _summary_decimal(row["cost_hkd"]) + amount
+            detached_total += amount
+        base_pricing_groups = [{
+            "id": "main",
+            "name": "主倍率汇总",
+            "cost_hkd": max(factory_price - detached_total, Decimal("0")),
+            "markup": markup,
+            "is_main": True,
+            "inherits_main_markup": True,
+        }, *detached.values()]
+
+    def priced_groups(extra_main_cost: Decimal = Decimal("0")) -> tuple[list[dict[str, str]], Decimal, Decimal]:
+        rows_out: list[dict[str, str]] = []
+        after_markup_total = Decimal("0")
+        for group in base_pricing_groups:
+            pricing_base = _summary_decimal(group["cost_hkd"])
+            if group.get("is_main"):
+                pricing_base += global_pricing_cost + additional_tax + extra_main_cost
+            group_markup = _summary_decimal(group["markup"], decimal_text(markup))
+            after_markup = pricing_base * group_markup
+            after_settlement = after_markup / settlement
+            after_markup_total += after_markup
+            rows_out.append({
+                "id": str(group["id"]),
+                "name": str(group["name"]),
+                "cost_hkd": decimal_text(group["cost_hkd"]),
+                "pricing_base_hkd": decimal_text(pricing_base),
+                "markup": decimal_text(group_markup),
+                "settlement": decimal_text(settlement),
+                "quoted_hkd": decimal_text(after_settlement),
+                "inherits_main_markup": "true" if group.get("inherits_main_markup") else "false",
+            })
+        return rows_out, after_markup_total, after_markup_total / settlement
+
+    pricing_groups, _base_after_markup, base_price = priced_groups()
+    global_pricing_markup = (
+        _summary_decimal(base_pricing_groups[0].get("markup"), decimal_text(markup))
+        if base_pricing_groups
+        else markup
+    )
+    global_pricing_base = global_pricing_cost + additional_tax
+    global_pricing_quote = (
+        global_pricing_base * global_pricing_markup / settlement
+        if settlement > 0
+        else Decimal("0")
+    )
+    percentage_misc = base_price * misc_ratio
+
     t1_values = {
-        "base_price": factory_price * markup,
+        "base_price": base_price,
+        "material": molding_material,
         "imp_mat": import_material,
         "dom_mat": domestic_material,
         "blow": _summary_decimal(molding_totals.get("blow_hkd")),
         "slush": slush_total,
         "sewing_hair": hair_total,
-        "sewing_cloth": _summary_decimal(sewing_totals.get("clothes_hkd")),
+        "sewing_cloth": sewing_clothes_total,
         "hardware": max(hardware_total - hardware_motor, Decimal("0")),
         "electronic": max(electronic_total - electronic_motor, Decimal("0")),
         "motor": hardware_motor + electronic_motor,
@@ -1059,7 +1464,7 @@ def _rr2_cost_summary(
         "carton": carton_total,
         "freight": freight,
         "cabinet": cabinet,
-        "misc": indonesia_freight + additional_tax,
+        "misc": percentage_misc,
     }
     t3_values = {
         "injection_labor": injection_labor,
@@ -1069,9 +1474,16 @@ def _rr2_cost_summary(
     }
 
     no_labor_cost = (
-        sum((value for key, value in t1_values.items() if key != "base_price"), Decimal("0"))
+        # ``material`` is the visible combined injection-resin cost.  The two
+        # legacy split keys remain in the API solely for tax/Excel compatibility
+        # and must not be counted a second time.
+        sum((
+            value for key, value in t1_values.items()
+            if key not in {"base_price", "imp_mat", "dom_mat"}
+        ), Decimal("0"))
         + sum((value for key, value in t2_values.items() if key not in {"code_before", "code_after"}), Decimal("0"))
         + t3_values["injection_labor"]
+        + direct_misc_cost
     )
     labor_cost = t3_values["painting_labor"] + t3_values["paint_material"] + t3_values["assembly_labor"]
     total_cost = no_labor_cost + labor_cost
@@ -1080,12 +1492,18 @@ def _rr2_cost_summary(
     profit = base_price - total_cost
 
     tax_13_cost = (
-        t1_values["dom_mat"] + t1_values["hardware"] + t1_values["motor"]
+        domestic_material + t1_values["hardware"] + t1_values["motor"]
         + t2_values["color_box"] + t2_values["battery"] + t2_values["libao"]
         + t2_values["other_buy"] + t3_values["paint_material"] + t1_values["glue_bag"]
     )
     tax_rates = snapshot.get("tax_rates", {})
     tax_rates = tax_rates if isinstance(tax_rates, dict) else {}
+    sewing_tax_refund_enabled = str(factory_id or "").strip().lower() in SEWING_TAX_REFUND_FACTORY_IDS
+    sewing_clothes_rate = (
+        _summary_decimal(tax_rates.get("sewing_clothes"), "0.115") * 100
+        if sewing_tax_refund_enabled
+        else None
+    )
     tax_specs = (
         ("tax13", "含税13%类成本", tax_13_cost, None),
         ("labor13", "人工类13%", injection_labor + t3_values["painting_labor"] + t3_values["assembly_labor"], None),
@@ -1095,7 +1513,12 @@ def _rr2_cost_summary(
         ("tax1", "含税1%", t2_values["plating"], _summary_decimal(tax_rates.get("tax_1_percent"), "0.0099") * 100),
         ("slush3", "搪胶类3%", t1_values["slush"], _summary_decimal(tax_rates.get("slush"), "0.03") * 100),
         ("sewhair13", "车发类13%", t1_values["sewing_hair"], _summary_decimal(tax_rates.get("sewing_hair"), "0.115") * 100),
-        ("sewcloth13", "车衣类13%", t1_values["sewing_cloth"], _summary_decimal(tax_rates.get("sewing_clothes"), "0.115") * 100),
+        (
+            "sewcloth13",
+            "车衣物料退税（仅华康C/D）",
+            sewing_clothes_material,
+            sewing_clothes_rate,
+        ),
         ("suction6", "吸塑类6%", t1_values["suction"], _summary_decimal(tax_rates.get("blister"), "0.06") * 100),
         ("freight9", "运费类9%", t2_values["freight"], _summary_decimal(tax_rates.get("freight_tax_9"), "0.0826") * 100),
         ("tax13b", "含税13%类", tax_13_cost, _summary_decimal(tax_rates.get("tax_13_percent"), "0.115") * 100),
@@ -1118,10 +1541,16 @@ def _rr2_cost_summary(
     def rows_from(values: dict[str, Decimal], definitions: tuple[tuple[str, str], ...]) -> list[dict[str, str]]:
         return [{"key": key, "label": label, "value": decimal_text(values[key])} for key, label in definitions]
 
-    t1_rows = rows_from(t1_values, (
-        ("base_price", "货价"), ("imp_mat", "进口料"), ("dom_mat", "国内料"), ("blow", "吹气"),
+    t1_rows: list[dict[str, object]] = rows_from(t1_values, (
+        ("base_price", "货价"), ("material", "料价"), ("blow", "吹气"),
         ("slush", "搪胶"), ("sewing_hair", "车发"), ("sewing_cloth", "车衣"), ("hardware", "五金"),
         ("electronic", "电子"), ("motor", "马达"), ("suction", "吸塑"), ("glue_bag", "胶袋"),
+    ))
+    # Transitional compatibility for released Excel code and older clients.
+    # New UI consumers hide these rows and use the combined ``material`` row.
+    t1_rows.extend((
+        {"key": "imp_mat", "label": "进口料", "value": decimal_text(import_material), "display": False},
+        {"key": "dom_mat", "label": "国内料", "value": decimal_text(domestic_material), "display": False},
     ))
     t2_rows = rows_from(t2_values, (
         ("color_box", "彩盒/内咭"), ("code_before", "未减税前码数"), ("code_after", "减税后码数"),
@@ -1140,7 +1569,6 @@ def _rr2_cost_summary(
     ]
 
     mold_share_usd = cost_context.get("mold_amortization_usd", Decimal("0"))
-    shipping_floor = factory_price + additional_tax
     shipping_rows: list[dict[str, str]] = []
     if freight_enabled:
         option_rows: list[tuple[str, Decimal, Decimal, Decimal]] = [
@@ -1156,8 +1584,7 @@ def _rr2_cost_summary(
         )
         for name, row_freight, row_lift, total_cartons in option_rows:
             with_freight = shipping_floor + row_freight + row_lift
-            after_markup = with_freight * markup
-            after_settlement = after_markup / settlement
+            row_pricing_groups, after_markup, after_settlement = priced_groups(row_freight + row_lift)
             total_usd = after_settlement / fx_hkd_usd
             shipping_rows.append({
                 "name": name,
@@ -1172,6 +1599,7 @@ def _rr2_cost_summary(
                 "total_usd": decimal_text(total_usd),
                 "mold_amortization_usd": decimal_text(mold_share_usd),
                 "total_with_mold_usd": decimal_text(total_usd + mold_share_usd),
+                "pricing_groups": row_pricing_groups,
             })
 
     return {
@@ -1181,13 +1609,19 @@ def _rr2_cost_summary(
         "t2": t2_rows,
         "t3": t3_rows,
         "t4": tax_rows,
+        "molding_material_breakdown": {
+            "total_hkd": decimal_text(molding_material),
+            "imported_hkd": decimal_text(import_material),
+            "domestic_hkd": decimal_text(domestic_material),
+        },
         "totals": {
             "rmb_purchase_cost_hkd": decimal_text(
-                t1_values["dom_mat"] + t1_values["sewing_hair"] + t1_values["sewing_cloth"]
+                domestic_material + t1_values["sewing_hair"] + t1_values["sewing_cloth"]
                 + t1_values["hardware"] + t1_values["electronic"] + t1_values["motor"]
                 + t2_values["color_box"] + t2_values["battery"] + t2_values["libao"]
                 + t2_values["plating"] + t2_values["other_buy"] + t2_values["carton"]
                 + t2_values["misc"] + t1_values["glue_bag"] + t3_values["paint_material"]
+                + direct_misc_cost
             ),
             "total_deduction_hkd": decimal_text(total_deduction),
             "after_deduction_cost_hkd": decimal_text(after_deduction),
@@ -1208,6 +1642,39 @@ def _rr2_cost_summary(
             "shipping_floor_hkd": decimal_text(shipping_floor),
             "hkd_usd": decimal_text(fx_hkd_usd),
             "mold_amortization_usd": decimal_text(mold_share_usd),
+            "pricing_mode": pricing_mode,
+            "pricing_groups": pricing_groups,
+            "pricing_entries": [
+                {
+                    **entry,
+                    "amount_hkd": decimal_text(entry.get("amount_hkd")),
+                    "markup_override": (
+                        None
+                        if entry.get("markup_override") is None
+                        else decimal_text(entry.get("markup_override"))
+                    ),
+                }
+                for entry in pricing_entries
+            ],
+            "global_pricing": {
+                "cost_hkd": decimal_text(global_pricing_cost),
+                "pricing_base_hkd": decimal_text(global_pricing_base),
+                "markup": decimal_text(global_pricing_markup),
+                "settlement": decimal_text(settlement),
+                "quoted_hkd": decimal_text(global_pricing_quote),
+                "entries": [
+                    {
+                        **entry,
+                        "amount_hkd": decimal_text(entry.get("amount_hkd")),
+                        "markup_override": (
+                            None
+                            if entry.get("markup_override") is None
+                            else decimal_text(entry.get("markup_override"))
+                        ),
+                    }
+                    for entry in global_pricing_entries
+                ],
+            },
             "rows": shipping_rows,
         },
     }
@@ -1402,6 +1869,23 @@ def _derive_quote_status(db: Session, quote: InternalQuote) -> None:
             InternalQuoteSection.is_required.is_(True),
         )
     ).all()
+    if is_whole_quote_review(quote):
+        if quote.final_release_status == "pending":
+            quote.status = "final_reviewing"
+        elif quote.final_release_status == "approved":
+            if quote.status != "exported":
+                quote.status = "fully_approved"
+        else:
+            complete = bool(sections) and all(
+                section.filled_at
+                and bool(_json_object(section.payload_json))
+                and section.calculation_status == "valid"
+                and section.dependency_status == "current"
+                for section in sections
+            )
+            quote.status = "ready_for_final_review" if complete else "drafting"
+        quote.updated_at = now_text()
+        return
     statuses = {section.status for section in sections}
     if sections and statuses <= COMPLETED_SECTION_STATUSES:
         quote.status = "ready_for_final_review"
@@ -1454,6 +1938,22 @@ def _create_sections(
         _add_revision(db, quote, section, user, reason="initial")
 
 
+def _initial_section_payloads(payload: InternalQuoteCreateRequest) -> dict[str, str]:
+    if not payload.pricing_components:
+        return {}
+    components = [
+        {"id": f"component-{index:02d}", "name": name}
+        for index, name in enumerate(payload.pricing_components, start=1)
+    ]
+    return {
+        "sales": json.dumps(
+            {"pricing_mode": "component", "pricing_components": components},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    }
+
+
 def create_quote(
     db: Session,
     payload: InternalQuoteCreateRequest,
@@ -1468,67 +1968,118 @@ def create_quote(
         payload.initiator_department,
     )
     timestamp = now_text()
-    quote = InternalQuote(
-        id=f"IQ-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:10].upper()}",
+    products = payload.products
+    batch_id = f"IQB-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:12].upper()}"
+    quote_ids = [
+        f"IQ-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:10].upper()}"
+        for _item in products
+    ]
+    baseline_quote_id = quote_ids[0]
+    batch_size = len(products)
+    participating_sections = set(payload.participating_sections)
+    initial_section_payloads = _initial_section_payloads(payload)
+    batch_snapshot = build_reference_snapshot(
+        db,
         factory_id=payload.factory_id,
         workshop_code=payload.workshop_code,
-        workshop_name=payload.workshop_name,
-        quote_no=payload.quote_no,
-        product_name=payload.product_name,
-        customer=payload.customer,
-        qty=payload.qty,
-        version_label=payload.version_label,
-        status="drafting",
-        initiator_department=payload.initiator_department,
-        business_owner_id=payload.business_owner_id,
-        business_owner_name=payload.business_owner_name,
-        target_customer_price=payload.target_customer_price,
-        target_date=payload.target_date,
-        remark=payload.remark,
-        module_version="v2",
-        reference_snapshot_id="",
-        formula_version=FORMULA_VERSION,
-        header_revision=1,
-        cloned_from_quote_id="",
-        archived_by="",
-        archived_at="",
-        archive_reason="",
-        created_by=user.id,
-        created_by_name=user.display_name,
-        created_at=timestamp,
-        updated_at=timestamp,
     )
-    db.add(quote)
-    try:
-        db.flush()
-        _create_reference_set(db, quote, user, source_type="create")
-        participating_sections = set(payload.participating_sections)
-        _create_sections(db, quote, user, participating_sections)
-        _add_audit(
-            db,
-            quote,
-            user,
-            "create",
-            department=payload.initiator_department,
-            detail=json.dumps(
-                {
-                    "quote_no": quote.quote_no,
-                    "version_label": quote.version_label,
-                    "target_customer_price": quote.target_customer_price,
-                },
-                ensure_ascii=False,
+    quotes: list[InternalQuote] = []
+    for position, (quote_id, product) in enumerate(zip(quote_ids, products, strict=True), start=1):
+        item_quote_no = payload.quote_no if position == 1 else f"{payload.quote_no[:123]}-P{position:02d}"
+        quote = InternalQuote(
+            id=quote_id,
+            factory_id=payload.factory_id,
+            workshop_code=payload.workshop_code,
+            workshop_name=payload.workshop_name,
+            quote_no=item_quote_no,
+            product_name=product.product_name,
+            quote_type=payload.quote_type,
+            batch_id=batch_id,
+            batch_quote_no=payload.quote_no,
+            batch_position=position,
+            batch_size=batch_size,
+            baseline_quote_id=baseline_quote_id,
+            region_code=product.region_code,
+            customer=payload.customer,
+            qty=product.qty,
+            version_label=payload.version_label,
+            status="drafting",
+            initiator_department=payload.initiator_department,
+            business_owner_id=payload.business_owner_id,
+            business_owner_name=payload.business_owner_name,
+            target_customer_price=payload.target_customer_price,
+            target_date=payload.target_date,
+            remark=payload.remark,
+            module_version=(
+                WHOLE_QUOTE_REVIEW_MODULE_VERSION
+                if payload.workflow_mode == "whole_quote_review"
+                else LEGACY_SECTION_REVIEW_MODULE_VERSION
             ),
-            new_revision=1,
-            request=request,
+            reference_snapshot_id="",
+            formula_version=FORMULA_VERSION,
+            header_revision=1,
+            cloned_from_quote_id="",
+            archived_by="",
+            archived_at="",
+            archive_reason="",
+            created_by=user.id,
+            created_by_name=user.display_name,
+            created_at=timestamp,
+            updated_at=timestamp,
         )
+        quotes.append(quote)
+        db.add(quote)
+    try:
+        for quote in quotes:
+            db.flush()
+            _create_reference_set(
+                db,
+                quote,
+                user,
+                source_type="batch_create" if batch_size > 1 else "create",
+                snapshot=batch_snapshot,
+            )
+            _create_sections(
+                db,
+                quote,
+                user,
+                participating_sections,
+                initial_section_payloads,
+            )
+            _add_audit(
+                db,
+                quote,
+                user,
+                "create",
+                department=payload.initiator_department,
+                detail=json.dumps(
+                    {
+                        "quote_no": quote.quote_no,
+                        "version_label": quote.version_label,
+                        "target_customer_price": quote.target_customer_price,
+                        "workflow_mode": payload.workflow_mode,
+                        "quote_type": payload.quote_type,
+                        "batch_id": batch_id,
+                        "batch_position": quote.batch_position,
+                        "batch_size": batch_size,
+                    },
+                    ensure_ascii=False,
+                ),
+                new_revision=1,
+                request=request,
+            )
+        root_quote = quotes[0]
         for section_code, section_name, departments in SECTION_DEFINITIONS:
             if section_code not in participating_sections:
                 continue
             _add_notification(
                 db,
-                quote,
+                root_quote,
                 title=f"新内部报价待{section_name}协作",
-                message=f"{quote.quote_no} / {quote.product_name} 已建单，请进入{section_name}分段处理",
+                message=(
+                    f"{root_quote.batch_quote_no} / {root_quote.product_name} 等 {batch_size} 款已建单，"
+                    f"请进入{section_name}处理"
+                ),
                 event="quote_created",
                 target_permission=f"internal_quote:{section_code}_edit",
                 target_department=departments[0],
@@ -1538,8 +2089,9 @@ def create_quote(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="报价编号与版本已存在") from None
-    db.refresh(quote)
-    return quote_to_out(db, quote)
+    root_quote = quotes[0]
+    db.refresh(root_quote)
+    return quote_to_out(db, root_quote)
 
 
 def _list_quote_sections(
@@ -1568,7 +2120,10 @@ def list_quotes(
     include_sections: bool = False,
 ) -> list[InternalQuoteOut]:
     ensure_quote_read(db, user, factory_id)
-    statement = select(InternalQuote).where(InternalQuote.factory_id == factory_id)
+    statement = select(InternalQuote).where(
+        InternalQuote.factory_id == factory_id,
+        InternalQuote.batch_position == 1,
+    )
     if status:
         statement = statement.where(InternalQuote.status == status)
     if keyword:
@@ -1607,7 +2162,10 @@ def list_quotes_page(
     """Return one factory-scoped page without loading the remaining quote rows."""
 
     ensure_quote_read(db, user, factory_id)
-    statement = select(InternalQuote).where(InternalQuote.factory_id == factory_id)
+    statement = select(InternalQuote).where(
+        InternalQuote.factory_id == factory_id,
+        InternalQuote.batch_position == 1,
+    )
     if status:
         statement = statement.where(InternalQuote.status == status)
     if customer:
@@ -1636,7 +2194,11 @@ def list_quotes_page(
         value
         for value in db.scalars(
             select(InternalQuote.customer)
-            .where(InternalQuote.factory_id == factory_id, InternalQuote.customer != "")
+            .where(
+                InternalQuote.factory_id == factory_id,
+                InternalQuote.batch_position == 1,
+                InternalQuote.customer != "",
+            )
             .distinct()
             .order_by(InternalQuote.customer)
         ).all()
@@ -1714,6 +2276,7 @@ def get_quote_dashboard(
         select(InternalQuote)
         .where(
             InternalQuote.factory_id == factory_id,
+            InternalQuote.batch_position == 1,
             InternalQuote.created_at >= start_text,
             InternalQuote.created_at <= end_text,
         )
@@ -1964,6 +2527,406 @@ def get_quote_detail(
     return quote_to_out(db, quote)
 
 
+def get_quote_batch_rows(db: Session, quote: InternalQuote) -> list[InternalQuote]:
+    """Return the ordered product quotes that participate in one batch decision."""
+
+    if not quote.batch_id:
+        return [quote]
+    rows = list(db.scalars(
+        select(InternalQuote)
+        .where(
+            InternalQuote.factory_id == quote.factory_id,
+            InternalQuote.batch_id == quote.batch_id,
+        )
+        .order_by(InternalQuote.batch_position, InternalQuote.id)
+    ).all())
+    return rows or [quote]
+
+
+def _product_image_out(attachment: InternalQuoteAttachment | None) -> InternalQuoteProductImageOut | None:
+    if attachment is None:
+        return None
+    return InternalQuoteProductImageOut(
+        id=attachment.id,
+        file_name=attachment.file_name,
+        content_type=attachment.content_type,
+        size_bytes=attachment.size_bytes,
+        uploaded_by_name=attachment.uploaded_by_name,
+        uploaded_at=attachment.uploaded_at,
+    )
+
+
+_BATCH_HEADER_DIFFERENCE_FIELDS = (
+    "qty",
+    "customer",
+    "target_customer_price",
+    "target_date",
+    "remark",
+)
+
+_DIFFERENCE_FIELD_LABELS = {
+    "materials": "材料明细", "molds": "模具明细", "cartons": "纸箱明细",
+    "injection_lines": "注塑明细", "blow_lines": "吹气明细", "operations": "工序明细",
+    "products": "产品明细", "components": "零件明细", "groups": "产品组",
+    "processes": "工序", "packaging_materials": "包装材料", "testing_fee_moqs": "测试费 MOQ",
+    "item": "名称", "name": "名称", "specification": "规格", "category": "类别",
+    "quantity": "用量", "qty": "数量", "unit_price_rmb": "RMB 单价",
+    "unit_price_hkd": "HKD 单价", "loss_rate": "损耗率", "tax_rate_percent": "税点",
+    "remark": "备注", "material": "材质", "material_type": "料型", "grade": "料型",
+    "net_weight_g": "净重", "cycle_time_seconds": "周期", "target_output": "目标数",
+    "persons": "人数", "total_persons": "总人数", "production_qty": "生产量",
+    "teams": "小组数", "testing_fee_total_usd": "测试费用",
+}
+
+
+def _difference_path_label(path: tuple[str | int, ...]) -> str:
+    labels: list[str] = []
+    for part in path:
+        if isinstance(part, int):
+            labels.append(f"第 {part + 1} 行")
+        else:
+            labels.append(_DIFFERENCE_FIELD_LABELS.get(part, part.replace("_", " ")))
+    return " · ".join(labels) or "内容"
+
+
+def _payload_difference_details(
+    value: object,
+    baseline_value: object,
+    *,
+    path: tuple[str | int, ...] = (),
+    limit: int = 60,
+) -> list[str]:
+    if value == baseline_value or limit <= 0:
+        return []
+    if isinstance(value, dict) and isinstance(baseline_value, dict):
+        details: list[str] = []
+        for key in sorted(set(value) | set(baseline_value)):
+            details.extend(_payload_difference_details(
+                value.get(key), baseline_value.get(key), path=(*path, key), limit=limit - len(details)
+            ))
+            if len(details) >= limit:
+                break
+        return details
+    if isinstance(value, list) and isinstance(baseline_value, list):
+        details: list[str] = []
+        for index in range(max(len(value), len(baseline_value))):
+            current = value[index] if index < len(value) else None
+            baseline = baseline_value[index] if index < len(baseline_value) else None
+            details.extend(_payload_difference_details(
+                current, baseline, path=(*path, index), limit=limit - len(details)
+            ))
+            if len(details) >= limit:
+                break
+        return details
+    return [_difference_path_label(path)]
+
+
+def _batch_product_differences(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+    reference: InternalQuoteReferenceSet | None,
+    baseline: InternalQuote,
+    baseline_sections: list[InternalQuoteSection],
+    baseline_reference: InternalQuoteReferenceSet | None,
+) -> tuple[list[str], list[str], dict[str, list[str]]]:
+    different_header_fields = [
+        field
+        for field in _BATCH_HEADER_DIFFERENCE_FIELDS
+        if getattr(quote, field) != getattr(baseline, field)
+    ]
+    reference_sha256 = reference.sha256 if reference is not None else ""
+    baseline_reference_sha256 = baseline_reference.sha256 if baseline_reference is not None else ""
+    if reference_sha256 != baseline_reference_sha256:
+        different_header_fields.append("reference_snapshot")
+
+    section_by_code = {section.department: section for section in sections}
+    baseline_section_by_code = {section.department: section for section in baseline_sections}
+    different_sections: list[str] = []
+    different_section_details: dict[str, list[str]] = {}
+    for code in SECTION_CODE_ORDER:
+        section = section_by_code.get(code)
+        baseline_section = baseline_section_by_code.get(code)
+        section_signature = None if section is None else content_hash({
+            "is_required": section.is_required,
+            "payload": _json_object(section.payload_json),
+        })
+        baseline_signature = None if baseline_section is None else content_hash({
+            "is_required": baseline_section.is_required,
+            "payload": _json_object(baseline_section.payload_json),
+        })
+        if section_signature != baseline_signature:
+            different_sections.append(code)
+            if section is None or baseline_section is None or section.is_required != baseline_section.is_required:
+                different_section_details[code] = ["参与状态"]
+            else:
+                different_section_details[code] = _payload_difference_details(
+                    _json_object(section.payload_json),
+                    _json_object(baseline_section.payload_json),
+                ) or ["部门内容"]
+    return different_header_fields, different_sections, different_section_details
+
+
+def list_quote_batch_products(
+    db: Session,
+    quote_id: str,
+    user: AuthContext,
+) -> list[InternalQuoteBatchProductOut]:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_read(db, user, quote.factory_id)
+    rows = get_quote_batch_rows(db, quote)
+    quote_ids = [item.id for item in rows]
+    sections_by_quote = _list_quote_sections(db, rows)
+    references = {
+        item.id: db.get(InternalQuoteReferenceSet, item.reference_snapshot_id)
+        if item.reference_snapshot_id else None
+        for item in rows
+    }
+    images: dict[str, InternalQuoteAttachment] = {}
+    if quote_ids:
+        for attachment in db.scalars(
+            select(InternalQuoteAttachment)
+            .where(
+                InternalQuoteAttachment.quote_id.in_(quote_ids),
+                InternalQuoteAttachment.department == "product-image",
+            )
+            .order_by(
+                InternalQuoteAttachment.quote_id,
+                InternalQuoteAttachment.uploaded_at.desc(),
+                InternalQuoteAttachment.id.desc(),
+            )
+        ).all():
+            images.setdefault(attachment.quote_id, attachment)
+    baseline = next((item for item in rows if item.id == (quote.baseline_quote_id or rows[0].id)), rows[0])
+    baseline_sections = sections_by_quote.get(baseline.id, [])
+    baseline_reference = references.get(baseline.id)
+    output: list[InternalQuoteBatchProductOut] = []
+    for item in rows:
+        different_header_fields, different_sections, different_section_details = (
+            ([], [], {})
+            if item.id == baseline.id
+            else _batch_product_differences(
+                item,
+                sections_by_quote.get(item.id, []),
+                references.get(item.id),
+                baseline,
+                baseline_sections,
+                baseline_reference,
+            )
+        )
+        output.append(InternalQuoteBatchProductOut(
+            quote_id=item.id,
+            quote_no=item.quote_no,
+            product_name=item.product_name,
+            qty=item.qty,
+            position=item.batch_position or 1,
+            batch_size=item.batch_size or len(rows),
+            quote_type=item.quote_type or "single",
+            region_code=item.region_code or "",
+            status=item.status,
+            header_revision=item.header_revision,
+            is_baseline=item.id == baseline.id,
+            differs_from_baseline=bool(different_header_fields or different_sections),
+            different_header_fields=different_header_fields,
+            different_sections=different_sections,
+            different_section_details=different_section_details,
+            main_image=_product_image_out(images.get(item.id)),
+        ))
+    return output
+
+
+def _without_import_batch_ids(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_import_batch_ids(item)
+            for key, item in value.items()
+            if key != "import_batch_id"
+        }
+    if isinstance(value, list):
+        return [_without_import_batch_ids(item) for item in value]
+    return value
+
+
+def copy_batch_baseline_to_product(
+    db: Session,
+    quote_id: str,
+    target_quote_id: str,
+    payload: InternalQuoteBatchCopyRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    context_quote = _get_quote(db, quote_id)
+    target = _get_quote(db, target_quote_id)
+    ensure_quote_read(db, user, context_quote.factory_id)
+    initiator_department = _initiator_department(user, context_quote.factory_id)
+    ensure_permission_in_scope(
+        db,
+        user,
+        "internal_quote:clone",
+        context_quote.factory_id,
+        initiator_department,
+    )
+    rows = get_quote_batch_rows(db, context_quote)
+    baseline = next((item for item in rows if item.id == (context_quote.baseline_quote_id or rows[0].id)), rows[0])
+    if target.factory_id != context_quote.factory_id or target.batch_id != context_quote.batch_id:
+        raise HTTPException(status_code=409, detail="目标产品不属于当前报价批次")
+    if target.id == baseline.id:
+        raise HTTPException(status_code=409, detail="基准款不能复制到自身")
+    _ensure_active(target)
+    if target.status in {"final_reviewing", "fully_approved", "exported"}:
+        raise HTTPException(status_code=409, detail="目标产品已提交审核或完成输出，不能覆盖复制")
+    _check_revision(target.header_revision, payload.revision, "目标产品报价头")
+
+    source_sections = list(db.scalars(
+        select(InternalQuoteSection).where(InternalQuoteSection.quote_id == baseline.id)
+    ).all())
+    target_sections = list(db.scalars(
+        select(InternalQuoteSection).where(InternalQuoteSection.quote_id == target.id)
+    ).all())
+    source_by_code = {section.department: section for section in source_sections}
+    target_by_code = {section.department: section for section in target_sections}
+    timestamp = now_text()
+    old_header_revision = target.header_revision
+    for field in (
+        "customer",
+        "qty",
+        "business_owner_id",
+        "business_owner_name",
+        "target_customer_price",
+        "target_date",
+        "remark",
+        "module_version",
+    ):
+        setattr(target, field, getattr(baseline, field))
+    target.cloned_from_quote_id = baseline.id
+    target.header_revision += 1
+    target.final_release_status = ""
+    target.final_submission_manifest_json = "{}"
+    target.final_submitted_by = ""
+    target.final_submitted_by_name = ""
+    target.final_submitted_at = ""
+    target.final_reviewed_by = ""
+    target.final_reviewed_by_name = ""
+    target.final_reviewed_at = ""
+    target.final_review_comment = ""
+    target.updated_at = timestamp
+
+    source_reference = _find_reference_set(db, baseline)
+    source_snapshot = (
+        _json_object(source_reference.snapshot_json)
+        if source_reference is not None
+        else build_reference_snapshot(
+            db,
+            factory_id=baseline.factory_id,
+            workshop_code=baseline.workshop_code,
+        )
+    )
+    _create_reference_set(db, target, user, source_type="batch_baseline_copy", snapshot=source_snapshot)
+
+    for code in SECTION_NAMES:
+        source_section = source_by_code.get(code)
+        target_section = target_by_code.get(code)
+        if source_section is None or target_section is None:
+            continue
+        old_revision = target_section.revision
+        copied_payload = _without_import_batch_ids(_json_object(source_section.payload_json))
+        if code == "sales" and baseline.region_code != target.region_code:
+            # Indonesia freight belongs to the destination-specific product,
+            # not to the batch baseline.  Preserve an Indonesia target's own
+            # value when copying common fields, and never carry the field into
+            # a mainland/unspecified target.
+            target_payload = _json_object(target_section.payload_json)
+            target_indonesia_freight = target_payload.get("indonesia_freight_hkd")
+            copied_payload.pop("indonesia_freight_hkd", None)
+            if target.region_code == "indonesia" and target_indonesia_freight is not None:
+                copied_payload["indonesia_freight_hkd"] = target_indonesia_freight
+        target_section.is_required = source_section.is_required
+        target_section.payload_json = canonical_json(copied_payload)
+        target_section.status = "draft"
+        target_section.revision += 1
+        target_section.filled_by = user.display_name if source_section.is_required and copied_payload else ""
+        target_section.filled_at = timestamp if source_section.is_required and copied_payload else ""
+        target_section.submitted_by = ""
+        target_section.submitted_by_id = ""
+        target_section.submitted_at = ""
+        target_section.reviewed_by = ""
+        target_section.reviewed_at = ""
+        target_section.review_comment = ""
+        target_section.updated_at = timestamp
+        if source_section.is_required and copied_payload:
+            _calculate_and_apply(db, target, target_section, user)
+        else:
+            target_section.calculation_json = "{}"
+            target_section.calculation_status = "pending"
+            target_section.calculation_hash = ""
+            target_section.calculation_formula_version = target.formula_version
+            target_section.calculation_reference_snapshot_id = target.reference_snapshot_id
+            target_section.calculated_at = ""
+            target_section.dependency_hash = ""
+            target_section.dependency_status = "current"
+        _add_revision(db, target, target_section, user, reason="batch_baseline_copy")
+        _add_audit(
+            db,
+            target,
+            user,
+            "batch_copy_section",
+            department=code,
+            old_revision=old_revision,
+            new_revision=target_section.revision,
+            request=request,
+        )
+
+    db.execute(delete(InternalQuoteImportBatch).where(InternalQuoteImportBatch.quote_id == target.id))
+    db.execute(
+        delete(InternalQuoteAttachment).where(
+            InternalQuoteAttachment.quote_id == target.id,
+            InternalQuoteAttachment.department != "product-image",
+        )
+    )
+    source_attachments = db.scalars(
+        select(InternalQuoteAttachment).where(
+            InternalQuoteAttachment.quote_id == baseline.id,
+            InternalQuoteAttachment.department != "product-image",
+        )
+    ).all()
+    for attachment in source_attachments:
+        db.add(InternalQuoteAttachment(
+            id=f"IQATT-{uuid4().hex}",
+            quote_id=target.id,
+            factory_id=target.factory_id,
+            department=attachment.department,
+            file_name=attachment.file_name,
+            content_type=attachment.content_type,
+            size_bytes=attachment.size_bytes,
+            sha256=attachment.sha256,
+            content=attachment.content,
+            uploaded_by=user.id,
+            uploaded_by_name=user.display_name,
+            uploaded_at=timestamp,
+        ))
+    _derive_quote_status(db, target)
+    _add_audit(
+        db,
+        target,
+        user,
+        "batch_copy_baseline",
+        detail=json.dumps(
+            {
+                "baseline_quote_id": baseline.id,
+                "target_quote_id": target.id,
+                "copied_attachment_count": len(source_attachments),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        old_revision=old_header_revision,
+        new_revision=target.header_revision,
+        request=request,
+    )
+    db.commit()
+    db.refresh(target)
+    return quote_to_out(db, target)
+
+
 def update_quote_header(
     db: Session,
     quote_id: str,
@@ -1993,7 +2956,9 @@ def update_quote_header(
             ),
         ).limit(1)
     )
-    if started_section is not None:
+    if started_section is not None and not (
+        is_whole_quote_review(quote) and quote.status == "rejected"
+    ):
         raise HTTPException(
             status_code=409,
             detail="已有参与分段开始填写；为避免数量或负责人变更与成本 revision 不一致，报价头只能在协作填写前修改",
@@ -2279,13 +3244,21 @@ def clone_quote(
     ).all()
     payloads = {section.department: section.payload_json for section in source_sections}
     timestamp = now_text()
+    target_id = f"IQ-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:10].upper()}"
     target = InternalQuote(
-        id=f"IQ-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:10].upper()}",
+        id=target_id,
         factory_id=source.factory_id,
         workshop_code=source.workshop_code,
         workshop_name=source.workshop_name,
         quote_no=payload.quote_no,
         product_name=source.product_name,
+        quote_type="single",
+        batch_id=target_id,
+        batch_quote_no=payload.quote_no,
+        batch_position=1,
+        batch_size=1,
+        baseline_quote_id=target_id,
+        region_code=source.region_code,
         customer=source.customer,
         qty=source.qty,
         version_label=payload.version_label,
@@ -2300,7 +3273,13 @@ def clone_quote(
         ),
         target_date=payload.target_date,
         remark=source.remark if payload.remark is None else payload.remark,
-        module_version="v2",
+        module_version=(
+            WHOLE_QUOTE_REVIEW_MODULE_VERSION
+            if payload.workflow_mode == "whole_quote_review"
+            else LEGACY_SECTION_REVIEW_MODULE_VERSION
+            if payload.workflow_mode == "section_review"
+            else source.module_version
+        ),
         reference_snapshot_id="",
         formula_version=FORMULA_VERSION,
         header_revision=1,
@@ -2545,6 +3524,7 @@ def submit_section(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -2621,6 +3601,7 @@ def request_section_na(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -2685,6 +3666,7 @@ def withdraw_section_submission(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -2738,6 +3720,7 @@ def review_section(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_quote_business_reviewer(db, user, quote)
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -2869,6 +3852,7 @@ def reopen_section(
     request: Request | None = None,
 ) -> InternalQuoteSectionOut:
     quote = _get_quote(db, quote_id)
+    _ensure_section_review_workflow(quote)
     ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
     _ensure_active(quote)
     section = _get_section(db, quote_id, section_code)
@@ -3004,6 +3988,7 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
         cost_context,
         _json_object(reference.snapshot_json),
         quote.qty,
+        factory_id=quote.factory_id,
     )
     section_summaries: list[dict[str, object]] = []
     warnings: list[dict[str, object]] = []
@@ -3268,13 +4253,7 @@ def update_quote_reference_fx(
     request: Request | None = None,
 ) -> InternalQuoteOut:
     quote = _get_quote(db, quote_id)
-    ensure_quote_permission(
-        db,
-        user,
-        "internal_quote:sales_edit",
-        quote.factory_id,
-        ("sales-business",),
-    )
+    ensure_section_permission(db, user, quote.factory_id, "sales", "edit")
     _ensure_active(quote)
     _check_revision(quote.header_revision, payload.revision, "报价头")
 
@@ -3293,7 +4272,7 @@ def update_quote_reference_fx(
     fx["hkd_usd"] = payload.hkd_usd
     snapshot["fx"] = fx
     reason = (
-        f"业务汇率调整：RMB→HKD {format(old_rmb_hkd, 'f')}→{payload.rmb_hkd}；"
+        f"报价汇率调整：RMB→HKD {format(old_rmb_hkd, 'f')}→{payload.rmb_hkd}；"
         f"HKD→USD {format(old_hkd_usd, 'f')}→{payload.hkd_usd}"
     )
     return _replace_quote_reference_set(
@@ -3307,6 +4286,53 @@ def update_quote_reference_fx(
         change_description="参考汇率已调整",
         audit_detail=(
             f"rmb_hkd={payload.rmb_hkd};hkd_usd={payload.hkd_usd};"
+            f"previous_reference={current_reference.id}"
+        ),
+        request=request,
+    )
+
+
+def update_quote_reference_materials(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteReferenceMaterialsUpdateRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    quote = _get_quote(db, quote_id)
+    # Sales and engineering are the two cross-department quotation owners.
+    # Production departments keep their existing section-only edit boundary.
+    ensure_section_permission(db, user, quote.factory_id, "sales", "edit")
+    _ensure_active(quote)
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+
+    current_reference = _ensure_reference_set(db, quote, user)
+    snapshot = _json_object(current_reference.snapshot_json)
+    old_material_prices = snapshot.get("material_prices", {})
+    normalized_material_prices = {
+        f"{row.material}|{row.grade}": row.price_hkd_lb
+        for row in payload.material_prices
+    }
+    if old_material_prices == normalized_material_prices:
+        return quote_to_out(db, quote)
+
+    snapshot["material_prices"] = normalized_material_prices
+    reason = (
+        f"本报价专用料价已更新："
+        f"{len(old_material_prices) if isinstance(old_material_prices, dict) else 0} 项→"
+        f"{len(normalized_material_prices)} 项"
+    )
+    return _replace_quote_reference_set(
+        db,
+        quote,
+        user,
+        source_type="manual_materials",
+        snapshot=snapshot,
+        reason=reason,
+        audit_action="reference_materials_update",
+        change_description="本报价专用料价已调整",
+        audit_detail=(
+            f"material_count={len(normalized_material_prices)};"
             f"previous_reference={current_reference.id}"
         ),
         request=request,
@@ -3367,34 +4393,44 @@ def archive_quote(
         quote.factory_id,
         ("sales-business",),
     )
-    _ensure_active(quote)
+    selected_quote = quote
+    batch_quotes = get_quote_batch_rows(db, quote)
+    for item in batch_quotes:
+        _ensure_active(item)
     _check_revision(quote.header_revision, payload.revision, "报价头")
-    old_revision = quote.header_revision
-    quote.status = "archived"
-    quote.header_revision += 1
-    quote.archived_by = user.id
-    quote.archived_at = now_text()
-    quote.archive_reason = payload.reason
-    quote.updated_at = now_text()
-    _add_audit(
-        db,
-        quote,
-        user,
-        "archive",
-        department="sales",
-        old_revision=old_revision,
-        new_revision=quote.header_revision,
-        reason=payload.reason,
-        request=request,
-    )
-    _mark_quote_notifications_handled(
-        db,
-        quote,
-        events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
-    )
+    timestamp = now_text()
+    for item in batch_quotes:
+        old_revision = item.header_revision
+        item.status = "archived"
+        item.header_revision += 1
+        item.archived_by = user.id
+        item.archived_at = timestamp
+        item.archive_reason = payload.reason
+        item.updated_at = timestamp
+        _add_audit(
+            db,
+            item,
+            user,
+            "archive",
+            department="sales",
+            old_revision=old_revision,
+            new_revision=item.header_revision,
+            reason=payload.reason,
+            detail=json.dumps(
+                {"batch_id": item.batch_id or item.id, "batch_size": len(batch_quotes)},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            request=request,
+        )
+        _mark_quote_notifications_handled(
+            db,
+            item,
+            events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
+        )
     db.commit()
-    db.refresh(quote)
-    return quote_to_out(db, quote)
+    db.refresh(selected_quote)
+    return quote_to_out(db, selected_quote)
 
 
 def delete_quote(
@@ -3418,19 +4454,21 @@ def delete_quote(
         raise HTTPException(status_code=403, detail="仅建单人或本厂区业务主管可删除内部报价")
 
     _check_revision(quote.header_revision, revision, "报价头")
+    batch_quotes = get_quote_batch_rows(db, quote)
+    quote_ids = [item.id for item in batch_quotes]
     has_export = db.scalar(
         select(func.count(InternalQuoteExportFile.id)).where(
-            InternalQuoteExportFile.quote_id == quote.id
+            InternalQuoteExportFile.quote_id.in_(quote_ids)
         )
     )
     has_handoff = db.scalar(
         select(func.count(InternalQuoteArtifactHandoff.id)).where(
-            InternalQuoteArtifactHandoff.quote_id == quote.id
+            InternalQuoteArtifactHandoff.quote_id.in_(quote_ids)
         )
     )
     if (
-        quote.status in {"released", "exported"}
-        or quote.final_release_status == "approved"
+        any(item.status in {"released", "fully_approved", "exported"} for item in batch_quotes)
+        or any(item.final_release_status == "approved" for item in batch_quotes)
         or bool(has_export)
         or bool(has_handoff)
     ):
@@ -3445,16 +4483,17 @@ def delete_quote(
         username=user.username,
         user_id=user.id,
         detail=(
-            f"删除内部报价：{quote.factory_id}/{quote.quote_no}/{quote.version_label}，"
-            f"建单人={quote.created_by_name or quote.created_by}，revision={quote.header_revision}"
+            f"删除内部报价批次：{quote.factory_id}/{quote.batch_quote_no or quote.quote_no}/{quote.version_label}，"
+            f"产品数={len(batch_quotes)}，建单人={quote.created_by_name or quote.created_by}，revision={quote.header_revision}"
         ),
         request=request,
     )
-    _mark_quote_notifications_handled(
-        db,
-        quote,
-        events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
-    )
+    for item in batch_quotes:
+        _mark_quote_notifications_handled(
+            db,
+            item,
+            events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
+        )
 
     # Explicitly remove children so SQLite test/local databases remain correct
     # even when foreign-key cascade enforcement is not enabled on a connection.
@@ -3470,6 +4509,6 @@ def delete_quote(
         InternalQuoteSection,
         InternalQuoteReferenceSet,
     ):
-        db.execute(delete(model).where(model.quote_id == quote.id))
-    db.delete(quote)
+        db.execute(delete(model).where(model.quote_id.in_(quote_ids)))
+    db.execute(delete(InternalQuote).where(InternalQuote.id.in_(quote_ids)))
     db.commit()

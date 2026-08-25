@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Building2, CheckCircle2, Copy, FilePlus2, Snowflake, X } from '@lucide/vue'
-import { computed, reactive, ref, watch } from 'vue'
+import { Building2, CheckCircle2, Copy, Eye, FileImage, FilePlus2, FileText, Plus, Snowflake, Trash2, X } from '@lucide/vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import type {
   InternalQuote,
   InternalQuoteBusinessOwner,
   InternalQuoteCreatePayload,
+  InternalQuoteCreateProduct,
   InternalQuoteSectionCode,
 } from '@/types/internalQuoteDesk'
 
@@ -42,7 +43,13 @@ const emit = defineEmits<{
 }>()
 
 const errorMessage = ref('')
-const form = reactive<InternalQuoteCreatePayload>({
+const documentPreview = ref<{ file: File; url: string; kind: 'image' | 'pdf' | 'file' } | null>(null)
+type QuoteCreateForm = InternalQuoteCreatePayload & {
+  quoteType: 'single' | 'series' | 'multi_region'
+  products: InternalQuoteCreateProduct[]
+}
+
+const form = reactive<QuoteCreateForm>({
   quoteNo: '',
   productName: '',
   customer: '',
@@ -55,15 +62,32 @@ const form = reactive<InternalQuoteCreatePayload>({
   targetDate: '2026-08-30',
   remark: '',
   participatingSections: [...mandatorySectionCodes],
+  quoteType: 'single',
+  products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
+  pricingComponents: [],
 })
+const selectedDepartmentDefinitions = computed(() => internalQuoteSectionDefinitions.filter((item) => (
+  normalizeParticipation(form.participatingSections).includes(item.code)
+)))
 
 const title = computed(() => props.mode === 'clone' ? '复制内部报价' : '新建内部报价')
 const customerOptions = computed(() => Array.from(new Set([
   ...(props.sourceQuote?.customer ? [props.sourceQuote.customer] : []),
   ...props.customers,
 ])))
+const isJustPlay = computed(() => (
+  props.mode === 'create'
+  && String(props.factoryId).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'huakangb'
+  && String(form.customer).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'justplay'
+))
+
+watch(isJustPlay, (enabled) => {
+  if (enabled && !form.pricingComponents?.length) form.pricingComponents = ['主体', '配件1']
+  if (!enabled) form.pricingComponents = []
+}, { immediate: true })
 
 watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners[0]?.id, props.customers[0]] as const, ([open]) => {
+  closeDocumentPreview()
   if (!open) return
   errorMessage.value = ''
   if (props.mode === 'clone' && props.sourceQuote) {
@@ -84,6 +108,15 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
       participatingSections: normalizeParticipation(
         props.sourceQuote.sections.filter((section) => section.isRequired).map((section) => section.code),
       ),
+      quoteType: 'single',
+      products: [{
+        productName: props.sourceQuote.productName,
+        quantity: props.sourceQuote.quantity,
+        regionCode: props.sourceQuote.regionCode,
+        imageFile: null,
+        documentFiles: [],
+      }],
+      pricingComponents: [],
     })
     return
   }
@@ -100,6 +133,9 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
     targetDate: '2026-08-30',
     remark: '',
     participatingSections: [...mandatorySectionCodes],
+    quoteType: 'single',
+    products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
+    pricingComponents: [],
   })
 }, { immediate: true })
 
@@ -109,8 +145,13 @@ function submit() {
     errorMessage.value = '当前账号不能以所选部门发起内部报价。'
     return
   }
-  if (!form.quoteNo.trim() || !form.productName.trim() || !form.customer.trim()) {
+  if (!form.quoteNo.trim() || !form.customer.trim()) {
     errorMessage.value = '请填写报价号、产品名称和客户。'
+    return
+  }
+  if (!form.products.length || form.products.length > 20
+    || form.products.some((product) => !product.productName.trim())) {
+    errorMessage.value = '请填写 1 至 20 款产品的名称。'
     return
   }
   if (props.mode === 'create' && !props.customers.includes(form.customer)) {
@@ -122,20 +163,44 @@ function submit() {
     return
   }
   if (!props.businessOwners.some((item) => item.id === form.businessOwnerId)) {
-    errorMessage.value = '请选择当前厂区具备分段审核权限的业务负责人。'
+    errorMessage.value = '请选择当前厂区具备整单审核权限的业务负责人。'
     return
   }
   if (!form.targetCustomerPrice.trim()) {
     errorMessage.value = '请填写客人目标价；客人未提供时请填写“无”。'
     return
   }
-  if (!Number.isFinite(Number(form.quantity)) || Number(form.quantity) <= 0) {
-    errorMessage.value = '出货数量必须大于 0。'
+  if (form.products.some((product) => !Number.isFinite(Number(product.quantity)) || Number(product.quantity) <= 0)) {
+    errorMessage.value = '每款产品的出货数量都必须大于 0。'
     return
   }
+  if (isJustPlay.value) {
+    const componentNames = (form.pricingComponents ?? []).map((name) => name.trim()).filter(Boolean)
+    if (!componentNames.length) {
+      errorMessage.value = '华康B JustPlay 报价至少要建立一个分项。'
+      return
+    }
+    if (componentNames.length !== new Set(componentNames.map((name) => name.toLocaleLowerCase())).size) {
+      errorMessage.value = 'JustPlay 分项名称不能重复。'
+      return
+    }
+    form.pricingComponents = componentNames
+  }
+  const participating = new Set(normalizeParticipation(form.participatingSections))
+  if (form.products.some((product) => (product.documentFiles ?? []).some((document) => !participating.has(document.department)))) {
+    errorMessage.value = '产品资料必须分配给本次参与报价的部门。'
+    return
+  }
+  const normalizedProducts = form.products.map((product) => ({
+    ...product,
+    productName: product.productName.trim(),
+    quantity: Number(product.quantity),
+  }))
   emit('confirm', {
     ...form,
-    quantity: Number(form.quantity),
+    productName: normalizedProducts[0]!.productName,
+    quantity: normalizedProducts[0]!.quantity,
+    products: normalizedProducts,
     participatingSections: normalizeParticipation(form.participatingSections),
   })
 }
@@ -144,6 +209,86 @@ function selectBusinessOwner() {
   const selected = props.businessOwners.find((item) => item.id === form.businessOwnerId)
   form.businessOwner = selected?.displayName ?? ''
 }
+
+function changeQuoteType() {
+  const first = form.products[0] ?? { productName: '', quantity: 10000, regionCode: '' as const, imageFile: null, documentFiles: [] }
+  if (form.quoteType === 'single') {
+    form.products = [{ ...first, regionCode: '' }]
+    return
+  }
+  if (form.quoteType === 'multi_region') {
+    const baseName = first.productName.replace(/—(?:大陆价|印尼价)$/, '') || '产品名'
+    form.products = [
+      { ...first, productName: `${baseName}—大陆价`, regionCode: 'mainland' },
+      { productName: `${baseName}—印尼价`, quantity: first.quantity, regionCode: 'indonesia', imageFile: null, documentFiles: [] },
+    ]
+    return
+  }
+  form.products = form.products.map((product) => ({ ...product, regionCode: '' }))
+}
+
+function addProduct() {
+  if (form.products.length >= 20 || form.quoteType !== 'series') return
+  form.products.push({ productName: '', quantity: form.products[0]?.quantity ?? 10000, regionCode: '', imageFile: null, documentFiles: [] })
+}
+
+function removeProduct(index: number) {
+  if (form.products.length <= 1 || form.quoteType !== 'series') return
+  form.products.splice(index, 1)
+}
+
+function addPricingComponent() {
+  if (!isJustPlay.value || (form.pricingComponents?.length ?? 0) >= 50) return
+  form.pricingComponents ??= []
+  form.pricingComponents.push(`配件${form.pricingComponents.length}`)
+}
+
+function removePricingComponent(index: number) {
+  if (!isJustPlay.value || (form.pricingComponents?.length ?? 0) <= 1) return
+  form.pricingComponents?.splice(index, 1)
+}
+
+function selectProductImage(index: number, event: Event) {
+  const input = event.target as HTMLInputElement
+  const product = form.products[index]
+  if (product) product.imageFile = input.files?.[0] ?? null
+}
+
+function selectProductDocuments(index: number, event: Event) {
+  const input = event.target as HTMLInputElement
+  const product = form.products[index]
+  if (!product) return
+  const existing = product.documentFiles ?? (product.documentFiles = [])
+  for (const file of Array.from(input.files ?? [])) {
+    if (existing.some((item) => item.file.name === file.name && item.file.size === file.size)) continue
+    existing.push({ file, department: 'engineering' })
+  }
+  input.value = ''
+}
+
+function removeProductDocument(productIndex: number, documentIndex: number) {
+  form.products[productIndex]?.documentFiles?.splice(documentIndex, 1)
+}
+
+function closeDocumentPreview() {
+  if (documentPreview.value?.url) URL.revokeObjectURL(documentPreview.value.url)
+  documentPreview.value = null
+}
+
+function openDocumentPreview(file: File) {
+  closeDocumentPreview()
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+  const kind = ['jpg', 'jpeg', 'png', 'webp'].includes(extension)
+    ? 'image'
+    : extension === 'pdf' ? 'pdf' : 'file'
+  documentPreview.value = {
+    file,
+    url: kind === 'file' ? '' : URL.createObjectURL(file),
+    kind,
+  }
+}
+
+onBeforeUnmount(closeDocumentPreview)
 </script>
 
 <template>
@@ -170,7 +315,7 @@ function selectBusinessOwner() {
           <div class="quote-dialog-body">
             <div v-if="mode === 'clone' && sourceQuote" class="quote-copy-note">
               <Copy aria-hidden="true" />
-              <span>复制 {{ sourceQuote.quoteNo }} {{ sourceQuote.versionLabel }} 的单头、分段明细和参考快照；全部审批、最终放行和导出状态会清零。</span>
+              <span>整单复制 {{ sourceQuote.quoteNo }} {{ sourceQuote.versionLabel }} 的报价头、全部部门明细和参考快照；审核及导出状态会清零。</span>
             </div>
 
             <fieldset class="quote-department-choice">
@@ -179,13 +324,29 @@ function selectBusinessOwner() {
                 <input v-model="form.initiatorDepartment" type="radio" value="sales-business" :disabled="!allowedInitiatorDepartments.includes('sales-business')">
                 <span class="quote-choice-check"><CheckCircle2 aria-hidden="true" /></span>
                 <strong>业务部建单</strong>
-                <small>维护单头、业务分段及最终放行</small>
+                <small>维护报价头及业务部内容，完成后统一提交整单</small>
               </label>
               <label :class="{ active: form.initiatorDepartment === 'engineering', disabled: !allowedInitiatorDepartments.includes('engineering') }">
                 <input v-model="form.initiatorDepartment" type="radio" value="engineering" :disabled="!allowedInitiatorDepartments.includes('engineering')">
                 <span class="quote-choice-check"><CheckCircle2 aria-hidden="true" /></span>
                 <strong>工程部建单</strong>
-                <small>发起工程核价，同时指定全部分段审核负责人</small>
+                <small>发起工程核价，同时指定唯一整单审核人</small>
+              </label>
+            </fieldset>
+
+            <fieldset v-if="mode === 'create'" class="quote-type-choice">
+              <legend>报价类型</legend>
+              <label :class="{ active: form.quoteType === 'single' }">
+                <input v-model="form.quoteType" type="radio" value="single" @change="changeQuoteType">
+                <strong>单款报价</strong><small>仅建立一款产品</small>
+              </label>
+              <label :class="{ active: form.quoteType === 'series' }">
+                <input v-model="form.quoteType" type="radio" value="series" @change="changeQuoteType">
+                <strong>系列多款</strong><small>同批最多 20 款</small>
+              </label>
+              <label :class="{ active: form.quoteType === 'multi_region' }">
+                <input v-model="form.quoteType" type="radio" value="multi_region" @change="changeQuoteType">
+                <strong>多地区报价</strong><small>默认大陆价与印尼价</small>
               </label>
             </fieldset>
 
@@ -198,10 +359,6 @@ function selectBusinessOwner() {
                 <span>版本标签 <b>*</b></span>
                 <input v-model="form.versionLabel" type="text" placeholder="V1.0">
               </label>
-              <label class="wide">
-                <span>产品名称 <b>*</b></span>
-                <input v-model="form.productName" type="text" placeholder="填写产品名称">
-              </label>
               <label>
                 <span>客户 <b>*</b></span>
                 <select v-model="form.customer">
@@ -211,16 +368,12 @@ function selectBusinessOwner() {
                 <small v-if="!customerOptions.length" class="quote-owner-hint">请联系本厂业务主管或工程主管先维护客户资料。</small>
               </label>
               <label>
-                <span>业务负责人 / 全部分段审核人 <b>*</b></span>
+                <span>业务负责人 / 整单审核人 <b>*</b></span>
                 <select v-model="form.businessOwnerId" :disabled="!businessOwners.length" @change="selectBusinessOwner">
-                  <option value="" disabled>{{ businessOwners.length ? '选择业务审核负责人' : '当前厂区暂无具备分段审核权限的人员' }}</option>
+                  <option value="" disabled>{{ businessOwners.length ? '选择唯一整单审核人' : '当前厂区暂无具备整单审核权限的人员' }}</option>
                   <option v-for="owner in businessOwners" :key="owner.id" :value="owner.id">{{ owner.displayName }}（{{ owner.username }}）</option>
                 </select>
-                <small class="quote-owner-hint">显示业务部主管，以及已获“本人报价自审”权限的当前建单人；个人自审仅适用于本人创建且由本人负责的报价。</small>
-              </label>
-              <label>
-                <span>出货数量 <b>*</b></span>
-                <input v-model.number="form.quantity" type="number" min="1" step="1">
+                <small class="quote-owner-hint">整份报价只交给此人审核；个人自审仅适用于本人创建、本人负责且已获自审权限的报价。</small>
               </label>
               <label>
                 <span>客人目标价 <b>*</b></span>
@@ -235,6 +388,55 @@ function selectBusinessOwner() {
                 <textarea v-model="form.remark" rows="2" placeholder="记录客户要求、报价范围或版本说明" />
               </label>
             </div>
+
+            <section v-if="isJustPlay" class="quote-product-list quote-pricing-component-list">
+              <div class="quote-product-list-head">
+                <div><strong>JustPlay 报价分项</strong><span>建单时确定主体与配件；各部门报价时直接选择归属，输出仍使用现有字段映射。</span></div>
+                <button type="button" :disabled="(form.pricingComponents?.length ?? 0) >= 50" @click="addPricingComponent"><Plus />新增配件</button>
+              </div>
+              <div class="quote-pricing-component-rows">
+                <label v-for="(_component, index) in form.pricingComponents" :key="index">
+                  <span>{{ index === 0 ? '主分项' : `配件 ${index}` }}</span>
+                  <input v-model="form.pricingComponents![index]" type="text" maxlength="64" :placeholder="index === 0 ? '例如：主体' : `例如：配件${index}`">
+                  <button type="button" :disabled="(form.pricingComponents?.length ?? 0) <= 1" :aria-label="`移除分项 ${index + 1}`" @click="removePricingComponent(index)"><Trash2 /></button>
+                </label>
+              </div>
+              <p>第一个分项是未选择明细的默认归属；创建后右侧原 MOQ 区域会改为各分项倍率。</p>
+            </section>
+
+            <section class="quote-product-list">
+              <div class="quote-product-list-head">
+                <div><strong>产品清单</strong><span>第 1 款为基准款；创建后可把整份部门报价复制到其他款。</span></div>
+                <button v-if="form.quoteType === 'series'" type="button" :disabled="form.products.length >= 20" @click="addProduct"><Plus />新增产品</button>
+              </div>
+              <div class="quote-product-rows">
+                <article v-for="(product, index) in form.products" :key="index" class="quote-product-row">
+                  <span class="quote-product-number">{{ String(index + 1).padStart(2, '0') }}</span>
+                  <label class="quote-product-name"><span>产品名称 <b>*</b></span><input v-model="product.productName" type="text" :placeholder="index === 0 ? '填写基准款名称' : `填写第 ${index + 1} 款名称`"></label>
+                  <label><span>出货数量 <b>*</b></span><input v-model.number="product.quantity" type="number" min="1" step="1"></label>
+                  <div class="quote-product-assets">
+                    <div class="quote-product-asset-pickers">
+                      <label class="quote-product-image"><span>产品主图</span><input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" @change="selectProductImage(index, $event)"><small><FileImage />{{ product.imageFile?.name || '选择图片' }}</small></label>
+                      <button v-if="product.imageFile" type="button" class="quote-asset-preview" @click="openDocumentPreview(product.imageFile)"><Eye />预览主图</button>
+                      <label v-if="mode === 'create'" class="quote-product-documents"><span>产品资料</span><input type="file" multiple accept=".xls,.xlsx,.doc,.docx,.pdf,.jpg,.jpeg" @change="selectProductDocuments(index, $event)"><small><FileText />添加资料</small></label>
+                    </div>
+                    <div v-if="product.documentFiles?.length" class="quote-product-document-list">
+                      <div v-for="(document, documentIndex) in product.documentFiles" :key="`${document.file.name}-${document.file.size}`">
+                        <button type="button" class="quote-document-name" :title="`预览 ${document.file.name}`" @click="openDocumentPreview(document.file)"><Eye />{{ document.file.name }}</button>
+                        <select v-model="document.department" :aria-label="`${document.file.name} 分配部门`">
+                          <option v-for="section in selectedDepartmentDefinitions" :key="section.code" :value="section.code">{{ section.label }}</option>
+                        </select>
+                        <button type="button" class="quote-document-remove" :aria-label="`移除 ${document.file.name}`" @click="removeProductDocument(index, documentIndex)"><Trash2 /></button>
+                      </div>
+                    </div>
+                  </div>
+                  <span v-if="product.regionCode" class="quote-region-badge">{{ product.regionCode === 'mainland' ? '大陆价' : '印尼价' }}</span>
+                  <button v-if="form.quoteType === 'series' && form.products.length > 1" type="button" class="quote-remove-product" aria-label="移除产品" @click="removeProduct(index)"><Trash2 /></button>
+                  <b v-if="index === 0" class="quote-baseline-badge">基准款</b>
+                </article>
+              </div>
+              <p>产品主图与资料在同一区域维护；资料必须分配给参与部门，支持 Excel、Word、PDF 和 JPG/JPEG，创建后继续在对应部门资料栏预览。</p>
+            </section>
 
             <section class="quote-create-baseline">
               <div class="quote-baseline-title">
@@ -280,6 +482,14 @@ function selectBusinessOwner() {
             </button>
           </footer>
         </section>
+        <div v-if="documentPreview" class="quote-create-preview-backdrop" role="presentation" @mousedown.self="closeDocumentPreview">
+          <section class="quote-create-preview" role="dialog" aria-modal="true" :aria-label="`预览 ${documentPreview.file.name}`">
+            <header><div><strong>{{ documentPreview.file.name }}</strong><span>{{ (documentPreview.file.size / 1024).toFixed(1) }} KB</span></div><button type="button" aria-label="关闭资料预览" @click="closeDocumentPreview"><X /></button></header>
+            <img v-if="documentPreview.kind === 'image'" :src="documentPreview.url" :alt="documentPreview.file.name">
+            <iframe v-else-if="documentPreview.kind === 'pdf'" :src="documentPreview.url" :title="documentPreview.file.name" />
+            <div v-else class="quote-create-file-preview"><FileText /><strong>文件已加入本款产品资料</strong><span>Excel 和 Word 内容将在报价创建完成后，通过对应部门的资料预览窗口打开。</span></div>
+          </section>
+        </div>
       </div>
     </Transition>
   </Teleport>
@@ -287,7 +497,7 @@ function selectBusinessOwner() {
 
 <style scoped>
 .quote-dialog-backdrop{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:24px;background:rgb(15 23 42/.5);backdrop-filter:blur(5px)}
-.quote-dialog{width:min(820px,100%);max-height:min(920px,calc(100vh - 48px));overflow:auto;border:1px solid #d8e2e7;border-radius:18px;background:#fff;box-shadow:0 30px 80px rgb(15 23 42/.24)}
+.quote-dialog{width:min(980px,100%);max-height:min(920px,calc(100vh - 48px));overflow:auto;border:1px solid #d8e2e7;border-radius:18px;background:#fff;box-shadow:0 30px 80px rgb(15 23 42/.24)}
 .quote-dialog-head,.quote-dialog-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 22px;border-color:#e2e8f0;background:#f8fafc}
 .quote-dialog-head{border-bottom:1px solid #e2e8f0}.quote-dialog-actions{justify-content:flex-end;border-top:1px solid #e2e8f0}
 .quote-dialog-heading{display:flex;min-width:0;align-items:center;gap:13px}.quote-dialog-heading h2{margin:0;color:#0f172a;font-size:20px;font-weight:900}.quote-dialog-heading p{margin:5px 0 0;color:#64748b;font-size:12px;line-height:1.5}
@@ -296,13 +506,17 @@ function selectBusinessOwner() {
 .quote-dialog-body{display:grid;gap:18px;padding:22px}.quote-copy-note{display:flex;gap:9px;border:1px solid #bfdbfe;border-radius:10px;background:#eff6ff;padding:11px 13px;color:#1e40af;font-size:12px;line-height:1.55}.quote-copy-note svg{width:17px;height:17px;flex:0 0 auto;margin-top:1px}
 .quote-department-choice{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0;padding:0;border:0}.quote-department-choice legend{grid-column:1/-1;margin-bottom:1px;color:#475569;font-size:12px;font-weight:800}.quote-department-choice label{position:relative;display:grid;grid-template-columns:auto 1fr;gap:2px 9px;border:1px solid #dbe5ea;border-radius:11px;padding:13px 14px;cursor:pointer}.quote-department-choice label.active{border-color:#14b8a6;background:#f0fdfa;box-shadow:0 0 0 3px rgb(20 184 166/.09)}.quote-department-choice input{position:absolute;opacity:0}.quote-choice-check{grid-row:1/3;color:#94a3b8}.active .quote-choice-check{color:#0f766e}.quote-choice-check svg{width:18px;height:18px}.quote-department-choice strong{color:#0f172a;font-size:13px}.quote-department-choice small{color:#64748b;font-size:11px;line-height:1.45}
 .quote-department-choice label.disabled{cursor:not-allowed;opacity:.48}.quote-department-choice label.disabled:hover{border-color:#dbe5ea;box-shadow:none}
+.quote-type-choice{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:0;padding:0;border:0}.quote-type-choice legend{grid-column:1/-1;color:#475569;font-size:12px;font-weight:800}.quote-type-choice label{position:relative;display:grid;gap:3px;border:1px solid #dbe5ea;border-radius:10px;padding:11px 12px;cursor:pointer}.quote-type-choice label.active{border-color:#14b8a6;background:#f0fdfa;box-shadow:0 0 0 3px rgb(20 184 166/.08)}.quote-type-choice input{position:absolute;opacity:0}.quote-type-choice strong{color:#0f172a;font-size:13px}.quote-type-choice small{color:#64748b;font-size:11px}
 .quote-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.quote-form-grid label{display:grid;gap:6px}.quote-form-grid label.wide{grid-column:1/-1}.quote-form-grid label>span{color:#475569;font-size:11px;font-weight:800}.quote-form-grid b{color:#dc2626}.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{width:100%;border:1px solid #dbe5ea;border-radius:9px;background:#fff;padding:9px 11px;color:#0f172a;font-size:13px;outline:none}.quote-form-grid textarea{resize:vertical}
 .quote-owner-hint{color:#64748b;font-size:11px;line-height:1.5}
+.quote-product-list{display:grid;gap:10px;border:1px solid #dbe5ea;border-radius:12px;background:#f8fafc;padding:14px}.quote-product-list-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.quote-product-list-head>div{display:grid;gap:3px}.quote-product-list-head strong{color:#0f172a;font-size:14px}.quote-product-list-head span,.quote-product-list>p{margin:0;color:#64748b;font-size:11px;line-height:1.5}.quote-product-list-head button{display:inline-flex;align-items:center;gap:5px;border:1px solid #99f6e4;border-radius:8px;background:#fff;padding:7px 10px;color:#0f766e;font-size:11px;font-weight:900}.quote-product-list-head button svg{width:14px}.quote-product-rows{display:grid;gap:8px}.quote-product-row{position:relative;display:grid;grid-template-columns:34px minmax(170px,1.35fr) minmax(95px,.55fr) minmax(330px,2fr) auto;align-items:start;gap:9px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;padding:10px}.quote-product-number{align-self:center;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:900}.quote-product-row label{display:grid;gap:5px}.quote-product-row label>span{color:#475569;font-size:10px;font-weight:800}.quote-product-row label b{color:#dc2626}.quote-product-row input[type=text],.quote-product-row input[type=number]{min-width:0;width:100%;border:1px solid #dbe5ea;border-radius:8px;padding:8px 9px;color:#0f172a;font-size:12px}.quote-product-image input,.quote-product-documents input{position:absolute;width:1px;height:1px;opacity:0}.quote-product-image small,.quote-product-documents small{display:flex;min-width:0;align-items:center;justify-content:center;gap:5px;overflow:hidden;border:1px dashed #99f6e4;border-radius:8px;padding:8px 9px;color:#0f766e;font-size:11px;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}.quote-product-image small svg,.quote-product-documents small svg{width:14px;flex:0 0 auto}.quote-product-assets{display:grid;gap:7px}.quote-product-asset-pickers{display:grid;grid-template-columns:minmax(120px,1fr) auto minmax(105px,.7fr);align-items:end;gap:6px}.quote-asset-preview{display:inline-flex;height:34px;align-items:center;gap:4px;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:0 8px;color:#0f766e;font-size:10px;font-weight:900}.quote-asset-preview svg{width:13px}.quote-product-document-list{display:grid;gap:5px}.quote-product-document-list>div{display:grid;grid-template-columns:minmax(0,1fr) 86px 28px;gap:5px}.quote-document-name{display:flex;min-width:0;align-items:center;gap:5px;overflow:hidden;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:6px 7px;color:#475569;font-size:10px;text-align:left;text-overflow:ellipsis;white-space:nowrap}.quote-document-name svg{width:12px;flex:0 0 auto}.quote-product-document-list select{min-width:0;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:5px;color:#0f766e;font-size:10px;font-weight:800}.quote-document-remove{display:grid;place-items:center;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#dc2626}.quote-document-remove svg{width:12px}.quote-baseline-badge,.quote-region-badge{position:absolute;top:6px;right:8px;border-radius:999px;padding:3px 6px;font-size:9px}.quote-baseline-badge{background:#ccfbf1;color:#0f766e}.quote-region-badge{right:62px;background:#eff6ff;color:#1d4ed8}.quote-remove-product{display:grid;width:30px;height:30px;place-items:center;border:1px solid #fecaca;border-radius:8px;background:#fff;color:#dc2626}.quote-remove-product svg{width:14px}
+.quote-pricing-component-list{border-color:#99f6e4;background:#f0fdfa}.quote-pricing-component-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.quote-pricing-component-rows label{display:grid;grid-template-columns:auto minmax(0,1fr) 30px;align-items:center;gap:8px;border:1px solid #ccfbf1;border-radius:9px;background:#fff;padding:8px}.quote-pricing-component-rows label>span{color:#0f766e;font-size:11px;font-weight:900}.quote-pricing-component-rows input{min-width:0;border:1px solid #dbe5ea;border-radius:7px;padding:7px 8px;color:#0f172a;font-size:12px}.quote-pricing-component-rows label>button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#dc2626}.quote-pricing-component-rows label>button svg{width:13px}
+.quote-create-preview-backdrop{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:28px;background:rgb(15 23 42/.66)}.quote-create-preview{display:grid;width:min(900px,100%);max-height:calc(100vh - 56px);overflow:hidden;border:1px solid #cbd5e1;border-radius:16px;background:#fff;box-shadow:0 28px 80px rgb(15 23 42/.35)}.quote-create-preview header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:12px 14px}.quote-create-preview header>div{display:grid;min-width:0}.quote-create-preview header strong{overflow:hidden;color:#0f172a;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.quote-create-preview header span{margin-top:2px;color:#64748b;font-size:10px}.quote-create-preview header button{display:grid;width:32px;height:32px;place-items:center;border:0;border-radius:8px;background:#fff;color:#64748b}.quote-create-preview header svg{width:16px}.quote-create-preview>img{display:block;max-width:100%;max-height:calc(100vh - 150px);margin:auto;object-fit:contain}.quote-create-preview>iframe{width:min(900px,90vw);height:calc(100vh - 150px);border:0}.quote-create-file-preview{display:grid;min-height:280px;place-items:center;align-content:center;gap:9px;padding:30px;color:#64748b;text-align:center}.quote-create-file-preview>svg{width:44px;color:#0d9488}.quote-create-file-preview strong{color:#0f172a;font-size:15px}.quote-create-file-preview span{max-width:480px;font-size:12px;line-height:1.6}
 .quote-create-baseline{display:grid;gap:12px;border:1px solid #dbe5ea;border-radius:12px;background:#f8fafc;padding:15px}.quote-baseline-title{display:flex;align-items:center;gap:9px}.quote-baseline-title>svg{width:20px;color:#0f766e}.quote-baseline-title div{display:grid}.quote-baseline-title strong{color:#0f172a;font-size:13px}.quote-baseline-title span{margin-top:2px;color:#64748b;font-size:11px}.quote-segment-pills{display:flex;flex-wrap:wrap;gap:7px}.quote-segment-pills span{display:inline-flex;align-items:center;gap:4px;border:1px solid #ccfbf1;border-radius:999px;background:#fff;padding:5px 8px;color:#0f766e;font-size:10px;font-weight:800}.quote-segment-pills svg{width:12px;height:12px}.quote-create-baseline p{display:flex;align-items:flex-start;gap:6px;margin:0;color:#64748b;font-size:11px;line-height:1.5}.quote-create-baseline p svg{width:15px;height:15px;flex:0 0 auto;color:#0d9488}.quote-form-error{margin:0;border-radius:8px;background:#fef2f2;padding:9px 11px;color:#b91c1c;font-size:12px}
 .quote-primary-button,.quote-secondary-button{display:inline-flex;min-height:38px;align-items:center;justify-content:center;gap:7px;border-radius:9px;padding:0 16px;font-size:12px;font-weight:900}.quote-primary-button{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-primary-button:hover{background:#115e59}.quote-secondary-button{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-primary-button svg{width:16px;height:16px}.quote-dialog-enter-active,.quote-dialog-leave-active{transition:opacity .16s ease}.quote-dialog-enter-active .quote-dialog,.quote-dialog-leave-active .quote-dialog{transition:transform .18s ease}.quote-dialog-enter-from,.quote-dialog-leave-to{opacity:0}.quote-dialog-enter-from .quote-dialog,.quote-dialog-leave-to .quote-dialog{transform:translateY(8px) scale(.985)}
 .quote-department-choice small,.quote-form-grid label>span,.quote-baseline-title span,.quote-create-baseline p{font-size:12px}.quote-segment-pills span{font-size:11px}.quote-primary-button,.quote-secondary-button{font-size:13px}.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label{transition:color .18s ease,background-color .18s ease,border-color .18s ease,box-shadow .18s ease,transform .18s ease}.quote-icon-button:hover,.quote-primary-button:hover,.quote-secondary-button:hover{transform:translateY(-1px)}.quote-icon-button:active,.quote-primary-button:active,.quote-secondary-button:active{transform:translateY(0) scale(.98)}.quote-secondary-button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}.quote-department-choice label:hover{border-color:#99f6e4;box-shadow:0 8px 18px rgb(15 118 110/.08)}.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:border-color .18s ease,box-shadow .18s ease,background-color .18s ease}.quote-form-grid input:hover,.quote-form-grid select:hover,.quote-form-grid textarea:hover{border-color:#94a3b8}.quote-form-grid input:focus,.quote-form-grid select:focus,.quote-form-grid textarea:focus{border-color:#14b8a6;box-shadow:0 0 0 3px rgb(20 184 166/.1)}
 .quote-participation-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.quote-participation-heading strong{color:#0f172a;font-size:13px}.quote-participation-heading span{color:#64748b;font-size:12px}.quote-segment-pills.mandatory span{border-color:#99f6e4;background:#f0fdfa;padding:6px 9px;font-size:11px}.quote-optional-segments{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px}.quote-optional-segments label{position:relative;display:flex;align-items:center;gap:7px;min-width:0;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:9px;cursor:pointer;transition:border-color .18s ease,background-color .18s ease,box-shadow .18s ease,transform .18s ease}.quote-optional-segments label:hover{border-color:#5eead4;box-shadow:0 7px 16px rgb(15 118 110/.08);transform:translateY(-1px)}.quote-optional-segments label.active{border-color:#14b8a6;background:#f0fdfa;box-shadow:0 0 0 2px rgb(20 184 166/.08)}.quote-optional-segments input{position:absolute;opacity:0}.quote-optional-segments>label>svg{width:16px;height:16px;flex:0 0 auto;color:#cbd5e1}.quote-optional-segments label.active>svg{color:#0f766e}.quote-optional-segments label span{display:grid;min-width:0}.quote-optional-segments strong{overflow:hidden;color:#0f172a;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.quote-optional-segments small{margin-top:2px;color:#64748b;font-size:10px;white-space:nowrap}.quote-create-baseline .quote-participation-note{border-radius:8px;background:#fff7ed;padding:8px 10px;color:#9a3412;font-size:12px}
-@media(max-width:760px){.quote-optional-segments{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:650px){.quote-dialog-backdrop{padding:0}.quote-dialog{max-height:100vh;border-radius:0}.quote-department-choice,.quote-form-grid{grid-template-columns:1fr}.quote-form-grid label.wide{grid-column:auto}.quote-dialog-actions{position:sticky;bottom:0}.quote-participation-heading{align-items:flex-start;flex-direction:column;gap:3px}}
+@media(max-width:760px){.quote-optional-segments{grid-template-columns:repeat(2,minmax(0,1fr))}.quote-type-choice{grid-template-columns:1fr}.quote-product-row{grid-template-columns:30px 1fr}.quote-product-row label,.quote-product-assets{grid-column:2}.quote-product-asset-pickers{grid-template-columns:1fr auto}.quote-product-documents{grid-column:1/-1}.quote-remove-product{grid-column:2}.quote-region-badge{right:8px;top:32px}}
+@media(max-width:650px){.quote-dialog-backdrop{padding:0}.quote-dialog{max-height:100vh;border-radius:0}.quote-department-choice,.quote-form-grid,.quote-pricing-component-rows{grid-template-columns:1fr}.quote-form-grid label.wide{grid-column:auto}.quote-dialog-actions{position:sticky;bottom:0}.quote-participation-heading{align-items:flex-start;flex-direction:column;gap:3px}}
 @media(prefers-reduced-motion:reduce){.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label,.quote-optional-segments label,.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:none}}
 </style>

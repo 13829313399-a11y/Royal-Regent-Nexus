@@ -76,7 +76,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     const liveQuote = quote()
     liveQuote.targetCustomerPrice = 'USD 20'
 
-    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: liveQuote } })
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: liveQuote, canEditMarkup: true } })
 
     expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 140.40')
     expect(wrapper.get('[data-testid="live-cost-hkd"]').text()).toBe('HKD 117.00')
@@ -86,6 +86,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-2"]').element.value).toBe('1.20')
     expect(wrapper.get('.quote-markup-tier-row.active').text()).toContain('本单采用')
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-misc"]').element.value).toBe('2.00')
+    expect(wrapper.get('[data-testid="live-quote-settlement"]').text()).toBe('0.9800')
     expect(wrapper.text()).toContain('实时试算 · 未保存')
     expect(wrapper.text()).toContain('RMB 119.34')
     expect(wrapper.text()).toContain('USD 18.00')
@@ -117,17 +118,19 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(saveButton.attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-testid="select-quote-markup-tier-0"]').trigger('click')
+    await wrapper.get('[data-testid="output-quote-markup-tier-1"]').setValue(false)
     await wrapper.get('[data-testid="live-quote-markup-0"]').setValue('1.15')
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('3.5')
+    expect(wrapper.get('[data-testid="live-quote-settlement"]').text()).toBe('0.9650')
     expect(saveButton.attributes('disabled')).toBeUndefined()
     await saveButton.trigger('click')
 
     expect(wrapper.emitted('updateMarkup')).toEqual([[
       {
         markupTiers: [
-          { moq: '3000', markup: '1.15' },
-          { moq: '5000', markup: '1.20' },
-          { moq: '10000', markup: '1.20' },
+          { moq: '3000', markup: '1.15', includeInOutput: true },
+          { moq: '5000', markup: '1.20', includeInOutput: false },
+          { moq: '10000', markup: '1.20', includeInOutput: true },
         ],
         selectedMoq: '3000',
         miscRatio: '0.0350',
@@ -145,11 +148,16 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
 
     await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.20')
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('2.555')
-    expect(wrapper.text()).toContain('杂项系数最多保留 2 位小数')
+    expect(wrapper.text()).toContain('杂项率最多保留 2 位小数')
     expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('101')
-    expect(wrapper.text()).toContain('杂项系数必须在 0% 至 100% 之间')
+    expect(wrapper.text()).toContain('杂项率必须大于等于 0% 且小于 100%')
+    expect(wrapper.get('[data-testid="live-quote-settlement"]').text()).toBe('—')
+
+    await wrapper.get('[data-testid="live-quote-misc"]').setValue('100')
+    expect(wrapper.text()).toContain('杂项率必须大于等于 0% 且小于 100%')
+    expect(wrapper.get('[data-testid="save-quote-markup"]').attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-testid="live-quote-misc"]').setValue('2.00')
     await wrapper.setProps({ markupBlockedReason: '请先重开业务部分段。' })
@@ -159,5 +167,47 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
 
     const viewer = mount(InternalQuoteActivityPanel, { props: { quote: quote() } })
     expect(viewer.find('[data-testid="save-quote-markup"]').exists()).toBe(false)
+    for (const testId of ['live-quote-markup-moq-0', 'live-quote-markup-0', 'select-quote-markup-tier-0', 'live-quote-misc']) {
+      expect(viewer.get(`[data-testid="${testId}"]`).attributes('disabled')).toBeDefined()
+    }
+  })
+
+  it('replaces MOQ editing with JustPlay component multipliers', async () => {
+    const componentQuote = quote()
+    componentQuote.sections = [{ code: 'sales', payload: {
+      pricing_mode: 'component',
+      pricing_components: [
+        { id: 'component-01', name: '主体', markup_x: 1.15 },
+        { id: 'component-02', name: '镜子' },
+      ],
+    } }] as InternalQuote['sections']
+    componentQuote.rr2CostSummary = {
+      shippingPricing: {
+        markup: 1.15,
+        miscRatio: .03,
+        markupTiers: [],
+        activeMarkupMoq: 10000,
+        pricingMode: 'component',
+        pricingGroups: [
+          { id: 'component-01', name: '主体', costHkd: 60, pricingBaseHkd: 60, markup: 1.15, settlement: .97, quotedHkd: 71.134, inheritsMainMarkup: false },
+          { id: 'component-02', name: '镜子', costHkd: 40, pricingBaseHkd: 40, markup: 1.15, settlement: .97, quotedHkd: 47.423, inheritsMainMarkup: true },
+        ],
+      },
+    } as InternalQuote['rr2CostSummary']
+
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: componentQuote, canEditMarkup: true } })
+    expect(wrapper.find('[data-testid="live-quote-markup-moq-0"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('JustPlay 分项倍率')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-component-markup-1"]').element.value).toBe('1.15')
+
+    await wrapper.get('[data-testid="live-quote-component-markup-1"]').setValue('1.05')
+    await wrapper.get('[data-testid="save-quote-markup"]').trigger('click')
+    expect(wrapper.emitted('updateMarkup')?.[0]?.[0]).toMatchObject({
+      miscRatio: '0.0300',
+      componentMarkups: [
+        { id: 'component-01', markup: '1.15' },
+        { id: 'component-02', markup: '1.05' },
+      ],
+    })
   })
 })

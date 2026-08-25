@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
@@ -15,7 +15,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
@@ -24,10 +24,17 @@ from app.core.time import business_now
 from app.models.qc_inspection import (
     QcCustomerConfig,
     QcInspectionAuditEvent,
+    QcInspectionDefect,
+    QcInspectionDisposition,
+    QcInspectionEvent,
+    QcInspectionEventLine,
     QcInspectionIdempotencyRecord,
     QcInspectionOrder,
     QcInspectionProblem,
     QcInspectionReport,
+    QcInspectionReportDocument,
+    QcInspectionReportPackage,
+    QcInspectionTestResult,
     QcReportRenameBatch,
     QcReportRenameGroup,
     QcReportRenameSourceFile,
@@ -38,7 +45,10 @@ from app.models.qc_inspection import (
 from app.schemas.qc_inspection import (
     QcCustomerConfigCreate,
     QcCustomerConfigUpdate,
+    QcInspectionEventCreate,
+    QcInspectionEventUpdate,
     QcOrderCreate,
+    QcOrderReportGenerateRequest,
     QcOrderUpdate,
     QcProblemCreate,
     QcProblemUpdate,
@@ -66,7 +76,8 @@ QC_DEPARTMENTS = ("qc",)
 QC_REPORT_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-MAX_SCHEDULE_IMPORT_BYTES = 20 * 1024 * 1024
+MAX_SCHEDULE_IMPORT_MEGABYTES = 35
+MAX_SCHEDULE_IMPORT_BYTES = MAX_SCHEDULE_IMPORT_MEGABYTES * 1024 * 1024
 SCHEDULE_IMPORT_SUFFIXES = {".xls", ".xlsx", ".xlsm"}
 REPORT_TYPES = {
     "CUSTOMER_SUMMARY",
@@ -74,6 +85,15 @@ REPORT_TYPES = {
     "HUAXING_CUSTOMER_WEEKLY_DETAIL",
     "HUAXING_WEEKLY_AGGREGATE",
     "GROUP_SUMMARY",
+    "WEEKLY_INSPECTION_SCHEDULE",
+    "DAILY_INSPECTION_LEDGER",
+    "WEEKLY_PROBLEM_DETAIL",
+    "WEEKLY_RETURN_SUMMARY",
+    "INSPECTION_PASS_RATE",
+    "ANNUAL_INSPECTION_STATISTICS",
+    "PRODUCT_QUALITY_LEDGER",
+    "INSPECTION_DOCUMENT_INDEX",
+    "ORDER_INSPECTION_REPORT",
 }
 RESULT_PROBLEM_TRIGGERS = {"FAIL", "REJECTED", "CONDITIONAL_PASS", "CANCELLED"}
 
@@ -382,6 +402,423 @@ def _new_inspection_no() -> str:
 
 def _new_problem_no() -> str:
     return f"QCP-{business_now():%Y%m%d}-{uuid4().hex[:8].upper()}"
+
+
+def _get_event(db: Session, factory_id: str, event_id: str) -> QcInspectionEvent:
+    event = db.get(QcInspectionEvent, event_id)
+    if event is None or event.factory_id != factory_id:
+        raise HTTPException(status_code=404, detail="验货记录不存在")
+    return event
+
+
+def _event_children(db: Session, event_id: str) -> tuple[list[object], ...]:
+    lines = list(
+        db.scalars(
+            select(QcInspectionEventLine)
+            .where(QcInspectionEventLine.inspection_event_id == event_id)
+            .order_by(QcInspectionEventLine.line_no)
+        ).all()
+    )
+    defects = list(
+        db.scalars(
+            select(QcInspectionDefect)
+            .where(QcInspectionDefect.inspection_event_id == event_id)
+            .order_by(QcInspectionDefect.severity, QcInspectionDefect.id)
+        ).all()
+    )
+    tests = list(
+        db.scalars(
+            select(QcInspectionTestResult)
+            .where(QcInspectionTestResult.inspection_event_id == event_id)
+            .order_by(QcInspectionTestResult.test_item, QcInspectionTestResult.id)
+        ).all()
+    )
+    dispositions = list(
+        db.scalars(
+            select(QcInspectionDisposition)
+            .where(QcInspectionDisposition.inspection_event_id == event_id)
+            .order_by(QcInspectionDisposition.disposition_type, QcInspectionDisposition.id)
+        ).all()
+    )
+    return lines, defects, tests, dispositions
+
+
+def event_to_out(db: Session, event: QcInspectionEvent) -> dict[str, object]:
+    lines, defects, tests, dispositions = _event_children(db, event.id)
+    return {
+        "id": event.id,
+        "factory_id": event.factory_id,
+        "inspection_order_id": event.inspection_order_id,
+        "attempt_no": event.attempt_no,
+        "event_type": event.event_type,
+        "actual_inspection_date": event.actual_inspection_date,
+        "inspector_name": event.inspector_name,
+        "inspection_agency": event.inspection_agency,
+        "inspection_location": event.inspection_location,
+        "sampling_standard": event.sampling_standard,
+        "inspection_level": event.inspection_level,
+        "aql_critical": event.aql_critical,
+        "aql_major": event.aql_major,
+        "aql_minor": event.aql_minor,
+        "lot_size": event.lot_size,
+        "sample_size": event.sample_size,
+        "critical_defect_count": event.critical_defect_count,
+        "major_defect_count": event.major_defect_count,
+        "minor_defect_count": event.minor_defect_count,
+        "inspection_result": event.inspection_result,
+        "document_status": event.document_status,
+        "manual_has_problem": bool(event.manual_has_problem),
+        "report_number": event.report_number,
+        "note": event.note,
+        "lines": [
+            {
+                "id": item.id,
+                "line_no": item.line_no,
+                "customer_po_no": item.customer_po_no,
+                "release_no": item.release_no,
+                "customer_item_no": item.customer_item_no,
+                "internal_item_no": item.internal_item_no,
+                "batch_no": item.batch_no,
+                "date_code": item.date_code,
+                "product_name": item.product_name,
+                "order_quantity": item.order_quantity,
+                "inspected_quantity": item.inspected_quantity,
+                "packing": item.packing,
+                "carton_count": item.carton_count,
+                "upc_ean": item.upc_ean,
+            }
+            for item in lines
+        ],
+        "defects": [
+            {
+                "id": item.id,
+                "event_line_id": item.event_line_id,
+                "category": item.category,
+                "severity": item.severity,
+                "quantity": item.quantity,
+                "defect_location": item.defect_location,
+                "description": item.description,
+                "production_department": item.production_department,
+                "photo_reference": item.photo_reference,
+            }
+            for item in defects
+        ],
+        "tests": [
+            {
+                "id": item.id,
+                "test_item": item.test_item,
+                "method_standard": item.method_standard,
+                "specification": item.specification,
+                "measured_value": item.measured_value,
+                "unit": item.unit,
+                "sample_size": item.sample_size,
+                "result": item.result,
+                "operator_name": item.operator_name,
+                "reviewer_name": item.reviewer_name,
+            }
+            for item in tests
+        ],
+        "dispositions": [
+            {
+                "id": item.id,
+                "disposition_type": item.disposition_type,
+                "return_quantity": item.return_quantity,
+                "rework_quantity": item.rework_quantity,
+                "reason": item.reason,
+                "approved_by": item.approved_by,
+                "approved_date": item.approved_date,
+                "verification_result": item.verification_result,
+            }
+            for item in dispositions
+        ],
+        "revision": event.revision,
+        "created_by": event.created_by,
+        "created_by_name": event.created_by_name,
+        "updated_by": event.updated_by,
+        "updated_by_name": event.updated_by_name,
+        "created_at": event.created_at,
+        "updated_at": event.updated_at,
+    }
+
+
+def list_inspection_events(
+    db: Session, factory_id: str, inspection_order_id: str
+) -> list[dict[str, object]]:
+    factory_id = require_qc_factory(factory_id)
+    _get_order(db, factory_id, inspection_order_id)
+    events = list(
+        db.scalars(
+            select(QcInspectionEvent)
+            .where(
+                QcInspectionEvent.factory_id == factory_id,
+                QcInspectionEvent.inspection_order_id == inspection_order_id,
+            )
+            .order_by(QcInspectionEvent.attempt_no.desc())
+        ).all()
+    )
+    return [event_to_out(db, item) for item in events]
+
+
+def _replace_event_children(
+    db: Session,
+    event: QcInspectionEvent,
+    payload: QcInspectionEventCreate | QcInspectionEventUpdate,
+) -> None:
+    for model in (
+        QcInspectionDisposition,
+        QcInspectionTestResult,
+        QcInspectionDefect,
+        QcInspectionEventLine,
+    ):
+        db.execute(delete(model).where(model.inspection_event_id == event.id))
+    for line_no, item in enumerate(payload.lines, start=1):
+        data = item.model_dump()
+        db.add(
+            QcInspectionEventLine(
+                id=f"QCEL-{uuid4().hex}",
+                factory_id=event.factory_id,
+                inspection_event_id=event.id,
+                line_no=line_no,
+                **data,
+            )
+        )
+    for item in payload.defects:
+        db.add(
+            QcInspectionDefect(
+                id=f"QCDF-{uuid4().hex}",
+                factory_id=event.factory_id,
+                inspection_event_id=event.id,
+                **item.model_dump(),
+            )
+        )
+    for item in payload.tests:
+        db.add(
+            QcInspectionTestResult(
+                id=f"QCTR-{uuid4().hex}",
+                factory_id=event.factory_id,
+                inspection_event_id=event.id,
+                **item.model_dump(),
+            )
+        )
+    for item in payload.dispositions:
+        db.add(
+            QcInspectionDisposition(
+                id=f"QCDP-{uuid4().hex}",
+                factory_id=event.factory_id,
+                inspection_event_id=event.id,
+                **item.model_dump(),
+            )
+        )
+
+
+def _sync_order_from_event(
+    order: QcInspectionOrder, event: QcInspectionEvent, user: AuthContext
+) -> None:
+    order.actual_inspection_date = event.actual_inspection_date
+    order.inspection_result = event.inspection_result
+    order.inspection_agency = event.inspection_agency or order.inspection_agency
+    order.manual_has_problem = bool(event.manual_has_problem)
+    order.report_status = event.document_status
+    if event.inspection_result in {"PASS", "FAIL", "REJECTED", "CONDITIONAL_PASS"}:
+        order.status = "COMPLETED"
+    elif event.inspection_result == "CANCELLED":
+        order.status = "CANCELLED"
+    else:
+        order.status = "IN_PROGRESS"
+    order.revision += 1
+    order.updated_by = user.id
+    order.updated_by_name = user.display_name
+    order.updated_at = now_text()
+
+
+def _sync_event_problem(
+    db: Session,
+    order: QcInspectionOrder,
+    event: QcInspectionEvent,
+    payload: QcInspectionEventCreate | QcInspectionEventUpdate,
+    user: AuthContext,
+) -> None:
+    source_key = f"EVENT:{event.id}"
+    problem = db.scalar(
+        select(QcInspectionProblem).where(
+            QcInspectionProblem.factory_id == order.factory_id,
+            QcInspectionProblem.inspection_order_id == order.id,
+            QcInspectionProblem.source_key == source_key,
+        )
+    )
+    has_problem = bool(payload.defects) or payload.manual_has_problem or (
+        payload.inspection_result in RESULT_PROBLEM_TRIGGERS
+    )
+    if not has_problem:
+        if problem is not None:
+            problem.status = "CANCELLED"
+            problem.revision += 1
+            problem.updated_by = user.id
+            problem.updated_by_name = user.display_name
+            problem.updated_at = now_text()
+        return
+    description = "；".join(
+        f"{item.severity}/{item.quantity}：{item.description}" for item in payload.defects
+    )
+    return_reason = "；".join(
+        item.reason
+        for item in payload.dispositions
+        if item.disposition_type == "RETURN" and item.reason
+    )
+    timestamp = now_text()
+    if problem is None:
+        problem = QcInspectionProblem(
+            id=f"QCPR-{uuid4().hex}",
+            factory_id=order.factory_id,
+            problem_no=_new_problem_no(),
+            inspection_order_id=order.id,
+            source_type="AUTO_RESULT",
+            source_key=source_key,
+            status="OPEN" if description else "DRAFT",
+            category="验货缺陷/处置",
+            description=description,
+            return_reason=return_reason,
+            corrective_action="",
+            resolution="",
+            primary_responsible_person="",
+            secondary_responsible_person="",
+            reported_date=event.actual_inspection_date,
+            revision=1,
+            created_by=user.id,
+            created_by_name=user.display_name,
+            updated_by=user.id,
+            updated_by_name=user.display_name,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        db.add(problem)
+    else:
+        problem.status = "OPEN" if description else "DRAFT"
+        problem.description = description
+        problem.return_reason = return_reason
+        problem.reported_date = event.actual_inspection_date
+        problem.revision += 1
+        problem.updated_by = user.id
+        problem.updated_by_name = user.display_name
+        problem.updated_at = timestamp
+
+
+EVENT_MUTATION_FIELDS = {
+    "event_type",
+    "actual_inspection_date",
+    "inspector_name",
+    "inspection_agency",
+    "inspection_location",
+    "sampling_standard",
+    "inspection_level",
+    "aql_critical",
+    "aql_major",
+    "aql_minor",
+    "lot_size",
+    "sample_size",
+    "critical_defect_count",
+    "major_defect_count",
+    "minor_defect_count",
+    "inspection_result",
+    "document_status",
+    "manual_has_problem",
+    "report_number",
+    "note",
+}
+
+
+def create_inspection_event(
+    db: Session, payload: QcInspectionEventCreate, user: AuthContext
+) -> dict[str, object]:
+    factory_id = require_qc_factory(payload.factory_id)
+    payload_hash = _payload_sha256(payload.model_dump(mode="json"))
+    replay = _idempotent_response(
+        db, user, "EVENT_CREATE", payload.request_id, payload_hash
+    )
+    if replay is not None:
+        return replay
+    order = _get_order(db, factory_id, payload.inspection_order_id)
+    attempt_no = (
+        db.scalar(
+            select(func.max(QcInspectionEvent.attempt_no)).where(
+                QcInspectionEvent.inspection_order_id == order.id
+            )
+        )
+        or 0
+    ) + 1
+    timestamp = now_text()
+    event = QcInspectionEvent(
+        id=f"QCE-{uuid4().hex}",
+        factory_id=factory_id,
+        inspection_order_id=order.id,
+        attempt_no=attempt_no,
+        **{
+            field: getattr(payload, field)
+            for field in EVENT_MUTATION_FIELDS
+        },
+        revision=1,
+        created_by=user.id,
+        created_by_name=user.display_name,
+        updated_by=user.id,
+        updated_by_name=user.display_name,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    db.add(event)
+    _flush(db, conflict_message="验货记录主表创建冲突，请刷新后重试")
+    _replace_event_children(db, event, payload)
+    _flush(db, conflict_message="验货记录明细创建冲突，请检查 PO、缺陷与测试数据")
+    _sync_order_from_event(order, event, user)
+    _sync_event_problem(db, order, event, payload, user)
+    _flush(db, conflict_message="验货记录创建冲突，请刷新后重试")
+    response = event_to_out(db, event)
+    _audit(
+        db, user, factory_id, "INSPECTION_EVENT_CREATED", "qc_inspection_event",
+        event.id, payload.request_id, after=response,
+    )
+    _record_idempotency(
+        db, user, factory_id, "EVENT_CREATE", payload.request_id, payload_hash, response
+    )
+    _commit(db, conflict_message="验货记录创建冲突，请刷新后重试")
+    return response
+
+
+def update_inspection_event(
+    db: Session, event_id: str, payload: QcInspectionEventUpdate, user: AuthContext
+) -> dict[str, object]:
+    factory_id = require_qc_factory(payload.factory_id)
+    payload_hash = _payload_sha256(payload.model_dump(mode="json"))
+    operation = f"EVENT_UPDATE:{event_id}"
+    replay = _idempotent_response(db, user, operation, payload.request_id, payload_hash)
+    if replay is not None:
+        return replay
+    event = _get_event(db, factory_id, event_id)
+    if event.inspection_order_id != payload.inspection_order_id:
+        raise HTTPException(status_code=422, detail="验货记录不能改挂到其他主单")
+    if event.revision != payload.expected_revision:
+        raise HTTPException(status_code=409, detail="验货记录已被其他人更新，请刷新后重试")
+    before = event_to_out(db, event)
+    for field in EVENT_MUTATION_FIELDS:
+        setattr(event, field, getattr(payload, field))
+    event.revision += 1
+    event.updated_by = user.id
+    event.updated_by_name = user.display_name
+    event.updated_at = now_text()
+    _replace_event_children(db, event, payload)
+    order = _get_order(db, factory_id, event.inspection_order_id)
+    _sync_order_from_event(order, event, user)
+    _sync_event_problem(db, order, event, payload, user)
+    _flush(db, conflict_message="验货记录更新冲突，请刷新后重试")
+    response = event_to_out(db, event)
+    _audit(
+        db, user, factory_id, "INSPECTION_EVENT_UPDATED", "qc_inspection_event",
+        event.id, payload.request_id, before=before, after=response, reason=payload.reason,
+    )
+    _record_idempotency(
+        db, user, factory_id, operation, payload.request_id, payload_hash, response
+    )
+    _commit(db, conflict_message="验货记录更新冲突，请刷新后重试")
+    return response
 
 
 def _new_order(
@@ -1179,7 +1616,10 @@ def preview_schedule_import(
     if not content:
         raise HTTPException(status_code=422, detail="排期文件不能为空")
     if len(content) > MAX_SCHEDULE_IMPORT_BYTES:
-        raise HTTPException(status_code=413, detail="排期文件不能超过 20 MB")
+        raise HTTPException(
+            status_code=413,
+            detail=f"排期文件不能超过 {MAX_SCHEDULE_IMPORT_MEGABYTES} MB",
+        )
     source_hash = hashlib.sha256(content).hexdigest()
     payload_hash = _payload_sha256(
         {
@@ -2183,11 +2623,217 @@ def _build_report_workbook(
     return output.getvalue()
 
 
+V3_AGGREGATE_REPORT_TYPES = {
+    "WEEKLY_INSPECTION_SCHEDULE",
+    "DAILY_INSPECTION_LEDGER",
+    "WEEKLY_PROBLEM_DETAIL",
+    "WEEKLY_RETURN_SUMMARY",
+    "INSPECTION_PASS_RATE",
+    "ANNUAL_INSPECTION_STATISTICS",
+    "PRODUCT_QUALITY_LEDGER",
+    "INSPECTION_DOCUMENT_INDEX",
+}
+
+
+def _period_bounds(mode: str, key: str) -> tuple[str, str]:
+    if mode == "WEEK":
+        year_text, week_text = key.split("-W", 1)
+        start = date.fromisocalendar(int(year_text), int(week_text), 1)
+        end = start + timedelta(days=6)
+    elif mode == "MONTH":
+        year_text, month_text = key.split("-", 1)
+        start = date(int(year_text), int(month_text), 1)
+        next_month = date(start.year + (start.month == 12), (start.month % 12) + 1, 1)
+        end = next_month - timedelta(days=1)
+    elif mode == "YEAR":
+        start = date(int(key), 1, 1)
+        end = date(int(key), 12, 31)
+    else:
+        raise HTTPException(status_code=422, detail="汇总报表不支持事件周期")
+    return start.isoformat(), end.isoformat()
+
+
+def _write_tabular_sheet(
+    workbook: Workbook,
+    *,
+    sheet_name: str,
+    title: str,
+    headers: list[str],
+    rows: list[list[object]],
+) -> None:
+    sheet = workbook.create_sheet(sheet_name[:31])
+    last_column = max(1, len(headers))
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_column)
+    sheet.cell(1, 1, title)
+    sheet.cell(1, 1).font = Font(name="Microsoft YaHei", size=16, bold=True)
+    sheet.cell(1, 1).alignment = Alignment(horizontal="center", vertical="center")
+    sheet.row_dimensions[1].height = 32
+    sheet.append(headers)
+    for row in rows:
+        sheet.append(row)
+    _style_range(sheet, 2, 2, 1, last_column, fill=HEADER_FILL, bold=True)
+    if sheet.max_row >= 3:
+        _style_range(sheet, 3, sheet.max_row, 1, last_column)
+    for column_no, header in enumerate(headers, start=1):
+        maximum = max(
+            [len(str(header))]
+            + [len(str(sheet.cell(row_no, column_no).value or "")) for row_no in range(3, sheet.max_row + 1)]
+        )
+        sheet.column_dimensions[get_column_letter(column_no)].width = min(36, max(10, maximum + 2))
+    sheet.freeze_panes = "A3"
+    sheet.auto_filter.ref = f"A2:{get_column_letter(last_column)}{max(2, sheet.max_row)}"
+    sheet.sheet_view.showGridLines = False
+    _configure_print(sheet, last_column, sheet.max_row)
+
+
+def _build_v3_report_workbook(
+    report_type: str,
+    period_key: str,
+    orders: list[QcInspectionOrder],
+    events: list[QcInspectionEvent],
+    problems: list[QcInspectionProblem],
+    lines: list[QcInspectionEventLine],
+    defects: list[QcInspectionDefect],
+    dispositions: list[QcInspectionDisposition],
+    packages: list[QcInspectionReportPackage],
+    documents: list[QcInspectionReportDocument],
+) -> bytes:
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    orders_by_id = {item.id: item for item in orders}
+    events_by_id = {item.id: item for item in events}
+    lines_by_event: dict[str, list[QcInspectionEventLine]] = defaultdict(list)
+    defects_by_event: dict[str, list[QcInspectionDefect]] = defaultdict(list)
+    dispositions_by_event: dict[str, list[QcInspectionDisposition]] = defaultdict(list)
+    docs_by_package: dict[str, list[QcInspectionReportDocument]] = defaultdict(list)
+    for item in lines:
+        lines_by_event[item.inspection_event_id].append(item)
+    for item in defects:
+        defects_by_event[item.inspection_event_id].append(item)
+    for item in dispositions:
+        dispositions_by_event[item.inspection_event_id].append(item)
+    for item in documents:
+        docs_by_package[item.package_id].append(item)
+
+    if report_type == "WEEKLY_INSPECTION_SCHEDULE":
+        rows = [
+            [item.planned_inspection_date, item.customer_name, item.sales_contract_no, item.customer_po_no, item.customer_item_no, item.product_name, float(item.quantity), item.inspection_agency, item.production_department, RESULT_LABELS[item.inspection_result], item.status]
+            for item in orders
+        ]
+        _write_tabular_sheet(workbook, sheet_name="验货排期", title=f"验货排期表（{period_key}）", headers=["计划验货日期", "客户", "合同号", "PO", "货号", "产品", "数量", "验货机构", "生产部门", "当前结果", "状态"], rows=rows)
+    elif report_type == "DAILY_INSPECTION_LEDGER":
+        rows = []
+        for event in events:
+            order = orders_by_id[event.inspection_order_id]
+            rows.append([event.actual_inspection_date, order.customer_name, order.sales_contract_no, "；".join(item.customer_po_no for item in lines_by_event[event.id]), "；".join(item.customer_item_no for item in lines_by_event[event.id]), event.attempt_no, event.event_type, event.inspector_name, event.inspection_agency, event.lot_size, event.sample_size, event.critical_defect_count, event.major_defect_count, event.minor_defect_count, RESULT_LABELS[event.inspection_result], event.report_number])
+        _write_tabular_sheet(workbook, sheet_name="验货台账", title=f"验货台账（{period_key}）", headers=["验货日期", "客户", "合同号", "PO", "货号", "次数", "验货类型", "验货员", "机构", "批量", "抽样数", "致命", "主要", "次要", "结果", "报告号"], rows=rows)
+    elif report_type == "WEEKLY_PROBLEM_DETAIL":
+        rows = []
+        for problem in problems:
+            order = orders_by_id.get(problem.inspection_order_id)
+            if order is None:
+                continue
+            rows.append([problem.reported_date, problem.problem_no, order.customer_name, order.sales_contract_no, order.customer_po_no, order.customer_item_no, problem.category, problem.description, problem.return_reason, problem.corrective_action, problem.resolution, problem.primary_responsible_person, problem.secondary_responsible_person, problem.status])
+        _write_tabular_sheet(workbook, sheet_name="问题明细", title=f"验货问题明细（{period_key}）", headers=["发现日期", "问题号", "客户", "合同号", "PO", "货号", "类别", "问题描述", "退货原因", "纠正措施", "处理结果", "第一责任人", "第二责任人", "状态"], rows=rows)
+    elif report_type == "WEEKLY_RETURN_SUMMARY":
+        rows = []
+        for disposition in dispositions:
+            if disposition.disposition_type != "RETURN":
+                continue
+            event = events_by_id[disposition.inspection_event_id]
+            order = orders_by_id[event.inspection_order_id]
+            rows.append([event.actual_inspection_date, order.customer_name, order.sales_contract_no, "；".join(item.customer_po_no for item in lines_by_event[event.id]), "；".join(item.customer_item_no for item in lines_by_event[event.id]), disposition.return_quantity, disposition.reason, event.inspection_result, event.report_number])
+        _write_tabular_sheet(workbook, sheet_name="退货汇总", title=f"验货退货汇总（{period_key}，仅统计明确 RETURN 处置）", headers=["验货日期", "客户", "合同号", "PO", "货号", "退货数量", "退货原因", "验货结果", "报告号"], rows=rows)
+    elif report_type == "INSPECTION_PASS_RATE":
+        by_customer: dict[str, list[QcInspectionEvent]] = defaultdict(list)
+        for event in events:
+            by_customer[orders_by_id[event.inspection_order_id].customer_name].append(event)
+        rows = []
+        for customer, items in sorted(by_customer.items()):
+            completed = [item for item in items if item.inspection_result not in {"PENDING", "CANCELLED"}]
+            passed = sum(item.inspection_result in {"PASS", "CONDITIONAL_PASS"} for item in completed)
+            returned = sum(any(d.disposition_type == "RETURN" for d in dispositions_by_event[item.id]) for item in completed)
+            rows.append([customer, len(items), len(completed), passed, len(completed) - passed, returned, passed / len(completed) if completed else 0])
+        _write_tabular_sheet(workbook, sheet_name="合格率", title=f"验货合格率统计（{period_key}）", headers=["客户", "验货次数", "已结论次数", "通过次数", "未通过次数", "明确退货次数", "合格率"], rows=rows)
+        sheet = workbook["合格率"]
+        for row_no in range(3, sheet.max_row + 1):
+            sheet.cell(row_no, 7).number_format = "0.00%"
+    elif report_type == "ANNUAL_INSPECTION_STATISTICS":
+        monthly: dict[str, list[QcInspectionEvent]] = defaultdict(list)
+        for event in events:
+            monthly[event.actual_inspection_date[:7]].append(event)
+        rows = []
+        for month, items in sorted(monthly.items()):
+            completed = [item for item in items if item.inspection_result not in {"PENDING", "CANCELLED"}]
+            passed = sum(item.inspection_result in {"PASS", "CONDITIONAL_PASS"} for item in completed)
+            returned = sum(any(d.disposition_type == "RETURN" for d in dispositions_by_event[item.id]) for item in completed)
+            rows.append([month, len(items), len(completed), passed, len(completed) - passed, returned, passed / len(completed) if completed else 0, sum(item.critical_defect_count + item.major_defect_count + item.minor_defect_count for item in items)])
+        _write_tabular_sheet(workbook, sheet_name="年度统计", title=f"年度验货统计（{period_key}）", headers=["月份", "验货次数", "已结论次数", "通过次数", "未通过次数", "退货次数", "合格率", "缺陷数量"], rows=rows)
+        sheet = workbook["年度统计"]
+        for row_no in range(3, sheet.max_row + 1):
+            sheet.cell(row_no, 7).number_format = "0.00%"
+    elif report_type == "PRODUCT_QUALITY_LEDGER":
+        rows = []
+        for line in lines:
+            event = events_by_id[line.inspection_event_id]
+            order = orders_by_id[event.inspection_order_id]
+            rows.append([event.actual_inspection_date, order.customer_name, order.sales_contract_no, line.customer_po_no, line.release_no, line.customer_item_no, line.internal_item_no, line.batch_no, line.date_code, line.product_name, line.order_quantity, line.inspected_quantity, line.packing, line.carton_count, event.sample_size, event.critical_defect_count, event.major_defect_count, event.minor_defect_count, event.inspection_result, event.report_number])
+        _write_tabular_sheet(workbook, sheet_name="产品质量台账", title=f"产品质量验货台账（{period_key}）", headers=["验货日期", "客户", "合同号", "PO", "Release", "客户货号", "内部货号", "批次", "Date Code", "产品", "订单数量", "验货数量", "装箱", "箱数", "抽样数", "致命", "主要", "次要", "结果", "报告号"], rows=rows)
+    elif report_type == "INSPECTION_DOCUMENT_INDEX":
+        rows = []
+        for package in packages:
+            event = events_by_id[package.inspection_event_id]
+            order = orders_by_id[event.inspection_order_id]
+            package_docs = docs_by_package[package.id] or [None]
+            for document in package_docs:
+                rows.append([event.actual_inspection_date, order.inspection_no, order.customer_name, order.sales_contract_no, package.package_no, package.external_report_no, package.external_inspection_no, package.issuing_organization, package.document_status, package.revision, document.document_role if document else "", document.original_file_name if document else "", document.media_type if document else "", document.size_bytes if document else 0, document.sha256 if document else ""])
+        _write_tabular_sheet(workbook, sheet_name="报告文件索引", title=f"验货报告文件索引（{period_key}）", headers=["验货日期", "验货单号", "客户", "合同号", "报告包号", "外部报告号", "外部验货号", "出具机构", "文档状态", "版本", "文档角色", "原文件名", "类型", "字节数", "SHA256"], rows=rows)
+    else:
+        raise HTTPException(status_code=422, detail="暂不支持该 V3 报表类型")
+
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def _build_order_report_workbook(
+    order: QcInspectionOrder,
+    event: QcInspectionEvent,
+    lines: list[QcInspectionEventLine],
+    defects: list[QcInspectionDefect],
+    tests: list[QcInspectionTestResult],
+    dispositions: list[QcInspectionDisposition],
+) -> bytes:
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    _write_tabular_sheet(
+        workbook,
+        sheet_name="验货结论",
+        title=f"验货报告 · {order.inspection_no} · 第 {event.attempt_no} 次",
+        headers=["验货日期", "客户", "合同号", "验货类型", "验货员", "机构", "地点", "抽样标准", "检验水平", "AQL(C/M/m)", "批量", "抽样数", "致命", "主要", "次要", "结论", "报告号", "文档状态", "备注"],
+        rows=[[event.actual_inspection_date, order.customer_name, order.sales_contract_no, event.event_type, event.inspector_name, event.inspection_agency, event.inspection_location, event.sampling_standard, event.inspection_level, f"{event.aql_critical}/{event.aql_major}/{event.aql_minor}", event.lot_size, event.sample_size, event.critical_defect_count, event.major_defect_count, event.minor_defect_count, RESULT_LABELS[event.inspection_result], event.report_number, event.document_status, event.note]],
+    )
+    _write_tabular_sheet(workbook, sheet_name="PO与货号", title="验货 PO / 货号明细", headers=["序号", "PO", "Release", "客户货号", "内部货号", "批次", "Date Code", "产品", "订单数量", "验货数量", "装箱", "箱数", "UPC/EAN"], rows=[[item.line_no, item.customer_po_no, item.release_no, item.customer_item_no, item.internal_item_no, item.batch_no, item.date_code, item.product_name, item.order_quantity, item.inspected_quantity, item.packing, item.carton_count, item.upc_ean] for item in lines])
+    _write_tabular_sheet(workbook, sheet_name="缺陷明细", title="缺陷明细", headers=["严重度", "数量", "类别", "位置", "问题描述", "生产部门", "照片索引"], rows=[[item.severity, item.quantity, item.category, item.defect_location, item.description, item.production_department, item.photo_reference] for item in defects])
+    _write_tabular_sheet(workbook, sheet_name="测试记录", title="功能/性能测试记录", headers=["测试项目", "方法/标准", "规格", "实测值", "单位", "样本数", "结果", "操作人", "复核人"], rows=[[item.test_item, item.method_standard, item.specification, item.measured_value, item.unit, item.sample_size, item.result, item.operator_name, item.reviewer_name] for item in tests])
+    _write_tabular_sheet(workbook, sheet_name="处置记录", title="验货处置记录", headers=["处置类型", "退货数量", "返工数量", "原因", "批准人", "批准日期", "验证结果"], rows=[[item.disposition_type, item.return_quantity, item.rework_quantity, item.reason, item.approved_by, item.approved_date, item.verification_result] for item in dispositions])
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
 def report_to_out(report: QcInspectionReport) -> dict[str, object]:
     return {
         "id": report.id,
         "factory_id": report.factory_id,
         "week_key": report.week_key,
+        "period_mode": report.period_mode,
+        "period_key": report.period_key or report.week_key,
+        "metric_version": report.metric_version,
+        "inspection_order_id": report.inspection_order_id,
+        "inspection_event_id": report.inspection_event_id,
         "report_type": report.report_type,
         "status": report.status,
         "is_formal_snapshot": bool(report.is_formal_snapshot),
@@ -2223,48 +2869,151 @@ def generate_report(
     replay = _idempotent_response(db, user, "REPORT_GENERATE", payload.request_id, payload_hash)
     if replay is not None:
         return replay
-    order_statement = select(QcInspectionOrder).where(
-        QcInspectionOrder.week_key == payload.week_key
-    )
-    if factory_id != "*":
-        order_statement = order_statement.where(QcInspectionOrder.factory_id == factory_id)
-    scoped_orders = list(
-        db.scalars(
-            order_statement.order_by(
-                QcInspectionOrder.factory_id,
-                QcInspectionOrder.customer_name,
-                QcInspectionOrder.inspection_no,
+    events: list[QcInspectionEvent] = []
+    lines: list[QcInspectionEventLine] = []
+    defects: list[QcInspectionDefect] = []
+    dispositions: list[QcInspectionDisposition] = []
+    packages: list[QcInspectionReportPackage] = []
+    documents: list[QcInspectionReportDocument] = []
+    excluded_pending_count = 0
+    excluded_cancelled_count = 0
+
+    if payload.report_type in V3_AGGREGATE_REPORT_TYPES:
+        if payload.period_mode == "EVENT":
+            raise HTTPException(status_code=422, detail="汇总报表不能使用事件周期")
+        start_date, end_date = _period_bounds(payload.period_mode, payload.period_key)
+        event_statement = (
+            select(QcInspectionEvent)
+            .where(
+                QcInspectionEvent.factory_id == factory_id,
+                QcInspectionEvent.actual_inspection_date >= start_date,
+                QcInspectionEvent.actual_inspection_date <= end_date,
             )
-        ).all()
-    )
-    completed_results = {"PASS", "FAIL", "REJECTED", "CONDITIONAL_PASS"}
-    orders = [
-        item
-        for item in scoped_orders
-        if item.status == "COMPLETED"
-        and item.inspection_result in completed_results
-        and bool(item.actual_inspection_date)
-    ]
-    excluded_cancelled_count = sum(
-        1
-        for item in scoped_orders
-        if item.status == "CANCELLED" or item.inspection_result == "CANCELLED"
-    )
-    excluded_pending_count = len(scoped_orders) - len(orders) - excluded_cancelled_count
-    order_ids = [item.id for item in orders]
-    problems = (
-        list(
+            .order_by(QcInspectionEvent.actual_inspection_date, QcInspectionEvent.attempt_no)
+        )
+        events = list(db.scalars(event_statement).all())
+        event_ids = [item.id for item in events]
+        event_order_ids = {item.inspection_order_id for item in events}
+        schedule_statement = select(QcInspectionOrder).where(
+            QcInspectionOrder.factory_id == factory_id,
+            QcInspectionOrder.planned_inspection_date >= start_date,
+            QcInspectionOrder.planned_inspection_date <= end_date,
+        )
+        scheduled_orders = list(
+            db.scalars(
+                schedule_statement.order_by(
+                    QcInspectionOrder.planned_inspection_date,
+                    QcInspectionOrder.customer_name,
+                )
+            ).all()
+        )
+        all_order_ids = event_order_ids | {item.id for item in scheduled_orders}
+        if all_order_ids:
+            orders = list(
+                db.scalars(
+                    select(QcInspectionOrder)
+                    .where(QcInspectionOrder.id.in_(all_order_ids))
+                    .order_by(QcInspectionOrder.customer_name, QcInspectionOrder.inspection_no)
+                ).all()
+            )
+        else:
+            orders = []
+        if payload.report_type == "WEEKLY_INSPECTION_SCHEDULE":
+            orders = scheduled_orders
+        problems = list(
+            db.scalars(
+                select(QcInspectionProblem)
+                .where(
+                    QcInspectionProblem.factory_id == factory_id,
+                    QcInspectionProblem.reported_date >= start_date,
+                    QcInspectionProblem.reported_date <= end_date,
+                    QcInspectionProblem.status != "CANCELLED",
+                )
+                .order_by(QcInspectionProblem.reported_date, QcInspectionProblem.problem_no)
+            ).all()
+        )
+        if problems:
+            missing_order_ids = {
+                item.inspection_order_id for item in problems
+            } - {item.id for item in orders}
+            if missing_order_ids:
+                orders.extend(
+                    db.scalars(
+                        select(QcInspectionOrder).where(QcInspectionOrder.id.in_(missing_order_ids))
+                    ).all()
+                )
+        if event_ids:
+            lines = list(db.scalars(select(QcInspectionEventLine).where(QcInspectionEventLine.inspection_event_id.in_(event_ids)).order_by(QcInspectionEventLine.inspection_event_id, QcInspectionEventLine.line_no)).all())
+            defects = list(db.scalars(select(QcInspectionDefect).where(QcInspectionDefect.inspection_event_id.in_(event_ids))).all())
+            dispositions = list(db.scalars(select(QcInspectionDisposition).where(QcInspectionDisposition.inspection_event_id.in_(event_ids))).all())
+            packages = list(db.scalars(select(QcInspectionReportPackage).where(QcInspectionReportPackage.inspection_event_id.in_(event_ids))).all())
+            package_ids = [item.id for item in packages]
+            if package_ids:
+                documents = list(db.scalars(select(QcInspectionReportDocument).where(QcInspectionReportDocument.package_id.in_(package_ids))).all())
+        source_revision = _payload_sha256(
+            {
+                "orders": [(item.id, item.revision) for item in orders],
+                "events": [(item.id, item.revision) for item in events],
+                "problems": [(item.id, item.revision) for item in problems],
+                "lines": [item.id for item in lines],
+                "defects": [item.id for item in defects],
+                "dispositions": [item.id for item in dispositions],
+                "packages": [(item.id, item.revision) for item in packages],
+                "documents": [(item.id, item.sha256) for item in documents],
+                "metric_version": "qc-metrics-v1",
+            }
+        )
+        artifact = _build_v3_report_workbook(
+            payload.report_type,
+            payload.period_key,
+            orders,
+            events,
+            problems,
+            lines,
+            defects,
+            dispositions,
+            packages,
+            documents,
+        )
+        configured_customers: list[QcCustomerConfig] = []
+    else:
+        if payload.period_mode != "WEEK":
+            raise HTTPException(status_code=422, detail="兼容报表仅支持周周期")
+        order_statement = select(QcInspectionOrder).where(
+            QcInspectionOrder.week_key == payload.week_key
+        )
+        if factory_id != "*":
+            order_statement = order_statement.where(QcInspectionOrder.factory_id == factory_id)
+        scoped_orders = list(
+            db.scalars(
+                order_statement.order_by(
+                    QcInspectionOrder.factory_id,
+                    QcInspectionOrder.customer_name,
+                    QcInspectionOrder.inspection_no,
+                )
+            ).all()
+        )
+        completed_results = {"PASS", "FAIL", "REJECTED", "CONDITIONAL_PASS"}
+        orders = [
+            item for item in scoped_orders
+            if item.status == "COMPLETED"
+            and item.inspection_result in completed_results
+            and bool(item.actual_inspection_date)
+        ]
+        excluded_cancelled_count = sum(
+            1 for item in scoped_orders
+            if item.status == "CANCELLED" or item.inspection_result == "CANCELLED"
+        )
+        excluded_pending_count = len(scoped_orders) - len(orders) - excluded_cancelled_count
+        order_ids = [item.id for item in orders]
+        problems = list(
             db.scalars(
                 select(QcInspectionProblem)
                 .where(QcInspectionProblem.inspection_order_id.in_(order_ids))
                 .order_by(QcInspectionProblem.problem_no)
             ).all()
-        )
-        if order_ids
-        else []
-    )
-    configured_customers = (
-        list(
+        ) if order_ids else []
+        configured_customers = list(
             db.scalars(
                 select(QcCustomerConfig)
                 .where(
@@ -2273,28 +3022,21 @@ def generate_report(
                 )
                 .order_by(QcCustomerConfig.customer_name)
             ).all()
+        ) if payload.report_type == "CUSTOMER_SUMMARY" and factory_id != "*" else []
+        source_revision = _payload_sha256(
+            {
+                "orders": [(item.id, item.revision) for item in orders],
+                "problems": [(item.id, item.revision) for item in problems],
+                "customer_configs": [(item.id, item.revision, item.customer_name, item.status) for item in configured_customers],
+            }
         )
-        if payload.report_type == "CUSTOMER_SUMMARY" and factory_id != "*"
-        else []
-    )
-    configured_customer_names = [item.customer_name for item in configured_customers]
-    source_revision = _payload_sha256(
-        {
-            "orders": [(item.id, item.revision) for item in orders],
-            "problems": [(item.id, item.revision) for item in problems],
-            "customer_configs": [
-                (item.id, item.revision, item.customer_name, item.status)
-                for item in configured_customers
-            ],
-        }
-    )
-    artifact = _build_report_workbook(
-        payload.report_type,
-        payload.week_key,
-        orders,
-        problems,
-        configured_customer_names,
-    )
+        artifact = _build_report_workbook(
+            payload.report_type,
+            payload.week_key,
+            orders,
+            problems,
+            [item.customer_name for item in configured_customers],
+        )
     artifact_hash = hashlib.sha256(artifact).hexdigest()
     snapshot_revision = (
         db.scalar(
@@ -2306,14 +3048,22 @@ def generate_report(
         )
         or 0
     ) + 1
+    artifact_scope_key = (
+        payload.period_key if payload.report_type in V3_AGGREGATE_REPORT_TYPES else payload.week_key
+    )
     file_name = (
-        f"QC_{payload.report_type}_{factory_id}_{payload.week_key}_"
+        f"QC_{payload.report_type}_{factory_id}_{artifact_scope_key}_"
         f"R{snapshot_revision}.xlsx"
     )
     report = QcInspectionReport(
         id=f"QCR-{uuid4().hex}",
         factory_id=factory_id,
         week_key=payload.week_key,
+        period_mode=payload.period_mode,
+        period_key=payload.period_key,
+        metric_version="qc-metrics-v1",
+        inspection_order_id="",
+        inspection_event_id="",
         report_type=payload.report_type,
         status="GENERATED",
         is_formal_snapshot=payload.is_formal_snapshot,
@@ -2329,9 +3079,13 @@ def generate_report(
                 "order_count": len(orders),
                 "problem_count": len(problems),
                 "customer_config_count": len(configured_customers),
+                "event_count": len(events),
+                "defect_count": len(defects),
+                "return_disposition_count": sum(item.disposition_type == "RETURN" for item in dispositions),
                 "excluded_pending_count": excluded_pending_count,
                 "excluded_cancelled_count": excluded_cancelled_count,
-                "source": "qc_inspection_orders+qc_inspection_problems",
+                "source": "qc_inspection_normalized_v1",
+                "metric_version": "qc-metrics-v1",
             }
         ),
         error_message="",
@@ -2361,6 +3115,136 @@ def generate_report(
         response,
     )
     _commit(db, conflict_message="报表生成请求冲突，请更换 request_id")
+    return response
+
+
+def generate_order_report(
+    db: Session,
+    order_id: str,
+    payload: QcOrderReportGenerateRequest,
+    user: AuthContext,
+) -> dict[str, object]:
+    factory_id = require_qc_factory(payload.factory_id)
+    payload_hash = _payload_sha256(payload.model_dump(mode="json"))
+    operation = f"ORDER_REPORT_GENERATE:{payload.inspection_event_id}"
+    replay = _idempotent_response(db, user, operation, payload.request_id, payload_hash)
+    if replay is not None:
+        return replay
+    order = _get_order(db, factory_id, order_id)
+    event = _get_event(db, factory_id, payload.inspection_event_id)
+    if event.inspection_order_id != order.id:
+        raise HTTPException(status_code=422, detail="验货记录不属于当前主单")
+    lines, defects, tests, dispositions = _event_children(db, event.id)
+    artifact = _build_order_report_workbook(
+        order,
+        event,
+        list(lines),
+        list(defects),
+        list(tests),
+        list(dispositions),
+    )
+    artifact_hash = hashlib.sha256(artifact).hexdigest()
+    source_revision = _payload_sha256(
+        {
+            "order": (order.id, order.revision),
+            "event": (event.id, event.revision),
+            "lines": [item.id for item in lines],
+            "defects": [item.id for item in defects],
+            "tests": [item.id for item in tests],
+            "dispositions": [item.id for item in dispositions],
+        }
+    )
+    snapshot_revision = (
+        db.scalar(
+            select(func.max(QcInspectionReport.snapshot_revision)).where(
+                QcInspectionReport.factory_id == factory_id,
+                QcInspectionReport.week_key == order.week_key,
+                QcInspectionReport.report_type == "ORDER_INSPECTION_REPORT",
+            )
+        )
+        or 0
+    ) + 1
+    file_name = f"QC验货报告_{order.inspection_no}_第{event.attempt_no}次_R{snapshot_revision}.xlsx"
+    timestamp = now_text()
+    report = QcInspectionReport(
+        id=f"QCR-{uuid4().hex}",
+        factory_id=factory_id,
+        week_key=order.week_key,
+        period_mode="EVENT",
+        period_key=f"EVT-{event.attempt_no}",
+        metric_version="qc-metrics-v1",
+        inspection_order_id=order.id,
+        inspection_event_id=event.id,
+        report_type="ORDER_INSPECTION_REPORT",
+        status="GENERATED",
+        is_formal_snapshot=event.document_status == "FINAL",
+        snapshot_revision=snapshot_revision,
+        source_revision_sha256=source_revision,
+        artifact_file_name=file_name,
+        artifact_media_type=QC_REPORT_MEDIA_TYPE,
+        artifact_sha256=artifact_hash,
+        artifact_size_bytes=len(artifact),
+        artifact_bytes=artifact,
+        generation_summary_json=_canonical_json(
+            {
+                "order_count": 1,
+                "event_count": 1,
+                "line_count": len(lines),
+                "defect_count": len(defects),
+                "test_count": len(tests),
+                "disposition_count": len(dispositions),
+                "source": "qc_inspection_event",
+            }
+        ),
+        error_message="",
+        requested_by=user.id,
+        requested_by_name=user.display_name,
+        created_at=timestamp,
+    )
+    package = QcInspectionReportPackage(
+        id=f"QCPK-{uuid4().hex}",
+        factory_id=factory_id,
+        inspection_event_id=event.id,
+        package_no=f"PKG-{business_now():%Y%m%d}-{uuid4().hex[:8].upper()}",
+        report_type="INTERNAL_XLSX",
+        external_report_no=event.report_number,
+        external_inspection_no=order.inspection_no,
+        issuing_organization=event.inspection_agency,
+        document_status=event.document_status,
+        issued_date=event.actual_inspection_date,
+        revision=1,
+        created_by=user.id,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    document = QcInspectionReportDocument(
+        id=f"QCDO-{uuid4().hex}",
+        factory_id=factory_id,
+        package_id=package.id,
+        document_role="GENERATED_REPORT",
+        original_file_name=file_name,
+        original_relative_path="",
+        media_type=QC_REPORT_MEDIA_TYPE,
+        extension=".xlsx",
+        size_bytes=len(artifact),
+        sha256=artifact_hash,
+        source_bytes=artifact,
+        created_by=user.id,
+        created_at=timestamp,
+    )
+    db.add_all([report, package])
+    _flush(db, conflict_message="单单验货报告包生成冲突，请重试")
+    db.add(document)
+    _flush(db, conflict_message="单单验货报告文件索引生成冲突，请重试")
+    response = report_to_out(report)
+    _audit(
+        db, user, factory_id, "ORDER_INSPECTION_REPORT_GENERATED",
+        "qc_inspection_report", report.id, payload.request_id, after=response,
+    )
+    _record_idempotency(
+        db, user, factory_id, operation, payload.request_id, payload_hash, response
+    )
+    _commit(db, conflict_message="单单验货报告生成冲突，请更换 request_id")
     return response
 
 

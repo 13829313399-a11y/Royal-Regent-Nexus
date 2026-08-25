@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings
 from app.core.time import business_now, parse_business_timestamp
 from app.models.injection_scheduling import (
     InjectionSchedulingMachine,
@@ -45,6 +46,7 @@ from app.models.injection_scheduling_shared import (
     InjectionSchedulingMasterDataProposal,
     InjectionSchedulingRolloutPolicy,
 )
+from app.schemas.ai.workbook import AIInjectionPlanLayoutRecognitionV1
 from app.schemas.injection_scheduling_import import (
     InjectionSchedulingImportBatchOut,
     InjectionSchedulingImportConfirm,
@@ -53,8 +55,17 @@ from app.schemas.injection_scheduling_import import (
     InjectionSchedulingImportTaskPreview,
     InjectionSchedulingMasterApproval,
 )
+from app.services.ai.workbook_layout_recognition import (
+    WorkbookLayoutRecognitionError,
+    recognize_workbook_layout_sync,
+    validate_layout_sources,
+)
+from app.services.ai.workbook_recognition_packet import (
+    build_workbook_recognition_packet,
+)
 from app.services.auth import AuthContext
 from app.services.injection_scheduling import require_injection_scheduling_factory
+from app.services.injection_scheduling_ai_layout import parse_ai_layout_workbook
 from app.services.injection_scheduling_demand_import import (
     master_revision_digest,
     parse_demand_order_workbook,
@@ -77,6 +88,7 @@ from app.services.injection_scheduling_master_import import (
 )
 from app.services.injection_scheduling_profile_registry import (
     active_profiles_for_factory,
+    create_active_workbench_profile_revision,
     create_profile_revision,
     profile_revision_for_factory,
 )
@@ -258,6 +270,7 @@ def import_batch_out(
         preview_generation=record.preview_generation,
         document_kind=record.document_kind,
         source_namespace_id=record.source_namespace_id,
+        recognition=normalized.get("recognition"),
         profile=normalized.get("profile"),
         sheet_roles=normalized.get("sheet_roles", []),
         mapping=normalized.get("mapping", []),
@@ -425,6 +438,226 @@ def _bind_demand_plan_context(
     normalized["normalized_sha256"] = _payload_hash(normalized)
 
 
+def _profile_recognition_metadata(
+    normalized: dict[str, Any], *, requested_mode: str
+) -> None:
+    profile = normalized.get("profile") or {}
+    if not profile:
+        return
+    mode = (
+        "SIGNED_SYSTEM_EXPORT"
+        if profile.get("recognition_method") == "SIGNED_SYSTEM_EXPORT"
+        else "PROFILE"
+    )
+    normalized["recognition"] = {
+        "mode": mode,
+        "requested_mode": requested_mode,
+        "profile_id": profile.get("profile_id"),
+        "profile_revision": profile.get("revision"),
+        "profile_code": profile.get("profile_code", ""),
+        "sheet_name": next(
+            (
+                item.get("sheet_name", "")
+                for item in normalized.get("sheet_roles", [])
+                if item.get("role") == "CURRENT_PLAN"
+            ),
+            "",
+        ),
+    }
+    normalized.get("summary", {}).update({"recognition_mode": mode})
+
+
+def _cached_ai_layout_for_source(
+    db: Session,
+    *,
+    factory_id: str,
+    source_sha256: str,
+    business_date: date,
+    model: str,
+) -> dict[str, Any] | None:
+    candidates = list(
+        db.scalars(
+            select(InjectionSchedulingImportBatch)
+            .where(
+                InjectionSchedulingImportBatch.factory_id == factory_id,
+                InjectionSchedulingImportBatch.source_file_hash == source_sha256,
+            )
+            .order_by(InjectionSchedulingImportBatch.created_at.desc())
+            .limit(10)
+        ).all()
+    )
+    for candidate in candidates:
+        candidate_normalized = _load_json(candidate.normalized_json, {})
+        candidate_unsigned = dict(candidate_normalized)
+        embedded_digest = candidate_unsigned.pop("normalized_sha256", "")
+        if (
+            not embedded_digest
+            or embedded_digest != candidate.normalized_sha256
+            or _payload_hash(candidate_unsigned) != embedded_digest
+        ):
+            continue
+        recognition = candidate_normalized.get("recognition") or {}
+        if (
+            recognition.get("mode") != "AI_LAYOUT"
+            or recognition.get("business_date") != business_date.isoformat()
+            or recognition.get("model") != model
+            or recognition.get("prompt_version") != "injection-plan-layout-v1"
+        ):
+            continue
+        layout = recognition.get("layout")
+        if not isinstance(layout, dict):
+            continue
+        try:
+            validated = AIInjectionPlanLayoutRecognitionV1.model_validate(layout)
+        except ValueError:
+            continue
+        if validated.source_sha256 == source_sha256:
+            return validated.model_dump(mode="json")
+    return None
+
+
+def _validated_ai_layout_binding(
+    batch: InjectionSchedulingImportBatch, normalized: dict[str, Any]
+) -> AIInjectionPlanLayoutRecognitionV1 | None:
+    recognition = normalized.get("recognition") or {}
+    if recognition.get("mode") != "AI_LAYOUT":
+        return None
+    try:
+        layout = AIInjectionPlanLayoutRecognitionV1.model_validate(
+            recognition.get("layout")
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AI_LAYOUT_BINDING_INVALID",
+                "message": "AI 布局结构已损坏，请重新预览",
+            },
+        ) from exc
+    digest_payload = layout.model_dump(
+        mode="json",
+        exclude={"generated_by_model", "prompt_version", "layout_digest"},
+    )
+    computed_digest = _payload_hash(digest_payload)
+    profile = normalized.get("profile") or {}
+    if (
+        layout.source_sha256 != batch.source_file_hash
+        or recognition.get("source_sha256") != batch.source_file_hash
+        or layout.layout_digest != computed_digest
+        or batch.profile_definition_sha256 != computed_digest
+        or profile.get("definition_digest") != computed_digest
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AI_LAYOUT_BINDING_STALE",
+                "message": "AI 布局、来源文件或布局摘要已变化，请重新预览",
+            },
+        )
+    return layout
+
+
+def _can_fallback_to_ai(
+    normalized: dict[str, Any], issues: list[dict[str, Any]]
+) -> bool:
+    if normalized.get("document_kind", "PLANNED_SCHEDULE") != "PLANNED_SCHEDULE":
+        return False
+    if normalized.get("batch_state") != "MAPPING_REQUIRED":
+        return False
+    blocking_codes = {
+        str(item.get("code", "")) for item in issues if item.get("blocking")
+    }
+    return bool(blocking_codes) and blocking_codes <= {
+        "PROFILE_NOT_IDENTIFIED",
+        "REQUIRED_MAPPING_MISSING",
+    }
+
+
+def _parse_with_ai_layout(
+    *,
+    factory_id: str,
+    source_file_name: str,
+    content: bytes,
+    business_date: date,
+    recognition_mode: str,
+    request_id: str,
+    settings: Settings | None,
+    cached_layout: dict[str, Any] | None,
+    system_machine_codes: set[str],
+    system_mold_nos: set[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if settings is None or not settings.ai_cloud_workbook_mapping_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "AI_WORKBOOK_MAPPING_DISABLED",
+                "message": "云端工作簿布局识别尚未启用",
+            },
+        )
+    packet = build_workbook_recognition_packet(
+        source_file_name=source_file_name,
+        content=content,
+        factory_id=factory_id,
+        business_date=business_date,
+    )
+    layout: AIInjectionPlanLayoutRecognitionV1 | None = None
+    cache_hit = False
+    if cached_layout:
+        try:
+            candidate = AIInjectionPlanLayoutRecognitionV1.model_validate(cached_layout)
+        except ValueError:
+            candidate = None
+        if candidate is not None and candidate.source_sha256 == packet.source.source_sha256:
+            try:
+                validate_layout_sources(candidate, packet)
+            except ValueError:
+                candidate = None
+            if candidate is not None:
+                layout = candidate
+                cache_hit = True
+    if layout is None:
+        try:
+            layout = recognize_workbook_layout_sync(
+                packet=packet,
+                settings=settings,
+                request_id=request_id,
+            )
+        except WorkbookLayoutRecognitionError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={"code": exc.code, "message": exc.public_message},
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "AI_LAYOUT_PROVIDER_FAILED",
+                    "message": "云端布局识别暂时不可用，请稍后重试或选择固定模板",
+                },
+            ) from exc
+    try:
+        return parse_ai_layout_workbook(
+            content,
+            source_file_name,
+            factory_id=factory_id,
+            layout=layout,
+            packet_digest=packet.packet_sha256,
+            business_date=business_date.isoformat(),
+            requested_mode=recognition_mode,
+            cache_hit=cache_hit,
+            system_machine_codes=system_machine_codes,
+            system_mold_nos=system_mold_nos,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "AI_LAYOUT_SOURCE_INVALID",
+                "message": "AI 布局与当前工作簿来源不一致，请重新识别",
+            },
+        ) from exc
+
+
 def _parse_and_reconcile(
     db: Session,
     *,
@@ -432,7 +665,15 @@ def _parse_and_reconcile(
     source_file_name: str,
     content: bytes,
     document_kind: str | None,
+    recognition_mode: str = "AUTO",
+    business_date: date | None = None,
+    request_id: str = "",
+    settings: Settings | None = None,
+    cached_layout: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    recognition_mode = recognition_mode.strip().upper()
+    if recognition_mode not in {"AUTO", "PROFILE", "AI"}:
+        raise HTTPException(status_code=422, detail="recognition_mode 无效")
     requested_kind = document_kind or "PLANNED_SCHEDULE"
     if requested_kind not in {
         "AUTO",
@@ -442,6 +683,19 @@ def _parse_and_reconcile(
         "MASTER_DATA",
     }:
         raise HTTPException(status_code=422, detail="document_kind 无效")
+    if recognition_mode == "AI" and requested_kind not in {
+        "AUTO",
+        "PLANNED_SCHEDULE",
+    }:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "AI_LAYOUT_DOCUMENT_KIND_UNSUPPORTED",
+                "message": "AI 布局识别 MVP 仅支持 PLANNED_SCHEDULE",
+            },
+        )
+    if recognition_mode == "AI" and requested_kind == "AUTO":
+        requested_kind = "PLANNED_SCHEDULE"
     system_meta = verify_signed_system_meta(db, content, factory_id=factory_id)
     if system_meta is not None and requested_kind == "DEMAND_ORDER":
         raise HTTPException(
@@ -577,14 +831,49 @@ def _parse_and_reconcile(
                 if item.profile_id != signed_profile.profile_id
             ),
         )
-    normalized, issues = parse_injection_scheduling_workbook(
-        content,
-        source_file_name,
-        factory_id=factory_id,
-        system_machine_codes=system_machine_codes,
-        system_mold_nos=system_mold_nos,
-        profiles=profiles,
-    )
+    if system_meta is None and recognition_mode == "AI":
+        normalized, issues = _parse_with_ai_layout(
+            factory_id=factory_id,
+            source_file_name=source_file_name,
+            content=content,
+            business_date=business_date or business_now().date(),
+            recognition_mode=recognition_mode,
+            request_id=request_id,
+            settings=settings,
+            cached_layout=cached_layout,
+            system_machine_codes=system_machine_codes,
+            system_mold_nos=system_mold_nos,
+        )
+    else:
+        normalized, issues = parse_injection_scheduling_workbook(
+            content,
+            source_file_name,
+            factory_id=factory_id,
+            system_machine_codes=system_machine_codes,
+            system_mold_nos=system_mold_nos,
+            profiles=profiles,
+        )
+        if (
+            system_meta is None
+            and recognition_mode == "AUTO"
+            and _can_fallback_to_ai(normalized, issues)
+        ):
+            normalized, issues = _parse_with_ai_layout(
+                factory_id=factory_id,
+                source_file_name=source_file_name,
+                content=content,
+                business_date=business_date or business_now().date(),
+                recognition_mode=recognition_mode,
+                request_id=request_id,
+                settings=settings,
+                cached_layout=cached_layout,
+                system_machine_codes=system_machine_codes,
+                system_mold_nos=system_mold_nos,
+            )
+        else:
+            _profile_recognition_metadata(
+                normalized, requested_mode=recognition_mode
+            )
     if system_meta is not None:
         manifest_by_source_row: dict[int, dict[str, Any]] = {}
         for item in system_meta["rows"]:
@@ -664,18 +953,39 @@ def preview_import(
     preview_request_id: str,
     user: AuthContext,
     document_kind: str | None = None,
+    recognition_mode: str = "AUTO",
+    business_date: date | None = None,
+    settings: Settings | None = None,
 ) -> tuple[InjectionSchedulingImportBatch, bool]:
     factory_id = require_injection_scheduling_factory(factory_id)
     if expected_revision != 0:
         raise HTTPException(
             status_code=409, detail="新导入预览 expected_revision 必须为 0"
         )
+    source_sha256 = hashlib.sha256(content).hexdigest()
+    effective_business_date = business_date or business_now().date()
+    cached_layout = (
+        _cached_ai_layout_for_source(
+            db,
+            factory_id=factory_id,
+            source_sha256=source_sha256,
+            business_date=effective_business_date,
+            model=settings.ai_default_model if settings is not None else "",
+        )
+        if recognition_mode.strip().upper() in {"AUTO", "AI"}
+        else None
+    )
     normalized, issues = _parse_and_reconcile(
         db,
         factory_id=factory_id,
         source_file_name=source_file_name,
         content=content,
         document_kind=document_kind,
+        recognition_mode=recognition_mode,
+        business_date=effective_business_date,
+        request_id=preview_request_id,
+        settings=settings,
+        cached_layout=cached_layout,
     )
     preview_payload_hash = _payload_hash(
         {
@@ -684,6 +994,8 @@ def preview_import(
             "source_file_name": source_file_name,
             "source_file_hash": normalized["source_file_hash"],
             "document_kind": normalized.get("document_kind", "PLANNED_SCHEDULE"),
+            "recognition_mode": recognition_mode.strip().upper(),
+            "business_date": effective_business_date.isoformat(),
         }
     )
     existing = db.scalar(
@@ -790,6 +1102,9 @@ def preview_import(
         confirmed_at="",
     )
     db.add(record)
+    # Establish the composite batch/factory parent before inserting artifact,
+    # issue and reconciliation child rows in this explicit transaction.
+    db.flush()
     db.add(
         InjectionSchedulingUploadArtifact(
             id=f"isartifact-{uuid4().hex}",
@@ -798,7 +1113,9 @@ def preview_import(
             storage_key=f"injection-import/{uuid4().hex}",
             source_sha256=record.source_file_hash,
             size_bytes=len(content),
-            detected_format="XLSX",
+            detected_format=(
+                "XLSM" if source_file_name.lower().endswith(".xlsm") else "XLSX"
+            ),
             payload_blob=content,
             expires_at=(business_now() + timedelta(hours=72)).isoformat(
                 timespec="seconds"
@@ -916,6 +1233,22 @@ def preview_import(
             detail={
                 "source_file_hash": record.source_file_hash,
                 "summary": normalized["summary"],
+                "recognition": {
+                    key: value
+                    for key, value in (normalized.get("recognition") or {}).items()
+                    if key
+                    in {
+                        "mode",
+                        "requested_mode",
+                        "model",
+                        "prompt_version",
+                        "layout_digest",
+                        "source_sha256",
+                        "business_date",
+                        "overall_confidence",
+                        "cache_hit",
+                    }
+                },
             },
             user=user,
         )
@@ -940,6 +1273,7 @@ def retry_import_batch(
     batch_id: str,
     payload: InjectionSchedulingImportRetry,
     user: AuthContext,
+    settings: Settings | None = None,
 ) -> tuple[InjectionSchedulingImportBatch, bool]:
     factory_id = require_injection_scheduling_factory(payload.factory_id)
     payload_hash = _payload_hash(payload.model_dump(mode="json"))
@@ -1010,12 +1344,36 @@ def retry_import_batch(
         or len(content) != artifact.size_bytes
     ):
         raise HTTPException(status_code=409, detail="原始文件完整性校验失败")
+    prior_normalized = _load_json(batch.normalized_json, {})
+    prior_recognition = prior_normalized.get("recognition") or {}
+    cached_layout = (
+        prior_recognition.get("layout")
+        if prior_recognition.get("mode") == "AI_LAYOUT"
+        else None
+    )
+    requested_recognition_mode = str(
+        prior_recognition.get("requested_mode") or "PROFILE"
+    ).upper()
+    if cached_layout:
+        requested_recognition_mode = "AI"
+    recognition_business_date: date | None = None
+    try:
+        recognition_business_date = date.fromisoformat(
+            str(prior_recognition.get("business_date") or "")
+        )
+    except ValueError:
+        recognition_business_date = None
     normalized, issues = _parse_and_reconcile(
         db,
         factory_id=factory_id,
         source_file_name=batch.source_file_name,
         content=content,
         document_kind=batch.document_kind,
+        recognition_mode=requested_recognition_mode,
+        business_date=recognition_business_date,
+        request_id=payload.request_id,
+        settings=settings,
+        cached_layout=cached_layout if isinstance(cached_layout, dict) else None,
     )
     generation = batch.preview_generation + 1
     timestamp = _now()
@@ -1353,6 +1711,165 @@ def update_import_mapping_draft(
     )
     db.commit()
     return batch
+
+
+def apply_workbench_import_mapping(
+    db: Session,
+    *,
+    batch_id: str,
+    factory_id: str,
+    expected_revision: int,
+    request_id: str,
+    mappings: dict[str, str],
+    user: AuthContext,
+    settings: Settings | None = None,
+) -> InjectionSchedulingImportBatch:
+    """Activate clerk mapping corrections and rebuild the preview in one screen."""
+
+    factory_id = require_injection_scheduling_factory(factory_id)
+    operation_hash = _payload_hash(
+        {
+            "batch_id": batch_id,
+            "expected_revision": expected_revision,
+            "mappings": mappings,
+        }
+    )
+    replay_event = db.scalar(
+        select(InjectionSchedulingAuditEvent).where(
+            InjectionSchedulingAuditEvent.factory_id == factory_id,
+            InjectionSchedulingAuditEvent.entity_id == batch_id,
+            InjectionSchedulingAuditEvent.event_type
+            == "workbench_import_mapping_applied",
+            InjectionSchedulingAuditEvent.request_id == request_id,
+        )
+    )
+    if replay_event is not None:
+        detail = _load_json(replay_event.detail_json, {})
+        if detail.get("operation_hash") != operation_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="相同 request_id 已用于其他字段映射",
+            )
+        return get_import_batch(db, factory_id=factory_id, batch_id=batch_id)
+
+    batch = db.scalar(
+        select(InjectionSchedulingImportBatch)
+        .where(
+            InjectionSchedulingImportBatch.id == batch_id,
+            InjectionSchedulingImportBatch.factory_id == factory_id,
+        )
+        .with_for_update()
+    )
+    if batch is None:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    if batch.revision != expected_revision:
+        raise HTTPException(status_code=409, detail="导入批次已变化，请重新加载")
+    if batch.status != "PREVIEW" or batch.document_kind not in {
+        "DEMAND_ORDER",
+        "PLANNED_SCHEDULE",
+    }:
+        raise HTTPException(
+            status_code=409,
+            detail="只有未确认的需求单或生产计划预览可修正字段映射",
+        )
+    unknown_fields = set(mappings) - set(CANONICAL_FIELD_CATALOG)
+    if unknown_fields:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "存在未知规范字段", "fields": sorted(unknown_fields)},
+        )
+    if not mappings or any(not key.strip() or not value.strip() for key, value in mappings.items()):
+        raise HTTPException(status_code=422, detail="映射字段和来源表头不能为空")
+    if len(set(mappings.values())) != len(mappings):
+        raise HTTPException(status_code=422, detail="同一来源表头不能映射到多个字段")
+
+    normalized = _load_json(batch.normalized_json, {})
+    available_headers = {
+        str(item.get("raw_header", "")).strip()
+        for item in normalized.get("mapping", [])
+        if str(item.get("raw_header", "")).strip()
+    }
+    unknown_headers = set(mappings.values()) - available_headers
+    if unknown_headers:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "来源表头不属于当前预览",
+                "headers": sorted(unknown_headers),
+            },
+        )
+    base = db.get(InjectionSchedulingImportProfile, batch.profile_id)
+    if base is None or base.document_kind != batch.document_kind:
+        raise HTTPException(status_code=409, detail="当前预览没有可复用的基础模板")
+    config = _load_json(base.config_json, {})
+    fields = list(config.get("fields", []))
+    by_name = {str(item.get("canonical_field", "")): item for item in fields}
+    for canonical_field, raw_header in mappings.items():
+        field = by_name.get(canonical_field)
+        if field is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"基础模板不支持字段 {canonical_field}",
+            )
+        headers = [str(item) for item in field.get("headers", [])]
+        if raw_header not in headers:
+            field["headers"] = [*headers, raw_header]
+
+    latest_revision = int(
+        db.scalar(
+            select(func.max(InjectionSchedulingImportProfile.revision)).where(
+                InjectionSchedulingImportProfile.profile_family == base.profile_family
+            )
+        )
+        or 0
+    )
+    profile_code = (
+        f"{base.profile_family}-wb-r{latest_revision + 1}-{batch.id[-6:]}"
+    )[:96]
+    create_active_workbench_profile_revision(
+        db,
+        factory_id=factory_id,
+        profile_family=base.profile_family,
+        profile_code=profile_code,
+        name=f"{base.name}（工作台修正）",
+        description="文员在简化工作台同屏修正字段映射",
+        expected_family_revision=latest_revision,
+        request_id=request_id,
+        config=config,
+        user=user,
+    )
+
+    current = get_import_batch(db, factory_id=factory_id, batch_id=batch_id)
+    retry_request_id = f"{request_id[:120]}-retry"
+    rebuilt, _ = retry_import_batch(
+        db,
+        batch_id=batch_id,
+        payload=InjectionSchedulingImportRetry(
+            factory_id=factory_id,
+            expected_revision=current.revision,
+            request_id=retry_request_id,
+        ),
+        user=user,
+        settings=settings,
+    )
+    _audit(
+        db,
+        factory_id=factory_id,
+        event_type="workbench_import_mapping_applied",
+        entity_type="import_batch",
+        entity_id=rebuilt.id,
+        entity_revision=rebuilt.revision,
+        request_id=request_id,
+        detail={
+            "operation_hash": operation_hash,
+            "mappings": dict(sorted(mappings.items())),
+            "profile_id": rebuilt.profile_id,
+            "preview_generation": rebuilt.preview_generation,
+        },
+        user=user,
+    )
+    db.commit()
+    return rebuilt
 
 
 def propose_import_profile_from_batch(
@@ -2058,24 +2575,34 @@ def _confirm_canonical_takeover(
                     },
                 )
         profile = normalized.get("profile") or {}
-        if not batch.profile_id or batch.profile_revision is None:
-            raise HTTPException(status_code=409, detail="规范导入缺少 Profile binding")
-        signed_system_meta = normalized.get("system_meta") or {}
-        binding_profile_id = signed_system_meta.get(
-            "plan_export_profile_id", batch.profile_id
-        )
-        binding_profile_revision = signed_system_meta.get(
-            "plan_export_profile_revision", batch.profile_revision
-        )
-        binding_profile_family = signed_system_meta.get(
-            "plan_export_profile_family", profile.get("profile_family", "")
-        )
-        binding_renderer_code = signed_system_meta.get(
-            "plan_export_renderer_code", profile.get("renderer_code", "")
-        )
-        binding_source = signed_system_meta.get(
-            "plan_export_binding_source", "IMPORT_PROFILE"
-        )
+        ai_layout = _validated_ai_layout_binding(batch, normalized)
+        if ai_layout is not None:
+            binding_profile_id = SYSTEM_STANDARD_EXPORT_PROFILE.profile_id
+            binding_profile_revision = SYSTEM_STANDARD_EXPORT_PROFILE.revision
+            binding_profile_family = SYSTEM_STANDARD_EXPORT_PROFILE.profile_family
+            binding_renderer_code = SYSTEM_STANDARD_EXPORT_PROFILE.renderer_code
+            binding_source = "SYSTEM_STANDARD"
+        else:
+            if not batch.profile_id or batch.profile_revision is None:
+                raise HTTPException(
+                    status_code=409, detail="规范导入缺少 Profile binding"
+                )
+            signed_system_meta = normalized.get("system_meta") or {}
+            binding_profile_id = signed_system_meta.get(
+                "plan_export_profile_id", batch.profile_id
+            )
+            binding_profile_revision = signed_system_meta.get(
+                "plan_export_profile_revision", batch.profile_revision
+            )
+            binding_profile_family = signed_system_meta.get(
+                "plan_export_profile_family", profile.get("profile_family", "")
+            )
+            binding_renderer_code = signed_system_meta.get(
+                "plan_export_renderer_code", profile.get("renderer_code", "")
+            )
+            binding_source = signed_system_meta.get(
+                "plan_export_binding_source", "IMPORT_PROFILE"
+            )
         if plan.export_binding_source == "IMPORT_PROFILE" and (
             plan.export_profile_id != binding_profile_id
             or plan.export_profile_revision != binding_profile_revision
@@ -2856,6 +3383,10 @@ def _confirm_master_data(
             reviewed_at="",
         )
         db.add(proposal)
+        # Field evidence has a strict foreign key to the proposal. Flush the
+        # parent explicitly so SQLite and PostgreSQL do not depend on ORM
+        # insertion ordering when no relationship is mapped between them.
+        db.flush()
         for field_name, evidence in row.get("source_lineage", {}).items():
             if not evidence.get("displayed_value") and not evidence.get("raw_value"):
                 continue
@@ -3078,6 +3609,7 @@ def confirm_import(
             False,
         )
     if batch.preview_schema_version == "injection-scheduling-canonical-v1":
+        ai_layout = _validated_ai_layout_binding(batch, normalized)
         signed_system_meta = normalized.get("system_meta") or {}
         signed_profile = (
             signed_system_meta.get("profile_id") == batch.profile_id
@@ -3087,7 +3619,10 @@ def confirm_import(
             ("ACTIVE", "RETIRED") if signed_profile else ("ACTIVE",)
         )
         active_profile_record = None
-        if batch.profile_id != SYSTEM_STANDARD_EXPORT_PROFILE.profile_id:
+        if (
+            ai_layout is None
+            and batch.profile_id != SYSTEM_STANDARD_EXPORT_PROFILE.profile_id
+        ):
             active_profile_record = db.scalar(
                 select(InjectionSchedulingImportProfile)
                 .join(
@@ -3105,15 +3640,18 @@ def confirm_import(
                 )
                 .with_for_update()
             )
-        profile_definition_matches = (
-            batch.profile_id == SYSTEM_STANDARD_EXPORT_PROFILE.profile_id
-            and signed_profile
-            and batch.profile_definition_sha256
-            == (normalized.get("profile") or {}).get("definition_digest", "")
-        ) or (
-            active_profile_record is not None
-            and batch.profile_definition_sha256
-            == active_profile_record.definition_sha256
+        profile_definition_matches = ai_layout is not None or (
+            (
+                batch.profile_id == SYSTEM_STANDARD_EXPORT_PROFILE.profile_id
+                and signed_profile
+                and batch.profile_definition_sha256
+                == (normalized.get("profile") or {}).get("definition_digest", "")
+            )
+            or (
+                active_profile_record is not None
+                and batch.profile_definition_sha256
+                == active_profile_record.definition_sha256
+            )
         )
         if (
             not profile_definition_matches

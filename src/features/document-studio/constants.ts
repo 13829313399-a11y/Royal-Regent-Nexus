@@ -7,7 +7,6 @@ export const DOCUMENT_TOOLS: readonly DocumentToolDefinition[] = [
     description: '提取表格并生成可编辑工作簿',
     accept: '.pdf,application/pdf',
     extensionLabel: 'PDF',
-    available: true,
   },
   {
     id: 'pdf-to-word',
@@ -15,7 +14,6 @@ export const DOCUMENT_TOOLS: readonly DocumentToolDefinition[] = [
     description: '保留文本、图片与基础版式',
     accept: '.pdf,application/pdf',
     extensionLabel: 'PDF',
-    available: true,
   },
   {
     id: 'word-to-pdf',
@@ -23,15 +21,13 @@ export const DOCUMENT_TOOLS: readonly DocumentToolDefinition[] = [
     description: '生成适合分发的 PDF 文档',
     accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     extensionLabel: 'DOCX',
-    available: false,
   },
   {
     id: 'pdf-translation',
     label: 'PDF 翻译',
-    description: '翻译文档并保留可复核证据',
+    description: '使用本地模型或千问翻译并生成新文件',
     accept: '.pdf,application/pdf',
     extensionLabel: 'PDF',
-    available: false,
   },
   {
     id: 'pdf-split',
@@ -39,7 +35,6 @@ export const DOCUMENT_TOOLS: readonly DocumentToolDefinition[] = [
     description: '按页或页段输出独立文件',
     accept: '.pdf,application/pdf',
     extensionLabel: 'PDF',
-    available: true,
   },
 ] as const
 

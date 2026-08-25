@@ -37,6 +37,7 @@ MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
     "customer_release_no": {"label": "客户 Release 号", "input_type": "text"},
     "merchandiser": {"label": "跟单", "input_type": "text"},
     "unit_price_usd": {"label": "订单单价 USD", "input_type": "number"},
+    "factory_unit_price_hkd": {"label": "出厂价 HKD", "input_type": "number"},
     "contact": {"label": "联系人", "input_type": "text"},
     "item": {"label": "产品编号", "input_type": "text"},
     "item_no": {"label": "产品编号", "input_type": "text"},

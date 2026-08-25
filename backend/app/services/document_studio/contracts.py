@@ -2,35 +2,7 @@ from enum import StrEnum
 
 DOCUMENT_CONTRACT_VERSION = "1"
 MAX_DOCUMENT_PAGES = 200
-MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 MAX_BLOCK_TEXT_CHARS = 50_000
-
-
-class DocumentJobType(StrEnum):
-    PDF_TO_EXCEL = "PDF_TO_EXCEL"
-    PDF_TO_WORD = "PDF_TO_WORD"
-    WORD_TO_PDF = "WORD_TO_PDF"
-    PDF_TRANSLATION = "PDF_TRANSLATION"
-    PDF_SPLIT = "PDF_SPLIT"
-
-
-class DocumentProcessingMode(StrEnum):
-    AUTO = "AUTO"
-    LOCAL_PRIVATE = "LOCAL_PRIVATE"
-    AI_ENHANCED = "AI_ENHANCED"
-
-
-class DocumentPageRangeKind(StrEnum):
-    ALL = "ALL"
-    PAGES = "PAGES"
-
-
-class DocumentRouteDecision(StrEnum):
-    SYNC_LOCAL = "SYNC_LOCAL"
-    TASK_LOCAL = "TASK_LOCAL"
-    TASK_AI_ENHANCED = "TASK_AI_ENHANCED"
-    REVIEW_REQUIRED = "REVIEW_REQUIRED"
-    UNSUPPORTED = "UNSUPPORTED"
 
 
 class DocumentExtractionRoute(StrEnum):
@@ -77,12 +49,6 @@ class DocumentCellValueType(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
-class DocumentReviewSeverity(StrEnum):
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-
-
 class DocumentReviewIssueKind(StrEnum):
     LOW_CONFIDENCE_BLOCK = "LOW_CONFIDENCE_BLOCK"
     LOW_CONFIDENCE_CELL = "LOW_CONFIDENCE_CELL"
@@ -94,22 +60,3 @@ class DocumentReviewIssueKind(StrEnum):
     PROTECTED_TOKEN_MISSING = "PROTECTED_TOKEN_MISSING"
     TEXT_OVERFLOW = "TEXT_OVERFLOW"
     FONT_MISSING = "FONT_MISSING"
-
-
-class DocumentReviewAction(StrEnum):
-    ACCEPT = "ACCEPT"
-    EDIT = "EDIT"
-    MARK_UNKNOWN = "MARK_UNKNOWN"
-
-
-class DocumentJobState(StrEnum):
-    CREATED = "CREATED"
-    PREFLIGHTING = "PREFLIGHTING"
-    READY = "READY"
-    RUNNING = "RUNNING"
-    REVIEW_REQUIRED = "REVIEW_REQUIRED"
-    VERIFYING = "VERIFYING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    EXPIRED = "EXPIRED"

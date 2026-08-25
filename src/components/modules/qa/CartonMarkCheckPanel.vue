@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronLeft, ChevronRight, Crop, Eye, FileSpreadsheet, FileText, Image as ImageIcon, RefreshCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
+import { CheckCircle2, ChevronLeft, ChevronRight, Crop, Eye, FileSpreadsheet, FileText, Image as ImageIcon, RefreshCw, RotateCcw, RotateCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
@@ -7,12 +7,13 @@ import {
   type CartonMarkAutoCheckResponse,
   type CartonMarkBatchCheckResponse,
   type CartonMarkComparisonItem,
-  type CartonMarkCustomerOption,
+  type CartonMarkCustomer,
   type CartonMarkDocumentContentComparison,
   type CartonMarkDocumentContentCheckResponse,
   type CartonMarkTemplateDocumentKind,
   type CartonMarkTemplateRecordResponse,
 } from '@/api/cartonMark'
+import CartonMarkCustomerDialog from '@/components/modules/qa/CartonMarkCustomerDialog.vue'
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
 import {
@@ -21,6 +22,7 @@ import {
   getContainedImageFrame,
   isUsableCropSelection,
   normalizeCropSelection,
+  rotateImageBlob,
   type NormalizedCropSelection,
 } from '@/lib/imageCrop'
 import { useAppStore } from '@/stores/app'
@@ -134,7 +136,7 @@ const photoForm = reactive({
 
 const allRecords = ref<CartonMarkTemplateRecord[]>([])
 const allPhotoRecords = ref<CartonMarkPhotoRecord[]>([])
-const customerOptions = ref<CartonMarkCustomerOption[]>([])
+const customerOptions = ref<CartonMarkCustomer[]>([])
 const selectedFile = ref<File | null>(null)
 const selectedExcelFile = ref<File | null>(null)
 const selectedFrontPhotoFile = ref<File | null>(null)
@@ -174,6 +176,9 @@ const photoErrorMessage = ref('')
 const photoSuccessMessage = ref('')
 const isLoading = ref(false)
 const isLoadingCustomerOptions = ref(false)
+const customerDialogOpen = ref(false)
+const customerMutationBusy = ref(false)
+const customerMutationError = ref('')
 const isSaving = ref(false)
 const isSavingPhoto = ref(false)
 const isSavingBatchPhoto = ref(false)
@@ -192,6 +197,10 @@ const imageUrls = new Set<string>()
 const photoCropState = reactive<Record<CartonMarkPhotoSide, PhotoCropState>>({
   front: createPhotoCropState(),
   side: createPhotoCropState(),
+})
+const isRotatingPhoto = reactive<Record<CartonMarkPhotoSide, boolean>>({
+  front: false,
+  side: false,
 })
 
 const activeFactory = computed(() => appStore.activeProductionFactory)
@@ -216,6 +225,7 @@ const canInCurrentWorkspace = (permission: string) => {
 }
 const isAdmin = computed(() => canInCurrentWorkspace('system:user_manage'))
 const canUploadTemplate = computed(() => isAdmin.value || canInCurrentWorkspace('carton_mark:template_upload'))
+const canManageCustomers = computed(() => isAdmin.value || canInCurrentWorkspace('carton_mark:customer_manage'))
 const canUploadPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:photo_upload', activeFactoryId.value, currentDepartmentId.value))
 const canReviewPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:review', activeFactoryId.value, currentDepartmentId.value))
 const canDeleteTemplate = computed(() => isWarehouseWorkspace.value && canUploadTemplate.value)
@@ -324,6 +334,13 @@ const comparisonPdfMissingMessage = computed(() => {
 
 const templateCustomerOptions = computed(() => {
   const customerMap = new Map<string, { name: string, count: number }>()
+
+  for (const customer of customerOptions.value) {
+    customerMap.set(normalizeKey(customer.name), {
+      name: customer.name,
+      count: 0,
+    })
+  }
 
   for (const record of photoReadyRecords.value) {
     const key = normalizeKey(record.customerName)
@@ -480,9 +497,7 @@ onMounted(async () => {
   const requestedFactoryName = activeFactory.value.shortName
   const requestedFactoryGeneration = factoryGeneration
   templateRequestController = new AbortController()
-  if (isWarehouseWorkspace.value) {
-    void loadCustomerOptions(requestedFactoryId, requestedFactoryGeneration)
-  }
+  void loadCustomerOptions(requestedFactoryId, requestedFactoryGeneration)
 
   const templatesPromise = cartonMarkApi.listTemplates(requestedFactoryId, templateRequestController.signal)
   const photosPromise = readPhotoRecordsFromDb()
@@ -548,7 +563,7 @@ async function loadCustomerOptions(factoryId: ProductionFactoryContextId, genera
   customerOptionsErrorMessage.value = ''
 
   try {
-    const nextCustomerOptions = await cartonMarkApi.listCustomerOptions(factoryId, controller.signal)
+    const nextCustomerOptions = await cartonMarkApi.listCustomers(factoryId, controller.signal)
     if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted) return
     customerOptions.value = nextCustomerOptions
     if (!nextCustomerOptions.some((customer) => normalizeKey(customer.name) === normalizeKey(form.customerName))) {
@@ -558,7 +573,7 @@ async function loadCustomerOptions(factoryId: ProductionFactoryContextId, genera
     if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted || controller.signal.aborted) return
     customerOptions.value = []
     form.customerName = ''
-    customerOptionsErrorMessage.value = `内部报价台客户读取失败：${getApiErrorMessage(error)}`
+    customerOptionsErrorMessage.value = `箱唛客户资料读取失败：${getApiErrorMessage(error)}`
   } finally {
     if (isCurrentFactoryTask(factoryId, generation) && isPanelMounted) {
       isLoadingCustomerOptions.value = false
@@ -568,6 +583,78 @@ async function loadCustomerOptions(factoryId: ProductionFactoryContextId, genera
 
 function reloadCustomerOptions() {
   void loadCustomerOptions(activeFactoryId.value, factoryGeneration)
+}
+
+async function createManagedCustomer(name: string) {
+  if (!canManageCustomers.value || customerMutationBusy.value) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = factoryGeneration
+  customerMutationBusy.value = true
+  customerMutationError.value = ''
+  try {
+    const customer = await cartonMarkApi.createCustomer(requestedFactoryId, name)
+    await loadCustomerOptions(requestedFactoryId, requestedGeneration)
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      form.customerName = customer.name
+    }
+  } catch (error) {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationError.value = getApiErrorMessage(error)
+    }
+  } finally {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationBusy.value = false
+    }
+  }
+}
+
+async function updateManagedCustomer(customer: CartonMarkCustomer, name: string) {
+  if (!canManageCustomers.value || customerMutationBusy.value) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = factoryGeneration
+  const wasSelected = normalizeKey(form.customerName) === normalizeKey(customer.name)
+  customerMutationBusy.value = true
+  customerMutationError.value = ''
+  try {
+    const updated = await cartonMarkApi.updateCustomer(
+      requestedFactoryId,
+      customer.id,
+      name,
+      customer.revision,
+    )
+    await loadCustomerOptions(requestedFactoryId, requestedGeneration)
+    if (wasSelected && isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      form.customerName = updated.name
+    }
+  } catch (error) {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationError.value = getApiErrorMessage(error)
+    }
+  } finally {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationBusy.value = false
+    }
+  }
+}
+
+async function deleteManagedCustomer(customer: CartonMarkCustomer) {
+  if (!canManageCustomers.value || customerMutationBusy.value) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = factoryGeneration
+  customerMutationBusy.value = true
+  customerMutationError.value = ''
+  try {
+    await cartonMarkApi.deleteCustomer(requestedFactoryId, customer.id, customer.revision)
+    await loadCustomerOptions(requestedFactoryId, requestedGeneration)
+  } catch (error) {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationError.value = getApiErrorMessage(error)
+    }
+  } finally {
+    if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      customerMutationBusy.value = false
+    }
+  }
 }
 
 function revokeTemplateUrls() {
@@ -590,13 +677,14 @@ watch(activeFactoryId, () => {
   revokeTemplateUrls()
   allRecords.value = []
   customerOptions.value = []
+  customerDialogOpen.value = false
+  customerMutationBusy.value = false
+  customerMutationError.value = ''
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryName = activeFactory.value.shortName
   const requestedFactoryGeneration = factoryGeneration
   void loadTemplateRecords(requestedFactoryId, requestedFactoryName, requestedFactoryGeneration)
-  if (isWarehouseWorkspace.value) {
-    void loadCustomerOptions(requestedFactoryId, requestedFactoryGeneration)
-  }
+  void loadCustomerOptions(requestedFactoryId, requestedFactoryGeneration)
   errorMessage.value = ''
   successMessage.value = ''
   documentReviewMessage.value = ''
@@ -985,6 +1073,49 @@ function buildCroppedPhotoFileName(fileName: string) {
   return `${fileName.slice(0, dotIndex)}-crop.png`
 }
 
+function buildRotatedPhotoFileName(fileName: string, direction: 'left' | 'right') {
+  const dotIndex = fileName.lastIndexOf('.')
+  const baseName = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName
+  return `${baseName}-rotate-${direction}.png`
+}
+
+async function rotateActiveBatchPhoto(side: CartonMarkPhotoSide, degrees: -90 | 90) {
+  const file = getSelectedPhotoFile(side)
+  if (!file || isRotatingPhoto[side]) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = factoryGeneration
+  const requestedIndex = getActiveBatchPhotoIndex(side)
+
+  isRotatingPhoto[side] = true
+  photoErrorMessage.value = ''
+  photoSuccessMessage.value = ''
+  try {
+    const direction = degrees < 0 ? 'left' : 'right'
+    const rotatedFile = await rotateImageBlob(
+      file,
+      degrees,
+      buildRotatedPhotoFileName(file.name, direction),
+    )
+    if (!isPanelMounted || !isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) return
+    const files = [...getBatchPhotoFiles(side)]
+    if (!files[requestedIndex]) return
+    files[requestedIndex] = rotatedFile
+    setBatchPhotoFiles(side, files)
+    if (getActiveBatchPhotoIndex(side) === requestedIndex) {
+      setSelectedPhotoFile(side, rotatedFile)
+      resetPhotoCropState(side, true)
+      photoPreviewRenderTick.value += 1
+    }
+    photoSuccessMessage.value = `${side === 'front' ? '正唛' : '侧唛'}第 ${requestedIndex + 1} 张已${degrees < 0 ? '向左' : '向右'}旋转 90°，将使用旋转后的图片核对。`
+  } catch (error) {
+    if (isPanelMounted && isCurrentFactoryTask(requestedFactoryId, requestedGeneration)) {
+      photoErrorMessage.value = getApiErrorMessage(error)
+    }
+  } finally {
+    isRotatingPhoto[side] = false
+  }
+}
+
 async function applyPhotoCrop(side: CartonMarkPhotoSide) {
   const state = photoCropState[side]
   const file = getSelectedPhotoFile(side)
@@ -1321,16 +1452,14 @@ function openBatchPhotoFilePicker(side: CartonMarkPhotoSide) {
   sideBatchPhotoFileInput.value?.click()
 }
 
-function handleFileChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
+function selectPrintPdf(file: File | undefined, input?: HTMLInputElement) {
   errorMessage.value = ''
   successMessage.value = ''
   documentReviewMessage.value = ''
 
   if (!canUploadTemplate.value) {
     selectedFile.value = null
-    input.value = ''
+    if (input) input.value = ''
     errorMessage.value = '当前账号无权上传打印 PDF，请使用纸箱仓管账号操作。'
     return
   }
@@ -1342,7 +1471,7 @@ function handleFileChange(event: Event) {
 
   if (!isPdfFile(file)) {
     selectedFile.value = null
-    input.value = ''
+    if (input) input.value = ''
     errorMessage.value = '打印箱唛只支持 PDF 文件。'
     return
   }
@@ -1350,16 +1479,23 @@ function handleFileChange(event: Event) {
   selectedFile.value = file
 }
 
-function handleExcelFileChange(event: Event) {
+function handleFileChange(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
+  selectPrintPdf(input.files?.[0], input)
+}
+
+function handlePdfFileDrop(event: DragEvent) {
+  selectPrintPdf(event.dataTransfer?.files[0])
+}
+
+function selectExcelContract(file: File | undefined, input?: HTMLInputElement) {
   errorMessage.value = ''
   successMessage.value = ''
   documentReviewMessage.value = ''
 
   if (!canUploadTemplate.value) {
     selectedExcelFile.value = null
-    input.value = ''
+    if (input) input.value = ''
     errorMessage.value = '当前账号无权上传客人 Excel，请使用纸箱仓管账号操作。'
     return
   }
@@ -1371,12 +1507,21 @@ function handleExcelFileChange(event: Event) {
 
   if (!isExcelFile(file)) {
     selectedExcelFile.value = null
-    input.value = ''
+    if (input) input.value = ''
     errorMessage.value = '客人 PO 箱唛只支持 .xls、.xlsx 或 .xlsm 文件。'
     return
   }
 
   selectedExcelFile.value = file
+}
+
+function handleExcelFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  selectExcelContract(input.files?.[0], input)
+}
+
+function handleExcelFileDrop(event: DragEvent) {
+  selectExcelContract(event.dataTransfer?.files[0])
 }
 
 function handlePhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
@@ -1416,9 +1561,7 @@ function handlePhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
   setSelectedPhotoFile('side', file)
 }
 
-function handleBatchPhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
+function selectBatchPhotoFiles(files: File[], side: CartonMarkPhotoSide) {
   photoErrorMessage.value = ''
   photoSuccessMessage.value = ''
 
@@ -1442,6 +1585,15 @@ function handleBatchPhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
     setSelectedPhotoFile(side, validFiles[0])
     photoPreviewRenderTick.value += 1
   }
+}
+
+function handleBatchPhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
+  const input = event.target as HTMLInputElement
+  selectBatchPhotoFiles(Array.from(input.files ?? []), side)
+}
+
+function handleBatchPhotoDrop(event: DragEvent, side: CartonMarkPhotoSide) {
+  selectBatchPhotoFiles(Array.from(event.dataTransfer?.files ?? []), side)
 }
 
 async function submitTemplate() {
@@ -2366,7 +2518,17 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 
         <div class="mt-6 grid gap-4 md:grid-cols-3">
           <div class="block">
-            <label for="carton-mark-customer" class="text-sm font-medium text-slate-700">客名</label>
+            <div class="flex items-center justify-between gap-2">
+              <label for="carton-mark-customer" class="text-sm font-medium text-slate-700">客名</label>
+              <button
+                v-if="canManageCustomers"
+                type="button"
+                class="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-700 transition hover:bg-teal-100"
+                @click="customerMutationError = ''; customerDialogOpen = true"
+              >
+                维护客户
+              </button>
+            </div>
             <select
               id="carton-mark-customer"
               v-model="form.customerName"
@@ -2394,10 +2556,10 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               <button type="button" class="font-semibold underline underline-offset-2" @click="reloadCustomerOptions">重试</button>
             </p>
             <p v-else-if="!isLoadingCustomerOptions && !customerOptions.length" id="carton-mark-customer-help" class="mt-1 text-xs text-amber-700">
-              当前厂区尚未在内部报价台添加客户，请先到内部报价台维护客户名。
+              当前厂区尚未添加箱唛客户，请联系纸箱部主管或经理维护。
             </p>
             <p v-else id="carton-mark-customer-help" class="mt-1 text-xs text-slate-500">
-              客名来自当前厂区内部报价台客户库，并作为右侧客户资料集合的归档名称。
+              客名由当前厂区纸箱部主管以上维护，并作为右侧客户资料集合的归档名称。
             </p>
           </div>
           <label class="block">
@@ -2425,7 +2587,11 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
         </div>
 
         <div class="mt-5 grid gap-4 lg:grid-cols-2">
-          <div class="rounded-lg border border-dashed border-teal-300 bg-teal-50/40 p-5">
+          <div
+            class="rounded-lg border border-dashed border-teal-300 bg-teal-50/40 p-5"
+            @dragover.prevent
+            @drop.prevent="handleExcelFileDrop"
+          >
             <input
               ref="excelFileInput"
               type="file"
@@ -2442,6 +2608,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 <div class="min-w-0">
                   <p class="truncate text-sm font-semibold text-slate-900">{{ selectedExcelFileLabel }}</p>
                   <p class="mt-1 text-xs text-slate-500">客人提供的 PO 箱唛 Excel</p>
+                  <p class="mt-1 text-xs font-medium text-teal-700">可点击选择或拖拽 Excel 到此处</p>
                 </div>
               </div>
               <button
@@ -2455,7 +2622,11 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
             </div>
           </div>
 
-          <div class="rounded-lg border border-dashed border-blue-300 bg-blue-50/40 p-5">
+          <div
+            class="rounded-lg border border-dashed border-blue-300 bg-blue-50/40 p-5"
+            @dragover.prevent
+            @drop.prevent="handlePdfFileDrop"
+          >
             <input
               ref="fileInput"
               type="file"
@@ -2472,6 +2643,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 <div class="min-w-0">
                   <p class="truncate text-sm font-semibold text-slate-900">{{ selectedFileLabel }}</p>
                   <p class="mt-1 text-xs text-slate-500">实际用于打印箱唛的 PDF</p>
+                  <p class="mt-1 text-xs font-medium text-blue-700">可点击选择或拖拽 PDF 到此处</p>
                 </div>
               </div>
               <button
@@ -2742,6 +2914,14 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               </label>
             </div>
 
+            <p
+              v-if="customerOptionsErrorMessage"
+              class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+            >
+              {{ customerOptionsErrorMessage }}
+              <button type="button" class="font-semibold underline underline-offset-2" @click="reloadCustomerOptions">重试</button>
+            </p>
+
             <div
               v-if="selectedTemplateForPhoto"
               class="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800"
@@ -2749,7 +2929,11 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               {{ selectedTemplateForPhoto.customerName }} · 合同：{{ selectedTemplateForPhoto.contractNumber || '未填写' }} · ITEM：{{ selectedTemplateForPhoto.item }}
             </div>
 
-            <div v-else-if="records.length && !filteredTemplateOptions.length" class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-500">
+            <div v-else-if="filteredTemplateOptions.length" class="rounded-lg border border-dashed border-blue-200 bg-blue-50/50 px-4 py-4 text-sm text-slate-600">
+              请选择一份已通过纸箱部 Excel–PDF 文字核对的打印 PDF，再上传现场箱唛照片。
+            </div>
+
+            <div v-else-if="records.length" class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-500">
               当前客名没有已通过纸箱部 Excel–PDF 文字核对的打印 PDF，请先完成源文件核对。
             </div>
 
@@ -2763,7 +2947,11 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           </p>
 
           <div class="mt-4 grid gap-4 md:grid-cols-2">
-            <div class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5">
+            <div
+              class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5"
+              @dragover.prevent
+              @drop.prevent="handleBatchPhotoDrop($event, 'front')"
+            >
               <input
                 ref="frontBatchPhotoFileInput"
                 type="file"
@@ -2781,6 +2969,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   <div class="min-w-0">
                     <p class="truncate text-sm font-semibold text-slate-900">{{ selectedFrontBatchFilesLabel }}</p>
                     <p class="mt-1 text-xs text-slate-500">正唛图片 · 可一次选择多张；一张只保留一块正唛</p>
+                    <p class="mt-1 text-xs font-medium text-blue-700">可点击选择或拖拽多张正唛到此处</p>
                   </div>
                 </div>
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
@@ -2865,6 +3054,26 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   </div>
                   <div class="flex flex-wrap items-center gap-2">
                     <button
+                      type="button"
+                      aria-label="当前正唛向左旋转 90 度"
+                      :disabled="isRotatingPhoto.front"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-blue-200 hover:text-blue-700 disabled:cursor-wait disabled:opacity-50"
+                      @click="rotateActiveBatchPhoto('front', -90)"
+                    >
+                      <RotateCcw class="size-3.5" aria-hidden="true" />
+                      左转
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="当前正唛向右旋转 90 度"
+                      :disabled="isRotatingPhoto.front"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-blue-200 hover:text-blue-700 disabled:cursor-wait disabled:opacity-50"
+                      @click="rotateActiveBatchPhoto('front', 90)"
+                    >
+                      <RotateCw class="size-3.5" aria-hidden="true" />
+                      右转
+                    </button>
+                    <button
                       v-if="!photoCropState.front.enabled"
                       type="button"
                       class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 transition hover:bg-blue-50"
@@ -2900,7 +3109,11 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               </div>
             </div>
 
-            <div class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5">
+            <div
+              class="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5"
+              @dragover.prevent
+              @drop.prevent="handleBatchPhotoDrop($event, 'side')"
+            >
               <input
                 ref="sideBatchPhotoFileInput"
                 type="file"
@@ -2918,6 +3131,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   <div class="min-w-0">
                     <p class="truncate text-sm font-semibold text-slate-900">{{ selectedSideBatchFilesLabel }}</p>
                     <p class="mt-1 text-xs text-slate-500">侧唛图片 · 可一次选择多张；一张只保留一块侧唛</p>
+                    <p class="mt-1 text-xs font-medium text-blue-700">可点击选择或拖拽多张侧唛到此处</p>
                   </div>
                 </div>
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
@@ -3000,6 +3214,26 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     <span v-else class="text-xs font-medium text-slate-500">当前照片可框选箱唛区域</span>
                   </div>
                   <div class="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      aria-label="当前侧唛向左旋转 90 度"
+                      :disabled="isRotatingPhoto.side"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-blue-200 hover:text-blue-700 disabled:cursor-wait disabled:opacity-50"
+                      @click="rotateActiveBatchPhoto('side', -90)"
+                    >
+                      <RotateCcw class="size-3.5" aria-hidden="true" />
+                      左转
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="当前侧唛向右旋转 90 度"
+                      :disabled="isRotatingPhoto.side"
+                      class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-blue-200 hover:text-blue-700 disabled:cursor-wait disabled:opacity-50"
+                      @click="rotateActiveBatchPhoto('side', 90)"
+                    >
+                      <RotateCw class="size-3.5" aria-hidden="true" />
+                      右转
+                    </button>
                     <button
                       v-if="!photoCropState.side.enabled"
                       type="button"
@@ -3708,5 +3942,16 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
         </div>
       </section>
     </div>
+    <CartonMarkCustomerDialog
+      :open="customerDialogOpen"
+      :customers="customerOptions"
+      :busy="customerMutationBusy"
+      :factory-name="activeFactory.shortName"
+      :external-error="customerMutationError"
+      @close="customerDialogOpen = false"
+      @create="createManagedCustomer"
+      @update="updateManagedCustomer"
+      @delete="deleteManagedCustomer"
+    />
   </div>
 </template>

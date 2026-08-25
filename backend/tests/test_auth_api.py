@@ -99,6 +99,8 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "molding_sample:notification_read",
                         "molding_sample:production_read",
                         "molding_sample:read",
+                        "qc_inspection:audit_read",
+                        "qc_inspection:read",
                         "system:audit_read",
                         "system:permission_catalog_read",
                     }
@@ -1039,6 +1041,135 @@ def test_system_position_notifications_follow_factory_and_department_contract(
 
 
 @pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
+def test_carton_manager_operates_carton_modules_across_factories_only(
+    monkeypatch,
+    authz_mode,
+):
+    with make_client(
+        monkeypatch,
+        AUTHZ_MODE=authz_mode,
+        AUTHZ_WRITES_ENABLED="false",
+    ):
+        auth_service = importlib.import_module("app.services.auth")
+        positions = importlib.import_module("app.services.system_positions")
+
+        def context_for(role_id: str):
+            definition = positions.get_system_position(role_id)
+            assert definition is not None
+            permissions = frozenset(definition.permission_codes)
+            grant = auth_service.AuthGrantContext(
+                role_id=definition.role_id,
+                role_name=definition.name,
+                factory_id="huaxing",
+                department=definition.department,
+                permissions=permissions,
+                scope_mode=definition.scope_mode,
+                read_permissions=frozenset(
+                    code
+                    for code in permissions
+                    if code in {"carton_mark:read", "carton_procurement:read"}
+                ),
+                unrestricted_department=True,
+            )
+            return auth_service.AuthContext(
+                id=f"user-{role_id}",
+                username=role_id,
+                display_name=definition.name,
+                roles=(definition.name,),
+                role_codes=(definition.role_id,),
+                permissions=permissions,
+                factory_scopes=("huaxing",),
+                department_scopes=(definition.department,),
+                grants=(grant,),
+                active_permission_codes=permissions,
+            )
+
+        carton_manager = context_for("position_carton_manager")
+        carton_supervisor = context_for("position_carton_supervisor")
+        carton_keeper = context_for("position_carton_warehouse_keeper")
+        module_permissions = (
+            "carton_mark:read",
+            "carton_mark:template_upload",
+            "carton_mark:customer_manage",
+            *positions.CARTON_PROCUREMENT_PERMISSION_CODES,
+        )
+
+        for permission in module_permissions:
+            allowed, source_type, _, _ = auth_service.authorization_decision(
+                carton_manager,
+                permission,
+                "huadeng",
+                "carton",
+            )
+            assert allowed is True
+            assert source_type == "role_binding_cross_operate"
+            assert auth_service.has_permission_in_scope(
+                carton_manager,
+                permission,
+                "huadeng",
+                "carton",
+            )
+
+            assert auth_service.has_permission_in_scope(
+                carton_supervisor,
+                permission,
+                "huaxing",
+                "carton",
+            )
+            if permission in carton_keeper.permissions:
+                assert auth_service.has_permission_in_scope(
+                    carton_keeper,
+                    permission,
+                    "huaxing",
+                    "carton",
+                )
+            assert not auth_service.has_permission_in_scope(
+                carton_supervisor,
+                permission,
+                "huadeng",
+                "carton",
+            )
+            assert not auth_service.has_permission_in_scope(
+                carton_keeper,
+                permission,
+                "huadeng",
+                "carton",
+            )
+
+        for permission in (
+            "carton_mark:read",
+            "carton_mark:photo_upload",
+            "carton_mark:review",
+        ):
+            allowed, source_type, _, _ = auth_service.authorization_decision(
+                carton_manager,
+                permission,
+                "huadeng",
+                "qc",
+            )
+            assert allowed is True
+            assert source_type == "role_binding_cross_operate"
+            assert auth_service.has_permission_in_scope(
+                carton_supervisor,
+                permission,
+                "huaxing",
+                "qc",
+            )
+            assert not auth_service.has_permission_in_scope(
+                carton_supervisor,
+                permission,
+                "huadeng",
+                "qc",
+            )
+            assert not auth_service.has_permission_in_scope(
+                carton_keeper,
+                permission,
+                "huaxing",
+                "qc",
+            )
+
+
+@pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
 def test_molding_sample_dispatch_fixed_positions_keep_source_factory_and_department_scope(
     monkeypatch,
     authz_mode,
@@ -1569,7 +1700,10 @@ def test_password_reset_request_creates_admin_system_notification(monkeypatch):
         assert reset_response.status_code == 200
         reset_payload = reset_response.json()
         assert reset_payload["status"] == "submitted"
-        assert reset_payload["message"] == "申请已提交。如账号资料有效，管理员会进行核验处理。"
+        assert reset_payload["message"] == (
+            "申请已提交。请保留当前浏览器，管理员审核通过后可在此直接设置新密码。"
+        )
+        assert reset_response.cookies.get("rr_password_reset_claim")
         assert reset_payload["request_id"].startswith("password-reset-")
 
         client.post("/api/auth/login", json={"username": "admin", "password": ADMIN_TEST_PASSWORD})

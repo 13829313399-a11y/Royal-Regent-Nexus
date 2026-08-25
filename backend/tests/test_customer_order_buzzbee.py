@@ -175,29 +175,70 @@ def build_tottus_po() -> bytes:
 
 def build_wmu_po() -> bytes:
     workbook = openpyxl.Workbook()
-    main = workbook.active
-    main.title = "11019 Dept 07"
-    main["E14"] = 11019
-    main["E17"] = "PD T-REX SQUIRTER"
-    main["E25"] = 8
-    main["N6"] = "WMU"
-    main["A52"] = "11019-07-24-WM-PDQ"
-    main["A53"] = "11019-07-24-WM-HT"
+    sheet = workbook.active
+    sheet.title = "11019 Dept 07"
+    sheet["H2"] = "Issued Date:"
+    sheet["J2"] = date(2026, 8, 19)
+    sheet["H4"] = "S/C No.:"
+    sheet["J4"] = 53233
+    sheet["N4"] = "WMU"
+    sheet["A6"] = "Inspection Date:"
+    sheet["C6"] = "TBA"
+    sheet["A8"] = "Date of Loading:"
+    sheet["C8"] = "Please see attached"
+    sheet["A12"] = "Our Item# :"
+    sheet["C12"] = 11019
+    sheet["A15"] = "Description:"
+    sheet["C15"] = "PD T-REX SQUIRTER"
+    sheet["A18"] = "Quantity:"
+    sheet["C18"] = 38736
+    sheet["A23"] = "Outer Carton Qty:"
+    sheet["C23"] = 8
+    sheet["A32"] = "PO#"
+    sheet["C32"] = "See attached"
+    sheet["B44"] = "ASTM F963 American Standard is required"
+
     attached = workbook.create_sheet("PO Attached")
     attached["A1"] = "WALMART USA"
+    attached["A2"] = "BB ITEM#"
+    attached["B2"] = 11019
+    attached["C2"] = "Walmart Item#"
+    attached["D2"] = 671368029
+    attached["A3"] = "Description"
+    attached["B3"] = "PD T-REX SQUIRTER"
+    attached["G5"] = "8pcs/ctn"
     headers = (
-        "S/C NO.", "Walmart PO#", "SHIP VIA", "Ship Window", "Cancel Date",
-        "Ordered Qty\n(PCS)", "Total Ctns ", "Inspection Date", "Remark",
+        "S/C NO.",
+        "Walmart PO#",
+        "SHIP VIA",
+        "Ship Window",
+        "Cancel Date",
+        "Ordered Qty (PCS)",
+        "Total Ctns",
+        "Inspection Date",
+        "Remark",
     )
-    for column, header in enumerate(headers, 1):
-        attached.cell(6, column, header)
-    attached.append([None] * 9)
-    for row_number, values in enumerate((
-        (53284, "0105570339", "STATESBORO", date(2026, 10, 25), date(2026, 11, 1), 2040, 255, date(2026, 10, 8), None),
-        (53281, "0105570336", "RIDGEVILLE", date(2026, 10, 31), date(2026, 11, 7), 2344, 293, date(2026, 10, 20), None),
-    ), 7):
-        for column, value in enumerate(values, 1):
-            attached.cell(row_number, column, value)
+    for column, header in enumerate(headers, start=1):
+        attached.cell(6, column).value = header
+    suborders = (
+        (53233, "0105570288", "SAVANNAH", date(2026, 10, 20), date(2026, 10, 27), 3840, 480, date(2026, 9, 29)),
+        (53295, "0105570350", "RIDGEVILLE", date(2026, 10, 26), date(2026, 11, 2), 4408, 551, date(2026, 10, 8)),
+        (53221, "0105570276", "SUFFOLK", date(2026, 10, 26), date(2026, 11, 2), 5496, 687, date(2026, 10, 8)),
+        (53273, "0105570328", "MOBILE", date(2026, 10, 30), date(2026, 11, 6), 5472, 684, date(2026, 10, 20)),
+        (53218, "0105570273", "HOUSTON", date(2026, 11, 2), date(2026, 11, 9), 8184, 1023, date(2026, 10, 13)),
+        (53267, "0105570322", "MIDWEST", date(2026, 11, 12), date(2026, 11, 19), 4392, 549, date(2026, 10, 22)),
+        (53213, "0105570268", "EASTVALE", date(2026, 11, 14), date(2026, 11, 21), 6944, 868, date(2026, 10, 27)),
+    )
+    for row_number, suborder in enumerate(suborders, start=7):
+        for column, value in enumerate(suborder, start=1):
+            attached.cell(row_number, column).value = value
+    attached["E15"] = "Total:"
+    attached["F15"] = 38736
+    attached["G15"] = 4842
+
+    packaging = workbook.create_sheet("Packaging Box")
+    packaging["A1"] = "Packaging Ref"
+    packaging["B1"] = "11019-08-26-WMU"
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -316,6 +357,24 @@ def build_schedule(*, include_price: bool = True) -> bytes:
     return encrypt_xlsx(output.getvalue())
 
 
+def build_wmu_schedule() -> bytes:
+    workbook = openpyxl.load_workbook(BytesIO(decrypt_xlsx(build_schedule())))
+    order = workbook["接单表"]
+    order["F4"] = "11019"
+    order["G4"] = "恐龙水枪"
+    order["H4"] = "PD T-REX SQUIRTER"
+    order["J4"] = 8
+    order["L4"] = "美国标准"
+    order["M4"] = 18.5
+    review = workbook["正单评审表"]
+    review["F4"] = "11019"
+    review["G4"] = "恐龙水枪"
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return encrypt_xlsx(output.getvalue())
+
+
 def upload_preview(client: TestClient):
     return client.post(
         "/api/customer-orders/buzzbee/preview",
@@ -398,6 +457,94 @@ def test_buzzbee_preview_requires_sales_permission_and_maps_seventeen_fields(mon
         }
         assert len(row["lineage"]) == 17
         assert row["item_sheet_name"] == "子弹枪ITEM表"
+
+
+def test_wmu_mainland_preview_and_export_use_po_attached_suborders(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "customer_order_wmu_sales", "sales_customer_owner", "sales-business")
+        common = {"factory_id": "huaxing", "received_date": "2026-08-19"}
+        po_content = build_wmu_po()
+        schedule_content = build_wmu_schedule()
+
+        def files():
+            return {
+                "po_file": (
+                    "WMU 11019 (DEPT 07) 40 - 53284 WH.xlsx",
+                    po_content,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+                "schedule_file": (
+                    "2026年 BUZZ BEE 生产排期表.xls.xlsx",
+                    schedule_content,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            }
+
+        response = client.post(
+            "/api/customer-orders/buzzbee/preview",
+            data=common,
+            files=files(),
+        )
+
+        assert response.status_code == 200, response.text
+        preview = response.json()
+        assert preview["summary"] == {"total": 7, "valid": 7, "warning": 0, "blocked": 0}
+        assert preview["input_template"] == "BUZZBEE_WALMART_WMU_ATTACHED_V1"
+        assert [row["contract_no"] for row in preview["rows"]] == [
+            "53233",
+            "53295",
+            "53221",
+            "53273",
+            "53218",
+            "53267",
+            "53213",
+        ]
+        assert [row["po_no"] for row in preview["rows"]] == [
+            "0105570288",
+            "0105570350",
+            "0105570276",
+            "0105570328",
+            "0105570273",
+            "0105570322",
+            "0105570268",
+        ]
+        first = preview["rows"][0]
+        assert first["customer_country"] == "WMU / 美国"
+        assert first["quantity"] == "3840"
+        assert first["units_per_carton"] == "8"
+        assert first["carton_count"] == "480"
+        assert first["requested_ship_date"] == "2026-10-20"
+        assert first["lineage"]["contract_no"] == "PO Attached!A7"
+        assert first["lineage"]["po_no"] == "PO Attached!B7"
+        assert first["source_po_file_name"] == "WMU 11019 (DEPT 07) 40 - 53284 WH.xlsx"
+
+        exported = client.post(
+            "/api/customer-orders/buzzbee/export",
+            data={
+                **common,
+                "confirmed": "true",
+                "preview_fingerprint": preview["preview_fingerprint"],
+            },
+            files=files(),
+        )
+        assert exported.status_code == 200, exported.text
+        service = importlib.import_module("app.services.customer_order_buzzbee")
+        output = service.OoxmlSchedule(decrypt_xlsx(exported.content))
+        order_rows = output.read_rows("接单表")
+        exported_po_numbers = {
+            values.get("C")
+            for values in order_rows.values()
+            if values.get("D") in {"53233", "53295", "53221", "53273", "53218", "53267", "53213"}
+        }
+        assert exported_po_numbers == {
+            "0105570288",
+            "0105570350",
+            "0105570276",
+            "0105570328",
+            "0105570273",
+            "0105570322",
+            "0105570268",
+        }
 
 
 def test_buzzbee_export_requires_confirmation_and_returns_updated_encrypted_schedule(monkeypatch):
@@ -774,39 +921,104 @@ def test_aafe_filename_typo_still_uses_aafes_customer_profile():
     assert parsed.values["standard"] == "美国标准"
 
 
-def test_wmu_xlsx_contract_expands_po_attached_child_orders():
+def test_wmu_mainland_xlsx_contract_expands_po_attached_suborders():
     service = importlib.import_module("app.services.customer_order_buzzbee")
 
-    parsed = service.parse_po("WMU 11019 (DEPT 07) 40 - 53284 WH.xlsx", build_wmu_po())
+    parsed = service.parse_po(
+        "WMU 11019 (DEPT 07) 40 - 53284 WH.xlsx",
+        build_wmu_po(),
+    )
 
-    assert len(parsed) == 2
-    assert parsed[0].input_template == service.WMU_TEMPLATE
-    assert parsed[0].values == {
-        "contract_no": "53284",
-        "po_no": "0105570339",
-        "customer_name": "WALMART USA",
-        "country": "美国",
+    assert len(parsed) == 7
+    assert {line.input_template for line in parsed} == {service.WMU_TEMPLATE}
+    assert all(line.values["product_no"] == "11019" for line in parsed)
+    assert all(line.values["product_name_en"] == "PD T-REX SQUIRTER" for line in parsed)
+    assert all(line.values["units_per_carton"] == 8 for line in parsed)
+    assert all(line.values["customer_name"] == "WMU" for line in parsed)
+    assert sum(line.values["quantity"] for line in parsed) == 38736
+    assert sum(line.values["declared_carton_count"] for line in parsed) == 4842
+
+    first = parsed[0]
+    assert first.values == {
+        "contract_no": "53233",
+        "inspection_date": "2026-09-29",
+        "requested_ship_date": "2026-10-20",
         "product_no": "11019",
         "product_name_en": "PD T-REX SQUIRTER",
-        "quantity": Decimal("2040"),
-        "units_per_carton": Decimal("8"),
+        "quantity": 3840,
+        "units_per_carton": 8,
+        "declared_carton_count": 480,
+        "po_no": "0105570288",
+        "customer_name": "WMU",
+        "country": "美国",
         "standard": "美国标准",
-        "packaging": "11019-07-24-WM-PDQ / 11019-07-24-WM-HT",
-        "requested_ship_date": "2026-10-25",
-        "inspection_raw": "2026-10-08 00:00:00",
-        "inspection_date": "2026-10-08",
-        "ship_via": "STATESBORO",
+        "packaging": "11019-08-26-WMU",
+        "inspection_raw": "2026-09-29 00:00:00",
     }
-    assert parsed[1].values["po_no"] == "0105570336"
-    assert parsed[1].values["contract_no"] == "53281"
-    assert parsed[0].lineage["po_no"] == "PO Attached!B7"
+    assert first.lineage["contract_no"] == "PO Attached!A7"
+    assert first.lineage["po_no"] == "PO Attached!B7"
+    assert first.lineage["quantity"] == "PO Attached!F7"
+    assert first.lineage["requested_ship_date"] == "PO Attached!D7"
+    assert first.lineage["inspection_date"] == "PO Attached!H7"
+    assert first.lineage["standard"] == "合同条款 · U.S. Standard"
+
+    last = parsed[-1]
+    assert last.values["contract_no"] == "53213"
+    assert last.values["po_no"] == "0105570268"
+    assert last.values["quantity"] == 6944
+    assert last.values["requested_ship_date"] == "2026-11-14"
+    assert last.values["inspection_date"] == "2026-10-27"
 
 
-def test_indonesia_xlsx_contract_remains_out_of_scope():
+def test_wmu_mainland_contract_requires_po_attached_sheet():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.load_workbook(BytesIO(build_wmu_po()))
+    del workbook["PO Attached"]
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+
+    with pytest.raises(service.CustomerOrderWorkbookError, match="缺少 PO Attached 子订单页"):
+        service.parse_po(
+            "WMU 11019 (DEPT 07) 40 - 53284 WH.xlsx",
+            output.getvalue(),
+        )
+
+
+def test_wmu_declared_carton_conflict_is_blocked():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.load_workbook(BytesIO(build_wmu_po()))
+    workbook["PO Attached"]["G7"] = 481
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    parsed = service.parse_po(
+        "WMU 11019 (DEPT 07) 40 - 53284 WH.xlsx",
+        output.getvalue(),
+    )
+    preview = service._build_preview_rows(
+        parsed,
+        {
+            "11019": service.ScheduleLookup(
+                product_name_zh="恐龙水枪",
+                unit_price_hkd=Decimal("18.5"),
+                existing_rows=[],
+            )
+        },
+        "2026-08-19",
+    )
+
+    assert preview[0]["status"] == "blocked"
+    issue = next(item for item in preview[0]["issues"] if item["code"] == "carton_count_conflict")
+    assert issue["message"] == "PO Attached 标示 481 箱，但数量 ÷ 装箱数为 480 箱"
+
+
+@pytest.mark.parametrize("marker", ["Indonesia", "印尼"])
+def test_explicit_indonesia_xlsx_contract_remains_out_of_scope(marker):
     service = importlib.import_module("app.services.customer_order_buzzbee")
 
     with pytest.raises(service.CustomerOrderWorkbookError, match="印尼合同"):
-        service.parse_po("Indonesia schedule.xlsx", build_tottus_po())
+        service.parse_po(f"{marker} schedule.xlsx", build_tottus_po())
 
 
 def test_po_number_is_optional_for_standard_customer_but_required_for_walmart():

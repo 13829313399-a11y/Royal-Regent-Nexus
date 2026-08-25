@@ -30,6 +30,23 @@ from app.services.ai.provider_factory import (
 )
 from app.services.ai.providers import ProviderError
 from app.services.auth import AuthContext, get_current_user
+from app.services.document_studio.renderers.office_pdf_renderer import (
+    OfficePdfRenderError,
+    render_docx_to_pdf,
+)
+from app.services.document_tools.capabilities import (
+    document_tool_capabilities,
+    document_tool_diagnostics,
+)
+from app.services.document_tools.contracts import (
+    DocumentToolError,
+    ProcessingMode,
+)
+from app.services.document_tools.smart_converters import (
+    convert_pdf_to_excel_smart,
+    convert_pdf_to_word_smart,
+    convert_pdf_translation_smart,
+)
 from app.services.document_translation import (
     DocumentTranslationError,
     DocumentTranslationUnavailableError,
@@ -37,17 +54,133 @@ from app.services.document_translation import (
     translate_document,
 )
 from app.services.pdf_split import PdfSplitError, split_pdf
-from app.services.pdf_to_excel import PdfToExcelConversionError, convert_pdf_to_excel
-from app.services.pdf_to_word import PdfToWordConversionError, convert_pdf_to_word
+from app.services.pdf_to_excel import PdfToExcelConversionError
+from app.services.pdf_to_word import PdfToWordConversionError
+from app.services.pdf_translation import (
+    PdfTranslationConversionError,
+)
 
 router = APIRouter(prefix="/api/tools")
 translation_logger = logging.getLogger("app.tools.document_translation")
 
-MAX_PDF_SIZE_BYTES = 20 * 1024 * 1024
-MAX_DOCUMENT_SIZE_BYTES = 20 * 1024 * 1024
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+DOCX_MEDIA_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 ZIP_MEDIA_TYPE = "application/zip"
+
+
+def _tool_error(exc: DocumentToolError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "code": exc.code,
+            "message": exc.message,
+            "action": exc.action,
+            "retryable": exc.retryable,
+        },
+    )
+
+
+def _stable_error(
+    code: str,
+    message: str,
+    *,
+    action: str,
+    status_code: int = 422,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": message,
+            "action": action,
+            "retryable": status_code >= 500,
+        },
+    )
+
+
+def _processing_headers(
+    *,
+    mode: ProcessingMode,
+    page_count: int,
+    qwen_page_count: int = 0,
+    low_confidence_count: int = 0,
+    provider_model: str = "",
+    warnings: tuple[str, ...] = (),
+) -> dict[str, str]:
+    headers = {
+        "X-Processing-Mode": mode.value,
+        "X-Local-Page-Count": str(max(0, page_count - qwen_page_count)),
+        "X-Qwen-Page-Count": str(qwen_page_count),
+        "X-Low-Confidence-Count": str(low_confidence_count),
+        "X-Document-Warning-Count": str(len(warnings)),
+    }
+    if provider_model:
+        headers["X-Provider-Model"] = provider_model
+    if warnings:
+        headers["X-Document-Warnings"] = url_quote(
+            json.dumps(warnings, ensure_ascii=False)
+        )
+    return headers
+
+
+def _require_document_tools() -> None:
+    if not settings.document_tools_enabled:
+        raise _stable_error(
+            "DOCUMENT_TOOLS_DISABLED",
+            "文档工具已被管理员关闭。",
+            action="请联系管理员启用 DOCUMENT_TOOLS_ENABLED。",
+            status_code=503,
+        )
+
+
+def _translation_pairs(
+    raw: str, *, label: str, limit: int
+) -> tuple[dict[str, str], ...]:
+    try:
+        parsed = json.loads(raw or "[]")
+    except json.JSONDecodeError as exc:
+        raise _stable_error(
+            "DOCUMENT_TRANSLATION_OPTIONS_INVALID",
+            f"{label}参数格式不正确。",
+            action=f"请检查{label}后重试。",
+            status_code=400,
+        ) from exc
+    if not isinstance(parsed, list) or len(parsed) > limit:
+        raise _stable_error(
+            "DOCUMENT_TRANSLATION_OPTIONS_INVALID",
+            f"{label}参数格式不正确。",
+            action=f"{label}最多支持 {limit} 组。",
+            status_code=400,
+        )
+    normalized: list[dict[str, str]] = []
+    for pair in parsed:
+        if not isinstance(pair, dict):
+            raise _stable_error(
+                "DOCUMENT_TRANSLATION_OPTIONS_INVALID",
+                f"{label}参数格式不正确。",
+                action=f"{label}必须包含 source 和 target。",
+                status_code=400,
+            )
+        source = pair.get("source")
+        target = pair.get("target")
+        if (
+            not isinstance(source, str)
+            or not isinstance(target, str)
+            or not source.strip()
+            or not target.strip()
+            or len(source) > 500
+            or len(target) > 500
+        ):
+            raise _stable_error(
+                "DOCUMENT_TRANSLATION_OPTIONS_INVALID",
+                f"{label}参数格式不正确。",
+                action=f"{label}的源文和译文必须为 1～500 个字符。",
+                status_code=400,
+            )
+        normalized.append({"source": source.strip(), "target": target.strip()})
+    return tuple(normalized)
 
 
 def _cloud_translation_provider_error(
@@ -73,31 +206,106 @@ async def _read_office_document(document_file: UploadFile) -> tuple[bytes, str]:
     file_name = document_file.filename or "文档.docx"
     extension = Path(file_name).suffix.lower()
     if extension not in {".xlsx", ".xlsm", ".docx"}:
-        raise HTTPException(status_code=400, detail="只支持上传 .xlsx、.xlsm 或 .docx 文件。")
+        raise _stable_error(
+            "DOCUMENT_FILE_TYPE_UNSUPPORTED",
+            "只支持上传 .xlsx、.xlsm 或 .docx 文件。",
+            action="请重新选择受支持的 Office 文档。",
+            status_code=400,
+        )
 
     document_bytes = await document_file.read()
     if not document_bytes:
-        raise HTTPException(status_code=400, detail="Office 文档不能为空。")
-    if len(document_bytes) > MAX_DOCUMENT_SIZE_BYTES:
-        raise HTTPException(status_code=413, detail="单个 Office 文档不可超过 20MB。")
+        raise _stable_error(
+            "DOCUMENT_FILE_EMPTY",
+            "Office 文档不能为空。",
+            action="请选择包含内容的 Office 文档。",
+            status_code=400,
+        )
+    if len(document_bytes) > settings.document_tool_max_file_bytes:
+        raise _stable_error(
+            "DOCUMENT_FILE_TOO_LARGE",
+            "Office 文档超过服务器允许的大小。",
+            action=f"请将单个文件控制在 {settings.document_tool_max_file_bytes // 1024 // 1024} MB 以内。",
+            status_code=413,
+        )
     if not document_bytes.startswith(b"PK"):
-        raise HTTPException(status_code=400, detail="文件内容不是有效的 Office 文档。")
+        raise _stable_error(
+            "DOCUMENT_FILE_SIGNATURE_INVALID",
+            "文件内容不是有效的 Office 文档。",
+            action="请重新导出文档，不要只修改文件扩展名。",
+            status_code=400,
+        )
+    return document_bytes, file_name
+
+
+async def _read_word_document(document_file: UploadFile) -> tuple[bytes, str]:
+    document_bytes, file_name = await _read_office_document(document_file)
+    if Path(file_name).suffix.lower() != ".docx":
+        raise _stable_error(
+            "DOCUMENT_FILE_TYPE_UNSUPPORTED",
+            "Word 转 PDF 只支持上传 .docx 文件。",
+            action="请将文档另存为 DOCX 后重试。",
+            status_code=400,
+        )
     return document_bytes, file_name
 
 
 async def _read_pdf(pdf_file: UploadFile) -> tuple[bytes, str]:
     file_name = pdf_file.filename or "PDF文件.pdf"
     if not file_name.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="只支持上传 .pdf 文件。")
+        raise _stable_error(
+            "DOCUMENT_FILE_TYPE_UNSUPPORTED",
+            "只支持上传 .pdf 文件。",
+            action="请重新选择 PDF 文件。",
+            status_code=400,
+        )
 
     pdf_bytes = await pdf_file.read()
     if not pdf_bytes:
-        raise HTTPException(status_code=400, detail="PDF 文件不能为空。")
-    if len(pdf_bytes) > MAX_PDF_SIZE_BYTES:
-        raise HTTPException(status_code=413, detail="单个 PDF 不可超过 20MB。")
+        raise _stable_error(
+            "DOCUMENT_FILE_EMPTY",
+            "PDF 文件不能为空。",
+            action="请选择包含页面的 PDF 文件。",
+            status_code=400,
+        )
+    if len(pdf_bytes) > settings.document_tool_max_file_bytes:
+        raise _stable_error(
+            "DOCUMENT_FILE_TOO_LARGE",
+            "PDF 超过服务器允许的大小。",
+            action=f"请将单个文件控制在 {settings.document_tool_max_file_bytes // 1024 // 1024} MB 以内。",
+            status_code=413,
+        )
     if not pdf_bytes.lstrip().startswith(b"%PDF-"):
-        raise HTTPException(status_code=400, detail="文件内容不是有效的 PDF。")
+        raise _stable_error(
+            "DOCUMENT_FILE_SIGNATURE_INVALID",
+            "文件内容不是有效的 PDF。",
+            action="请重新导出 PDF，不要只修改文件扩展名。",
+            status_code=400,
+        )
     return pdf_bytes, file_name
+
+
+@router.get("/capabilities")
+def tools_capabilities(
+    _current_user: Annotated[AuthContext, Depends(get_current_user)],
+):
+    return document_tool_capabilities(settings)
+
+
+@router.get("/diagnostics")
+def tools_diagnostics(
+    current_user: Annotated[AuthContext, Depends(get_current_user)],
+):
+    if settings.app_env.strip().casefold() not in {"development", "dev", "test"} and (
+        "admin" not in current_user.role_codes
+    ):
+        raise _stable_error(
+            "DOCUMENT_DIAGNOSTICS_ADMIN_REQUIRED",
+            "只有系统管理员可以查看文档工具诊断。",
+            action="请联系系统管理员执行诊断。",
+            status_code=403,
+        )
+    return document_tool_diagnostics(settings)
 
 
 @router.get("/document-translation/status")
@@ -113,8 +321,7 @@ def document_translation_service_status(
         **local_status,
         "cloudAvailable": cloud_available,
         "artifactWorkflowsEnabled": bool(
-            settings.ai_artifacts_enabled
-            and settings.ai_artifact_workflows_enabled
+            settings.ai_artifacts_enabled and settings.ai_artifact_workflows_enabled
         ),
         "modes": {
             "local_private": {
@@ -147,14 +354,18 @@ async def document_translation(
 ):
     document_bytes, file_name = await _read_office_document(document_file)
     if direction not in {"zh_to_en", "en_to_zh"}:
-        raise HTTPException(status_code=400, detail="翻译方向无效，只支持中译英或英译中。")
+        raise HTTPException(
+            status_code=400, detail="翻译方向无效，只支持中译英或英译中。"
+        )
 
     selected_sheet_names: list[str] | None = None
     if sheet_names.strip():
         try:
             parsed_sheet_names = json.loads(sheet_names)
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="工作表选择参数格式不正确。") from exc
+            raise HTTPException(
+                status_code=400, detail="工作表选择参数格式不正确。"
+            ) from exc
         if not isinstance(parsed_sheet_names, list) or any(
             not isinstance(name, str) for name in parsed_sheet_names
         ):
@@ -229,7 +440,9 @@ async def document_translation(
         except ArtifactError as exc:
             raise _artifact_error(exc) from exc
         except ProviderConfigurationError as exc:
-            raise HTTPException(status_code=503, detail="云端翻译 Provider 不可用。") from exc
+            raise HTTPException(
+                status_code=503, detail="云端翻译 Provider 不可用。"
+            ) from exc
         except ProviderError as exc:
             raise _cloud_translation_provider_error(
                 exc,
@@ -257,8 +470,7 @@ async def document_translation(
             media_type=result.media_type,
             headers={
                 "Content-Disposition": (
-                    "attachment; filename*=UTF-8''"
-                    f"{url_quote(result.output_file_name)}"
+                    f"attachment; filename*=UTF-8''{url_quote(result.output_file_name)}"
                 ),
                 "X-Translation-Unit-Count": str(result.translated_unit_count),
                 "X-Translation-Skipped-Count": str(result.skipped_unit_count),
@@ -276,11 +488,15 @@ async def document_translation(
         model_dir = settings.document_translation_model_dir
         if mode == "ai_smart_cloud":
             if not settings.ai_cloud_document_translation_enabled:
-                raise HTTPException(status_code=503, detail="AI Smart / Cloud 翻译尚未启用。")
+                raise HTTPException(
+                    status_code=503, detail="AI Smart / Cloud 翻译尚未启用。"
+                )
             try:
                 provider = build_provider(settings)
             except ProviderConfigurationError as exc:
-                raise HTTPException(status_code=503, detail="云端翻译 Provider 不可用。") from exc
+                raise HTTPException(
+                    status_code=503, detail="云端翻译 Provider 不可用。"
+                ) from exc
 
             async def translate_fragments(texts, fragment_direction):
                 assert provider is not None
@@ -358,14 +574,18 @@ async def document_translation_artifact(
     if not settings.ai_artifact_workflows_enabled:
         raise HTTPException(status_code=404, detail="Not Found")
     if direction not in {"zh_to_en", "en_to_zh"}:
-        raise HTTPException(status_code=400, detail="翻译方向无效，只支持中译英或英译中。")
+        raise HTTPException(
+            status_code=400, detail="翻译方向无效，只支持中译英或英译中。"
+        )
 
     selected_sheet_names: list[str] | None = None
     if sheet_names.strip():
         try:
             parsed_sheet_names = json.loads(sheet_names)
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="工作表选择参数格式不正确。") from exc
+            raise HTTPException(
+                status_code=400, detail="工作表选择参数格式不正确。"
+            ) from exc
         if not isinstance(parsed_sheet_names, list) or any(
             not isinstance(name, str) for name in parsed_sheet_names
         ):
@@ -392,7 +612,9 @@ async def document_translation_artifact(
             try:
                 provider = build_provider(settings)
             except ProviderConfigurationError as exc:
-                raise HTTPException(status_code=503, detail="云端翻译 Provider 不可用。") from exc
+                raise HTTPException(
+                    status_code=503, detail="云端翻译 Provider 不可用。"
+                ) from exc
         translated = await translate_artifact(
             db,
             artifact_id=artifact_id,
@@ -444,15 +666,9 @@ async def document_translation_artifact(
                 "attachment; filename*=UTF-8''"
                 f"{url_quote(translated.document.output_file_name)}"
             ),
-            "X-Translation-Unit-Count": str(
-                translated.document.translated_unit_count
-            ),
-            "X-Translation-Skipped-Count": str(
-                translated.document.skipped_unit_count
-            ),
-            "X-Translation-Part-Count": str(
-                translated.document.processed_part_count
-            ),
+            "X-Translation-Unit-Count": str(translated.document.translated_unit_count),
+            "X-Translation-Skipped-Count": str(translated.document.skipped_unit_count),
+            "X-Translation-Part-Count": str(translated.document.processed_part_count),
             "X-Translation-Mode": mode,
             "X-Source-Artifact-ID": translated.source.id,
             "X-Derived-Artifact-ID": translated.derived.id,
@@ -467,13 +683,31 @@ async def document_translation_artifact(
 async def pdf_to_excel(
     pdf_file: Annotated[UploadFile, File()],
     _current_user: Annotated[AuthContext, Depends(get_current_user)],
+    processing_mode: Annotated[str, Form()] = "AUTO",
 ):
+    _require_document_tools()
     pdf_bytes, file_name = await _read_pdf(pdf_file)
+    try:
+        mode = ProcessingMode.parse(processing_mode)
+    except DocumentToolError as exc:
+        raise _tool_error(exc) from exc
 
     try:
-        result = await run_in_threadpool(convert_pdf_to_excel, pdf_bytes, file_name)
+        result = await run_in_threadpool(
+            convert_pdf_to_excel_smart,
+            pdf_bytes,
+            file_name,
+            settings=settings,
+            mode=mode,
+        )
+    except DocumentToolError as exc:
+        raise _tool_error(exc) from exc
     except PdfToExcelConversionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _stable_error(
+            "PDF_TO_EXCEL_FAILED",
+            str(exc),
+            action="请确认 PDF 未加密且包含可识别的文字或表格。",
+        ) from exc
 
     return Response(
         content=result.content,
@@ -487,6 +721,14 @@ async def pdf_to_excel(
             "X-PDF-Text-Page-Count": str(result.text_page_count),
             "X-PDF-OCR-Page-Count": str(result.ocr_page_count),
             "Cache-Control": "no-store",
+            **_processing_headers(
+                mode=mode,
+                page_count=result.page_count,
+                qwen_page_count=result.qwen_page_count,
+                low_confidence_count=result.low_confidence_count,
+                provider_model=result.provider_model,
+                warnings=result.warnings,
+            ),
         },
     )
 
@@ -495,12 +737,32 @@ async def pdf_to_excel(
 async def pdf_to_word(
     pdf_file: Annotated[UploadFile, File()],
     _current_user: Annotated[AuthContext, Depends(get_current_user)],
+    processing_mode: Annotated[str, Form()] = "AUTO",
+    output_mode: Annotated[str, Form()] = "EDITABLE",
 ):
+    _require_document_tools()
     pdf_bytes, file_name = await _read_pdf(pdf_file)
     try:
-        result = await run_in_threadpool(convert_pdf_to_word, pdf_bytes, file_name)
+        mode = ProcessingMode.parse(processing_mode)
+    except DocumentToolError as exc:
+        raise _tool_error(exc) from exc
+    try:
+        result = await run_in_threadpool(
+            convert_pdf_to_word_smart,
+            pdf_bytes,
+            file_name,
+            settings=settings,
+            mode=mode,
+            output_mode=output_mode,
+        )
+    except DocumentToolError as exc:
+        raise _tool_error(exc) from exc
     except PdfToWordConversionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _stable_error(
+            "PDF_TO_WORD_FAILED",
+            str(exc),
+            action="请确认 PDF 未加密且包含可识别内容。",
+        ) from exc
 
     return Response(
         content=result.content,
@@ -513,6 +775,190 @@ async def pdf_to_word(
             "X-PDF-Text-Page-Count": str(result.text_page_count),
             "X-PDF-OCR-Page-Count": str(result.ocr_page_count),
             "Cache-Control": "no-store",
+            **_processing_headers(
+                mode=mode,
+                page_count=result.page_count,
+                qwen_page_count=result.qwen_page_count,
+                provider_model=result.provider_model,
+                warnings=result.warnings,
+            ),
+        },
+    )
+
+
+@router.post("/word-to-pdf")
+async def word_to_pdf(
+    document_file: Annotated[UploadFile, File()],
+    _current_user: Annotated[AuthContext, Depends(get_current_user)],
+    processing_mode: Annotated[str, Form()] = "AUTO",
+):
+    _require_document_tools()
+    document_bytes, file_name = await _read_word_document(document_file)
+    try:
+        mode = ProcessingMode.parse(processing_mode)
+    except DocumentToolError as exc:
+        raise _tool_error(exc) from exc
+    if mode == ProcessingMode.QWEN:
+        raise _tool_error(
+            DocumentToolError(
+                "QWEN_NOT_APPLICABLE",
+                "Word 转 PDF 不需要调用千问。",
+                action="请选择自动或仅本地模式。",
+            )
+        )
+    try:
+        result = await run_in_threadpool(
+            render_docx_to_pdf,
+            document_bytes,
+            file_name,
+            command=settings.document_office_renderer_command,
+            timeout_seconds=settings.document_office_renderer_timeout_seconds,
+            # The synchronous tool already rejects macros/external relationships,
+            # uses LibreOffice safe mode and a disposable profile, and applies
+            # subprocess resource limits. Reuse an attested network namespace when
+            # present, without making the full Document Job gate a prerequisite.
+            network_isolation_command=(
+                settings.document_office_renderer_network_isolation_command
+                if settings.document_office_renderer_network_isolation_verified
+                else None
+            ),
+        )
+    except OfficePdfRenderError as exc:
+        status_code = (
+            503
+            if exc.retryable
+            or exc.code
+            in {
+                "LIBREOFFICE_NOT_INSTALLED",
+                "DOCUMENT_OFFICE_RENDERER_UNAVAILABLE",
+            }
+            else 422
+        )
+        raise _stable_error(
+            exc.code,
+            exc.public_message,
+            action=(
+                "请管理员安装 LibreOffice 并确认命令路径。"
+                if exc.code == "LIBREOFFICE_NOT_INSTALLED"
+                else "请重试；若持续失败，请将错误码提供给管理员。"
+            ),
+            status_code=status_code,
+        ) from exc
+
+    return Response(
+        content=result.content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(result.output_file_name)}",
+            "X-Word-Page-Count": str(result.page_count),
+            "X-Word-Blank-Page-Count": str(result.blank_page_count),
+            "Cache-Control": "no-store",
+            **_processing_headers(
+                mode=mode,
+                page_count=result.page_count,
+                warnings=result.warnings,
+            ),
+        },
+    )
+
+
+@router.post("/pdf-translation")
+async def pdf_translation(
+    pdf_file: Annotated[UploadFile, File()],
+    _current_user: Annotated[AuthContext, Depends(get_current_user)],
+    direction: Annotated[str, Form()] = "AUTO",
+    layout: Annotated[str, Form()] = "TRANSLATED_ONLY",
+    protected_tokens: Annotated[str, Form()] = "[]",
+    include_editable_docx: Annotated[bool, Form()] = False,
+    processing_mode: Annotated[str, Form()] = "AUTO",
+    glossary_json: Annotated[str, Form()] = "[]",
+    translation_memory_json: Annotated[str, Form()] = "[]",
+    domain_prompt: Annotated[str, Form()] = "",
+):
+    _require_document_tools()
+    pdf_bytes, file_name = await _read_pdf(pdf_file)
+    try:
+        mode = ProcessingMode.parse(processing_mode)
+    except DocumentToolError as exc:
+        raise _tool_error(exc) from exc
+    try:
+        parsed_tokens = json.loads(protected_tokens)
+    except json.JSONDecodeError as exc:
+        raise _stable_error(
+            "DOCUMENT_TRANSLATION_OPTIONS_INVALID",
+            "保护词参数格式不正确。",
+            action="请检查保护词列表后重试。",
+            status_code=400,
+        ) from exc
+    if (
+        not isinstance(parsed_tokens, list)
+        or len(parsed_tokens) > 100
+        or any(
+            not isinstance(token, str) or len(token) > 200 for token in parsed_tokens
+        )
+    ):
+        raise _stable_error(
+            "DOCUMENT_TRANSLATION_OPTIONS_INVALID",
+            "保护词参数格式不正确。",
+            action="保护词最多 100 个，每个不超过 200 个字符。",
+            status_code=400,
+        )
+    glossary = _translation_pairs(glossary_json, label="术语表", limit=50)
+    translation_memory = _translation_pairs(
+        translation_memory_json,
+        label="翻译记忆",
+        limit=20,
+    )
+    if len(domain_prompt) > 2_000:
+        raise _stable_error(
+            "DOCUMENT_TRANSLATION_OPTIONS_INVALID",
+            "领域提示过长。",
+            action="请将领域提示控制在 2000 个字符以内。",
+            status_code=400,
+        )
+
+    try:
+        result = await run_in_threadpool(
+            convert_pdf_translation_smart,
+            pdf_bytes,
+            file_name,
+            settings=settings,
+            mode=mode,
+            requested_direction=direction,
+            layout=layout,
+            protected_tokens=tuple(
+                dict.fromkeys(token.strip() for token in parsed_tokens if token.strip())
+            ),
+            include_editable_docx=include_editable_docx,
+            terms=glossary,
+            translation_memory=translation_memory,
+            domain_prompt=domain_prompt.strip(),
+        )
+    except DocumentToolError as exc:
+        raise _tool_error(exc) from exc
+    except PdfTranslationConversionError as exc:
+        raise _stable_error(
+            "PDF_TRANSLATION_FAILED",
+            str(exc),
+            action="请确认文档包含可识别文字，并检查翻译方向和版式设置。",
+        ) from exc
+
+    return Response(
+        content=result.content,
+        media_type=result.media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(result.output_file_name)}",
+            "X-PDF-Page-Count": str(result.page_count),
+            "X-Translation-Unit-Count": str(result.translated_unit_count),
+            "X-PDF-OCR-Page-Count": str(result.ocr_page_count),
+            "Cache-Control": "no-store",
+            **_processing_headers(
+                mode=mode,
+                page_count=result.page_count,
+                qwen_page_count=result.qwen_page_count,
+                provider_model=result.provider_model,
+                warnings=result.warnings,
+            ),
         },
     )
 
@@ -523,8 +969,22 @@ async def pdf_split(
     _current_user: Annotated[AuthContext, Depends(get_current_user)],
     split_mode: Annotated[str, Form()] = "each_page",
     page_ranges: Annotated[str, Form()] = "",
+    processing_mode: Annotated[str, Form()] = "AUTO",
 ):
+    _require_document_tools()
     pdf_bytes, file_name = await _read_pdf(pdf_file)
+    try:
+        mode = ProcessingMode.parse(processing_mode)
+    except DocumentToolError as exc:
+        raise _tool_error(exc) from exc
+    if mode == ProcessingMode.QWEN:
+        raise _tool_error(
+            DocumentToolError(
+                "QWEN_NOT_APPLICABLE",
+                "PDF 拆分不需要调用千问。",
+                action="请选择自动或仅本地模式。",
+            )
+        )
     try:
         result = await run_in_threadpool(
             split_pdf,
@@ -534,7 +994,11 @@ async def pdf_split(
             page_ranges=page_ranges,
         )
     except PdfSplitError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _stable_error(
+            "PDF_SPLIT_FAILED",
+            str(exc),
+            action="请检查页段格式，例如 1-3,5,8-10。",
+        ) from exc
 
     return Response(
         content=result.content,
@@ -544,5 +1008,6 @@ async def pdf_split(
             "X-PDF-Page-Count": str(result.page_count),
             "X-PDF-Split-File-Count": str(result.file_count),
             "Cache-Control": "no-store",
+            **_processing_headers(mode=mode, page_count=result.page_count),
         },
     )

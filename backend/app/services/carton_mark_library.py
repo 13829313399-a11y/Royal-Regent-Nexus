@@ -12,9 +12,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.time import business_now
-from app.models.carton_mark import CartonMarkDocument, CartonMarkTemplate
+from app.models.carton_mark import (
+    CartonMarkCustomer,
+    CartonMarkDocument,
+    CartonMarkTemplate,
+)
 from app.models.carton_procurement import CartonAuditEvent
-from app.models.internal_quote import InternalQuoteCustomer
 from app.schemas.carton_mark import (
     CartonMarkCustomerOptionOut,
     CartonMarkDocumentCheckResponse,
@@ -143,9 +146,9 @@ def list_carton_mark_customer_options(
 ) -> list[CartonMarkCustomerOptionOut]:
     factory_id = require_carton_factory(factory_id)
     customers = db.scalars(
-        select(InternalQuoteCustomer)
-        .where(InternalQuoteCustomer.factory_id == factory_id)
-        .order_by(InternalQuoteCustomer.normalized_name, InternalQuoteCustomer.id)
+        select(CartonMarkCustomer)
+        .where(CartonMarkCustomer.factory_id == factory_id)
+        .order_by(CartonMarkCustomer.normalized_name, CartonMarkCustomer.id)
     ).all()
     return [
         CartonMarkCustomerOptionOut(id=customer.id, name=customer.name)
@@ -229,6 +232,19 @@ def create_carton_mark_template(
 ) -> CartonMarkTemplateOut:
     factory_id = require_carton_factory(factory_id)
     customer_name = _normalize_required(customer_name, "客户名称", 255)
+    managed_customer = db.scalar(
+        select(CartonMarkCustomer).where(
+            CartonMarkCustomer.factory_id == factory_id,
+            CartonMarkCustomer.normalized_name
+            == " ".join(customer_name.split()).casefold(),
+        )
+    )
+    if managed_customer is None:
+        raise HTTPException(
+            status_code=422,
+            detail="所选客名不在当前厂区箱唛客户库，请联系纸箱部主管维护",
+        )
+    customer_name = managed_customer.name
     item = _normalize_required(item, "ITEM", 128)
     contract_number = _normalize_required(contract_number, "合同号", 128)
     po = " ".join(po.strip().split()) or contract_number

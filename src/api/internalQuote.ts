@@ -43,6 +43,13 @@ export interface ApiInternalQuote {
   workshop_name: string
   quote_no: string
   product_name: string
+  quote_type: 'single' | 'series' | 'multi_region'
+  batch_id: string
+  batch_quote_no: string
+  batch_position: number
+  batch_size: number
+  baseline_quote_id: string
+  region_code: '' | 'mainland' | 'indonesia'
   customer: string
   qty: number
   version_label: string
@@ -141,9 +148,10 @@ export interface ApiInternalQuoteSummary {
   rr2_cost_summary?: {
     currency: string
     indonesia_freight_hkd: string
-    t1: Array<{ key: string; label: string; value: string; format?: string }>
-    t2: Array<{ key: string; label: string; value: string; format?: string }>
-    t3: Array<{ key: string; label: string; value: string; format?: string }>
+    t1: Array<{ key: string; label: string; value: string; format?: string; display?: boolean }>
+    t2: Array<{ key: string; label: string; value: string; format?: string; display?: boolean }>
+    t3: Array<{ key: string; label: string; value: string; format?: string; display?: boolean }>
+    molding_material_breakdown?: { total_hkd: string; imported_hkd: string; domestic_hkd: string }
     t4: Array<{ key: string; label: string; amount_hkd: string; rate_percent: string | null; deduction_hkd: string | null }>
     totals: { rmb_purchase_cost_hkd: string; total_deduction_hkd: string; after_deduction_cost_hkd: string }
     shipping_pricing: {
@@ -154,7 +162,7 @@ export interface ApiInternalQuoteSummary {
       lift_share_percent: string
       markup: string
       active_markup_moq?: string
-      markup_tiers?: Array<{ moq: string; markup: string; is_active: boolean }>
+      markup_tiers?: Array<{ moq: string; markup: string; is_active: boolean; include_in_output?: boolean }>
       misc_ratio: string
       settlement: string
       factory_price_hkd: string
@@ -162,7 +170,9 @@ export interface ApiInternalQuoteSummary {
       shipping_floor_hkd: string
       hkd_usd: string
       mold_amortization_usd: string
-      rows: Array<Record<string, string>>
+      pricing_mode?: 'standard' | 'component'
+      pricing_groups?: Array<Record<string, string>>
+      rows: Array<Record<string, unknown>>
     }
   }
   sections: Array<Record<string, unknown>>
@@ -406,6 +416,11 @@ export interface InternalQuotePricingBaselineUpdateRequest {
   freight_routes: ApiInternalQuoteFreightBaselineRow[]
 }
 
+export interface InternalQuoteReferenceMaterialsUpdateRequest {
+  revision: number
+  material_prices: ApiInternalQuoteMaterialBaselineRow[]
+}
+
 export interface InternalQuoteCreateRequest {
   factory_id: string
   workshop_code: string
@@ -422,6 +437,56 @@ export interface InternalQuoteCreateRequest {
   target_date: string
   remark: string
   participating_sections: InternalQuoteSectionCode[]
+  workflow_mode: 'section_review' | 'whole_quote_review'
+  quote_type: 'single' | 'series' | 'multi_region'
+  products: Array<{
+    product_name: string
+    qty: number
+    region_code: '' | 'mainland' | 'indonesia'
+  }>
+  pricing_components?: string[]
+}
+
+export interface ApiInternalQuoteAttachmentPreviewSheet {
+  name: string
+  rows: unknown[][]
+  total_rows: number
+  total_columns: number
+  truncated: boolean
+}
+
+export interface ApiInternalQuoteAttachmentContentPreview {
+  file_name: string
+  kind: 'excel' | 'word'
+  sheets: ApiInternalQuoteAttachmentPreviewSheet[]
+  paragraphs: string[]
+  warnings: string[]
+}
+
+export interface ApiInternalQuoteBatchProduct {
+  quote_id: string
+  quote_no: string
+  product_name: string
+  qty: number
+  position: number
+  batch_size: number
+  quote_type: 'single' | 'series' | 'multi_region'
+  region_code: '' | 'mainland' | 'indonesia'
+  status: string
+  header_revision: number
+  is_baseline: boolean
+  differs_from_baseline: boolean
+  different_header_fields: string[]
+  different_sections: InternalQuoteSectionCode[]
+  different_section_details: Partial<Record<InternalQuoteSectionCode, string[]>>
+  main_image: null | {
+    id: string
+    file_name: string
+    content_type: string
+    size_bytes: number
+    uploaded_by_name: string
+    uploaded_at: string
+  }
 }
 
 export interface InternalQuoteCloneRequest {
@@ -433,6 +498,7 @@ export interface InternalQuoteCloneRequest {
   target_date: string
   remark?: string
   participating_sections?: InternalQuoteSectionCode[]
+  workflow_mode?: 'section_review' | 'whole_quote_review'
 }
 
 export interface InternalQuoteHeaderUpdateRequest {
@@ -482,6 +548,17 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     },
     async get(quoteId: string) {
       const response = await client.get<ApiInternalQuote>(`/internal-quotes/${quoteId}`)
+      return response.data
+    },
+    async listBatchProducts(quoteId: string) {
+      const response = await client.get<ApiInternalQuoteBatchProduct[]>(`/internal-quotes/${quoteId}/batch-products`)
+      return response.data
+    },
+    async copyBatchBaseline(quoteId: string, targetQuoteId: string, revision: number) {
+      const response = await client.post<ApiInternalQuote>(
+        `/internal-quotes/${quoteId}/batch-products/${targetQuoteId}/copy-baseline`,
+        { revision },
+      )
       return response.data
     },
     async create(payload: InternalQuoteCreateRequest) {
@@ -675,8 +752,36 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       )
       return response.data
     },
+    async updateReferenceMaterials(
+      quoteId: string,
+      payload: InternalQuoteReferenceMaterialsUpdateRequest,
+    ) {
+      const response = await client.put<ApiInternalQuote>(
+        `/internal-quotes/${quoteId}/reference-snapshot/materials`,
+        payload,
+      )
+      return response.data
+    },
+    async uploadProductImage(quoteId: string, file: File) {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await client.post<ApiInternalQuoteAttachment>(
+        `/internal-quotes/${quoteId}/product-image`,
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
+      )
+      return response.data
+    },
     async downloadAttachment(quoteId: string, attachmentId: string) {
       const response = await client.get<Blob>(`/internal-quotes/${quoteId}/attachments/${attachmentId}/download`, { responseType: 'blob' })
+      return response.data
+    },
+    async previewAttachment(quoteId: string, attachmentId: string) {
+      const response = await client.get<Blob>(`/internal-quotes/${quoteId}/attachments/${attachmentId}/preview`, { responseType: 'blob' })
+      return response.data
+    },
+    async previewAttachmentContent(quoteId: string, attachmentId: string) {
+      const response = await client.get<ApiInternalQuoteAttachmentContentPreview>(`/internal-quotes/${quoteId}/attachments/${attachmentId}/content-preview`)
       return response.data
     },
     async deleteImportAttachment(quoteId: string, attachmentId: string, revision: number) {

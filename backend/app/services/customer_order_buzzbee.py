@@ -27,7 +27,7 @@ XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml
 PREVIEW_SCHEMA_VERSION = "customer-order-buzzbee-preview-v1"
 STANDARD_TEMPLATE = "BUZZBEE_STANDARD_CONTRACT_V1"
 WMC_TEMPLATE = "BUZZBEE_WALMART_WMC_INLINE_V1"
-WMU_TEMPLATE = "BUZZBEE_WALMART_WMU_PO_ATTACHED_V1"
+WMU_TEMPLATE = "BUZZBEE_WALMART_WMU_ATTACHED_V1"
 TARGET_TEMPLATE = "BUZZBEE_PRODUCTION_SCHEDULE_V1"
 SCHEDULE_PASSWORD = "2026"
 MAX_PO_BYTES = 12 * 1024 * 1024
@@ -57,14 +57,17 @@ PO_PATTERN = re.compile(r"(?:P\s*/?\s*O|PO)\s*(?:NUMBER|NO\.?|/[^:]+)?\s*:\s*([0
 
 LABEL_FIELDS = (
     ("Contract No.", "contract_no"),
+    ("S/C No.", "contract_no"),
     ("Date of Loading", "requested_ship_date"),
     ("Final Inspection Date", "inspection_date"),
     ("Inspection Date", "inspection_date"),
     ("Our Item#", "product_no"),
     ("Goods", "product_name_en"),
+    ("Description", "product_name_en"),
     ("Quantity", "quantity"),
     ("Export Carton Packing", "units_per_carton"),
     ("Shipping Carton Packing", "units_per_carton"),
+    ("Outer Carton Qty", "units_per_carton"),
 )
 
 
@@ -250,6 +253,9 @@ def _ordinary_customer_metadata(
     elif re.search(r"\bA{2,3}FE(?:S)?\b", probe):
         customer_name, country, profile_standard = "AAFES", "美国", "美国标准"
         profile_source = "客户规则 · AAFES"
+    elif re.search(r"\bWMU\b", probe):
+        customer_name, country, profile_standard = "WMU", "美国", "美国标准"
+        profile_source = "客户规则 · WMU"
     elif "SAFARI HOUSE" in probe:
         customer_name, country, profile_standard = "SAFARI HOUSE", "科威特", "欧洲标准"
         profile_source = "客户规则 · SAFARI HOUSE"
@@ -509,89 +515,153 @@ def _parse_wmc_xlsx_sheet(
     return [ParsedPoLine(values=values, lineage=lineage, input_template=WMC_TEMPLATE)]
 
 
-def _parse_wmu_xlsx_workbook(
+def _normalized_wmu_header(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", _clean_text(value).upper())
+
+
+def _wmu_attachment_columns(
+    sheet: openpyxl.worksheet.worksheet.Worksheet,
+) -> tuple[int, dict[str, int]]:
+    aliases = {
+        "contract_no": {"SCNO"},
+        "po_no": {"WALMARTPO"},
+        "requested_ship_date": {"SHIPWINDOW"},
+        "quantity": {"ORDEREDQTYPCS", "ORDEREDQTY"},
+        "declared_carton_count": {"TOTALCTNS", "TOTALCARTONS"},
+        "inspection_date": {"INSPECTIONDATE"},
+    }
+    required = {
+        "contract_no",
+        "po_no",
+        "requested_ship_date",
+        "quantity",
+        "inspection_date",
+    }
+    for row_number, row in _iter_xlsx_rows(sheet):
+        if row_number > 40:
+            break
+        columns: dict[str, int] = {}
+        for column, value, _ in row:
+            header = _normalized_wmu_header(value)
+            if not header:
+                continue
+            for field, candidates in aliases.items():
+                if header in candidates:
+                    columns[field] = column
+                    break
+        if required <= columns.keys():
+            return row_number, columns
+    raise CustomerOrderWorkbookError(
+        "WMU PO Attached 页缺少 S/C NO.、Walmart PO#、Ship Window、Ordered Qty 或 Inspection Date 表头"
+    )
+
+
+def _first_workbook_packaging(
     workbook: openpyxl.Workbook,
+) -> tuple[str, str]:
+    for sheet in workbook.worksheets:
+        for _, row in _iter_xlsx_rows(sheet):
+            for _, raw_value, coordinate in row:
+                match = PACKAGING_PATTERN.search(_clean_text(raw_value))
+                if match:
+                    return match.group(1), f"{sheet.title}!{coordinate}"
+    return "", ""
+
+
+def _parse_wmu_xlsx_workbook(
+    file_name: str,
+    workbook: openpyxl.Workbook,
+    main_sheet: openpyxl.worksheet.worksheet.Worksheet,
+    main_rows: list[tuple[int, list[tuple[int, Any, str]]]],
 ) -> list[ParsedPoLine]:
-    """Expand a mainland Walmart WMU workbook from its PO Attached sheet."""
-    attached = next(
-        (sheet for sheet in workbook.worksheets if sheet.title.strip().lower() == "po attached"),
-        None,
-    )
-    if attached is None:
-        raise CustomerOrderWorkbookError("WMU 合同缺少 PO Attached 子订单页")
-
-    main = workbook.worksheets[0]
-    product_no = _clean_identifier(main["E14"].value or attached["B2"].value)
-    product_name_en = _clean_text(main["E17"].value or attached["B3"].value)
-    units_per_carton = _decimal(main["E25"].value)
-    packaging_refs = [
-        _clean_text(main.cell(row=row_number, column=1).value)
-        for row_number in range(1, main.max_row + 1)
-    ]
-    packaging = " / ".join(
-        value for value in packaging_refs if re.search(r"\d{4,}-\d{2}-\d{2}-WM", value, re.I)
-    )
-
-    header_row = next(
+    attachment_sheet = next(
         (
-            row_number
-            for row_number in range(1, min(attached.max_row, 20) + 1)
-            if "WALMART PO" in _clean_text(attached.cell(row_number, 2).value).upper()
-            and "ORDERED QTY" in _clean_text(attached.cell(row_number, 6).value).upper()
+            sheet
+            for sheet in workbook.worksheets
+            if re.sub(r"\s+", "", sheet.title).upper() == "POATTACHED"
         ),
         None,
     )
-    if header_row is None:
-        raise CustomerOrderWorkbookError("WMU PO Attached 页未识别到子订单表头")
+    if attachment_sheet is None:
+        raise CustomerOrderWorkbookError("WMU 合同缺少 PO Attached 子订单页")
 
-    lines: list[ParsedPoLine] = []
-    for row_number in range(header_row + 1, attached.max_row + 1):
-        contract_no = _clean_identifier(attached.cell(row_number, 1).value)
-        po_no = _clean_text(attached.cell(row_number, 2).value)
-        quantity = _decimal(attached.cell(row_number, 6).value)
-        carton_count = _decimal(attached.cell(row_number, 7).value)
+    master = _parse_ordinary_po_rows(file_name, main_sheet.title, main_rows)[0]
+    master.values["customer_name"] = "WMU"
+    master.values["country"] = "美国"
+    master.values["standard"] = master.values.get("standard") or "美国标准"
+    master.lineage["customer_name"] = master.lineage.get("customer_name") or "模板规则 · WMU"
+    master.lineage["country"] = master.lineage.get("country") or "模板规则 · WMU → 美国"
+    master.lineage["standard"] = master.lineage.get("standard") or "模板规则 · WMU → 美国标准"
+    if not master.values.get("packaging"):
+        packaging, packaging_source = _first_workbook_packaging(workbook)
+        master.values["packaging"] = packaging
+        master.lineage["packaging"] = packaging_source
+
+    header_row, columns = _wmu_attachment_columns(attachment_sheet)
+    parsed_lines: list[ParsedPoLine] = []
+    for row_number, row in _iter_xlsx_rows(attachment_sheet):
+        if row_number <= header_row:
+            continue
+        row_values = {column: value for column, value, _ in row}
+        contract_no = _clean_identifier(row_values.get(columns["contract_no"]))
+        po_no = _clean_text(row_values.get(columns["po_no"]))
+        quantity = row_values.get(columns["quantity"])
         if not contract_no and not po_no:
             continue
-        if not contract_no or not po_no or quantity is None or quantity <= 0:
-            continue
-        row_pack = units_per_carton
-        if row_pack is None and carton_count is not None and carton_count > 0:
-            row_pack = quantity / carton_count
+
+        declared_cartons = (
+            row_values.get(columns["declared_carton_count"])
+            if "declared_carton_count" in columns
+            else None
+        )
+        units_per_carton = master.values.get("units_per_carton")
+        if not _clean_text(units_per_carton):
+            quantity_decimal = _decimal(quantity)
+            carton_decimal = _decimal(declared_cartons)
+            if quantity_decimal is not None and carton_decimal is not None and carton_decimal > 0:
+                units_per_carton = quantity_decimal / carton_decimal
+
+        inspection_raw = _clean_text(row_values.get(columns["inspection_date"]))
         values = {
+            **master.values,
             "contract_no": contract_no,
             "po_no": po_no,
-            "customer_name": "WALMART USA",
-            "country": "美国",
-            "product_no": product_no,
-            "product_name_en": product_name_en,
             "quantity": quantity,
-            "units_per_carton": row_pack,
-            "standard": "美国标准",
-            "packaging": packaging or "Walmart USA / RFID",
-            "requested_ship_date": _format_iso_date(attached.cell(row_number, 4).value),
-            "inspection_raw": _clean_text(attached.cell(row_number, 8).value),
-            "inspection_date": _format_iso_date(attached.cell(row_number, 8).value),
-            "ship_via": _clean_text(attached.cell(row_number, 3).value),
+            "units_per_carton": units_per_carton,
+            "declared_carton_count": declared_cartons,
+            "requested_ship_date": _format_iso_date(
+                row_values.get(columns["requested_ship_date"])
+            ),
+            "inspection_raw": inspection_raw,
+            "inspection_date": _format_iso_date(
+                row_values.get(columns["inspection_date"])
+            ),
         }
         lineage = {
-            "contract_no": f"{attached.title}!A{row_number}",
-            "po_no": f"{attached.title}!B{row_number}",
-            "customer_name": f"{attached.title}!A1",
-            "country": "模板规则 · WALMART USA → 美国",
-            "product_no": f"{main.title}!E14",
-            "product_name_en": f"{main.title}!E17",
-            "quantity": f"{attached.title}!F{row_number}",
-            "units_per_carton": f"{main.title}!E25",
-            "standard": "模板规则 · WALMART USA → 美国标准",
-            "packaging": f"{main.title}!A52:A53" if packaging else "模板规则 · WMU RFID",
-            "requested_ship_date": f"{attached.title}!D{row_number}",
-            "inspection_date": f"{attached.title}!H{row_number}",
+            **master.lineage,
+            "contract_no": f"{attachment_sheet.title}!{_cell_name(row_number, columns['contract_no'])}",
+            "po_no": f"{attachment_sheet.title}!{_cell_name(row_number, columns['po_no'])}",
+            "quantity": f"{attachment_sheet.title}!{_cell_name(row_number, columns['quantity'])}",
+            "requested_ship_date": f"{attachment_sheet.title}!{_cell_name(row_number, columns['requested_ship_date'])}",
+            "inspection_date": f"{attachment_sheet.title}!{_cell_name(row_number, columns['inspection_date'])}",
         }
-        lines.append(ParsedPoLine(values=values, lineage=lineage, input_template=WMU_TEMPLATE))
+        if "declared_carton_count" in columns:
+            lineage["declared_carton_count"] = (
+                f"{attachment_sheet.title}!{_cell_name(row_number, columns['declared_carton_count'])}"
+            )
+        if not master.lineage.get("units_per_carton") and "declared_carton_count" in columns:
+            lineage["units_per_carton"] = (
+                f"系统计算 · {attachment_sheet.title}!"
+                f"{_cell_name(row_number, columns['quantity'])} ÷ "
+                f"{attachment_sheet.title}!{_cell_name(row_number, columns['declared_carton_count'])}"
+            )
+        parsed_lines.append(
+            ParsedPoLine(values=values, lineage=lineage, input_template=WMU_TEMPLATE)
+        )
 
-    if not lines:
-        raise CustomerOrderWorkbookError("WMU PO Attached 页没有可用的子订单明细")
-    return lines
+    if not parsed_lines:
+        raise CustomerOrderWorkbookError("WMU PO Attached 页未找到有效子订单")
+    return parsed_lines
 
 
 def _parse_xlsx_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
@@ -614,14 +684,10 @@ def _parse_xlsx_po(file_name: str, content: bytes) -> list[ParsedPoLine]:
                 if _clean_text(value)
             ]
         ).upper()
-        if "WMU" in identity_probe and any(
-            item.title.strip().lower() == "po attached" for item in workbook.worksheets
-        ):
-            return _parse_wmu_xlsx_workbook(workbook)
         if "INDONESIA" in identity_probe or "印尼" in identity_probe:
             raise CustomerOrderWorkbookError("印尼合同不属于当前 BuzzBee 映射范围")
-        if "WMU" in identity_probe:
-            raise CustomerOrderWorkbookError("WMU 合同缺少 PO Attached 子订单页")
+        if "WMU" in identity_probe or "WALMART USA" in identity_probe:
+            return _parse_wmu_xlsx_workbook(file_name, workbook, sheet, rows)
         return _parse_ordinary_po_rows(file_name, sheet.title, rows)
     finally:
         workbook.close()
@@ -1232,6 +1298,7 @@ def _build_preview_rows(
             if quantity is not None and units_per_carton is not None and units_per_carton > 0
             else None
         )
+        declared_carton_count = _decimal(values.get("declared_carton_count"))
         unit_price = schedule.unit_price_hkd
         amount = quantity * unit_price if quantity is not None and unit_price is not None else None
         inspection_date = _clean_text(values.get("inspection_date"))
@@ -1288,6 +1355,22 @@ def _build_preview_rows(
                     "partial_carton",
                     "carton_count",
                     "数量不能被装箱数整除，系统不会静默向上取整",
+                )
+            )
+        if (
+            declared_carton_count is not None
+            and carton_count is not None
+            and declared_carton_count != carton_count
+        ):
+            issues.append(
+                _make_issue(
+                    "blocked",
+                    "carton_count_conflict",
+                    "carton_count",
+                    (
+                        f"PO Attached 标示 { _decimal_text(declared_carton_count) } 箱，"
+                        f"但数量 ÷ 装箱数为 { _decimal_text(carton_count) } 箱"
+                    ),
                 )
             )
         if not values.get("packaging"):
@@ -1357,7 +1440,7 @@ def _build_preview_rows(
             "product_name_en": parsed.lineage.get("product_name_en", ""),
             "quantity": parsed.lineage.get("quantity", ""),
             "units_per_carton": parsed.lineage.get("units_per_carton", ""),
-            "carton_count": "系统计算 · 数量 ÷ 装箱数",
+            "carton_count": parsed.lineage.get("declared_carton_count") or "系统计算 · 数量 ÷ 装箱数",
             "standard": parsed.lineage.get("standard", ""),
             "unit_price_hkd": f"当前客户排期 · 产品 {product_no} 最近有效 HKD 单价",
             "amount_hkd": "系统计算 · 数量 × 单价HK",

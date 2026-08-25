@@ -114,6 +114,7 @@ describe('internal quote form block progress', () => {
     expect(statuses('sales', { testing_fee_total_usd: 1250, testing_fee_moqs: [5000, 0] })['testing-fee']).toBe('partial')
     expect(statuses('sales', { testing_fee_total_usd: 1250, testing_fee_moqs: [5000, 10000] })['testing-fee']).toBe('complete')
     expect(statuses('sales', { testing_fee_total_usd: 1250, testing_fee_moq: 5000 })['testing-fee']).toBe('complete')
+    expect(statuses('sales', { testing_fee_enabled: false, testing_fee_total_usd: 1250, testing_fee_moqs: [0] })['testing-fee']).toBe('complete')
   })
 
   it('accepts customer pickup as a complete freight choice', () => {
@@ -173,5 +174,20 @@ describe('internal quote form block progress', () => {
       'assembly-work': 'complete',
       'packaging-work': 'complete',
     })
+
+    expect(statuses('assembly', {
+      groups: [
+        { name: '组装成品', category: 'assembly', production_qty: 100, teams: 1, total_persons: 6, processes: [] },
+        { name: '包装成品', category: 'packaging', production_qty: 100, teams: 1, total_persons: 4, processes: [] },
+      ],
+    })).toEqual({
+      'assembly-summary': 'complete',
+      'assembly-work': 'complete',
+      'packaging-work': 'complete',
+    })
+
+    expect(statuses('assembly', {
+      groups: [{ name: '组装成品', category: 'assembly', production_qty: 100, teams: 1, processes: [] }],
+    })['assembly-work']).toBe('partial')
   })
 })

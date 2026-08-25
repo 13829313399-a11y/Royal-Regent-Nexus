@@ -70,7 +70,8 @@ def test_ai_prompt_runtime_assets_are_complete_and_git_tracked() -> None:
     )
 
     dockerfile = (REPOSITORY_ROOT / "Dockerfile.backend").read_text(encoding="utf-8")
-    assert "build_default_tool_registry(document_studio_enabled=True)" in dockerfile
+    assert "tool_registry = build_default_tool_registry()" in dockerfile
+    assert "document_studio_enabled" not in dockerfile
     assert "registry.prompt_registry.load_core()" in dockerfile
 
     production_requirements = {
@@ -227,6 +228,15 @@ def test_pilot_readiness_script_checks_external_and_server_side_gates() -> None:
     assert "AI_ACTION_GATEWAY_ENABLED=false" in backend_example
     assert "AI_OPERATIONAL_ALERTS_ENABLED=false" in production_example
     assert "AI_OPERATIONAL_ALERTS_ENABLED=false" in backend_example
+    for capability_flag in (
+        "AI_ADAPTIVE_SURFACE_ENABLED",
+        "AI_RICH_MESSAGE_RENDERER_ENABLED",
+        "AI_WORKBENCH_V2_ENABLED",
+        "AI_CONVERSATION_CONTEXT_ENABLED",
+        "AI_PRESENTATION_BLOCKS_ENABLED",
+    ):
+        assert f"{capability_flag}=false" in production_example
+        assert f"{capability_flag}=false" in backend_example
 
     auth_tree = ast.parse(
         (REPOSITORY_ROOT / "backend" / "app" / "services" / "auth.py").read_text(

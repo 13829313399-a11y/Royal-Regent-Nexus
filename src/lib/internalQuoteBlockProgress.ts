@@ -73,7 +73,7 @@ function engineeringBlocks(payload: EngineeringPayload): InternalQuoteFormBlock[
     && positive(payload.mold_fx_rmb_usd)
   return [
     block('hardware', '五金部分', 'optional', hardware.length > 0, hardware.length > 0 && hardware.every(materialComplete), '可选；填写时名称、用量、RMB 原单价及大于 0 的损耗率必填'),
-    block('auxiliary', '辅助材料部分', 'optional', auxiliary.length > 0, auxiliary.length > 0 && auxiliary.every(materialComplete), '可选；填写时名称、类别、用量、RMB/HKD 任一原单价及大于 0 的损耗率必填'),
+    block('auxiliary', '辅助材料/外购件部分', 'optional', auxiliary.length > 0, auxiliary.length > 0 && auxiliary.every(materialComplete), '可选；填写时名称、类别、用量、RMB/HKD 任一原单价及大于 0 的损耗率必填'),
     block('molds', '模具部分', 'optional', payload.molds.length > 0, payload.molds.length > 0 && moldComplete, '可选；填写时模具名称、套数、模价 RMB 必填'),
     block('mold-allocation', '生产模具费用与分摊部分', 'optional', hasAllocation, hasAllocation && allocationComplete, '可选；可关闭分摊，启用且有费用时金额、对应分摊套数和 RMB→USD 汇率必填'),
   ]
@@ -165,14 +165,16 @@ function sewingBlocks(payload: SewingPayload): InternalQuoteFormBlock[] {
 function assemblyBlocks(payload: AssemblyPayload): InternalQuoteFormBlock[] {
   const groupComplete = (group: AssemblyPayload['groups'][number]) => Boolean(
     text(group.name) && positive(group.production_qty) && positive(group.teams)
-    && group.processes.length > 0 && group.processes.every((row) => text(row.name) && positive(row.persons)),
+    && (group.processes.length
+      ? group.processes.every((row) => text(row.name) && positive(row.persons))
+      : positive(group.total_persons)),
   )
   const assemblyGroups = payload.groups.filter((group) => group.category === 'assembly')
   const packagingGroups = payload.groups.filter((group) => group.category === 'packaging')
   return [
     block('assembly-summary', '总表部分', 'required', true, positive(payload.labor_base_hkd) && positive(payload.standard_work_hours), '必须；人工基数和标准工时须大于 0，产品汇总由系统自动计算'),
-    block('assembly-work', '组装部分', 'required', assemblyGroups.length > 0, assemblyGroups.length > 0 && assemblyGroups.every(groupComplete), '必须；产品、生产量、小组数及至少一道工序的名称和人数必填，备注可不填'),
-    block('packaging-work', '包装部分', 'required', packagingGroups.length > 0, packagingGroups.length > 0 && packagingGroups.every(groupComplete), '必须；产品、生产量、小组数及至少一道工序的名称和人数必填，备注可不填'),
+    block('assembly-work', '组装部分', 'required', assemblyGroups.length > 0, assemblyGroups.length > 0 && assemblyGroups.every(groupComplete), '必须；无工序时手填总人数；有工序时由各工序人数自动汇总'),
+    block('packaging-work', '包装部分', 'required', packagingGroups.length > 0, packagingGroups.length > 0 && packagingGroups.every(groupComplete), '必须；无工序时手填总人数；有工序时由各工序人数自动汇总'),
   ]
 }
 
@@ -183,10 +185,11 @@ function salesBlocks(
   const testingFeeMoqs = payload.testing_fee_moqs?.length
     ? payload.testing_fee_moqs
     : payload.testing_fee_moq != null ? [payload.testing_fee_moq] : []
-  const hasTestingFee = positive(payload.testing_fee_total_usd) || testingFeeMoqs.some(positive)
-  const testingFeeComplete = positive(payload.testing_fee_total_usd)
+  const testingFeeEnabled = payload.testing_fee_enabled !== false
+  const hasTestingFee = !testingFeeEnabled || positive(payload.testing_fee_total_usd) || testingFeeMoqs.some(positive)
+  const testingFeeComplete = !testingFeeEnabled || (positive(payload.testing_fee_total_usd)
     && testingFeeMoqs.length > 0
-    && testingFeeMoqs.every(positive)
+    && testingFeeMoqs.every(positive))
   const packagingComplete = payload.packaging_materials.length > 0 && payload.packaging_materials.every((row) => Boolean(
     text(row.item) && text(row.specification) && positive(row.quantity) && positive(row.loss_rate ?? 1) && (positive(row.unit_price_rmb) || positive(row.unit_price_hkd)),
   ))
@@ -204,7 +207,7 @@ function salesBlocks(
     && cartonsComplete
   )
   return [
-    block('testing-fee', '测试费部分', 'optional', hasTestingFee, testingFeeComplete, '可选；填写测试费用 USD 后，每个 MOQ 必须大于 0，各档单价 USD 由系统自动计算'),
+    block('testing-fee', '测试费部分', 'optional', hasTestingFee, testingFeeComplete, '可选择不计算；启用后填写测试费用 USD，每个 MOQ 必须大于 0，各档单价 USD 由系统自动计算'),
     block('packaging-materials', '包装材料部分', 'optional', payload.packaging_materials.length > 0, packagingComplete, '可选；填写时名称、规格、类别、用量、RMB/HKD 任一原单价及大于 0 的损耗率必填'),
     block('cartons', '纸箱计算与包装尺寸部分', 'required', payload.cartons.length > 0 || colorBoxDimensionsComplete, colorBoxDimensionsComplete && cartonsComplete, '必须；彩盒三维尺寸、至少一个纸箱尺寸和每箱数量必填，彩盒与纸箱可分别选择 cm 或 inch；产品尺寸（in）和平卡可选'),
     block('freight', '运费计算部分', 'required', true, freightComplete, '运费与吊柜费可独立启用；启用任一项时须完整填写容量和主纸箱资料，两项都关闭时不计运输费用'),

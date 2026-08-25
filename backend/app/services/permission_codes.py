@@ -30,6 +30,7 @@ MOLDING_SAMPLE_PERMISSION_CODES = (
 CARTON_MARK_PERMISSION_CODES = (
     "carton_mark:read",
     "carton_mark:template_upload",
+    "carton_mark:customer_manage",
     "carton_mark:photo_upload",
     "carton_mark:review",
 )
@@ -111,15 +112,15 @@ QC_INSPECTION_PERMISSION_CODES = (
 )
 
 INTERNAL_QUOTE_SECTION_CODES = (
-    "sales",
     "engineering",
-    "electronic",
     "molding",
+    "assembly",
     "painting",
+    "electronic",
     "slush",
     "sewing",
     "hair",
-    "assembly",
+    "sales",
 )
 
 INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE = "internal_quote:self_review"

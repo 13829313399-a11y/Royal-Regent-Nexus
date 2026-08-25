@@ -17,11 +17,11 @@ from app.api.ai_artifacts import router as ai_artifacts_router
 from app.api.ai_conversations import router as ai_conversations_router
 from app.api.ai_feedback import router as ai_feedback_router
 from app.api.ai_tasks import router as ai_tasks_router
-from app.api.document_jobs import router as document_jobs_router
 from app.api.auth import router as auth_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_procurement import router as carton_procurement_router
 from app.api.customer_order import router as customer_order_router
+from app.api.directory import router as directory_router
 from app.api.iam import router as iam_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.injection_scheduling import router as injection_scheduling_router
@@ -48,6 +48,9 @@ from app.api.injection_scheduling_scheduler import (
 )
 from app.api.injection_scheduling_shared import (
     router as injection_scheduling_shared_router,
+)
+from app.api.injection_scheduling_workbench import (
+    router as injection_scheduling_workbench_router,
 )
 from app.api.internal_quote import (
     customer_price_artifact_router,
@@ -230,10 +233,10 @@ app.include_router(ai_artifacts_router)
 app.include_router(ai_conversations_router)
 app.include_router(ai_feedback_router)
 app.include_router(ai_tasks_router)
-app.include_router(document_jobs_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_procurement_router)
 app.include_router(customer_order_router)
+app.include_router(directory_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
@@ -246,6 +249,7 @@ app.include_router(injection_scheduling_scheduler_router)
 app.include_router(injection_scheduling_phase5_router)
 app.include_router(injection_scheduling_profiles_router)
 app.include_router(injection_scheduling_shared_router)
+app.include_router(injection_scheduling_workbench_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)

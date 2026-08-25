@@ -29,6 +29,7 @@ export type InternalQuoteStatus =
 
 export type InternalQuoteInitiatorDepartment = 'sales-business' | 'engineering'
 export type InternalQuoteCurrency = 'HKD' | 'RMB' | 'USD'
+export type InternalQuoteWorkflowMode = 'section_review' | 'whole_quote_review'
 
 export interface InternalQuoteCostLine {
   id: string
@@ -65,6 +66,7 @@ export interface InternalQuoteSection {
   calculation: Record<string, unknown>
   calculationStatus: string
   dependencyStatus: string
+  filledAt: string
 }
 
 export interface InternalQuoteActivity {
@@ -132,6 +134,7 @@ export interface InternalQuoteRr2SummaryValue {
   label: string
   value: number
   format?: string
+  display?: boolean
 }
 
 export interface InternalQuoteTaxSummaryValue {
@@ -161,6 +164,18 @@ export interface InternalQuoteMarkupTier {
   moq: number
   markup: number
   isActive: boolean
+  includeInOutput: boolean
+}
+
+export interface InternalQuotePricingGroup {
+  id: string
+  name: string
+  costHkd: number
+  pricingBaseHkd: number
+  markup: number
+  settlement: number
+  quotedHkd: number
+  inheritsMainMarkup: boolean
 }
 
 export interface InternalQuoteRr2CostSummary {
@@ -169,6 +184,7 @@ export interface InternalQuoteRr2CostSummary {
   t1: InternalQuoteRr2SummaryValue[]
   t2: InternalQuoteRr2SummaryValue[]
   t3: InternalQuoteRr2SummaryValue[]
+  moldingMaterialBreakdown?: { totalHkd: number; importedHkd: number; domesticHkd: number }
   t4: InternalQuoteTaxSummaryValue[]
   rmbPurchaseCostHkd: number
   totalDeductionHkd: number
@@ -189,6 +205,8 @@ export interface InternalQuoteRr2CostSummary {
     shippingFloorHkd: number
     hkdUsd: number
     moldAmortizationUsd: number
+    pricingMode: 'standard' | 'component'
+    pricingGroups: InternalQuotePricingGroup[]
     rows: InternalQuoteShippingPriceRow[]
   }
 }
@@ -197,6 +215,13 @@ export interface InternalQuote {
   id: string
   quoteNo: string
   productName: string
+  quoteType: 'single' | 'series' | 'multi_region'
+  batchId: string
+  batchQuoteNo: string
+  batchPosition: number
+  batchSize: number
+  baselineQuoteId: string
+  regionCode: '' | 'mainland' | 'indonesia'
   customer: string
   versionLabel: string
   factoryId: string
@@ -221,6 +246,7 @@ export interface InternalQuote {
   referenceSnapshotId: string
   referenceSnapshot: Record<string, unknown>
   formulaVersion: string
+  moduleVersion: string
   headerRevision: number
   finalReleaseStatus: string
   factoryPriceHkd: number
@@ -229,8 +255,10 @@ export interface InternalQuote {
   shippingScenarios: InternalQuoteShippingScenario[]
   rr2CostSummary: InternalQuoteRr2CostSummary
   finalSubmittedBy?: string
+  finalSubmittedById?: string
   finalApprovedBy?: string
   finalApprovedAt?: string
+  finalReviewComment?: string
   sections: InternalQuoteSection[]
   activities: InternalQuoteActivity[]
   comments: InternalQuoteComment[]
@@ -251,6 +279,48 @@ export interface InternalQuoteCreatePayload {
   targetDate: string
   remark: string
   participatingSections: InternalQuoteSectionCode[]
+  quoteType?: 'single' | 'series' | 'multi_region'
+  products?: InternalQuoteCreateProduct[]
+  pricingComponents?: string[]
+}
+
+export interface InternalQuoteCreateProduct {
+  productName: string
+  quantity: number
+  regionCode: '' | 'mainland' | 'indonesia'
+  imageFile?: File | null
+  documentFiles?: InternalQuoteCreateDocument[]
+}
+
+export interface InternalQuoteCreateDocument {
+  file: File
+  department: InternalQuoteSectionCode
+}
+
+export interface InternalQuoteBatchProduct {
+  quoteId: string
+  quoteNo: string
+  productName: string
+  quantity: number
+  position: number
+  batchSize: number
+  quoteType: 'single' | 'series' | 'multi_region'
+  regionCode: '' | 'mainland' | 'indonesia'
+  status: InternalQuoteStatus
+  headerRevision: number
+  isBaseline: boolean
+  differsFromBaseline: boolean
+  differentHeaderFields: string[]
+  differentSections: InternalQuoteSectionCode[]
+  differentSectionDetails: Partial<Record<InternalQuoteSectionCode, string[]>>
+  mainImage: null | {
+    id: string
+    fileName: string
+    contentType: string
+    sizeBytes: number
+    uploadedByName: string
+    uploadedAt: string
+  }
 }
 
 export interface InternalQuoteBusinessOwner {

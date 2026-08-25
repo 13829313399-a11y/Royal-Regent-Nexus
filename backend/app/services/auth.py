@@ -9,10 +9,11 @@ from io import BytesIO
 
 from fastapi import Depends, HTTPException, Request
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.time import serialize_process_local_timestamp
 from app.db import get_db
 from app.models.auth import (
     AuthAuditLog,
@@ -36,6 +37,9 @@ from app.models.auth import (
 from app.schemas.auth import (
     AuthMeResponse,
     ChangePasswordRequest,
+    PasswordResetClaimCompleteRequest,
+    PasswordResetClaimCompleteResponse,
+    PasswordResetClaimResponse,
     PasswordResetRequest,
     PasswordResetResponse,
     RegisterRequest,
@@ -60,12 +64,16 @@ from app.services.permission_codes import (
     INTERNAL_QUOTE_SECTION_CODES,
 )
 from app.services.system_positions import (
+    CARTON_QC_WORKSPACE_PERMISSION_CODES,
+    CARTON_QC_WORKSPACE_POSITION_ROLE_IDS,
     SYSTEM_POSITION_DEFINITIONS,
     get_system_position,
 )
 from app.services.system_position_reconcile import reconcile_system_position_catalog
 
 SESSION_COOKIE_NAME = "rr_session"
+PASSWORD_RESET_CLAIM_COOKIE_NAME = "rr_password_reset_claim"
+PASSWORD_RESET_CLAIM_COOKIE_MAX_AGE_SECONDS = 48 * 60 * 60
 logger = logging.getLogger(__name__)
 LEGACY_EXPORT_COMPAT_MARKER = "legacy_export_compat_v1_completed"
 LEGACY_EXPORT_COMPAT_PERMISSION = "molding_sample:export"
@@ -119,11 +127,11 @@ LOGIN_FAILURE_LIMIT = 10
 LOGIN_FAILURE_WINDOW_MINUTES = 15
 LOGIN_LOCKED_MESSAGE = f"登录失败次数过多，请 {LOGIN_FAILURE_WINDOW_MINUTES} 分钟后再试"
 BAD_CREDENTIALS_MESSAGE = "用户名或密码错误"
-PASSWORD_RESET_PUBLIC_MESSAGE = "申请已提交。如账号资料有效，管理员会进行核验处理。"
+PASSWORD_RESET_PUBLIC_MESSAGE = (
+    "申请已提交。请保留当前浏览器，管理员审核通过后可在此直接设置新密码。"
+)
 PASSWORD_RESET_RATE_LIMIT = 5
 PASSWORD_RESET_RATE_WINDOW_MINUTES = 15
-TEMPORARY_PASSWORD_HOURS = 24
-TEMPORARY_PASSWORD_LENGTH = 16
 MIN_ACCOUNT_PASSWORD_LENGTH = 6
 DUMMY_PASSWORD_SALT = "00000000000000000000000000000000"
 PASSWORD_CHINESE_MESSAGE = "密码不能包含中文，请使用英文、数字或符号"
@@ -625,6 +633,7 @@ POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
         "internal_quote:clone",
         "carton_mark:read",
         "carton_mark:template_upload",
+        "carton_mark:customer_manage",
         "carton_mark:photo_upload",
         "carton_mark:review",
     }
@@ -640,6 +649,12 @@ def system_position_grant_department_matches(
     if permission not in POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES or department in {None, "*"}:
         return True
     if grant.role_id == "position_general_manager" or grant.department == "*":
+        return True
+    if (
+        department == "qc"
+        and grant.role_id in CARTON_QC_WORKSPACE_POSITION_ROLE_IDS
+        and permission in CARTON_QC_WORKSPACE_PERMISSION_CODES
+    ):
         return True
     if grant.department == department:
         return True
@@ -667,6 +682,10 @@ def hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def hash_password_reset_claim_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def verify_password(password: str, user: AuthUser) -> bool:
     expected = hash_password(password, user.password_salt)
     return hmac.compare_digest(expected, user.password_hash)
@@ -689,27 +708,6 @@ def validate_password_characters(password: str) -> None:
         raise HTTPException(status_code=400, detail=PASSWORD_CHINESE_MESSAGE)
 
 
-def generate_temporary_password(length: int = TEMPORARY_PASSWORD_LENGTH) -> str:
-    if length < 12:
-        raise ValueError("temporary password length must be at least 12")
-    uppercase = "ABCDEFGHJKLMNPQRSTUVWXYZ"
-    lowercase = "abcdefghijkmnopqrstuvwxyz"
-    digits = "23456789"
-    symbols = "!@#$%*-_+"
-    alphabet = uppercase + lowercase + digits + symbols
-    characters = [
-        secrets.choice(uppercase),
-        secrets.choice(lowercase),
-        secrets.choice(digits),
-        secrets.choice(symbols),
-        *(secrets.choice(alphabet) for _ in range(length - 4)),
-    ]
-    for index in range(len(characters) - 1, 0, -1):
-        swap_index = secrets.randbelow(index + 1)
-        characters[index], characters[swap_index] = characters[swap_index], characters[index]
-    return "".join(characters)
-
-
 def latest_issued_password_reset_request(
     db: Session,
     user_id: str,
@@ -719,6 +717,7 @@ def latest_issued_password_reset_request(
         .where(
             AuthPasswordResetRequest.user_id == user_id,
             AuthPasswordResetRequest.status.in_({"approved", "expired"}),
+            AuthPasswordResetRequest.claim_token_hash.is_(None),
         )
         .order_by(
             AuthPasswordResetRequest.last_issued_at.desc(),
@@ -2000,7 +1999,7 @@ def submit_password_reset_request(
     db: Session,
     payload: PasswordResetRequest,
     request: Request | None = None,
-) -> PasswordResetResponse:
+) -> tuple[PasswordResetResponse, str]:
     username = payload.username.strip()
     display_name = payload.display_name.strip()
     contact = payload.contact.strip()
@@ -2018,22 +2017,6 @@ def submit_password_reset_request(
         select(AuthUser).where(func.lower(AuthUser.username) == username.casefold())
     )
     normalized_username = matched_user.username if matched_user else username.casefold()
-    existing_pending = db.scalar(
-        select(AuthPasswordResetRequest)
-        .where(
-            AuthPasswordResetRequest.username == normalized_username,
-            AuthPasswordResetRequest.status == "pending",
-        )
-        .order_by(AuthPasswordResetRequest.submitted_at.desc(), AuthPasswordResetRequest.id.desc())
-        .limit(1)
-    )
-    if existing_pending is not None:
-        return PasswordResetResponse(
-            status="submitted",
-            message=PASSWORD_RESET_PUBLIC_MESSAGE,
-            request_id=existing_pending.id,
-        )
-
     request_ip = request_ip_address(request)
     cutoff = (datetime.now() - timedelta(minutes=PASSWORD_RESET_RATE_WINDOW_MINUTES)).strftime(
         "%Y-%m-%d %H:%M:%S"
@@ -2077,6 +2060,7 @@ def submit_password_reset_request(
             if latest_registration is not None and latest_registration.factory_id and latest_registration.department:
                 target_factory_id = latest_registration.factory_id
                 target_department = latest_registration.department
+    raw_claim_token = secrets.token_urlsafe(32)
     reset_request = AuthPasswordResetRequest(
         id=f"password-reset-{secrets.token_hex(12)}",
         user_id=matched_user.id if matched_user else None,
@@ -2089,6 +2073,7 @@ def submit_password_reset_request(
         status="pending",
         request_ip=request_ip,
         user_agent=request.headers.get("user-agent", "") if request else "",
+        claim_token_hash=hash_password_reset_claim_token(raw_claim_token),
         issue_count=0,
         submitted_at=now,
         created_at=now,
@@ -2103,20 +2088,23 @@ def submit_password_reset_request(
         "matched_user_id": matched_user.id if matched_user else "",
     }
 
-    db.add(
-        SystemNotification(
-            id=notification_id,
-            target_permission="system:user_manage",
-            target_factory_id=target_factory_id,
-            target_department=target_department,
-            type="password_reset",
-            title="密码重置待处理",
-            message="收到新的密码重置申请，请进入账号管理页核验申请资料。",
-            payload_json=json.dumps(payload_json, ensure_ascii=False),
-            status="unread",
-            created_at=now,
-        )
+    notification = SystemNotification(
+        id=notification_id,
+        target_permission="system:user_manage",
+        target_factory_id=target_factory_id,
+        target_department=target_department,
+        type="password_reset",
+        title="密码重置待处理",
+        message="收到新的密码重置申请，请进入账号管理页核验申请资料。",
+        payload_json=json.dumps(payload_json, ensure_ascii=False),
+        status="unread",
+        created_at=now,
     )
+    db.add(notification)
+    # The reset request owns a foreign key to this notification. Flush the
+    # notification first so SQLAlchemy cannot issue the link UPDATE before the
+    # referenced row exists on databases with immediate FK enforcement.
+    db.flush()
     reset_request.notification_id = notification_id
     add_auth_audit(
         db,
@@ -2128,10 +2116,232 @@ def submit_password_reset_request(
     )
     db.commit()
 
-    return PasswordResetResponse(
-        status="submitted",
-        message=PASSWORD_RESET_PUBLIC_MESSAGE,
+    return (
+        PasswordResetResponse(
+            status="submitted",
+            message=PASSWORD_RESET_PUBLIC_MESSAGE,
+            request_id=reset_request.id,
+        ),
+        raw_claim_token,
+    )
+
+
+def password_reset_claim_none_response() -> PasswordResetClaimResponse:
+    return PasswordResetClaimResponse(
+        status="none",
+        message="当前浏览器没有找到原申请凭证，请重新提交密码重置申请。",
+    )
+
+
+def password_reset_claim_to_response(
+    reset_request: AuthPasswordResetRequest,
+) -> PasswordResetClaimResponse:
+    messages = {
+        "pending": "申请正在等待管理员审核",
+        "approved": "申请已通过，请在有效期内设置新密码",
+        "completed": "密码已成功重置，请使用新密码登录",
+        "rejected": "密码重置申请未通过，请检查资料后重新提交",
+        "expired": "本次改密时限已过期，请重新提交或联系管理员重新开放",
+    }
+    status = reset_request.status
+    if reset_request.claim_token_hash is None and status in {"pending", "approved", "expired"}:
+        status = "legacy_invalid"
+    return PasswordResetClaimResponse(
+        status=status,
         request_id=reset_request.id,
+        can_complete=status == "approved",
+        expires_at=(
+            serialize_process_local_timestamp(reset_request.expires_at)
+            if status == "approved"
+            else ""
+        ),
+        message=(
+            "该申请来自旧版流程，请重新提交密码重置申请"
+            if status == "legacy_invalid"
+            else messages.get(status, "当前浏览器没有可处理的密码重置申请")
+        ),
+    )
+
+
+def load_password_reset_claim(
+    db: Session,
+    raw_claim_token: str | None,
+    *,
+    for_update: bool = False,
+) -> AuthPasswordResetRequest | None:
+    if not raw_claim_token:
+        return None
+    statement = select(AuthPasswordResetRequest).where(
+        AuthPasswordResetRequest.claim_token_hash
+        == hash_password_reset_claim_token(raw_claim_token)
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
+
+
+def expire_password_reset_claim(
+    db: Session,
+    reset_request: AuthPasswordResetRequest,
+    request: Request | None = None,
+) -> None:
+    now = now_text()
+    reset_request.status = "expired"
+    reset_request.updated_at = now
+    mark_password_reset_notification_handled(db, reset_request, now)
+    add_auth_audit(
+        db,
+        "password_reset_claim_expired",
+        username=reset_request.username,
+        user_id=reset_request.user_id or "",
+        detail=f"原设备重置凭证已过期：{reset_request.id}",
+        request=request,
+    )
+
+
+def get_password_reset_claim(
+    db: Session,
+    raw_claim_token: str | None,
+    request: Request | None = None,
+) -> PasswordResetClaimResponse:
+    if not raw_claim_token:
+        return password_reset_claim_none_response()
+    reset_request = load_password_reset_claim(db, raw_claim_token)
+    if reset_request is None:
+        add_auth_audit(
+            db,
+            "password_reset_claim_invalid",
+            detail="收到无效的原设备密码重置凭证",
+            request=request,
+        )
+        db.commit()
+        return password_reset_claim_none_response()
+    expires_at = parse_time(reset_request.expires_at)
+    if reset_request.status == "approved" and (
+        expires_at is None or expires_at <= datetime.now()
+    ):
+        expire_password_reset_claim(db, reset_request, request=request)
+        db.commit()
+    return password_reset_claim_to_response(reset_request)
+
+
+def complete_password_reset_claim(
+    db: Session,
+    raw_claim_token: str | None,
+    payload: PasswordResetClaimCompleteRequest,
+    request: Request | None = None,
+) -> PasswordResetClaimCompleteResponse:
+    if not raw_claim_token:
+        raise HTTPException(
+            status_code=400,
+            detail="当前浏览器没有找到原申请凭证，请重新提交密码重置申请",
+        )
+    reset_request = load_password_reset_claim(db, raw_claim_token, for_update=True)
+    if reset_request is None:
+        add_auth_audit(
+            db,
+            "password_reset_claim_invalid",
+            detail="使用无效的原设备密码重置凭证尝试完成改密",
+            request=request,
+        )
+        db.commit()
+        raise HTTPException(status_code=409, detail="该重置申请已完成或已失效")
+    if reset_request.status != "approved":
+        raise HTTPException(status_code=409, detail="该重置申请尚未批准、已完成或已失效")
+    expires_at = parse_time(reset_request.expires_at)
+    if expires_at is None or expires_at <= datetime.now():
+        expire_password_reset_claim(db, reset_request, request=request)
+        db.commit()
+        raise HTTPException(status_code=409, detail="本次改密时限已过期")
+
+    validate_password_characters(payload.new_password)
+    validate_password_characters(payload.confirm_password)
+    if payload.new_password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
+    if len(payload.new_password) < MIN_ACCOUNT_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"密码至少需要 {MIN_ACCOUNT_PASSWORD_LENGTH} 位",
+        )
+
+    user = db.get(AuthUser, reset_request.user_id) if reset_request.user_id else None
+    if user is None or user.status != "active":
+        raise HTTPException(status_code=409, detail="申请关联账号不可用于密码重置")
+    if verify_password(payload.new_password, user):
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+
+    now = now_text()
+    claim = db.execute(
+        update(AuthPasswordResetRequest)
+        .where(
+            AuthPasswordResetRequest.id == reset_request.id,
+            AuthPasswordResetRequest.status == "approved",
+            AuthPasswordResetRequest.claim_token_hash
+            == hash_password_reset_claim_token(raw_claim_token),
+            AuthPasswordResetRequest.issue_count == reset_request.issue_count,
+        )
+        .values(
+            status="completed",
+            completed_at=now,
+            expires_at="",
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claim.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="该重置申请已完成或已失效")
+
+    salt, password_hash = make_password_hash(payload.new_password)
+    user.password_salt = salt
+    user.password_hash = password_hash
+    user.force_password_change = 0
+    user.updated_at = now
+
+    active_sessions = db.scalars(
+        select(AuthSession).where(
+            AuthSession.user_id == user.id,
+            AuthSession.status == "active",
+        )
+    ).all()
+    for session in active_sessions:
+        session.status = "revoked"
+        session.revoked_at = now
+
+    reset_request.status = "completed"
+    reset_request.completed_at = now
+    reset_request.expires_at = ""
+    reset_request.updated_at = now
+    mark_password_reset_notification_handled(db, reset_request, now)
+
+    other_requests = db.scalars(
+        select(AuthPasswordResetRequest).where(
+            AuthPasswordResetRequest.user_id == user.id,
+            AuthPasswordResetRequest.id != reset_request.id,
+            AuthPasswordResetRequest.status.in_({"pending", "approved"}),
+        )
+    ).all()
+    for other_request in other_requests:
+        other_request.status = "expired"
+        other_request.expires_at = ""
+        other_request.updated_at = now
+        mark_password_reset_notification_handled(db, other_request, now)
+
+    add_auth_audit(
+        db,
+        "password_reset_completed",
+        username=user.username,
+        user_id=user.id,
+        detail=(
+            f"原设备密码重置申请 {reset_request.id} 已完成；"
+            f"撤销会话 {len(active_sessions)} 个，失效其他申请 {len(other_requests)} 个"
+        ),
+        request=request,
+    )
+    db.commit()
+    return PasswordResetClaimCompleteResponse(
+        status="completed",
+        message="密码已成功重置，请使用新密码登录",
     )
 
 
@@ -2166,7 +2376,7 @@ def change_current_password(
     if len(payload.new_password) < MIN_ACCOUNT_PASSWORD_LENGTH:
         raise HTTPException(status_code=400, detail=f"密码至少需要 {MIN_ACCOUNT_PASSWORD_LENGTH} 位")
     if secrets.compare_digest(payload.current_password, payload.new_password):
-        raise HTTPException(status_code=400, detail="新密码不能与当前临时密码相同")
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
 
     user = db.get(AuthUser, current_user.id)
     if user is None or user.status != "active":

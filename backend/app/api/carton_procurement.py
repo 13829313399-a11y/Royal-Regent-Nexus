@@ -53,6 +53,7 @@ from app.services.carton_procurement import (
     create_order,
     create_receipt,
     delete_customer,
+    delete_unmatched_delivery_import,
     dashboard,
     generate_closings,
     get_import_batch,
@@ -375,6 +376,17 @@ def get_latest_receipt_import(
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
     return get_latest_import_batch(db, factory_id, "DELIVERY_NOTE")
+
+
+@router.delete("/receipt-imports/{batch_id}", status_code=204)
+def remove_unmatched_receipt_import(
+    batch_id: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
+    delete_unmatched_delivery_import(db, factory_id, batch_id, current_user)
 
 
 @router.get("/imports", response_model=CartonImportBatchListOut)

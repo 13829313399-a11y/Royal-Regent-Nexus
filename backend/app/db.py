@@ -432,12 +432,19 @@ INJECTION_SCHEDULING_DEMAND_SHARED_REQUIRED_COLUMNS = {
         "factory_readiness_status",
     },
 }
-QC_INSPECTION_REVISION = "20260812_0067"
+QC_INSPECTION_REVISION = "20260824_0082"
 QC_INSPECTION_REQUIRED_TABLES = {
     "qc_customer_configs",
     "qc_schedule_import_batches",
     "qc_schedule_import_rows",
     "qc_inspection_orders",
+    "qc_inspection_events",
+    "qc_inspection_event_lines",
+    "qc_inspection_defects",
+    "qc_inspection_test_results",
+    "qc_inspection_dispositions",
+    "qc_inspection_report_packages",
+    "qc_inspection_report_documents",
     "qc_inspection_problems",
     "qc_schedule_change_decisions",
     "qc_inspection_reports",
@@ -447,8 +454,9 @@ QC_INSPECTION_REQUIRED_TABLES = {
     "qc_inspection_audit_events",
     "qc_inspection_idempotency_records",
 }
-CARTON_MARK_LIBRARY_REVISION = "20260813_0075"
+CARTON_MARK_LIBRARY_REVISION = "20260819_0080"
 CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
+    "carton_mark_customers",
     "carton_mark_templates",
     "carton_mark_documents",
 }

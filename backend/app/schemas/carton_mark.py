@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CartonMarkExtractedField(BaseModel):
@@ -105,6 +105,33 @@ class CartonMarkDocumentCheckResponse(BaseModel):
 class CartonMarkCustomerOptionOut(BaseModel):
     id: str
     name: str
+
+
+class CartonMarkCustomerCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = " ".join(value.strip().split())
+        if not normalized:
+            raise ValueError("客户名称不能为空")
+        return normalized
+
+
+class CartonMarkCustomerUpdateRequest(CartonMarkCustomerCreateRequest):
+    revision: int = Field(ge=1)
+
+
+class CartonMarkCustomerOut(CartonMarkCustomerOptionOut):
+    factory_id: str
+    revision: int = Field(ge=1)
+    created_by: str
+    created_by_name: str
+    created_at: str
+    updated_by: str
+    updated_by_name: str
+    updated_at: str
 
 
 class CartonMarkTemplateOut(BaseModel):

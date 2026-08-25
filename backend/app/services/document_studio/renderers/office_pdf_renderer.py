@@ -35,6 +35,16 @@ class OfficePdfRenderResult:
     output_file_name: str
     page_count: int
     blank_page_count: int = 0
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class OfficeRendererStatus:
+    available: bool
+    command: str
+    executable: str = ""
+    version: str = ""
+    reason_code: str = ""
 
 
 _EXTERNAL_RELATIONSHIP = re.compile(
@@ -60,6 +70,8 @@ _FONT_SUBSTITUTIONS = {
     "仿宋": {"noto serif cjk sc"},
     "等线": {"noto sans cjk sc"},
 }
+_MAX_DOCX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+_MAX_DOCX_PARTS = 10_000
 
 
 def _safe_filename(value: str) -> str:
@@ -67,9 +79,19 @@ def _safe_filename(value: str) -> str:
     return f"{stem.strip(' .') or 'Word文档'}_转换结果.pdf"
 
 
-def _validate_docx(content: bytes) -> None:
+def _validate_docx(content: bytes) -> tuple[bytes, tuple[str, ...]]:
+    warnings: list[str] = []
     try:
         with zipfile.ZipFile(BytesIO(content)) as archive:
+            infos = archive.infolist()
+            if (
+                len(infos) > _MAX_DOCX_PARTS
+                or sum(info.file_size for info in infos) > _MAX_DOCX_UNCOMPRESSED_BYTES
+            ):
+                raise OfficePdfRenderError(
+                    "DOCUMENT_OFFICE_ZIP_BOMB_REJECTED",
+                    "DOCX 解压后内容过大，已拒绝转换。",
+                )
             names = {name.casefold() for name in archive.namelist()}
             if "[content_types].xml" not in names or "word/document.xml" not in names:
                 raise OfficePdfRenderError(
@@ -81,17 +103,44 @@ def _validate_docx(content: bytes) -> None:
                     "DOCUMENT_INPUT_MACRO_REJECTED",
                     "不接受包含宏的 Word 文档。",
                 )
+            external_relationships = False
             for name in archive.namelist():
                 lowered = name.casefold()
                 if lowered.endswith(".rels") and _EXTERNAL_RELATIONSHIP.search(
                     archive.read(name)
                 ):
-                    raise OfficePdfRenderError(
-                        "DOCUMENT_EXTERNAL_LINK_REJECTED",
-                        "Word 文档包含外部关系，已拒绝转换。",
-                    )
+                    external_relationships = True
                 if lowered == "word/document.xml":
                     ElementTree.fromstring(archive.read(name))
+            if external_relationships:
+                warnings.append("文档中的外部链接已在转换副本中移除。")
+                output = BytesIO()
+                with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as sanitized:
+                    for info in infos:
+                        data = archive.read(info.filename)
+                        if info.filename.casefold().endswith(".rels"):
+                            try:
+                                root = ElementTree.fromstring(data)
+                                for relationship in list(root):
+                                    if (
+                                        str(
+                                            relationship.attrib.get("TargetMode", "")
+                                        ).casefold()
+                                        == "external"
+                                    ):
+                                        root.remove(relationship)
+                                data = ElementTree.tostring(
+                                    root,
+                                    encoding="utf-8",
+                                    xml_declaration=True,
+                                )
+                            except ElementTree.ParseError as exc:
+                                raise OfficePdfRenderError(
+                                    "DOCUMENT_OFFICE_INPUT_CORRUPT",
+                                    "DOCX 外部关系结构无效。",
+                                ) from exc
+                        sanitized.writestr(info, data)
+                content = output.getvalue()
     except OfficePdfRenderError:
         raise
     except (zipfile.BadZipFile, KeyError, ElementTree.ParseError) as exc:
@@ -99,6 +148,7 @@ def _validate_docx(content: bytes) -> None:
             "DOCUMENT_OFFICE_INPUT_CORRUPT",
             "DOCX 文件已损坏或结构无效。",
         ) from exc
+    return content, tuple(warnings)
 
 
 def _requested_fonts(content: bytes) -> frozenset[str]:
@@ -119,10 +169,10 @@ def _requested_fonts(content: bytes) -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
-def _installed_fonts() -> frozenset[str]:
+def _installed_fonts() -> frozenset[str] | None:
     executable = shutil.which("fc-list")
     if executable is None:
-        return frozenset()
+        return None
     completed = subprocess.run(
         [executable, "--format=%{family}\n"],
         check=False,
@@ -131,7 +181,7 @@ def _installed_fonts() -> frozenset[str]:
         timeout=15,
     )
     if completed.returncode != 0:
-        return frozenset()
+        return None
     return frozenset(
         family.strip().casefold()
         for line in completed.stdout.splitlines()
@@ -140,11 +190,13 @@ def _installed_fonts() -> frozenset[str]:
     )
 
 
-def _validate_fonts(content: bytes) -> None:
+def _validate_fonts(content: bytes) -> tuple[str, ...]:
     requested = _requested_fonts(content)
     if not requested:
-        return
+        return ()
     installed = _installed_fonts()
+    if installed is None:
+        return ()
     missing = []
     for font in requested:
         normalized = font.casefold()
@@ -154,12 +206,37 @@ def _validate_fonts(content: bytes) -> None:
         if substitutions.intersection(installed):
             continue
         missing.append(font)
-    if missing:
-        preview = "、".join(sorted(missing)[:5])
-        raise OfficePdfRenderError(
-            "DOCUMENT_FONT_MISSING",
-            f"Office 渲染环境缺少文档字体：{preview}。",
+    return tuple(sorted(missing))
+
+
+@lru_cache(maxsize=8)
+def office_renderer_status(command: str) -> OfficeRendererStatus:
+    executable = shutil.which(command)
+    if executable is None:
+        return OfficeRendererStatus(
+            available=False,
+            command=command,
+            reason_code="LIBREOFFICE_NOT_INSTALLED",
         )
+    version = ""
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if completed.returncode == 0:
+            version = completed.stdout.strip().splitlines()[0][:200]
+    except (OSError, subprocess.SubprocessError):
+        version = ""
+    return OfficeRendererStatus(
+        available=True,
+        command=command,
+        executable=executable,
+        version=version,
+    )
 
 
 def _validate_pdf(content: bytes) -> tuple[int, int]:
@@ -191,18 +268,27 @@ def render_docx_to_pdf(
     *,
     command: str,
     timeout_seconds: int = 120,
-    network_isolation_command: str = "unshare",
+    network_isolation_command: str | None = "unshare",
 ) -> OfficePdfRenderResult:
-    _validate_docx(content)
-    _validate_fonts(content)
+    content, validation_warnings = _validate_docx(content)
     executable = shutil.which(command)
     if executable is None:
         raise OfficePdfRenderError(
-            "DOCUMENT_OFFICE_RENDERER_UNAVAILABLE",
-            "受限 Office 渲染器未安装。",
+            "LIBREOFFICE_NOT_INSTALLED",
+            "服务器未安装 LibreOffice，暂时无法执行 Word 转 PDF。",
         )
-    isolation_executable = shutil.which(network_isolation_command)
-    if os.name != "nt" and isolation_executable is None:
+    missing_fonts = _validate_fonts(content)
+    warnings = list(validation_warnings)
+    if missing_fonts:
+        warnings.append(
+            "渲染环境缺少字体："
+            + "、".join(missing_fonts[:5])
+            + "；已使用可用替代字体，版式可能略有变化。"
+        )
+    isolation_executable = (
+        shutil.which(network_isolation_command) if network_isolation_command else None
+    )
+    if os.name != "nt" and network_isolation_command and isolation_executable is None:
         raise OfficePdfRenderError(
             "DOCUMENT_OFFICE_RENDERER_UNAVAILABLE",
             "Office 渲染器缺少无外网隔离命令。",
@@ -225,19 +311,21 @@ def render_docx_to_pdf(
         }
         try:
             office_command = [
-                    executable,
-                    "--headless",
-                    "--nologo",
-                    "--nodefault",
-                    "--nolockcheck",
-                    "--nofirststartwizard",
-                    f"-env:UserInstallation={profile_url}",
-                    "--convert-to",
-                    "pdf:writer_pdf_Export",
-                    "--outdir",
-                    str(output_dir),
-                    str(source),
-                ]
+                executable,
+                "--headless",
+                "--safe-mode",
+                "--nologo",
+                "--nodefault",
+                "--norestore",
+                "--nolockcheck",
+                "--nofirststartwizard",
+                f"-env:UserInstallation={profile_url}",
+                "--convert-to",
+                "pdf:writer_pdf_Export",
+                "--outdir",
+                str(output_dir),
+                str(source),
+            ]
             command_line = (
                 [isolation_executable, "--net", "--", *office_command]
                 if os.name != "nt" and isolation_executable is not None
@@ -247,9 +335,13 @@ def render_docx_to_pdf(
             def apply_limits() -> None:
                 if resource is None:
                     return
-                resource.setrlimit(resource.RLIMIT_CPU, (timeout_seconds, timeout_seconds + 5))
+                resource.setrlimit(
+                    resource.RLIMIT_CPU, (timeout_seconds, timeout_seconds + 5)
+                )
                 resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
-                resource.setrlimit(resource.RLIMIT_FSIZE, (100 * 1024**2, 100 * 1024**2))
+                resource.setrlimit(
+                    resource.RLIMIT_FSIZE, (100 * 1024**2, 100 * 1024**2)
+                )
                 resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
 
             completed = subprocess.run(
@@ -280,4 +372,5 @@ def render_docx_to_pdf(
             output_file_name=_safe_filename(source_filename),
             page_count=page_count,
             blank_page_count=blank_page_count,
+            warnings=tuple(warnings),
         )

@@ -4,15 +4,15 @@ export const P4_ARTIFACT_TEMPLATE_VERSION = 'internal-quote-p4-v2'
 export const P4_STRUCTURED_DATA_SCHEMA_VERSION = 'internal-quote-structured-data-v1'
 
 export const P4_SECTION_CODES = [
-  'sales',
   'engineering',
-  'electronic',
   'molding',
+  'assembly',
   'painting',
+  'electronic',
   'slush',
   'sewing',
   'hair',
-  'assembly',
+  'sales',
 ] as const
 
 export type P4SectionCode = typeof P4_SECTION_CODES[number]

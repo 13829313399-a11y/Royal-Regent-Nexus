@@ -1,6 +1,17 @@
 from urllib.parse import quote as url_quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -8,7 +19,10 @@ from app.db import get_db
 from app.schemas.carton_mark import (
     CartonMarkAutoCheckResponse,
     CartonMarkBatchCheckResponse,
+    CartonMarkCustomerCreateRequest,
     CartonMarkCustomerOptionOut,
+    CartonMarkCustomerOut,
+    CartonMarkCustomerUpdateRequest,
     CartonMarkDocumentCheckResponse,
     CartonMarkTemplateOut,
 )
@@ -33,6 +47,12 @@ from app.services.carton_mark_library import (
     list_carton_mark_customer_options,
     list_carton_mark_templates,
     update_carton_mark_document_check_result,
+)
+from app.services.carton_mark_customers import (
+    create_carton_mark_customer,
+    delete_carton_mark_customer,
+    list_carton_mark_customers,
+    update_carton_mark_customer,
 )
 
 router = APIRouter()
@@ -143,9 +163,94 @@ def get_carton_mark_customer_options(
         current_user,
         "carton_mark:read",
         factory_id,
-        CARTON_MARK_WRITE_DEPARTMENTS,
+        CARTON_MARK_READ_DEPARTMENTS,
     )
     return list_carton_mark_customer_options(db, factory_id)
+
+
+@router.get(
+    "/api/carton-mark/customers",
+    response_model=list[CartonMarkCustomerOut],
+)
+def get_carton_mark_customers(
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = ensure_carton_mark_scope(
+        db,
+        current_user,
+        "carton_mark:read",
+        factory_id,
+        CARTON_MARK_READ_DEPARTMENTS,
+    )
+    return list_carton_mark_customers(db, factory_id=factory_id)
+
+
+@router.post(
+    "/api/carton-mark/customers",
+    response_model=CartonMarkCustomerOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_carton_mark_customer(
+    payload: CartonMarkCustomerCreateRequest,
+    request: Request,
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return create_carton_mark_customer(
+        db,
+        current_user,
+        factory_id=factory_id,
+        payload=payload,
+        request=request,
+    )
+
+
+@router.put(
+    "/api/carton-mark/customers/{customer_id}",
+    response_model=CartonMarkCustomerOut,
+)
+def put_carton_mark_customer(
+    customer_id: str,
+    payload: CartonMarkCustomerUpdateRequest,
+    request: Request,
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return update_carton_mark_customer(
+        db,
+        current_user,
+        factory_id=factory_id,
+        customer_id=customer_id,
+        payload=payload,
+        request=request,
+    )
+
+
+@router.delete(
+    "/api/carton-mark/customers/{customer_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def remove_carton_mark_customer(
+    customer_id: str,
+    request: Request,
+    factory_id: str = Query(min_length=1, max_length=64),
+    revision: int = Query(ge=1),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    delete_carton_mark_customer(
+        db,
+        current_user,
+        factory_id=factory_id,
+        customer_id=customer_id,
+        revision=revision,
+        request=request,
+    )
+    return None
 
 
 @router.get("/api/carton-mark/templates", response_model=list[CartonMarkTemplateOut])
