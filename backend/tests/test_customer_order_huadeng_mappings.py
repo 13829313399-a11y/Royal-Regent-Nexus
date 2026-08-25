@@ -91,6 +91,17 @@ def test_casdon_preview_and_export_use_received_date_and_seven_day_rule(monkeypa
             10: "玩具厨房", 11: 12, 13: 8, 37: "Toy Kitchen",
         },
     )
+    schedule_book = openpyxl.load_workbook(BytesIO(schedule))
+    schedule_sheet = schedule_book["Casdon 排货表-总"]
+    schedule_sheet.cell(3, 6, "OTHER")
+    schedule_sheet.cell(3, 7, "CASDON UK")
+    schedule_sheet.cell(3, 9, "9999")
+    schedule_sheet.cell(3, 10, "其他产品")
+    schedule_sheet.cell(3, 11, 6)
+    schedule_buffer = BytesIO()
+    schedule_book.save(schedule_buffer)
+    schedule_book.close()
+    schedule = schedule_buffer.getvalue()
 
     def parse(_self, _path: str):
         return {
@@ -142,6 +153,8 @@ def test_casdon_preview_and_export_use_received_date_and_seven_day_rule(monkeypa
         assert workbook["Casdon 排货表-总"].cell(2, 6).value == "OLD"
         assert workbook["Casdon 排货表-总"].cell(3, 6).value == "8395"
         assert workbook["Casdon 排货表-总"].cell(3, 2).value == datetime(2026, 8, 3)
+        assert workbook["Casdon 排货表-总"].cell(4, 6).value == "OTHER"
+        assert workbook["Casdon 排货表-总"].cell(4, 9).value == "9999"
         assert workbook["Casdon 排货表-总"].cell(3, 13).value == 8
         assert workbook["Casdon 排货表-总"].cell(3, 14).value == '=IF(M3=0,"",K3/M3)'
     finally:
@@ -272,6 +285,69 @@ def test_jakks_blocks_change_orders_and_dedupes_batch(monkeypatch) -> None:
     assert prepared.records[0]["contact"] == "Amy"
     assert any("CXL/SUP" in warning for warning in prepared.warnings)
     assert any("完全重复" in warning for warning in prepared.warnings)
+
+
+def test_jakks_standard_contract_uses_notes_not_order_notes_remarks() -> None:
+    rows = [
+        ["JAKKS-10001 UPC 123 Country of Origin CN", "Toy Figure Customer Item No: 88", 2.0, "100 CA Outer Pack: 10", "USD 200.00"],
+        ["ORDER NOTES: REMARKS do not write this"],
+        ["NOTES: Use customer-approved label"],
+    ]
+
+    parsed = service.jakks_po_parser._parse_standard_contract_rows(rows)
+
+    assert len(parsed) == 1
+    assert parsed[0]["special_note"] == "Use customer-approved label"
+
+
+def test_jakks_scanned_pdf_prefers_rapidocr(monkeypatch) -> None:
+    from app.services import carton_mark
+
+    class FakePage:
+        def extract_text(self, **_kwargs):
+            return ""
+
+        def to_image(self, **kwargs):
+            assert kwargs["resolution"] == 180
+            return type("Rendered", (), {"original": object()})()
+
+    class FakePdf:
+        pages = [FakePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    ocr_text = (
+        "HD20260604 Date: 2026/4/22\n"
+        "713041-2-V1-F1 Toy milk bottle 玩具牛奶瓶 528.32 KGM US$2.50 US$1,320.80"
+    )
+    monkeypatch.setattr(service.jakks_po_parser.pdfplumber, "open", lambda _path: FakePdf())
+    monkeypatch.setattr(carton_mark, "get_rapidocr_engine", lambda: (lambda _image: object()))
+    monkeypatch.setattr(carton_mark, "rapidocr_result_to_text", lambda _result: ocr_text)
+
+    text, used_ocr = service.jakks_po_parser.extract_text("scan.pdf")
+
+    assert text == ocr_text
+    assert used_ocr is True
+
+
+def test_jakks_inherits_unique_date_code_and_blocks_missing_chinese_name() -> None:
+    order = {
+        "lines": [{"item_no": "J-1", "product_name": "English Name"}],
+        "warnings": [],
+    }
+    service._apply_jakks_schedule_data(
+        order,
+        {"records": [{"sku": "J-1", "product": "English Only", "date_code": "2628"}]},
+    )
+
+    line = order["lines"][0]
+    assert line["date_code"] == "2628"
+    assert any(flag["code"] == "missing_product_name_zh" for flag in line["flags"])
+    assert not any(flag["code"] == "missing_date_code" for flag in line["flags"])
 
 
 def test_jakks_native_contract_pdf_accepts_plain_item_and_trailing_usd(
@@ -406,6 +482,57 @@ def test_simba_prefers_same_name_excel_and_inherits_schedule(monkeypatch) -> Non
     assert len(prepared.records) == 1
     assert prepared.records[0]["order_date"] == "2026-08-03"
     assert any("优先采用 Excel" in warning for warning in prepared.warnings)
+
+
+def test_simba_drops_po_carton_dimensions_and_keeps_first_english_sentence(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.simba_schedule,
+        "read_schedule",
+        lambda *_args, **_kwargs: {"sheet": "Simba排期", "records": []},
+    )
+    monkeypatch.setattr(
+        service.simba_schedule,
+        "enrich_rows_from_schedule",
+        lambda *_args: {
+            "product_names_applied": 0,
+            "exact_fields_applied": 0,
+            "product_name_conflicts": [],
+        },
+    )
+    monkeypatch.setattr(
+        service.simba_po_parser,
+        "parse_po_file",
+        lambda _content, *, filename: {
+            "filename": filename,
+            "rows": [{
+                "contract_no": "S1",
+                "item_no": "A1",
+                "quantity": 24,
+                "outer_pack": 12,
+                "po_ship_date": "2026-09-01",
+                "customer": "SIMBA",
+                "contact": "May",
+                "english_name": "Fire Truck. Includes two figures and accessories.",
+                "outer_length_cm": 40,
+                "outer_width_cm": 30,
+                "outer_height_cm": 20,
+            }],
+            "warnings": [],
+        },
+    )
+
+    prepared = service._prepare_simba(
+        [("Release-S1.xlsx", b"xlsx")],
+        "2026年Simba排期.xlsx",
+        b"schedule",
+        "2026-08-03",
+    )
+
+    row = prepared.records[0]
+    assert row["english_name"] == "Fire Truck."
+    assert "outer_length_cm" not in row
+    assert "outer_width_cm" not in row
+    assert "outer_height_cm" not in row
 
 
 def test_simba_scanned_pdf_uses_shared_tesseract_configuration(monkeypatch) -> None:

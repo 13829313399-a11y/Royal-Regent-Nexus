@@ -106,7 +106,9 @@ for customer_code in HUAKANG_A_CUSTOMER_MAPPINGS:
     CUSTOMER_FACTORY_OPTIONS[customer_code] = tuple(dict.fromkeys((*existing, "huakang-a")))
 for customer_code in HUAKANG_C_CUSTOMER_MAPPINGS:
     existing = CUSTOMER_FACTORY_OPTIONS.get(customer_code, ())
-    CUSTOMER_FACTORY_OPTIONS[customer_code] = tuple(dict.fromkeys((*existing, "huakang-c")))
+    CUSTOMER_FACTORY_OPTIONS[customer_code] = tuple(
+        dict.fromkeys((*existing, "huakang-c", "huakang-d"))
+    )
 CUSTOMER_NAMES = {
     "buzzbee": "BuzzBee",
     "dickie": "Dickie",
@@ -133,6 +135,7 @@ FACTORY_NAMES = {
     "huadeng": "华登",
     "huakang-a": "华康A",
     "huakang-c": "华康C",
+    "huakang-d": "华康D",
 }
 
 
@@ -172,7 +175,7 @@ def _get_mapped_customer_spec(customer_code: str, factory_id: str):
             return get_huakang_a_customer_mapping(customer_code)
         except HuakangACustomerOrderError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if factory_id == "huakang-c":
+    if factory_id in {"huakang-c", "huakang-d"}:
         try:
             return get_huakang_c_customer_mapping(customer_code)
         except HuakangCCustomerOrderError as exc:
@@ -191,7 +194,7 @@ def _get_mapped_customer_spec(customer_code: str, factory_id: str):
 def _create_mapped_customer_preview(*, customer_code: str, **kwargs):
     if kwargs.get("factory_id") == "huakang-a":
         return create_huakang_a_customer_preview(customer_code=customer_code, **kwargs)
-    if kwargs.get("factory_id") == "huakang-c":
+    if kwargs.get("factory_id") in {"huakang-c", "huakang-d"}:
         return create_huakang_c_customer_preview(customer_code=customer_code, **kwargs)
     if customer_code in HUADENG_CUSTOMER_MAPPINGS:
         return create_huadeng_customer_preview(customer_code=customer_code, **kwargs)
@@ -201,7 +204,7 @@ def _create_mapped_customer_preview(*, customer_code: str, **kwargs):
 def _export_mapped_customer_schedule(*, customer_code: str, **kwargs):
     if kwargs.get("factory_id") == "huakang-a":
         return export_huakang_a_customer_schedule(customer_code=customer_code, **kwargs)
-    if kwargs.get("factory_id") == "huakang-c":
+    if kwargs.get("factory_id") in {"huakang-c", "huakang-d"}:
         return export_huakang_c_customer_schedule(customer_code=customer_code, **kwargs)
     if customer_code in HUADENG_CUSTOMER_MAPPINGS:
         return export_huadeng_customer_schedule(customer_code=customer_code, **kwargs)

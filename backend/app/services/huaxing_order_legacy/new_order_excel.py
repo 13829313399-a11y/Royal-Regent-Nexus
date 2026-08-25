@@ -12,6 +12,7 @@ from typing import Any, BinaryIO, Callable, Collection, Iterable, Mapping, Seque
 import openpyxl
 import xlrd
 from openpyxl import Workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
@@ -1026,6 +1027,8 @@ def append_records_to_workbook(
                 for col_no in range(1, max_col + 1):
                     source_cell = target.cell(source_row, col_no)
                     destination = target.cell(row_no, col_no)
+                    if isinstance(destination, MergedCell):
+                        continue
                     _copy_style(source_cell, destination)
                     if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
                         try:
@@ -1066,6 +1069,8 @@ def append_records_to_workbook(
                 record = payload
                 for col_no, field in column_map.items():
                     cell = target.cell(row_no, col_no)
+                    if isinstance(cell, MergedCell):
+                        continue
                     # A template formula is authoritative for calculated fields unless
                     # this customer explicitly identifies the field as PO-owned input.
                     has_formula = isinstance(cell.value, str) and cell.value.startswith("=")
@@ -1163,6 +1168,7 @@ def append_column_records_to_workbook(
     group_key_factory: Callable[[Any], str] | None = None,
     group_row_values_factory: Callable[[Any, int], Mapping[int, Any]] | None = None,
     column_formats: Mapping[int, str] | None = None,
+    new_row_fill_color: str = "",
 ) -> dict[str, Any]:
     """Copy the complete workbook and append fixed-column records to one sheet.
 
@@ -1217,6 +1223,11 @@ def append_column_records_to_workbook(
             group_count = len(grouped_records)
         else:
             grouped_layout = [("detail", record) for record in rows]
+        highlight_fill = (
+            PatternFill(fill_type="solid", fgColor=new_row_fill_color)
+            if new_row_fill_color
+            else None
+        )
 
         formulas = []
         for sheet in workbook.worksheets:
@@ -1260,6 +1271,8 @@ def append_column_records_to_workbook(
                     source_cell = target.cell(source_row, col_no)
                     destination = target.cell(row_no, col_no)
                     _copy_style(source_cell, destination)
+                    if highlight_fill is not None:
+                        destination.fill = copy(highlight_fill)
                     if isinstance(source_cell.value, str) and source_cell.value.startswith("="):
                         try:
                             destination.value = Translator(

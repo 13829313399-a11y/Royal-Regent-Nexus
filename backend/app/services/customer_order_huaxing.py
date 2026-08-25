@@ -527,11 +527,11 @@ def _prepare_batch(
     schedule_file_name: str, schedule_content: bytes,
 ) -> PreparedBatch:
     handlers: dict[str, Callable[[list[tuple[str, bytes]], str, bytes], PreparedBatch]] = {
+        "disney": _prepare_disney,
         "edu": _prepare_edu,
         "360": _prepare_360,
         "yinhui": _prepare_yinhui,
         "seasons": _prepare_seasons,
-        "disney": _prepare_disney,
     }
     if customer_code in {"maxx", "shushupapa"}:
         return _prepare_multi(customer_code, po_files, schedule_file_name, schedule_content)
@@ -901,6 +901,16 @@ def _seasons_lane_records(
         for record in records:
             item_key = re.sub(r"[^A-Z0-9]", "", _text(record.get("item_no")).upper())
             matches = [sheet for sheet, items in lane_items.items() if item_key and item_key in items]
+            if not matches and "其它款ITEM" in lane_items:
+                # New SEASONS items cannot be classified from the PO/QF alone.
+                # Keep export available by using the workbook's explicit catch-all
+                # lane instead of guessing a product family from its description.
+                matches = ["其它款ITEM"]
+            elif not matches and len(lane_items) == 1:
+                # Some customer templates contain only one product lane (the
+                # supplied test workbook contains only the blow-moulded lane).
+                # In that case the workbook itself is the unambiguous classifier.
+                matches = [next(iter(lane_items))]
             if len(matches) != 1:
                 raise HuaxingCustomerOrderError(
                     f"{record.get('item_no') or '未知货号'}：无法在 SEASONS ITEM 表中唯一确定写入区域"
@@ -1042,6 +1052,15 @@ def export_huaxing_customer_schedule(
     if not preview["rows"]:
         raise HuaxingCustomerOrderError("本批文件没有可安全生成的新单明细，请查看预览告警")
     prepared = _prepare_batch(customer_code, po_files, schedule_file_name, schedule_content)
+    field_aliases = {
+        "disney": {
+            "product_name_zh": "product_name_zh",
+            "product_name_en": "description",
+            "units_per_carton": "case_pack",
+            "line_q": "inspection_date",
+            "requested_ship_date": "ship_date",
+        },
+    }.get(customer_code, {})
     if customer_code == "disney":
         for record in prepared.records:
             record["received_date"] = received_date
@@ -1049,6 +1068,7 @@ def export_huaxing_customer_schedule(
         prepared.records,
         [str(row["id"]) for row in preview["rows"]],
         manual_overrides or [],
+        field_aliases=field_aliases,
     )
     with TemporaryDirectory(prefix=f"huaxing-{customer_code}-output-") as temp_dir:
         output_path = Path(temp_dir) / preview["output_file_name"]

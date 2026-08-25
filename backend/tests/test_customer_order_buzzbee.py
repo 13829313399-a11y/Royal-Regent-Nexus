@@ -894,6 +894,33 @@ def test_ordinary_xlsx_contract_uses_labels_instead_of_aafes_or_wmc_gate():
     assert parsed.lineage["standard"] == "合同条款 · European Standard"
 
 
+def test_aafe_filename_typo_still_uses_aafes_customer_profile():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet["M8"] = "Contract No.:"
+    sheet["O8"] = 53080
+    sheet["A12"] = "Date of Loading:"
+    sheet["F12"] = date(2026, 10, 1)
+    sheet["A16"] = "Our Item# :"
+    sheet["F16"] = 40210
+    sheet["A18"] = "Goods:"
+    sheet["C18"] = "MAYHEM OUTRAGE"
+    sheet["A20"] = "Quantity:"
+    sheet["F20"] = 80
+    sheet["A26"] = "Shipping Carton Packing"
+    sheet["F26"] = 4
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+
+    parsed = service.parse_po("AAAFE SC# 53080 - 40210 WH 2 Rev 1.xlsx", output.getvalue())[0]
+
+    assert parsed.values["customer_name"] == "AAFES"
+    assert parsed.values["country"] == "美国"
+    assert parsed.values["standard"] == "美国标准"
+
+
 def test_wmu_mainland_xlsx_contract_expands_po_attached_suborders():
     service = importlib.import_module("app.services.customer_order_buzzbee")
 
