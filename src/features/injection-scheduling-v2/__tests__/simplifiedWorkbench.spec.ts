@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPasteChanges, formatWorkbenchCell, workbenchColumnPresets } from '../workbench/columns'
+import { dueSlackPresentation, formatAClass, priorityPresentation } from '../workbench/presentation'
 import type { ImportBatchRecord } from '../types'
 import type { WorkbenchCellChange, WorkbenchJob, WorkbenchSnapshot } from '../workbench/types'
 
@@ -55,6 +56,47 @@ describe('simplified injection scheduling workbench', () => {
     expect(formatWorkbenchCell({ ...job(1), status: 'UNPLANNED' }, statusColumn)).toBe('待排')
     expect(formatWorkbenchCell({ ...job(1), status: 'RUNNING' }, statusColumn)).toBe('生产中')
     expect(formatWorkbenchCell({ ...job(1), status: 'DONE' }, statusColumn)).toBe('完成')
+  })
+
+  it('presents priority, delivery risk, and machine A class in operator language', () => {
+    const priorityColumn = workbenchColumnPresets.scheduler.find((column) => column.key === 'priority')!
+    const slackColumn = workbenchColumnPresets.scheduler.find((column) => column.key === 'deliverySlackDays')!
+    const aClassColumn = workbenchColumnPresets.scheduler.find((column) => column.key === 'requiredMachineA')!
+    expect(formatWorkbenchCell({ ...job(1), priority: 'CRITICAL' }, priorityColumn)).toBe('特急')
+    expect(formatWorkbenchCell({ ...job(1), deliverySlackDays: -2 }, slackColumn)).toBe('逾期 2 天')
+    expect(formatWorkbenchCell(job(1), aClassColumn)).toBe('12A')
+    expect(priorityPresentation('URGENT').tone).toBe('amber')
+    expect(dueSlackPresentation(0).label).toBe('今日到期')
+    expect(formatAClass(null)).toBe('A级待补')
+  })
+
+  it('keeps the polished shell accessible and exposes only one primary header action', () => {
+    const source = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/workbench/InjectionSchedulingWorkbenchView.vue'), 'utf8')
+    expect(source).toContain('role="tablist"')
+    expect(source).toContain(':aria-selected="view === \'sheet\'"')
+    expect(source).toContain('@keydown.esc="clearSearch"')
+    expect(source).toContain('<AccountMenu variant="obsidian" compact />')
+    expect(source.match(/variant="primary"/g)).toHaveLength(1)
+    expect(source).toContain('排期建议')
+  })
+
+  it('scopes reduced motion and keeps grid virtualization synchronized to 38 pixels', () => {
+    const motion = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/workbench/workbench.motion.css'), 'utf8')
+    const grid = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/workbench/WorkbenchGrid.vue'), 'utf8')
+    expect(motion).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(motion).toContain('.injection-workbench *')
+    expect(grid).toContain('estimateSize: () => 38')
+  })
+
+  it('keeps dialog confirmation guarded and exposes explicit staged feedback', () => {
+    const root = join(process.cwd(), 'src/features/injection-scheduling-v2/workbench')
+    const schedule = readFileSync(join(root, 'ScheduleSuggestionDialog.vue'), 'utf8')
+    const importDialog = readFileSync(join(root, 'SimpleImportDialog.vue'), 'utf8')
+    expect(schedule).toContain(':disabled="!canApply"')
+    expect(schedule).toContain('暂不能生成或应用新的排期建议')
+    expect(importDialog).toContain('wb-import-rail')
+    expect(importDialog).toContain('源文件始终只读')
+    expect(importDialog).toContain('role="alert"')
   })
 
   it('does not treat a letter T in business identifiers as a datetime separator', () => {

@@ -135,7 +135,7 @@ export interface WorkbenchColumn {
   label: string
   width: number
   editable?: WorkbenchEditableField
-  format?: 'number' | 'decimal' | 'percent' | 'date' | 'datetime' | 'status' | 'boolean'
+  format?: 'number' | 'decimal' | 'percent' | 'date' | 'datetime' | 'status' | 'boolean' | 'priority' | 'slack' | 'aClass'
   frozen?: boolean
 }
 

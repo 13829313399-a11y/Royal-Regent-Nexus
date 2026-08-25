@@ -5,6 +5,7 @@ import type {
   WorkbenchEditableField,
   WorkbenchJob,
 } from './types'
+import { dueSlackPresentation, formatAClass, priorityPresentation, statusPresentation } from './presentation'
 
 const frozen: WorkbenchColumn[] = [
   { key: 'machineCode', label: '机台', width: 88, frozen: true },
@@ -19,9 +20,9 @@ const frozen: WorkbenchColumn[] = [
 
 const planning: WorkbenchColumn[] = [
   { key: 'deliveryDueDate', label: '交货日', width: 108, format: 'date' },
-  { key: 'deliverySlackDays', label: '交期余量', width: 94, format: 'number' },
-  { key: 'priority', label: '优先级', width: 88 },
-  { key: 'requiredMachineA', label: '要求A级', width: 92, format: 'decimal' },
+  { key: 'deliverySlackDays', label: '交期余量', width: 104, format: 'slack' },
+  { key: 'priority', label: '优先级', width: 88, format: 'priority' },
+  { key: 'requiredMachineA', label: '要求A级', width: 92, format: 'aClass' },
   { key: 'materialName', label: '原料', width: 112 },
   { key: 'colorName', label: '颜色', width: 104 },
   { key: 'armRequirement', label: '机械手', width: 108 },
@@ -87,7 +88,10 @@ export const workbenchColumnPresets: Record<WorkbenchColumnPreset, WorkbenchColu
 export function formatWorkbenchCell(job: WorkbenchJob, column: WorkbenchColumn) {
   const value = job[column.key]
   if (value == null || value === '') return '—'
-  if (column.format === 'status') return ({ UNPLANNED: '待排', PLANNED: '已排', RUNNING: '生产中', PAUSED: '暂停', DONE: '完成' } as Record<string, string>)[String(value)] ?? String(value)
+  if (column.format === 'status') return statusPresentation(job.status).label
+  if (column.format === 'priority') return priorityPresentation(String(value)).label
+  if (column.format === 'slack') return dueSlackPresentation(Number(value)).label
+  if (column.format === 'aClass') return formatAClass(Number(value))
   if (column.format === 'boolean') return value ? '是' : '否'
   if (column.format === 'percent') return `${(Number(value) * 100).toFixed(1)}%`
   if (column.format === 'number') return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 0 })

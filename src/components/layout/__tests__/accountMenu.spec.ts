@@ -46,8 +46,9 @@ function seedUser() {
   return authStore
 }
 
-function mountAccountMenu() {
+function mountAccountMenu(props?: { compact?: boolean; variant?: 'light' | 'obsidian' }) {
   return mount(AccountMenu, {
+    props,
     global: {
       stubs: {
         Teleport: true,
@@ -68,6 +69,18 @@ describe('AccountMenu', () => {
       createObjectURL: vi.fn(() => 'blob:avatar-preview'),
       revokeObjectURL: vi.fn(),
     })
+  })
+
+  it('keeps the light default while supporting a compact obsidian trigger', () => {
+    seedUser()
+    const light = mountAccountMenu()
+    expect(light.get('.account-menu').attributes('data-variant')).toBe('light')
+    expect(light.get('.account-menu__details').exists()).toBe(true)
+
+    const obsidian = mountAccountMenu({ variant: 'obsidian', compact: true })
+    expect(obsidian.get('.account-menu').attributes('data-variant')).toBe('obsidian')
+    expect(obsidian.find('.account-menu__details').exists()).toBe(false)
+    expect(obsidian.get('.account-menu__chevron').exists()).toBe(true)
   })
 
   it('logs out the current account and returns to the login page', async () => {

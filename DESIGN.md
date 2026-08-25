@@ -507,6 +507,12 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 
 排产工作区是经明确隔离的高密度桌面系统：
 
+- 正式轻量工作台使用 `.injection-workbench` 根命名空间与 `--wb-*` 局部 token；保留的旧版回滚视图继续使用 `.injection-scheduling-v2` 与 `--is-*`，二者不得交叉提升为全局规则；
+- 轻量工作台采用 Industrial Crystal Operations Console：64px 黑曜石指挥栏、冷白信息面、青绿单一主操作和按语义分配的状态色；KPI、筛选、状态栏与 38px 虚拟表格行构成固定高密度节奏；
+- 轻量工作台复用 `AccountMenu`（`obsidian` / `compact`）、`UserAvatar`、`StatusPill` 和 `ProgressMeter`，不得复制账户、头像、状态或进度逻辑；
+- 计划表与机台队列使用 `tablist` / `tab` / `tabpanel` 语义；表格内部承担横向滚动，工作台壳层在 1024–1920px 不产生横向滚动；
+- 轻量工作台动效统一由 `workbench.motion.css` 约束，Teleport 弹窗和抽屉也必须覆盖 reduced-motion；
+
 - 根命名空间：`.injection-scheduling-v2`；
 - 最低宽度 1024px，固定视口工作区；
 - 字体密度约 12–13px；
