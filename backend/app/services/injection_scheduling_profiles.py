@@ -417,8 +417,10 @@ def _huaxing_fields() -> tuple[FieldRule, ...]:
     )
 
 
-def _huakang_b_fields() -> tuple[FieldRule, ...]:
-    p = "huakang_b_daily_plan_v1"
+def _huakang_b_fields(
+    profile_code: str = "huakang_b_daily_plan_v1",
+) -> tuple[FieldRule, ...]:
+    p = profile_code
     return (
         _field(p, "machine_code", "B", ("机位",), "identifier", required=True),
         _field(p, "source_machine_finish", "C", ("计划啤完机台",), "text"),
@@ -474,6 +476,61 @@ def _huakang_b_fields() -> tuple[FieldRule, ...]:
         _field(p, "remark", "AT", ("备注",), "text"),
         _field(p, "required_arm_type", "AU", ("单双臂",), "text"),
         _field(p, "required_fixture_type", "AV", ("气剪", "夹具"), "text"),
+    )
+
+
+def _huakang_a_fields() -> tuple[FieldRule, ...]:
+    p = "huakang_a_daily_plan_v1"
+    return (
+        _field(
+            p, "machine_code", "B", ("机位", "机号"), "identifier", required=True
+        ),
+        _field(p, "item_no", "D", ("货号",), "identifier"),
+        _field(p, "legacy_machine_class_text", "E", ("安机", "机型", "机安"), "text"),
+        _field(p, "mold_no", "F", ("工模", "模号"), "identifier", required=True),
+        _field(p, "product_name", "G", ("名称", "产品名称"), "text", required=True),
+        _field(p, "order_no", "H", ("单号", "订单号"), "identifier", required=True),
+        _field(p, "warehouse_text", "I", ("仓库",), "identifier"),
+        _field(p, "set_quantity", "J", ("套数", "数量(套)"), "number"),
+        _field(
+            p, "order_quantity", "K", ("订单数", "订单数量"), "number", required=True
+        ),
+        _field(
+            p, "completed_quantity", "L", ("已啤数", "完成数"), "number", required=True
+        ),
+        _field(p, "source_outstanding_quantity", "M", ("欠数",), "number"),
+        _field(
+            p,
+            "daily_target_quantity",
+            "N",
+            ("计划日目标", "计划目标"),
+            "number",
+            unit="pieces/day",
+        ),
+        _field(p, "material_name", "O", ("用料", "材料"), "text"),
+        _field(p, "sprue_ratio", "P", ("水口比例",), "percent"),
+        _field(p, "color_name", "Q", ("颜色",), "text"),
+        _field(p, "color_powder_code", "R", ("色粉",), "identifier"),
+        _field(p, "whole_shot_net_weight_g", "S", ("净重",), "number", unit="g"),
+        _field(p, "whole_shot_gross_weight_g", "T", ("毛重",), "number", unit="g"),
+        _field(p, "material_weight_kg", "U", ("用料重",), "number", unit="kg"),
+        _field(p, "unit_price", "V", ("单价/啤", "单价"), "number"),
+        _field(p, "order_date", "W", ("下单期", "下单日期"), "date"),
+        _field(p, "delivery_due_date", "Y", ("交货完成期", "交货期"), "date"),
+        _field(p, "legacy_mold_change", "Z", ("转模参考时间",), "text"),
+        _field(p, "legacy_color_change", "AA", ("转色参考时间",), "text"),
+        _field(p, "legacy_setup", "AB", ("转模/色时间",), "text"),
+        _field(p, "legacy_downtime", "AC", ("机/模故时间",), "text"),
+        _field(p, "planned_start", "AD", ("计划啤货期", "计划生产期"), "datetime"),
+        _field(p, "planned_finish", "AE", ("计划完成期",), "datetime"),
+        _field(p, "source_plan_month", "AF", ("计划完成月",), "text"),
+        _field(p, "source_warehouse_date", "AG", ("入库期",), "date"),
+        _field(p, "source_delivery_slack", "AH", ("交期差",), "number"),
+        _field(p, "source_production_days", "AI", ("啤货天数",), "number"),
+        _field(p, "requires_spray_paint", "AJ", ("是否喷油",), "text"),
+        _field(p, "required_arm_type", "AO", ("单双臂",), "text"),
+        _field(p, "required_fixture_type", "AP", ("气剪", "夹具"), "text"),
+        _field(p, "remark", "AT", ("备注",), "text"),
     )
 
 
@@ -607,6 +664,43 @@ BUILTIN_IMPORT_PROFILES: tuple[ImportProfile, ...] = (
         renderer_code="huaxing_daily_plan_v1",
     ),
     ImportProfile(
+        profile_id="isprofile-huakang-a-daily-v1",
+        profile_code="huakang_a_daily_plan_v1",
+        profile_family="huakang_a_daily_plan",
+        revision=1,
+        name="华康 A 啤机生产日计划表 v1",
+        factories=("huakang-a",),
+        status="ACTIVE",
+        sheet_roles=(
+            SheetRoleRule(
+                "CURRENT_PLAN",
+                (
+                    "1月",
+                    "2月",
+                    "3月",
+                    "4月",
+                    "5月",
+                    "6月",
+                    "7月",
+                    "8月",
+                    "9月",
+                    "10月",
+                    "11月",
+                    "12月",
+                ),
+                True,
+                3,
+            ),
+        ),
+        fields=_huakang_a_fields(),
+        machine_adapter="system_master_only",
+        mold_adapter="system_master_only",
+        dynamic_shift_start="AU",
+        dynamic_shift_end="DJ",
+        quantity_scope="ORDER_CUMULATIVE",
+        renderer_code="system_standard_v1",
+    ),
+    ImportProfile(
         profile_id="isprofile-huakang-b-daily-v1",
         profile_code="huakang_b_daily_plan_v1",
         profile_family="huakang_b_daily_plan",
@@ -630,6 +724,25 @@ BUILTIN_IMPORT_PROFILES: tuple[ImportProfile, ...] = (
         dynamic_shift_end="DF",
         quantity_scope="ORDER_CUMULATIVE",
         renderer_code="huakang_b_daily_plan_v1",
+    ),
+    ImportProfile(
+        profile_id="isprofile-huakang-b-plan-only-v1",
+        profile_code="huakang_b_plan_only_v1",
+        profile_family="huakang_b_plan_only",
+        revision=1,
+        name="华康 B 啤机生产日计划表（单计划表）v1",
+        factories=("huakang-b",),
+        status="ACTIVE",
+        sheet_roles=(
+            SheetRoleRule("CURRENT_PLAN", ("计划表",), True, 3),
+        ),
+        fields=_huakang_b_fields("huakang_b_plan_only_v1"),
+        machine_adapter="system_master_only",
+        mold_adapter="system_master_only",
+        dynamic_shift_start="AW",
+        dynamic_shift_end="DF",
+        quantity_scope="ORDER_CUMULATIVE",
+        renderer_code="system_standard_v1",
     ),
     ImportProfile(
         profile_id="isprofile-demand-order-shared-v1",

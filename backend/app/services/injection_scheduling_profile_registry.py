@@ -69,10 +69,14 @@ def active_profiles_for_factory(
             InjectionSchedulingImportProfile.revision.desc(),
         )
     ).all()
-    return tuple(
-        _profile_from_record(profile, (binding.factory_id,))
-        for profile, binding in rows
-    )
+    selected: list[ImportProfile] = []
+    seen_families: set[str] = set()
+    for profile, binding in rows:
+        if profile.profile_family in seen_families:
+            continue
+        seen_families.add(profile.profile_family)
+        selected.append(_profile_from_record(profile, (binding.factory_id,)))
+    return tuple(selected)
 
 
 def profile_revision_for_factory(
@@ -179,6 +183,7 @@ def create_profile_revision(
     request_id: str,
     config: dict[str, Any],
     user: AuthContext,
+    commit: bool = True,
 ) -> InjectionSchedulingImportProfile:
     latest_record = db.scalar(
         select(InjectionSchedulingImportProfile)
@@ -283,12 +288,100 @@ def create_profile_revision(
             },
             user=user,
         )
-        db.commit()
+        if commit:
+            db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
             status_code=409,
             detail="Profile revision 或 profile_code 已被其他操作占用，请重新加载",
+        ) from exc
+    return record
+
+
+def create_active_workbench_profile_revision(
+    db: Session,
+    *,
+    factory_id: str,
+    profile_family: str,
+    profile_code: str,
+    name: str,
+    description: str,
+    expected_family_revision: int,
+    request_id: str,
+    config: dict[str, Any],
+    user: AuthContext,
+) -> InjectionSchedulingImportProfile:
+    """Save a clerk-corrected mapping as an immediately usable factory template.
+
+    The simplified workbench intentionally has no profile approval step.  The
+    older profile-governance routes retain their submitter/reviewer separation;
+    this helper is only used by the workbench import contract and records a
+    distinct audit event.  Existing shared profiles remain active so a
+    factory-local correction cannot disable imports in another factory.
+    """
+
+    record = create_profile_revision(
+        db,
+        factory_id=factory_id,
+        profile_family=profile_family,
+        profile_code=profile_code,
+        name=name,
+        description=description,
+        expected_family_revision=expected_family_revision,
+        request_id=request_id,
+        config=config,
+        user=user,
+        commit=False,
+    )
+    timestamp = _now()
+    actor_name = _actor_name(user)
+    record.status = "ACTIVE"
+    record.lifecycle_revision += 1
+    record.reviewed_by = user.id
+    record.reviewed_by_name = actor_name
+    record.reviewed_at = timestamp
+    shadowed_records = list(
+        db.scalars(
+            select(InjectionSchedulingImportProfile)
+            .join(
+                InjectionSchedulingImportProfileFactory,
+                InjectionSchedulingImportProfile.id
+                == InjectionSchedulingImportProfileFactory.profile_id,
+            )
+            .where(
+                InjectionSchedulingImportProfileFactory.factory_id == factory_id,
+                InjectionSchedulingImportProfile.profile_family == profile_family,
+                InjectionSchedulingImportProfile.status == "ACTIVE",
+                InjectionSchedulingImportProfile.id != record.id,
+            )
+        ).all()
+    )
+    _audit(
+        db,
+        factory_id=factory_id,
+        event_type="workbench_import_template_activated",
+        entity_type="import_profile",
+        entity_id=record.id,
+        entity_revision=record.revision,
+        request_id=request_id,
+        detail={
+            "reason": description,
+            "definition_sha256": record.definition_sha256,
+            "workflow": "SIMPLIFIED_WORKBENCH",
+            "shadowed_factory_profile_ids": [
+                previous.id for previous in shadowed_records
+            ],
+        },
+        user=user,
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="工作台映射模板激活冲突，请重新预览",
         ) from exc
     return record
 

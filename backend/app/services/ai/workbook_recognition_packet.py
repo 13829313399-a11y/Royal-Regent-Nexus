@@ -31,7 +31,7 @@ from app.services.injection_scheduling_excel import (
 
 PACKET_SCHEMA_VERSION = "workbook-recognition-packet-v1"
 MAX_SHEETS = 50
-MAX_COLUMNS = 500
+MAX_COLUMNS = 1_024
 MAX_ROWS = 100_000
 MAX_HEADER_ROWS = 20
 MAX_SAMPLE_ROWS = 24
@@ -198,7 +198,9 @@ def _sheet_packet(
             for cell in cells.values()
             if cell.get("value") not in (None, "") or cell.get("formula")
         ]
-        for cell in cells.values():
+        # Styled empty cells may extend to XFD even though the business table ends
+        # hundreds of columns earlier. Limit the semantic payload, not formatting.
+        for cell in semantic_cells:
             column = _column_from_ref(str(cell.get("reference", "")))
             if column:
                 max_column = max(max_column, _column_number(column))

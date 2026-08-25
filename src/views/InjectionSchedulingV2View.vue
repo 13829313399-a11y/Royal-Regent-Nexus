@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import InjectionSchedulingV2View from '@/features/injection-scheduling-v2/InjectionSchedulingV2View.vue'
+import InjectionSchedulingWorkbenchView from '@/features/injection-scheduling-v2/workbench/InjectionSchedulingWorkbenchView.vue'
 </script>
 
-<template><InjectionSchedulingV2View /></template>
+<template><InjectionSchedulingWorkbenchView /></template>

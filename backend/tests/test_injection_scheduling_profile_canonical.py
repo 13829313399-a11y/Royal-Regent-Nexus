@@ -38,10 +38,15 @@ def _bytes(workbook: Workbook) -> bytes:
     return payload.getvalue()
 
 
-def _huakang_b_fixture(*, drift_order_header: bool = False) -> bytes:
+def _huakang_b_fixture(
+    *,
+    drift_order_header: bool = False,
+    plan_sheet_name: str = "排期表",
+    include_support_sheets: bool = True,
+) -> bytes:
     workbook = Workbook()
     plan = workbook.active
-    plan.title = "排期表"
+    plan.title = plan_sheet_name
     plan["A1"] = "华康B啤机生产日排表（脱敏契约样本）"
     for column, value in {
         "A": "机位",
@@ -109,22 +114,89 @@ def _huakang_b_fixture(*, drift_order_header: bool = False) -> bytes:
     }.items():
         plan[f"{column}6"] = value
 
-    machine = workbook.create_sheet("厂区现有啤机")
-    machine["A3"] = "设备编号"
-    machine["B3"] = "设备名称"
-    machine["A4"] = "B01"
-    machine["B4"] = "320T 注塑机"
-    machine["D4"] = "32A"
-    machine["F4"] = 500
-    machine["G4"] = "700x700"
-    machine["H4"] = 320
-    machine["I4"] = "标准机"
-    machine["J4"] = "双臂"
+    if include_support_sheets:
+        machine = workbook.create_sheet("厂区现有啤机")
+        machine["A3"] = "设备编号"
+        machine["B3"] = "设备名称"
+        machine["A4"] = "B01"
+        machine["B4"] = "320T 注塑机"
+        machine["D4"] = "32A"
+        machine["F4"] = 500
+        machine["G4"] = "700x700"
+        machine["H4"] = 320
+        machine["I4"] = "标准机"
+        machine["J4"] = "双臂"
 
-    for title in ("已啤完", "机台完成时间", "外发2", "取消订单", "每班啤数记录"):
-        history = workbook.create_sheet(title)
-        history["I5"] = "HISTORY-MUST-NOT-BECOME-CURRENT"
-        history["L5"] = 999
+        for title in ("已啤完", "机台完成时间", "外发2", "取消订单", "每班啤数记录"):
+            history = workbook.create_sheet(title)
+            history["I5"] = "HISTORY-MUST-NOT-BECOME-CURRENT"
+            history["L5"] = 999
+    return _bytes(workbook)
+
+
+def _huakang_a_fixture() -> bytes:
+    workbook = Workbook()
+    plan = workbook.active
+    plan.title = "8月"
+    plan["A1"] = "河源华康A啤机生产日计划表（脱敏契约样本）"
+    for column, value in {
+        "A": "机位",
+        "B": "机位",
+        "D": "货号",
+        "E": "机安",
+        "F": "工模",
+        "G": "名称",
+        "H": "单号",
+        "I": "仓库",
+        "J": "套数",
+        "K": "订单数",
+        "L": "已啤数",
+        "M": "欠数",
+        "N": "计划日目标",
+        "O": "用料",
+        "P": "水口比例",
+        "Q": "颜色",
+        "R": "色粉",
+        "S": "净重",
+        "T": "毛重",
+        "U": "用料重",
+        "V": "单价/啤",
+        "W": "下单期",
+        "Y": "交货完成期",
+        "AD": "计划啤货期",
+        "AE": "计划完成期",
+        "AO": "单双臂",
+        "AP": "气剪",
+        "AT": "备注",
+        "AU": "1号",
+    }.items():
+        plan[f"{column}3"] = value
+    plan["AU2"] = "白班"
+    plan["A4"] = "1"
+    plan["B4"] = "1"
+    for column, value in {
+        "B": "1",
+        "D": "ITEM-A-01",
+        "E": "7A",
+        "F": "MOLD-A-01",
+        "G": "脱敏产品甲",
+        "H": "ORDER-A-01",
+        "I": "WH-A",
+        "J": 1,
+        "K": 100,
+        "L": 10,
+        "M": 90,
+        "N": 50,
+        "O": "PP",
+        "P": "5%",
+        "Q": "黑",
+        "R": "C-A-01",
+        "AD": datetime(2026, 8, 1, 8),  # noqa: DTZ001 - Excel stores local wall time
+        "AE": datetime(2026, 8, 1, 20),  # noqa: DTZ001 - Excel stores local wall time
+        "AO": "双臂",
+        "AU": 50,
+    }.items():
+        plan[f"{column}5"] = value
     return _bytes(workbook)
 
 
@@ -208,6 +280,51 @@ def test_huakang_b_profile_maps_duplicate_header_by_coordinate_and_classifies_ro
     assert overproduction[0]["blocking"] is False
 
 
+def test_huakang_b_plan_only_sheet_uses_group_title_without_creating_machine_master():
+    normalized, _ = parse_injection_scheduling_workbook(
+        _huakang_b_fixture(
+            plan_sheet_name="计划表",
+            include_support_sheets=False,
+        ),
+        "huakang-b-plan-only.xlsx",
+        factory_id="huakang-b",
+    )
+
+    assert normalized["profile"]["profile_code"] == "huakang_b_plan_only_v1"
+    assert normalized["summary"]["scheduled_baseline_count"] == 1
+    assert normalized["summary"]["backlog_count"] == 1
+    assert normalized["scheduled_baseline_tasks"][0]["machine_code"] == "B01"
+    assert normalized["machines"] == []
+    assert any(
+        item["entity_type"] == "MACHINE"
+        and item["business_key"] == "B01"
+        and item["status"] == "MISSING_IN_SYSTEM_MASTER"
+        for item in normalized["master_differences"]
+    )
+
+
+def test_huakang_a_profile_maps_month_sheet_and_duplicate_machine_header():
+    normalized, issues = parse_injection_scheduling_workbook(
+        _huakang_a_fixture(),
+        "huakang-a-contract.xlsx",
+        factory_id="huakang-a",
+        system_machine_codes={"1"},
+        system_mold_nos={"MOLD-A-01"},
+    )
+
+    assert normalized["profile"]["profile_code"] == "huakang_a_daily_plan_v1"
+    assert normalized["batch_state"] == "PREVIEW_READY"
+    assert normalized["summary"]["scheduled_baseline_count"] == 1
+    assert normalized["summary"]["backlog_count"] == 0
+    assert normalized["summary"]["order_count"] == 1
+    assert normalized["summary"]["master_difference_count"] == 0
+    task = normalized["scheduled_baseline_tasks"][0]
+    assert task["machine_code"] == "1"
+    assert task["daily_target_quantity"] == 50
+    assert task["source"]["dynamic_shift_cells"][0]["column"] == "AU"
+    assert not [item for item in issues if item["blocking"]]
+
+
 def test_huaxing_and_unknown_factory_use_same_canonical_contract():
     source = _huaxing_fixture()
     normalized, _ = parse_injection_scheduling_workbook(
@@ -257,7 +374,7 @@ def test_builtin_profile_registry_is_idempotent_and_factory_scoped():
             db.scalar(
                 select(func.count()).select_from(InjectionSchedulingImportProfile)
             )
-            == 4
+            == 6
         )
         assert (
             db.scalar(
@@ -265,16 +382,20 @@ def test_builtin_profile_registry_is_idempotent_and_factory_scoped():
                     InjectionSchedulingImportProfileFactory
                 )
             )
-            == 14
+            == 16
         )
         assert (
             db.scalar(select(func.count()).select_from(InjectionSchedulingAuditEvent))
-            == 14
+            == 16
         )
         huakang_profiles = active_profiles_for_factory(db, "huakang-b")
         assert [item.profile_code for item in huakang_profiles] == [
-            "huakang_b_daily_plan_v1"
+            "huakang_b_daily_plan_v1",
+            "huakang_b_plan_only_v1",
         ]
+        assert [
+            item.profile_code for item in active_profiles_for_factory(db, "huakang-a")
+        ] == ["huakang_a_daily_plan_v1"]
         assert active_profiles_for_factory(db, "huakang-c") == ()
         assert [
             item.profile_code
@@ -351,7 +472,7 @@ def test_profile_revision_activation_retires_predecessor_and_audits():
         assert predecessor.status == "RETIRED"
         assert [
             item.revision for item in active_profiles_for_factory(db, "huakang-b")
-        ] == [2]
+        ] == [2, 1]
         event_types = set(
             db.scalars(select(InjectionSchedulingAuditEvent.event_type)).all()
         )
