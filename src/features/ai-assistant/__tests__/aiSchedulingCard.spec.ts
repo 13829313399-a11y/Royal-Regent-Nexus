@@ -103,7 +103,7 @@ describe('AI structured business cards', () => {
             status_labels: { PUBLISHED: '执行中', DRAFT: '规划草案' },
             common_errors: ['厂区无权限'],
             prohibited_claims: ['不得把草案称为执行计划'],
-            source_files: ['src/features/injection-scheduling-v2/InjectionSchedulingV2View.vue'],
+            source_files: ['src/views/InjectionSchedulingV2View.vue'],
             help_markdown: '先确认厂区，再查看执行计划与规划草案。\n\n**这段内容必须按纯文本显示。**',
           },
           error: null,

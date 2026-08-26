@@ -11,9 +11,10 @@ const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
 const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/CustomerPriceArtifactPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
+const injectionSchedulingPlaceholderSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingV2View.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('exposes the Phase 1 injection scheduling V2 read-only workspace', () => {
+  it('keeps the injection scheduling card and routes it to the rebuild placeholder', () => {
     expect(enterpriseSource).toContain("id: 'injection-scheduling'")
     expect(enterpriseSource).toContain("title: '注塑排产中枢'")
     expect(enterpriseSource).toContain("route: '/modules/production/injection-scheduling'")
@@ -23,7 +24,13 @@ describe('production module entry', () => {
     expect(routerSource).toContain("import('@/views/InjectionSchedulingV2View.vue')")
     expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}fullPage: true/)
     expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}permissions: \['injection_scheduling:read'\]/)
-    expect(routerSource).not.toContain('InjectionSchedulingWorkspaceView.vue')
+    expect(enterpriseSource).toContain("status: '重构中'")
+    expect(enterpriseSource).toContain("stats: '旧页面已下线 · 入口保留'")
+    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling/mold-database'")
+    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling/machine-database'")
+    expect(injectionSchedulingPlaceholderSource).toContain('注塑排产中枢正在重构')
+    expect(injectionSchedulingPlaceholderSource).toContain('返回生产部模块中心')
+    expect(injectionSchedulingPlaceholderSource).not.toContain('features/injection-scheduling-v2')
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {

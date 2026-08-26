@@ -79,7 +79,7 @@
 - `src/components/common/SectionPanel.vue`：标准内容面板；
 - `src/components/common/StatusPill.vue`：状态标签；
 - `src/components/layout/`：应用顶栏、侧栏和页面壳；
-- `src/features/injection-scheduling-v2/styles/`：排产工作区隔离 token、修饰和动效；
+- `src/views/InjectionSchedulingV2View.vue`：注塑排产重构期占位入口；旧排产工作区样式已移除；
 - `src/components/molding/print/moldingSamplePrint.css`：啤办打印输出；
 - `design-qa.md`：具体功能的视觉验收证据，不替代本规范。
 

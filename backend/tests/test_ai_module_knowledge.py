@@ -319,7 +319,8 @@ def test_fixed_registry_loads_versioned_help_and_rejects_path_like_ids() -> None
     assert document.metadata.source_files[-1] == "src/data/enterpriseMock.ts"
     assert document.metadata.status_labels["PUBLISHED"].startswith("当前执行")
     assert document.metadata.status_labels["DRAFT"].startswith("排产草案")
-    assert "只读演示数据" in document.body_markdown
+    assert "当前路由只显示重构占位信息" in document.body_markdown
+    assert "当前占位页不开放这些流程" in document.body_markdown
     assert "ERP" in document.body_markdown
 
     with pytest.raises(UnknownModuleKnowledgeError):

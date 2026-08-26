@@ -3,7 +3,7 @@ import { X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import type { DirectoryMember } from '@/api/directory'
-import { useDialogFocus } from '@/features/injection-scheduling-v2/composables/useDialogFocus'
+import { useDialogFocus } from '@/composables/useDialogFocus'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 import { directoryDepartmentLabel, directoryFactoryLabel } from '@/lib/directoryLabels'
 

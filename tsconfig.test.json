@@ -3,11 +3,6 @@
   "include": [
     "src/vite-env.d.ts",
     "src/types/**/*.d.ts",
-    "src/features/injection-scheduling-v2/__tests__/b0PerformanceBaseline.spec.ts",
-    "src/features/injection-scheduling-v2/__tests__/*.runtime.spec.ts",
-    "src/features/injection-scheduling-v2/__tests__/fixtures/**/*.ts",
-    "src/features/injection-scheduling-v2/__tests__/harness/**/*.ts",
-    "src/features/injection-scheduling-v2/__tests__/helpers/**/*.ts",
     "src/features/ai-assistant/__tests__/*.spec.ts"
   ],
   "exclude": [],
