@@ -70,7 +70,8 @@ HUADENG_CUSTOMER_MAPPINGS: dict[str, HuadengCustomerMappingSpec] = {
     "casdon": HuadengCustomerMappingSpec(
         "casdon", "Casdon", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
         "HUADENG_CASDON_PO_V1", "HUADENG_CASDON_SCHEDULE_APPEND_V2",
-        "按 PO 修订版和字段完整度去重；新单插入同货号最后一行并继承外箱，总箱按数量除以外箱；"
+        "按 PO 修订版和字段完整度去重；新单插入同货号最后一行，并按同货号唯一值继承外箱；"
+        "外箱缺失或存在多个值时需人工填写/确认，总箱按数量除以外箱；"
         "USD 按 7.75 换算 HKD，验货期为走货期前 7 天并避开周末。",
     ),
     "jakks": HuadengCustomerMappingSpec(
@@ -411,6 +412,31 @@ def _prepare_casdon_or_spin(
                 values = schedule_module._compose_row(order, line, index)
                 legacy_rows.append(values)
                 record = _legacy_row_record(customer_code, order, line, values)
+                if is_casdon and not line.get("is_charge") and not values.get(
+                    schedule_module.COL["outer"]
+                ):
+                    item = casdon_schedule.item_base(values.get(schedule_module.COL["item"]))
+                    outer_values = index.outer_values_by_item.get(item, ())
+                    if len(outer_values) > 1:
+                        options = " / ".join(_text(value) for value in outer_values)
+                        code = "ambiguous_units_per_carton"
+                        message = (
+                            f"当前排期货号 {item} 存在多个外箱装箱数（{options}），"
+                            "请人工填写本单外箱装箱数"
+                        )
+                    else:
+                        code = "missing_units_per_carton"
+                        message = (
+                            f"当前排期未找到货号 {item} 的外箱装箱数，"
+                            "请人工填写本单外箱装箱数"
+                        )
+                    record.setdefault("flags", []).append({
+                        "level": "high",
+                        "code": code,
+                        "field": "units_per_carton",
+                        "text": message,
+                    })
+                    warnings.append(f"{order.get('filename')} / {item}：{message}")
                 if is_casdon:
                     schedule_key = (
                         casdon_schedule.normalize_po(values.get(schedule_module.COL["contract"])),
@@ -1029,7 +1055,8 @@ def create_huadeng_customer_preview(
     file_names = [name for name, _ in po_files]
     po_hashes = [sha256(content).hexdigest() for _, content in po_files]
     export_position_rule = (
-        "Casdon 新单按货号插入该货号最后一条历史明细之后、小计之前，并继承同货号外箱；"
+        "Casdon 新单按货号插入该货号最后一条历史明细之后、小计之前；"
+        "外箱按同货号唯一值继承，缺失或多值时需人工填写/确认；"
         "总箱使用数量除以外箱的行公式。"
         if customer_code == "casdon"
         else "仅在对应目标表明细末尾/合计行之前插入本批新单，并从插入点向上选择最近的"

@@ -108,7 +108,7 @@ def test_casdon_preview_and_export_use_received_date_and_seven_day_rule(monkeypa
             "po_number": "8395",
             "po_date": "2026-07-30",
             "ship_date": "2026-08-10",
-            "customer": "CASDON UK",
+            "customer": "KB SALES",
             "customer_po_header": "UK-PO-1",
             "version": "A",
             "lines": [{
@@ -251,6 +251,111 @@ def test_casdon_export_inserts_before_matching_item_subtotal(monkeypatch) -> Non
     assert preview["rows"][1]["units_per_carton"] == "4"
     assert preview["rows"][1]["carton_count"] == "3"
     assert any("插入该货号最后一条历史明细之后" in warning for warning in preview["warnings"])
+
+
+def test_casdon_outer_pack_conflict_or_absence_can_be_manually_resolved(monkeypatch) -> None:
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "2026年未验货订单"
+    headers = {
+        2: "来单日期", 4: "合同联系人", 5: "客户PO", 6: "合同号", 7: "客名",
+        8: "版本", 9: "货号", 10: "产品名称", 11: "数量", 13: "外装箱",
+        14: "总箱", 27: "验货期", 29: "PO走货期", 32: "单价/港币",
+        33: "单价/美金", 34: "总货价/港币", 35: "总货价/美金",
+        37: "英文品名", 47: "走货国家",
+    }
+    for column, value in headers.items():
+        worksheet.cell(1, column, value)
+    existing_rows = (
+        {6: "OLD-USA", 7: "CASDON USA", 8: "A", 9: "11050(A)", 10: "充棉机", 11: 60, 13: 6},
+        {6: "OLD-TARGET", 7: "TARGET USA", 8: "A", 9: "11050.TAR001(A)", 10: "充棉机", 11: 40, 13: 4},
+        {10: "合计：", 11: "=SUM(K2:K3)", 14: "=SUM(N2:N3)"},
+    )
+    for row_no, values in enumerate(existing_rows, start=2):
+        for column, value in values.items():
+            worksheet.cell(row_no, column, value)
+    notes = workbook.create_sheet("说明")
+    notes["A1"] = "保留工作表"
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    schedule = output.getvalue()
+
+    def parse(_self, _path: str):
+        return {
+            "po_number": "NEW-MANUAL-OUTER",
+            "po_date": "2026-08-01",
+            "ship_date": "2026-09-01",
+            "customer": "KB SALES",
+            "customer_po_header": "KB-PO-1",
+            "version": "A",
+            "lines": [
+                {
+                    "line_no": "1", "item_code": "11050", "description_en": "Stuffing Machine",
+                    "qty": 12, "unit": "PCS", "unit_price": 2, "total_usd": 24,
+                    "is_charge": False,
+                },
+                {
+                    "line_no": "2", "item_code": "99999", "description_en": "New Item",
+                    "qty": 24, "unit": "PCS", "unit_price": 1, "total_usd": 24,
+                    "is_charge": False,
+                },
+            ],
+            "raw_text": "",
+        }
+
+    monkeypatch.setattr(service.casdon_po_parser.CasdonPOParser, "parse", parse)
+    preview = service.create_huadeng_customer_preview(
+        customer_code="casdon",
+        factory_id="huadeng",
+        received_date="2026-08-03",
+        po_files=[("PO NEW-MANUAL-OUTER.pdf", b"pdf")],
+        schedule_file_name="2026年Casdon排期.xlsx",
+        schedule_content=schedule,
+    )
+
+    assert preview["summary"]["blocked"] == 2
+    assert preview["rows"][0]["issues"][0]["code"] == "ambiguous_units_per_carton"
+    assert preview["rows"][0]["issues"][0]["field"] == "units_per_carton"
+    assert preview["rows"][1]["issues"][0]["code"] == "missing_units_per_carton"
+    issue_keys = {
+        issue["skip_key"]
+        for row in preview["rows"]
+        for issue in row["issues"]
+    }
+    overrides = [
+        {"row_id": "casdon-1", "field": "units_per_carton", "value": "6"},
+        {"row_id": "casdon-2", "field": "units_per_carton", "value": "12"},
+    ]
+    exported, _file_name, _exported_preview = service.export_huadeng_customer_schedule(
+        customer_code="casdon",
+        factory_id="huadeng",
+        received_date="2026-08-03",
+        po_files=[("PO NEW-MANUAL-OUTER.pdf", b"pdf")],
+        schedule_file_name="2026年Casdon排期.xlsx",
+        schedule_content=schedule,
+        skipped_issue_keys=issue_keys,
+        manual_overrides=overrides,
+    )
+
+    result = openpyxl.load_workbook(BytesIO(exported), data_only=False)
+    try:
+        assert result.sheetnames == ["2026年未验货订单", "说明"]
+        sheet = result["2026年未验货订单"]
+        exported_rows = {
+            sheet.cell(row_no, 9).value: row_no
+            for row_no in range(2, sheet.max_row + 1)
+            if sheet.cell(row_no, 6).value == "NEW-MANUAL-OUTER"
+        }
+        conflict_row = exported_rows["11050(A)"]
+        missing_row = exported_rows["99999(A)"]
+        assert sheet.cell(conflict_row, 13).value == 6
+        assert sheet.cell(conflict_row, 14).value == f'=IF(M{conflict_row}=0,"",K{conflict_row}/M{conflict_row})'
+        assert sheet.cell(missing_row, 13).value == 12
+        assert sheet.cell(missing_row, 14).value == f'=IF(M{missing_row}=0,"",K{missing_row}/M{missing_row})'
+        assert result["说明"]["A1"].value == "保留工作表"
+    finally:
+        result.close()
 
 
 def test_jakks_blocks_change_orders_and_dedupes_batch(monkeypatch) -> None:

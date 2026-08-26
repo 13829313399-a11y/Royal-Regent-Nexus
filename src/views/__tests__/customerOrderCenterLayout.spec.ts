@@ -626,6 +626,77 @@ describe('customer order center static frontend', () => {
     expect(wrapper.findAll('.customer-summary-grid > article')).toHaveLength(1)
   })
 
+  it('keeps factory schedule rows and summaries isolated to the active factory', () => {
+    const huakangA = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'schedule',
+        factoryId: 'huakang-a',
+        factoryName: '华康A厂',
+      },
+    })
+
+    expect(huakangA.findAll('.customer-summary-grid > article')).toHaveLength(0)
+    expect(huakangA.findAll('.month-card-grid > button')).toHaveLength(0)
+    expect(huakangA.findAll('.factory-schedule-table tbody tr')).toHaveLength(1)
+    expect(huakangA.get('.factory-schedule-table tbody').text()).toContain('当前筛选条件下暂无走货PO')
+    expect(huakangA.findAll('.factory-schedule-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0', '0', '0'])
+    expect(huakangA.text()).not.toContain('BuzzBee / WMC')
+    expect(huakangA.text()).not.toContain('BuzzBee / AAFES（美国）')
+
+    const huaxing = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'schedule',
+        factoryId: 'huaxing',
+        factoryName: '华兴厂',
+      },
+    })
+
+    expect(huaxing.findAll('.customer-summary-grid > article')).toHaveLength(2)
+    expect(huaxing.findAll('.factory-schedule-table tbody tr')).toHaveLength(2)
+    expect(huaxing.text()).toContain('BuzzBee / WMC')
+    expect(huaxing.text()).toContain('BuzzBee / AAFES（美国）')
+
+    const huakangDashboard = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'dashboard',
+        factoryId: 'huakang-a',
+        factoryName: '华康A厂',
+      },
+    })
+
+    expect(huakangDashboard.get('.metric-grid').text()).toContain('当前导入批次0')
+    expect(huakangDashboard.get('.metric-grid').text()).toContain('待确认数据0')
+    expect(huakangDashboard.get('.activity-table tbody').text()).toContain('当前厂区暂无处理记录')
+    expect(huakangDashboard.text()).not.toContain('BuzzBee')
+
+    const huakangLedger = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'ledger',
+        factoryId: 'huakang-a',
+        factoryName: '华康A厂',
+      },
+    })
+
+    expect(huakangLedger.get('.ledger-kpis').text()).toContain('已确认订单明细0')
+    expect(huakangLedger.get('.ledger-kpis').text()).toContain('待确认/阻断0')
+    expect(huakangLedger.get('.ledger-kpis').text()).toContain('厂区排期PO0')
+    expect(huakangLedger.get('.ledger-table tbody').text()).toContain('当前厂区暂无订单记录')
+    expect(huakangLedger.get('select[aria-label="筛选客户"]').findAll('option')).toHaveLength(1)
+    expect(huakangLedger.text()).not.toContain('BuzzBee')
+
+    const huakangExceptions = mount(CustomerOrderCenterWorkspace, {
+      props: {
+        activeSection: 'exceptions',
+        factoryId: 'huakang-a',
+        factoryName: '华康A厂',
+      },
+    })
+
+    expect(huakangExceptions.findAll('.exception-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0', '0', '0', '0'])
+    expect(huakangExceptions.get('.empty-exception').text()).toContain('当前筛选条件下没有待关注事项')
+    expect(huakangExceptions.text()).not.toContain('BuzzBee')
+  })
+
   it('accepts multiple PO files and one schedule through the upload drop zones', async () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: {

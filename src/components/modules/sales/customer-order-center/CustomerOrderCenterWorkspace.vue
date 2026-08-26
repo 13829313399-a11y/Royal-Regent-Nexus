@@ -417,6 +417,7 @@ interface ScheduleException {
 
 interface OrderRow {
   id: string
+  factoryId: string
   status: OrderStatus
   statusLabel: string
   rowRole?: 'parent' | 'detail'
@@ -554,6 +555,8 @@ const searchQuery = ref('')
 const includeValid = ref(true)
 const includeWarning = ref(true)
 const includeBlocked = ref(true)
+const selectedLedgerStatus = ref<'all' | OrderStatus>('all')
+const selectedLedgerCustomer = ref('all')
 const traceRow = ref<OrderRow | null>(null)
 const blockingResolutionOpen = ref(false)
 const scheduleGenerated = ref(false)
@@ -591,6 +594,7 @@ const preflightConfirmationText = computed(
 const orderRows = ref<OrderRow[]>([
   {
     id: 'row-001',
+    factoryId: 'huaxing',
     status: 'valid',
     statusLabel: '有效',
     issue: 'WMC 首页内嵌格式已匹配；数量、装箱数、箱数和当前目标排期一致。',
@@ -628,6 +632,7 @@ const orderRows = ref<OrderRow[]>([
   },
   {
     id: 'row-002',
+    factoryId: 'huaxing',
     status: 'blocked',
     statusLabel: '阻断',
     issue: 'PO装船日期为2026-02-02，旧排期为2026-01-28；LCL是否提前5天尚未确认。',
@@ -665,10 +670,14 @@ const orderRows = ref<OrderRow[]>([
   },
 ])
 
+const factoryOrderRows = computed(() => (
+  orderRows.value.filter((row) => row.factoryId === props.factoryId)
+))
+
 const activeOrderRows = computed(() => (
   props.activeSection === 'preview' && !previewBatch.value
     ? []
-    : orderRows.value.map((sourceRow) => {
+    : factoryOrderRows.value.map((sourceRow) => {
         const row = { ...sourceRow }
         const issues = row.issues ?? []
         for (const issue of issues) {
@@ -759,6 +768,27 @@ const filteredRows = computed(() => {
     if (row.status === 'valid' && !includeValid.value) return false
     if (row.status === 'warning' && !includeWarning.value) return false
     if (row.status === 'blocked' && !includeBlocked.value) return false
+    if (!query) return true
+    return [
+      row.poNo,
+      row.contractNo,
+      row.customerCountry,
+      row.productNo,
+      row.productNameZh,
+      row.productNameEn,
+    ].some((value) => value.toLowerCase().includes(query))
+  })
+})
+
+const ledgerCustomers = computed(() => [...new Set(
+  activeOrderRows.value.map((row) => row.customerCountry),
+)])
+
+const filteredLedgerRows = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  return activeOrderRows.value.filter((row) => {
+    if (selectedLedgerStatus.value !== 'all' && row.status !== selectedLedgerStatus.value) return false
+    if (selectedLedgerCustomer.value !== 'all' && row.customerCountry !== selectedLedgerCustomer.value) return false
     if (!query) return true
     return [
       row.poNo,
@@ -877,6 +907,23 @@ const scheduleSummary = computed(() => ({
   productionIncomplete: filteredFactoryScheduleRows.value.filter((row) => row.productionProgress < 100).length,
   publishableCount: filteredFactoryScheduleRows.value.filter((row) => row.publishableToDownstream).length,
 }))
+
+const dashboardSummary = computed(() => ({
+  importBatchCount: factoryOrderRows.value.length > 0 ? 1 : 0,
+  poCount: new Set(factoryOrderRows.value.map((row) => row.poNo)).size,
+  confirmationCount: activeOrderRows.value.filter((row) => row.status !== 'valid').length,
+  productionIncomplete: factoryScheduleRows.value.filter((row) => row.productionProgress < 100).length,
+}))
+
+const recentFactoryActivities = computed(() => factoryOrderRows.value.slice(0, 3).map((row) => ({
+  id: row.id,
+  time: row.feedbackAt === '—' ? row.receivedDate : row.feedbackAt.slice(11, 16),
+  action: row.status === 'valid' ? '订单排期确认' : '字段映射复核',
+  subject: `${row.customerCountry} / P/O# ${row.poNo}`,
+  result: row.status === 'valid' ? '已确认' : row.statusLabel,
+  status: row.status,
+  stage: row.status === 'valid' ? '流程01完成' : '预览与确认',
+})))
 
 const monthlyScheduleSummary = computed(() => scheduleMonths.value.map((month) => {
   const rows = factoryScheduleRows.value.filter((row) => row.deliveryMonth === month)
@@ -1011,7 +1058,7 @@ const previewCustomerName = computed(() => {
 })
 
 const previewCustomerMarkets = computed(() => Array.from(new Set(
-  orderRows.value
+  factoryOrderRows.value
     .map((row) => row.customerCountry.trim())
     .filter(Boolean),
 )))
@@ -1108,6 +1155,11 @@ function notify(message: string) {
 
 function navigate(section: CustomerOrderCenterSection) {
   emit('navigate', section)
+}
+
+function getCustomerScheduleLabel(row: OrderRow) {
+  const customerName = row.customerCountry.split('/')[0]?.trim() || row.customerCountry
+  return `${customerName}排期_V1.xlsx`
 }
 
 function clearPreviewState() {
@@ -1249,9 +1301,10 @@ function handleDroppedFiles(kind: 'po' | 'schedule', event: DragEvent) {
   applySelectedFiles(kind, Array.from(event.dataTransfer?.files ?? []))
 }
 
-function mapPreviewRow(row: CustomerOrderPreviewRow): OrderRow {
+function mapPreviewRow(row: CustomerOrderPreviewRow, factoryId: string): OrderRow {
   return {
     id: row.id,
+    factoryId,
     status: row.status,
     statusLabel: row.status_label,
     rowRole: row.row_role ?? 'detail',
@@ -1350,8 +1403,11 @@ async function parseSelectedFiles() {
           requestedFactoryId,
         )
     if (requestId !== parseRequestSequence) return
+    if (preview.factory_id !== requestedFactoryId) {
+      throw new Error(`服务端返回厂区 ${preview.factory_id || '未知'}，与当前厂区 ${requestedFactoryId} 不一致，已拒绝展示。`)
+    }
     previewBatch.value = preview
-    orderRows.value = preview.rows.map(mapPreviewRow)
+    orderRows.value = preview.rows.map((row) => mapPreviewRow(row, requestedFactoryId))
     skippedIssueKeys.value = []
     manualOverrideValues.value = {}
     notify(`批量解析完成：${preview.po_file_count} 份PO、${preview.summary.total} 条明细，待确认 ${preview.confirmation_count ?? 0} 条，警告 ${preview.summary.warning} 条，阻断 ${preview.summary.blocked} 条。`)
@@ -1570,6 +1626,19 @@ watch(
   () => {
     selectedCustomerCode.value = ''
     resetImportBatch()
+    searchQuery.value = ''
+    includeValid.value = true
+    includeWarning.value = true
+    includeBlocked.value = true
+    selectedLedgerStatus.value = 'all'
+    selectedLedgerCustomer.value = 'all'
+    selectedScheduleMonth.value = 'all'
+    selectedScheduleCustomer.value = 'all'
+    selectedProductionStatus.value = 'all'
+    selectedExceptionSeverity.value = 'all'
+    selectedExceptionCategory.value = 'all'
+    exceptionSearch.value = ''
+    acknowledgedExceptionIds.value = []
   },
 )
 
@@ -1609,19 +1678,19 @@ onBeforeUnmount(() => {
         <div class="metric-grid">
           <article class="metric-card">
             <span class="metric-card__icon metric-card__icon--blue"><FileUp aria-hidden="true" /></span>
-            <div><p>今日导入批次</p><strong>3</strong><small>2个PO · 1张客户排期</small></div>
+            <div><p>当前导入批次</p><strong>{{ dashboardSummary.importBatchCount }}</strong><small>{{ dashboardSummary.poCount }}个PO · 当前厂区</small></div>
           </article>
           <article class="metric-card">
             <span class="metric-card__icon metric-card__icon--amber"><ClipboardCheck aria-hidden="true" /></span>
-            <div><p>待确认数据</p><strong>2</strong><small>1项日期规则 · 1项Q字段</small></div>
+            <div><p>待确认数据</p><strong>{{ dashboardSummary.confirmationCount }}</strong><small>仅统计当前厂区订单</small></div>
           </article>
           <article class="metric-card">
             <span class="metric-card__icon metric-card__icon--green"><Layers3 aria-hidden="true" /></span>
-            <div><p>生产未完成</p><strong>{{ scheduleSummary.productionIncomplete }}</strong><small>静态反馈示例 · 只读</small></div>
+            <div><p>生产未完成</p><strong>{{ dashboardSummary.productionIncomplete }}</strong><small>当前厂区 · 只读</small></div>
           </article>
           <article class="metric-card metric-card--error">
             <span class="metric-card__icon metric-card__icon--red"><AlertTriangle aria-hidden="true" /></span>
-            <div><p>阻断项</p><strong>{{ orderSummary.blocked }}</strong><small>LCL日期口径待确认</small></div>
+            <div><p>阻断项</p><strong>{{ orderSummary.blocked }}</strong><small>当前厂区数据校验</small></div>
           </article>
         </div>
 
@@ -1706,9 +1775,14 @@ onBeforeUnmount(() => {
             <table class="activity-table">
               <thead><tr><th>时间</th><th>业务动作</th><th>客户 / 文件</th><th>处理结果</th><th>当前阶段</th></tr></thead>
               <tbody>
-                <tr><td>13:42</td><td>生成客户排期</td><td>BuzzBee / WMC PO批次#772</td><td><span class="status-chip status-chip--valid">已生成</span></td><td>流程01完成</td></tr>
-                <tr><td>11:18</td><td>字段映射复核</td><td>2026年 BUZZ BEE 生产排期表.xls.xlsx</td><td><span class="status-chip status-chip--warning">2项待确认</span></td><td>预览与确认</td></tr>
-                <tr><td>09:36</td><td>生产进度反馈</td><td>BuzzBee / P/O# 0092504153</td><td><span class="status-chip status-chip--warning">装配未完成</span></td><td>总排期风险提醒</td></tr>
+                <tr v-for="activity in recentFactoryActivities" :key="`activity-${activity.id}`">
+                  <td>{{ activity.time }}</td>
+                  <td>{{ activity.action }}</td>
+                  <td>{{ activity.subject }}</td>
+                  <td><span :class="['status-chip', `status-chip--${activity.status}`]">{{ activity.result }}</span></td>
+                  <td>{{ activity.stage }}</td>
+                </tr>
+                <tr v-if="recentFactoryActivities.length === 0"><td colspan="5">当前厂区暂无处理记录</td></tr>
               </tbody>
             </table>
           </div>
@@ -2106,34 +2180,35 @@ onBeforeUnmount(() => {
         </header>
 
         <div class="ledger-kpis">
-          <article><span><FileCheck2 aria-hidden="true" /></span><div><p>已生成客户排期</p><strong>12</strong><small>BuzzBee 2026年度</small></div></article>
-          <article><span class="amber"><CalendarClock aria-hidden="true" /></span><div><p>待确认</p><strong>2</strong><small>字段或尾箱问题</small></div></article>
-          <article><span class="green"><GitBranch aria-hidden="true" /></span><div><p>厂区排期PO</p><strong>{{ scheduleSummary.poCount }}</strong><small>{{ factoryName }}当前数据</small></div></article>
+          <article><span><FileCheck2 aria-hidden="true" /></span><div><p>已确认订单明细</p><strong>{{ orderSummary.valid }}</strong><small>{{ factoryName }}当前数据</small></div></article>
+          <article><span class="amber"><CalendarClock aria-hidden="true" /></span><div><p>待确认/阻断</p><strong>{{ dashboardSummary.confirmationCount }}</strong><small>{{ factoryName }}当前数据</small></div></article>
+          <article><span class="green"><GitBranch aria-hidden="true" /></span><div><p>厂区排期PO</p><strong>{{ dashboardSummary.poCount }}</strong><small>{{ factoryName }}当前数据</small></div></article>
         </div>
 
         <article class="ledger-card">
           <div class="ledger-toolbar">
             <label class="ledger-search"><Search aria-hidden="true" /><input v-model="searchQuery" type="search" placeholder="筛选 P/O#、合同、产品或客户"></label>
-            <select aria-label="筛选订单状态"><option>全部状态</option><option>已生成排期</option><option>待确认</option></select>
-            <select aria-label="筛选客户"><option>全部客户</option><option>BuzzBee</option></select>
+            <select v-model="selectedLedgerStatus" aria-label="筛选订单状态"><option value="all">全部状态</option><option value="valid">已确认</option><option value="warning">警告/待确认</option><option value="blocked">阻断</option></select>
+            <select v-model="selectedLedgerCustomer" aria-label="筛选客户"><option value="all">全部客户</option><option v-for="customer in ledgerCustomers" :key="customer" :value="customer">{{ customer }}</option></select>
             <button type="button" class="icon-square" aria-label="刷新"><RefreshCw aria-hidden="true" /></button>
-            <span class="ledger-count">共 {{ filteredRows.length }} 条静态样例</span>
+            <span class="ledger-count">共 {{ filteredLedgerRows.length }} 条当前厂区记录</span>
           </div>
           <div class="table-scroll table-scroll--ledger">
             <table class="ledger-table">
               <thead><tr><th>P/O#</th><th>Contract No.</th><th>客名/国家</th><th>产品编号</th><th>中文名称</th><th>数量</th><th>装箱数</th><th>箱数</th><th>单价HK</th><th>金额HK</th><th>客要求走货期</th><th>订单状态</th><th>客户排期输出</th><th>版本</th><th>操作</th></tr></thead>
               <tbody>
-                <tr v-for="row in filteredRows" :key="`ledger-${row.id}`">
+                <tr v-for="row in filteredLedgerRows" :key="`ledger-${row.id}`">
                   <td class="mono strong">{{ row.poNo }}</td><td class="mono">{{ row.contractNo }}</td><td>{{ row.customerCountry }}</td><td class="mono">{{ row.productNo }}</td><td>{{ row.productNameZh }}</td>
                   <td class="number">{{ row.quantity }}</td><td class="number">{{ row.unitsPerCarton }}</td><td class="number">{{ row.cartonCount }}</td><td class="number">{{ row.unitPriceHkd }}</td><td class="number">{{ row.amountHkd }}</td><td>{{ row.requestedShipDate || '待补充' }}</td>
                   <td><span :class="['status-chip', `status-chip--${row.status}`]">{{ row.status === 'valid' ? '已确认' : row.statusLabel }}</span></td>
-                  <td>{{ row.status === 'valid' ? 'BuzzBee排期_V1.xlsx' : '尚未生成' }}</td><td><button type="button" class="version-button"><History aria-hidden="true" /> V1</button></td>
+                  <td>{{ row.status === 'valid' ? getCustomerScheduleLabel(row) : '尚未生成' }}</td><td><button type="button" class="version-button"><History aria-hidden="true" /> V1</button></td>
                   <td><button type="button" class="trace-button" @click="traceRow = row">查看</button></td>
                 </tr>
+                <tr v-if="filteredLedgerRows.length === 0"><td colspan="15">当前厂区暂无订单记录</td></tr>
               </tbody>
             </table>
           </div>
-          <footer class="table-footer"><span>显示 {{ filteredRows.length }} 条记录</span><div><button type="button"><ChevronLeft aria-hidden="true" /></button><b>1</b><button type="button"><ChevronRight aria-hidden="true" /></button></div></footer>
+          <footer class="table-footer"><span>显示 {{ filteredLedgerRows.length }} 条记录</span><div><button type="button"><ChevronLeft aria-hidden="true" /></button><b>1</b><button type="button"><ChevronRight aria-hidden="true" /></button></div></footer>
         </article>
       </section>
 
