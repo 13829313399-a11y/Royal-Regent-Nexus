@@ -184,6 +184,7 @@ describe('simplified injection scheduling workbench', () => {
       expected_revision: 3,
       mappings: { order_quantity: '订单数量新口径' },
     })
+    expect(httpMocks.post.mock.calls[0]?.[2]).toEqual({ timeout: 300_000 })
     const dialog = readFileSync(join(process.cwd(), 'src/features/injection-scheduling-v2/workbench/SimpleImportDialog.vue'), 'utf8')
     expect(dialog).toContain('slice(0, 25)')
     expect(dialog).toContain('保存本厂区模板并导入')

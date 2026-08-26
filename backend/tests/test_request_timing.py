@@ -16,7 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 
 @pytest.fixture(scope="module")
-def request_timing_middleware(tmp_path_factory):
+def production_main(tmp_path_factory):
     """Load the production middleware without consulting backend/.env."""
 
     patcher = pytest.MonkeyPatch()
@@ -40,8 +40,13 @@ def request_timing_middleware(tmp_path_factory):
             del sys.modules[module_name]
 
     main = importlib.import_module("app.main")
-    yield main.record_request_timing
+    yield main
     patcher.undo()
+
+
+@pytest.fixture(scope="module")
+def request_timing_middleware(production_main):
+    return production_main.record_request_timing
 
 
 @pytest.fixture
@@ -104,3 +109,46 @@ def test_request_id_is_shared_by_state_response_header_and_log(
     assert f"request_id={state_request_id}" in timing_logs[0]
     if supplied_request_id is not None and not should_be_preserved:
         assert supplied_request_id not in timing_logs[0]
+
+
+def test_production_app_compresses_large_responses(production_main):
+    middleware = next(
+        (
+            item
+            for item in production_main.app.user_middleware
+            if item.cls is production_main.ScopedGZipMiddleware
+        ),
+        None,
+    )
+    assert middleware is not None
+    assert middleware.kwargs == {
+        "minimum_size": production_main.LARGE_RESPONSE_COMPRESSION_MINIMUM_BYTES,
+        "compresslevel": production_main.LARGE_RESPONSE_COMPRESSION_LEVEL,
+    }
+
+    probe = FastAPI()
+    probe.add_middleware(production_main.ScopedGZipMiddleware, **middleware.kwargs)
+
+    @probe.get("/api/injection-scheduling/imports/large-response")
+    async def large_response():
+        return {"payload": "x" * production_main.LARGE_RESPONSE_COMPRESSION_MINIMUM_BYTES}
+
+    @probe.get("/unrelated-large-response")
+    async def unrelated_large_response():
+        return {"payload": "x" * production_main.LARGE_RESPONSE_COMPRESSION_MINIMUM_BYTES}
+
+    with TestClient(probe) as client:
+        response = client.get(
+            "/api/injection-scheduling/imports/large-response",
+            headers={"Accept-Encoding": "gzip"},
+        )
+        unrelated_response = client.get(
+            "/unrelated-large-response",
+            headers={"Accept-Encoding": "gzip"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-encoding"] == "gzip"
+    assert len(response.json()["payload"]) == production_main.LARGE_RESPONSE_COMPRESSION_MINIMUM_BYTES
+    assert unrelated_response.status_code == 200
+    assert "content-encoding" not in unrelated_response.headers

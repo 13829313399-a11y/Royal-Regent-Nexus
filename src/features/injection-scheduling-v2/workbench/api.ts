@@ -2,6 +2,7 @@ import { http } from '@/lib/http'
 import { createRandomUuidHex } from '@/lib/randomUuid'
 import {
   confirmImportBatch,
+  IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS,
   mapImportBatch,
   uploadImportPreview,
 } from '../api/injectionSchedulingV2Api'
@@ -219,7 +220,7 @@ export async function applyWorkbenchImportMapping(
     expected_revision: batch.revision,
     request_id: requestId('workbench-import-map'),
     mappings,
-  })
+  }, { timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS })
   return mapImportBatch(data as UnknownRecord)
 }
 
