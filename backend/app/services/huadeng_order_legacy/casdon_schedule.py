@@ -156,6 +156,7 @@ class MasterIndex:
         self.catalog_by_item: dict[str, dict] = {}
         self.catalog_by_customer_item: dict[tuple[str, str], dict] = {}
         self.metadata_by_contract_item: dict[tuple[str, str], dict] = {}
+        self.outer_values_by_item: dict[str, tuple[Any, ...]] = {}
         self.max_row = 1
         self.headers: dict[int, str] = {}
         self.inheritance_conflicts: list[dict[str, Any]] = []
@@ -251,6 +252,9 @@ def build_index(filepath: str) -> MasterIndex:
             idx.catalog_by_item[base] = _counter_to_catalog(
                 counters[base], samples[base], idx.inheritance_conflicts, "全部客户", base
             )
+            idx.outer_values_by_item[base] = _distinct_outer_values(
+                counters[base].get("outer", Counter())
+            )
         for key in customer_counters:
             idx.catalog_by_customer_item[key] = _counter_to_catalog(
                 customer_counters[key], customer_samples[key], idx.inheritance_conflicts, key[0], key[1]
@@ -287,6 +291,23 @@ _CATALOG_COLS = {
 
 
 _PRODUCT_NAME_FIELDS = {"cn_name", "english_name"}
+
+
+def _outer_value_key(value: Any) -> tuple[str, Any]:
+    text = str(value or "").strip()
+    try:
+        return "number", float(text.replace(",", ""))
+    except (TypeError, ValueError):
+        return "text", text.casefold()
+
+
+def _distinct_outer_values(counter: Counter) -> tuple[Any, ...]:
+    values: dict[tuple[str, Any], Any] = {}
+    for value in counter:
+        if value in (None, ""):
+            continue
+        values.setdefault(_outer_value_key(value), value)
+    return tuple(values.values())
 
 
 def _name_key(value: Any) -> str:
@@ -351,6 +372,10 @@ def _catalog_for(idx: MasterIndex, customer: str, base: str, po: str = "") -> di
     exact = idx.metadata_by_contract_item.get((normalize_po(po), base), {})
     if exact:
         cat.update(exact)
+        if cat.get("outer") in (None, ""):
+            outer_values = idx.outer_values_by_item.get(base, ())
+            if len(outer_values) == 1:
+                cat["outer"] = outer_values[0]
         return cat
 
     cat.update(idx.catalog_by_customer_item.get(key, {}))
@@ -363,6 +388,12 @@ def _catalog_for(idx: MasterIndex, customer: str, base: str, po: str = "") -> di
         ]
         if len(matches) == 1:
             cat.update(matches[0])
+    # Casdon 业务确认外箱是货号级主数据，不受客名限制。为避免同货号
+    # 存在多个装箱数时静默猜值，只在全排期该货号外箱唯一时跨客户继承。
+    cat.pop("outer", None)
+    outer_values = idx.outer_values_by_item.get(base, ())
+    if len(outer_values) == 1:
+        cat["outer"] = outer_values[0]
     return cat
 
 
