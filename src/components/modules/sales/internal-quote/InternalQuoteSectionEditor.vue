@@ -297,6 +297,20 @@ function hasUnsavedChanges() {
   return isDirty.value
 }
 
+function canSaveWholeQuoteDraft() {
+  return editable.value
+}
+
+function getWholeQuoteDraft() {
+  if (!editable.value) throw new Error(`${props.section.label}当前不可编辑，无法统一保存。`)
+  return {
+    sectionCode: props.section.code,
+    revision: props.section.revision,
+    payload: cloneInternalQuotePayload(props.section.code, draftPayload.value),
+    baselinePayload: JSON.parse(baselinePayload.value) as Record<string, unknown>,
+  }
+}
+
 async function saveWholeQuoteDraft(refreshQuote = true) {
   if (!editable.value) throw new Error(`${props.section.label}当前不可编辑，无法统一保存。`)
   const result = await saveDraft(false, '在连续报价页统一保存当前产品', refreshQuote)
@@ -304,7 +318,7 @@ async function saveWholeQuoteDraft(refreshQuote = true) {
   return result
 }
 
-defineExpose({ saveSalesMarkup, saveWholeQuoteDraft, hasUnsavedChanges })
+defineExpose({ saveSalesMarkup, saveWholeQuoteDraft, hasUnsavedChanges, canSaveWholeQuoteDraft, getWholeQuoteDraft })
 
 function askHowToHandleUnsavedChanges() {
   if (pendingUnsavedPrompt) return pendingUnsavedPrompt

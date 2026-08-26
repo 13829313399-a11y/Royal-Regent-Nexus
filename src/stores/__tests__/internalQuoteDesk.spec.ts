@@ -576,6 +576,164 @@ describe('internal quote desk real API state', () => {
     expect(apiMock.get).toHaveBeenCalledTimes(1)
   })
 
+  it('snapshots a whole-product save and refreshes downstream revisions after engineering changes', async () => {
+    const store = useInternalQuoteDeskStore()
+    const engineeringPayload = { molds: [{ item: '新模具' }] }
+    const moldingBaseline = { injection_lines: [{ item: '原胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
+    const moldingPayload = { injection_lines: [{ item: '胶件A' }], blow_lines: [], injection_loss_rate_percent: 3 }
+    const beforeSave = quote({
+      sections: sectionCodes.map((code, index) => code === 'molding'
+        ? { ...section(code, index), payload: moldingBaseline }
+        : section(code, index)),
+    })
+    const afterEngineering = quote({
+      sections: sectionCodes.map((code, index) => code === 'molding'
+        ? { ...section(code, index), revision: 2, payload: moldingBaseline, dependency_status: 'stale' }
+        : section(code, index)),
+    })
+    const afterWholeSave = quote({
+      sections: sectionCodes.map((code, index) => {
+        if (code === 'engineering') return { ...section(code, index), revision: 2, payload: engineeringPayload }
+        if (code === 'molding') return { ...section(code, index), revision: 3, payload: moldingPayload, calculation_status: 'valid' }
+        return section(code, index)
+      }),
+    })
+    apiMock.saveSection
+      .mockResolvedValueOnce({ ...section('engineering', 1), revision: 2, payload: engineeringPayload })
+      .mockResolvedValueOnce({ ...section('molding', 3), revision: 3, payload: moldingPayload })
+    apiMock.get
+      .mockResolvedValueOnce(beforeSave)
+      .mockResolvedValueOnce(afterEngineering)
+      .mockResolvedValueOnce(afterWholeSave)
+
+    await store.saveWholeProductSections('quote-1', [
+      { sectionCode: 'engineering', revision: 1, payload: engineeringPayload, baselinePayload: { source: 'backend' } },
+      { sectionCode: 'molding', revision: 1, payload: moldingPayload, baselinePayload: moldingBaseline },
+    ])
+
+    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
+      1,
+      'quote-1',
+      'engineering',
+      1,
+      engineeringPayload,
+      '在连续报价页统一保存当前产品',
+    )
+    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
+      2,
+      'quote-1',
+      'molding',
+      2,
+      moldingPayload,
+      '在连续报价页统一保存当前产品',
+    )
+    expect(apiMock.get).toHaveBeenCalledTimes(3)
+    expect(store.getQuoteById('quote-1')?.sections.find((item) => item.code === 'molding')?.payload).toEqual(moldingPayload)
+  })
+
+  it('saves every supplied department snapshot even when its payload is unchanged', async () => {
+    const store = useInternalQuoteDeskStore()
+    const currentQuote = quote()
+    const salesPayload = { source: 'backend' }
+    const assemblyPayload = { source: 'backend' }
+    apiMock.get
+      .mockResolvedValueOnce(currentQuote)
+      .mockResolvedValueOnce(currentQuote)
+    apiMock.saveSection
+      .mockResolvedValueOnce(section('assembly', 4))
+      .mockResolvedValueOnce(section('sales', 0))
+
+    await store.saveWholeProductSections('quote-1', [
+      { sectionCode: 'sales', revision: 4, payload: salesPayload, baselinePayload: salesPayload },
+      { sectionCode: 'assembly', revision: 1, payload: assemblyPayload, baselinePayload: assemblyPayload },
+    ])
+
+    expect(apiMock.saveSection).toHaveBeenCalledTimes(2)
+    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
+      1,
+      'quote-1',
+      'assembly',
+      1,
+      assemblyPayload,
+      '在连续报价页统一保存当前产品',
+    )
+    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
+      2,
+      'quote-1',
+      'sales',
+      4,
+      salesPayload,
+      '在连续报价页统一保存当前产品',
+    )
+  })
+
+  it('does not overwrite a concurrent downstream edit while refreshing an engineering dependency', async () => {
+    const store = useInternalQuoteDeskStore()
+    const engineeringPayload = { molds: [{ item: '新模具' }] }
+    const moldingBaseline = { injection_lines: [{ item: '原胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
+    const moldingPayload = { injection_lines: [{ item: '本页胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
+    const concurrentMoldingPayload = { injection_lines: [{ item: '他人胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
+    apiMock.saveSection.mockResolvedValueOnce({ ...section('engineering', 1), revision: 2, payload: engineeringPayload })
+    apiMock.get
+      .mockResolvedValueOnce(quote({
+        sections: sectionCodes.map((code, index) => code === 'molding'
+          ? { ...section(code, index), payload: moldingBaseline }
+          : section(code, index)),
+      }))
+      .mockResolvedValueOnce(quote({
+        sections: sectionCodes.map((code, index) => code === 'molding'
+          ? { ...section(code, index), revision: 2, payload: concurrentMoldingPayload, dependency_status: 'stale' }
+          : section(code, index)),
+      }))
+
+    await expect(store.saveWholeProductSections('quote-1', [
+      { sectionCode: 'engineering', revision: 1, payload: engineeringPayload, baselinePayload: { source: 'backend' } },
+      { sectionCode: 'molding', revision: 1, payload: moldingPayload, baselinePayload: moldingBaseline },
+    ])).rejects.toThrow('啤机部内容已被其他用户修改')
+
+    expect(apiMock.saveSection).toHaveBeenCalledTimes(1)
+    expect(store.submitting).toBe(false)
+  })
+
+  it('retries a partial whole-product save without resubmitting sections already persisted', async () => {
+    const store = useInternalQuoteDeskStore()
+    const engineeringPayload = { molds: [{ item: '新模具' }] }
+    const moldingBaseline = { injection_lines: [{ item: '原胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
+    const moldingPayload = { injection_lines: [{ item: '本页胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
+    const partiallySavedQuote = quote({
+      sections: sectionCodes.map((code, index) => {
+        if (code === 'engineering') return { ...section(code, index), revision: 2, payload: engineeringPayload }
+        if (code === 'molding') return { ...section(code, index), revision: 2, payload: moldingBaseline, dependency_status: 'stale' }
+        return section(code, index)
+      }),
+    })
+    const fullySavedQuote = quote({
+      sections: sectionCodes.map((code, index) => {
+        if (code === 'engineering') return { ...section(code, index), revision: 2, payload: engineeringPayload }
+        if (code === 'molding') return { ...section(code, index), revision: 3, payload: moldingPayload }
+        return section(code, index)
+      }),
+    })
+    apiMock.get
+      .mockResolvedValueOnce(partiallySavedQuote)
+      .mockResolvedValueOnce(fullySavedQuote)
+    apiMock.saveSection.mockResolvedValueOnce({ ...section('molding', 3), revision: 3, payload: moldingPayload })
+
+    await store.saveWholeProductSections('quote-1', [
+      { sectionCode: 'engineering', revision: 1, payload: engineeringPayload, baselinePayload: { source: 'backend' } },
+      { sectionCode: 'molding', revision: 1, payload: moldingPayload, baselinePayload: moldingBaseline },
+    ])
+
+    expect(apiMock.saveSection).toHaveBeenCalledTimes(1)
+    expect(apiMock.saveSection).toHaveBeenCalledWith(
+      'quote-1',
+      'molding',
+      2,
+      moldingPayload,
+      '在连续报价页统一保存当前产品',
+    )
+  })
+
   it('keeps the saved miscellaneous ratio and selected markup tier after the authoritative refresh', async () => {
     const salesPayload = {
       shipping: {

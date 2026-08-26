@@ -23,7 +23,7 @@ import {
 } from '@/api/internalQuote'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { getApiErrorMessage } from '@/lib/http'
-import { defaultSalesMiscRatio, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio } from '@/lib/internalQuoteSectionPayload'
+import { defaultSalesMiscRatio, normalizeInternalQuotePayload, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio } from '@/lib/internalQuoteSectionPayload'
 import { useAppStore } from '@/stores/app'
 import type {
   InternalQuote,
@@ -119,6 +119,31 @@ function definitionFor(code: string) {
 const internalQuoteSectionOrder = new Map(
   internalQuoteSectionDefinitions.map((definition, index) => [definition.code, index]),
 )
+
+export interface InternalQuoteWholeProductDraft {
+  sectionCode: InternalQuoteSectionCode
+  revision: number
+  payload: Record<string, unknown>
+  baselinePayload: Record<string, unknown>
+}
+
+function stablePayloadValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stablePayloadValue)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, stablePayloadValue(nested)]),
+  )
+}
+
+function payloadFingerprint(value: Record<string, unknown>) {
+  return JSON.stringify(stablePayloadValue(value))
+}
+
+function sectionPayloadFingerprint(sectionCode: InternalQuoteSectionCode, value: Record<string, unknown>) {
+  return payloadFingerprint(normalizeInternalQuotePayload(sectionCode, value))
+}
 
 function orderedApiSections(sections: ApiInternalQuoteSection[]) {
   return [...sections].sort((left, right) => (
@@ -1275,6 +1300,85 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
       }
       return result
+    },
+    async saveWholeProductSections(quoteId: string, drafts: InternalQuoteWholeProductDraft[]) {
+      if (!drafts.length) throw new Error('当前没有需要保存的部门修改。')
+      const draftByCode = new Map(drafts.map((draft) => [draft.sectionCode, draft]))
+      if (draftByCode.size !== drafts.length) throw new Error('整单保存包含重复部门，请重新读取页面后再试。')
+      const orderedDrafts = orderedParticipatingSections([...draftByCode.keys()])
+        .map((sectionCode) => draftByCode.get(sectionCode)!)
+      const currentRevisions = new Map(orderedDrafts.map((draft) => [draft.sectionCode, draft.revision]))
+      const savedSections: ApiInternalQuoteSection[] = []
+      this.clearLiveCostPreview(quoteId)
+      this.submitting = true
+      this.errorMessage = ''
+      this.conflictMessage = ''
+      try {
+        const latestBeforeSave = await internalQuoteApi.get(quoteId)
+        const alreadyPersisted = new Set<InternalQuoteSectionCode>()
+        for (const draft of orderedDrafts) {
+          const latestSection = latestBeforeSave.sections.find((section) => section.department === draft.sectionCode)
+          if (!latestSection) throw new Error(`${definitionFor(draft.sectionCode).label}已不在当前报价中，请重新读取页面后再试。`)
+          if (latestSection.revision === draft.revision) continue
+          const latestFingerprint = sectionPayloadFingerprint(draft.sectionCode, latestSection.payload)
+          if (latestFingerprint === sectionPayloadFingerprint(draft.sectionCode, draft.payload)) {
+            currentRevisions.set(draft.sectionCode, latestSection.revision)
+            alreadyPersisted.add(draft.sectionCode)
+            savedSections.push(latestSection)
+            continue
+          }
+          if (latestFingerprint === sectionPayloadFingerprint(draft.sectionCode, draft.baselinePayload)) {
+            currentRevisions.set(draft.sectionCode, latestSection.revision)
+            continue
+          }
+          throw new Error(`${definitionFor(draft.sectionCode).label}内容已被其他用户修改；本页输入仍已保留，请重新读取后核对。`)
+        }
+
+        for (let index = 0; index < orderedDrafts.length; index += 1) {
+          const draft = orderedDrafts[index]!
+          if (alreadyPersisted.has(draft.sectionCode)) continue
+          const result = await internalQuoteApi.saveSection(
+            quoteId,
+            draft.sectionCode,
+            currentRevisions.get(draft.sectionCode) ?? draft.revision,
+            draft.payload,
+            '在连续报价页统一保存当前产品',
+          )
+          savedSections.push(result)
+          currentRevisions.set(draft.sectionCode, result.revision)
+
+          const pendingMoldingDraft = draft.sectionCode === 'engineering'
+            ? orderedDrafts.slice(index + 1).find((item) => item.sectionCode === 'molding')
+            : undefined
+          if (pendingMoldingDraft) {
+            const latestQuote = await internalQuoteApi.get(quoteId)
+            const latestMolding = latestQuote.sections.find((section) => section.department === 'molding')
+            if (!latestMolding) throw new Error('工程部保存后未能读取啤机部最新 revision，请重新读取页面后再试。')
+            const latestFingerprint = sectionPayloadFingerprint('molding', latestMolding.payload)
+            if (
+              latestMolding.revision !== pendingMoldingDraft.revision
+              && latestFingerprint !== sectionPayloadFingerprint('molding', pendingMoldingDraft.baselinePayload)
+              && latestFingerprint !== sectionPayloadFingerprint('molding', pendingMoldingDraft.payload)
+            ) {
+              throw new Error('啤机部内容已被其他用户修改；本页输入仍已保留，请重新读取后核对。')
+            }
+            currentRevisions.set('molding', latestMolding.revision)
+          }
+        }
+
+        const refreshed = await this.loadQuote(quoteId)
+        if (!refreshed) {
+          throw new Error(`全部部门已写入服务器，但页面未能读取最新报价。${this.errorMessage || '请重新读取最新 revision 后继续。'}`)
+        }
+        return { quote: refreshed, sections: savedSections }
+      } catch (error) {
+        const message = mutationMessage(error)
+        if (responseStatus(error) === 409) this.conflictMessage = message
+        this.errorMessage = message
+        throw new Error(message)
+      } finally {
+        this.submitting = false
+      }
     },
     submitSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.submitSection(quoteId, sectionCode, revision))

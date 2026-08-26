@@ -676,26 +676,28 @@ function hasUnsavedDepartmentChanges() {
 async function saveWholeProductDraft() {
   message.value = ''
   errorMessage.value = ''
-  const dirtySections = participatingSections.value.filter((section) => sectionEditors.value[section.code]?.hasUnsavedChanges())
-  if (!dirtySections.length) {
-    message.value = `“${quote.value.productName}”当前没有需要保存的修改。`
+  const savableSections = participatingSections.value.filter((section) => sectionEditors.value[section.code]?.canSaveWholeQuoteDraft())
+  if (!savableSections.length) {
+    errorMessage.value = `“${quote.value.productName}”当前没有可保存的部门内容。`
+    return
+  }
+  let drafts: ReturnType<InstanceType<typeof InternalQuoteSectionEditor>['getWholeQuoteDraft']>[]
+  try {
+    drafts = savableSections.map((section) => {
+      const editor = sectionEditors.value[section.code]
+      if (!editor) throw new Error(`${section.label}编辑器尚未就绪。`)
+      return editor.getWholeQuoteDraft()
+    })
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '无法读取当前页面草稿，请重新打开报价后再试。'
     return
   }
   wholeProductSaving.value = true
-  const savedLabels: string[] = []
   try {
-    for (const section of dirtySections) {
-      const editor = sectionEditors.value[section.code]
-      if (!editor) throw new Error(`${section.label}编辑器尚未就绪。`)
-      await editor.saveWholeQuoteDraft(false)
-      savedLabels.push(section.label)
-    }
-    const refreshed = await quoteStore.loadQuote(quote.value.id)
-    if (!refreshed) throw new Error('全部分部已写入服务器，但页面未能读取最新报价，请点击“重新读取最新 revision”。')
-    message.value = `“${quote.value.productName}”已统一保存：${savedLabels.join('、')}。`
+    await quoteStore.saveWholeProductSections(quote.value.id, drafts)
+    message.value = `“${quote.value.productName}”当前全部现有内容已保存：${savableSections.map((section) => section.label).join('、')}。`
   } catch (error) {
-    const savedNote = savedLabels.length ? `；此前已保存：${savedLabels.join('、')}` : ''
-    errorMessage.value = `${error instanceof Error ? error.message : '统一保存当前款失败'}${savedNote}。`
+    errorMessage.value = `${error instanceof Error ? error.message : '统一保存当前款失败'} 页面输入已保留，可修正后直接重试。`
   } finally {
     wholeProductSaving.value = false
   }
@@ -882,7 +884,7 @@ onBeforeUnmount(() => {
         <footer id="quote-page-actions" class="quote-whole-product-actions" aria-label="整单操作">
           <div class="quote-whole-product-actions-copy"><strong>整单操作</strong><span>在这里查看汇总、保存当前款、切换款号、复制基准款，以及提交或审核整单。</span><small>当前款：{{ quote.productName }} · 最后更新 {{ quote.updatedAt }}</small></div>
           <div class="quote-whole-product-actions-controls">
-            <button type="button" class="quote-whole-product-save" title="保存当前款全部部门的修改" :disabled="wholeProductSaving || quoteStore.submitting" @click="saveWholeProductDraft"><Save />{{ wholeProductSaving ? '保存中…' : '保存' }}</button>
+            <button type="button" class="quote-whole-product-save" title="保存当前款全部现有内容" :disabled="wholeProductSaving || quoteStore.submitting" @click="saveWholeProductDraft"><Save />{{ wholeProductSaving ? '保存中…' : '保存' }}</button>
             <div class="quote-whole-review-actions quote-whole-product-workflow">
               <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与输出</RouterLink>
               <button v-if="!['final_pending', 'released', 'exported', 'archived'].includes(quote.status)" type="button" class="primary" :title="!canSubmitWholeReview ? '当前账号没有整单提交权限' : !batchReady ? '全部产品完成后可提交审核' : '提交审核'" :disabled="!canSubmitWholeReview || !batchReady || quoteStore.submitting" @click="submitWholeReview"><Send />{{ quoteStore.submitting ? '提交中…' : '提交审核' }}</button>
@@ -962,7 +964,7 @@ onBeforeUnmount(() => {
 .quote-edge-panel:hover,.quote-edge-panel:focus-within,.quote-edge-panel.open,.quote-edge-panel.resizing{transform:translateX(0)}
 .quote-edge-panel-body{width:100%;height:100%;overflow:auto;border:1px solid #cbd5e1;background:rgb(248 250 252/.98);padding:8px;pointer-events:none;box-shadow:0 18px 42px rgb(15 23 42/.2);backdrop-filter:blur(12px)}
 .quote-edge-panel:hover .quote-edge-panel-body,.quote-edge-panel:focus-within .quote-edge-panel-body{pointer-events:auto}
-.quote-edge-panel-left .quote-edge-panel-body{border-radius:0 14px 14px 0}
+.quote-edge-panel-left .quote-edge-panel-body{overflow:visible;border-radius:0 14px 14px 0}
 .quote-edge-panel-right .quote-edge-panel-body{border-radius:14px 0 0 14px}
 .quote-edge-panel-right .quote-edge-panel-body{display:grid;min-width:0;overflow:hidden;grid-template-rows:auto minmax(0,1fr)}
 .quote-edge-resizer{position:absolute;z-index:4;top:0;bottom:0;left:-5px;width:10px;border:0;background:transparent;pointer-events:auto;cursor:ew-resize}.quote-edge-resizer:hover,.quote-edge-panel.resizing .quote-edge-resizer{background:rgb(20 184 166/.28)}
@@ -975,6 +977,7 @@ onBeforeUnmount(() => {
 .quote-edge-handle span{font-size:9px;font-weight:950;letter-spacing:.08em;line-height:1.15;writing-mode:vertical-rl}
 .quote-edge-handle:focus-visible{outline:3px solid rgb(45 212 191/.3);outline-offset:2px}
 .quote-edge-panel :deep(.quote-section-rail),.quote-edge-panel :deep(.quote-activity-panel){position:static;top:auto;max-height:none;box-shadow:none}
+.quote-edge-panel-left :deep(.quote-section-rail){overflow:visible}
 .quote-edge-panel-left :deep(.quote-section-rail>header),.quote-edge-panel-left :deep(.quote-section-rail>footer){display:flex}
 .quote-edge-panel-left :deep(.quote-section-rail nav){display:grid;min-width:0}
 .quote-edge-panel-left :deep(.quote-section-rail nav button){min-width:0}
