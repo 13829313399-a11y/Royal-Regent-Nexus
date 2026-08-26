@@ -35,15 +35,37 @@ def extract_text(path: str | Path) -> tuple[str, bool]:
         text = "\n".join(page.extract_text(x_tolerance=2, y_tolerance=4) or "" for page in pdf.pages)
         if len(re.sub(r"\s+", "", text)) >= 80:
             return text, False
+
+        rapidocr_texts: list[str] = []
+        try:
+            from app.services.carton_mark import get_rapidocr_engine, rapidocr_result_to_text
+
+            rapidocr_engine = get_rapidocr_engine()
+            if rapidocr_engine is not None:
+                for page in pdf.pages:
+                    image = page.to_image(resolution=180).original
+                    recognized = rapidocr_result_to_text(rapidocr_engine(image))
+                    if recognized.strip():
+                        rapidocr_texts.append(recognized)
+                rapidocr_text = "\n".join(rapidocr_texts)
+                if len(re.sub(r"\s+", "", rapidocr_text)) >= 40:
+                    return rapidocr_text, True
+        except Exception:
+            # A missing/failed RapidOCR runtime should not prevent the existing
+            # Tesseract fallback from handling the scan.
+            pass
+
         try:
             import pytesseract
         except ImportError as exc:
-            raise ValueError("扫描版 PO 需要服务器 OCR 组件（pytesseract/tesseract）") from exc
+            if rapidocr_texts:
+                return "\n".join(rapidocr_texts), True
+            raise ValueError("扫描版 PO 需要服务器 OCR 组件（RapidOCR 或 Tesseract）") from exc
         pages = []
         for page in pdf.pages:
             image = page.to_image(resolution=300).original
             pages.append(pytesseract.image_to_string(image, lang="eng", config="--psm 6"))
-        return "\n".join(pages), True
+        return "\n".join([*rapidocr_texts, *pages]), True
 
 
 def _parse_text_fields(text: str) -> dict[str, Any]:
@@ -534,7 +556,10 @@ def _parse_standard_contract_rows(
             )
             if not ship_date and re.search(r"Request\s*Date", joined, re.I):
                 ship_date = _english_date(joined)
-            note_match = re.search(r"\bNOTES\s*:\s*(.+)", joined, re.I)
+            # JAKKS has both ``ORDER NOTES: REMARKS`` and the business
+            # ``NOTES:`` field.  Only the latter belongs in the schedule's
+            # special-note column.
+            note_match = re.search(r"(?<!ORDER )\bNOTES\s*:\s*(.+)", joined, re.I)
             if note_match and not special_note:
                 special_note = _clean(note_match.group(1))
             if following is not row and any(

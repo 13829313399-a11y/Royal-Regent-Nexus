@@ -700,6 +700,32 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
                 _seen_ids[rid] = len(incoming)
             incoming.append(r)
 
+    # A formal PO uploaded together with its new QF should consume that QF,
+    # even when the old schedule contains an earlier QF for the same item.
+    # The parser enriches formal rows from the schedule before reconciliation,
+    # so replace that inherited QF only when the current batch has one unique,
+    # quantity-compatible QF candidate for the same item and customer.
+    batch_qf_by_item: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in incoming:
+        if not record.get("po_no") and record.get("oqf_no"):
+            batch_qf_by_item[clean(record.get("item_no")).upper()].append(record)
+    for record in incoming:
+        if not record.get("po_no"):
+            continue
+        candidates = [
+            candidate
+            for candidate in batch_qf_by_item.get(clean(record.get("item_no")).upper(), [])
+            if number(candidate.get("quantity")) == number(record.get("quantity"))
+            and (
+                not clean(candidate.get("customer"))
+                or not clean(record.get("customer"))
+                or clean(candidate.get("customer")).upper() == clean(record.get("customer")).upper()
+            )
+        ]
+        candidate_qfs = {clean(candidate.get("oqf_no")).upper() for candidate in candidates}
+        if len(candidate_qfs) == 1:
+            record["oqf_no"] = next(iter(candidate_qfs))
+
     # 当前排期已经存在的同单同货号不再作为新单导出；若数量不同，
     # 视为修改/补单并按用户业务边界拦截，不能静默覆盖。
     existing_by_id: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)

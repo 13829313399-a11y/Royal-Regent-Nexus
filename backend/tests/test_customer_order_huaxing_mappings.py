@@ -19,6 +19,7 @@ from app.services.customer_order_huaxing import (
     _export_prepared,
     _issues,
     _record_fields,
+    _seasons_lane_records,
     _validate_skips,
     create_huaxing_customer_preview,
     export_huaxing_customer_schedule,
@@ -40,6 +41,7 @@ from app.services.huaxing_order_legacy import (
 
 def test_huaxing_customer_order_center_exposes_all_mapped_customers():
     assert set(HUAXING_CUSTOMER_MAPPINGS) == {
+        "disney",
         "edu",
         "360",
         "yinhui",
@@ -846,6 +848,92 @@ def test_seasons_composite_pack_uses_outer_carton_quantity():
     assert shixin_schedule.outer_pack_number("4P/16") == 16
     assert shixin_schedule.outer_pack_number("3P/12") == 12
     assert shixin_schedule.outer_pack_number("24/144") == 144
+
+
+def test_yinhui_so_number_accepts_dollar_zero_ocr_variant():
+    assert yinhui_po_parser._so_no("Color/Style: GREY $0:2300000763 -10") == "2300000763"
+
+
+def test_seasons_current_batch_qf_replaces_old_schedule_qf_for_formal_po():
+    qf = {
+        "document_type": "QF预备单",
+        "oqf_no": "QF16098138",
+        "po_no": "",
+        "customer": "SEASONS USA",
+        "item_no": "W85340",
+        "quantity": 101,
+        "ship_date": "2026-10-30",
+        "product_name": "PUMPKIN",
+    }
+    formal = {
+        "document_type": "正式PO",
+        "oqf_no": "QF16097578",
+        "po_no": "MPO1609793",
+        "oc_no": "ZE618957",
+        "customer": "SEASONS USA",
+        "item_no": "W85340",
+        "quantity": 101,
+        "ship_date": "2026-10-30",
+        "product_name": "PUMPKIN",
+    }
+
+    reconciled = shixin_schedule.reconcile_documents(
+        [
+            {"filename": "QF16098138.pdf", "status": "success", "records": [qf], "warnings": []},
+            {"filename": "MPO1609793.pdf", "status": "success", "records": [formal], "warnings": []},
+        ],
+        [],
+    )
+
+    formal_result = next(record for record in reconciled["records"] if record.get("po_no"))
+    assert formal_result["oqf_no"] == "QF16098138"
+    assert formal_result["remaining_qf"] == 0
+    assert formal_result.get("risk_text") != "QF数量不足，正式PO累计超扣"
+
+
+def test_seasons_new_item_uses_explicit_other_item_lane() -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "其它款ITEM"
+    worksheet.append(["產品編號", "產品名稱"])
+    worksheet.append(["KNOWN-1", "历史其它款"])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+
+    lanes = _seasons_lane_records(
+        buffer.getvalue(),
+        "SEASONS排期.xlsx",
+        [{"item_no": "NEW-2026", "product_name": "新款产品"}],
+        {"item_no": ["產品編號"]},
+    )
+
+    assert lanes == [(
+        "其它款ITEM",
+        "其它接单表",
+        [{"item_no": "NEW-2026", "product_name": "新款产品"}],
+    )]
+
+
+def test_seasons_new_item_uses_only_lane_in_single_lane_template() -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "吹气系列ITEM表"
+    worksheet.append(["產品編號", "產品名稱"])
+    worksheet.append(["KNOWN-1", "历史吹气产品"])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+
+    record = {"item_no": "W70357", "product_name": "SINISTER SKULL"}
+    lanes = _seasons_lane_records(
+        buffer.getvalue(),
+        "SEASONS排期.xlsx",
+        [record],
+        {"item_no": ["產品編號"]},
+    )
+
+    assert lanes == [("吹气系列ITEM表", "吹气、PU接单表", [record])]
 
 
 def test_seasons_appends_to_reserved_rows_before_first_total_and_stays_in_first_section(

@@ -134,6 +134,18 @@ class CartonMarkCustomerOut(CartonMarkCustomerOptionOut):
     updated_at: str
 
 
+class CartonMarkTemplateManualReleaseRequest(BaseModel):
+    reason: str = Field(min_length=5, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = " ".join(value.strip().split())
+        if len(normalized) < 5:
+            raise ValueError("人工放行理由至少需要 5 个字符")
+        return normalized
+
+
 class CartonMarkTemplateOut(BaseModel):
     id: str
     factory_id: str
@@ -152,3 +164,8 @@ class CartonMarkTemplateOut(BaseModel):
     updated_at: str
     created_by_name: str
     qc_ready: bool
+    manual_released: bool
+    manual_release_reason: str
+    manual_release_source_status: str
+    manual_released_by_name: str
+    manual_released_at: str

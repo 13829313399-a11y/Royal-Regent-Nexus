@@ -24,6 +24,7 @@ from app.schemas.carton_mark import (
     CartonMarkCustomerOut,
     CartonMarkCustomerUpdateRequest,
     CartonMarkDocumentCheckResponse,
+    CartonMarkTemplateManualReleaseRequest,
     CartonMarkTemplateOut,
 )
 from app.services.auth import AuthContext, ensure_permission, get_current_user
@@ -46,6 +47,7 @@ from app.services.carton_mark_library import (
     get_carton_mark_template,
     list_carton_mark_customer_options,
     list_carton_mark_templates,
+    manually_release_carton_mark_template,
     update_carton_mark_document_check_result,
 )
 from app.services.carton_mark_customers import (
@@ -325,6 +327,33 @@ async def recheck_persisted_carton_mark_template(
         factory_id=factory_id,
         template_id=template_id,
         check_result=check_result,
+    )
+
+
+@router.post(
+    "/api/carton-mark/templates/{template_id}/manual-release",
+    response_model=CartonMarkTemplateOut,
+)
+def manually_release_persisted_carton_mark_template(
+    template_id: str,
+    payload: CartonMarkTemplateManualReleaseRequest,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = ensure_carton_mark_scope(
+        db,
+        current_user,
+        "carton_mark:template_release",
+        factory_id,
+        CARTON_MARK_WRITE_DEPARTMENTS,
+    )
+    return manually_release_carton_mark_template(
+        db,
+        current_user,
+        factory_id=factory_id,
+        template_id=template_id,
+        reason=payload.reason,
     )
 
 

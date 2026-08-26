@@ -238,6 +238,10 @@ CARTON_MARK_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         (*WAREHOUSE_DEPARTMENTS, "carton"),
         guidance="仅纸箱部或 PMC/仓管范围可上传 Excel、打印 PDF 并核对",
     ),
+    "carton_mark:template_release": ScopePolicy(
+        (*WAREHOUSE_DEPARTMENTS, "carton"),
+        guidance="仅纸箱部主管、经理或系统管理员可在保留自动核对结果的前提下人工放行",
+    ),
     "carton_mark:customer_manage": ScopePolicy(
         (*WAREHOUSE_DEPARTMENTS, "carton"),
         guidance="仅纸箱部主管、经理或更高权限可维护本厂箱唛客户主数据",

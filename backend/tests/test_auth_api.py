@@ -1090,6 +1090,7 @@ def test_carton_manager_operates_carton_modules_across_factories_only(
         module_permissions = (
             "carton_mark:read",
             "carton_mark:template_upload",
+            "carton_mark:template_release",
             "carton_mark:customer_manage",
             *positions.CARTON_PROCUREMENT_PERMISSION_CODES,
         )
@@ -1135,6 +1136,12 @@ def test_carton_manager_operates_carton_modules_across_factories_only(
                 "huadeng",
                 "carton",
             )
+        assert not auth_service.has_permission_in_scope(
+            carton_keeper,
+            "carton_mark:template_release",
+            "huaxing",
+            "carton",
+        )
 
         for permission in (
             "carton_mark:read",

@@ -204,6 +204,7 @@ def test_huakang_c_registry_is_factory_scoped_and_keeps_maxx_separate() -> None:
     assert customer_order_api.CUSTOMER_FACTORY_OPTIONS["maxx"] == (
         "huaxing",
         "huakang-c",
+        "huakang-d",
     )
     assert customer_order_api._get_mapped_customer_spec(
         "maxx", "huaxing"
@@ -211,8 +212,11 @@ def test_huakang_c_registry_is_factory_scoped_and_keeps_maxx_separate() -> None:
     assert customer_order_api._get_mapped_customer_spec(
         "maxx", "huakang-c"
     ).target_template == "HUAKANG_C_MAXX_SCHEDULE_APPEND_V2"
+    assert customer_order_api._get_mapped_customer_spec(
+        "maxx", "huakang-d"
+    ).target_template == "HUAKANG_C_MAXX_SCHEDULE_APPEND_V2"
 
-    with pytest.raises(service.HuakangCCustomerOrderError, match="只属于华康C厂区"):
+    with pytest.raises(service.HuakangCCustomerOrderError, match="只属于华康D"):
         service.create_huakang_c_customer_preview(
             customer_code="index",
             factory_id="huakang-a",
@@ -221,6 +225,26 @@ def test_huakang_c_registry_is_factory_scoped_and_keeps_maxx_separate() -> None:
             schedule_file_name="INDEX排期.xlsx",
             schedule_content=_schedule_bytes("index"),
         )
+
+
+def test_external_order_mapping_accepts_huakang_d_scope(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.huakang_po_parser.HuakangPOParser,
+        "parse",
+        lambda _self, _path: deepcopy(_order("index")),
+    )
+
+    preview = service.create_huakang_c_customer_preview(
+        customer_code="index",
+        factory_id="huakang-d",
+        received_date="2026-08-20",
+        po_files=[("INDEX.pdf", b"pdf")],
+        schedule_file_name="INDEX排期.xlsx",
+        schedule_content=_schedule_bytes("index"),
+    )
+
+    assert preview["factory_id"] == "huakang-d"
+    assert preview["rows"][0]["product_no"] == "ITEM-1"
 
 
 def test_revision_deduplication_keeps_latest_po() -> None:
@@ -253,7 +277,8 @@ SubTotal""",
 07/01/2026 JAZ12345
 PO Rev. 2
 60 DAYS ROD 08/01/2026 SC-JAZ-1 SEA
-ABC123 123-456 JAZWARES Toy 480 48 2.00 960.00
+ABC123 123456789012 JAZWARES Toy with complex accessories and
+multi-line packaging description 480 48 2.00 960.00
 ****""",
             ("JAZ12345", "ABC123", 480),
         ),
@@ -300,6 +325,10 @@ def test_legacy_parser_recognizes_each_huakang_c_customer(
     assert parsed["po_number"] == expected[0]
     assert parsed["lines"][0]["item_code"] == expected[1]
     assert parsed["lines"][0]["qty"] == expected[2]
+    if customer_code == "jazwares":
+        assert parsed["lines"][0]["description"] == (
+            "JAZWARES Toy with complex accessories and multi-line packaging description"
+        )
     if customer_code == "strottman":
         assert parsed["lines"][0]["carton_qty"] == 6000
         assert parsed["lines"][0]["pcs_per_carton"] == 125
