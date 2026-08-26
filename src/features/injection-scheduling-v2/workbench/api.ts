@@ -199,8 +199,14 @@ export async function applyHeuristicPreview(snapshot: WorkbenchSnapshot, preview
   })
 }
 
-export async function previewWorkbenchImport(factoryId: string, file: File, kind: ImportDocumentKindChoice, businessDate: string) {
-  return uploadImportPreview(factoryId, file, kind, 'AUTO', businessDate)
+export async function previewWorkbenchImport(
+  factoryId: string,
+  file: File,
+  kind: ImportDocumentKindChoice,
+  businessDate: string,
+  recognitionMode: 'AUTO' | 'AI' = 'AUTO',
+) {
+  return uploadImportPreview(factoryId, file, kind, recognitionMode, businessDate)
 }
 
 export async function applyWorkbenchImportMapping(

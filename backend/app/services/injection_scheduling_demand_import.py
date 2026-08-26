@@ -22,6 +22,7 @@ from app.models.injection_scheduling_shared import (
     InjectionSchedulingMoldReservation,
     InjectionSchedulingPhysicalMoldAsset,
 )
+from app.schemas.ai.workbook import AIInjectionWorkbookMappingV1
 from app.services.injection_scheduling_canonical import _convert
 from app.services.injection_scheduling_excel import (
     _clean_text,
@@ -345,26 +346,214 @@ def _find_document(
     return sheet_name, header_row, mapping, columns, meta
 
 
+def _find_document_from_layout(
+    reader: _WorkbookReader,
+    profile: ImportProfile,
+    layout: AIInjectionWorkbookMappingV1,
+) -> tuple[str, int, list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    sheet_name = layout.source_sheet.sheet_name
+    if sheet_name not in reader.sheet_paths:
+        raise HTTPException(status_code=422, detail="AI 映射引用的需求单 Sheet 不存在")
+    header_rows = set(layout.source_sheet.header_rows)
+    header_cells: dict[str, dict[str, Any]] = {}
+    anchor_refs = {
+        ref
+        for anchor in layout.metadata_anchors
+        for ref in (anchor.label_cell, anchor.value_cell)
+    }
+    anchor_cells: dict[str, dict[str, Any]] = {}
+    for row_number, cells in reader.rows(sheet_name):
+        if row_number in header_rows:
+            for cell in cells.values():
+                header_cells[str(cell.get("reference", ""))] = cell
+        if any(
+            str(cell.get("reference", "")) in anchor_refs for cell in cells.values()
+        ):
+            for cell in cells.values():
+                reference = str(cell.get("reference", ""))
+                if reference in anchor_refs:
+                    anchor_cells[reference] = cell
+        if row_number > max(
+            [
+                *header_rows,
+                *[int("".join(filter(str.isdigit, ref))) for ref in anchor_refs],
+            ]
+        ):
+            break
+    mapping: list[dict[str, Any]] = []
+    columns: dict[str, str] = {}
+    required = {item.canonical_field for item in profile.fields if item.required}
+    rules = {item.canonical_field: item for item in profile.fields}
+    for item in layout.field_mappings:
+        cell = header_cells.get(item.header_cell)
+        raw_header = _cell_text(reader, cell)
+        columns[item.canonical_field] = item.source_column
+        mapping.append(
+            {
+                "rule_id": rules[item.canonical_field].rule_id,
+                "rule_revision": profile.revision,
+                "sheet_role": "ORDER_SOURCE",
+                "sheet_name": sheet_name,
+                "header_row": int("".join(filter(str.isdigit, item.header_cell))),
+                "column": item.source_column,
+                "fallback_column": item.source_column,
+                "raw_header": raw_header,
+                "normalized_header": normalize_header(raw_header),
+                "canonical_field": item.canonical_field,
+                "converter": item.transformer,
+                "unit": rules[item.canonical_field].unit,
+                "required": item.canonical_field in required,
+                "status": "MAPPED",
+                "mapping_method": "AI_HEADER_CELL",
+                "confidence": "AI",
+                "confidence_score": item.confidence,
+                "confidence_reason": item.reason,
+                "mapping_source": "AI_SKILL",
+                "authority": CANONICAL_FIELD_CATALOG[item.canonical_field].authority,
+                "sample_values": [],
+            }
+        )
+    meta: dict[str, Any] = {}
+    for anchor in layout.metadata_anchors:
+        value_cell = anchor_cells.get(anchor.value_cell)
+        label_cell = anchor_cells.get(anchor.label_cell)
+        if value_cell is None or label_cell is None:
+            continue
+        value = _convert(reader, value_cell, anchor.transformer)
+        if value in (None, ""):
+            continue
+        meta[anchor.canonical_field] = {
+            "value": value,
+            "source_row": int("".join(filter(str.isdigit, anchor.value_cell))),
+            "cell_ref": anchor.value_cell,
+            "label_cell_ref": anchor.label_cell,
+            "raw_value": value_cell.get("raw_value"),
+            "mapping_method": "AI_METADATA_ANCHOR",
+        }
+    return sheet_name, max(header_rows), mapping, columns, meta
+
+
+def _find_document_from_saved_profile(
+    reader: _WorkbookReader,
+    profile: ImportProfile,
+) -> tuple[str, int, list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    recognition = profile.recognition_config
+    source_sheet = recognition.get("source_sheet") or {}
+    role = profile.primary_source_role
+    sheet_name = next((name for name in role.names if name in reader.sheet_paths), "")
+    if not sheet_name:
+        raise HTTPException(
+            status_code=422, detail="已保存模板引用的需求单 Sheet 不存在"
+        )
+    header_row = int(role.header_row or max(source_sheet.get("header_rows") or [1]))
+    field_header_rows = {int(item.header_row or header_row) for item in profile.fields}
+    header_cells: dict[str, dict[str, Any]] = {}
+    anchor_specs = list(recognition.get("metadata_anchors") or [])
+    anchor_refs = {
+        str(ref)
+        for item in anchor_specs
+        for ref in (item.get("label_cell"), item.get("value_cell"))
+        if ref
+    }
+    anchor_cells: dict[str, dict[str, Any]] = {}
+    last_needed_row = max(
+        [
+            *field_header_rows,
+            *[int("".join(filter(str.isdigit, ref))) for ref in anchor_refs],
+        ]
+    )
+    for row_number, cells in reader.rows(sheet_name):
+        if row_number in field_header_rows:
+            for cell in cells.values():
+                header_cells[str(cell.get("reference", ""))] = cell
+        for cell in cells.values():
+            reference = str(cell.get("reference", ""))
+            if reference in anchor_refs:
+                anchor_cells[reference] = cell
+        if row_number > last_needed_row:
+            break
+    mapping: list[dict[str, Any]] = []
+    columns: dict[str, str] = {}
+    for rule in profile.fields:
+        rule_header_row = int(rule.header_row or header_row)
+        cell = header_cells.get(f"{rule.column}{rule_header_row}")
+        raw_header = _cell_text(reader, cell)
+        matched = normalize_header(raw_header) in {
+            normalize_header(item) for item in rule.headers
+        }
+        if matched:
+            columns[rule.canonical_field] = rule.column
+        mapping.append(
+            {
+                "rule_id": rule.rule_id,
+                "rule_revision": profile.revision,
+                "sheet_role": "ORDER_SOURCE",
+                "sheet_name": sheet_name,
+                "header_row": rule_header_row,
+                "column": rule.column,
+                "fallback_column": rule.column,
+                "raw_header": raw_header,
+                "normalized_header": normalize_header(raw_header),
+                "canonical_field": rule.canonical_field,
+                "converter": rule.converter,
+                "unit": rule.unit,
+                "required": rule.required,
+                "status": "MAPPED" if matched else "MISSING",
+                "mapping_method": "SAVED_STRUCTURAL_HEADER",
+                "confidence": "EXACT" if matched else "NONE",
+                "authority": CANONICAL_FIELD_CATALOG[rule.canonical_field].authority,
+                "sample_values": [],
+            }
+        )
+    meta: dict[str, Any] = {}
+    for item in anchor_specs:
+        label_ref = str(item.get("label_cell", ""))
+        value_ref = str(item.get("value_cell", ""))
+        label_cell = anchor_cells.get(label_ref)
+        value_cell = anchor_cells.get(value_ref)
+        converter = str(item.get("transformer", "text"))
+        if label_cell is None or value_cell is None:
+            continue
+        value = _convert(reader, value_cell, converter)
+        if value in (None, ""):
+            continue
+        meta[str(item.get("canonical_field", ""))] = {
+            "value": value,
+            "source_row": int("".join(filter(str.isdigit, value_ref))),
+            "cell_ref": value_ref,
+            "label_cell_ref": label_ref,
+            "raw_value": value_cell.get("raw_value"),
+            "mapping_method": "SAVED_AI_METADATA_ANCHOR",
+        }
+    return sheet_name, header_row, mapping, columns, meta
+
+
 def master_revision_digest(db: Session, company_scope_id: str) -> str:
     definitions = list(
         db.scalars(
             select(InjectionSchedulingMoldDefinition)
-            .where(InjectionSchedulingMoldDefinition.company_scope_id == company_scope_id)
+            .where(
+                InjectionSchedulingMoldDefinition.company_scope_id == company_scope_id
+            )
             .order_by(InjectionSchedulingMoldDefinition.id)
         ).all()
     )
     definition_ids = [item.id for item in definitions]
-    assets = list(
-        db.scalars(
-            select(InjectionSchedulingPhysicalMoldAsset)
-            .where(
-                InjectionSchedulingPhysicalMoldAsset.mold_definition_id.in_(
-                    definition_ids
+    assets = (
+        list(
+            db.scalars(
+                select(InjectionSchedulingPhysicalMoldAsset)
+                .where(
+                    InjectionSchedulingPhysicalMoldAsset.mold_definition_id.in_(
+                        definition_ids
+                    )
                 )
-            )
-            .order_by(InjectionSchedulingPhysicalMoldAsset.id)
-        ).all()
-    ) if definition_ids else []
+                .order_by(InjectionSchedulingPhysicalMoldAsset.id)
+            ).all()
+        )
+        if definition_ids
+        else []
+    )
     asset_ids = [item.id for item in assets]
     payload: dict[str, list[tuple[Any, ...]]] = {
         "mold_definitions": [
@@ -401,37 +590,61 @@ def master_revision_digest(db: Session, company_scope_id: str) -> str:
         ("output_specs", InjectionSchedulingMoldOutputSpec),
         ("capabilities", InjectionSchedulingFactoryMoldCapability),
     ):
-        payload[name] = [
-            (str(item.id), int(item.revision), str(item.status))
-            for item in db.scalars(
-                select(model)
-                .where(model.mold_definition_id.in_(definition_ids))
-                .order_by(model.id)
-            ).all()
-        ] if definition_ids else []
-    payload["movements"] = [
-        (item.id, item.status, item.effective_at, item.from_factory_id, item.to_factory_id)
-        for item in db.scalars(
-            select(InjectionSchedulingMoldAssetMovement)
-            .where(InjectionSchedulingMoldAssetMovement.physical_asset_id.in_(asset_ids))
-            .order_by(InjectionSchedulingMoldAssetMovement.id)
-        ).all()
-    ] if asset_ids else []
-    payload["reservations"] = [
-        (
-            item.id,
-            item.revision,
-            item.status,
-            item.window_start,
-            item.window_end,
-            item.expires_at,
+        payload[name] = (
+            [
+                (str(item.id), int(item.revision), str(item.status))
+                for item in db.scalars(
+                    select(model)
+                    .where(model.mold_definition_id.in_(definition_ids))
+                    .order_by(model.id)
+                ).all()
+            ]
+            if definition_ids
+            else []
         )
-        for item in db.scalars(
-            select(InjectionSchedulingMoldReservation)
-            .where(InjectionSchedulingMoldReservation.physical_asset_id.in_(asset_ids))
-            .order_by(InjectionSchedulingMoldReservation.id)
-        ).all()
-    ] if asset_ids else []
+    payload["movements"] = (
+        [
+            (
+                item.id,
+                item.status,
+                item.effective_at,
+                item.from_factory_id,
+                item.to_factory_id,
+            )
+            for item in db.scalars(
+                select(InjectionSchedulingMoldAssetMovement)
+                .where(
+                    InjectionSchedulingMoldAssetMovement.physical_asset_id.in_(
+                        asset_ids
+                    )
+                )
+                .order_by(InjectionSchedulingMoldAssetMovement.id)
+            ).all()
+        ]
+        if asset_ids
+        else []
+    )
+    payload["reservations"] = (
+        [
+            (
+                item.id,
+                item.revision,
+                item.status,
+                item.window_start,
+                item.window_end,
+                item.expires_at,
+            )
+            for item in db.scalars(
+                select(InjectionSchedulingMoldReservation)
+                .where(
+                    InjectionSchedulingMoldReservation.physical_asset_id.in_(asset_ids)
+                )
+                .order_by(InjectionSchedulingMoldReservation.id)
+            ).all()
+        ]
+        if asset_ids
+        else []
+    )
     return _digest(payload)
 
 
@@ -553,9 +766,7 @@ def _resolve_row(
         reasons.append("shared_mold_pending_enrichment")
     elif not mold_output_spec_id:
         reasons.append("mold_output_pending_enrichment")
-    capability_keys = [
-        (item.applicability_key, item.priority) for item in capabilities
-    ]
+    capability_keys = [(item.applicability_key, item.priority) for item in capabilities]
     capability_conflict = len(capability_keys) != len(set(capability_keys))
     eligible_assets = [
         asset
@@ -637,6 +848,7 @@ def parse_demand_order_workbook(
     *,
     factory_id: str,
     profile: ImportProfile,
+    layout_override: AIInjectionWorkbookMappingV1 | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     source_file_hash = hashlib.sha256(content).hexdigest()
     company_scope_id = _company_scope_id(db, factory_id)
@@ -644,7 +856,21 @@ def parse_demand_order_workbook(
     reader = _WorkbookReader(content)
     issues: list[dict[str, Any]] = []
     try:
-        sheet_name, header_row, mapping, columns, meta = _find_document(reader, profile)
+        if layout_override is not None:
+            sheet_name, header_row, mapping, columns, meta = _find_document_from_layout(
+                reader, profile, layout_override
+            )
+        elif profile.recognition_config.get("method") in {
+            "AI_SKILL",
+            "MANUAL_CORRECTION",
+        }:
+            sheet_name, header_row, mapping, columns, meta = (
+                _find_document_from_saved_profile(reader, profile)
+            )
+        else:
+            sheet_name, header_row, mapping, columns, meta = _find_document(
+                reader, profile
+            )
         blocking_mapping = [
             item for item in mapping if item["required"] and item["status"] != "MAPPED"
         ]
@@ -663,6 +889,15 @@ def parse_demand_order_workbook(
                 )
 
         meta_values = {key: value["value"] for key, value in meta.items()}
+        if not meta_values.get("source_document_no"):
+            meta_values["source_document_no"] = source_file_name.rsplit(".", 1)[0]
+            meta["source_document_no"] = {
+                "value": meta_values["source_document_no"],
+                "source_row": 0,
+                "cell_ref": "",
+                "raw_value": None,
+                "mapping_method": "FILE_NAME_STEM_FALLBACK",
+            }
         rules = {item.canonical_field: item for item in profile.fields}
         mapping_by_field = {item["canonical_field"]: item for item in mapping}
         rows: list[dict[str, Any]] = []
@@ -671,13 +906,52 @@ def parse_demand_order_workbook(
             normalize_header(item) for item in profile.termination_aliases
         }
         started = False
+        empty_identity_streak = 0
+        saved_source_sheet = profile.recognition_config.get("source_sheet") or {}
+        saved_termination = (profile.recognition_config.get("row_layout") or {}).get(
+            "termination"
+        ) or {}
         for row_number, cells in reader.rows(sheet_name):
-            if row_number <= header_row:
+            data_start_row = (
+                layout_override.source_sheet.data_start_row
+                if layout_override is not None
+                else int(saved_source_sheet.get("data_start_row") or header_row + 1)
+            )
+            data_end_row = (
+                layout_override.source_sheet.data_end_row
+                if layout_override is not None
+                else 1_000_000
+            )
+            if row_number < data_start_row:
                 continue
+            if row_number > data_end_row:
+                break
             row_tokens = {
                 normalize_header(_cell_text(reader, cell)) for cell in cells.values()
             } - {""}
-            if started and (
+            if layout_override is not None:
+                termination = layout_override.row_layout.termination
+                footer_tokens = {
+                    normalize_header(item) for item in termination.footer_labels
+                }
+                if (
+                    started
+                    and termination.mode == "FIRST_FOOTER_LABEL"
+                    and row_tokens & footer_tokens
+                ):
+                    break
+            elif saved_termination:
+                footer_tokens = {
+                    normalize_header(item)
+                    for item in saved_termination.get("footer_labels", [])
+                }
+                if (
+                    started
+                    and saved_termination.get("mode") == "FIRST_FOOTER_LABEL"
+                    and row_tokens & footer_tokens
+                ):
+                    break
+            elif started and (
                 "备注" in row_tokens
                 or "下单日期" in row_tokens
                 or "操作员" in row_tokens
@@ -698,7 +972,9 @@ def parse_demand_order_workbook(
             for field_name, column in columns.items():
                 rule = rules[field_name]
                 cell = cells.get(column)
-                canonical[field_name] = _convert(reader, cell, rule.converter)
+                converted = _convert(reader, cell, rule.converter)
+                if converted not in (None, "") or field_name not in canonical:
+                    canonical[field_name] = converted
                 lineage[field_name] = {
                     "source_file_hash": source_file_hash,
                     "source_sheet": sheet_name,
@@ -719,7 +995,26 @@ def parse_demand_order_workbook(
                 canonical.get("product_group_no") or canonical.get("product_name")
             )
             if not mold_no and quantity == 0 and not has_product:
+                if (
+                    layout_override is not None
+                    and layout_override.row_layout.termination.mode
+                    == "EMPTY_IDENTITY_STREAK"
+                ):
+                    empty_identity_streak += 1
+                    if (
+                        started
+                        and empty_identity_streak
+                        >= layout_override.row_layout.termination.empty_identity_streak
+                    ):
+                        break
+                elif saved_termination.get("mode") == "EMPTY_IDENTITY_STREAK":
+                    empty_identity_streak += 1
+                    if started and empty_identity_streak >= int(
+                        saved_termination.get("empty_identity_streak") or 5
+                    ):
+                        break
                 continue
+            empty_identity_streak = 0
             if not mold_no or quantity <= 0 or not has_product:
                 issues.append(
                     _issue(
@@ -835,9 +1130,20 @@ def parse_demand_order_workbook(
             "profile_family": profile.profile_family,
             "revision": profile.revision,
             "definition_digest": profile_definition_digest(profile),
-            "recognition_method": "TITLE_ANCHORS_DYNAMIC_HEADER",
+            "recognition_method": (
+                str(
+                    profile.recognition_config.get("method")
+                    or "ACTIVE_STRUCTURAL_PROFILE"
+                )
+                if profile.recognition_config.get("structural_layout_signature")
+                else "TITLE_ANCHORS_DYNAMIC_HEADER"
+            ),
+            "recognition_config": profile.recognition_config,
         },
-        "template_signature": profile_template_signature(profile),
+        "template_signature": str(
+            profile.recognition_config.get("structural_layout_signature")
+            or profile_template_signature(profile)
+        ),
         "header_fingerprint": profile_header_fingerprint(profile),
         "sheet_roles": [
             {
@@ -852,6 +1158,7 @@ def parse_demand_order_workbook(
         "mapping_fingerprint": mapping_fingerprint,
         "mapping_draft": {},
         "document_meta": meta_values,
+        "document_meta_lineage": meta,
         "demand_rows": rows,
         "scheduled_baseline_tasks": [],
         "backlog_orders": [],

@@ -79,6 +79,29 @@ def active_profiles_for_factory(
     return tuple(selected)
 
 
+def active_profile_by_structural_signature(
+    db: Session,
+    *,
+    factory_id: str,
+    structural_signature: str,
+    document_kind: str,
+) -> ImportProfile | None:
+    matches = [
+        profile
+        for profile in active_profiles_for_factory(
+            db, factory_id, document_kind=document_kind
+        )
+        if profile.recognition_config.get("structural_layout_signature")
+        == structural_signature
+    ]
+    if not matches:
+        return None
+    return max(
+        matches,
+        key=lambda item: (item.revision, item.profile_family),
+    )
+
+
 def profile_revision_for_factory(
     db: Session,
     *,
@@ -311,6 +334,7 @@ def create_active_workbench_profile_revision(
     request_id: str,
     config: dict[str, Any],
     user: AuthContext,
+    commit: bool = True,
 ) -> InjectionSchedulingImportProfile:
     """Save a clerk-corrected mapping as an immediately usable factory template.
 
@@ -376,7 +400,10 @@ def create_active_workbench_profile_revision(
         user=user,
     )
     try:
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
@@ -430,7 +457,9 @@ def transition_profile(
             status_code=409, detail="只有 PROFILE_DRAFT 或 RETIRED Profile 可以激活"
         )
     if target_status == "ACTIVE" and record.created_by == user.id:
-        raise HTTPException(status_code=403, detail="Profile 提交人与审核激活人必须分离")
+        raise HTTPException(
+            status_code=403, detail="Profile 提交人与审核激活人必须分离"
+        )
     if target_status == "RETIRED" and record.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="只有 ACTIVE Profile 可以停用")
     timestamp = _now()

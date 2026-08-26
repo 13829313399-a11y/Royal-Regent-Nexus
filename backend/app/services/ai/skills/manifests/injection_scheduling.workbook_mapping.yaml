@@ -1,0 +1,24 @@
+id: injection_scheduling.workbook_mapping
+version: 1.0.0
+prompt_version: 1.0.0
+owner: production-platform
+status: current
+intents:
+  - classify_injection_workbook
+  - map_injection_workbook
+route_names: []
+knowledge_ids: []
+required_context:
+  factory_scope: required
+allowed_tools: []
+feature_tools: []
+model_policy:
+  capability: STRUCTURED_EXTRACTION
+  reasoning: BALANCED
+risk_policy:
+  maximum: PREVIEW_WITH_AUDIT
+output_contract:
+  schema_id: injection_scheduling.workbook_mapping.v1
+max_steps: 2
+max_input_tokens: 16000
+eval_suite_ref: injection_workbook_mapping_v1
