@@ -36,4 +36,9 @@ describe('AI-B10/B11 workbook preview and mapping boundaries', () => {
     expect(wizard).toContain('AI 布局已通过后端来源校验')
     expect(wizard).toContain('确定性服务完成')
   })
+
+  it('uses a five-minute scoped deadline for workbook import operations', () => {
+    expect(api).toContain('export const IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS = 300_000')
+    expect(api.match(/timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS/g)?.length).toBeGreaterThanOrEqual(8)
+  })
 })

@@ -24,6 +24,8 @@ import type {
 
 type UnknownRecord = Record<string, unknown>
 
+export const IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS = 300_000
+
 export interface AIWorkbookMappingProposal extends UnknownRecord {
   preview_manifest?: AIPreviewManifest
 }
@@ -866,12 +868,18 @@ export function mapImportBatch(source: UnknownRecord): ImportBatchRecord {
 }
 
 export async function listImportBatches(factoryId: string) {
-  const { data } = await http.get('/injection-scheduling/imports', { params: { factory_id: factoryId, limit: 20 } })
+  const { data } = await http.get('/injection-scheduling/imports', {
+    params: { factory_id: factoryId, limit: 20 },
+    timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS,
+  })
   return (Array.isArray(data) ? data as UnknownRecord[] : []).map(mapImportBatch)
 }
 
 export async function recoverImportBatch(factoryId: string, batchId: string) {
-  const { data } = await http.get(`/injection-scheduling/imports/${batchId}`, { params: { factory_id: factoryId } })
+  const { data } = await http.get(`/injection-scheduling/imports/${batchId}`, {
+    params: { factory_id: factoryId },
+    timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS,
+  })
   return mapImportBatch(data as UnknownRecord)
 }
 
@@ -894,6 +902,7 @@ export async function uploadImportPreview(
       'Content-Type': 'multipart/form-data',
       'X-Request-ID': newRequestId('import-preview'),
     },
+    timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS,
   })
   return mapImportBatch(data as UnknownRecord)
 }
@@ -909,6 +918,7 @@ export async function proposeWorkbookFieldMapping(
   body.set('file', file)
   const { data } = await http.post('/ai/workbooks/mapping-proposal', body, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS,
   })
   return parseWorkbookMappingProposal(data)
 }
@@ -916,7 +926,7 @@ export async function proposeWorkbookFieldMapping(
 export async function retryImportPreview(factoryId: string, batch: ImportBatchRecord) {
   const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/retry`, {
     factory_id: factoryId, expected_revision: batch.revision, request_id: newRequestId('import-retry'),
-  })
+  }, { timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS })
   return mapImportBatch(data as UnknownRecord)
 }
 
@@ -926,7 +936,7 @@ export async function updateImportMappingDraft(factoryId: string, batch: ImportB
     expected_revision: batch.revision,
     request_id: newRequestId('import-mapping'),
     mappings,
-  })
+  }, { timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS })
   return mapImportBatch(data as UnknownRecord)
 }
 
@@ -937,7 +947,7 @@ export async function proposeImportProfile(factoryId: string, batch: ImportBatch
     request_id: newRequestId('import-profile-proposal'),
     name,
     reason,
-  })
+  }, { timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS })
   return mapImportBatch(data as UnknownRecord)
 }
 
@@ -1135,7 +1145,7 @@ export async function approveImportMasterDifferences(factoryId: string, batch: I
   const differences = batch.masterDifferences.map((item) => `${text(item.entity_type)}:${text(item.business_key)}`)
   const { data } = await http.post(`/injection-scheduling/imports/${batch.id}/master-differences/approve`, {
     factory_id: factoryId, expected_revision: batch.revision, request_id: newRequestId('import-master'), reason, differences,
-  })
+  }, { timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS })
   return mapImportBatch(data as UnknownRecord)
 }
 
@@ -1161,7 +1171,7 @@ export async function confirmImportBatch(factoryId: string, batch: ImportBatchRe
       target_draft_plan_id: batch.confirmedPlanId || text(batch.planContext.target_draft_plan_id),
       reference_published_plan_id: text(batch.planContext.reference_published_plan_id),
     } : {}),
-  })
+  }, { timeout: IMPORT_WORKBOOK_REQUEST_TIMEOUT_MS })
   return mapImportBatch(data as UnknownRecord)
 }
 
