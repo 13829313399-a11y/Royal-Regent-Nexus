@@ -7,7 +7,6 @@ import {
   parseScenarioCompare,
   type AIPreviewManifest,
 } from '@/features/nexus-copilot/renderers/preview'
-import { parseWorkbookMappingProposal } from '@/features/injection-scheduling-v2/api/injectionSchedulingV2Api'
 
 export function previewManifest(overrides: Partial<AIPreviewManifest> = {}): AIPreviewManifest {
   return {
@@ -75,7 +74,7 @@ describe('NIF-15 generic Preview contracts', () => {
     expect(expiredAtRuntime?.can_propose_action).toBe(false)
   })
 
-  it('validates Scenario Compare basis and workbook adapter metadata', () => {
+  it('validates Scenario Compare basis and workbook Preview metadata', () => {
     const comparison = {
       schema_version: 'ai-scenario-compare-v1',
       preview_type: 'injection_scheduling.run',
@@ -88,16 +87,13 @@ describe('NIF-15 generic Preview contracts', () => {
     }
     expect(parseScenarioCompare(comparison)?.comparable).toBe(true)
     expect(parseScenarioCompare({ ...comparison, comparable: false })).toBeNull()
-    expect(parseWorkbookMappingProposal({ proposal: [], preview_manifest: previewManifest({
+    expect(parsePreviewManifest(previewManifest({
       preview_type: 'workbook.mapping',
       preview_id: 'workbook-preview-0001',
       deterministic_service: false,
       can_propose_action: false,
       action_capability: null,
-    }) }).preview_manifest?.preview_type).toBe('workbook.mapping')
-    expect(() => parseWorkbookMappingProposal({
-      proposal: [],
-      preview_manifest: { ...previewManifest(), unexpected: true },
-    })).toThrow('Preview 校验失败')
+    }))?.preview_type).toBe('workbook.mapping')
+    expect(parsePreviewManifest({ ...previewManifest(), unexpected: true })).toBeNull()
   })
 })

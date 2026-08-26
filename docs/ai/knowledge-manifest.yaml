@@ -113,7 +113,7 @@ documents:
     module_id: injection-scheduling
     route_names: [injection-scheduling-v2]
     source_path: docs/ai/modules/injection-scheduling.md
-    source_files: [backend/app/api/injection_scheduling_execution.py, backend/app/services/injection_scheduling_execution.py, src/features/injection-scheduling-v2/stores/useInjectionSchedulingV2Store.ts]
+    source_files: [backend/app/api/injection_scheduling_execution.py, backend/app/services/injection_scheduling_execution.py, src/views/InjectionSchedulingV2View.vue]
     factory_ids: ['*']
     role_codes: ['*']
     keywords: [注塑, 啤机, 排产, DRAFT, PUBLISHED, BACKLOG, 发布, 生产回报]

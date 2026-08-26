@@ -6,7 +6,7 @@ import AvatarPreviewDialog from '@/components/directory/AvatarPreviewDialog.vue'
 import MemberDirectoryList from '@/components/directory/MemberDirectoryList.vue'
 import type { DirectoryMember, PresenceFilter } from '@/api/directory'
 import { directoryApi } from '@/api/directory'
-import { useDialogFocus } from '@/features/injection-scheduling-v2/composables/useDialogFocus'
+import { useDialogFocus } from '@/composables/useDialogFocus'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 import { getApiErrorMessage } from '@/lib/http'
 
