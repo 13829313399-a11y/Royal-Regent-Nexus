@@ -613,20 +613,31 @@ def _parse_plan_rows(
         row_layout.get("machine_code_strategy") or "CURRENT_OR_INHERITED"
     )
     machine_header_rule = str(
-        row_layout.get("machine_header_rule") or "MACHINE_CODE_WITHOUT_BUSINESS_IDENTITY"
+        row_layout.get("machine_header_rule")
+        or "MACHINE_CODE_WITHOUT_BUSINESS_IDENTITY"
     )
     machine_header_columns = list(row_layout.get("machine_header_columns") or [])
-    task_identity_fields = list(
-        row_layout.get("task_identity_fields") or ["order_no"]
-    )
-    backlog_rule = str(
-        row_layout.get("backlog_rule") or "BUSINESS_ROW_WITHOUT_MACHINE"
-    )
+    task_identity_fields = list(row_layout.get("task_identity_fields") or ["order_no"])
+    backlog_rule = str(row_layout.get("backlog_rule") or "BUSINESS_ROW_WITHOUT_MACHINE")
+    termination = row_layout.get("termination") or {}
+    footer_labels = {
+        normalize_header(item) for item in termination.get("footer_labels", [])
+    }
+    empty_identity_streak = 0
 
     for row_number, cells in reader.rows(sheet_name):
         if row_number < data_start_row:
             continue
         if row_number > data_end_row:
+            break
+        row_tokens = {
+            normalize_header(reader.identifier(cell)) for cell in cells.values()
+        } - {""}
+        if (
+            (scheduled or backlog or ignored)
+            and termination.get("mode") == "FIRST_FOOTER_LABEL"
+            and row_tokens & footer_labels
+        ):
             break
         values: dict[str, Any] = {}
         field_lineage: dict[str, Any] = {}
@@ -705,11 +716,12 @@ def _parse_plan_rows(
                 and order_quantity is None
             )
         if is_machine_header:
+            empty_identity_streak = 0
             current_machine = raw_machine
             # The duplicated A/B group title is assignment evidence, not master
             # data. It may classify following rows while still creating a
             # MISSING_IN_SYSTEM_MASTER difference against authoritative machines.
-            if fixed_group_header:
+            if fixed_group_header or layout_override:
                 known_machine_codes.add(raw_machine)
             ignored.append(
                 {
@@ -720,6 +732,16 @@ def _parse_plan_rows(
             )
             continue
         if not order_like:
+            if termination.get("mode") == "EMPTY_IDENTITY_STREAK" and not any(
+                _clean_text(values.get(field)) for field in task_identity_fields
+            ):
+                empty_identity_streak += 1
+                if (scheduled or backlog or ignored) and empty_identity_streak >= int(
+                    termination.get("empty_identity_streak") or 5
+                ):
+                    break
+            else:
+                empty_identity_streak = 0
             if any(_clean_text(value) for value in values.values()):
                 ignored.append(
                     {
@@ -729,6 +751,7 @@ def _parse_plan_rows(
                     }
                 )
             continue
+        empty_identity_streak = 0
 
         explicit_machine = raw_machine
         planned_start = _clean_text(values.get("planned_start"))
@@ -797,7 +820,9 @@ def _parse_plan_rows(
         }
         likely_backlog = not machine_code and not has_window
         for rule, cell in formula_checks:
-            ignore_backlog_date = likely_backlog and rule.canonical_field in backlog_date_fields
+            ignore_backlog_date = (
+                likely_backlog and rule.canonical_field in backlog_date_fields
+            )
             blocking_formula = (
                 _formula_issue(
                     profile=profile,
@@ -907,11 +932,7 @@ def _parse_plan_rows(
             scheduled.append(row)
             if row["execution_status"] == "RUNNING":
                 running_candidates[machine_code].append(row)
-        elif (
-            not machine_code
-            and not has_window
-            and backlog_rule != "NONE"
-        ):
+        elif not machine_code and not has_window and backlog_rule != "NONE":
             row["classification"] = "BACKLOG"
             row["execution_status"] = (
                 "COMPLETED"
@@ -1125,6 +1146,16 @@ def parse_canonical_workbook(
         return normalized, issues
 
     current_sheet = roles["CURRENT_PLAN"]["sheet_name"]
+    if layout_override is None and profile.recognition_config.get("row_layout"):
+        source_sheet = profile.recognition_config.get("source_sheet") or {}
+        layout_override = {
+            "data_start_row": int(
+                source_sheet.get("data_start_row")
+                or int(roles["CURRENT_PLAN"]["header_row"] or 1) + 1
+            ),
+            "data_end_row": 1_000_000,
+            "row_layout": profile.recognition_config["row_layout"],
+        }
     _profile_title_warning(reader, profile, current_sheet, issues)
     if mapping_blockers:
         for blocker in mapping_blockers:
@@ -1164,9 +1195,11 @@ def parse_canonical_workbook(
         entity_label="模具",
         issues=issues,
     )
-    known_machine_codes = {item["machine_code"] for item in machines} | set(
-        system_machine_codes or set()
-    ) | set(additional_known_machine_codes or set())
+    known_machine_codes = (
+        {item["machine_code"] for item in machines}
+        | set(system_machine_codes or set())
+        | set(additional_known_machine_codes or set())
+    )
     parsed = _parse_plan_rows(
         reader,
         profile=profile,
@@ -1196,7 +1229,10 @@ def parse_canonical_workbook(
             )
         ],
     }
-    template_signature = _hash(signature_payload)
+    template_signature = str(
+        profile.recognition_config.get("structural_layout_signature")
+        or _hash(signature_payload)
+    )
     mapping_fingerprint = _hash(
         [
             {key: value for key, value in item.items() if key != "sample_values"}
@@ -1240,10 +1276,16 @@ def parse_canonical_workbook(
             "status": profile.status,
             "factories": list(profile.factories),
             "recognition_method": (
-                "ACTIVE_PROFILE_EXACT"
+                str(
+                    profile.recognition_config.get("method")
+                    or "ACTIVE_STRUCTURAL_PROFILE"
+                )
+                if profile.recognition_config.get("structural_layout_signature")
+                else "ACTIVE_PROFILE_EXACT"
                 if all(item["status"] == "MAPPED" for item in mapping)
                 else "ACTIVE_PROFILE_COMPATIBLE_HEADER_FINGERPRINT"
             ),
+            "recognition_config": profile.recognition_config,
             "template_signature": template_signature,
             "definition_digest": profile_definition_digest(profile),
             "quantity_scope": profile.quantity_scope,

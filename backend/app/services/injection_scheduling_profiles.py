@@ -5,6 +5,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any, Literal
 
 AuthorityType = Literal[
@@ -66,6 +67,7 @@ class ImportProfile:
     title_aliases: tuple[str, ...] = ()
     anchor_aliases: tuple[str, ...] = ()
     termination_aliases: tuple[str, ...] = ()
+    recognition_config: dict[str, Any] = dataclass_field(default_factory=dict)
 
     @property
     def current_plan_role(self) -> SheetRoleRule:
@@ -482,9 +484,7 @@ def _huakang_b_fields(
 def _huakang_a_fields() -> tuple[FieldRule, ...]:
     p = "huakang_a_daily_plan_v1"
     return (
-        _field(
-            p, "machine_code", "B", ("机位", "机号"), "identifier", required=True
-        ),
+        _field(p, "machine_code", "B", ("机位", "机号"), "identifier", required=True),
         _field(p, "item_no", "D", ("货号",), "identifier"),
         _field(p, "legacy_machine_class_text", "E", ("安机", "机型", "机安"), "text"),
         _field(p, "mold_no", "F", ("工模", "模号"), "identifier", required=True),
@@ -733,9 +733,7 @@ BUILTIN_IMPORT_PROFILES: tuple[ImportProfile, ...] = (
         name="华康 B 啤机生产日计划表（单计划表）v1",
         factories=("huakang-b",),
         status="ACTIVE",
-        sheet_roles=(
-            SheetRoleRule("CURRENT_PLAN", ("计划表",), True, 3),
-        ),
+        sheet_roles=(SheetRoleRule("CURRENT_PLAN", ("计划表",), True, 3),),
         fields=_huakang_b_fields("huakang_b_plan_only_v1"),
         machine_adapter="system_master_only",
         mold_adapter="system_master_only",
@@ -837,6 +835,15 @@ SYSTEM_STANDARD_EXPORT_PROFILE = ImportProfile(
 
 
 def profile_config(profile: ImportProfile) -> dict[str, Any]:
+    recognition = json.loads(json.dumps(profile.recognition_config, ensure_ascii=False))
+    if profile.document_kind != "PLANNED_SCHEDULE":
+        recognition.update(
+            {
+                "title_aliases": list(profile.title_aliases),
+                "anchor_aliases": list(profile.anchor_aliases),
+                "termination_aliases": list(profile.termination_aliases),
+            }
+        )
     return {
         "profile_id": profile.profile_id,
         "profile_code": profile.profile_code,
@@ -883,15 +890,11 @@ def profile_config(profile: ImportProfile) -> dict[str, Any]:
             {
                 "document_kind": profile.document_kind,
                 "source_namespace_id": profile.source_namespace_id,
-                "recognition": {
-                    "title_aliases": list(profile.title_aliases),
-                    "anchor_aliases": list(profile.anchor_aliases),
-                    "termination_aliases": list(profile.termination_aliases),
-                },
             }
             if profile.document_kind != "PLANNED_SCHEDULE"
             else {}
         ),
+        **({"recognition": recognition} if recognition else {}),
     }
 
 
@@ -1064,6 +1067,11 @@ def profile_from_config(config: dict[str, Any]) -> ImportProfile:
             str(value)
             for value in config.get("recognition", {}).get("termination_aliases", [])
         ),
+        recognition_config={
+            str(key): value
+            for key, value in config.get("recognition", {}).items()
+            if key not in {"title_aliases", "anchor_aliases", "termination_aliases"}
+        },
     )
     if profile.quantity_scope not in {"ORDER_CUMULATIVE", "SPLIT_CUMULATIVE"}:
         raise ValueError("Profile quantity_scope 无效")
