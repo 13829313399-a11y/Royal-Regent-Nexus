@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.middleware.gzip import GZipMiddleware
 
 from app.api.ai import router as ai_router
 from app.api.ai_actions import gateway_router as ai_action_gateway_router
@@ -86,6 +87,32 @@ from app.services.ai.observability.alerts import (
 from app.services.ai.task_service import enforce_task_retention
 
 request_timing_logger = logging.getLogger("uvicorn.error")
+LARGE_RESPONSE_COMPRESSION_MINIMUM_BYTES = 64 * 1024
+LARGE_RESPONSE_COMPRESSION_LEVEL = 5
+LARGE_RESPONSE_COMPRESSION_PATH_PREFIXES = (
+    "/api/injection-scheduling/imports",
+    "/api/injection-scheduling/workbench/imports",
+    "/api/ai/workbooks/mapping-proposal",
+)
+
+
+class ScopedGZipMiddleware:
+    def __init__(self, app, *, minimum_size: int, compresslevel: int):
+        self.app = app
+        self.gzip_app = GZipMiddleware(
+            app,
+            minimum_size=minimum_size,
+            compresslevel=compresslevel,
+        )
+
+    async def __call__(self, scope, receive, send):
+        path = str(scope.get("path", ""))
+        if scope.get("type") == "http" and path.startswith(
+            LARGE_RESPONSE_COMPRESSION_PATH_PREFIXES
+        ):
+            await self.gzip_app(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -141,6 +168,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app.add_middleware(
+    ScopedGZipMiddleware,
+    minimum_size=LARGE_RESPONSE_COMPRESSION_MINIMUM_BYTES,
+    compresslevel=LARGE_RESPONSE_COMPRESSION_LEVEL,
+)
 
 
 @app.exception_handler(RequestValidationError)
