@@ -39,6 +39,17 @@ MAX_CELL_TEXT = 240
 MAX_FORMULA_TEXT = 2_000
 MAX_MERGED_REGIONS = 2_000
 _DATE_FORMAT = re.compile(r"(?:^|[^a-z])[dmyhs]+", re.IGNORECASE)
+_MONTH_SHEET = re.compile(r"^(?:[1-9]|1[0-2])月$")
+_DATE_TOKEN = re.compile(
+    r"^(?:[1-9]|[12][0-9]|3[01])(?:号|日)?$|^\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?$"
+)
+_SHIFT_ALIASES = frozenset({"白班", "夜班", "晚班"})
+_IDENTITY_HEADER = re.compile(r"工模|模具|单号|订单号|名称|数量|订单数|货号")
+_FOOTER_LABEL = re.compile(r"合计|总计|小计|备注|下单日期|下单人|操作员|制表")
+_STRUCTURAL_LABEL = re.compile(
+    r"计划|排程|需求|订单|下单|客户|厂区|工厂|月份|日期|单号|编号|审核|制表|"
+    r"机台|工模|模具|货号|产品|名称|数量|完成|开始|结束|交期|材料|颜色|备注"
+)
 
 
 def _json(value: Any) -> str:
@@ -154,13 +165,45 @@ def _cell_payload(
 
 def _representative_rows(
     first: list[AIWorkbookRecognitionRowV1],
+    machine_headers: list[AIWorkbookRecognitionRowV1],
+    business_rows: list[AIWorkbookRecognitionRowV1],
+    footer_rows: list[AIWorkbookRecognitionRowV1],
     reservoir: list[AIWorkbookRecognitionRowV1],
     last: deque[AIWorkbookRecognitionRowV1],
 ) -> list[AIWorkbookRecognitionRowV1]:
     selected: dict[int, AIWorkbookRecognitionRowV1] = {}
-    for item in [*first, *sorted(reservoir, key=lambda row: row.row), *last]:
+    for item in [
+        *first,
+        *machine_headers[:8],
+        *business_rows[:8],
+        *footer_rows[:4],
+        *sorted(reservoir, key=lambda row: row.row),
+        *last,
+    ]:
         selected.setdefault(item.row, item)
     return list(selected.values())[:MAX_SAMPLE_ROWS]
+
+
+def _candidate_row_kind(
+    reader: _WorkbookReader,
+    cells: dict[str, dict[str, Any]],
+    identity_columns: set[str],
+) -> str:
+    values = {
+        column: reader.identifier(cell).strip()
+        for column, cell in cells.items()
+        if reader.identifier(cell).strip()
+    }
+    if any(_FOOTER_LABEL.search(value) for value in values.values()):
+        return "FOOTER"
+    first = values.get("A", "")
+    second = values.get("B", "")
+    identity_count = sum(bool(values.get(column)) for column in identity_columns)
+    if first and first == second and identity_count <= 1:
+        return "MACHINE_HEADER"
+    if identity_count >= 2:
+        return "BUSINESS_ROW"
+    return "OTHER"
 
 
 def _sheet_packet(
@@ -172,6 +215,9 @@ def _sheet_packet(
     dimension, merged = _sheet_xml_metadata(reader, sheet_name)
     header_cells: list[AIWorkbookRecognitionCellV1] = []
     first_rows: list[AIWorkbookRecognitionRowV1] = []
+    machine_header_rows: list[AIWorkbookRecognitionRowV1] = []
+    business_rows: list[AIWorkbookRecognitionRowV1] = []
+    footer_rows: list[AIWorkbookRecognitionRowV1] = []
     reservoir: list[AIWorkbookRecognitionRowV1] = []
     last_rows: deque[AIWorkbookRecognitionRowV1] = deque(maxlen=8)
     column_nonempty: defaultdict[str, int] = defaultdict(int)
@@ -182,6 +228,7 @@ def _sheet_packet(
     max_column = 1
     effective_max_row = 1
     semantic_row_count = 0
+    identity_columns: set[str] = set()
 
     for row_number, cells in reader.rows(sheet_name):
         max_row = max(max_row, row_number)
@@ -218,6 +265,12 @@ def _sheet_packet(
                 for cell in semantic_cells[:160]
                 if len(header_cells) < 3_200
             )
+            for cell in semantic_cells:
+                display = _display_value(reader, cell, _value_kind(reader, cell))
+                if _IDENTITY_HEADER.search(display):
+                    column = _column_from_ref(str(cell.get("reference", "")))
+                    if column:
+                        identity_columns.add(column)
         if not semantic_cells:
             continue
         effective_max_row = row_number
@@ -234,7 +287,11 @@ def _sheet_packet(
             if cell.get("formula_cache_missing"):
                 column_missing[column] += 1
             display = _display_value(reader, cell, _value_kind(reader, cell))
-            if display and display not in column_samples[column] and len(column_samples[column]) < 6:
+            if (
+                display
+                and display not in column_samples[column]
+                and len(column_samples[column]) < 6
+            ):
                 column_samples[column].append(display)
 
         row_payload = AIWorkbookRecognitionRowV1(
@@ -243,14 +300,26 @@ def _sheet_packet(
         )
         if len(first_rows) < 8:
             first_rows.append(row_payload)
+        candidate_kind = _candidate_row_kind(reader, cells, identity_columns)
+        if candidate_kind == "MACHINE_HEADER" and len(machine_header_rows) < 8:
+            machine_header_rows.append(row_payload)
+        elif candidate_kind == "BUSINESS_ROW" and len(business_rows) < 8:
+            business_rows.append(row_payload)
+        elif candidate_kind == "FOOTER" and len(footer_rows) < 4:
+            footer_rows.append(row_payload)
         last_rows.append(row_payload)
         if len(reservoir) < 8:
             reservoir.append(row_payload)
         else:
-            selector = int(
-                hashlib.sha256(f"{sheet_name}:{row_number}".encode()).hexdigest()[:8],
-                16,
-            ) % semantic_row_count
+            selector = (
+                int(
+                    hashlib.sha256(f"{sheet_name}:{row_number}".encode()).hexdigest()[
+                        :8
+                    ],
+                    16,
+                )
+                % semantic_row_count
+            )
             if selector < len(reservoir):
                 reservoir[selector] = row_payload
 
@@ -269,7 +338,12 @@ def _sheet_packet(
             cells=header_cells,
         ),
         representative_rows=_representative_rows(
-            first_rows, reservoir, last_rows
+            first_rows,
+            machine_header_rows,
+            business_rows,
+            footer_rows,
+            reservoir,
+            last_rows,
         ),
         column_profiles=[
             AIWorkbookRecognitionColumnProfileV1(
@@ -332,5 +406,134 @@ def build_workbook_recognition_packet(
     )
     digest_payload = packet.model_dump(mode="json", exclude={"packet_sha256"})
     return packet.model_copy(
-        update={"packet_sha256": hashlib.sha256(_json(digest_payload).encode()).hexdigest()}
+        update={
+            "packet_sha256": hashlib.sha256(_json(digest_payload).encode()).hexdigest()
+        }
     )
+
+
+def _signature_token(
+    cell: AIWorkbookRecognitionCellV1, *, preserve_text: bool = True
+) -> str:
+    text = re.sub(r"\s+", "", cell.display_value.strip().lower())
+    if not text:
+        return ""
+    if cell.value_kind == "DATE" or _DATE_TOKEN.fullmatch(text):
+        return "<DATE_TOKEN>"
+    if text in _SHIFT_ALIASES:
+        return "<SHIFT>"
+    text = re.sub(r"20\d{2}年?", "<YEAR>", text)
+    text = re.sub(r"(?:[1-9]|1[0-2])月", "<MONTH>", text)
+    if not preserve_text and not _STRUCTURAL_LABEL.search(text):
+        return f"<{cell.value_kind}_VALUE>"
+    return text[:160]
+
+
+def structural_layout_signature(packet: AIWorkbookRecognitionPacketV1) -> str:
+    """Hash only workbook structure; order data, month and date values are excluded."""
+
+    sheets: list[dict[str, Any]] = []
+    for sheet in packet.sheets:
+        name = (
+            "<MONTH_SHEET>"
+            if _MONTH_SHEET.fullmatch(sheet.name.strip())
+            else sheet.name
+        )
+        cells_by_row: defaultdict[int, list[AIWorkbookRecognitionCellV1]] = defaultdict(
+            list
+        )
+        header_match_counts: defaultdict[int, int] = defaultdict(int)
+        for cell in sheet.header_region.cells:
+            match = CELL_REF_RE.fullmatch(cell.cell_ref)
+            if match is None:
+                continue
+            row_number = int(match.group(2))
+            cells_by_row[row_number].append(cell)
+            if _IDENTITY_HEADER.search(cell.display_value):
+                header_match_counts[row_number] += 1
+        base_header_row = (
+            max(header_match_counts, key=lambda row: (header_match_counts[row], row))
+            if header_match_counts
+            else sheet.header_region.start_row
+        )
+        identity_columns = {
+            match.group(1)
+            for cell in cells_by_row[base_header_row]
+            if (match := CELL_REF_RE.fullmatch(cell.cell_ref)) is not None
+            and _IDENTITY_HEADER.search(cell.display_value)
+        }
+        first_data_row: int | None = None
+        for row_number in sorted(cells_by_row):
+            if row_number <= base_header_row:
+                continue
+            values = {
+                match.group(1): cell.display_value.strip()
+                for cell in cells_by_row[row_number]
+                if (match := CELL_REF_RE.fullmatch(cell.cell_ref)) is not None
+            }
+            identity_count = sum(
+                bool(values.get(column)) for column in identity_columns
+            )
+            if (
+                identity_columns and identity_count >= min(2, len(identity_columns))
+            ) or (values.get("A") and values.get("A") == values.get("B")):
+                first_data_row = row_number
+                break
+        header_end = (
+            first_data_row - 1
+            if first_data_row is not None
+            else min(sheet.header_region.end_row, base_header_row + 3)
+        )
+        header_by_column: defaultdict[str, list[tuple[int, str]]] = defaultdict(list)
+        for cell in sheet.header_region.cells:
+            match = CELL_REF_RE.fullmatch(cell.cell_ref)
+            if match is None or int(match.group(2)) > header_end:
+                continue
+            row_number = int(match.group(2))
+            token = _signature_token(cell, preserve_text=row_number >= base_header_row)
+            if token:
+                header_by_column[match.group(1)].append((int(match.group(2)), token))
+        columns: list[tuple[str, tuple[tuple[int, str], ...] | str]] = []
+        shift_open = False
+        shift_column_numbers: set[int] = set()
+        for column in sorted(header_by_column, key=_column_number):
+            tokens = tuple(sorted(header_by_column[column]))
+            has_shift = any(token == "<SHIFT>" for _, token in tokens)
+            # A merged date normally appears only in the first column of a
+            # day/night pair.  Collapse the whole consecutive shift run so a
+            # new month (different day count) still matches the saved shape.
+            if has_shift:
+                shift_column_numbers.add(_column_number(column))
+                if not shift_open:
+                    columns.append(("<SHIFT_GRID>", "<SHIFT_GRID>"))
+                    shift_open = True
+                continue
+            shift_open = False
+            columns.append((column, tokens))
+        merge_shapes: list[str] = []
+        for region in sheet.merged_regions:
+            match = re.fullmatch(r"([A-Z]{1,4})([0-9]+):([A-Z]{1,4})([0-9]+)", region)
+            if match is None or int(match.group(2)) > header_end:
+                continue
+            start_column = _column_number(match.group(1))
+            end_column = _column_number(match.group(3))
+            if any(
+                start_column <= column_number <= end_column
+                for column_number in shift_column_numbers
+            ):
+                continue
+            merge_shapes.append(region)
+        merge_shapes.sort()
+        sheets.append(
+            {
+                "name": name,
+                "state": sheet.state,
+                "columns": columns,
+                "header_merge_shapes": merge_shapes,
+            }
+        )
+    return hashlib.sha256(_json({"version": 1, "sheets": sheets}).encode()).hexdigest()
+
+
+def source_sheet_mode(sheet_name: str) -> str:
+    return "MONTH_SHEET" if _MONTH_SHEET.fullmatch(sheet_name.strip()) else "EXACT_NAME"

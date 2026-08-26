@@ -97,6 +97,14 @@ describe('simplified injection scheduling workbench', () => {
     expect(importDialog).toContain('wb-import-rail')
     expect(importDialog).toContain('源文件始终只读')
     expect(importDialog).toContain('role="alert"')
+    expect(importDialog).toContain('智能识别并预览')
+    expect(importDialog).toContain('正在读取表结构并匹配模板…')
+    expect(importDialog).toContain('千问重新识别')
+    expect(importDialog).toContain('识别来源')
+    expect(importDialog).toContain('识别布局详情')
+    expect(importDialog).toContain('AI 只负责结构映射')
+    expect(importDialog).toContain("preview('AI')")
+    expect(importDialog).toContain("'确认导入'")
   })
 
   it('does not treat a letter T in business identifiers as a datetime separator', () => {

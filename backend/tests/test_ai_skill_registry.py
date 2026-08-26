@@ -22,14 +22,18 @@ def _user(*, denied: bool = False) -> AuthContext:
         binding_id="grant-scheduling-reader",
     )
     overrides = (
-        AuthOverrideContext(
-            id="deny-scheduling-read",
-            permission_code="injection_scheduling:read",
-            effect="deny",
-            factory_id="huaxing",
-            department="production",
-        ),
-    ) if denied else ()
+        (
+            AuthOverrideContext(
+                id="deny-scheduling-read",
+                permission_code="injection_scheduling:read",
+                effect="deny",
+                factory_id="huaxing",
+                department="production",
+            ),
+        )
+        if denied
+        else ()
+    )
     return AuthContext(
         id="skill-user",
         username="skill-user",
@@ -60,7 +64,11 @@ def _context(*, denied: bool = False) -> ToolExecutionContext:
             verified_factory_id="huaxing",
             verified_module_id="injection-scheduling",
             knowledge_id="injection-scheduling",
-            allowed_tool_groups=("identity", "module_knowledge", "injection_scheduling"),
+            allowed_tool_groups=(
+                "identity",
+                "module_knowledge",
+                "injection_scheduling",
+            ),
         ),
     )
 
@@ -101,22 +109,28 @@ max_input_tokens: 1000
 """
 
 
-def test_default_registry_has_reviewed_unique_versioned_skills_and_stable_hashes() -> None:
+def test_default_registry_has_reviewed_unique_versioned_skills_and_stable_hashes() -> (
+    None
+):
     tools = build_default_tool_registry()
     first = SkillRegistry(tools)
     second = SkillRegistry(tools)
 
-    assert len(first.skills) == 12
+    assert len(first.skills) == 13
     assert [skill.manifest.id for skill in first.skills] == sorted(
         skill.manifest.id for skill in first.skills
     )
-    assert len({skill.manifest.id for skill in first.skills}) == 12
+    assert len({skill.manifest.id for skill in first.skills}) == 13
     assert [skill.content_hash for skill in first.skills] == [
         skill.content_hash for skill in second.skills
     ]
     assert all(len(skill.content_hash) == 64 for skill in first.skills)
     assert first.resolve("injection_scheduling.read_context", "1.0.0").version_ref == (
         "injection_scheduling.read_context@1.0.0"
+    )
+    assert (
+        first.resolve("injection_scheduling.workbook_mapping", "1.0.0").version_ref
+        == "injection_scheduling.workbook_mapping@1.0.0"
     )
     with pytest.raises(SkillRegistryError, match="unknown Skill"):
         first.resolve("injection_scheduling.read_context", "9.9.9")
@@ -136,7 +150,9 @@ def test_default_registry_has_reviewed_unique_versioned_skills_and_stable_hashes
     }.issubset({skill.manifest.id for skill in first.skills})
 
 
-def test_module_tutor_feature_tool_is_optional_and_only_authorized_when_enabled() -> None:
+def test_module_tutor_feature_tool_is_optional_and_only_authorized_when_enabled() -> (
+    None
+):
     disabled = SkillRegistry(build_default_tool_registry())
     enabled = SkillRegistry(build_default_tool_registry(knowledge_hub_enabled=True))
     disabled_skill = disabled.resolve("system.module_tutor")

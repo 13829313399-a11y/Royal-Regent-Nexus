@@ -18,7 +18,9 @@ from test_injection_scheduling_phase3_api import (
 from test_injection_scheduling_phase4_import import login
 
 
-def _demand_workbook(*, row_count: int = 1, unknown_quantity_header: bool = False) -> bytes:
+def _demand_workbook(
+    *, row_count: int = 1, unknown_quantity_header: bool = False
+) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "客户下单"
@@ -101,7 +103,17 @@ def _master_data_workbook() -> bytes:
     ]
     for column, value in enumerate(mold_headers, start=1):
         mold_sheet.cell(1, column, value)
-    mold_values = ["M-002", "第二套测试工模", "STYLE-02", "上壳", "120A", 2, 1600, 24, 21]
+    mold_values = [
+        "M-002",
+        "第二套测试工模",
+        "STYLE-02",
+        "上壳",
+        "120A",
+        2,
+        1600,
+        24,
+        21,
+    ]
     for column, value in enumerate(mold_values, start=1):
         mold_sheet.cell(2, column, value)
 
@@ -196,29 +208,29 @@ def _seed_shared_resolution_data() -> None:
         db.flush()
         db.add(
             shared.InjectionSchedulingCommercialRateRule(
-                    id="rate:test-001",
-                    owner_scope_type="COMPANY",
-                    owner_scope_id="company:royal-regent",
-                    applicable_factory_mode="ANY_IN_OWNER_COMPANY",
-                    applicable_factory_id=None,
-                    applicable_customer_mode="ANY",
-                    applicable_customer_id=None,
-                    mold_definition_id=None,
-                    mold_output_spec_id=output.id,
-                    contract_mode="ANY",
-                    contract_id=None,
-                    pricing_basis="PER_SHOT",
-                    amount=1,
-                    currency="HKD",
-                    tax_mode="EXCLUDED",
-                    priority=10,
-                    status="ACTIVE",
-                    revision=1,
-                    valid_from="2026-01-01",
-                    proposed_by="system-test-proposer",
-                    approved_by="system-test-approver",
-                    created_at=timestamp,
-                    approved_at=timestamp,
+                id="rate:test-001",
+                owner_scope_type="COMPANY",
+                owner_scope_id="company:royal-regent",
+                applicable_factory_mode="ANY_IN_OWNER_COMPANY",
+                applicable_factory_id=None,
+                applicable_customer_mode="ANY",
+                applicable_customer_id=None,
+                mold_definition_id=None,
+                mold_output_spec_id=output.id,
+                contract_mode="ANY",
+                contract_id=None,
+                pricing_basis="PER_SHOT",
+                amount=1,
+                currency="HKD",
+                tax_mode="EXCLUDED",
+                priority=10,
+                status="ACTIVE",
+                revision=1,
+                valid_from="2026-01-01",
+                proposed_by="system-test-proposer",
+                approved_by="system-test-approver",
+                created_at=timestamp,
+                approved_at=timestamp,
             )
         )
         db.commit()
@@ -328,6 +340,7 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
             assert order.delivery_due_date == "2026-08-20"
             assert order.warehouse_text == "测试下单人"
             assert order.remark == "首批"
+
             lineage = json.loads(order.lineage_json)
             assert lineage["source_mold_no"] == "M-001"
             assert lineage["source_daily_capacity"] == 2000
@@ -363,8 +376,7 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
         mapping_preview = mapping_response.json()
         assert mapping_preview["batch_state"] == "MAPPING_REQUIRED"
         assert any(
-            item["canonical_field"] == "order_quantity"
-            and item["status"] == "MISSING"
+            item["canonical_field"] == "order_quantity" and item["status"] == "MISSING"
             for item in mapping_preview["mapping"]
         )
         saved_mapping = client.patch(
@@ -423,9 +435,33 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
         )
         assert applied_mapping.status_code == 200, applied_mapping.text
         corrected_preview = applied_mapping.json()
-        assert corrected_preview["batch_state"] == "PREVIEW_READY"
+        assert corrected_preview["batch_state"] == "PREVIEW_READY", json.dumps(
+            {
+                "issues": [
+                    {
+                        "code": item["code"],
+                        "field_name": item["field_name"],
+                        "raw_value": item["raw_value"],
+                    }
+                    for item in corrected_preview["issues"]
+                ],
+                "mapping": [
+                    {
+                        "canonical_field": item.get("canonical_field"),
+                        "raw_header": item.get("raw_header"),
+                        "status": item.get("status"),
+                        "column": item.get("column"),
+                        "header_row": item.get("header_row"),
+                    }
+                    for item in corrected_preview["mapping"]
+                ],
+            },
+            ensure_ascii=False,
+        )
         assert corrected_preview["preview_generation"] == 2
-        assert corrected_preview["demand_rows"][0]["canonical"]["order_quantity"] == 1000
+        assert (
+            corrected_preview["demand_rows"][0]["canonical"]["order_quantity"] == 1000
+        )
 
         mapping_replay = client.post(
             "/api/injection-scheduling/workbench/imports/"
@@ -449,12 +485,8 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
                 "expected_plan_revision": corrected_preview["plan_context"][
                     "target_draft_plan_revision"
                 ],
-                "expected_preview_generation": corrected_preview[
-                    "preview_generation"
-                ],
-                "expected_resolution_digest": corrected_preview[
-                    "resolution_digest"
-                ],
+                "expected_preview_generation": corrected_preview["preview_generation"],
+                "expected_resolution_digest": corrected_preview["resolution_digest"],
                 "request_id": "workbench-demand-confirm-0001",
                 "confirm_mode": "merge_draft",
                 "confirm_scope": "SELECTED",
@@ -476,12 +508,10 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
             workbench_profile = db.scalar(
                 select(import_models.InjectionSchedulingImportProfile)
                 .where(
-                    import_models.InjectionSchedulingImportProfile.profile_family
-                    == "demand_order_shared",
-                    import_models.InjectionSchedulingImportProfile.status == "ACTIVE",
-                    import_models.InjectionSchedulingImportProfile.profile_code.like(
-                        "%demand_order_shared-wb-r%"
+                    import_models.InjectionSchedulingImportProfile.profile_family.like(
+                        "workbench_demand_order_%"
                     ),
+                    import_models.InjectionSchedulingImportProfile.status == "ACTIVE",
                 )
                 .order_by(
                     import_models.InjectionSchedulingImportProfile.revision.desc()
@@ -489,15 +519,21 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
             )
             assert workbench_profile is not None
             assert "订单数量新口径" in workbench_profile.config_json
+            workbench_profile_config = json.loads(workbench_profile.config_json)
+            assert workbench_profile_config["recognition"]["method"] == "MANUAL_CORRECTION"
+            assert workbench_profile_config["recognition"][
+                "structural_layout_signature"
+            ]
             huaxing_demand_profiles = profile_registry.active_profiles_for_factory(
                 db, "huaxing", "DEMAND_ORDER"
             )
             other_factory_profiles = profile_registry.active_profiles_for_factory(
                 db, "huakang-b", "DEMAND_ORDER"
             )
-            assert [item.profile_id for item in huaxing_demand_profiles] == [
-                workbench_profile.id
-            ]
+            assert {item.profile_id for item in huaxing_demand_profiles} == {
+                "isprofile-demand-order-shared-v1",
+                workbench_profile.id,
+            }
             assert [item.profile_id for item in other_factory_profiles] == [
                 "isprofile-demand-order-shared-v1"
             ]
@@ -521,7 +557,9 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
         assert partial_response.status_code == 201, partial_response.text
         partial = partial_response.json()
         assert partial["summary"]["ready_count"] == 2
-        first_row_id, second_row_id = [item["row_id"] for item in partial["demand_rows"]]
+        first_row_id, second_row_id = [
+            item["row_id"] for item in partial["demand_rows"]
+        ]
         partial_confirm = client.post(
             f"/api/injection-scheduling/imports/{partial['id']}/confirm",
             json={
@@ -543,7 +581,9 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
         assert partial_confirm.status_code == 200, partial_confirm.text
         partially_confirmed = partial_confirm.json()
         assert partially_confirmed["status"] == "PARTIALLY_CONFIRMED"
-        assert [item["confirmation_state"] for item in partially_confirmed["demand_rows"]] == [
+        assert [
+            item["confirmation_state"] for item in partially_confirmed["demand_rows"]
+        ] == [
             "CONFIRMED",
             "PENDING",
         ]
@@ -613,6 +653,199 @@ def test_demand_order_preview_and_confirm_only_create_draft_backlog(monkeypatch)
         assert stale_confirm.json()["detail"]["code"] == "MASTER_DATA_STALE"
 
 
+def test_ai_demand_mapping_confirms_backlog_and_saves_active_template(monkeypatch):
+    source = _demand_workbook()
+    source_hash = hashlib.sha256(source).hexdigest()
+    with make_migrated_client(monkeypatch) as client:
+        login(client, "admin", ADMIN_TEST_PASSWORD)
+        _seed_shared_resolution_data()
+        config = importlib.import_module("app.core.config")
+        import_service = importlib.import_module(
+            "app.services.injection_scheduling_import"
+        )
+        workbook_schema = importlib.import_module("app.schemas.ai.workbook")
+        config.settings.ai_cloud_workbook_mapping_enabled = True
+
+        def field(name, column, transformer):
+            return {
+                "canonical_field": name,
+                "source_column": column,
+                "header_cell": f"{column}3",
+                "transformer": transformer,
+                "confidence": 0.96,
+                "reason": "需求单表头与代表性明细共同支持该字段映射",
+            }
+
+        model_mapping = (
+            workbook_schema.AIModelInjectionWorkbookMappingV1.model_validate(
+                {
+                    "document_kind": "DEMAND_ORDER",
+                    "source_sha256": source_hash,
+                    "source_sheet": {
+                        "sheet_name": "客户下单",
+                        "header_rows": [3],
+                        "data_start_row": 4,
+                        "data_end_row": 10,
+                    },
+                    "row_layout": {
+                        "layout_type": "FLAT_ROWS",
+                        "machine_code_strategy": "NONE",
+                        "machine_header_rule": "NONE",
+                        "task_identity_fields": ["source_mold_no", "product_name"],
+                        "backlog_rule": "NONE",
+                        "termination": {
+                            "mode": "FIRST_FOOTER_LABEL",
+                            "footer_labels": ["备注"],
+                        },
+                    },
+                    "field_mappings": [
+                        field("product_group_no", "A", "identifier"),
+                        field("source_mold_no", "B", "identifier"),
+                        field("product_name", "C", "trim"),
+                        field("order_quantity", "D", "number"),
+                        field("color_name", "G", "trim"),
+                        field("material_name", "I", "trim"),
+                        field("remark", "Q", "text"),
+                    ],
+                    "metadata_anchors": [
+                        {
+                            "canonical_field": "customer_name",
+                            "label_cell": "A2",
+                            "value_cell": "B2",
+                            "transformer": "trim",
+                            "confidence": 0.98,
+                            "reason": "公司名称标签右侧为单据客户值",
+                        },
+                        {
+                            "canonical_field": "source_document_no",
+                            "label_cell": "D2",
+                            "value_cell": "E2",
+                            "transformer": "identifier",
+                            "confidence": 0.98,
+                            "reason": "单号标签右侧为来源单据编号",
+                        },
+                        {
+                            "canonical_field": "warehouse_text",
+                            "label_cell": "I2",
+                            "value_cell": "J2",
+                            "transformer": "trim",
+                            "confidence": 0.9,
+                            "reason": "交货地点标签右侧可作为仓库来源事实",
+                        },
+                    ],
+                    "shift_grid": {"enabled": False},
+                    "overall_confidence": 0.95,
+                }
+            )
+        )
+        mapping_payload = model_mapping.model_dump(mode="json")
+        mapping_digest = hashlib.sha256(
+            json.dumps(
+                mapping_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        recognized = workbook_schema.AIInjectionWorkbookMappingV1(
+            **mapping_payload,
+            generated_by_model="qwen3.7-plus",
+            mapping_digest=mapping_digest,
+        )
+        monkeypatch.setattr(
+            import_service,
+            "recognize_injection_workbook_mapping_sync",
+            lambda **_kwargs: recognized,
+        )
+
+        preview_response = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huaxing",
+                "expected_revision": "0",
+                "document_kind": "DEMAND_ORDER",
+                "recognition_mode": "AI",
+                "business_date": "2026-08-09",
+            },
+            files={"file": ("ai-demand.xlsx", source)},
+            headers={"x-request-id": "ai-demand-preview-0001"},
+        )
+        assert preview_response.status_code == 201, preview_response.text
+        preview = preview_response.json()
+        assert preview["recognition"]["mode"] == "AI_SKILL"
+        assert preview["batch_state"] == "PREVIEW_READY"
+        assert preview["demand_rows"][0]["canonical"]["source_mold_no"] == "M-001"
+        assert preview["demand_rows"][0]["canonical"]["customer_name"] == "测试客户"
+
+        confirm_response = client.post(
+            f"/api/injection-scheduling/imports/{preview['id']}/confirm",
+            json={
+                "factory_id": "huaxing",
+                "document_kind": "DEMAND_ORDER",
+                "expected_revision": preview["revision"],
+                "expected_plan_revision": 0,
+                "expected_preview_generation": preview["preview_generation"],
+                "expected_resolution_digest": preview["resolution_digest"],
+                "request_id": "ai-demand-confirm-0001",
+                "confirm_mode": "create_draft",
+                "confirm_scope": "ALL_READY",
+                "business_date": "2026-08-09",
+            },
+        )
+        assert confirm_response.status_code == 200, confirm_response.text
+        assert confirm_response.json()["result"]["created_tasks"] == 0
+
+        def fail_if_ai_called(**_kwargs):
+            raise AssertionError("已确认的相同结构应直接复用厂区模板")
+
+        monkeypatch.setattr(
+            import_service,
+            "recognize_injection_workbook_mapping_sync",
+            fail_if_ai_called,
+        )
+        template_preview_response = client.post(
+            "/api/injection-scheduling/imports/preview",
+            data={
+                "factory_id": "huaxing",
+                "expected_revision": "0",
+                "document_kind": "DEMAND_ORDER",
+                "recognition_mode": "AUTO",
+                "business_date": "2026-08-10",
+            },
+            files={"file": ("next-demand.xlsx", source)},
+            headers={"x-request-id": "ai-demand-template-preview-0001"},
+        )
+        assert template_preview_response.status_code == 201, (
+            template_preview_response.text
+        )
+        template_preview = template_preview_response.json()
+        assert template_preview["recognition"]["mode"] == "PROFILE"
+        assert template_preview["recognition"]["source"] == "SAVED_TEMPLATE"
+        assert template_preview["recognition"]["template_hit"] is True
+
+        db_module = importlib.import_module("app.db")
+        import_models = importlib.import_module(
+            "app.models.injection_scheduling_import"
+        )
+        execution = importlib.import_module("app.models.injection_scheduling_execution")
+        with db_module.SessionLocal() as db:
+            active_template = db.scalar(
+                select(import_models.InjectionSchedulingImportProfile).where(
+                    import_models.InjectionSchedulingImportProfile.profile_family.like(
+                        "workbench_ai_demand_order_%"
+                    ),
+                    import_models.InjectionSchedulingImportProfile.status == "ACTIVE",
+                )
+            )
+            assert active_template is not None
+            assert (
+                db.scalar(
+                    select(func.count()).select_from(execution.InjectionSchedulingTask)
+                )
+                == 0
+            )
+
+
 def test_customer_and_price_are_not_scheduling_import_prerequisites(monkeypatch):
     with make_migrated_client(monkeypatch) as client:
         login(client, "admin", ADMIN_TEST_PASSWORD)
@@ -668,9 +901,7 @@ def test_customer_and_price_are_not_scheduling_import_prerequisites(monkeypatch)
         )
         assert confirm_response.status_code == 200, confirm_response.text
         with db_module.SessionLocal() as db:
-            version = db.scalar(
-                select(shared.InjectionSchedulingDemandOrderVersion)
-            )
+            version = db.scalar(select(shared.InjectionSchedulingDemandOrderVersion))
             assert version is not None
             assert version.customer_identity_id is None
             assert version.commercial_rate_rule_id is None
@@ -1002,9 +1233,14 @@ def test_master_data_preview_only_creates_governed_proposals(monkeypatch):
             )
             assert len(proposals) == 2
             assert {item.status for item in proposals} == {"PROPOSED"}
-            assert db.scalar(
-                select(func.count()).select_from(shared.InjectionSchedulingFieldEvidence)
-            ) >= 10
+            assert (
+                db.scalar(
+                    select(func.count()).select_from(
+                        shared.InjectionSchedulingFieldEvidence
+                    )
+                )
+                >= 10
+            )
             assert (
                 db.scalar(
                     select(func.count()).select_from(
@@ -1013,7 +1249,6 @@ def test_master_data_preview_only_creates_governed_proposals(monkeypatch):
                 )
                 == 0
             )
-
 
             mold_proposal = next(
                 item
@@ -1094,8 +1329,7 @@ def test_real_demand_workbook_read_only_preview(monkeypatch):
         assert payload["source_file_hash"] == before_hash
         assert payload["demand_rows"]
         assert all(
-            "machine_code" not in row["canonical"]
-            for row in payload["demand_rows"]
+            "machine_code" not in row["canonical"] for row in payload["demand_rows"]
         )
     after_stat = source_path.stat()
     assert hashlib.sha256(source_path.read_bytes()).hexdigest() == before_hash
