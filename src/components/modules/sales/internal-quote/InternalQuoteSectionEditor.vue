@@ -19,10 +19,12 @@ const props = withDefaults(defineProps<{
   canReview: boolean
   canRemove: boolean
   wholeQuoteReview?: boolean
+  activePricingComponentId?: string
   differsFromBaseline?: boolean
   differenceDetails?: string[]
 }>(), {
   wholeQuoteReview: false,
+  activePricingComponentId: '',
   differsFromBaseline: false,
   differenceDetails: () => [],
 })
@@ -76,11 +78,19 @@ function toggleQuickQuoteMode() {
   const next: Record<string, unknown> = { ...draftPayload.value, quote_mode: nextMode }
   if (props.section.code === 'electronic' && nextMode === 'quick') {
     const quickRows = Array.isArray(next.quick_quotes) ? next.quick_quotes : []
-    if (!quickRows.length) next.quick_quotes = [{ item: '', unit_price_rmb: 0, tax_rate_percent: 13, remark: '' }]
+    if (!quickRows.length) next.quick_quotes = [{ item: '', unit_price_rmb: 0, tax_rate_percent: 13, remark: '', ...(pricingMode.value === 'component' && props.activePricingComponentId ? { pricing_component_id: props.activePricingComponentId } : {}) }]
   }
   if (props.section.code === 'sewing' && nextMode === 'quick') {
     const quickRows = Array.isArray(next.quick_quotes) ? next.quick_quotes : []
-    if (!quickRows.length) next.quick_quotes = [{ doll_name: '', unit_price_hkd: 0 }]
+    if (!quickRows.length) next.quick_quotes = [{ doll_name: '', unit_price_hkd: 0, ...(pricingMode.value === 'component' && props.activePricingComponentId ? { pricing_component_id: props.activePricingComponentId } : {}) }]
+  }
+  if (props.section.code === 'painting' && nextMode === 'quick' && pricingMode.value === 'component' && props.activePricingComponentId) {
+    const quickQuote = next.quick_quote && typeof next.quick_quote === 'object' && !Array.isArray(next.quick_quote)
+      ? next.quick_quote as Record<string, unknown>
+      : {}
+    if (!quickQuote.pricing_component_id && !Number(quickQuote.spray_labor_hkd) && !Number(quickQuote.paint_hkd)) {
+      next.quick_quote = { ...quickQuote, pricing_component_id: props.activePricingComponentId }
+    }
   }
   draftPayload.value = normalizeInternalQuotePayload(props.section.code, next)
   localMessage.value = nextMode === 'quick'
@@ -553,7 +563,7 @@ function confirmRemoveParticipation() {
       <footer><strong class="replace-only-note">确认后按模板负责的数据区域更新；重复导入不会累计金额</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable" @click="confirmImport">确认导入</button></footer>
     </section>
 
-    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :main-markup="mainMarkup" :disabled="!editable" @block-progress="emit('block-progress', section.code, $event)" @preview-attachment="previewAttachment" />
+    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="emit('block-progress', section.code, $event)" @preview-attachment="previewAttachment" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"

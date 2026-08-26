@@ -8,7 +8,7 @@ import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/i
 import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 import type { QuotePricingMetadata, SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 
-const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; mainMarkup?: number }>()
+const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; activePricingComponentId?: string; mainMarkup?: number }>()
 const model = defineModel<Record<string, unknown>>({ required: true })
 const emit = defineEmits<{
   'block-progress': [blocks: InternalQuoteFormBlock[]]
@@ -53,8 +53,32 @@ const slush = computed(() => model.value as unknown as SlushPayload)
 const sewing = computed(() => model.value as unknown as SewingPayload)
 const hair = computed(() => model.value as unknown as HairPayload)
 const assembly = computed(() => model.value as unknown as AssemblyPayload)
-const assemblyGroups = computed(() => assembly.value.groups.filter((group) => group.category === 'assembly'))
+const pricingComponentIds = computed(() => new Set((props.pricingComponents ?? []).map((component) => component.id)))
+const currentPricingComponentId = computed(() => {
+  if (props.pricingMode !== 'component') return ''
+  if (props.activePricingComponentId && pricingComponentIds.value.has(props.activePricingComponentId)) return props.activePricingComponentId
+  return props.pricingComponents?.[0]?.id ?? ''
+})
+function resolvedPricingComponentId(meta: QuotePricingMetadata) {
+  const id = String(meta.pricing_component_id ?? '')
+  return pricingComponentIds.value.has(id) ? id : props.pricingComponents?.[0]?.id ?? ''
+}
+function belongsToCurrentPricingComponent(meta: QuotePricingMetadata) {
+  return props.pricingMode !== 'component' || resolvedPricingComponentId(meta) === currentPricingComponentId.value
+}
+function assignCurrentPricingComponent<T extends object>(row: T): T & QuotePricingMetadata {
+  if (props.pricingMode === 'component' && currentPricingComponentId.value) {
+    (row as QuotePricingMetadata).pricing_component_id = currentPricingComponentId.value
+  }
+  return row as T & QuotePricingMetadata
+}
+function removeItem<T>(items: T[], row: T) {
+  const index = items.indexOf(row)
+  if (index >= 0) items.splice(index, 1)
+}
+const assemblyGroups = computed(() => assembly.value.groups.filter((group) => group.category === 'assembly' && belongsToCurrentPricingComponent(group)))
 const packagingGroups = computed(() => assembly.value.groups.filter((group) => group.category === 'packaging'))
+const visibleAssemblySummaryGroups = computed(() => [...assemblyGroups.value, ...packagingGroups.value])
 type PricingItem = { label: string; meta: QuotePricingMetadata; allowMarkupOverride: boolean }
 function electronicPricingItems(rows: ElectronicComponentRow[], prefix = ''): PricingItem[] {
   return rows.flatMap((row, index) => {
@@ -105,7 +129,7 @@ function previewImportSource(importType: string) {
   const attachment = importSourceAttachment(importType)
   if (attachment) emit('preview-attachment', attachment)
 }
-const assemblyLaborTotal = computed(() => calculateAssemblyCategoryLaborHkd(assembly.value, 'assembly'))
+const assemblyLaborTotal = computed(() => assemblyGroups.value.reduce((total, group) => total + calculateAssemblyGroupLaborHkd(group, assembly.value.labor_base_hkd), 0))
 const packagingLaborTotal = computed(() => calculateAssemblyCategoryLaborHkd(assembly.value, 'packaging'))
 const allAssemblyLaborTotal = computed(() => assemblyLaborTotal.value + packagingLaborTotal.value)
 // 所有客户共用内部核价字段；仅在对应客户单据上显示报客模板专属字段。
@@ -125,26 +149,36 @@ const formBlocks = computed(() => getInternalQuoteFormBlocks(
 watchEffect(() => emit('block-progress', formBlocks.value))
 function blockDomId(id: string) { return `internal-quote-${props.code}-${id}` }
 const operationCodes = Object.keys(paintingOperationLabels) as PaintingOperationCode[]
-const paintingOperationTotals = computed(() => calculatePaintingOperationTotals(painting.value))
-const paintingTotal = computed(() => calculatePaintingTotalHkd(painting.value))
+const visiblePaintingRows = computed(() => painting.value.rows.filter(belongsToCurrentPricingComponent))
+const visiblePaintingPayload = computed<PaintingPayload>(() => ({ ...painting.value, rows: visiblePaintingRows.value }))
+const paintingOperationTotals = computed(() => calculatePaintingOperationTotals(visiblePaintingPayload.value))
+const paintingTotal = computed(() => calculatePaintingTotalHkd(visiblePaintingPayload.value))
 const paintingQuickPaintTax = computed(() => calculatePaintingQuickPaintTaxHkd(painting.value))
 const paintingQuickTotal = computed(() => calculatePaintingQuickTotalHkd(painting.value))
-const slushTotalHkd = computed(() => calculateSlushTotalHkd(slush.value))
-const slushTotalRmb = computed(() => calculateSlushTotalRmb(slush.value, props.rmbHkdRate))
-const hairTotalHkd = computed(() => calculateHairTotalHkd(hair.value))
-const sewingTotalHkd = computed(() => calculateSewingTotalHkd(sewing.value, props.rmbHkdRate))
-const sewingQuickTotalHkd = computed(() => calculateSewingQuickTotalHkd(sewing.value))
+const visibleSlushRows = computed(() => slush.value.lines.filter(belongsToCurrentPricingComponent))
+const visibleHairRows = computed(() => hair.value.lines.filter(belongsToCurrentPricingComponent))
+const visibleSewingGroups = computed(() => sewing.value.groups.filter(belongsToCurrentPricingComponent))
+const visibleSewingQuickRows = computed(() => sewing.value.quick_quotes.filter(belongsToCurrentPricingComponent))
+const slushTotalHkd = computed(() => calculateSlushTotalHkd({ ...slush.value, lines: visibleSlushRows.value }))
+const slushTotalRmb = computed(() => calculateSlushTotalRmb({ ...slush.value, lines: visibleSlushRows.value }, props.rmbHkdRate))
+const hairTotalHkd = computed(() => calculateHairTotalHkd({ ...hair.value, lines: visibleHairRows.value }))
+const sewingTotalHkd = computed(() => calculateSewingTotalHkd({ ...sewing.value, groups: visibleSewingGroups.value }, props.rmbHkdRate))
+const sewingQuickTotalHkd = computed(() => calculateSewingQuickTotalHkd({ ...sewing.value, quick_quotes: visibleSewingQuickRows.value }))
 const engineeringMaterialCategories: EngineeringMaterialRow['auxiliary_category'][] = ['吸塑', '胶袋', '彩盒/内卡', '电池', '利宝', '电镀', '其他外购']
-const hardwareRows = computed(() => engineering.value.materials.filter((row) => row.category === 'hardware'))
-const auxiliaryRows = computed(() => engineering.value.materials.filter((row) => row.category === 'auxiliary'))
+const hardwareRows = computed(() => engineering.value.materials.filter((row) => row.category === 'hardware' && belongsToCurrentPricingComponent(row)))
+const auxiliaryRows = computed(() => engineering.value.materials.filter((row) => row.category === 'auxiliary' && belongsToCurrentPricingComponent(row)))
 const hardwareTotal = computed(() => hardwareRows.value.reduce((total, row) => total + calculateEngineeringMaterialAmountHkd(row, props.rmbHkdRate), 0))
 const auxiliaryTotal = computed(() => auxiliaryRows.value.reduce((total, row) => total + calculateEngineeringMaterialAmountHkd(row, props.rmbHkdRate), 0))
 const moldQuoteTotalRmb = computed(() => engineering.value.molds.reduce((total, row) => total + Number(row.cost_rmb || 0), 0))
 const moldQuoteTotalHkd = computed(() => engineering.value.molds.reduce((total, row) => total + calculateEngineeringMoldPriceHkd(row, props.rmbHkdRate), 0))
 const moldAllocation = computed(() => calculateEngineeringMoldAllocation(engineering.value))
-const electronicSummary = computed(() => calculateElectronicSummary(electronic.value, props.rmbHkdRate))
-const electronicQuickSubtotalRmb = computed(() => calculateElectronicQuickSubtotalRmb(electronic.value))
-const electronicQuickSubtotalHkd = computed(() => (electronic.value.quick_quotes ?? []).reduce(
+const visibleElectronicQuickRows = computed(() => electronic.value.quick_quotes.filter(belongsToCurrentPricingComponent))
+const visibleElectronicComponents = computed(() => electronic.value.components.filter(belongsToCurrentPricingComponent))
+function visibleElectronicChildren(row: ElectronicComponentRow) { return row.children.filter(belongsToCurrentPricingComponent) }
+const visibleElectronicPayload = computed<ElectronicPayload>(() => ({ ...electronic.value, quick_quotes: visibleElectronicQuickRows.value, components: visibleElectronicComponents.value.map((row) => ({ ...row, children: visibleElectronicChildren(row) })) }))
+const electronicSummary = computed(() => calculateElectronicSummary(visibleElectronicPayload.value, props.rmbHkdRate))
+const electronicQuickSubtotalRmb = computed(() => calculateElectronicQuickSubtotalRmb(visibleElectronicPayload.value))
+const electronicQuickSubtotalHkd = computed(() => visibleElectronicQuickRows.value.reduce(
   (total, row) => total + calculateElectronicQuickUnitPriceHkd(row, props.rmbHkdRate),
   0,
 ))
@@ -314,16 +348,18 @@ function injectionPreviewText(row: InjectionRow, key: 'materialPriceHkdG' | 'mat
   if ((key === 'moldingCostHkd' || key === 'unitAmountHkd' || key === 'lineAmountHkd') && !selectedMachineReference(row)) return '请选择机型'
   return '补全套数 / 目标数'
 }
-const liveInjectionTotal = computed(() => molding.value.injection_lines.reduce((total, row) => total + (injectionPreview(row).lineAmountHkd ?? 0), 0))
-const liveInjectionWeightTotal = computed(() => molding.value.injection_lines.reduce((total, row) => {
+const visibleInjectionRows = computed(() => molding.value.injection_lines.filter(belongsToCurrentPricingComponent))
+const visibleBlowRows = computed(() => molding.value.blow_lines.filter(belongsToCurrentPricingComponent))
+const liveInjectionTotal = computed(() => visibleInjectionRows.value.reduce((total, row) => total + (injectionPreview(row).lineAmountHkd ?? 0), 0))
+const liveInjectionWeightTotal = computed(() => visibleInjectionRows.value.reduce((total, row) => {
   const quantity = Math.max(0, finiteNumber(row.quantity, 1))
   return total + injectionPreview(row).lossWeightG * quantity
 }, 0))
-const liveInjectionMaterialTotal = computed(() => molding.value.injection_lines.reduce((total, row) => {
+const liveInjectionMaterialTotal = computed(() => visibleInjectionRows.value.reduce((total, row) => {
   const quantity = Math.max(0, finiteNumber(row.quantity, 1))
   return total + (injectionPreview(row).materialCostHkd ?? 0) * quantity
 }, 0))
-const liveInjectionMoldingLaborTotal = computed(() => molding.value.injection_lines.reduce((total, row) => {
+const liveInjectionMoldingLaborTotal = computed(() => visibleInjectionRows.value.reduce((total, row) => {
   const quantity = Math.max(0, finiteNumber(row.quantity, 1))
   return total + (injectionPreview(row).moldingCostHkd ?? 0) * quantity
 }, 0))
@@ -356,7 +392,7 @@ function blowPreviewText(
   return row.material ? '请选择具体料型' : '请填写用料'
 }
 
-const liveBlowTotal = computed(() => molding.value.blow_lines.reduce((total, row) => total + (blowPreview(row).lineAmountHkd ?? 0), 0))
+const liveBlowTotal = computed(() => visibleBlowRows.value.reduce((total, row) => total + (blowPreview(row).lineAmountHkd ?? 0), 0))
 const liveMoldingTotal = computed(() => liveInjectionTotal.value + liveBlowTotal.value)
 
 function fixedDecimal(value: number, precision: number) {
@@ -370,8 +406,8 @@ function remove<T>(items: T[], index: number) { items.splice(index, 1) }
 function engineeringMaterialRow(category: 'hardware' | 'auxiliary'): EngineeringMaterialRow {
   return { item: '', category, purpose: '', specification: '', quantity: 0, unit: '', unit_price_rmb: 0, ...(category === 'auxiliary' ? { unit_price_hkd: 0, unit_price_source_currency: 'RMB' as const } : {}), loss_rate: 1, material: '', surface_treatment: '', supplier: '', contact: '', auxiliary_category: category === 'hardware' ? '五金' : '其他外购', tax_rate_percent: category === 'hardware' ? 13 : 0, remark: '', disney_description: '', disney_section: 'product', disney_unit_price_usd: 0, disney_included: 1 }
 }
-function addEngineeringHardware() { engineering.value.materials.push(engineeringMaterialRow('hardware')) }
-function addEngineeringAuxiliary() { engineering.value.materials.push(engineeringMaterialRow('auxiliary')) }
+function addEngineeringHardware() { engineering.value.materials.push(assignCurrentPricingComponent(engineeringMaterialRow('hardware'))) }
+function addEngineeringAuxiliary() { engineering.value.materials.push(assignCurrentPricingComponent(engineeringMaterialRow('auxiliary'))) }
 function removeEngineeringMaterial(row: EngineeringMaterialRow) {
   const index = engineering.value.materials.indexOf(row)
   if (index >= 0) engineering.value.materials.splice(index, 1)
@@ -552,12 +588,13 @@ function setElectronicExtraRmb(
   promoteElectronicToRmb()
   electronic.value[rmbField] = inputNumber(event)
 }
-function addElectronicComponent() { promoteElectronicToRmb(); electronic.value.components.push(electronicRow()) }
-function addElectronicChild(index: number) { promoteElectronicToRmb(); electronic.value.components[index].children.push(electronicRow()) }
-function addElectronicQuickQuote() { promoteElectronicToRmb(); electronic.value.quick_quotes.push(electronicQuickRow()) }
-function addInjection() { molding.value.injection_lines.push({ engineering_source_key: '', engineering_synced_fields: [], engineering_sync_disabled: false, item: '', mold_no: '', material: '', grade: '', color: '', net_weight_g: 0, loss_rate_percent: injectionLossRate.value, machine_name: '', machine_code: '', cavity: '', sets: 1, target_output: 0, cycle_time_seconds: 0, quantity: 1, remark: '', disney_mold_no: '', disney_resin_cost_usd_kg: 0, disney_cycle_time_seconds: 0, disney_labor_rate_usd_hr: 0 }) }
-function copyInjection(index: number) {
-  const source = molding.value.injection_lines[index]
+function addElectronicComponent() { promoteElectronicToRmb(); electronic.value.components.push(assignCurrentPricingComponent(electronicRow())) }
+function addElectronicChild(row: ElectronicComponentRow) { promoteElectronicToRmb(); row.children.push(assignCurrentPricingComponent(electronicRow())) }
+function addElectronicQuickQuote() { promoteElectronicToRmb(); electronic.value.quick_quotes.push(assignCurrentPricingComponent(electronicQuickRow())) }
+function addInjection() { molding.value.injection_lines.push(assignCurrentPricingComponent({ engineering_source_key: '', engineering_synced_fields: [], engineering_sync_disabled: false, item: '', mold_no: '', material: '', grade: '', color: '', net_weight_g: 0, loss_rate_percent: injectionLossRate.value, machine_name: '', machine_code: '', cavity: '', sets: 1, target_output: 0, cycle_time_seconds: 0, quantity: 1, remark: '', disney_mold_no: '', disney_resin_cost_usd_kg: 0, disney_cycle_time_seconds: 0, disney_labor_rate_usd_hr: 0 })) }
+function copyInjection(source: InjectionRow) {
+  const index = molding.value.injection_lines.indexOf(source)
+  if (index < 0) return
   if (!source) return
   source.engineering_sync_disabled = true
   source.engineering_synced_fields = []
@@ -569,21 +606,24 @@ function copyInjection(index: number) {
   })
 }
 function addCaixingToolPlanRow() { molding.value.caixing_tool_plan_rows.push({ ref_no: '', process_type: 'IN', tool_no: '', tooling_cost_hkd: 0, description: '', sku_no: '', cavities: 1, up: 1, net_weight_g: 0, material_code: 0, material: '', color: '', material_cost_hkd: 0, machine_size: '', cycle_time_seconds: 0, process_cost_hkd: 0 }) }
-function addBlow() { molding.value.blow_lines.push({ item: '', daily_capacity: '', material: '', grade: '', estimated_weight_g: 0, labor_hkd: 0, burr_hkd: 0, profit_multiplier: 1.05, quantity: 1, output_count: '', mold_price_rmb: 0, remark: '' }) }
+function addBlow() { molding.value.blow_lines.push(assignCurrentPricingComponent({ item: '', daily_capacity: '', material: '', grade: '', estimated_weight_g: 0, labor_hkd: 0, burr_hkd: 0, profit_multiplier: 1.05, quantity: 1, output_count: '', mold_price_rmb: 0, remark: '' })) }
 function addPainting() {
-  painting.value.rows.push({
+  painting.value.rows.push(assignCurrentPricingComponent({
     image_reference: '', name: '', position: '', remark: '',
     operations: Object.fromEntries(operationCodes.map((code) => [code, { quantity: 0, unit_price_hkd: 0 }])) as PaintingPayload['rows'][number]['operations'],
-  })
+  }))
 }
 function addDisneyDecoration() { painting.value.disney_decorations.push({ application_type: '', rate_per_op_usd: 0, operations: 0 }) }
-function addSlush() { slush.value.lines.push({ product_code: '', item: '', material: '', weight_g: 0, daily_output_24h: 0, quantity: 1, unit_price_hkd: 0, remark: '' }) }
-function addHair() { hair.value.lines.push({ name: '', craft: '', weight_g: 0, unit_price_hkd: 0, unit: 'PCS', remark: '' }) }
-function addSewingGroup() { sewing.value.groups.push({ name: '', category: 'clothes', labor_rmb: 0, materials: [] }) }
-function addSewingMaterial(index: number) { sewing.value.groups[index].materials.push({ item: '', part: '', craft: '', pieces: 0, supplier: '', fabric_moq_y: 0, below_moq_fee_rmb: 0, usage: 0, unit_price_rmb: 0, exchange_rate: Number(props.rmbHkdRate) || 0, markup: 1, remark: '' }) }
-function addSewingQuickQuote() { sewing.value.quick_quotes.push({ doll_name: '', unit_price_hkd: 0 }) }
+function addSlush() { slush.value.lines.push(assignCurrentPricingComponent({ product_code: '', item: '', material: '', weight_g: 0, daily_output_24h: 0, quantity: 1, unit_price_hkd: 0, remark: '' })) }
+function addHair() { hair.value.lines.push(assignCurrentPricingComponent({ name: '', craft: '', weight_g: 0, unit_price_hkd: 0, unit: 'PCS', remark: '' })) }
+function addSewingGroup() { sewing.value.groups.push(assignCurrentPricingComponent({ name: '', category: 'clothes', labor_rmb: 0, materials: [] })) }
+function addSewingMaterial(group: SewingGroup) { group.materials.push({ item: '', part: '', craft: '', pieces: 0, supplier: '', fabric_moq_y: 0, below_moq_fee_rmb: 0, usage: 0, unit_price_rmb: 0, exchange_rate: Number(props.rmbHkdRate) || 0, markup: 1, remark: '' }) }
+function addSewingQuickQuote() { sewing.value.quick_quotes.push(assignCurrentPricingComponent({ doll_name: '', unit_price_hkd: 0 })) }
 function sewingEmbroideryCount(group: SewingGroup) { return group.materials.filter((row) => row.craft === '电绣').length }
-function addAssemblyGroup(category: AssemblyGroup['category']) { assembly.value.groups.push({ name: '', category, production_qty: 1, teams: 1, total_persons: null, processes: [] }) }
+function addAssemblyGroup(category: AssemblyGroup['category']) {
+  const group = { name: '', category, production_qty: 1, teams: 1, total_persons: null, processes: [] } as AssemblyGroup
+  assembly.value.groups.push(category === 'assembly' ? assignCurrentPricingComponent(group) : group)
+}
 function setAssemblyManualPeople(group: AssemblyGroup, event: Event) {
   const value = (event.target as HTMLInputElement).value.trim()
   group.total_persons = value === '' ? null : Math.max(0, finiteNumber(value))
@@ -622,11 +662,11 @@ function addDickieMaterialPrice() {
       <span>所有客户共用同一套内部核价字段；当前客户的报客模板专属字段只用于最终转换，不参与内部成本计算。</span>
     </section>
     <main class="section-payload-blocks">
-    <section v-if="pricingItems.length" class="quote-pricing-assignment">
+    <section v-if="pricingMode !== 'component' && pricingItems.length" class="quote-pricing-assignment">
       <header>
         <div>
-          <strong>{{ pricingMode === 'component' ? 'JustPlay 分项归属' : '明细倍率' }}</strong>
-          <span>{{ pricingMode === 'component' ? '选择后，该明细的全部原计算金额会汇总到对应配件；成本公式与现有映射不变。' : '留空跟随右侧主倍率；填写不同倍率后自动从主倍率汇总中拆出，清空或填回主倍率即可恢复。' }}</span>
+          <strong>明细倍率</strong>
+          <span>留空跟随右侧主倍率；填写不同倍率后自动从主倍率汇总中拆出，清空或填回主倍率即可恢复。</span>
         </div>
       </header>
       <div class="quote-pricing-assignment-grid">
@@ -646,7 +686,7 @@ function addDickieMaterialPrice() {
               <tr v-for="(row,index) in hardwareRows" :key="index">
                 <td>{{ index + 1 }}</td><td><input v-model="row.item" :disabled="disabled" aria-label="五金零件名称"></td><td><input v-model="row.specification" :disabled="disabled" aria-label="五金规格"></td><td><span class="fixed-field" aria-label="五金类别">五金</span></td><td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1" aria-label="五金用量"></td><td><input v-model.number="row.unit_price_rmb" :disabled="disabled" type="number" min="0" step="0.001" aria-label="五金原单价 RMB"></td><td><input v-model.number="row.loss_rate" :disabled="disabled" type="number" min="0.1" step="0.1" aria-label="五金损耗率"></td><td class="calculated-cell">{{ calculated(calculateEngineeringMaterialEffectiveUnitHkd(row, props.rmbHkdRate)) }}</td><td class="calculated-cell">{{ calculated(calculateEngineeringMaterialAmountHkd(row, props.rmbHkdRate)) }}</td><td><span class="fixed-field numeric" aria-label="五金税点">13%</span></td><td><input v-model="row.remark" :disabled="disabled" aria-label="五金备注"></td><td><button type="button" class="icon" :disabled="disabled" @click="removeEngineeringMaterial(row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!hardwareRows.length"><td colspan="12" class="empty">暂无五金明细，可新增或从五金报价单预览导入</td></tr>
+              <tr v-if="!hardwareRows.length"><td colspan="12" class="empty">当前配件暂无五金明细，可新增或从五金报价单预览导入</td></tr>
             </tbody>
             <tfoot><tr><td colspan="8">五金成本汇总</td><td>HKD {{ calculated(hardwareTotal) }}</td><td colspan="3" /></tr></tfoot>
           </table>
@@ -661,7 +701,7 @@ function addDickieMaterialPrice() {
               <tr v-for="(row,index) in auxiliaryRows" :key="index">
                 <td>{{ index + 1 }}</td><td><input v-model="row.item" :disabled="disabled" aria-label="辅助材料/外购件零件名称"></td><td><input v-model="row.specification" :disabled="disabled" aria-label="辅助材料/外购件规格"></td><td><select v-model="row.auxiliary_category" :disabled="disabled" aria-label="辅助材料/外购件类别"><option v-for="category in engineeringMaterialCategories" :key="category" :value="category">{{ category }}</option></select></td><td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1" aria-label="辅助材料/外购件用量"></td><td><input :value="calculateEngineeringMaterialUnitRmb(row, props.rmbHkdRate)" :disabled="disabled" type="number" min="0" step="0.001" aria-label="辅助材料/外购件原单价 RMB" @input="setEngineeringMaterialUnitPrice(row, 'RMB', $event)"></td><td><input :value="calculateEngineeringMaterialUnitHkd(row, props.rmbHkdRate)" :disabled="disabled" type="number" min="0" step="0.001" aria-label="辅助材料/外购件原单价 HKD" @input="setEngineeringMaterialUnitPrice(row, 'HKD', $event)"></td><td><input v-model.number="row.loss_rate" :disabled="disabled" type="number" min="0.1" step="0.1" aria-label="辅助材料/外购件损耗率"></td><td class="calculated-cell">{{ calculated(calculateEngineeringMaterialEffectiveUnitHkd(row, props.rmbHkdRate)) }}</td><td class="calculated-cell">{{ calculated(calculateEngineeringMaterialAmountHkd(row, props.rmbHkdRate)) }}</td><td><input v-model.number="row.tax_rate_percent" :disabled="disabled" type="number" min="0" max="100" step="0.01" aria-label="辅助材料/外购件税点"></td><td><input v-model="row.remark" :disabled="disabled" aria-label="辅助材料/外购件备注"></td><td><button type="button" class="icon" :disabled="disabled" @click="removeEngineeringMaterial(row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!auxiliaryRows.length"><td colspan="13" class="empty">暂无辅助材料/外购件明细</td></tr>
+              <tr v-if="!auxiliaryRows.length"><td colspan="13" class="empty">当前配件暂无辅助材料/外购件明细</td></tr>
             </tbody>
             <tfoot><tr><td colspan="9">辅助材料/外购件成本汇总</td><td>HKD {{ calculated(auxiliaryTotal) }}</td><td colspan="3" /></tr></tfoot>
           </table>
@@ -801,16 +841,16 @@ function addDickieMaterialPrice() {
           <table class="electronicQuickTable">
             <thead><tr><th>#</th><th>零件名称</th><th>单价 RMB</th><th>单价 HKD（自动）</th><th>税点 %</th><th>备注</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in electronic.quick_quotes" :key="index">
+              <tr v-for="(row,index) in visibleElectronicQuickRows" :key="index">
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><input v-model="row.item" :disabled="disabled" aria-label="电子快捷报价零件名称"></td>
                 <td><input v-model.number="row.unit_price_rmb" :disabled="disabled" type="number" min="0" step="0.001" aria-label="电子快捷报价单价 RMB"></td>
                 <td class="calculated-cell">{{ calculated(calculateElectronicQuickUnitPriceHkd(row, props.rmbHkdRate)) }}</td>
                 <td><input v-model.number="row.tax_rate_percent" :disabled="disabled" type="number" min="0" max="100" step="0.01" aria-label="电子快捷报价税点"></td>
                 <td><input v-model="row.remark" :disabled="disabled" aria-label="电子快捷报价备注"></td>
-                <td><button type="button" class="icon" :disabled="disabled" aria-label="删除电子快捷报价行" @click="remove(electronic.quick_quotes,index)"><Trash2 /></button></td>
+                <td><button type="button" class="icon" :disabled="disabled" aria-label="删除电子快捷报价行" @click="removeItem(electronic.quick_quotes,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!electronic.quick_quotes.length"><td colspan="7" class="empty">暂无快捷报价行，请新增电子件</td></tr>
+              <tr v-if="!visibleElectronicQuickRows.length"><td colspan="7" class="empty">当前配件暂无快捷报价行，请新增电子件</td></tr>
             </tbody>
             <tfoot><tr><td colspan="2">快捷零件小计</td><td>RMB {{ calculated(electronicQuickSubtotalRmb) }}</td><td>HKD {{ calculated(electronicQuickSubtotalHkd) }}</td><td colspan="3">每行按用量 1 计入电子部汇总</td></tr></tfoot>
           </table>
@@ -821,12 +861,12 @@ function addDickieMaterialPrice() {
           <div><strong>电子零件部分</strong><span>统一按人民币单价填入；港币单价与金额按本报价冻结汇率自动换算</span></div>
           <div class="block-header-actions"><button v-if="importSourceAttachment('electronic')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('electronic')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addElectronicComponent"><Plus />新增电子件</button></div>
         </header>
-        <article v-for="(row,index) in electronic.components" :key="index" class="nested-card electronic-card">
+        <article v-for="(row,index) in visibleElectronicComponents" :key="index" class="nested-card electronic-card">
           <div class="nested-head">
             <strong>零件组 {{ index + 1 }}</strong>
             <div class="nested-actions">
-              <button type="button" :disabled="disabled" @click="addElectronicChild(index)"><Plus />新增子项</button>
-              <button type="button" class="icon" :disabled="disabled" @click="remove(electronic.components,index)"><Trash2 /></button>
+              <button type="button" :disabled="disabled" @click="addElectronicChild(row)"><Plus />新增子项</button>
+              <button type="button" class="icon" :disabled="disabled" @click="removeItem(electronic.components,row)"><Trash2 /></button>
             </div>
           </div>
           <div class="payload-table-scroll">
@@ -845,7 +885,7 @@ function addDickieMaterialPrice() {
                   <td><input v-model="row.remark" :disabled="disabled" aria-label="电子零件备注"></td>
                   <td />
                 </tr>
-                <tr v-for="(child,childIndex) in row.children" :key="childIndex" class="electronic-child-row">
+                <tr v-for="(child,childIndex) in visibleElectronicChildren(row)" :key="childIndex" class="electronic-child-row">
                   <td>↳ {{ index + 1 }}.{{ childIndex + 1 }}</td>
                   <td><input v-model="child.item" :disabled="disabled" aria-label="电子子项名称"></td>
                   <td><input v-model="child.specification" :disabled="disabled" aria-label="电子子项规格"></td>
@@ -855,13 +895,13 @@ function addDickieMaterialPrice() {
                   <td class="calculated-cell">{{ calculated(calculateElectronicAmountHkd(child, props.rmbHkdRate)) }}</td>
                   <td><input v-model.number="child.tax_rate_percent" :disabled="disabled" type="number" min="0" max="100" step="0.01" aria-label="电子子项税点"></td>
                   <td><input v-model="child.remark" :disabled="disabled" aria-label="电子子项备注"></td>
-                  <td><button type="button" class="icon" :disabled="disabled" @click="remove(row.children,childIndex)"><Trash2 /></button></td>
+                  <td><button type="button" class="icon" :disabled="disabled" @click="removeItem(row.children,child)"><Trash2 /></button></td>
                 </tr>
               </tbody>
             </table>
           </div>
         </article>
-        <div v-if="!electronic.components.length" class="empty">暂无电子零件，可逐行新增或通过“上传附件”自动识别电子报价单</div>
+        <div v-if="!visibleElectronicComponents.length" class="empty">当前配件暂无电子零件，可逐行新增或通过“上传附件”自动识别电子报价单</div>
       </section>
       <section :id="blockDomId('electronic-summary')" class="payload-block electronic-summary-block" data-form-block>
         <header><div><strong>电子成本汇总部分</strong><span>按电子报价口径自动汇总；含税报价 HKD 按冻结汇率换算</span></div></header>
@@ -897,7 +937,7 @@ function addDickieMaterialPrice() {
           <table class="moldingInjectionTable">
             <thead><tr><th>#</th><th>模具名称</th><th>材质</th><th>料型</th><th>啤净重 (g)</th><th>料价 HKD/g（快照）</th><th>原料单价 HKD（自动）</th><th>啤价 HKD/啤（自动）</th><th>出模数</th><th>套数</th><th>机型 A码</th><th>目标数</th><th>周期 (秒)</th><th>成品金额 HKD（自动）</th><th>成品用量</th><th>备注</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in molding.injection_lines" :key="index">
+              <tr v-for="(row,index) in visibleInjectionRows" :key="index">
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><textarea v-model="row.item" :disabled="disabled || injectionFieldLocked(row, 'item')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'item') }" rows="2"></textarea></td>
                 <td><select v-model="row.material" :disabled="disabled" aria-label="材料类别" @change="selectMaterial(row)"><option value="">请选择材质</option><option v-if="row.material && !moldingMaterialNames.includes(row.material)" :value="row.material">{{ row.material }}</option><option v-for="material in moldingMaterialNames" :key="material" :value="material">{{ material }}</option></select></td>
@@ -916,12 +956,12 @@ function addDickieMaterialPrice() {
                 <td><input v-model="row.remark" :disabled="disabled"></td>
                 <td>
                   <div class="injection-row-actions">
-                    <button type="button" class="icon" :disabled="disabled" :aria-label="`复制第 ${index + 1} 行注塑明细`" title="复制该行并解除两行的工程同步锁" @click="copyInjection(index)"><Copy /></button>
-                    <button type="button" class="icon" :disabled="disabled || Boolean(row.engineering_source_key && !row.engineering_sync_disabled)" :title="row.engineering_source_key && !row.engineering_sync_disabled ? '此行由工程部模具自动生成；复制后可分别编辑和删除' : '删除注塑行'" :aria-label="`删除第 ${index + 1} 行注塑明细`" @click="remove(molding.injection_lines,index)"><Trash2 /></button>
+                    <button type="button" class="icon" :disabled="disabled" :aria-label="`复制第 ${index + 1} 行注塑明细`" title="复制该行并解除两行的工程同步锁" @click="copyInjection(row)"><Copy /></button>
+                    <button type="button" class="icon" :disabled="disabled || Boolean(row.engineering_source_key && !row.engineering_sync_disabled)" :title="row.engineering_source_key && !row.engineering_sync_disabled ? '此行由工程部模具自动生成；复制后可分别编辑和删除' : '删除注塑行'" :aria-label="`删除第 ${index + 1} 行注塑明细`" @click="removeItem(molding.injection_lines,row)"><Trash2 /></button>
                   </div>
                 </td>
               </tr>
-              <tr v-if="!molding.injection_lines.length"><td colspan="17" class="empty">暂无注塑明细，可手工新增或通过“上传附件”自动识别啤机报价单</td></tr>
+              <tr v-if="!visibleInjectionRows.length"><td colspan="17" class="empty">当前配件暂无注塑明细，可手工新增或通过“上传附件”自动识别啤机报价单</td></tr>
             </tbody>
           </table>
         </div>
@@ -938,7 +978,7 @@ function addDickieMaterialPrice() {
           <table class="moldingBlowTable">
             <thead><tr><th>#</th><th>货名</th><th>日产量 / 22H</th><th>用料</th><th>料型</th><th>预估料重 g</th><th>料价 HKD/lb（快照）</th><th>产品料价 HKD（自动）</th><th>吹工 HKD</th><th>披锋 HKD</th><th>小计 HKD（自动）</th><th>利润倍率</th><th>合计 HKD（自动）</th><th>成品用量</th><th>出数</th><th>模价 RMB</th><th>备注</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in molding.blow_lines" :key="index">
+              <tr v-for="(row,index) in visibleBlowRows" :key="index">
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><input v-model="row.item" :disabled="disabled"></td>
                 <td><input v-model="row.daily_capacity" :disabled="disabled"></td>
@@ -956,9 +996,9 @@ function addDickieMaterialPrice() {
                 <td><input v-model="row.output_count" :disabled="disabled"></td>
                 <td><input v-model.number="row.mold_price_rmb" :disabled="disabled" type="number" min="0" step="0.01"></td>
                 <td><input v-model="row.remark" :disabled="disabled"></td>
-                <td><button type="button" class="icon" :disabled="disabled" @click="remove(molding.blow_lines,index)"><Trash2 /></button></td>
+                <td><button type="button" class="icon" :disabled="disabled" @click="removeItem(molding.blow_lines,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!molding.blow_lines.length"><td colspan="18" class="empty">暂无吹气明细；没有吹气件时可保持为空</td></tr>
+              <tr v-if="!visibleBlowRows.length"><td colspan="18" class="empty">当前配件暂无吹气明细；没有吹气件时可保持为空</td></tr>
             </tbody>
           </table>
         </div>
@@ -985,7 +1025,7 @@ function addDickieMaterialPrice() {
               <tr><template v-for="code in operationCodes" :key="`${code}-sub`"><th>数量</th><th>单价 HKD</th></template></tr>
             </thead>
             <tbody>
-              <tr v-for="(row,index) in painting.rows" :key="index">
+              <tr v-for="(row,index) in visiblePaintingRows" :key="index">
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><input v-model="row.image_reference" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行图片引用`" placeholder="附件名称 / 图片引用"></td>
                 <td><input v-model="row.name" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行名称`"></td>
@@ -993,11 +1033,11 @@ function addDickieMaterialPrice() {
                 <template v-for="code in operationCodes" :key="code"><td><input v-model.number="row.operations[code].quantity" :disabled="disabled" type="number" min="0" step="1" :aria-label="`${paintingOperationLabels[code]}数量`"></td><td><input v-model.number="row.operations[code].unit_price_hkd" :disabled="disabled" type="number" min="0" step="0.001" :aria-label="`${paintingOperationLabels[code]}单价 HKD`"></td></template>
                 <td class="snapshot-cell amount">{{ calculated(calculatePaintingRowAmount(row)) }}</td>
                 <td><input v-model="row.remark" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行备注`"></td>
-                <td><button type="button" class="icon" :disabled="disabled" @click="remove(painting.rows,index)"><Trash2 /></button></td>
+                <td><button type="button" class="icon" :disabled="disabled" @click="removeItem(painting.rows,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!painting.rows.length"><td colspan="23" class="empty">暂无喷油/移印/UV明细，可新增或从喷油报价单预览导入</td></tr>
+              <tr v-if="!visiblePaintingRows.length"><td colspan="23" class="empty">当前配件暂无喷油/移印/UV明细，可新增或从喷油报价单预览导入</td></tr>
             </tbody>
-            <tfoot v-if="painting.rows.length"><tr><td colspan="4">工序合计</td><template v-for="code in operationCodes" :key="`${code}-total`"><td colspan="2" class="painting-operation-total">HKD {{ calculated(paintingOperationTotals[code]) }}</td></template><td class="calculated-cell">HKD {{ calculated(paintingTotal) }}</td><td colspan="2" /></tr></tfoot>
+            <tfoot v-if="visiblePaintingRows.length"><tr><td colspan="4">工序合计</td><template v-for="code in operationCodes" :key="`${code}-total`"><td colspan="2" class="painting-operation-total">HKD {{ calculated(paintingOperationTotals[code]) }}</td></template><td class="calculated-cell">HKD {{ calculated(paintingTotal) }}</td><td colspan="2" /></tr></tfoot>
           </table>
         </div>
         <div class="painting-summary-card"><strong>二、喷油/移印/UV成本汇总</strong><span>当前填入预览</span><b>HKD {{ calculated(paintingTotal) }}</b><span>正式金额</span><b>保存后由服务端权威重算</b></div>
@@ -1012,7 +1052,7 @@ function addDickieMaterialPrice() {
           <table class="slushTable">
             <thead><tr><th>#</th><th>产品编号</th><th>胶件名称</th><th>材料</th><th>料重 (g)</th><th>日产量 24H</th><th>用量 (PC)</th><th>单价 HKD</th><th>总价 HKD（自动）</th><th>备注</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in slush.lines" :key="index">
+              <tr v-for="(row,index) in visibleSlushRows" :key="index">
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><input v-model="row.product_code" :disabled="disabled" aria-label="搪胶产品编号"></td>
                 <td><input v-model="row.item" :disabled="disabled" aria-label="搪胶胶件名称"></td>
@@ -1023,11 +1063,11 @@ function addDickieMaterialPrice() {
                 <td><input v-model.number="row.unit_price_hkd" :disabled="disabled" type="number" min="0" step="0.001" aria-label="搪胶单价 HKD"></td>
                 <td class="calculated-cell">{{ calculated(calculateSlushRowAmount(row)) }}</td>
                 <td><input v-model="row.remark" :disabled="disabled" aria-label="搪胶备注"></td>
-                <td><button type="button" class="icon" :disabled="disabled" @click="remove(slush.lines,index)"><Trash2 /></button></td>
+                <td><button type="button" class="icon" :disabled="disabled" @click="removeItem(slush.lines,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!slush.lines.length"><td colspan="11" class="empty">暂无搪胶明细，可新增或从搪胶报价单预览导入</td></tr>
+              <tr v-if="!visibleSlushRows.length"><td colspan="11" class="empty">当前配件暂无搪胶明细，可新增或从搪胶报价单预览导入</td></tr>
             </tbody>
-            <tfoot v-if="slush.lines.length"><tr><td colspan="8">搪胶成本汇总</td><td>HKD {{ calculated(slushTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
+            <tfoot v-if="visibleSlushRows.length"><tr><td colspan="8">搪胶成本汇总</td><td>HKD {{ calculated(slushTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
           </table>
         </div>
         <div class="slush-summary-card"><strong>合计</strong><span>HKD</span><b>{{ calculated(slushTotalHkd) }}</b><span>RMB（冻结汇率 {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</span><b>{{ calculated(slushTotalRmb) }}</b></div>
@@ -1041,19 +1081,19 @@ function addDickieMaterialPrice() {
           <table class="sewingQuickTable">
             <thead><tr><th>#</th><th>公仔名称</th><th>单个公仔价钱 HKD</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in sewing.quick_quotes" :key="index"><td class="row-number">{{ index + 1 }}</td><td><input v-model="row.doll_name" :disabled="disabled" :aria-label="`快捷报价公仔 ${index + 1} 名称`" placeholder="填写公仔名称"></td><td><input v-model.number="row.unit_price_hkd" :disabled="disabled" type="number" min="0" step="0.001" :aria-label="`快捷报价公仔 ${index + 1} 价钱 HKD`"></td><td><button type="button" class="icon" :disabled="disabled" @click="remove(sewing.quick_quotes,index)"><Trash2 /></button></td></tr>
-              <tr v-if="!sewing.quick_quotes.length"><td colspan="4" class="empty">至少新增一个公仔并填写名称与 HKD 价钱</td></tr>
+              <tr v-for="(row,index) in visibleSewingQuickRows" :key="index"><td class="row-number">{{ index + 1 }}</td><td><input v-model="row.doll_name" :disabled="disabled" :aria-label="`快捷报价公仔 ${index + 1} 名称`" placeholder="填写公仔名称"></td><td><input v-model.number="row.unit_price_hkd" :disabled="disabled" type="number" min="0" step="0.001" :aria-label="`快捷报价公仔 ${index + 1} 价钱 HKD`"></td><td><button type="button" class="icon" :disabled="disabled" @click="removeItem(sewing.quick_quotes,row)"><Trash2 /></button></td></tr>
+              <tr v-if="!visibleSewingQuickRows.length"><td colspan="4" class="empty">当前配件至少新增一个公仔并填写名称与 HKD 价钱</td></tr>
             </tbody>
-            <tfoot v-if="sewing.quick_quotes.length"><tr><td colspan="2">快捷报价合计</td><td>HKD {{ calculated(sewingQuickTotalHkd) }}</td><td /></tr></tfoot>
+            <tfoot v-if="visibleSewingQuickRows.length"><tr><td colspan="2">快捷报价合计</td><td>HKD {{ calculated(sewingQuickTotalHkd) }}</td><td /></tr></tfoot>
           </table>
         </div>
       </section>
       <section v-else :id="blockDomId('sewing')" class="payload-block" data-form-block>
         <header><div><strong>车缝部分</strong><span>逐行汇率参与换算；成本 HKD = 用量 × 单价 RMB ÷ 汇率，价钱 HKD = 成本 HKD × 码点。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('sewing')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('sewing')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addSewingGroup"><Plus />新增产品组</button></div></header>
-        <article v-for="(group,index) in sewing.groups" :key="index" class="nested-card sewing-card">
-          <div class="nested-head"><strong>产品组 {{ index + 1 }}</strong><button type="button" class="icon" :disabled="disabled" @click="remove(sewing.groups,index)"><Trash2 /></button></div>
+        <article v-for="(group,index) in visibleSewingGroups" :key="index" class="nested-card sewing-card">
+          <div class="nested-head"><strong>产品组 {{ index + 1 }}</strong><button type="button" class="icon" :disabled="disabled" @click="removeItem(sewing.groups,group)"><Trash2 /></button></div>
           <div class="inline-fields sewing-group-fields"><label><span>产品</span><input v-model="group.name" :disabled="disabled" placeholder="例如：6寸小蜥蜴 / 盾牌" aria-label="车缝产品名称"></label><label><span>类型</span><select v-model="group.category" :disabled="disabled" aria-label="车缝产品类型"><option value="clothes">车衣</option><option v-if="group.category === 'hair'" value="hair">车发（历史数据，请改用车发部）</option></select></label></div>
-          <div class="subhead"><span>车缝物料明细</span><button type="button" :disabled="disabled" @click="addSewingMaterial(index)"><Plus />增加行</button></div>
+          <div class="subhead"><span>车缝物料明细</span><button type="button" :disabled="disabled" @click="addSewingMaterial(group)"><Plus />增加行</button></div>
           <div class="payload-table-scroll">
             <table class="sewingTable">
               <thead><tr><th>#</th><th>物料名称</th><th>裁片部位</th><th>工艺</th><th>裁片数</th><th>供应商</th><th>布料 MOQ/Y</th><th>低于 MOQ/每色费用 RMB</th><th>用量/码</th><th>单价 RMB</th><th>汇率</th><th>成本 HKD（自动）</th><th>码点</th><th>价钱 HKD（自动）</th><th>备注</th><th /></tr></thead>
@@ -1083,7 +1123,7 @@ function addDickieMaterialPrice() {
           </div>
           <div class="sewing-group-status"><span>本组小计：<b>{{ calculated(calculateSewingGroupTotalHkd(group, props.rmbHkdRate)) }}</b> HKD</span><span v-if="sewingEmbroideryCount(group)" class="embroidery-badge">含电绣 {{ sewingEmbroideryCount(group) }} 行</span><span v-if="group.labor_rmb > 0 && !sewingGroupHasLaborLine(group)" class="legacy-labor">已计入历史组人工 RMB {{ calculated(group.labor_rmb) }}</span></div>
         </article>
-        <div v-if="!sewing.groups.length" class="empty sewing-empty">暂无产品组，可新增或从车缝报价单预览导入</div>
+        <div v-if="!visibleSewingGroups.length" class="empty sewing-empty">当前配件暂无产品组，可新增或从车缝报价单预览导入</div>
         <div class="sewing-summary-card"><strong>配套合计</strong><span>HKD（逐行汇率；旧数据回退冻结汇率 {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</span><b>{{ calculated(sewingTotalHkd) }}</b></div>
       </section>
     </template>
@@ -1098,7 +1138,7 @@ function addDickieMaterialPrice() {
           <table class="hairTable">
             <thead><tr><th>#</th><th>名称</th><th>工艺</th><th>重量 (g)</th><th>单价 (HKD)</th><th>单位</th><th>计入成本 HKD（自动）</th><th>备注</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in hair.lines" :key="index">
+              <tr v-for="(row,index) in visibleHairRows" :key="index">
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><input v-model="row.name" :disabled="disabled" aria-label="车发名称"></td>
                 <td><input v-model="row.craft" :disabled="disabled" aria-label="车发工艺"></td>
@@ -1107,11 +1147,11 @@ function addDickieMaterialPrice() {
                 <td><input v-model="row.unit" :disabled="disabled" aria-label="车发单位"></td>
                 <td class="calculated-cell">{{ calculated(calculateHairRowAmountHkd(row)) }}</td>
                 <td><input v-model="row.remark" :disabled="disabled" aria-label="车发备注"></td>
-                <td><button type="button" class="icon" :disabled="disabled" aria-label="删除车发行" @click="remove(hair.lines,index)"><Trash2 /></button></td>
+                <td><button type="button" class="icon" :disabled="disabled" aria-label="删除车发行" @click="removeItem(hair.lines,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!hair.lines.length"><td colspan="9" class="empty">暂无车发明细，请新增一行填写</td></tr>
+              <tr v-if="!visibleHairRows.length"><td colspan="9" class="empty">当前配件暂无车发明细，请新增一行填写</td></tr>
             </tbody>
-            <tfoot v-if="hair.lines.length"><tr><td colspan="6">车发成本汇总</td><td>HKD {{ calculated(hairTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
+            <tfoot v-if="visibleHairRows.length"><tr><td colspan="6">车发成本汇总</td><td>HKD {{ calculated(hairTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
           </table>
         </div>
       </section>
@@ -1128,8 +1168,8 @@ function addDickieMaterialPrice() {
           <table class="assemblySummaryTable">
             <thead><tr><th>类型</th><th>产品</th><th>标准工时</th><th>基数 HKD</th><th>生产量</th><th>小组</th><th>总人数</th><th>合计 人工/PCS HKD</th></tr></thead>
             <tbody>
-              <tr v-for="(group,index) in assembly.groups" :key="index"><td>{{ group.category === 'assembly' ? '组装' : '包装/混装' }}</td><td>{{ group.name || '未命名' }}</td><td>{{ Number(assembly.standard_work_hours || 0).toFixed(2) }}</td><td>{{ Number(assembly.labor_base_hkd || 0).toFixed(2) }}</td><td>{{ whole(group.production_qty) }}</td><td>{{ whole(group.teams) }}</td><td>{{ whole(calculateAssemblyGroupPeople(group)) }}</td><td class="calculated-cell">{{ calculated(calculateAssemblyGroupLaborHkd(group, assembly.labor_base_hkd)) }}</td></tr>
-              <tr v-if="!assembly.groups.length"><td colspan="8" class="empty">组装与包装部分新增产品后，将自动生成总表</td></tr>
+              <tr v-for="(group,index) in visibleAssemblySummaryGroups" :key="index"><td>{{ group.category === 'assembly' ? '组装' : '包装/混装' }}</td><td>{{ group.name || '未命名' }}</td><td>{{ Number(assembly.standard_work_hours || 0).toFixed(2) }}</td><td>{{ Number(assembly.labor_base_hkd || 0).toFixed(2) }}</td><td>{{ whole(group.production_qty) }}</td><td>{{ whole(group.teams) }}</td><td>{{ whole(calculateAssemblyGroupPeople(group)) }}</td><td class="calculated-cell">{{ calculated(calculateAssemblyGroupLaborHkd(group, assembly.labor_base_hkd)) }}</td></tr>
+              <tr v-if="!visibleAssemblySummaryGroups.length"><td colspan="8" class="empty">当前配件暂无组装产品；包装/混装共用项也尚未新增</td></tr>
             </tbody>
             <tfoot><tr><td colspan="7">组装人工合计</td><td>HKD {{ calculated(assemblyLaborTotal) }}</td></tr><tr><td colspan="7">包装/混装人工合计</td><td>HKD {{ calculated(packagingLaborTotal) }}</td></tr><tr class="assembly-grand-total"><td colspan="7">所有产品总合计 人工/PCS</td><td>HKD {{ calculated(allAssemblyLaborTotal) }}</td></tr></tfoot>
           </table>
@@ -1395,7 +1435,7 @@ function addDickieMaterialPrice() {
 .payload-table-scroll table.slushTable{min-width:1650px}.slushTable th:nth-child(2),.slushTable td:nth-child(2){min-width:135px}.slushTable th:nth-child(3),.slushTable td:nth-child(3),.slushTable th:nth-child(4),.slushTable td:nth-child(4){min-width:150px}.slushTable th:nth-child(10),.slushTable td:nth-child(10){min-width:210px}.slush-summary-card{display:grid;grid-template-columns:minmax(180px,1fr) auto minmax(130px,auto) auto minmax(130px,auto);align-items:center;gap:14px;border-top:1px solid #99f6e4;background:#f0fdfa;padding:11px 12px;color:#64748b;font-size:11px}.slush-summary-card strong{color:#334155;font-size:12px}.slush-summary-card b{color:#0f766e;text-align:right}.slush-formula-note{display:grid;grid-template-columns:auto 1fr;gap:10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 12px;color:#64748b;font-size:11px;line-height:1.5}.slush-formula-note strong{color:#0f766e}
 .payload-table-scroll table.hairTable{min-width:1200px}.hairTable th:nth-child(2),.hairTable td:nth-child(2),.hairTable th:nth-child(3),.hairTable td:nth-child(3){min-width:180px}.hairTable th:nth-child(8),.hairTable td:nth-child(8){min-width:220px}.hair-formula-note{display:grid;grid-template-columns:auto 1fr;gap:10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 12px;color:#64748b;font-size:11px;line-height:1.5}.hair-formula-note strong{color:#0f766e}
 .sewing-group-fields{grid-template-columns:minmax(260px,1fr) minmax(140px,220px)}.payload-table-scroll table.sewingTable{min-width:2460px}.sewingTable th:nth-child(2),.sewingTable td:nth-child(2){min-width:230px}.sewingTable th:nth-child(3),.sewingTable td:nth-child(3){min-width:130px}.sewingTable th:nth-child(6),.sewingTable td:nth-child(6){min-width:130px}.sewingTable th:nth-child(15),.sewingTable td:nth-child(15){min-width:220px}.sewing-group-status{display:flex;flex-wrap:wrap;align-items:center;gap:12px;border-top:1px solid #eef2f6;padding:9px 12px;color:#64748b;font-size:11px}.sewing-group-status b{color:#0f766e}.embroidery-badge{border-radius:999px;background:#dcfce7;padding:3px 8px;color:#15803d;font-weight:800}.legacy-labor{border-radius:999px;background:#fffbeb;padding:3px 8px;color:#92400e}.sewing-empty{border-top:1px solid #eef2f6}.sewing-summary-card{display:grid;grid-template-columns:minmax(180px,1fr) auto minmax(130px,auto);align-items:center;gap:14px;border-top:1px solid #99f6e4;background:#f0fdfa;padding:11px 12px;color:#64748b;font-size:11px}.sewing-summary-card strong{color:#334155;font-size:12px}.sewing-summary-card b{color:#0f766e;text-align:right}.sewing-formula-note{display:grid;grid-template-columns:auto 1fr;gap:10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 12px;color:#64748b;font-size:11px;line-height:1.5}.sewing-formula-note strong{color:#0f766e}
-.assembly-base-fields{grid-template-columns:repeat(2,minmax(160px,260px))}.assembly-formula-note{display:flex;gap:10px;border-top:1px solid #fde68a;border-bottom:1px solid #fde68a;background:#fffbeb;padding:9px 12px;color:#64748b;font-size:11px;line-height:1.5}.assembly-formula-note strong{color:#0f766e}.payload-table-scroll table.assemblySummaryTable{min-width:780px}.assemblySummaryTable td{color:#475569;font-size:12px;font-variant-numeric:tabular-nums}.assemblySummaryTable td:last-child,.assemblySummaryTable th:last-child{text-align:right}.assemblySummaryTable tfoot td{text-align:right}.assemblySummaryTable tfoot td:first-child{color:#475569}.assemblySummaryTable tfoot .assembly-grand-total td{background:#dcfce7;color:#15803d;font-size:13px;font-weight:900}.assembly-group-fields{grid-template-columns:minmax(210px,1.5fr) repeat(2,minmax(95px,.65fr)) minmax(110px,.75fr) minmax(170px,1fr)}.assembly-readonly output{display:flex;height:34px;align-items:center;border:1px solid #99f6e4;border-radius:7px;background:#f0fdfa;padding:0 9px;color:#0f766e;font-size:13px;font-variant-numeric:tabular-nums;font-weight:900}.payload-table-scroll table.assemblyProcessTable{min-width:680px}.assemblyProcessTable th:first-child,.assemblyProcessTable td:first-child{width:52px}.assemblyProcessTable th:nth-child(2),.assemblyProcessTable td:nth-child(2){width:34%}.assemblyProcessTable th:nth-child(3),.assemblyProcessTable td:nth-child(3){width:120px}.assembly-section-total{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #86efac;background:#ecfdf5;padding:11px 12px;color:#166534;font-size:12px}.assembly-section-total b{color:#15803d;font-size:13px;font-variant-numeric:tabular-nums}.assembly-group-card{overflow:hidden}
+.assembly-base-fields{grid-template-columns:repeat(2,minmax(160px,260px))}.assembly-formula-note{display:flex;gap:10px;border-top:1px solid #fde68a;border-bottom:1px solid #fde68a;background:#fffbeb;padding:9px 12px;color:#64748b;font-size:11px;line-height:1.5}.assembly-formula-note strong{color:#0f766e}.payload-table-scroll table.assemblySummaryTable{min-width:780px}.assemblySummaryTable td{color:#475569;font-size:12px;font-variant-numeric:tabular-nums}.assemblySummaryTable td:last-child,.assemblySummaryTable th:last-child{text-align:right}.assemblySummaryTable tfoot td{text-align:right}.assemblySummaryTable tfoot td:first-child{color:#475569}.assemblySummaryTable tfoot .assembly-grand-total td{background:#dcfce7;color:#15803d;font-size:13px;font-weight:900}.assembly-group-fields{grid-template-columns:minmax(210px,1.5fr) repeat(2,minmax(95px,.65fr)) minmax(110px,.75fr) minmax(170px,1fr)}.assembly-readonly output{display:flex;height:34px;box-sizing:border-box;align-items:center;border:1px solid #99f6e4;border-radius:7px;background:#f0fdfa;padding:0 9px;color:#0f766e;font-size:13px;font-variant-numeric:tabular-nums;font-weight:900}.payload-table-scroll table.assemblyProcessTable{min-width:680px}.assemblyProcessTable th:first-child,.assemblyProcessTable td:first-child{width:52px}.assemblyProcessTable th:nth-child(2),.assemblyProcessTable td:nth-child(2){width:34%}.assemblyProcessTable th:nth-child(3),.assemblyProcessTable td:nth-child(3){width:120px}.assembly-section-total{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #86efac;background:#ecfdf5;padding:11px 12px;color:#166534;font-size:12px}.assembly-section-total b{color:#15803d;font-size:13px;font-variant-numeric:tabular-nums}.assembly-group-card{overflow:hidden}
 .freight-source-strip{display:flex;flex-wrap:wrap;gap:18px;margin:12px 12px 0;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:10px 12px;color:#475569;font-size:12px}.freight-source-strip b{color:#0f766e}.freight-source-missing{border-style:dashed;border-color:#cbd5e1;background:#f8fafc;color:#94a3b8}.freight-capacity-fields{padding-bottom:10px}.payload-table-scroll table.freightTable{min-width:1420px}.freightTable td:nth-child(2) strong,.freight-fee-label{display:block}.freight-route-output{display:grid;justify-items:center;gap:3px;color:#64748b;font-size:10px;font-weight:800}.freight-route-output input{width:15px;height:15px;accent-color:#0f766e}.freight-fee-label{margin-top:2px;color:#94a3b8;font-size:10px}.freight-formula-note{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 12px;color:#64748b;font-size:11px}.freight-formula-note strong{grid-row:1/3;color:#0f766e}.freight-formula-note span{line-height:1.5}
 .freight-toggle-group{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:7px}.freight-status-toggle{display:inline-flex;min-height:32px;align-items:center;gap:7px;border:1px solid #5eead4;border-radius:999px;background:#f0fdfa;padding:0 11px;color:#0f766e;cursor:pointer}.freight-status-toggle.inactive{border-color:#cbd5e1;background:#fff;color:#64748b}.freight-status-toggle input{width:14px;height:14px;accent-color:#0f766e}.freight-status-toggle span{margin:0!important;color:inherit!important;font-size:12px!important;font-weight:800}.freight-disabled-notice{display:grid;gap:4px;margin:12px;border:1px dashed #cbd5e1;border-radius:9px;background:#f8fafc;padding:14px}.freight-disabled-notice strong{color:#475569;font-size:12px}.freight-disabled-notice span{color:#64748b;font-size:11px;line-height:1.5}
 /* Department forms can contain many independent blocks; completion now lives in page navigation. */
