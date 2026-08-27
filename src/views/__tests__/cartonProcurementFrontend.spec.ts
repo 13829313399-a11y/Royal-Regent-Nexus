@@ -22,15 +22,22 @@ const cartonApiMock = vi.hoisted(() => ({
   listMovements: vi.fn(),
   listInventoryBalances: vi.fn(),
   createInventoryMovement: vi.fn(),
+  createInventoryMovementsBulk: vi.fn(),
   reverseInventoryMovement: vi.fn(),
+  listInventorySummary: vi.fn(),
+  listAuditEvents: vi.fn(),
   listClosings: vi.fn(),
   listExceptions: vi.fn(),
   createOrder: vi.fn(),
   updateOrder: vi.fn(),
   cancelOrder: vi.fn(),
+  appendOrder: vi.fn(),
+  returnOrder: vi.fn(),
+  bulkCancelOrders: vi.fn(),
   uploadHistoryOrders: vi.fn(),
   uploadHistoryInventory: vi.fn(),
   exportPurchaseOrder: vi.fn(),
+  exportPurchaseOrders: vi.fn(),
   uploadReceipt: vi.fn(),
   deleteReceiptImport: vi.fn(),
   latestReceiptImport: vi.fn(),
@@ -146,6 +153,8 @@ describe('CartonProcurementView frontend workspace', () => {
     cartonApiMock.listOrders.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listMovements.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listInventorySummary.mockResolvedValue([])
+    cartonApiMock.listAuditEvents.mockResolvedValue([])
     cartonApiMock.listImports.mockResolvedValue([])
     cartonApiMock.listReceipts.mockResolvedValue([])
     cartonApiMock.listClosings.mockRejectedValue(new Error('offline test'))
@@ -175,7 +184,7 @@ describe('CartonProcurementView frontend workspace', () => {
       product_order_quantity: String(payload.product_order_quantity),
       order_date: payload.order_date,
       due_date: payload.due_date,
-      status: 'CONFIRMED',
+      status: 'PENDING_SUPPLIER',
       note: payload.note,
       revision: 1,
       created_by: 'user-test',
@@ -348,8 +357,10 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.get('input[aria-label="纸箱供应商"]').attributes('disabled')).toBeDefined()
     await wrapper.get('input[aria-label="合同号"]').setValue('SC-DEMO-001')
     await wrapper.get('input[aria-label="货号"]').setValue('203399999')
+    await wrapper.get('input[aria-label="产品名称"]').setValue('新产品')
+    await wrapper.get('input[aria-label="纸质 1"]').setValue('A33+B')
     await wrapper.get('input[aria-label="规格 1"]').setValue('30 × 20 × 15 cm')
-    expect(wrapper.get('output[aria-label="纸箱数量 1"]').text()).toBe('30')
+    expect(wrapper.get('output[aria-label="纸箱数量 1"]').text()).toBe('0')
     await wrapper.get('input[aria-label="订单数量"]').setValue('3601')
     expect(wrapper.get('output[aria-label="纸箱数量 1"]').text()).toBe('31')
     await wrapper.get('input[aria-label="订单数量"]').setValue('3600')
@@ -365,10 +376,10 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('203399999')
     expect(wrapper.text()).toContain('合同内纸品明细 · 2 行')
     expect(wrapper.text()).toContain('A9A')
-    expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONFIRMED' }))
-    expect(wrapper.text()).toContain('已下单')
+    expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'PENDING_SUPPLIER' }))
+    expect(wrapper.text()).toContain('已提交供应商')
     expect(wrapper.text()).toContain('含 2 条纸品明细')
-    expect(wrapper.text()).toContain('已自动进入排期核对、收料和库存后续流程')
+    expect(wrapper.text()).toContain('数量增加请使用“追加”')
 
     await wrapper.get('button[aria-label="导出 CT-260805-ABC123 采购单"]').trigger('click')
     await flushPromises()
@@ -408,43 +419,47 @@ describe('CartonProcurementView frontend workspace', () => {
       note: payload.note,
       revision: current.revision + 1,
     }))
-    cartonApiMock.cancelOrder.mockImplementation(async (_factoryId: string, current: any) => ({
-      ...current,
-      status: 'CANCELLED',
-      revision: current.revision + 1,
-    }))
+    cartonApiMock.returnOrder.mockImplementation(async (_factoryId: string, current: any) => {
+      const cancelled = {
+        ...current,
+        status: 'CANCELLED',
+        revision: current.revision + 1,
+      }
+      cartonApiMock.listOrders.mockResolvedValue([cancelled])
+      return cancelled
+    })
 
     const wrapper = mountView('orders')
     await flushPromises()
 
     await wrapper.get('button[aria-label="修改 CT-CONTROLLED 订单"]').trigger('click')
     expect(wrapper.text()).toContain('修改纸箱合同订单 CT-CONTROLLED')
-    await wrapper.get('input[aria-label="合同号"]').setValue('SC-CT-CONTROLLED-R1')
+    expect(wrapper.get('input[aria-label="合同号"]').attributes('disabled')).toBeDefined()
     await wrapper.get('input[aria-label="计划交期"]').setValue(businessDateOffset(7))
-    await wrapper.get('textarea[aria-label="订单修改原因"]').setValue('客户确认交期及合同号修订')
+    await wrapper.get('textarea[aria-label="订单修改原因"]').setValue('客户确认调整计划交期')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
     expect(cartonApiMock.updateOrder).toHaveBeenCalledWith(
       expect.objectContaining({ order_no: 'CT-CONTROLLED', revision: 1 }),
       expect.objectContaining({
-        contract_no: 'SC-CT-CONTROLLED-R1',
-        reason: '客户确认交期及合同号修订',
+        contract_no: 'SC-CT-CONTROLLED',
+        reason: '客户确认调整计划交期',
       }),
     )
     expect(wrapper.text()).toContain('已按原因完成第 2 版修订')
 
-    await wrapper.get('button[aria-label="取消 CT-CONTROLLED 订单"]').trigger('click')
-    await wrapper.get('textarea[aria-label="订单取消原因"]').setValue('客户正式取消该合同')
+    await wrapper.get('button[aria-label="退单 CT-CONTROLLED"]').trigger('click')
+    await wrapper.get('textarea[aria-label="订单取消退单原因"]').setValue('客户正式取消该合同')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(cartonApiMock.cancelOrder).toHaveBeenCalledWith(
+    expect(cartonApiMock.returnOrder).toHaveBeenCalledWith(
       'huaxing',
       expect.objectContaining({ order_no: 'CT-CONTROLLED', revision: 2 }),
       '客户正式取消该合同',
     )
-    expect(wrapper.text()).toContain('已取消，并保留审计记录')
+    expect(wrapper.text()).toContain('已退单')
     expect(wrapper.get('[data-order-no="CT-CONTROLLED"]').text()).toContain('已取消')
   })
 
@@ -629,7 +644,7 @@ describe('CartonProcurementView frontend workspace', () => {
 
     expect(wrapper.text()).toContain('人工录入订单收料')
     expect(wrapper.text()).toContain('CT-260805-76C698')
-    expect(wrapper.text()).toContain('全部收齐，确认后完成订单')
+    expect(wrapper.text()).toContain('全部收齐，确认后自动完成')
     await findButton(wrapper, '保存待确认收料单').trigger('click')
     expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
     expect(wrapper.get('[data-testid="receipt-save-feedback"]').attributes('role')).toBe('alert')

@@ -1,5 +1,6 @@
 from io import BytesIO
 from urllib.parse import quote as url_quote
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.carton_procurement import (
+    CartonAuditEventListOut,
     CartonClosingGenerateRequest,
     CartonClosingOut,
     CartonClosingStatusRequest,
@@ -23,14 +25,19 @@ from app.schemas.carton_procurement import (
     CartonHistoryOrderImportOut,
     CartonHistoryInventoryImportOut,
     CartonInventoryBalanceOut,
+    CartonInventoryBulkCreate,
+    CartonInventoryFlowSummaryOut,
     CartonInventoryMovementCreate,
     CartonInventoryMovementListOut,
     CartonInventoryMovementOut,
     CartonInventoryReversalRequest,
+    CartonOrderAppendRequest,
+    CartonOrderBulkCancelRequest,
     CartonOrderCancelRequest,
     CartonOrderCreate,
     CartonOrderListOut,
     CartonOrderOut,
+    CartonOrderSelectionRequest,
     CartonOrderUpdate,
     CartonReceiptConfirmRequest,
     CartonReceiptCreate,
@@ -45,11 +52,14 @@ from app.services.auth import (
 )
 from app.services.carton_procurement import (
     CARTON_DEPARTMENTS,
+    append_order,
+    bulk_cancel_orders,
     cancel_order,
     confirm_receipt,
     create_customer,
     create_import_batch,
     create_inventory_movement,
+    create_inventory_movements_bulk,
     create_order,
     create_receipt,
     delete_customer,
@@ -65,6 +75,8 @@ from app.services.carton_procurement import (
     list_closings,
     list_exceptions,
     list_import_batches,
+    list_inventory_flow_summary,
+    list_audit_events,
     list_movements,
     list_orders,
     list_receipts,
@@ -72,6 +84,7 @@ from app.services.carton_procurement import (
     receipt_out,
     require_carton_factory,
     reverse_inventory_movement,
+    return_order,
     update_order,
     update_closing_status,
     update_customer,
@@ -173,6 +186,9 @@ def get_orders(
     factory_id: str,
     customer_code: str = Query(default="", max_length=64),
     search: str = Query(default="", max_length=128),
+    status_filter: str = Query(default="", max_length=32),
+    due_from: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    due_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -184,6 +200,9 @@ def get_orders(
         factory_id,
         customer_code=customer_code.strip(),
         search=search.strip(),
+        status_filter=status_filter.strip(),
+        due_from=due_from.strip(),
+        due_to=due_to.strip(),
         limit=limit,
         offset=offset,
     )
@@ -217,6 +236,17 @@ def patch_order(
     return order_out(db, update_order(db, order_no, payload, current_user))
 
 
+@router.post("/orders/{order_no}/append", response_model=CartonOrderOut)
+def post_order_append(
+    order_no: str,
+    payload: CartonOrderAppendRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return order_out(db, append_order(db, order_no, payload, current_user))
+
+
 @router.post("/orders/{order_no}/cancel", response_model=CartonOrderOut)
 def post_order_cancel(
     order_no: str,
@@ -226,6 +256,27 @@ def post_order_cancel(
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
     return order_out(db, cancel_order(db, order_no, payload, current_user))
+
+
+@router.post("/orders/{order_no}/return", response_model=CartonOrderOut)
+def post_order_return(
+    order_no: str,
+    payload: CartonOrderCancelRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return order_out(db, return_order(db, order_no, payload, current_user))
+
+
+@router.post("/orders/bulk-cancel", response_model=list[CartonOrderOut])
+def post_orders_bulk_cancel(
+    payload: CartonOrderBulkCancelRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return [order_out(db, order) for order in bulk_cancel_orders(db, payload, current_user)]
 
 
 @router.post(
@@ -270,6 +321,32 @@ def get_purchase_order_workbook(
     return StreamingResponse(
         BytesIO(content),
         media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}"},
+    )
+
+
+@router.post("/orders/purchase-orders.zip")
+def post_purchase_order_archive(
+    payload: CartonOrderSelectionRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    output = BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        for order_no in payload.order_nos:
+            order = get_order_by_no(db, factory_id, order_no)
+            content = build_purchase_order_workbook(
+                order,
+                get_order_lines(db, order.id),
+                generated_at=business_now(),
+            )
+            archive.writestr(f"{order.order_no}_纸箱采购单.xlsx", content)
+    output.seek(0)
+    file_name = f"纸箱采购单_批量_{business_now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return StreamingResponse(
+        output,
+        media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}"},
     )
 
@@ -528,6 +605,25 @@ def get_inventory_balances(
     return inventory_balances(db, factory_id, customer_code=customer_code.strip())
 
 
+@router.get("/inventory/summary", response_model=list[CartonInventoryFlowSummaryOut])
+def get_inventory_summary(
+    factory_id: str,
+    customer_code: str = Query(default="", max_length=64),
+    date_from: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return list_inventory_flow_summary(
+        db,
+        factory_id,
+        customer_code=customer_code.strip(),
+        date_from=date_from.strip(),
+        date_to=date_to.strip(),
+    )
+
+
 @router.post("/inventory/movements", response_model=CartonInventoryMovementOut, status_code=201)
 def post_inventory_movement(
     payload: CartonInventoryMovementCreate,
@@ -536,6 +632,20 @@ def post_inventory_movement(
 ):
     _ensure_permission(db, current_user, "carton_procurement:inventory_write", payload.factory_id)
     return create_inventory_movement(db, payload, current_user)
+
+
+@router.post(
+    "/inventory/movements/bulk",
+    response_model=list[CartonInventoryMovementOut],
+    status_code=201,
+)
+def post_inventory_movements_bulk(
+    payload: CartonInventoryBulkCreate,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:inventory_write", payload.factory_id)
+    return create_inventory_movements_bulk(db, payload, current_user)
 
 
 @router.post(
@@ -551,6 +661,38 @@ def post_inventory_reversal(
 ):
     _ensure_permission(db, current_user, "carton_procurement:inventory_write", payload.factory_id)
     return reverse_inventory_movement(db, movement_id, payload, current_user)
+
+
+@router.get("/audit-events", response_model=CartonAuditEventListOut)
+def get_audit_events(
+    factory_id: str,
+    search: str = Query(default="", max_length=128),
+    event_type: str = Query(default="", max_length=64),
+    date_from: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    total, items = list_audit_events(
+        db,
+        factory_id,
+        search=search.strip(),
+        event_type=event_type.strip(),
+        date_from=date_from.strip(),
+        date_to=date_to.strip(),
+        limit=limit,
+        offset=offset,
+    )
+    return CartonAuditEventListOut(
+        factory_id=factory_id,
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=items,
+    )
 
 
 @router.get("/closings", response_model=list[CartonClosingOut])

@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -19,6 +20,11 @@ CartonClosingStatus = Literal["DRAFT", "PENDING", "CONFIRMED", "LOCKED"]
 CartonCustomerStatus = Literal["ACTIVE", "INACTIVE"]
 
 
+BUSINESS_IDENTIFIER_RE = re.compile(
+    r"^[0-9A-Za-z\u4e00-\u9fff][0-9A-Za-z\u4e00-\u9fff._/#()（）+& -]*[0-9A-Za-z\u4e00-\u9fff]$"
+)
+
+
 def _strip(value: str) -> str:
     return value.strip()
 
@@ -29,6 +35,17 @@ def _validate_iso_date(value: str) -> str:
         date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError("日期必须使用 YYYY-MM-DD 格式") from exc
+    return value
+
+
+def _validate_business_identifier(value: str, *, label: str) -> str:
+    value = value.strip()
+    if len(value) == 1 and re.fullmatch(r"[0-9A-Za-z\u4e00-\u9fff]", value):
+        return value
+    if not BUSINESS_IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(
+            f"{label}格式无效；仅允许中英文、数字、空格及 - _ . / # ( ) + &，且首尾必须为文字或数字"
+        )
     return value
 
 
@@ -185,6 +202,16 @@ class CartonOrderCreate(BaseModel):
     def strip_text(cls, value: str) -> str:
         return _strip(value)
 
+    @field_validator("contract_no")
+    @classmethod
+    def validate_contract_no(cls, value: str) -> str:
+        return _validate_business_identifier(value, label="合同号")
+
+    @field_validator("item_no")
+    @classmethod
+    def validate_item_no(cls, value: str) -> str:
+        return _validate_business_identifier(value, label="货号")
+
     @field_validator("order_date", "due_date")
     @classmethod
     def validate_dates(cls, value: str) -> str:
@@ -227,6 +254,16 @@ class CartonOrderUpdate(BaseModel):
     def strip_text(cls, value: str) -> str:
         return _strip(value)
 
+    @field_validator("contract_no")
+    @classmethod
+    def validate_contract_no(cls, value: str) -> str:
+        return _validate_business_identifier(value, label="合同号")
+
+    @field_validator("item_no")
+    @classmethod
+    def validate_item_no(cls, value: str) -> str:
+        return _validate_business_identifier(value, label="货号")
+
     @field_validator("order_date", "due_date")
     @classmethod
     def validate_dates(cls, value: str) -> str:
@@ -248,6 +285,72 @@ class CartonOrderCancelRequest(BaseModel):
     @classmethod
     def strip_text(cls, value: str) -> str:
         return _strip(value)
+
+
+class CartonOrderAppendRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    additional_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    reason: str = Field(min_length=4, max_length=500)
+    due_date: str | None = None
+
+    @field_validator("factory_id", "reason")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+    @field_validator("due_date")
+    @classmethod
+    def validate_optional_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value) if value is not None else None
+
+
+class CartonOrderActionItem(BaseModel):
+    order_no: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+
+    @field_validator("order_no")
+    @classmethod
+    def strip_order_no(cls, value: str) -> str:
+        return _strip(value)
+
+
+class CartonOrderBulkCancelRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=4, max_length=500)
+    items: list[CartonOrderActionItem] = Field(min_length=1, max_length=100)
+
+    @field_validator("factory_id", "reason")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+    @model_validator(mode="after")
+    def validate_unique_orders(self):
+        order_nos = [item.order_no for item in self.items]
+        if len(order_nos) != len(set(order_nos)):
+            raise ValueError("批量操作不能重复选择同一张订单")
+        return self
+
+
+class CartonOrderSelectionRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    order_nos: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("factory_id")
+    @classmethod
+    def strip_factory_id(cls, value: str) -> str:
+        return _strip(value)
+
+    @field_validator("order_nos")
+    @classmethod
+    def normalize_order_nos(cls, values: list[str]) -> list[str]:
+        normalized = [_strip(value) for value in values]
+        if any(not value for value in normalized):
+            raise ValueError("订单编号不能为空")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("不能重复选择同一张订单")
+        return normalized
 
 
 class CartonOrderLineOut(BaseModel):
@@ -456,6 +559,49 @@ class CartonInventoryMovementCreate(BaseModel):
         return self
 
 
+class CartonInventoryBulkItem(BaseModel):
+    order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
+    reference_movement_id: str | None = Field(default=None, min_length=1, max_length=96)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+    location: str = Field(default="", max_length=128)
+
+    @field_validator("order_line_id", "reference_movement_id")
+    @classmethod
+    def strip_optional_id(cls, value: str | None) -> str | None:
+        normalized = _strip(value or "")
+        return normalized or None
+
+    @field_validator("location")
+    @classmethod
+    def strip_location(cls, value: str) -> str:
+        return _strip(value)
+
+    @model_validator(mode="after")
+    def validate_target(self):
+        if bool(self.order_line_id) == bool(self.reference_movement_id):
+            raise ValueError("每条批量出库记录必须且只能选择一个库存结存来源")
+        return self
+
+
+class CartonInventoryBulkCreate(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    document_no: str = Field(min_length=1, max_length=128)
+    reason: str = Field(default="客户要货", min_length=1, max_length=2000)
+    items: list[CartonInventoryBulkItem] = Field(min_length=1, max_length=100)
+
+    @field_validator("factory_id", "document_no", "reason")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+    @model_validator(mode="after")
+    def validate_unique_targets(self):
+        targets = [item.order_line_id or item.reference_movement_id for item in self.items]
+        if len(targets) != len(set(targets)):
+            raise ValueError("批量出库不能重复选择同一条库存结存")
+        return self
+
+
 class CartonInventoryReversalRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     reason: str = Field(min_length=1, max_length=2000)
@@ -503,6 +649,16 @@ class CartonInventoryMovementListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonInventoryMovementOut]
+
+
+class CartonInventoryFlowSummaryOut(BaseModel):
+    business_date: str
+    customer_code: str
+    customer_name: str
+    movement_type: Literal["INBOUND", "OUTBOUND"]
+    document_count: int
+    line_count: int
+    quantity: Decimal
 
 
 class CartonHistoryInventoryImportOut(BaseModel):
@@ -668,6 +824,27 @@ class CartonExceptionListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonExceptionOut]
+
+
+class CartonAuditEventOut(BaseModel):
+    sequence: int
+    id: str
+    factory_id: str
+    event_type: str
+    entity_type: str
+    entity_id: str
+    detail: dict[str, object]
+    actor_user_id: str
+    actor_name: str
+    created_at: str
+
+
+class CartonAuditEventListOut(BaseModel):
+    factory_id: str
+    total: int
+    limit: int
+    offset: int
+    items: list[CartonAuditEventOut]
 
 
 class CartonDashboardOut(BaseModel):

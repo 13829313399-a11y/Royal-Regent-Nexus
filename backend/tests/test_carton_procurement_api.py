@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
 from urllib.parse import unquote
+from zipfile import ZipFile
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook, load_workbook
@@ -304,7 +305,7 @@ def test_grouped_order_calculation_and_factory_scope(monkeypatch):
         _freeze_carton_time(monkeypatch)
 
         order = _create_order(client)
-        assert order["status"] == "CONFIRMED"
+        assert order["status"] == "PENDING_SUPPLIER"
         assert order["customer_code"] == "DICKIE"
         assert len(order["lines"]) == 2
         assert order["lines"][0]["packaging_type"] == "外箱"
@@ -365,20 +366,36 @@ def test_order_update_and_cancel_are_controlled_by_revision_and_business_activit
             }
         )
         update_payload["lines"][0]["usage_quantity"] = "100"
-        updated = client.patch(
+        locked = client.patch(
             f"/api/carton-procurement/orders/{order['order_no']}",
             json=update_payload,
+        )
+        assert locked.status_code == 409, locked.text
+        assert "已提交供应商" in locked.json()["detail"]
+
+        schedule_payload = _order_payload()
+        schedule_payload.update(
+            {
+                "expected_revision": order["revision"],
+                "reason": "供应商排期变化，更新计划交期",
+                "due_date": "2026-08-15",
+                "note": "仅调整交期和备注",
+            }
+        )
+        updated = client.patch(
+            f"/api/carton-procurement/orders/{order['order_no']}",
+            json=schedule_payload,
         )
         assert updated.status_code == 200, updated.text
         revised = updated.json()
         assert revised["revision"] == order["revision"] + 1
-        assert revised["contract_no"] == "SC700145365-R1"
+        assert revised["contract_no"] == "SC700145365"
         assert revised["due_date"] == "2026-08-15"
-        assert Decimal(revised["lines"][0]["required_quantity"]) == Decimal("48.0000")
+        assert Decimal(revised["lines"][0]["required_quantity"]) == Decimal("30.0000")
 
         stale = client.patch(
             f"/api/carton-procurement/orders/{order['order_no']}",
-            json={**update_payload, "reason": "使用旧版本再次提交"},
+            json={**schedule_payload, "reason": "使用旧版本再次提交"},
         )
         assert stale.status_code == 409
         assert "刷新" in stale.json()["detail"]
@@ -426,7 +443,7 @@ def test_order_update_and_cancel_are_controlled_by_revision_and_business_activit
             json=structural_update,
         )
         assert blocked_update.status_code == 409
-        assert "只能修改计划交期和备注" in blocked_update.json()["detail"]
+        assert "已提交供应商" in blocked_update.json()["detail"]
 
         blocked_cancel = client.post(
             f"/api/carton-procurement/orders/{active_order['order_no']}/cancel",
@@ -438,6 +455,204 @@ def test_order_update_and_cancel_are_controlled_by_revision_and_business_activit
         )
         assert blocked_cancel.status_code == 409
         assert "不能取消" in blocked_cancel.json()["detail"]
+
+
+def test_order_append_bulk_cancel_export_filters_and_audit(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+
+        order = _create_order(client)
+        appended = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": order["revision"],
+                "additional_quantity": "600",
+                "reason": "客户正式追加六百套产品",
+                "due_date": "2026-08-15",
+            },
+        )
+        assert appended.status_code == 200, appended.text
+        appended_order = appended.json()
+        assert Decimal(appended_order["product_order_quantity"]) == Decimal("4200.000000")
+        assert Decimal(appended_order["lines"][0]["required_quantity"]) == Decimal("35.0000")
+        assert appended_order["due_date"] == "2026-08-15"
+
+        reminders = client.get(
+            "/api/carton-procurement/exceptions",
+            params={"factory_id": "huaxing", "search": "追加订单"},
+        )
+        assert reminders.status_code == 200, reminders.text
+        assert any(item["category"] == "ORDER_APPENDED" for item in reminders.json()["items"])
+
+        audit = client.get(
+            "/api/carton-procurement/audit-events",
+            params={"factory_id": "huaxing", "event_type": "ORDER_APPENDED"},
+        )
+        assert audit.status_code == 200, audit.text
+        assert audit.json()["total"] == 1
+        assert audit.json()["items"][0]["detail"]["reason"] == "客户正式追加六百套产品"
+
+        returned = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/return",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": appended_order["revision"],
+                "reason": "客户取消追加后的整张合同",
+            },
+        )
+        assert returned.status_code == 200, returned.text
+        assert returned.json()["status"] == "CANCELLED"
+
+        first = _create_order(client)
+        second = _create_order(client)
+        archive = client.post(
+            "/api/carton-procurement/orders/purchase-orders.zip",
+            json={"factory_id": "huaxing", "order_nos": [first["order_no"], second["order_no"]]},
+        )
+        assert archive.status_code == 200, archive.text
+        assert archive.headers["content-type"].startswith("application/zip")
+        with ZipFile(BytesIO(archive.content)) as zipped:
+            assert sorted(zipped.namelist()) == sorted([
+                f"{first['order_no']}_纸箱采购单.xlsx",
+                f"{second['order_no']}_纸箱采购单.xlsx",
+            ])
+
+        cancelled = client.post(
+            "/api/carton-procurement/orders/bulk-cancel",
+            json={
+                "factory_id": "huaxing",
+                "reason": "客户统一取消本批未生产订单",
+                "items": [
+                    {"order_no": first["order_no"], "expected_revision": first["revision"]},
+                    {"order_no": second["order_no"], "expected_revision": second["revision"]},
+                ],
+            },
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert [item["status"] for item in cancelled.json()] == ["CANCELLED", "CANCELLED"]
+
+        filtered = client.get(
+            "/api/carton-procurement/orders",
+            params={
+                "factory_id": "huaxing",
+                "status_filter": "CANCELLED",
+                "due_from": "2026-08-01",
+                "due_to": "2026-08-31",
+            },
+        )
+        assert filtered.status_code == 200, filtered.text
+        assert filtered.json()["total"] == 3
+
+        invalid_payload = _order_payload()
+        invalid_payload["contract_no"] = "<script>"
+        invalid = client.post("/api/carton-procurement/orders", json=invalid_payload)
+        assert invalid.status_code == 422
+        assert "合同号格式无效" in invalid.text
+
+
+def test_batch_receipt_bulk_outbound_summary_and_return(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        first = _create_order(client)
+        second = _create_order(client)
+        receipt_response = client.post(
+            "/api/carton-procurement/receipts",
+            json={
+                "factory_id": "huaxing",
+                "delivery_note_no": "DN-BULK-001",
+                "delivery_date": "2026-08-05",
+                "note": "两张订单批量登记入库",
+                "lines": [
+                    {
+                        "order_line_id": first["lines"][0]["id"],
+                        "delivered_quantity": "30",
+                        "received_quantity": "30",
+                        "location": "A-01",
+                    },
+                    {
+                        "order_line_id": second["lines"][0]["id"],
+                        "delivered_quantity": "30",
+                        "received_quantity": "30",
+                        "location": "A-02",
+                    },
+                ],
+            },
+        )
+        assert receipt_response.status_code == 201, receipt_response.text
+        receipt = receipt_response.json()
+        assert len(receipt["lines"]) == 2
+        blocked_cross_order_return = client.post(
+            f"/api/carton-procurement/orders/{first['order_no']}/return",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": first["revision"],
+                "reason": "测试跨订单待确认收料保护",
+            },
+        )
+        assert blocked_cross_order_return.status_code == 409
+        assert "共用的待确认收料单" in blocked_cross_order_return.json()["detail"]
+        confirmed = client.post(
+            f"/api/carton-procurement/receipts/{receipt['id']}/confirm",
+            json={"factory_id": "huaxing", "expected_revision": receipt["revision"]},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+
+        balances = client.get(
+            "/api/carton-procurement/inventory/balances",
+            params={"factory_id": "huaxing"},
+        )
+        assert balances.status_code == 200, balances.text
+        selected = [row for row in balances.json() if row["balance"] == "30.0000"]
+        assert len(selected) == 2
+        outbound = client.post(
+            "/api/carton-procurement/inventory/movements/bulk",
+            json={
+                "factory_id": "huaxing",
+                "document_no": "OUT-BULK-001",
+                "reason": "客户要货",
+                "items": [
+                    {
+                        "order_line_id": row["order_line_id"],
+                        "quantity": row["balance"],
+                        "location": row["latest_location"],
+                    }
+                    for row in selected
+                ],
+            },
+        )
+        assert outbound.status_code == 201, outbound.text
+        assert len(outbound.json()) == 2
+        assert all(Decimal(item["quantity"]) == Decimal("-30.0000") for item in outbound.json())
+
+        summary = client.get(
+            "/api/carton-procurement/inventory/summary",
+            params={
+                "factory_id": "huaxing",
+                "date_from": "2026-08-05",
+                "date_to": "2026-08-05",
+            },
+        )
+        assert summary.status_code == 200, summary.text
+        by_type = {item["movement_type"]: Decimal(item["quantity"]) for item in summary.json()}
+        assert by_type == {"INBOUND": Decimal("60.0000"), "OUTBOUND": Decimal("60.0000")}
+
+        refreshed = client.get(
+            "/api/carton-procurement/orders",
+            params={"factory_id": "huaxing", "search": first["order_no"]},
+        ).json()["items"][0]
+        returned = client.post(
+            f"/api/carton-procurement/orders/{first['order_no']}/return",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": refreshed["revision"],
+                "reason": "客户退货并终止剩余纸品订单",
+            },
+        )
+        assert returned.status_code == 200, returned.text
+        assert returned.json()["status"] == "CANCELLED"
 
 
 def test_purchase_order_export_contains_grouped_lines_and_formula(monkeypatch):
