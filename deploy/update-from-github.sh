@@ -192,17 +192,10 @@ capture_database_state() {
 }
 
 candidate_id=""
-ai_control_volume=""
-ai_disable_marker_preexisting=0
-ai_disable_marker_created=0
-ai_shared_guard_enabled="false"
 cleanup_candidate() {
   if [ -n "$candidate_id" ]; then
     echo "Deployment stopped before cutover completed; leaving API candidate $candidate_id running." >&2
     echo "After recovery, remove it with: docker rm -f $candidate_id" >&2
-  fi
-  if [ "$ai_disable_marker_created" -eq 1 ]; then
-    echo "AI runtime disable marker remains active because deployment did not complete." >&2
   fi
 }
 trap cleanup_candidate EXIT INT TERM
@@ -227,29 +220,6 @@ web_id="$(compose ps -q web)"
 [ "$(container_health "$db_id")" = "healthy" ] || fail "Database container is not healthy"
 [ "$(container_health "$api_id")" = "healthy" ] || fail "API container is not healthy"
 [ "$(container_health "$web_id")" = "healthy" ] || fail "Web container is not healthy"
-
-ai_pilot_enabled="$(read_env_value AI_PILOT_ENABLED)"
-case "$ai_pilot_enabled" in
-  true)
-    [ "$(read_env_value AI_RUNTIME_DISABLE_PATH)" = "/app/backend/control/ai.disabled" ] \
-      || fail "AI Pilot requires the approved runtime disable path"
-    ai_control_volume="$(
-      docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/backend/control"}}{{.Name}}{{end}}{{end}}' "$api_id"
-    )"
-    [ -n "$ai_control_volume" ] || fail "AI Pilot control volume is not mounted"
-    if docker run --rm --network none -v "$ai_control_volume:/control:ro" \
-      postgres:16-alpine test -f /control/ai.disabled; then
-      ai_disable_marker_preexisting=1
-    fi
-    ai_shared_guard_enabled="$(read_env_value AI_SHARED_GUARD_ENABLED)"
-    case "$ai_shared_guard_enabled" in
-      true|false) ;;
-      *) fail "AI_SHARED_GUARD_ENABLED must be true or false while AI Pilot is enabled" ;;
-    esac
-    ;;
-  false|"") ;;
-  *) fail "AI_PILOT_ENABLED must be true or false" ;;
-esac
 
 old_commit="$(git rev-parse HEAD)"
 git fetch --prune origin
@@ -301,16 +271,7 @@ git merge --ff-only "$target_commit"
 echo "Building API and Web images while the current service remains online"
 compose build api web
 
-if [ "$ai_pilot_enabled" = "true" ] && [ "$ai_disable_marker_preexisting" -eq 0 ]; then
-  echo "Disabling AI at the shared runtime control boundary before API cutover"
-  docker run --rm --network none -v "$ai_control_volume:/control" postgres:16-alpine \
-    sh -c 'umask 077; : > /control/ai.disabled'
-  ai_disable_marker_created=1
-fi
-
-if [ -z "$migration_changes" ] && { \
-  [ "$ai_pilot_enabled" != "true" ] || [ "$ai_shared_guard_enabled" = "true" ]; \
-}; then
+if [ -z "$migration_changes" ]; then
   network_name="$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$api_id")"
   [ -n "$network_name" ] || fail "Cannot determine the production Docker network"
   new_api_image_ref="$(docker inspect --format '{{.Config.Image}}' "$api_id")"
@@ -318,9 +279,6 @@ if [ -z "$migration_changes" ] && { \
   [ -n "$new_api_image" ] || fail "Cannot determine the newly built API image"
   candidate_name="rr-api-candidate-$timestamp"
 
-  if [ "$ai_pilot_enabled" = "true" ]; then
-    echo "Shared AI Guard enabled; starting the candidate behind the active AI disable marker"
-  fi
   echo "Starting a health-checked API candidate before replacing the production API"
   candidate_id="$(docker run -d \
     --name "$candidate_name" \
@@ -348,8 +306,6 @@ else
   if [ -n "$migration_changes" ]; then
     echo "Alembic migration changes detected:"
     printf '%s\n' "$migration_changes"
-  else
-    echo "AI Pilot is enabled without Shared Guard; avoiding concurrent limiter instances"
   fi
   compose up -d --no-deps api
   api_id="$(compose ps -q api)"
@@ -377,6 +333,3 @@ echo "Database container preserved: $db_id"
 echo "Verified backup: $backup_dir/database.dump"
 echo "Rollback images: rrnexus-api:rollback-$timestamp and rrnexus-web:rollback-$timestamp"
 echo "Rollback evidence: $backup_dir/api-rollback-artifact.txt and $backup_dir/web-rollback-artifact.txt"
-if [ "$ai_disable_marker_created" -eq 1 ]; then
-  echo "AI remains disabled by the runtime marker; run the two-stage Pilot readiness procedure before removing it."
-fi

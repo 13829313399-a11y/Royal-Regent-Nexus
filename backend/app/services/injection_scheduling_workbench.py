@@ -547,6 +547,23 @@ def update_injection_scheduling_workbench_jobs(
                             detail="锁定字段只支持是或否",
                         )
                     value = normalized in {"true", "1", "是"}
+            elif item.field == "machine_id":
+                value = _text(item.value)
+                if not value:
+                    raise HTTPException(status_code=422, detail="目标机台不能为空")
+            elif item.field == "sequence_no":
+                try:
+                    value = int(item.value)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="机台队列序号必须是整数",
+                    ) from exc
+                if value < 0:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="机台队列序号不能小于零",
+                    )
             else:
                 value = _text(item.value)
             _merge_bulk_value(task_changes[task.id], field, value)

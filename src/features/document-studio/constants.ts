@@ -25,7 +25,7 @@ export const DOCUMENT_TOOLS: readonly DocumentToolDefinition[] = [
   {
     id: 'pdf-translation',
     label: 'PDF 翻译',
-    description: '使用本地模型或千问翻译并生成新文件',
+    description: '使用服务器本地模型翻译并生成新文件',
     accept: '.pdf,application/pdf',
     extensionLabel: 'PDF',
   },

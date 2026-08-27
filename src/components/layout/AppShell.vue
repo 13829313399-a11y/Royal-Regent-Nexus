@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import SidebarNav from '@/components/layout/SidebarNav.vue'
 import TopBar from '@/components/layout/TopBar.vue'
-import AiAssistantDrawer from '@/features/ai-assistant/AiAssistantDrawer.vue'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 import { usePresenceHeartbeat } from '@/composables/usePresenceHeartbeat'
 
@@ -82,7 +81,4 @@ onBeforeUnmount(() => {
       </main>
     </div>
   </div>
-
-  <!-- Teleported overlay: available on full-page business routes without changing their grid. -->
-  <AiAssistantDrawer />
 </template>

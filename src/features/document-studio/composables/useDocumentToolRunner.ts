@@ -31,9 +31,7 @@ export interface DocumentToolRunResult {
 
 function processingSummary(metadata: DocumentProcessingMetadata) {
   const summary: string[] = []
-  if (metadata.qwenPageCount) summary.push(`${metadata.qwenPageCount} 页千问 OCR`)
   if (metadata.lowConfidenceCount) summary.push(`${metadata.lowConfidenceCount} 个低置信结果已标记`)
-  if (metadata.providerModel) summary.push(metadata.providerModel)
   return summary
 }
 

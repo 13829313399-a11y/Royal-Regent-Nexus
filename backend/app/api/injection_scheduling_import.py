@@ -6,7 +6,6 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.db import get_db
 from app.schemas.injection_scheduling_import import (
     InjectionSchedulingImportBatchOut,
@@ -143,7 +142,6 @@ def post_import_preview(
         document_kind=document_kind,
         recognition_mode=recognition_mode,
         business_date=business_date,
-        settings=settings,
     )
     return import_batch_out(db, record, idempotent_replay=replay)
 
@@ -279,7 +277,6 @@ def post_import_retry(
         batch_id=batch_id,
         payload=payload,
         user=current_user,
-        settings=settings,
     )
     return import_batch_out(db, record, idempotent_replay=replay)
 

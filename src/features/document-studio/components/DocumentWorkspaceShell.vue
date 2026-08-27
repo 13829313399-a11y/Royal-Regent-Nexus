@@ -247,7 +247,7 @@ function downloadResult() {
 watch(() => props.toolId, resetWorkspace)
 watch(capability, (value) => {
   if (!value || !supportsModeSelection.value || value.modes[processingMode.value].available) return
-  const fallback = (['AUTO', 'LOCAL', 'QWEN'] as const).find(mode => value.modes[mode].available)
+  const fallback = (['AUTO', 'LOCAL'] as const).find(mode => value.modes[mode].available)
   if (fallback) processingMode.value = fallback
 }, { immediate: true })
 onBeforeUnmount(resetWorkspace)
@@ -338,7 +338,7 @@ onBeforeUnmount(resetWorkspace)
           />
           <PdfSplitPanel v-else v-model:mode="splitMode" v-model:page-ranges="pageRanges" :disabled="isBusy" />
 
-          <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-600"><strong class="font-semibold text-slate-800">运行边界</strong><p class="mt-1">普通转换直接调用共享工具接口，不创建 Artifact 或后台 Task；千问失败会明确报错，不静默回退。</p></div>
+          <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-600"><strong class="font-semibold text-slate-800">运行边界</strong><p class="mt-1">转换只调用服务器本地工具，不创建外部任务，也不把文档内容发送到第三方服务。</p></div>
         </div>
 
         <div class="border-t border-slate-200 p-5"><Button class="w-full" size="lg" :disabled="!canStart" @click="runConversion"><LoaderCircle v-if="isBusy" class="size-4 animate-spin" aria-hidden="true" /><RotateCcw v-else-if="state === 'ERROR'" class="size-4" aria-hidden="true" />{{ isBusy ? '处理中…' : state === 'ERROR' ? '重新处理' : '开始处理' }}</Button></div>

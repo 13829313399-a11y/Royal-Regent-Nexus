@@ -8,6 +8,6 @@ Store only deidentified or approved synthetic fixtures in the repository. Keep b
 | PDF to Word | character accuracy, reading-order accuracy, heading/list/table/image recall, missing/duplicate block rate, layout-preserving page-image count |
 | PDF translation | glossary hit rate, number/code preservation, one-to-one unit rate, table-cell coverage, overflow rate, human acceptance rate |
 | Word to PDF | page-count consistency, unintended blank-page rate, missing-font rate, header/footer/table/image checks, visual-difference review rate |
-| Platform | success/failure/cancel rate, P50/P95 request duration, Qwen pages per request, temporary-file cleanup rate and estimated provider cost |
+| Platform | success/failure rate, P50/P95 request duration, temporary-file cleanup rate and local-engine resource usage |
 
-Every evaluation record must bind the source fixture version, code commit, parser/model versions, processing mode, option template, expected values, observed values and reviewer. Thresholds require product and operations approval; this repository intentionally does not invent pass scores without a gold set.
+Every evaluation record must bind the source fixture version, code commit, parser/engine versions, processing mode, option template, expected values, observed values and reviewer. Thresholds require product and operations approval; this repository intentionally does not invent pass scores without a gold set.

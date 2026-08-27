@@ -45,24 +45,6 @@ def test_production_web_waits_for_a_healthy_api() -> None:
     assert "condition: service_started" not in web_section
 
 
-def test_ai_pilot_candidate_requires_shared_guard_and_active_marker() -> None:
-    script = SCRIPT_PATH.read_text(encoding="utf-8")
-
-    assert (
-        'ai_shared_guard_enabled="$(read_env_value AI_SHARED_GUARD_ENABLED)"' in script
-    )
-    assert '[ "$ai_shared_guard_enabled" = "true" ]' in script
-    assert (
-        "Shared AI Guard enabled; starting the candidate behind the active AI disable marker"
-        in script
-    )
-    marker_position = script.index(
-        "Disabling AI at the shared runtime control boundary"
-    )
-    candidate_position = script.index("Shared AI Guard enabled; starting the candidate")
-    assert marker_position < candidate_position
-
-
 def test_web_healthcheck_covers_the_api_proxy_path() -> None:
     dockerfile = (PROJECT_ROOT / "Dockerfile.frontend").read_text(encoding="utf-8")
 

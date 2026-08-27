@@ -48,6 +48,41 @@ TITLE_FACTORY_TOKENS = {
     "huakang-d": ("华康d", "华康D"),
     "huadeng": ("华登",),
 }
+UNIFIED_PRIORITY_MAP = {"": "NORMAL", "普通": "NORMAL", "急单": "URGENT", "特急": "CRITICAL"}
+UNIFIED_EXECUTION_STATUS_MAP = {
+    "": "",
+    "待排": "BACKLOG",
+    "排队": "QUEUED",
+    "生产中": "RUNNING",
+    "阻塞": "BLOCKED",
+}
+UNIFIED_ARM_TYPES = {"", "无要求", "单臂", "双臂", "多臂"}
+UNIFIED_COLOR_DEPTHS = {"", "浅", "中", "深"}
+UNIFIED_LOCK_MAP = {"": False, "否": False, "是": True}
+UNIFIED_PROCESS_TAGS = {
+    "PVC",
+    "PC螺杆",
+    "抽芯",
+    "高压",
+    "透明料",
+    "双色",
+    "立式",
+    "热流道",
+    "放件",
+    "复模",
+}
+UNIFIED_PROCESS_CODE_MAP = {
+    "PVC": "pvc",
+    "PC螺杆": "pc_screw",
+    "抽芯": "core_pull",
+    "高压": "high_pressure",
+    "透明料": "clear_material",
+    "双色": "two_color",
+    "立式": "vertical",
+    "热流道": "hot_runner",
+    "放件": "manual_insert",
+    "复模": "repeat_mold",
+}
 
 
 def _json(value: Any) -> str:
@@ -150,9 +185,7 @@ def _mapping_for_profile(
                 "required": rule.required,
                 "status": status,
                 "mapping_method": (
-                    "AI_LAYOUT_VALIDATED"
-                    if rule.selector_strategy == "AI_HEADER_CELL" and matched
-                    else "PROFILE_COLUMN_AND_HEADER"
+                    "PROFILE_COLUMN_AND_HEADER"
                     if matched
                     else "PROFILE_COLUMN_HINT"
                 ),
@@ -162,6 +195,83 @@ def _mapping_for_profile(
             }
         )
     return mapping, blocking
+
+
+def _validate_template_contract(
+    reader: _WorkbookReader,
+    profile: ImportProfile,
+    roles: dict[str, dict[str, Any]],
+    issues: list[dict[str, Any]],
+) -> bool:
+    contract = profile.recognition_config.get("template_contract") or {}
+    if not contract:
+        return False
+    sheet_name = roles.get("CURRENT_PLAN", {}).get("sheet_name", "")
+    if not sheet_name:
+        return True
+    blocked = False
+    version_cell = str(contract.get("version_cell") or "B2").upper()
+    version_match = re.fullmatch(r"([A-Z]{1,3})([1-9][0-9]*)", version_cell)
+    if version_match is None:
+        raise RuntimeError("fixed template version_cell is invalid")
+    version_row = _row(reader, sheet_name, int(version_match.group(2)))
+    actual_version = reader.identifier(version_row.get(version_match.group(1)))
+    expected_version = str(contract.get("version") or "")
+    if actual_version != expected_version:
+        blocked = True
+        issues.append(
+            _issue(
+                code="UNIFIED_TEMPLATE_VERSION_MISMATCH",
+                message=f"模板版本必须为 {expected_version}，请重新下载最新版统一模板。",
+                sheet_name=sheet_name,
+                source_row=int(version_match.group(2)),
+                field_name="template_version",
+                cell_ref=version_cell,
+                raw_value=actual_version,
+                blocking=True,
+            )
+        )
+    header_row_number = int(contract.get("header_row") or 5)
+    header_row = _row(reader, sheet_name, header_row_number)
+    expected_headers = [str(value) for value in contract.get("headers", [])]
+    actual_headers = [
+        reader.identifier(header_row.get(_excel_column(index)))
+        for index in range(1, len(expected_headers) + 1)
+    ]
+    if actual_headers != expected_headers:
+        blocked = True
+        mismatches = [
+            {
+                "column": _excel_column(index),
+                "expected": expected,
+                "actual": actual,
+            }
+            for index, (expected, actual) in enumerate(
+                zip(expected_headers, actual_headers, strict=True), start=1
+            )
+            if expected != actual
+        ]
+        issues.append(
+            _issue(
+                code="UNIFIED_TEMPLATE_STRUCTURE_MODIFIED",
+                message="模板结构已被修改，请重新下载最新版统一模板。",
+                sheet_name=sheet_name,
+                source_row=header_row_number,
+                field_name="template_headers",
+                cell_ref=f"A{header_row_number}:{contract.get('last_column', 'AD')}{header_row_number}",
+                raw_value=_json(mismatches),
+                blocking=True,
+            )
+        )
+    return blocked
+
+
+def _excel_column(index: int) -> str:
+    result = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
 
 
 def _select_profile(
@@ -488,6 +598,8 @@ def _profile_title_warning(
     sheet_name: str,
     issues: list[dict[str, Any]],
 ) -> None:
+    if profile.recognition_config.get("template_contract"):
+        return
     if not profile.factories or not sheet_name:
         return
     title_cells = _row(reader, sheet_name, 1)
@@ -624,6 +736,7 @@ def _parse_plan_rows(
         normalize_header(item) for item in termination.get("footer_labels", [])
     }
     empty_identity_streak = 0
+    is_unified_template = profile.profile_code == "group_unified_plan_v1"
 
     for row_number, cells in reader.rows(sheet_name):
         if row_number < data_start_row:
@@ -662,7 +775,7 @@ def _parse_plan_rows(
 
         order_quantity = values.get("order_quantity")
         order_no = _clean_text(values.get("order_no"))
-        order_like = (
+        order_like = bool(any(value not in {None, ""} for value in values.values())) if is_unified_template else (
             bool(
                 order_no
                 and order_quantity is not None
@@ -774,6 +887,9 @@ def _parse_plan_rows(
             else explicit_machine or inherited_machine
         )
         completed = values.get("completed_quantity")
+        if is_unified_template and completed is None:
+            completed = 0.0
+            values["completed_quantity"] = completed
         has_window = bool(
             planned_start and planned_finish and planned_start < planned_finish
         )
@@ -781,9 +897,98 @@ def _parse_plan_rows(
             layout_override
             and backlog_rule != "NONE"
             and not machine_code
-            and not has_window
+            and (is_unified_template or not has_window)
         )
         row_errors: list[str] = []
+        if is_unified_template:
+            for field_name in (
+                "order_no",
+                "mold_no",
+                "product_name",
+                "delivery_due_date",
+            ):
+                if not _clean_text(values.get(field_name)):
+                    row_errors.append(field_name)
+            if order_quantity is None or order_quantity <= 0:
+                row_errors.append("order_quantity")
+            priority_text = _clean_text(values.get("priority_code"))
+            if priority_text not in UNIFIED_PRIORITY_MAP:
+                row_errors.append("priority_code")
+            values["priority_code"] = UNIFIED_PRIORITY_MAP.get(priority_text, "NORMAL")
+            execution_text = _clean_text(values.get("execution_status"))
+            if execution_text not in UNIFIED_EXECUTION_STATUS_MAP:
+                row_errors.append("execution_status")
+            explicit_execution_status = UNIFIED_EXECUTION_STATUS_MAP.get(execution_text, "")
+            arm_text = _clean_text(values.get("required_arm_type"))
+            if arm_text not in UNIFIED_ARM_TYPES:
+                row_errors.append("required_arm_type")
+            values["required_arm_type"] = "" if arm_text == "无要求" else arm_text
+            fixture_text = _clean_text(values.get("required_fixture_type"))
+            values["required_fixture_type"] = (
+                "" if fixture_text == "无要求" else fixture_text
+            )
+            color_depth = _clean_text(values.get("color_depth"))
+            if color_depth not in UNIFIED_COLOR_DEPTHS:
+                row_errors.append("color_depth")
+            lock_text = _clean_text(values.get("locked"))
+            if lock_text not in UNIFIED_LOCK_MAP:
+                row_errors.append("locked")
+            values["locked"] = UNIFIED_LOCK_MAP.get(lock_text, False)
+            process_tags = [
+                item.strip()
+                for item in _clean_text(values.get("process_tags_evidence")).split("|")
+                if item.strip()
+            ]
+            unknown_tags = [item for item in process_tags if item not in UNIFIED_PROCESS_TAGS]
+            values["process_tags_evidence"] = [
+                UNIFIED_PROCESS_CODE_MAP.get(item, item) for item in process_tags
+            ]
+            if unknown_tags:
+                issues.append(
+                    _issue(
+                        code="UNKNOWN_PROCESS_TAG",
+                        message=f"第 {row_number} 行包含未知工艺标签，已保留原值供人工核对",
+                        sheet_name=sheet_name,
+                        source_row=row_number,
+                        field_name="process_tags_evidence",
+                        raw_value="|".join(unknown_tags),
+                    )
+                )
+            if bool(planned_start) != bool(planned_finish):
+                row_errors.append("planned_window")
+            if not machine_code and explicit_execution_status not in {"", "BACKLOG"}:
+                row_errors.append("execution_status")
+            if machine_code and explicit_execution_status == "BACKLOG":
+                row_errors.append("execution_status")
+            if not machine_code and values["locked"]:
+                row_errors.append("locked")
+            if not machine_code and (planned_start or planned_finish):
+                issues.append(
+                    _issue(
+                        code="BACKLOG_WINDOW_IGNORED",
+                        message=f"第 {row_number} 行当前机台为空，计划开始/完成仅作为提醒，不作为待排权威",
+                        sheet_name=sheet_name,
+                        source_row=row_number,
+                        field_name="planned_window",
+                    )
+                )
+                values["planned_start"] = ""
+                values["planned_finish"] = ""
+                planned_start = ""
+                planned_finish = ""
+                has_window = False
+            if explicit_execution_status == "RUNNING" and not values["locked"]:
+                issues.append(
+                    _issue(
+                        code="RUNNING_NOT_LOCKED",
+                        message=f"第 {row_number} 行为生产中但未锁定，建议核对后锁定",
+                        sheet_name=sheet_name,
+                        source_row=row_number,
+                        field_name="locked",
+                    )
+                )
+        else:
+            explicit_execution_status = ""
         if (completed is None and not is_backlog_candidate) or (
             completed is not None and completed < 0
         ):
@@ -803,16 +1008,28 @@ def _parse_plan_rows(
             )
         mold_no = _clean_text(values.get("mold_no"))
         if mold_no and mold_no not in authoritative_mold_nos:
-            master_differences.setdefault(
-                ("MOLD", mold_no),
-                {
-                    "entity_type": "MOLD",
-                    "business_key": mold_no,
-                    "status": "MISSING_IN_SYSTEM_MASTER",
-                    "source_sheet": sheet_name,
-                    "source_row": row_number,
-                },
-            )
+            if is_unified_template:
+                issues.append(
+                    _issue(
+                        code="MOLD_USING_TEMPLATE_EVIDENCE",
+                        message=f"第 {row_number} 行模具未匹配系统主数据，本批次保留 Excel 证据且不覆盖主档",
+                        sheet_name=sheet_name,
+                        source_row=row_number,
+                        field_name="mold_no",
+                        raw_value=mold_no,
+                    )
+                )
+            else:
+                master_differences.setdefault(
+                    ("MOLD", mold_no),
+                    {
+                        "entity_type": "MOLD",
+                        "business_key": mold_no,
+                        "status": "MISSING_IN_SYSTEM_MASTER",
+                        "source_sheet": sheet_name,
+                        "source_row": row_number,
+                    },
+                )
         blocking_formula = False
         backlog_date_fields = {
             "planned_start",
@@ -836,18 +1053,21 @@ def _parse_plan_rows(
                 or blocking_formula
             )
         scheduled_evidence = bool(machine_code or planned_start or planned_finish)
-        if completed is not None and completed > order_quantity:
-            issues.append(
-                _issue(
-                    code="OVERPRODUCED",
-                    message=f"第 {row_number} 行已啤数大于订单数，按超产保留并视为完成",
-                    sheet_name=sheet_name,
-                    source_row=row_number,
-                    field_name="completed_quantity",
-                    raw_value=str(completed),
+        if completed is not None and completed > (order_quantity or 0):
+            if is_unified_template:
+                row_errors.append("completed_quantity")
+            else:
+                issues.append(
+                    _issue(
+                        code="OVERPRODUCED",
+                        message=f"第 {row_number} 行已啤数大于订单数，按超产保留并视为完成",
+                        sheet_name=sheet_name,
+                        source_row=row_number,
+                        field_name="completed_quantity",
+                        raw_value=str(completed),
+                    )
                 )
-            )
-        if scheduled_evidence and not has_window:
+        if scheduled_evidence and not has_window and not is_unified_template:
             row_errors.append("planned_window")
         if blocking_formula:
             row_errors.append("formula_source")
@@ -870,27 +1090,38 @@ def _parse_plan_rows(
                 mold_no,
                 product_name,
                 machine_code,
+                str(row_number) if is_unified_template else "",
             ]
         )
-        row = {
-            **values,
-            "machine_code": machine_code,
-            "sequence_no": sequence_by_machine[machine_code] if machine_code else 0,
-            "execution_status": (
+        if is_unified_template:
+            execution_status = explicit_execution_status or (
+                "BACKLOG" if not machine_code else "QUEUED"
+            )
+            priority_code = values.get("priority_code", "NORMAL")
+        else:
+            execution_status = (
                 "COMPLETED"
                 if completed is not None and completed >= order_quantity
                 else "RUNNING"
                 if "▲" in _clean_text(values.get("legacy_marker"))
                 else "QUEUED"
-            ),
-            "status_inferred": True,
-            "priority_code": (
+            )
+            priority_code = (
                 "CRITICAL"
                 if "特急" in _clean_text(values.get("legacy_marker"))
                 else "URGENT"
                 if "急" in _clean_text(values.get("legacy_marker"))
                 else "NORMAL"
-            ),
+            )
+        row = {
+            **values,
+            "machine_code": machine_code,
+            "sequence_no": sequence_by_machine[machine_code] if machine_code else 0,
+            "execution_status": execution_status,
+            "status_inferred": not explicit_execution_status
+            if is_unified_template
+            else True,
+            "priority_code": priority_code,
             "stable_order_key": stable_order_key,
             "stable_row_key": split_key,
             "split_key": split_key,
@@ -918,7 +1149,11 @@ def _parse_plan_rows(
                 issues.append(
                     _issue(
                         code="CANONICAL_ROW_INVALID",
-                        message=f"第 {row_number} 行已排证据存在，但规范字段 {field_name} 无法安全确认",
+                        message=(
+                            f"第 {row_number} 行字段 {field_name} 不符合统一模板合同"
+                            if is_unified_template
+                            else f"第 {row_number} 行已排证据存在，但规范字段 {field_name} 无法安全确认"
+                        ),
                         sheet_name=sheet_name,
                         source_row=row_number,
                         field_name=field_name,
@@ -926,15 +1161,15 @@ def _parse_plan_rows(
                     )
                 )
             continue
-        if machine_code and has_window:
+        if machine_code and (has_window or is_unified_template):
             row["classification"] = "SCHEDULED_BASELINE"
             sequence_by_machine[machine_code] += 1
             scheduled.append(row)
             if row["execution_status"] == "RUNNING":
                 running_candidates[machine_code].append(row)
-        elif not machine_code and not has_window and backlog_rule != "NONE":
+        elif not machine_code and (not has_window or is_unified_template) and backlog_rule != "NONE":
             row["classification"] = "BACKLOG"
-            row["execution_status"] = (
+            row["execution_status"] = "BACKLOG" if is_unified_template else (
                 "COMPLETED"
                 if completed is not None and completed >= order_quantity
                 else "QUEUED"
@@ -999,6 +1234,19 @@ def _parse_plan_rows(
                 )
     for machine_code, rows in running_candidates.items():
         if len(rows) <= 1:
+            continue
+        if is_unified_template:
+            issues.append(
+                _issue(
+                    code="MULTIPLE_RUNNING_TASKS",
+                    message=f"机台 {machine_code} 同时存在多个生产中任务，请只保留一个。",
+                    sheet_name=sheet_name,
+                    source_row=rows[1]["source"]["source_row"],
+                    field_name="execution_status",
+                    raw_value=machine_code,
+                    blocking=True,
+                )
+            )
             continue
         for row in rows[1:]:
             row["execution_status"] = "QUEUED"
@@ -1156,6 +1404,7 @@ def parse_canonical_workbook(
             "data_end_row": 1_000_000,
             "row_layout": profile.recognition_config["row_layout"],
         }
+    contract_blocked = _validate_template_contract(reader, profile, roles, issues)
     _profile_title_warning(reader, profile, current_sheet, issues)
     if mapping_blockers:
         for blocker in mapping_blockers:
@@ -1211,6 +1460,19 @@ def parse_canonical_workbook(
         issues=issues,
         layout_override=layout_override,
     )
+    if (
+        profile.profile_code == "group_unified_plan_v1"
+        and not parsed["scheduled_baseline_tasks"]
+        and not parsed["backlog_orders"]
+    ):
+        issues.append(
+            _issue(
+                code="NO_IMPORT_ROWS",
+                message="统一模板没有可导入的业务行，请从第 6 行开始填写后重新上传",
+                sheet_name=current_sheet,
+                blocking=True,
+            )
+        )
     signature_payload = {
         "profile_family": profile.profile_family,
         "sheet_roles": {
@@ -1242,7 +1504,7 @@ def parse_canonical_workbook(
     blocking_count = sum(bool(item["blocking"]) for item in issues)
     batch_state = (
         "MAPPING_REQUIRED"
-        if mapping_blockers
+        if mapping_blockers or contract_blocked
         else (
             "MASTER_REVIEW_REQUIRED"
             if parsed["master_differences"]

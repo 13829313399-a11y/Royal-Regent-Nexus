@@ -676,6 +676,26 @@ def _new_global_order(
 ) -> InjectionSchedulingOrder:
     completed = _decimal(row.get("completed_quantity"))
     quantity = _decimal(row.get("order_quantity"))
+    evidence_keys = (
+        "mold_no",
+        "required_machine_a_class_evidence",
+        "whole_shot_net_weight_g",
+        "whole_shot_gross_weight_g",
+        "daily_target_quantity",
+        "material_name",
+        "color_name",
+        "color_depth",
+        "required_arm_type",
+        "required_fixture_type",
+        "process_tags_evidence",
+        "material_available_date_evidence",
+        "mold_available_date_evidence",
+    )
+    evidence = {
+        key: row.get(key)
+        for key in evidence_keys
+        if row.get(key) not in (None, "", [])
+    }
     order = InjectionSchedulingOrder(
         id=f"isorder-{uuid4().hex}",
         factory_id=factory_id,
@@ -703,6 +723,14 @@ def _new_global_order(
                 "stable_order_key": row.get("stable_order_key", ""),
                 "profile_id": row["source"].get("profile_id"),
                 "profile_revision": row["source"].get("profile_revision"),
+                "source_mold_no": row.get("mold_no", ""),
+                "required_machine_a": row.get(
+                    "required_machine_a_class_evidence"
+                ),
+                "source_daily_capacity": row.get("daily_target_quantity"),
+                "field_lineage": row["source"].get("field_lineage", {}),
+                "evidence_source": "GROUP_UNIFIED_PLAN_TEMPLATE",
+                **evidence,
             }
         ),
         status="COMPLETED" if completed >= quantity else "BACKLOG",
@@ -1494,7 +1522,11 @@ def apply_takeover_actions(
         if row is None:
             raise HTTPException(status_code=409, detail="对账动作缺少来源规范行")
         mold = molds.get(row.get("mold_no", ""))
-        if row.get("mold_no") and mold is None:
+        uses_unified_template_evidence = (
+            (normalized.get("profile") or {}).get("profile_family")
+            == "group_unified_plan"
+        )
+        if row.get("mold_no") and mold is None and not uses_unified_template_evidence:
             raise HTTPException(status_code=409, detail="来源模具尚未通过主数据审批")
         order = order_cache.get(stable_order)
         if order is None:
@@ -1613,7 +1645,11 @@ def apply_takeover_actions(
             delivery_slack_days=_delivery_slack_days(
                 state.delivery_due_date, row.get("planned_finish", "")
             ),
-            locked=True,
+            locked=(
+                bool(row.get("locked"))
+                if "locked" in row
+                else True
+            ),
             manual_override_reason=f"Imported baseline: {batch.id}",
             active_execution=False,
             import_batch_id=batch.id,

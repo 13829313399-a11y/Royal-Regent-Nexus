@@ -23,6 +23,5 @@ pytesseract
 rapidocr>=3.9.1,<4
 onnxruntime>=1.27,<2
 ortools==9.15.6755
-openai==2.53.0
 httpx2
 pytest

@@ -19,13 +19,9 @@ from app.core.config import settings
 from app.services.document_studio.renderers.office_pdf_renderer import (
     render_docx_to_pdf,
 )
-from app.services.document_tools.contracts import ProcessingMode
-from app.services.document_tools.smart_converters import (
-    convert_pdf_to_excel_smart,
-    convert_pdf_to_word_smart,
-    convert_pdf_translation_smart,
-)
 from app.services.pdf_split import split_pdf
+from app.services.pdf_to_excel import convert_pdf_to_excel
+from app.services.pdf_to_word import convert_pdf_to_word
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_LIVE_DOCUMENT_TESTS") != "1",
@@ -45,56 +41,16 @@ def _fixture(name: str) -> tuple[bytes, str]:
 
 def test_real_text_pdf_to_excel_reopens() -> None:
     data, filename = _fixture("DOCUMENT_LIVE_TEXT_PDF")
-    result = convert_pdf_to_excel_smart(
-        data,
-        filename,
-        settings=settings,
-        mode=ProcessingMode.AUTO,
-    )
+    result = convert_pdf_to_excel(data, filename)
     workbook = load_workbook(BytesIO(result.content))
-    assert len(workbook.worksheets) >= 2
+    assert len(workbook.worksheets) >= 1
 
 
-def test_real_scanned_table_uses_qwen_and_reopens() -> None:
+def test_real_scanned_pdf_to_word_reopens() -> None:
     data, filename = _fixture("DOCUMENT_LIVE_SCAN_TABLE_PDF")
-    result = convert_pdf_to_excel_smart(
-        data,
-        filename,
-        settings=settings,
-        mode=ProcessingMode.QWEN,
-    )
-    load_workbook(BytesIO(result.content))
-    assert result.qwen_page_count >= 1
-    assert result.table_count >= 1
-
-
-def test_real_scanned_pdf_to_word_uses_qwen_and_reopens() -> None:
-    data, filename = _fixture("DOCUMENT_LIVE_SCAN_TABLE_PDF")
-    result = convert_pdf_to_word_smart(
-        data,
-        filename,
-        settings=settings,
-        mode=ProcessingMode.QWEN,
-        output_mode="EDITABLE",
-    )
+    result = convert_pdf_to_word(data, filename)
     Document(BytesIO(result.content))
-    assert result.qwen_page_count >= 1
-
-
-def test_real_scanned_pdf_uses_qwen_mt_and_reopens() -> None:
-    data, filename = _fixture("DOCUMENT_LIVE_SCAN_TRANSLATION_PDF")
-    result = convert_pdf_translation_smart(
-        data,
-        filename,
-        settings=settings,
-        mode=ProcessingMode.QWEN,
-        requested_direction="ZH_TO_EN",
-        layout="TRANSLATED_ONLY",
-        protected_tokens=(),
-        include_editable_docx=False,
-    )
-    assert len(PdfReader(BytesIO(result.content)).pages) >= 1
-    assert result.provider_model == settings.qwen_translation_model
+    assert result.page_count >= 1
 
 
 def test_real_docx_uses_installed_libreoffice_and_reopens() -> None:

@@ -51,19 +51,6 @@ describe('shared tools api', () => {
     })
   })
 
-  it('requires an explicit cloud mode and consent marker', async () => {
-    const post = vi.fn().mockResolvedValue({ data: new Blob(['xlsx']), headers: {} })
-    const api = createSharedToolsApi({ post })
-    const file = new File(['office'], '订单.xlsx')
-
-    await api.translateDocument(file, 'zh_to_en', ['订单'], 'ai_smart_cloud', true)
-
-    const payload = post.mock.calls[0]![1] as FormData
-    expect(payload.get('mode')).toBe('ai_smart_cloud')
-    expect(payload.get('cloud_consent')).toBe('true')
-    expect(payload.get('sheet_names')).toBe('["订单"]')
-  })
-
   it('turns an HTML gateway timeout into a safe Chinese message', async () => {
     const post = vi.fn().mockRejectedValue({
       isAxiosError: true,
@@ -115,54 +102,6 @@ describe('shared tools api', () => {
     const payload = post.mock.calls[0]![1] as FormData
     expect(payload.get('direction')).toBe('en_to_zh')
     expect(payload.get('sheet_names')).toBe('["报价单","生产计划"]')
-  })
-
-  it('uses a strict type-bound Artifact contract without sending the source file twice', async () => {
-    const post = vi.fn().mockResolvedValue({
-      data: new Blob(['translated']),
-      headers: {
-        'x-source-artifact-id': `aiart-${'a'.repeat(32)}`,
-        'x-derived-artifact-id': `aiart-${'b'.repeat(32)}`,
-      },
-    })
-    const upload = vi.fn().mockResolvedValue({
-      id: `aiart-${'a'.repeat(32)}`,
-      content_class: 'DOCUMENT',
-      classification: 'CONFIDENTIAL_BUSINESS',
-      sha256: 'c'.repeat(64),
-    })
-    const api = createSharedToolsApi({ post }, upload)
-    const file = new File(['office'], '订单.docx')
-
-    const result = await api.translateDocument(
-      file,
-      'zh_to_en',
-      undefined,
-      'ai_smart_cloud',
-      true,
-      'huaxing',
-      true,
-    )
-
-    expect(upload).toHaveBeenCalledWith(file, 'huaxing', 'CONFIDENTIAL_BUSINESS')
-    expect(post).toHaveBeenCalledOnce()
-    const [url, payload] = post.mock.calls[0]!
-    expect(url).toBe('/tools/document-translation/artifact')
-    expect((payload as FormData).get('document_file')).toBeNull()
-    expect((payload as FormData).get('artifact_id')).toBe(`aiart-${'a'.repeat(32)}`)
-    expect(JSON.parse(String((payload as FormData).get('cloud_consent_json')))).toEqual({
-      accepted: true,
-      notice_version: 'aliyun-cn-beijing-document-v1',
-      provider: 'qwen',
-      region: 'cn-beijing',
-      classification: 'CONFIDENTIAL_BUSINESS',
-      content_class: 'DOCUMENT',
-      artifact_ids: [`aiart-${'a'.repeat(32)}`],
-    })
-    expect(result).toMatchObject({
-      sourceArtifactId: `aiart-${'a'.repeat(32)}`,
-      derivedArtifactId: `aiart-${'b'.repeat(32)}`,
-    })
   })
 
   it('uploads one PDF and returns download metadata', async () => {

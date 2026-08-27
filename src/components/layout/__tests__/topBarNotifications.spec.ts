@@ -26,6 +26,10 @@ const systemApiMock = vi.hoisted(() => ({
 const mountedWrappers: Array<ReturnType<typeof mount>> = []
 
 vi.mock('vue-router', () => ({
+  RouterLink: {
+    props: ['to'],
+    template: '<a :href="typeof to === `string` ? to : `#`"><slot /></a>',
+  },
   useRoute: () => routeState,
   useRouter: () => ({
     replace: vi.fn(),
@@ -200,9 +204,9 @@ describe('TopBar notifications', () => {
     await flushPromises()
 
     expect(moldingSampleApi.listNotifications).toHaveBeenCalledWith()
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).toContain('1')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).toContain('1')
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
 
     expect(wrapper.text()).toContain('通知中心')
     expect(wrapper.text()).toContain('1 条未读 · 2 项待处理')
@@ -254,8 +258,8 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).toContain('1')
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).toContain('1')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     expect(wrapper.text()).toContain('工程部待办')
     expect(wrapper.text()).not.toContain('生产部待办')
   })
@@ -287,8 +291,8 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).toContain('1')
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).toContain('1')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     expect(wrapper.text()).toContain('经理审核待办')
   })
 
@@ -321,8 +325,8 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).toContain('1')
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).toContain('1')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     expect(wrapper.text()).toContain('历史啤机部门待办')
   })
 
@@ -353,7 +357,7 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
 
     expect(wrapper.text()).toContain('待接单生产任务')
     expect(wrapper.text()).not.toContain('工程部回传')
@@ -390,9 +394,9 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).toContain('2')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).toContain('2')
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('啤办单待主管审核')
@@ -439,8 +443,8 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).toContain('1')
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).toContain('1')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     expect(wrapper.text()).toContain('华兴工程通知')
     expect(wrapper.text()).not.toContain('华登工程通知')
     expect(wrapper.text()).not.toContain('华兴啤机通知')
@@ -490,8 +494,8 @@ describe('TopBar notifications', () => {
     moldingSampleApiMock.listNotifications.mockResolvedValue(notifications)
     const clerkWrapper = mountTopBar()
     await flushPromises()
-    expect(clerkWrapper.get('button[aria-haspopup="dialog"]').text()).toContain('1')
-    await clerkWrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    expect(clerkWrapper.get('button[aria-label^="通知中心"]').text()).toContain('1')
+    await clerkWrapper.get('button[aria-label^="通知中心"]').trigger('click')
     expect(clerkWrapper.text()).toContain('华兴啤机任务')
     expect(clerkWrapper.text()).not.toContain('华登啤机任务')
     expect(clerkWrapper.text()).not.toContain('华兴工程消息')
@@ -505,8 +509,8 @@ describe('TopBar notifications', () => {
     })
     const supervisorWrapper = mountTopBar()
     await flushPromises()
-    expect(supervisorWrapper.get('button[aria-haspopup="dialog"]').text()).toContain('2')
-    await supervisorWrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    expect(supervisorWrapper.get('button[aria-label^="通知中心"]').text()).toContain('2')
+    await supervisorWrapper.get('button[aria-label^="通知中心"]').trigger('click')
     expect(supervisorWrapper.text()).toContain('华兴啤机任务')
     expect(supervisorWrapper.text()).toContain('华登啤机任务')
     expect(supervisorWrapper.text()).not.toContain('华兴工程消息')
@@ -529,9 +533,9 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).not.toContain('1')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).not.toContain('1')
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     await flushPromises()
 
     expect(moldingSampleApi.listNotifications).toHaveBeenCalledTimes(2)
@@ -557,19 +561,19 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     expect(wrapper.find('[role="dialog"][aria-labelledby="notification-center-title"]').exists()).toBe(true)
 
     document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     await flushPromises()
     expect(wrapper.find('[role="dialog"][aria-labelledby="notification-center-title"]').exists()).toBe(false)
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flushPromises()
     expect(wrapper.find('[role="dialog"][aria-labelledby="notification-center-title"]').exists()).toBe(false)
     await new Promise((resolve) => window.setTimeout(resolve, 0))
-    expect(document.activeElement).toBe(wrapper.get('button[aria-haspopup="dialog"]').element)
+    expect(document.activeElement).toBe(wrapper.get('button[aria-label^="通知中心"]').element)
 
     wrapper.unmount()
   })
@@ -580,7 +584,7 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     await flushPromises()
 
     const heading = wrapper.get('#notification-center-title')
@@ -737,7 +741,7 @@ describe('TopBar notifications', () => {
     const wrapper = mountTopBar()
     await flushPromises()
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     await flushPromises()
 
     const notificationLink = wrapper
@@ -749,9 +753,9 @@ describe('TopBar notifications', () => {
     await flushPromises()
 
     expect(moldingSampleApi.updateNotification).toHaveBeenCalledWith('N-SUPERVISOR-HANDLED', { status: '已读' })
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).not.toContain('1')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).not.toContain('1')
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('0 条未读 · 1 项待处理')
     expect(wrapper.text()).toContain('啤办单待主管审核')
@@ -797,9 +801,9 @@ describe('TopBar notifications', () => {
     await flushPromises()
 
     expect(systemApi.listNotifications).toHaveBeenCalledWith()
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).toContain('1')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).toContain('1')
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('系统通知')
@@ -813,67 +817,12 @@ describe('TopBar notifications', () => {
     await flushPromises()
 
     expect(systemApi.updateNotification).toHaveBeenCalledWith('SYS-REG-1', { status: 'read' })
-    expect(wrapper.get('button[aria-haspopup="dialog"]').text()).not.toContain('1')
+    expect(wrapper.get('button[aria-label^="通知中心"]').text()).not.toContain('1')
 
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('0 条未读 · 1 项待处理')
     expect(wrapper.text()).toContain('新用户注册待审批')
   })
 
-  it('requires an explicit receiving-channel acknowledgement for AI operational alerts', async () => {
-    seedAccount({
-      roles: ['系统管理员'],
-      permissions: ['system:user_manage'],
-      factoryScopes: ['*'],
-    })
-    const alert = createSystemNotification({
-      id: 'AI-ALERT-UI-1',
-      title: 'AI Provider 连续失败',
-      type: 'ai_operational_alert',
-      target_user_id: 'user-test',
-      target_permission: '',
-      target_factory_id: '',
-      target_department: '',
-      payload: {
-        schema_version: 'ai-operational-alert-v1',
-        alert_type: 'PROVIDER_FAILURE',
-        observed_value: 5,
-        threshold_value: 3,
-        metadata_only: true,
-      },
-    })
-    const registration = createSystemNotification({
-      id: 'SYS-REG-NO-MANUAL-ACK',
-      title: '普通注册通知',
-    })
-    systemApiMock.listNotifications.mockResolvedValue([alert, registration])
-    systemApiMock.updateNotification.mockResolvedValue({
-      ...alert,
-      status: 'handled',
-      read_at: '2026-07-18 16:01:00',
-      handled_at: '2026-07-18 16:02:00',
-    })
-
-    const wrapper = mountTopBar()
-    await flushPromises()
-    await wrapper.get('button[aria-haspopup="dialog"]').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('2 条未读 · 2 项待处理')
-    expect(wrapper.text()).toContain('AI 运维告警')
-    expect(wrapper.findAll('button').filter((button) => button.text() === '确认已处理')).toHaveLength(1)
-
-    await wrapper.get('button[aria-label="确认已处理：AI Provider 连续失败"]').trigger('click')
-    await flushPromises()
-
-    expect(systemApi.updateNotification).toHaveBeenCalledWith('AI-ALERT-UI-1', { status: 'handled' })
-    expect(wrapper.text()).toContain('1 条未读 · 1 项待处理')
-    expect(wrapper.text()).toContain('已处理')
-
-    const pendingTab = wrapper.findAll('button').find((button) => button.text().includes('待处理'))
-    await pendingTab?.trigger('click')
-    expect(wrapper.text()).not.toContain('AI Provider 连续失败')
-    expect(wrapper.text()).toContain('普通注册通知')
-  })
 })

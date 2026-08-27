@@ -132,6 +132,8 @@ class InjectionSchedulingWorkbenchJobChange(BaseModel):
         "shift_target_quantity",
         "planned_start",
         "planned_finish",
+        "machine_id",
+        "sequence_no",
         "locked",
         "manual_override_reason",
         "warehouse_text",
