@@ -85,7 +85,7 @@ export interface CartonOrderCreateRequest {
   product_order_quantity: number
   order_date: string
   due_date: string
-  status: 'CONFIRMED'
+  status: 'PENDING_SUPPLIER'
   note: string
   lines: Array<{
     packaging_type: string
@@ -187,6 +187,29 @@ export interface CartonInventoryMovementCreateRequest {
   location: string
   document_no: string
   reason: string
+}
+
+export interface CartonInventoryFlowSummaryResponse {
+  business_date: string
+  customer_code: string
+  customer_name: string
+  movement_type: 'INBOUND' | 'OUTBOUND'
+  document_count: number
+  line_count: number
+  quantity: string
+}
+
+export interface CartonAuditEventResponse {
+  sequence: number
+  id: string
+  factory_id: string
+  event_type: string
+  entity_type: string
+  entity_id: string
+  detail: Record<string, unknown>
+  actor_user_id: string
+  actor_name: string
+  created_at: string
 }
 
 export interface CartonClosingResponse {
@@ -379,9 +402,21 @@ export const cartonProcurementApi = {
     })
     return response.data
   },
-  async listOrders(factoryId: string) {
+  async listOrders(factoryId: string, filters: {
+    status?: string
+    dueFrom?: string
+    dueTo?: string
+    search?: string
+  } = {}) {
     const response = await http.get<{ items: CartonOrderResponse[] }>('/carton-procurement/orders', {
-      params: { factory_id: factoryId, limit: 200 },
+      params: {
+        factory_id: factoryId,
+        status_filter: filters.status ?? '',
+        due_from: filters.dueFrom ?? '',
+        due_to: filters.dueTo ?? '',
+        search: filters.search ?? '',
+        limit: 200,
+      },
     })
     return response.data.items
   },
@@ -407,6 +442,47 @@ export const cartonProcurementApi = {
     )
     return response.data
   },
+  async appendOrder(
+    factoryId: string,
+    order: CartonOrderResponse,
+    additionalQuantity: number,
+    reason: string,
+    dueDate?: string,
+  ) {
+    const response = await http.post<CartonOrderResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/append`,
+      {
+        factory_id: factoryId,
+        expected_revision: order.revision,
+        additional_quantity: additionalQuantity,
+        reason,
+        due_date: dueDate || null,
+      },
+    )
+    return response.data
+  },
+  async returnOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
+    const response = await http.post<CartonOrderResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/return`,
+      {
+        factory_id: factoryId,
+        expected_revision: order.revision,
+        reason,
+      },
+    )
+    return response.data
+  },
+  async bulkCancelOrders(factoryId: string, orders: CartonOrderResponse[], reason: string) {
+    const response = await http.post<CartonOrderResponse[]>('/carton-procurement/orders/bulk-cancel', {
+      factory_id: factoryId,
+      reason,
+      items: orders.map((order) => ({
+        order_no: order.order_no,
+        expected_revision: order.revision,
+      })),
+    })
+    return response.data
+  },
   async uploadHistoryOrders(factoryId: string, file: File) {
     const form = new FormData()
     form.append('file', file)
@@ -421,6 +497,14 @@ export const cartonProcurementApi = {
     const response = await http.get<Blob>(
       `/carton-procurement/orders/${encodeURIComponent(orderNo)}/purchase-order.xlsx`,
       { params: { factory_id: factoryId }, responseType: 'blob', timeout: 30_000 },
+    )
+    return response.data
+  },
+  async exportPurchaseOrders(factoryId: string, orderNos: string[]) {
+    const response = await http.post<Blob>(
+      '/carton-procurement/orders/purchase-orders.zip',
+      { factory_id: factoryId, order_nos: orderNos },
+      { responseType: 'blob', timeout: 60_000 },
     )
     return response.data
   },
@@ -442,6 +526,30 @@ export const cartonProcurementApi = {
     const response = await http.post<CartonInventoryMovementResponse>(
       '/carton-procurement/inventory/movements',
       payload,
+    )
+    return response.data
+  },
+  async createInventoryMovementsBulk(payload: {
+    factory_id: string
+    document_no: string
+    reason: string
+    items: Array<{
+      order_line_id: string | null
+      reference_movement_id: string | null
+      quantity: number
+      location: string
+    }>
+  }) {
+    const response = await http.post<CartonInventoryMovementResponse[]>(
+      '/carton-procurement/inventory/movements/bulk',
+      payload,
+    )
+    return response.data
+  },
+  async listInventorySummary(factoryId: string, dateFrom = '', dateTo = '') {
+    const response = await http.get<CartonInventoryFlowSummaryResponse[]>(
+      '/carton-procurement/inventory/summary',
+      { params: { factory_id: factoryId, date_from: dateFrom, date_to: dateTo } },
     )
     return response.data
   },
@@ -585,5 +693,23 @@ export const cartonProcurementApi = {
       resolution_note: resolutionNote,
     })
     return response.data
+  },
+  async listAuditEvents(factoryId: string, filters: {
+    search?: string
+    eventType?: string
+    dateFrom?: string
+    dateTo?: string
+  } = {}) {
+    const response = await http.get<{ items: CartonAuditEventResponse[] }>('/carton-procurement/audit-events', {
+      params: {
+        factory_id: factoryId,
+        search: filters.search ?? '',
+        event_type: filters.eventType ?? '',
+        date_from: filters.dateFrom ?? '',
+        date_to: filters.dateTo ?? '',
+        limit: 500,
+      },
+    })
+    return response.data.items
   },
 }
