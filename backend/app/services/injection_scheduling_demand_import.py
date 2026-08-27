@@ -22,7 +22,6 @@ from app.models.injection_scheduling_shared import (
     InjectionSchedulingMoldReservation,
     InjectionSchedulingPhysicalMoldAsset,
 )
-from app.schemas.ai.workbook import AIInjectionWorkbookMappingV1
 from app.services.injection_scheduling_canonical import _convert
 from app.services.injection_scheduling_excel import (
     _clean_text,
@@ -346,93 +345,6 @@ def _find_document(
     return sheet_name, header_row, mapping, columns, meta
 
 
-def _find_document_from_layout(
-    reader: _WorkbookReader,
-    profile: ImportProfile,
-    layout: AIInjectionWorkbookMappingV1,
-) -> tuple[str, int, list[dict[str, Any]], dict[str, str], dict[str, Any]]:
-    sheet_name = layout.source_sheet.sheet_name
-    if sheet_name not in reader.sheet_paths:
-        raise HTTPException(status_code=422, detail="AI 映射引用的需求单 Sheet 不存在")
-    header_rows = set(layout.source_sheet.header_rows)
-    header_cells: dict[str, dict[str, Any]] = {}
-    anchor_refs = {
-        ref
-        for anchor in layout.metadata_anchors
-        for ref in (anchor.label_cell, anchor.value_cell)
-    }
-    anchor_cells: dict[str, dict[str, Any]] = {}
-    for row_number, cells in reader.rows(sheet_name):
-        if row_number in header_rows:
-            for cell in cells.values():
-                header_cells[str(cell.get("reference", ""))] = cell
-        if any(
-            str(cell.get("reference", "")) in anchor_refs for cell in cells.values()
-        ):
-            for cell in cells.values():
-                reference = str(cell.get("reference", ""))
-                if reference in anchor_refs:
-                    anchor_cells[reference] = cell
-        if row_number > max(
-            [
-                *header_rows,
-                *[int("".join(filter(str.isdigit, ref))) for ref in anchor_refs],
-            ]
-        ):
-            break
-    mapping: list[dict[str, Any]] = []
-    columns: dict[str, str] = {}
-    required = {item.canonical_field for item in profile.fields if item.required}
-    rules = {item.canonical_field: item for item in profile.fields}
-    for item in layout.field_mappings:
-        cell = header_cells.get(item.header_cell)
-        raw_header = _cell_text(reader, cell)
-        columns[item.canonical_field] = item.source_column
-        mapping.append(
-            {
-                "rule_id": rules[item.canonical_field].rule_id,
-                "rule_revision": profile.revision,
-                "sheet_role": "ORDER_SOURCE",
-                "sheet_name": sheet_name,
-                "header_row": int("".join(filter(str.isdigit, item.header_cell))),
-                "column": item.source_column,
-                "fallback_column": item.source_column,
-                "raw_header": raw_header,
-                "normalized_header": normalize_header(raw_header),
-                "canonical_field": item.canonical_field,
-                "converter": item.transformer,
-                "unit": rules[item.canonical_field].unit,
-                "required": item.canonical_field in required,
-                "status": "MAPPED",
-                "mapping_method": "AI_HEADER_CELL",
-                "confidence": "AI",
-                "confidence_score": item.confidence,
-                "confidence_reason": item.reason,
-                "mapping_source": "AI_SKILL",
-                "authority": CANONICAL_FIELD_CATALOG[item.canonical_field].authority,
-                "sample_values": [],
-            }
-        )
-    meta: dict[str, Any] = {}
-    for anchor in layout.metadata_anchors:
-        value_cell = anchor_cells.get(anchor.value_cell)
-        label_cell = anchor_cells.get(anchor.label_cell)
-        if value_cell is None or label_cell is None:
-            continue
-        value = _convert(reader, value_cell, anchor.transformer)
-        if value in (None, ""):
-            continue
-        meta[anchor.canonical_field] = {
-            "value": value,
-            "source_row": int("".join(filter(str.isdigit, anchor.value_cell))),
-            "cell_ref": anchor.value_cell,
-            "label_cell_ref": anchor.label_cell,
-            "raw_value": value_cell.get("raw_value"),
-            "mapping_method": "AI_METADATA_ANCHOR",
-        }
-    return sheet_name, max(header_rows), mapping, columns, meta
-
-
 def _find_document_from_saved_profile(
     reader: _WorkbookReader,
     profile: ImportProfile,
@@ -523,7 +435,7 @@ def _find_document_from_saved_profile(
             "cell_ref": value_ref,
             "label_cell_ref": label_ref,
             "raw_value": value_cell.get("raw_value"),
-            "mapping_method": "SAVED_AI_METADATA_ANCHOR",
+            "mapping_method": "SAVED_STRUCTURAL_METADATA_ANCHOR",
         }
     return sheet_name, header_row, mapping, columns, meta
 
@@ -848,7 +760,6 @@ def parse_demand_order_workbook(
     *,
     factory_id: str,
     profile: ImportProfile,
-    layout_override: AIInjectionWorkbookMappingV1 | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     source_file_hash = hashlib.sha256(content).hexdigest()
     company_scope_id = _company_scope_id(db, factory_id)
@@ -856,14 +767,7 @@ def parse_demand_order_workbook(
     reader = _WorkbookReader(content)
     issues: list[dict[str, Any]] = []
     try:
-        if layout_override is not None:
-            sheet_name, header_row, mapping, columns, meta = _find_document_from_layout(
-                reader, profile, layout_override
-            )
-        elif profile.recognition_config.get("method") in {
-            "AI_SKILL",
-            "MANUAL_CORRECTION",
-        }:
+        if profile.recognition_config.get("method") == "MANUAL_CORRECTION":
             sheet_name, header_row, mapping, columns, meta = (
                 _find_document_from_saved_profile(reader, profile)
             )
@@ -912,16 +816,10 @@ def parse_demand_order_workbook(
             "termination"
         ) or {}
         for row_number, cells in reader.rows(sheet_name):
-            data_start_row = (
-                layout_override.source_sheet.data_start_row
-                if layout_override is not None
-                else int(saved_source_sheet.get("data_start_row") or header_row + 1)
+            data_start_row = int(
+                saved_source_sheet.get("data_start_row") or header_row + 1
             )
-            data_end_row = (
-                layout_override.source_sheet.data_end_row
-                if layout_override is not None
-                else 1_000_000
-            )
+            data_end_row = 1_000_000
             if row_number < data_start_row:
                 continue
             if row_number > data_end_row:
@@ -929,18 +827,7 @@ def parse_demand_order_workbook(
             row_tokens = {
                 normalize_header(_cell_text(reader, cell)) for cell in cells.values()
             } - {""}
-            if layout_override is not None:
-                termination = layout_override.row_layout.termination
-                footer_tokens = {
-                    normalize_header(item) for item in termination.footer_labels
-                }
-                if (
-                    started
-                    and termination.mode == "FIRST_FOOTER_LABEL"
-                    and row_tokens & footer_tokens
-                ):
-                    break
-            elif saved_termination:
+            if saved_termination:
                 footer_tokens = {
                     normalize_header(item)
                     for item in saved_termination.get("footer_labels", [])
@@ -995,19 +882,7 @@ def parse_demand_order_workbook(
                 canonical.get("product_group_no") or canonical.get("product_name")
             )
             if not mold_no and quantity == 0 and not has_product:
-                if (
-                    layout_override is not None
-                    and layout_override.row_layout.termination.mode
-                    == "EMPTY_IDENTITY_STREAK"
-                ):
-                    empty_identity_streak += 1
-                    if (
-                        started
-                        and empty_identity_streak
-                        >= layout_override.row_layout.termination.empty_identity_streak
-                    ):
-                        break
-                elif saved_termination.get("mode") == "EMPTY_IDENTITY_STREAK":
+                if saved_termination.get("mode") == "EMPTY_IDENTITY_STREAK":
                     empty_identity_streak += 1
                     if started and empty_identity_streak >= int(
                         saved_termination.get("empty_identity_streak") or 5

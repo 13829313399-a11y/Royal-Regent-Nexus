@@ -689,7 +689,7 @@ describe('CartonProcurementView frontend workspace', () => {
       duplicate: false,
       parse_summary: {
         engine: 'rapidocr-pp-ocrv6',
-        parser_version: 'delivery-note-qwen-v4',
+        parser_version: 'delivery-note-local-v5',
         row_count: 18,
         matched_count: 0,
         issue_count: 18,
@@ -728,7 +728,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('SC700145011/3600')
     expect(wrapper.text()).toContain('31.5 × 11.125 × 11.25 in')
     expect(wrapper.text()).toContain('识别诊断详情（OCR 原文、引擎与警告）')
-    expect(wrapper.text()).toContain('delivery-note-qwen-v4')
+    expect(wrapper.text()).toContain('delivery-note-local-v5')
     expect(wrapper.text()).toContain('前往异常中心')
     expect(wrapper.text()).toContain('删除本次导入')
     expect(wrapper.text()).not.toContain('等待导入并复核送货单')
@@ -760,7 +760,7 @@ describe('CartonProcurementView frontend workspace', () => {
       duplicate: false,
       parse_summary: {
         engine: 'rapidocr-pp-ocrv6+pytesseract-fallback',
-        parser_version: 'delivery-note-qwen-v4',
+        parser_version: 'delivery-note-local-v5',
         row_count: 0,
         matched_count: 0,
         issue_count: 0,

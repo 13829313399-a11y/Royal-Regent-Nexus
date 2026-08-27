@@ -64,6 +64,6 @@ Focused backend runs report a `PytestCacheWarning`: `.pytest_cache/v/cache` alre
 - Keep the authenticated `/tools?factory=...` route and the real global shell.
 - Keep existing `/api/tools/pdf-to-excel`, `/api/tools/pdf-to-word`, `/api/tools/pdf-split`, and Office document translation behavior available.
 - Do not manufacture task progress or recent-job records for synchronous calls.
-- Reuse AI Task and AI Artifact later; do not add a parallel task state machine.
-- Keep Document Studio, cloud OCR, and Office renderer feature switches off by default.
-- Do not enable `DOCUMENT_OCR` in the general AI capability router in this batch.
+- Keep request-time tools synchronous; do not add a task state machine or persisted artifact store.
+- Keep Document Studio and the Office renderer feature switches off by default.
+- Keep all document extraction and translation within configured local engines.

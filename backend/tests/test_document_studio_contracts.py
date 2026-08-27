@@ -29,7 +29,7 @@ def _block() -> DocumentBlock:
 
 def test_snapshot_enforces_bbox_page_sequence_confidence_and_no_html() -> None:
     snapshot = DocumentSnapshot(
-        source_artifact_id=f"aiart-{HEX}",
+        source_artifact_id=f"document-{HEX}",
         source_sha256=SHA,
         page_count=1,
         languages=("zh-CN", "en"),

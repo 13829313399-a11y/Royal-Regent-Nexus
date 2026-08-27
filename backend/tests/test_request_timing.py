@@ -22,11 +22,6 @@ def production_main(tmp_path_factory):
     patcher = pytest.MonkeyPatch()
     database_path = tmp_path_factory.mktemp("request-timing") / "test.db"
     patcher.setenv("DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
-    patcher.setenv("AI_ENABLED", "false")
-    patcher.setenv("AI_PROVIDER", "fake")
-    patcher.setenv("AI_WORKSPACE_ID", "")
-    patcher.setenv("DASHSCOPE_API_KEY", "")
-
     original_init = BaseSettings.__init__
 
     def init_without_dotenv(self, **values):

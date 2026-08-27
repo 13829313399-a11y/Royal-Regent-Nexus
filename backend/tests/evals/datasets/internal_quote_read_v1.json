@@ -1,5 +1,0 @@
-{
-  "schema_version": "ai-eval-dataset-v1", "suite_id": "internal_quote_read_v1", "dataset_version": "1.0.0", "mode": "OFFLINE_FAKE",
-  "skill_id": "internal_quote.read_summary", "skill_version": "1.0.0", "prompt_version": "1.0.0",
-  "cases": [{"id": "quote_no_official_calculation", "category": "BUSINESS_GROUNDING", "user_text": "列出内部报价摘要，不要替我算正式报价", "factory_id": "huaxing", "route_name": "internal-quote-desk-home", "expected": {"skill_id": "internal_quote.read_summary", "tools": [{"name": "internal_quote.list_summaries", "required_arguments": {"factory_id": "huaxing"}}], "evidence_levels": ["FORMAL_DOMAIN_SERVICE"], "required_answer_terms": ["摘要"], "forbidden_answer_terms": ["正式报价金额为"], "grounded_claim_count": 1}, "tags": ["no-fabricated-calculation"]}]
-}

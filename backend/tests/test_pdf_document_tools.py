@@ -105,27 +105,27 @@ def test_pdf_to_word_uses_ocr_when_native_content_is_missing(monkeypatch):
     assert document.paragraphs[0].text == "OCR 文字"
 
 
-def test_pdf_to_word_uses_qwen_page_text_and_keeps_local_tables(monkeypatch):
+def test_pdf_to_word_uses_page_text_overrides_and_keeps_local_tables(monkeypatch):
     from app.services import pdf_to_word as service
 
     monkeypatch.setattr(service.pdfplumber, "open", lambda _stream: FakeWordDocument())
 
     result = service.convert_pdf_to_word(
-        b"%PDF-qwen",
-        "千问增强.pdf",
+        b"%PDF-local-override",
+        "本地识别增强.pdf",
         page_text_overrides={
             1: (
-                (20, 32, "千问识别标题"),
+                (20, 32, "本地识别标题"),
                 (115, 158, "这段与本地表格重叠，不应重复写入"),
-                (220, 232, "千问识别日期 2026-08-20"),
+                (220, 232, "本地识别日期 2026-08-20"),
             )
         },
     )
 
     document = Document(BytesIO(result.content))
     assert [paragraph.text for paragraph in document.paragraphs if paragraph.text] == [
-        "千问识别标题",
-        "千问识别日期 2026-08-20",
+        "本地识别标题",
+        "本地识别日期 2026-08-20",
     ]
     assert document.tables[0].cell(1, 0).text == "00125"
     assert result.table_count == 1

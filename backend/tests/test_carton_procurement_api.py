@@ -682,8 +682,8 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         assert first.json()["parse_summary"]["row_count"] == 2
         assert first.json()["parse_summary"]["matched_count"] == 1
         assert first.json()["parse_summary"]["issue_count"] == 1
-        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-qwen-v4"
-        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-qwen-v4"
+        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-local-v5"
+        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-local-v5"
         matched = first.json()["parse_summary"]["rows"][0]
         assert matched["match_status"] == "MATCHED"
         assert matched["order_line_id"] == order["lines"][0]["id"]

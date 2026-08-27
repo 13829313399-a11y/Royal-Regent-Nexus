@@ -277,8 +277,76 @@ CANONICAL_FIELD_CATALOG: dict[str, CanonicalField] = {
             "SOURCE_FACT",
             "unconfirmed source timing evidence",
         ),
+        CanonicalField("priority_code", "text", "SOURCE_FACT", "planning priority"),
+        CanonicalField(
+            "required_machine_a_class_evidence",
+            "number",
+            "SOURCE_FACT",
+            "batch-scoped machine class evidence",
+        ),
+        CanonicalField("color_depth", "text", "SOURCE_FACT", "color transition order"),
+        CanonicalField(
+            "process_tags_evidence",
+            "text",
+            "SOURCE_FACT",
+            "batch-scoped structured process evidence",
+        ),
+        CanonicalField(
+            "material_available_date_evidence",
+            "date",
+            "SOURCE_FACT",
+            "batch-scoped material availability evidence",
+        ),
+        CanonicalField(
+            "mold_available_date_evidence",
+            "date",
+            "SOURCE_FACT",
+            "batch-scoped mold availability evidence",
+        ),
+        CanonicalField(
+            "execution_status",
+            "text",
+            "BASELINE_DECISION",
+            "takeover execution state",
+        ),
+        CanonicalField(
+            "locked", "boolean", "BASELINE_DECISION", "takeover movement boundary"
+        ),
     )
 }
+
+GROUP_UNIFIED_PLAN_HEADERS: tuple[str, ...] = (
+    "行号（自动）",
+    "单号*",
+    "货号",
+    "工模编号*",
+    "产品名称*",
+    "仓库",
+    "订单数量*",
+    "已完成数量",
+    "欠数（自动）",
+    "交货完成期*",
+    "优先级",
+    "模具安数",
+    "整啤净重(g)",
+    "整啤毛重(g)",
+    "标准日产量",
+    "材料",
+    "颜色/色号",
+    "颜色深浅",
+    "单双臂",
+    "夹具",
+    "特殊工艺",
+    "齐料日期",
+    "模具可用日期",
+    "当前机台",
+    "执行状态",
+    "计划开始",
+    "计划完成",
+    "锁定",
+    "备注",
+    "填表检查（自动）",
+)
 
 ALLOWED_CONVERTERS = frozenset(
     {"trim", "identifier", "number", "date", "datetime", "percent", "text"}
@@ -318,7 +386,7 @@ ALLOWED_DOCUMENT_KINDS = frozenset(
     {"DEMAND_ORDER", "PLANNED_SCHEDULE", "SYSTEM_ROUND_TRIP", "MASTER_DATA"}
 )
 ALLOWED_SELECTOR_STRATEGIES = frozenset(
-    {"FIXED_COLUMN_HEADER", "HEADER_ALIAS", "AI_HEADER_CELL"}
+    {"FIXED_COLUMN_HEADER", "HEADER_ALIAS"}
 )
 
 
@@ -636,7 +704,90 @@ def _demand_order_fields() -> tuple[FieldRule, ...]:
     )
 
 
+def _group_unified_plan_fields() -> tuple[FieldRule, ...]:
+    p = "group_unified_plan_v1"
+    return (
+        _field(p, "order_no", "B", ("单号*",), "identifier", required=True),
+        _field(p, "item_no", "C", ("货号",), "identifier"),
+        _field(p, "mold_no", "D", ("工模编号*",), "identifier", required=True),
+        _field(p, "product_name", "E", ("产品名称*",), "text", required=True),
+        _field(p, "warehouse_text", "F", ("仓库",), "identifier"),
+        _field(p, "order_quantity", "G", ("订单数量*",), "number", required=True),
+        _field(p, "completed_quantity", "H", ("已完成数量",), "number"),
+        _field(
+            p,
+            "delivery_due_date",
+            "J",
+            ("交货完成期*",),
+            "date",
+            required=True,
+        ),
+        _field(p, "priority_code", "K", ("优先级",), "text"),
+        _field(
+            p,
+            "required_machine_a_class_evidence",
+            "L",
+            ("模具安数",),
+            "number",
+        ),
+        _field(p, "whole_shot_net_weight_g", "M", ("整啤净重(g)",), "number", unit="g"),
+        _field(p, "whole_shot_gross_weight_g", "N", ("整啤毛重(g)",), "number", unit="g"),
+        _field(p, "daily_target_quantity", "O", ("标准日产量",), "number", unit="pieces/day"),
+        _field(p, "material_name", "P", ("材料",), "text"),
+        _field(p, "color_name", "Q", ("颜色/色号",), "text"),
+        _field(p, "color_depth", "R", ("颜色深浅",), "text"),
+        _field(p, "required_arm_type", "S", ("单双臂",), "text"),
+        _field(p, "required_fixture_type", "T", ("夹具",), "text"),
+        _field(p, "process_tags_evidence", "U", ("特殊工艺",), "text"),
+        _field(p, "material_available_date_evidence", "V", ("齐料日期",), "date"),
+        _field(p, "mold_available_date_evidence", "W", ("模具可用日期",), "date"),
+        _field(p, "machine_code", "X", ("当前机台",), "identifier"),
+        _field(p, "execution_status", "Y", ("执行状态",), "text"),
+        _field(p, "planned_start", "Z", ("计划开始",), "datetime"),
+        _field(p, "planned_finish", "AA", ("计划完成",), "datetime"),
+        _field(p, "locked", "AB", ("锁定",), "text"),
+        _field(p, "remark", "AC", ("备注",), "text"),
+    )
+
+
 BUILTIN_IMPORT_PROFILES: tuple[ImportProfile, ...] = (
+    ImportProfile(
+        profile_id="isprofile-group-unified-plan-v1",
+        profile_code="group_unified_plan_v1",
+        profile_family="group_unified_plan",
+        revision=1,
+        name="集团统一注塑排产导入模板 v1",
+        factories=("huaxing", "huakang-a", "huakang-b"),
+        status="ACTIVE",
+        sheet_roles=(SheetRoleRule("CURRENT_PLAN", ("计划导入",), True, 5),),
+        fields=_group_unified_plan_fields(),
+        machine_adapter="system_master_only",
+        mold_adapter="system_master_only",
+        dynamic_shift_start="ZZZ",
+        dynamic_shift_end="ZZZ",
+        quantity_scope="SPLIT_CUMULATIVE",
+        renderer_code="system_standard_v1",
+        source_namespace_id="group-unified-plan:v1",
+        recognition_config={
+            "template_contract": {
+                "version_cell": "B2",
+                "version": "RR-ISP-1.0",
+                "header_row": 5,
+                "data_start_row": 6,
+                "last_column": "AD",
+                "headers": list(GROUP_UNIFIED_PLAN_HEADERS),
+            },
+            "row_layout": {
+                "layout_type": "FLAT_ROWS",
+                "machine_code_strategy": "CURRENT_ROW",
+                "machine_header_rule": "NONE",
+                "backlog_rule": "BUSINESS_ROW_WITHOUT_MACHINE",
+                "queue_sequence": "SOURCE_ROW_ASC",
+                "task_identity_fields": ["order_no", "mold_no", "product_name"],
+            },
+            "source_sheet": {"data_start_row": 6},
+        },
+    ),
     ImportProfile(
         profile_id="isprofile-huaxing-daily-v1",
         profile_code="huaxing_daily_plan_v1",

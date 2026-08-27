@@ -14,7 +14,6 @@ from app.schemas.document_studio import (
     DocumentTable,
 )
 from app.services import pdf_translation as local_pdf_translation
-from app.services.document_studio.extractors.qwen_ocr import cloud_ocr_page_numbers
 from app.services.document_studio.pipelines.pdf_translation import translate_snapshot
 from app.services.document_studio.renderers import office_pdf_renderer
 from docx import Document
@@ -34,7 +33,7 @@ def _pdf_bytes(page_count: int = 1) -> bytes:
 
 def _snapshot(text: str = "订单 PO-001 数量 0012") -> DocumentSnapshot:
     return DocumentSnapshot(
-        source_artifact_id="aiart-" + "a" * 32,
+        source_artifact_id="document-" + "a" * 32,
         source_sha256="b" * 64,
         page_count=1,
         pages=(
@@ -83,7 +82,7 @@ def _table_snapshot() -> DocumentSnapshot:
         ),
     )
     return DocumentSnapshot(
-        source_artifact_id="aiart-" + "a" * 32,
+        source_artifact_id="document-" + "a" * 32,
         source_sha256="b" * 64,
         page_count=1,
         pages=(
@@ -106,11 +105,6 @@ def _table_snapshot() -> DocumentSnapshot:
             ),
         ),
     )
-
-
-def test_qwen_page_selection_is_a_small_request_time_heuristic() -> None:
-    assert cloud_ocr_page_numbers(_snapshot()) == ()
-    assert cloud_ocr_page_numbers(_snapshot(), force_all_pages=True) == (1,)
 
 
 def test_pdf_translation_preserves_codes_and_numbers() -> None:

@@ -77,7 +77,7 @@ def convert_pdf_translation(
     try:
         snapshot = snapshot_override or extract_local_snapshot(
             data=pdf_bytes,
-            source_artifact_id=f"aiart-{source_sha256[:32]}",
+            source_artifact_id=f"document-{source_sha256[:32]}",
             source_sha256=source_sha256,
         )
         translated = translate_snapshot(

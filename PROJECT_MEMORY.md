@@ -27,7 +27,7 @@ The main implemented or partially implemented domains are:
 - Huaxing BuzzBee, Dickie, Caixing, EDU, 360, Yinhui, SEASONS, Maxx, Shushupapa and Disney; Huadeng Casdon, Jakks, Simba, Spin and Spin Master; Huakang A 360, Green Toys and HeadStart; plus Huakang C INDEX, JAZAWARES/JAZWARES, MAXX, STROTTMAN and JP customer-order preview and schedule export
 - Carton-mark comparison
 - Indonesia invoice reconciliation
-- Injection-scheduling backend compatibility for Profile import, plan-aware takeover and continuation scheduling; the production card remains visible while its frontend is rebuilt
+- Injection-scheduling fixed-template workbench, Profile import, plan-aware takeover and continuation scheduling
 
 The intended Customer Order Center boundary is to own original purchase orders, normalized order facts, validation, confirmation, immutable versions and source lineage, then publish confirmed demand to PMC. Detailed material planning, workshop scheduling, inventory execution and shipping execution belong to downstream modules and should appear in the order center only as summaries or links.
 
@@ -39,33 +39,8 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Production packaging: separate backend and frontend container images, PostgreSQL, and Nginx for the web application.
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
-- The repository has a default-off AI boundary with deterministic Fake and Qwen OpenAI-compatible
-  Responses providers. Qwen requests always use `store=false`; endpoints are derived from a validated
-  region and Workspace identifier. The login-protected `/api/ai/responses` Orchestrator carries the
-  middleware-owned Request ID through versioned SSE and metadata-only logs, enforces server-owned
-  policy, limits, timeout/cancellation and one terminal event, and supports bounded replay of registered
-  read-only custom tools. Tool discovery and execution both recheck the canonical IAM decision and the
-  verified page/tool-group scope. Injection Scheduling V2 exposes versioned module knowledge, separate
-  PUBLISHED/DRAFT plan context and a paginated formal Backlog summary; tool database sessions are
-  short-lived and self-owned. The frontend has a feature-gated adaptive assistant surface (edge handle,
-  floating/docked desktop window and mobile fullscreen mode), sanitized Markdown presentation, per-turn
-  progress/Evidence/result blocks and a full-page `/workbench/ai` with collapsible conversation rail,
-  resizable inspector and owner-scoped persistent or temporary conversations. Persistent conversations
-  bind an explicit server-owned factory/module/route context; continuation rechecks the stored binding,
-  current IAM and selected entity instead of accepting a client-supplied page hint. Persistent history is
-  assembled on the server and current IAM is rechecked before bodies or Evidence references are returned;
-  temporary conversations store no user/assistant body. These UI/context changes are independently
-  default-off in repository configuration and opt-in in `backend/local-ai.env.example`.
-  Production Nginx disables buffering for the SSE route. AI-specific database state now exists in
-  `ai_conversations`, `ai_messages`, `ai_conversation_summaries`, `ai_tasks`, `ai_task_steps`,
-  `ai_task_events`, `ai_guard_leases`, `ai_guard_request_events`, `ai_guard_daily_budgets`,
-  `ai_guard_disable_states`, `ai_action_confirmations` and
-  `ai_conversation_context_bindings`, and the
-  only consequential AI write path is the default-off `apply_preview_run` confirmation/execute flow that
-  applies a selected scheduling run to DRAFT only; it never Publishes or Rolls Back. Vision code is present
-  behind Pilot, consent and configuration boundaries, but it is not production-ready until the recorded
-  TLS, Secure-cookie, secret-rotation and field gates pass.
-- Alembic has one current head: `20260825_0083`.
+- The former AI assistant, Workbench, Provider integration, cloud document enhancement, background Tasks, Artifacts, Vision, Skills, Prompts, controlled actions, operational alerts and scheduling layout inference have been removed. No `/api/ai/*` or `/workbench/ai` route remains. Historical Alembic revisions are retained only to preserve upgrade-chain continuity; migration `20260826_0084` removes their runtime tables and alert rows.
+- Alembic has one current head: `20260826_0084`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -237,7 +212,7 @@ The PMC / warehouse module catalog exposes `/modules/pmc-warehouse/carton-procur
 
 Migration `20260805_0050` adds the persistent carton supplier, order/header-line, import-batch, receipt/header-line, inventory-movement, month-end-closing and audit tables plus the initial six `carton_procurement:*` permissions. The authenticated `/api/carton-procurement` API enforces factory scope and pagination, uses the fixed supplier record for each factory, keeps formal order creation human-triggered, and creates exactly one inbound inventory movement per receipt line only after a human confirms the receipt. Effective receipt equals received minus damaged, rejected and other unusable quantities; partial receipts leave an order incomplete. Inventory history is append-only through normal API flows, with corrections recorded as adjustment or reversal movements, and locked closing periods reject further inventory postings. Month-end closing uses draft, pending, confirmed and locked states and stores a customer-period-currency snapshot. Migration `20260810_0064` adds the persisted closing currency, backfills single-currency legacy closings from their source inventory movements without changing locked quantities, amounts or status, rejects ambiguous mixed-currency legacy snapshots, and makes future closing generation aggregate each customer and currency separately.
 
-Migration `20260805_0051` adds factory-scoped persisted import exceptions and the seventh permission, `carton_procurement:exception_manage`. Weekly schedule and delivery-note imports now parse supported `.xlsx`, `.xlsm` and `.xls` header variants into structured previews. When the server-side Qwen document/vision provider is configured, delivery-note images use Qwen vision first with a strict, no-storage JSON contract; an unavailable, timed-out or invalid provider response automatically falls back to local OCR and records that fallback in the batch warning. Dongkang delivery-note photos use the same four-column business contract regardless of engine: the first column is split into contract number plus item number, the second into paper-item type plus paper quality, the third is the specification, and the fourth is delivered carton quantity; the page-level DN number remains receipt metadata and never becomes an order row or matching identifier. The local profile accepts `.heic`/`.heif` phone originals through `pillow-heif`, corrects sideways photos, keeps rows with an unreadable order cell as explicit review rows, and narrows multi-line contracts by paper quality and normalized dimensions before paper type. Import batches retain file identity metadata, SHA-256 fingerprint and structured parse summary rather than treating the uploaded source file as authoritative business data. Rows are matched to human-created carton orders using normalized contract and item identifiers, then paper type and paper quality where needed. Missing orders, quantity differences and ambiguous matches create persisted exception work items. Duplicate fingerprints restore the original batch and do not duplicate exceptions, but the delivery parser version is part of that identity so a parser upgrade reprocesses the same source instead of restoring a stale zero-row batch. The receipt page always keeps the recognized structured rows visible even when no order matches and exposes OCR raw text, engine, parser version and every warning in an expanded diagnostic panel when parsing or matching fails. Weekly imports never create formal orders, and delivery imports never create receipts or inventory. A delivery-note import may be deleted only while it still requires review, has zero matched formal-order rows and is not referenced by any receipt; deletion removes its derived exception work items, retains an audit event, and makes the same source fingerprint eligible for a clean re-import.
+Migration `20260805_0051` adds factory-scoped persisted import exceptions and the seventh permission, `carton_procurement:exception_manage`. Weekly schedule and delivery-note imports now parse supported `.xlsx`, `.xlsm` and `.xls` header variants into structured previews. Delivery-note images use the local OCR pipeline only; parser failures remain explicit batch warnings and never trigger an external provider call. Dongkang delivery-note photos use the same four-column business contract regardless of engine: the first column is split into contract number plus item number, the second into paper-item type plus paper quality, the third is the specification, and the fourth is delivered carton quantity; the page-level DN number remains receipt metadata and never becomes an order row or matching identifier. The local profile accepts `.heic`/`.heif` phone originals through `pillow-heif`, corrects sideways photos, keeps rows with an unreadable order cell as explicit review rows, and narrows multi-line contracts by paper quality and normalized dimensions before paper type. Import batches retain file identity metadata, SHA-256 fingerprint and structured parse summary rather than treating the uploaded source file as authoritative business data. Rows are matched to human-created carton orders using normalized contract and item identifiers, then paper type and paper quality where needed. Missing orders, quantity differences and ambiguous matches create persisted exception work items. Duplicate fingerprints restore the original batch and do not duplicate exceptions, but the delivery parser version is part of that identity so a parser upgrade reprocesses the same source instead of restoring a stale zero-row batch. The receipt page always keeps the recognized structured rows visible even when no order matches and exposes OCR raw text, engine, parser version and every warning in an expanded diagnostic panel when parsing or matching fails. Weekly imports never create formal orders, and delivery imports never create receipts or inventory. A delivery-note import may be deleted only while it still requires review, has zero matched formal-order rows and is not referenced by any receipt; deletion removes its derived exception work items, retains an audit event, and makes the same source fingerprint eligible for a clean re-import.
 
 Migration `20260811_0065` adds `INSPECTION_SCHEDULE` import batches and a persisted import profile so the same source can be recalculated with a different advance-day rule without colliding with an earlier batch. Inspection reminders classify completed orders as ready, open orders as upcoming, due soon or overdue, and unmatched rows as missing or ambiguous; actionable results are copied into the existing exception center with the carton department as owner.
 
@@ -253,9 +228,9 @@ The authenticated shared tool center is available at `/tools?factory=<factory-id
 
 The shared tool center uses one `智能文档工作台` shell with five primary tabs and a `tool` query value: PDF-to-Excel, PDF-to-Word, Word-to-PDF, PDF translation and PDF split. Its main surface is a single-file request/response flow with five states (`IDLE`, `FILE_SELECTED`, `RUNNING`, `SUCCESS`, `ERROR`), compact upload, source/result preview, cancellable processing, stable error code/action copy and an explicit result-download button; it no longer exposes Document Job history, Task polling, Artifact lineage or automatic download. The frontend reads `/api/tools/capabilities` instead of hard-coding availability, and `/api/tools/diagnostics` exposes only administrator-safe runtime status. The global shell and factory context remain unchanged.
 
-Document Studio has no new database table or migration. The five `/api/tools/*` routes execute synchronously and do not depend on AI Pilot, Agent, Task, Artifact, Worker or ClamAV. Its former Document Job API/UI, review flow, six-step Task Tool, five dedicated Skills/Prompts and signed-file Broker runtime have been retired; shared AI Task/Artifact/Skill infrastructure remains intact, while the historical database tables and Alembic revisions stay in place for one version cycle. PDF-to-Excel, PDF-to-Word and PDF translation accept `AUTO`, `LOCAL` or `QWEN`; Word-to-PDF and PDF split intentionally support deterministic local processing only. Qwen access is backend-only and environment-driven: `qwen3.5-ocr` receives rendered PDF pages as Base64 Data URLs, `qwen3.7-plus` returns strictly validated non-thinking JSON for table reconstruction, and Qwen-MT uses its translation-specific `translation_options`. `QWEN` means all applicable pages use the configured provider; `AUTO` selects Qwen only for scanned or low-confidence pages. A requested Qwen contribution that fails is returned as a stable failure instead of silently claiming a local result as AI-enhanced. Layout-preserving PDF-to-Word is a page-faithful image-based DOCX and therefore rejects `QWEN` as not applicable; editable mode can consume Qwen page text.
+Document Studio has no domain database table or background workflow. The five `/api/tools/*` routes execute synchronously with local engines only and do not persist source files, generated files, translation text or processing history. PDF-to-Excel and PDF-to-Word use local extraction; PDF translation uses the configured offline model; Word-to-PDF uses headless LibreOffice; PDF split uses pypdf. Public processing modes are limited to `AUTO` and `LOCAL`.
 
-The underlying shared tool APIs provide authenticated request-time processing without persisting source files, generated files, translation text or processing history. `POST /api/tools/pdf-to-excel` turns strict Qwen table JSON directly into `.xlsx`, preserves leading zeroes as text, merges declared cross-page continuations and visibly annotates low-confidence cells; local extraction remains available. `POST /api/tools/pdf-to-word` supports editable and layout-preserving output. `POST /api/tools/word-to-pdf` validates the OOXML ZIP, rejects macros, removes external relationships from a disposable conversion copy, runs real headless LibreOffice with a unique profile and reports missing fonts as warnings rather than blocking otherwise valid output. `POST /api/tools/pdf-translation` supports Qwen-MT glossary, translation memory and domain hints, plus the existing offline translation mode, and can return translated-only, side-by-side or stacked PDF with optional editable DOCX. `POST /api/tools/pdf-split` emits one PDF per page or per validated range. Input size, PDF page count, temporary-file lifetime, provider enablement, model names and timeouts are environment-driven; MIME/signature, safe ZIP, macro, decompression and result validation remain mandatory. The separate `/api/tools/document-translation` Office compatibility route remains available. Every request-time tool creates a separate output without overwriting the upload.
+The APIs preserve leading zeroes, validate MIME/signature and file structure, reject macros and unsafe OOXML relationships where applicable, isolate disposable conversion files and never overwrite the upload. `/api/tools/capabilities` and the administrator-only diagnostics endpoint expose only local-engine availability.
 
 ### Carton Mark and Indonesia Invoice
 
@@ -263,13 +238,15 @@ Carton-mark now has a factory-scoped persistent template library. The carton/PMC
 
 Migration `20260825_0083` persists carton-mark manual-release reason, reviewer, time and source automatic status, and refuses downgrade while approval evidence exists.
 
+Migration `20260826_0084` retires the removed AI subsystem by deleting its operational-alert notifications and dropping all assistant conversation, task, artifact, guard, feedback, metric and action-confirmation tables. Its downgrade is intentionally blocked because deleted assistant data cannot be reconstructed; production requires a verified pre-migration backup.
+
 Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF inputs for an authenticated user. It is also request-time processing rather than a persisted workflow.
 
-### Injection-Scheduling Backend Compatibility and Frontend Rebuild Boundary
+### Injection-Scheduling Fixed-Template Workbench and Compatibility Boundary
 
-The production-module card and formal route `/modules/production/injection-scheduling?factory=<factory-id>` remain, but the route now renders only a minimal rebuild placeholder. The previous `src/features/injection-scheduling-v2/` front end, its dedicated tests and the mold/machine child routes have been removed. Backend APIs, persistence models, migrations, permissions and existing business data remain intact as compatibility assets; they are not proof of an active user-facing scheduling module. Any replacement front end must start from a newly approved product contract instead of restoring the deleted UI.
+The production-module card and formal route `/modules/production/injection-scheduling?factory=<factory-id>` now render the active fixed-template scheduling workbench under `src/features/injection-scheduling/`. It provides controlled template download, one-dialog preview/confirmation, backlog and machine queues, hard-constraint explanations, drag/reorder/withdraw/lock operations, HEURISTIC suggestion preview/apply and DRAFT publish. The deleted `src/features/injection-scheduling-v2/` front end and mold/machine child routes remain retired and were not restored.
 
-The backend takeover, publish, scheduler, import and Phase 5 contracts below remain compatibility boundaries and are not currently exposed by the production-module route.
+The workbench reuses the existing takeover, publish, scheduler, matching, revision, audit and Phase 5 contracts. It does not expose Profile-governance screens, dedicated mold/machine maintenance pages or device/calendar administration.
 
 
 
@@ -280,9 +257,9 @@ The Phase 0 backend remains the source for factory-scoped machine/mold/rule mast
 
 Import interpretation is now selected through versioned, factory-bound ACTIVE Profiles rather than a global Huaxing worksheet/header/column contract. The built-in `huaxing_daily_plan_v1`, `huakang_a_daily_plan_v1` and `huakang_b_daily_plan_v1` Profiles map their own sheet roles, headers, columns, converters and renderer identities into the same canonical model. The Huakang A Profile recognizes monthly `1月` through `12月` current-plan sheets with row 3 headers, the fixed business columns through `AT`, and the `AU:DJ` dynamic shift grid; machine and mold facts remain system-master-only, and its confirmed plan uses the system-standard renderer. The independent `huakang_b_plan_only_v1` Profile recognizes the current one-Sheet `计划表` variant with row 3 headers and the `AW:DF` shift grid; duplicated A/B machine group titles supply assignment evidence without creating machine masters, so missing authoritative machines remain explicit master-review items. Workbook recognition measures semantic non-empty columns rather than styled-empty XFD tails and allows up to 1,024 semantic columns, so the supplied 514-column Huaxing shift grid and formatted 16,384-column Huakang B tail remain bounded but importable. A RETIRED Profile can be restored to ACTIVE only through the Profile-management permission, an optimistic lifecycle revision, an explicit reason and an audited reactivation; draft proposer/activator separation remains enforced. Embedded workbook machine or mold sheets are candidate source facts unless an explicit factory-master import has been approved. The current Huaxing machine registry is an approved factory-scoped import from the `华兴机器设备` Sheet: `摆放区域 + 机位` determines the canonical `旧N`/`新N` machine code, while model, A-class, power, shot capacity, frame size, clamping force, year, machine type, robot and auxiliary-equipment values remain editable equipment details with their source-row evidence; the three full-electric rows whose raw shot specification is `201CM3` use the approved planning value `201g` while retaining `201CM3` in source evidence. Re-running the importer creates missing machines only and never overwrites clerk edits. For Huaxing legacy mold-master consolidation, `机安` is authoritative for mold machine A-class, robot arm and fixture/suction-cup requirements; `单价` supplies machine A-class only when the mold has no `机安` row, while price always comes from `单价`. Huaxing workbook prices are activated from the `单价` column as factory-owned `CNY` `PER_SHOT` rules with `AS_LISTED` tax treatment and ANY customer/contract applicability; source rows without one active output or with conflicting duplicate prices remain review-required instead of being silently selected. A missing system master enters an independently permissioned `MASTER_REVIEW_REQUIRED` workflow; confirmation never silently creates master data.
 
-Unknown `DEMAND_ORDER` and `PLANNED_SCHEDULE` workbooks now share the versioned `injection_scheduling.workbook_mapping@1.0.0` Skill and one strict mapping schema through the same preview route with `recognition_mode=AUTO|PROFILE|AI`. For unsigned scheduling files, `AUTO` first checks a factory ACTIVE structural template, then the existing deterministic Profiles, and invokes the configured Qwen table model only after an explicit identification/mapping miss; `AI` forces a new Qwen mapping and does not reuse the same-file cache. File selection still avoids AI Artifact, ClamAV, AI Pilot and per-request consent gates. The model receives only a bounded, read-only OOXML Recognition Packet containing multi-row headers, merge metadata, representative machine/business/footer rows, formula/cache state and bounded column summaries. It returns only document kind, Sheet/header/data bounds, flat or machine-group row rules, controlled canonical field mappings, optional document metadata anchors, termination and optional date/shift-grid rules. The backend validates every real Sheet, cell, column, transformer, source SHA and mapping digest before deterministic parsers re-read the original workbook; AI never returns order rows, business IDs, Tasks or schedule dates and never writes or publishes. Structural signatures normalize month Sheet names, month/date values and dynamic day/night grid width so a confirmed new month can reuse the same factory template without another model call. Confirmation automatically saves a validated AI mapping as a factory ACTIVE workbench Profile in the same transaction; a backend mapping-correction request can save the complete observed headers, row bounds and source Sheet as an independent factory ACTIVE `MANUAL_CORRECTION` structural Profile, then rebuilds the preview. The original deterministic Profile remains available for unrelated layouts. This simplified-workbench activation path is audited and does not change the separate legacy Profile proposal/reviewer routes. No database table or migration is added, and cloud mapping remains controlled by `AI_CLOUD_WORKBOOK_MAPPING_ENABLED`.
+The active workbench accepts only the built-in `group_unified_plan_v1` Profile for `RR-ISP-1.0`. Its immutable resource is served from `backend/app/resources/injection_scheduling/unified_injection_plan_v1.xlsx` after SHA-256 verification. `B2`, Sheet `计划导入`, row 5 and all 30 `A:AD` headers are exact contracts; business rows start at row 6, formula-only A/I/AD rows are ignored, and leading-zero identifiers stay text. An empty current-machine cell enters BACKLOG; a system-known machine creates a current-queue baseline even without imported timestamps. System master data remains authoritative, while missing mold master facts may use per-batch Excel evidence stored in lineage without creating or overwriting master data or adding an approval chain. The workbench always sends `recognition_mode=PROFILE`, uses only deterministic fixed-template parsing, and blocks modified versions/headers, invalid enums/quantities, contradictory machine/status/lock values and multiple RUNNING rows on one machine. Confirmation retains source hash/row/field evidence and existing action/revision/idempotency contracts. This workbench path adds no scheduling-domain migration and `SYSTEM_STANDARD_EXPORT_PROFILE` remains unchanged.
 
-Demand-order import is a separate `DEMAND_ORDER` document contract. It recognizes the production-order title and metadata anchors, discovers dynamic headers, preserves raw/displayed cell lineage, and blocks only invalid order facts, ambiguous headers or duplicate fallback order identities at intake. The unified workbook Skill can now supply those header mappings and exact label/value metadata anchors for unfamiliar demand sheets; absent machine columns and a disabled shift grid are valid demand contracts. Row values remain authoritative and document anchors fill only missing customer, source-document, due/order-date and warehouse facts. Valid rows enter the planning DRAFT/BACKLOG before mold enrichment; a missing or ambiguous shared definition/output remains `mold_enrichment_status=PENDING|AMBIGUOUS` and preserves the raw mold number for later resolution. Post-import enrichment resolves company shared definitions, output-spec consensus, factory capability and authorized active CNY price fields directly into auditable order lineage and direct order foreign keys without requiring or fabricating a legacy factory mold or physical asset. A matched definition plus active factory capability is enough for heuristic, CP-SAT and manual-append planning in DRAFT; the solver may use source-row whole-shot weight when an output spec is not yet specific. Physical assets remain optional in DRAFT. When a shared-mold task is published in a factory that has no asset record for that mold, the server creates and binds one factory-owned AVAILABLE default asset, reflecting the normal rule that one mold number means one physical mold; existing asset records always remain authoritative, so maintenance, transfer and additional-copy states are never bypassed. Confirmed demand rows project their source item/mold/product/order/quantity, color, powder, material, daily capacity, whole-shot net weight, total gross weight, sprue ratio, order date, due date and remark into the plan-facing order contract without promoting those values into approved mold master data; source daily capacity is the default plan target, capped by outstanding quantity, footer `下单人` takes precedence as the plan `仓库`, and footer `下单日期` maps to plan `下单期`. Scheduling duration prioritizes the demand row's source daily capacity, then an active calibrated speed model, shared-mold daily capacity and finally the controlled default rate. When a full order exceeds the selected horizon, the preview allocates only the quantity that fits the current window, persists that quantity on the task, and keeps the remaining quantity in DRAFT/BACKLOG for a later window without overwriting the earlier segment. Customer text remains source lineage only, and customer or commercial-price master data is not resolved, frozen or used as a scheduling-import prerequisite. Confirmation is row-selectable and idempotent, creates immutable demand identity/version records, never creates a Task directly and never mutates the execution PUBLISHED plan. Validated AI/manual mappings may become factory ACTIVE structural templates at confirmation/correction, while the older explicit Profile proposal routes retain reviewer activation. `MASTER_DATA` remains deterministic: it recognizes only the controlled `机安`/`模具资料` and `单价`/`价格规则` Sheet roles, and confirmation creates Proposal plus field evidence without activating definitions, assets or rates.
+Demand-order import is a separate `DEMAND_ORDER` document contract. It recognizes the production-order title and metadata anchors, discovers dynamic headers, preserves raw/displayed cell lineage, and blocks only invalid order facts, ambiguous headers or duplicate fallback order identities at intake. absent machine columns and a disabled shift grid are valid demand contracts. Row values remain authoritative and document anchors fill only missing customer, source-document, due/order-date and warehouse facts. Valid rows enter the planning DRAFT/BACKLOG before mold enrichment; a missing or ambiguous shared definition/output remains `mold_enrichment_status=PENDING|AMBIGUOUS` and preserves the raw mold number for later resolution. Post-import enrichment resolves company shared definitions, output-spec consensus, factory capability and authorized active CNY price fields directly into auditable order lineage and direct order foreign keys without requiring or fabricating a legacy factory mold or physical asset. A matched definition plus active factory capability is enough for heuristic, CP-SAT and manual-append planning in DRAFT; the solver may use source-row whole-shot weight when an output spec is not yet specific. Physical assets remain optional in DRAFT. When a shared-mold task is published in a factory that has no asset record for that mold, the server creates and binds one factory-owned AVAILABLE default asset, reflecting the normal rule that one mold number means one physical mold; existing asset records always remain authoritative, so maintenance, transfer and additional-copy states are never bypassed. Confirmed demand rows project their source item/mold/product/order/quantity, color, powder, material, daily capacity, whole-shot net weight, total gross weight, sprue ratio, order date, due date and remark into the plan-facing order contract without promoting those values into approved mold master data; source daily capacity is the default plan target, capped by outstanding quantity, footer `下单人` takes precedence as the plan `仓库`, and footer `下单日期` maps to plan `下单期`. Scheduling duration prioritizes the demand row's source daily capacity, then an active calibrated speed model, shared-mold daily capacity and finally the controlled default rate. When a full order exceeds the selected horizon, the preview allocates only the quantity that fits the current window, persists that quantity on the task, and keeps the remaining quantity in DRAFT/BACKLOG for a later window without overwriting the earlier segment. Customer text remains source lineage only, and customer or commercial-price master data is not resolved, frozen or used as a scheduling-import prerequisite. Confirmation is row-selectable and idempotent, creates immutable demand identity/version records, never creates a Task directly and never mutates the execution PUBLISHED plan. Explicitly reviewed Profile proposals retain their governed reviewer activation path. `MASTER_DATA` remains deterministic: it recognizes only the controlled `机安`/`模具资料` and `单价`/`价格规则` Sheet roles, and confirmation creates Proposal plus field evidence without activating definitions, assets or rates.
 
 Shared mold identity is company-scoped while physical mold assets, movements, reservations and capability records remain factory-aware. Company visibility is not proof that a mold is schedulable in the selected factory. Rate rules have explicit owner and applicability scopes; missing scope is never treated as a wildcard and no production price is seeded by migration. Master-data and price changes use proposal/approval permissions with proposer/approver separation. Physical-asset conflicts are rechecked when tasks are created, moved, auto-scheduled or published. Auto-schedule previews persist expiring TENTATIVE holds for new tasks and apply them as ACTIVE reservations; cancel/completion releases them, and signed exports retain the physical asset and copy lineage. Legacy candidates remain `LEGACY_UNVERIFIED` until a locked activation transaction creates one LegacyMoldCopyBinding and reservations for all unambiguous unfinished legacy tasks.
 
@@ -379,7 +356,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Migration `20260809_0059` adds demand-order import state and the company/shared-mold plus factory physical-asset model; it intentionally seeds company membership only and no commercial rates. Migration `20260809_0060` adds conservative rollout policies for all six factories and physical-asset assignment lineage. Compatibility migration `20260810_0061` follows the remote customer-order `0059` plus injection branch and conditionally supplies the customer-order audit columns missing from already-migrated local databases. Local SQLite was backed up and migrated through the injection `0060` branch with integrity, foreign-key, schema-gate and `/health` verification; it still needs the compatibility-head upgrade, and production still requires its own verified backup, migration and real-workbook reconciliation.
 - Repository configuration examples are not proof of the live production authorization mode, secrets, migration state or running revision. Verify live state before any production action.
 - Production Compose injects only the three required `POSTGRES_*` variables into PostgreSQL; the API
-  alone receives the complete untracked `.env.production`, including any future AI Provider secret.
+  alone receives the complete untracked `.env.production`.
 
 ## 8. Active Known Issues
 
@@ -391,314 +368,8 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Explicitly identified Indonesia customer-order contract and schedule processing is outside the current BuzzBee parser contract; WMU identifies a supported mainland Walmart US contract and must not be treated as Indonesia.
 - Many module cards and dashboard metrics still use demonstration data and need explicit replacement plans before they can be treated as operational.
 - The repository alone cannot confirm the live production `AUTHZ_MODE`, permission-write posture, database head or deployed application revision.
-- AI is implemented through the B8 Pilot safety boundary while retaining the B6B read-only text/tool
-  contract and optional B7B image-understanding path. B8 uses default-deny server-side user and
-  factory allowlists, canonical domain authorization, per-user process-local concurrency/RPM/daily
-  budget guards, bounded Provider output, metadata-only observability and a runtime disable marker.
-  The explicit Pilot user list is bounded to 128 unique IDs; factories remain limited to the six
-  canonical IDs. Production examples remain disabled with empty allowlists, and the readiness path
-  fails closed unless the fixed control path, external TLS assertion and Qwen Beijing Provider
-  contract are valid. Pilot releases use a single API instance until limiter/budget state moves to
-  shared atomic storage.
-  Contract tests cover Request-ID correlation, strict context/tool scope, canonical-deny enforcement,
-  result limits, stable SSE, provider/tool failure, timeout, abnormal EOF, cancellation and session
-  cleanup. Non-sensitive live Qwen contracts have passed for B2 text, the B7A Data URL/function
-  compatibility path and the B7B sanitizer-to-Provider path with `qwen3.7-plus`, streaming and
-  `store=false`. On 2026-08-11 the user explicitly approved sending the current request's selected
-  screenshots/business images to the Aliyun Bailian Beijing service. B7B still requires versioned
-  per-request consent, treats images/OCR as untrusted `USER_PROVIDED` data, strips metadata, disables
-  tools and makes only one Provider call. The UI discloses that `store=false` does not mean zero
-  provider retention. Vision remains default-off in examples and image requests must bind to a
-  server-verified non-empty Pilot factory. The live server currently runs a user-directed temporary
-  HTTP/development-mode rollout for approved active accounts across all six factories, including
-  Vision, before the public TLS edge is ready. This does not pass production readiness: the browser
-  to Nexus hop, login and image upload remain plaintext, `AI_PILOT_PUBLIC_TLS_VERIFIED` must remain
-  false, and the exposed Provider secret still requires rotation. AI availability must not be treated
-  as business-domain authorization.
-- NIF-01 freezes the existing `/api/ai/responses`, SSE v1, 13 default ToolSpecs, optional Proposal
-  Tool, Vision no-Tool rule, Capability v1 and Action isolation in JSON/SSE Golden fixtures and
-  deterministic Fake Provider scenarios. `AI_NIF_RUNTIME_ENABLED` is default-off; while off, the
-  existing Drawer and v1 API behavior remain unchanged. When explicitly enabled, the additive
-  `POST /api/ai/capabilities/context` resource reports only tools allowed after server-side Provider,
-  Pilot, page, factory, IAM and Feature Flag filtering. Controlled Apply configuration never exposes
-  `apply_preview_run` as a model Tool. This source state is not evidence that NIF Runtime or the
-  context resource is enabled in production.
-- NIF-02 adds a strict Provider Capability Catalog and default-off Router. Business AI paths now
-  request stable capability aliases and `FAST/BALANCED/DEEP` policies; the Qwen/Fake adapter maps
-  them to reviewed model and reasoning values only when
-  `AI_PROVIDER_CAPABILITY_ROUTER_ENABLED=true`. ProviderRequest v2 explicitly fixes store/state,
-  cache, region, Tool-choice, parallel-Tool, modality, output-format, retry/fallback and data-class
-  policy. Qwen remains `store=false`; cross-region fallback, unregistered built-ins and private
-  reasoning output fail closed. Bounded retry is restricted to stateless text-only no-Tool requests
-  before any streamed output. Refusal, incomplete, error and usage have standard Provider events.
-  `DOCUMENT_OCR`, embedding and rerank remain unregistered, and the Router is not enabled in the
-  production examples.
-- NIF-03 accepts ADR-003/014 and adds Git-first, versioned Skill manifests and Prompt fragments plus
-  one bounded Nexus Runtime. `AI_SKILL_ROUTER_ENABLED` is independently default-off and also requires
-  `AI_NIF_RUNTIME_ENABLED`; while either Flag is off, the legacy global Prompt and Tool Group path is
-  unchanged. When enabled, deterministic rules and a closed optional classifier select one primary
-  Skill, Runtime Plans can only reduce the intersection of registered/IAM-authorized Tools, and
-  unknown Skill/Tool/version, step, token or risk escalation fails closed. Prompt compilation keeps
-  immutable core policy separate from typed identity/page context, reviewed knowledge, Skill, Tool
-  and output contracts, records stable versions and SHA-256 hashes, and keeps file/OCR/Tool free text
-  in untrusted data blocks. All default Worker-visible ToolSpecs now have explicit version,
-  side-effect, idempotency and retry metadata; side-effecting or unclassified Tools are never
-  automatically replayed. This source state does not enable the Skill Router in production.
-- NIF-04 adds optional Evidence v1 to successful Tool envelopes behind both
-  `AI_NIF_RUNTIME_ENABLED` and independently default-off `AI_EVIDENCE_V1_ENABLED`. Evidence records a
-  stable source level/name, canonical factory, timezone-aware as-of, optional entity revision/cursor,
-  truncation, SHA-256 content hash and `REAUTHORIZE_ON_OPEN`; it never copies arbitrary result fields,
-  and opening an Evidence reference reuses current Tool IAM and page factory scope. The minimum
-  Verifier rejects unsupported formal claims, cross-factory mixing, DRAFT-as-PUBLISHED,
-  Preview-as-Executed, truncated-as-complete, failed-Tool support and user files described as formal
-  system data. Frontend domain parsing is no longer in the Pinia Store: exact
-  `schema_version + result_type` renderers live in a versioned Registry, legacy cards keep their
-  closed field adapters, and unknown Evidence-backed schemas degrade to inert read-only JSON with no
-  links or actions. This source state does not enable Evidence v1 in production.
-- NIF-05 implements the accepted ADR-004/005 Conversation v1 baseline behind default-off
-  `AI_CONVERSATIONS_ENABLED`: persistent message bodies and safe summaries expire after 30 days,
-  temporary conversations store no user/assistant body, deletion removes bodies while retaining a
-  180-day tombstone, conversation security audit is 180 days and Action audit remains 365 days.
-  Owner-only access, current factory/IAM reauthorization, restore tombstone replay and startup/hourly
-  retention enforcement fail closed. Provider requests still use `store=false`; the user's 2026-08-12
-  product/security/operations approval is an engineering rollout baseline, not additional legal
-  sign-off. NIF-06 adds `/workbench/ai`, URL-based refresh recovery, shared Drawer/Workbench in-memory
-  presentation state, persistent/temporary labels, safe stage summaries and Evidence reload behavior
-  that drops inaccessible details instead of reusing cached facts. Migrations `20260814_0076` and
-  `20260814_0077` add reauthorized Conversation context bindings plus pin/archive metadata. The server
-  enumerates allowed contexts from current IAM, rejects cross-factory or stale client hints and rechecks
-  the binding on every continuation; the Workbench now sends that stored binding instead of `null`.
-  This source state does not enable conversation persistence or the new UI flags in production.
-- NIF-07 implements the accepted ADR-015 Task-retention baseline behind default-off
-  `AI_TASKS_ENABLED`, with durable owner/factory-scoped Task, bounded Step and metadata-only Event
-  records. The strict state machine reserves but cannot enter `WAITING_APPROVAL`; create/read/cancel-
-  intent/resume/events APIs recheck current owner, Pilot factory and stored Tool IAM, while Resume also
-  revalidates input/plan hashes and Skill/Prompt/Tool versions. Only READ/COMPUTE/SIMULATE/PREVIEW
-  plans and NONE/PREVIEW_STATE steps are representable; retries require idempotent failed Steps and
-  Preview never becomes an Action. Terminal Task/Step/Event metadata is retained for 180 days with a
-  maximum 30-day backup-deletion tail. NIF-08 implements the accepted ADR-006 engineering baseline
-  behind a separate default-off `AI_TASK_WORKER_ENABLED` flag: a PostgreSQL-only independent Worker
-  claims Tasks with `FOR UPDATE SKIP LOCKED`, uses a 90-second lease and 15-second heartbeat, permits
-  concurrency 1–4, and allows at most two recovery retries after the initial attempt. Only explicitly
-  side-effect-free, idempotent, `SAFE_TRANSIENT` Steps can be replayed; PREVIEW-state mutation,
-  unclassified Tools and all Action handlers fail closed. Provider/Tool execution is time-bounded,
-  cancellation is durable intent and a returning external result is discarded after cancellation or
-  lease loss. Persistent Events support `after` and `Last-Event-ID`, while the Workbench Task list,
-  timeline, Cancel/Resume controls and refresh recovery always reload server state and current IAM.
-  Compose includes an independently stoppable Worker and ordinary API health does not depend on it.
-  Migration `20260813_0070` preserves lease/recovery data on downgrade refusal. NIF-09 implements
-  the accepted ADR-007 engineering baseline behind default-off `AI_SHARED_GUARD_ENABLED` while
-  preserving the process-local single-instance compatibility mode. PostgreSQL advisory transaction
-  locks atomically coordinate global/factory/user disable state, per-user concurrency, rolling RPM,
-  Asia/Shanghai daily Token reservations and opaque expiring leases across API/Worker instances.
-  The local file marker remains the strongest per-host emergency switch; selected shared-state
-  failure rejects only new AI work, not ordinary business health. Worker Steps use the same Guard,
-  renew active Guard leases and conservatively reconcile usage; expired lease/request/budget/disable
-  metadata has bounded cleanup paths. Migration `20260813_0071` stores only Guard metadata and refuses
-  downgrade while protected state exists. NIF-08/NIF-09 remain production-disabled and do not add an
-  Action handler or enable a multi-instance topology.
-- NIF-10 implements Semantic Gateway v1 behind default-off `AI_SEMANTIC_GATEWAY_ENABLED` without a
-  database migration. Versioned code catalogs define the first single-domain entities, reviewed
-  Chinese/factory aliases and server-owned Metric operations. A closed Pydantic Query Plan accepts
-  only catalogued entity/operation/field/operator/sort/metric combinations, caps filters, sorts,
-  metrics and page size, replaces any model factory hint with the verified server page factory, and
-  deterministically maps to an authorized registered Tool. The first semantic fixture is a new
-  read-only injection-backlog Tool with fixed date/order/item/priority predicates; the frozen legacy
-  scheduling Tool schema remains unchanged. Internal Quote reuses its field-minimized summary Tool.
-  Customer Order exposes only the existing Capability and Export Audit surfaces and still declares
-  that no authoritative order Ledger or official total exists. Business IDs stay strings so leading
-  zeroes and wildcard characters remain literal, dates normalize in Asia/Shanghai, and no Query Plan
-  path accepts or emits SQL. A page may submit only selected-entity type, ID and revision for injection
-  backlog orders or internal quotes; while the flag is enabled the API reloads the current row,
-  rechecks factory, permission and explicit deny, requires an exact current revision and sends only a
-  minimal server-owned label. Tool results, including semantic backlog results, continue to receive
-  the existing Evidence envelope. NIF-10 remains production-disabled and does not enable cross-domain
-  conclusions, cross-factory aggregation, model formulas, arbitrary queries or a customer-order
-  Ledger.
-- NIF-11 implements the accepted ADR-008 engineering baseline behind default-off
-  `AI_KNOWLEDGE_HUB_ENABLED` without a database migration, cloud File Search or vector store. A
-  Git-authored Manifest binds exactly seven first-wave K1 module documents to owner, semantic
-  version, review identity/date, expiry, source files, route, factory/role filters and allowlisted
-  deep links. All seven are only `PILOT_READY`; `EVAL_PASSED` and `PUBLISHED` remain impossible
-  without the later NIF-17 Dataset, Runner result and reviewer evidence. Startup validates the
-  current corpus only when the feature is enabled. The bounded in-process exact/Chinese-keyword
-  Retriever returns at most five section hits with document/section/version/content-hash Citation,
-  explicitly reports missing evidence, excludes expired/retired/K2/out-of-scope content, and keeps
-  a backend adapter seam for a separately justified PostgreSQL FTS implementation. Knowledge text
-  enters Provider requests only as untrusted data, cannot widen Tool or IAM scope, and formal domain
-  Tool facts win on conflict. The Module Tutor and business Skills may optionally use the new Tool
-  when registered, while disabling the feature returns to the legacy injection help path. The
-  frontend renders versioned Knowledge as a distinct cited guidance layer. `PROJECT_MEMORY.md` and
-  `AGENTS.md` are forbidden knowledge sources, and user corrections follow a manual Git review
-  queue rather than runtime or automatic publication. ADR-008 approval was given by the user acting
-  for product, security, operations and module Knowledge Owners as an engineering rollout baseline,
-  not additional legal sign-off. NIF-11 remains production-disabled and does not index or duplicate
-  real-time business records.
-- NIF-12 implements the accepted ADR-009 engineering baseline behind independently default-off
-  `AI_ARTIFACTS_ENABLED`. Migration `20260813_0072` adds owner/factory-scoped immutable Artifact
-  metadata, SHA-256, opaque Storage Key, closed classification/scanner/parser states, 30-day byte
-  retention, 180-day metadata/security-audit tombstones and parent/derived parser/model lineage; it
-  refuses downgrade while any Artifact exists and application startup refuses to let `create_all`
-  bypass the migration. The upload/metadata/download/delete API rechecks current Pilot, owner and
-  factory access, never exposes a storage path or public URL, validates extension/MIME/magic and
-  closed type limits, blocks unsafe OOXML paths, macros, external relationships, high compression,
-  encrypted files, oversized PDF/image content and all scanner-unavailable/rejected cases. Original
-  bytes are written once; duplicate or derived content receives a new ID/key, derived classification
-  cannot weaken the parent and derived retention cannot exceed it. Delete/expiry revokes access
-  before online-byte cleanup, retries pending deletion hourly and records the maximum 30-day backup
-  tail. Production Compose adds a non-published `clamav/clamav:1.4_base` service with persistent
-  signatures checked six times daily and an `ai-artifacts` volume mounted only into API/AI Worker.
-  Production enablement additionally fails startup unless the private volume, ClamAV operations,
-  mainland-China private OSS bucket, KMS encryption and restore-drill evidence are asserted. Artifact
-  Provider egress remains absent: `RESTRICTED` is never external, and later workbook/document/image
-  adapters must keep separate per-request Bailian Beijing consent with `store=false`. Targeted
-  Artifact tests pass 23/23 and directly related legacy/deploy contract tests pass 12/12; one
-  targeted Artifact migration head `20260813_0072` and `git diff --check` pass. This workstation has no Docker command,
-  so live ClamAV/signature alerting, private-volume permissions, daily encrypted OSS backup and restore
-  remain field-only NIF-18 evidence. NIF-12 does not migrate existing domain attachments or claim
-  workbook/PDF/OCR parsers, and the feature remains disabled in production examples.
-- NIF-13 adapts the existing workbook inspection/mapping, local/cloud Office translation and Vision
-  attachment paths to NIF-12 behind a second independently default-off
-  `AI_ARTIFACT_WORKFLOWS_ENABLED` switch. New `.xlsx` inspect/mapping contracts bind the exact source
-  Artifact SHA and versioned snapshot; new `.xlsx`/`.docx` translation creates a separately scanned
-  derived Artifact with parent, parser/terms and model lineage; Vision sends only owner/factory-bound
-  IMAGE Artifact references after reloading, integrity checking, metadata stripping and exact
-  per-request image consent. Workbook, document and image Bailian Beijing consent contracts bind
-  provider, region, classification, content class and the exact Artifact IDs and never inherit from
-  one another; `RESTRICTED` fails before Provider construction. Local CTranslate2/SentencePiece remains
-  the default and requires no cloud consent. Existing multipart APIs remain compatible and internally
-  register eligible macro-free `.xlsx`/`.docx` inputs first; `.xlsm` deliberately stays on the legacy
-  compatibility implementation because the new Artifact baseline rejects macros. Large macro-free
-  local translations enter an idempotency-keyed Preview Task whose source/result hashes and Artifact
-  lineage persist through Worker crash/retry and page refresh; completed Task metadata restores the
-  derived-file download. The model-visible registry still excludes these workflow Tools, and the
-  Worker receives them only when the adapter flag is on. No arbitrary Excel import, PDF/OCR, Profile
-  auto-approval, DEMAND_ORDER production Task, machine/date fabrication or source-byte mutation was
-  added. ADR-009 approval remains an engineering product/security/operations baseline, not additional
-  legal sign-off or production enablement; NIF-13 remains disabled in production examples.
-- NIF-14 implements a two-stage injection-Backlog screenshot workflow behind independently
-  default-off `AI_VISION_TOOL_COMPARISON_ENABLED`. Stage A accepts one currently authorized IMAGE
-  Artifact with exact image-class Bailian Beijing consent, performs exactly one structured
-  multimodal Provider call with `ToolChoicePolicy.NONE`, treats every pixel and recognized string as
-  untrusted data, preserves leading-zero business IDs as strings and persists only a bounded
-  `USER_PROVIDED` Observation with per-field confidence. Stage B is never automatic: the Workbench
-  requires a separate user click, creates a new READ Task containing only the source Observation Task
-  ID and server-fixed factory/page context, reloads the active source Artifact, rechecks current
-  owner/factory/`injection_scheduling:read` access and then performs one fresh registered formal
-  Backlog read with fixed `limit=20, offset=0`. No OCR text can select a Tool, factory, filter or
-  permission. Exact order/item strings are compared deterministically; low-confidence, missing and
-  ambiguous matches remain unconfirmed, and formal truncation/as-of are explicit. Task metadata and
-  Events retain separate `USER_PROVIDED` and `FORMAL_DOMAIN_SERVICE` Evidence plus the image Artifact
-  hash, while the result contract requires `no_write_performed=true`. The UI separately labels both
-  authority layers, confidence, detected image instructions, differences, unconfirmed rows,
-  truncation and the no-write boundary. Turning the flag off restores the existing single-stage
-  Vision/no-Tool behavior. NIF-14 adds no migration, Profile approval, write, import, scheduling Task,
-  arbitrary query or cross-factory comparison and remains disabled in production examples.
-- NIF-15 adds a closed, migration-free `PREVIEW_WITH_AUDIT` framework without replacing either
-  domain algorithm. A versioned Preview Manifest now records the Preview type, factory, source
-  Revision hash, normalized input hash, explicit assumptions, bounded Evidence, creator, TTL,
-  live status and proposal-only capability. The registry has exactly two adapters: existing
-  injection-scheduling Run generation/comparison remains the deterministic source of scheduling
-  metrics, while workbook mapping remains a model-inference proposal backed by separate
-  `USER_PROVIDED` and `MODEL_INFERENCE` Evidence. The generic Verifier rechecks current factory,
-  IAM, source Revision, expiry, assumption values and origin; stale, expired, revoked, cross-factory,
-  mislabeled and unregistered Previews cannot create an Action Proposal. Scenario Compare derives
-  comparability from source hashes and never writes. Task metadata durably retains bounded Manifests
-  and Evidence; recovered UI state recomputes elapsed TTL and shows the same strict Preview card in
-  the Workbench, scheduling result and workbook mapping flow. The card says no formal write occurred
-  and distinguishes `CREATE_PROPOSAL_ONLY` from Apply/Publish/execution. Legacy B13 results without a
-  Manifest remain readable, while unknown Manifest/Scenario fields fail closed. No Preview table,
-  scheduling algorithm, workbook import, Profile activation, Apply, Publish or Rollback was added.
-- NIF-16 implements accepted ADR-012 as a compatible evolution of the existing
-  `AIActionConfirmation` row rather than a parallel state machine. The same row now retains the
-  legacy API status while recording the closed Proposal lifecycle, versioned Handler Manifest and
-  Approval Policy, explicit authenticated-user approval binding, independent approval/execution
-  idempotency IDs, COMMITTING/VERIFYING states, formal DRAFT/Run read-back, Domain Audit ID and
-  non-automatic compensation guidance. Permission, factory, args hash, entity Revision, TTL,
-  handler/policy version and freshness are rechecked at the required boundaries. The Provider-visible
-  Tool may propose only; the executor remains absent from the Tool registry. The sole Handler applies
-  one current injection scheduling Preview to DRAFT and rejects PUBLISHED targets; Publish, Rollback,
-  inventory/final release and a second write action remain absent. `AI_ACTION_GATEWAY_ENABLED` and
-  `AI_CONTROLLED_APPLY_ENABLED` are independent and default off. ADR-012 is an engineering baseline,
-  not production enablement or additional legal sign-off.
-- NIF-17 adds a repeatable product-Eval, feedback and metadata-only observability platform behind
-  independently default-off `AI_FEEDBACK_ENABLED`, `AI_OBSERVABILITY_ENABLED` and
-  `AI_METRIC_EXPORT_ENABLED`. Twelve Git-versioned `OFFLINE_FAKE` datasets bind every current/pilot
-  Skill to the exact Skill/Prompt hashes and cover Chinese language, business grounding, files,
-  Vision, scheduling, security, Provider/Worker resilience and Action replay boundaries. The Runner
-  excludes Live Provider Eval from ordinary CI, emits no user text, answer text, Tool arguments,
-  Raw Prompt/Tool Result or Chain of Thought, and measures task success, grounded claims, citations,
-  Tool selection/arguments plus zero-target unauthorized, cross-factory and Preview/Executed
-  mislabel rates. Migration `20260813_0073` stores bounded Feedback, Eval Run and Model Run/Tool Call
-  metadata and refuses downgrade while evidence exists; startup refuses to let `create_all` bypass
-  it. Runtime metrics bind Request/Conversation/Task/Action, Skill/Prompt/Tool/Provider/Model
-  versions, Token/cost estimate, latency, retries, failures and Evidence count without retaining
-  request or result bodies. Cost is unavailable until approved per-million Token rates are configured
-  and successful-task cost is reported only when a Task-linked Model Run exists. Users can submit
-  owned, factory-matched helpful/correction feedback; an administrator may only triage or propose a
-  manual Eval Case reference, never auto-edit Prompt or Knowledge. Summary, event and Eval Run export
-  are wildcard-system-admin-only and default off. The UI exposes feedback only for complete Assistant
-  messages with a verified persisted Message or Model response receipt and explicitly states the
-  manual-review boundary. NIF-17 does not itself enable production AI, publish Knowledge, open an
-  Action, or claim Live Provider/field acceptance.
-- NIF-18 repository-side readiness controls include a metadata-only twenty-gate evidence
-  verifier/template, a one-way shared kill-switch drill, explicit `disabled`/`preflight`/
-  `action-field` readiness stages and a deployment path that permits a multi-instance Shared Guard
-  candidate only behind the active disable marker. A default-off
-  `AI_OPERATIONAL_ALERTS_ENABLED` channel continuously evaluates cost per successful Task,
-  Provider/Tool failures, Worker recovery, ClamAV signature age/availability and per-user budget.
-  It requires positive approved thresholds, Token rates, observability/export, Artifact/ClamAV
-  readiness and active recipient user IDs; deterministic cooldown IDs prevent multi-instance
-  duplicates. Alerts use the private System Notification feed and its `handled` transition as the
-  recipient acknowledgement. The notification center provides `确认已处理` only for these AI
-  alerts: read/view is not acknowledgement and a failed acknowledgement restores pending state.
-  Payloads retain only counts, thresholds, window and a closed detail code. NIF-18 evidence schema
-  v2 requires six separate trigger gates/references plus a distinct recipient-acknowledgement
-  gate/reference before the aggregate cost-alert gate can pass; duplicate keys or alert references
-  fail verification. The wildcard-admin acknowledgement report accepts only opaque alert IDs and
-  returns no recipient ID or observed value; it can report `all_acknowledged=true` only for one
-  complete six-type evaluation delivered to a consistent recipient set with every notice handled.
-  Repository implementation is not field acceptance: production must still trigger and acknowledge
-  all six alerts on the exact deployed revision. The current HTTP/development-mode production Pilot
-  has the NIF Runtime, Shared Guard, Semantic/Knowledge, Artifact and Artifact workflows, controlled
-  Vision comparison, Feedback/Observability/metric export/operational alerts, Action Gateway and the
-  sole DRAFT Controlled Apply handler enabled under the user's accepted HTTP risk. ClamAV is healthy,
-  its clean/EICAR field probes pass, and the private Artifact volume is mounted only into API/Worker.
-  Artifact and Action routes use `build_pilot_guard()` like the other Shared-Guard routes so every
-  state-changing AI route shares the same multi-instance replay and budget protection. The runtime stage is
-  `action-field`, but overall NIF-18 remains `NO-GO`: TLS/HSTS, Secure Cookie, secret rotation,
-  encrypted private OSS/KMS backup and restore evidence, full browser acceptance, and the six alert
-  trigger/recipient acknowledgement evidence remain incomplete.
-  `backend/local-ai.env.example` is the secret-free, opt-in local development profile for exposing
-  the same AI UI/API feature surface without changing the repository's default-off baseline. Real
-  credentials remain only in ignored `backend/.env`; SQLite-only Worker/Shared Guard and the absent
-  local ClamAV operations/alert channel remain disabled, so this profile is not NIF-18 field evidence.
-  Current alert-channel source verification on the `41187cd` baseline passed all 447 backend
-  `test_ai_*.py` tests with 2 intentional skips, all 909 frontend tests with 6 skips, the exact AI
-  Ruff scope, frontend typecheck, production build, shell syntax and diff check. These are repository
-  results, not `FIELD-PASS`. ADR-012 remains the default-off DRAFT-only engineering baseline; all
-  L4 actions stay prohibited.
-- AI-B9 now provides separately authorized, factory-scoped, read-only Tool and closed frontend-result
-  contracts for Internal Quote, molding samples, carton procurement, raw-material inventory and
-  customer orders. Each domain uses selected-field serializers and canonical permission checks; the
-  Tool surface does not inherit unrelated detail, pricing, approval, export or mutation capability.
-  Unknown or additional result fields fail closed.
-- AI-B10/B11 now route unfamiliar `DEMAND_ORDER` and `PLANNED_SCHEDULE` workbooks through the unified
-  `injection_scheduling.workbook_mapping@1.0.0` Skill after factory structural templates and deterministic
-  Profiles. The result is source-validated and consumed by deterministic demand/canonical parsers,
-  reconciliation and locked DRAFT takeover; it cannot fabricate rows, IDs, Tasks, dates or publish.
-  Confirmed AI mappings and same-dialog manual corrections become audited factory ACTIVE structural
-  templates for later no-model reuse. Scheduling workbook selection and mapping do not use AI Pilot,
-  Artifact, scanner or per-request consent gates; cloud workbook recognition remains controlled by its dedicated configuration flag. AI-B12 cloud document translation is also default-off and falls back to the
-  existing server-local translator; enabling it does not authorize workbook transmission or retention.
-- AI-B13 can persist and compare scheduling candidate previews through the existing auto-schedule-run
-  service but cannot Apply or Publish them. AI-B14/B15 add a separate confirmation API and the first
-  controlled action, applying a selected run only to DRAFT. Confirmations bind the user, factory,
-  canonical arguments, entity revision/hash and TTL, recheck current permission and freshness, and use
-  idempotent execution-request identity. The Provider-visible Tool can only propose the confirmation;
-  the consequential `apply_preview_run` handler is never registered as a model-callable Tool. Controlled
-  Apply remains default-off and never Publish/Rollback.
-- The retained injection-scheduling backend includes Phase 5 provider-neutral ingestion, device-derived cycle observations, mold speed-model calibration and operational analytics. It currently has no active operational frontend; real ERP/device adapters, calendar maintenance, conflict resolution and production-scale KPI acceptance remain later work.
+- The former AI subsystem is retired. Historical migration files remain only so existing databases can advance safely to `20260826_0084`; application code must not import or recreate the removed routes, models, services, tables, provider settings or UI surfaces.
+- The injection-scheduling module now has an active fixed-template operational frontend for planning intake and workbench actions. Phase 5 provider-neutral ingestion, device-derived cycle observations, mold speed-model calibration and operational analytics remain backend compatibility assets; real ERP/device adapters, calendar maintenance and production-scale KPI acceptance remain later work.
 
 ## 9. Current Next Steps
 
@@ -708,29 +379,6 @@ The smallest unresolved decisions that require product or operational confirmati
 - Schedule the Huakang A 3D printing cutover, provide production deployment access, and field-accept one idle printer before enabling remote control across all printers.
 - Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
-- Replace the temporary HTTP/development-mode AI rollout with the real TLS/HSTS edge, secure session
-  cookie, rotated Provider secret, runtime-disable drill, authenticated browser acceptance and total-
-  cost alerting. Re-run readiness before calling the Pilot production-ready. The recorded B7B approval
-  covers user-selected images with per-request consent; it is not a separate legal sign-off. The
-  scheduling B10 workbook path now operates without per-request consent, while B12 document workflows
-  still require their own transmission and retention/deletion policy decision. Production credentials must stay in the
-  untracked server secret boundary.
-- ADR-006 is approved as a product/security/operations engineering rollout baseline for NIF-08,
-  with a 90-second lease, 15-second heartbeat, at most two safe recovery retries, one-to-four Worker
-  concurrency and measurable queue/latency/contention triggers for a Redis or broker evaluation.
-  ADR-007 is separately approved on the same authority and scope for the default-off NIF-09
-  PostgreSQL shared Guard baseline. Neither approval is additional legal sign-off, production
-  enablement, multi-instance activation or Action authorization. A real PostgreSQL contention/load
-  drill remains part of the later field gate because this workstation has no native Docker runtime.
-- ADR-008, ADR-009 and ADR-012 are approved engineering rollout baselines. NIF-12 through NIF-17
-  remain default-off in repository examples, but their production runtime flags are explicitly enabled
-  under accepted HTTP risk; the repository-side NIF-18 evidence pack is implemented while formal
-  production readiness remains `NO-GO`. ADR-012 authorizes only the existing DRAFT Action Gateway;
-  it does not authorize a second write action, Publish/Rollback, or add legal sign-off.
-  Do not treat user images as formal system facts. Scheduling B10 workbook layout is the explicit
-  exception to the former request-bound file-consent rule; document and image consent remain separate and request-bound, `RESTRICTED` never leaves
-  Nexus, and the private-volume/ClamAV/OSS/KMS/restore evidence above remains an NIF-18 field gate
-  rather than repository-proven production readiness.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.
 
 When one of these decisions becomes an implemented, verified long-lived fact, update the relevant section in place and remove the corresponding unresolved item.

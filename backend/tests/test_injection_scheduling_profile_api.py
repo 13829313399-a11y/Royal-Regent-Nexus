@@ -84,7 +84,9 @@ def test_profile_registry_api_is_factory_scoped_and_not_inferred_for_general_man
         )
         assert response.status_code == 200, response.text
         assert {item["profile_code"] for item in response.json()["items"]} == {
+            "group_unified_plan_v1",
             "huakang_b_daily_plan_v1",
+            "huakang_b_plan_only_v1",
             "demand_order_shared_v1",
             "master_data_shared_v1",
         }

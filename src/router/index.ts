@@ -396,16 +396,6 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/workbench/ai',
-    name: 'ai-workbench',
-    component: () => import('@/features/nexus-copilot/workbench/AiWorkbenchView.vue'),
-    meta: {
-      title: 'Nexus AI 工作台',
-      fullPage: true,
-      requiresAuth: true,
-    },
-  },
-  {
     path: '/system/users',
     name: 'system-users',
     component: () => import('@/views/SystemUserManagementView.vue'),

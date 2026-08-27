@@ -1,10 +1,5 @@
 import axios from 'axios'
 import { http } from '@/lib/http'
-import {
-  isArtifactWorkflowUnavailable,
-  uploadAIArtifact,
-} from '@/api/aiArtifacts'
-
 
 export const PDF_TO_EXCEL_TIMEOUT_MS = 900_000
 export const PDF_TO_WORD_TIMEOUT_MS = 900_000
@@ -13,7 +8,7 @@ export const PDF_TRANSLATION_TIMEOUT_MS = 1_800_000
 export const PDF_SPLIT_TIMEOUT_MS = 300_000
 export const DOCUMENT_TRANSLATION_TIMEOUT_MS = 1_800_000
 
-export type DocumentProcessingMode = 'AUTO' | 'LOCAL' | 'QWEN'
+export type DocumentProcessingMode = 'AUTO' | 'LOCAL'
 
 export interface DocumentToolModeCapability {
   available: boolean
@@ -33,15 +28,6 @@ export interface DocumentToolsCapabilities {
   default_mode: DocumentProcessingMode
   tools: Record<string, DocumentToolCapability>
   providers: {
-    qwen: {
-      configured: boolean
-      available: boolean
-      region: string
-      ocr_model: string
-      table_model: string
-      translation_model: string
-      reason_code: string
-    }
     libreoffice: { available: boolean; version: string; reason_code: string }
     local_translation: { available: boolean }
   }
@@ -51,9 +37,7 @@ export interface DocumentToolsCapabilities {
 export interface DocumentProcessingMetadata {
   mode: DocumentProcessingMode
   localPageCount: number
-  qwenPageCount: number
   lowConfidenceCount: number
-  providerModel: string
   warnings: string[]
 }
 
@@ -70,18 +54,13 @@ export class DocumentToolApiError extends Error {
 }
 
 export type DocumentTranslationDirection = 'zh_to_en' | 'en_to_zh'
-export type DocumentTranslationMode = 'local_private' | 'ai_smart_cloud'
-
 export interface DocumentTranslationStatus {
   available: boolean
   engine: 'offline'
   engineLabel: string
   directions: Record<DocumentTranslationDirection, boolean>
-  cloudAvailable?: boolean
-  artifactWorkflowsEnabled?: boolean
   modes?: {
     local_private: { available: boolean; label: string }
-    ai_smart_cloud: { available: boolean; label: string; provider: string; model: string }
   }
 }
 
@@ -91,8 +70,6 @@ export interface DocumentTranslationResult {
   translatedUnitCount: number
   skippedUnitCount: number
   processedPartCount: number
-  sourceArtifactId?: string
-  derivedArtifactId?: string
 }
 
 export interface PdfToExcelMetrics {
@@ -206,15 +183,13 @@ function processingMetadata(
     }
   }
   const headerMode = String(headers?.['x-processing-mode'] ?? fallbackMode).toUpperCase()
-  const mode: DocumentProcessingMode = ['AUTO', 'LOCAL', 'QWEN'].includes(headerMode)
+  const mode: DocumentProcessingMode = ['AUTO', 'LOCAL'].includes(headerMode)
     ? headerMode as DocumentProcessingMode
     : fallbackMode
   return {
     mode,
     localPageCount: headerCount(headers, 'x-local-page-count'),
-    qwenPageCount: headerCount(headers, 'x-qwen-page-count'),
     lowConfidenceCount: headerCount(headers, 'x-low-confidence-count'),
-    providerModel: String(headers?.['x-provider-model'] ?? ''),
     warnings,
   }
 }
@@ -278,7 +253,6 @@ async function parseBlobError(error: unknown): Promise<never> {
 
 export function createSharedToolsApi(
   client: SharedToolsHttpClient = http,
-  artifactUploader = uploadAIArtifact,
 ) {
   return {
     async getCapabilities(signal?: AbortSignal): Promise<DocumentToolsCapabilities> {
@@ -300,16 +274,11 @@ export function createSharedToolsApi(
       documentFile: File,
       direction: DocumentTranslationDirection,
       selectedSheetNames?: string[],
-      mode: DocumentTranslationMode = 'local_private',
-      cloudConsent = false,
-      factoryId = '',
-      artifactWorkflowEnabled = false,
     ): Promise<DocumentTranslationResult> {
       const payload = new FormData()
       payload.append('document_file', documentFile)
       payload.append('direction', direction)
-      payload.append('mode', mode)
-      if (mode === 'ai_smart_cloud') payload.append('cloud_consent', String(cloudConsent))
+      payload.append('mode', 'local_private')
       if (selectedSheetNames) payload.append('sheet_names', JSON.stringify(selectedSheetNames))
       const extension = documentFile.name.match(/\.(xlsx|xlsm|docx)$/i)?.[0].toLowerCase() ?? '.docx'
       const stem = documentFile.name.replace(/\.(xlsx|xlsm|docx)$/i, '') || '文档'
@@ -317,61 +286,6 @@ export function createSharedToolsApi(
       const fallbackFileName = `${stem}_${directionLabel}${extension}`
 
       try {
-        if (
-          artifactWorkflowEnabled
-          && factoryId
-          && /\.(xlsx|docx)$/i.test(documentFile.name)
-        ) {
-          try {
-            const source = await artifactUploader(
-              documentFile,
-              factoryId,
-              'CONFIDENTIAL_BUSINESS',
-            )
-            const artifactPayload = new FormData()
-            artifactPayload.append('artifact_id', source.id)
-            artifactPayload.append('direction', direction)
-            artifactPayload.append('mode', mode)
-            if (selectedSheetNames) {
-              artifactPayload.append('sheet_names', JSON.stringify(selectedSheetNames))
-            }
-            if (mode === 'ai_smart_cloud') {
-              artifactPayload.append('cloud_consent_json', JSON.stringify({
-                accepted: true,
-                notice_version: source.content_class === 'WORKBOOK'
-                  ? 'aliyun-cn-beijing-workbook-v1'
-                  : 'aliyun-cn-beijing-document-v1',
-                provider: 'qwen',
-                region: 'cn-beijing',
-                classification: source.classification,
-                content_class: source.content_class,
-                artifact_ids: [source.id],
-              }))
-            }
-            const artifactResponse = await client.post<Blob>(
-              '/tools/document-translation/artifact',
-              artifactPayload,
-              {
-                headers: { 'Content-Type': 'multipart/form-data' },
-                responseType: 'blob',
-                timeout: DOCUMENT_TRANSLATION_TIMEOUT_MS,
-              },
-            )
-            return {
-              blob: artifactResponse.data,
-              fileName: responseFileName(artifactResponse.headers, fallbackFileName),
-              translatedUnitCount: headerCount(artifactResponse.headers, 'x-translation-unit-count'),
-              skippedUnitCount: headerCount(artifactResponse.headers, 'x-translation-skipped-count'),
-              processedPartCount: headerCount(artifactResponse.headers, 'x-translation-part-count'),
-              sourceArtifactId: String(artifactResponse.headers?.['x-source-artifact-id'] ?? ''),
-              derivedArtifactId: String(artifactResponse.headers?.['x-derived-artifact-id'] ?? ''),
-            }
-          }
-          catch (error) {
-            if (!isArtifactWorkflowUnavailable(error)) throw error
-          }
-        }
-        if (factoryId) payload.append('factory_id', factoryId)
         const response = await client.post<Blob>('/tools/document-translation', payload, {
           headers: { 'Content-Type': 'multipart/form-data' },
           responseType: 'blob',

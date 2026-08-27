@@ -18,7 +18,7 @@ from app.services.document_studio.contracts import (
 )
 
 DocumentContractVersion = Literal["1"]
-DocumentArtifactId = Annotated[str, Field(pattern=r"^aiart-[0-9a-f]{32}$")]
+DocumentSourceId = Annotated[str, Field(pattern=r"^document-[0-9a-f]{32}$")]
 DocumentBBox = Annotated[
     tuple[float, float, float, float],
     Field(description="PDF points: left, top, right, bottom in source-page coordinates."),
@@ -139,7 +139,7 @@ class DocumentPageSnapshot(_ClosedDocumentModel):
 
 class DocumentSnapshot(_ClosedDocumentModel):
     contract_version: DocumentContractVersion = DOCUMENT_CONTRACT_VERSION
-    source_artifact_id: DocumentArtifactId
+    source_artifact_id: DocumentSourceId
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     revision: int = Field(default=1, ge=1, le=10_000)
     page_count: int = Field(ge=1, le=MAX_DOCUMENT_PAGES)

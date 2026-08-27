@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from io import BytesIO
 
+from openpyxl import Workbook
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import Session
+
 from app.db import Base
 from app.models import (
     injection_scheduling as _injection_scheduling_models,  # noqa: F401
@@ -27,9 +31,6 @@ from app.services.injection_scheduling_profiles import (
     profile_config,
     profile_from_config,
 )
-from openpyxl import Workbook
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import Session
 
 
 def _bytes(workbook: Workbook) -> bytes:
@@ -370,32 +371,30 @@ def test_builtin_profile_registry_is_idempotent_and_factory_scoped():
     with Session(engine) as db:
         seed_builtin_import_profiles(db)
         seed_builtin_import_profiles(db)
-        assert (
-            db.scalar(
-                select(func.count()).select_from(InjectionSchedulingImportProfile)
-            )
-            == 6
-        )
+        assert db.scalar(
+            select(func.count()).select_from(InjectionSchedulingImportProfile)
+        ) == len(BUILTIN_IMPORT_PROFILES)
         assert (
             db.scalar(
                 select(func.count()).select_from(
                     InjectionSchedulingImportProfileFactory
                 )
             )
-            == 16
+            == sum(len(profile.factories) for profile in BUILTIN_IMPORT_PROFILES)
         )
         assert (
             db.scalar(select(func.count()).select_from(InjectionSchedulingAuditEvent))
-            == 16
+            == sum(len(profile.factories) for profile in BUILTIN_IMPORT_PROFILES)
         )
         huakang_profiles = active_profiles_for_factory(db, "huakang-b")
         assert [item.profile_code for item in huakang_profiles] == [
+            "group_unified_plan_v1",
             "huakang_b_daily_plan_v1",
             "huakang_b_plan_only_v1",
         ]
         assert [
             item.profile_code for item in active_profiles_for_factory(db, "huakang-a")
-        ] == ["huakang_a_daily_plan_v1"]
+        ] == ["group_unified_plan_v1", "huakang_a_daily_plan_v1"]
         assert active_profiles_for_factory(db, "huakang-c") == ()
         assert [
             item.profile_code
@@ -471,8 +470,13 @@ def test_profile_revision_activation_retires_predecessor_and_audits():
         )
         assert predecessor.status == "RETIRED"
         assert [
-            item.revision for item in active_profiles_for_factory(db, "huakang-b")
-        ] == [2, 1]
+            (item.profile_family, item.revision)
+            for item in active_profiles_for_factory(db, "huakang-b")
+        ] == [
+            ("group_unified_plan", 1),
+            ("huakang_b_daily_plan", 2),
+            ("huakang_b_plan_only", 1),
+        ]
         event_types = set(
             db.scalars(select(InjectionSchedulingAuditEvent.event_type)).all()
         )

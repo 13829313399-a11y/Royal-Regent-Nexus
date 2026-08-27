@@ -44,7 +44,6 @@ const {
   resumeCurrentToast,
   activateNotification,
   markNotificationRead,
-  markNotificationHandled,
   activateToast,
   refreshNotifications,
   formatNotificationTime,
@@ -118,16 +117,6 @@ function handleItemAction(item: NotificationCenterItem) {
 
 function handleMarkRead(item: NotificationCenterItem) {
   void markNotificationRead(item)
-}
-
-function canAcknowledgeItem(item: NotificationCenterItem) {
-  return item.source === 'system'
-    && item.category === 'ai_operational_alert'
-    && item.status !== 'handled'
-}
-
-function handleMarkHandled(item: NotificationCenterItem) {
-  void markNotificationHandled(item)
 }
 
 function handleTabKeydown(event: KeyboardEvent, tabIndex: number) {
@@ -359,19 +348,11 @@ onUnmounted(() => {
                     >
                       标为已读
                     </button>
-                    <button
-                      v-if="canAcknowledgeItem(item)"
-                      type="button"
-                      class="text-[11px] font-bold text-emerald-700 transition hover:text-emerald-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30"
-                      :aria-label="`确认已处理：${item.title}`"
-                      @click="handleMarkHandled(item)"
-                    >
-                      确认已处理
-                    </button>
-                    <span v-if="!item.isUnread && !canAcknowledgeItem(item)" class="text-[11px] text-slate-400">{{ itemFooterLabel(item) }}</span>
+                    <span v-if="!item.isUnread" class="text-[11px] text-slate-400">{{ itemFooterLabel(item) }}</span>
                   </div>
 
                   <RouterLink
+                    v-if="item.route"
                     :to="item.route"
                     class="inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 transition hover:text-teal-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
                     :aria-label="`${item.actionLabel}：${item.title}`"

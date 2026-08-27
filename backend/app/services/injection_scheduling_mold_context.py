@@ -36,7 +36,10 @@ def order_mold_key(order: InjectionSchedulingOrder) -> str:
     lineage = _load_json(order.lineage_json, {})
     definition_id = str(lineage.get("mold_definition_id") or "")
     output_id = str(lineage.get("mold_output_spec_id") or "")
-    return f"shared:{definition_id}:{output_id or '*'}" if definition_id else ""
+    if definition_id:
+        return f"shared:{definition_id}:{output_id or '*'}"
+    source_mold_no = str(lineage.get("source_mold_no") or "").strip()
+    return f"evidence:{source_mold_no}" if source_mold_no else ""
 
 
 def task_mold_key(
@@ -106,6 +109,71 @@ def _legacy_context(mold: InjectionSchedulingMold) -> SchedulingMoldContext:
     )
 
 
+def _evidence_context(order: InjectionSchedulingOrder) -> SchedulingMoldContext | None:
+    lineage = _load_json(order.lineage_json, {})
+    mold_no = str(lineage.get("source_mold_no") or "").strip()
+    if not mold_no:
+        return None
+    process_tags = lineage.get("process_tags_evidence") or []
+    if not isinstance(process_tags, list):
+        process_tags = []
+    mold_a_class = _positive_decimal(
+        lineage.get("required_machine_a_class_evidence")
+        or lineage.get("required_machine_a")
+    )
+    net_weight = _positive_decimal(lineage.get("whole_shot_net_weight_g"))
+    gross_weight = _positive_decimal(lineage.get("whole_shot_gross_weight_g"))
+    arm_type = str(lineage.get("required_arm_type") or "")
+    fixture_type = str(lineage.get("required_fixture_type") or "")
+    complete = bool(mold_a_class and net_weight and arm_type and fixture_type)
+    return SchedulingMoldContext(
+        id=f"evidence:{mold_no}",
+        revision=1,
+        legacy_mold_id=None,
+        definition_id=None,
+        definition_revision=None,
+        output_spec_id=None,
+        output_spec_revision=None,
+        capability_revisions=(),
+        mold_no=mold_no,
+        name=order.product_name,
+        mold_a_class=mold_a_class,
+        whole_shot_net_weight_g=net_weight,
+        whole_shot_gross_weight_g=gross_weight,
+        required_arm_type=arm_type,
+        required_fixture_type=fixture_type,
+        material_code=str(lineage.get("material_name") or ""),
+        material_name=str(lineage.get("material_name") or ""),
+        color_profile=str(
+            lineage.get("color_depth") or lineage.get("color_name") or ""
+        ),
+        process_requirements_json=json.dumps(
+            process_tags, ensure_ascii=False, separators=(",", ":")
+        ),
+        process_tags_json=json.dumps(
+            process_tags, ensure_ascii=False, separators=(",", ":")
+        ),
+        copy_count=1,
+        status="available",
+        normalization_status="COMPLETE" if complete else "REVIEW_REQUIRED",
+        special_machine_type="two_color" if "two_color" in process_tags else "",
+    )
+
+
+def _with_evidence_contexts(
+    result: dict[str, SchedulingMoldContext],
+    orders: list[InjectionSchedulingOrder],
+) -> dict[str, SchedulingMoldContext]:
+    for order in orders:
+        key = order_mold_key(order)
+        if not key or key in result:
+            continue
+        evidence = _evidence_context(order)
+        if evidence is not None:
+            result[key] = evidence
+    return result
+
+
 def _consensus(records: list[Any], field: str) -> Any:
     values = {
         value
@@ -130,7 +198,11 @@ def machine_capabilities_for_mold(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Use an active factory capability as the draft-stage fallback for shared molds."""
 
-    if mold.legacy_mold_id is not None or mold.status != "available":
+    if (
+        mold.legacy_mold_id is not None
+        or mold.definition_id is None
+        or mold.status != "available"
+    ):
         return arm_capabilities, fixture_capabilities
     return (
         arm_capabilities
@@ -260,7 +332,7 @@ def load_scheduling_molds(
         if order.mold_definition_id and not order.mold_id
     }
     if not definition_ids:
-        return result
+        return _with_evidence_contexts(result, orders)
     definitions = {
         item.id: item
         for item in db.scalars(
@@ -334,4 +406,4 @@ def load_scheduling_molds(
             relevant,
             asset_counts.get(definition.id, 0),
         )
-    return result
+    return _with_evidence_contexts(result, orders)

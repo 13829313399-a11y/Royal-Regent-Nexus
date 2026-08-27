@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -35,6 +36,9 @@ from app.services.injection_scheduling import (
     update_mold,
     update_rule_set,
 )
+from app.services.injection_scheduling_unified_template import (
+    unified_template_download,
+)
 
 router = APIRouter(
     prefix="/api/injection-scheduling",
@@ -62,6 +66,23 @@ def _ensure_scheduling_permission(
         SCHEDULING_DEPARTMENTS[0],
     )
     return factory_id
+
+
+@router.get("/templates/unified-plan", response_class=FileResponse)
+def get_unified_plan_template(
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_scheduling_permission(
+        db, current_user, "injection_scheduling:import", factory_id
+    )
+    path, filename = unified_template_download(factory_id)
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
+    )
 
 
 @router.get("/machines", response_model=InjectionSchedulingMachineListOut)

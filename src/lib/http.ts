@@ -57,24 +57,13 @@ export const http: AxiosInstance = axios.create({
   },
 })
 
-function isExpectedCapabilityForbidden(error: AxiosError<ApiErrorPayload>) {
-  if (error.config?.skipForbiddenSessionRefresh !== true) return false
-  const requestUrl = error.config.url
-  if (typeof requestUrl !== 'string') return false
-  const requestPath = requestUrl.split('?')[0]
-  return requestPath === '/ai/capabilities' || requestPath.endsWith('/ai/capabilities')
-}
-
 http.interceptors.response.use(
   (response) => response,
   (error: AxiosError<ApiErrorPayload>) => {
     if (error.response?.status === 401) {
       unauthorizedHandler?.(error)
     }
-    if (
-      error.response?.status === 403
-      && !isExpectedCapabilityForbidden(error)
-    ) {
+    if (error.response?.status === 403) {
       forbiddenHandler?.(error)
     }
 

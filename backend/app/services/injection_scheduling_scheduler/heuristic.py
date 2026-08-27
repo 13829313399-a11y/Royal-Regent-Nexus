@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -53,6 +54,31 @@ class HeuristicResult:
     assignments: tuple[dict[str, Any], ...]
     summary: dict[str, Any]
     frozen_task_ids: tuple[str, ...]
+
+
+def _evidence_ready_at(
+    order: InjectionSchedulingOrder, horizon_start: datetime
+) -> datetime:
+    try:
+        lineage = json.loads(order.lineage_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return horizon_start
+    candidates = [horizon_start]
+    for key in (
+        "material_available_date_evidence",
+        "mold_available_date_evidence",
+    ):
+        value = str(lineage.get(key) or "").strip()
+        if not value:
+            continue
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=horizon_start.tzinfo)
+        candidates.append(parsed)
+    return max(candidates)
 
 
 def _order_sort_key(order: InjectionSchedulingOrder) -> tuple[Any, ...]:
@@ -430,6 +456,7 @@ def solve_heuristic(
             duration = timedelta(minutes=transition.setup_minutes + production)
             machine_start = max(
                 horizon_start,
+                _evidence_ready_at(order, horizon_start),
                 (machine_anchors or {}).get(machine.id, horizon_start),
                 last_slot.finish if last_slot else horizon_start,
             )

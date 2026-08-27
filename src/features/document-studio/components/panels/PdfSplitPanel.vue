@@ -11,7 +11,7 @@ const emit = defineEmits<{
 <template>
   <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
     <div class="flex items-center gap-2 text-sm font-semibold text-slate-800"><ShieldCheck class="size-4 text-teal-700" aria-hidden="true" />本地确定性处理</div>
-    <p class="mt-1.5 text-xs leading-5 text-slate-600">使用 pypdf 拆分，不调用 AI。</p>
+    <p class="mt-1.5 text-xs leading-5 text-slate-600">使用 pypdf 在本地拆分。</p>
   </div>
   <div>
     <p class="text-xs font-semibold text-slate-700">拆分方式</p>

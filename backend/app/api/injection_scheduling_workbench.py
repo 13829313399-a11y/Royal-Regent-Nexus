@@ -3,12 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.db import get_db
-from app.schemas.injection_scheduling_import import (
-    InjectionSchedulingImportBatchOut,
-    InjectionSchedulingMappingDraftUpdate,
-)
 from app.schemas.injection_scheduling_workbench import (
     InjectionSchedulingWorkbenchBulkUpdate,
     InjectionSchedulingWorkbenchOut,
@@ -22,10 +17,6 @@ from app.services.auth import (
 from app.services.injection_scheduling import (
     SCHEDULING_DEPARTMENTS,
     require_injection_scheduling_factory,
-)
-from app.services.injection_scheduling_import import (
-    apply_workbench_import_mapping,
-    import_batch_out,
 )
 from app.services.injection_scheduling_workbench import (
     get_injection_scheduling_workbench,
@@ -100,32 +91,6 @@ def _ensure_edit_permission(
     return factory_id, can_override
 
 
-def _ensure_import_permission(
-    db: Session,
-    user: AuthContext,
-    factory_id: str,
-) -> str:
-    factory_id = require_injection_scheduling_factory(factory_id)
-    if any(
-        has_permission_in_scope(
-            user,
-            "injection_scheduling:import",
-            factory_id,
-            department,
-        )
-        for department in SCHEDULING_DEPARTMENTS
-    ):
-        return factory_id
-    ensure_permission_in_scope(
-        db,
-        user,
-        "injection_scheduling:import",
-        factory_id,
-        SCHEDULING_DEPARTMENTS[0],
-    )
-    return factory_id
-
-
 @router.get("", response_model=InjectionSchedulingWorkbenchOut)
 def get_workbench(
     factory_id: str,
@@ -162,31 +127,3 @@ def post_bulk_update(
         user=current_user,
         can_override_baseline=can_override,
     )
-
-
-@router.post(
-    "/imports/{batch_id}/apply-mapping",
-    response_model=InjectionSchedulingImportBatchOut,
-)
-def post_workbench_import_mapping(
-    batch_id: str,
-    payload: InjectionSchedulingMappingDraftUpdate,
-    db: DbSession,
-    current_user: CurrentUser,
-):
-    factory_id = _ensure_import_permission(
-        db,
-        current_user,
-        payload.factory_id,
-    )
-    record = apply_workbench_import_mapping(
-        db,
-        batch_id=batch_id,
-        factory_id=factory_id,
-        expected_revision=payload.expected_revision,
-        request_id=payload.request_id,
-        mappings=payload.mappings,
-        user=current_user,
-        settings=settings,
-    )
-    return import_batch_out(db, record)
