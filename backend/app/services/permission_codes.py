@@ -70,33 +70,6 @@ THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:audit_read",
 )
 
-INJECTION_SCHEDULING_PERMISSION_CODES = (
-    "injection_scheduling:read",
-    "injection_scheduling:import",
-    "injection_scheduling:edit",
-    "injection_scheduling:report",
-    "injection_scheduling:publish",
-    "injection_scheduling:rollback",
-    "injection_scheduling:manage_master",
-    "injection_scheduling:manage_rules",
-    "injection_scheduling:manage_import_profiles",
-    "injection_scheduling:propose_import_profiles",
-    "injection_scheduling:export",
-    "shared_mold:read",
-    "shared_mold:propose",
-    "shared_mold:review",
-    "shared_mold:manage",
-    "shared_mold:approve",
-    "factory_mold:manage",
-    "factory_mold_asset:manage",
-    "factory_mold_capability:manage",
-    "shared_mold_price:read",
-    "shared_mold_price:propose",
-    "shared_mold_price:write",
-    "shared_mold_price:approve",
-    "shared_mold_price:manage",
-)
-
 QC_INSPECTION_PERMISSION_CODES = (
     "qc_inspection:read",
     "qc_inspection:schedule_write",
@@ -169,7 +142,6 @@ BUSINESS_PERMISSION_CODES = (
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *CUSTOMER_ORDER_PERMISSION_CODES,
     *THREE_D_PRINTING_PERMISSION_CODES,
-    *INJECTION_SCHEDULING_PERMISSION_CODES,
     *QC_INSPECTION_PERMISSION_CODES,
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )
