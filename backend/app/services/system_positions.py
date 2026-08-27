@@ -55,26 +55,6 @@ THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES = (
     *THREE_D_PRINTING_OPERATOR_PERMISSION_CODES,
     "three_d_printing:audit_read",
 )
-INJECTION_SCHEDULING_CLERK_PERMISSION_CODES = (
-    "injection_scheduling:read",
-    "injection_scheduling:import",
-    "injection_scheduling:edit",
-    "injection_scheduling:report",
-    "injection_scheduling:export",
-    "shared_mold:read",
-    "shared_mold_price:read",
-    "injection_scheduling:propose_import_profiles",
-)
-INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
-    *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
-    "injection_scheduling:publish",
-    "injection_scheduling:rollback",
-    "injection_scheduling:manage_import_profiles",
-    "shared_mold:propose",
-    "factory_mold:manage",
-    "factory_mold_asset:manage",
-    "factory_mold_capability:manage",
-)
 CARTON_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_procurement:customer_manage"
 CARTON_MARK_CUSTOMER_MANAGE_PERMISSION_CODE = "carton_mark:customer_manage"
 CARTON_MARK_TEMPLATE_RELEASE_PERMISSION_CODE = "carton_mark:template_release"
@@ -199,27 +179,12 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "internal_quote:hair_review",
     "internal_quote:assembly_edit",
     "internal_quote:assembly_review",
-    *(
-        permission
-        for permission in INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES
-        if permission != "injection_scheduling:manage_import_profiles"
-    ),
 )
 GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LIST)
 GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
     (
         *THREE_D_PRINTING_PERMISSION_CODES,
         *QC_INSPECTION_PERMISSION_CODES,
-        "injection_scheduling:manage_master",
-        "injection_scheduling:manage_rules",
-        "injection_scheduling:manage_import_profiles",
-        "shared_mold:approve",
-        "shared_mold:review",
-        "shared_mold:manage",
-        "shared_mold_price:propose",
-        "shared_mold_price:write",
-        "shared_mold_price:approve",
-        "shared_mold_price:manage",
     )
 )
 
@@ -311,9 +276,6 @@ PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "internal_quote:molding_edit",
     "internal_quote:molding_review",
     *THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES[1:],
-    "injection_scheduling:read",
-    "injection_scheduling:publish",
-    "injection_scheduling:rollback",
 )
 
 PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
@@ -356,14 +318,10 @@ MOLDING_CLERK_PERMISSION_CODES = (
     "molding_sample:production_fillback",
     "molding_sample:production_complete",
     "molding_sample:notification_read",
-    *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
 )
 
 MOLDING_SUPERVISOR_PERMISSION_CODES = (
     *MOLDING_CLERK_PERMISSION_CODES,
-    "injection_scheduling:publish",
-    "injection_scheduling:rollback",
-    "injection_scheduling:manage_import_profiles",
 )
 
 WAREHOUSE_PERMISSION_CODES = (

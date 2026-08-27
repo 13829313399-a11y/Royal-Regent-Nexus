@@ -11,39 +11,17 @@ const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend
 const quoteCenterPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/QuoteCenterPanel.vue'), 'utf8')
 const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/components/modules/sales/CustomerPriceArtifactPanel.vue'), 'utf8')
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
-const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingV2View.vue'), 'utf8')
-const injectionSchedulingPageSource = readFileSync(join(process.cwd(), 'src/features/injection-scheduling/InjectionSchedulingPage.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('routes injection scheduling to the fixed-template production workbench', () => {
+  it('keeps the injection scheduling card while its runtime module is retired', () => {
     expect(enterpriseSource).toContain("id: 'injection-scheduling'")
     expect(enterpriseSource).toContain("title: '注塑排产中枢'")
-    expect(enterpriseSource).toContain("route: '/modules/production/injection-scheduling'")
-    expect(enterpriseSource).toContain("permissions: ['injection_scheduling:read']")
-    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
-    expect(routerSource).toContain("name: 'injection-scheduling-v2'")
-    expect(routerSource).toContain("import('@/views/InjectionSchedulingV2View.vue')")
-    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}fullPage: true/)
-    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}permissions: \['injection_scheduling:read'\]/)
-    expect(enterpriseSource).toContain("status: '运行中'")
-    expect(enterpriseSource).toContain("stats: '固定模板 · 人工确认 · 可审计'")
-    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling/mold-database'")
-    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling/machine-database'")
-    expect(injectionSchedulingViewSource).toContain('InjectionSchedulingPage')
-    expect(injectionSchedulingViewSource).not.toContain('注塑排产中枢正在重构')
-    expect(injectionSchedulingViewSource).not.toContain('features/injection-scheduling-v2')
-    for (const requiredCopy of [
-      '下载模板',
-      '导入计划表',
-      '生成排期建议',
-      '待排订单池',
-      '机台排程区',
-      '设为执行计划',
-      '固定 Profile',
-    ]) {
-      expect(injectionSchedulingPageSource).toContain(requiredCopy)
-    }
-    expect(injectionSchedulingPageSource).not.toContain("recognition_mode: 'AUTO'")
+    expect(enterpriseSource).toContain("status: '重构中'")
+    expect(enterpriseSource).toContain("stats: '前后端已移除 · 等待重新建设'")
+    expect(enterpriseSource).not.toContain("route: '/modules/production/injection-scheduling'")
+    expect(enterpriseSource).not.toContain("permissions: ['injection_scheduling:read']")
+    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).not.toContain('InjectionSchedulingV2View.vue')
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {

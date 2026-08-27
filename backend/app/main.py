@@ -7,7 +7,6 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from starlette.middleware.gzip import GZipMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.carton_mark import router as carton_mark_router
@@ -16,34 +15,6 @@ from app.api.customer_order import router as customer_order_router
 from app.api.directory import router as directory_router
 from app.api.iam import router as iam_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
-from app.api.injection_scheduling import router as injection_scheduling_router
-from app.api.injection_scheduling_execution import (
-    router as injection_scheduling_execution_router,
-)
-from app.api.injection_scheduling_export import (
-    router as injection_scheduling_export_router,
-)
-from app.api.injection_scheduling_import import (
-    router as injection_scheduling_import_router,
-)
-from app.api.injection_scheduling_matching import (
-    router as injection_scheduling_matching_router,
-)
-from app.api.injection_scheduling_phase5 import (
-    router as injection_scheduling_phase5_router,
-)
-from app.api.injection_scheduling_profiles import (
-    router as injection_scheduling_profiles_router,
-)
-from app.api.injection_scheduling_scheduler import (
-    router as injection_scheduling_scheduler_router,
-)
-from app.api.injection_scheduling_shared import (
-    router as injection_scheduling_shared_router,
-)
-from app.api.injection_scheduling_workbench import (
-    router as injection_scheduling_workbench_router,
-)
 from app.api.internal_quote import (
     customer_price_artifact_router,
 )
@@ -61,31 +32,6 @@ from app.core.config import settings
 from app.db import init_db
 
 request_timing_logger = logging.getLogger("uvicorn.error")
-LARGE_RESPONSE_COMPRESSION_MINIMUM_BYTES = 64 * 1024
-LARGE_RESPONSE_COMPRESSION_LEVEL = 5
-LARGE_RESPONSE_COMPRESSION_PATH_PREFIXES = (
-    "/api/injection-scheduling/imports",
-    "/api/injection-scheduling/workbench/imports",
-)
-
-
-class ScopedGZipMiddleware:
-    def __init__(self, app, *, minimum_size: int, compresslevel: int):
-        self.app = app
-        self.gzip_app = GZipMiddleware(
-            app,
-            minimum_size=minimum_size,
-            compresslevel=compresslevel,
-        )
-
-    async def __call__(self, scope, receive, send):
-        path = str(scope.get("path", ""))
-        if scope.get("type") == "http" and path.startswith(
-            LARGE_RESPONSE_COMPRESSION_PATH_PREFIXES
-        ):
-            await self.gzip_app(scope, receive, send)
-            return
-        await self.app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -95,11 +41,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
-app.add_middleware(
-    ScopedGZipMiddleware,
-    minimum_size=LARGE_RESPONSE_COMPRESSION_MINIMUM_BYTES,
-    compresslevel=LARGE_RESPONSE_COMPRESSION_LEVEL,
-)
 
 
 @app.exception_handler(RequestValidationError)
@@ -158,16 +99,6 @@ app.include_router(directory_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
-app.include_router(injection_scheduling_router)
-app.include_router(injection_scheduling_execution_router)
-app.include_router(injection_scheduling_export_router)
-app.include_router(injection_scheduling_import_router)
-app.include_router(injection_scheduling_matching_router)
-app.include_router(injection_scheduling_scheduler_router)
-app.include_router(injection_scheduling_phase5_router)
-app.include_router(injection_scheduling_profiles_router)
-app.include_router(injection_scheduling_shared_router)
-app.include_router(injection_scheduling_workbench_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)

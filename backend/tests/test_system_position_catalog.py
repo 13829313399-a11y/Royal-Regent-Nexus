@@ -48,8 +48,8 @@ def test_fixed_system_position_definition_contract():
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 124
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 117
+    assert len(registered_codes) == 100
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 93
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -86,7 +86,6 @@ def test_fixed_system_position_definition_contract():
     general_manager = positions.get_system_position("position_general_manager")
     assert general_manager is not None
     assert general_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert len(general_manager.permission_codes) == 89
     assert (
         set(general_manager.permission_codes)
         | positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES
@@ -95,21 +94,13 @@ def test_fixed_system_position_definition_contract():
     assert positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES == frozenset(
         (
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
-            "injection_scheduling:manage_master",
-            "injection_scheduling:manage_rules",
-            "injection_scheduling:manage_import_profiles",
-            "shared_mold:approve",
-            "shared_mold:review",
-            "shared_mold:manage",
-            "shared_mold_price:propose",
-            "shared_mold_price:write",
-            "shared_mold_price:approve",
-            "shared_mold_price:manage",
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
         )
     )
-    assert "injection_scheduling:export" in general_manager.permission_codes
-    assert "injection_scheduling:manage_import_profiles" not in general_manager.permission_codes
+    assert not any(
+        code.startswith(("injection_scheduling:", "shared_mold:", "shared_mold_price:", "factory_mold:"))
+        for code in general_manager.permission_codes
+    )
     assert not any(
         code.startswith("three_d_printing:")
         for code in general_manager.permission_codes
@@ -209,31 +200,11 @@ def test_fixed_system_position_definition_contract():
         "molding_sample:production_complete",
         "molding_sample:notification_read",
     }
-    expected_clerk_scheduling_permissions = {
-        "injection_scheduling:read",
-        "injection_scheduling:import",
-        "injection_scheduling:edit",
-        "injection_scheduling:report",
-        "injection_scheduling:export",
-        "shared_mold:read",
-        "shared_mold_price:read",
-        "injection_scheduling:propose_import_profiles",
-    }
-    expected_supervisor_scheduling_permissions = {
-        *expected_clerk_scheduling_permissions,
-        "injection_scheduling:publish",
-        "injection_scheduling:rollback",
-        "injection_scheduling:manage_import_profiles",
-    }
     assert molding_clerk.scope_mode == positions.CROSS_FACTORY_READ_SCOPE
     assert molding_supervisor.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
     assert molding_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert set(molding_clerk.permission_codes) == (
-        expected_task_permissions | expected_clerk_scheduling_permissions
-    )
-    assert set(molding_supervisor.permission_codes) == (
-        expected_task_permissions | expected_supervisor_scheduling_permissions
-    )
+    assert set(molding_clerk.permission_codes) == expected_task_permissions
+    assert set(molding_supervisor.permission_codes) == expected_task_permissions
     assert molding_manager.permission_codes == molding_supervisor.permission_codes
 
     production_supervisor = positions.get_system_position(
@@ -252,31 +223,18 @@ def test_fixed_system_position_definition_contract():
         positions.PRODUCTION_TASK_OPERATE_PERMISSION_CODES
         & set(production_supervisor.permission_codes)
     )
-    assert {
-        permission
-        for permission in production_supervisor.permission_codes
-        if permission.startswith("injection_scheduling:")
-    } == {
-        "injection_scheduling:read",
-        "injection_scheduling:publish",
-        "injection_scheduling:rollback",
-    }
-    assert {
-        permission
-        for permission in production_manager.permission_codes
-        if permission.startswith("injection_scheduling:")
-    } == {
-        "injection_scheduling:read",
-        "injection_scheduling:publish",
-        "injection_scheduling:rollback",
-    }
     assert all(
-        permission not in definition.permission_codes
-        for definition in positions.SYSTEM_POSITION_DEFINITIONS
-        for permission in (
-            "injection_scheduling:manage_master",
-            "injection_scheduling:manage_rules",
+        not any(
+            permission.startswith(prefix)
+            for prefix in (
+                "injection_scheduling:",
+                "shared_mold:",
+                "shared_mold_price:",
+                "factory_mold:",
+            )
         )
+        for definition in positions.SYSTEM_POSITION_DEFINITIONS
+        for permission in definition.permission_codes
     )
     assert all(
         "molding_sample:raw_material_write"

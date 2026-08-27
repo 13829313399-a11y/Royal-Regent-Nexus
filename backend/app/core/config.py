@@ -25,9 +25,6 @@ class Settings(BaseSettings):
         BACKEND_DIR / "models" / "document-translation"
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
-    injection_scheduling_export_signing_key: str = ""
-    injection_scheduling_export_signing_key_id: str = "v1"
-    injection_scheduling_export_verification_keys_json: str = "{}"
     document_tools_enabled: bool = True
     document_tool_max_file_bytes: int = Field(
         default=20 * 1024 * 1024,

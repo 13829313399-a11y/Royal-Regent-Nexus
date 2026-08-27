@@ -112,19 +112,6 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/modules/production/injection-scheduling',
-    name: 'injection-scheduling-v2',
-    component: () => import('@/views/InjectionSchedulingV2View.vue'),
-    meta: {
-      title: '注塑排产中枢',
-      fullPage: true,
-      requiresAuth: true,
-      permissions: ['injection_scheduling:read'],
-      enforcePermissions: true,
-      allowAuthenticatedReadOnly: true,
-    },
-  },
-  {
     path: '/change-password',
     name: 'change-password',
     component: () => import('@/views/ForcePasswordChangeView.vue'),
