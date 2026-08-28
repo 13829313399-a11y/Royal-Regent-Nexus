@@ -65,8 +65,8 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).not.toContain('请修正来源文件后重新解析')
   })
 
-  it('registers EDU, 360, Yinhui, SEASONS, Maxx and Shushupapa under Huaxing', () => {
-    for (const code of ['edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa']) {
+  it('registers EDU, 360, Yinhui, SEASONS, Maxx, Shushupapa and Barter under Huaxing', () => {
+    for (const code of ['edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'barter']) {
       expect(workspaceSource).toContain(`code: '${code}'`)
       expect(workspaceSource).toContain(`customer-choice-${'$'}{customer.code}`)
     }

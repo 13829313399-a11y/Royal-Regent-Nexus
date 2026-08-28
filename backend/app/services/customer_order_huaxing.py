@@ -29,6 +29,11 @@ from app.services.customer_order_manual import (
     apply_overrides_to_records,
     decorate_manual_resolution_policy,
 )
+from app.services.customer_order_buzzbee import (
+    CustomerOrderWorkbookError,
+    _decrypt_schedule,
+    _encrypt_schedule,
+)
 
 
 PREVIEW_SCHEMA_VERSION = "customer-order-huaxing-mapped-preview-v1"
@@ -88,6 +93,11 @@ HUAXING_CUSTOMER_MAPPINGS: dict[str, HuaxingCustomerMappingSpec] = {
         "HUAXING_SHUSHUPAPA_ORDER_V1", "HUAXING_SHUSHUPAPA_SCHEDULE_APPEND_V2",
         "严格识别 Shushupapa 客户并隔离客户数据；按 PO 修订版去重，验货日期为走货期前 7 天。",
     ),
+    "barter": HuaxingCustomerMappingSpec(
+        "barter", "Barter", (".pdf",), (".xlsx",),
+        "HUAXING_BARTER_SCANNED_CONTRACT_V1", "HUAXING_BARTER_SCHEDULE_APPEND_V2",
+        "扫描合同逐页 OCR，以文件名合同范围校正页序；使用所选邮件日期，同步写入 Iteam表和接单表并保留 2026 密码。",
+    ),
     "disney": HuaxingCustomerMappingSpec(
         "disney", "迪士尼", (".pdf",), (".xlsx", ".xlsm"),
         "HUAXING_DISNEY_PO_V1", "HUAXING_DISNEY_SCHEDULE_APPEND_V2",
@@ -101,6 +111,15 @@ def get_huaxing_customer_mapping(customer_code: str) -> HuaxingCustomerMappingSp
         return HUAXING_CUSTOMER_MAPPINGS[customer_code]
     except KeyError as exc:
         raise HuaxingCustomerOrderError(f"不支持的华兴客户映射：{customer_code}") from exc
+
+
+def _plain_schedule_content(customer_code: str, content: bytes) -> tuple[bytes, bool]:
+    if customer_code != "barter":
+        return content, False
+    try:
+        return _decrypt_schedule(content)
+    except CustomerOrderWorkbookError as exc:
+        raise HuaxingCustomerOrderError(str(exc).replace("BuzzBee", "Barter")) from exc
 
 
 def _text(value: Any) -> str:
@@ -496,8 +515,15 @@ def _prepare_multi(
         multi_schedule.normalize_key(record.get("po_number")) for record in history
         if multi_schedule.normalize_key(record.get("po_number"))
     }
+    history_by_po = {
+        multi_schedule.normalize_key(record.get("po_number")): record
+        for record in history
+        if multi_schedule.normalize_key(record.get("po_number"))
+    }
     records: list[dict[str, Any]] = []
     existing_count = 0
+    customer_po_reconciled = 0
+    history_fields_reconciled = 0
     for order in orders:
         for line in order.get("lines", []):
             if line.get("is_charge"):
@@ -509,7 +535,54 @@ def _prepare_multi(
             if duplicate_existing:
                 existing_count += 1
             row = multi_schedule._line_values(order, line)
+            if customer_code == "barter" and duplicate_existing:
+                existing = history_by_po.get(multi_schedule.normalize_key(po_number), {})
+                parsed_customer_po = multi_schedule.normalize_key(row.get("customer_po"))
+                existing_customer_po = _text(existing.get("customer_po"))
+                # OCR occasionally confuses the second 9 in Walmart's 0990 prefix
+                # with 8. A matching existing contract is safe evidence for this
+                # stable external PO identifier; revised quantities/dates remain PO-owned.
+                if (
+                    existing_customer_po.startswith("0990")
+                    and not parsed_customer_po.startswith("0990")
+                ):
+                    row["customer_po"] = existing_customer_po
+                    customer_po_reconciled += 1
+                for field in (
+                    "item", "product", "product_en", "outer_pack", "cartons",
+                    "unit_price", "date_code", "ship_date", "country",
+                    "color_box", "customer_label", "label", "battery",
+                ):
+                    if row.get(field) in (None, "", 0) and existing.get(field) not in (None, "", 0):
+                        row[field] = existing[field]
+                        history_fields_reconciled += 1
+                parsed_price = row.get("unit_price")
+                existing_price = existing.get("unit_price")
+                same_quantity = (
+                    row.get("quantity") not in (None, "", 0)
+                    and float(row["quantity"]) == float(existing.get("quantity") or -1)
+                )
+                if (
+                    isinstance(parsed_price, (int, float))
+                    and existing_price not in (None, "", 0)
+                    and (
+                        float(parsed_price) > 1000
+                        or (
+                            row.get("_ocr_used")
+                            and same_quantity
+                            and abs(float(parsed_price) - float(existing_price)) > 0.01
+                        )
+                    )
+                ):
+                    row["unit_price"] = existing["unit_price"]
+                    history_fields_reconciled += 1
+                if row.get("quantity") not in (None, "", 0) and row.get("unit_price") not in (None, "", 0):
+                    calculated_amount = round(float(row["quantity"]) * float(row["unit_price"]), 2)
+                    if row.get("amount") in (None, "", 0) or abs(float(row["amount"]) - calculated_amount) > 0.05:
+                        row["amount"] = calculated_amount
+                        history_fields_reconciled += 1
             row["_source_po_file_name"] = _text(order.get("filename"))
+            row["source_page"] = line.get("source_page")
             row["flags"] = multi_schedule._record_flags(row, customer_code, date.today())
             if duplicate_existing:
                 row["_duplicate_existing"] = True
@@ -518,6 +591,14 @@ def _prepare_multi(
         warnings.append(
             f"{existing_count} 行 PO 已存在当前或已走货排期，"
             "测试阶段可在预览确认后重复生成。"
+        )
+    if customer_po_reconciled:
+        warnings.append(
+            f"{customer_po_reconciled} 行 Walmart 客户 PO 的 OCR 前缀已用同合同历史排期校正。"
+        )
+    if history_fields_reconciled:
+        warnings.append(
+            f"{history_fields_reconciled} 个 OCR 空缺或明显异常字段已用同合同历史排期校正；数量仍以本次合同为准。"
         )
     return PreparedBatch(records, warnings, _text(info.get("sheet")))
 
@@ -533,7 +614,7 @@ def _prepare_batch(
         "yinhui": _prepare_yinhui,
         "seasons": _prepare_seasons,
     }
-    if customer_code in {"maxx", "shushupapa"}:
+    if customer_code in {"maxx", "shushupapa", "barter"}:
         return _prepare_multi(customer_code, po_files, schedule_file_name, schedule_content)
     try:
         return handlers[customer_code](po_files, schedule_file_name, schedule_content)
@@ -639,6 +720,28 @@ def _record_fields(customer_code: str, record: dict[str, Any]) -> dict[str, Any]
             "line_q": record.get("inspection_date"),
             "requested_ship_date": record.get("ship_date"),
         }
+    if customer_code == "barter":
+        return {
+            "po_no": record.get("customer_po"),
+            "contract_no": record.get("po_number"),
+            "customer_name": record.get("customer"),
+            "country": record.get("country"),
+            "product_no": record.get("item"),
+            "product_name_zh": record.get("product"),
+            "product_name_en": record.get("product_en"),
+            "quantity": record.get("quantity"),
+            "units_per_carton": record.get("outer_pack"),
+            "carton_count": record.get("cartons"),
+            "standard": _joined(record.get("country"), "PO价格币种HKD"),
+            "unit_price_hkd": record.get("unit_price"),
+            "amount_hkd": record.get("amount"),
+            "packaging": _joined(
+                record.get("color_box"), record.get("customer_label"),
+                record.get("label"), record.get("battery"),
+            ),
+            "customer_q": record.get("inspection_date"),
+            "requested_ship_date": record.get("ship_date"),
+        }
     return {
         "po_no": record.get("po_number"),
         "contract_no": record.get("po_number"),
@@ -735,8 +838,11 @@ def _preview_row(
     source_file = _text(record.get("_source_po_file_name")) or default_source_file
     source_sheet = _text(record.get("source_sheet") or record.get("schedule_category")) or sheet_name
     source_row = _text(record.get("source_row") or record.get("row_number") or record.get("row"))
+    source_page = _text(record.get("source_page"))
     source_reference = f"{source_file} · {source_sheet}"
-    if source_row:
+    if source_page:
+        source_reference += f" 第 {source_page} 页"
+    elif source_row:
         source_reference += f" 第 {source_row} 行"
     common: dict[str, Any] = {
         "id": row_id,
@@ -768,6 +874,8 @@ def _preview_row(
 def create_huaxing_customer_preview(
     *, customer_code: str, factory_id: str, received_date: str,
     po_files: list[tuple[str, bytes]], schedule_file_name: str, schedule_content: bytes,
+    _prepared: PreparedBatch | None = None,
+    _schedule_encrypted: bool | None = None,
 ) -> dict[str, Any]:
     spec = get_huaxing_customer_mapping(customer_code)
     if factory_id != "huaxing":
@@ -778,7 +886,16 @@ def create_huaxing_customer_preview(
         normalized_received_date = date.fromisoformat(received_date).isoformat()
     except ValueError as exc:
         raise HuaxingCustomerOrderError("来单日期必须是 YYYY-MM-DD") from exc
-    prepared = _prepare_batch(customer_code, po_files, schedule_file_name, schedule_content)
+    if _prepared is None:
+        plain_schedule, schedule_encrypted = _plain_schedule_content(customer_code, schedule_content)
+        prepared = _prepare_batch(customer_code, po_files, schedule_file_name, plain_schedule)
+    else:
+        prepared = _prepared
+        schedule_encrypted = bool(_schedule_encrypted)
+    if customer_code == "barter":
+        for record in prepared.records:
+            # Barter 作业说明指定来单日期取客户确认邮件日期，不取合同落款日期。
+            record["po_date"] = normalized_received_date
     first_file_name = po_files[0][0]
     rows = [
         _preview_row(
@@ -807,6 +924,7 @@ def create_huaxing_customer_preview(
         "source_po_sha256": _combined_hash(file_names, po_hashes),
         "source_po_sha256s": po_hashes,
         "source_schedule_sha256": sha256(schedule_content).hexdigest(),
+        "_schedule_encrypted": schedule_encrypted,
         "input_template": spec.input_template,
         "target_template": spec.target_template,
         "output_file_name": _safe_output_name(schedule_file_name, spec.name),
@@ -820,6 +938,8 @@ def create_huaxing_customer_preview(
         "warnings": list(dict.fromkeys([
             spec.rule_summary,
             export_note,
+            *( ["源 Barter 排期使用打开密码 2026；导出文件将自动恢复相同密码。"]
+               if customer_code == "barter" and schedule_encrypted else [] ),
             *prepared.warnings,
         ])),
     }
@@ -833,6 +953,7 @@ def _append_records_across_sheets(
     aliases: dict[str, list[str]] | dict[str, tuple[str, ...]],
     targets: list[tuple[str, list[dict[str, Any]], bool]],
     formula_fallback_fields: tuple[str, ...] = (),
+    prune_empty_trailing_cells: bool = False,
 ) -> None:
     """Apply several linked-sheet appends to one complete workbook copy."""
     current_content = schedule_content
@@ -851,6 +972,7 @@ def _append_records_across_sheets(
             sheet_names=(sheet_name,),
             formula_fallback_fields=formula_fallback_fields,
             first_total_section=first_total_section,
+            prune_empty_trailing_cells=prune_empty_trailing_cells,
         )
         current_content = output.getvalue()
         current_filename = f"working{working_suffix}"
@@ -1002,6 +1124,20 @@ def _export_prepared(
             formula_fallback_fields=("cartons",),
         )
         return
+    if customer_code == "barter":
+        _append_records_across_sheets(
+            schedule_content=schedule_content,
+            schedule_file_name=schedule_file_name,
+            output_path=output_path,
+            aliases=multi_schedule.ALIASES,
+            targets=[
+                ("Iteam表", prepared.records, False),
+                ("接单表", prepared.records, False),
+            ],
+            formula_fallback_fields=("cartons", "amount"),
+            prune_empty_trailing_cells=True,
+        )
+        return
     with TemporaryDirectory(prefix=f"huaxing-{customer_code}-export-") as temp_dir:
         schedule_path = Path(temp_dir) / Path(schedule_file_name).name
         schedule_path.write_bytes(schedule_content)
@@ -1041,23 +1177,40 @@ def export_huaxing_customer_schedule(
     skipped_issue_keys: set[str] | None = None,
     manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
+    plain_schedule, schedule_encrypted = _plain_schedule_content(customer_code, schedule_content)
+    prepared = _prepare_batch(customer_code, po_files, schedule_file_name, plain_schedule)
     preview = create_huaxing_customer_preview(
         customer_code=customer_code, factory_id=factory_id, received_date=received_date,
         po_files=po_files, schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
+        _prepared=prepared,
+        _schedule_encrypted=schedule_encrypted,
     )
     decorate_manual_resolution_policy(preview)
     apply_overrides_to_preview(preview, manual_overrides or [])
     _validate_skips(preview, skipped_issue_keys or set())
     if not preview["rows"]:
         raise HuaxingCustomerOrderError("本批文件没有可安全生成的新单明细，请查看预览告警")
-    prepared = _prepare_batch(customer_code, po_files, schedule_file_name, schedule_content)
     field_aliases = {
         "disney": {
             "product_name_zh": "product_name_zh",
             "product_name_en": "description",
             "units_per_carton": "case_pack",
             "line_q": "inspection_date",
+            "requested_ship_date": "ship_date",
+        },
+        "barter": {
+            "po_no": "customer_po",
+            "contract_no": "po_number",
+            "customer_name": "customer",
+            "product_no": "item",
+            "product_name_zh": "product",
+            "product_name_en": "product_en",
+            "units_per_carton": "outer_pack",
+            "carton_count": "cartons",
+            "unit_price_hkd": "unit_price",
+            "amount_hkd": "amount",
+            "customer_q": "inspection_date",
             "requested_ship_date": "ship_date",
         },
     }.get(customer_code, {})
@@ -1075,7 +1228,7 @@ def export_huaxing_customer_schedule(
         try:
             _export_prepared(
                 customer_code=customer_code, prepared=prepared,
-                schedule_file_name=schedule_file_name, schedule_content=schedule_content,
+                schedule_file_name=schedule_file_name, schedule_content=plain_schedule,
                 output_path=output_path,
             )
         except Exception as exc:
@@ -1087,4 +1240,10 @@ def export_huaxing_customer_schedule(
                 download_file_name,
                 _text(prepared.records[0].get("po_number")) if prepared.records else "",
             )
-        return output_path.read_bytes(), download_file_name, preview
+        output = output_path.read_bytes()
+        if customer_code == "barter" and schedule_encrypted:
+            try:
+                output = _encrypt_schedule(output)
+            except CustomerOrderWorkbookError as exc:
+                raise HuaxingCustomerOrderError(str(exc)) from exc
+        return output, download_file_name, preview
