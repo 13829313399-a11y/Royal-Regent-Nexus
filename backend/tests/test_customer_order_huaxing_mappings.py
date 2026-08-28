@@ -28,8 +28,10 @@ from app.services.customer_order_manual import (
     apply_overrides_to_records,
     decorate_manual_resolution_policy,
 )
+from app.services.customer_order_buzzbee import _decrypt_schedule, _encrypt_schedule
 from app.services.huaxing_order_legacy import (
     edu_schedule,
+    multi_po_parser,
     multi_schedule,
     new_order_excel,
     shixin_schedule,
@@ -48,6 +50,7 @@ def test_huaxing_customer_order_center_exposes_all_mapped_customers():
         "seasons",
         "maxx",
         "shushupapa",
+        "barter",
         "disney",
     }
     assert all(spec.target_template.endswith("_SCHEDULE_APPEND_V2") for spec in HUAXING_CUSTOMER_MAPPINGS.values())
@@ -1193,6 +1196,177 @@ def test_maxx_and_shushupapa_apply_their_seven_day_dates():
     assert shushupapa["inspection_date"] == "2026-08-13"
 
 
+def test_barter_scanned_contract_is_parsed_one_order_per_page():
+    pages = [
+        """PURCHASE CONTRACT CONTRACT #: TNT/F 16329
+DELIVERY :JUN 1, 2027
+CUSTOMER :WAL-MART USA (O990310797)
+88292 AF QUICK DRAW 2,040 PCS 18.4580/PCS 33,574.32
+(408 CTN)
+RFID LABEL & CARTON LABEL
+BATTERY : 2 PCS AA
+5 PC PER MASTER
+PLEASE APPLY DATE CODE WM88292RR-0527 TO BOTH ON PRODUCT & PACKAGING.
+2026 NEW PACKAGING - GREEN BOX""",
+        """PURCHASE CONTRACT CONTRACT #: TNT/F 16330
+DELIVERY :JUN 18, 2027
+CUSTOMER :WAL-MART USA (0990310799)
+88292 AF QUICK DRAW 1,360 PCS 16.4580/PCS 22,382.88
+(272 CTN)
+RFID LABEL & CARTON LABEL
+BATTERY : 2 PCS AA
+5 PC PER MASTER
+PLEASE APPLY DATE CODE WM88292RR-0727 TO BOTH ON PRODUCT & PACKAGING.
+2026 NEW PACKAGING - GREEN BOX""",
+    ]
+
+    parsed = multi_po_parser._parse_barter_pages(
+        pages,
+        "TNT16329-16330 Contract.pdf",
+        ocr_used=True,
+    )
+
+    assert parsed["client"] == "barter"
+    assert [line["po_number"] for line in parsed["lines"]] == ["TNT/F16329", "TNT/F16330"]
+    assert [line["customer_po"] for line in parsed["lines"]] == ["0990310797", "0990310799"]
+    assert [line["ship_date"] for line in parsed["lines"]] == ["2027-06-01", "2027-06-18"]
+    assert [line["quantity"] for line in parsed["lines"]] == [2040, 1360]
+    assert [line["outer_pack"] for line in parsed["lines"]] == [5, 5]
+    assert [line["cartons"] for line in parsed["lines"]] == [408, 272]
+    assert [line["unit_price"] for line in parsed["lines"]] == [16.458, 16.458]
+    assert [line["amount"] for line in parsed["lines"]] == [33574.32, 22382.88]
+    assert [line["date_code"] for line in parsed["lines"]] == ["WM88292RR-0527", "WM88292RR-0727"]
+    assert parsed["lines"][0]["product_name_zh"] == "绿色发声枪"
+    assert any("逐页 OCR" in warning for warning in parsed["warnings"])
+
+
+def test_barter_encrypted_schedule_roundtrip_writes_item_and_order_sheets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    workbook = Workbook()
+    item = workbook.active
+    item.title = "Iteam表"
+    item_headers = [
+        "系统", "客户", "来单日期", "正单合同号 S/C NO", "第三方客户 PO NO#",
+        "产品货号", "产品名称", "英文名称", "数量", "装箱数", "总箱数",
+        "单价(HKD)", "总金额(HKD)", "日期码", "CRD", "箱唛资料(收到日期)",
+        "彩盒", "客贴纸", "贴纸", "电池", "走货国家/规格", "备注",
+        "BV验货日期", "验货结果", "走货情况",
+    ]
+    for column, value in enumerate(item_headers, 1):
+        item.cell(4, column, value)
+    item_row = [
+        "已上系统", "WM USA", "2026-01-01", "TNT/F10000", "0990000000",
+        "88292", "绿色发声枪", "AF QUICK DRAW", 100, 5, "=I5/J5",
+        16.458, "=I5*L5", "WM88292RR-0126", "2026-02-01", "齐",
+        "英文盒（2026版本）", "RFID", "外箱利宝", "AA（2pcs）", "WM USA", "",
+        "", "", "",
+    ]
+    for column, value in enumerate(item_row, 1):
+        item.cell(5, column, value)
+    item["XFD1"] = "远端非空单元格需保留"
+    item["XFD3"].fill = PatternFill("solid", fgColor="FFFFFF")
+
+    order = workbook.create_sheet("接单表")
+    order_headers = [
+        "客户", "来单日期", "正单合同号", "第三方客户 PO NO#", "产品货号",
+        "产品名称", "英文名称", "数量", "装箱数", "总箱数", "单价(HKD)",
+        "总金额(HKD)", "CRD", "验货日期", "验货结果", "日期码",
+        "走货国家/规格", "说明书", "彩盒", "备注",
+    ]
+    for column, value in enumerate(order_headers, 1):
+        order.cell(4, column, value)
+    order_row = [
+        "WM USA", "2026-01-01", "TNT/F10000", "0990000000", "88292",
+        "绿色发声枪", "AF QUICK DRAW", 100, 5, "=H5/I5", 16.458,
+        "=H5*K5", "2026-02-01", "", "", "WM88292RR-0126", "WM USA",
+        "", "英文盒（2026版本）", "",
+    ]
+    for column, value in enumerate(order_row, 1):
+        order.cell(5, column, value)
+
+    plain = BytesIO()
+    workbook.save(plain)
+    workbook.close()
+    encrypted = _encrypt_schedule(plain.getvalue())
+    parsed_order = {
+        "client": "barter",
+        "client_name": "Barter",
+        "filename": "TNT16380 Contract.pdf",
+        "po_number": "TNT/F16380",
+        "customer": "WM USA",
+        "warnings": ["扫描件已 OCR"],
+        "lines": [{
+            "po_number": "TNT/F16380",
+            "customer_po": "0990310999",
+            "ship_date": "2027-06-01",
+            "item_code": "88292",
+            "product_name_zh": "绿色发声枪",
+            "description": "AF QUICK DRAW",
+            "quantity": 2040,
+            "outer_pack": 5,
+            "cartons": 408,
+            "unit_price": 16.458,
+            "amount": 33574.32,
+            "date_code": "WM88292RR-0527",
+            "color_box": "英文盒（2026版本）",
+            "customer_label": "RFID",
+            "label": "外箱利宝",
+            "battery": "AA（2pcs）",
+            "country": "WM USA",
+            "source_page": 1,
+            "_ocr_used": True,
+        }],
+    }
+    monkeypatch.setattr(multi_po_parser, "parse_po", lambda *_args, **_kwargs: parsed_order)
+
+    preview = create_huaxing_customer_preview(
+        customer_code="barter",
+        factory_id="huaxing",
+        received_date="2026-08-28",
+        po_files=[("TNT16380 Contract.pdf", b"%PDF-1.4")],
+        schedule_file_name="2026年 BARTER 排期.xlsx",
+        schedule_content=encrypted,
+    )
+    assert preview["_schedule_encrypted"] is True
+    assert preview["rows"][0]["po_no"] == "0990310999"
+    assert preview["rows"][0]["contract_no"] == "TNT/F16380"
+    assert "第 1 页" in preview["rows"][0]["lineage"]["source"]
+
+    output, _, exported_preview = export_huaxing_customer_schedule(
+        customer_code="barter",
+        factory_id="huaxing",
+        received_date="2026-08-28",
+        po_files=[("TNT16380 Contract.pdf", b"%PDF-1.4")],
+        schedule_file_name="2026年 BARTER 排期.xlsx",
+        schedule_content=encrypted,
+    )
+    assert output.startswith(bytes.fromhex("D0CF11E0A1B11AE1"))
+    assert exported_preview["_schedule_encrypted"] is True
+    decrypted_output, was_encrypted = _decrypt_schedule(output)
+    assert was_encrypted is True
+    rendered = load_workbook(BytesIO(decrypted_output), data_only=False)
+    try:
+        item_sheet = rendered["Iteam表"]
+        order_sheet = rendered["接单表"]
+        item_new_row = next(row for row in range(5, item_sheet.max_row + 1) if item_sheet.cell(row, 4).value == "TNT/F16380")
+        order_new_row = next(row for row in range(5, order_sheet.max_row + 1) if order_sheet.cell(row, 3).value == "TNT/F16380")
+        assert item_sheet.cell(item_new_row, 3).value.date().isoformat() == "2026-08-28"
+        assert item_sheet.cell(item_new_row, 5).value == "0990310999"
+        assert item_sheet.cell(item_new_row, 14).value == "WM88292RR-0527"
+        assert item_sheet.cell(item_new_row, 11).data_type == "f"
+        assert item_sheet.cell(item_new_row, 13).data_type == "f"
+        assert item_sheet["XFD1"].value == "远端非空单元格需保留"
+        assert order_sheet.cell(order_new_row, 2).value.date().isoformat() == "2026-08-28"
+        assert order_sheet.cell(order_new_row, 4).value == "0990310999"
+        assert order_sheet.cell(order_new_row, 16).value == "WM88292RR-0527"
+        assert order_sheet.cell(order_new_row, 10).data_type == "f"
+        assert order_sheet.cell(order_new_row, 12).data_type == "f"
+    finally:
+        rendered.close()
+
+
 def test_multi_customer_revision_dedup_keeps_highest_revision():
     selected, report = _dedupe_multi_orders([
         {"po_number": "PO-1", "filename": "PO-1.pdf"},
@@ -1210,6 +1384,7 @@ def test_common_preview_contract_maps_each_customer_and_blocks_high_risk_flags()
     assert _record_fields("seasons", {"oqf_no": "QF-1"})["po_no"] == "QF-1"
     assert _record_fields("maxx", {"po_number": "M-1"})["po_no"] == "M-1"
     assert _record_fields("shushupapa", {"po_number": "S-1"})["po_no"] == "S-1"
+    assert _record_fields("barter", {"po_number": "TNT/F1", "customer_po": "0990"})["po_no"] == "0990"
     assert _record_fields("disney", {"po_number": "D-1"})["po_no"] == "D-1"
 
     issues = _issues(

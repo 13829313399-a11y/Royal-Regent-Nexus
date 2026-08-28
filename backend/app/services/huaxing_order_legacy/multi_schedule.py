@@ -24,7 +24,7 @@ CLIENT_NAMES = {"maxx": "Maxx", "shushupapa": "Shushupapa", "barter": "Barter"}
 CLIENT_SHEETS = {
     "maxx": ("KFC公仔接单表", "接单表"),
     "shushupapa": ("接单表",),
-    "barter": ("接单表", "Iteam", "Item"),
+    "barter": ("Iteam表", "接单表", "发票"),
 }
 
 ALIASES = {
@@ -32,10 +32,11 @@ ALIASES = {
     "project": ("款号", "PROJECT", "PROJECTNO"),
     "po_date": ("来单日期", "客出单日期", "订单日期"),
     "customer": ("客户", "客名", "第三方客户"),
-    "po_number": ("PONO", "采购订单NO", "正单合同号", "CONTRACT"),
-    "customer_po": ("客PONO", "第三方客户/PONO", "CUSTOMERPO"),
+    "po_number": ("PONO", "采购订单NO", "正单合同号", "正单合同号S/CNO", "CONTRACT"),
+    "customer_po": ("客PONO", "第三方客户/PONO", "第三方客户 PO NO#", "CUSTOMERPO"),
     "item": ("ITEMNO", "产品货号", "货号"),
     "product": ("产品名称", "名称"),
+    "product_en": ("英文名称",),
     "quantity": ("每款总数量", "华兴产品数量", "产品数量", "数量"),
     "external_quantity": ("外厂产品数量",),
     "inner_pack": ("每款装箱个数", "华兴产品装箱个数", "产品装箱个数"),
@@ -43,11 +44,14 @@ ALIASES = {
     "cartons": ("总箱数",),
     "color_box": ("彩盒",),
     "manual": ("说明书",),
-    "label": ("贴纸", "客贴纸"),
+    "box_mark": ("箱唛资料", "箱唛资料(收到日期)"),
+    "customer_label": ("客贴纸",),
+    "label": ("贴纸",),
+    "battery": ("电池",),
     "card": ("卡牌",),
     "country": ("走货国家/规格", "走货国家", "规格"),
-    "unit_price": ("单价(USD)", "单价USD", "单价"),
-    "amount": ("总金额(USD)", "总金额USD", "金额USD"),
+    "unit_price": ("单价(HKD)", "单价HKD", "单价(USD)", "单价USD", "单价"),
+    "amount": ("总金额(HKD)", "总金额HKD", "金额HKD", "总金额(USD)", "总金额USD", "金额USD"),
     "complete_date": ("完成日期",),
     "inspection_date": ("验货日期", "BV验货日期"),
     "ship_date": ("SHIPMENT", "走货期", "CRD"),
@@ -201,17 +205,46 @@ def inspect_schedule(path: str | Path, client: str) -> dict[str, Any]:
 def _record_flags(record: dict[str, Any], client: str, today: date) -> list[dict[str, str]]:
     flags: list[dict[str, str]] = []
     if not record.get("po_number"):
-        flags.append({"level": "high", "text": "缺订单号"})
+        flags.append({"level": "high", "code": "missing_po_number", "field": "po_number", "text": "缺订单号"})
     if not record.get("item"):
-        flags.append({"level": "high", "text": "缺货号"})
+        flags.append({"level": "high", "code": "missing_item", "field": "item", "text": "缺货号"})
     if not record.get("ship_date"):
-        flags.append({"level": "medium", "text": "缺走货期"})
+        flags.append({
+            "level": "high" if client == "barter" else "medium",
+            "code": "missing_ship_date",
+            "field": "ship_date",
+            "text": "缺走货期",
+        })
     else:
         ship = parse_date(record["ship_date"])
         if ship and ship < today and str(record.get("inspection_result") or "").upper() not in {"PASS", "已走货"}:
-            flags.append({"level": "high", "text": "走货期已过"})
+            flags.append({"level": "high", "code": "past_ship_date", "field": "inspection_result", "text": "走货期已过"})
         elif ship and 0 <= (ship - today).days <= 14:
-            flags.append({"level": "medium", "text": "14天内走货"})
+            flags.append({"level": "medium", "code": "near_ship_date", "field": "ship_date", "text": "14天内走货"})
+    if client == "barter":
+        required = (
+            ("customer_po", "customer_po", "缺第三方客户 PO"),
+            ("quantity", "quantity", "缺数量"),
+            ("outer_pack", "outer_pack", "缺装箱数"),
+            ("unit_price", "unit_price", "缺 HKD 单价"),
+            ("amount", "amount", "缺 HKD 金额"),
+            ("date_code", "date_code", "缺日期码"),
+        )
+        for key, field, message in required:
+            if record.get(key) in (None, "", 0):
+                flags.append({
+                    "level": "high",
+                    "code": f"missing_{key}",
+                    "field": field,
+                    "text": message,
+                })
+        if record.get("_ocr_used"):
+            flags.append({
+                "level": "medium",
+                "code": "ocr_review",
+                "field": "row",
+                "text": "扫描合同已由 OCR 逐页识别，请对照原 PDF 复核关键字段",
+            })
     if client == "shushupapa":
         item = normalize_key(record.get("item"))
         customer = normalize_key(record.get("customer"))
@@ -296,16 +329,23 @@ def _line_values(order: dict[str, Any], line: dict[str, Any]) -> dict[str, Any]:
         "po_date": order.get("po_date"), "customer": order.get("customer"),
         "po_number": line.get("po_number") or order.get("po_number"),
         "customer_po": line.get("customer_po") or order.get("customer_po"),
-        "item": line.get("item_code"), "product": line.get("description"), "quantity": line.get("quantity"),
+        "item": line.get("item_code"),
+        "product": line.get("product_name_zh") or line.get("description"),
+        "product_en": line.get("description"),
+        "quantity": line.get("quantity"),
         "external_quantity": line.get("external_quantity"),
         "inner_pack": line.get("inner_pack"),
         "outer_pack": line.get("outer_pack"),
         "cartons": line.get("cartons"),
         "color_box": line.get("color_box"),
         "manual": line.get("manual"),
+        "box_mark": line.get("box_mark"),
+        "customer_label": line.get("customer_label"),
         "label": line.get("label"),
+        "battery": line.get("battery"),
         "country": line.get("country"),
         "unit_price": line.get("unit_price"), "amount": line.get("amount"),
+        "date_code": line.get("date_code"),
         # Maxx 规则文档明确：完成日期在 Shipment 前一周。
         "complete_date": (
             (ship - timedelta(days=7)).isoformat()
@@ -319,7 +359,11 @@ def _line_values(order: dict[str, Any], line: dict[str, Any]) -> dict[str, Any]:
             else (ship - timedelta(days=7)).isoformat() if ship else order.get("inspection_date")
         ),
         "ship_date": ship_value,
+        "inspection_result": line.get("inspection_result") or order.get("inspection_result"),
         "remarks": line.get("shipment_note") or order.get("shipment_note"),
+        "source_page": line.get("source_page"),
+        "_ocr_used": bool(line.get("_ocr_used")),
+        "_ocr_reconciled": bool(line.get("_ocr_reconciled")),
     }
 
 
@@ -329,7 +373,11 @@ def _read_order_history(client: str, path: str | Path) -> list[dict[str, Any]]:
     try:
         records: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
-        for ws in wb.worksheets:
+        worksheets = list(wb.worksheets)
+        if client == "barter":
+            priority = {"Iteam表": 0, "接单表": 1, "发票": 2}
+            worksheets.sort(key=lambda ws: priority.get(ws.title, 3))
+        for ws in worksheets:
             try:
                 header_row, columns, _ = _header_map(ws)
             except ValueError:

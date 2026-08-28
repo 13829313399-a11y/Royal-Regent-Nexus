@@ -1358,7 +1358,9 @@ async def export_mapped_customer_order_batch(
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
             "X-Output-Template": preview["target_template"],
-            "X-Workbook-Password-Required": "false",
+            "X-Workbook-Password-Required": (
+                "true" if preview.get("_schedule_encrypted") else "false"
+            ),
             "X-PO-File-Count": str(preview["po_file_count"]),
             "X-Skipped-Issue-Count": str(len(actual_issue_keys)),
             "X-Content-SHA256": audit.output_sha256,

@@ -875,6 +875,7 @@ def append_records_to_workbook(
         Mapping[int, Any],
     ] | None = None,
     first_total_section: bool = False,
+    prune_empty_trailing_cells: bool = False,
 ) -> dict[str, Any]:
     """Copy the complete workbook and insert new detail rows before its total row.
 
@@ -897,6 +898,22 @@ def append_records_to_workbook(
             default=max(column_map),
         )
         max_col = max(max(column_map), header_last_col)
+        if prune_empty_trailing_cells:
+            # Some customer templates accidentally style every column through XFD.
+            # Moving those millions of value-less cells makes a 49-row insert take
+            # minutes. Keep all content/comments/links and workbook-level column
+            # dimensions, but discard empty per-cell style records beyond the real
+            # table boundary before shifting rows.
+            removable = [
+                coordinate
+                for coordinate, cell in target._cells.items()
+                if cell.column > max_col
+                and cell.value is None
+                and cell.comment is None
+                and not getattr(cell, "hyperlink", None)
+            ]
+            for coordinate in removable:
+                del target._cells[coordinate]
         detail_columns = tuple(
             col_no
             for col_no, field in column_map.items()

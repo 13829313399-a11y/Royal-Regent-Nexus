@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import io
 import re
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
 import pdfplumber
 from openpyxl import load_workbook
+
+from app.services.carton_mark import configure_tesseract, missing_tesseract_message
 
 
 CLIENTS = {
@@ -61,10 +65,91 @@ def _iso_date(value: Any) -> str | None:
     return None
 
 
-def read_pdf(source: str | Path | bytes | BinaryIO) -> tuple[str, int]:
-    payload = io.BytesIO(source) if isinstance(source, bytes) else source
-    with pdfplumber.open(payload) as pdf:
+def _pdf_bytes(source: str | Path | bytes | BinaryIO) -> bytes:
+    if isinstance(source, bytes):
+        return source
+    if isinstance(source, (str, Path)):
+        return Path(source).read_bytes()
+    position = source.tell() if hasattr(source, "tell") else None
+    payload = source.read()
+    if position is not None and hasattr(source, "seek"):
+        source.seek(position)
+    return payload
+
+
+def _ocr_contract_page(pytesseract_module, image, language: str) -> str:
+    dense = pytesseract_module.image_to_string(
+        image,
+        lang=language,
+        config="--oem 3 --psm 6 -c preserve_interword_spaces=1",
+    )
+    # A sparse second pass over the contract header/customer band is especially
+    # useful for distinguishing 8/9 in Walmart PO numbers without doubling the
+    # OCR cost for the full page.
+    header_band = image.crop((0, int(image.height * 0.16), image.width, int(image.height * 0.48)))
+    sparse = pytesseract_module.image_to_string(
+        header_band,
+        lang=language,
+        config="--oem 3 --psm 11",
+    )
+    return dense + "\n" + sparse
+
+
+def read_pdf_pages(
+    source: str | Path | bytes | BinaryIO,
+    *,
+    min_native_chars_per_page: int = 40,
+    max_pages: int = 60,
+) -> tuple[list[str], bool]:
+    """Read native PDF text, falling back to bounded page-preserving OCR."""
+    content = _pdf_bytes(source)
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
         pages = [(page.extract_text(x_tolerance=2, y_tolerance=3) or "") for page in pdf.pages]
+    if not pages:
+        raise ValueError("PDF 没有页面")
+    if len(pages) > max_pages:
+        raise ValueError(f"扫描 PDF 最多支持 {max_pages} 页，当前为 {len(pages)} 页")
+    native_chars = sum(len(re.sub(r"\s+", "", page)) for page in pages)
+    if native_chars >= len(pages) * min_native_chars_per_page:
+        return pages, False
+
+    try:
+        import pypdfium2 as pdfium  # type: ignore
+        import pytesseract  # type: ignore
+    except Exception as exc:
+        raise ValueError("扫描 PDF OCR 依赖未安装：需要 pypdfium2、Pillow 和 pytesseract") from exc
+    tesseract_cmd, language = configure_tesseract(pytesseract)
+    if not tesseract_cmd:
+        raise ValueError(missing_tesseract_message())
+
+    document = pdfium.PdfDocument(content)
+    ocr_pages: list[str] = []
+    pending = deque()
+    try:
+        # Keep only three rendered pages alive at once. Tesseract itself runs in
+        # separate processes, so a small worker pool materially shortens 49-page
+        # Barter batches without retaining the whole document as bitmaps.
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="barter-ocr") as executor:
+            for page_index in range(len(document)):
+                image = document[page_index].render(scale=4).to_pil().convert("RGB")
+                pending.append(executor.submit(
+                    _ocr_contract_page,
+                    pytesseract,
+                    image,
+                    language,
+                ))
+                if len(pending) >= 3:
+                    ocr_pages.append(pending.popleft().result())
+            while pending:
+                ocr_pages.append(pending.popleft().result())
+    finally:
+        if hasattr(document, "close"):
+            document.close()
+    return ocr_pages, True
+
+
+def read_pdf(source: str | Path | bytes | BinaryIO) -> tuple[str, int]:
+    pages, _ = read_pdf_pages(source)
     return "\n".join(pages), len(pages)
 
 
@@ -636,25 +721,208 @@ def _parse_shushupapa_excel(
     return result
 
 
-def _parse_barter(text: str, filename: str, pages: int) -> dict[str, Any]:
-    result = _base_result("barter", filename, pages)
-    result["customer"] = "WAL-MART USA"
-    result["po_number"] = _search(r"CONTRACT(?:\s+NO\.?)?\s*[:#]?\s*([A-Z0-9-]+)", text)
-    result["customer_po"] = _search(r"CUSTOMER\s*:\s*WAL-?MART\s+USA\s*\(?([A-Z0-9-]+)", text)
-    result["ship_date"] = _iso_date(_search(r"DELIVERY\s*[:#]?\s*([^\n]+)", text))
-    line_re = re.compile(r"(?m)^([A-Z0-9-]{4,})\s+(.+?)\s+([\d,]+)\s+(?:PCS?|EA)\s+([\d,.]+)\s+([\d,.]+)$", re.I)
-    for match in line_re.finditer(text):
-        result["lines"].append({
-            "item_code": match.group(1), "description": _clean(match.group(2)),
-            "quantity": _number(match.group(3)), "unit": "pcs",
-            "unit_price": _number(match.group(4)), "amount": _number(match.group(5)),
+_BARTER_DIGIT_TRANSLATION = str.maketrans({
+    "O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "Z": "2",
+    "S": "5", "$": "5", "§": "5", "G": "6", "T": "7", "B": "8",
+})
+_BARTER_PRODUCTS = {
+    "AF QUICK DRAW": {"item_code": "88292", "product_name_zh": "绿色发声枪"},
+}
+
+
+def _barter_digits(value: Any) -> str:
+    return re.sub(r"\D", "", _clean(value).upper().translate(_BARTER_DIGIT_TRANSLATION))
+
+
+def _barter_number(value: Any) -> float | int | None:
+    translated = _clean(value).upper().translate(_BARTER_DIGIT_TRANSLATION)
+    return _number(translated)
+
+
+def _barter_contract_range(filename: str, page_count: int) -> tuple[int, int] | None:
+    match = re.search(r"TNT\s*(\d{5})\s*[-_]\s*(\d{5})", Path(filename).stem, re.I)
+    if not match:
+        return None
+    start, end = int(match.group(1)), int(match.group(2))
+    return (start, end) if end >= start and end - start + 1 == page_count else None
+
+
+def _barter_customer_po(text: str) -> str:
+    matches: list[str] = []
+    for line in text.splitlines():
+        upper = line.upper()
+        if "CUSTOMER" not in upper:
+            continue
+        tail = upper.split("USA", 1)[-1]
+        matches.extend(re.findall(r"\d{10}", _barter_digits(tail)))
+    return next(
+        (value for value in matches if value.startswith("0990")),
+        next((value for value in matches if value.startswith("09")), matches[0] if matches else ""),
+    )
+
+
+def _barter_date_code(text: str, item_code: str) -> str:
+    compact = re.sub(r"\s+", "", text.upper()).translate(_BARTER_DIGIT_TRANSLATION)
+    match = re.search(rf"WM{re.escape(item_code)}RR[-~]?([0-9]{{4}})", compact)
+    if not match:
+        match = re.search(r"DATEC0DE.*?RR[-~]?([0-9]{4})", compact)
+    return f"WM{item_code}RR-{match.group(1)}" if match else ""
+
+
+def _parse_barter_page(
+    text: str,
+    *,
+    page_number: int,
+    expected_contract: str | None,
+    ocr_used: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    contract_match = re.search(r"CONTRACT\s*[^\n]*?TNT\s*/?\s*F?\s*([0-9OQDISZTBG]{5})", text, re.I)
+    parsed_contract = (
+        f"TNT/F{_barter_digits(contract_match.group(1))}"
+        if contract_match and len(_barter_digits(contract_match.group(1))) == 5
+        else ""
+    )
+    contract = expected_contract or parsed_contract
+    if expected_contract and parsed_contract and expected_contract != parsed_contract:
+        warnings.append(f"第 {page_number} 页合同号 OCR 为 {parsed_contract}，已按文件名页序校正为 {expected_contract}")
+
+    delivery = _search(
+        r"DELIVERY\s*[:<#]?\s*([A-Z]{3,9}[\s.\-]*\d{1,2}\s*,?\s*20\d{2})",
+        text,
+    )
+    ship_date = _iso_date(delivery)
+    customer_po = _barter_customer_po(text)
+
+    product_line = next((
+        _clean(line) for line in text.splitlines()
+        if re.search(r"\bP[CO]S\b", line, re.I) and re.search(r"/\s*P[CO]S", line, re.I)
+    ), "")
+    product_match = re.search(
+        r"^\s*([A-Z0-9]{4,})\s+(.+?)\s+([0-9OQDISZTBG§$,]+)\s+P[CO]S\s+"
+        r"([0-9OQDISZTBG§$,.]+)\s*/\s*P[CO]S[,]?\s+([0-9OQDISZTBG§$,. ]+)",
+        product_line,
+        re.I,
+    )
+    parsed_item = _barter_digits(product_match.group(1)) if product_match else ""
+    description = _clean(product_match.group(2)).upper() if product_match else ""
+    known_product = next((
+        (name, values) for name, values in _BARTER_PRODUCTS.items()
+        if name in description or name in text.upper()
+    ), None)
+    if known_product:
+        description = known_product[0]
+        item_code = known_product[1]["item_code"]
+        product_name_zh = known_product[1]["product_name_zh"]
+    else:
+        item_code = parsed_item
+        product_name_zh = description
+
+    parsed_quantity = _barter_number(product_match.group(3)) if product_match else None
+    unit_price = _barter_number(product_match.group(4)) if product_match else None
+    parsed_amount = _barter_number(product_match.group(5)) if product_match else None
+    carton_match = re.search(r"\(\s*([0-9OQDISZTBG§$, ]+)\s+[CG]TN\s*\)", text, re.I)
+    cartons = _barter_number(carton_match.group(1)) if carton_match else None
+    pack_match = re.search(r"([0-9OQDISZTBG§$]+)\s+P[CO]\s+PER\s+MASTER", text, re.I)
+    outer_pack = _barter_number(pack_match.group(1)) if pack_match else None
+    quantity = parsed_quantity
+    if cartons and outer_pack:
+        calculated_quantity = int(float(cartons) * float(outer_pack))
+        if parsed_quantity is None or abs(float(parsed_quantity) - calculated_quantity) > 0.001:
+            warnings.append(f"第 {page_number} 页数量已按箱数×装箱数校正为 {calculated_quantity}")
+        quantity = calculated_quantity
+    if quantity and parsed_amount:
+        implied_price = round(float(parsed_amount) / float(quantity), 4)
+        if (
+            0 < implied_price < 1000
+            and (
+                unit_price is None
+                or abs(float(unit_price) * float(quantity) - float(parsed_amount)) > 0.05
+            )
+        ):
+            warnings.append(f"第 {page_number} 页 HKD 单价已按行金额÷数量校正为 {implied_price:g}")
+            unit_price = implied_price
+    if unit_price is not None and not 0 < float(unit_price) < 1000:
+        warnings.append(f"第 {page_number} 页 HKD 单价 OCR 异常，已留待历史排期或人工校正")
+        unit_price = None
+    amount = parsed_amount
+    if quantity is not None and unit_price is not None:
+        calculated_amount = round(float(quantity) * float(unit_price), 2)
+        if parsed_amount is None or abs(float(parsed_amount) - calculated_amount) > 0.05:
+            warnings.append(f"第 {page_number} 页金额已按数量×HKD单价校正为 {calculated_amount:.2f}")
+        amount = calculated_amount
+
+    line = {
+        "po_number": contract,
+        "customer_po": customer_po,
+        "ship_date": ship_date,
+        "item_code": item_code,
+        "product_name_zh": product_name_zh,
+        "description": description,
+        "quantity": quantity,
+        "unit": "pcs",
+        "unit_price": unit_price,
+        "amount": amount,
+        "outer_pack": outer_pack,
+        "cartons": cartons,
+        "date_code": _barter_date_code(text, item_code) if item_code else "",
+        "color_box": "英文盒（2026版本）" if "2026" in text and "GREEN BOX" in text.upper() else "",
+        "customer_label": "RFID" if "RFID" in text.upper() else "",
+        "label": "外箱利宝" if "CARTON LABEL" in text.upper() else "",
+        "battery": "AA（2pcs）" if re.search(r"2\s+P[CO]S\s+.*AA", text, re.I) else "",
+        "country": "WM USA",
+        "source_page": page_number,
+        "_ocr_used": ocr_used,
+        "_ocr_reconciled": bool(warnings),
+    }
+    return line, warnings
+
+
+def _parse_barter_pages(
+    page_texts: list[str], filename: str, *, ocr_used: bool = False,
+) -> dict[str, Any]:
+    result = _base_result("barter", filename, len(page_texts))
+    result["customer"] = "WM USA"
+    contract_range = _barter_contract_range(filename, len(page_texts))
+    page_warnings: list[str] = []
+    for page_number, text in enumerate(page_texts, start=1):
+        expected = f"TNT/F{contract_range[0] + page_number - 1}" if contract_range else None
+        line, warnings = _parse_barter_page(
+            text,
+            page_number=page_number,
+            expected_contract=expected,
+            ocr_used=ocr_used,
+        )
+        page_warnings.extend(warnings)
+        if line.get("po_number") or any(line.get(key) for key in ("item_code", "quantity", "customer_po")):
+            result["lines"].append(line)
+    if result["lines"]:
+        first = result["lines"][0]
+        result.update({
+            "po_number": first.get("po_number") or "",
+            "customer_po": first.get("customer_po") or "",
+            "ship_date": first.get("ship_date"),
         })
-    if len(text.strip()) < 80:
+    if ocr_used:
+        result["confidence"] = "medium"
+        result["warnings"].append(
+            f"该 Barter 合同为扫描件，已逐页 OCR 提取 {len(page_texts)} 页；导出前请复核合同号、客户 PO、数量、日期码及 CRD。"
+        )
+    if contract_range:
+        result["warnings"].append(
+            f"文件名合同范围 TNT/F{contract_range[0]}–TNT/F{contract_range[1]} 与 {len(page_texts)} 页逐页对应。"
+        )
+    if page_warnings:
+        result["warnings"].append("；".join(page_warnings[:8]) + ("；其余校正详见逐行预览" if len(page_warnings) > 8 else ""))
+    if not result["lines"]:
         result["confidence"] = "low"
-        result["warnings"].append("该 Barter 合同是扫描件，当前无法提取文字；请上传可检索 PDF，或在导出的待确认表中补录。")
-    elif not result["lines"]:
         result["warnings"].append("未识别到 Barter 产品行，请核对合同版式。")
     return result
+
+
+def _parse_barter(text: str, filename: str, pages: int) -> dict[str, Any]:
+    """Backward-compatible entry point for native-text Barter documents."""
+    return _parse_barter_pages(text.split("\f") if "\f" in text else [text], filename)
 
 
 def _parse_excel(source: str | Path | bytes | BinaryIO, filename: str) -> dict[str, Any]:
@@ -706,14 +974,16 @@ def parse_po(source: str | Path | bytes | BinaryIO, filename: str = "") -> dict[
         result = _parse_excel(source, name)
         _check_line_math(result)
         return result
-    text, pages = read_pdf(source)
+    page_texts, ocr_used = read_pdf_pages(source)
+    text = "\n".join(page_texts)
+    pages = len(page_texts)
     client = detect_client(text, name)
     if client == "maxx":
         result = _parse_maxx(text, name, pages)
     elif client == "shushupapa":
         result = _parse_shushupapa(text, name, pages)
     elif client == "barter":
-        result = _parse_barter(text, name, pages)
+        result = _parse_barter_pages(page_texts, name, ocr_used=ocr_used)
     else:
         result = _base_result("", name, pages)
         result["confidence"] = "low"
