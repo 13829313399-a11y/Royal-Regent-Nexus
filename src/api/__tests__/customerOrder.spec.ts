@@ -256,8 +256,8 @@ describe('customer order api', () => {
     )).rejects.toThrow('当前环境未启用测试阶段重复订单确认')
   })
 
-  it('routes all six Huaxing mapped customers through the shared batch contract', async () => {
-    const customers = ['edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa'] as const
+  it('routes all seven Huaxing mapped customers through the shared batch contract', async () => {
+    const customers = ['edu', '360', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'barter'] as const
     for (const customer of customers) {
       const blob = new Blob([customer])
       const post = vi.fn()

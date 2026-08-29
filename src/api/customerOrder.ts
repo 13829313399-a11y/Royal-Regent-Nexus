@@ -21,7 +21,7 @@ export type HuaxingMappedCustomerCode =
   | 'seasons'
   | 'maxx'
   | 'shushupapa'
-  | 'disney'
+  | 'barter'
 
 export type HuadengMappedCustomerCode =
   | 'casdon'

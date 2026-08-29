@@ -197,6 +197,19 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       ruleDescription: '严格隔离客户数据并按 PO 修订版、当前及已走货排期去重；验货日期为走货期前 7 天。',
     },
     {
+      code: 'barter',
+      name: 'Barter',
+      version: 'V1·OCR复核',
+      poAccept: '.pdf',
+      poExtensions: ['.pdf'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
+      poDescription: 'Barter Purchase Contract 扫描 PDF（支持 TNT 连号多页合同）',
+      templateDescription: '2026 BARTER 排期（Iteam表 / 接单表）',
+      targetTemplate: 'HUAXING_BARTER_SCHEDULE_APPEND_V2',
+      ruleDescription: '逐页 OCR 识别并按文件名合同范围校正页序；来单日期取客户确认邮件日期，同步写入 Iteam表和接单表，BV 验货日期留待确认，并保留源排期密码。',
+    },
+    {
       code: 'disney',
       name: '迪士尼',
       version: 'V1',
@@ -394,7 +407,7 @@ CUSTOMER_PROFILES_BY_FACTORY['huakang-d'] = CUSTOMER_PROFILES_BY_FACTORY['huakan
 CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] = []
 
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
-  'disney', 'edu', '360', 'green-toys', 'headstart', 'yinhui', 'seasons', 'maxx', 'shushupapa',
+  'disney', 'edu', '360', 'green-toys', 'headstart', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'barter',
   'casdon', 'jakks', 'simba', 'spin', 'spin-master',
   'index', 'jazwares', 'strottman', 'jp',
 ])
