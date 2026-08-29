@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { formatMaterialComposition, resolveMaterialComponents } from '@/lib/moldingSampleBusiness'
-import { formatBusinessDate } from '@/lib/dateTime'
-import type { MoldingSampleItem, MoldingSampleWorkflowRecord } from '@/types/moldingSample'
+import { formatBusinessDate, formatBusinessDateTime } from '@/lib/dateTime'
+import type { MoldingSampleAuditLog, MoldingSampleItem, MoldingSampleWorkflowRecord } from '@/types/moldingSample'
 import './moldingSamplePrint.css'
+
+const ENGINEERING_ORDER_ACTION_PREFIXES = ['工程提交', '工程开单'] as const
 
 interface Props {
   records: MoldingSampleWorkflowRecord[]
@@ -20,6 +22,24 @@ function formatBlank(value: string | number | null | undefined, fallback = '待�
 
 function formatDate(value: string | null | undefined, fallback = '待填写') {
   return formatBusinessDate(value, fallback)
+}
+
+function formatDateTime(value: string | null | undefined, fallback = '未记录') {
+  return formatBusinessDateTime(value, { fallback })
+}
+
+function getOpeningAudit(record: MoldingSampleWorkflowRecord): MoldingSampleAuditLog | undefined {
+  return record.audit_logs
+    .filter((log) => ENGINEERING_ORDER_ACTION_PREFIXES.some((prefix) => log.action.startsWith(prefix)))
+    .sort((left, right) => left.created_at.localeCompare(right.created_at))[0]
+}
+
+function getOrderCreator(record: MoldingSampleWorkflowRecord) {
+  return getOpeningAudit(record)?.actor_name?.trim() || record.order.eng_name?.trim() || '未记录'
+}
+
+function getOrderCreatedAt(record: MoldingSampleWorkflowRecord) {
+  return getOpeningAudit(record)?.created_at || record.order.created_at
 }
 
 function formatWeight(value: number | null | undefined) {
@@ -60,9 +80,19 @@ function getDensityClass(record: MoldingSampleWorkflowRecord) {
             <h1>啤机部生产任务单</h1>
             <p>MOLDING SAMPLE PRODUCTION TASK</p>
           </div>
-          <div class="molding-print-document-number">
-            <strong>{{ record.order.id }}</strong>
-            <span>{{ record.order.status }} · {{ record.order.stage || '待填写' }}</span>
+          <div class="molding-print-production-document-summary">
+            <div class="molding-print-document-number">
+              <strong>{{ record.order.id }}</strong>
+              <span>{{ record.order.status }} · {{ record.order.stage || '待填写' }}</span>
+            </div>
+            <div class="molding-print-production-compact-meta" aria-label="生产任务单下单信息">
+              <span>
+                下单人：<strong data-testid="molding-sample-production-print-creator">{{ getOrderCreator(record) }}</strong>
+              </span>
+              <span>
+                开单时间：<strong data-testid="molding-sample-production-print-created-at">{{ formatDateTime(getOrderCreatedAt(record)) }}</strong>
+              </span>
+            </div>
           </div>
         </header>
 

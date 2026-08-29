@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   BriefcaseBusiness,
   Building2,
@@ -17,6 +17,8 @@ import { useRouter } from 'vue-router'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import { authApi } from '@/api/auth'
 import { departmentMap, factoryContexts } from '@/data/enterpriseMock'
+import { useDialogFocus } from '@/composables/useDialogFocus'
+import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -36,7 +38,10 @@ const authStore = useAuthStore()
 const menuRoot = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const isMenuOpen = ref(false)
+const isAvatarPreviewOpen = ref(false)
 const isProfileDialogOpen = ref(false)
+const avatarPreviewRoot = ref<HTMLElement | null>(null)
+const avatarPreviewCloseButton = ref<HTMLButtonElement | null>(null)
 const isLoggingOut = ref(false)
 const isSavingAvatar = ref(false)
 const isRemovingAvatar = ref(false)
@@ -78,6 +83,26 @@ const avatarUrl = computed(() => resolveAvatarUrl(authStore.currentUser?.avatar_
 const dialogAvatarUrl = computed(() => previewAvatarUrl.value || avatarUrl.value)
 const hasServerAvatar = computed(() => Boolean(avatarUrl.value))
 const isAvatarBusy = computed(() => isSavingAvatar.value || isRemovingAvatar.value)
+let releaseAvatarPreviewScrollLock: BodyScrollLockRelease | null = null
+
+useDialogFocus(
+  () => isAvatarPreviewOpen.value,
+  avatarPreviewRoot,
+  {
+    onEscape: () => closeAvatarPreview(),
+    openAnnouncement: () => `已打开${displayName.value}的头像预览`,
+    initialFocus: () => avatarPreviewCloseButton.value,
+  },
+)
+
+watch(isAvatarPreviewOpen, (open) => {
+  if (open) {
+    releaseAvatarPreviewScrollLock ??= acquireBodyScrollLock()
+  } else {
+    releaseAvatarPreviewScrollLock?.()
+    releaseAvatarPreviewScrollLock = null
+  }
+})
 
 const internalDepartmentLabels: Record<string, string> = {
   system: '系统管理',
@@ -125,6 +150,10 @@ function clearSelectedAvatar() {
 }
 
 function closeMenuWhenClickingOutside(event: PointerEvent) {
+  if (isAvatarPreviewOpen.value) {
+    return
+  }
+
   if (!menuRoot.value?.contains(event.target as Node)) {
     isMenuOpen.value = false
   }
@@ -132,6 +161,14 @@ function closeMenuWhenClickingOutside(event: PointerEvent) {
 
 function toggleMenu() {
   isMenuOpen.value = !isMenuOpen.value
+}
+
+function openAvatarPreview() {
+  isAvatarPreviewOpen.value = true
+}
+
+function closeAvatarPreview() {
+  isAvatarPreviewOpen.value = false
 }
 
 function openProfileDialog() {
@@ -248,6 +285,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', closeMenuWhenClickingOutside)
+  releaseAvatarPreviewScrollLock?.()
   revokePreviewUrl()
 })
 </script>
@@ -298,7 +336,15 @@ onBeforeUnmount(() => {
         aria-label="账号菜单"
       >
         <div class="flex items-center gap-3 border-b border-slate-100 px-4 py-3.5">
-          <UserAvatar :src="avatarUrl" :name="displayName" size="lg" />
+          <button
+            type="button"
+            class="shrink-0 rounded-full transition duration-150 hover:scale-105 hover:ring-4 hover:ring-teal-50 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-teal-100 active:scale-95"
+            :aria-label="`放大查看${displayName}的头像`"
+            title="点击放大头像"
+            @click="openAvatarPreview"
+          >
+            <UserAvatar :src="avatarUrl" :name="displayName" size="lg" loading="eager" />
+          </button>
           <span class="min-w-0 flex-1">
             <span class="block truncate text-sm font-bold text-slate-900">{{ displayName }}</span>
             <span class="mt-0.5 block truncate text-[11px] text-slate-500">{{ accountName }}</span>
@@ -355,6 +401,54 @@ onBeforeUnmount(() => {
     </Transition>
 
     <Teleport to="body">
+      <Transition name="nav-backdrop">
+        <div
+          v-if="isAvatarPreviewOpen"
+          class="fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm"
+          role="presentation"
+          @click.self="closeAvatarPreview"
+        >
+          <section
+            ref="avatarPreviewRoot"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-avatar-preview-title"
+            tabindex="-1"
+            class="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl outline-none"
+          >
+            <header class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-[11px] font-bold tracking-[0.16em] text-teal-700">账户头像</p>
+                <h2 id="account-avatar-preview-title" class="mt-1 text-lg font-semibold text-slate-950">
+                  {{ displayName }}
+                </h2>
+              </div>
+              <button
+                ref="avatarPreviewCloseButton"
+                type="button"
+                aria-label="关闭头像预览"
+                class="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+                @click="closeAvatarPreview"
+              >
+                <X class="size-5" aria-hidden="true" />
+              </button>
+            </header>
+            <div class="mt-5 flex justify-center rounded-2xl bg-slate-50 p-6">
+              <UserAvatar
+                :src="avatarUrl"
+                :name="displayName"
+                size="xl"
+                loading="eager"
+                class="!h-64 !w-64 max-h-[min(64vw,320px)] max-w-[min(64vw,320px)] !text-6xl ring-1 ring-slate-200"
+              />
+            </div>
+            <p class="mt-4 text-center text-sm text-slate-600">
+              {{ roleLabel }} · {{ factoryLabel }} · {{ departmentLabel }}
+            </p>
+          </section>
+        </div>
+      </Transition>
+
       <div
         v-if="isProfileDialogOpen"
         class="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-slate-950/45 px-4 py-6 backdrop-blur-sm"

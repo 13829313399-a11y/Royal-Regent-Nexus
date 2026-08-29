@@ -169,6 +169,42 @@ describe('AccountMenu', () => {
     expect(wrapper.text()).not.toContain('集团啤办员')
   })
 
+  it('enlarges the menu avatar in an accessible preview and closes with Escape', async () => {
+    const authStore = seedUser()
+    authStore.applySession({
+      ...authStore.currentUser!,
+      avatar_url: '/api/auth/me/avatar?v=avatar-version-1',
+    })
+    const wrapper = mount(AccountMenu, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          Teleport: true,
+        },
+      },
+    })
+
+    await wrapper.get('button[aria-label="账号与头像设置"]').trigger('click')
+    const avatarButton = wrapper.get('button[aria-label="放大查看测试账号的头像"]')
+    const avatarElement = avatarButton.element as HTMLButtonElement
+    avatarElement.focus()
+    await avatarButton.trigger('click')
+    await flushPromises()
+
+    const preview = wrapper.get('[aria-labelledby="account-avatar-preview-title"]')
+    expect(preview.text()).toContain('账户头像')
+    expect(preview.text()).toContain('测试账号')
+    expect(preview.get('img').attributes('src')).toBe('/api/auth/me/avatar?v=avatar-version-1')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('关闭头像预览')
+
+    await preview.trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+
+    expect(wrapper.find('[aria-labelledby="account-avatar-preview-title"]').exists()).toBe(false)
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('放大查看测试账号的头像')
+    wrapper.unmount()
+  })
+
   it('opens a formal avatar dialog and applies the returned current-user profile', async () => {
     const authStore = seedUser()
     uploadAvatarMock.mockResolvedValue({
