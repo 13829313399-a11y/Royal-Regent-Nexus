@@ -118,7 +118,8 @@ USER_PRESENCE_MIGRATION_REVISION = "20260821_0082"
 CARTON_MARK_MANUAL_RELEASE_MIGRATION_REVISION = "20260825_0083"
 AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION = "20260826_0084"
 INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION = "20260827_0085"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION
+CARTON_AD_HOC_RECEIPT_MIGRATION_REVISION = "20260830_0086"
+HEAD_MIGRATION_REVISION = CARTON_AD_HOC_RECEIPT_MIGRATION_REVISION
 INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_factory_settings",
     "injection_schedule_order_demands",
@@ -4500,7 +4501,7 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
         assert _snapshot_legacy_injection_scheduling_tables(connection) == legacy_before
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION,)
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
 
         def columns(table_name: str) -> set[str]:
             return {

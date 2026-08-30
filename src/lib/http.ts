@@ -83,6 +83,24 @@ export function getApiErrorMessage(error: unknown) {
   return 'Unexpected request error'
 }
 
+export async function getApiErrorMessageAsync(error: unknown) {
+  if (axios.isAxiosError<ApiErrorPayload | Blob>(error) && error.response?.data instanceof Blob) {
+    try {
+      const rawPayload = await error.response.data.text()
+      if (rawPayload) {
+        const payload = JSON.parse(rawPayload) as ApiErrorPayload
+        const message = extractApiErrorPayloadMessage(payload)
+        if (message) return message
+      }
+    } catch {
+      // Fall through to the ordinary Axios message when a download error body
+      // is empty or is not JSON.
+    }
+  }
+
+  return getApiErrorMessage(error)
+}
+
 function extractApiErrorPayloadMessage(payload: ApiErrorPayload | undefined) {
   if (!payload) {
     return undefined
