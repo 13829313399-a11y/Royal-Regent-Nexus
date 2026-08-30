@@ -1,8 +1,8 @@
 """allow human-confirmed ad hoc carton receipt lines
 
-Revision ID: 20260829_0085
-Revises: 20260826_0084
-Create Date: 2026-08-29
+Revision ID: 20260830_0086
+Revises: 20260827_0085
+Create Date: 2026-08-30
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "20260829_0085"
-down_revision: str | Sequence[str] | None = "20260826_0084"
+revision: str = "20260830_0086"
+down_revision: str | Sequence[str] | None = "20260827_0085"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

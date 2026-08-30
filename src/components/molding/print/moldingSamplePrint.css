@@ -348,6 +348,28 @@
   margin-top: 2mm;
 }
 
+.molding-print-production-document-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1.5mm;
+}
+
+.molding-print-production-compact-meta {
+  display: flex;
+  justify-content: flex-end;
+  gap: 3mm;
+  color: #64748b;
+  font-size: 9.5pt;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.molding-print-production-compact-meta strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+
 .molding-print-production-page .molding-print-reason-bar {
   margin-top: 3mm;
 }

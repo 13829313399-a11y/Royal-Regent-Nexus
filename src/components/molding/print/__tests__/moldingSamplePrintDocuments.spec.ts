@@ -55,4 +55,54 @@ describe('shared molding-sample print documents', () => {
     expect(wrapper.text()).not.toContain('派厂时间')
     expect(wrapper.text()).not.toContain('实际料费(HKD)')
   })
+
+  it('prints the original engineering submitter as the order creator', () => {
+    const record = createRecord(1)
+    const sourceAudit = record.audit_logs[0]
+
+    record.order.eng_name = '杨敬作'
+    record.audit_logs = [
+      {
+        ...sourceAudit,
+        id: `${record.order.id}-audit-resubmit`,
+        action: '工程提交主管审核',
+        actor_name: '重新提交账号',
+        created_at: '2026-07-06 17:20',
+      },
+      {
+        ...sourceAudit,
+        id: `${record.order.id}-audit-opening`,
+        action: '工程提交主管审核',
+        actor_name: '华兴工程师',
+        created_at: '2026-07-06 16:55',
+      },
+    ]
+
+    const wrapper = mount(MoldingSampleProductionPrintDocument, {
+      props: {
+        records: [record],
+      },
+    })
+
+    expect(wrapper.get('[data-testid="molding-sample-production-print-creator"]').text()).toBe('华兴工程师')
+    expect(wrapper.get('[data-testid="molding-sample-production-print-created-at"]').text()).toBe('2026-07-06 16:55')
+    expect(wrapper.text()).toContain('下单人')
+    expect(wrapper.text()).toContain('开单时间')
+    expect(wrapper.text()).not.toContain('杨敬作')
+  })
+
+  it('falls back to the engineering name when legacy records have no opening audit', () => {
+    const record = createRecord(1)
+
+    record.order.eng_name = '杨敬作'
+    record.audit_logs = []
+
+    const wrapper = mount(MoldingSampleProductionPrintDocument, {
+      props: {
+        records: [record],
+      },
+    })
+
+    expect(wrapper.get('[data-testid="molding-sample-production-print-creator"]').text()).toBe('杨敬作')
+  })
 })
