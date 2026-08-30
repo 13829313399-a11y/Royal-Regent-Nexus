@@ -1,6 +1,5 @@
 from io import BytesIO
 from urllib.parse import quote as url_quote
-from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -35,9 +34,11 @@ from app.schemas.carton_procurement import (
     CartonOrderBulkCancelRequest,
     CartonOrderCancelRequest,
     CartonOrderCreate,
+    CartonOrderHistorySuggestionListOut,
     CartonOrderListOut,
     CartonOrderOut,
     CartonOrderSelectionRequest,
+    CartonOrderSubmitRequest,
     CartonOrderUpdate,
     CartonReceiptConfirmRequest,
     CartonReceiptCreate,
@@ -85,6 +86,8 @@ from app.services.carton_procurement import (
     require_carton_factory,
     reverse_inventory_movement,
     return_order,
+    search_order_history_items,
+    submit_order_to_supplier,
     update_order,
     update_closing_status,
     update_customer,
@@ -92,6 +95,7 @@ from app.services.carton_procurement import (
 )
 from app.services.carton_procurement_export import (
     XLSX_MEDIA_TYPE,
+    build_combined_purchase_order_workbook,
     build_purchase_order_workbook,
 )
 from app.services.carton_procurement_history_import import import_history_orders
@@ -215,6 +219,33 @@ def get_orders(
     )
 
 
+@router.get("/order-history/item-suggestions", response_model=CartonOrderHistorySuggestionListOut)
+def get_order_history_item_suggestions(
+    factory_id: str,
+    item_no: str = Query(min_length=1, max_length=128),
+    customer_code: str = Query(default="", max_length=64),
+    limit: int = Query(default=8, ge=1, le=20),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(
+        db, current_user, "carton_procurement:read", factory_id
+    )
+    items = search_order_history_items(
+        db,
+        factory_id,
+        item_no,
+        customer_code=customer_code,
+        limit=limit,
+    )
+    return CartonOrderHistorySuggestionListOut(
+        factory_id=factory_id,
+        query=item_no.strip(),
+        total=len(items),
+        items=items,
+    )
+
+
 @router.post("/orders", response_model=CartonOrderOut, status_code=201)
 def post_order(
     payload: CartonOrderCreate,
@@ -234,6 +265,17 @@ def patch_order(
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
     return order_out(db, update_order(db, order_no, payload, current_user))
+
+
+@router.post("/orders/{order_no}/submit-supplier", response_model=CartonOrderOut)
+def post_order_submit_supplier(
+    order_no: str,
+    payload: CartonOrderSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return order_out(db, submit_order_to_supplier(db, order_no, payload, current_user))
 
 
 @router.post("/orders/{order_no}/append", response_model=CartonOrderOut)
@@ -325,28 +367,23 @@ def get_purchase_order_workbook(
     )
 
 
-@router.post("/orders/purchase-orders.zip")
-def post_purchase_order_archive(
+@router.post("/orders/purchase-orders.xlsx")
+def post_combined_purchase_order_workbook(
     payload: CartonOrderSelectionRequest,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
-    output = BytesIO()
-    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-        for order_no in payload.order_nos:
-            order = get_order_by_no(db, factory_id, order_no)
-            content = build_purchase_order_workbook(
-                order,
-                get_order_lines(db, order.id),
-                generated_at=business_now(),
-            )
-            archive.writestr(f"{order.order_no}_纸箱采购单.xlsx", content)
-    output.seek(0)
-    file_name = f"纸箱采购单_批量_{business_now().strftime('%Y%m%d_%H%M%S')}.zip"
+    generated_at = business_now()
+    orders = []
+    for order_no in payload.order_nos:
+        order = get_order_by_no(db, factory_id, order_no)
+        orders.append((order, get_order_lines(db, order.id)))
+    content = build_combined_purchase_order_workbook(orders, generated_at=generated_at)
+    file_name = f"纸箱合并采购单_{generated_at.strftime('%Y%m%d_%H%M%S')}.xlsx"
     return StreamingResponse(
-        output,
-        media_type="application/zip",
+        BytesIO(content),
+        media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}"},
     )
 
@@ -668,6 +705,7 @@ def get_audit_events(
     factory_id: str,
     search: str = Query(default="", max_length=128),
     event_type: str = Query(default="", max_length=64),
+    actor_user_id: str = Query(default="", max_length=64),
     date_from: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     limit: int = Query(default=100, ge=1, le=500),
@@ -681,6 +719,7 @@ def get_audit_events(
         factory_id,
         search=search.strip(),
         event_type=event_type.strip(),
+        actor_user_id=actor_user_id.strip(),
         date_from=date_from.strip(),
         date_to=date_to.strip(),
         limit=limit,

@@ -239,13 +239,18 @@ class CartonReceiptLine(Base):
         ),
         CheckConstraint("effective_quantity >= 0", name="ck_carton_receipt_line_effective"),
         CheckConstraint("unit_price >= 0", name="ck_carton_receipt_line_price"),
+        CheckConstraint(
+            "source_type IN ('FORMAL_ORDER', 'AD_HOC')",
+            name="ck_carton_receipt_line_source_type",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     factory_id: Mapped[str] = mapped_column(String(64), index=True)
     receipt_id: Mapped[str] = mapped_column(String(96), index=True)
     line_no: Mapped[int] = mapped_column(Integer)
-    order_line_id: Mapped[str] = mapped_column(String(96), index=True)
+    order_line_id: Mapped[str | None] = mapped_column(String(96), nullable=True, index=True)
+    source_type: Mapped[str] = mapped_column(String(24), default="FORMAL_ORDER", index=True)
     customer_code: Mapped[str] = mapped_column(String(64), index=True)
     customer_name: Mapped[str] = mapped_column(String(255), index=True)
     contract_no: Mapped[str] = mapped_column(String(128), index=True)
