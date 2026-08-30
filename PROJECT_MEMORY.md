@@ -39,8 +39,8 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
 - The former AI assistant, Workbench, Provider integration, cloud document enhancement, background Tasks, Artifacts, Vision, Skills, Prompts, controlled actions, operational alerts and scheduling layout inference have been removed. No `/api/ai/*` or `/workbench/ai` route remains. Historical Alembic revisions are retained only to preserve upgrade-chain continuity; migration `20260826_0084` removes their runtime tables and alert rows.
-- The former injection-scheduling frontend and backend runtime have been removed for a new rebuild. Only a non-navigating production-module card and historical database migrations/data remain; no injection-scheduling UI or API route is active.
-- Alembic has one current head: `20260826_0084`.
+- The injection-scheduling frontend and backend runtime have been removed for a new rebuild. Only a non-navigating production-module card and historical database migrations/data remain; no injection-scheduling UI, API route or active permission definition exists.
+- Alembic has one current head: `20260827_0085`.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -244,9 +244,9 @@ Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF in
 
 ### Injection-Scheduling Rebuild Placeholder
 
-The production module center retains the `注塑排产中枢` catalog card as a non-navigating rebuild placeholder. The former frontend route and workspace, API clients, backend routers, schemas, models, services, template resources and operational tests have been removed; no `/modules/production/injection-scheduling` or `/api/injection-scheduling/*` runtime route remains.
+The production module center retains the `注塑排产中枢` catalog card as a non-navigating rebuild placeholder. The frontend route and workspace, API clients, backend routers, schemas, models, services, import/scheduling runtime, AI configuration, active permissions and operational tests have been removed; no `/modules/production/injection-scheduling` or `/api/injection-scheduling/*` runtime route remains.
 
-Historical Alembic revisions and existing database tables/data are intentionally retained to preserve upgrade-chain continuity and avoid deleting business records without a separate authorized migration. Any future rebuild must define its own route, data reuse or retirement plan, permissions and migration boundary before reactivating the card.
+Historical Alembic revisions and existing database tables/data are intentionally retained to preserve upgrade-chain continuity and avoid deleting business records without a separate authorized migration. Migration `20260827_0085` remains the single current head and its twelve `injection_schedule_*` tables are dormant after runtime removal. Any future rebuild must explicitly decide whether to reuse or retire those tables and define a new route, permissions and migration boundary before reactivating the card.
  ### Huakang A 3D Printing Management
 ### Huakang A 3D Printing Management
 

@@ -117,7 +117,26 @@ CURRENT_HEAD_MERGE_MIGRATION_REVISION = "20260820_0081"
 USER_PRESENCE_MIGRATION_REVISION = "20260821_0082"
 CARTON_MARK_MANUAL_RELEASE_MIGRATION_REVISION = "20260825_0083"
 AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION = "20260826_0084"
-HEAD_MIGRATION_REVISION = AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION
+INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION = "20260827_0085"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION
+INJECTION_SCHEDULE_CENTER_TABLES = {
+    "injection_schedule_factory_settings",
+    "injection_schedule_order_demands",
+    "injection_schedule_machines",
+    "injection_schedule_molds",
+    "injection_schedule_lines",
+    "injection_schedule_shift_outputs",
+    "injection_schedule_import_batches",
+    "injection_schedule_import_request_bindings",
+    "injection_schedule_import_issues",
+    "injection_schedule_saved_views",
+    "injection_schedule_audit_events",
+    "injection_schedule_auto_proposals",
+}
+INJECTION_SCHEDULE_CENTER_AUDIT_TRIGGERS = {
+    "trg_injection_schedule_audit_events_no_update",
+    "trg_injection_schedule_audit_events_no_delete",
+}
 MOLDING_SAMPLE_TABLES = [
     "molding_sample_orders",
     "molding_sample_items",
@@ -251,7 +270,9 @@ def test_alembic_has_single_molding_sample_head():
     )
     user_presence_revision = script.get_revision(USER_PRESENCE_MIGRATION_REVISION)
     assert user_presence_revision.down_revision == CURRENT_HEAD_MERGE_MIGRATION_REVISION
-    user_presence_content = Path(user_presence_revision.path).read_text(encoding="utf-8")
+    user_presence_content = Path(user_presence_revision.path).read_text(
+        encoding="utf-8"
+    )
     assert "auth_user_presence" in user_presence_content
     assert "last_seen_at" in user_presence_content
     for expected in (
@@ -262,9 +283,7 @@ def test_alembic_has_single_molding_sample_head():
     ):
         assert expected in password_reset_claim_content
 
-    current_head_revision = script.get_revision(
-        CURRENT_HEAD_MERGE_MIGRATION_REVISION
-    )
+    current_head_revision = script.get_revision(CURRENT_HEAD_MERGE_MIGRATION_REVISION)
     assert set(current_head_revision.down_revision) == {
         PASSWORD_RESET_CLAIM_MIGRATION_REVISION,
         CARTON_MARK_CUSTOMER_MIGRATION_REVISION,
@@ -277,9 +296,9 @@ def test_alembic_has_single_molding_sample_head():
         manual_override_revision.down_revision
         == INJECTION_SCHEDULING_PUBLIC_PLANNING_MIGRATION_REVISION
     )
-    manual_override_content = Path(
-        manual_override_revision.path
-    ).read_text(encoding="utf-8")
+    manual_override_content = Path(manual_override_revision.path).read_text(
+        encoding="utf-8"
+    )
     for expected in (
         "manual_overrides_json",
         "manual_override_count",
@@ -297,9 +316,14 @@ def test_alembic_has_single_molding_sample_head():
     takeover_revision = script.get_revision(
         INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION
     )
-    assert takeover_revision.down_revision == INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION
+    assert (
+        takeover_revision.down_revision
+        == INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION
+    )
 
-    profile_revision = script.get_revision(INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION)
+    profile_revision = script.get_revision(
+        INJECTION_SCHEDULING_PROFILE_MIGRATION_REVISION
+    )
     assert profile_revision.down_revision == CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION
 
     auto_flow_revision = script.get_revision(CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION)
@@ -318,8 +342,12 @@ def test_alembic_has_single_molding_sample_head():
     }
 
     carton_revision = script.get_revision(CARTON_PROCUREMENT_MIGRATION_REVISION)
-    assert carton_revision.down_revision == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
-    exception_revision = script.get_revision(CARTON_EXCEPTION_WORKFLOW_MIGRATION_REVISION)
+    assert (
+        carton_revision.down_revision == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+    )
+    exception_revision = script.get_revision(
+        CARTON_EXCEPTION_WORKFLOW_MIGRATION_REVISION
+    )
     assert exception_revision.down_revision == CARTON_PROCUREMENT_MIGRATION_REVISION
     carton_content = Path(carton_revision.path).read_text(encoding="utf-8")
     for expected in (
@@ -342,8 +370,7 @@ def test_alembic_has_single_molding_sample_head():
     assert phase4_revision.down_revision == INJECTION_SCHEDULING_V2_PHASE3_REVISION
     phase3_revision = script.get_revision(INJECTION_SCHEDULING_V2_PHASE3_REVISION)
     assert (
-        phase3_revision.down_revision
-        == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
+        phase3_revision.down_revision == CUSTOMER_ORDER_EXPORT_AUDIT_MIGRATION_REVISION
     )
 
     customer_order_audit_revision = script.get_revision(
@@ -353,9 +380,9 @@ def test_alembic_has_single_molding_sample_head():
         customer_order_audit_revision.down_revision
         == INJECTION_SCHEDULING_V2_PHASE0_REVISION
     )
-    customer_order_audit_content = Path(
-        customer_order_audit_revision.path
-    ).read_text(encoding="utf-8")
+    customer_order_audit_content = Path(customer_order_audit_revision.path).read_text(
+        encoding="utf-8"
+    )
     for expected in (
         CUSTOMER_ORDER_EXPORT_AUDIT_TABLE,
         "preview_fingerprint",
@@ -467,9 +494,7 @@ def test_alembic_has_single_molding_sample_head():
         == THREE_D_PRINTING_MIGRATION_REVISION
     )
 
-    three_d_printing_revision = script.get_revision(
-        THREE_D_PRINTING_MIGRATION_REVISION
-    )
+    three_d_printing_revision = script.get_revision(THREE_D_PRINTING_MIGRATION_REVISION)
     assert (
         three_d_printing_revision.down_revision
         == INJECTION_SCHEDULING_BACKEND_MIGRATION_REVISION
@@ -483,9 +508,7 @@ def test_alembic_has_single_molding_sample_head():
         == INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION
     )
 
-    hair_revision = script.get_revision(
-        INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION
-    )
+    hair_revision = script.get_revision(INTERNAL_QUOTE_HAIR_SECTION_MIGRATION_REVISION)
     assert (
         hair_revision.down_revision
         == INJECTION_SCHEDULE_REBUILD_REMOVAL_MIGRATION_REVISION
@@ -545,10 +568,18 @@ def test_alembic_has_single_molding_sample_head():
     injection_removal_revision = script.get_revision(
         INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION
     )
-    assert injection_removal_revision.down_revision == INJECTION_SCHEDULE_HUB_MIGRATION_REVISION
+    assert (
+        injection_removal_revision.down_revision
+        == INJECTION_SCHEDULE_HUB_MIGRATION_REVISION
+    )
 
-    injection_hub_revision = script.get_revision(INJECTION_SCHEDULE_HUB_MIGRATION_REVISION)
-    assert injection_hub_revision.down_revision == INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
+    injection_hub_revision = script.get_revision(
+        INJECTION_SCHEDULE_HUB_MIGRATION_REVISION
+    )
+    assert (
+        injection_hub_revision.down_revision
+        == INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
+    )
 
     freight_revision = script.get_revision(
         INTERNAL_QUOTE_BASELINE_FREIGHT_MIGRATION_REVISION
@@ -558,9 +589,7 @@ def test_alembic_has_single_molding_sample_head():
     assert "internal_quote_pricing_baselines" in freight_content
     assert "freight_routes_json" in freight_content
 
-    customer_revision = script.get_revision(
-        INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION
-    )
+    customer_revision = script.get_revision(INTERNAL_QUOTE_CUSTOMER_MIGRATION_REVISION)
     assert customer_revision.down_revision == MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION
     customer_content = Path(customer_revision.path).read_text(encoding="utf-8")
     for expected in (
@@ -571,9 +600,7 @@ def test_alembic_has_single_molding_sample_head():
     ):
         assert expected in customer_content
 
-    dispatch_revision = script.get_revision(
-        MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION
-    )
+    dispatch_revision = script.get_revision(MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION)
     assert dispatch_revision.down_revision == RAW_MATERIAL_SHARED_MIGRATION_REVISION
     dispatch_content = Path(dispatch_revision.path).read_text(encoding="utf-8")
     for expected in (
@@ -605,9 +632,9 @@ def test_alembic_has_single_molding_sample_head():
         raw_material_shared_revision.down_revision
         == INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION
     )
-    raw_material_shared_content = Path(
-        raw_material_shared_revision.path
-    ).read_text(encoding="utf-8")
+    raw_material_shared_content = Path(raw_material_shared_revision.path).read_text(
+        encoding="utf-8"
+    )
     for expected in (
         "RAW_MATERIAL_BUSINESS_FIELDS",
         "BEGIN IMMEDIATE",
@@ -632,13 +659,20 @@ def test_alembic_has_single_molding_sample_head():
     pricing_baseline_revision = script.get_revision(
         INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION
     )
-    assert pricing_baseline_revision.down_revision == INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION
-    pricing_baseline_content = Path(pricing_baseline_revision.path).read_text(encoding="utf-8")
+    assert (
+        pricing_baseline_revision.down_revision
+        == INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION
+    )
+    pricing_baseline_content = Path(pricing_baseline_revision.path).read_text(
+        encoding="utf-8"
+    )
     assert "internal_quote_pricing_baselines" in pricing_baseline_content
     assert "material_prices_json" in pricing_baseline_content
     assert "machine_prices_json" in pricing_baseline_content
 
-    target_price_revision = script.get_revision(INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION)
+    target_price_revision = script.get_revision(
+        INTERNAL_QUOTE_TARGET_PRICE_MIGRATION_REVISION
+    )
     assert target_price_revision.down_revision == IAM_POSITION_SCOPE_MIGRATION_REVISION
     target_price_content = Path(target_price_revision.path).read_text(encoding="utf-8")
     assert "target_customer_price" in target_price_content
@@ -729,7 +763,9 @@ def test_alembic_has_single_molding_sample_head():
 
     workshop_revision = script.get_revision(INTERNAL_QUOTE_WORKSHOP_MIGRATION_REVISION)
     assert workshop_revision.down_revision == INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION
-    assert "huaxing-workshop" in Path(workshop_revision.path).read_text(encoding="utf-8")
+    assert "huaxing-workshop" in Path(workshop_revision.path).read_text(
+        encoding="utf-8"
+    )
 
     workflow_revision = script.get_revision(INTERNAL_QUOTE_WORKFLOW_MIGRATION_REVISION)
     assert workflow_revision.down_revision == MATERIAL_COMPONENT_MIGRATION_REVISION
@@ -741,24 +777,39 @@ def test_alembic_has_single_molding_sample_head():
     ):
         assert table_name in workflow_content
 
-    material_component_revision = script.get_revision(MATERIAL_COMPONENT_MIGRATION_REVISION)
+    material_component_revision = script.get_revision(
+        MATERIAL_COMPONENT_MIGRATION_REVISION
+    )
     assert material_component_revision.down_revision == TRIAL_REPORT_MIGRATION_REVISION
-    material_component_content = Path(material_component_revision.path).read_text(encoding="utf-8")
+    material_component_content = Path(material_component_revision.path).read_text(
+        encoding="utf-8"
+    )
     assert "material_components" in material_component_content
     assert "material_usage_type" in material_component_content
     assert "actual_material_cost_components" in material_component_content
 
     trial_report_revision = script.get_revision(TRIAL_REPORT_MIGRATION_REVISION)
     assert trial_report_revision.down_revision == RAW_MATERIAL_MIGRATION_REVISION
-    assert "molding_sample_trial_reports" in Path(trial_report_revision.path).read_text(encoding="utf-8")
+    assert "molding_sample_trial_reports" in Path(trial_report_revision.path).read_text(
+        encoding="utf-8"
+    )
 
     raw_material_revision = script.get_revision(RAW_MATERIAL_MIGRATION_REVISION)
-    assert raw_material_revision.down_revision == NOTIFICATION_DEPARTMENT_MIGRATION_REVISION
-    assert "raw_materials" in Path(raw_material_revision.path).read_text(encoding="utf-8")
+    assert (
+        raw_material_revision.down_revision
+        == NOTIFICATION_DEPARTMENT_MIGRATION_REVISION
+    )
+    assert "raw_materials" in Path(raw_material_revision.path).read_text(
+        encoding="utf-8"
+    )
 
-    notification_department_revision = script.get_revision(NOTIFICATION_DEPARTMENT_MIGRATION_REVISION)
+    notification_department_revision = script.get_revision(
+        NOTIFICATION_DEPARTMENT_MIGRATION_REVISION
+    )
     assert notification_department_revision.down_revision == PRICING_MIGRATION_REVISION
-    notification_department_content = Path(notification_department_revision.path).read_text(encoding="utf-8")
+    notification_department_content = Path(
+        notification_department_revision.path
+    ).read_text(encoding="utf-8")
     assert "target_department" in notification_department_content
 
     pricing_revision = script.get_revision(PRICING_MIGRATION_REVISION)
@@ -781,13 +832,22 @@ def test_alembic_has_single_molding_sample_head():
 
     mold_metadata_revision = script.get_revision(MOLD_METADATA_MIGRATION_REVISION)
     assert mold_metadata_revision.down_revision == AUTH_REGISTRATION_MIGRATION_REVISION
-    mold_metadata_content = Path(mold_metadata_revision.path).read_text(encoding="utf-8")
+    mold_metadata_content = Path(mold_metadata_revision.path).read_text(
+        encoding="utf-8"
+    )
     assert "mold_dimensions" in mold_metadata_content
     assert "mold_presence_status" in mold_metadata_content
 
-    auth_registration_revision = script.get_revision(AUTH_REGISTRATION_MIGRATION_REVISION)
-    assert auth_registration_revision.down_revision == INJECTION_SCHEDULE_MIGRATION_REVISION
-    auth_registration_content = Path(auth_registration_revision.path).read_text(encoding="utf-8")
+    auth_registration_revision = script.get_revision(
+        AUTH_REGISTRATION_MIGRATION_REVISION
+    )
+    assert (
+        auth_registration_revision.down_revision
+        == INJECTION_SCHEDULE_MIGRATION_REVISION
+    )
+    auth_registration_content = Path(auth_registration_revision.path).read_text(
+        encoding="utf-8"
+    )
     assert "auth_registration_requests" in auth_registration_content
     assert "system_notifications" in auth_registration_content
 
@@ -822,7 +882,8 @@ def test_alembic_has_single_molding_sample_head():
     for table_name in [
         name
         for name in MOLDING_SAMPLE_TABLES
-        if name not in {
+        if name
+        not in {
             "molding_sample_notifications",
             "molding_sample_problems",
             "molding_sample_trial_reports",
@@ -832,7 +893,9 @@ def test_alembic_has_single_molding_sample_head():
         assert table_name in base_migration_content
 
     notification_revision = script.get_revision(NOTIFICATION_MIGRATION_REVISION)
-    notification_migration_content = Path(notification_revision.path).read_text(encoding="utf-8")
+    notification_migration_content = Path(notification_revision.path).read_text(
+        encoding="utf-8"
+    )
     assert "molding_sample_notifications" in notification_migration_content
 
 
@@ -873,7 +936,8 @@ def test_customer_order_manual_override_migration_adds_audit_columns(tmp_path):
 
     with sqlite3.connect(database_path) as connection:
         columns = {
-            row[1]: row for row in connection.execute(
+            row[1]: row
+            for row in connection.execute(
                 "PRAGMA table_info(customer_order_export_audits)"
             )
         }
@@ -884,7 +948,9 @@ def test_customer_order_manual_override_migration_adds_audit_columns(tmp_path):
         ).fetchone() == (CUSTOMER_ORDER_MANUAL_OVERRIDE_MIGRATION_REVISION,)
 
 
-def test_internal_quote_customer_migration_seeds_factories_and_backfills_history(tmp_path):
+def test_internal_quote_customer_migration_seeds_factories_and_backfills_history(
+    tmp_path,
+):
     database_path = tmp_path / "internal_quote_customers_0029.db"
     env = os.environ.copy()
     env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
@@ -944,14 +1010,16 @@ def test_internal_quote_customer_migration_seeds_factories_and_backfills_history
                 "PRAGMA table_info('internal_quote_pricing_baselines')"
             ).fetchall()
         }
-        counts = dict(connection.execute(
-            """
+        counts = dict(
+            connection.execute(
+                """
             SELECT factory_id, COUNT(*)
             FROM internal_quote_customers
             GROUP BY factory_id
             ORDER BY factory_id
             """
-        ).fetchall())
+            ).fetchall()
+        )
         assert counts == {
             "huakang-a": 5,
             "huakang-b": 5,
@@ -982,7 +1050,9 @@ def test_internal_quote_customer_migration_seeds_factories_and_backfills_history
         ).fetchone() == ("历史客户",)
 
 
-def test_injection_schedule_hub_migration_preserves_legacy_snapshot_without_activation(tmp_path):
+def test_injection_schedule_hub_migration_preserves_legacy_snapshot_without_activation(
+    tmp_path,
+):
     database_path = tmp_path / "injection_schedule_hub_0030.db"
     env = os.environ.copy()
     env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
@@ -1023,15 +1093,17 @@ def test_injection_schedule_hub_migration_preserves_legacy_snapshot_without_acti
 
     run_alembic("upgrade", INJECTION_SCHEDULE_HUB_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INJECTION_SCHEDULE_HUB_MIGRATION_REVISION,
-        )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULE_HUB_MIGRATION_REVISION,)
         assert connection.execute(
             "SELECT status, revision, source_sha256, activated_at FROM injection_schedule_import_batches WHERE id = 'legacy-import'"
         ).fetchone() == ("legacy_snapshot", 1, "", "")
         tables = {
             row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
         }
         assert {
             "injection_schedule_import_diffs",
@@ -1044,10 +1116,14 @@ def test_injection_schedule_hub_migration_preserves_legacy_snapshot_without_acti
             "injection_shift_outputs",
             "injection_machine_downtimes",
         } <= tables
-        assert connection.execute("SELECT COUNT(*) FROM injection_order_tasks").fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM injection_order_tasks"
+        ).fetchone() == (0,)
 
 
-def test_injection_schedule_removal_migration_drops_module_schema_and_permissions(tmp_path):
+def test_injection_schedule_removal_migration_drops_module_schema_and_permissions(
+    tmp_path,
+):
     database_path = tmp_path / "injection_schedule_removal_0031.db"
     env = os.environ.copy()
     env["DATABASE_URL"] = f"sqlite:///{database_path.as_posix()}"
@@ -1077,9 +1153,9 @@ def test_injection_schedule_removal_migration_drops_module_schema_and_permission
 
     run_alembic("upgrade", INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION,
-        )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULE_REMOVAL_MIGRATION_REVISION,)
         injection_tables = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'injection_%'"
         ).fetchall()
@@ -1132,9 +1208,9 @@ def test_injection_schedule_phase2_upgrade_rebuilds_scoped_schema_and_preserves_
 
     run_alembic("upgrade", INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION)
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,
-        )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULE_PHASE4_MIGRATION_REVISION,)
         assert connection.execute(
             "SELECT COUNT(*) FROM auth_audit_logs WHERE action = 'phase2_preflight'"
         ).fetchone() == (1,)
@@ -1496,7 +1572,9 @@ def test_injection_schedule_delivery_snapshot_upgrade_backfills_existing_tasks(
 
 def test_injection_schedule_hub_postgresql_offline_sql_contains_forward_schema():
     env = os.environ.copy()
-    env["DATABASE_URL"] = "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    env["DATABASE_URL"] = (
+        "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -1523,12 +1601,16 @@ def test_injection_schedule_hub_postgresql_offline_sql_contains_forward_schema()
         "injection_schedule_audit_logs",
     ):
         assert f"create table {table_name}" in sql
-    assert "alter table injection_schedule_import_batches add column source_sha256" in sql
+    assert (
+        "alter table injection_schedule_import_batches add column source_sha256" in sql
+    )
 
 
 def test_injection_schedule_removal_postgresql_offline_sql_drops_module_schema():
     env = os.environ.copy()
-    env["DATABASE_URL"] = "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    env["DATABASE_URL"] = (
+        "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -1560,7 +1642,9 @@ def test_injection_schedule_removal_postgresql_offline_sql_drops_module_schema()
 
 def test_injection_schedule_phase2_postgresql_offline_sql_contains_scoped_schema():
     env = os.environ.copy()
-    env["DATABASE_URL"] = "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    env["DATABASE_URL"] = (
+        "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -1611,8 +1695,7 @@ def test_injection_schedule_phase2_postgresql_offline_sql_contains_scoped_schema
 def test_injection_schedule_phase4_postgresql_offline_sql_contains_execution_schema():
     env = os.environ.copy()
     env["DATABASE_URL"] = (
-        "postgresql+psycopg://postgres:postgres@localhost:5432/"
-        "royal_regent_nexus"
+        "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
     )
     result = subprocess.run(
         [
@@ -1640,12 +1723,9 @@ def test_injection_schedule_phase4_postgresql_offline_sql_contains_execution_sch
         "alter table injection_schedule_tasks add column "
         "execution_status varchar(32)" in sql
     )
+    assert "alter table injection_schedule_tasks add column protected boolean" in sql
     assert (
-        "alter table injection_schedule_tasks add column protected boolean" in sql
-    )
-    assert (
-        "alter table injection_order_masters add column "
-        "priority_code varchar(2)" in sql
+        "alter table injection_order_masters add column priority_code varchar(2)" in sql
     )
     assert "ck_injection_order_priority_code" in sql
     assert "ix_injection_order_masters_priority_code" in sql
@@ -1683,7 +1763,9 @@ def test_injection_schedule_phase4_postgresql_offline_sql_contains_execution_sch
 
 def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     env = os.environ.copy()
-    env["DATABASE_URL"] = "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    env["DATABASE_URL"] = (
+        "postgresql+psycopg://postgres:postgres@localhost:5432/royal_regent_nexus"
+    )
 
     result = subprocess.run(
         [
@@ -1762,7 +1844,9 @@ def test_alembic_offline_postgresql_sql_contains_molding_sample_schema():
     assert "update raw_materials set factory_id = '*'" in sql
     assert "drop constraint uq_raw_materials_factory_code" in sql
     assert "add constraint uq_raw_materials_material_code unique (material_code)" in sql
-    assert "add constraint ck_raw_materials_global_factory check (factory_id = '*')" in sql
+    assert (
+        "add constraint ck_raw_materials_global_factory check (factory_id = '*')" in sql
+    )
     assert sql.index("lock table raw_materials in access exclusive mode") < sql.index(
         "raw material master data conflict"
     )
@@ -1777,9 +1861,11 @@ def test_raw_material_shared_sqlite_write_lock_blocks_competing_writer(tmp_path)
         seed_connection.commit()
 
     config = Config(str(ALEMBIC_INI))
-    migration_module = ScriptDirectory.from_config(config).get_revision(
-        RAW_MATERIAL_SHARED_MIGRATION_REVISION
-    ).module
+    migration_module = (
+        ScriptDirectory.from_config(config)
+        .get_revision(RAW_MATERIAL_SHARED_MIGRATION_REVISION)
+        .module
+    )
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     try:
         with engine.connect() as migration_connection, migration_connection.begin():
@@ -2003,23 +2089,32 @@ def test_raw_material_shared_upgrade_merges_equivalent_rows_deterministically(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (RAW_MATERIAL_SHARED_MIGRATION_REVISION,)
 
-        raw_material_table_sql = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'raw_materials'"
-        ).fetchone()[0].lower()
-        assert "constraint ck_raw_materials_global_factory check (factory_id = '*')" in (
-            raw_material_table_sql
+        raw_material_table_sql = (
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'raw_materials'"
+            )
+            .fetchone()[0]
+            .lower()
+        )
+        assert (
+            "constraint ck_raw_materials_global_factory check (factory_id = '*')"
+            in (raw_material_table_sql)
         )
 
         unique_index_columns = []
-        for index_row in connection.execute("PRAGMA index_list('raw_materials')").fetchall():
+        for index_row in connection.execute(
+            "PRAGMA index_list('raw_materials')"
+        ).fetchall():
             if index_row[2] != 1:
                 continue
-            unique_index_columns.append([
-                column_row[2]
-                for column_row in connection.execute(
-                    f"PRAGMA index_info('{index_row[1]}')"
-                ).fetchall()
-            ])
+            unique_index_columns.append(
+                [
+                    column_row[2]
+                    for column_row in connection.execute(
+                        f"PRAGMA index_info('{index_row[1]}')"
+                    ).fetchall()
+                ]
+            )
         assert ["material_code"] in unique_index_columns
         assert ["factory_id", "material_code"] not in unique_index_columns
 
@@ -2263,9 +2358,9 @@ def test_iam_position_scope_upgrade_classifies_internal_quote_reads(tmp_path):
             "internal_quote:timeline_read": "read",
             "internal_quote:export": "operate",
         }
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            HEAD_MIGRATION_REVISION,
-        )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
 
 
 def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
@@ -2371,7 +2466,13 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
             FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'
             """
         ).fetchone()
-        assert quote == ("LEGACY-P1", "sales-business", "legacy_rr2_compatible", 1, "无")
+        assert quote == (
+            "LEGACY-P1",
+            "sales-business",
+            "legacy_rr2_compatible",
+            1,
+            "无",
+        )
         audit = connection.execute(
             "SELECT factory_id, action FROM internal_quote_audit_logs WHERE id = 'IQA-LEGACY-P1'"
         ).fetchone()
@@ -2379,9 +2480,9 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
         assert connection.execute(
             "SELECT COUNT(*) FROM internal_quote_sections WHERE quote_id = 'IQ-LEGACY-P1'"
         ).fetchone() == (1,)
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,
-        )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INTERNAL_QUOTE_PRICING_BASELINE_MIGRATION_REVISION,)
 
     run_alembic("downgrade", INTERNAL_QUOTE_ARCHIVE_MIGRATION_REVISION)
     run_alembic("upgrade", "head")
@@ -2389,9 +2490,9 @@ def test_internal_quote_p1_upgrade_preserves_existing_0019_records(tmp_path):
         assert connection.execute(
             "SELECT quote_no FROM internal_quotes WHERE id = 'IQ-LEGACY-P1'"
         ).fetchone() == ("LEGACY-P1",)
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            HEAD_MIGRATION_REVISION,
-        )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
 
 
 def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
@@ -2567,9 +2668,9 @@ def test_internal_quote_p3_upgrade_preserves_existing_0018_artifacts(tmp_path):
         assert connection.execute(
             "SELECT file_name FROM internal_quote_export_files WHERE id = 'IQEXP-LEGACY'"
         ).fetchone() == ("历史导出.xlsx",)
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            HEAD_MIGRATION_REVISION,
-        )
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_MIGRATION_REVISION,)
 
 
 def _run_dispatch_alembic(database_path: Path, *arguments: str):
@@ -2598,6 +2699,41 @@ def _run_dispatch_init_db(database_path: Path):
         capture_output=True,
         check=False,
     )
+
+
+def _snapshot_legacy_injection_scheduling_tables(
+    connection: sqlite3.Connection,
+) -> dict[str, tuple[str | None, list[tuple]]]:
+    table_names = sorted(
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        if row[0].startswith("injection_scheduling_")
+    )
+    return {
+        table_name: (
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,),
+            ).fetchone()[0],
+            connection.execute(
+                f'SELECT * FROM "{table_name}" ORDER BY rowid'
+            ).fetchall(),
+        )
+        for table_name in table_names
+    }
+
+
+def _foreign_key_column_groups(
+    connection: sqlite3.Connection, table_name: str
+) -> set[frozenset[tuple[str, str]]]:
+    groups: dict[int, set[tuple[str, str]]] = {}
+    for row in connection.execute(
+        f'PRAGMA foreign_key_list("{table_name}")'
+    ).fetchall():
+        groups.setdefault(row[0], set()).add((row[3], row[4]))
+    return {frozenset(group) for group in groups.values()}
 
 
 def _sqlite_schema_signature(database_path: Path) -> list[tuple[str, str, str]]:
@@ -2771,7 +2907,9 @@ def test_three_d_printing_factory_reassignment_moves_linked_data_to_huakang_a(
             )
 
 
-def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(tmp_path):
+def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(
+    tmp_path,
+):
     database_path = tmp_path / "molding_sample_dispatch_schema_gate.db"
     initial_upgrade = _run_dispatch_alembic(
         database_path,
@@ -2856,9 +2994,12 @@ def test_injection_schedule_rebuild_removal_drops_schema_permissions_and_marker(
             "injection_schedule_shift_actuals",
             "injection_schedule_actual_corrections",
         } <= injection_tables
-        assert connection.execute(
-            "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
-        ).fetchone()[0] > 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
+            ).fetchone()[0]
+            > 0
+        )
         connection.execute(
             """
             INSERT OR REPLACE INTO auth_iam_state (key, value_json, updated_at)
@@ -2889,17 +3030,29 @@ def test_injection_schedule_rebuild_removal_drops_schema_permissions_and_marker(
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_MIGRATION_REVISION,)
-        assert connection.execute(
-            """
-            SELECT COUNT(*)
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND (
-                name LIKE 'injection_schedule_%'
-                OR name LIKE 'injection_%_masters'
-              )
-            """
-        ).fetchone() == (0,)
+        rebuilt_tables = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND (
+                    name LIKE 'injection_schedule_%'
+                    OR name LIKE 'injection_%_masters'
+                  )
+                """
+            ).fetchall()
+        }
+        assert rebuilt_tables == INJECTION_SCHEDULE_CENTER_TABLES
+        assert not (
+            {
+                "injection_schedule_tasks",
+                "injection_schedule_shift_actuals",
+                "injection_schedule_actual_corrections",
+            }
+            & rebuilt_tables
+        )
         assert connection.execute(
             "SELECT COUNT(*) FROM auth_permissions WHERE code LIKE 'injection_schedule:%'"
         ).fetchone() == (0,)
@@ -2966,9 +3119,7 @@ def test_new_injection_scheduling_backend_upgrade_creates_isolated_contract(
             "injection_scheduling_published_snapshots",
             "injection_scheduling_audit_events",
         } <= table_names
-        assert not any(
-            name.startswith("injection_schedule_") for name in table_names
-        )
+        assert not any(name.startswith("injection_schedule_") for name in table_names)
 
         permission_codes = {
             row[0]
@@ -3124,9 +3275,9 @@ def test_injection_scheduling_phase2_master_rebuild_is_scoped_and_requires_phase
               AND configured_max_utilization = 1.0
             """
         ).fetchone() == (6,)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM auth_users"
-        ).fetchone() == (auth_user_count_before,)
+        assert connection.execute("SELECT COUNT(*) FROM auth_users").fetchone() == (
+            auth_user_count_before,
+        )
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (INJECTION_SCHEDULING_PHASE2_MASTER_MIGRATION_REVISION,)
@@ -3376,6 +3527,7 @@ def test_injection_scheduling_phase3_execution_upgrade_and_guards(tmp_path):
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (INJECTION_SCHEDULING_PHASE3_EXECUTION_MIGRATION_REVISION,)
 
+
 def test_injection_scheduling_phase3_postgresql_offline_sql_contains_contract():
     env = os.environ.copy()
     env["DATABASE_URL"] = "postgresql+psycopg://unused:unused@localhost/unused"
@@ -3560,7 +3712,11 @@ def test_injection_scheduling_phase4_import_upgrade_lineage_and_guards(tmp_path)
 
     blocked_startup = _run_dispatch_init_db(database_path)
     assert blocked_startup.returncode != 0
-    assert INJECTION_SCHEDULING_V2_PHASE0_REVISION in blocked_startup.stderr
+    assert "请先备份数据库并执行 Alembic upgrade head" in blocked_startup.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION,)
 
 
 def test_injection_scheduling_phase4_postgresql_offline_sql_contains_contract():
@@ -3855,15 +4011,12 @@ def test_molding_sample_dispatch_upgrade_backfills_scope_and_preserves_rows(tmp_
                 if row[1] == "factory_id"
             )
             assert factory_column[3] == 1
-            assert (
-                f"ix_{table_name}_factory_id"
-                in {
-                    row[1]
-                    for row in connection.execute(
-                        f"PRAGMA index_list('{table_name}')"
-                    ).fetchall()
-                }
-            )
+            assert f"ix_{table_name}_factory_id" in {
+                row[1]
+                for row in connection.execute(
+                    f"PRAGMA index_list('{table_name}')"
+                ).fetchall()
+            }
 
         order_indexes = {
             row[1]
@@ -3879,12 +4032,16 @@ def test_molding_sample_dispatch_upgrade_backfills_scope_and_preserves_rows(tmp_
             ).fetchall()
         ] == ["production_factory_id", "status", "created_at"]
 
-        order_table_sql = connection.execute(
-            """
+        order_table_sql = (
+            connection.execute(
+                """
             SELECT sql FROM sqlite_master
             WHERE type = 'table' AND name = 'molding_sample_orders'
             """
-        ).fetchone()[0].lower()
+            )
+            .fetchone()[0]
+            .lower()
+        )
         assert "ck_molding_sample_orders_production_factory" in order_table_sql
         assert "molding_sample_dispatch_logs" in {
             row[0]
@@ -4313,6 +4470,456 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
     assert allowed_startup.returncode == 0, allowed_startup.stderr
 
 
+def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
+    database_path = tmp_path / "injection_schedule_center_isolated.db"
+    before_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,
+    )
+    assert before_upgrade.returncode == 0, before_upgrade.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        legacy_before = _snapshot_legacy_injection_scheduling_tables(connection)
+        assert legacy_before
+
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        all_table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        rebuilt_table_names = {
+            name for name in all_table_names if name.startswith("injection_schedule_")
+        }
+        assert rebuilt_table_names == INJECTION_SCHEDULE_CENTER_TABLES
+        assert _snapshot_legacy_injection_scheduling_tables(connection) == legacy_before
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION,)
+
+        def columns(table_name: str) -> set[str]:
+            return {
+                row[1]
+                for row in connection.execute(
+                    f'PRAGMA table_info("{table_name}")'
+                ).fetchall()
+            }
+
+        assert {
+            "machine_ounce_capacity",
+            "shot_capacity_g",
+            "tonnage",
+            "is_automatic",
+            "robot_arm_type",
+            "fixture",
+            "supports_core_pull",
+            "max_mold_length_mm",
+            "max_mold_width_mm",
+            "max_mold_height_mm",
+            "min_mold_thickness_mm",
+            "max_mold_thickness_mm",
+            "tie_bar_x_mm",
+            "tie_bar_y_mm",
+            "allowed_materials_json",
+            "forbidden_materials_json",
+            "allowed_color_lightness_json",
+            "structured_constraints_json",
+            "raw_remark",
+            "version",
+        } <= columns("injection_schedule_machines")
+        assert {
+            "mold_ounce_requirement",
+            "min_machine_ounce",
+            "max_machine_ounce",
+            "cavity_count",
+            "shot_weight_g",
+            "recommended_tonnage",
+            "mold_length_mm",
+            "mold_width_mm",
+            "mold_height_mm",
+            "mold_thickness_mm",
+            "requires_core_pull",
+            "required_robot_arm",
+            "required_fixture",
+            "forbidden_machine_codes_json",
+            "structured_constraints_json",
+            "version",
+        } <= columns("injection_schedule_molds")
+        assert {
+            "raw_total_sets",
+            "raw_source_json",
+            "shipping_date",
+            "material_name",
+            "material_status",
+            "material_prepared_kg",
+            "version",
+        } <= columns("injection_schedule_order_demands")
+        assert {
+            "suggested_changeover_hours",
+            "manual_changeover_hours",
+            "final_changeover_hours",
+            "manual_changeover_reason",
+            "system_daily_target",
+            "manual_daily_target",
+            "effective_daily_target",
+            "version",
+        } <= columns("injection_schedule_lines")
+        line_table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'injection_schedule_lines'"
+        ).fetchone()[0]
+        assert "ck_injection_schedule_line_sequence_nonnegative" in line_table_sql
+        assert "ck_injection_schedule_line_cancelled_unassigned" in line_table_sql
+
+        mold_unique_column_sets = {
+            tuple(
+                row[2]
+                for row in connection.execute(
+                    f'PRAGMA index_info("{index_row[1]}")'
+                ).fetchall()
+            )
+            for index_row in connection.execute(
+                'PRAGMA index_list("injection_schedule_molds")'
+            ).fetchall()
+            if index_row[2]
+        }
+        assert ("factory_id", "mold_code", "product_code") in mold_unique_column_sets
+
+        order_unique_column_sets = {
+            tuple(
+                row[2]
+                for row in connection.execute(
+                    f'PRAGMA index_info("{index_row[1]}")'
+                ).fetchall()
+            )
+            for index_row in connection.execute(
+                'PRAGMA index_list("injection_schedule_order_demands")'
+            ).fetchall()
+            if index_row[2]
+        }
+        assert (
+            "factory_id",
+            "order_no",
+            "product_code",
+            "mold_code",
+        ) in order_unique_column_sets
+        line_unique_column_sets = {
+            tuple(
+                row[2]
+                for row in connection.execute(
+                    f'PRAGMA index_info("{index_row[1]}")'
+                ).fetchall()
+            )
+            for index_row in connection.execute(
+                'PRAGMA index_list("injection_schedule_lines")'
+            ).fetchall()
+            if index_row[2]
+        }
+        assert ("factory_id", "order_demand_id") in line_unique_column_sets
+        binding_unique_column_sets = {
+            tuple(
+                row[2]
+                for row in connection.execute(
+                    f'PRAGMA index_info("{index_row[1]}")'
+                ).fetchall()
+            )
+            for index_row in connection.execute(
+                'PRAGMA index_list("injection_schedule_import_request_bindings")'
+            ).fetchall()
+            if index_row[2]
+        }
+        assert ("factory_id", "request_id") in binding_unique_column_sets
+
+        order_fks = _foreign_key_column_groups(
+            connection, "injection_schedule_order_demands"
+        )
+        line_fks = _foreign_key_column_groups(connection, "injection_schedule_lines")
+        shift_fks = _foreign_key_column_groups(
+            connection, "injection_schedule_shift_outputs"
+        )
+        issue_fks = _foreign_key_column_groups(
+            connection, "injection_schedule_import_issues"
+        )
+        binding_fks = _foreign_key_column_groups(
+            connection, "injection_schedule_import_request_bindings"
+        )
+        assert (
+            frozenset({("source_batch_id", "id"), ("factory_id", "factory_id")})
+            in order_fks
+        )
+        assert (
+            frozenset({("order_demand_id", "id"), ("factory_id", "factory_id")})
+            in line_fks
+        )
+        assert (
+            frozenset({("machine_id", "id"), ("factory_id", "factory_id")}) in line_fks
+        )
+        assert frozenset({("mold_id", "id"), ("factory_id", "factory_id")}) in line_fks
+        assert (
+            frozenset({("schedule_line_id", "id"), ("factory_id", "factory_id")})
+            in shift_fks
+        )
+        assert (
+            frozenset({("batch_id", "id"), ("factory_id", "factory_id")}) in issue_fks
+        )
+        assert (
+            frozenset({("batch_id", "id"), ("factory_id", "factory_id")}) in binding_fks
+        )
+
+
+def test_injection_schedule_center_postgresql_offline_sql_contains_contract():
+    env = os.environ.copy()
+    env["DATABASE_URL"] = "postgresql+psycopg://unused:unused@localhost/unused"
+    env["ALEMBIC_OFFLINE_METADATA_ONLY"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_INI),
+            "upgrade",
+            (
+                f"{AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION}:"
+                f"{INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION}"
+            ),
+            "--sql",
+        ],
+        cwd=BACKEND_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout.lower()
+    assert "create table injection_schedule_import_request_bindings" in sql
+    assert "uq_injection_schedule_import_request_binding_request" in sql
+    assert "uq_injection_schedule_import_batch_commit_request" in sql
+    for index_name in (
+        "ix_is_import_request_binding_factory_batch",
+        "ix_is_import_request_binding_source_hash",
+        "ix_is_import_request_binding_created",
+    ):
+        assert f"create index {index_name}" in sql
+
+
+def test_injection_schedule_center_upgrade_rejects_exact_name_conflict(tmp_path):
+    database_path = tmp_path / "injection_schedule_center_name_conflict.db"
+    before_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,
+    )
+    assert before_upgrade.returncode == 0, before_upgrade.stderr
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE injection_schedule_machines "
+            "(id TEXT PRIMARY KEY, sentinel TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO injection_schedule_machines (id, sentinel) "
+            "VALUES ('existing', 'preserve-me')"
+        )
+        connection.commit()
+
+    rejected = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert rejected.returncode != 0
+    assert "exact target table names already exist" in rejected.stderr
+    assert "injection_schedule_machines" in rejected.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        target_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+            if row[0].startswith("injection_schedule_")
+        }
+        assert target_names == {"injection_schedule_machines"}
+        assert connection.execute(
+            "SELECT id, sentinel FROM injection_schedule_machines"
+        ).fetchall() == [("existing", "preserve-me")]
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,)
+
+
+def test_injection_schedule_center_audit_events_are_database_immutable(tmp_path):
+    database_path = tmp_path / "injection_schedule_center_immutable_audit.db"
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        trigger_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            ).fetchall()
+        }
+        assert INJECTION_SCHEDULE_CENTER_AUDIT_TRIGGERS <= trigger_names
+
+        connection.execute(
+            """
+            INSERT INTO injection_schedule_audit_events (
+                id, factory_id, event_sequence, event_type, entity_type,
+                entity_id, actor_user_id, created_at
+            ) VALUES (
+                'audit-immutable-1', 'factory-a', 1, 'LINE_CREATED', 'LINE',
+                'line-a', 'user-a', '2026-08-27T00:00:00Z'
+            )
+            """
+        )
+        connection.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                """
+                UPDATE injection_schedule_audit_events
+                SET reason = 'tampered'
+                WHERE id = 'audit-immutable-1'
+                """
+            )
+        connection.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                """
+                DELETE FROM injection_schedule_audit_events
+                WHERE id = 'audit-immutable-1'
+                """
+            )
+        connection.rollback()
+
+        assert connection.execute(
+            """
+            SELECT id, reason
+            FROM injection_schedule_audit_events
+            WHERE id = 'audit-immutable-1'
+            """
+        ).fetchone() == ("audit-immutable-1", "")
+
+
+def test_injection_schedule_center_empty_downgrade_preserves_legacy_data(tmp_path):
+    database_path = tmp_path / "injection_schedule_center_empty_downgrade.db"
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        legacy_before = _snapshot_legacy_injection_scheduling_tables(connection)
+        trigger_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            ).fetchall()
+        }
+        assert INJECTION_SCHEDULE_CENTER_AUDIT_TRIGGERS <= trigger_names
+
+    downgraded = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,
+    )
+    assert downgraded.returncode == 0, downgraded.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        remaining_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert not (remaining_names & INJECTION_SCHEDULE_CENTER_TABLES)
+        assert _snapshot_legacy_injection_scheduling_tables(connection) == legacy_before
+        remaining_trigger_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            ).fetchall()
+        }
+        assert not (remaining_trigger_names & INJECTION_SCHEDULE_CENTER_AUDIT_TRIGGERS)
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,)
+
+
+def test_injection_schedule_center_downgrade_rejects_business_data(tmp_path):
+    database_path = tmp_path / "injection_schedule_center_data_guard.db"
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO injection_schedule_factory_settings (
+                id, factory_id, factory_name, created_by, updated_by,
+                created_at, updated_at
+            ) VALUES (
+                'settings-factory-a', 'factory-a', 'Factory A', 'user-a', 'user-a',
+                '2026-08-27T00:00:00Z', '2026-08-27T00:00:00Z'
+            )
+            """
+        )
+        connection.commit()
+
+    rejected = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,
+    )
+    assert rejected.returncode != 0
+    assert "cannot be downgraded after injection schedule center" in rejected.stderr
+    assert "injection_schedule_factory_settings" in rejected.stderr
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION,)
+        assert connection.execute(
+            "SELECT factory_id FROM injection_schedule_factory_settings"
+        ).fetchall() == [("factory-a",)]
+
+
+def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path):
+    migrated_database = tmp_path / "injection_schedule_center_retired_0084.db"
+    before_upgrade = _run_dispatch_alembic(
+        migrated_database,
+        "upgrade",
+        AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,
+    )
+    assert before_upgrade.returncode == 0, before_upgrade.stderr
+
+    allowed = _run_dispatch_init_db(migrated_database)
+    assert allowed.returncode == 0, allowed.stderr
+    with sqlite3.connect(migrated_database) as connection:
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert not (table_names & INJECTION_SCHEDULE_CENTER_TABLES)
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,)
+
+    fresh_database = tmp_path / "injection_schedule_center_retired_fresh.db"
+    fresh_start = _run_dispatch_init_db(fresh_database)
+    assert fresh_start.returncode == 0, fresh_start.stderr
+    with sqlite3.connect(fresh_database) as connection:
+        fresh_table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert not (fresh_table_names & INJECTION_SCHEDULE_CENTER_TABLES)
+        assert "alembic_version" not in fresh_table_names
+
+
 def test_injection_scheduling_profile_downgrade_rejects_lifecycle_data(tmp_path):
     database_path = tmp_path / "injection_scheduling_profile_downgrade_guard.db"
     upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
@@ -4333,11 +4940,13 @@ def test_injection_scheduling_profile_downgrade_rejects_lifecycle_data(tmp_path)
         CARTON_ORDER_AUTO_FLOW_MIGRATION_REVISION,
     )
     assert rejected.returncode != 0
-    assert "cannot be downgraded" in rejected.stderr
+    assert "0084 is irreversible" in rejected.stderr
+    assert "retired AI subsystem" in rejected.stderr
+    assert "pre-removal database backup" in rejected.stderr
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION,)
+        ).fetchone() == (AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,)
         assert connection.execute(
             "SELECT COUNT(*) FROM injection_scheduling_import_profiles"
         ).fetchone() == (2,)
@@ -4403,11 +5012,13 @@ def test_injection_scheduling_public_planning_downgrade_rejects_artifacts(tmp_pa
         INJECTION_SCHEDULING_TAKEOVER_MIGRATION_REVISION,
     )
     assert rejected.returncode != 0
-    assert "cannot be downgraded after upload artifacts" in rejected.stderr
+    assert "0084 is irreversible" in rejected.stderr
+    assert "retired AI subsystem" in rejected.stderr
+    assert "pre-removal database backup" in rejected.stderr
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (PROTECTED_DOWNGRADE_PREFLIGHT_REVISION,)
+        ).fetchone() == (AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,)
         assert connection.execute(
             "SELECT COUNT(*) FROM injection_scheduling_upload_artifacts"
         ).fetchone() == (1,)
@@ -4551,8 +5162,8 @@ def test_carton_units_per_carton_migration_preserves_required_quantity(tmp_path)
         usage_quantity, required_quantity = connection.execute(
             "SELECT usage_quantity, required_quantity FROM carton_order_lines WHERE id = 'CTL-LEGACY'"
         ).fetchone()
-        assert Decimal(str(usage_quantity)) == Decimal("120")
-        assert Decimal(str(required_quantity)) == Decimal("30")
+        assert Decimal(str(usage_quantity)) == Decimal(120)
+        assert Decimal(str(required_quantity)) == Decimal(30)
 
     downgraded = _run_dispatch_alembic(database_path, "downgrade", "20260817_0078")
     assert downgraded.returncode == 0, downgraded.stderr
@@ -4561,10 +5172,12 @@ def test_carton_units_per_carton_migration_preserves_required_quantity(tmp_path)
             "SELECT usage_quantity, required_quantity FROM carton_order_lines WHERE id = 'CTL-LEGACY'"
         ).fetchone()
         assert Decimal(str(usage_quantity)) == Decimal("0.00833333")
-        assert Decimal(str(required_quantity)) == Decimal("30")
+        assert Decimal(str(required_quantity)) == Decimal(30)
 
 
-def test_carton_closing_currency_migration_backfills_without_changing_locked_values(tmp_path):
+def test_carton_closing_currency_migration_backfills_without_changing_locked_values(
+    tmp_path,
+):
     database_path = tmp_path / "carton_closing_currency_0064.db"
     with sqlite3.connect(database_path) as connection:
         connection.executescript(

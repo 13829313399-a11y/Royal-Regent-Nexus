@@ -79,7 +79,7 @@
 - `src/components/common/SectionPanel.vue`：标准内容面板；
 - `src/components/common/StatusPill.vue`：状态标签；
 - `src/components/layout/`：应用顶栏、侧栏和页面壳；
-- `src/views/InjectionSchedulingV2View.vue`：注塑排产重构期占位入口；旧排产工作区样式已移除；
+- `src/data/enterpriseMock.ts`：注塑排产重构期占位卡片；运行时页面和模块专属样式已移除；
 - `src/components/molding/print/moldingSamplePrint.css`：啤办打印输出；
 - `design-qa.md`：具体功能的视觉验收证据，不替代本规范。
 
@@ -503,27 +503,9 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 
 ## 15. 局部设计系统与例外
 
-### 15.1 注塑排产 V2
+### 15.1 注塑排产重构占位
 
-排产工作区是经明确隔离的高密度桌面系统：
-
-- 正式轻量工作台使用 `.injection-workbench` 根命名空间与 `--wb-*` 局部 token；保留的旧版回滚视图继续使用 `.injection-scheduling-v2` 与 `--is-*`，二者不得交叉提升为全局规则；
-- 轻量工作台采用 Industrial Crystal Operations Console：64px 黑曜石指挥栏、冷白信息面、青绿单一主操作和按语义分配的状态色；KPI、筛选、状态栏与 38px 虚拟表格行构成固定高密度节奏；
-- 轻量工作台复用 `AccountMenu`（`obsidian` / `compact`）、`UserAvatar`、`StatusPill` 和 `ProgressMeter`，不得复制账户、头像、状态或进度逻辑；
-- 计划表与机台队列使用 `tablist` / `tab` / `tabpanel` 语义；表格内部承担横向滚动，工作台壳层在 1024–1920px 不产生横向滚动；
-- 轻量工作台动效统一由 `workbench.motion.css` 约束，Teleport 弹窗和抽屉也必须覆盖 reduced-motion；
-
-- 根命名空间：`.injection-scheduling-v2`；
-- 最低宽度 1024px，固定视口工作区；
-- 字体密度约 12–13px；
-- 独立 `--is-*` token、深 Navy 顶栏、青绿主色；
-- 基础样式加载顺序：`injection-scheduling-v2.css` → `styles/tokens.css` → `styles/polish.css` → `styles/motion.css`；
-- 机台库和共享模具库再加载各自 CSS；
-- Modal、Toast 等 Teleport 内容需显式继承同一 token；
-- 动效必须遵守 reduced-motion；
-- 该 token 不得复制到普通模块或写入 `:root`。
-
-排产工作区的例外只服务于大量列、虚拟滚动、冻结分区和实时状态，不代表普通页面也应使用 9–12px 正文或固定 1024px 画布。
+生产模块中心只保留“注塑排产中枢”目录卡片，并显示“重构中”。卡片没有路由、链接、键盘焦点或模块专属权限要求；旧工作区、API、组件和样式均不构成当前设计系统的一部分。后续重新开发前，应先确认新版流程、数据边界、权限和界面方案，再建立新的局部设计约束。
 
 ### 15.2 登录、注册与强制改密
 
@@ -579,10 +561,6 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 - 共享原语目前主要只有 Button 和 Progress，Input、Select、Dialog、Table 尚未统一；
 - `StatusPill` 与 `ProgressMeter` 的展示色调类型目前从演示数据模块导入；六种色调可以沿用，但类型应迁到中立的设计或展示层，演示数据不能成为设计 token 权威；
 - 多个历史业务全页拥有独立 scoped CSS，视觉与交互细节存在差异；
-- 排产 V2 的基础 CSS 与后置 token/polish 层存在覆盖关系，维护时必须遵守固定加载顺序；
-- 排产基础 CSS 和动效 CSS 中仍有未挂根命名空间的通用类名，可能与全局 `.popover-*`、`.modal-*` 等选择器冲突；新增规则必须完整限定作用域；
-- 排产 `polish.css` 引用了尚未定义的 `--is-text-tertiary`，在正式收敛 token 时需要补齐或替换；
-- 排产根强制 `min-width: 1024px`，同时仍保留更小宽度的历史媒体查询，最低宽度与小屏策略尚未完全统一；
 - 全局尚无 success、warning、info、spacing、shadow 和 motion 语义 token，模块中存在较多硬编码色值与时长；
 - 顶栏、侧栏和背景装饰分别使用约 72px 与 75px 的位置值，尚未抽取统一壳层尺寸 token；
 - 部分历史工作区自建蓝色或青绿色板并引用未加载的 Inter、JetBrains Mono 等字体，这些不能提升为全局标准；
