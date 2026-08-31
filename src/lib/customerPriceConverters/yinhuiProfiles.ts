@@ -1,7 +1,7 @@
-// The operating guide supplies the first four rates. PVC/TPE are corroborated by
+// The customer supplies ABS/TPR/PP/POM/C-ABS rates. PVC/TPE are corroborated by
 // the source resin costs and quote multiplier (rounded to HKD/kg, two decimals).
 // Rates belong to the customer, not a SKU or an individual hand-filled example.
-export const YINHUI_MATERIAL_PRICES_HKD_KG = { ABS: 15.65, TPR: 18.8, PP: 12.6, POM: 34.07, PVC: 17.16, TPE: 15.9 } as const
+export const YINHUI_MATERIAL_PRICES_HKD_KG = { ABS: 15.65, TPR: 18.8, PP: 12.6, POM: 34.07, 'C-ABS': 24, PVC: 17.16, TPE: 15.9 } as const
 // Customer-supplied layout families, never saved quotation amounts or MOQ values.
 export const YINHUI_PROFILES = {
   standard: { label: '机器人 / 标准六表', file: 'yinhui-customer-quote-template.bin', product: '', packaging: 'Window Box' },

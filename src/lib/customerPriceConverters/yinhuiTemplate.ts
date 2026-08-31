@@ -303,9 +303,12 @@ function writer(zip: Record<string, Uint8Array>, index: number) {
   }
   return { set, doc, has: (ref: string) => cells.has(ref), save: () => { zip[path] = serialize(doc) } }
 }
-export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult, template: ArrayBuffer) {
+export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult, template: ArrayBuffer, options: { missingMaterialPricesConfirmed?: boolean } = {}) {
   const d = result.quoteData
   validateYinhuiExport(d)
+  const total = yinhuiTotals(d)
+  const pricePending = total.missingMaterialPrices.length > 0
+  if (pricePending && !options.missingMaterialPricesConfirmed) throw new Error(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。请确认单价留空、合计暂未包含这些料价后再导出。`)
   const layout = templateLayout(parseXlsxWorkbook(template))
   const first = layout.bom[0]!
   for (const [label, count, capacity] of [
@@ -317,11 +320,10 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
     ['包装', d.packagingRows.length, 12],
   ] as const) if (count > capacity) throw new Error(`银辉${label}有 ${count} 行，超过该客表 ${capacity} 行容量，不能截断明细`)
   const zip = unzipSync(sanitizeYinhuiTemplate(template))
-  const total = yinhuiTotals(d)
   const date = excelDateSerial(new Date(`${d.quoteDate}T12:00:00Z`))
   const summary = writer(zip, 0); const s = summary.set
   s('C3', 'Royal Regent Products International Ltd'); s('H3', date)
-  s('C4', d.productName); s('C5', d.model); s('C6', d.stage); s('H5', d.packaging); s('H6', d.moq); s('K11', YINHUI_HKD_USD)
+  s('C4', d.productName); s('C5', d.model); s('C6', pricePending ? [d.stage, 'PRICE PENDING'].filter(Boolean).join(' / ') : d.stage); s('H5', d.packaging); s('H6', d.moq); s('K11', YINHUI_HKD_USD)
   ;[total.plastic, total.mechanical, total.electronic, total.fabric, total.labour, 0].forEach((v, i) => s(`H${13 + i}`, v))
   for (let r = 20; r <= 25; r++) s(`H${r}`, 0)
   s('H27', total.packaging); s('H28', d.packagingLaborHkd); s('H29', 0)
@@ -389,7 +391,7 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
         if (w.has(`O${r}`) || item.weightG > 0) t(`O${r}`, yinhuiMaterialPrice(d, item.material))
         t(`R${r}`, item.toolingHkd)
       }
-      const plasticCost = item ? item.weightG * yinhuiMaterialPrice(d, item.material) / 1000 : 0
+      const plasticCost = item ? item.weightG * (yinhuiMaterialPrice(d, item.material) ?? 0) / 1000 : 0
       t(`H${r}`, item?.weightG || 0); t(`P${r}`, plasticCost); t(`Q${r}`, plasticCost + (item?.laborHkd || 0))
     }
     for (const [col, value] of [['E', d.tools.reduce((a,r) => a + r.usage, 0)], ['H', d.tools.reduce((a,r) => a + r.weightG, 0)], ['N', total.injection], ['P', total.plastic - d.plastic.reduce((a,r) => a + r.amountHkd, 0)], ['R', total.tooling]] as const) t(`${col}${end}`, second ? 0 : value)

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { strFromU8, unzipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
-import { convertYinhuiInternalQuote, convertYinhuiP4InternalQuote, isYinhuiCustomer, validateYinhuiExport, yinhuiTotals } from '@/lib/customerPriceConverters/yinhui'
+import { buildYinhuiCustomerQuoteFileName, convertYinhuiInternalQuote, convertYinhuiP4InternalQuote, isYinhuiCustomer, validateYinhuiExport, yinhuiMaterialPrice, yinhuiTotals } from '@/lib/customerPriceConverters/yinhui'
 import { createYinhuiCustomerQuoteWorkbook, sanitizeYinhuiTemplate, YINHUI_SHEET_NAMES } from '@/lib/customerPriceConverters/yinhuiTemplate'
 import { createXlsxWorkbook, parseXlsxWorkbook, type XlsxCellInput } from '@/lib/customerPriceConverters/xlsxLite'
 import { P4_SECTION_CODES, type P4InternalQuoteArtifact } from '@/lib/customerPriceConverters/p4Artifact'
@@ -96,8 +96,58 @@ describe('Silverlit temporary independent mapping', () => {
     expect(content).not.toMatch(/PRIVATE SUPPLIER|contact@example|Robo Rapidfire|88538|88528|采购利润/)
     expect(sanitizeYinhuiTemplate(template)).toBeTruthy()
   })
-  it.each([['missing cache', {internal:'#VALUE!'}],['unmapped resin', {material:'PA'}],['unmapped cost', {category:'电镀'}]])('blocks %s instead of silently using zero', (_, options) => {
+  it.each([['missing cache', {internal:'#VALUE!'}],['invalid resin cell', {material:'#VALUE!'}],['unmapped cost', {category:'电镀'}]])('blocks %s instead of silently using zero', (_, options) => {
     expect(() => convertYinhuiInternalQuote(legacy(options), '银辉00012.xlsx')).toThrow()
+  })
+  it.each([['ABS',15.65],['TPR',18.8],['PP',12.6],['POM',34.07],['C-ABS',24],[' c – abs料 ',24]] as const)('applies the supplied %s price to the material cell and 100g cost', (resin, price) => {
+    const result = convertYinhuiInternalQuote(legacy({material:resin}), '银辉00012.xlsx')
+    const output = buffer(createYinhuiCustomerQuoteWorkbook(result, template))
+    const rows = parseXlsxWorkbook(output).sheets[4]!.rows
+    expect(rows[7]?.[14]).toBe(price)
+    expect(rows[7]?.[15]).toBeCloseTo(price / 10, 8)
+    expect(yinhuiTotals(result.quoteData).missingMaterialPrices).toEqual([])
+    expect(buildYinhuiCustomerQuoteFileName(result)).not.toContain('待补料价')
+  })
+  it.each(['standard','88636','89115','89275'] as const)('exports unpriced resin with an explicit acknowledgement and blank price in %s', profile => {
+    const result = convertYinhuiInternalQuote(legacy({material:'PA'}), '银辉00012.xlsx')
+    result.quoteData.templateId = profile
+    result.quoteData.stage = 'R0'
+    const variant = buffer(readFileSync(`public/templates/${YINHUI_PROFILES[profile].file}`))
+    expect(result.warnings.join(' ')).toMatch(/缺少银辉报客料价：PA/)
+    expect(result.sheets[0]?.name).toContain('待补料价')
+    expect(yinhuiMaterialPrice(result.quoteData, 'PA')).toBeNull()
+    expect(yinhuiTotals(result.quoteData).exFactory).toBeCloseTo(19.4, 6)
+    expect(() => validateYinhuiExport(result.quoteData)).not.toThrow()
+    expect(() => createYinhuiCustomerQuoteWorkbook(result, variant)).toThrow(/请确认/)
+    const output = buffer(createYinhuiCustomerQuoteWorkbook(result, variant, {missingMaterialPricesConfirmed:true}))
+    const parsed = parseXlsxWorkbook(output)
+    expect(parsed.sheets[4]?.rows[7]?.[8]).toBe('PA')
+    expect(parsed.sheets[4]?.rows[7]?.[14]).toBe('') // unknown is blank, never an internal/other-customer price or a zero price
+    const toolXml = new DOMParser().parseFromString(strFromU8(unzipSync(new Uint8Array(output))['xl/worksheets/sheet5.xml']!), 'application/xml')
+    const priceCell = Array.from(toolXml.getElementsByTagName('c')).find(cell => cell.getAttribute('r') === 'O8')!
+    expect(priceCell.childNodes).toHaveLength(0)
+    expect(parsed.sheets[4]?.rows[7]?.[15]).toBe(0) // original formula evaluates the still-blank price
+    expect(parsed.sheets[0]?.rows[5]?.[2]).toBe('R0 / PRICE PENDING')
+    expect(parsed.sheets[0]?.rows[31]?.[9]).toBeCloseTo(19.4, 6)
+    expect(formulaAndStyle(output)).toEqual(formulaAndStyle(variant))
+    expect(unzipSync(new Uint8Array(output))['xl/styles.xml']).toEqual(unzipSync(new Uint8Array(variant))['xl/styles.xml'])
+    expect(buildYinhuiCustomerQuoteFileName(result)).toContain('-待补料价.xlsx')
+    result.quoteData.freightLclHkd = null
+    expect(() => createYinhuiCustomerQuoteWorkbook(result, variant, {missingMaterialPricesConfirmed:true})).toThrow(/运费/)
+  })
+  it('keeps known material costs and deduplicates repeated missing resin warnings', () => {
+    const input = changedLegacy(sheets => {
+      sheets.splice(1,1)
+      sheets[0]!.rows[12] = [null,null,'Cover*1','PA',20,null,null,null,null,null,null,1]
+      sheets[0]!.rows[13] = [null,null,'Handle*1','PA',30,null,null,null,null,null,null,1]
+    })
+    const result = convertYinhuiInternalQuote(input, '银辉00012.xlsx')
+    expect(yinhuiTotals(result.quoteData)).toMatchObject({plastic:1.565,missingMaterialPrices:['PA']})
+    const output = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template, {missingMaterialPricesConfirmed:true})))
+    expect(output.sheets[4]?.rows[7]?.[14]).toBe(15.65)
+    expect(output.sheets[4]?.rows[8]?.[14]).toBe('')
+    expect(output.sheets[4]?.rows[9]?.[14]).toBe('')
+    expect(result.warnings.filter(w => w.startsWith('缺少银辉报客料价：'))).toHaveLength(1)
   })
   it('requires English names and explicit freight but accepts zero freight', () => {
     const d = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx').quoteData
@@ -261,6 +311,18 @@ describe('Silverlit temporary independent mapping', () => {
     result.quoteData.model = 'P4-001'
     const output = createYinhuiCustomerQuoteWorkbook(result, template)
     expect(parseXlsxWorkbook(buffer(output)).sheets[0]?.rows[31]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory,6)
+  })
+  it.each(['C-ABS','PA'])('uses the same priced or unpriced %s flow for approved P4 input', resin => {
+    const artifact = p4()
+    ;(artifact.sections.molding.calculation.line_breakdown as Array<Record<string,unknown>>)[0]!.material = resin
+    const result = convertYinhuiP4InternalQuote(artifact, 'approved.xlsx')
+    result.quoteData.model = 'P4-001'
+    const missing = resin === 'PA'
+    expect(yinhuiTotals(result.quoteData).missingMaterialPrices).toEqual(missing ? ['PA'] : [])
+    if (missing) expect(() => createYinhuiCustomerQuoteWorkbook(result, template)).toThrow(/请确认/)
+    const output = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template, {missingMaterialPricesConfirmed:missing})))
+    expect(output.sheets[4]?.rows[7]?.[14]).toBe(missing ? '' : 24)
+    expect(output.sheets[0]?.rows[31]?.[9]).toBeCloseTo(missing ? 8.9 : 11.3, 6)
   })
   it('keeps P4 customer, factory and unsupported-cost boundaries explicit', () => {
     const a = p4(); a.customer = 'BuzzBee'; expect(() => convertYinhuiP4InternalQuote(a,'a.xlsx')).toThrow(/客户/)
