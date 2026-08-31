@@ -6,6 +6,7 @@ export interface XlsxParsedSheet {
   name: string
   rows: XlsxCellValue[][]
   cellFillIds: number[][]
+  cellFormulas?: Record<string, string>
 }
 
 export interface XlsxParsedWorkbook {
@@ -184,19 +185,23 @@ function resolveWorksheetTargets(zip: Record<string, Uint8Array>) {
   })
 }
 
-export function parseXlsxWorkbook(buffer: ArrayBuffer): XlsxParsedWorkbook {
+export function parseXlsxWorkbook(buffer: ArrayBuffer, options: { sheetNames?: string[]; valuesOnly?: boolean; includeFormulas?: boolean } = {}): XlsxParsedWorkbook {
   const zip = unzipSync(new Uint8Array(buffer))
   const sharedStrings = readSharedStrings(zip)
   const cellStyleFillIds = readCellStyleFillIds(zip)
-  const sheets = resolveWorksheetTargets(zip).map((sheet) => {
-    const worksheetXml = getZipText(zip, sheet.path)
+  const sheets = resolveWorksheetTargets(zip).filter((sheet) => !options.sheetNames || options.sheetNames.includes(sheet.name)).map((sheet) => {
+    let worksheetXml = getZipText(zip, sheet.path)
     if (!worksheetXml) {
       throw new Error(`没有读取到工作表：${sheet.name}`)
     }
 
+    // Some legacy workbooks format tens of thousands of otherwise empty rows.
+    // Value-only consumers do not need those empty cells, but all value/formula cells retain their addresses.
+    if (options.valuesOnly) worksheetXml = worksheetXml.replace(/<c\b[^>]*\/>/g, '').replace(/<row\b[^>]*>\s*<\/row>/g, '')
     const worksheet = parseXml(worksheetXml)
     const rows: XlsxCellValue[][] = []
     const cellFillIds: number[][] = []
+    const cellFormulas: Record<string, string> = {}
 
     Array.from(worksheet.getElementsByTagName('row')).forEach((row, fallbackRowIndex) => {
       const rowIndex = Number(row.getAttribute('r') ?? fallbackRowIndex + 1) - 1
@@ -208,6 +213,10 @@ export function parseXlsxWorkbook(buffer: ArrayBuffer): XlsxParsedWorkbook {
         const columnName = reference.match(/[A-Z]+/)?.[0]
         const columnIndex = columnName ? columnNameToIndex(columnName) : cells.length
         cells[columnIndex] = readCellValue(cell, sharedStrings)
+        if (options.includeFormulas) {
+          const formula = cell.getElementsByTagName('f')[0]?.textContent
+          if (formula) cellFormulas[reference] = formula
+        }
         const styleId = Number(cell.getAttribute('s') ?? 0)
         fills[columnIndex] = cellStyleFillIds[styleId] ?? 0
       })
@@ -220,6 +229,7 @@ export function parseXlsxWorkbook(buffer: ArrayBuffer): XlsxParsedWorkbook {
       name: sheet.name,
       rows,
       cellFillIds,
+      ...(options.includeFormulas ? { cellFormulas } : {}),
     }
   })
 

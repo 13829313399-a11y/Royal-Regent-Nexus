@@ -27,7 +27,7 @@ const metrics = computed(() => {
   }
 
   return [
-    { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dickie / 彩星' },
+    { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dickie / 彩星 / 银辉' },
     { label: '待复核', value: '1', detail: '主管核对输出版本' },
     { label: '客户范围', value: '全部', detail: '按账号权限导入和输出' },
   ]
@@ -51,7 +51,7 @@ const metrics = computed(() => {
     >
       <strong class="text-base text-slate-900">当前厂区尚未配置报客映射</strong>
       <p class="mt-2 text-sm text-slate-500">
-        BuzzBee、迪士尼、Dickie 和彩星仅适用于华兴，360 仅适用于华康 A；请先为本厂区新增独立客户映射链路。
+        BuzzBee、迪士尼、Dickie、彩星和银辉仅适用于华兴，360 仅适用于华康 A；请先为本厂区新增独立客户映射链路。
       </p>
     </section>
   </SalesModuleWorkbench>
