@@ -219,7 +219,7 @@ export interface ApiInternalQuoteExport {
 export interface ApiInternalQuoteImportPreview {
   batch_id: string
   quote_id: string
-  import_type: 'mold' | 'hardware' | 'electronic' | 'molding' | 'painting' | 'slush' | 'sewing' | 'assembly'
+  import_type: 'mold' | 'hardware' | 'electronic' | 'molding' | 'painting' | 'slush' | 'sewing' | 'hair' | 'assembly'
   target_department: string
   source_file_name: string
   source_sha256: string
@@ -807,6 +807,10 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     },
     async submitFinal(quoteId: string, revision: number) {
       const response = await client.post<ApiInternalQuoteFinalRelease>(`/internal-quotes/${quoteId}/final-submit`, { revision })
+      return response.data
+    },
+    async withdrawFinal(quoteId: string, revision: number, reason: string) {
+      const response = await client.post<ApiInternalQuoteFinalRelease>(`/internal-quotes/${quoteId}/final-withdraw`, { revision, reason })
       return response.data
     },
     async reviewFinal(quoteId: string, revision: number, decision: 'approve' | 'reject', reason = '') {

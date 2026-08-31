@@ -23,12 +23,13 @@ from app.schemas.internal_quote import (
     InternalQuoteFinalReleaseOut,
     InternalQuoteFinalReviewOut,
     InternalQuoteFinalReviewRequest,
+    InternalQuoteReasonRequest,
     InternalQuoteRevisionRequest,
     InternalQuoteSectionComparisonOut,
     InternalQuoteVersionCandidateOut,
     InternalQuoteVersionComparisonOut,
 )
-from app.services.auth import AuthContext, now_text
+from app.services.auth import AuthContext, can, now_text
 from app.services.internal_quote import (
     ALL_QUOTE_DEPARTMENTS,
     ARTIFACT_NOTIFICATION_EVENTS,
@@ -271,7 +272,7 @@ def _submit_whole_quote_review(
         ("sales-business",),
     )
     selected_quote = quote
-    batch_quotes = get_quote_batch_rows(db, quote)
+    batch_quotes = get_quote_batch_rows(db, quote, for_update=True)
     root_quote = next((item for item in batch_quotes if item.batch_position == 1), batch_quotes[0])
     reviewer_ids = {item.business_owner_id for item in batch_quotes}
     if len(reviewer_ids) != 1:
@@ -396,7 +397,7 @@ def _review_whole_quote(
     request: Request | None,
 ) -> InternalQuoteFinalReleaseOut:
     selected_quote = quote
-    batch_quotes = get_quote_batch_rows(db, quote)
+    batch_quotes = get_quote_batch_rows(db, quote, for_update=True)
     root_quote = next((item for item in batch_quotes if item.batch_position == 1), batch_quotes[0])
     reviewer_ids = {item.business_owner_id for item in batch_quotes}
     if len(reviewer_ids) != 1:
@@ -557,6 +558,76 @@ def _review_whole_quote(
         quote=quote_to_out(db, selected_quote),
         review=_review_out(selected_review),
     )
+
+
+def withdraw_whole_quote_submission(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteReasonRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteFinalReleaseOut:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_read(db, user, quote.factory_id)
+    # The same ordered row locks are used by submit/review, so a concurrent
+    # approval cannot be overwritten by the creator's withdrawal.
+    batch_quotes = get_quote_batch_rows(db, quote, for_update=True)
+    if any(item.created_by != user.id for item in batch_quotes):
+        raise HTTPException(status_code=403, detail="只有建单人本人可以在审核前退回修改")
+    if not any(can(user, "internal_quote:create", quote.factory_id, department)
+               for department in ("sales-business", "engineering")):
+        raise HTTPException(status_code=403, detail="当前账号没有该厂区的建单操作权限")
+    if not payload.reason.strip():
+        raise HTTPException(status_code=422, detail="退回修改必须填写原因")
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+    for item in batch_quotes:
+        _ensure_active(item)
+        if not is_whole_quote_review(item) or item.status != "final_reviewing" or item.final_release_status != "pending":
+            raise HTTPException(status_code=409, detail="只有待整单审核的报价可以退回修改；审核完成后不能撤回")
+
+    timestamp = now_text()
+    for item in batch_quotes:
+        for section in _whole_review_required_sections(_quote_sections(db, item.id)):
+            old_revision = section.revision
+            section.status = "rejected"
+            section.revision += 1
+            section.submitted_by = ""
+            section.submitted_by_id = ""
+            section.submitted_at = ""
+            section.reviewed_by = ""
+            section.reviewed_at = ""
+            section.review_comment = ""
+            section.updated_at = timestamp
+            _add_revision(db, item, section, user, reason=payload.reason)
+            _add_audit(
+                db, item, user, "whole_review_withdraw_section",
+                department=section.department, old_revision=old_revision,
+                new_revision=section.revision, reason=payload.reason, request=request,
+            )
+        old_header_revision = item.header_revision
+        item.header_revision += 1
+        item.status = "rejected"
+        item.final_release_status = "invalidated"
+        item.final_release_invalidated_at = timestamp
+        item.final_release_invalidation_reason = payload.reason
+        item.updated_at = timestamp
+        # Keep the submitted manifest and submitter as evidence. Withdrawal is
+        # an audit action, never a reviewer rejection or an approval record.
+        _add_audit(
+            db, item, user, "whole_review_withdraw", department="",
+            old_revision=old_header_revision, new_revision=item.header_revision,
+            reason=payload.reason,
+            detail=canonical_json({
+                "submission_revision": item.final_submission_revision,
+                "batch_id": item.batch_id or item.id,
+                "batch_size": len(batch_quotes),
+            }),
+            request=request,
+        )
+        _mark_quote_notifications_handled(db, item, events=FINAL_REVIEW_NOTIFICATION_EVENTS)
+    db.commit()
+    db.refresh(quote)
+    return InternalQuoteFinalReleaseOut(quote=quote_to_out(db, quote))
 
 
 def submit_final_release(

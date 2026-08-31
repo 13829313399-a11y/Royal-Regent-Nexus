@@ -26,9 +26,20 @@ const internalQuoteOperatePermissions = [
 ] as const
 
 interface InternalQuoteAccessChecker {
-  currentUser: { id?: string; profile?: { primary_factory_id: string } | null } | null
+  currentUser: {
+    id?: string
+    profile?: { primary_factory_id: string; primary_department?: string } | null
+    grants?: { department: string }[]
+  } | null
   can: (permission: string, factoryId?: string, department?: string) => boolean
   canAny: (permissions: string[], factoryId?: string, department?: string) => boolean
+}
+
+function isSalesQuoteReviewer(authStore: InternalQuoteAccessChecker) {
+  const department = authStore.currentUser?.profile?.primary_department?.trim()
+  return department
+    ? department === 'sales-business'
+    : Boolean(authStore.currentUser?.grants?.some((grant) => grant.department === 'sales-business'))
 }
 
 export function canReviewInternalQuoteSections(
@@ -40,6 +51,7 @@ export function canReviewInternalQuoteSections(
   return Boolean(
     businessOwnerId
     && authStore.currentUser?.id === businessOwnerId
+    && isSalesQuoteReviewer(authStore)
     && (
       authStore.can('internal_quote:sales_review', factoryId, 'sales-business')
       || (
@@ -48,6 +60,19 @@ export function canReviewInternalQuoteSections(
       )
     ),
   )
+}
+
+export function canWithdrawInternalQuote(
+  authStore: InternalQuoteAccessChecker,
+  quote: { moduleVersion: string; status: string; createdById: string; factoryId: string },
+) {
+  return Boolean(quote.createdById)
+    && quote.moduleVersion === 'v3'
+    && quote.status === 'final_pending'
+    && quote.createdById === authStore.currentUser?.id
+    && ['sales-business', 'engineering'].some((department) =>
+      authStore.can('internal_quote:create', quote.factoryId, department),
+    )
 }
 
 export function canEditAllInternalQuoteSections(

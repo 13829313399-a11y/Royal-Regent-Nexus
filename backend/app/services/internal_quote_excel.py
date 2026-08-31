@@ -857,15 +857,44 @@ def _split_engineering_mold_part_names(value: object) -> list[str]:
     source = _plain_text(value).replace("／", "/")
     if not source:
         return []
+    tokens: list[str] = []
+    token_start, bracket_depth = 0, 0
+    for offset, character in enumerate(source):
+        if character in "（(【[":
+            bracket_depth += 1
+        elif character in "）)】]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif character == "/" and bracket_depth == 0:
+            token = source[token_start:offset].strip()
+            if token:
+                tokens.append(token)
+            token_start = offset + 1
+    if final_token := source[token_start:].strip():
+        tokens.append(final_token)
     result: list[str] = []
-    for raw_part in source.split("/"):
-        part = raw_part.strip()
-        if not part:
+    opposites = {"前": "后", "后": "前", "左": "右", "右": "左"}
+    index = 0
+    while index < len(tokens):
+        part = tokens[index]
+        left = re.fullmatch(r"(.*?)([前后左右])([^前后左右]*)", part)
+        right = re.fullmatch(r"(.*?)([前后左右])([^前后左右]*)", tokens[index + 1]) if index + 1 < len(tokens) else None
+        if (
+            left and right and opposites[left[2]] == right[2]
+            and (not left[1] or not right[1] or left[1] == right[1])
+            and (not left[3] or not right[3] or left[3] == right[3])
+            and not re.search(r"前后|左右", left[1] + right[1])
+        ):
+            prefix, suffix = left[1] or right[1], left[3] or right[3]
+            result.extend((f"{prefix}{left[2]}{suffix}", f"{prefix}{right[2]}{suffix}"))
+            index += 2
             continue
-        if "左右" in part:
-            result.extend((part.replace("左右", "左"), part.replace("左右", "右")))
+        pairs = re.findall(r"左右|前后", part)
+        if len(pairs) == 1:
+            pair = pairs[0]
+            result.extend((part.replace(pair, pair[0], 1), part.replace(pair, pair[1], 1)))
         else:
             result.append(part)
+        index += 1
     return result
 
 
