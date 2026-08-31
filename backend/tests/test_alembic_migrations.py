@@ -118,7 +118,8 @@ USER_PRESENCE_MIGRATION_REVISION = "20260821_0082"
 CARTON_MARK_MANUAL_RELEASE_MIGRATION_REVISION = "20260825_0083"
 AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION = "20260826_0084"
 INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION = "20260827_0085"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION
+INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION = "20260830_0086"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION
 INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_factory_settings",
     "injection_schedule_order_demands",
@@ -132,6 +133,7 @@ INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_saved_views",
     "injection_schedule_audit_events",
     "injection_schedule_auto_proposals",
+    "injection_schedule_machine_unavailable_windows",
 }
 INJECTION_SCHEDULE_CENTER_AUDIT_TRIGGERS = {
     "trg_injection_schedule_audit_events_no_update",
@@ -4500,7 +4502,7 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
         assert _snapshot_legacy_injection_scheduling_tables(connection) == legacy_before
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION,)
+        ).fetchone() == (INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION,)
 
         def columns(table_name: str) -> set[str]:
             return {
@@ -4530,6 +4532,9 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
             "allowed_color_lightness_json",
             "structured_constraints_json",
             "raw_remark",
+            "machine_a_label",
+            "is_high_speed",
+            "display_order",
             "version",
         } <= columns("injection_schedule_machines")
         assert {
@@ -4548,6 +4553,8 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
             "required_fixture",
             "forbidden_machine_codes_json",
             "structured_constraints_json",
+            "required_machine_a_label",
+            "pieces_per_shot",
             "version",
         } <= columns("injection_schedule_molds")
         assert {
@@ -4557,6 +4564,10 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
             "material_name",
             "material_status",
             "material_prepared_kg",
+            "business_key",
+            "total_sets",
+            "required_machine_a_value",
+            "data_completeness_status",
             "version",
         } <= columns("injection_schedule_order_demands")
         assert {
@@ -4567,6 +4578,8 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
             "system_daily_target",
             "manual_daily_target",
             "effective_daily_target",
+            "schedule_revision",
+            "schedule_source",
             "version",
         } <= columns("injection_schedule_lines")
         line_table_sql = connection.execute(
@@ -4604,9 +4617,7 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
         }
         assert (
             "factory_id",
-            "order_no",
-            "product_code",
-            "mold_code",
+            "business_key",
         ) in order_unique_column_sets
         line_unique_column_sets = {
             tuple(
@@ -4871,19 +4882,23 @@ def test_injection_schedule_center_downgrade_rejects_business_data(tmp_path):
         AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,
     )
     assert rejected.returncode != 0
-    assert "cannot be downgraded after injection schedule center" in rejected.stderr
+    assert (
+        "cannot be downgraded after injection scheduling application" in rejected.stderr
+    )
     assert "injection_schedule_factory_settings" in rejected.stderr
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION,)
+        ).fetchone() == (INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION,)
         assert connection.execute(
             "SELECT factory_id FROM injection_schedule_factory_settings"
         ).fetchall() == [("factory-a",)]
 
 
-def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path):
+def test_init_db_requires_migration_for_existing_database_and_supports_fresh_dev(
+    tmp_path,
+):
     migrated_database = tmp_path / "injection_schedule_center_retired_0084.db"
     before_upgrade = _run_dispatch_alembic(
         migrated_database,
@@ -4892,8 +4907,10 @@ def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path)
     )
     assert before_upgrade.returncode == 0, before_upgrade.stderr
 
-    allowed = _run_dispatch_init_db(migrated_database)
-    assert allowed.returncode == 0, allowed.stderr
+    blocked = _run_dispatch_init_db(migrated_database)
+    assert blocked.returncode != 0
+    assert INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION in blocked.stderr
+    assert "table:injection_schedule_factory_settings" in blocked.stderr
     with sqlite3.connect(migrated_database) as connection:
         table_names = {
             row[0]
@@ -4906,7 +4923,7 @@ def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path)
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,)
 
-    fresh_database = tmp_path / "injection_schedule_center_retired_fresh.db"
+    fresh_database = tmp_path / "injection_schedule_center_phase1_fresh.db"
     fresh_start = _run_dispatch_init_db(fresh_database)
     assert fresh_start.returncode == 0, fresh_start.stderr
     with sqlite3.connect(fresh_database) as connection:
@@ -4916,7 +4933,15 @@ def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path)
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-        assert not (fresh_table_names & INJECTION_SCHEDULE_CENTER_TABLES)
+        assert {
+            "injection_schedule_factory_settings",
+            "injection_schedule_order_demands",
+            "injection_schedule_machines",
+            "injection_schedule_molds",
+            "injection_schedule_lines",
+            "injection_schedule_shift_outputs",
+            "injection_schedule_machine_unavailable_windows",
+        } <= fresh_table_names
         assert "alembic_version" not in fresh_table_names
 
 

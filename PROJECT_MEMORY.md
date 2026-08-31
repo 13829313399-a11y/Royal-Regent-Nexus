@@ -39,8 +39,8 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
 - The former AI assistant, Workbench, Provider integration, cloud document enhancement, background Tasks, Artifacts, Vision, Skills, Prompts, controlled actions, operational alerts and scheduling layout inference have been removed. No `/api/ai/*` or `/workbench/ai` route remains. Historical Alembic revisions are retained only to preserve upgrade-chain continuity; migration `20260826_0084` removes their runtime tables and alert rows.
-- The injection-scheduling frontend and backend runtime have been removed for a new rebuild. Only a non-navigating production-module card and historical database migrations/data remain; no injection-scheduling UI, API route or active permission definition exists.
-- Alembic has one current head: `20260827_0085`.
+- The injection-scheduling frontend and backend runtime are locally rebuilt at `/modules/production/injection-scheduling` and `/api/production/injection-scheduling`; the production-module card opens the authenticated, factory-scoped workspace and is explicitly marked local acceptance/not online.
+- Alembic has one current head: `20260830_0086`. The local SQLite business database was backup-first upgraded to this head on 2026-08-31; this does not establish a production deployment or production-database migration.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -242,12 +242,11 @@ Migration `20260826_0084` retires the removed AI subsystem by deleting its opera
 
 Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF inputs for an authenticated user. It is also request-time processing rather than a persisted workflow.
 
-### Injection-Scheduling Rebuild Placeholder
+### Injection-Scheduling Center
 
-The production module center retains the `注塑排产中枢` catalog card as a non-navigating rebuild placeholder. The frontend route and workspace, API clients, backend routers, schemas, models, services, import/scheduling runtime, AI configuration, active permissions and operational tests have been removed; no `/modules/production/injection-scheduling` or `/api/injection-scheduling/*` runtime route remains.
+The production card routes to `/modules/production/injection-scheduling?factory=<factory-id>` and the factory-scoped backend lives under `/api/production/injection-scheduling`. The shared workspace covers deterministic Excel preview/confirm/reject with four versioned profiles, import issues and diff counts, machine/mold/order master-data maintenance, manual move validation plus optimistic locking, maintenance windows, day/night output, deterministic auto-schedule proposals, saved views, current-filter XLSX export, immutable audit and optional Qwen suggestions. Qwen is disabled by default and never writes a formal schedule directly.
 
-Historical Alembic revisions and existing database tables/data are intentionally retained to preserve upgrade-chain continuity and avoid deleting business records without a separate authorized migration. Migration `20260827_0085` remains the single current head and its twelve `injection_schedule_*` tables are dormant after runtime removal. Any future rebuild must explicitly decide whether to reuse or retire those tables and define a new route, permissions and migration boundary before reactivating the card.
- ### Huakang A 3D Printing Management
+Migration `20260830_0086` extends the retained `20260827_0085` twelve-table contract rather than rewriting historical migration data; it adds application fields, active-order business keys, one machine-unavailable-window table and the `injection_scheduling:read|edit|schedule|admin` permissions. Its downgrade refuses to remove populated application data. The local SQLite business database was upgraded from 0085 to 0086 on 2026-08-31 only after a verified online backup; integrity, foreign keys, startup schema guard and `/health` passed afterward. Production still requires its own separately authorized backup-first migration and deployment. The current implementation, sample reconciliation, operating steps and cutover boundary are recorded only in `docs/business/injection-scheduling-implementation-inventory.md`.
 ### Huakang A 3D Printing Management
 
 3D printing management is a connected Huakang A-only production capability:
@@ -326,7 +325,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Many module cards and dashboard metrics still use demonstration data and need explicit replacement plans before they can be treated as operational.
 - The repository alone cannot confirm the live production `AUTHZ_MODE`, permission-write posture, database head or deployed application revision.
 - The former AI subsystem is retired. Historical migration files remain only so existing databases can advance safely to `20260826_0084`; application code must not import or recreate the removed routes, models, services, tables, provider settings or UI surfaces.
-- The injection-scheduling module is intentionally inactive pending redesign. Its production-module card remains visible as a rebuild placeholder, while frontend/backend runtime code and active permission definitions are absent; historical schema/data remain dormant until a separately authorized migration decides whether to reuse or retire them.
+- The rebuilt injection-scheduling module is in local acceptance only. Its local SQLite schema is at 0086 and the guarded backend starts successfully, but real master-data blockers, shadow scheduling, clerk sign-off, production deployment and production-database migration remain outstanding.
 
 ## 9. Current Next Steps
 

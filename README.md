@@ -16,7 +16,8 @@ Before implementing any requirement, read and maintain `PROJECT_MEMORY.md`.
 
 For agent operating rules, read and maintain `AGENTS.md`.
 
-For the Injection Production Hub, also read and maintain `docs/injection-production-hub-context-memory.md`.
+For the Injection Scheduling Center, also read and maintain
+`docs/business/injection-scheduling-implementation-inventory.md`.
 
 The development server is configured for:
 

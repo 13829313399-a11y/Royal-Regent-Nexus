@@ -19,7 +19,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v22"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v23"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -97,6 +97,15 @@ QC_INSPECTION_SUPERVISOR_PERMISSION_CODES = (
     "qc_inspection:factory_summary",
 )
 
+INJECTION_SCHEDULING_CLERK_PERMISSION_CODES = (
+    "injection_scheduling:read",
+    "injection_scheduling:edit",
+)
+INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES = (
+    *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
+    "injection_scheduling:schedule",
+)
+
 
 @dataclass(frozen=True)
 class SystemPositionDefinition:
@@ -146,6 +155,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "customer_order:export",
     "customer_order:duplicate_confirm",
     "customer_order:audit_read",
+    *INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
     "internal_quote:read",
     "internal_quote:create",
     "internal_quote:clone",
@@ -185,6 +195,7 @@ GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
     (
         *THREE_D_PRINTING_PERMISSION_CODES,
         *QC_INSPECTION_PERMISSION_CODES,
+        "injection_scheduling:admin",
     )
 )
 
@@ -276,6 +287,7 @@ PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "internal_quote:molding_edit",
     "internal_quote:molding_review",
     *THREE_D_PRINTING_SUPERVISOR_PERMISSION_CODES[1:],
+    *INJECTION_SCHEDULING_SUPERVISOR_PERMISSION_CODES,
 )
 
 PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
@@ -293,6 +305,7 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
     "internal_quote:summary_read",
     "internal_quote:timeline_read",
     "internal_quote:molding_edit",
+    *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
 )
 
 PAINTING_CLERK_PERMISSION_CODES = (
@@ -318,10 +331,12 @@ MOLDING_CLERK_PERMISSION_CODES = (
     "molding_sample:production_fillback",
     "molding_sample:production_complete",
     "molding_sample:notification_read",
+    *INJECTION_SCHEDULING_CLERK_PERMISSION_CODES,
 )
 
 MOLDING_SUPERVISOR_PERMISSION_CODES = (
     *MOLDING_CLERK_PERMISSION_CODES,
+    "injection_scheduling:schedule",
 )
 
 WAREHOUSE_PERMISSION_CODES = (
