@@ -91,7 +91,7 @@ from app.services.internal_quote_customers import (
     list_customers,
     update_customer,
 )
-from app.services.internal_quote_templates import XLSX_CONTENT_TYPE, build_internal_quote_import_template
+from app.services.internal_quote_templates import XLS_CONTENT_TYPE, XLSX_CONTENT_TYPE, build_internal_quote_import_template
 from app.services.internal_quote_artifacts import (
     confirm_import_batch,
     create_controlled_export,
@@ -117,6 +117,7 @@ from app.services.internal_quote_release import (
     list_version_candidates,
     review_final_release,
     submit_final_release,
+    withdraw_whole_quote_submission,
 )
 
 
@@ -549,6 +550,17 @@ def post_internal_quote_final_submit(
     return submit_final_release(db, quote_id, payload, current_user, request)
 
 
+@router.post("/{quote_id}/final-withdraw", response_model=InternalQuoteFinalReleaseOut)
+def post_internal_quote_final_withdraw(
+    quote_id: str,
+    payload: InternalQuoteReasonRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return withdraw_whole_quote_submission(db, quote_id, payload, current_user, request)
+
+
 @router.post("/{quote_id}/final-review", response_model=InternalQuoteFinalReleaseOut)
 def post_internal_quote_final_review(
     quote_id: str,
@@ -642,7 +654,7 @@ def get_internal_quote_import_template(
         raise HTTPException(status_code=400, detail=str(error)) from error
     return Response(
         content=content,
-        media_type=XLSX_CONTENT_TYPE,
+        media_type=XLS_CONTENT_TYPE if file_name.lower().endswith(".xls") else XLSX_CONTENT_TYPE,
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
             "Cache-Control": "private, max-age=300",

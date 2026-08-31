@@ -54,7 +54,7 @@ function submit() {
     return
   }
   if (!props.businessOwners.some((owner) => owner.id === form.businessOwnerId)) {
-    localError.value = '请选择当前厂区有效的业务审核负责人。'
+    localError.value = '请选择当前厂区具备审核权限的业务部人员。'
     return
   }
   if (!Number.isInteger(Number(form.quantity)) || Number(form.quantity) <= 0) {
@@ -88,7 +88,7 @@ function submit() {
           <label class="wide"><span>产品名称</span><input v-model="form.productName" type="text"></label>
           <label><span>客户</span><select v-model="form.customer"><option v-for="customer in customers" :key="customer" :value="customer">{{ customer }}</option></select></label>
           <label><span>出货数量</span><input v-model.number="form.quantity" type="number" min="1" step="1"></label>
-          <label class="wide"><span>业务负责人 / 全部分段审核人</span><select v-model="form.businessOwnerId" @change="selectOwner"><option v-for="owner in businessOwners" :key="owner.id" :value="owner.id">{{ owner.displayName }}（{{ owner.username }}）</option></select></label>
+          <label class="wide"><span>业务负责人 / 全部分段审核人（仅业务部）</span><select v-model="form.businessOwnerId" @change="selectOwner"><option value="" disabled>请选择业务部审核人</option><option v-for="owner in businessOwners" :key="owner.id" :value="owner.id">{{ owner.displayName }}（{{ owner.username }}）</option></select></label>
           <label><span>客人目标价</span><input v-model="form.targetCustomerPrice" type="text"></label>
           <label><span>预计完成日期</span><input v-model="form.targetDate" type="date"></label>
           <label class="wide"><span>备注</span><textarea v-model="form.remark" rows="3" /></label>

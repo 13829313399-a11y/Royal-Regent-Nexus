@@ -23,7 +23,8 @@ import {
 } from '@/api/internalQuote'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { getApiErrorMessage } from '@/lib/http'
-import { defaultSalesMiscRatio, normalizeInternalQuotePayload, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio } from '@/lib/internalQuoteSectionPayload'
+import { normalizeInternalQuoteDraft } from '@/lib/internalQuoteMoldingReferences'
+import { defaultSalesMiscRatio, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio } from '@/lib/internalQuoteSectionPayload'
 import { useAppStore } from '@/stores/app'
 import type {
   InternalQuote,
@@ -55,6 +56,7 @@ const actionTitles: Record<string, string> = {
   whole_review_lock_section: '整单提交锁定部门内容', whole_review_submit: '提交整单审核',
   whole_review_approve_section: '整单审核通过部门内容', whole_review_reject_section: '整单审核退回部门内容',
   whole_review_approve: '整单审核通过', whole_review_reject: '整单审核退回',
+  whole_review_withdraw: '建单人退回修改', whole_review_withdraw_section: '建单人退回解锁部门内容',
   batch_copy_baseline: '复制基准款整份报价', batch_copy_section: '复制基准款部门内容',
   upload_product_image: '更新产品主图',
 }
@@ -141,8 +143,8 @@ function payloadFingerprint(value: Record<string, unknown>) {
   return JSON.stringify(stablePayloadValue(value))
 }
 
-function sectionPayloadFingerprint(sectionCode: InternalQuoteSectionCode, value: Record<string, unknown>) {
-  return payloadFingerprint(normalizeInternalQuotePayload(sectionCode, value))
+function sectionPayloadFingerprint(sectionCode: InternalQuoteSectionCode, value: Record<string, unknown>, snapshot?: Record<string, unknown>) {
+  return payloadFingerprint(normalizeInternalQuoteDraft(sectionCode, value, snapshot))
 }
 
 function orderedApiSections(sections: ApiInternalQuoteSection[]) {
@@ -1303,6 +1305,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     async saveWholeProductSections(quoteId: string, drafts: InternalQuoteWholeProductDraft[]) {
       if (!drafts.length) throw new Error('当前没有需要保存的部门修改。')
+      const fingerprint = (code: InternalQuoteSectionCode, value: Record<string, unknown>) => (
+        sectionPayloadFingerprint(code, value, this.getQuoteById(quoteId)?.referenceSnapshot)
+      )
       const draftByCode = new Map(drafts.map((draft) => [draft.sectionCode, draft]))
       if (draftByCode.size !== drafts.length) throw new Error('整单保存包含重复部门，请重新读取页面后再试。')
       const orderedDrafts = orderedParticipatingSections([...draftByCode.keys()])
@@ -1320,14 +1325,14 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           const latestSection = latestBeforeSave.sections.find((section) => section.department === draft.sectionCode)
           if (!latestSection) throw new Error(`${definitionFor(draft.sectionCode).label}已不在当前报价中，请重新读取页面后再试。`)
           if (latestSection.revision === draft.revision) continue
-          const latestFingerprint = sectionPayloadFingerprint(draft.sectionCode, latestSection.payload)
-          if (latestFingerprint === sectionPayloadFingerprint(draft.sectionCode, draft.payload)) {
+          const latestFingerprint = fingerprint(draft.sectionCode, latestSection.payload)
+          if (latestFingerprint === fingerprint(draft.sectionCode, draft.payload)) {
             currentRevisions.set(draft.sectionCode, latestSection.revision)
             alreadyPersisted.add(draft.sectionCode)
             savedSections.push(latestSection)
             continue
           }
-          if (latestFingerprint === sectionPayloadFingerprint(draft.sectionCode, draft.baselinePayload)) {
+          if (latestFingerprint === fingerprint(draft.sectionCode, draft.baselinePayload)) {
             currentRevisions.set(draft.sectionCode, latestSection.revision)
             continue
           }
@@ -1354,11 +1359,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
             const latestQuote = await internalQuoteApi.get(quoteId)
             const latestMolding = latestQuote.sections.find((section) => section.department === 'molding')
             if (!latestMolding) throw new Error('工程部保存后未能读取啤机部最新 revision，请重新读取页面后再试。')
-            const latestFingerprint = sectionPayloadFingerprint('molding', latestMolding.payload)
+            const latestFingerprint = fingerprint('molding', latestMolding.payload)
             if (
               latestMolding.revision !== pendingMoldingDraft.revision
-              && latestFingerprint !== sectionPayloadFingerprint('molding', pendingMoldingDraft.baselinePayload)
-              && latestFingerprint !== sectionPayloadFingerprint('molding', pendingMoldingDraft.payload)
+              && latestFingerprint !== fingerprint('molding', pendingMoldingDraft.baselinePayload)
+              && latestFingerprint !== fingerprint('molding', pendingMoldingDraft.payload)
             ) {
               throw new Error('啤机部内容已被其他用户修改；本页输入仍已保留，请重新读取后核对。')
             }
@@ -1497,6 +1502,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     submitFinal(quoteId: string, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.submitFinal(quoteId, revision))
+    },
+    withdrawFinal(quoteId: string, revision: number, reason: string) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.withdrawFinal(quoteId, revision, reason))
     },
     reviewFinal(quoteId: string, revision: number, decision: 'approve' | 'reject', reason = '') {
       return this.executeMutation(quoteId, () => internalQuoteApi.reviewFinal(quoteId, revision, decision, reason))

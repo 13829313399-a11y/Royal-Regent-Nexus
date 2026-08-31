@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   canEditAllInternalQuoteSections,
   canReviewInternalQuoteSections,
+  canWithdrawInternalQuote,
   isForeignFactory,
   isInternalQuoteReadOnly,
 } from '@/lib/internalQuoteAccess'
@@ -67,7 +68,7 @@ describe('internal quote read-only presentation boundary', () => {
 describe('internal quote selected reviewer boundary', () => {
   function reviewerChecker(userId: string, allowed: boolean, selfReviewAllowed = false) {
     return {
-      currentUser: { id: userId, profile: { primary_factory_id: 'huaxing' } },
+      currentUser: { id: userId, profile: { primary_factory_id: 'huaxing', primary_department: 'sales-business' } },
       can: (permission: string, factoryId?: string, department?: string) => (
         (permission === 'internal_quote:sales_review' ? allowed : selfReviewAllowed)
         && ['internal_quote:sales_review', 'internal_quote:self_review'].includes(permission)
@@ -112,5 +113,43 @@ describe('internal quote selected reviewer boundary', () => {
       'independent-owner',
       'another-creator',
     )).toBe(false)
+  })
+
+  it.each(['engineering', 'management', 'production', '*'])('rejects %s personnel even with review or self-review access', (department) => {
+    const checker = reviewerChecker('selected', true, true)
+    checker.currentUser.profile.primary_department = department
+    expect(canReviewInternalQuoteSections(checker, 'huaxing', 'selected', 'selected')).toBe(false)
+  })
+
+  it('requires explicit Sales membership for legacy users without a department profile', () => {
+    const checker = reviewerChecker('selected', true)
+    const legacy = { ...checker, currentUser: { id: 'selected', grants: [{ department: '*' }] } }
+    expect(canReviewInternalQuoteSections(legacy, 'huaxing', 'selected')).toBe(false)
+    legacy.currentUser.grants = [{ department: 'sales-business' }]
+    expect(canReviewInternalQuoteSections(legacy, 'huaxing', 'selected')).toBe(true)
+  })
+})
+
+describe('internal quote creator withdrawal boundary', () => {
+  const quote = { moduleVersion: 'v3', status: 'final_pending', createdById: 'creator', factoryId: 'huaxing' }
+  const checker = {
+    currentUser: { id: 'creator' },
+    can: (permission: string, factory?: string) => permission === 'internal_quote:create' && factory === 'huaxing',
+    canAny: () => false,
+  }
+
+  it('allows the creator to withdraw before review without reviewer permission', () => {
+    expect(canWithdrawInternalQuote(checker, quote)).toBe(true)
+    expect(canWithdrawInternalQuote({ ...checker, currentUser: { id: 'reviewer' } }, quote)).toBe(false)
+    expect(canWithdrawInternalQuote({ ...checker, can: () => false }, quote)).toBe(false)
+    expect(canWithdrawInternalQuote(checker, { ...quote, factoryId: 'huadeng' })).toBe(false)
+  })
+
+  it.each(['drafting', 'fully_approved', 'released', 'exported', 'rejected', 'archived'])('does not allow withdrawal in %s', (status) => {
+    expect(canWithdrawInternalQuote(checker, { ...quote, status })).toBe(false)
+  })
+
+  it('keeps the legacy section workflow unchanged', () => {
+    expect(canWithdrawInternalQuote(checker, { ...quote, moduleVersion: 'v2' })).toBe(false)
   })
 })

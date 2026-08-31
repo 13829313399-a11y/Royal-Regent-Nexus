@@ -41,6 +41,7 @@ const apiMock = vi.hoisted(() => ({
   downloadExport: vi.fn(),
   downloadEngineeringWorkbook: vi.fn(),
   submitFinal: vi.fn(),
+  withdrawFinal: vi.fn(),
   reviewFinal: vi.fn(),
   listVersionCandidates: vi.fn(),
   compareVersion: vi.fn(),
@@ -187,6 +188,22 @@ describe('internal quote desk real API state', () => {
     apiMock.addParticipation.mockResolvedValue(quote())
     apiMock.removeParticipation.mockResolvedValue(quote())
     apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
+  })
+
+  it('refreshes the quote and activity history after creator withdrawal', async () => {
+    const store = useInternalQuoteDeskStore()
+    apiMock.withdrawFinal.mockResolvedValue({ quote: quote({ status: 'rejected', header_revision: 3 }) })
+    apiMock.get.mockResolvedValue(quote({ status: 'rejected', header_revision: 3, module_version: 'v3' }))
+    apiMock.getTimeline.mockResolvedValue({ business_events: [{
+      id: 'withdraw-1', department: '', actor_id: 'u1', actor_name: '建单人',
+      action: 'whole_review_withdraw', detail: '', old_revision: 2, new_revision: 3,
+      reason: '客户数量改变', created_at: '2026-08-31 15:00',
+    }], view_records: [] })
+    await store.withdrawFinal('quote-1', 2, '客户数量改变')
+    expect(apiMock.withdrawFinal).toHaveBeenCalledWith('quote-1', 2, '客户数量改变')
+    expect(store.getQuoteById('quote-1')).toMatchObject({ status: 'rejected', headerRevision: 3 })
+    expect(store.getQuoteById('quote-1')?.activities[0].title).toBe('建单人退回修改')
+    expect(store.submitting).toBe(false)
   })
 
   it('loads the factory list with real section progress and owner choices', async () => {
@@ -629,6 +646,30 @@ describe('internal quote desk real API state', () => {
     )
     expect(apiMock.get).toHaveBeenCalledTimes(3)
     expect(store.getQuoteById('quote-1')?.sections.find((item) => item.code === 'molding')?.payload).toEqual(moldingPayload)
+  })
+
+  it('ignores material and machine canonicalization when checking a newer saved baseline', async () => {
+    const store = useInternalQuoteDeskStore()
+    apiMock.getReferenceSnapshot.mockResolvedValue({ snapshot: {
+      material_prices: { 'ABS|750SW': '8.5' },
+      machine_prices: [{ range: '18A', machine: '180T', shift_price_hkd: '1890' }],
+    } })
+    await store.loadQuote('quote-1')
+    const storedLine = { item: '前壳', material: 'abs', grade: '', machine_code: '18', machine_name: '', net_weight_g: 15 }
+    const baselineLine = { ...storedLine, material: 'ABS', grade: '750SW', machine_code: '18A', machine_name: '180T' }
+    const payload = { injection_lines: [{ ...baselineLine, net_weight_g: 20 }] }
+    const latest = quote({ sections: sectionCodes.map((code, index) => code === 'molding'
+      ? { ...section(code, index), revision: 2, payload: { injection_lines: [storedLine] } }
+      : section(code, index)) })
+    apiMock.get.mockResolvedValue(latest)
+    apiMock.saveSection.mockResolvedValue({ ...section('molding', 3), revision: 3, payload })
+
+    await store.saveWholeProductSections('quote-1', [{
+      sectionCode: 'molding', revision: 1, payload,
+      baselinePayload: { injection_lines: [baselineLine] },
+    }])
+
+    expect(apiMock.saveSection).toHaveBeenCalledWith('quote-1', 'molding', 2, payload, '在连续报价页统一保存当前产品')
   })
 
   it('saves every supplied department snapshot even when its payload is unchanged', async () => {

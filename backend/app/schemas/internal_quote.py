@@ -9,7 +9,7 @@ ReviewDecision = Literal["approve", "reject"]
 InternalQuoteWorkflowMode = Literal["section_review", "whole_quote_review"]
 InternalQuoteType = Literal["single", "series", "multi_region"]
 InternalQuoteRegionCode = Literal["", "mainland", "indonesia"]
-InternalQuoteImportType = Literal["mold", "hardware", "electronic", "molding", "painting", "slush", "sewing", "assembly"]
+InternalQuoteImportType = Literal["mold", "hardware", "electronic", "molding", "painting", "slush", "sewing", "hair", "assembly"]
 InternalQuoteSectionCode = Literal[
     "sales",
     "engineering",

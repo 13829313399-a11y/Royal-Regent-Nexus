@@ -97,6 +97,7 @@ IMPORT_LIST_FIELDS = {
     "painting": ("rows",),
     "slush": ("lines",),
     "sewing": ("groups",),
+    "hair": ("lines",),
     "assembly": ("groups",),
 }
 IMPORT_BATCH_FIELD = "import_batch_id"
@@ -151,12 +152,14 @@ def _validate_file_size(content: bytes, limit: int, label: str) -> None:
         raise HTTPException(status_code=413, detail=f"{label}超过 {limit // 1024 // 1024}MB 限制")
 
 
-def _validate_import_file(file_name: str, content: bytes) -> None:
+def _validate_import_file(file_name: str, content: bytes, *, import_type: str) -> None:
     extension = Path(file_name).suffix.lower()
-    if extension not in IMPORT_EXTENSIONS:
+    is_hair_xls = import_type == "hair" and extension == ".xls"
+    if extension not in IMPORT_EXTENSIONS and not is_hair_xls:
         raise HTTPException(status_code=400, detail="导入仅支持 .xlsx/.xlsm；旧 .xls 请先另存为 xlsx")
     _validate_file_size(content, MAX_IMPORT_SIZE, "Excel 文件")
-    if not content.startswith(b"PK"):
+    signature = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" if is_hair_xls else b"PK"
+    if not content.startswith(signature):
         raise HTTPException(status_code=400, detail="Excel 文件头无效")
 
 
@@ -233,7 +236,7 @@ def create_import_preview(
     section = _get_section(db, quote.id, target_department)
     _ensure_section_participates(section)
     clean_name = safe_file_name(file_name)
-    _validate_import_file(clean_name, content)
+    _validate_import_file(clean_name, content, import_type=import_type)
 
     reference = db.get(InternalQuoteReferenceSet, quote.reference_snapshot_id)
     snapshot = _json_object(reference.snapshot_json) if reference is not None else {}
@@ -244,6 +247,7 @@ def create_import_preview(
             import_type,
             rmb_hkd=Decimal(str(fx_value)),
             fallback_qty=Decimal(str(max(quote.qty, 1))),
+            fallback_product_name=quote.product_name,
         )
     except (ValueError, ArithmeticError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -264,6 +268,7 @@ def create_import_preview(
             "painting": "rows",
             "slush": "lines",
             "sewing": "groups",
+            "hair": "lines",
             "assembly": "groups",
         }[import_type]
         existing_list = existing_payload.get(list_field, [])
@@ -283,7 +288,7 @@ def create_import_preview(
         # Keep the original workbook only inside the server-side preview
         # record.  The public preview contract deliberately omits this field.
         # Confirmation materializes it as a normal quote attachment so the
-        # final controlled XLSX can append every uploaded worksheet intact.
+        # final controlled XLSX can append supported source worksheets intact.
         "source_workbook_base64": base64.b64encode(content).decode("ascii"),
         "payload_fragment": parsed.payload_fragment,
         "diff_summary": {
@@ -410,6 +415,7 @@ def _merge_import_payload(
         "painting": "rows",
         "slush": "lines",
         "sewing": "groups",
+        "hair": "lines",
         "assembly": "groups",
     }[import_type]
     imported_rows = fragment.get(list_field, [])

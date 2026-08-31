@@ -20,6 +20,7 @@ IMPORT_TYPE_DEPARTMENTS = {
     "painting": "painting",
     "slush": "slush",
     "sewing": "sewing",
+    "hair": "hair",
     "assembly": "assembly",
 }
 MAX_WORKBOOK_ROWS = 2000
@@ -124,7 +125,35 @@ def _validate_ooxml(content: bytes) -> None:
         raise ValueError("文件不是有效的 xlsx/xlsm 工作簿") from error
 
 
-def workbook_rows(content: bytes) -> list[tuple[str, list[list[object]]]]:
+def _xls_workbook_rows(content: bytes) -> list[tuple[str, list[list[object]]]]:
+    import xlrd
+
+    try:
+        workbook = xlrd.open_workbook(file_contents=content, on_demand=True, ragged_rows=True)
+        try:
+            sheets = []
+            for sheet in workbook.sheets():
+                rows = []
+                for row_index in range(min(sheet.nrows, MAX_WORKBOOK_ROWS)):
+                    rows.append([
+                        xlrd.error_text_from_code.get(cell.value, "#VALUE!")
+                        if cell.ctype == xlrd.XL_CELL_ERROR else cell.value
+                        for cell in sheet.row(row_index)[:MAX_WORKBOOK_COLUMNS]
+                    ])
+                if any(any(text(cell) for cell in row) for row in rows):
+                    sheets.append((sheet.name, rows))
+        finally:
+            workbook.release_resources()
+    except Exception as error:
+        raise ValueError("无法读取车发部 XLS 报价单，请确认文件有效且未加密") from error
+    if not sheets:
+        raise ValueError("工作簿为空")
+    return sheets
+
+
+def workbook_rows(content: bytes, *, allow_xls: bool = False) -> list[tuple[str, list[list[object]]]]:
+    if allow_xls and content.startswith(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"):
+        return _xls_workbook_rows(content)
     _validate_ooxml(content)
     try:
         workbook = load_workbook(BytesIO(content), data_only=True, read_only=True)
@@ -255,6 +284,12 @@ def find_header(
     sheets: list[tuple[str, list[list[object]]]],
     import_type: str,
 ) -> tuple[str, list[list[object]], int]:
+    if import_type == "hair":
+        # Never take the stale price from 正式 when this template has 明细.
+        detail_sheets = [(name, rows) for name, rows in sheets if re.search(r"明细|明細", name)]
+        if not detail_sheets:
+            raise ValueError("车发报价必须使用‘明细’工作表中的单价和重量")
+        sheets = detail_sheets
     patterns = {
         "mold": (
             "模号|模具编号|MOLDNO|产品名称|ITEMDESCRIPTION|项目内容",
@@ -267,6 +302,7 @@ def find_header(
         "assembly": ("工序名称|做工名称", "人数"),
         "painting": ("名称|位置", "夹模|移印|散枪|边模|抹油|擦PP水"),
         "slush": ("产品编号|产品编码|货号", "胶件名称|零件名称|产品名称", "材料|材质", "用量|数量"),
+        "hair": ("货名|名称", "单价", "重量", "单位"),
     }[import_type]
     for sheet_name, rows in sheets:
         for index, row in enumerate(rows[:40]):
@@ -282,6 +318,7 @@ def find_header(
             "assembly": "未找到工序名称或做工名称/人数表头",
             "painting": "未找到名称/位置及喷油工序表头",
             "slush": "未找到产品编号/胶件名称/材料/用量表头",
+            "hair": "未在明细页找到货名/港币单价/重量/单位表头，请使用车发部报价单模板",
         }[import_type]
     )
 
@@ -1376,6 +1413,58 @@ def _parse_assembly(
     return {"groups": groups}, total_rows, warnings
 
 
+def _parse_hair(
+    rows: list[list[object]], header_index: int, *, sheet_name: str = "明细",
+    fallback_product_name: str = "", **_: Any,
+) -> tuple[dict[str, Any], int, list[str]]:
+    header = rows[header_index]
+    name_col = column_index(header, ("货名", "名称"))
+    item_col = column_index(header, ("货号", "编号"))
+    unit_col = column_index(header, ("单位",))
+    # The product price and weight precede its unit column (D/E before F in
+    # the fixed template). Restrict the search so a missing left-hand header
+    # cannot silently fall back to the right-hand raw-material breakdown.
+    product_header = header[:unit_col] if unit_col is not None else []
+    price_col = column_index(product_header, ("单价(HK$)", "单价(HKD)", "单价港币", "单价(港币)"))
+    weight_col = column_index(product_header, ("重量(g)",))
+    craft_col = column_index(header, ("工艺",))
+    remark_col = column_index(header, ("备注",))
+    if price_col is None or weight_col is None:
+        raise ValueError("车发明细缺少港币单价或重量(g)列，不能使用右侧材料明细单价代替")
+    lines = []
+    warnings = []
+    for source_row, row in enumerate(rows[header_index + 1:], start=header_index + 2):
+        name = text(value_at(row, name_col))
+        item_no = text(value_at(row, item_col))
+        raw_price = value_at(row, price_col)
+        raw_weight = value_at(row, weight_col)
+        if not any(text(value) for value in (name, item_no, raw_price, raw_weight)):
+            continue
+        if re.search(r"合计|小计|总计", name + item_no):
+            continue
+        unit_price = number(raw_price)
+        weight = number(raw_weight)
+        if unit_price is None or weight is None or unit_price <= 0 or weight <= 0:
+            raise ValueError(f"明细第 {source_row} 行的单价和重量必须为正数；公式请先在 Excel 中计算并保存")
+        if not name:
+            name = fallback_product_name or item_no or "车发报价"
+            warnings.append(f"明细第 {source_row} 行未填货名，暂用‘{name}’，请核对")
+        lines.append({
+            "name": name,
+            "craft": text(value_at(row, craft_col)) or "车发",
+            "weight_g": precise_decimal_text(weight),
+            "unit_price_hkd": precise_decimal_text(unit_price),
+            "unit": text(value_at(row, unit_col)) or "PCS",
+            "remark": text(value_at(row, remark_col)),
+            "item_no": item_no,
+            "source_sheet": sheet_name,
+            "source_row": source_row,
+        })
+    if not lines:
+        raise ValueError("车发明细页没有可导入的单价和重量，请填写后保存")
+    return {"lines": lines}, len(lines), warnings
+
+
 PARSERS: dict[str, Callable[..., tuple[dict[str, Any], int, list[str]]]] = {
     "mold": _parse_mold,
     "hardware": _parse_hardware,
@@ -1384,6 +1473,7 @@ PARSERS: dict[str, Callable[..., tuple[dict[str, Any], int, list[str]]]] = {
     "painting": _parse_painting,
     "slush": _parse_slush,
     "sewing": _parse_sewing,
+    "hair": _parse_hair,
     "assembly": _parse_assembly,
 }
 
@@ -1394,10 +1484,11 @@ def parse_internal_quote_workbook(
     *,
     rmb_hkd: Decimal = Decimal("0.85"),
     fallback_qty: Decimal = Decimal("1"),
+    fallback_product_name: str = "",
 ) -> ParsedInternalQuoteImport:
     if import_type not in IMPORT_TYPE_DEPARTMENTS:
         raise ValueError("不支持的内部报价导入类型")
-    sheets = workbook_rows(content)
+    sheets = workbook_rows(content, allow_xls=import_type == "hair")
     sheet_name, rows, header_index = find_header(sheets, import_type)
     rows = [list(row) for row in rows]
     if header_index + 1 < len(rows):
@@ -1469,6 +1560,7 @@ def parse_internal_quote_workbook(
         fallback_qty=fallback_qty,
         sheet_name=sheet_name,
         embedded_images_by_row=embedded_images_by_row,
+        **({"fallback_product_name": fallback_product_name} if import_type == "hair" else {}),
     )
     if import_type == "mold":
         parsed_rows = fragment.get("molds", [])
