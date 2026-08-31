@@ -30,6 +30,7 @@ def _create_engine():
             connect_args={"check_same_thread": False},
             future=True,
         )
+
         @event.listens_for(sqlite_engine, "connect")
         def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
             cursor = dbapi_connection.cursor()
@@ -277,6 +278,27 @@ CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
     "carton_mark_templates",
     "carton_mark_documents",
 }
+INJECTION_SCHEDULING_REVISION = "20260831_0087"
+INJECTION_SCHEDULING_REQUIRED_TABLES = {
+    "injection_schedule_machine_unavailable_windows",
+}
+INJECTION_SCHEDULING_REQUIRED_COLUMNS = {
+    "injection_schedule_factory_settings": {
+        "schedule_revision",
+        "schedule_horizon_days",
+        "freeze_hours",
+        "effective_hours_per_day",
+    },
+    "injection_schedule_order_demands": {
+        "business_key",
+        "required_machine_a_value",
+        "data_completeness_status",
+    },
+    "injection_schedule_lines": {
+        "schedule_revision",
+        "schedule_source",
+    },
+}
 
 
 def ensure_carton_mark_library_schema_ready() -> None:
@@ -465,6 +487,57 @@ def ensure_three_d_printing_schema_ready() -> None:
     )
 
 
+def ensure_injection_scheduling_schema_ready() -> None:
+    """Do not let create_all partially activate the scheduling application."""
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        if "injection_schedule_factory_settings" not in table_names:
+            if "alembic_version" not in table_names:
+                return
+            current_revision = connection.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar_one_or_none()
+            missing = ["table:injection_schedule_factory_settings"]
+        else:
+            current_revision = None
+            if "alembic_version" in table_names:
+                current_revision = connection.exec_driver_sql(
+                    "SELECT version_num FROM alembic_version"
+                ).scalar_one_or_none()
+
+            missing = [
+                f"table:{table_name}"
+                for table_name in sorted(
+                    INJECTION_SCHEDULING_REQUIRED_TABLES - table_names
+                )
+            ]
+            for (
+                table_name,
+                required_columns,
+            ) in INJECTION_SCHEDULING_REQUIRED_COLUMNS.items():
+                if table_name not in table_names:
+                    missing.append(f"table:{table_name}")
+                    continue
+                available_columns = {
+                    column["name"] for column in inspector.get_columns(table_name)
+                }
+                missing.extend(
+                    f"column:{table_name}.{column_name}"
+                    for column_name in sorted(required_columns - available_columns)
+                )
+        if not missing:
+            return
+
+    raise RuntimeError(
+        "检测到注塑排产数据库尚未完成应用契约迁移 "
+        f"{INJECTION_SCHEDULING_REVISION}；当前版本：{current_revision}；"
+        f"缺少：{', '.join(missing)}。"
+        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+    )
+
+
 def ensure_sqlite_legacy_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -524,6 +597,7 @@ def init_db() -> None:
         carton_mark,  # noqa: F401
         carton_procurement,  # noqa: F401
         customer_order,  # noqa: F401
+        injection_schedule,  # noqa: F401
         internal_quote,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
@@ -544,6 +618,7 @@ def init_db() -> None:
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()
     ensure_three_d_printing_schema_ready()
+    ensure_injection_scheduling_schema_ready()
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()
     Base.metadata.create_all(bind=engine)

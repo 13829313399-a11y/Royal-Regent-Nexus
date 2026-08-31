@@ -266,6 +266,9 @@ ROLE_PERMISSIONS = {
         "carton_procurement:closing_manage",
         "carton_procurement:import",
         "carton_procurement:exception_manage",
+        "injection_scheduling:read",
+        "injection_scheduling:edit",
+        "injection_scheduling:schedule",
     },
     "warehouse_keeper": {
         "molding_sample:read",
@@ -313,6 +316,8 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_fillback",
         "molding_sample:production_complete",
         "molding_sample:notification_read",
+        "injection_scheduling:read",
+        "injection_scheduling:edit",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_clerk"],
     },
     "molding_production_observer": {
@@ -369,6 +374,9 @@ ROLE_PERMISSIONS = {
         "molding_sample:production_complete",
         "molding_sample:audit_read",
         "molding_sample:notification_read",
+        "injection_scheduling:read",
+        "injection_scheduling:edit",
+        "injection_scheduling:schedule",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_supervisor"],
     },
     "admin": set(APPLICATION_PERMISSIONS),

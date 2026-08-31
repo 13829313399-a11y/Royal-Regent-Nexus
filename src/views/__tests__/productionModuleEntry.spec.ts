@@ -13,15 +13,16 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('keeps the injection scheduling card while its runtime module is retired', () => {
+  it('opens the locally accepted injection scheduling workspace from the preserved card', () => {
     expect(enterpriseSource).toContain("id: 'injection-scheduling'")
     expect(enterpriseSource).toContain("title: '注塑排产中枢'")
-    expect(enterpriseSource).toContain("status: '重构中'")
-    expect(enterpriseSource).toContain("stats: '前后端已移除 · 等待重新建设'")
-    expect(enterpriseSource).not.toContain("route: '/modules/production/injection-scheduling'")
-    expect(enterpriseSource).not.toContain("permissions: ['injection_scheduling:read']")
-    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling'")
-    expect(routerSource).not.toContain('InjectionSchedulingV2View.vue')
+    expect(enterpriseSource).toContain("status: '本地验收'")
+    expect(enterpriseSource).toContain("stats: '真实 API · 厂区隔离 · 未上线'")
+    expect(enterpriseSource).toContain("route: '/modules/production/injection-scheduling'")
+    expect(enterpriseSource).toContain("permissions: ['injection_scheduling:read']")
+    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).toContain("component: () => import('@/views/InjectionSchedulingView.vue')")
+    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}permissions: \['injection_scheduling:read'\]/)
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {
@@ -189,7 +190,7 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).toMatch(/title="客价转换台"/)
     expect(customerPriceConversionViewSource).toContain("['huaxing', 'huakang-a'].includes(appStore.activeProductionFactory.id)")
     expect(customerPriceConversionViewSource).toContain('data-testid="customer-price-mapping-empty"')
-    expect(customerPriceConversionViewSource).toContain('BuzzBee、迪士尼、Dickie 和彩星仅适用于华兴，360 仅适用于华康 A')
+    expect(customerPriceConversionViewSource).toContain('BuzzBee、迪士尼、Dickie、彩星和银辉仅适用于华兴，360 仅适用于华康 A')
     expect(customerPriceConversionViewSource).toContain("{ label: '待转换', value: '0'")
     expect(customerPriceConversionViewSource).toContain("{ label: '客户范围', value: '待配置'")
     expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)
