@@ -85,7 +85,7 @@ export interface CartonOrderCreateRequest {
   product_order_quantity: number
   order_date: string
   due_date: string
-  status: 'PENDING_SUPPLIER'
+  status: 'CONFIRMED'
   note: string
   lines: Array<{
     packaging_type: string
@@ -116,6 +116,33 @@ export interface CartonHistoryOrderImportResponse {
   imported_orders: string[]
   skipped_orders: string[]
   warnings: string[]
+}
+
+export interface CartonOrderHistorySuggestionResponse {
+  item_no: string
+  customer_code: string
+  customer_name: string
+  product_name: string
+  latest_order_no: string
+  latest_contract_no: string
+  latest_order_date: string
+  latest_product_order_quantity: string
+  order_count: number
+  match_type: 'EXACT' | 'PREFIX' | 'CONTAINS' | 'SIMILAR'
+  match_score: number
+  lines: Array<{
+    line_no: number
+    packaging_type: string
+    paper_quality: string
+    specification: string
+    dimension_unit: string
+    usage_quantity: string
+    unit: string
+    unit_price: string
+    currency: string
+    price_source: string
+    note: string
+  }>
 }
 
 export interface CartonHistoryInventoryImportResponse {
@@ -175,6 +202,7 @@ export interface CartonInventoryBalanceResponse {
   balance: string
   latest_location: string
   latest_movement_id: string
+  latest_document_no: string
   latest_movement_at: string
 }
 
@@ -319,7 +347,8 @@ export interface CartonReceiptResponse {
   lines: Array<{
     id: string
     line_no: number
-    order_line_id: string
+    source_type: 'FORMAL_ORDER' | 'AD_HOC'
+    order_line_id: string | null
     customer_code: string
     customer_name: string
     contract_no: string
@@ -431,6 +460,16 @@ export const cartonProcurementApi = {
     )
     return response.data
   },
+  async submitOrderToSupplier(factoryId: string, order: CartonOrderResponse) {
+    const response = await http.post<CartonOrderResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/submit-supplier`,
+      {
+        factory_id: factoryId,
+        expected_revision: order.revision,
+      },
+    )
+    return response.data
+  },
   async cancelOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/cancel`,
@@ -493,6 +532,25 @@ export const cartonProcurementApi = {
     )
     return response.data
   },
+  async searchOrderHistoryItems(
+    factoryId: string,
+    itemNo: string,
+    customerCode = '',
+    limit = 8,
+  ) {
+    const response = await http.get<{ items: CartonOrderHistorySuggestionResponse[] }>(
+      '/carton-procurement/order-history/item-suggestions',
+      {
+        params: {
+          factory_id: factoryId,
+          item_no: itemNo,
+          customer_code: customerCode,
+          limit,
+        },
+      },
+    )
+    return response.data.items
+  },
   async exportPurchaseOrder(factoryId: string, orderNo: string) {
     const response = await http.get<Blob>(
       `/carton-procurement/orders/${encodeURIComponent(orderNo)}/purchase-order.xlsx`,
@@ -502,7 +560,7 @@ export const cartonProcurementApi = {
   },
   async exportPurchaseOrders(factoryId: string, orderNos: string[]) {
     const response = await http.post<Blob>(
-      '/carton-procurement/orders/purchase-orders.zip',
+      '/carton-procurement/orders/purchase-orders.xlsx',
       { factory_id: factoryId, order_nos: orderNos },
       { responseType: 'blob', timeout: 60_000 },
     )
@@ -642,7 +700,16 @@ export const cartonProcurementApi = {
     import_batch_id: string | null
     note: string
     lines: Array<{
-      order_line_id: string
+      source_type: 'FORMAL_ORDER' | 'AD_HOC'
+      order_line_id: string | null
+      customer_code: string
+      contract_no: string
+      item_no: string
+      packaging_type: string
+      paper_quality: string
+      specification: string
+      unit: string
+      currency: string
       delivered_quantity: number
       received_quantity: number
       damaged_quantity: number
@@ -697,6 +764,7 @@ export const cartonProcurementApi = {
   async listAuditEvents(factoryId: string, filters: {
     search?: string
     eventType?: string
+    actorUserId?: string
     dateFrom?: string
     dateTo?: string
   } = {}) {
@@ -705,6 +773,7 @@ export const cartonProcurementApi = {
         factory_id: factoryId,
         search: filters.search ?? '',
         event_type: filters.eventType ?? '',
+        actor_user_id: filters.actorUserId ?? '',
         date_from: filters.dateFrom ?? '',
         date_to: filters.dateTo ?? '',
         limit: 500,

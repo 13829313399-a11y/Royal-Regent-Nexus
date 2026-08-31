@@ -1,15 +1,23 @@
 <script setup lang="ts">
 import { Copy, Eye, Plus, Trash2 } from '@lucide/vue'
-import { computed, watchEffect } from 'vue'
+import { computed, ref, watchEffect } from 'vue'
+import { canonicalizeMoldingReferences, moldingMaterialReferences as getMoldingMaterials, moldingMachineReferences as getMoldingMachines, moldingMaterialOptions, selectedMoldingMaterial, selectedMoldingMachine, normalizedReferenceToken, type MoldingMaterialSelection, type MoldingMaterialReference } from '@/lib/internalQuoteMoldingReferences'
 import { internalQuoteAttachmentPreviewUrl } from '@/api/internalQuote'
 import InternalQuotePricingFields from './InternalQuotePricingFields.vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
+import { previewEngineeringMoldPartSplit } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 import type { QuotePricingMetadata, SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 
 const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; activePricingComponentId?: string; mainMarkup?: number }>()
 const model = defineModel<Record<string, unknown>>({ required: true })
+const moldRowKeys = new WeakMap<object, number>()
+let nextMoldRowKey = 0
+function moldRowKey(row: object) {
+  if (!moldRowKeys.has(row)) moldRowKeys.set(row, ++nextMoldRowKey)
+  return moldRowKeys.get(row)!
+}
 const emit = defineEmits<{
   'block-progress': [blocks: InternalQuoteFormBlock[]]
   'preview-attachment': [attachment: InternalQuoteAttachmentRecord]
@@ -196,70 +204,18 @@ function injectionFieldLocked(row: MoldingPayload['injection_lines'][number], fi
   return Boolean(!row.engineering_sync_disabled && row.engineering_source_key && row.engineering_synced_fields?.includes(field))
 }
 type InjectionRow = MoldingPayload['injection_lines'][number]
-type MoldingMaterialSelection = Pick<InjectionRow, 'material' | 'grade'>
-type MoldingMaterialReference = { material: string; grade: string; priceHkdLb: number }
-type MoldingMachineReference = { range: string; machine: string; shiftPriceHkd: number }
-
-function normalizedReferenceToken(value: unknown) {
-  return String(value ?? '').normalize('NFKC').trim().replace(/\s+/g, '').toUpperCase()
-}
 function finiteNumber(value: unknown, fallback = 0) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
 }
-const moldingMaterialReferences = computed<MoldingMaterialReference[]>(() => {
-  const source = props.referenceSnapshot?.material_prices
-  if (!source || typeof source !== 'object' || Array.isArray(source)) return []
-  return Object.entries(source).flatMap(([key, value]) => {
-    const separator = key.indexOf('|')
-    const material = (separator >= 0 ? key.slice(0, separator) : key).trim()
-    const grade = (separator >= 0 ? key.slice(separator + 1) : '').trim()
-    const priceHkdLb = finiteNumber(value, Number.NaN)
-    return material && grade && Number.isFinite(priceHkdLb) ? [{ material, grade, priceHkdLb }] : []
-  })
-})
+const moldingMaterialReferences = computed(() => getMoldingMaterials(props.referenceSnapshot))
+const moldingMachineReferences = computed(() => getMoldingMachines(props.referenceSnapshot))
 const moldingMaterialNames = computed(() => [...new Set(moldingMaterialReferences.value.map((row) => row.material))])
-const moldingMachineReferences = computed<MoldingMachineReference[]>(() => {
-  const source = props.referenceSnapshot?.machine_prices
-  if (!Array.isArray(source)) return []
-  return source.flatMap((value) => {
-    if (!value || typeof value !== 'object') return []
-    const row = value as Record<string, unknown>
-    const range = String(row.range ?? '').trim()
-    const machine = String(row.machine ?? '').trim()
-    const shiftPriceHkd = finiteNumber(row.shift_price_hkd, Number.NaN)
-    return range && Number.isFinite(shiftPriceHkd) ? [{ range, machine, shiftPriceHkd }] : []
-  })
-})
-
 function materialOptions(row: MoldingMaterialSelection) {
-  const material = normalizedReferenceToken(row.material)
-  const hint = material || normalizedReferenceToken(row.grade)
-  if (!hint) return moldingMaterialReferences.value
-  const direct = moldingMaterialReferences.value.filter((item) => normalizedReferenceToken(item.material) === hint)
-  if (direct.length) return direct
-  const fuzzy = moldingMaterialReferences.value.filter((item) => {
-    const candidate = `${normalizedReferenceToken(item.material)}${normalizedReferenceToken(item.grade)}`
-    return candidate.includes(hint) || hint.includes(normalizedReferenceToken(item.material))
-  })
-  return fuzzy.length ? fuzzy : moldingMaterialReferences.value
+  return moldingMaterialOptions(row, moldingMaterialReferences.value)
 }
 function selectedMaterialReference(row: MoldingMaterialSelection) {
-  const material = normalizedReferenceToken(row.material)
-  const grade = normalizedReferenceToken(row.grade)
-  const exact = moldingMaterialReferences.value.find((item) => normalizedReferenceToken(item.material) === material && normalizedReferenceToken(item.grade) === grade)
-  if (exact) return exact
-  if (grade) {
-    const gradeMatch = moldingMaterialReferences.value.find((item) => {
-      const candidateMaterial = normalizedReferenceToken(item.material)
-      return normalizedReferenceToken(item.grade) === grade
-        && (!material || candidateMaterial.includes(material) || material.includes(candidateMaterial))
-    })
-    if (gradeMatch) return gradeMatch
-  }
-  const candidates = materialOptions(row).filter((item) => !material || normalizedReferenceToken(item.material) === material)
-  if (candidates.length === 1) return candidates[0]
-  return undefined
+  return selectedMoldingMaterial(row, moldingMaterialReferences.value)
 }
 function selectMaterial(row: MoldingMaterialSelection) {
   const candidates = moldingMaterialReferences.value.filter((item) => normalizedReferenceToken(item.material) === normalizedReferenceToken(row.material))
@@ -274,23 +230,8 @@ function selectMaterialGrade(row: MoldingMaterialSelection, value: string) {
   row.material = selected.material
   row.grade = selected.grade
 }
-function machineCodeValue(value: unknown) {
-  const match = normalizedReferenceToken(value).match(/^(\d+(?:\.\d+)?)A?$/)
-  return match ? Number(match[1]) : undefined
-}
 function selectedMachineReference(row: InjectionRow) {
-  const code = normalizedReferenceToken(row.machine_code)
-  const name = normalizedReferenceToken(row.machine_name)
-  const exact = moldingMachineReferences.value.find((item) => normalizedReferenceToken(item.range) === code || (name && normalizedReferenceToken(item.machine) === name))
-  if (exact) return exact
-  const numeric = machineCodeValue(row.machine_code)
-  if (numeric === undefined) return undefined
-  return moldingMachineReferences.value.find((item) => {
-    const [start, end = start] = item.range.split('-', 2)
-    const lower = machineCodeValue(start)
-    const upper = machineCodeValue(end)
-    return lower !== undefined && upper !== undefined && numeric >= lower && numeric <= upper
-  })
+  return selectedMoldingMachine(row, moldingMachineReferences.value)
 }
 function selectMachine(row: InjectionRow, range: string) {
   const selected = moldingMachineReferences.value.find((item) => item.range === range)
@@ -298,27 +239,7 @@ function selectMachine(row: InjectionRow, range: string) {
   if (selected) row.machine_name = selected.machine
 }
 watchEffect(() => {
-  if (props.code !== 'molding' || props.disabled) return
-  for (const row of molding.value.injection_lines) {
-    const material = selectedMaterialReference(row)
-    if (material) {
-      if (row.material !== material.material) row.material = material.material
-      if (row.grade !== material.grade) row.grade = material.grade
-    }
-    const machine = selectedMachineReference(row)
-    if (machine) {
-      // Do not leave a visually matched option backed by an old bare code such
-      // as "18". Persist the same canonical range that the select displays.
-      if (row.machine_code !== machine.range) row.machine_code = machine.range
-      if (!row.machine_name) row.machine_name = machine.machine
-    }
-  }
-  for (const row of molding.value.blow_lines) {
-    const material = selectedMaterialReference(row)
-    if (!material) continue
-    if (row.material !== material.material) row.material = material.material
-    if (row.grade !== material.grade) row.grade = material.grade
-  }
+  if (props.code === 'molding' && !props.disabled) canonicalizeMoldingReferences(molding.value, props.referenceSnapshot)
 })
 function injectionPreview(row: InjectionRow) {
   const material = selectedMaterialReference(row)
@@ -416,8 +337,18 @@ function engineeringMoldPartRow(name = ''): EngineeringMoldPartRow {
   return { name, color: '', process: '', process_unit_price_hkd: 0, unit_net_weight_g: 0, output_count: 1, quantity: 1 }
 }
 function splitEngineeringMoldParts(row: EngineeringMoldRow) {
-  row.parts = splitEngineeringMoldPartNames(row.item || row.chinese_name)
-    .map((name) => engineeringMoldPartRow(name))
+  if (!props.disabled) moldSplitTarget.value = row
+}
+const moldSplitTarget = ref<EngineeringMoldRow>()
+const moldSplitPreview = computed(() => {
+  const row = moldSplitTarget.value
+  if (props.code !== 'engineering' || !row || !engineering.value.molds.includes(row)) return undefined
+  return previewEngineeringMoldPartSplit(row.item || row.chinese_name, row.parts)
+})
+function confirmMoldPartSplit() {
+  if (props.disabled || !moldSplitTarget.value || !moldSplitPreview.value?.nameCount) return
+  moldSplitTarget.value.parts = moldSplitPreview.value.rows.map(({ part }) => part)
+  moldSplitTarget.value = undefined
 }
 function addEngineeringMoldPart(row: EngineeringMoldRow) {
   row.parts.push(engineeringMoldPartRow())
@@ -755,7 +686,7 @@ function addDickieMaterialPrice() {
           </table>
         </div>
         <div v-if="engineering.molds.length" class="engineering-mold-parts">
-          <article v-for="(row,index) in engineering.molds" :key="`${row.mold_no}-${index}`" class="nested-card engineering-mold-part-card">
+          <article v-for="(row,index) in engineering.molds" :key="moldRowKey(row)" class="nested-card engineering-mold-part-card">
             <div class="nested-head">
               <div><strong>{{ row.mold_no || `模具 ${index + 1}` }} 配件子行</strong><span>{{ row.item || row.chinese_name || '请先填写模具名称' }}</span></div>
               <div class="nested-actions">
@@ -763,12 +694,20 @@ function addDickieMaterialPrice() {
                 <button type="button" :disabled="disabled" @click="addEngineeringMoldPart(row)"><Plus />新增子配件</button>
               </div>
             </div>
-            <div class="mold-part-rule">“左右”自动展开为左、右两个配件；“/”或“／”每个分隔段生成一个配件。重新拆分会以当前模具名称覆盖现有子行。</div>
+            <div class="mold-part-rule">“左右”“前后”展开为两个配件；“前/后”“前／后”补全共同名称。普通斜杠按名称分行。重新拆分先预览，保留匹配行数据和未匹配的手工行。</div>
+            <section v-if="moldSplitTarget === row && moldSplitPreview && !disabled" class="mold-split-preview" role="dialog" aria-label="配件拆分预览">
+              <strong>配件拆分预览 · 确认前不修改原行</strong>
+              <p>匹配行保留颜色、加工内容、单价、重量、出模数和用量；新增行需要补填数据。</p>
+              <p v-if="moldSplitPreview.retainedCount" class="split-warning">有 {{ moldSplitPreview.retainedCount }} 条原行无法匹配，将保留在末尾，不会自动删除；确认后请核对是否需要手工调整。</p>
+              <p v-if="!moldSplitPreview.nameCount">请先填写模具名称。</p>
+              <ol><li v-for="(entry,previewIndex) in moldSplitPreview.rows" :key="previewIndex"><span>{{ entry.part.name || '未命名' }}</span><b>{{ entry.status === 'matched' ? '保留数据' : entry.status === 'retained' ? '原行未匹配 · 保留' : '新增 · 待填写' }}</b></li></ol>
+              <div class="nested-actions"><button type="button" @click="moldSplitTarget = undefined">取消拆分</button><button type="button" :disabled="disabled || !moldSplitPreview.nameCount" @click="confirmMoldPartSplit">确认拆分并保留数据</button></div>
+            </section>
             <div class="payload-table-scroll">
               <table class="engineeringMoldParts">
                 <thead><tr><th>#</th><th>配件名称</th><th>颜色</th><th>加工内容</th><th>加工总单价 HKD</th><th>原胶件单净重 (g)</th><th>出模数</th><th>用量</th><th /></tr></thead>
                 <tbody>
-                  <tr v-for="(part,partIndex) in row.parts" :key="partIndex">
+                  <tr v-for="(part,partIndex) in row.parts" :key="moldRowKey(part)">
                     <td>{{ partIndex + 1 }}</td>
                     <td><input v-model="part.name" :disabled="disabled" aria-label="模具子配件名称"></td>
                     <td><input v-model="part.color" :disabled="disabled" :placeholder="row.color || '可留空'" aria-label="模具子配件颜色"></td>
@@ -1131,7 +1070,7 @@ function addDickieMaterialPrice() {
     <template v-else-if="props.code === 'hair'">
       <section :id="blockDomId('hair')" class="payload-block" data-form-block>
         <header>
-          <div><strong>车发部分</strong><span>按名称、工艺、重量、港币单价和单位维护；每行单价直接计入本产品车发成本。</span></div>
+          <div><strong>车发部分</strong><span>模板导入读取“明细”页的单价和重量；每行港币单价直接计入本产品车发成本，不再乘以重量。</span></div>
           <button type="button" :disabled="disabled" @click="addHair"><Plus />新增车发行</button>
         </header>
         <div class="payload-table-scroll">
@@ -1446,4 +1385,9 @@ function addDickieMaterialPrice() {
 .sales-testing-fee-breakdowns{display:grid;padding:4px 14px 14px}.sales-testing-fee-breakdown{grid-template-columns:minmax(180px,430px) minmax(180px,430px) 38px;padding:10px 0}.sales-testing-fee-breakdown+.sales-testing-fee-breakdown{border-top:1px solid #eef2f6}.sales-testing-fee-remove{align-self:end;width:38px;height:38px}.sales-testing-fee-remove:disabled{cursor:not-allowed;opacity:.4}@media(max-width:720px){.sales-testing-fee-breakdown{grid-template-columns:1fr 1fr 38px}}@media(max-width:520px){.sales-testing-fee-breakdown{grid-template-columns:1fr 38px}.sales-testing-fee-result{grid-column:1}.sales-testing-fee-remove{grid-column:2;grid-row:1/3}}
 .engineering-sync-badge{display:inline-flex!important;align-items:center;border:1px solid rgb(204 251 241/.7);border-radius:999px;background:rgb(255 255 255/.14);padding:4px 8px;color:#fff!important;font-size:10px!important;font-weight:800;white-space:nowrap}.payload-table-scroll input.engineering-prefilled:disabled,.payload-table-scroll textarea.engineering-prefilled:disabled{border-color:#99f6e4;background:#ecfdf5;color:#0f766e;font-weight:800;opacity:1;-webkit-text-fill-color:#0f766e}
 .payload-table-scroll table.disneyPurchasedParts{min-width:1250px}.payload-table-scroll table.disneyMoldFields{min-width:1450px}.payload-table-scroll table.disneyInjectionFields{min-width:1050px}.payload-table-scroll table.disneyPackagingFields{min-width:980px}.disney-carton-fields{border-top:1px solid #eef2f6;background:#f8fafc}
+.mold-split-preview{display:grid;gap:8px;margin:12px;border:1px solid #5eead4;border-radius:9px;background:#f0fdfa;padding:12px;font-size:12px;color:#134e4a}
+.mold-split-preview p{margin:0;line-height:1.6}.mold-split-preview .split-warning{color:#92400e}
+.mold-split-preview ol{margin:0;padding-left:24px}.mold-split-preview li{padding:4px}.mold-split-preview li b{margin-left:16px;font-size:11px}
+.mold-split-preview .nested-actions{display:flex;gap:8px}.mold-split-preview button{border:1px solid #5eead4;border-radius:6px;background:#fff;padding:7px 12px}
+.mold-split-preview button:disabled{opacity:.5;cursor:not-allowed}
 </style>

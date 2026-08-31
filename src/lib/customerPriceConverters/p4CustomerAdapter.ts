@@ -1,3 +1,5 @@
+import { convertYinhuiP4InternalQuote, type YinhuiConversionResult } from './yinhui'
+import { extractYinhuiProductImage } from './yinhuiTemplate'
 import {
   convertBuzzBeeP4InternalQuote,
   type BuzzBeeConversionResult,
@@ -24,7 +26,7 @@ import {
   type P4InternalQuoteArtifact,
 } from './p4Artifact'
 
-export type P4ConfiguredCustomerId = 'buzzbee' | 'disney' | 'dicky' | 'caixing' | 'three-sixty'
+export type P4ConfiguredCustomerId = 'buzzbee' | 'disney' | 'dicky' | 'caixing' | 'three-sixty' | 'yinhui'
 
 export interface P4BuzzBeePreparedConversion {
   customerId: 'buzzbee'
@@ -56,7 +58,13 @@ export interface P4ThreeSixtyPreparedConversion {
   result: ThreeSixtyConversionResult
 }
 
-export type P4PreparedCustomerConversion = P4BuzzBeePreparedConversion | P4DisneyPreparedConversion | P4DickyPreparedConversion | P4CaixingPreparedConversion | P4ThreeSixtyPreparedConversion
+export interface P4YinhuiPreparedConversion {
+  customerId: 'yinhui'
+  artifact: P4InternalQuoteArtifact
+  result: YinhuiConversionResult
+}
+
+export type P4PreparedCustomerConversion = P4YinhuiPreparedConversion | P4BuzzBeePreparedConversion | P4DisneyPreparedConversion | P4DickyPreparedConversion | P4CaixingPreparedConversion | P4ThreeSixtyPreparedConversion
 
 export class P4CustomerMappingError extends Error {
   constructor(message: string) {
@@ -69,6 +77,7 @@ function customerNameMatches(customerId: P4ConfiguredCustomerId, value: string) 
   const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '')
   const accepted: Record<P4ConfiguredCustomerId, string[]> = {
     buzzbee: ['buzzbee'],
+    yinhui: ['银辉', '銀輝', '银辉客', '銀輝客', 'yinhui', 'silverlit'],
     disney: ['迪士尼', 'disney'],
     dicky: ['dickie', 'dicky'],
     caixing: ['彩星', 'caixing'],
@@ -88,6 +97,11 @@ export function prepareP4CustomerConversion(
     throw new P4CustomerMappingError(`受控文件客户“${artifact.customer || '未填写'}”与当前客户模板不一致`)
   }
 
+  if (customerId === 'yinhui') {
+    const result = convertYinhuiP4InternalQuote(artifact, sourceFileName)
+    result.quoteData.image = extractYinhuiProductImage(buffer, '报价明细')
+    return { customerId, artifact, result }
+  }
   if (customerId === 'buzzbee') {
     return {
       customerId,

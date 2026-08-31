@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isYinhuiCustomer } from '@/lib/customerPriceConverters/yinhui'
 import {
   CheckCircle2,
   CircleAlert,
@@ -105,7 +106,7 @@ function normalizeCustomerName(value: string) {
 
 function matchConfiguredCustomer(artifact: CustomerPriceInternalQuoteArtifact) {
   const target = normalizeCustomerName(artifact.customer)
-  return props.customers.find((customer) => normalizeCustomerName(customer.name) === target)
+  return props.customers.find((customer) => normalizeCustomerName(customer.name) === target || (customer.id === 'yinhui' && isYinhuiCustomer(artifact.customer)))
 }
 
 async function loadArtifacts() {

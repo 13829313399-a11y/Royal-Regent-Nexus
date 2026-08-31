@@ -40,6 +40,10 @@ import {
   createThreeSixtyCustomerQuoteWorkbook,
   type ThreeSixtyConversionResult,
 } from '@/lib/customerPriceConverters/threeSixty'
+import YinhuiQuoteReview from '@/components/modules/sales/YinhuiQuoteReview.vue'
+import { buildYinhuiCustomerQuoteFileName, convertYinhuiInternalQuote, isYinhuiCustomer, validateYinhuiExport, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
+import { yinhuiTemplateUrl } from '@/lib/customerPriceConverters/yinhuiProfiles'
+import { createYinhuiCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/yinhuiTemplate'
 import { useAppStore } from '@/stores/app'
 import {
   prepareP4CustomerConversion,
@@ -154,6 +158,15 @@ const customerOptions: CustomerOption[] = [
     activeQuoteCount: 2,
   },
   {
+    id: 'yinhui',
+    name: '银辉',
+    factoryId: 'huaxing',
+    department: 'sales-business',
+    workshop: '华兴',
+    owner: '临时独立映射',
+    activeQuoteCount: 0,
+  },
+  {
     id: 'three-sixty',
     name: '360',
     factoryId: 'huakang-a',
@@ -191,6 +204,8 @@ const disneyConversionResult = ref<DisneyConversionResult | null>(null)
 const dickyConversionResult = ref<DickyConversionResult | null>(null)
 const caixingConversionResult = ref<CaixingConversionResult | null>(null)
 const threeSixtyConversionResult = ref<ThreeSixtyConversionResult | null>(null)
+const yinhuiConversionResult = ref<YinhuiConversionResult | null>(null)
+const yinhuiConfirmed = ref(false)
 const isImportDragActive = ref(false)
 let importDragDepth = 0
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -325,6 +340,8 @@ function resetFactoryTransientState() {
   dickyConversionResult.value = null
   caixingConversionResult.value = null
   threeSixtyConversionResult.value = null
+  yinhuiConversionResult.value = null
+  yinhuiConfirmed.value = false
   isImportDragActive.value = false
   importDragDepth = 0
   preparedP4Conversions.clear()
@@ -417,7 +434,7 @@ const visibleConversionRows = computed(() => {
 })
 
 const existingSelectedSourceFileName = computed(() => {
-  if (selectedCustomer.value.id === 'buzzbee' || selectedCustomer.value.id === 'disney' || selectedCustomer.value.id === 'dicky' || selectedCustomer.value.id === 'caixing' || selectedCustomer.value.id === 'three-sixty') {
+  if (selectedCustomer.value.id === 'buzzbee' || selectedCustomer.value.id === 'disney' || selectedCustomer.value.id === 'dicky' || selectedCustomer.value.id === 'caixing' || selectedCustomer.value.id === 'three-sixty' || selectedCustomer.value.id === 'yinhui') {
     return ''
   }
 
@@ -554,6 +571,10 @@ const canExportCustomerQuote = computed(() => {
   if (selectedCustomer.value.id === 'three-sixty') {
     return hasActiveThreeSixtyConversion.value
   }
+  if (selectedCustomer.value.id === 'yinhui') {
+    if (!selectedImportMatchesCurrentChoice.value || !yinhuiConversionResult.value || !yinhuiConfirmed.value) return false
+    try { validateYinhuiExport(yinhuiConversionResult.value.quoteData); return true } catch { return false }
+  }
 
   return visibleConversionRows.value.length > 0 && Boolean(selectedImportFileName.value)
 })
@@ -688,6 +709,7 @@ function readFileAsArrayBuffer(file: File) {
 }
 
 function configuredCustomerId(customerName: string): P4ConfiguredCustomerId | null {
+  if (activeFactoryId.value === 'huaxing' && isYinhuiCustomer(customerName)) return 'yinhui'
   const normalized = customerName.trim().toLowerCase().replace(/[\s_-]+/g, '')
   const matched = visibleCustomers.value.find((customer) => customer.name.trim().toLowerCase().replace(/[\s_-]+/g, '') === normalized)
   return matched && ['buzzbee', 'disney', 'dicky', 'caixing', 'three-sixty'].includes(matched.id)
@@ -760,6 +782,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = null
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+    yinhuiConversionResult.value = null
+    yinhuiConfirmed.value = false
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   } else if (conversion.customerId === 'disney') {
@@ -770,6 +794,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = null
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+    yinhuiConversionResult.value = null
+    yinhuiConfirmed.value = false
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   } else if (conversion.customerId === 'dicky') {
@@ -780,6 +806,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = result
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+    yinhuiConversionResult.value = null
+    yinhuiConfirmed.value = false
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   } else if (conversion.customerId === 'caixing') {
@@ -790,9 +818,21 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = null
     caixingConversionResult.value = result
     threeSixtyConversionResult.value = null
+    yinhuiConversionResult.value = null
+    yinhuiConfirmed.value = false
     selectedCaixingProductType.value = result.productType
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
+  } else if (conversion.customerId === 'yinhui') {
+    yinhuiConversionResult.value = conversion.result
+    yinhuiConfirmed.value = false
+    buzzBeeConversionResult.value = null
+    disneyConversionResult.value = null
+    dickyConversionResult.value = null
+    caixingConversionResult.value = null
+    threeSixtyConversionResult.value = null
+    importedWorkbookSheets.value = conversion.result.sheets
+    importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · 银辉 P4 临时映射 · 输出 6 Sheet`
   } else if (conversion.customerId === 'three-sixty') {
     const result = conversion.result
     const detailCount = result.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
@@ -801,6 +841,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = null
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = result
+    yinhuiConversionResult.value = null
+    yinhuiConfirmed.value = false
     importedWorkbookSheets.value = result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · P4 直转 · ${result.sheets.length} Sheet / ${detailCount} 条`
   }
@@ -939,6 +981,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+      yinhuiConversionResult.value = null
+      yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'disney') {
@@ -956,6 +1000,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+      yinhuiConversionResult.value = null
+      yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'dicky') {
@@ -973,6 +1019,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = conversionResult
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+      yinhuiConversionResult.value = null
+      yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'caixing') {
@@ -990,8 +1038,24 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = conversionResult
       threeSixtyConversionResult.value = null
+      yinhuiConversionResult.value = null
+      yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
+    } else if (customer.id === 'yinhui') {
+      if (!file.name.toLowerCase().endsWith('.xlsx')) throw new Error('银辉仅支持 .xlsx 原内部报价或 P4 最终放行文件；旧 .xls 请先另存为 .xlsx')
+      const buffer = await readFileAsArrayBuffer(file)
+      if (!isCurrentImportRequest()) return
+      const result = convertYinhuiInternalQuote(buffer, file.name)
+      yinhuiConversionResult.value = result
+      yinhuiConfirmed.value = false
+      buzzBeeConversionResult.value = null
+      disneyConversionResult.value = null
+      dickyConversionResult.value = null
+      caixingConversionResult.value = null
+      threeSixtyConversionResult.value = null
+      importedWorkbookSheets.value = result.sheets
+      importedFileSize.value = `${formatFileSize(file.size)} · 银辉临时映射 · 输出 6 Sheet`
     } else if (customer.id === 'three-sixty') {
       if (!file.name.toLowerCase().endsWith('.xlsx')) {
         throw new Error('360 当前支持 .xlsx P4 最终放行文件或原专用多 Sheet 工作簿，旧 .xls 请先另存为 .xlsx')
@@ -1006,6 +1070,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = conversionResult
+      yinhuiConversionResult.value = null
+      yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · P4 上传直转 · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else {
@@ -1014,6 +1080,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+      yinhuiConversionResult.value = null
+      yinhuiConfirmed.value = false
       importedWorkbookSheets.value = createMockWorkbookSheets(customer, file.name)
       importedFileSize.value = formatFileSize(file.size)
     }
@@ -1061,6 +1129,8 @@ async function importInternalQuoteFile(file: File | undefined) {
     dickyConversionResult.value = null
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+    yinhuiConversionResult.value = null
+    yinhuiConfirmed.value = false
     importErrorMessage.value = error instanceof Error ? `导入失败：${error.message}` : '导入失败：内部报价解析失败'
   } finally {
     if (isCurrentImportRequest()) {
@@ -1171,6 +1241,13 @@ async function exportCustomerQuoteExcel() {
       if (!isCurrentExportRequest()) return
       const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
       fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
+      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+    } else if (selectedCustomer.value.id === 'yinhui' && yinhuiConversionResult.value) {
+      const conversion = yinhuiConversionResult.value
+      const templateBuffer = await fetchTemplateBuffer(yinhuiTemplateUrl(conversion.quoteData.templateId), '银辉报客')
+      if (!isCurrentExportRequest() || selectedCustomer.value.id !== 'yinhui' || conversion !== yinhuiConversionResult.value || !yinhuiConfirmed.value) return
+      const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value })
+      fileName = buildYinhuiCustomerQuoteFileName(conversion)
       downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'three-sixty' && threeSixtyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(THREE_SIXTY_CUSTOMER_QUOTE_TEMPLATE_URL, '360 报客')
@@ -1348,6 +1425,8 @@ async function exportCustomerQuoteExcel() {
         </div>
       </div>
 
+      <YinhuiQuoteReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiConversionResult" v-model:confirmed="yinhuiConfirmed" :result="yinhuiConversionResult" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote" />
+
       <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <label
           class="flex min-h-[118px] flex-col items-center justify-center rounded-lg border px-6 py-5 text-center transition-colors"
@@ -1407,7 +1486,7 @@ async function exportCustomerQuoteExcel() {
                   ? 'bg-white text-teal-700 ring-teal-200'
                   : 'bg-white text-slate-500 ring-slate-200'"
           >
-            {{ !canImportSelectedCustomer ? '权限限制：不可导入或替换' : isImportingInternalQuote ? '请稍候，正在识别并转换数据' : hasSelectedCustomerImport ? '已就绪，可输出报客价' : isImportDragActive ? '松开鼠标导入 Excel' : selectedCustomer?.id === 'three-sixty' ? '支持 .xlsx P4 / 原内部多 Sheet（无需 Breakdown）' : '支持 .xls / .xlsx' }}
+            {{ !canImportSelectedCustomer ? '权限限制：不可导入或替换' : isImportingInternalQuote ? '请稍候，正在识别并转换数据' : hasSelectedCustomerImport ? (selectedCustomer.id === 'yinhui' && !yinhuiConfirmed ? '已导入，待下方核对' : '已就绪，可输出报客价') : isImportDragActive ? '松开鼠标导入 Excel' : selectedCustomer?.id === 'yinhui' ? '支持 .xlsx 原内部报价 / P4 · 银辉独立映射' : selectedCustomer?.id === 'three-sixty' ? '支持 .xlsx P4 / 原内部多 Sheet（无需 Breakdown）' : '支持 .xls / .xlsx' }}
           </span>
             <input
               data-testid="quote-import-input"

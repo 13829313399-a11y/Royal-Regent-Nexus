@@ -190,7 +190,7 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).toMatch(/title="客价转换台"/)
     expect(customerPriceConversionViewSource).toContain("['huaxing', 'huakang-a'].includes(appStore.activeProductionFactory.id)")
     expect(customerPriceConversionViewSource).toContain('data-testid="customer-price-mapping-empty"')
-    expect(customerPriceConversionViewSource).toContain('BuzzBee、迪士尼、Dickie 和彩星仅适用于华兴，360 仅适用于华康 A')
+    expect(customerPriceConversionViewSource).toContain('BuzzBee、迪士尼、Dickie、彩星和银辉仅适用于华兴，360 仅适用于华康 A')
     expect(customerPriceConversionViewSource).toContain("{ label: '待转换', value: '0'")
     expect(customerPriceConversionViewSource).toContain("{ label: '客户范围', value: '待配置'")
     expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)

@@ -8,6 +8,7 @@ import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { cloneInternalQuotePayload, normalizeInternalQuotePayload, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
+import { normalizeInternalQuoteDraft } from '@/lib/internalQuoteMoldingReferences'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
 import type { SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
@@ -38,6 +39,7 @@ const quoteStore = useInternalQuoteDeskStore()
 const authStore = useAuthStore()
 const draftPayload = ref<Record<string, unknown>>({})
 const baselinePayload = ref('')
+const draftRevision = ref(props.section.revision)
 const importPreview = ref<ApiInternalQuoteImportPreview>()
 const previewAttachmentTarget = ref<InternalQuoteAttachmentRecord>()
 const deleteAttachmentTarget = ref<InternalQuoteAttachmentRecord>()
@@ -178,6 +180,7 @@ const importOptions = computed<ImportOption[]>(() => ({
   painting: [{ type: 'painting', label: '喷油报价单', fileName: '喷油报价单.xlsx' }],
   slush: [{ type: 'slush', label: '搪胶报价单', fileName: '搪胶部报价导入模板-2026.07.xlsx' }],
   sewing: [{ type: 'sewing', label: '车缝报价单', fileName: '车缝报价单.xlsx' }],
+  hair: [{ type: 'hair', label: '车发部报价单', fileName: '车发部报价单.xls' }],
   assembly: [{ type: 'assembly', label: '生产排拉工序表', fileName: '装工.xlsx' }],
 } as Partial<Record<InternalQuoteSectionCode, ImportOption[]>>)[props.section.code] ?? [])
 
@@ -208,17 +211,38 @@ function scheduleLivePreview() {
     void quoteStore.previewSectionCost(
       props.quote.id,
       props.section.code,
-      props.section.revision,
+      draftRevision.value,
       cloneInternalQuotePayload(props.section.code, draftPayload.value),
     )
   }, 450)
 }
 
-watch(() => [props.quote.id, props.section.code, props.section.revision, props.section.updatedAt, props.canEdit, props.canReview] as const, () => {
+function normalizedDraft(payload: Record<string, unknown>) {
+  return normalizeInternalQuoteDraft(props.section.code, payload, props.quote.referenceSnapshot)
+}
+
+let draftContext = ''
+watch([
+  () => props.quote.id, () => props.section.code, () => props.section.revision,
+  () => props.section.updatedAt, () => props.section.payload, () => props.quote.referenceSnapshot,
+], () => {
+  const context = `${props.quote.id}:${props.section.code}`
+  const contextChanged = context !== draftContext
+  const incoming = normalizedDraft(props.section.payload)
+  const incomingText = JSON.stringify(incoming)
+  const currentText = JSON.stringify(draftPayload.value)
+  // A quote refresh may replace section objects without changing their data.
+  // Never overwrite a local edit (or recreate its focused input) in that case.
+  if (!contextChanged && isDirty.value && incomingText !== currentText) {
+    if (incomingText !== baselinePayload.value) localError.value = '服务器内容已更新，本页未保存输入已保留；请核对后再保存。'
+    return
+  }
+  draftContext = context
   cancelLivePreviewTimer()
   quoteStore.clearLiveCostPreview()
-  draftPayload.value = normalizeInternalQuotePayload(props.section.code, props.section.payload)
-  baselinePayload.value = JSON.stringify(draftPayload.value)
+  if (contextChanged || incomingText !== currentText) draftPayload.value = incoming
+  baselinePayload.value = incomingText
+  draftRevision.value = props.section.revision
   importPreview.value = undefined
   deleteAttachmentTarget.value = undefined
   reasonAction.value = undefined
@@ -242,12 +266,30 @@ onBeforeUnmount(() => {
 function resetFeedback() { localMessage.value = ''; localError.value = '' }
 function errorText(error: unknown) { return error instanceof Error ? error.message : '操作失败。' }
 
+function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<string, unknown>, revision: number) {
+  const saved = normalizedDraft(payload)
+  const submittedText = JSON.stringify(normalizedDraft(submitted))
+  const currentText = JSON.stringify(draftPayload.value)
+  const savedText = JSON.stringify(saved)
+  // Acknowledge only the submitted snapshot. Edits made while awaiting the
+  // response must remain dirty, including when the server returns no new revision.
+  if (currentText === submittedText && currentText !== savedText) draftPayload.value = saved
+  baselinePayload.value = savedText
+  draftRevision.value = revision
+  cancelLivePreviewTimer()
+  scheduleLivePreview()
+}
+
 async function saveDraft(showMessage = true, reason = '', refreshQuote = true) {
   resetFeedback()
   try {
-    const requestedRevision = props.section.revision
-    const result = await quoteStore.saveSection(props.quote.id, props.section.code, requestedRevision, cloneInternalQuotePayload(props.section.code, draftPayload.value), reason, refreshQuote) as ApiInternalQuoteSection
-    baselinePayload.value = JSON.stringify(draftPayload.value)
+    const requestedRevision = draftRevision.value
+    const quoteId = props.quote.id
+    const sectionCode = props.section.code
+    const submitted = cloneInternalQuotePayload(sectionCode, draftPayload.value)
+    const result = await quoteStore.saveSection(quoteId, sectionCode, requestedRevision, submitted, reason, refreshQuote) as ApiInternalQuoteSection
+    if (props.quote.id !== quoteId || props.section.code !== sectionCode) return result
+    acceptSavedPayload(result.payload, submitted, result.revision)
     if (showMessage) localMessage.value = result.revision === requestedRevision
       ? `${props.section.label}内容没有变化，沿用 revision ${result.revision}。`
       : `${props.section.label}草稿已保存，服务端已生成 revision ${result.revision} 并重新计算。`
@@ -305,7 +347,7 @@ function getWholeQuoteDraft() {
   if (!editable.value) throw new Error(`${props.section.label}当前不可编辑，无法统一保存。`)
   return {
     sectionCode: props.section.code,
-    revision: props.section.revision,
+    revision: draftRevision.value,
     payload: cloneInternalQuotePayload(props.section.code, draftPayload.value),
     baselinePayload: JSON.parse(baselinePayload.value) as Record<string, unknown>,
   }
@@ -318,7 +360,7 @@ async function saveWholeQuoteDraft(refreshQuote = true) {
   return result
 }
 
-defineExpose({ saveSalesMarkup, saveWholeQuoteDraft, hasUnsavedChanges, canSaveWholeQuoteDraft, getWholeQuoteDraft })
+defineExpose({ saveSalesMarkup, saveWholeQuoteDraft, hasUnsavedChanges, canSaveWholeQuoteDraft, getWholeQuoteDraft, acceptSavedPayload })
 
 function askHowToHandleUnsavedChanges() {
   if (pendingUnsavedPrompt) return pendingUnsavedPrompt
@@ -367,9 +409,10 @@ onMounted(() => window.addEventListener('beforeunload', handleBeforeUnload))
 async function submitSection() {
   resetFeedback()
   try {
-    let revision = props.section.revision
+    let revision = draftRevision.value
     if (isDirty.value) {
-      const saved = await quoteStore.saveSection(props.quote.id, props.section.code, revision, cloneInternalQuotePayload(props.section.code, draftPayload.value)) as ApiInternalQuoteSection
+      const saved = await saveDraft(false)
+      if (!saved) return
       revision = saved.revision
     }
     await quoteStore.submitSection(props.quote.id, props.section.code, revision)
@@ -408,7 +451,7 @@ async function confirmReasonAction() {
 }
 
 function isImportWorkbook(file: File) {
-  return /\.(xlsx|xlsm)$/i.test(file.name)
+  return /\.(xlsx|xlsm)$/i.test(file.name) || (props.section.code === 'hair' && /\.xls$/i.test(file.name))
 }
 
 async function withdrawSection() {
@@ -468,7 +511,9 @@ async function downloadImportTemplate(option?: ImportOption) {
   resetFeedback()
   try {
     await quoteStore.downloadImportTemplate(props.quote.id, target.type, target.fileName)
-    localMessage.value = `${target.label}映射模板已下载；请按绿色表头填写黄色区域后，从“上传附件”导入。`
+    localMessage.value = target.type === 'hair'
+      ? '车发部原版模板已下载；填写“明细”页的单价和重量，保存后从“上传附件”导入。'
+      : `${target.label}映射模板已下载；请按绿色表头填写黄色区域后，从“上传附件”导入。`
   } catch (error) {
     localError.value = errorText(error)
   }

@@ -1,7 +1,7 @@
 # 注塑排产中枢实现盘点与契约
 
 > 当前基线：`origin/main` 的 2026-08-30 代码树
-> 应用与本地业务库迁移：`20260830_0086`（生产数据库状态未由本地仓库证明）
+> 应用与本地业务库迁移：`20260831_0087`（生产数据库状态未由本地仓库证明）
 > 目标前端路由：`/modules/production/injection-scheduling`
 > 目标后端前缀：`/api/production/injection-scheduling`
 
@@ -12,7 +12,7 @@
 ## 2. 当前事实
 
 - 本次已重新接通前端路由、后端 API、领域服务、权限和生产模块卡片；页面明确标注“本地验收 · 未上线”。
-- Alembic 只有一个目标 head：`20260830_0086`；本地 SQLite 业务数据库已在 2026-08-31 完成备份优先的 0085 → 0086 升级。该事实不代表生产数据库已迁移。
+- Alembic 只有一个目标 head：`20260831_0087`；本地 SQLite 业务数据库已在 2026-08-31 完成备份优先的注塑 0085 → 纸箱收货 0086 → 注塑应用 0087 升级。该事实不代表生产数据库已迁移。
 - 本地业务数据库升级后 `PRAGMA quick_check` 为 `ok`，`PRAGMA foreign_key_check` 为 0 条异常，启动 schema guard 与 `/health` 均通过。
 - 0085 创建的 12 张 `injection_schedule_*` 表及 0086 新增的机台不可用窗口表全部存在；升级后 13 张表内业务行数仍均为 0。
 - 0085 是已提交历史迁移，禁止修改、删除或用新的整库 drop/rebuild 替代。
@@ -37,9 +37,9 @@
 | `injection_schedule_audit_events` | 不可变业务审计 | 厂区序号、实体版本、前后值、原因、操作者；数据库触发器禁止更新和删除 |
 | `injection_schedule_auto_proposals` | 自动排程预览 | 输入摘要、算法版本、变更、未排原因、过期和应用状态 |
 
-## 4. 0086 前向扩展契约
+## 4. 0087 前向扩展契约
 
-`20260830_0086_connect_injection_schedule_application.py` 只增加应用层确实需要、且 0085 没有等价表达的字段：
+`20260831_0087_connect_injection_schedule_application.py` 接在远程主线的纸箱收货 0086 后，只增加注塑应用层确实需要、且 0085 没有等价表达的字段：
 
 - 厂区设置：排程总 revision、默认时间范围、冻结时长、有效生产小时、排程规则 JSON、颜色规则 JSON。
 - 导入批次：文档类型、profile code、单据头/页尾公共字段 JSON。
@@ -118,10 +118,9 @@
 ## 9. 部署变量与迁移/回滚
 
 - 核心模块不依赖 AI。默认 `QWEN_ENABLED=false`；启用时配置 `QWEN_API_KEY`，可选 `QWEN_BASE_URL`、`QWEN_MODEL`、`QWEN_TIMEOUT_SECONDS`。
-- 其他环境（尤其生产）迁移前必须对目标数据库做一致性备份并验证可恢复，再执行 `alembic upgrade 20260830_0086`；应用启动的 schema guard 会拒绝“已有 Alembic 库但未到 0086”的运行状态。
+- 其他环境（尤其生产）迁移前必须对目标数据库做一致性备份并验证可恢复，再执行 `alembic upgrade 20260831_0087`；应用启动的 schema guard 会拒绝“已有 Alembic 库但未到 0087”的运行状态。
 - 本地升级的可恢复备份为 `D:\RR\.backups\royal-regent-nexus\royal_regent_nexus-before-0086-20260831-184111.db`，SHA-256 为 `B90516249AACCBF64E33FDECA9B699FB55BD5BEEFC8C73ADD0DCE016325CD9DE`；备份保持 0085、`quick_check=ok`、外键异常 0、用户 26、注塑业务行 0。
 - 0086 downgrade 只允许在扩展表完全无业务数据时执行；一旦存在注塑排产数据，应恢复迁移前备份，而不是强制降级丢数据。
-- 2026-08-30 临时演练库、备份和恢复副本均为 6,844,416 bytes、SHA-256 `f7da4ee21d63aad366220bc4fcf2705b6d83328e86ee91b2e18675c37316b965`，`PRAGMA quick_check=ok`、revision=`20260830_0086`、注塑表 13 张。
 - 正式接管仍按“主数据校准 → 当前计划导入 → 影子排程 → 双轨 3–5 个工作日 → 系统接管”执行；未经文员核对和负责人签收，不得停用原 Excel。
 
 ## 10. 发布边界

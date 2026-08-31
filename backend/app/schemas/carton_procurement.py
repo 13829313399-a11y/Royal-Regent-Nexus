@@ -15,6 +15,7 @@ CartonOrderStatus = Literal[
     "CANCELLED",
 ]
 CartonReceiptStatus = Literal["DRAFT", "PENDING_CONFIRMATION", "POSTED", "REVERSED"]
+CartonReceiptLineSourceType = Literal["FORMAL_ORDER", "AD_HOC"]
 CartonMovementType = Literal["INBOUND", "OUTBOUND", "ADJUSTMENT", "REVERSAL"]
 CartonClosingStatus = Literal["DRAFT", "PENDING", "CONFIRMED", "LOCKED"]
 CartonCustomerStatus = Literal["ACTIVE", "INACTIVE"]
@@ -287,6 +288,16 @@ class CartonOrderCancelRequest(BaseModel):
         return _strip(value)
 
 
+class CartonOrderSubmitRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+
+    @field_validator("factory_id")
+    @classmethod
+    def strip_factory_id(cls, value: str) -> str:
+        return _strip(value)
+
+
 class CartonOrderAppendRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
@@ -373,6 +384,42 @@ class CartonOrderLineOut(BaseModel):
     note: str
 
 
+class CartonOrderHistoryLineOut(BaseModel):
+    line_no: int
+    packaging_type: str
+    paper_quality: str
+    specification: str
+    dimension_unit: str
+    usage_quantity: Decimal
+    unit: str
+    unit_price: Decimal
+    currency: str
+    price_source: str
+    note: str
+
+
+class CartonOrderHistorySuggestionOut(BaseModel):
+    item_no: str
+    customer_code: str
+    customer_name: str
+    product_name: str
+    latest_order_no: str
+    latest_contract_no: str
+    latest_order_date: str
+    latest_product_order_quantity: Decimal
+    order_count: int
+    match_type: Literal["EXACT", "PREFIX", "CONTAINS", "SIMILAR"]
+    match_score: int
+    lines: list[CartonOrderHistoryLineOut]
+
+
+class CartonOrderHistorySuggestionListOut(BaseModel):
+    factory_id: str
+    query: str
+    total: int
+    items: list[CartonOrderHistorySuggestionOut]
+
+
 class CartonOrderOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -423,7 +470,16 @@ class CartonHistoryOrderImportOut(BaseModel):
 
 
 class CartonReceiptLineCreate(BaseModel):
-    order_line_id: str = Field(min_length=1, max_length=96)
+    source_type: CartonReceiptLineSourceType = "FORMAL_ORDER"
+    order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
+    customer_code: str = Field(default="", max_length=64)
+    contract_no: str = Field(default="", max_length=128)
+    item_no: str = Field(default="", max_length=128)
+    packaging_type: str = Field(default="", max_length=64)
+    paper_quality: str = Field(default="", max_length=128)
+    specification: str = Field(default="", max_length=255)
+    unit: str = Field(default="个", min_length=1, max_length=32)
+    currency: str = Field(default="CNY", min_length=1, max_length=8)
     delivered_quantity: Decimal = Field(ge=0, max_digits=18, decimal_places=4)
     received_quantity: Decimal = Field(ge=0, max_digits=18, decimal_places=4)
     damaged_quantity: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=4)
@@ -433,16 +489,57 @@ class CartonReceiptLineCreate(BaseModel):
     location: str = Field(default="", max_length=128)
     feedback_note: str = Field(default="", max_length=2000)
 
-    @field_validator("order_line_id", "location", "feedback_note")
+    @field_validator(
+        "customer_code",
+        "contract_no",
+        "item_no",
+        "packaging_type",
+        "paper_quality",
+        "specification",
+        "unit",
+        "currency",
+        "location",
+        "feedback_note",
+    )
     @classmethod
     def strip_text(cls, value: str) -> str:
         return _strip(value)
+
+    @field_validator("order_line_id")
+    @classmethod
+    def strip_order_line_id(cls, value: str | None) -> str | None:
+        value = _strip(value or "")
+        return value or None
 
     @model_validator(mode="after")
     def validate_effective_quantity(self):
         unusable = self.damaged_quantity + self.rejected_quantity + self.unusable_quantity
         if unusable > self.received_quantity:
             raise ValueError("破损、拒收和其他不可用数量之和不能大于实收数量")
+        if self.received_quantity > self.delivered_quantity:
+            raise ValueError("实收数量不能大于送货数量")
+        if self.source_type == "FORMAL_ORDER":
+            if not self.order_line_id:
+                raise ValueError("正式订单收料必须关联订单明细")
+            return self
+        if self.order_line_id:
+            raise ValueError("非正式收料不能伪造正式订单明细关联")
+        missing = [
+            label
+            for label, value in (
+                ("客户", self.customer_code),
+                ("货号", self.item_no),
+                ("纸品类型", self.packaging_type),
+                ("纸质", self.paper_quality),
+                ("规格", self.specification),
+                ("单位", self.unit),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"非正式收料必须补齐：{'、'.join(missing)}")
+        if self.received_quantity - unusable <= 0:
+            raise ValueError("非正式收料的有效收料数量必须大于 0")
         return self
 
 
@@ -471,7 +568,8 @@ class CartonReceiptLineOut(BaseModel):
 
     id: str
     line_no: int
-    order_line_id: str
+    source_type: CartonReceiptLineSourceType
+    order_line_id: str | None
     customer_code: str
     customer_name: str
     contract_no: str
@@ -689,6 +787,7 @@ class CartonInventoryBalanceOut(BaseModel):
     balance: Decimal
     latest_location: str
     latest_movement_id: str
+    latest_document_no: str
     latest_movement_at: str
 
 

@@ -119,6 +119,7 @@ describe('internal quote API adapter', () => {
     await api.previewAttachmentContent('quote-1', 'attachment-1')
     await api.deleteImportAttachment('quote-1', 'attachment-1', 10)
     await api.submitFinal('quote-1', 3)
+    await api.withdrawFinal('quote-1', 4, '修改客户数量')
     await api.reviewFinal('quote-1', 4, 'approve')
     await api.createExport('quote-1')
     await api.downloadEngineeringWorkbook('quote-1')
@@ -149,6 +150,7 @@ describe('internal quote API adapter', () => {
     expect((formCalls[0][1] as FormData).get('file')).toBe(file)
     expect((formCalls[1][1] as FormData).get('department')).toBe('engineering')
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/final-submit', { revision: 3 })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/final-withdraw', { revision: 4, reason: '修改客户数量' })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/final-review', { revision: 4, decision: 'approve', reason: '' })
     expect(http.post).toHaveBeenCalledWith(
       '/internal-quotes/quote-1/engineering-data/export',

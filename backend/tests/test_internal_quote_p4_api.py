@@ -73,8 +73,6 @@ def test_p4_release_ignores_inactive_optional_sections_and_marks_them_in_structu
             "sales-business",
         )
         payload = create_payload(suffix="P4-OPTIONAL")
-        payload["business_owner_id"] = submitter["id"]
-        payload["business_owner_name"] = submitter["display_name"]
         created = client.post("/api/internal-quotes", json=payload)
         assert created.status_code == 201, created.text
         quote_id = created.json()["id"]
@@ -110,8 +108,6 @@ def test_p4_responsible_sales_followup_releases_once_and_hands_off_final_artifac
         assert "internal_quote:final_submit" in submitter["permissions"]
         assert "internal_quote:final_approve" not in submitter["permissions"]
         payload = create_payload(suffix="P4-RELEASE", participating_sections=ALL_SECTION_CODES)
-        payload["business_owner_id"] = submitter["id"]
-        payload["business_owner_name"] = submitter["display_name"]
         quote = client.post("/api/internal-quotes", json=payload).json()
         quote_id = quote["id"]
 
@@ -396,8 +392,6 @@ def test_p4_legacy_layout_export_is_refreshed_without_replacing_release_handoff(
             "sales-business",
         )
         payload = create_payload(suffix="P4-LAYOUT-REFRESH", participating_sections=ALL_SECTION_CODES)
-        payload["business_owner_id"] = submitter["id"]
-        payload["business_owner_name"] = submitter["display_name"]
         quote = client.post("/api/internal-quotes", json=payload).json()
         quote_id = quote["id"]
         mark_all_sections_not_applicable(quote_id)
@@ -580,8 +574,8 @@ def test_p4_quote_version_comparison_uses_clone_lineage_and_section_snapshots(mo
             json={
                 "quote_no": "IQ-TEST-P4-COMPARE-TARGET",
                 "version_label": "V2",
-                "business_owner_id": "owner-compare",
-                "business_owner_name": "版本负责人",
+                "business_owner_id": base["business_owner_id"],
+                "business_owner_name": base["business_owner_name"],
                 "target_date": "2026-09-01",
             },
         ).json()

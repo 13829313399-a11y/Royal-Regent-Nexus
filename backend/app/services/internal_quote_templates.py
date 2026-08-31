@@ -10,6 +10,7 @@ from openpyxl.utils import get_column_letter
 
 TEMPLATE_VERSION = "2026.07"
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+XLS_CONTENT_TYPE = "application/vnd.ms-excel"
 FIXED_TEMPLATE_DIRECTORY = (
     Path(__file__).resolve().parent.parent
     / "data"
@@ -22,6 +23,7 @@ FIXED_TEMPLATE_FILE_NAMES = {
     "painting": "喷油报价单.xlsx",
     "electronic": "电子报价单.xlsx",
     "sewing": "车缝报价单.xlsx",
+    "hair": "车发部报价单.xls",
 }
 
 TEMPLATE_LABELS = {
@@ -32,6 +34,7 @@ TEMPLATE_LABELS = {
     "painting": "喷油部报价",
     "slush": "搪胶部报价",
     "sewing": "车缝部报价",
+    "hair": "车发部报价",
     "assembly": "装配部排拉工序",
 }
 
@@ -182,7 +185,8 @@ def build_internal_quote_import_template(import_type: str) -> tuple[bytes, str]:
             raise RuntimeError(
                 f"内部报价固定模板缺失：{fixed_file_name}"
             ) from error
-        if not content.startswith(b"PK"):
+        signature = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" if template_path.suffix.lower() == ".xls" else b"PK"
+        if not content.startswith(signature):
             raise RuntimeError(
                 f"内部报价固定模板格式无效：{fixed_file_name}"
             )

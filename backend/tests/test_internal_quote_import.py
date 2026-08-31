@@ -32,8 +32,12 @@ def workbook_bytes(rows: list[list[object]], title: str = "报价明细") -> byt
 def test_downloadable_import_template_uses_a_header_recognized_by_its_parser(import_type: str):
     content, file_name = build_internal_quote_import_template(import_type)
 
-    assert content.startswith(b"PK")
-    assert file_name.endswith(".xlsx")
+    if import_type == "hair":
+        assert content.startswith(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")
+        assert file_name.endswith(".xls")
+    else:
+        assert content.startswith(b"PK")
+        assert file_name.endswith(".xlsx")
     if import_type in FIXED_TEMPLATE_FILE_NAMES:
         assert file_name == FIXED_TEMPLATE_FILE_NAMES[import_type]
         expected_path = (

@@ -1,8 +1,8 @@
 """connect the injection schedule application contract
 
-Revision ID: 20260830_0086
-Revises: 20260827_0085
-Create Date: 2026-08-30
+Revision ID: 20260831_0087
+Revises: 20260830_0086
+Create Date: 2026-08-31
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import sqlalchemy as sa
 from alembic import op
 from alembic.util.exc import CommandError
 
-revision: str = "20260830_0086"
-down_revision: str | Sequence[str] | None = "20260827_0085"
+revision: str = "20260831_0087"
+down_revision: str | Sequence[str] | None = "20260830_0086"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -390,7 +390,7 @@ def _create_machine_unavailable_windows() -> None:
 
 def _seed_permissions() -> None:
     connection = op.get_bind()
-    timestamp = "2026-08-30 00:00:00"
+    timestamp = "2026-08-31 00:00:00"
     affected_roles: set[str] = set()
     for sort_offset, (code, name, description, access_kind, risk_level) in enumerate(
         PERMISSIONS
@@ -519,7 +519,7 @@ def _refuse_data_losing_downgrade() -> None:
     ]
     if populated:
         raise CommandError(
-            "20260830_0086 cannot be downgraded after injection scheduling "
+            "20260831_0087 cannot be downgraded after injection scheduling "
             "application data exists in: "
             f"{', '.join(populated)}. Restore a verified pre-migration backup instead."
         )
@@ -555,7 +555,7 @@ def _remove_permissions() -> None:
 def downgrade() -> None:
     if op.get_context().as_sql:
         raise CommandError(
-            "20260830_0086 requires an online downgrade so it can protect business data"
+            "20260831_0087 requires an online downgrade so it can protect business data"
         )
     _refuse_data_losing_downgrade()
     _remove_permissions()

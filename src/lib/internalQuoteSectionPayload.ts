@@ -1051,13 +1051,79 @@ function importBatchMetadata(row: Record<string, unknown>) {
 export function splitEngineeringMoldPartNames(value: unknown): string[] {
   const source = textValue(value).replaceAll('／', '/').trim()
   if (!source) return []
-  return source
-    .split('/')
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .flatMap((part) => part.includes('左右')
-      ? [part.replaceAll('左右', '左'), part.replaceAll('左右', '右')]
-      : [part])
+  const tokens: string[] = []
+  let tokenStart = 0
+  let bracketDepth = 0
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]!
+    if ('（(【['.includes(character)) bracketDepth += 1
+    else if ('）)】]'.includes(character)) bracketDepth = Math.max(0, bracketDepth - 1)
+    else if (character === '/' && bracketDepth === 0) {
+      const token = source.slice(tokenStart, index).trim()
+      if (token) tokens.push(token)
+      tokenStart = index + 1
+    }
+  }
+  const finalToken = source.slice(tokenStart).trim()
+  if (finalToken) tokens.push(finalToken)
+  const expanded: string[] = []
+  const opposites: Record<string, string> = { 前: '后', 后: '前', 左: '右', 右: '左' }
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!
+    const left = token.match(/^(.*?)([前后左右])([^前后左右]*)$/)
+    const right = tokens[index + 1]?.match(/^(.*?)([前后左右])([^前后左右]*)$/)
+    if (left && right && opposites[left[2]!] === right[2]
+      && (!left[1] || !right[1] || left[1] === right[1])
+      && (!left[3] || !right[3] || left[3] === right[3])
+      && !/前后|左右/.test(left[1]! + right[1]!)) {
+      const prefix = left[1] || right[1] || ''
+      const suffix = left[3] || right[3] || ''
+      expanded.push(`${prefix}${left[2]}${suffix}`, `${prefix}${right[2]}${suffix}`)
+      index += 1
+      continue
+    }
+    const pairs = token.match(/左右|前后/g) ?? []
+    // Multiple direction pairs are ambiguous; keep the name for manual review.
+    if (pairs.length === 1) {
+      const pair = pairs[0]!
+      expanded.push(token.replace(pair, pair[0]!), token.replace(pair, pair[1]!))
+    } else expanded.push(token)
+  }
+  return expanded
+}
+
+export function previewEngineeringMoldPartSplit(value: unknown, existing: EngineeringMoldPartRow[]) {
+  const names = splitEngineeringMoldPartNames(value)
+  const matches = new Map<number, number>()
+  const used = new Set<number>()
+  // Reserve exact matches before attempting to repair legacy bare directions.
+  names.forEach((name, index) => {
+    const found = existing.findIndex((part, oldIndex) => !used.has(oldIndex) && part.name.trim() === name)
+    if (found >= 0) { matches.set(index, found); used.add(found) }
+  })
+  const directionMatches = (short: string, full: string) => (
+    /^[前后左右]$/.test(short) && (full.startsWith(short) || new RegExp(`${short}(?:[（(][^（）()]*[）)])?$`).test(full))
+  )
+  names.forEach((name, index) => {
+    if (matches.has(index)) return
+    const candidates = existing.flatMap((part, oldIndex) => !used.has(oldIndex) && directionMatches(part.name.trim(), name) ? [oldIndex] : [])
+    if (candidates.length !== 1) return
+    const oldIndex = candidates[0]!
+    const short = existing[oldIndex]!.name.trim()
+    if (names.filter((candidate, candidateIndex) => !matches.has(candidateIndex) && directionMatches(short, candidate)).length !== 1) return
+    matches.set(index, oldIndex)
+    used.add(oldIndex)
+  })
+  const proposed = names.map((name, index) => {
+    const oldIndex = matches.get(index)
+    const old = oldIndex === undefined ? undefined : existing[oldIndex]
+    const part: EngineeringMoldPartRow = old
+      ? (old.name === name ? old : { ...old, name })
+      : { name, color: '', process: '', process_unit_price_hkd: 0, unit_net_weight_g: 0, output_count: 1, quantity: 1 }
+    return { part, status: old ? 'matched' as const : 'added' as const }
+  })
+  const retained = existing.flatMap((part, index) => used.has(index) ? [] : [{ part, status: 'retained' as const }])
+  return { rows: [...proposed, ...retained], nameCount: names.length, retainedCount: retained.length }
 }
 
 function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPartRow[] {

@@ -7,11 +7,11 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.auth import AuthUser, AuthUserRole, SystemNotification
+from app.models.auth import AuthUser, AuthUserRole, EmployeeProfile, SystemNotification
 from app.models.internal_quote import (
     InternalQuote,
     InternalQuoteAttachment,
@@ -1967,6 +1967,7 @@ def create_quote(
         payload.factory_id,
         payload.initiator_department,
     )
+    owner_name = validate_quote_business_owner(db, payload.business_owner_id, payload.factory_id, user.id)
     timestamp = now_text()
     products = payload.products
     batch_id = f"IQB-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:12].upper()}"
@@ -2006,7 +2007,7 @@ def create_quote(
             status="drafting",
             initiator_department=payload.initiator_department,
             business_owner_id=payload.business_owner_id,
-            business_owner_name=payload.business_owner_name,
+            business_owner_name=owner_name,
             target_customer_price=payload.target_customer_price,
             target_date=payload.target_date,
             remark=payload.remark,
@@ -2388,40 +2389,37 @@ def get_quote_dashboard(
     )
 
 
-def _has_business_owner_binding(
-    db: Session,
-    user: AuthUser,
-    factory_id: str,
-) -> bool:
-    context = build_auth_context(db, user)
-    return can(
-        context,
-        "internal_quote:sales_review",
-        factory_id,
-        "sales-business",
-    ) and any(
-        grant.factory_id in {factory_id, "*"}
-        and grant.department in {"sales-business", "*"}
-        and "internal_quote:sales_review" in grant.permissions
-        for grant in context.grants
+def _is_sales_quote_reviewer(user: AuthContext) -> bool:
+    # Employee organization is authoritative; old accounts fall back to an
+    # active, explicit Sales binding. Wildcard access is not Sales membership.
+    department = user.profile.primary_department.strip() if user.profile else ""
+    if department:
+        return department == "sales-business"
+    return any(grant.department == "sales-business" for grant in user.grants)
+
+
+def _can_review_quote(user: AuthContext, factory_id: str, created_by: str) -> bool:
+    return _is_sales_quote_reviewer(user) and (
+        can(user, "internal_quote:sales_review", factory_id, "sales-business")
+        or (created_by == user.id and can(
+            user, INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE, factory_id, "sales-business",
+        ))
     )
 
 
-def _has_self_review_permission(
-    db: Session,
-    user: AuthUser,
-    factory_id: str,
-) -> bool:
-    return can(
-        build_auth_context(db, user),
-        INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
-        factory_id,
-        "sales-business",
-    )
+def validate_quote_business_owner(
+    db: Session, owner_id: str, factory_id: str, created_by: str,
+) -> str:
+    owner = db.get(AuthUser, owner_id)
+    if owner is None or owner.status != "active" or not _can_review_quote(
+        build_auth_context(db, owner), factory_id, created_by,
+    ):
+        raise HTTPException(status_code=400, detail="请选择在当前厂区具备审核权限的业务部人员")
+    return owner.display_name or owner.username
 
 
 def _can_self_review_own_quote(user: AuthContext, quote: InternalQuote) -> bool:
-    return quote.created_by == user.id and has_permission_in_scope(
+    return _is_sales_quote_reviewer(user) and quote.created_by == user.id and can(
         user,
         INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
         quote.factory_id,
@@ -2442,14 +2440,9 @@ def ensure_quote_business_reviewer(
             status_code=403,
             detail=f"仅建单时指定的业务审核负责人（{reviewer_name}）可审核全部部门分段",
         )
-    if has_permission_in_scope(
-        user,
-        "internal_quote:sales_review",
-        quote.factory_id,
-        "sales-business",
-    ):
-        return
-    if _can_self_review_own_quote(user, quote):
+    if not _is_sales_quote_reviewer(user):
+        raise HTTPException(status_code=403, detail="只有业务部人员可以审核内部报价")
+    if _can_review_quote(user, quote.factory_id, quote.created_by):
         return
     raise HTTPException(
         status_code=403,
@@ -2465,11 +2458,14 @@ def list_business_owners(
     ensure_quote_read(db, user, factory_id)
     users = db.scalars(
         select(AuthUser)
-        .join(AuthUserRole, AuthUserRole.user_id == AuthUser.id)
+        .outerjoin(AuthUserRole, AuthUserRole.user_id == AuthUser.id)
+        .outerjoin(EmployeeProfile, EmployeeProfile.user_id == AuthUser.id)
         .where(
             AuthUser.status == "active",
-            AuthUserRole.factory_id.in_((factory_id, "*")),
-            AuthUserRole.department.in_(("sales-business", "*")),
+            or_(
+                EmployeeProfile.primary_department == "sales-business",
+                AuthUserRole.department == "sales-business",
+            ),
         )
         .distinct()
         .order_by(AuthUser.display_name, AuthUser.username, AuthUser.id)
@@ -2481,11 +2477,7 @@ def list_business_owners(
             display_name=item.display_name or item.username,
         )
         for item in users
-        if _has_business_owner_binding(db, item, factory_id)
-        or (
-            item.id == user.id
-            and _has_self_review_permission(db, item, factory_id)
-        )
+        if _can_review_quote(build_auth_context(db, item), factory_id, user.id)
     ]
 
 
@@ -2527,19 +2519,22 @@ def get_quote_detail(
     return quote_to_out(db, quote)
 
 
-def get_quote_batch_rows(db: Session, quote: InternalQuote) -> list[InternalQuote]:
+def get_quote_batch_rows(
+    db: Session, quote: InternalQuote, *, for_update: bool = False,
+) -> list[InternalQuote]:
     """Return the ordered product quotes that participate in one batch decision."""
 
-    if not quote.batch_id:
-        return [quote]
-    rows = list(db.scalars(
-        select(InternalQuote)
-        .where(
-            InternalQuote.factory_id == quote.factory_id,
+    statement = select(InternalQuote).where(InternalQuote.factory_id == quote.factory_id)
+    if quote.batch_id:
+        statement = statement.where(
             InternalQuote.batch_id == quote.batch_id,
         )
-        .order_by(InternalQuote.batch_position, InternalQuote.id)
-    ).all())
+    else:
+        statement = statement.where(InternalQuote.id == quote.id)
+    statement = statement.order_by(InternalQuote.batch_position, InternalQuote.id)
+    if for_update:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
+    rows = list(db.scalars(statement).all())
     return rows or [quote]
 
 
@@ -2964,9 +2959,16 @@ def update_quote_header(
             detail="已有参与分段开始填写；为避免数量或负责人变更与成本 revision 不一致，报价头只能在协作填写前修改",
         )
     _check_revision(quote.header_revision, payload.revision, "报价头")
+    owner_name = None
+    if payload.business_owner_id is not None or payload.business_owner_name is not None:
+        owner_name = validate_quote_business_owner(
+            db, payload.business_owner_id or quote.business_owner_id, quote.factory_id, quote.created_by,
+        )
     old_revision = quote.header_revision
     for field, value in payload.model_dump(exclude={"revision"}, exclude_none=True).items():
         setattr(quote, field, value)
+    if owner_name is not None:
+        quote.business_owner_name = owner_name
     quote.header_revision += 1
     quote.updated_at = now_text()
     _add_audit(
@@ -3239,6 +3241,7 @@ def clone_quote(
         source.factory_id,
         initiator_department,
     )
+    owner_name = validate_quote_business_owner(db, payload.business_owner_id, source.factory_id, user.id)
     source_sections = db.scalars(
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == source.id)
     ).all()
@@ -3265,7 +3268,7 @@ def clone_quote(
         status="drafting",
         initiator_department=initiator_department,
         business_owner_id=payload.business_owner_id,
-        business_owner_name=payload.business_owner_name,
+        business_owner_name=owner_name,
         target_customer_price=(
             source.target_customer_price
             if payload.target_customer_price is None

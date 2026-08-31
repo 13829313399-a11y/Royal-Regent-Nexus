@@ -145,6 +145,9 @@ def create_payload(
     suffix: str = "001",
     participating_sections: list[str] | None = None,
 ) -> dict:
+    # Creation now validates its reviewer against active accounts. This shared
+    # fixture can be reused by tests that change the quote's factory.
+    ensure_user("iq_default_reviewer", "sales_customer_supervisor", "sales-business", "*")
     payload = {
         "factory_id": "huaxing",
         "workshop_code": "huaxing-workshop",
@@ -155,8 +158,8 @@ def create_payload(
         "qty": 5000,
         "version_label": "V1",
         "initiator_department": initiator_department,
-        "business_owner_id": "owner-001",
-        "business_owner_name": "业务负责人",
+        "business_owner_id": "user-iq_default_reviewer",
+        "business_owner_name": "iq_default_reviewer",
         "target_customer_price": "USD 3.50",
         "target_date": "2026-08-01",
         "remark": "P1 回归",
@@ -195,12 +198,17 @@ def test_mapped_import_template_download_requires_quote_access_and_returns_xlsx(
             "painting": "喷油报价单.xlsx",
             "electronic": "电子报价单.xlsx",
             "sewing": "车缝报价单.xlsx",
+            "hair": "车发部报价单.xls",
         }
         for import_type, file_name in fixed_templates.items():
             fixed_response = client.get(
                 f"/api/internal-quotes/{quote_id}/imports/{import_type}/template"
             )
             assert fixed_response.status_code == 200, fixed_response.text
+            assert fixed_response.headers["content-type"] == (
+                "application/vnd.ms-excel" if import_type == "hair"
+                else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
             assert fixed_response.content == (
                 BACKEND_DIR
                 / "app"
@@ -233,7 +241,7 @@ def test_sales_create_keeps_all_section_slots_but_only_mandatory_departments_par
         quote = response.json()
         assert quote["status"] == "drafting"
         assert quote["initiator_department"] == "sales-business"
-        assert quote["business_owner_name"] == "业务负责人"
+        assert quote["business_owner_name"] == "iq_default_reviewer"
         assert quote["target_customer_price"] == "USD 3.50"
         assert len(quote["sections"]) == 9
         assert [section["department"] for section in quote["sections"]] == [
@@ -1409,8 +1417,8 @@ def test_na_reopen_clone_and_cross_department_permissions(monkeypatch):
             json={
                 "quote_no": "IQ-TEST-ENG-COPY",
                 "version_label": "V2",
-                "business_owner_id": "owner-002",
-                "business_owner_name": "复制单负责人",
+                "business_owner_id": "user-iq_business_owner_option",
+                "business_owner_name": "iq_business_owner_option",
                 "target_date": "2026-08-15",
             },
         )

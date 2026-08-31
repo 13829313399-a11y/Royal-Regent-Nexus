@@ -163,7 +163,7 @@ function submit() {
     return
   }
   if (!props.businessOwners.some((item) => item.id === form.businessOwnerId)) {
-    errorMessage.value = '请选择当前厂区具备整单审核权限的业务负责人。'
+    errorMessage.value = '请选择当前厂区具备整单审核权限的业务部人员。'
     return
   }
   if (!form.targetCustomerPrice.trim()) {
@@ -368,9 +368,9 @@ onBeforeUnmount(closeDocumentPreview)
                 <small v-if="!customerOptions.length" class="quote-owner-hint">请联系本厂业务主管或工程主管先维护客户资料。</small>
               </label>
               <label>
-                <span>业务负责人 / 整单审核人 <b>*</b></span>
+                <span>业务负责人 / 整单审核人（仅业务部） <b>*</b></span>
                 <select v-model="form.businessOwnerId" :disabled="!businessOwners.length" @change="selectBusinessOwner">
-                  <option value="" disabled>{{ businessOwners.length ? '选择唯一整单审核人' : '当前厂区暂无具备整单审核权限的人员' }}</option>
+                  <option value="" disabled>{{ businessOwners.length ? '选择业务部整单审核人' : '当前厂区暂无具备审核权限的业务部人员' }}</option>
                   <option v-for="owner in businessOwners" :key="owner.id" :value="owner.id">{{ owner.displayName }}（{{ owner.username }}）</option>
                 </select>
                 <small class="quote-owner-hint">整份报价只交给此人审核；个人自审仅适用于本人创建、本人负责且已获自审权限的报价。</small>

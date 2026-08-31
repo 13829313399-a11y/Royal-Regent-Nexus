@@ -12,7 +12,7 @@ import InternalQuoteSectionEditor from './InternalQuoteSectionEditor.vue'
 import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
-import { canEditAllInternalQuoteSections, canReviewInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
+import { canEditAllInternalQuoteSections, canReviewInternalQuoteSections, canWithdrawInternalQuote, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { consumeInternalQuoteProductScroll, rememberInternalQuoteProductScroll } from '@/lib/internalQuoteProductScroll'
 import { cloneInternalQuotePayload, salesSettlementDivisorForMiscRatio, type SalesMarkupTier, type SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
@@ -41,6 +41,8 @@ const sectionNodes = ref<Partial<Record<InternalQuoteSectionCode, HTMLElement>>>
 const sectionBlockProgress = ref<Partial<Record<InternalQuoteSectionCode, InternalQuoteFormBlock[]>>>({})
 const wholeRejectOpen = ref(false)
 const wholeRejectReason = ref('')
+const wholeWithdrawOpen = ref(false)
+const wholeWithdrawReason = ref('')
 const rightPanelTab = ref<'quote' | 'files'>('quote')
 const rightPanelPinned = ref(false)
 const rightPanelResizing = ref(false)
@@ -159,6 +161,7 @@ const canReviewActive = computed(() => canReviewInternalQuoteSections(
 ))
 const canSubmitWholeReview = computed(() => isWholeQuoteReview.value
   && authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
+const canWithdrawWhole = computed(() => canWithdrawInternalQuote(authStore, quote.value))
 const canReviewWholeBase = computed(() => isWholeQuoteReview.value && canReviewInternalQuoteSections(
   authStore,
   quote.value.factoryId,
@@ -694,7 +697,13 @@ async function saveWholeProductDraft() {
   }
   wholeProductSaving.value = true
   try {
-    await quoteStore.saveWholeProductSections(quote.value.id, drafts)
+    const savedQuoteId = quote.value.id
+    const result = await quoteStore.saveWholeProductSections(savedQuoteId, drafts)
+    if (quote.value.id !== savedQuoteId) return
+    for (const draft of drafts) {
+      const saved = result.sections.find((section) => section.department === draft.sectionCode)
+      if (saved) sectionEditors.value[draft.sectionCode]?.acceptSavedPayload(saved.payload, draft.payload, saved.revision)
+    }
     message.value = `“${quote.value.productName}”当前全部现有内容已保存：${savableSections.map((section) => section.label).join('、')}。`
   } catch (error) {
     errorMessage.value = `${error instanceof Error ? error.message : '统一保存当前款失败'} 页面输入已保留，可修正后直接重试。`
@@ -744,8 +753,33 @@ async function approveWholeReview() {
 }
 
 function toggleWholeReject() {
+  wholeWithdrawOpen.value = false
   wholeRejectOpen.value = !wholeRejectOpen.value
   wholeRejectReason.value = ''
+}
+
+function toggleWholeWithdraw() {
+  wholeRejectOpen.value = false
+  wholeWithdrawOpen.value = !wholeWithdrawOpen.value
+  wholeWithdrawReason.value = ''
+}
+
+async function withdrawWholeReview() {
+  message.value = ''
+  errorMessage.value = ''
+  if (!canWithdrawWhole.value || !wholeWithdrawReason.value.trim()) {
+    errorMessage.value = '仅建单人可在审核前退回修改，请填写退回原因。'
+    return
+  }
+  try {
+    await quoteStore.withdrawFinal(quote.value.id, quote.value.headerRevision, wholeWithdrawReason.value.trim())
+    await quoteStore.loadBatchProducts(quote.value.id)
+    wholeWithdrawOpen.value = false
+    wholeWithdrawReason.value = ''
+    message.value = '报价已退回修改，整批内容已解锁；修改完成后请重新提交审核。'
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '退回修改失败，请刷新报价状态后重试。'
+  }
 }
 
 async function rejectWholeReview() {
@@ -772,6 +806,10 @@ async function rejectWholeReview() {
 
 onMounted(loadSwitchedProduct)
 watch(quoteId, loadSwitchedProduct)
+watch(quoteId, () => {
+  wholeWithdrawOpen.value = false
+  wholeWithdrawReason.value = ''
+})
 watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quoteFactoryId]) => {
   if (!quoteFactoryId || quoteFactoryId === factoryId || !isFactoryContextId(factoryId)) return
   void router.replace(getFactoryScopedRoute('/modules/sales-business/internal-quote-desk', factoryId))
@@ -892,9 +930,11 @@ onBeforeUnmount(() => {
               <span v-else-if="!['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !batchReady">全部产品完成后可提交</span>
               <template v-if="quote.status === 'final_pending' && canReviewWhole"><button type="button" class="reject" :disabled="quoteStore.submitting" @click="toggleWholeReject"><XCircle />退回整单</button><button type="button" class="primary" :disabled="quoteStore.submitting" @click="approveWholeReview"><ShieldCheck />整单审核通过</button></template>
               <span v-else-if="quote.status === 'final_pending'">等待指定审核人处理</span>
+              <button v-if="canWithdrawWhole" type="button" class="reject" :disabled="quoteStore.submitting" @click="toggleWholeWithdraw"><ArrowLeft />退回修改</button>
             </div>
           </div>
-          <section v-if="wholeRejectOpen && canReviewWhole" class="quote-whole-reject-panel quote-whole-product-reject"><div><strong>退回整份报价</strong><span>退回原因会写入整单审核记录，确认后报价头和全部部门内容同时解锁。</span></div><textarea v-model="wholeRejectReason" rows="2" placeholder="必须填写整单退回原因" /><button type="button" @click="toggleWholeReject">取消</button><button type="button" class="primary" :disabled="!wholeRejectReason.trim() || quoteStore.submitting" @click="rejectWholeReview">确认退回整单</button></section>
+          <section v-if="wholeRejectOpen && canReviewWhole && quote.status === 'final_pending'" class="quote-whole-reject-panel quote-whole-product-reject"><div><strong>退回整份报价</strong><span>退回原因会写入整单审核记录，确认后报价头和全部部门内容同时解锁。</span></div><textarea v-model="wholeRejectReason" rows="2" placeholder="必须填写整单退回原因" /><button type="button" @click="toggleWholeReject">取消</button><button type="button" class="primary" :disabled="!wholeRejectReason.trim() || quoteStore.submitting" @click="rejectWholeReview">确认退回整单</button></section>
+          <section v-if="wholeWithdrawOpen && canWithdrawWhole" class="quote-whole-reject-panel quote-whole-product-reject" aria-label="建单人退回修改"><div><strong>审核前退回修改</strong><span>确认后撤回整批报价的待审核状态，保留已填内容并解锁。修改完成后需重新提交审核，原因将记录在操作历史中。</span></div><textarea v-model="wholeWithdrawReason" rows="2" maxlength="2000" aria-label="退回修改原因" placeholder="请填写退回修改原因" /><button type="button" :disabled="quoteStore.submitting" @click="toggleWholeWithdraw">取消</button><button type="button" class="primary" :disabled="!wholeWithdrawReason.trim() || quoteStore.submitting" @click="withdrawWholeReview">确认退回修改</button></section>
         </footer>
       </div>
       <InternalQuoteSectionEditor v-else :ref="(instance) => setSectionEditorRef(activeSection.code, instance)" :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" :active-pricing-component-id="activePricingComponentId" :differs-from-baseline="baselineDifferentSections.includes(activeSection.code)" :difference-details="currentBatchProduct?.differentSectionDetails[activeSection.code] ?? []" @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />

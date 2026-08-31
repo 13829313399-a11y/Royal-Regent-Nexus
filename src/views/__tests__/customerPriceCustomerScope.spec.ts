@@ -115,6 +115,7 @@ describe('QuoteCenterPanel customer visibility', () => {
       '迪士尼 1 单',
       'Dickie 1 单',
       '彩星 2 单',
+      '银辉 0 单',
     ])
 
     for (const [selectedIndex, customerButton] of customerButtons.entries()) {
