@@ -82,8 +82,11 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
         </table>
       </div>
     </details>
-    <p class="mt-3 text-sm font-semibold text-slate-800">EX-FACTORY HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / 7.8).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
+    <p v-if="total.missingMaterialPrices.length" class="mt-3 rounded-md border border-amber-300 bg-amber-100 p-3 text-sm text-amber-950" role="alert" data-testid="yinhui-missing-prices">
+      报客料价待补：{{ total.missingMaterialPrices.join('、') }}。对应 Tool Plan 单价留空，合计暂未包含这些料价；仍可确认后导出。文件名标注“待补料价”，客表 STAGE 标注 PRICE PENDING，请补齐后再发送客户。
+    </p>
+    <p class="mt-3 text-sm font-semibold text-slate-800">{{ total.missingMaterialPrices.length ? '已知成本小计（待补料价）' : 'EX-FACTORY' }} HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / 7.8).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
     <p v-if="error" class="mt-2 text-sm text-red-700" role="alert">{{ error }}</p>
-    <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || disabled" class="mt-1">已核对型号、MOQ、英文描述、图片、料型、模具费及运费；确认按上述临时映射生成。</label>
+    <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || disabled" class="mt-1"><span>已核对型号、MOQ、英文描述、图片、料型、模具费及运费；确认按上述临时映射生成。<strong v-if="total.missingMaterialPrices.length">我已知悉缺失料价将留空、当前合计不完整，同意先导出并补齐料价。</strong></span></label>
   </fieldset>
 </template>

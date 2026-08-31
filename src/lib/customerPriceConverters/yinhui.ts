@@ -6,7 +6,8 @@ import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG, yinhuiProfileForModel, 
 export const YINHUI_CUSTOMER_QUOTE_TEMPLATE_URL = '/templates/yinhui-customer-quote-template.bin'
 export { YINHUI_MATERIAL_PRICES_HKD_KG } from './yinhuiProfiles'
 export const YINHUI_HKD_USD = 7.8
-type Material = keyof typeof YINHUI_MATERIAL_PRICES_HKD_KG
+// Keep source resin names even when the customer has not supplied a price yet.
+type Material = string
 export interface YinhuiCostRow {
   description: string
   source: string
@@ -90,12 +91,17 @@ export function isYinhuiCustomer(value: string) {
   return ['银辉', '銀輝', '银辉客', '銀輝客', 'yinhui', 'silverlit'].includes(value.trim().toLowerCase().replace(/[\s_-]/g, ''))
 }
 function material(v: unknown): Material {
-  const key = text(v).toUpperCase().replace(/料$/, '')
-  if (Object.hasOwn(YINHUI_MATERIAL_PRICES_HKD_KG, key)) return key as Material
-  throw new Error(`银辉固定塑料价未配置“${text(v)}”，请先确认料型，不能套用其他客户单价`)
+  const key = text(v).normalize('NFKC').toUpperCase().replace(/[‐‑‒–—−]/g, '-').replace(/\s*-\s*/g, '-').replace(/料$/, '').trim()
+  if (!key || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/.test(key)) throw new Error('银辉内部料型缺失或为公式错误，请先核对料型')
+  return key
 }
-export function yinhuiMaterialPrice(_data: YinhuiQuoteData, resin: Material) {
-  return positive(YINHUI_MATERIAL_PRICES_HKD_KG[resin], `客表 ${resin} 港币公斤价`)
+export function yinhuiMaterialPrice(_data: YinhuiQuoteData, resin: Material): number | null {
+  const key = material(resin)
+  if (!Object.hasOwn(YINHUI_MATERIAL_PRICES_HKD_KG, key)) return null
+  return positive(YINHUI_MATERIAL_PRICES_HKD_KG[key as keyof typeof YINHUI_MATERIAL_PRICES_HKD_KG], `客表 ${key} 港币公斤价`)
+}
+export function yinhuiMissingMaterialPrices(data: YinhuiQuoteData) {
+  return [...new Set(data.tools.filter(row => yinhuiMaterialPrice(data, row.material) === null).map(row => material(row.material)))]
 }
 const simplified = (value: string) => value.replace(/[殼電門輪轂膠遙蓋紅機鈕彈夾軸輸齒轉動馬頭銀後側發線潤貼說螺絲]/g, (c) => {
   const from = '殼電門輪轂膠遙蓋紅機鈕彈夾軸輸齒轉動馬頭銀後側發線潤貼說螺絲'
@@ -172,7 +178,10 @@ function addCost(data: YinhuiQuoteData, category: string, description: string, q
   else if (amountHkd !== 0) throw new Error(`银辉尚未映射成本类别“${category}”：${description}（${source}），不能漏项输出`)
 }
 export function yinhuiTotals(data: YinhuiQuoteData) {
-  const plastic = sum(data.tools.map((r) => r.weightG * yinhuiMaterialPrice(data, r.material) / 1000)) + sum(data.plastic.map((r) => r.amountHkd))
+  const missingMaterialPrices = yinhuiMissingMaterialPrices(data)
+  // With missing prices these are known-cost subtotals, not complete quotations.
+  // The workbook leaves the corresponding unit-price inputs blank for completion.
+  const plastic = sum(data.tools.map((r) => r.weightG * (yinhuiMaterialPrice(data, r.material) ?? 0) / 1000)) + sum(data.plastic.map((r) => r.amountHkd))
   const mechanical = sum(data.mechanical.map((r) => r.amountHkd))
   const electronic = sum(data.electronic.map((r) => r.amountHkd))
   const fabric = sum((data.fabric || []).map((r) => r.amountHkd))
@@ -181,7 +190,7 @@ export function yinhuiTotals(data: YinhuiQuoteData) {
   const labour = injection + data.assemblyHkd + data.sprayingHkd
   const bom = plastic + mechanical + electronic + fabric + labour
   const exFactory = bom + packaging + data.packagingLaborHkd
-  return { plastic, mechanical, electronic, fabric, injection, labour, packaging, bom, exFactory,
+  return { plastic, mechanical, electronic, fabric, injection, labour, packaging, bom, exFactory, missingMaterialPrices,
     fcl: data.freightFclHkd === null ? null : exFactory + data.freightFclHkd,
     lcl: data.freightLclHkd === null ? null : exFactory + data.freightLclHkd,
     tooling: sum(data.tools.map((r) => r.toolingHkd)) }
@@ -193,11 +202,13 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
   const limits: Array<[string, number, number]> = [['Tool Plan', data.tools.length, 53], ['塑料外购', data.plastic.length, 8], ['五金', data.mechanical.length, 27], ['电子', data.electronic.length, 10], ['包装材料', data.packagingRows.length, 12]]
   for (const [name, count, max] of limits) if (count > max) throw new Error(`银辉${name}有 ${count} 行，超过当前模板 ${max} 行容量，请先扩展映射，不能截断明细`)
   const total = yinhuiTotals(data)
+  if (total.missingMaterialPrices.length) warnings.push(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。对应单价将留空，当前合计暂未包含这些料价；确认后可导出，发送客户前请补齐。`)
   const sheetId = 'yinhui-summary'
-  const groups: Array<[string, number]> = [['Plastic', total.plastic], ['Mechanical', total.mechanical], ['Electronic', total.electronic], ['Fabric', total.fabric], ['Labour', total.labour], ['Packaging material', total.packaging], ['Packaging labour', data.packagingLaborHkd]]
-  const details = groups.map(([description, price], i) => ({ id: `${sheetId}-${i}`, sheetId, sheetName: 'SUM(總計)', itemNo: String(i + 1), description,
+  const summaryName = total.missingMaterialPrices.length ? 'SUM(總計) · 待补料价' : 'SUM(總計)'
+  const groups: Array<[string, number]> = [[total.missingMaterialPrices.length ? 'Plastic (price pending)' : 'Plastic', total.plastic], ['Mechanical', total.mechanical], ['Electronic', total.electronic], ['Fabric', total.fabric], ['Labour', total.labour], ['Packaging material', total.packaging], ['Packaging labour', data.packagingLaborHkd]]
+  const details = groups.map(([description, price], i) => ({ id: `${sheetId}-${i}`, sheetId, sheetName: summaryName, itemNo: String(i + 1), description,
     internalPriceHkd: 0, customerPriceHkd: round(price), previousCustomerPriceHkd: round(price), differenceHkd: 0, marginBand: '独立客表口径', compareStatus: '持平' as const }))
-  return { sourceFileName, quoteData: data, warnings: [...new Set(warnings)], sheets: [{ id: sheetId, name: 'SUM(總計)', sourceFileName,
+  return { sourceFileName, quoteData: data, warnings: [...new Set(warnings)], sheets: [{ id: sheetId, name: summaryName, sourceFileName,
     rowCount: details.length, totalInternalHkd: round(data.internalTotalHkd), totalCustomerHkd: round(total.exFactory), details }] }
 }
 
@@ -223,7 +234,7 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   const filenameModel = sourceFileName.match(/(?:银辉|銀輝|silverlit)[ _-]*(\d+)/i)?.[1]
   if (filenameModel && filenameModel !== data.model) warnings.push(`型号冲突：文件名 ${filenameModel}，内部明细 ${data.model}。请核对并修改型号。`)
   if (data.templateId !== 'standard') warnings.push(`使用 ${profile.label} 原客表版式；包装、英文产品名称来自对应参考客表，请复核。`)
-  warnings.push('料价全型号统一：ABS 15.65、TPR 18.8、PP 12.6、POM 34.07（操作说明）；PVC 17.16、TPE 15.9（多表核对），单位 HKD/kg。不沿用个别客表错填料型或不同单价。')
+  warnings.push('料价全型号统一：ABS 15.65、TPR 18.8、PP 12.6、POM 34.07、C-ABS 24（客户提供）；PVC 17.16、TPE 15.9（多表核对），单位 HKD/kg。不沿用个别客表错填料型或不同单价。')
   if (windowBox.length) warnings.push(`已选择“${main.name}”；密封盒属于另一包装方案，不参与本次计算。`)
   if (['81283', '89127'].includes(data.templateId)) warnings.push(`${data.templateId} 原客表部分料重公式含固定数值；对应内部料重改变时会阻止导出，需先核对模板公式。`)
   let activeBoxColumn: number | undefined
@@ -528,5 +539,6 @@ export function validateYinhuiExport(data: YinhuiQuoteData) {
   if (/[\u3400-\u9fff]/.test(data.productName)) throw new Error('请在核对区填写英文产品名称')
 }
 export function buildYinhuiCustomerQuoteFileName(result: YinhuiConversionResult) {
-  return `银辉-${result.quoteData.model}-报客价-${result.quoteData.quoteDate}.xlsx`.replace(/[\\/:*?"<>|]/g, '-')
+  const pending = yinhuiMissingMaterialPrices(result.quoteData).length ? '-待补料价' : ''
+  return `银辉-${result.quoteData.model}-报客价-${result.quoteData.quoteDate}${pending}.xlsx`.replace(/[\\/:*?"<>|]/g, '-')
 }

@@ -1246,7 +1246,7 @@ async function exportCustomerQuoteExcel() {
       const conversion = yinhuiConversionResult.value
       const templateBuffer = await fetchTemplateBuffer(yinhuiTemplateUrl(conversion.quoteData.templateId), '银辉报客')
       if (!isCurrentExportRequest() || selectedCustomer.value.id !== 'yinhui' || conversion !== yinhuiConversionResult.value || !yinhuiConfirmed.value) return
-      const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer)
+      const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value })
       fileName = buildYinhuiCustomerQuoteFileName(conversion)
       downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'three-sixty' && threeSixtyConversionResult.value) {
