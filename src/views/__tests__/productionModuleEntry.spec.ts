@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest'
 const enterpriseSource = readFileSync(join(process.cwd(), 'src/data/enterpriseMock.ts'), 'utf8')
 const moduleCenterSource = readFileSync(join(process.cwd(), 'src/views/ModuleCenterView.vue'), 'utf8')
 const routerSource = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
-const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingView.vue'), 'utf8')
 const moduleCardSource = readFileSync(join(process.cwd(), 'src/components/modules/ModuleCard.vue'), 'utf8')
 const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMaterialManagementView.vue'), 'utf8')
 const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend/app/data/raw_material_baseline.json'), 'utf8')) as Array<Record<string, unknown>>
@@ -14,20 +13,15 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('opens the locally accepted injection scheduling workspace from the preserved card', () => {
+  it('keeps the injection scheduling card while its runtime module is retired', () => {
     expect(enterpriseSource).toContain("id: 'injection-scheduling'")
     expect(enterpriseSource).toContain("title: '注塑排产中枢'")
-    expect(enterpriseSource).toContain("status: '本地验收'")
-    expect(enterpriseSource).toContain("stats: '真实 API · 厂区隔离 · 未上线'")
-    expect(enterpriseSource).toContain("route: '/modules/production/injection-scheduling'")
-    expect(enterpriseSource).toContain("factoryIds: ['huakang-a', 'huakang-b', 'huadeng', 'huaxing']")
-    expect(enterpriseSource).toContain("permissions: ['injection_scheduling:read']")
-    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
-    expect(routerSource).toContain("component: () => import('@/views/InjectionSchedulingView.vue')")
-    expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}permissions: \['injection_scheduling:read'\]/)
-    expect(injectionSchedulingViewSource).toContain("['huakang-a', 'huakang-b', 'huadeng', 'huaxing'] as const")
-    expect(injectionSchedulingViewSource).toContain('watch([factoryId, () => route.query.factory]')
-    expect(injectionSchedulingViewSource).toContain("router.replace({ query: { ...route.query, factory: value } })")
+    expect(enterpriseSource).toContain("status: '重构中'")
+    expect(enterpriseSource).toContain("stats: '前后端已移除 · 等待重新建设'")
+    expect(enterpriseSource).not.toContain("route: '/modules/production/injection-scheduling'")
+    expect(enterpriseSource).not.toContain("permissions: ['injection_scheduling:read']")
+    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).not.toContain('InjectionSchedulingView.vue')
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {

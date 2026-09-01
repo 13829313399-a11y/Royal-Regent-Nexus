@@ -50,13 +50,6 @@ CUSTOMER_ORDER_PERMISSION_CODES = (
     "customer_order:audit_read",
 )
 
-INJECTION_SCHEDULING_PERMISSION_CODES = (
-    "injection_scheduling:read",
-    "injection_scheduling:edit",
-    "injection_scheduling:schedule",
-    "injection_scheduling:admin",
-)
-
 CARTON_PROCUREMENT_PERMISSION_CODES = (
     "carton_procurement:read",
     "carton_procurement:order_write",
@@ -148,7 +141,6 @@ BUSINESS_PERMISSION_CODES = (
     *CARTON_PROCUREMENT_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *CUSTOMER_ORDER_PERMISSION_CODES,
-    *INJECTION_SCHEDULING_PERMISSION_CODES,
     *THREE_D_PRINTING_PERMISSION_CODES,
     *QC_INSPECTION_PERMISSION_CODES,
     *INTERNAL_QUOTE_PERMISSION_CODES,

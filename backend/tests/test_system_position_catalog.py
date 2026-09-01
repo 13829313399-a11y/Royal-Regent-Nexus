@@ -41,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v23"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v22"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 104
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 97
+    assert len(registered_codes) == 100
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 93
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -95,20 +95,10 @@ def test_fixed_system_position_definition_contract():
         (
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
-            "injection_scheduling:admin",
         )
     )
-    assert {
-        code
-        for code in general_manager.permission_codes
-        if code.startswith("injection_scheduling:")
-    } == {
-        "injection_scheduling:read",
-        "injection_scheduling:edit",
-        "injection_scheduling:schedule",
-    }
     assert not any(
-        code.startswith(("shared_mold:", "shared_mold_price:", "factory_mold:"))
+        code.startswith(("injection_scheduling:", "shared_mold:", "shared_mold_price:", "factory_mold:"))
         for code in general_manager.permission_codes
     )
     assert not any(
@@ -213,15 +203,8 @@ def test_fixed_system_position_definition_contract():
     assert molding_clerk.scope_mode == positions.CROSS_FACTORY_READ_SCOPE
     assert molding_supervisor.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
     assert molding_manager.scope_mode == positions.CROSS_FACTORY_OPERATE_SCOPE
-    assert set(molding_clerk.permission_codes) == expected_task_permissions | {
-        "injection_scheduling:read",
-        "injection_scheduling:edit",
-    }
-    assert set(molding_supervisor.permission_codes) == expected_task_permissions | {
-        "injection_scheduling:read",
-        "injection_scheduling:edit",
-        "injection_scheduling:schedule",
-    }
+    assert set(molding_clerk.permission_codes) == expected_task_permissions
+    assert set(molding_supervisor.permission_codes) == expected_task_permissions
     assert molding_manager.permission_codes == molding_supervisor.permission_codes
 
     production_supervisor = positions.get_system_position(
@@ -244,6 +227,7 @@ def test_fixed_system_position_definition_contract():
         not any(
             permission.startswith(prefix)
             for prefix in (
+                "injection_scheduling:",
                 "shared_mold:",
                 "shared_mold_price:",
                 "factory_mold:",
