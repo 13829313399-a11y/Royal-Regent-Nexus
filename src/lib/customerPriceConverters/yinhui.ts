@@ -103,12 +103,13 @@ export function yinhuiMaterialPrice(_data: YinhuiQuoteData, resin: Material): nu
 export function yinhuiMissingMaterialPrices(data: YinhuiQuoteData) {
   return [...new Set(data.tools.filter(row => yinhuiMaterialPrice(data, row.material) === null).map(row => material(row.material)))]
 }
-const simplified = (value: string) => value.replace(/[殼電門輪轂膠遙蓋紅機鈕彈夾軸輸齒轉動馬頭銀後側發線潤貼說螺絲]/g, (c) => {
-  const from = '殼電門輪轂膠遙蓋紅機鈕彈夾軸輸齒轉動馬頭銀後側發線潤貼說螺絲'
-  const to =   '壳电门轮毂胶遥盖红机钮弹夹轴输齿转动马头银后侧发线润贴说螺丝'
+const simplified = (value: string) => value.replace(/[殼電門輪轂膠遙蓋紅機鈕彈夾軸輸齒轉動馬頭銀後側發線潤貼說螺絲裝飾單雙連鏈撥鎖釘壓員擺開關欄層]/g, (c) => {
+  const from = '殼電門輪轂膠遙蓋紅機鈕彈夾軸輸齒轉動馬頭銀後側發線潤貼說螺絲裝飾單雙連鏈撥鎖釘壓員擺開關欄層'
+  const to =   '壳电门轮毂胶遥盖红机钮弹夹轴输齿转动马头银后侧发线润贴说螺丝装饰单双连链拨锁钉压员摆开关栏层'
   return to[from.indexOf(c)] || c
 }).replace(/[\s（）()、，,]/g, '').toLowerCase()
 const translations: Array<[RegExp, string]> = [
+  [/圆球弹簧/g, 'Ball Spring '], [/扭簧/g, 'Torsion Spring '], [/L形弹簧/gi, 'L-shaped Spring '],
   [/双安全压簧/g, 'Double Safety Compression Spring '], [/密绕拉簧/g, 'Close-wound Extension Spring '],
   [/胶钉带/g, 'Plastic Fastener Tie '], [/透明胶圈/g, 'Clear Elastic Band '],
   [/介子头螺丝/g, 'Washer Head Screw '], [/直花钉轴/g, 'Knurled Pin '], [/钉轴/g, 'Pin '],
@@ -117,14 +118,15 @@ const translations: Array<[RegExp, string]> = [
   [/螺絲/g, 'Screw '], [/丝母/g, 'Nut '], [/机牙/g, 'Machine Screw '],
   [/AA[ A]*电池(?:负正片|正负片|正片|负片)/g, 'Battery Contact'],
   [/回中弹簧/g, 'Return Spring '], [/密绕弹簧/g, 'Close-wound Spring '], [/压力弹簧|压簧/g, 'Compression Spring '], [/接触弹簧/g, 'Contact Spring '], [/弹簧/g, 'Spring '],
-  [/双花D轴/g, 'Double Knurled D Shaft '], [/双花轴/g, 'Double Knurled Shaft '], [/單花軸/g, 'Single Knurled Shaft '], [/光[軸轴]/g, 'Smooth Shaft '], [/軸|轴/g, 'Shaft '],
+  [/双花D轴/g, 'Double Knurled D Shaft '], [/双花轴/g, 'Double Knurled Shaft '], [/[單单]花[軸轴]/g, 'Single Knurled Shaft '], [/光[軸轴]/g, 'Smooth Shaft '], [/軸|轴/g, 'Shaft '],
   [/直花钉轴|钉轴/g, 'Knurled Pin '], [/釘/g, 'Pin '], [/T钉/g, 'T-Pin '],
-  [/介子螺丝/g, 'Washer Head Screw '], [/介子/g, 'Washer '], [/垫片/g, 'Pad '],
+  [/介子螺丝/g, 'Washer Head Screw '], [/介子/g, 'Washer '], [/平垫/g, 'Flat Washer '], [/垫片/g, 'Pad '],
   [/單頭蝸桿齒/g, 'Single-start Worm Gear '], [/右旋/g, 'Right Hand'],
   [/单面背胶|單面背膠/g, 'Single-sided Adhesive '], [/黑色/g, 'Black '], [/白色/g, 'White '], [/矽膠/g, 'Silicone '],
-  [/磁鐵/g, 'Magnet '], [/釹鐵錋/g, 'NdFeB '], [/電鎳/g, 'Nickel Plated'],
-  [/软管|拉管/g, 'Tube '], [/泡棉/g, 'Foam '], [/胶袋/g, 'Poly Bag '], [/PC片/g, 'PC Sheet '],
-  [/充电线(?!装配)/g, 'Charging Cable '], [/^马达/g, 'Motor '], [/车身贴纸/g, 'Product Sticker'],
+  [/磁[鐵铁]/g, 'Magnet '], [/釹鐵錋/g, 'NdFeB '], [/電鎳/g, 'Nickel Plated'],
+  [/软管|拉管/g, 'Tube '], [/泡棉/g, 'Foam '], [/胶袋/g, 'Poly Bag '],
+  [/磨砂PC片/g, 'Frosted PC Sheet '], [/印花PVC片/g, 'Printed PVC Sheet '], [/PC片/g, 'PC Sheet '], [/PVC片/g, 'PVC Sheet '],
+  [/马达齿轮/g, 'Motor Gear '], [/蜗杆齿轮/g, 'Worm Gear '], [/充电线(?!装配)/g, 'Charging Cable '], [/充电电池/g, 'Rechargeable Battery'], [/^马达/g, 'Motor '], [/车身贴纸/g, 'Product Sticker'],
   [/O型圈/g, 'O-Ring'], [/彩盒\+外箱/g, 'Color Box / Outer Carton'], [/利宝$/g, 'Label'],
   [/报关费用\/文件费\/操作费用[：:]?/g, 'Documents / Customs Fee'],
   [/驱动马达\s*金属刷130/gi, 'Drive Motor 130 with Metal Brush'],
@@ -141,6 +143,7 @@ const translations: Array<[RegExp, string]> = [
   [/錫線|锡线/g, 'Solder Wire'], [/润滑油/g, 'Lubricant'], [/吸塑/g, 'Blister'],
   [/扎带/g, 'Cable Tie '], [/封箱胶纸\/[膠胶]水/g, 'Packing Tape / Adhesive Glue'],
   [/说明书/g, 'Instruction Manual'], [/利宝[貼贴]纸/g, 'Libo Sticker'], [/彩盒\+内卡|彩盒\/内咭/g, 'Color Box / Inner Card'], [/彩盒/g, 'Color Box'], [/内卡/g, 'Inner Card'],
+  [/充电模组/g, 'Charging Module'], [/守门员/g, 'Goalkeeper'],
   [/带插头线/g, 'Battery with Plug Wire'], [/电池/g, 'Battery'], [/透明/g, 'Clear'],
 ]
 function translate(value: string) {
@@ -149,6 +152,7 @@ function translate(value: string) {
 function quantityFromDescription(value: string) {
   // These parentheses identify the product model, not the number of PCBAs/fabric sets.
   if (/^(?:电子|電子|车缝|車縫)[（(]\d+[)）]$/.test(value.trim())) return 1
+  if (/[（(]\s*\d{4,}\s*[)）]\s*$/.test(value.trim())) return 1
   const match = value.match(/[（(]\s*(\d+(?:\.\d+)?(?:\s*[*×x]\s*\d+(?:\.\d+)?)*)\s*(?:PCS?|个|件)?\s*[)）]\s*$/i)
   return match ? match[1]!.split(/[*×x]/).reduce((a, b) => a * positive(b.trim(), `${value}用量`), 1) : 1
 }
@@ -172,7 +176,7 @@ function addCost(data: YinhuiQuoteData, category: string, description: string, q
     data.electronic.push(line)
     if (/电池|電池|battery/i.test(`${category} ${description}`)) { line.isBattery = true; data.battery = [data.battery, line.description].filter(Boolean).join('; ') }
   } else if (/车身贴纸|產品貼紙|产品贴纸/.test(description)) data.mechanical.push(line)
-  else if (/橡[膠胶]圈|rubber ring|PE泡棉|PVC拉管|PC片单面背胶|介子 .*PET|扎带3\.5[*x×]250/i.test(description) || (!/五金|hardware/i.test(category) && /EVA/i.test(description))) data.plastic.push(line)
+  else if (/橡[膠胶]圈|rubber ring|PE泡棉|PVC拉管|(?:PC|PVC)片|介子 .*PET|扎带3\.5[*x×]250/i.test(description) || (!/五金|hardware/i.test(category) && /EVA/i.test(description))) data.plastic.push(line)
   else if (/吸塑|利宝|利寶|彩盒|内咭|包装|报关|packaging/i.test(category) || /胶钉带|透明胶圈|扎带|^垫片[（(]|胶纸|膠紙|胶水|膠水|胶袋|吸塑|说明书|文件费|custom|document|carton/i.test(description)) data.packagingRows.push(line)
   else if (/马达|馬達|五金|其他外购|其他外購|hardware|auxiliary/i.test(category)) data.mechanical.push(line)
   else if (amountHkd !== 0) throw new Error(`银辉尚未映射成本类别“${category}”：${description}（${source}），不能漏项输出`)
@@ -311,23 +315,72 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   }
   if (!injections.length) throw new Error('银辉没有可转换的注塑明细')
   if (plan) {
-    type Group = { mold: string; resin: string; rows: XlsxCellValue[][] }
+    type PlanColumns = { mold: number; description: number; partNo: number; material: number; cavity: number; usage: number; weight: number; usageIsMoldOutput: boolean }
+    const headerText = (value: XlsxCellValue) => text(value).normalize('NFKC').replace(/\s/g, '').replace(/[（）]/g, (v) => v === '（' ? '(' : ')').toLowerCase()
+    const headerRows = plan.rows.slice(0, 8)
+    const headerColumn = (pattern: RegExp) => {
+      const columns = new Set<number>()
+      headerRows.forEach(row => row.forEach((value, column) => { if (pattern.test(headerText(value))) columns.add(column) }))
+      return columns.size === 1 ? [...columns][0] : undefined
+    }
+    const detected = {
+      mold: headerColumn(/^(?:moldno\.?|模[号號])$/),
+      description: headerColumn(/^(?:description|chinesename|中文名[称稱])$/),
+      partNo: headerColumn(/^(?:partno\.?|[编編][号號])$/),
+      material: headerColumn(/^(?:material|[胶膠]料|物料material)$/),
+      cavity: headerColumn(/^(?:cavity|出模[量數数]|模穴[數数])$/),
+      usage: headerColumn(/^(?:qty\/toy|产品用量|產品用量|\/up)$/),
+      weight: headerColumn(/^(?:net\(?g\)?|plasticwt\(?g\)?|[单單]个[胶膠]件重量\(?g\)?)$/),
+    }
+    const columns: PlanColumns = Object.values(detected).every(value => value !== undefined)
+      ? { ...(detected as Omit<PlanColumns, 'usageIsMoldOutput'>), usageIsMoldOutput: headerRows.some(row => headerText(row[detected.usage!]) === '/up') }
+      : { mold: 0, description: 1, partNo: 2, material: 3, cavity: 5, usage: 6, weight: 12, usageIsMoldOutput: false }
+    type PlanRow = { description: string; partNo: string; resin: string; cavity: number; usage: number; weight: number }
+    type Group = { mold: string; rows: PlanRow[] }
+    type Segment = { group: Group; resin: string; rows: PlanRow[] }
     const groups: Group[] = []; let group: Group | undefined
     for (const row of plan.rows) {
-      if (hasValue(row[3]) && hasValue(row[0]) && hasValue(row[12]) && !/Material|膠料/.test(text(row[3]))) { group = { mold: text(row[0]), resin: text(row[3]), rows: [] }; groups.push(group) }
-      if (group && hasValue(row[1]) && hasValue(row[2]) && hasValue(row[12]) && !/Net|重量/.test(text(row[12]))) group.rows.push(row)
+      const detail = hasValue(row[columns.description]) && hasValue(row[columns.partNo])
+        && typeof row[columns.cavity] === 'number' && typeof row[columns.usage] === 'number' && typeof row[columns.weight] === 'number'
+      // Some legacy plans repeat a part name in the mold column on a detail
+      // row. A real mold-group start also carries its material.
+      if (detail && hasValue(row[columns.mold]) && hasValue(row[columns.material])) { group = { mold: text(row[columns.mold]), rows: [] }; groups.push(group) }
+      if (!group || !detail) continue
+      const cavity = positive(row[columns.cavity], 'Tool Plan出模数')
+      // Legacy Qty/Toy may legitimately be 0 for a plugged/insert-mold cavity.
+      // Compact "/ up" is a divisor and therefore must remain strictly positive.
+      const sourceUsage = columns.usageIsMoldOutput
+        ? positive(row[columns.usage], 'Tool Plan每啤成品数')
+        : numeric(row[columns.usage], 'Tool Plan用量')
+      group.rows.push({
+        description: text(row[columns.description]), partNo: text(row[columns.partNo]), resin: text(row[columns.material]), cavity,
+        usage: columns.usageIsMoldOutput ? cavity / sourceUsage : sourceUsage,
+        weight: positive(row[columns.weight], 'Tool Plan重量'),
+      })
     }
-    const used = new Set<Group>()
+    const segments = groups.flatMap(group => {
+      const result: Segment[] = []; let segment: Segment | undefined; let resin = ''
+      for (const row of group.rows) {
+        const nextResin = row.resin || resin
+        if (!segment || (row.resin && simplified(nextResin) !== simplified(resin))) {
+          resin = nextResin; segment = { group, resin, rows: [] }; result.push(segment)
+        }
+        segment.rows.push(row)
+      }
+      return result
+    })
+    const used = new Set<Segment>(); const moldWritten = new Set<Group>()
     for (const injection of injections) {
       const firstName = simplified(injection.description.split('*')[0] || '')
-      let matches = groups.filter((g) => !used.has(g) && simplified(text(g.rows[0]?.[1])) === firstName)
-      if (matches.length !== 1) matches = groups.filter((g) => !used.has(g) && Math.abs(sum(g.rows.map((r) => numeric(r[6], 'Tool Plan用量') * numeric(r[12], 'Tool Plan重量'))) - injection.weight) <= .03)
+      let matches = segments.filter(segment => !used.has(segment) && simplified(segment.rows[0]?.description || '') === firstName)
+      if (matches.length !== 1) matches = segments.filter(segment => !used.has(segment) && Math.abs(sum(segment.rows.map(row => row.usage * row.weight)) - injection.weight) <= .03)
       if (matches.length !== 1) throw new Error(`银辉无法唯一匹配注塑第 ${injection.row} 行到 Tool Plan：${injection.description}`)
       const matched = matches[0]!; used.add(matched)
-      if (matched.resin.toUpperCase() !== injection.material) warnings.push(`模具 ${matched.mold} 料型 ${matched.resin} 与明细 ${injection.material} 不一致；按当前明细 ${injection.material} 计价。`)
-      matched.rows.forEach((r, i) => data.tools.push({ moldNo: i === 0 ? matched.mold : '', partNo: text(r[2]), description: text(r[1]), usage: numeric(r[6], 'Tool Plan用量'), cavity: numeric(r[5], 'Tool Plan出模数'), weightG: i === 0 ? injection.weight : 0, material: injection.material, laborHkd: i === 0 ? injection.labor : 0, toolingHkd: 0 }))
+      if (matched.resin && material(matched.resin) !== injection.material) warnings.push(`模具 ${matched.group.mold} 料型 ${matched.resin} 与明细 ${injection.material} 不一致；按当前明细 ${injection.material} 计价。`)
+      const writeMold = !moldWritten.has(matched.group); moldWritten.add(matched.group)
+      matched.rows.forEach((row, i) => data.tools.push({ moldNo: i === 0 && writeMold ? matched.group.mold : '', partNo: row.partNo, description: row.description, usage: row.usage, cavity: row.cavity, weightG: i === 0 ? injection.weight : 0, material: injection.material, laborHkd: i === 0 ? injection.labor : 0, toolingHkd: 0 }))
     }
-    if (used.size !== groups.length) throw new Error('银辉 Tool Plan 存在未匹配模具，不能遗漏输出')
+    if (used.size !== segments.length) throw new Error('银辉 Tool Plan 存在未匹配模具或料型分段，不能遗漏输出')
   } else {
     warnings.push('内部文件无独立 Tool Plan：按明细模组拆出零件，用该组总料重和啤工计价；没有依据的客户模号、零件号留空。')
     for (const injection of injections) {
@@ -354,11 +407,13 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   const finalIndex = rows.findIndex((r, i) => i >= costStart && text(r[2]) === '出厂价')
   const feeIndex = rows.findIndex((r, i) => i >= costStart && /报关费用.*文件费/.test(text(r[2])) && !consumed.has(i))
   let extraFee = 0
-  const extraIndex = feeIndex >= 0 ? feeIndex : finalIndex > 0 && hasValue(rows[finalIndex - 1]?.[3]) ? finalIndex - 1 : -1
+  // Only an explicitly labelled, otherwise-unconsumed document/customs fee is
+  // independent here. A few newer sheets put another subtotal immediately
+  // before the final price; inferring that subtotal as a fee corrupts freight.
+  const extraIndex = feeIndex
   if (extraIndex >= 0) {
     extraFee = numeric(rows[extraIndex]?.[3], '出厂价附加费用')
     data.packagingRows.push({ description: 'Documents / Customs Fee', source: `${main.name}!D${extraIndex + 1}`, quantity: 1, amountHkd: extraFee, internalHkd: extraFee })
-    if (feeIndex < 0) warnings.push(`明细 D${extraIndex + 1} 是出厂价单独加回的费用但未标名称，暂列文件费，请复核。`)
   }
   const freightRow = rows.find((r, i) => i >= costStart && i < end && text(r[1]) === '运费')
   const costHeader = rows[costStart - 1]!
@@ -369,7 +424,12 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     }
   }
   // Earlier source version has explicit per-piece FCL/LCL prices next to the document fee.
-  const explicit = rows.findIndex((r, i) => i >= costStart && text(r[4]) === 'FCL' && text(r[5]) === 'LCL')
+  // Legacy files place explicit FCL/LCL amounts immediately beside the
+  // separately labelled document fee. New files also use FCL/LCL near their
+  // final USD price, so proximity to that fee is required to disambiguate it.
+  const explicit = feeIndex >= 0
+    ? rows.findIndex((r, i) => i > feeIndex && i <= feeIndex + 2 && text(r[4]) === 'FCL' && text(r[5]) === 'LCL')
+    : -1
   if (explicit >= 0 && !hasValue(rows[explicit + 1]?.[3]) && typeof rows[explicit + 1]?.[4] === 'number' && typeof rows[explicit + 1]?.[5] === 'number') {
     data.freightFclHkd = numeric(rows[explicit + 1]?.[4], 'FCL 运费'); data.freightLclHkd = numeric(rows[explicit + 1]?.[5], 'LCL 运费')
   }
@@ -387,7 +447,13 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     const firstPart = (name: string) => simplified(name.split(/[*/;]/)[0] || '')
     for (const row of moldPrices) {
       let target = data.tools.find(t => t.moldNo === text(row[1]))
-      if (!plan && compatible) target = data.tools.find(t => t.weightG > 0 && firstPart(t.description) === firstPart(text(row[2])))
+      if (!target && compatible) {
+        const candidates = data.tools.filter(t => t.weightG > 0 && firstPart(t.description) === firstPart(text(row[2])))
+        if (candidates.length === 1) {
+          target = candidates[0]
+          if (plan && target.moldNo !== text(row[1])) warnings.push(`模具报价 ${text(row[1])} 与 Tool Plan ${target.moldNo || '空白'} 编号不同，已按唯一首件“${target.description}”匹配，请复核。`)
+        }
+      }
       if (target && compatible) {
         target.toolingHkd += numeric(row[9], '模具港币价'); if (!target.moldNo) target.moldNo = text(row[1])
         if (!plan) {
