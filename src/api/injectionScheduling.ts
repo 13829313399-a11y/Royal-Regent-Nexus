@@ -72,6 +72,15 @@ export const injectionSchedulingApi = {
     return response.data
   },
 
+  async downloadUnifiedTemplate(factoryId: string) {
+    const response = await http.get<Blob>(`${BASE_PATH}/templates/unified-plan`, {
+      params: { factory_id: factoryId },
+      responseType: 'blob',
+      timeout: 60_000,
+    })
+    return response.data
+  },
+
   async previewImport(factoryId: string, file: File, requestId: string, profileOverride = '') {
     const form = new FormData()
     form.append('factory_id', factoryId)

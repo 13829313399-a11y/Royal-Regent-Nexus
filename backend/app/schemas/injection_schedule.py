@@ -98,6 +98,7 @@ class InjectionScheduleMachineOut(BaseModel):
 class InjectionScheduleMoldOut(BaseModel):
     id: str
     factory_id: str
+    scope_type: str
     mold_code: str
     product_code: str
     product_name: str

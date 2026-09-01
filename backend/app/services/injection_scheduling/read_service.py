@@ -16,31 +16,27 @@ from app.models.injection_schedule import (
     InjectionScheduleOrderDemand,
     InjectionScheduleShiftOutput,
 )
-from app.services.auth import ALLOWED_FACTORY_IDS
 from app.services.injection_scheduling.calculations import progress
+from app.services.injection_scheduling.template_contract import (
+    FACTORY_NAMES,
+    INJECTION_FACTORY_IDS,
+)
 
 INJECTION_SCHEDULING_DEPARTMENTS = ("production", "molding")
 SUPPORTED_IMPORT_PROFILES = (
+    "UNIFIED_PLAN_V2",
     "WAREHOUSE_ORDER_FLAT_V1",
     "PRODUCTION_ORDER_FORM_V1",
     "HK_B_PLAN_V1",
     "HUA_XING_PLAN_V1",
 )
-FACTORY_NAMES = {
-    "huakang-a": "华康 A 厂",
-    "huakang-b": "华康 B 厂",
-    "huakang-c": "华康 C 厂",
-    "huakang-d": "华康 D 厂",
-    "huadeng": "华登厂",
-    "huaxing": "华兴厂",
-}
 ACTIVE_ORDER_STATUSES = ("PENDING", "SCHEDULED", "IN_PRODUCTION")
 
 
 def require_factory(factory_id: str) -> str:
     normalized = factory_id.strip().lower()
-    if normalized not in ALLOWED_FACTORY_IDS:
-        raise HTTPException(status_code=422, detail="不支持的实体厂区")
+    if normalized not in INJECTION_FACTORY_IDS:
+        raise HTTPException(status_code=422, detail="当前厂区没有注塑部")
     return normalized
 
 
@@ -60,7 +56,7 @@ def _default_settings(factory_id: str) -> dict[str, object]:
         "auto_schedule_mode": "PREVIEW_CONFIRM",
         "ai_enabled": False,
         "template_family": "unified_injection_schedule",
-        "template_version": "1.0",
+        "template_version": "2.0",
         "schedule_revision": 1,
         "schedule_horizon_days": 14,
         "freeze_hours": 12,
@@ -231,10 +227,8 @@ def list_machines(
 def list_molds(
     db: Session, factory_id: str, *, include_disabled: bool = False
 ) -> list[dict[str, object]]:
-    statement = (
-        select(InjectionScheduleMold)
-        .where(InjectionScheduleMold.factory_id == factory_id)
-        .order_by(InjectionScheduleMold.mold_code, InjectionScheduleMold.product_code)
+    statement = select(InjectionScheduleMold).order_by(
+        InjectionScheduleMold.mold_code, InjectionScheduleMold.product_code
     )
     if not include_disabled:
         statement = statement.where(InjectionScheduleMold.status != "DISABLED")
@@ -242,6 +236,7 @@ def list_molds(
         {
             "id": item.id,
             "factory_id": item.factory_id,
+            "scope_type": item.scope_type,
             "mold_code": item.mold_code,
             "product_code": item.product_code,
             "product_name": item.product_name,
@@ -293,10 +288,7 @@ def board_lines(
         )
         .outerjoin(
             InjectionScheduleMold,
-            and_(
-                InjectionScheduleMold.id == InjectionScheduleLine.mold_id,
-                InjectionScheduleMold.factory_id == InjectionScheduleLine.factory_id,
-            ),
+            InjectionScheduleMold.id == InjectionScheduleLine.mold_id,
         )
         .outerjoin(output, output.c.order_demand_id == InjectionScheduleOrderDemand.id)
         .where(

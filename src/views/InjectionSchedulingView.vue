@@ -23,7 +23,6 @@ import InjectionScheduleTable from '@/features/injection-scheduling/components/I
 import { useInjectionScheduleWorkspace } from '@/features/injection-scheduling/composables/useInjectionScheduleWorkspace'
 import {
   factoryContexts,
-  productionFactoryContextIds,
   type ProductionFactoryContextId,
 } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
@@ -33,15 +32,21 @@ import type { InjectionScheduleSavedView } from '@/types/injectionScheduling'
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
+const injectionFactoryIds = ['huakang-a', 'huakang-b', 'huadeng', 'huaxing'] as const
+type InjectionFactoryId = typeof injectionFactoryIds[number]
+
+function isInjectionFactoryId(value: string): value is InjectionFactoryId {
+  return injectionFactoryIds.includes(value as InjectionFactoryId)
+}
 
 const factoryId = computed(() => {
   const requested = Array.isArray(route.query.factory) ? route.query.factory[0] : route.query.factory
-  return typeof requested === 'string' && productionFactoryContextIds.includes(requested as ProductionFactoryContextId)
-    ? requested
-    : appStore.activeProductionFactory.id
+  if (typeof requested === 'string' && isInjectionFactoryId(requested)) return requested
+  const activeFactoryId = appStore.activeProductionFactory.id
+  return isInjectionFactoryId(activeFactoryId) ? activeFactoryId : 'huaxing'
 })
 const factoryName = computed(() => factoryContexts.find((item) => item.id === factoryId.value)?.shortName ?? factoryId.value)
-const productionFactories = computed(() => factoryContexts.filter((item) => productionFactoryContextIds.includes(item.id as ProductionFactoryContextId)))
+const productionFactories = computed(() => factoryContexts.filter((item) => isInjectionFactoryId(item.id)))
 
 const {
   bootstrap,
@@ -141,7 +146,12 @@ async function selectFactory(event: Event) {
   await router.replace({ query: { ...route.query, factory: selected } })
 }
 
-watch(factoryId, (value) => {
+watch([factoryId, () => route.query.factory], ([value, requested]) => {
+  const requestedFactoryId = Array.isArray(requested) ? requested[0] : requested
+  if (requestedFactoryId !== value) {
+    void router.replace({ query: { ...route.query, factory: value } })
+    return
+  }
   appStore.setActiveFactory(value as ProductionFactoryContextId)
   void loadSavedViews()
 }, { immediate: true })
@@ -164,7 +174,7 @@ watch(factoryId, (value) => {
               <h1 class="text-lg font-bold">注塑排产中枢</h1>
               <span class="rounded-full bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-700">本地验收 · 未上线</span>
             </div>
-            <p class="text-xs text-slate-500">统一计划表 · 后端派生实数 · {{ factoryName }}</p>
+            <p class="text-xs text-slate-500">统一计划表 · 机台按厂区 · 模具四厂共享 · {{ factoryName }}</p>
           </div>
         </div>
         <div class="flex items-center gap-2">
@@ -212,7 +222,7 @@ watch(factoryId, (value) => {
           </Button>
           <div class="mx-1 h-7 w-px bg-slate-200" />
           <span class="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600">
-            <ShieldCheck class="size-3.5" aria-hidden="true" />数据由 API 按厂区隔离读取
+            <ShieldCheck class="size-3.5" aria-hidden="true" />机台按厂区隔离 · 模具公司共享
           </span>
           <span class="ml-auto text-xs text-slate-500">机台 {{ machines.length }} · 模具 {{ molds.length }} · revision {{ board?.schedule_revision ?? 1 }}</span>
         </div>

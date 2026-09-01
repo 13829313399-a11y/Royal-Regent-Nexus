@@ -332,12 +332,16 @@ class InjectionScheduleMachine(Base):
 class InjectionScheduleMold(Base):
     __tablename__ = "injection_schedule_molds"
     __table_args__ = (
-        UniqueConstraint("id", "factory_id"),
-        UniqueConstraint("factory_id", "mold_code", "product_code"),
+        UniqueConstraint("mold_code", "product_code"),
+        CheckConstraint("factory_id = 'company'"),
+        CheckConstraint("scope_type = 'COMPANY_SHARED'"),
     )
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
-    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    factory_id: Mapped[str] = mapped_column(String(64), default="company", index=True)
+    scope_type: Mapped[str] = mapped_column(
+        String(24), default="COMPANY_SHARED", index=True
+    )
     mold_code: Mapped[str] = mapped_column(String(128), index=True)
     product_code: Mapped[str] = mapped_column(String(128), index=True)
     product_name: Mapped[str] = mapped_column(String(255), default="")
@@ -414,10 +418,7 @@ class InjectionScheduleLine(Base):
                 "injection_schedule_machines.factory_id",
             ],
         ),
-        ForeignKeyConstraint(
-            ["mold_id", "factory_id"],
-            ["injection_schedule_molds.id", "injection_schedule_molds.factory_id"],
-        ),
+        ForeignKeyConstraint(["mold_id"], ["injection_schedule_molds.id"]),
         Index(
             "ix_injection_schedule_line_factory_window",
             "factory_id",

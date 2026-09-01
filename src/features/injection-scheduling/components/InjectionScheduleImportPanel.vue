@@ -2,6 +2,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  Download,
   FileSpreadsheet,
   Loader2,
   Upload,
@@ -28,10 +29,11 @@ const file = ref<File | null>(null)
 const profileOverride = ref('')
 const preview = ref<InjectionScheduleImportPreview | null>(null)
 const commitResult = ref<InjectionScheduleImportCommitResult | null>(null)
-const busyAction = ref<'preview' | 'commit' | 'reject' | ''>('')
+const busyAction = ref<'template' | 'preview' | 'commit' | 'reject' | ''>('')
 const errorMessage = ref('')
 
 const profileNames: Record<string, string> = {
+  UNIFIED_PLAN_V2: '统一计划表 V2.0',
   WAREHOUSE_ORDER_FLAT_V1: '仓库扁平下单表',
   PRODUCTION_ORDER_FORM_V1: '啤机部生产啤货表',
   HK_B_PLAN_V1: '河源华康 B 计划表',
@@ -55,6 +57,26 @@ function resetResult() {
 function selectFile(event: Event) {
   file.value = (event.target as HTMLInputElement).files?.[0] ?? null
   resetResult()
+}
+
+async function downloadTemplate() {
+  busyAction.value = 'template'
+  errorMessage.value = ''
+  try {
+    const blob = await injectionSchedulingApi.downloadUnifiedTemplate(props.factoryId)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = '统一注塑排产计划表模板_V2.0.xlsx'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    errorMessage.value = getApiErrorMessage(error)
+  } finally {
+    busyAction.value = ''
+  }
 }
 
 async function createPreview() {
@@ -137,10 +159,21 @@ watch(() => props.factoryId, () => {
         </h2>
         <p class="mt-1 text-xs text-slate-500">先生成只读预览并校验；存在阻塞错误时不能写入订单。</p>
       </div>
-      <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="canEdit ? 'bg-teal-50 text-teal-700' : 'bg-slate-100 text-slate-500'">
-        {{ canEdit ? '可导入' : '只读权限' }}
-      </span>
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        <Button variant="outline" :disabled="Boolean(busyAction)" @click="downloadTemplate">
+          <Loader2 v-if="busyAction === 'template'" class="animate-spin" aria-hidden="true" />
+          <Download v-else aria-hidden="true" />
+          下载统一计划表模板
+        </Button>
+        <span class="rounded-full px-2.5 py-1 text-xs font-semibold" :class="canEdit ? 'bg-teal-50 text-teal-700' : 'bg-slate-100 text-slate-500'">
+          {{ canEdit ? '可导入' : '只读权限' }}
+        </span>
+      </div>
     </div>
+
+    <p class="mt-3 rounded-lg border border-teal-100 bg-teal-50/70 px-3 py-2 text-xs text-teal-800">
+      华兴、华登、华康A、华康B共用同一份计划表格式；机台与模具主数据由系统数据库提供，上传数据按当前厂区隔离。
+    </p>
 
     <div class="mt-4 grid gap-2 lg:grid-cols-[minmax(260px,1fr)_240px_auto]">
       <label class="flex h-10 cursor-pointer items-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 text-sm hover:border-teal-500">
