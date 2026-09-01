@@ -4944,9 +4944,7 @@ def test_injection_schedule_center_downgrade_rejects_business_data(tmp_path):
         ).fetchall() == [("factory-a",)]
 
 
-def test_init_db_requires_migration_for_existing_database_and_supports_fresh_dev(
-    tmp_path,
-):
+def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path):
     migrated_database = tmp_path / "injection_schedule_center_retired_0084.db"
     before_upgrade = _run_dispatch_alembic(
         migrated_database,
@@ -4955,10 +4953,8 @@ def test_init_db_requires_migration_for_existing_database_and_supports_fresh_dev
     )
     assert before_upgrade.returncode == 0, before_upgrade.stderr
 
-    blocked = _run_dispatch_init_db(migrated_database)
-    assert blocked.returncode != 0
-    assert INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION in blocked.stderr
-    assert "table:injection_schedule_factory_settings" in blocked.stderr
+    allowed = _run_dispatch_init_db(migrated_database)
+    assert allowed.returncode == 0, allowed.stderr
     with sqlite3.connect(migrated_database) as connection:
         table_names = {
             row[0]
@@ -4971,7 +4967,7 @@ def test_init_db_requires_migration_for_existing_database_and_supports_fresh_dev
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,)
 
-    fresh_database = tmp_path / "injection_schedule_center_phase1_fresh.db"
+    fresh_database = tmp_path / "injection_schedule_center_retired_fresh.db"
     fresh_start = _run_dispatch_init_db(fresh_database)
     assert fresh_start.returncode == 0, fresh_start.stderr
     with sqlite3.connect(fresh_database) as connection:
@@ -4981,15 +4977,7 @@ def test_init_db_requires_migration_for_existing_database_and_supports_fresh_dev
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-        assert {
-            "injection_schedule_factory_settings",
-            "injection_schedule_order_demands",
-            "injection_schedule_machines",
-            "injection_schedule_molds",
-            "injection_schedule_lines",
-            "injection_schedule_shift_outputs",
-            "injection_schedule_machine_unavailable_windows",
-        } <= fresh_table_names
+        assert not (fresh_table_names & INJECTION_SCHEDULE_CENTER_TABLES)
         assert "alembic_version" not in fresh_table_names
 
 
