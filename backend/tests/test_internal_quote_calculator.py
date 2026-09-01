@@ -834,6 +834,32 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         "qty_per_carton": "10.0000",
     }
 
+    justplay = calculate(
+        "sales",
+        {
+            "pricing_mode": "component",
+            "paper_price_factor": "2.75",
+            "cartons": [{
+                "item": "主纸箱",
+                "length_in": "23.75",
+                "width_in": "10.75",
+                "height_in": "15.5",
+                "qty_per_carton": "2",
+                "flat_cards": [],
+            }],
+        },
+        factory_price_hkd="20",
+    )
+    fixed_lines = [
+        row for row in justplay["line_breakdown"]
+        if row["kind"] == "justplay_fixed_packaging"
+    ]
+    assert [row["item"] for row in fixed_lines] == ["胶纸/胶水/胶针", "纸托板成本"]
+    assert [row["formula_code"] for row in fixed_lines] == ["adhesive", "paper_pallet"]
+    assert [row["amount_hkd"] for row in fixed_lines] == ["0.1475", "0.4458"]
+    assert justplay["totals"]["packaging_material_hkd"] == "0.5934"
+    assert justplay["totals"]["packaging_material_rmb"] == "0.0000"
+
     adjusted = calculate(
         "sales",
         {

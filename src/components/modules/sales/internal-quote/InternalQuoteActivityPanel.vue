@@ -2,7 +2,7 @@
 import { Activity, Calculator, Clock3, Eye, LoaderCircle, MessageSquare, Pencil, Save, Send, ShieldCheck, Sparkles, UserRound, X } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
-import { createDefaultSalesMarkupTiers, salesMarkupTierForQuantity, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
+import { createDefaultSalesMarkupTiers, salesMarkupTierForQuantity, salesPackagingPricingGroupId, salesPackagingPricingGroupName, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuote } from '@/types/internalQuoteDesk'
 
 const props = defineProps<{
@@ -45,7 +45,7 @@ const savedComponentMarkups = computed(() => {
   const source = salesPricingPayload.value.pricing_components
   if (!Array.isArray(source) || salesPricingPayload.value.pricing_mode !== 'component') return []
   const summaryById = new Map((props.quote.rr2CostSummary?.shippingPricing.pricingGroups ?? []).map((row) => [row.id, row]))
-  return source.flatMap((value) => {
+  const components = source.flatMap((value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return []
     const row = value as Record<string, unknown>
     const id = String(row.id ?? '').trim()
@@ -54,6 +54,19 @@ const savedComponentMarkups = computed(() => {
     const markup = Number(row.markup_x ?? summaryMarkup ?? savedMarkup.value)
     return id && name && Number.isFinite(markup) && markup > 0 ? [{ id, name, markup }] : []
   })
+  if (!components.length) return []
+  const shipping = salesPricingPayload.value.shipping && typeof salesPricingPayload.value.shipping === 'object' && !Array.isArray(salesPricingPayload.value.shipping)
+    ? salesPricingPayload.value.shipping as Record<string, unknown>
+    : {}
+  const packagingMarkup = Number(shipping.packaging_markup_x ?? props.quote.rr2CostSummary?.shippingPricing.globalPricing?.markup ?? savedMarkup.value)
+  return [
+    ...components,
+    {
+      id: salesPackagingPricingGroupId,
+      name: salesPackagingPricingGroupName,
+      markup: Number.isFinite(packagingMarkup) && packagingMarkup > 0 ? packagingMarkup : savedMarkup.value,
+    },
+  ]
 })
 const isComponentPricing = computed(() => savedComponentMarkups.value.length > 0)
 const componentMarkupRows = ref(savedComponentMarkups.value.map((row) => ({ ...row, markup: row.markup.toFixed(2) })))
@@ -72,7 +85,15 @@ const reportSettlementDivisor = computed(() => {
 const livePreview = computed(() => (
   quoteStore.livePreviewQuoteId === props.quote.id ? quoteStore.liveCostPreview : null
 ))
-const previewReady = computed(() => livePreview.value?.calculation_status === 'valid')
+const previewReady = computed(() => {
+  const calculations = Object.values(livePreview.value?.calculations ?? {})
+  return calculations.length > 0 && calculations.every((calculation) => calculation?.status === 'valid')
+})
+const pricingSummary = computed(() => (
+  previewReady.value && quoteStore.livePreviewQuoteId === props.quote.id && quoteStore.liveCostPreviewSummary
+    ? quoteStore.liveCostPreviewSummary
+    : props.quote.rr2CostSummary
+))
 const previewBusy = computed(() => quoteStore.livePreviewQuoteId === props.quote.id && quoteStore.livePreviewLoading)
 const previewError = computed(() => (
   quoteStore.livePreviewQuoteId === props.quote.id ? quoteStore.livePreviewErrorMessage : ''
@@ -115,8 +136,8 @@ const markupValidationMessage = computed(() => {
     for (const [index, row] of componentMarkupRows.value.entries()) {
       const value = String(row.markup).trim()
       const parsed = Number(value)
-      if (!value || !Number.isFinite(parsed) || parsed < .01 || parsed > 9.99) return `第 ${index + 1} 个分项倍率必须在 0.01 至 9.99 之间。`
-      if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return '分项倍率最多保留 2 位小数。'
+      if (!value || !Number.isFinite(parsed) || parsed < .01 || parsed > 9.99) return `${row.name}倍率必须在 0.01 至 9.99 之间。`
+      if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return `${row.name}倍率最多保留 2 位小数。`
     }
     return ''
   }
@@ -167,17 +188,19 @@ const quoteHkd = computed(() => {
   const settlement = Number.isFinite(miscRatio) && miscRatio >= 0 && miscRatio < 1
     ? salesSettlementDivisorForMiscRatio(miscRatio)
     : Math.max(1 - savedMiscRatio.value, .0001)
-  const groups = props.quote.rr2CostSummary?.shippingPricing.pricingGroups ?? []
+  const groups = pricingSummary.value?.shippingPricing.pricingGroups ?? []
   if (!groups.length) return costHkd.value * normalizedMarkup.value
   const componentMarkupById = new Map(componentMarkupRows.value.map((row) => [row.id, Number(row.markup)]))
-  const liveDelta = costHkd.value - props.quote.factoryPriceHkd
-  return groups.reduce((total, group, index) => {
-    const pricingBase = group.pricingBaseHkd + (index === 0 ? liveDelta : 0)
+  const componentQuote = groups.reduce((total, group, index) => {
     const groupMarkup = isComponentPricing.value
       ? componentMarkupById.get(group.id) ?? normalizedMarkup.value
       : index === 0 ? normalizedMarkup.value : group.markup
-    return total + pricingBase * groupMarkup / settlement
+    return total + group.pricingBaseHkd * groupMarkup / settlement
   }, 0)
+  if (!isComponentPricing.value) return componentQuote
+  const globalPricing = pricingSummary.value?.shippingPricing.globalPricing
+  const packagingMarkup = componentMarkupById.get(salesPackagingPricingGroupId) ?? normalizedMarkup.value
+  return componentQuote + (globalPricing?.pricingBaseHkd ?? 0) * packagingMarkup / settlement
 })
 const quoteRmb = computed(() => quoteHkd.value * props.quote.fxRmbHkd)
 const quoteUsd = computed(() => props.quote.fxHkdUsd ? quoteHkd.value / props.quote.fxHkdUsd : 0)
@@ -185,7 +208,7 @@ const previewDeltaHkd = computed(() => Number(livePreview.value?.delta_hkd ?? 0)
 const previewStatus = computed(() => {
   if (previewBusy.value) return '正在实时试算'
   if (previewReady.value) return '实时试算 · 未保存'
-  if (livePreview.value && livePreview.value.calculation_status !== 'valid') return '字段待完善'
+  if (livePreview.value && !previewReady.value) return '字段待完善'
   return '最近保存金额'
 })
 
@@ -428,7 +451,7 @@ function addComment() {
           </div>
         </div>
         <div v-else class="quote-markup-tier-control quote-component-markup-control">
-          <header><span>JustPlay 分项倍率</span><small>配件统一取本行倍率，部门明细无需重复填写</small></header>
+          <header><span>JustPlay 分项倍率</span><small>各配件与业务部包装分别采用本行倍率</small></header>
           <div v-for="(component,index) in componentMarkupRows" :key="component.id" class="quote-markup-tier-row quote-component-markup-row">
             <label :for="`quote-component-markup-${component.id}`">{{ component.name }}</label>
             <span>倍率</span>
@@ -450,7 +473,7 @@ function addComment() {
           data-testid="save-quote-markup"
           :disabled="busy || !!pricingValidationMessage || !pricingDirty || !!markupBlockedReason"
           @click="saveMarkup"
-        ><Save aria-hidden="true" />{{ busy ? '保存中…' : isComponentPricing ? '保存分项倍率与杂项' : '保存分段码数与杂项' }}</button>
+        ><Save aria-hidden="true" />{{ busy ? '保存中…' : isComponentPricing ? '保存分项及包装倍率' : '保存分段码数与杂项' }}</button>
         <p v-if="pricingValidationMessage" class="quote-markup-feedback error">{{ pricingValidationMessage }}</p>
         <p v-else-if="markupBlockedReason" class="quote-markup-feedback blocked">{{ markupBlockedReason }}</p>
         <p v-else-if="markupError" class="quote-markup-feedback error">{{ markupError }}</p>
@@ -468,8 +491,8 @@ function addComment() {
           已保存成本 HKD {{ savedTotalHkd.toFixed(2) }} · 成本变化 {{ previewDeltaHkd >= 0 ? '+' : '' }}{{ previewDeltaHkd.toFixed(2) }}
         </p>
         <p v-else-if="previewError" class="quote-live-preview-warning">实时试算暂不可用，当前显示最近保存金额。</p>
-        <p v-else-if="livePreview && livePreview.calculation_status !== 'valid'" class="quote-live-preview-warning">当前字段尚未完整，暂显示最近保存金额。</p>
-        <p class="quote-live-preview-note">{{ isComponentPricing ? '每个分项只在这里维护一次倍率；部门中的胶件和其他成本按已选归属汇总，保存后生成业务部新 revision 并用于导出。' : '跟客可主动选择本单采用的 MOQ 档，并决定哪些 MOQ 价格输出到内部报价表；本单采用档会固定输出。保存后会生成业务部新 revision、重新计算并用于后续导出。' }}</p>
+        <p v-else-if="livePreview && !previewReady" class="quote-live-preview-warning">当前字段尚未完整，暂显示最近保存金额。</p>
+        <p class="quote-live-preview-note">{{ isComponentPricing ? '各配件与业务部包装只在这里维护一次倍率；包装材料、纸箱、装配包装及整单运输费用按业务部包装倍率汇总，保存后生成业务部新 revision 并用于导出。' : '跟客可主动选择本单采用的 MOQ 档，并决定哪些 MOQ 价格输出到内部报价表；本单采用档会固定输出。保存后会生成业务部新 revision、重新计算并用于后续导出。' }}</p>
       </section>
       <section class="quote-side-section">
         <h3 class="quote-fx-heading"><span><ShieldCheck aria-hidden="true" />冻结参考快照</span><button v-if="canEditFx && !fxEditing" type="button" data-testid="edit-reference-fx" @click="beginFxEdit"><Pencil aria-hidden="true" />调整汇率</button></h3>

@@ -266,7 +266,7 @@ def test_rr2_justplay_pricing_entries_keep_assembly_formula_inputs():
     assert entry["formula_allocation_factor"] == "1.0000"
 
 
-def test_rr2_justplay_keeps_packaging_global_and_prices_it_once_with_main_markup():
+def test_rr2_justplay_keeps_packaging_global_and_prices_it_once_with_its_own_markup():
     sections = [
         section(
             "sales",
@@ -276,11 +276,25 @@ def test_rr2_justplay_keeps_packaging_global_and_prices_it_once_with_main_markup
                     {"id": "component-01", "name": "主体", "markup_x": "1.15"},
                     {"id": "component-02", "name": "镜子", "markup_x": "1.05"},
                 ],
-                "shipping": {"markup_x": "1.15", "misc_ratio": "0.03"},
+                "shipping": {
+                    "markup_x": "1.15",
+                    "packaging_markup_x": "1.25",
+                    "misc_ratio": "0.03",
+                },
+                "freight_calc": {"enabled": True},
                 "packaging_materials": [{"item": "彩盒"}],
                 "cartons": [{"item": "外箱"}],
             },
-            {"packaging_material_hkd": "3", "carton_hkd": "1"},
+            {
+                "packaging_material_hkd": "3",
+                "carton_hkd": "1",
+                "freight_options": [{
+                    "key": "yt40",
+                    "item": "YT 40 柜",
+                    "per_piece_hkd": "2",
+                    "total_cartons": "100",
+                }],
+            },
             [
                 {"kind": "packaging_material", "item": "彩盒", "category": "color_box_inner_card", "amount_hkd": "3"},
                 {"kind": "carton", "item": "外箱", "per_piece_hkd": "1"},
@@ -306,12 +320,75 @@ def test_rr2_justplay_keeps_packaging_global_and_prices_it_once_with_main_markup
 
     pricing = result["shipping_pricing"]
     assert [(row["name"], row["cost_hkd"], row["pricing_base_hkd"]) for row in pricing["pricing_groups"]] == [
-        ("主体", "6.0000", "10.0000"),
+        ("主体", "6.0000", "6.0000"),
         ("镜子", "4.0000", "4.0000"),
     ]
     assert pricing["global_pricing"]["cost_hkd"] == "4.0000"
+    assert pricing["global_pricing"]["pricing_base_hkd"] == "4.0000"
+    assert pricing["global_pricing"]["markup"] == "1.2500"
     assert [row["label"] for row in pricing["global_pricing"]["entries"]] == ["彩盒", "外箱"]
-    assert rows_by_key(result["t1"])["base_price"]["value"] == "16.1856"
+    assert pricing["rows"][1]["after_markup_hkd"] == "18.6000"
+    assert rows_by_key(result["t1"])["base_price"]["value"] == "16.5979"
+
+
+def test_rr2_justplay_owns_automatic_fixed_packaging_without_manual_material_rows():
+    sections = [
+        section(
+            "sales",
+            {
+                "pricing_mode": "component",
+                "pricing_components": [{"id": "component-01", "name": "主体", "markup_x": "1.15"}],
+                "shipping": {"markup_x": "1.15", "packaging_markup_x": "1.25", "misc_ratio": "0.03"},
+                "packaging_materials": [],
+                "cartons": [{"item": "外箱"}],
+            },
+            {"packaging_material_hkd": "0.6", "carton_hkd": "1"},
+            [
+                {
+                    "kind": "justplay_fixed_packaging",
+                    "item": "胶纸/胶水/胶针",
+                    "category": "other_purchase",
+                    "formula_code": "adhesive",
+                    "formula": "fixed adhesive formula",
+                    "carton_length_in": "23.75",
+                    "carton_width_in": "10.75",
+                    "qty_per_carton": "2",
+                    "amount_hkd": "0.2",
+                },
+                {
+                    "kind": "justplay_fixed_packaging",
+                    "item": "纸托板成本",
+                    "category": "other_purchase",
+                    "formula_code": "paper_pallet",
+                    "formula": "fixed pallet formula",
+                    "qty_per_carton": "2",
+                    "amount_hkd": "0.4",
+                },
+                {"kind": "carton", "item": "外箱", "per_piece_hkd": "1"},
+            ],
+        ),
+        section(
+            "engineering",
+            {"materials": []},
+            {"hardware_hkd": "10", "auxiliary_hkd": "0", "packaging_hkd": "0", "carton_hkd": "0", "total_hkd": "10"},
+            [{"kind": "material", "item": "主体件", "category": "hardware", "amount_hkd": "10", "pricing_component_id": "component-01"}],
+        ),
+    ]
+
+    result = _rr2_cost_summary(
+        sections,
+        {"factory_price_hkd": Decimal("11.6"), "carton_hkd": Decimal("1")},
+        SNAPSHOT,
+        factory_id="huakang-b",
+    )
+
+    global_pricing = result["shipping_pricing"]["global_pricing"]
+    assert global_pricing["cost_hkd"] == "1.6000"
+    assert global_pricing["markup"] == "1.2500"
+    assert [row["label"] for row in global_pricing["entries"]] == ["胶纸/胶水/胶针", "纸托板成本", "外箱"]
+    assert global_pricing["entries"][0]["formula_code"] == "adhesive"
+    assert global_pricing["entries"][0]["carton_length_in"] == "23.75"
+    assert global_pricing["entries"][1]["formula_code"] == "paper_pallet"
 
 
 @pytest.mark.parametrize(

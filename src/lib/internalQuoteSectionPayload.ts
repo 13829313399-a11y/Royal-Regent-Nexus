@@ -13,6 +13,8 @@ export interface SalesPricingComponent {
   name: string
   markup_x?: number
 }
+export const salesPackagingPricingGroupId = 'sales-packaging'
+export const salesPackagingPricingGroupName = '业务部包装'
 export interface EngineeringMaterialRow extends QuotePricingMetadata {
   item: string
   category: EngineeringMaterialCategory
@@ -465,6 +467,7 @@ export interface SalesMarkupTier {
 }
 export interface SalesShippingPricing {
   markup_x?: number
+  packaging_markup_x?: number
   markup_tiers?: SalesMarkupTier[]
   selected_markup_moq?: number
   misc_ratio?: number
@@ -768,6 +771,26 @@ export function calculatePackagingMaterialEffectiveUnitHkd(row: DualCurrencyUnit
 export function calculatePackagingMaterialAmountHkd(row: Pick<SalesPackagingMaterialRow, 'quantity'> & DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   const quantity = positivePreviewNumber(row.quantity)
   return quantity * calculatePackagingMaterialEffectiveUnitHkd(row, rmbHkdRate)
+}
+
+export function calculateJustPlayAdhesivePackagingCostHkd(
+  carton: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'qty_per_carton'> | undefined,
+) {
+  if (!carton) return 0
+  const length = positivePreviewNumber(carton.length_in)
+  const width = positivePreviewNumber(carton.width_in)
+  const quantity = positivePreviewNumber(carton.qty_per_carton)
+  return length && width && quantity
+    ? 3.9 / 2150 * (length * 2 + width * 4 + 6) / quantity + 0.06
+    : 0
+}
+
+export function calculateJustPlayPaperPalletCostHkd(
+  carton: Pick<SalesCartonRow, 'qty_per_carton'> | undefined,
+) {
+  if (!carton) return 0
+  const quantity = positivePreviewNumber(carton.qty_per_carton)
+  return quantity ? 19 / 24 / quantity + 0.05 : 0
 }
 
 export function calculateEngineeringMaterialUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
@@ -1605,6 +1628,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     ...(hasShippingPricing ? {
       shipping: {
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'markup_x') ? { markup_x: numberValue(shippingSource.markup_x, 1.2) } : {}),
+        ...(Object.prototype.hasOwnProperty.call(shippingSource, 'packaging_markup_x') ? { packaging_markup_x: numberValue(shippingSource.packaging_markup_x, numberValue(shippingSource.markup_x, 1.2)) } : {}),
         ...(Object.prototype.hasOwnProperty.call(shippingSource, 'markup_tiers')
           ? { markup_tiers: normalizeSalesMarkupTiers(shippingSource.markup_tiers, numberValue(shippingSource.markup_x, 1.2)) }
           : {}),

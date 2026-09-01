@@ -47,6 +47,7 @@ from app.services.internal_quote import (
     _get_quote,
     _json_object,
     _mark_quote_notifications_handled,
+    ensure_quote_formula_current,
     ensure_quote_business_reviewer,
     ensure_quote_permission,
     ensure_quote_read,
@@ -104,6 +105,7 @@ def _release_manifest(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
 ) -> dict[str, Any]:
+    ensure_quote_formula_current(quote, sections)
     required = [section for section in sections if section.is_required]
     incomplete = [
         section.department
@@ -192,6 +194,7 @@ def _whole_review_manifest(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
 ) -> dict[str, Any]:
+    ensure_quote_formula_current(quote, sections)
     required = _whole_review_required_sections(sections)
     invalid = [
         section.department

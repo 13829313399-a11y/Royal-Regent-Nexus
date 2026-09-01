@@ -125,7 +125,7 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
             "/api/internal-quotes/calculation-contracts?factory_id=huaxing"
         )
         assert contract.status_code == 200
-        assert contract.json()["formula_version"] == "rr2-2026-v1"
+        assert contract.json()["formula_version"] == "rr2-2026-v2"
         assert set(contract.json()["sections"]) == {
             "sales",
             "engineering",
@@ -151,7 +151,7 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
         quote_id = created["id"]
         old_reference_id = created["reference_snapshot_id"]
         assert old_reference_id.startswith("IQREF-")
-        assert created["formula_version"] == "rr2-2026-v1"
+        assert created["formula_version"] == "rr2-2026-v2"
         assert all(
             section["calculation_status"] == "pending"
             and section["calculation_reference_snapshot_id"] == old_reference_id
@@ -377,7 +377,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         assert engineering.status_code == 200, engineering.text
         engineering_section = engineering.json()
         assert engineering_section["calculation_status"] == "valid"
-        assert engineering_section["calculation"]["formula_version"] == "rr2-2026-v1"
+        assert engineering_section["calculation"]["formula_version"] == "rr2-2026-v2"
         assert engineering_section["calculation"]["totals"]["hardware_hkd"] == "20.0000"
         assert engineering_section["calculation"]["totals"]["mold_amortization_usd"] == "1.2403"
 
@@ -456,7 +456,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
         assert summary.status_code == 200
         body = summary.json()
-        assert body["formula_version"] == "rr2-2026-v1"
+        assert body["formula_version"] == "rr2-2026-v2"
         assert body["components_hkd"]["hardware_hkd"] == "20.0000"
         assert body["calculation_phase"] == "blocked"
         assert any(
@@ -800,3 +800,160 @@ def test_p2_dependency_and_reference_sync_close_stale_review_notifications(monke
         assert next(
             item for item in notifications_after_sync if item["id"] == second_review_notification["id"]
         )["status"] == "handled"
+
+
+def test_multi_section_preview_and_whole_product_save_share_one_authoritative_total(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p2_whole_save", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="WHOLE-SAVE"),
+        )
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+        drafts = [
+            {"section_code": "engineering", "revision": 1, "payload": ENGINEERING_PAYLOAD},
+            {"section_code": "assembly", "revision": 1, "payload": ASSEMBLY_PAYLOAD},
+        ]
+
+        preview = client.post(
+            f"/api/internal-quotes/{quote_id}/cost-preview",
+            json={"drafts": drafts},
+        )
+        assert preview.status_code == 200, preview.text
+        preview_body = preview.json()
+        assert set(preview_body["calculations"]) == {"engineering", "assembly"}
+        assert all(row["status"] == "valid" for row in preview_body["calculations"].values())
+        assert float(preview_body["preview_factory_price_hkd"]) > 0
+
+        saved = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/save-all",
+            json={"sections": drafts, "reason": "整款原子保存测试"},
+        )
+        assert saved.status_code == 200, saved.text
+        assert {row["department"] for row in saved.json()["sections"]} == {"engineering", "assembly"}
+        summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
+        assert summary.status_code == 200, summary.text
+        assert summary.json()["factory_price_hkd"] == preview_body["preview_factory_price_hkd"]
+
+
+def test_whole_product_save_rolls_back_every_section_when_one_calculation_fails(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p2_whole_rollback", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="WHOLE-ROLLBACK"),
+        )
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+        failed = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/save-all",
+            json={
+                "sections": [
+                    {"section_code": "engineering", "revision": 1, "payload": ENGINEERING_PAYLOAD},
+                    {
+                        "section_code": "assembly",
+                        "revision": 1,
+                        "payload": {**ASSEMBLY_PAYLOAD, "labor_base_hkd": "不是数字"},
+                    },
+                ],
+                "reason": "验证事务回滚",
+            },
+        )
+        assert failed.status_code == 400, failed.text
+        detail = client.get(f"/api/internal-quotes/{quote_id}").json()
+        by_code = {row["department"]: row for row in detail["sections"]}
+        assert by_code["engineering"]["revision"] == 1
+        assert by_code["engineering"]["payload"] == {}
+        assert by_code["assembly"]["revision"] == 1
+        assert by_code["assembly"]["payload"] == {}
+
+
+def test_whole_product_save_recalculates_unchanged_molding_after_engineering_dependency_changes(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p2_whole_dependency", "sales_customer_owner", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(
+                suffix="WHOLE-DEPENDENCY",
+                participating_sections=["sales", "engineering", "molding", "assembly"],
+            ),
+        )
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+        first = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/save-all",
+            json={
+                "sections": [
+                    {"section_code": "engineering", "revision": 1, "payload": ENGINEERING_PAYLOAD},
+                    {"section_code": "molding", "revision": 1, "payload": MOLDING_PAYLOAD},
+                ],
+                "reason": "首次整款保存",
+            },
+        )
+        assert first.status_code == 200, first.text
+        first_by_code = {row["department"]: row for row in first.json()["sections"]}
+        assert first_by_code["molding"]["calculation_status"] == "valid"
+
+        changed_engineering = {
+            **ENGINEERING_PAYLOAD,
+            "molds": [{**ENGINEERING_PAYLOAD["molds"][0], "item": "主模改版"}],
+        }
+        second = client.put(
+            f"/api/internal-quotes/{quote_id}/sections/save-all",
+            json={
+                "sections": [
+                    {
+                        "section_code": "engineering",
+                        "revision": first_by_code["engineering"]["revision"],
+                        "payload": changed_engineering,
+                    },
+                    {
+                        "section_code": "molding",
+                        "revision": first_by_code["molding"]["revision"],
+                        "payload": MOLDING_PAYLOAD,
+                    },
+                ],
+                "reason": "工程模具变更后整款保存",
+            },
+        )
+        assert second.status_code == 200, second.text
+        second_by_code = {row["department"]: row for row in second.json()["sections"]}
+        assert second_by_code["molding"]["calculation_status"] == "valid"
+        assert second_by_code["molding"]["dependency_status"] == "current"
+        assert second_by_code["molding"]["revision"] > first_by_code["molding"]["revision"]
+
+
+def test_old_formula_is_reported_and_can_be_recalculated_without_changing_reference_values(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_p2_formula_recalc", "sales_customer_supervisor", "sales-business")
+        created = client.post(
+            "/api/internal-quotes",
+            json=create_payload(suffix="FORMULA-RECALC"),
+        )
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+        old_reference_id = created.json()["reference_snapshot_id"]
+
+        db_module = importlib.import_module("app.db")
+        quote_models = importlib.import_module("app.models.internal_quote")
+        with db_module.SessionLocal() as db:
+            quote = db.get(quote_models.InternalQuote, quote_id)
+            quote.formula_version = "rr2-2026-v1"
+            db.commit()
+
+        summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
+        assert summary.status_code == 200, summary.text
+        assert summary.json()["current_formula_version"] == "rr2-2026-v2"
+        assert any(row["code"] == "formula_version_stale" for row in summary.json()["warnings"])
+
+        recalculated = client.post(
+            f"/api/internal-quotes/{quote_id}/formula/recalculate",
+            json={"revision": 1, "reason": "部署新版公式后统一重算"},
+        )
+        assert recalculated.status_code == 200, recalculated.text
+        body = recalculated.json()
+        assert body["formula_version"] == "rr2-2026-v2"
+        assert body["reference_snapshot_id"] != old_reference_id
+        fresh_summary = client.get(f"/api/internal-quotes/{quote_id}/summary").json()
+        assert not any(row["code"] == "formula_version_stale" for row in fresh_summary["warnings"])

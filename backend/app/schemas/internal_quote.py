@@ -502,9 +502,70 @@ class InternalQuoteSectionPreviewOut(BaseModel):
     preview_factory_price_hkd: str
     delta_hkd: str
     components_hkd: dict[str, str]
+    rr2_cost_summary: dict[str, Any]
     formula_version: str
     reference_snapshot_id: str
     generated_at: str
+
+
+class InternalQuoteCostPreviewDraft(BaseModel):
+    section_code: InternalQuoteSectionCode
+    revision: int = Field(ge=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class InternalQuoteCostPreviewRequest(BaseModel):
+    drafts: list[InternalQuoteCostPreviewDraft] = Field(min_length=1, max_length=9)
+
+    @field_validator("drafts")
+    @classmethod
+    def validate_unique_sections(
+        cls, values: list[InternalQuoteCostPreviewDraft]
+    ) -> list[InternalQuoteCostPreviewDraft]:
+        codes = [item.section_code for item in values]
+        if len(codes) != len(set(codes)):
+            raise ValueError("实时试算不能包含重复部门")
+        return values
+
+
+class InternalQuoteCostPreviewOut(BaseModel):
+    quote_id: str
+    calculations: dict[str, dict[str, Any]]
+    warnings: list[dict[str, Any]]
+    saved_factory_price_hkd: str
+    preview_factory_price_hkd: str
+    delta_hkd: str
+    components_hkd: dict[str, str]
+    rr2_cost_summary: dict[str, Any]
+    formula_version: str
+    reference_snapshot_id: str
+    generated_at: str
+
+
+class InternalQuoteWholeProductSectionSave(BaseModel):
+    section_code: InternalQuoteSectionCode
+    revision: int = Field(ge=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class InternalQuoteWholeProductSaveRequest(BaseModel):
+    sections: list[InternalQuoteWholeProductSectionSave] = Field(min_length=1, max_length=9)
+    reason: str = Field(default="在连续报价页统一保存当前产品", max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def strip_whole_save_reason(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("sections")
+    @classmethod
+    def validate_unique_save_sections(
+        cls, values: list[InternalQuoteWholeProductSectionSave]
+    ) -> list[InternalQuoteWholeProductSectionSave]:
+        codes = [item.section_code for item in values]
+        if len(codes) != len(set(codes)):
+            raise ValueError("整款保存不能包含重复部门")
+        return values
 
 
 class InternalQuoteRevisionRequest(BaseModel):
@@ -681,6 +742,11 @@ class InternalQuoteOut(BaseModel):
     created_at: str
     updated_at: str
     sections: list[InternalQuoteSectionOut] = Field(default_factory=list)
+
+
+class InternalQuoteWholeProductSaveOut(BaseModel):
+    quote: InternalQuoteOut
+    sections: list[InternalQuoteSectionOut]
 
 
 class InternalQuoteProductImageOut(BaseModel):

@@ -141,6 +141,7 @@ export interface ApiInternalQuoteSummary {
   quote_id: string
   status: string
   formula_version: string
+  current_formula_version: string
   reference_snapshot_id: string
   factory_price_hkd: string
   mold_amortization_usd: string
@@ -172,12 +173,15 @@ export interface ApiInternalQuoteSummary {
       mold_amortization_usd: string
       pricing_mode?: 'standard' | 'component'
       pricing_groups?: Array<Record<string, string>>
+      global_pricing?: Record<string, unknown>
       rows: Array<Record<string, unknown>>
     }
   }
   sections: Array<Record<string, unknown>>
   warnings: Array<Record<string, unknown>>
 }
+
+export type ApiInternalQuoteRr2CostSummary = NonNullable<ApiInternalQuoteSummary['rr2_cost_summary']>
 
 export interface ApiInternalQuoteAttachment {
   id: string
@@ -323,9 +327,29 @@ export interface ApiInternalQuoteSectionPreview {
   preview_factory_price_hkd: string
   delta_hkd: string
   components_hkd: Record<string, string>
+  rr2_cost_summary: ApiInternalQuoteRr2CostSummary
   formula_version: string
   reference_snapshot_id: string
   generated_at: string
+}
+
+export interface ApiInternalQuoteCostPreview {
+  quote_id: string
+  calculations: Partial<Record<InternalQuoteSectionCode, Record<string, unknown>>>
+  warnings: Array<Record<string, unknown>>
+  saved_factory_price_hkd: string
+  preview_factory_price_hkd: string
+  delta_hkd: string
+  components_hkd: Record<string, string>
+  rr2_cost_summary: ApiInternalQuoteRr2CostSummary
+  formula_version: string
+  reference_snapshot_id: string
+  generated_at: string
+}
+
+export interface ApiInternalQuoteWholeProductSave {
+  quote: ApiInternalQuote
+  sections: ApiInternalQuoteSection[]
 }
 
 export type InternalQuoteDashboardPeriod = 'week' | 'month' | 'year'
@@ -684,6 +708,34 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       })
       return response.data
     },
+    async previewCosts(
+      quoteId: string,
+      drafts: Array<{ sectionCode: InternalQuoteSectionCode; revision: number; payload: Record<string, unknown> }>,
+    ) {
+      const response = await client.post<ApiInternalQuoteCostPreview>(`/internal-quotes/${quoteId}/cost-preview`, {
+        drafts: drafts.map((draft) => ({
+          section_code: draft.sectionCode,
+          revision: draft.revision,
+          payload: draft.payload,
+        })),
+      })
+      return response.data
+    },
+    async saveWholeProduct(
+      quoteId: string,
+      sections: Array<{ sectionCode: InternalQuoteSectionCode; revision: number; payload: Record<string, unknown> }>,
+      reason = '在连续报价页统一保存当前产品',
+    ) {
+      const response = await client.put<ApiInternalQuoteWholeProductSave>(`/internal-quotes/${quoteId}/sections/save-all`, {
+        sections: sections.map((section) => ({
+          section_code: section.sectionCode,
+          revision: section.revision,
+          payload: section.payload,
+        })),
+        reason,
+      })
+      return response.data
+    },
     async submitSection(quoteId: string, sectionCode: string, revision: number) {
       const response = await client.post<ApiInternalQuoteSection>(`/internal-quotes/${quoteId}/sections/${sectionCode}/submit`, { revision })
       return response.data
@@ -710,6 +762,10 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     },
     async syncReferenceSnapshot(quoteId: string, revision: number, reason: string) {
       const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/reference-snapshot/sync`, { revision, reason })
+      return response.data
+    },
+    async recalculateFormula(quoteId: string, revision: number, reason: string) {
+      const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/formula/recalculate`, { revision, reason })
       return response.data
     },
     async updateReferenceFx(quoteId: string, revision: number, rmbHkd: string, hkdUsd: string) {

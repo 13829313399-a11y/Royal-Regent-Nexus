@@ -469,15 +469,19 @@ def test_export_renders_justplay_components_before_one_global_packaging_block():
                     "formula_allocation_factor": "1",
                 },
                 {"section": "sales", "kind": "packaging_material", "category": "color_box_inner_card", "label": "彩盒/内卡", "amount_hkd": "0.8", "is_global": True},
+                {"section": "sales", "kind": "justplay_fixed_packaging", "category": "other_purchase", "label": "胶纸/胶水/胶针", "formula_code": "adhesive", "amount_hkd": "0.0811627907", "is_global": True},
+                {"section": "sales", "kind": "justplay_fixed_packaging", "category": "other_purchase", "label": "纸托板成本", "formula_code": "paper_pallet", "amount_hkd": "0.1819444444", "is_global": True},
                 {"section": "sales", "kind": "carton", "label": "外箱", "amount_hkd": "0.7", "is_global": True},
             ],
             "global_pricing": {
-                "cost_hkd": "1.5",
-                "pricing_base_hkd": "1.5",
-                "markup": "1.15",
+                "cost_hkd": "1.7631072351",
+                "pricing_base_hkd": "1.7631072351",
+                "markup": "1.25",
                 "settlement": "0.97",
                 "entries": [
                     {"section": "sales", "kind": "packaging_material", "category": "color_box_inner_card", "label": "彩盒/内卡", "amount_hkd": "0.8", "is_global": True},
+                    {"section": "sales", "kind": "justplay_fixed_packaging", "category": "other_purchase", "label": "胶纸/胶水/胶针", "formula_code": "adhesive", "amount_hkd": "0.0811627907", "is_global": True},
+                    {"section": "sales", "kind": "justplay_fixed_packaging", "category": "other_purchase", "label": "纸托板成本", "formula_code": "paper_pallet", "amount_hkd": "0.1819444444", "is_global": True},
                     {"section": "sales", "kind": "carton", "label": "外箱", "amount_hkd": "0.7", "is_global": True},
                 ],
             },
@@ -545,6 +549,16 @@ def test_export_renders_justplay_components_before_one_global_packaging_block():
         packaging_cost_row = _find_row(sheet, 3, "彩盒/内卡")
         assert packaging_cost_row > packaging_title_row
         assert sheet.cell(packaging_cost_row, 4).value == 0.8
+        outer_carton_row = _find_row(sheet, 14, "外箱 (inch):")
+        packing_qty_row = _find_row(sheet, 14, "装箱：")
+        adhesive_row = _find_row(sheet, 3, "胶纸/胶水/胶针")
+        paper_pallet_row = _find_row(sheet, 3, "纸托板成本")
+        assert sheet.cell(adhesive_row, 4).value == (
+            f"=3.9/2150*(O{outer_carton_row}*2+P{outer_carton_row}*4+6)/O{packing_qty_row}+0.06"
+        )
+        assert sheet.cell(paper_pallet_row, 4).value == f"=19/24/O{packing_qty_row}+0.05"
+        assert sheet.cell(adhesive_row, 1).value == ""
+        assert sheet.cell(paper_pallet_row, 1).value == ""
         carton_cost_row = _find_row(sheet, 3, "纸箱")
         assert str(sheet.cell(carton_cost_row, 4).value).startswith("=O")
         lift_cost_row = _find_row(sheet, 3, "吊柜费")
@@ -585,6 +599,7 @@ def test_export_renders_justplay_components_before_one_global_packaging_block():
         assert sheet.cell(packaging_subtotal_row, 5).value == (
             f"=$D${packaging_subtotal_row}+E{packaging_freight_row}"
         )
+        assert sheet.cell(packaging_subtotal_row + 1, 4).value == 1.25
         assert sheet.cell(packaging_hkd_row, 5).value == (
             f"=E{packaging_subtotal_row}*E{packaging_subtotal_row + 1}/E{packaging_subtotal_row + 2}"
         )
