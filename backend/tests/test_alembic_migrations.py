@@ -120,7 +120,8 @@ AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION = "20260826_0084"
 INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION = "20260827_0085"
 CARTON_AD_HOC_RECEIPT_MIGRATION_REVISION = "20260830_0086"
 INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION = "20260831_0087"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION
+INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION = "20260901_0088"
+HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION
 INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_factory_settings",
     "injection_schedule_order_demands",
@@ -4556,6 +4557,7 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
             "structured_constraints_json",
             "required_machine_a_label",
             "pieces_per_shot",
+            "scope_type",
             "version",
         } <= columns("injection_schedule_molds")
         assert {
@@ -4602,7 +4604,11 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
             ).fetchall()
             if index_row[2]
         }
-        assert ("factory_id", "mold_code", "product_code") in mold_unique_column_sets
+        assert ("mold_code", "product_code") in mold_unique_column_sets
+        assert connection.execute(
+            "SELECT COUNT(*) FROM injection_schedule_molds "
+            "WHERE factory_id != 'company' OR scope_type != 'COMPANY_SHARED'"
+        ).fetchone() == (0,)
 
         order_unique_column_sets = {
             tuple(
@@ -4671,7 +4677,7 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
         assert (
             frozenset({("machine_id", "id"), ("factory_id", "factory_id")}) in line_fks
         )
-        assert frozenset({("mold_id", "id"), ("factory_id", "factory_id")}) in line_fks
+        assert frozenset({("mold_id", "id")}) in line_fks
         assert (
             frozenset({("schedule_line_id", "id"), ("factory_id", "factory_id")})
             in shift_fks
@@ -4719,6 +4725,47 @@ def test_injection_schedule_center_postgresql_offline_sql_contains_contract():
         "ix_is_import_request_binding_created",
     ):
         assert f"create index {index_name}" in sql
+
+
+def test_shared_mold_upgrade_preserves_existing_mold_and_changes_scope(tmp_path):
+    database_path = tmp_path / "injection_shared_mold_upgrade.db"
+    before_upgrade = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION,
+    )
+    assert before_upgrade.returncode == 0, before_upgrade.stderr
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO injection_schedule_molds (
+                id, factory_id, mold_code, product_code,
+                created_by, updated_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "mold-existing",
+                "huaxing",
+                "MOLD-001",
+                "ITEM-001",
+                "admin",
+                "admin",
+                "2026-09-01T00:00:00+08:00",
+                "2026-09-01T00:00:00+08:00",
+            ),
+        )
+        connection.commit()
+
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT factory_id, scope_type, mold_code, product_code "
+            "FROM injection_schedule_molds WHERE id = 'mold-existing'"
+        ).fetchone() == ("company", "COMPANY_SHARED", "MOLD-001", "ITEM-001")
+        assert frozenset({("mold_id", "id")}) in _foreign_key_column_groups(
+            connection, "injection_schedule_lines"
+        )
 
 
 def test_injection_schedule_center_upgrade_rejects_exact_name_conflict(tmp_path):
@@ -4910,7 +4957,7 @@ def test_init_db_requires_migration_for_existing_database_and_supports_fresh_dev
 
     blocked = _run_dispatch_init_db(migrated_database)
     assert blocked.returncode != 0
-    assert INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION in blocked.stderr
+    assert INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION in blocked.stderr
     assert "table:injection_schedule_factory_settings" in blocked.stderr
     with sqlite3.connect(migrated_database) as connection:
         table_names = {

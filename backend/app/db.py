@@ -278,7 +278,7 @@ CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
     "carton_mark_templates",
     "carton_mark_documents",
 }
-INJECTION_SCHEDULING_REVISION = "20260831_0087"
+INJECTION_SCHEDULING_REVISION = "20260901_0088"
 INJECTION_SCHEDULING_REQUIRED_TABLES = {
     "injection_schedule_machine_unavailable_windows",
 }
@@ -297,6 +297,9 @@ INJECTION_SCHEDULING_REQUIRED_COLUMNS = {
     "injection_schedule_lines": {
         "schedule_revision",
         "schedule_source",
+    },
+    "injection_schedule_molds": {
+        "scope_type",
     },
 }
 

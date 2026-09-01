@@ -45,7 +45,6 @@ def _enrich_from_master_data(
 ) -> None:
     molds = db.scalars(
         select(InjectionScheduleMold).where(
-            InjectionScheduleMold.factory_id == factory_id,
             InjectionScheduleMold.status == "ACTIVE",
         )
     ).all()
@@ -128,11 +127,20 @@ def _annotate_preview_difference(
         "product_name",
         "priority",
         "delivery_due_date",
+        "shipping_date",
         "color",
+        "color_lightness",
         "material_name",
+        "material_status",
         "remark",
     )
-    decimal_fields = ("quantity_sets", "total_sets", "order_shots", "daily_target")
+    decimal_fields = (
+        "quantity_sets",
+        "total_sets",
+        "order_shots",
+        "daily_target",
+        "material_prepared_kg",
+    )
     for row in rows:
         current = existing_by_key.get(str(row["business_key"]))
         if current is None:
@@ -385,13 +393,16 @@ ORDER_MUTABLE_FIELDS = (
     "order_date",
     "delivery_start_date",
     "delivery_due_date",
+    "shipping_date",
     "warehouse",
     "delivery_location",
     "ordered_by_name",
     "operator_name",
     "color",
     "pigment_code",
+    "color_lightness",
     "material_name",
+    "material_status",
     "required_machine_a_label",
     "data_completeness_status",
     "remark",
@@ -406,6 +417,7 @@ ORDER_DECIMAL_FIELDS = (
     "material_weight_kg",
     "daily_target",
     "required_machine_a_value",
+    "material_prepared_kg",
 )
 
 
@@ -520,7 +532,6 @@ def commit_import(
                 raw_source_json=json.dumps(
                     row.get("raw_source", {}), ensure_ascii=False
                 ),
-                material_status="UNPREPARED",
                 status="PENDING",
                 created_by=actor.id,
                 created_by_name=actor.display_name,
@@ -534,29 +545,28 @@ def commit_import(
             db.flush()
             mold = db.scalar(
                 select(InjectionScheduleMold).where(
-                    InjectionScheduleMold.factory_id == factory_id,
                     InjectionScheduleMold.mold_code == order.mold_code,
                     InjectionScheduleMold.product_code == order.product_code,
                 )
             )
             line = InjectionScheduleLine(
-                    id=f"is-line-{uuid4().hex}",
-                    factory_id=factory_id,
-                    order_demand_id=order.id,
-                    mold_id=mold.id if mold else None,
-                    status="PENDING",
-                    priority=order.priority,
-                    system_daily_target=order.daily_target,
-                    effective_daily_target=order.daily_target,
-                    schedule_revision=1,
-                    schedule_source="IMPORT",
-                    created_by=actor.id,
-                    created_by_name=actor.display_name,
-                    updated_by=actor.id,
-                    updated_by_name=actor.display_name,
-                    created_at=now,
-                    updated_at=now,
-                )
+                id=f"is-line-{uuid4().hex}",
+                factory_id=factory_id,
+                order_demand_id=order.id,
+                mold_id=mold.id if mold else None,
+                status="PENDING",
+                priority=order.priority,
+                system_daily_target=order.daily_target,
+                effective_daily_target=order.daily_target,
+                schedule_revision=1,
+                schedule_source="IMPORT",
+                created_by=actor.id,
+                created_by_name=actor.display_name,
+                updated_by=actor.id,
+                updated_by_name=actor.display_name,
+                created_at=now,
+                updated_at=now,
+            )
             db.add(line)
             lines_by_business_key[business_key] = line
             created_count += 1

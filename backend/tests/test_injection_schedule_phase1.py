@@ -14,8 +14,9 @@ from app.services.injection_scheduling.calculations import (
     progress,
     qualified_shots,
 )
+from app.services.injection_scheduling.template_contract import UNIFIED_PLAN_HEADERS
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from sqlalchemy import select
 
 TEST_TMP_DIR = Path(__file__).resolve().parents[1] / ".pytest-tmp"
@@ -359,6 +360,190 @@ def test_excel_preview_is_deterministic_and_commit_is_idempotent(monkeypatch):
         assert orders.status_code == 200
         assert orders.json()["total"] == 1
         assert orders.json()["items"][0]["product_code"] == "000123"
+
+
+def test_one_unified_template_serves_four_factories_and_enforces_factory_scope(
+    monkeypatch,
+):
+    client, _ = make_client(monkeypatch)
+    factory_ids = ("huakang-a", "huakang-b", "huadeng", "huaxing")
+    expected_content: bytes | None = None
+    huaxing_content = b""
+    with client:
+        assert (
+            client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": ADMIN_TEST_PASSWORD},
+            ).status_code
+            == 200
+        )
+        for factory_id in factory_ids:
+            response = client.get(
+                "/api/production/injection-scheduling/templates/unified-plan",
+                params={"factory_id": factory_id},
+            )
+            assert response.status_code == 200, response.text
+            assert response.content[:2] == b"PK"
+            if expected_content is None:
+                expected_content = response.content
+            assert response.content == expected_content
+            workbook = load_workbook(BytesIO(response.content), read_only=True)
+            try:
+                assert workbook.sheetnames == ["统一计划表"]
+                plan = workbook["统一计划表"]
+                assert plan["A1"].value == "Royal Regent Nexus · 统一注塑排产计划表"
+                assert plan["A2"].value == "模板版本：2.0"
+                assert (
+                    tuple(plan.cell(4, column).value for column in range(1, 57))
+                    == UNIFIED_PLAN_HEADERS
+                )
+            finally:
+                workbook.close()
+            if factory_id == "huaxing":
+                huaxing_content = response.content
+
+        for unsupported_factory_id in ("huakang-c", "huakang-d"):
+            response = client.get(
+                "/api/production/injection-scheduling/templates/unified-plan",
+                params={"factory_id": unsupported_factory_id},
+            )
+            assert response.status_code == 422
+            assert "没有注塑部" in response.text
+
+        workbook = load_workbook(BytesIO(huaxing_content))
+        plan = workbook["统一计划表"]
+        values = {
+            3: "待排",
+            5: "特急",
+            6: "24A",
+            7: "MOLD-UNIFIED-001",
+            8: "统一模板订单",
+            9: "ORDER-UNIFIED-001",
+            10: "000456",
+            11: 1000,
+            12: 500,
+            16: 2000,
+            18: 0.08,
+            19: "深蓝色",
+            20: "00428",
+            21: "深",
+            22: "ABS 750NSW",
+            23: 24,
+            28: datetime(2026, 9, 15),
+            46: "已齐料",
+            47: 10,
+            51: "huaxing",
+        }
+        for column, value in values.items():
+            plan.cell(5, column, value)
+        output = BytesIO()
+        workbook.save(output)
+        workbook.close()
+        filled_content = output.getvalue()
+
+        preview = client.post(
+            "/api/production/injection-scheduling/imports/preview",
+            data={"factory_id": "huaxing", "request_id": "preview-unified-1"},
+            files={"file": ("huaxing-unified.xlsx", filled_content)},
+        )
+        assert preview.status_code == 200, preview.text
+        payload = preview.json()
+        assert payload["profile_code"] == "UNIFIED_PLAN_V2"
+        assert payload["source_sheet"] == "统一计划表"
+        assert payload["summary"]["row_count"] == 1
+        assert payload["summary"]["blocking_issue_count"] == 0
+        assert payload["rows"][0]["priority"] == "EXPEDITE"
+        assert payload["rows"][0]["product_code"] == "000456"
+
+        mismatch = client.post(
+            "/api/production/injection-scheduling/imports/preview",
+            data={"factory_id": "huakang-a", "request_id": "preview-unified-2"},
+            files={"file": ("huaxing-unified.xlsx", filled_content)},
+        )
+        assert mismatch.status_code == 200
+        mismatch_payload = mismatch.json()
+        assert mismatch_payload["summary"]["blocking_issue_count"] == 1
+        assert mismatch_payload["issues"][0]["error_type"] == "FACTORY_SCOPE_MISMATCH"
+
+        workbook = load_workbook(BytesIO(huaxing_content))
+        workbook.create_sheet("机台主数据")
+        output = BytesIO()
+        workbook.save(output)
+        workbook.close()
+        invalid_multi_sheet = client.post(
+            "/api/production/injection-scheduling/imports/preview",
+            data={"factory_id": "huaxing", "request_id": "preview-unified-3"},
+            files={"file": ("invalid-multi-sheet.xlsx", output.getvalue())},
+        )
+        assert invalid_multi_sheet.status_code == 422
+        assert "只能包含" in invalid_multi_sheet.text
+
+
+def test_molds_are_company_shared_while_machines_remain_factory_scoped(monkeypatch):
+    client, _ = make_client(monkeypatch)
+    machine_payload = {
+        "machine_code": "M-01",
+        "position": "A区",
+        "machine_name": "一号机",
+        "machine_a_label": "24A",
+        "machine_ounce_capacity": 24,
+    }
+    mold_payload = {
+        "factory_id": "huaxing",
+        "mold_code": "MOLD-SHARED-001",
+        "product_code": "000789",
+        "product_name": "共享模具产品",
+        "required_machine_a_label": "24A",
+        "mold_ounce_requirement": 24,
+    }
+    with client:
+        assert (
+            client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": ADMIN_TEST_PASSWORD},
+            ).status_code
+            == 200
+        )
+        for factory_id in ("huaxing", "huadeng"):
+            response = client.post(
+                "/api/production/injection-scheduling/machines",
+                json={"factory_id": factory_id, **machine_payload},
+            )
+            assert response.status_code == 200, response.text
+
+        created_mold = client.post(
+            "/api/production/injection-scheduling/molds", json=mold_payload
+        )
+        assert created_mold.status_code == 200, created_mold.text
+        assert created_mold.json()["factory_id"] == "company"
+        assert created_mold.json()["scope_type"] == "COMPANY_SHARED"
+
+        for factory_id in ("huaxing", "huadeng", "huakang-a", "huakang-b"):
+            molds = client.get(
+                "/api/production/injection-scheduling/molds",
+                params={"factory_id": factory_id},
+            )
+            assert molds.status_code == 200, molds.text
+            assert molds.json()["total"] == 1
+            assert molds.json()["items"][0]["id"] == created_mold.json()["id"]
+            assert molds.json()["items"][0]["scope_type"] == "COMPANY_SHARED"
+
+        duplicate = client.post(
+            "/api/production/injection-scheduling/molds",
+            json={**mold_payload, "factory_id": "huadeng"},
+        )
+        assert duplicate.status_code == 409
+
+        huaxing_machines = client.get(
+            "/api/production/injection-scheduling/machines",
+            params={"factory_id": "huaxing"},
+        ).json()["items"]
+        huadeng_machines = client.get(
+            "/api/production/injection-scheduling/machines",
+            params={"factory_id": "huadeng"},
+        ).json()["items"]
+        assert len(huaxing_machines) == len(huadeng_machines) == 1
+        assert huaxing_machines[0]["id"] != huadeng_machines[0]["id"]
 
 
 def test_plan_history_preview_and_commit_preserve_day_night_outputs(monkeypatch):

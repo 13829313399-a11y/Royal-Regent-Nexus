@@ -235,7 +235,6 @@ def build_proposal(
         machines = [item for item in machines if item.id in allowed]
     molds = db.scalars(
         select(InjectionScheduleMold).where(
-            InjectionScheduleMold.factory_id == factory_id,
             InjectionScheduleMold.status == "ACTIVE",
         )
     ).all()

@@ -2,8 +2,8 @@ from datetime import date
 from io import BytesIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -99,6 +99,10 @@ from app.services.injection_scheduling.scheduler import (
     apply_proposal,
     build_proposal,
     reject_proposal,
+)
+from app.services.injection_scheduling.template_contract import (
+    unified_template_download_name,
+    unified_template_path,
 )
 
 router = APIRouter(
@@ -347,6 +351,27 @@ def update_mold(
     )
 
 
+@router.get("/templates/unified-plan")
+def download_unified_plan_template(
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(
+        db, current_user, "injection_scheduling:read", factory_id
+    )
+    template_path = unified_template_path()
+    if not template_path.is_file():
+        raise HTTPException(status_code=500, detail="当前厂区统一模板资源缺失")
+    return FileResponse(
+        template_path,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        filename=unified_template_download_name(),
+    )
+
+
 @router.post("/imports/preview", response_model=InjectionScheduleImportPreviewOut)
 def preview_excel_import(
     factory_id: str = Form(...),
@@ -363,8 +388,6 @@ def preview_excel_import(
     while chunk := file.file.read(UPLOAD_CHUNK_SIZE):
         content.extend(chunk)
         if len(content) > MAX_IMPORT_BYTES:
-            from fastapi import HTTPException
-
             raise HTTPException(status_code=413, detail="排产导入文件不能超过 35 MB")
     return preview_import(
         db,

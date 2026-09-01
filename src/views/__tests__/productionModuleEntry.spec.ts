@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 const enterpriseSource = readFileSync(join(process.cwd(), 'src/data/enterpriseMock.ts'), 'utf8')
 const moduleCenterSource = readFileSync(join(process.cwd(), 'src/views/ModuleCenterView.vue'), 'utf8')
 const routerSource = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
+const injectionSchedulingViewSource = readFileSync(join(process.cwd(), 'src/views/InjectionSchedulingView.vue'), 'utf8')
 const moduleCardSource = readFileSync(join(process.cwd(), 'src/components/modules/ModuleCard.vue'), 'utf8')
 const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMaterialManagementView.vue'), 'utf8')
 const rawMaterialBaseline = JSON.parse(readFileSync(join(process.cwd(), 'backend/app/data/raw_material_baseline.json'), 'utf8')) as Array<Record<string, unknown>>
@@ -19,10 +20,14 @@ describe('production module entry', () => {
     expect(enterpriseSource).toContain("status: '本地验收'")
     expect(enterpriseSource).toContain("stats: '真实 API · 厂区隔离 · 未上线'")
     expect(enterpriseSource).toContain("route: '/modules/production/injection-scheduling'")
+    expect(enterpriseSource).toContain("factoryIds: ['huakang-a', 'huakang-b', 'huadeng', 'huaxing']")
     expect(enterpriseSource).toContain("permissions: ['injection_scheduling:read']")
     expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
     expect(routerSource).toContain("component: () => import('@/views/InjectionSchedulingView.vue')")
     expect(routerSource).toMatch(/path: '\/modules\/production\/injection-scheduling'[\s\S]{0,420}permissions: \['injection_scheduling:read'\]/)
+    expect(injectionSchedulingViewSource).toContain("['huakang-a', 'huakang-b', 'huadeng', 'huaxing'] as const")
+    expect(injectionSchedulingViewSource).toContain('watch([factoryId, () => route.query.factory]')
+    expect(injectionSchedulingViewSource).toContain("router.replace({ query: { ...route.query, factory: value } })")
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {

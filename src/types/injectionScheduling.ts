@@ -136,6 +136,7 @@ export interface InjectionScheduleMachine {
 export interface InjectionScheduleMold {
   id: string
   factory_id: string
+  scope_type: 'COMPANY_SHARED'
   mold_code: string
   product_code: string
   product_name: string

@@ -22,6 +22,15 @@ from app.services.injection_scheduling.import_profiles import (
     ImportProfile,
     canonical_header,
 )
+from app.services.injection_scheduling.template_contract import (
+    UNIFIED_IMPORT_PROFILE,
+    UNIFIED_PLAN_HEADERS,
+    UNIFIED_PLAN_SHEET,
+    UNIFIED_REQUIRED_SHEETS,
+    UNIFIED_TEMPLATE_TITLE,
+    UNIFIED_TEMPLATE_VERSION,
+    UNIFIED_TEMPLATE_VERSION_MARKER,
+)
 
 MAX_IMPORT_BYTES = 35 * 1024 * 1024
 MAX_IMPORT_MEGABYTES = 35
@@ -157,13 +166,19 @@ def _issue(
     }
 
 
-def _detect_profile(sheet, override: str) -> ImportProfile:
+def _detect_profile(workbook, override: str) -> ImportProfile:
     if override:
         profile = IMPORT_PROFILES.get(override)
         if profile is None:
             raise HTTPException(status_code=422, detail="不支持的导入 profile")
         return profile
 
+    if UNIFIED_REQUIRED_SHEETS <= set(workbook.sheetnames):
+        unified_sheet = workbook[UNIFIED_PLAN_SHEET]
+        if _text(unified_sheet["A1"].value) == UNIFIED_TEMPLATE_TITLE:
+            return IMPORT_PROFILES[UNIFIED_IMPORT_PROFILE]
+
+    sheet = workbook[workbook.sheetnames[0]]
     sample_values = [
         _compact(value)
         for row in sheet.iter_rows(
@@ -193,6 +208,49 @@ def _detect_profile(sheet, override: str) -> ImportProfile:
         status_code=422,
         detail="无法唯一识别 Excel 模板，请选择明确的导入 profile",
     )
+
+
+def _profile_sheet(workbook, profile: ImportProfile):
+    if profile.code == UNIFIED_IMPORT_PROFILE:
+        if UNIFIED_PLAN_SHEET not in workbook.sheetnames:
+            raise HTTPException(status_code=422, detail="统一模板缺少统一计划表")
+        return workbook[UNIFIED_PLAN_SHEET]
+    return workbook[workbook.sheetnames[0]]
+
+
+def _validate_unified_workbook(workbook, factory_id: str) -> None:
+    missing_sheets = sorted(UNIFIED_REQUIRED_SHEETS - set(workbook.sheetnames))
+    if missing_sheets:
+        raise HTTPException(
+            status_code=422,
+            detail=f"统一模板缺少工作表：{', '.join(missing_sheets)}",
+        )
+    if workbook.sheetnames != [UNIFIED_PLAN_SHEET]:
+        raise HTTPException(
+            status_code=422,
+            detail="统一模板只能包含“统一计划表”一个工作表",
+        )
+    plan = workbook[UNIFIED_PLAN_SHEET]
+    if _text(plan["A1"].value) != UNIFIED_TEMPLATE_TITLE:
+        raise HTTPException(status_code=422, detail="统一计划表标题已改变")
+    version_marker = _text(plan["A2"].value)
+    if version_marker != UNIFIED_TEMPLATE_VERSION_MARKER:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"统一模板版本应为 {UNIFIED_TEMPLATE_VERSION}，"
+                f"当前为 {version_marker or '空'}"
+            ),
+        )
+    headers = tuple(
+        _text(plan.cell(4, column).value)
+        for column in range(1, len(UNIFIED_PLAN_HEADERS) + 1)
+    )
+    if headers != UNIFIED_PLAN_HEADERS:
+        raise HTTPException(
+            status_code=422,
+            detail="统一计划表 56 字段或字段顺序已改变，请从模块重新下载模板",
+        )
 
 
 def _header_mapping(
@@ -351,9 +409,38 @@ def _normalize_row(
         raw.get("delivery_due_date") or header.get("delivery_due_date"), epoch=epoch
     )
     remark = _text(raw.get("remark"))
+    raw_priority = _compact(raw.get("priority")).upper()
     priority = (
-        "EXPEDITE" if "特急" in remark else "URGENT" if "急" in remark else "NORMAL"
+        "EXPEDITE"
+        if raw_priority in {"特急", "EXPEDITE"} or "特急" in remark
+        else "URGENT"
+        if raw_priority in {"急", "急单", "URGENT"} or "急" in remark
+        else "NORMAL"
     )
+    raw_lightness = _compact(raw.get("color_lightness")).upper()
+    color_lightness = {
+        "透明": "TRANSPARENT",
+        "浅": "LIGHT",
+        "中": "MEDIUM",
+        "深": "DARK",
+        "未知": "UNKNOWN",
+        "TRANSPARENT": "TRANSPARENT",
+        "LIGHT": "LIGHT",
+        "MEDIUM": "MEDIUM",
+        "DARK": "DARK",
+        "UNKNOWN": "UNKNOWN",
+    }.get(raw_lightness, "UNKNOWN")
+    raw_material_status = _compact(raw.get("material_status")).upper()
+    material_status = {
+        "未配料": "UNPREPARED",
+        "部分配料": "PARTIAL",
+        "已齐料": "READY",
+        "缺料": "BLOCKED",
+        "UNPREPARED": "UNPREPARED",
+        "PARTIAL": "PARTIAL",
+        "READY": "READY",
+        "BLOCKED": "BLOCKED",
+    }.get(raw_material_status, "UNPREPARED")
     product_code = _text(raw.get("product_code"))
     mold_code = _text(raw.get("mold_code"))
     order_no = _text(raw.get("order_no") or header.get("order_no"))
@@ -386,12 +473,14 @@ def _normalize_row(
         ),
         "delivery_start_date": _date_text(raw.get("delivery_start_date"), epoch=epoch),
         "delivery_due_date": delivery_due,
+        "shipping_date": _date_text(raw.get("shipping_date"), epoch=epoch),
         "warehouse": _text(raw.get("warehouse") or header.get("warehouse")),
         "delivery_location": header.get("delivery_location", ""),
         "ordered_by_name": header.get("ordered_by_name", ""),
         "operator_name": header.get("operator_name", ""),
         "color": _text(raw.get("color")),
         "pigment_code": _text(raw.get("pigment_code")),
+        "color_lightness": color_lightness,
         "material_name": _text(raw.get("material_name")),
         "water_ratio": str(water_ratio) if water_ratio is not None else None,
         "net_weight_g": str(_decimal(raw.get("net_weight_g")))
@@ -406,6 +495,10 @@ def _normalize_row(
         "daily_target": str(_decimal(raw.get("daily_target")))
         if _decimal(raw.get("daily_target")) is not None
         else None,
+        "material_status": material_status,
+        "material_prepared_kg": str(
+            _decimal(raw.get("material_prepared_kg")) or Decimal(0)
+        ),
         "required_machine_a_label": required_label,
         "required_machine_a_value": str(required_value)
         if required_value is not None
@@ -514,9 +607,11 @@ def parse_workbook_preview(
         ) from exc
 
     try:
-        sheet = workbook[workbook.sheetnames[0]]
-        cached_sheet = cached_workbook[cached_workbook.sheetnames[0]]
-        profile = _detect_profile(sheet, profile_override)
+        profile = _detect_profile(workbook, profile_override)
+        if profile.code == UNIFIED_IMPORT_PROFILE:
+            _validate_unified_workbook(workbook, factory_id)
+        sheet = _profile_sheet(workbook, profile)
+        cached_sheet = cached_workbook[sheet.title]
         header_row, mapping, labels = _header_mapping(sheet, profile)
         history_columns, unresolved_history_dates = (
             _history_columns(sheet, header_row=header_row, epoch=workbook.epoch)
@@ -586,6 +681,20 @@ def parse_workbook_preview(
             mold_code = _text(_cell(values, mapping, "mold_code"))
             if not any((product_code, mold_code)):
                 continue
+            if profile.code == UNIFIED_IMPORT_PROFILE:
+                row_factory_id = _text(_cell(values, mapping, "factory_id")).lower()
+                if row_factory_id and row_factory_id != factory_id:
+                    issues.append(
+                        _issue(
+                            row=source_row,
+                            field="factory_id",
+                            raw_value=row_factory_id,
+                            severity="ERROR",
+                            error_type="FACTORY_SCOPE_MISMATCH",
+                            message="明细工厂 ID 与当前页面厂区不一致",
+                            blocking=True,
+                        )
+                    )
             if (
                 profile.document_type == "ORDER_FORM"
                 and _decimal(_cell(values, mapping, "quantity_sets")) is None
