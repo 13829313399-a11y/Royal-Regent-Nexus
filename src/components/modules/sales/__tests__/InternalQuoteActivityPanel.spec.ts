@@ -94,6 +94,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(wrapper.text()).toContain('已保存成本 HKD 100.00 · 成本变化 +17.00')
 
     await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.33')
+    expect(wrapper.emitted('previewMarkup')?.at(-1)).toEqual([1.33])
     expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 155.61')
     expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('目标余量 USD 0.05')
     expect(wrapper.get('.quote-live-cost').classes()).toContain('proximity-4')
