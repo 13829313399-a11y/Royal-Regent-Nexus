@@ -1823,9 +1823,12 @@ def test_internal_quote_dashboard_reports_period_status_customer_progress_and_sp
         quote_models = importlib.import_module("app.models.internal_quote")
         quote_service = importlib.import_module("app.services.internal_quote")
         week_start, week_end, _ = quote_service._dashboard_period_bounds("week")
+        month_start, _, _ = quote_service._dashboard_period_bounds("month")
         year_start, _, _ = quote_service._dashboard_period_bounds("year")
-        available_seconds = max(4.0, (week_end - week_start).total_seconds())
+        common_start = max(week_start, month_start, year_start)
+        available_seconds = max(4.0, (week_end - common_start).total_seconds())
         speed_unit = min(3600.0, available_seconds / 4)
+        current_time = week_end - timedelta(seconds=speed_unit * 2)
 
         with db_module.SessionLocal() as db:
             done_a = db.get(quote_models.InternalQuote, quote_ids["DASH-A-DONE"])
@@ -1835,18 +1838,18 @@ def test_internal_quote_dashboard_reports_period_status_customer_progress_and_sp
             old_quote = db.get(quote_models.InternalQuote, quote_ids["DASH-OLD"])
             assert done_a and active_a and done_b and canceled_c and old_quote
 
-            current_stamp = week_start.strftime("%Y-%m-%d %H:%M:%S")
+            current_stamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
             for quote in (done_a, active_a, done_b, canceled_c):
                 quote.created_at = current_stamp
                 quote.updated_at = current_stamp
 
             done_a.status = "fully_approved"
             done_a.final_release_status = "approved"
-            done_a.final_reviewed_at = (week_start + timedelta(seconds=speed_unit)).strftime("%Y-%m-%d %H:%M:%S")
+            done_a.final_reviewed_at = (current_time + timedelta(seconds=speed_unit)).strftime("%Y-%m-%d %H:%M:%S")
             done_a.updated_at = done_a.final_reviewed_at
             done_b.status = "exported"
             done_b.final_release_status = "approved"
-            done_b.final_reviewed_at = (week_start + timedelta(seconds=speed_unit * 2)).strftime("%Y-%m-%d %H:%M:%S")
+            done_b.final_reviewed_at = (current_time + timedelta(seconds=speed_unit * 2)).strftime("%Y-%m-%d %H:%M:%S")
             done_b.updated_at = done_b.final_reviewed_at
             canceled_c.status = "archived"
             canceled_c.archived_at = current_stamp

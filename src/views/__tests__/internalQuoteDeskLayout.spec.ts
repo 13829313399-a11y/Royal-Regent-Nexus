@@ -104,7 +104,7 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['整单操作', '查看汇总与输出', 'saveWholeProductDraft', 'quote-whole-product-actions', 'quote-whole-product-workflow']) expect(collaborationSource).toContain(text)
     expect(collaborationSource).toContain('sectionEditors.value[section.code]?.canSaveWholeQuoteDraft()')
     expect(collaborationSource).toContain('editor.getWholeQuoteDraft()')
-    expect(collaborationSource).toContain('await quoteStore.saveWholeProductSections(quote.value.id, drafts)')
+    expect(collaborationSource).toContain('await quoteStore.saveWholeProductSections(savedQuoteId, drafts)')
     expect(collaborationSource).toContain('当前全部现有内容已保存')
     expect(collaborationSource).toContain('title="保存当前款全部现有内容"')
     expect(collaborationSource).not.toContain('const dirtySections = participatingSections.value.filter')

@@ -4,7 +4,7 @@ import { computed, ref, watchEffect } from 'vue'
 import { canonicalizeMoldingReferences, moldingMaterialReferences as getMoldingMaterials, moldingMachineReferences as getMoldingMachines, moldingMaterialOptions, selectedMoldingMaterial, selectedMoldingMachine, normalizedReferenceToken, type MoldingMaterialSelection, type MoldingMaterialReference } from '@/lib/internalQuoteMoldingReferences'
 import { internalQuoteAttachmentPreviewUrl } from '@/api/internalQuote'
 import InternalQuotePricingFields from './InternalQuotePricingFields.vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { previewEngineeringMoldPartSplit } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
@@ -399,8 +399,14 @@ function updateCartonDimension(carton: SalesCartonRow, key: CartonDimensionKey, 
 function updateCartonSizeUnit(carton: SalesCartonRow, event: Event) {
   carton.size_unit = normalizeSalesDimensionUnit((event.target as HTMLSelectElement).value)
 }
-const packagingMaterialTotal = computed(() => sales.value.packaging_materials.reduce((total, row) => total + calculatePackagingMaterialAmountHkd(row, props.rmbHkdRate), 0))
 const primaryCarton = computed(() => sales.value.cartons[0])
+const justPlayAdhesivePackagingCost = computed(() => calculateJustPlayAdhesivePackagingCostHkd(primaryCarton.value))
+const justPlayPaperPalletCost = computed(() => calculateJustPlayPaperPalletCostHkd(primaryCarton.value))
+const justPlayFixedPackagingTotal = computed(() => justPlayAdhesivePackagingCost.value + justPlayPaperPalletCost.value)
+const packagingMaterialTotal = computed(() => (
+  sales.value.packaging_materials.reduce((total, row) => total + calculatePackagingMaterialAmountHkd(row, props.rmbHkdRate), 0)
+  + (props.pricingMode === 'component' ? justPlayFixedPackagingTotal.value : 0)
+))
 const testingFeeCalculationEnabled = computed<boolean>({
   get: () => sales.value.testing_fee_enabled !== false,
   set: (value) => { sales.value.testing_fee_enabled = value },
@@ -1216,9 +1222,15 @@ function addDickieMaterialPrice() {
                 <td><input v-model="row.remark" :disabled="disabled" aria-label="包装材料备注"></td>
                 <td><button type="button" class="icon" :disabled="disabled" @click="remove(sales.packaging_materials,index)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!sales.packaging_materials.length"><td colspan="13" class="empty">暂无包装材料，可按需要新增</td></tr>
+              <template v-if="pricingMode === 'component'">
+                <tr class="justplay-fixed-packaging-row">
+                  <td>自动</td><td>胶纸/胶水/胶针</td><td>3.9÷2150×(主纸箱长×2+主纸箱宽×4+6)÷每箱数量+0.06</td><td>其他外购</td><td>1</td><td>—</td><td class="calculated-cell">{{ calculated(justPlayAdhesivePackagingCost) }}</td><td>1</td><td class="calculated-cell">{{ calculated(justPlayAdhesivePackagingCost) }}</td><td class="calculated-cell">{{ calculated(justPlayAdhesivePackagingCost) }}</td><td>—</td><td>按主纸箱英寸尺寸及每箱数量自动计算</td><td /></tr>
+                <tr class="justplay-fixed-packaging-row">
+                  <td>自动</td><td>纸托板成本</td><td>19÷24÷每箱数量+0.05</td><td>其他外购</td><td>1</td><td>—</td><td class="calculated-cell">{{ calculated(justPlayPaperPalletCost) }}</td><td>1</td><td class="calculated-cell">{{ calculated(justPlayPaperPalletCost) }}</td><td class="calculated-cell">{{ calculated(justPlayPaperPalletCost) }}</td><td>—</td><td>按主纸箱每箱数量自动计算</td><td /></tr>
+              </template>
+              <tr v-if="!sales.packaging_materials.length && pricingMode !== 'component'"><td colspan="13" class="empty">暂无包装材料，可按需要新增</td></tr>
             </tbody>
-            <tfoot v-if="sales.packaging_materials.length"><tr><td colspan="9">包装材料合计</td><td class="calculated-cell">HKD {{ calculated(packagingMaterialTotal) }}</td><td colspan="3" /></tr></tfoot>
+            <tfoot v-if="sales.packaging_materials.length || pricingMode === 'component'"><tr><td colspan="9">包装材料合计</td><td class="calculated-cell">HKD {{ calculated(packagingMaterialTotal) }}</td><td colspan="3" /></tr></tfoot>
           </table>
         </div>
       </section>

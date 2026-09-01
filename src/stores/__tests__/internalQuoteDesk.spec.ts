@@ -26,6 +26,8 @@ const apiMock = vi.hoisted(() => ({
   listAttachments: vi.fn(),
   listExports: vi.fn(),
   saveSection: vi.fn(),
+  saveWholeProduct: vi.fn(),
+  previewCosts: vi.fn(),
   submitSection: vi.fn(),
   reviewSection: vi.fn(),
   requestSectionNa: vi.fn(),
@@ -185,6 +187,7 @@ describe('internal quote desk real API state', () => {
     apiMock.create.mockResolvedValue(quote({ id: 'created-1', quote_no: 'IQ-CREATED' }))
     apiMock.clone.mockResolvedValue(quote({ id: 'clone-1', quote_no: 'IQ-CLONE', status: 'drafting', sections: sectionCodes.map((code, index) => ({ ...section(code, index), status: 'draft', revision: 1 })) }))
     apiMock.saveSection.mockResolvedValue({ ...section('engineering', 1), revision: 2, payload: { molds: [{ item: '模具A' }] } })
+    apiMock.saveWholeProduct.mockResolvedValue({ quote: quote(), sections: [] })
     apiMock.addParticipation.mockResolvedValue(quote())
     apiMock.removeParticipation.mockResolvedValue(quote())
     apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
@@ -603,11 +606,6 @@ describe('internal quote desk real API state', () => {
         ? { ...section(code, index), payload: moldingBaseline }
         : section(code, index)),
     })
-    const afterEngineering = quote({
-      sections: sectionCodes.map((code, index) => code === 'molding'
-        ? { ...section(code, index), revision: 2, payload: moldingBaseline, dependency_status: 'stale' }
-        : section(code, index)),
-    })
     const afterWholeSave = quote({
       sections: sectionCodes.map((code, index) => {
         if (code === 'engineering') return { ...section(code, index), revision: 2, payload: engineeringPayload }
@@ -615,12 +613,12 @@ describe('internal quote desk real API state', () => {
         return section(code, index)
       }),
     })
-    apiMock.saveSection
-      .mockResolvedValueOnce({ ...section('engineering', 1), revision: 2, payload: engineeringPayload })
-      .mockResolvedValueOnce({ ...section('molding', 3), revision: 3, payload: moldingPayload })
+    apiMock.saveWholeProduct.mockResolvedValue({
+      quote: afterWholeSave,
+      sections: afterWholeSave.sections.filter((row) => ['engineering', 'molding'].includes(row.department)),
+    })
     apiMock.get
       .mockResolvedValueOnce(beforeSave)
-      .mockResolvedValueOnce(afterEngineering)
       .mockResolvedValueOnce(afterWholeSave)
 
     await store.saveWholeProductSections('quote-1', [
@@ -628,23 +626,14 @@ describe('internal quote desk real API state', () => {
       { sectionCode: 'molding', revision: 1, payload: moldingPayload, baselinePayload: moldingBaseline },
     ])
 
-    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
-      1,
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledWith(
       'quote-1',
-      'engineering',
-      1,
-      engineeringPayload,
-      '在连续报价页统一保存当前产品',
+      [
+        { sectionCode: 'engineering', revision: 1, payload: engineeringPayload },
+        { sectionCode: 'molding', revision: 1, payload: moldingPayload },
+      ],
     )
-    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
-      2,
-      'quote-1',
-      'molding',
-      2,
-      moldingPayload,
-      '在连续报价页统一保存当前产品',
-    )
-    expect(apiMock.get).toHaveBeenCalledTimes(3)
+    expect(apiMock.get).toHaveBeenCalledTimes(2)
     expect(store.getQuoteById('quote-1')?.sections.find((item) => item.code === 'molding')?.payload).toEqual(moldingPayload)
   })
 
@@ -662,14 +651,20 @@ describe('internal quote desk real API state', () => {
       ? { ...section(code, index), revision: 2, payload: { injection_lines: [storedLine] } }
       : section(code, index)) })
     apiMock.get.mockResolvedValue(latest)
-    apiMock.saveSection.mockResolvedValue({ ...section('molding', 3), revision: 3, payload })
+    apiMock.saveWholeProduct.mockResolvedValue({
+      quote: latest,
+      sections: [{ ...section('molding', 3), revision: 3, payload }],
+    })
 
     await store.saveWholeProductSections('quote-1', [{
       sectionCode: 'molding', revision: 1, payload,
       baselinePayload: { injection_lines: [baselineLine] },
     }])
 
-    expect(apiMock.saveSection).toHaveBeenCalledWith('quote-1', 'molding', 2, payload, '在连续报价页统一保存当前产品')
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledWith(
+      'quote-1',
+      [{ sectionCode: 'molding', revision: 2, payload }],
+    )
   })
 
   it('saves every supplied department snapshot even when its payload is unchanged', async () => {
@@ -680,31 +675,23 @@ describe('internal quote desk real API state', () => {
     apiMock.get
       .mockResolvedValueOnce(currentQuote)
       .mockResolvedValueOnce(currentQuote)
-    apiMock.saveSection
-      .mockResolvedValueOnce(section('assembly', 4))
-      .mockResolvedValueOnce(section('sales', 0))
+    apiMock.saveWholeProduct.mockResolvedValue({
+      quote: currentQuote,
+      sections: [section('assembly', 4), section('sales', 0)],
+    })
 
     await store.saveWholeProductSections('quote-1', [
       { sectionCode: 'sales', revision: 4, payload: salesPayload, baselinePayload: salesPayload },
       { sectionCode: 'assembly', revision: 1, payload: assemblyPayload, baselinePayload: assemblyPayload },
     ])
 
-    expect(apiMock.saveSection).toHaveBeenCalledTimes(2)
-    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
-      1,
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledTimes(1)
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledWith(
       'quote-1',
-      'assembly',
-      1,
-      assemblyPayload,
-      '在连续报价页统一保存当前产品',
-    )
-    expect(apiMock.saveSection).toHaveBeenNthCalledWith(
-      2,
-      'quote-1',
-      'sales',
-      4,
-      salesPayload,
-      '在连续报价页统一保存当前产品',
+      [
+        { sectionCode: 'assembly', revision: 1, payload: assemblyPayload },
+        { sectionCode: 'sales', revision: 4, payload: salesPayload },
+      ],
     )
   })
 
@@ -714,25 +701,18 @@ describe('internal quote desk real API state', () => {
     const moldingBaseline = { injection_lines: [{ item: '原胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
     const moldingPayload = { injection_lines: [{ item: '本页胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
     const concurrentMoldingPayload = { injection_lines: [{ item: '他人胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
-    apiMock.saveSection.mockResolvedValueOnce({ ...section('engineering', 1), revision: 2, payload: engineeringPayload })
-    apiMock.get
-      .mockResolvedValueOnce(quote({
-        sections: sectionCodes.map((code, index) => code === 'molding'
-          ? { ...section(code, index), payload: moldingBaseline }
-          : section(code, index)),
-      }))
-      .mockResolvedValueOnce(quote({
-        sections: sectionCodes.map((code, index) => code === 'molding'
-          ? { ...section(code, index), revision: 2, payload: concurrentMoldingPayload, dependency_status: 'stale' }
-          : section(code, index)),
-      }))
+    apiMock.get.mockResolvedValueOnce(quote({
+      sections: sectionCodes.map((code, index) => code === 'molding'
+        ? { ...section(code, index), revision: 2, payload: concurrentMoldingPayload, dependency_status: 'stale' }
+        : section(code, index)),
+    }))
 
     await expect(store.saveWholeProductSections('quote-1', [
       { sectionCode: 'engineering', revision: 1, payload: engineeringPayload, baselinePayload: { source: 'backend' } },
       { sectionCode: 'molding', revision: 1, payload: moldingPayload, baselinePayload: moldingBaseline },
     ])).rejects.toThrow('啤机部内容已被其他用户修改')
 
-    expect(apiMock.saveSection).toHaveBeenCalledTimes(1)
+    expect(apiMock.saveWholeProduct).not.toHaveBeenCalled()
     expect(store.submitting).toBe(false)
   })
 
@@ -758,20 +738,20 @@ describe('internal quote desk real API state', () => {
     apiMock.get
       .mockResolvedValueOnce(partiallySavedQuote)
       .mockResolvedValueOnce(fullySavedQuote)
-    apiMock.saveSection.mockResolvedValueOnce({ ...section('molding', 3), revision: 3, payload: moldingPayload })
+    apiMock.saveWholeProduct.mockResolvedValue({
+      quote: fullySavedQuote,
+      sections: [{ ...section('molding', 3), revision: 3, payload: moldingPayload }],
+    })
 
     await store.saveWholeProductSections('quote-1', [
       { sectionCode: 'engineering', revision: 1, payload: engineeringPayload, baselinePayload: { source: 'backend' } },
       { sectionCode: 'molding', revision: 1, payload: moldingPayload, baselinePayload: moldingBaseline },
     ])
 
-    expect(apiMock.saveSection).toHaveBeenCalledTimes(1)
-    expect(apiMock.saveSection).toHaveBeenCalledWith(
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledTimes(1)
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledWith(
       'quote-1',
-      'molding',
-      2,
-      moldingPayload,
-      '在连续报价页统一保存当前产品',
+      [{ sectionCode: 'molding', revision: 2, payload: moldingPayload }],
     )
   })
 
@@ -814,6 +794,35 @@ describe('internal quote desk real API state', () => {
       .rejects.toThrow('操作已在服务端成功，但页面未能读取最新报价')
     expect(apiMock.saveSection).toHaveBeenCalledTimes(1)
     expect(store.errorMessage).toContain('详情读取失败')
+  })
+
+  it('keeps every dirty department in one authoritative live preview', async () => {
+    apiMock.previewCosts.mockImplementation(async (
+      _quoteId: string,
+      drafts: Array<{ sectionCode: InternalQuoteSectionCode; revision: number; payload: Record<string, unknown> }>,
+    ) => ({
+      quote_id: 'quote-1',
+      calculations: Object.fromEntries(drafts.map((draft) => [draft.sectionCode, { status: 'valid' }])),
+      warnings: [],
+      saved_factory_price_hkd: '10.0000',
+      preview_factory_price_hkd: String(10 + drafts.length),
+      delta_hkd: String(drafts.length),
+      components_hkd: {},
+      rr2_cost_summary: {},
+      formula_version: 'rr2-2026-v2',
+      reference_snapshot_id: 'REF-1',
+      generated_at: '2026-09-01 12:00:00',
+    }))
+    const store = useInternalQuoteDeskStore()
+
+    await store.previewSectionCost('quote-1', 'engineering', 1, { molds: [] })
+    await store.previewSectionCost('quote-1', 'assembly', 1, { groups: [] })
+
+    expect(apiMock.previewCosts).toHaveBeenLastCalledWith('quote-1', [
+      { sectionCode: 'engineering', revision: 1, payload: { molds: [] } },
+      { sectionCode: 'assembly', revision: 1, payload: { groups: [] } },
+    ])
+    expect(Object.keys(store.liveCostPreview?.calculations ?? {})).toEqual(['engineering', 'assembly'])
   })
 
   it('updates quote-scoped FX through the optimistic header revision and reloads the snapshot', async () => {

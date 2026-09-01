@@ -9,6 +9,7 @@ import { strFromU8, unzipSync } from 'fflate'
 
 const source = process.env.YINHUI_SAMPLE_DIR
 const output = process.env.YINHUI_TEST_OUTPUT
+const additional = process.env.YINHUI_ADDITIONAL_SAMPLE
 function buffer(b: Uint8Array) { return b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength) as ArrayBuffer }
 it.skipIf(!source || !output)('runs the locally supplied Silverlit workbooks without changing the originals', () => {
   const report: Array<Record<string,unknown>> = []
@@ -94,4 +95,60 @@ it.skipIf(!source || !output)('checks C-ABS and explicitly acknowledged missing 
     expect(createHash('sha256').update(readFileSync(`${source}/${name}`)).digest('hex')).toBe(sourceHash)
   }
   writeFileSync(`${output}/material-price-report.json`, JSON.stringify(report,null,2))
+}, 120000)
+
+it.skipIf(!additional || !output)('converts an additional compact Tool Plan sample deterministically without changing its workbook', () => {
+  const input = readFileSync(additional!)
+  const sourceHash = createHash('sha256').update(input).digest('hex')
+  let baseline: unknown
+  for (const round of [1,2,3]) {
+    const result = convertYinhuiInternalQuote(buffer(input), additional!.split(/[\\/]/).pop()!)
+    const comparable = {...result.quoteData,image:result.quoteData.image ? {extension:result.quoteData.image.extension,hash:createHash('sha256').update(result.quoteData.image.bytes).digest('hex')} : null}
+    if (round === 1) baseline = comparable
+    else expect(comparable).toEqual(baseline)
+    expect(result.quoteData).toMatchObject({model:'88753',templateId:'standard'})
+    expect(result.quoteData.tools).toHaveLength(50)
+    expect(result.quoteData.tools.filter(row => row.weightG > 0)).toHaveLength(10)
+    expect(result.quoteData.tools.reduce((total,row) => total + row.weightG,0)).toBeCloseTo(183.3,8)
+    expect(result.quoteData.tools.reduce((total,row) => total + row.toolingHkd,0)).toBe(639000)
+    expect(result.quoteData.tools.filter(row => row.material === 'TPR')).toMatchObject([{description:'輪胎',usage:2,cavity:12,weightG:1.4}])
+    expect(result.quoteData.tools.filter(row => row.description === '輪轂')).toMatchObject([{material:'ABS',usage:2,cavity:12,weightG:2.4}])
+    expect(result.quoteData.plastic).toMatchObject([
+      {description:'Frosted PC Sheet  0.5*14*25  (1PCS)'},
+      {description:'Printed PVC Sheet  0.3*57.8*115MM (1PCS)'},
+    ])
+    expect(result.quoteData.mechanical).toHaveLength(26)
+    expect(result.quoteData.electronic).toHaveLength(6)
+    expect(result.quoteData.electronic.find(row => row.description === 'TXPCBA')).toMatchObject({quantity:1})
+    expect(result.quoteData.freightFclHkd).toBeCloseTo(.281129149685833,12)
+    expect(result.quoteData.freightLclHkd).toBeCloseTo(.612424154496133,12)
+    expect(yinhuiTotals(result.quoteData).exFactory).toBeCloseTo(76.2117507013597,8)
+    expect(yinhuiTotals(result.quoteData).missingMaterialPrices).toEqual([])
+    result.quoteData.productName = 'GOAL GO BOT'
+    expect([
+      ...result.quoteData.plastic,
+      ...result.quoteData.mechanical,
+      ...result.quoteData.electronic,
+      ...(result.quoteData.fabric || []),
+      ...result.quoteData.packagingRows,
+    ].filter(row => /[\u3400-\u9fff]/.test(row.description)).map(row => row.description)).toEqual([])
+    validateYinhuiExport(result.quoteData)
+    const template = buffer(readFileSync(`public/templates/${YINHUI_PROFILES.standard.file}`))
+    const generated = createYinhuiCustomerQuoteWorkbook(result,template)
+    const templateZip = unzipSync(new Uint8Array(template)); const generatedZip = unzipSync(generated)
+    expect(generatedZip['xl/styles.xml']).toEqual(templateZip['xl/styles.xml'])
+    const structure = (bytes: Uint8Array) => {
+      const doc = new DOMParser().parseFromString(strFromU8(bytes), 'application/xml')
+      return {
+        cells:Array.from(doc.getElementsByTagName('c')).map(cell => [cell.getAttribute('r'),cell.getAttribute('s'),cell.getElementsByTagName('f')[0]?.outerHTML]),
+        geometry:['cols','mergeCells','pageMargins','pageSetup'].map(tag => doc.getElementsByTagName(tag)[0]?.outerHTML),
+        rows:Array.from(doc.getElementsByTagName('row')).map(row => [row.getAttribute('r'),row.getAttribute('ht')]),
+      }
+    }
+    for (let sheet = 1; sheet <= 6; sheet++) expect(structure(generatedZip[`xl/worksheets/sheet${sheet}.xml`]!)).toEqual(structure(templateZip[`xl/worksheets/sheet${sheet}.xml`]!))
+    const cached = parseXlsxWorkbook(buffer(generated)).sheets[0]!.rows
+    expect(cached[31]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory,6)
+    if (round === 1) writeFileSync(`${output}/银辉88753-报客价-映射复测.xlsx`,generated)
+  }
+  expect(createHash('sha256').update(readFileSync(additional!)).digest('hex')).toBe(sourceHash)
 }, 120000)

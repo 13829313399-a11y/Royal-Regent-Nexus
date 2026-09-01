@@ -178,6 +178,14 @@ export interface InternalQuotePricingGroup {
   inheritsMainMarkup: boolean
 }
 
+export interface InternalQuoteGlobalPricing {
+  costHkd: number
+  pricingBaseHkd: number
+  markup: number
+  settlement: number
+  quotedHkd: number
+}
+
 export interface InternalQuoteRr2CostSummary {
   currency: string
   indonesiaFreightHkd: number
@@ -207,6 +215,7 @@ export interface InternalQuoteRr2CostSummary {
     moldAmortizationUsd: number
     pricingMode: 'standard' | 'component'
     pricingGroups: InternalQuotePricingGroup[]
+    globalPricing: InternalQuoteGlobalPricing
     rows: InternalQuoteShippingPriceRow[]
   }
 }
@@ -246,6 +255,7 @@ export interface InternalQuote {
   referenceSnapshotId: string
   referenceSnapshot: Record<string, unknown>
   formulaVersion: string
+  currentFormulaVersion: string
   moduleVersion: string
   headerRevision: number
   finalReleaseStatus: string

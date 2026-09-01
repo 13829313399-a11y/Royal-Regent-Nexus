@@ -21,6 +21,37 @@ function engineeringModel() {
 }
 
 describe('InternalQuoteSectionForm JustPlay component scope', () => {
+  it('shows the two product-level fixed packaging formulas from the main carton', () => {
+    const modelValue = normalizeInternalQuotePayload('sales', {
+      pricing_mode: 'component',
+      packaging_materials: [],
+      cartons: [{
+        item: '主纸箱',
+        length_in: 23.75,
+        width_in: 10.75,
+        height_in: 15.5,
+        qty_per_carton: 2,
+        flat_cards: [],
+      }],
+    })
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'sales',
+        modelValue: modelValue as unknown as Record<string, unknown>,
+        pricingMode: 'component',
+        pricingComponents,
+        disabled: false,
+      },
+    })
+
+    const formulaRows = wrapper.findAll('.justplay-fixed-packaging-row')
+    expect(formulaRows).toHaveLength(2)
+    expect(formulaRows[0].text()).toContain('胶纸/胶水/胶针')
+    expect(formulaRows[0].text()).toContain('0.148')
+    expect(formulaRows[1].text()).toContain('纸托板成本')
+    expect(formulaRows[1].text()).toContain('0.446')
+  })
+
   it('filters rows by the shared active component and gives new rows that component automatically', async () => {
     const modelValue = engineeringModel()
     const wrapper = mount(InternalQuoteSectionForm, {

@@ -227,6 +227,35 @@ describe('Silverlit temporary independent mapping', () => {
     expect(d.tools).toMatchObject([{usage:2,cavity:1,weightG:100,toolingHkd:72000},{usage:2,cavity:1,weightG:0}])
     expect(yinhuiTotals(d).plastic).toBe(1.565)
   })
+  it('detects compact Tool Plan columns and splits one two-material mold into separately matched injection lines', () => {
+    const input = changedLegacy(sheets => {
+      sheets[0]!.rows[11]![2] = 'Body*1'; sheets[0]!.rows[11]![3] = 'ABS'; sheets[0]!.rows[11]![4] = 100
+      sheets[0]!.rows[12] = [null,null,'Cover*1','TPR',20,null,null,null,null,null,null,3]
+      sheets[1] = {name:'TOOL PLAN',cellFillIds:[],rows:[
+        [],[null,'模號','中文名稱','編號',null,'出模量',null,'單個膠件重量 (g)','膠料'],[],
+        [null,'Mold No.','Chinese Name',null,null,'Cavity',' / up','Plastic Wt (g)','Material'],[],
+        [null,'NA1XXX','Body','P1',null,2,2,100,'ABS'],
+        [null,null,'Cover','P2',null,2,2,20,'TPR'],
+      ]}
+      sheets.push({name:'模具报价',cellFillIds:[],rows:[['#00012'],[],[null,'M01','Body*2/Cover*2',null,null,null,'ABS',4,2,500]]})
+    })
+    const result = convertYinhuiInternalQuote(input,'银辉00012.xlsx')
+    expect(result.quoteData.tools).toMatchObject([
+      {moldNo:'NA1XXX',partNo:'P1',description:'Body',usage:1,cavity:2,weightG:100,material:'ABS',toolingHkd:500},
+      {moldNo:'',partNo:'P2',description:'Cover',usage:1,cavity:2,weightG:20,material:'TPR',toolingHkd:0},
+    ])
+    expect(result.warnings.join(' ')).toMatch(/模具报价 M01 与 Tool Plan NA1XXX 编号不同/)
+  })
+  it('keeps a zero Qty/Toy Tool Plan row used for a plugged mold cavity', () => {
+    const input = changedLegacy(sheets => {
+      sheets[1]!.rows.push(['Repeated part alias','Plugged cavity','/',null,'',1,0,100,30,30,2000,2000,10])
+    })
+    const tools = convertYinhuiInternalQuote(input, '银辉00012.xlsx').quoteData.tools
+    expect(tools).toMatchObject([
+      {description:'Body',usage:1,weightG:100},
+      {description:'Plugged cavity',usage:0,weightG:0},
+    ])
+  })
   it('retains the 89127 constant-multiplier formulas without doubling the already cumulative source weight', () => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
     result.quoteData.templateId = '89127'
@@ -257,6 +286,28 @@ describe('Silverlit temporary independent mapping', () => {
     expect(d.mechanical[0]?.quantity).toBe(4)
     expect(d.mechanical.filter(r => /Battery Contact/.test(r.description))).toMatchObject([{quantity:1,amountHkd:.33}])
   })
+  it('routes PC and PVC sheet parts to purchased plastic even when the source category says hardware', () => {
+    const input = changedLegacy(sheets => {
+      const rows = sheets[0]!.rows
+      rows[28]![1] = '五金'; rows[28]![2] = '磨砂PC片 0.5*14*25 (1PCS)'; rows[28]![3] = .15; rows[28]![4] = .165
+      rows[31] = [null,'五金','印花PVC片 0.3*57.8*115MM (1PCS)',.43,.473]
+    })
+    const d = convertYinhuiInternalQuote(input, '银辉00012.xlsx').quoteData
+    expect(d.plastic).toMatchObject([
+      {description:'Frosted PC Sheet  0.5*14*25 (1PCS)',quantity:1,amountHkd:.165},
+      {description:'Printed PVC Sheet  0.3*57.8*115MM (1PCS)',quantity:1,amountHkd:.473},
+    ])
+    expect(d.mechanical).toEqual([])
+  })
+  it('treats a trailing long parenthesized number as a model reference, not BOM quantity', () => {
+    const input = changedLegacy(sheets => {
+      sheets[0]!.rows[31] = [null,'电子','TX盒子（88753）',5,5.5]
+    })
+    expect(convertYinhuiInternalQuote(input, '银辉00012.xlsx').quoteData.electronic).toMatchObject([
+      {description:'TX盒子(88753)',quantity:1,amountHkd:5.5},
+      {description:'Battery (2PCS)',quantity:2,amountHkd:5.25},
+    ])
+  })
   it('ignores copied cost aliases and machine-cycle numbers instead of treating them as quoted prices', () => {
     const input = changedLegacy(sheets => {
       const rows = sheets[0]!.rows
@@ -275,6 +326,20 @@ describe('Silverlit temporary independent mapping', () => {
       rows[25] = [null,'运费','Freight',0,.01]
     })
     expect(() => convertYinhuiInternalQuote(input, '银辉00012.xlsx')).toThrow(/运费扣除/)
+  })
+  it('does not mistake a later subtotal and final FCL/LCL prices for document fee and freight', () => {
+    const input = changedLegacy(sheets => {
+      const rows = sheets[0]!.rows
+      rows[24]![4] = '盐田柜'; rows[24]![5] = '盐田散'
+      rows[25] = [null,'运费','Freight',0,.2,.3]
+      rows[42] = [] // no independently labelled document/customs fee
+      rows[43] = [null,null,null,null,'FCL','LCL']
+      rows[44] = [null,null,'电子部分小计',33.89,9.8,9.9]
+    })
+    const d = convertYinhuiInternalQuote(input, '银辉00012.xlsx').quoteData
+    expect(d.freightFclHkd).toBeCloseTo(.22, 8)
+    expect(d.freightLclHkd).toBeCloseTo(.33, 8)
+    expect(d.packagingRows.some(r => r.description === 'Documents / Customs Fee')).toBe(false)
   })
   it.each(['88636','89115','89275'] as const)('retains the %s variant formulas and layout while recalculating changed costs', (profile) => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')

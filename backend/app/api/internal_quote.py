@@ -15,6 +15,8 @@ from app.schemas.internal_quote import (
     InternalQuoteBatchProductOut,
     InternalQuoteBusinessOwnerOut,
     InternalQuoteCloneRequest,
+    InternalQuoteCostPreviewOut,
+    InternalQuoteCostPreviewRequest,
     InternalQuoteCreateRequest,
     InternalQuoteCustomerCreateRequest,
     InternalQuoteCustomerOut,
@@ -49,6 +51,8 @@ from app.schemas.internal_quote import (
     InternalQuoteTimelineOut,
     InternalQuoteVersionCandidateOut,
     InternalQuoteVersionComparisonOut,
+    InternalQuoteWholeProductSaveOut,
+    InternalQuoteWholeProductSaveRequest,
 )
 from app.services.auth import AuthContext, get_current_user
 from app.services.internal_quote import (
@@ -70,12 +74,15 @@ from app.services.internal_quote import (
     list_quote_batch_products,
     list_business_owners,
     list_section_revisions,
+    preview_quote_costs,
     preview_section_cost,
+    recalculate_quote_formula,
     remove_quote_participation,
     reopen_section,
     request_section_na,
     review_section,
     save_section,
+    save_whole_product_sections,
     submit_section,
     sync_quote_reference_set,
     update_quote_reference_fx,
@@ -380,6 +387,17 @@ def post_internal_quote_reference_snapshot_sync(
     return sync_quote_reference_set(db, quote_id, payload, current_user, request)
 
 
+@router.post("/{quote_id}/formula/recalculate", response_model=InternalQuoteOut)
+def post_internal_quote_formula_recalculate(
+    quote_id: str,
+    payload: InternalQuoteReferenceSyncRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return recalculate_quote_formula(db, quote_id, payload, current_user, request)
+
+
 @router.put("/{quote_id}/reference-snapshot/fx", response_model=InternalQuoteOut)
 def put_internal_quote_reference_snapshot_fx(
     quote_id: str,
@@ -422,6 +440,27 @@ def post_internal_quote_archive(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return archive_quote(db, quote_id, payload, current_user, request)
+
+
+@router.put("/{quote_id}/sections/save-all", response_model=InternalQuoteWholeProductSaveOut)
+def put_internal_quote_sections_save_all(
+    quote_id: str,
+    payload: InternalQuoteWholeProductSaveRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return save_whole_product_sections(db, quote_id, payload, current_user, request)
+
+
+@router.post("/{quote_id}/cost-preview", response_model=InternalQuoteCostPreviewOut)
+def post_internal_quote_cost_preview(
+    quote_id: str,
+    payload: InternalQuoteCostPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return preview_quote_costs(db, quote_id, payload, current_user)
 
 
 @router.put("/{quote_id}/sections/{section_code}", response_model=InternalQuoteSectionOut)
