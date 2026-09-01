@@ -60,15 +60,13 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     store.livePreviewSectionCode = 'engineering'
     store.liveCostPreview = {
       quote_id: 'quote-fx-1',
-      section_code: 'engineering',
-      section_revision: 2,
-      calculation_status: 'valid',
-      calculation: { status: 'valid', totals: { total_hkd: '117.0000' } },
+      calculations: { engineering: { status: 'valid', totals: { total_hkd: '117.0000' } } },
       warnings: [],
       saved_factory_price_hkd: '100.0000',
       preview_factory_price_hkd: '117.0000',
       delta_hkd: '17.0000',
       components_hkd: { hardware_hkd: '117.0000' },
+      rr2_cost_summary: {} as never,
       formula_version: 'rr2-2026-v1',
       reference_snapshot_id: 'IQREF-1',
       generated_at: '2026-07-19 12:00:00',
@@ -181,6 +179,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
         { id: 'component-01', name: '主体', markup_x: 1.15 },
         { id: 'component-02', name: '镜子' },
       ],
+      shipping: { markup_x: 1.15, packaging_markup_x: 1.25 },
     } }] as InternalQuote['sections']
     componentQuote.rr2CostSummary = {
       shippingPricing: {
@@ -193,6 +192,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
           { id: 'component-01', name: '主体', costHkd: 60, pricingBaseHkd: 60, markup: 1.15, settlement: .97, quotedHkd: 71.134, inheritsMainMarkup: false },
           { id: 'component-02', name: '镜子', costHkd: 40, pricingBaseHkd: 40, markup: 1.15, settlement: .97, quotedHkd: 47.423, inheritsMainMarkup: true },
         ],
+        globalPricing: { costHkd: 15, pricingBaseHkd: 15, markup: 1.25, settlement: .97, quotedHkd: 19.33 },
       },
     } as InternalQuote['rr2CostSummary']
 
@@ -200,14 +200,18 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(wrapper.find('[data-testid="live-quote-markup-moq-0"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('JustPlay 分项倍率')
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-component-markup-1"]').element.value).toBe('1.15')
+    expect(wrapper.text()).toContain('业务部包装')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-component-markup-2"]').element.value).toBe('1.25')
 
     await wrapper.get('[data-testid="live-quote-component-markup-1"]').setValue('1.05')
+    await wrapper.get('[data-testid="live-quote-component-markup-2"]').setValue('1.30')
     await wrapper.get('[data-testid="save-quote-markup"]').trigger('click')
     expect(wrapper.emitted('updateMarkup')?.[0]?.[0]).toMatchObject({
       miscRatio: '0.0300',
       componentMarkups: [
         { id: 'component-01', markup: '1.15' },
         { id: 'component-02', markup: '1.05' },
+        { id: 'sales-packaging', markup: '1.30' },
       ],
     })
   })

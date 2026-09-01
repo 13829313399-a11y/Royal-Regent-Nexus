@@ -11,7 +11,7 @@ from app.models.internal_quote import InternalQuotePricingBaseline
 from app.models.molding_sample import MoldingSampleMaterialPrice
 
 
-FORMULA_VERSION = "rr2-2026-v1"
+FORMULA_VERSION = "rr2-2026-v2"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -169,6 +169,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "testing_fee_moqs": "list of positive integer MOQ tiers when testing_fee_total_usd>0",
         "testing_fee_moq": "legacy single MOQ; read when testing_fee_moqs is absent",
         "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; original RMB source or derived", "unit_price_hkd": "decimal>=0; original HKD source or derived", "unit_price_source_currency": "RMB|HKD; omitted legacy rows prefer RMB unless only HKD exists", "loss_rate": "decimal>0; multiplier, default 1", "tax_rate_percent": "0..100", "remark": "text", "disney_description": "text", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>0"}],
+        "justplay_fixed_packaging": "when pricing_mode=component, automatically add 胶纸/胶水/胶针 = 3.9/2150*(main carton length*2+width*4+6)/qty+0.06 and 纸托板成本 = 19/24/qty+0.05, in HKD/PCS",
         "product_size_in": {"length": "optional decimal>0 inch", "width": "optional decimal>0 inch", "height": "optional decimal>0 inch"},
         "color_box_size_unit": "cm|inch; display/input preference, default inch",
         "color_box_size_in": {"length": "decimal>0 canonical inch", "width": "decimal>0 canonical inch", "height": "decimal>0 canonical inch"},
@@ -1811,6 +1812,55 @@ def _sales_packaging_materials(
     return total_hkd, total_rmb
 
 
+def _sales_justplay_fixed_packaging(
+    payload: dict[str, Any],
+    result: dict[str, Any],
+) -> Decimal:
+    if payload.get("pricing_mode") != "component":
+        return ZERO
+    cartons = payload.get("cartons", []) or []
+    if not cartons:
+        return ZERO
+    main_carton = cartons[0]
+    if not isinstance(main_carton, dict):
+        raise CalculationInputError("主纸箱格式无效")
+    length = positive_value(main_carton.get("length_in"), "主纸箱长度")
+    width = positive_value(main_carton.get("width_in"), "主纸箱宽度")
+    qty_per_carton = positive_value(main_carton.get("qty_per_carton"), "主纸箱每箱数量")
+    adhesive_cost = (
+        Decimal("3.9") / Decimal("2150")
+        * (length * 2 + width * 4 + Decimal("6"))
+        / qty_per_carton
+        + Decimal("0.06")
+    )
+    paper_pallet_cost = Decimal("19") / Decimal("24") / qty_per_carton + Decimal("0.05")
+    shared = {
+        "kind": "justplay_fixed_packaging",
+        "owner": "sales",
+        "category": "other_purchase",
+        "carton_length_in": decimal_text(length),
+        "carton_width_in": decimal_text(width),
+        "qty_per_carton": decimal_text(qty_per_carton),
+    }
+    result["line_breakdown"].extend([
+        {
+            **shared,
+            "formula_code": "adhesive",
+            "item": "胶纸/胶水/胶针",
+            "amount_hkd": decimal_text(adhesive_cost),
+            "formula": "3.9 ÷ 2150 × (主纸箱长 × 2 + 主纸箱宽 × 4 + 6) ÷ 每箱数量 + 0.06",
+        },
+        {
+            **shared,
+            "formula_code": "paper_pallet",
+            "item": "纸托板成本",
+            "amount_hkd": decimal_text(paper_pallet_cost),
+            "formula": "19 ÷ 24 ÷ 每箱数量 + 0.05",
+        },
+    ])
+    return adhesive_cost + paper_pallet_cost
+
+
 def _sales_freight_options(
     payload: dict[str, Any],
     snapshot: dict[str, Any],
@@ -2068,6 +2118,7 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
         })
     packaging_material_total_hkd, packaging_material_total_rmb = _sales_packaging_materials(payload, snapshot, result)
     carton_total_hkd, carton_cuft = _sales_packaging(payload, snapshot, result)
+    packaging_material_total_hkd += _sales_justplay_fixed_packaging(payload, result)
     freight_options = _sales_freight_options(payload, snapshot, result)
     sales_total_hkd = packaging_material_total_hkd + carton_total_hkd
     factory_price = base_factory_price + sales_total_hkd

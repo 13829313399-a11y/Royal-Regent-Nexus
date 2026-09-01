@@ -15,7 +15,7 @@ import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import { canEditAllInternalQuoteSections, canReviewInternalQuoteSections, canWithdrawInternalQuote, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { consumeInternalQuoteProductScroll, rememberInternalQuoteProductScroll } from '@/lib/internalQuoteProductScroll'
-import { cloneInternalQuotePayload, salesSettlementDivisorForMiscRatio, type SalesMarkupTier, type SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
+import { cloneInternalQuotePayload, salesPackagingPricingGroupId, salesSettlementDivisorForMiscRatio, type SalesMarkupTier, type SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 import { internalQuoteApi, internalQuoteAttachmentPreviewUrl, type InternalQuoteHeaderUpdateRequest } from '@/api/internalQuote'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
@@ -174,6 +174,10 @@ const canSelfReviewWhole = computed(() => quote.value.createdById === authStore.
 const canReviewWhole = computed(() => canReviewWholeBase.value
   && (quote.value.finalSubmittedById !== authStore.currentUser?.id || canSelfReviewWhole.value))
 const canSyncReference = computed(() => ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
+const formulaStale = computed(() => Boolean(
+  quote.value.currentFormulaVersion
+  && quote.value.formulaVersion !== quote.value.currentFormulaVersion,
+))
 const canEditSidebarPricing = computed(() => (
   !['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)
   && ([
@@ -470,7 +474,7 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
     if (salesEditor) {
       await salesEditor.saveSalesMarkup(markupTiers, selectedMoq, activeMarkup, miscRatio, componentMarkups.length ? componentMarkups : undefined)
       markupMessage.value = componentMarkups.length
-        ? 'JustPlay 各分项倍率、杂项系数及当前业务部草稿已保存并重新计算。'
+        ? 'JustPlay 各配件与业务部包装倍率、杂项系数及当前业务部草稿已保存并重新计算。'
         : `已选择 MOQ ${selectedMoq.toLocaleString('zh-CN')} 档；三档码数、杂项系数及当前业务部草稿已保存并重新计算。`
     } else {
       const section = salesSection.value
@@ -479,6 +483,7 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
         ? section.payload.shipping as Record<string, unknown>
         : {}
       const componentMarkupById = new Map(componentMarkups.map((row) => [row.id, row.markup]))
+      const packagingMarkup = componentMarkupById.get(salesPackagingPricingGroupId) ?? activeMarkup
       const sourcePricingComponents = Array.isArray(section.payload.pricing_components) ? section.payload.pricing_components : []
       const nextPricingComponents = sourcePricingComponents.flatMap((value, index) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return []
@@ -494,15 +499,16 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
         shipping: {
           ...sourceShipping,
           markup_x: Number(activeMarkup.toFixed(2)),
+          ...(componentMarkups.length ? { packaging_markup_x: Number(packagingMarkup.toFixed(2)) } : {}),
           markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)), include_in_output: tier.include_in_output !== false })),
           selected_markup_moq: selectedMoq,
           misc_ratio: Number(miscRatio.toFixed(4)),
           divisor: salesSettlementDivisorForMiscRatio(miscRatio),
         },
       })
-      await quoteStore.saveSection(quote.value.id, 'sales', section.revision, nextPayload, componentMarkups.length ? '在协作侧栏保存 JustPlay 分项倍率与杂项系数' : '在协作侧栏保存分段 MOQ 码数与杂项系数')
+      await quoteStore.saveSection(quote.value.id, 'sales', section.revision, nextPayload, componentMarkups.length ? '在协作侧栏保存 JustPlay 配件与业务部包装倍率及杂项系数' : '在协作侧栏保存分段 MOQ 码数与杂项系数')
       markupMessage.value = componentMarkups.length
-        ? 'JustPlay 分项倍率与杂项系数已保存为业务部新 revision。'
+        ? 'JustPlay 配件与业务部包装倍率及杂项系数已保存为业务部新 revision。'
         : `MOQ ${selectedMoq.toLocaleString('zh-CN')} 档已设为本单采用；分段码数与杂项系数已保存为业务部新 revision。`
     }
     message.value = markupMessage.value
@@ -759,6 +765,25 @@ function toggleWholeReject() {
   wholeRejectReason.value = ''
 }
 
+async function recalculateFormula() {
+  errorMessage.value = ''
+  message.value = ''
+  if (!canSyncReference.value) {
+    errorMessage.value = '当前账号没有该厂区的公式重算权限。'
+    return
+  }
+  if (!syncReason.value.trim()) {
+    errorMessage.value = '请填写公式重算原因。'
+    return
+  }
+  try {
+    await quoteStore.recalculateFormula(quote.value.id, quote.value.headerRevision, syncReason.value.trim())
+    message.value = `已按当前公式 ${quote.value.currentFormulaVersion} 重算；受影响审批需要重新提交。`
+    syncReason.value = ''
+    syncPanelOpen.value = false
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '按当前公式重算失败。' }
+}
+
 function toggleWholeWithdraw() {
   wholeRejectOpen.value = false
   wholeWithdrawOpen.value = !wholeWithdrawOpen.value
@@ -882,8 +907,8 @@ onBeforeUnmount(() => {
       <div class="quote-whole-review-copy"><span>{{ isMultiProduct ? '整批一次审核' : '整单审核' }}</span><h2>{{ collaborationStatusLabel }}</h2><p>{{ wholeReviewDescription }}</p><div><b>指定审核人：{{ quote.businessOwner }}</b><b v-if="isMultiProduct">产品数量：{{ batchProducts.length }} 款</b><b>当前款部门完成：{{ completedCount }}/{{ participatingSections.length }}</b><b>报价头 r{{ quote.headerRevision }}</b></div></div>
     </section>
 
-    <div class="quote-snapshot-banner"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>同步最新参考表将产生新 revision，并使受影响审批失效</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">同步最新参考表</button></div>
-    <section v-if="syncPanelOpen && canSyncReference" class="quote-sync-panel"><div><strong>同步最新参考表</strong><span>将重算已填写分段，并使受影响的审批、最终放行和 artifact 失效。</span></div><textarea v-model="syncReason" rows="2" placeholder="必须填写同步原因" /><button type="button" class="secondary" @click="syncPanelOpen = false">取消</button><button type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting || !canSyncReference" @click="syncReference">确认同步</button></section>
+    <div class="quote-snapshot-banner"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>{{ formulaStale ? `公式 ${quote.formulaVersion} 已过期，当前为 ${quote.currentFormulaVersion}` : '同步最新参考表将产生新 revision，并使受影响审批失效' }}</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">{{ formulaStale ? '处理旧公式' : '同步最新参考表' }}</button></div>
+    <section v-if="syncPanelOpen && canSyncReference" class="quote-sync-panel"><div><strong>{{ formulaStale ? '公式或参考数据更新' : '同步最新参考表' }}</strong><span>将重算已填写分段，并使受影响的审批、最终放行和 artifact 失效。</span></div><textarea v-model="syncReason" rows="2" placeholder="必须填写变更原因" /><button type="button" class="secondary" @click="syncPanelOpen = false">取消</button><button v-if="formulaStale" type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting" @click="recalculateFormula">按当前公式重算</button><button type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting || !canSyncReference" @click="syncReference">同步最新参考表</button></section>
     <section v-if="participationPanelOpen" class="quote-participation-panel">
       <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部、工程部和装配部固定参与；勾选可选部门表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>
       <div class="quote-participation-options">

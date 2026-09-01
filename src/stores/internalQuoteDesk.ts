@@ -6,13 +6,13 @@ import {
   type ApiInternalQuoteAudit,
   type ApiInternalQuoteBatchProduct,
   type ApiInternalQuoteCustomer,
+  type ApiInternalQuoteCostPreview,
   type ApiInternalQuoteDashboard,
   type ApiInternalQuoteExport,
   type ApiInternalQuoteImportPreview,
   type ApiInternalQuotePricingBaseline,
   type ApiInternalQuoteReferenceSet,
   type ApiInternalQuoteSection,
-  type ApiInternalQuoteSectionPreview,
   type ApiInternalQuoteSummary,
   type ApiInternalQuoteTimeline,
   type ApiInternalQuoteVersionCandidate,
@@ -299,7 +299,7 @@ const rr2T4Fields = [
   ['tax13b', '含税13%类', 11.5],
 ] as const
 
-function rr2CostSummary(summary?: ApiInternalQuoteSummary): InternalQuoteRr2CostSummary {
+function rr2CostSummary(summary?: Pick<ApiInternalQuoteSummary, 'rr2_cost_summary'>): InternalQuoteRr2CostSummary {
   const source = summary?.rr2_cost_summary
   const shipping = source?.shipping_pricing
   const miscRatioSource = shipping?.misc_ratio
@@ -418,6 +418,13 @@ function rr2CostSummary(summary?: ApiInternalQuoteSummary): InternalQuoteRr2Cost
         quotedHkd: numberValue(item.quoted_hkd),
         inheritsMainMarkup: String(item.inherits_main_markup) === 'true',
       })),
+      globalPricing: {
+        costHkd: numberValue(shipping?.global_pricing?.cost_hkd),
+        pricingBaseHkd: numberValue(shipping?.global_pricing?.pricing_base_hkd),
+        markup: numberValue(shipping?.global_pricing?.markup),
+        settlement: numberValue(shipping?.global_pricing?.settlement),
+        quotedHkd: numberValue(shipping?.global_pricing?.quoted_hkd),
+      },
       rows: (shipping?.rows ?? []).map((item) => ({
         name: String(item.name ?? '出货场景'),
         totalCartons: numberValue(item.total_cartons),
@@ -481,6 +488,7 @@ function toQuote(
     referenceSnapshotId: source.reference_snapshot_id,
     referenceSnapshot: extras.reference?.snapshot ?? {},
     formulaVersion: source.formula_version,
+    currentFormulaVersion: extras.summary?.current_formula_version || source.formula_version,
     moduleVersion: source.module_version,
     headerRevision: source.header_revision,
     finalReleaseStatus: source.final_release_status,
@@ -507,7 +515,7 @@ function emptyQuote(): InternalQuote {
     id: '', quoteNo: '', productName: '正在读取内部报价…', quoteType: 'single', batchId: '', batchQuoteNo: '', batchPosition: 1, batchSize: 1, baselineQuoteId: '', regionCode: '', customer: '', versionLabel: '', factoryId: '', factoryName: '',
     workshopCode: '', workshopName: '', initiatorDepartment: 'sales-business', createdById: '', initiatorName: '', businessOwnerId: '',
     businessOwner: '', targetCustomerPrice: '无', quantity: 1, targetDate: '', remark: '', createdAt: '', updatedAt: '', status: 'drafting',
-    fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', referenceSnapshot: {}, formulaVersion: '', moduleVersion: 'v2', headerRevision: 1,
+    fxRmbHkd: 0.85, fxHkdUsd: 7.8, fxRmbUsd: 7.75, referenceSnapshotId: '', referenceSnapshot: {}, formulaVersion: '', currentFormulaVersion: '', moduleVersion: 'v2', headerRevision: 1,
     finalReleaseStatus: '', factoryPriceHkd: 0, summaryComponents: {}, summaryWarnings: [], shippingScenarios: [], rr2CostSummary: rr2CostSummary(),
     sections: internalQuoteSectionDefinitions.map((definition) => ({
       ...definition, status: 'draft', isRequired: true, revision: 1, totalHkd: 0, updatedAt: '', warnings: [], lines: [],
@@ -594,7 +602,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     businessOwners: [] as InternalQuoteBusinessOwner[],
     pricingBaseline: null as ApiInternalQuotePricingBaseline | null,
     dashboard: null as ApiInternalQuoteDashboard | null,
-    liveCostPreview: null as ApiInternalQuoteSectionPreview | null,
+    liveCostPreview: null as ApiInternalQuoteCostPreview | null,
+    liveCostPreviewSummary: null as InternalQuoteRr2CostSummary | null,
+    livePreviewDrafts: {} as Partial<Record<InternalQuoteSectionCode, { revision: number; payload: Record<string, unknown> }>>,
     placeholderQuote: emptyQuote(),
     listLoading: false,
     dashboardLoading: false,
@@ -661,6 +671,14 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.businessOwners = []
       this.dashboard = null
       this.dashboardFactoryId = ''
+      this.livePreviewRequestSequence += 1
+      this.liveCostPreview = null
+      this.liveCostPreviewSummary = null
+      this.livePreviewDrafts = {}
+      this.livePreviewQuoteId = ''
+      this.livePreviewSectionCode = ''
+      this.livePreviewLoading = false
+      this.livePreviewErrorMessage = ''
       this.pricingBaseline = null
       this.pricingBaselineFactoryId = ''
       this.pricingBaselineWorkshopCode = ''
@@ -907,31 +925,41 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     clearLiveCostPreview(quoteId = '', sectionCode: InternalQuoteSectionCode | '' = '') {
       if (quoteId && this.livePreviewQuoteId && this.livePreviewQuoteId !== quoteId) return
-      if (sectionCode && this.livePreviewSectionCode && this.livePreviewSectionCode !== sectionCode) return
+      if (sectionCode) {
+        delete this.livePreviewDrafts[sectionCode]
+        const remaining = Object.keys(this.livePreviewDrafts) as InternalQuoteSectionCode[]
+        if (remaining.length && this.livePreviewQuoteId) {
+          void this.refreshLiveCostPreview(this.livePreviewQuoteId)
+          return
+        }
+      } else {
+        this.livePreviewDrafts = {}
+      }
       this.livePreviewRequestSequence += 1
       this.liveCostPreview = null
+      this.liveCostPreviewSummary = null
       this.livePreviewLoading = false
       this.livePreviewErrorMessage = ''
       this.livePreviewQuoteId = ''
       this.livePreviewSectionCode = ''
     },
-    async previewSectionCost(
-      quoteId: string,
-      sectionCode: InternalQuoteSectionCode,
-      revision: number,
-      payload: Record<string, unknown>,
-    ) {
+    async refreshLiveCostPreview(quoteId: string) {
+      const drafts = (Object.entries(this.livePreviewDrafts) as Array<[
+        InternalQuoteSectionCode,
+        { revision: number; payload: Record<string, unknown> },
+      ]>).map(([sectionCode, draft]) => ({ sectionCode, ...draft }))
+      if (!drafts.length) {
+        this.clearLiveCostPreview(quoteId)
+        return undefined
+      }
       const requestSequence = ++this.livePreviewRequestSequence
-      const contextChanged = this.livePreviewQuoteId !== quoteId || this.livePreviewSectionCode !== sectionCode
-      if (contextChanged) this.liveCostPreview = null
-      this.livePreviewQuoteId = quoteId
-      this.livePreviewSectionCode = sectionCode
       this.livePreviewLoading = true
       this.livePreviewErrorMessage = ''
       try {
-        const preview = await internalQuoteApi.previewSection(quoteId, sectionCode, revision, payload)
+        const preview = await internalQuoteApi.previewCosts(quoteId, drafts)
         if (requestSequence !== this.livePreviewRequestSequence) return undefined
         this.liveCostPreview = preview
+        this.liveCostPreviewSummary = rr2CostSummary({ rr2_cost_summary: preview.rr2_cost_summary })
         return preview
       } catch (error) {
         if (requestSequence !== this.livePreviewRequestSequence) return undefined
@@ -940,6 +968,23 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       } finally {
         if (requestSequence === this.livePreviewRequestSequence) this.livePreviewLoading = false
       }
+    },
+    async previewSectionCost(
+      quoteId: string,
+      sectionCode: InternalQuoteSectionCode,
+      revision: number,
+      payload: Record<string, unknown>,
+    ) {
+      const contextChanged = this.livePreviewQuoteId !== quoteId
+      if (contextChanged) {
+        this.liveCostPreview = null
+        this.liveCostPreviewSummary = null
+        this.livePreviewDrafts = {}
+      }
+      this.livePreviewQuoteId = quoteId
+      this.livePreviewSectionCode = sectionCode
+      this.livePreviewDrafts[sectionCode] = { revision, payload }
+      return this.refreshLiveCostPreview(quoteId)
     },
     async loadPricingBaseline(factoryId: string, workshopCode = 'huaxing-workshop') {
       const factoryContextGeneration = this.ensureFactoryContext(factoryId)
@@ -1339,36 +1384,16 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           throw new Error(`${definitionFor(draft.sectionCode).label}内容已被其他用户修改；本页输入仍已保留，请重新读取后核对。`)
         }
 
-        for (let index = 0; index < orderedDrafts.length; index += 1) {
-          const draft = orderedDrafts[index]!
-          if (alreadyPersisted.has(draft.sectionCode)) continue
-          const result = await internalQuoteApi.saveSection(
-            quoteId,
-            draft.sectionCode,
-            currentRevisions.get(draft.sectionCode) ?? draft.revision,
-            draft.payload,
-            '在连续报价页统一保存当前产品',
-          )
-          savedSections.push(result)
-          currentRevisions.set(draft.sectionCode, result.revision)
-
-          const pendingMoldingDraft = draft.sectionCode === 'engineering'
-            ? orderedDrafts.slice(index + 1).find((item) => item.sectionCode === 'molding')
-            : undefined
-          if (pendingMoldingDraft) {
-            const latestQuote = await internalQuoteApi.get(quoteId)
-            const latestMolding = latestQuote.sections.find((section) => section.department === 'molding')
-            if (!latestMolding) throw new Error('工程部保存后未能读取啤机部最新 revision，请重新读取页面后再试。')
-            const latestFingerprint = fingerprint('molding', latestMolding.payload)
-            if (
-              latestMolding.revision !== pendingMoldingDraft.revision
-              && latestFingerprint !== fingerprint('molding', pendingMoldingDraft.baselinePayload)
-              && latestFingerprint !== fingerprint('molding', pendingMoldingDraft.payload)
-            ) {
-              throw new Error('啤机部内容已被其他用户修改；本页输入仍已保留，请重新读取后核对。')
-            }
-            currentRevisions.set('molding', latestMolding.revision)
-          }
+        const pendingDrafts = orderedDrafts
+          .filter((draft) => !alreadyPersisted.has(draft.sectionCode))
+          .map((draft) => ({
+            sectionCode: draft.sectionCode,
+            revision: currentRevisions.get(draft.sectionCode) ?? draft.revision,
+            payload: draft.payload,
+          }))
+        if (pendingDrafts.length) {
+          const result = await internalQuoteApi.saveWholeProduct(quoteId, pendingDrafts)
+          savedSections.push(...result.sections)
         }
 
         const refreshed = await this.loadQuote(quoteId)
@@ -1414,6 +1439,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     syncReferenceSnapshot(quoteId: string, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.syncReferenceSnapshot(quoteId, revision, reason))
+    },
+    recalculateFormula(quoteId: string, revision: number, reason: string) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.recalculateFormula(quoteId, revision, reason))
     },
     updateReferenceFx(quoteId: string, revision: number, rmbHkd: string, hkdUsd: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.updateReferenceFx(quoteId, revision, rmbHkd, hkdUsd))

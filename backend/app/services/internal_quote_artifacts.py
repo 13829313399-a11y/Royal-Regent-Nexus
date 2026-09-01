@@ -53,6 +53,7 @@ from app.services.internal_quote import (
     _json_object,
     _rr2_cost_summary,
     _section_out,
+    ensure_quote_formula_current,
     ensure_quote_permission,
     ensure_quote_read,
     ensure_section_permission,
@@ -1532,6 +1533,33 @@ def _ensure_export_sections_ready(
         )
 
 
+def _export_matches_current_state(
+    record: InternalQuoteExportFile,
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+    *,
+    require_layout: bool = True,
+) -> bool:
+    manifest = _json_object(record.export_manifest_json)
+    section_revisions = {section.department: section.revision for section in sections}
+    section_hashes = {section.department: section.calculation_hash for section in sections}
+    if require_layout and (
+        manifest.get("workbook_layout_version") != WORKBOOK_LAYOUT_VERSION
+        or manifest.get("export_file_name_version") != EXPORT_FILE_NAME_VERSION
+    ):
+        return False
+    return (
+        record.formula_version == quote.formula_version
+        and record.reference_snapshot_id == quote.reference_snapshot_id
+        and record.header_revision == quote.header_revision
+        and _json_object(record.section_revisions_json) == section_revisions
+        and manifest.get("section_revisions") == section_revisions
+        and manifest.get("section_calculation_hashes") == section_hashes
+        and str(manifest.get("final_release_revision") or "0")
+        == str(quote.final_release_revision)
+    )
+
+
 def _handoff_manifest(
     quote: InternalQuote,
     record: InternalQuoteExportFile,
@@ -1609,6 +1637,7 @@ def create_controlled_export(
     _ensure_active(quote)
     _ensure_export_permission(db, quote, user)
     sections = _export_sections(db, quote)
+    ensure_quote_formula_current(quote, sections)
     _ensure_export_sections_ready(sections)
     attachments = db.scalars(
         select(InternalQuoteAttachment)
@@ -1639,13 +1668,7 @@ def create_controlled_export(
             )
         ).all()
         for current_export in current_exports:
-            current_manifest = _json_object(current_export.export_manifest_json)
-            if (
-                current_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION
-                and current_manifest.get("export_file_name_version") == EXPORT_FILE_NAME_VERSION
-                and str(current_manifest.get("final_release_revision") or "0")
-                == str(quote.final_release_revision)
-            ):
+            if _export_matches_current_state(current_export, quote, sections):
                 return _export_out(current_export)
         existing_handoff = db.scalar(
             select(InternalQuoteArtifactHandoff).where(
@@ -1656,17 +1679,18 @@ def create_controlled_export(
         if existing_handoff is not None:
             existing_export = db.get(InternalQuoteExportFile, existing_handoff.export_id)
             if existing_export is not None and existing_export.release_stage == "p4_final_approved":
-                existing_manifest = _json_object(existing_export.export_manifest_json)
-                if (
-                    existing_manifest.get("workbook_layout_version") == WORKBOOK_LAYOUT_VERSION
-                    and existing_manifest.get("export_file_name_version") == EXPORT_FILE_NAME_VERSION
-                ):
+                if _export_matches_current_state(existing_export, quote, sections):
                     return _export_out(existing_export)
                 # The final-release business payload remains immutable.  A
                 # presentation-only refresh gets a new export record while the
                 # one-per-release customer handoff continues to reference its
                 # original, structurally compatible P4 v2 artifact.
-                layout_refresh = True
+                layout_refresh = _export_matches_current_state(
+                    existing_export,
+                    quote,
+                    sections,
+                    require_layout=False,
+                )
     release_stage = "p4_final_approved" if is_final_release else "p3_section_approved"
     template_version = P4_TEMPLATE_VERSION if is_final_release else P3_TEMPLATE_VERSION
     _supersede_outdated_exports(db, quote, sections)

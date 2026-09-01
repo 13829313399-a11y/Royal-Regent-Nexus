@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 from collections import Counter, defaultdict
@@ -34,6 +35,8 @@ from app.schemas.internal_quote import (
     InternalQuoteBatchProductOut,
     InternalQuoteBusinessOwnerOut,
     InternalQuoteCloneRequest,
+    InternalQuoteCostPreviewOut,
+    InternalQuoteCostPreviewRequest,
     InternalQuoteCreateRequest,
     InternalQuoteDashboardOut,
     InternalQuoteHeaderUpdateRequest,
@@ -54,6 +57,8 @@ from app.schemas.internal_quote import (
     InternalQuoteSectionPreviewRequest,
     InternalQuoteSectionSaveRequest,
     InternalQuoteTimelineOut,
+    InternalQuoteWholeProductSaveOut,
+    InternalQuoteWholeProductSaveRequest,
 )
 from app.services.auth import (
     AuthContext,
@@ -751,6 +756,62 @@ def _section_totals(section: InternalQuoteSection) -> dict[str, object]:
     return totals if isinstance(totals, dict) else {}
 
 
+def quote_formula_mismatches(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+) -> list[dict[str, str]]:
+    """Return persisted quote/section calculations that predate current code."""
+
+    mismatches: list[dict[str, str]] = []
+    if quote.formula_version != FORMULA_VERSION:
+        mismatches.append(
+            {
+                "scope": "quote",
+                "section_code": "",
+                "saved_formula_version": quote.formula_version or "unknown",
+                "current_formula_version": FORMULA_VERSION,
+            }
+        )
+    for section in sections:
+        if not section.is_required or section.status == "not_applicable":
+            continue
+        if not _json_object(section.payload_json):
+            continue
+        if section.calculation_formula_version != FORMULA_VERSION:
+            mismatches.append(
+                {
+                    "scope": "section",
+                    "section_code": section.department,
+                    "saved_formula_version": section.calculation_formula_version or "unknown",
+                    "current_formula_version": FORMULA_VERSION,
+                }
+            )
+    return mismatches
+
+
+def ensure_quote_formula_current(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+) -> None:
+    mismatches = quote_formula_mismatches(quote, sections)
+    if mismatches:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "报价仍使用旧版计算公式，请先执行“按当前公式重算”后再审核或导出",
+                "formula_version": quote.formula_version,
+                "current_formula_version": FORMULA_VERSION,
+                "mismatches": mismatches,
+            },
+        )
+
+
+def _sales_owns_packaging_material_cost(payload: dict[str, object]) -> bool:
+    return bool(payload.get("packaging_materials")) or (
+        payload.get("pricing_mode") == "component" and bool(payload.get("cartons"))
+    )
+
+
 def _cost_context(
     db: Session,
     quote: InternalQuote,
@@ -786,7 +847,7 @@ def _cost_context(
     if sales_payload is None:
         sales_payload = _json_object(by_code["sales"].payload_json) if "sales" in by_code else {}
     sales_has_cartons = bool(sales_payload.get("cartons"))
-    sales_has_packaging_materials = bool(sales_payload.get("packaging_materials"))
+    sales_has_packaging_materials = _sales_owns_packaging_material_cost(sales_payload)
     # Indonesia freight is a destination-specific direct cost. Historical and
     # copied payloads may still carry the field on mainland/unspecified quotes;
     # keep the stored evidence intact but never let it enter an inapplicable
@@ -1086,6 +1147,12 @@ def _rr2_cost_summary(
         fallback_markup,
         quote_quantity,
     )
+    packaging_markup = _summary_decimal(
+        shipping_source.get("packaging_markup_x"),
+        decimal_text(markup),
+    )
+    if packaging_markup <= 0 or packaging_markup > Decimal("9.99"):
+        packaging_markup = markup
     try:
         misc_ratio, settlement = resolve_sales_misc_and_settlement(
             shipping_source,
@@ -1150,7 +1217,7 @@ def _rr2_cost_summary(
     direct_misc_cost = indonesia_freight + additional_tax
     shipping_floor = factory_price + additional_tax
     sales_has_cartons = bool(sales_payload.get("cartons"))
-    sales_has_packaging_materials = bool(sales_payload.get("packaging_materials"))
+    sales_has_packaging_materials = _sales_owns_packaging_material_cost(sales_payload)
     section_labels = {
         "engineering": "工程采购",
         "electronic": "电子",
@@ -1180,6 +1247,7 @@ def _rr2_cost_summary(
         "assembly_process": "amount_hkd_pcs",
         "assembly_manual_total": "amount_hkd_pcs",
         "packaging_material": "amount_hkd",
+        "justplay_fixed_packaging": "amount_hkd",
     }
 
     def section_pricing_target(code: str) -> Decimal:
@@ -1205,7 +1273,7 @@ def _rr2_cost_summary(
             return str(line.get("category") or "auxiliary") != "packaging" or not sales_has_packaging_materials
         if code == "engineering" and kind == "carton":
             return not sales_has_cartons
-        if code == "sales" and kind == "packaging_material":
+        if code == "sales" and kind in {"packaging_material", "justplay_fixed_packaging"}:
             return sales_has_packaging_materials
         if code == "sales" and kind == "carton":
             return sales_has_cartons
@@ -1261,6 +1329,11 @@ def _rr2_cost_summary(
                 "teams",
                 "production_qty",
                 "standard_work_hours",
+                "formula_code",
+                "carton_length_in",
+                "carton_width_in",
+                "qty_per_carton",
+                "formula",
             ):
                 if line.get(field) not in (None, ""):
                     entry[field] = line.get(field)
@@ -1403,10 +1476,15 @@ def _rr2_cost_summary(
 
     def priced_groups(extra_main_cost: Decimal = Decimal("0")) -> tuple[list[dict[str, str]], Decimal, Decimal]:
         rows_out: list[dict[str, str]] = []
-        after_markup_total = Decimal("0")
+        after_markup_total = (
+            (global_pricing_cost + additional_tax + extra_main_cost)
+            * packaging_markup
+            if component_definitions
+            else Decimal("0")
+        )
         for group in base_pricing_groups:
             pricing_base = _summary_decimal(group["cost_hkd"])
-            if group.get("is_main"):
+            if group.get("is_main") and not component_definitions:
                 pricing_base += global_pricing_cost + additional_tax + extra_main_cost
             group_markup = _summary_decimal(group["markup"], decimal_text(markup))
             after_markup = pricing_base * group_markup
@@ -1426,9 +1504,13 @@ def _rr2_cost_summary(
 
     pricing_groups, _base_after_markup, base_price = priced_groups()
     global_pricing_markup = (
-        _summary_decimal(base_pricing_groups[0].get("markup"), decimal_text(markup))
-        if base_pricing_groups
-        else markup
+        packaging_markup
+        if component_definitions
+        else (
+            _summary_decimal(base_pricing_groups[0].get("markup"), decimal_text(markup))
+            if base_pricing_groups
+            else markup
+        )
     )
     global_pricing_base = global_pricing_cost + additional_tax
     global_pricing_quote = (
@@ -1684,16 +1766,21 @@ def _calculation_dependencies(
     db: Session,
     quote: InternalQuote,
     section_code: str,
+    *,
+    payload_overrides: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     sections = db.scalars(
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
     ).all()
     by_code = {section.department: section for section in sections}
+    payload_overrides = payload_overrides or {}
     if section_code == "molding":
         engineering = by_code.get("engineering")
         if engineering is None:
             return {}
-        engineering_payload = _json_object(engineering.payload_json)
+        engineering_payload = payload_overrides.get("engineering")
+        if engineering_payload is None:
+            engineering_payload = _json_object(engineering.payload_json)
         source_molds = engineering_payload.get("molds", [])
         molds = source_molds if isinstance(source_molds, list) else []
         molding_dependency_fields = (
@@ -1762,7 +1849,7 @@ def _calculate_and_apply(
     factory_price_hkd = cost_context["factory_price_hkd"]
     if section.department == "sales" and section_payload.get("cartons"):
         factory_price_hkd -= cost_context["carton_hkd"]
-    if section.department == "sales" and section_payload.get("packaging_materials"):
+    if section.department == "sales" and _sales_owns_packaging_material_cost(section_payload):
         factory_price_hkd -= cost_context["packaging_material_hkd"]
     calculation = calculate_section(
         section.department,
@@ -2940,18 +3027,19 @@ def update_quote_header(
     _ensure_active(quote)
     if quote.status in {"final_reviewing", "fully_approved", "exported"}:
         raise HTTPException(status_code=409, detail="最终审核或放行后的报价头不可直接修改，请先退回或重开分段")
-    started_section = db.scalar(
-        select(InternalQuoteSection.id).where(
-            InternalQuoteSection.quote_id == quote.id,
-            InternalQuoteSection.is_required.is_(True),
-            (
-                (InternalQuoteSection.status != "draft")
-                | (InternalQuoteSection.revision > 1)
-                | (InternalQuoteSection.filled_at != "")
-            ),
-        ).limit(1)
+    sections = db.scalars(
+        select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
+    ).all()
+    started_section = any(
+        section.is_required
+        and (
+            section.status != "draft"
+            or section.revision > 1
+            or bool(section.filled_at)
+        )
+        for section in sections
     )
-    if started_section is not None and not (
+    if started_section and not (
         is_whole_quote_review(quote) and quote.status == "rejected"
     ):
         raise HTTPException(
@@ -2964,6 +3052,33 @@ def update_quote_header(
         owner_name = validate_quote_business_owner(
             db, payload.business_owner_id or quote.business_owner_id, quote.factory_id, quote.created_by,
         )
+    prospective_customer = payload.customer if payload.customer is not None else quote.customer
+    if payload.customer is not None and payload.customer != quote.customer:
+        sales = next((section for section in sections if section.department == "sales"), None)
+        sales_payload = _json_object(sales.payload_json) if sales is not None else {}
+        has_components = (
+            sales_payload.get("pricing_mode") == "component"
+            and bool(sales_payload.get("pricing_components"))
+        )
+        normalized_factory = re.sub(r"[^a-z0-9]", "", quote.factory_id.casefold())
+        normalized_customer = re.sub(r"[^a-z0-9]", "", prospective_customer.casefold())
+        is_justplay = normalized_factory == "huakangb" and normalized_customer == "justplay"
+        if is_justplay and not has_components:
+            raise HTTPException(
+                status_code=409,
+                detail="切换为华康B JustPlay 客户前，业务部分段必须先建立报价分项",
+            )
+        if not is_justplay and has_components:
+            raise HTTPException(
+                status_code=409,
+                detail="当前报价含 JustPlay 独立分项，不能直接切换为普通客户，请另建普通客户报价",
+            )
+    cost_inputs_changed = (
+        (payload.customer is not None and payload.customer != quote.customer)
+        or (payload.qty is not None and payload.qty != quote.qty)
+    )
+    if started_section and cost_inputs_changed:
+        ensure_quote_formula_current(quote, sections)
     old_revision = quote.header_revision
     for field, value in payload.model_dump(exclude={"revision"}, exclude_none=True).items():
         setattr(quote, field, value)
@@ -2971,6 +3086,43 @@ def update_quote_header(
         quote.business_owner_name = owner_name
     quote.header_revision += 1
     quote.updated_at = now_text()
+    if started_section and cost_inputs_changed:
+        for section_code in SECTION_CODE_ORDER:
+            section = next(
+                (row for row in sections if row.department == section_code),
+                None,
+            )
+            if (
+                section is None
+                or not section.is_required
+                or section.status == "not_applicable"
+                or not _json_object(section.payload_json)
+            ):
+                continue
+            old_section_revision = section.revision
+            section.revision += 1
+            try:
+                _calculate_and_apply(db, quote, section, user)
+            except CalculationInputError as error:
+                db.rollback()
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            section.status = "draft"
+            section.review_comment = "报价客户或数量已调整，系统已按新报价头重算"
+            section.updated_at = now_text()
+            _add_revision(db, quote, section, user, reason="header_cost_input_recalculated")
+            _add_audit(
+                db,
+                quote,
+                user,
+                "header_recalculated_section",
+                department=section.department,
+                old_revision=old_section_revision,
+                new_revision=section.revision,
+                reason="客户或数量变更",
+                request=request,
+            )
+        quote.final_release_status = "rejected"
+        _derive_quote_status(db, quote)
     _add_audit(
         db,
         quote,
@@ -3367,6 +3519,132 @@ def clone_quote(
     return quote_to_out(db, target)
 
 
+def preview_quote_costs(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteCostPreviewRequest,
+    user: AuthContext,
+) -> InternalQuoteCostPreviewOut:
+    """Preview every dirty department together using the authoritative calculator."""
+
+    quote = _get_quote(db, quote_id)
+    _ensure_active(quote)
+    sections = db.scalars(
+        select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
+    ).all()
+    by_code = {section.department: section for section in sections}
+    draft_by_code = {draft.section_code: draft for draft in payload.drafts}
+    payload_overrides: dict[str, dict[str, object]] = {}
+    for section_code, draft in draft_by_code.items():
+        ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
+        section = by_code.get(section_code)
+        if section is None:
+            raise HTTPException(status_code=404, detail="报价分段不存在")
+        _ensure_section_participates(section)
+        _check_revision(section.revision, draft.revision)
+        if section.status not in MUTABLE_SECTION_STATUSES:
+            raise HTTPException(status_code=409, detail=f"{section.department_name}当前状态不可试算")
+        payload_overrides[section_code] = draft.payload
+
+    reference = _find_reference_set(db, quote)
+    if reference is None:
+        raise HTTPException(status_code=409, detail="报价缺少冻结参考快照，暂时无法实时试算")
+    snapshot = _json_object(reference.snapshot_json)
+    saved_context = _cost_context(db, quote)
+    calculation_overrides: dict[str, dict[str, object]] = {}
+    calculations: dict[str, dict[str, object]] = {}
+    warnings: list[dict[str, object]] = []
+
+    for section_code in SECTION_CODE_ORDER:
+        draft = draft_by_code.get(section_code)
+        if draft is None:
+            continue
+        current_context = _cost_context(
+            db,
+            quote,
+            calculation_overrides=calculation_overrides,
+            payload_overrides=payload_overrides,
+        )
+        factory_price_hkd = current_context["factory_price_hkd"]
+        if section_code == "sales" and draft.payload.get("cartons"):
+            factory_price_hkd -= current_context["carton_hkd"]
+        if section_code == "sales" and _sales_owns_packaging_material_cost(draft.payload):
+            factory_price_hkd -= current_context["packaging_material_hkd"]
+        try:
+            calculation = calculate_section(
+                section_code,
+                draft.payload,
+                snapshot,
+                reference.id,
+                context={
+                    "factory_price_hkd": decimal_text(factory_price_hkd),
+                    "mold_amortization_usd": decimal_text(current_context["mold_amortization_usd"]),
+                    "dependencies": _calculation_dependencies(
+                        db,
+                        quote,
+                        section_code,
+                        payload_overrides=payload_overrides,
+                    ),
+                },
+            )
+        except CalculationInputError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        calculations[section_code] = calculation
+        warning_rows = calculation.get("warnings", [])
+        if isinstance(warning_rows, list):
+            warnings.extend(
+                {"section_code": section_code, **item}
+                for item in warning_rows
+                if isinstance(item, dict)
+            )
+        if calculation.get("status") == "valid":
+            calculation_overrides[section_code] = calculation
+
+    preview_context = _cost_context(
+        db,
+        quote,
+        calculation_overrides=calculation_overrides,
+        payload_overrides=payload_overrides,
+    )
+    preview_sections = [copy.copy(section) for section in sections]
+    for section in preview_sections:
+        preview_payload = payload_overrides.get(section.department)
+        preview_calculation = calculations.get(section.department)
+        if preview_payload is not None:
+            section.payload_json = canonical_json(preview_payload)
+        if preview_calculation is not None:
+            section.calculation_json = canonical_json(preview_calculation)
+            section.calculation_status = str(preview_calculation.get("status", "blocked"))
+            section.calculation_formula_version = FORMULA_VERSION
+            section.calculation_reference_snapshot_id = reference.id
+    rr2_cost_summary = _rr2_cost_summary(
+        [section for section in preview_sections if section.is_required],
+        preview_context,
+        snapshot,
+        quote.qty,
+        factory_id=quote.factory_id,
+    )
+    saved_factory_price = saved_context["factory_price_hkd"]
+    preview_factory_price = preview_context["factory_price_hkd"]
+    return InternalQuoteCostPreviewOut(
+        quote_id=quote.id,
+        calculations=calculations,
+        warnings=warnings,
+        saved_factory_price_hkd=decimal_text(saved_factory_price),
+        preview_factory_price_hkd=decimal_text(preview_factory_price),
+        delta_hkd=decimal_text(preview_factory_price - saved_factory_price),
+        components_hkd={
+            key: decimal_text(value)
+            for key, value in preview_context.items()
+            if key not in {"factory_price_hkd", "mold_amortization_usd"}
+        },
+        rr2_cost_summary=rr2_cost_summary,
+        formula_version=FORMULA_VERSION,
+        reference_snapshot_id=reference.id,
+        generated_at=now_text(),
+    )
+
+
 def preview_section_cost(
     db: Session,
     quote_id: str,
@@ -3374,85 +3652,99 @@ def preview_section_cost(
     payload: InternalQuoteSectionPreviewRequest,
     user: AuthContext,
 ) -> InternalQuoteSectionPreviewOut:
-    """Calculate an unsaved section and merge it into a read-only whole-quote preview.
+    preview = preview_quote_costs(
+        db,
+        quote_id,
+        InternalQuoteCostPreviewRequest(
+            drafts=[
+                {
+                    "section_code": section_code,
+                    "revision": payload.revision,
+                    "payload": payload.payload,
+                }
+            ]
+        ),
+        user,
+    )
+    calculation = preview.calculations.get(section_code, {})
+    return InternalQuoteSectionPreviewOut(
+        quote_id=preview.quote_id,
+        section_code=section_code,
+        section_revision=payload.revision,
+        calculation_status=str(calculation.get("status", "blocked")),
+        calculation=calculation,
+        warnings=preview.warnings,
+        saved_factory_price_hkd=preview.saved_factory_price_hkd,
+        preview_factory_price_hkd=preview.preview_factory_price_hkd,
+        delta_hkd=preview.delta_hkd,
+        components_hkd=preview.components_hkd,
+        rr2_cost_summary=preview.rr2_cost_summary,
+        formula_version=preview.formula_version,
+        reference_snapshot_id=preview.reference_snapshot_id,
+        generated_at=preview.generated_at,
+    )
 
-    This endpoint deliberately performs no flush, commit, audit, revision or
-    dependency invalidation.  It shares the production calculator and frozen
-    reference snapshot with ``save_section`` so the editor can tune a quote
-    before review without promoting browser arithmetic to authority.
-    """
 
-    quote = _get_quote(db, quote_id)
-    ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
-    _ensure_active(quote)
-    section = _get_section(db, quote_id, section_code)
-    _ensure_section_participates(section)
-    _check_revision(section.revision, payload.revision)
-    if section.status not in MUTABLE_SECTION_STATUSES:
-        raise HTTPException(status_code=409, detail="当前状态不可试算，请先退回或合法重开")
-
-    reference = _find_reference_set(db, quote)
-    if reference is None:
-        raise HTTPException(status_code=409, detail="报价缺少冻结参考快照，暂时无法实时试算")
-    snapshot = _json_object(reference.snapshot_json)
-    saved_context = _cost_context(db, quote)
-    preview_payload = payload.payload
-    dependencies = _calculation_dependencies(db, quote, section_code)
-    factory_price_hkd = saved_context["factory_price_hkd"]
-    if section_code == "sales" and preview_payload.get("cartons"):
-        factory_price_hkd -= saved_context["carton_hkd"]
-    if section_code == "sales" and preview_payload.get("packaging_materials"):
-        factory_price_hkd -= saved_context["packaging_material_hkd"]
-
-    try:
-        calculation = calculate_section(
-            section_code,
-            preview_payload,
-            snapshot,
-            reference.id,
-            context={
-                "factory_price_hkd": decimal_text(factory_price_hkd),
-                "mold_amortization_usd": decimal_text(saved_context["mold_amortization_usd"]),
-                "dependencies": dependencies,
-            },
+def _save_section_in_transaction(
+    db: Session,
+    quote: InternalQuote,
+    section: InternalQuoteSection,
+    next_payload: dict[str, object],
+    reason: str,
+    user: AuthContext,
+    request: Request | None,
+) -> InternalQuoteSection:
+    next_payload_json = canonical_json(next_payload)
+    current_payload_json = canonical_json(_json_object(section.payload_json))
+    payload_unchanged = next_payload_json == current_payload_json
+    if payload_unchanged and (
+        not next_payload
+        or (
+            section.calculation_status == "valid"
+            and section.dependency_status == "current"
+            and section.calculation_formula_version == FORMULA_VERSION
+            and section.calculation_reference_snapshot_id == quote.reference_snapshot_id
         )
+    ):
+        return section
+    previous_dependency_hashes = _downstream_dependency_hashes(
+        db,
+        quote,
+        section.department,
+    )
+    old_revision = section.revision
+    section.payload_json = next_payload_json
+    section.status = "draft"
+    section.revision += 1
+    section.filled_by = user.display_name
+    section.filled_at = now_text()
+    section.review_comment = ""
+    section.updated_at = now_text()
+    try:
+        _calculate_and_apply(db, quote, section, user)
     except CalculationInputError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-
-    calculation_status = str(calculation.get("status", "blocked"))
-    if calculation_status == "valid":
-        preview_context = _cost_context(
-            db,
-            quote,
-            calculation_overrides={section_code: calculation},
-            payload_overrides={section_code: preview_payload},
-        )
-    else:
-        preview_context = saved_context
-    saved_factory_price = saved_context["factory_price_hkd"]
-    preview_factory_price = preview_context["factory_price_hkd"]
-    warning_rows = calculation.get("warnings", [])
-    warnings = [item for item in warning_rows if isinstance(item, dict)] if isinstance(warning_rows, list) else []
-    components = {
-        key: decimal_text(value)
-        for key, value in preview_context.items()
-        if key not in {"factory_price_hkd", "mold_amortization_usd"}
-    }
-    return InternalQuoteSectionPreviewOut(
-        quote_id=quote.id,
-        section_code=section_code,
-        section_revision=section.revision,
-        calculation_status=calculation_status,
-        calculation=calculation,
-        warnings=warnings,
-        saved_factory_price_hkd=decimal_text(saved_factory_price),
-        preview_factory_price_hkd=decimal_text(preview_factory_price),
-        delta_hkd=decimal_text(preview_factory_price - saved_factory_price),
-        components_hkd=components,
-        formula_version=FORMULA_VERSION,
-        reference_snapshot_id=reference.id,
-        generated_at=now_text(),
+    _add_revision(db, quote, section, user, reason=reason)
+    _invalidate_downstream_dependencies(
+        db,
+        quote,
+        user,
+        section.department,
+        request,
+        previous_dependency_hashes,
     )
+    _add_audit(
+        db,
+        quote,
+        user,
+        "save",
+        department=section.department,
+        old_revision=old_revision,
+        new_revision=section.revision,
+        reason=reason,
+        request=request,
+    )
+    return section
 
 
 def save_section(
@@ -3471,51 +3763,79 @@ def save_section(
     _check_revision(section.revision, payload.revision)
     if section.status not in MUTABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="当前状态不可编辑，请先重新打开")
-    next_payload_json = canonical_json(payload.payload)
-    current_payload_json = canonical_json(_json_object(section.payload_json))
-    if next_payload_json == current_payload_json:
-        return _section_out(section)
-    previous_dependency_hashes = _downstream_dependency_hashes(
-        db,
-        quote,
-        section_code,
-    )
-    old_revision = section.revision
-    section.payload_json = next_payload_json
-    section.status = "draft"
-    section.revision += 1
-    section.filled_by = user.display_name
-    section.filled_at = now_text()
-    section.review_comment = ""
-    section.updated_at = now_text()
-    try:
-        _calculate_and_apply(db, quote, section, user)
-    except CalculationInputError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    _add_revision(db, quote, section, user, reason=payload.reason)
-    _invalidate_downstream_dependencies(
-        db,
-        quote,
-        user,
-        section_code,
-        request,
-        previous_dependency_hashes,
+    _save_section_in_transaction(
+        db, quote, section, payload.payload, payload.reason, user, request
     )
     _derive_quote_status(db, quote)
-    _add_audit(
-        db,
-        quote,
-        user,
-        "save",
-        department=section_code,
-        old_revision=old_revision,
-        new_revision=section.revision,
-        reason=payload.reason,
-        request=request,
-    )
     db.commit()
     db.refresh(section)
     return _section_out(section)
+
+
+def save_whole_product_sections(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteWholeProductSaveRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteWholeProductSaveOut:
+    """Save a product's dirty departments as one database transaction."""
+
+    quote = _get_quote(db, quote_id)
+    _ensure_active(quote)
+    sections = db.scalars(
+        select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
+    ).all()
+    by_code = {section.department: section for section in sections}
+    drafts = {draft.section_code: draft for draft in payload.sections}
+
+    # Check every optimistic-lock revision before changing any department.
+    for section_code, draft in drafts.items():
+        ensure_section_permission(db, user, quote.factory_id, section_code, "edit")
+        section = by_code.get(section_code)
+        if section is None:
+            raise HTTPException(status_code=404, detail="报价分段不存在")
+        _ensure_section_participates(section)
+        _check_revision(section.revision, draft.revision)
+        if section.status not in MUTABLE_SECTION_STATUSES:
+            raise HTTPException(status_code=409, detail=f"{section.department_name}当前状态不可编辑")
+
+    try:
+        for section_code in SECTION_CODE_ORDER:
+            draft = drafts.get(section_code)
+            if draft is None:
+                continue
+            section = by_code[section_code]
+            _save_section_in_transaction(
+                db,
+                quote,
+                section,
+                draft.payload,
+                payload.reason,
+                user,
+                request,
+            )
+        _derive_quote_status(db, quote)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(quote)
+    refreshed = db.scalars(
+        select(InternalQuoteSection)
+        .where(InternalQuoteSection.quote_id == quote.id)
+        .order_by(InternalQuoteSection.id)
+    ).all()
+    refreshed_by_code = {section.department: section for section in refreshed}
+    return InternalQuoteWholeProductSaveOut(
+        quote=quote_to_out(db, quote, section_rows=list(refreshed)),
+        sections=[
+            _section_out(refreshed_by_code[code])
+            for code in SECTION_CODE_ORDER
+            if code in drafts and code in refreshed_by_code
+        ],
+    )
 
 
 def submit_section(
@@ -3995,6 +4315,17 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
     )
     section_summaries: list[dict[str, object]] = []
     warnings: list[dict[str, object]] = []
+    formula_mismatches = quote_formula_mismatches(quote, participating_sections)
+    if formula_mismatches:
+        warnings.append(
+            {
+                "section_code": "",
+                "code": "formula_version_stale",
+                "message": "该报价使用旧版公式，请按当前公式重算后再审核或导出",
+                "severity": "blocking",
+                "mismatches": formula_mismatches,
+            }
+        )
     for section in participating_sections:
         calculation = _json_object(section.calculation_json)
         calculation_warnings = calculation.get("warnings", [])
@@ -4034,6 +4365,7 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
         "quote_id": quote.id,
         "status": quote.status,
         "formula_version": quote.formula_version,
+        "current_formula_version": FORMULA_VERSION,
         "reference_snapshot_id": reference.id,
         "reference_snapshot_sha256": reference.sha256,
         "required_sections": len(participating_sections),
@@ -4101,16 +4433,7 @@ def _replace_quote_reference_set(
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
     ).all()
     by_code = {section.department: section for section in sections}
-    for section_code in (
-        "engineering",
-        "electronic",
-        "molding",
-        "painting",
-        "slush",
-        "sewing",
-        "assembly",
-        "sales",
-    ):
+    for section_code in SECTION_CODE_ORDER:
         section = by_code.get(section_code)
         if section is None or not section.is_required:
             continue
@@ -4244,6 +4567,38 @@ def sync_quote_reference_set(
         reason=payload.reason,
         audit_action="reference_sync",
         change_description="参考数据快照已同步",
+        request=request,
+    )
+
+
+def recalculate_quote_formula(
+    db: Session,
+    quote_id: str,
+    payload: InternalQuoteReferenceSyncRequest,
+    user: AuthContext,
+    request: Request | None = None,
+) -> InternalQuoteOut:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_permission(
+        db,
+        user,
+        "internal_quote:reference_manage",
+        quote.factory_id,
+        ("sales-business", "engineering"),
+    )
+    _ensure_active(quote)
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+    current_reference = _ensure_reference_set(db, quote, user)
+    return _replace_quote_reference_set(
+        db,
+        quote,
+        user,
+        source_type="formula_recalculate",
+        snapshot=_json_object(current_reference.snapshot_json),
+        reason=payload.reason,
+        audit_action="formula_recalculate",
+        change_description="报价已按当前公式重算",
+        audit_detail=f"{quote.formula_version}->{FORMULA_VERSION}",
         request=request,
     )
 

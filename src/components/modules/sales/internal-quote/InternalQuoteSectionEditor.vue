@@ -6,7 +6,7 @@ import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/a
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
-import { cloneInternalQuotePayload, normalizeInternalQuotePayload, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
+import { cloneInternalQuotePayload, normalizeInternalQuotePayload, salesPackagingPricingGroupId, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
 import { normalizeInternalQuoteDraft } from '@/lib/internalQuoteMoldingReferences'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
@@ -242,9 +242,15 @@ watch([
     if (incomingText !== baselinePayload.value) localError.value = '服务器内容已更新，本页未保存输入已保留；请核对后再保存。'
     return
   }
+  if (draftContext) {
+    const separator = draftContext.lastIndexOf(':')
+    const previousQuoteId = draftContext.slice(0, separator)
+    const previousSectionCode = draftContext.slice(separator + 1) as InternalQuoteSectionCode
+    quoteStore.clearLiveCostPreview(previousQuoteId, previousSectionCode)
+  }
   draftContext = context
   cancelLivePreviewTimer()
-  quoteStore.clearLiveCostPreview()
+  quoteStore.clearLiveCostPreview(props.quote.id, props.section.code)
   if (contextChanged || incomingText !== currentText) draftPayload.value = incoming
   baselinePayload.value = incomingText
   draftRevision.value = props.section.revision
@@ -312,6 +318,7 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
     ? draftPayload.value.shipping as Record<string, unknown>
     : {}
   const componentMarkupById = new Map((componentMarkups ?? []).map((row) => [row.id, row.markup]))
+  const packagingMarkup = componentMarkupById.get(salesPackagingPricingGroupId) ?? activeMarkup
   const sourcePricingComponents = Array.isArray(draftPayload.value.pricing_components) ? draftPayload.value.pricing_components : []
   const nextPricingComponents = sourcePricingComponents.flatMap((value, index) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return []
@@ -328,13 +335,14 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
     shipping: {
       ...shipping,
       markup_x: Number(activeMarkup.toFixed(2)),
+      ...(componentMarkups?.length ? { packaging_markup_x: Number(packagingMarkup.toFixed(2)) } : {}),
       markup_tiers: markupTiers.map((tier) => ({ moq: tier.moq, markup_x: Number(tier.markup_x.toFixed(2)), include_in_output: tier.include_in_output !== false })),
       selected_markup_moq: selectedMoq,
       misc_ratio: Number(miscRatio.toFixed(4)),
       divisor: salesSettlementDivisorForMiscRatio(miscRatio),
     },
   })
-  const result = await saveDraft(false, componentMarkups?.length ? '在协作侧栏保存 JustPlay 分项倍率与杂项系数' : '在协作侧栏保存分段 MOQ 码数与杂项系数')
+  const result = await saveDraft(false, componentMarkups?.length ? '在协作侧栏保存 JustPlay 配件与业务部包装倍率及杂项系数' : '在协作侧栏保存分段 MOQ 码数与杂项系数')
   if (!result) throw new Error(localError.value || '保存码数与杂项失败。')
   localMessage.value = `业务部当前草稿、分段 MOQ 码数与杂项系数已保存，服务端已生成 revision ${result.revision} 并重新计算。`
   return result

@@ -29,7 +29,7 @@ from app.schemas.internal_quote import SECTION_CODE_ORDER
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v16"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v17"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -643,6 +643,8 @@ def _pricing_entry_category(entry: dict[str, Any]) -> str:
 
 
 def _pricing_entry_tax_tag(entry: dict[str, Any]) -> str:
+    if str(entry.get("kind") or "") == "justplay_fixed_packaging":
+        return ""
     category = _pricing_entry_category(entry)
     if category == "电镀":
         return "¥1%"
@@ -3255,7 +3257,7 @@ def _build_summary_sheet(
 
     tax_amount_row = tax_header_row + 1
     tax_13_formula = sum_tax_tag("¥13%")
-    rmb_purchase_formula = f"=D{tax_amount_row}+({sum_tax_tag('¥1%')[1:]})"
+    rmb_purchase_formula = f"=D{tax_amount_row}+{sum_tax_tag('¥1%')[1:]}"
     for column in range(3, 17):
         if column == 3:
             value: object = rmb_purchase_formula
@@ -3854,8 +3856,38 @@ def _replace_with_component_summary_sheet(
         and source_packaging_start < source_summary_start
         else None
     )
+    source_outer_carton_row = next(
+        (
+            row
+            for row in range(source_packaging_start, source_summary_start)
+            if str(source.cell(row, side_start_column).value or "").startswith("外箱")
+        ),
+        None,
+    )
+    source_packing_qty_row = next(
+        (
+            row
+            for row in range(source_packaging_start, source_summary_start)
+            if str(source.cell(row, side_start_column).value or "") == "装箱："
+        ),
+        None,
+    )
+    target_outer_carton_row = (
+        packaging_title_row + source_outer_carton_row - source_packaging_start
+        if source_outer_carton_row is not None
+        else None
+    )
+    target_packing_qty_row = (
+        packaging_title_row + source_packing_qty_row - source_packaging_start
+        if source_packing_qty_row is not None
+        else None
+    )
     carton_rendered = False
-    for entry in global_entries:
+    ordered_global_entries = sorted(
+        global_entries,
+        key=lambda item: str(item.get("kind") or "") == "carton",
+    )
+    for entry in ordered_global_entries:
         category = _pricing_entry_summary_category(entry)
         is_carton = category == "纸箱" or str(entry.get("kind") or "") == "carton"
         if is_carton and carton_rendered:
@@ -3868,6 +3900,19 @@ def _replace_with_component_summary_sheet(
                 f"={get_column_letter(side_start_column + 1)}{target_packaging_total_row}"
                 if target_packaging_total_row is not None
                 else _pricing_entry_amount(entry)
+            )
+        elif (
+            str(entry.get("kind") or "") == "justplay_fixed_packaging"
+            and target_outer_carton_row is not None
+            and target_packing_qty_row is not None
+        ):
+            length_ref = f"{get_column_letter(side_start_column + 1)}{target_outer_carton_row}"
+            width_ref = f"{get_column_letter(side_start_column + 2)}{target_outer_carton_row}"
+            quantity_ref = f"{get_column_letter(side_start_column + 1)}{target_packing_qty_row}"
+            amount = (
+                f"=3.9/2150*({length_ref}*2+{width_ref}*4+6)/{quantity_ref}+0.06"
+                if str(entry.get("formula_code") or "") == "adhesive"
+                else f"=19/24/{quantity_ref}+0.05"
             )
         else:
             source_detail_row = next(
@@ -4321,7 +4366,7 @@ def _replace_with_component_summary_sheet(
         tax_1_formula = visible_sumif("A", '"¥1%"')[1:]
         target.cell(tax_amount_row, 4).value = tax_13_formula
         target.cell(tax_amount_row, 3).value = (
-            f"=D{tax_amount_row}+({tax_1_formula})"
+            f"=D{tax_amount_row}+{tax_1_formula}"
         )
         t4 = _rr2_tax_rows(rr2_cost_summary)
         tax_keys = (
