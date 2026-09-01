@@ -14,7 +14,9 @@ class ImportProfile:
 
 HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "machine_code": ("机位", "机号"),
-    "required_machine_a_label": ("安机", "机安", "机器安数"),
+    "status": ("状态",),
+    "priority": ("优先级",),
+    "required_machine_a_label": ("安机", "机安", "机器安数", "模具安数"),
     "product_code": ("货号", "款号"),
     "mold_code": ("工模", "模具编号"),
     "product_name": ("名称", "工模名称"),
@@ -30,17 +32,28 @@ HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "color": ("颜色",),
     "pigment_code": ("色粉", "色粉号"),
     "material_name": ("用料", "用料名称"),
-    "net_weight_g": ("净重", "整啤净重"),
-    "gross_weight_g": ("毛重", "总毛重", "整啤毛重"),
+    "net_weight_g": ("净重", "净重(g)", "净重（g）", "整啤净重"),
+    "gross_weight_g": ("毛重", "毛重(g)", "毛重（g）", "总毛重", "整啤毛重"),
     "material_weight_kg": ("用料重", "用料重（KG）", "用料重(KG)"),
     "order_date": ("下单期", "下单日期"),
     "delivery_start_date": ("开始交货期",),
     "delivery_due_date": ("交货完成期", "交货日期", "交货"),
+    "shipping_date": ("走货期",),
+    "color_lightness": ("颜色明度",),
+    "material_status": ("原料状态",),
+    "material_prepared_kg": ("已配料重(KG)", "已配料重（KG）"),
+    "factory_id": ("工厂ID",),
     "remark": ("备注",),
 }
 
 
 IMPORT_PROFILES: dict[str, ImportProfile] = {
+    "UNIFIED_PLAN_V2": ImportProfile(
+        code="UNIFIED_PLAN_V2",
+        document_type="UNIFIED_PLAN",
+        title_signals=("统一注塑排产计划表",),
+        required_headers=("工模", "名称", "单号", "货号", "订单数"),
+    ),
     "WAREHOUSE_ORDER_FLAT_V1": ImportProfile(
         code="WAREHOUSE_ORDER_FLAT_V1",
         document_type="FLAT_ORDER",

@@ -16,6 +16,11 @@ from app.models.injection_schedule import (
 from app.services.auth import AuthContext
 from app.services.injection_scheduling.audit import write_audit_event
 from app.services.injection_scheduling.operations import ensure_factory_settings
+from app.services.injection_scheduling.template_contract import (
+    INJECTION_FACTORY_IDS,
+    SHARED_MOLD_SCOPE_ID,
+    SHARED_MOLD_SCOPE_TYPE,
+)
 
 
 def _now() -> str:
@@ -264,16 +269,16 @@ def create_mold(
         raise HTTPException(status_code=422, detail="工模和货号不能为空")
     if db.scalar(
         select(InjectionScheduleMold.id).where(
-            InjectionScheduleMold.factory_id == factory_id,
             InjectionScheduleMold.mold_code == mold_code,
             InjectionScheduleMold.product_code == product_code,
         )
     ):
-        raise HTTPException(status_code=409, detail="同厂区工模与货号组合已存在")
+        raise HTTPException(status_code=409, detail="共享模具库中工模与货号组合已存在")
     now = _now()
     item = InjectionScheduleMold(
         id=f"is-mold-{uuid4().hex}",
-        factory_id=factory_id,
+        factory_id=SHARED_MOLD_SCOPE_ID,
+        scope_type=SHARED_MOLD_SCOPE_TYPE,
         created_by=actor.id,
         created_by_name=actor.display_name,
         updated_by=actor.id,
@@ -283,20 +288,27 @@ def create_mold(
         **{**values, "mold_code": mold_code, "product_code": product_code},
     )
     db.add(item)
-    settings = ensure_factory_settings(db, factory_id, actor)
-    settings.schedule_revision += 1
-    write_audit_event(
-        db,
-        factory_id=factory_id,
-        event_type="MOLD_CREATED",
-        entity_type="MOLD",
-        entity_id=item.id,
-        entity_version=1,
-        actor=actor,
-        after=_snapshot(item, MOLD_FIELDS),
-    )
+    for shared_factory_id in sorted(INJECTION_FACTORY_IDS):
+        settings = ensure_factory_settings(db, shared_factory_id, actor)
+        settings.schedule_revision += 1
+        write_audit_event(
+            db,
+            factory_id=shared_factory_id,
+            event_type="SHARED_MOLD_CREATED",
+            entity_type="SHARED_MOLD",
+            entity_id=item.id,
+            entity_version=1,
+            actor=actor,
+            after=_snapshot(item, MOLD_FIELDS),
+        )
     db.commit()
-    return {"id": item.id, "version": item.version, **_snapshot(item, MOLD_FIELDS)}
+    return {
+        "id": item.id,
+        "factory_id": item.factory_id,
+        "scope_type": item.scope_type,
+        "version": item.version,
+        **_snapshot(item, MOLD_FIELDS),
+    }
 
 
 def patch_mold(
@@ -312,7 +324,6 @@ def patch_mold(
     item = db.scalar(
         select(InjectionScheduleMold).where(
             InjectionScheduleMold.id == mold_id,
-            InjectionScheduleMold.factory_id == factory_id,
         )
     )
     if item is None:
@@ -330,14 +341,13 @@ def patch_mold(
         raise HTTPException(status_code=422, detail="工模和货号不能为空")
     duplicate = db.scalar(
         select(InjectionScheduleMold.id).where(
-            InjectionScheduleMold.factory_id == factory_id,
             InjectionScheduleMold.mold_code == mold_code,
             InjectionScheduleMold.product_code == product_code,
             InjectionScheduleMold.id != mold_id,
         )
     )
     if duplicate:
-        raise HTTPException(status_code=409, detail="同厂区工模与货号组合已存在")
+        raise HTTPException(status_code=409, detail="共享模具库中工模与货号组合已存在")
     before = _snapshot(item, MOLD_FIELDS)
     for field in MOLD_FIELDS:
         setattr(item, field, values[field])
@@ -348,19 +358,26 @@ def patch_mold(
         actor.display_name,
         _now(),
     )
-    settings = ensure_factory_settings(db, factory_id, actor)
-    settings.schedule_revision += 1
-    write_audit_event(
-        db,
-        factory_id=factory_id,
-        event_type="MOLD_UPDATED",
-        entity_type="MOLD",
-        entity_id=item.id,
-        entity_version=item.version,
-        actor=actor,
-        reason=reason,
-        before=before,
-        after=_snapshot(item, MOLD_FIELDS),
-    )
+    for shared_factory_id in sorted(INJECTION_FACTORY_IDS):
+        settings = ensure_factory_settings(db, shared_factory_id, actor)
+        settings.schedule_revision += 1
+        write_audit_event(
+            db,
+            factory_id=shared_factory_id,
+            event_type="SHARED_MOLD_UPDATED",
+            entity_type="SHARED_MOLD",
+            entity_id=item.id,
+            entity_version=item.version,
+            actor=actor,
+            reason=reason,
+            before=before,
+            after=_snapshot(item, MOLD_FIELDS),
+        )
     db.commit()
-    return {"id": item.id, "version": item.version, **_snapshot(item, MOLD_FIELDS)}
+    return {
+        "id": item.id,
+        "factory_id": item.factory_id,
+        "scope_type": item.scope_type,
+        "version": item.version,
+        **_snapshot(item, MOLD_FIELDS),
+    }
