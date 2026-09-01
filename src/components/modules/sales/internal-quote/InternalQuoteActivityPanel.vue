@@ -18,6 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   updateFx: [payload: { rmbHkd: string; hkdUsd: string }]
   updateMarkup: [payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string; componentMarkups?: Array<{ id: string; markup: string }> }]
+  previewMarkup: [value: number]
 }>()
 const quoteStore = useInternalQuoteDeskStore()
 const activeTab = ref<'summary' | 'activity' | 'views'>('summary')
@@ -331,6 +332,7 @@ function saveMarkup() {
 }
 
 watch(() => props.quote.referenceSnapshotId, () => resetFxEditor())
+watch(normalizedMarkup, (value) => emit('previewMarkup', value), { immediate: true })
 watch(() => [props.quote.id, JSON.stringify(savedMarkupTiers.value), JSON.stringify(savedComponentMarkups.value), savedActiveMarkupTierIndex.value, savedMiscRatio.value] as const, () => {
   quoteMarkupTiers.value = savedMarkupTiers.value.map((tier) => ({
     moq: String(tier.moq),

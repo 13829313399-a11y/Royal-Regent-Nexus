@@ -53,6 +53,7 @@ let rightPanelResizeStartWidth = 0
 let sectionObserver: IntersectionObserver | undefined
 const markupMessage = ref('')
 const markupError = ref('')
+const previewMainMarkup = ref<number>()
 const headerDialogOpen = ref(false)
 const headerDialogBusy = ref(false)
 const headerDialogError = ref('')
@@ -807,6 +808,7 @@ async function rejectWholeReview() {
 onMounted(loadSwitchedProduct)
 watch(quoteId, loadSwitchedProduct)
 watch(quoteId, () => {
+  previewMainMarkup.value = undefined
   wholeWithdrawOpen.value = false
   wholeWithdrawReason.value = ''
 })
@@ -917,7 +919,7 @@ onBeforeUnmount(() => {
         </section>
         <InternalQuoteComponentScopePicker v-if="isComponentPricing" v-model="activePricingComponentId" :product-name="quote.productName" :components="pricingComponents" />
         <article v-for="section in participatingSections" :id="`quote-section-${section.code}`" :key="section.code" :ref="(node) => setSectionNode(section.code, node)" class="quote-continuous-section" :data-section-code="section.code">
-          <InternalQuoteSectionEditor :ref="(instance) => setSectionEditorRef(section.code, instance)" :quote="quote" :section="section" :can-edit="canEditSection(section.code)" :can-review="false" :can-remove="canRemoveSection(section.code)" :active-pricing-component-id="activePricingComponentId" :differs-from-baseline="baselineDifferentSections.includes(section.code)" :difference-details="currentBatchProduct?.differentSectionDetails[section.code] ?? []" whole-quote-review @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
+          <InternalQuoteSectionEditor :ref="(instance) => setSectionEditorRef(section.code, instance)" :quote="quote" :section="section" :can-edit="canEditSection(section.code)" :can-review="false" :can-remove="canRemoveSection(section.code)" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(section.code)" :difference-details="currentBatchProduct?.differentSectionDetails[section.code] ?? []" whole-quote-review @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
         </article>
         <footer id="quote-page-actions" class="quote-whole-product-actions" aria-label="整单操作">
           <div class="quote-whole-product-actions-copy"><strong>整单操作</strong><span>在这里查看汇总、保存当前款、切换款号、复制基准款，以及提交或审核整单。</span><small>当前款：{{ quote.productName }} · 最后更新 {{ quote.updatedAt }}</small></div>
@@ -937,7 +939,7 @@ onBeforeUnmount(() => {
           <section v-if="wholeWithdrawOpen && canWithdrawWhole" class="quote-whole-reject-panel quote-whole-product-reject" aria-label="建单人退回修改"><div><strong>审核前退回修改</strong><span>确认后撤回整批报价的待审核状态，保留已填内容并解锁。修改完成后需重新提交审核，原因将记录在操作历史中。</span></div><textarea v-model="wholeWithdrawReason" rows="2" maxlength="2000" aria-label="退回修改原因" placeholder="请填写退回修改原因" /><button type="button" :disabled="quoteStore.submitting" @click="toggleWholeWithdraw">取消</button><button type="button" class="primary" :disabled="!wholeWithdrawReason.trim() || quoteStore.submitting" @click="withdrawWholeReview">确认退回修改</button></section>
         </footer>
       </div>
-      <InternalQuoteSectionEditor v-else :ref="(instance) => setSectionEditorRef(activeSection.code, instance)" :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" :active-pricing-component-id="activePricingComponentId" :differs-from-baseline="baselineDifferentSections.includes(activeSection.code)" :difference-details="currentBatchProduct?.differentSectionDetails[activeSection.code] ?? []" @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
+      <InternalQuoteSectionEditor v-else :ref="(instance) => setSectionEditorRef(activeSection.code, instance)" :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(activeSection.code)" :difference-details="currentBatchProduct?.differentSectionDetails[activeSection.code] ?? []" @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
       <aside class="quote-edge-panel quote-edge-panel-right" :class="{ open: rightPanelPinned, resizing: rightPanelResizing }" :style="{ width: `${rightPanelWidth}px` }" aria-label="鼠标移入展开报价与资料侧栏">
         <button type="button" class="quote-edge-handle" :aria-label="rightPanelPinned ? '收起报价与资料侧栏' : '展开报价与资料侧栏'" title="移入可临时展开；点击可固定或收起" @click="rightPanelPinned = !rightPanelPinned"><ChevronRight /><span>报价与资料</span></button>
         <button type="button" class="quote-edge-resizer" aria-label="拖动调整侧栏宽度" title="左右拖动调整侧栏宽度" @pointerdown="startRightPanelResize" />
@@ -948,7 +950,7 @@ onBeforeUnmount(() => {
             <button v-if="rightPanelPinned" type="button" class="collapse" aria-label="收起报价与资料侧栏" @click="rightPanelPinned = false"><XCircle /></button>
           </nav>
           <div class="quote-side-mode-content">
-            <InternalQuoteActivityPanel v-if="rightPanelTab === 'quote'" :quote="quote" read-only :can-edit-fx="canEditFx" :can-edit-markup="canEditMarkup" :markup-blocked-reason="markupBlockedReason" :markup-message="markupMessage" :markup-error="markupError" :busy="quoteStore.submitting" @update-fx="updateReferenceFx" @update-markup="updateQuoteMarkup" />
+            <InternalQuoteActivityPanel v-if="rightPanelTab === 'quote'" :quote="quote" read-only :can-edit-fx="canEditFx" :can-edit-markup="canEditMarkup" :markup-blocked-reason="markupBlockedReason" :markup-message="markupMessage" :markup-error="markupError" :busy="quoteStore.submitting" @preview-markup="previewMainMarkup = $event" @update-fx="updateReferenceFx" @update-markup="updateQuoteMarkup" />
             <InternalQuoteDepartmentFilesPanel v-else :quote-id="quote.id" :section-label="activeSection.label" :attachments="activeSection.attachments" :requested-attachment-id="requestedFileAttachmentId" @select="requestedFileAttachmentId = $event" @download="downloadDepartmentFile" />
           </div>
         </div>

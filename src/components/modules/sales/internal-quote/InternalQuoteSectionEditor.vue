@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
   canRemove: boolean
   wholeQuoteReview?: boolean
   activePricingComponentId?: string
+  mainMarkupPreview?: number
   differsFromBaseline?: boolean
   differenceDetails?: string[]
 }>(), {
@@ -66,7 +67,11 @@ const pricingComponents = computed<SalesPricingComponent[]>(() => {
 const pricingMode = computed<'standard' | 'component'>(() => (
   salesPricingPayload.value.pricing_mode === 'component' && pricingComponents.value.length ? 'component' : 'standard'
 ))
-const mainMarkup = computed(() => Number(props.quote.rr2CostSummary.shippingPricing.markup) || 1.2)
+const mainMarkup = computed(() => {
+  const preview = Number(props.mainMarkupPreview)
+  if (Number.isFinite(preview) && preview > 0) return preview
+  return Number(props.quote.rr2CostSummary.shippingPricing.markup) || 1.2
+})
 const supportsQuickQuote = computed(() => ['electronic', 'painting', 'sewing'].includes(props.section.code))
 const isQuickQuoteMode = computed(() => draftPayload.value.quote_mode === 'quick')
 const quickQuoteButtonLabel = computed(() => {
