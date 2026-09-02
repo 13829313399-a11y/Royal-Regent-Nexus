@@ -66,11 +66,14 @@ function templateLayout(parsed: ReturnType<typeof parseXlsxWorkbook>) {
     if (!end) throw new Error('银辉模板缺少 Tool Plan TOTAL 行')
     return end
   })
-  return { bom, tools }
+  const basicInfo = parsed.sheets[0]!.rows.flatMap((row, i) => i >= 56 && /^(?:Battery|Adaptor|Try me function)$/i.test(String(row?.[1] || '').trim())
+    ? [{ row: i + 1, label: String(row[1]).trim() }] : [])
+  return { bom, tools, basicInfo }
 }
 function keepStatic(sheet: number, ref: string, layout: ReturnType<typeof templateLayout>) {
   const r = Number(ref.match(/\d+/)?.[0]); const c = column(ref)
-  if (sheet === 0) return new Set(['M1', 'A2', 'N2', 'A3', 'G3', 'A4', 'G4', 'A5', 'G5', 'A6', 'G6', 'A7', 'G7', 'A8', 'G8', 'N13', 'N20', 'B38', 'D38', 'B39', 'B41', 'I41', 'J41', 'K41', 'Q44', 'Q45', 'Q46', 'B48', 'B52', 'B54', 'D54', 'B56', 'B57', 'B58', 'B59', 'A57', 'A58', 'A59', 'F58', 'F18', 'F25', 'F29']).has(ref)
+  if (sheet === 0) return new Set(['M1', 'A2', 'N2', 'A3', 'G3', 'A4', 'G4', 'A5', 'G5', 'A6', 'G6', 'A7', 'G7', 'A8', 'G8', 'N13', 'N20', 'B38', 'D38', 'B39', 'B41', 'I41', 'J41', 'K41', 'Q44', 'Q45', 'Q46', 'B48', 'B52', 'B54', 'D54', 'B56', 'F18', 'F25', 'F29']).has(ref)
+    || layout.basicInfo.some(info => info.row === r && (c <= 2 || (c === 6 && /^Adaptor$/i.test(info.label))))
     || ((r === 9 || r === 10) && c <= 13) || (c <= 2 && r >= 11 && r <= 36) || (c === 2 && r >= 42 && r <= 46) || (c === 12 && r >= 42 && r <= 46) || (c <= 2 && r >= 49 && r <= 51)
   if (sheet === 1) return ['A2', 'M2', 'A3', 'H3', 'A4', 'D4', 'H4', 'A5', 'D5'].includes(ref) || r === 7
     || (c <= 2 && [9, 10, 31, 32].includes(r)) || (c === 2 && [23, 24, 25, 45, 46, 47].includes(r))
@@ -85,7 +88,7 @@ function keepStatic(sheet: number, ref: string, layout: ReturnType<typeof templa
   }
   return ['A2', 'B3', 'L3', 'B4', 'F4', 'L4', 'B5', 'F5'].includes(ref) || r === 7 || ref === `D${layout.tools[sheet - 4]}`
 }
-export function sanitizeYinhuiTemplate(buffer: ArrayBuffer) {
+export function sanitizeYinhuiTemplate(buffer: ArrayBuffer, options: { mechanicalCapacity?: number } = {}) {
   const source = unzipSync(new Uint8Array(buffer))
   const parsed = parseXlsxWorkbook(buffer)
   const layout = templateLayout(parsed)
@@ -139,7 +142,72 @@ export function sanitizeYinhuiTemplate(buffer: ArrayBuffer) {
     }
     output[path] = serialize(doc)
   })
+  const first = layout.bom[0]!
+  const extraRows = Math.max(0, (options.mechanicalCapacity || 0) - (first.electronic - first.mechanical - 1))
+  if (extraRows) extendMechanicalRows(output, first.mechanical, first.electronic, extraRows)
   return zipSync(output)
+}
+
+// Explicit template maintenance only: extend the existing mechanical detail style,
+// shifting references to BOM (1) so every downstream formula keeps its meaning.
+function extendMechanicalRows(zip: Record<string, Uint8Array>, heading: number, before: number, count: number) {
+  if (!Number.isInteger(count) || count > 20) throw new Error('银辉模板扩展行数无效')
+  const docs = YINHUI_SHEET_NAMES.map((_, i) => xml(strFromU8(zip[`xl/worksheets/sheet${i + 1}.xml`]!)))
+  const target = docs[2]!
+  const sample = elements(target, 'row').find(row => Number(row.getAttribute('r')) === before - 1)
+  if (!sample) throw new Error('银辉模板缺少可复制的五金明细行')
+  const sampleRow = sample.cloneNode(true) as Element
+  const formulas = formulaMap(target)
+  const shiftRef = (ref: string) => ref.replace(/(\$?[A-Z]{1,3}\$?)(\d+)/g, (_, col: string, row: string) => `${col}${Number(row) >= before ? Number(row) + count : row}`)
+  const shiftFormula = (expression: string, local: boolean) => expression.replace(/((?:'[^']+'|[\p{L}_][\p{L}\d_.]*)!)?(\$?[A-Z]{1,3}\$?\d+)(?::(\$?[A-Z]{1,3}\$?\d+))?/gu, (match, sheet: string | undefined, start: string, end: string | undefined) => {
+    const applies = sheet ? sheet.replace(/!$/, '').replace(/^'|'$/g, '') === 'BOM (1)' : local
+    return applies ? `${sheet || ''}${shiftRef(start)}${end ? `:${shiftRef(end)}` : ''}` : match
+  })
+  docs.forEach((doc, i) => {
+    for (const f of elements(doc, 'f')) {
+      if (f.textContent) f.textContent = shiftFormula(f.textContent, i === 2)
+      if (i === 2 && f.hasAttribute('ref')) f.setAttribute('ref', shiftRef(f.getAttribute('ref')!))
+    }
+    if (i === 2) {
+      for (const [totalColumn, detailColumn] of [['H', 'H'], ['K', 'J']]) {
+        const cell = elements(doc, 'c').find(c => c.getAttribute('r') === `${totalColumn}${heading}`)
+        const f = cell && elements(cell, 'f')[0]
+        if (!f) continue
+        const expected = `SUM(${detailColumn}${heading + 1}:${detailColumn}${before - 1})`
+        if ((f.textContent || '').replace(/[$\s]/g, '').toUpperCase() !== expected) throw new Error('银辉五金小计公式无法安全扩展')
+        f.textContent = `SUM(${detailColumn}${heading + 1}:${detailColumn}${before + count - 1})`
+      }
+      for (const row of elements(doc, 'row')) if (Number(row.getAttribute('r')) >= before) row.setAttribute('r', String(Number(row.getAttribute('r')) + count))
+      for (const cell of elements(doc, 'c')) cell.setAttribute('r', shiftRef(cell.getAttribute('r')!))
+      for (const name of ['dimension', 'mergeCell']) for (const el of elements(doc, name)) el.setAttribute('ref', shiftRef(el.getAttribute('ref')!))
+      const sheetData = elements(doc, 'sheetData')[0]!
+      const next = elements(doc, 'row').find(row => Number(row.getAttribute('r')) === before + count)!
+      for (let offset = 0; offset < count; offset++) {
+        const row = sampleRow.cloneNode(true) as Element
+        row.setAttribute('r', String(before + offset))
+        for (const cell of elements(row, 'c')) {
+          const oldRef = cell.getAttribute('r')!
+          const newRef = oldRef.replace(/\d+$/, String(before + offset))
+          cell.setAttribute('r', newRef)
+          const formula = formulas.get(oldRef)
+          if (formula) {
+            const f = elements(cell, 'f')[0]!
+            for (const attr of Array.from(f.attributes)) f.removeAttribute(attr.name)
+            f.textContent = translatedFormula(formula, oldRef, newRef)
+          } else if (column(newRef) === 10) {
+            const f = doc.createElementNS(NS, 'f')
+            f.textContent = `I${before + offset}*H${before + offset}`
+            cell.insertBefore(f, cell.firstChild)
+          }
+        }
+        sheetData.insertBefore(row, next)
+      }
+    }
+    zip[`xl/worksheets/sheet${i + 1}.xml`] = serialize(doc)
+  })
+  const workbook = xml(strFromU8(zip['xl/workbook.xml']!))
+  for (const name of elements(workbook, 'definedName')) name.textContent = shiftFormula(name.textContent || '', false)
+  zip['xl/workbook.xml'] = serialize(workbook)
 }
 
 type FormulaValue = number | string | boolean | { error: string } | FormulaValue[]
@@ -275,7 +343,7 @@ function writer(zip: Record<string, Uint8Array>, index: number) {
   }
   const set = (ref: string, value: string | number | null) => {
     if (mergedInteriors.has(ref)) {
-      if (value === null || value === '' || value === 'pc') return
+      if (value === null || value === '' || value === 'pc' || value === 0) return
       throw new Error(`银辉写入位置 ${YINHUI_SHEET_NAMES[index]}!${ref} 位于合并格内部，不能破坏原客表格式`)
     }
     let cell = cells.get(ref)
@@ -328,12 +396,28 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
   for (let r = 20; r <= 25; r++) s(`H${r}`, 0)
   s('H27', total.packaging); s('H28', d.packagingLaborHkd); s('H29', 0)
   s('G12', 1); s('G19', 0); s('G26', 1)
+  s('G32', total.documentFees ? 1 : null); s('H32', total.documentFees || null)
+  // Customer correction: customs/documents fees belong at H32, outside packaging.
+  // This is the sole approved formula change; retain the existing discount term.
+  const exFactoryCell = elements(summary.doc, 'c').find(cell => cell.getAttribute('r') === 'J32')
+  const exFactoryFormula = exFactoryCell && elements(exFactoryCell, 'f')[0]
+  if (!exFactoryFormula || exFactoryFormula.hasAttribute('t') || !['J30-J31', 'J30+H32', 'J30-J31+H32'].includes((exFactoryFormula.textContent || '').replace(/[$\s]/g, ''))) throw new Error('银辉出厂价公式不属于已确认格式，不能自动加入报关费')
+  exFactoryFormula.textContent = 'J30-J31+H32'
   for (const [r, freight] of [[34, d.freightLclHkd!], [36, d.freightFclHkd!]]) { s(`G${r}`, 1); s(`H${r}`, freight!) }
   d.colorBoxCm.forEach((v, i) => s(`${['I', 'J', 'K'][i]}44`, v))
   d.cartonCm.forEach((v, i) => s(`${['I', 'J', 'K'][i]}46`, v)); s('H46', d.cartonPack)
   s('H49', total.tooling); s('H50', 0); s('H52', total.tooling)
-  const battery = d.electronic.filter(r => r.isBattery).map(r => r.description).join('; ')
-  s('D57', battery ? 'included' : 'not included'); s('F57', battery); s('D58', d.adaptor); s('D59', d.tryMe)
+  const batteries = d.electronic.filter(r => r.isBattery).map(r => r.description)
+  const batteryRows = layout.basicInfo.filter(info => /^Battery$/i.test(info.label))
+  if (batteryRows.length > 1 && batteries.length > batteryRows.length) throw new Error('银辉电池资料超过客表行数，不能遗漏输出')
+  batteryRows.forEach((info, i) => {
+    const battery = batteryRows.length === 1 ? batteries.join('; ') : batteries[i] || ''
+    s(`D${info.row}`, battery ? 'included' : 'not included'); s(`F${info.row}`, battery)
+  })
+  for (const info of layout.basicInfo) {
+    if (/^Adaptor$/i.test(info.label)) s(`D${info.row}`, d.adaptor)
+    if (/^Try me function$/i.test(info.label)) s(`D${info.row}`, d.tryMe)
+  }
   summary.save()
   const rowCosts = (set: typeof s, list: YinhuiCostRow[], start: number, count: number, reserved: number[] = []) => {
     if (list.length > count - reserved.length) throw new Error('银辉明细超过原模板可填写行数，不能覆盖合并格或截断明细')
@@ -407,7 +491,7 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
     zip['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(zip['xl/worksheets/sheet1.xml']!).replace('</worksheet>', `<drawing xmlns:r="${REL}" r:id="product"/></worksheet>`))
     zip['[Content_Types].xml'] = strToU8(strFromU8(zip['[Content_Types].xml']!).replace('</Types>', `<Default Extension="${ext}" ContentType="image/${ext === 'jpg' ? 'jpeg' : 'png'}"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`))
   }
-  // Formula caches are refreshed below without changing the customer's formula expressions.
+  // Refresh caches after the explicit H32 fee formula correction; all other formulas stay intact.
   recalculateTemplate(zip)
   const output = zipSync(zip)
   const checked = parseXlsxWorkbook(output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer)
@@ -416,6 +500,8 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
     if (Math.abs(actualWeight - (d.tools[r - 8]?.weightG || 0)) > .000001) throw new Error(`银辉 TOOL PLAN (1)!H${r} 原料重公式结果与内部料重不一致；为保留原公式已阻止输出，请核对模板中的固定数值`)
   }
   const actual = Number(checked.sheets[0]?.rows[31]?.[9])
+  const actualSubtotal = Number(checked.sheets[0]?.rows[29]?.[9])
+  if (!Number.isFinite(actualSubtotal) || Math.abs(actualSubtotal - total.productSubtotal) > .000001) throw new Error('银辉产品小计与映射不一致，报关费不得重复计入包装或 BOM')
   if (!Number.isFinite(actual) || Math.abs(actual - total.exFactory) > .000001) throw new Error(`银辉原模板公式结果 ${actual} 与映射合计 ${total.exFactory} 不一致，已阻止输出，请核对映射位置`)
   return output
 }

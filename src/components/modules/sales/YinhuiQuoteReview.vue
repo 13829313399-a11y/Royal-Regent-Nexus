@@ -35,6 +35,7 @@ const groups = computed(() => [
   { name: '电子', rows: props.result.quoteData.electronic },
   { name: '车缝 / 布料', rows: props.result.quoteData.fabric || [] },
   { name: '包装', rows: props.result.quoteData.packagingRows },
+  { name: '报关 / 文件费（总表 H32）', rows: props.result.quoteData.documentFees || [] },
 ])
 const error = computed(() => {
   try { validateYinhuiExport(props.result.quoteData); return '' }
@@ -47,7 +48,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
 <template>
   <fieldset class="mt-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4" :disabled="disabled" data-testid="yinhui-review">
     <legend class="px-2 text-sm font-semibold text-slate-900">银辉临时映射 · 输出前核对</legend>
-    <p class="mb-3 text-sm text-slate-600">沿用提供的六张客表及其公式、字体、线条。当前明细汇入第一套 BOM；第二套保持空白。此处修改只影响本次报客文件。</p>
+    <p class="mb-3 text-sm text-slate-600">沿用提供的六张客表及其字体、线条。当前明细汇入第一套 BOM；第二套保持空白。报关 / 文件费单列总表 H32，由出厂价公式计入一次，不计入包装材料。此处修改只影响本次报客文件。</p>
     <p class="mb-3 text-xs text-slate-600">版式：{{ profile.label }} · 统一塑料 HKD/kg：{{ Object.entries(YINHUI_MATERIAL_PRICES_HKD_KG).map(([name, price]) => `${name} ${price}`).join(' / ') }}</p>
     <ul class="mb-4 list-disc space-y-1 pl-5 text-sm text-amber-900">
       <li v-for="warning in result.warnings" :key="warning">{{ warning }}</li>

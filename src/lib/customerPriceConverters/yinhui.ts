@@ -48,6 +48,7 @@ export interface YinhuiQuoteData {
   electronic: YinhuiCostRow[]
   fabric?: YinhuiCostRow[]
   packagingRows: YinhuiCostRow[]
+  documentFees?: YinhuiCostRow[]
   carton: YinhuiCostRow
   assemblyHkd: number
   sprayingHkd: number
@@ -116,7 +117,9 @@ const translations: Array<[RegExp, string]> = [
   [/单面强力背胶/g, 'Strong Single-sided Adhesive'], [/度/g, ' deg'],
   [/电子[（(]\d+[）)]/g, 'PCBA'], [/车[缝縫][（(]\d+[）)]/g, 'Fabric Assembly'],
   [/螺絲/g, 'Screw '], [/丝母/g, 'Nut '], [/机牙/g, 'Machine Screw '],
-  [/AA[ A]*电池(?:负正片|正负片|正片|负片)/g, 'Battery Contact'],
+  [/(AA[ A]*)电池(?:负正片|正负片)/g, '$1 Battery Positive-Negative Contact'],
+  [/(AA[ A]*)电池正片/g, '$1 Battery Positive Contact'],
+  [/(AA[ A]*)电池负片/g, '$1 Battery Negative Contact'],
   [/回中弹簧/g, 'Return Spring '], [/密绕弹簧/g, 'Close-wound Spring '], [/压力弹簧|压簧/g, 'Compression Spring '], [/接触弹簧/g, 'Contact Spring '], [/弹簧/g, 'Spring '],
   [/双花D轴/g, 'Double Knurled D Shaft '], [/双花轴/g, 'Double Knurled Shaft '], [/[單单]花[軸轴]/g, 'Single Knurled Shaft '], [/光[軸轴]/g, 'Smooth Shaft '], [/軸|轴/g, 'Shaft '],
   [/直花钉轴|钉轴/g, 'Knurled Pin '], [/釘/g, 'Pin '], [/T钉/g, 'T-Pin '],
@@ -160,13 +163,14 @@ function today() { return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Sha
 function emptyData(): YinhuiQuoteData {
   return { model: '', productName: '', quoteDate: today(), packaging: 'Window Box', moq: 0, stage: '', adaptor: '', tryMe: '',
     freightLclHkd: null, freightFclHkd: null, colorBoxCm: [], cartonCm: [], cartonPack: 0,
-    tools: [], plastic: [], mechanical: [], electronic: [], fabric: [], packagingRows: [],
+    tools: [], plastic: [], mechanical: [], electronic: [], fabric: [], packagingRows: [], documentFees: [],
     carton: { description: 'Outer Carton', source: '', quantity: 1, amountHkd: 0, internalHkd: 0 },
     assemblyHkd: 0, sprayingHkd: 0, packagingLaborHkd: 0, battery: '', internalTotalHkd: 0 }
 }
 function addCost(data: YinhuiQuoteData, category: string, description: string, quantity: number, amountHkd: number, internalHkd: number, source: string) {
   const line: YinhuiCostRow = { description: translate(description), quantity, amountHkd: round(amountHkd), internalHkd, source }
-  if (/装配工|assembly/i.test(category)) {
+  if (/报关|報關|文件[费費]|\bcustoms?\b|\bdocuments?\s*(?:fee|cost)s?\b/i.test(`${category} ${description}`)) (data.documentFees ||= []).push({ ...line, description: 'Documents / Customs Fee' })
+  else if (/装配工|assembly/i.test(category)) {
     if (/包装|包裝|packing/i.test(description)) data.packagingLaborHkd += amountHkd
     else data.assemblyHkd += amountHkd
   } else if (/油漆|喷油|噴油|painting/i.test(category)) data.sprayingHkd += amountHkd
@@ -175,8 +179,8 @@ function addCost(data: YinhuiQuoteData, category: string, description: string, q
   else if (/电子|電子|电池|電池|electronic/i.test(category)) {
     data.electronic.push(line)
     if (/电池|電池|battery/i.test(`${category} ${description}`)) { line.isBattery = true; data.battery = [data.battery, line.description].filter(Boolean).join('; ') }
-  } else if (/车身贴纸|產品貼紙|产品贴纸/.test(description)) data.mechanical.push(line)
-  else if (/橡[膠胶]圈|rubber ring|PE泡棉|PVC拉管|(?:PC|PVC)片|介子 .*PET|扎带3\.5[*x×]250/i.test(description) || (!/五金|hardware/i.test(category) && /EVA/i.test(description))) data.plastic.push(line)
+  } else if (/车身贴纸|產品貼紙|产品贴纸|(?:PC|PVC)\s*片|(?:PC|PVC)\s+sheet/i.test(description)) data.mechanical.push(line)
+  else if (/橡[膠胶]圈|rubber ring|PE泡棉|PVC拉管|介子 .*PET|扎带3\.5[*x×]250/i.test(description) || (!/五金|hardware/i.test(category) && /EVA/i.test(description))) data.plastic.push(line)
   else if (/吸塑|利宝|利寶|彩盒|内咭|包装|报关|packaging/i.test(category) || /胶钉带|透明胶圈|扎带|^垫片[（(]|胶纸|膠紙|胶水|膠水|胶袋|吸塑|说明书|文件费|custom|document|carton/i.test(description)) data.packagingRows.push(line)
   else if (/马达|馬達|五金|其他外购|其他外購|hardware|auxiliary/i.test(category)) data.mechanical.push(line)
   else if (amountHkd !== 0) throw new Error(`银辉尚未映射成本类别“${category}”：${description}（${source}），不能漏项输出`)
@@ -191,10 +195,12 @@ export function yinhuiTotals(data: YinhuiQuoteData) {
   const fabric = sum((data.fabric || []).map((r) => r.amountHkd))
   const injection = sum(data.tools.map((r) => r.laborHkd))
   const packaging = sum(data.packagingRows.map((r) => r.amountHkd)) + data.carton.amountHkd
+  const documentFees = sum((data.documentFees || []).map((r) => r.amountHkd))
   const labour = injection + data.assemblyHkd + data.sprayingHkd
   const bom = plastic + mechanical + electronic + fabric + labour
-  const exFactory = bom + packaging + data.packagingLaborHkd
-  return { plastic, mechanical, electronic, fabric, injection, labour, packaging, bom, exFactory, missingMaterialPrices,
+  const productSubtotal = bom + packaging + data.packagingLaborHkd
+  const exFactory = productSubtotal + documentFees
+  return { plastic, mechanical, electronic, fabric, injection, labour, packaging, documentFees, bom, productSubtotal, exFactory, missingMaterialPrices,
     fcl: data.freightFclHkd === null ? null : exFactory + data.freightFclHkd,
     lcl: data.freightLclHkd === null ? null : exFactory + data.freightLclHkd,
     tooling: sum(data.tools.map((r) => r.toolingHkd)) }
@@ -203,13 +209,15 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
   // Only the first packaging detail row has the customer's three dimension input cells.
   const colorBox = data.packagingRows.findIndex((r) => /color box/i.test(r.description))
   if (colorBox > 0) data.packagingRows.unshift(data.packagingRows.splice(colorBox, 1)[0]!)
-  const limits: Array<[string, number, number]> = [['Tool Plan', data.tools.length, 53], ['塑料外购', data.plastic.length, 8], ['五金', data.mechanical.length, 27], ['电子', data.electronic.length, 10], ['包装材料', data.packagingRows.length, 12]]
+  const extended = data.templateId === '88753'
+  const limits: Array<[string, number, number]> = [['Tool Plan', data.tools.length, 53], ['塑料外购', data.plastic.length, 8], ['五金', data.mechanical.length, extended ? 37 : 27], ['电子', data.electronic.length, extended ? 18 : 10], ['包装材料', data.packagingRows.length, 12]]
   for (const [name, count, max] of limits) if (count > max) throw new Error(`银辉${name}有 ${count} 行，超过当前模板 ${max} 行容量，请先扩展映射，不能截断明细`)
   const total = yinhuiTotals(data)
   if (total.missingMaterialPrices.length) warnings.push(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。对应单价将留空，当前合计暂未包含这些料价；确认后可导出，发送客户前请补齐。`)
   const sheetId = 'yinhui-summary'
   const summaryName = total.missingMaterialPrices.length ? 'SUM(總計) · 待补料价' : 'SUM(總計)'
   const groups: Array<[string, number]> = [[total.missingMaterialPrices.length ? 'Plastic (price pending)' : 'Plastic', total.plastic], ['Mechanical', total.mechanical], ['Electronic', total.electronic], ['Fabric', total.fabric], ['Labour', total.labour], ['Packaging material', total.packaging], ['Packaging labour', data.packagingLaborHkd]]
+  if (data.documentFees?.length) groups.push(['Documents / Customs Fee', total.documentFees])
   const details = groups.map(([description, price], i) => ({ id: `${sheetId}-${i}`, sheetId, sheetName: summaryName, itemNo: String(i + 1), description,
     internalPriceHkd: 0, customerPriceHkd: round(price), previousCustomerPriceHkd: round(price), differenceHkd: 0, marginBand: '独立客表口径', compareStatus: '持平' as const }))
   return { sourceFileName, quoteData: data, warnings: [...new Set(warnings)], sheets: [{ id: sheetId, name: summaryName, sourceFileName,
@@ -413,7 +421,7 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   const extraIndex = feeIndex
   if (extraIndex >= 0) {
     extraFee = numeric(rows[extraIndex]?.[3], '出厂价附加费用')
-    data.packagingRows.push({ description: 'Documents / Customs Fee', source: `${main.name}!D${extraIndex + 1}`, quantity: 1, amountHkd: extraFee, internalHkd: extraFee })
+    data.documentFees!.push({ description: 'Documents / Customs Fee', source: `${main.name}!D${extraIndex + 1}`, quantity: 1, amountHkd: extraFee, internalHkd: extraFee })
   }
   const freightRow = rows.find((r, i) => i >= costStart && i < end && text(r[1]) === '运费')
   const costHeader = rows[costStart - 1]!
@@ -434,12 +442,6 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     data.freightFclHkd = numeric(rows[explicit + 1]?.[4], 'FCL 运费'); data.freightLclHkd = numeric(rows[explicit + 1]?.[5], 'LCL 运费')
   }
   data.internalTotalHkd = finalIndex >= 0 ? numeric(rows[finalIndex]?.[3], '内部出厂报价') : numeric(rows[management + 1]?.[3], '内部出厂报价')
-  const contacts = data.mechanical.filter(r => /Battery Contact/.test(r.description))
-  if (contacts.length > 1) {
-    const first = data.mechanical.indexOf(contacts[0]!)
-    data.mechanical = data.mechanical.filter(r => !contacts.includes(r))
-    data.mechanical.splice(first, 0, { description: 'Battery Contacts (set)', quantity: 1, amountHkd: sum(contacts.map(r => r.amountHkd)), internalHkd: sum(contacts.map(r => r.internalHkd)), source: contacts.map(r => r.source).join(', ') })
-  }
   const tooling = workbook.sheets.find((s) => s.name === '模具报价')
   if (tooling) {
     const compatible = tooling.rows.slice(0, 12).flat().map(text).join(' ').includes(data.model)
@@ -492,6 +494,8 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   const warnings = ['银辉临时映射按单 BOM 输出；请核对英文名称、型号、运费和产品资料。']
   data.productName = artifact.productName
   data.model = artifact.productName.match(/#\s*([\w-]+)/)?.[1] || ''
+  data.templateId = yinhuiProfileForModel(data.model)
+  data.packaging = YINHUI_PROFILES[data.templateId].packaging
   data.moq = positive(artifact.quantity, 'P4 MOQ')
   const lines = (code: P4SectionCode) => records(artifact.sections[code].calculation.line_breakdown)
   const totals = (code: P4SectionCode) => obj(artifact.sections[code].calculation.totals)
@@ -598,7 +602,7 @@ export function validateYinhuiExport(data: YinhuiQuoteData) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data.quoteDate) || !Number.isFinite(Date.parse(data.quoteDate))) throw new Error('请填写有效报价日期')
   if (!data.packaging.trim()) throw new Error('请填写银辉包装方式')
   numeric(data.freightFclHkd, '40FT 每件运费'); numeric(data.freightLclHkd, 'LCL 每件运费')
-  for (const line of [...data.plastic, ...data.mechanical, ...data.electronic, ...(data.fabric || []), ...data.packagingRows]) {
+  for (const line of [...data.plastic, ...data.mechanical, ...data.electronic, ...(data.fabric || []), ...data.packagingRows, ...(data.documentFees || [])]) {
     positive(line.quantity, 'BOM 用量'); numeric(line.amountHkd, 'BOM 金额')
     if (!line.description.trim() || /[\u3400-\u9fff]/.test(line.description)) throw new Error(`请在核对区补全英文物料名称：${line.description || line.source}`)
   }
