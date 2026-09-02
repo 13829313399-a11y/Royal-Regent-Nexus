@@ -1185,6 +1185,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
             product_name: product.productName.trim(),
             qty: Number(product.quantity),
             region_code: product.regionCode,
+            ...(product.pricingComponents !== undefined ? { pricing_components: [...product.pricingComponents] } : {}),
           })),
           pricing_components: payload.pricingComponents ?? [],
         })

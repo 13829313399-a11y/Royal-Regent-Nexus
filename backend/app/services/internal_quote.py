@@ -1332,7 +1332,11 @@ def _rr2_cost_summary(
                 "formula_code",
                 "carton_length_in",
                 "carton_width_in",
+                "carton_height_in",
                 "qty_per_carton",
+                "adhesive_extra_hkd",
+                "cartons_per_pallet",
+                "paper_pallet_extra_hkd",
                 "formula",
             ):
                 if line.get(field) not in (None, ""):
@@ -1407,8 +1411,9 @@ def _rr2_cost_summary(
                 kind == "carton" or category == "packaging"
             ):
                 return True
-            return section_code == "assembly" and bool(
-                re.search(r"包装|pack", label, flags=re.IGNORECASE)
+            return section_code == "assembly" and (
+                category == "packaging"
+                or bool(re.search(r"包装|pack", label, flags=re.IGNORECASE))
             )
 
         global_pricing_entries = [
@@ -2025,16 +2030,22 @@ def _create_sections(
         _add_revision(db, quote, section, user, reason="initial")
 
 
-def _initial_section_payloads(payload: InternalQuoteCreateRequest) -> dict[str, str]:
-    if not payload.pricing_components:
+def _initial_section_payloads(payload: InternalQuoteCreateRequest, product_index: int = 0) -> dict[str, str]:
+    component_names = payload.products[product_index].pricing_components
+    if not component_names:
         return {}
     components = [
         {"id": f"component-{index:02d}", "name": name}
-        for index, name in enumerate(payload.pricing_components, start=1)
+        for index, name in enumerate(component_names, start=1)
     ]
     return {
         "sales": json.dumps(
-            {"pricing_mode": "component", "pricing_components": components},
+            {
+                "pricing_mode": "component", "pricing_components": components,
+                "justplay_packaging": {
+                    "adhesive_extra_hkd": 0, "paper_pallet_extra_hkd": 0,
+                },
+            },
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -2065,7 +2076,6 @@ def create_quote(
     baseline_quote_id = quote_ids[0]
     batch_size = len(products)
     participating_sections = set(payload.participating_sections)
-    initial_section_payloads = _initial_section_payloads(payload)
     batch_snapshot = build_reference_snapshot(
         db,
         factory_id=payload.factory_id,
@@ -2132,7 +2142,7 @@ def create_quote(
                 quote,
                 user,
                 participating_sections,
-                initial_section_payloads,
+                _initial_section_payloads(payload, quote.batch_position - 1),
             )
             _add_audit(
                 db,
@@ -2651,6 +2661,8 @@ _DIFFERENCE_FIELD_LABELS = {
     "injection_lines": "注塑明细", "blow_lines": "吹气明细", "operations": "工序明细",
     "products": "产品明细", "components": "零件明细", "groups": "产品组",
     "processes": "工序", "packaging_materials": "包装材料", "testing_fee_moqs": "测试费 MOQ",
+    "justplay_packaging": "胶纸及纸托板参数", "adhesive_extra_hkd": "胶纸附加金额 HKD/件",
+    "cartons_per_pallet": "每托板装箱数", "paper_pallet_extra_hkd": "纸托板附加金额 HKD/件",
     "item": "名称", "name": "名称", "specification": "规格", "category": "类别",
     "quantity": "用量", "qty": "数量", "unit_price_rmb": "RMB 单价",
     "unit_price_hkd": "HKD 单价", "loss_rate": "损耗率", "tax_rate_percent": "税点",

@@ -10,7 +10,7 @@ import type {
   SewingPayload,
   SlushPayload,
 } from '@/lib/internalQuoteSectionPayload'
-import { salesFreightCalculationModes } from '@/lib/internalQuoteSectionPayload'
+import { calculateJustPlayCartonsPerPallet, justPlayPackagingInputsValid, resolveSalesCartons, salesFreightCalculationModes } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 export type InternalQuoteBlockStatus = 'missing' | 'partial' | 'complete' | 'optional' | 'automatic'
@@ -182,6 +182,7 @@ function salesBlocks(
   payload: SalesPayload,
   freightCapacityKeys: string[] = ['cap_10t', 'cap_5t', 'cap_40', 'cap_20'],
 ): InternalQuoteFormBlock[] {
+  payload = { ...payload, cartons: resolveSalesCartons(payload) }
   const testingFeeMoqs = payload.testing_fee_moqs?.length
     ? payload.testing_fee_moqs
     : payload.testing_fee_moq != null ? [payload.testing_fee_moq] : []
@@ -209,6 +210,9 @@ function salesBlocks(
   return [
     block('testing-fee', '测试费部分', 'optional', hasTestingFee, testingFeeComplete, '可选择不计算；启用后填写测试费用 USD，每个 MOQ 必须大于 0，各档单价 USD 由系统自动计算'),
     block('packaging-materials', '包装材料部分', 'optional', payload.packaging_materials.length > 0, packagingComplete, '可选；填写时名称、规格、类别、用量、RMB/HKD 任一原单价及大于 0 的损耗率必填'),
+    ...(payload.pricing_mode === 'component' ? [block('justplay-packaging', 'JustPlay 胶纸及纸托板成本部分', 'required', true,
+      justPlayPackagingInputsValid(payload.justplay_packaging) && calculateJustPlayCartonsPerPallet(payload.cartons[0]) > 0 && positive(payload.cartons[0]?.qty_per_carton),
+      '必须；附加金额可填 0、保留两位小数，每托板装箱数按主纸箱长宽高自动计算，成本同时读取每箱数量')] : []),
     block('cartons', '纸箱计算与包装尺寸部分', 'required', payload.cartons.length > 0 || colorBoxDimensionsComplete, colorBoxDimensionsComplete && cartonsComplete, '必须；彩盒三维尺寸、至少一个纸箱尺寸和每箱数量必填，彩盒与纸箱可分别选择 cm 或 inch；产品尺寸（in）和平卡可选'),
     block('freight', '运费计算部分', 'required', true, freightComplete, '运费与吊柜费可独立启用；启用任一项时须完整填写容量和主纸箱资料，两项都关闭时不计运输费用'),
   ]

@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.internal_quote_calculator import CalculationInputError, DEFAULT_MACHINE_PRICES, calculate_section
+from app.services.internal_quote_calculator import CalculationInputError, DEFAULT_MACHINE_PRICES, calculate_section, resolve_sales_cartons
 
 
 SNAPSHOT = {
@@ -31,6 +31,102 @@ def calculate(section_code: str, payload: dict, **context):
         "IQREF-TEST",
         context=context,
     )
+
+
+@pytest.mark.parametrize("unit", ["inch", "cm"])
+@pytest.mark.parametrize("color_field", ["color_box_size_in", "color_box_size_cm"])
+def test_justplay_carton_uses_color_box_dimensions_not_submitted_manual_values(unit, color_field):
+    payload = {
+        "pricing_mode": "component", "color_box_size_unit": unit,
+        color_field: {"length": 10, "width": 5, "height": 4},
+        "cartons": [{"item": "主纸箱", "size_unit": unit, "length_in": 99, "width_in": 99, "height_in": 99, "qty_per_carton": 6}],
+    }
+    result = calculate("sales", payload)
+    carton = next(row for row in result["line_breakdown"] if row["kind"] == "carton")
+    assert carton["carton_price_hkd"] == "1.1956"  # 18.5 * 11.75 * 2 * 2.75 / 1000
+    assert carton["per_piece_hkd"] == "0.1993"
+    assert carton["cuft"] == "0.1789"
+    pallet = next(row for row in result["line_breakdown"] if row.get("formula_code") == "paper_pallet")
+    assert (pallet["carton_length_in"], pallet["carton_width_in"], pallet["carton_height_in"]) == ("10.7500", "5.7500", "5.0000")
+    assert pallet["cartons_per_pallet"] == "210.0000"
+    assert payload["cartons"][0]["length_in"] == 99  # Pure calculation never rewrites the input audit payload.
+    inner = {"item": "内箱", "length_in": 4, "width_in": 3, "height_in": 2, "qty_per_carton": 2}
+    assert resolve_sales_cartons({**payload, "cartons": [*payload["cartons"], inner]})[1] == inner
+    ordinary = {**payload, "pricing_mode": "standard"}
+    assert resolve_sales_cartons(ordinary) == payload["cartons"]
+
+
+@pytest.mark.parametrize("color_box", [None, {}, {"length": 10, "width": 0, "height": 4}, {"length": 10, "width": 5, "height": -1}])
+def test_justplay_carton_requires_complete_positive_color_box_dimensions(color_box):
+    with pytest.raises(CalculationInputError, match="彩盒"):
+        calculate("sales", {"pricing_mode": "component", "color_box_size_in": color_box,
+                            "cartons": [{"length_in": 18, "width_in": 12, "height_in": 10, "qty_per_carton": 24}]})
+
+
+def test_justplay_color_box_changes_also_update_freight_capacity():
+    result = calculate_section("sales", {
+        "pricing_mode": "component", "color_box_size_in": {"length": 17.25, "width": 11.25, "height": 9},
+        "cartons": [{"item": "主纸箱", "length_in": 1, "width_in": 1, "height_in": 1, "qty_per_carton": 24}],
+        "freight_calc": {"cap_40": 1980},
+    }, {**SNAPSHOT, "freight": {"routes": [{"route_key": "hk40", "route_name": "港柜", "capacity_key": "cap_40",
+                                           "freight_hkd": 8000, "lifting_hkd": 1200}]}}, "TEST-JP-COLOR-BOX")
+    freight = result["totals"]["freight_options"][0]
+    assert freight["carton_cuft"] == "1.2500"
+    assert freight["total_cartons"] == "1584.0000"
+    assert freight["freight_per_piece_hkd"] == "0.2104"
+    assert freight["lifting_per_piece_hkd"] == "0.0316"
+
+
+@pytest.mark.parametrize(("parameters", "amounts", "total"), [
+    ({"adhesive_extra_hkd": "0.12", "cartons_per_pallet": "40", "paper_pallet_extra_hkd": "0.07"}, ["0.2075", "0.8617"], "1.0692"),
+    ({"adhesive_extra_hkd": 0, "cartons_per_pallet": 24, "paper_pallet_extra_hkd": 0}, ["0.0875", "0.7917"], "0.8792"),
+])
+def test_justplay_packaging_uses_editable_parameters(parameters, amounts, total):
+    result = calculate("sales", {
+        "pricing_mode": "component",
+        "justplay_packaging": parameters,
+        "color_box_size_in": {"length": 23, "width": 10, "height": 14.5},
+        "cartons": [{"item": "主纸箱", "length_in": "23.75", "width_in": "10.75", "height_in": "15.5", "qty_per_carton": "2"}],
+    })
+    rows = [row for row in result["line_breakdown"] if row["kind"] == "justplay_fixed_packaging"]
+    assert [row["amount_hkd"] for row in rows] == amounts
+    assert result["totals"]["packaging_material_hkd"] == total
+    assert rows[0]["adhesive_extra_hkd"] == f"{float(parameters['adhesive_extra_hkd']):.4f}"
+    assert rows[1]["cartons_per_pallet"] == "12.0000"  # 4 wide * 1 long * 3 high; ignore legacy manual count
+    assert rows[1]["paper_pallet_extra_hkd"] == f"{float(parameters['paper_pallet_extra_hkd']):.4f}"
+
+
+@pytest.mark.parametrize("parameters", [
+    {"adhesive_extra_hkd": -1}, {"paper_pallet_extra_hkd": -1},
+    {"adhesive_extra_hkd": ""}, {"paper_pallet_extra_hkd": None},
+    {"adhesive_extra_hkd": "Infinity"}, [], None,
+])
+def test_justplay_packaging_rejects_invalid_parameters(parameters):
+    with pytest.raises(CalculationInputError):
+        calculate("sales", {"pricing_mode": "component", "justplay_packaging": parameters})
+    ordinary = calculate("sales", {"justplay_packaging": parameters})
+    assert ordinary["totals"]["packaging_material_hkd"] == "0.0000"
+
+
+def test_justplay_pallet_count_is_derived_and_oversize_cartons_cannot_be_priced():
+    payload = {"pricing_mode": "component", "justplay_packaging": {
+        "adhesive_extra_hkd": 0, "cartons_per_pallet": 0, "paper_pallet_extra_hkd": 0,
+    }}
+    assert calculate("sales", payload)["totals"]["packaging_material_hkd"] == "0.0000"
+    payload["cartons"] = [{"item": "主纸箱", "length_in": 18, "width_in": 12, "height_in": 10, "qty_per_carton": 24}]
+    payload["color_box_size_in"] = {"length": 17.25, "width": 11.25, "height": 9}
+    result = calculate("sales", payload)
+    pallet = next(row for row in result["line_breakdown"] if row.get("formula_code") == "paper_pallet")
+    assert pallet["cartons_per_pallet"] == "30.0000"  # 3 * 2 * 5
+    assert pallet["amount_hkd"] == "0.0264"
+    payload["justplay_packaging"]["paper_pallet_extra_hkd"] = "0.049"
+    result = calculate("sales", payload)
+    pallet = next(row for row in result["line_breakdown"] if row.get("formula_code") == "paper_pallet")
+    assert pallet["paper_pallet_extra_hkd"] == "0.0500"
+    assert pallet["amount_hkd"] == "0.0764"
+    payload["color_box_size_in"]["width"] = 50
+    with pytest.raises(CalculationInputError, match="超出纸托板可装范围"):
+        calculate("sales", payload)
 
 
 def test_engineering_electronic_and_molding_decimal_vectors():
@@ -839,6 +935,7 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         {
             "pricing_mode": "component",
             "paper_price_factor": "2.75",
+            "color_box_size_in": {"length": 23, "width": 10, "height": 14.5},
             "cartons": [{
                 "item": "主纸箱",
                 "length_in": "23.75",
@@ -856,8 +953,8 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
     ]
     assert [row["item"] for row in fixed_lines] == ["胶纸/胶水/胶针", "纸托板成本"]
     assert [row["formula_code"] for row in fixed_lines] == ["adhesive", "paper_pallet"]
-    assert [row["amount_hkd"] for row in fixed_lines] == ["0.1475", "0.4458"]
-    assert justplay["totals"]["packaging_material_hkd"] == "0.5934"
+    assert [row["amount_hkd"] for row in fixed_lines] == ["0.0875", "0.7917"]
+    assert justplay["totals"]["packaging_material_hkd"] == "0.8792"
     assert justplay["totals"]["packaging_material_rmb"] == "0.0000"
 
     adjusted = calculate(

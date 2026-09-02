@@ -64,7 +64,6 @@ const form = reactive<QuoteCreateForm>({
   participatingSections: [...mandatorySectionCodes],
   quoteType: 'single',
   products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
-  pricingComponents: [],
 })
 const selectedDepartmentDefinitions = computed(() => internalQuoteSectionDefinitions.filter((item) => (
   normalizeParticipation(form.participatingSections).includes(item.code)
@@ -81,10 +80,15 @@ const isJustPlay = computed(() => (
   && String(form.customer).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'justplay'
 ))
 
-watch(isJustPlay, (enabled) => {
-  if (enabled && !form.pricingComponents?.length) form.pricingComponents = ['主体', '配件1']
-  if (!enabled) form.pricingComponents = []
-}, { immediate: true })
+function initializeProductComponents() {
+  for (const product of form.products) {
+    product.pricingComponents = isJustPlay.value
+      ? [...(product.pricingComponents?.length ? product.pricingComponents : form.products[0]?.pricingComponents ?? ['主体', '配件1'])]
+      : undefined
+  }
+}
+
+watch(isJustPlay, initializeProductComponents, { immediate: true })
 
 watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners[0]?.id, props.customers[0]] as const, ([open]) => {
   closeDocumentPreview()
@@ -116,7 +120,6 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
         imageFile: null,
         documentFiles: [],
       }],
-      pricingComponents: [],
     })
     return
   }
@@ -135,8 +138,8 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
     participatingSections: [...mandatorySectionCodes],
     quoteType: 'single',
     products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
-    pricingComponents: [],
   })
+  initializeProductComponents()
 }, { immediate: true })
 
 function submit() {
@@ -175,16 +178,18 @@ function submit() {
     return
   }
   if (isJustPlay.value) {
-    const componentNames = (form.pricingComponents ?? []).map((name) => name.trim()).filter(Boolean)
-    if (!componentNames.length) {
-      errorMessage.value = '华康B JustPlay 报价至少要建立一个分项。'
-      return
+    for (const [index, product] of form.products.entries()) {
+      const componentNames = (product.pricingComponents ?? []).map((name) => name.trim())
+      if (!componentNames.length || componentNames.length > 50 || componentNames.some((name) => !name || name.length > 64)) {
+        errorMessage.value = `第 ${index + 1} 款必须填写主体及配件名称；最多 49 个配件，每个名称不超过 64 个字符。`
+        return
+      }
+      if (componentNames.length !== new Set(componentNames.map((name) => name.toLocaleLowerCase())).size) {
+        errorMessage.value = `第 ${index + 1} 款的 JustPlay 分项名称不能重复。`
+        return
+      }
+      product.pricingComponents = componentNames
     }
-    if (componentNames.length !== new Set(componentNames.map((name) => name.toLocaleLowerCase())).size) {
-      errorMessage.value = 'JustPlay 分项名称不能重复。'
-      return
-    }
-    form.pricingComponents = componentNames
   }
   const participating = new Set(normalizeParticipation(form.participatingSections))
   if (form.products.some((product) => (product.documentFiles ?? []).some((document) => !participating.has(document.department)))) {
@@ -195,12 +200,14 @@ function submit() {
     ...product,
     productName: product.productName.trim(),
     quantity: Number(product.quantity),
+    pricingComponents: isJustPlay.value ? [...(product.pricingComponents ?? [])] : undefined,
   }))
   emit('confirm', {
     ...form,
     productName: normalizedProducts[0]!.productName,
     quantity: normalizedProducts[0]!.quantity,
     products: normalizedProducts,
+    pricingComponents: isJustPlay.value ? [...(normalizedProducts[0]?.pricingComponents ?? [])] : [],
     participatingSections: normalizeParticipation(form.participatingSections),
   })
 }
@@ -220,7 +227,8 @@ function changeQuoteType() {
     const baseName = first.productName.replace(/—(?:大陆价|印尼价)$/, '') || '产品名'
     form.products = [
       { ...first, productName: `${baseName}—大陆价`, regionCode: 'mainland' },
-      { productName: `${baseName}—印尼价`, quantity: first.quantity, regionCode: 'indonesia', imageFile: null, documentFiles: [] },
+      { productName: `${baseName}—印尼价`, quantity: first.quantity, regionCode: 'indonesia', imageFile: null, documentFiles: [],
+        pricingComponents: isJustPlay.value ? [...(first.pricingComponents ?? ['主体', '配件1'])] : undefined },
     ]
     return
   }
@@ -229,7 +237,8 @@ function changeQuoteType() {
 
 function addProduct() {
   if (form.products.length >= 20 || form.quoteType !== 'series') return
-  form.products.push({ productName: '', quantity: form.products[0]?.quantity ?? 10000, regionCode: '', imageFile: null, documentFiles: [] })
+  form.products.push({ productName: '', quantity: form.products[0]?.quantity ?? 10000, regionCode: '', imageFile: null, documentFiles: [],
+    pricingComponents: isJustPlay.value ? [...(form.products[0]?.pricingComponents ?? ['主体', '配件1'])] : undefined })
 }
 
 function removeProduct(index: number) {
@@ -237,15 +246,25 @@ function removeProduct(index: number) {
   form.products.splice(index, 1)
 }
 
-function addPricingComponent() {
-  if (!isJustPlay.value || (form.pricingComponents?.length ?? 0) >= 50) return
-  form.pricingComponents ??= []
-  form.pricingComponents.push(`配件${form.pricingComponents.length}`)
+function addPricingComponent(productIndex: number) {
+  const components = form.products[productIndex]?.pricingComponents
+  if (!isJustPlay.value || !components || components.length >= 50) return
+  let suffix = components.length
+  while (components.some((name) => name.trim() === `配件${suffix}`)) suffix += 1
+  components.push(`配件${suffix}`)
 }
 
-function removePricingComponent(index: number) {
-  if (!isJustPlay.value || (form.pricingComponents?.length ?? 0) <= 1) return
-  form.pricingComponents?.splice(index, 1)
+function removePricingComponent(productIndex: number, componentIndex: number) {
+  if (!isJustPlay.value || componentIndex === 0) return
+  form.products[productIndex]?.pricingComponents?.splice(componentIndex, 1)
+}
+
+function changeAccessoryCount(productIndex: number, event: Event) {
+  const count = Number((event.target as HTMLSelectElement).value)
+  const components = form.products[productIndex]?.pricingComponents
+  if (!isJustPlay.value || !components || !Number.isInteger(count) || count < 0 || count > 49) return
+  if (components.length > count + 1) components.splice(count + 1)
+  while (components.length < count + 1) addPricingComponent(productIndex)
 }
 
 function selectProductImage(index: number, event: Event) {
@@ -389,24 +408,9 @@ onBeforeUnmount(closeDocumentPreview)
               </label>
             </div>
 
-            <section v-if="isJustPlay" class="quote-product-list quote-pricing-component-list">
-              <div class="quote-product-list-head">
-                <div><strong>JustPlay 报价分项</strong><span>建单时确定主体与配件；各部门报价时直接选择归属，输出仍使用现有字段映射。</span></div>
-                <button type="button" :disabled="(form.pricingComponents?.length ?? 0) >= 50" @click="addPricingComponent"><Plus />新增配件</button>
-              </div>
-              <div class="quote-pricing-component-rows">
-                <label v-for="(_component, index) in form.pricingComponents" :key="index">
-                  <span>{{ index === 0 ? '主分项' : `配件 ${index}` }}</span>
-                  <input v-model="form.pricingComponents![index]" type="text" maxlength="64" :placeholder="index === 0 ? '例如：主体' : `例如：配件${index}`">
-                  <button type="button" :disabled="(form.pricingComponents?.length ?? 0) <= 1" :aria-label="`移除分项 ${index + 1}`" @click="removePricingComponent(index)"><Trash2 /></button>
-                </label>
-              </div>
-              <p>第一个分项是未选择明细的默认归属；创建后右侧原 MOQ 区域会改为各分项倍率。</p>
-            </section>
-
             <section class="quote-product-list">
               <div class="quote-product-list-head">
-                <div><strong>产品清单</strong><span>第 1 款为基准款；创建后可把整份部门报价复制到其他款。</span></div>
+                <div><strong>产品清单</strong><span>{{ isJustPlay ? '每款独立设置配件；新增产品默认复制当前第 1 款的配件个数和名称，之后互不影响。' : '第 1 款为基准款；创建后可把整份部门报价复制到其他款。' }}</span></div>
                 <button v-if="form.quoteType === 'series'" type="button" :disabled="form.products.length >= 20" @click="addProduct"><Plus />新增产品</button>
               </div>
               <div class="quote-product-rows">
@@ -433,6 +437,23 @@ onBeforeUnmount(closeDocumentPreview)
                   <span v-if="product.regionCode" class="quote-region-badge">{{ product.regionCode === 'mainland' ? '大陆价' : '印尼价' }}</span>
                   <button v-if="form.quoteType === 'series' && form.products.length > 1" type="button" class="quote-remove-product" aria-label="移除产品" @click="removeProduct(index)"><Trash2 /></button>
                   <b v-if="index === 0" class="quote-baseline-badge">基准款</b>
+                  <section v-if="isJustPlay" class="quote-product-list quote-pricing-component-list quote-product-components">
+                    <div class="quote-product-list-head">
+                      <div><strong>本款 JustPlay 报价分项</strong><span>1 个主体 + {{ Math.max(0, (product.pricingComponents?.length ?? 1) - 1) }} 个配件；名称可分别修改。</span></div>
+                      <div class="quote-component-actions">
+                        <label class="quote-accessory-count"><span>配件个数</span><select :value="(product.pricingComponents?.length ?? 1) - 1" :aria-label="`第 ${index + 1} 款配件个数`" @change="changeAccessoryCount(index, $event)"><option v-for="count in 50" :key="count - 1" :value="count - 1">{{ count - 1 }} 个</option></select></label>
+                        <button type="button" :disabled="(product.pricingComponents?.length ?? 0) >= 50" @click="addPricingComponent(index)"><Plus />新增配件</button>
+                      </div>
+                    </div>
+                    <div class="quote-pricing-component-rows">
+                      <label v-for="(_component, componentIndex) in product.pricingComponents" :key="componentIndex">
+                        <span>{{ componentIndex === 0 ? '主体' : `配件 ${componentIndex}` }}</span>
+                        <input v-model="product.pricingComponents![componentIndex]" type="text" maxlength="64" :aria-label="`第 ${index + 1} 款${componentIndex === 0 ? '主体' : `配件 ${componentIndex}`}名称`" :placeholder="componentIndex === 0 ? '例如：主体' : `例如：配件${componentIndex}`">
+                        <button v-if="componentIndex > 0" type="button" :aria-label="`移除第 ${index + 1} 款配件 ${componentIndex}`" @click="removePricingComponent(index, componentIndex)"><Trash2 /></button>
+                      </label>
+                    </div>
+                    <p>各部门明细归属及右侧分项倍率只使用本款配置；未选择归属的明细默认计入主体。</p>
+                  </section>
                 </article>
               </div>
               <p>产品主图与资料在同一区域维护；资料必须分配给参与部门，支持 Excel、Word、PDF 和 JPG/JPEG，创建后继续在对应部门资料栏预览。</p>
@@ -519,4 +540,10 @@ onBeforeUnmount(closeDocumentPreview)
 @media(max-width:760px){.quote-optional-segments{grid-template-columns:repeat(2,minmax(0,1fr))}.quote-type-choice{grid-template-columns:1fr}.quote-product-row{grid-template-columns:30px 1fr}.quote-product-row label,.quote-product-assets{grid-column:2}.quote-product-asset-pickers{grid-template-columns:1fr auto}.quote-product-documents{grid-column:1/-1}.quote-remove-product{grid-column:2}.quote-region-badge{right:8px;top:32px}}
 @media(max-width:650px){.quote-dialog-backdrop{padding:0}.quote-dialog{max-height:100vh;border-radius:0}.quote-department-choice,.quote-form-grid,.quote-pricing-component-rows{grid-template-columns:1fr}.quote-form-grid label.wide{grid-column:auto}.quote-dialog-actions{position:sticky;bottom:0}.quote-participation-heading{align-items:flex-start;flex-direction:column;gap:3px}}
 @media(prefers-reduced-motion:reduce){.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label,.quote-optional-segments label,.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:none}}
+.quote-product-components{grid-column:2/-1;min-width:0;margin-top:4px}
+.quote-product-list-head>.quote-component-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.quote-product-row .quote-accessory-count{display:flex;align-items:center;gap:6px}
+.quote-accessory-count select{border:1px solid #99f6e4;border-radius:7px;background:#fff;padding:6px;color:#0f766e;font-size:12px}
+.quote-product-components .quote-pricing-component-rows label{grid-column:auto}
+@media(max-width:760px){.quote-product-components{grid-column:1/-1}.quote-product-components .quote-product-list-head{align-items:flex-start;flex-direction:column}.quote-product-components .quote-pricing-component-rows{grid-template-columns:1fr}}
 </style>

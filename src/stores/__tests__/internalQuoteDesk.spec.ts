@@ -38,6 +38,7 @@ const apiMock = vi.hoisted(() => ({
   previewImport: vi.fn(),
   confirmImport: vi.fn(),
   uploadAttachment: vi.fn(),
+  listBatchProducts: vi.fn(),
   downloadAttachment: vi.fn(),
   createExport: vi.fn(),
   downloadExport: vi.fn(),
@@ -480,6 +481,28 @@ describe('internal quote desk real API state', () => {
     expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'whole_quote_review' })
     expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'whole_quote_review' }))
     expect(cloned.id).toBe('clone-1')
+  })
+
+  it('sends distinct component definitions for each product in a JustPlay series', async () => {
+    apiMock.listBatchProducts.mockResolvedValueOnce([])
+    const store = useInternalQuoteDeskStore()
+    await store.createQuote({
+      quoteNo: 'IQ-JP-SERIES', productName: 'A款', customer: 'JustPlay', versionLabel: 'V1',
+      initiatorDepartment: 'sales-business', businessOwnerId: 'owner-1', businessOwner: '业务负责人',
+      targetCustomerPrice: '无', quantity: 1000, targetDate: '', remark: '',
+      participatingSections: ['sales', 'engineering', 'assembly'], quoteType: 'series',
+      pricingComponents: ['主体', '镜子', '梳子'],
+      products: [
+        { productName: 'A款', quantity: 1000, regionCode: '', pricingComponents: ['主体', '镜子', '梳子'] },
+        { productName: 'B款', quantity: 2000, regionCode: '', pricingComponents: ['主体', '发夹'] },
+        { productName: 'C款', quantity: 3000, regionCode: '', pricingComponents: ['主体'] },
+      ],
+    }, 'huakang-b')
+    expect(apiMock.create.mock.calls[0][0].products).toEqual([
+      { product_name: 'A款', qty: 1000, region_code: '', pricing_components: ['主体', '镜子', '梳子'] },
+      { product_name: 'B款', qty: 2000, region_code: '', pricing_components: ['主体', '发夹'] },
+      { product_name: 'C款', qty: 3000, region_code: '', pricing_components: ['主体'] },
+    ])
   })
 
   it('uploads create-time product documents to their assigned departments', async () => {

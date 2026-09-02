@@ -467,6 +467,7 @@ export interface InternalQuoteCreateRequest {
     product_name: string
     qty: number
     region_code: '' | 'mainland' | 'indonesia'
+    pricing_components?: string[]
   }>
   pricing_components?: string[]
 }

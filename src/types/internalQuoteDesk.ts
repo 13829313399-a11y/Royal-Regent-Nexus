@@ -300,6 +300,7 @@ export interface InternalQuoteCreateProduct {
   regionCode: '' | 'mainland' | 'indonesia'
   imageFile?: File | null
   documentFiles?: InternalQuoteCreateDocument[]
+  pricingComponents?: string[]
 }
 
 export interface InternalQuoteCreateDocument {
