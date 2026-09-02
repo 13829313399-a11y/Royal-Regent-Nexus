@@ -118,6 +118,7 @@ def test_justplay_components_are_created_only_for_huakang_b_and_seed_sales_paylo
     seeded = json.loads(_initial_section_payloads(payload)["sales"])
     assert seeded == {
         "pricing_mode": "component",
+        "justplay_packaging": {"adhesive_extra_hkd": 0, "paper_pallet_extra_hkd": 0},
         "pricing_components": [
             {"id": "component-01", "name": "主体"},
             {"id": "component-02", "name": "镜子"},
@@ -125,6 +126,52 @@ def test_justplay_components_are_created_only_for_huakang_b_and_seed_sales_paylo
     }
     with pytest.raises(ValidationError, match="只有华康B JustPlay"):
         create_request(factory_id="huaxing")
+
+
+def test_justplay_product_components_override_legacy_and_omitted_products_copy_first():
+    request = create_request(quote_type="series", products=[
+        {"product_name": "A款", "qty": 1000, "pricing_components": [" 主体 ", "镜子", "梳子"]},
+        {"product_name": "B款", "qty": 2000, "pricing_components": ["主体", "发夹"]},
+        {"product_name": "C款", "qty": 3000},
+    ])
+    expected = [["主体", "镜子", "梳子"], ["主体", "发夹"], ["主体", "镜子", "梳子"]]
+    assert [product.pricing_components for product in request.products] == expected
+    for index, names in enumerate(expected):
+        seeded = json.loads(_initial_section_payloads(request, index)["sales"])
+        assert [item["name"] for item in seeded["pricing_components"]] == names
+        assert [item["id"] for item in seeded["pricing_components"]] == [f"component-{i:02d}" for i in range(1, len(names) + 1)]
+    request.products[2].pricing_components[1] = "C镜子"
+    assert request.products[0].pricing_components[1] == "镜子"
+
+
+@pytest.mark.parametrize("names,expected_error", [
+    ([], "至少要建立一个分项"),
+    (["主体", " "], "不能为空"),
+    (["主体", "镜子", "镜子"], "不能重复"),
+    (["主体", "Mirror", "mirror"], "不能重复"),
+    (["主体", "长" * 65], "不能超过 64"),
+    ([str(i) for i in range(51)], "at most 50"),
+])
+def test_justplay_rejects_invalid_product_components(names, expected_error):
+    with pytest.raises(ValidationError, match=expected_error):
+        create_request(quote_type="series", products=[
+            {"product_name": "A款", "qty": 1000, "pricing_components": ["主体"]},
+            {"product_name": "B款", "qty": 2000, "pricing_components": names},
+        ])
+
+
+def test_ordinary_customer_cannot_inject_product_components():
+    with pytest.raises(ValidationError, match="只有华康B JustPlay"):
+        create_request(customer="普通客", pricing_components=[], products=[
+            {"product_name": "A款", "qty": 1000, "pricing_components": ["主体", "镜子"]},
+        ])
+
+
+def test_justplay_product_components_work_without_legacy_shared_field():
+    request = create_request(pricing_components=[], products=[
+        {"product_name": "A款", "qty": 1000, "pricing_components": ["主体"]},
+    ])
+    assert json.loads(_initial_section_payloads(request)["sales"])["pricing_components"] == [{"id": "component-01", "name": "主体"}]
 
 
 def test_rr2_standard_detail_multiplier_detaches_from_main_multiplier_pool():
@@ -266,6 +313,90 @@ def test_rr2_justplay_pricing_entries_keep_assembly_formula_inputs():
     assert entry["formula_allocation_factor"] == "1.0000"
 
 
+def test_rr2_justplay_routes_packaging_category_labor_to_business_packaging_markup():
+    sections = [
+        section(
+            "sales",
+            {
+                "pricing_mode": "component",
+                "pricing_components": [
+                    {"id": "component-01", "name": "主体", "markup_x": "1.15"},
+                ],
+                "shipping": {
+                    "markup_x": "1.15",
+                    "packaging_markup_x": "1.25",
+                    "misc_ratio": "0.03",
+                },
+            },
+            {},
+        ),
+        section(
+            "engineering",
+            {"materials": []},
+            {
+                "hardware_hkd": "1",
+                "auxiliary_hkd": "0",
+                "packaging_hkd": "0",
+                "carton_hkd": "0",
+                "total_hkd": "1",
+            },
+            [
+                {
+                    "kind": "material",
+                    "item": "主体件",
+                    "category": "hardware",
+                    "amount_hkd": "1",
+                    "pricing_component_id": "component-01",
+                }
+            ],
+        ),
+        section(
+            "assembly",
+            {"labor_base_hkd": "260"},
+            {
+                "assembly_hkd": "0",
+                "packaging_hkd": "0.52",
+                "total_hkd": "0.52",
+            },
+            [
+                {
+                    "kind": "assembly_process",
+                    "group": "成品 A",
+                    "category": "packaging",
+                    "process": "装箱",
+                    "persons": "4",
+                    "teams": "1",
+                    "production_qty": "2000",
+                    "amount_hkd_pcs": "0.52",
+                    "pricing_component_id": "component-01",
+                }
+            ],
+        ),
+    ]
+
+    result = _rr2_cost_summary(
+        sections,
+        {
+            "factory_price_hkd": Decimal("1.52"),
+            "assembly_hkd": Decimal("0"),
+            "packing_labor_hkd": Decimal("0.52"),
+            "carton_hkd": Decimal("0"),
+        },
+        SNAPSHOT,
+        factory_id="huakang-b",
+    )
+
+    pricing = result["shipping_pricing"]
+    assert pricing["pricing_groups"][0]["cost_hkd"] == "1.0000"
+    assert pricing["global_pricing"]["cost_hkd"] == "0.5200"
+    assert pricing["global_pricing"]["markup"] == "1.2500"
+    packaging_entry = pricing["global_pricing"]["entries"][0]
+    assert packaging_entry["section"] == "assembly"
+    assert packaging_entry["category"] == "packaging"
+    assert packaging_entry["label"] == "成品 A"
+    assert packaging_entry["is_global"] is True
+
+
 def test_rr2_justplay_keeps_packaging_global_and_prices_it_once_with_its_own_markup():
     sections = [
         section(
@@ -350,6 +481,7 @@ def test_rr2_justplay_owns_automatic_fixed_packaging_without_manual_material_row
                     "category": "other_purchase",
                     "formula_code": "adhesive",
                     "formula": "fixed adhesive formula",
+                    "adhesive_extra_hkd": "0.0000",
                     "carton_length_in": "23.75",
                     "carton_width_in": "10.75",
                     "qty_per_carton": "2",
@@ -361,6 +493,8 @@ def test_rr2_justplay_owns_automatic_fixed_packaging_without_manual_material_row
                     "category": "other_purchase",
                     "formula_code": "paper_pallet",
                     "formula": "fixed pallet formula",
+                    "cartons_per_pallet": "40.0000",
+                    "paper_pallet_extra_hkd": "0.0700",
                     "qty_per_carton": "2",
                     "amount_hkd": "0.4",
                 },
@@ -389,6 +523,9 @@ def test_rr2_justplay_owns_automatic_fixed_packaging_without_manual_material_row
     assert global_pricing["entries"][0]["formula_code"] == "adhesive"
     assert global_pricing["entries"][0]["carton_length_in"] == "23.75"
     assert global_pricing["entries"][1]["formula_code"] == "paper_pallet"
+    assert global_pricing["entries"][0]["adhesive_extra_hkd"] == "0.0000"
+    assert global_pricing["entries"][1]["cartons_per_pallet"] == "40.0000"
+    assert global_pricing["entries"][1]["paper_pallet_extra_hkd"] == "0.0700"
 
 
 @pytest.mark.parametrize(

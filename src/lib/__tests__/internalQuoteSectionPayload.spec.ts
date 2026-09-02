@@ -1,9 +1,43 @@
 import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
 import type { MoldingPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateJustPlayCartonsPerPallet, justPlayPackagingInputsValid, normalizeJustPlayPackagingInputs } from '@/lib/internalQuoteSectionPayload'
 import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
+  it('defaults unfilled JustPlay packaging parameters to zero and preserves saved inputs', () => {
+    const legacy = normalizeInternalQuotePayload('sales', { pricing_mode: 'component' })
+    expect(legacy.justplay_packaging).toEqual({ adhesive_extra_hkd: 0, paper_pallet_extra_hkd: 0 })
+    expect(justPlayPackagingInputsValid(legacy.justplay_packaging)).toBe(true)
+    const saved = { adhesive_extra_hkd: .06, cartons_per_pallet: 24, paper_pallet_extra_hkd: .05 }
+    expect(normalizeJustPlayPackagingInputs(saved)).toEqual({ adhesive_extra_hkd: .06, paper_pallet_extra_hkd: .05 })
+    const parameters = { adhesive_extra_hkd: 0, cartons_per_pallet: 40, paper_pallet_extra_hkd: .07 }
+    const payload = normalizeInternalQuotePayload('sales', { justplay_packaging: parameters })
+    expect(cloneInternalQuotePayload('sales', payload).justplay_packaging).toEqual({ adhesive_extra_hkd: 0, paper_pallet_extra_hkd: .07 })
+    const carton = { length_in: 23.75, width_in: 10.75, height_in: 15.5, qty_per_carton: 2 }
+    expect(calculateJustPlayAdhesivePackagingCostHkd(carton, parameters)).toBeCloseTo(.0875232558)
+    expect(calculateJustPlayCartonsPerPallet(carton)).toBe(12)
+    expect(calculateJustPlayPaperPalletCostHkd(carton, parameters)).toBeCloseTo(.8616666667)
+    expect(justPlayPackagingInputsValid(parameters)).toBe(true)
+    const blank = normalizeJustPlayPackagingInputs({ ...parameters, adhesive_extra_hkd: '' })
+    expect(blank.adhesive_extra_hkd).toBe('')
+    expect(justPlayPackagingInputsValid(blank)).toBe(false)
+    expect(cloneInternalQuotePayload('sales', { ...payload, justplay_packaging: blank }).justplay_packaging).toEqual(blank)
+    expect(normalizeJustPlayPackagingInputs({ adhesive_extra_hkd: .049, paper_pallet_extra_hkd: .055 }))
+      .toEqual({ adhesive_extra_hkd: .05, paper_pallet_extra_hkd: .06 })
+    expect(normalizeInternalQuotePayload('sales', {})).not.toHaveProperty('justplay_packaging')
+  })
+
+  it('floors all three pallet axes separately using main-carton inch dimensions', () => {
+    const carton = { length_in: 18, width_in: 12, height_in: 10, qty_per_carton: 24 }
+    expect(calculateJustPlayCartonsPerPallet(carton)).toBe(30)
+    expect(calculateJustPlayPaperPalletCostHkd(carton)).toBeCloseTo(.0263888889)
+    expect(calculateJustPlayCartonsPerPallet({ ...carton, width_in: 50 })).toBe(0)
+    expect(calculateJustPlayCartonsPerPallet({ ...carton, height_in: 0 })).toBe(0)
+    expect(calculateJustPlayCartonsPerPallet(undefined)).toBe(0)
+    expect(calculateJustPlayPaperPalletCostHkd({ ...carton, height_in: 0 })).toBe(0)
+  })
+
   it('omits retired sales cost fields for new forms while preserving historical payloads', () => {
     const fresh = normalizeInternalQuotePayload('sales', {})
     for (const key of ['additional_tax_hkd', 'indonesia_freight_hkd', 'tax_categories', 'scenarios']) {
@@ -203,8 +237,8 @@ describe('internal quote section payload normalization', () => {
     expect(calculateFlatCardPriceHkd({ length_in: 10, width_in: 5, quantity: 1 }, 2.75)).toBeCloseTo(0.1375)
     expect(calculateCartonUnitCostHkd(carton, 2.75)).toBeCloseTo(0.1111)
     expect(calculateCartonUnitCostHkd(carton, 2.75, 1.5)).toBeCloseTo(0.1031)
-    expect(calculateJustPlayAdhesivePackagingCostHkd({ length_in: 23.75, width_in: 10.75, qty_per_carton: 2 })).toBeCloseTo(0.1475233)
-    expect(calculateJustPlayPaperPalletCostHkd({ qty_per_carton: 2 })).toBeCloseTo(0.4458333)
+    expect(calculateJustPlayAdhesivePackagingCostHkd({ length_in: 23.75, width_in: 10.75, qty_per_carton: 2 })).toBeCloseTo(0.0875233)
+    expect(calculateJustPlayPaperPalletCostHkd({ length_in: 23.75, width_in: 10.75, height_in: 15.5, qty_per_carton: 2 })).toBeCloseTo(.7916666667)
 
     const freightOptions = calculateSalesFreightOptions(defaultSalesFreightCalculation, {
       length_in: 14,

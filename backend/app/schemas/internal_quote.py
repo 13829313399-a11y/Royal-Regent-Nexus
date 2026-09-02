@@ -76,6 +76,7 @@ class InternalQuoteProductCreateRequest(BaseModel):
     product_name: str = Field(min_length=1, max_length=255)
     qty: int = Field(gt=0)
     region_code: InternalQuoteRegionCode = ""
+    pricing_components: list[str] | None = Field(default=None, max_length=50)
 
     @field_validator("product_name")
     @classmethod
@@ -162,10 +163,28 @@ class InternalQuoteCreateRequest(BaseModel):
             raise ValueError("JustPlay 分项名称不能重复")
         if any(len(name) > 64 for name in component_names):
             raise ValueError("JustPlay 分项名称不能超过 64 个字符")
-        if is_justplay and not component_names:
-            raise ValueError("华康B JustPlay 报价至少要建立一个分项")
         if not is_justplay and component_names:
             raise ValueError("只有华康B JustPlay 报价可以在建单时建立分项")
+        baseline_names = component_names
+        for index, product in enumerate(products, start=1):
+            names = (
+                [name.strip() for name in product.pricing_components]
+                if product.pricing_components is not None
+                else list(baseline_names)
+            )
+            if is_justplay and not names:
+                raise ValueError(f"华康B JustPlay 报价第 {index} 款至少要建立一个分项")
+            if not is_justplay and names:
+                raise ValueError("只有华康B JustPlay 报价可以在建单时建立分项")
+            if any(not name for name in names):
+                raise ValueError(f"第 {index} 款的 JustPlay 分项名称不能为空")
+            if len(names) != len({name.casefold() for name in names}):
+                raise ValueError(f"第 {index} 款的 JustPlay 分项名称不能重复")
+            if any(len(name) > 64 for name in names):
+                raise ValueError(f"第 {index} 款的 JustPlay 分项名称不能超过 64 个字符")
+            product.pricing_components = names
+            if index == 1:
+                baseline_names = names
         self.pricing_components = component_names
         self.products = products
         return self

@@ -6,7 +6,7 @@ import { internalQuoteAttachmentPreviewUrl } from '@/api/internalQuote'
 import InternalQuotePricingFields from './InternalQuotePricingFields.vue'
 import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
-import { previewEngineeringMoldPartSplit } from '@/lib/internalQuoteSectionPayload'
+import { calculateJustPlayMainCartonDimensions, calculateJustPlayCartonsPerPallet, normalizeJustPlayPackagingInputs, justPlayPackagingInputsValid, previewEngineeringMoldPartSplit, type JustPlayPackagingInputs } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 import type { QuotePricingMetadata, SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 
@@ -24,6 +24,16 @@ const emit = defineEmits<{
 }>()
 
 const sales = computed(() => model.value as unknown as SalesPayload)
+const justPlayCartonAutomatic = computed(() => props.code === 'sales' && (props.pricingMode ?? sales.value.pricing_mode) === 'component')
+watchEffect(() => {
+  if (!justPlayCartonAutomatic.value) return
+  const mainCarton = sales.value.cartons[0]
+  if (!mainCarton) return
+  const derived = calculateJustPlayMainCartonDimensions(sales.value.color_box_size_in)
+  for (const key of ['length_in', 'width_in', 'height_in'] as const) {
+    if (mainCarton[key] !== derived[key]) mainCarton[key] = derived[key]
+  }
+})
 const hasInnerCarton = computed(() => sales.value.cartons.length > 1)
 const innerPaperPriceFactor = computed<number>({
   get: () => {
@@ -151,7 +161,7 @@ const isThreeSixty = computed(() => ['360', 'threesixty'].includes(normalizedCus
 const referenceFreightRoutes = computed(() => salesFreightReferenceRoutesFromSnapshot(props.referenceSnapshot?.freight))
 const formBlocks = computed(() => getInternalQuoteFormBlocks(
   props.code,
-  model.value,
+  props.code === 'sales' && props.pricingMode ? { ...model.value, pricing_mode: props.pricingMode } : model.value,
   referenceFreightRoutes.value.map(({ capacityKey }) => capacityKey),
 ))
 watchEffect(() => emit('block-progress', formBlocks.value))
@@ -393,6 +403,7 @@ function updateColorBoxDimension(key: SalesDimensionKey, event: Event) {
   sales.value.color_box_size_in[key] = dimensionValueToInches(value, colorBoxSizeUnit.value)
 }
 function updateCartonDimension(carton: SalesCartonRow, key: CartonDimensionKey, event: Event) {
+  if (justPlayCartonAutomatic.value && carton === sales.value.cartons[0]) return
   const value = (event.target as HTMLInputElement).value
   carton[key] = dimensionValueToInches(value, cartonSizeUnit(carton))
 }
@@ -400,12 +411,31 @@ function updateCartonSizeUnit(carton: SalesCartonRow, event: Event) {
   carton.size_unit = normalizeSalesDimensionUnit((event.target as HTMLSelectElement).value)
 }
 const primaryCarton = computed(() => sales.value.cartons[0])
-const justPlayAdhesivePackagingCost = computed(() => calculateJustPlayAdhesivePackagingCostHkd(primaryCarton.value))
-const justPlayPaperPalletCost = computed(() => calculateJustPlayPaperPalletCostHkd(primaryCarton.value))
+const justPlayPackagingInputs = computed(() => normalizeJustPlayPackagingInputs(sales.value.justplay_packaging))
+type JustPlayExtraKey = 'adhesive_extra_hkd' | 'paper_pallet_extra_hkd'
+const editingJustPlayExtra = ref<JustPlayExtraKey | null>(null)
+function justPlayExtraDisplay(key: JustPlayExtraKey) {
+  const value = justPlayPackagingInputs.value[key]
+  return value === '' || editingJustPlayExtra.value === key ? value : value.toFixed(2)
+}
+function updateJustPlayPackagingInput(key: keyof JustPlayPackagingInputs, event: Event) {
+  const raw = (event.target as HTMLInputElement).value
+  sales.value.justplay_packaging = { ...justPlayPackagingInputs.value, [key]: raw === '' ? '' : Number(raw) }
+}
+function finishJustPlayExtra(key: JustPlayExtraKey, event: Event) {
+  const input = event.target as HTMLInputElement
+  const value = input.value === '' ? '' : Number(input.value)
+  const rounded = value === '' || !Number.isFinite(value) ? '' : Math.round((value + Number.EPSILON) * 100) / 100
+  sales.value.justplay_packaging = { ...justPlayPackagingInputs.value, [key]: rounded }
+  editingJustPlayExtra.value = null
+  input.value = rounded === '' ? '' : rounded.toFixed(2)
+}
+const justPlayAdhesivePackagingCost = computed(() => calculateJustPlayAdhesivePackagingCostHkd(primaryCarton.value, justPlayPackagingInputs.value))
+const justPlayPaperPalletCost = computed(() => calculateJustPlayPaperPalletCostHkd(primaryCarton.value, justPlayPackagingInputs.value))
+const justPlayCartonsPerPallet = computed(() => calculateJustPlayCartonsPerPallet(primaryCarton.value))
 const justPlayFixedPackagingTotal = computed(() => justPlayAdhesivePackagingCost.value + justPlayPaperPalletCost.value)
 const packagingMaterialTotal = computed(() => (
   sales.value.packaging_materials.reduce((total, row) => total + calculatePackagingMaterialAmountHkd(row, props.rmbHkdRate), 0)
-  + (props.pricingMode === 'component' ? justPlayFixedPackagingTotal.value : 0)
 ))
 const testingFeeCalculationEnabled = computed<boolean>({
   get: () => sales.value.testing_fee_enabled !== false,
@@ -1141,7 +1171,7 @@ function addDickieMaterialPrice() {
       </section>
 
       <section :id="blockDomId('packaging-work')" class="payload-block" data-form-block>
-        <header><div><strong>包装部分</strong><span>按产品分组维护包装/混装排拉工序；与组装共用人工基数和标准工时</span></div><button type="button" :disabled="disabled" @click="addAssemblyGroup('packaging')"><Plus />新增包装产品</button></header>
+        <header><div><strong>包装部分</strong><span>{{ pricingMode === 'component' ? 'JustPlay 包装人工统一使用右侧“业务部包装”倍率，导出时归入包装明细；与组装共用人工基数和标准工时。' : '按产品分组维护包装/混装排拉工序；与组装共用人工基数和标准工时' }}</span></div><button type="button" :disabled="disabled" @click="addAssemblyGroup('packaging')"><Plus />新增包装产品</button></header>
         <article v-for="(group,index) in packagingGroups" :key="index" class="nested-card assembly-group-card">
           <div class="nested-head"><strong>包装/混装产品 {{ index + 1 }}</strong><button type="button" class="icon" :disabled="disabled" aria-label="删除包装产品" @click="removeAssemblyGroup(group)"><Trash2 /></button></div>
           <div class="inline-fields assembly-group-fields">
@@ -1222,17 +1252,34 @@ function addDickieMaterialPrice() {
                 <td><input v-model="row.remark" :disabled="disabled" aria-label="包装材料备注"></td>
                 <td><button type="button" class="icon" :disabled="disabled" @click="remove(sales.packaging_materials,index)"><Trash2 /></button></td>
               </tr>
-              <template v-if="pricingMode === 'component'">
-                <tr class="justplay-fixed-packaging-row">
-                  <td>自动</td><td>胶纸/胶水/胶针</td><td>3.9÷2150×(主纸箱长×2+主纸箱宽×4+6)÷每箱数量+0.06</td><td>其他外购</td><td>1</td><td>—</td><td class="calculated-cell">{{ calculated(justPlayAdhesivePackagingCost) }}</td><td>1</td><td class="calculated-cell">{{ calculated(justPlayAdhesivePackagingCost) }}</td><td class="calculated-cell">{{ calculated(justPlayAdhesivePackagingCost) }}</td><td>—</td><td>按主纸箱英寸尺寸及每箱数量自动计算</td><td /></tr>
-                <tr class="justplay-fixed-packaging-row">
-                  <td>自动</td><td>纸托板成本</td><td>19÷24÷每箱数量+0.05</td><td>其他外购</td><td>1</td><td>—</td><td class="calculated-cell">{{ calculated(justPlayPaperPalletCost) }}</td><td>1</td><td class="calculated-cell">{{ calculated(justPlayPaperPalletCost) }}</td><td class="calculated-cell">{{ calculated(justPlayPaperPalletCost) }}</td><td>—</td><td>按主纸箱每箱数量自动计算</td><td /></tr>
-              </template>
-              <tr v-if="!sales.packaging_materials.length && pricingMode !== 'component'"><td colspan="13" class="empty">暂无包装材料，可按需要新增</td></tr>
+              <tr v-if="!sales.packaging_materials.length"><td colspan="13" class="empty">暂无包装材料，可按需要新增</td></tr>
             </tbody>
-            <tfoot v-if="sales.packaging_materials.length || pricingMode === 'component'"><tr><td colspan="9">包装材料合计</td><td class="calculated-cell">HKD {{ calculated(packagingMaterialTotal) }}</td><td colspan="3" /></tr></tfoot>
+            <tfoot v-if="sales.packaging_materials.length"><tr><td colspan="9">包装材料合计</td><td class="calculated-cell">HKD {{ calculated(packagingMaterialTotal) }}</td><td colspan="3" /></tr></tfoot>
           </table>
         </div>
+      </section>
+      <section v-if="pricingMode === 'component'" :id="blockDomId('justplay-packaging')" class="payload-block justplay-packaging" data-form-block>
+        <header><div><strong>JustPlay 胶纸及纸托板成本部分</strong><span>自动读取主纸箱尺寸及每箱数量；统一使用右侧“业务部包装”倍率，导出仍列入包装明细。</span></div></header>
+        <div class="justplay-packaging-items">
+          <article>
+            <strong>胶纸/胶水/胶针</strong>
+            <div class="inline-fields">
+              <label><span>胶纸附加金额 HKD/件</span><input :value="justPlayExtraDisplay('adhesive_extra_hkd')" :disabled="disabled" type="number" min="0" step="0.01" aria-label="胶纸附加金额 HKD/件" @focus="editingJustPlayExtra = 'adhesive_extra_hkd'" @input="updateJustPlayPackagingInput('adhesive_extra_hkd', $event)" @blur="finishJustPlayExtra('adhesive_extra_hkd', $event)"></label>
+              <label class="sales-testing-fee-result"><span>单件成本 HKD（自动）</span><output aria-label="胶纸单件成本 HKD">{{ calculated(justPlayAdhesivePackagingCost) }}</output></label>
+            </div>
+          </article>
+          <article>
+            <strong>纸托板成本</strong>
+            <div class="inline-fields">
+              <label class="sales-testing-fee-result"><span>每托板装箱数（自动）</span><output aria-label="每托板装箱数">{{ justPlayCartonsPerPallet }}</output></label>
+              <label><span>纸托板附加金额 HKD/件</span><input :value="justPlayExtraDisplay('paper_pallet_extra_hkd')" :disabled="disabled" type="number" min="0" step="0.01" aria-label="纸托板附加金额 HKD/件" @focus="editingJustPlayExtra = 'paper_pallet_extra_hkd'" @input="updateJustPlayPackagingInput('paper_pallet_extra_hkd', $event)" @blur="finishJustPlayExtra('paper_pallet_extra_hkd', $event)"></label>
+              <label class="sales-testing-fee-result"><span>单件成本 HKD（自动）</span><output aria-label="纸托板单件成本 HKD">{{ calculated(justPlayPaperPalletCost) }}</output></label>
+            </div>
+          </article>
+        </div>
+        <p v-if="!justPlayPackagingInputsValid(justPlayPackagingInputs)" class="justplay-packaging-warning" role="alert">请填写两项附加金额，可填 0，保留两位小数。</p>
+        <p v-if="justPlayCartonsPerPallet <= 0" class="justplay-packaging-warning" role="alert">请补齐彩盒长、宽、高；由彩盒计算的主纸箱须能放入 1150 × 1000 × 1300 毫米的托板空间，才能自动计算装箱数及纸托板成本。</p>
+        <div class="calculation-strip"><span>胶纸及纸托板合计：<b>HKD {{ calculated(justPlayFixedPackagingTotal) }}</b></span></div>
       </section>
       <section v-if="isDisney" class="payload-block disney-packaging-fields">
         <header><div><strong>迪士尼包装件客户字段部分</strong><span>业务部包装材料逐行进入客户模板 Package Parts；英文说明、USD 单价与 Included 必须显式填写。</span></div></header>
@@ -1270,12 +1317,13 @@ function addDickieMaterialPrice() {
           </article>
         </div>
         <article v-for="(carton,index) in sales.cartons" :key="index" class="nested-card carton-card">
+          <p v-if="justPlayCartonAutomatic && index === 0" class="justplay-carton-note">主纸箱尺寸按彩盒自动计算（英寸）：长、宽各加 0.75，高加 1；请在上方填写彩盒尺寸。</p>
           <div class="nested-head"><strong>{{ index === 0 ? '主纸箱' : `内纸箱 ${index}` }}</strong><div class="nested-head-actions"><label class="dimension-unit-control"><span>尺寸单位</span><select :value="cartonSizeUnit(carton)" :disabled="disabled" :aria-label="`纸箱 ${index + 1} 尺寸单位`" @change="updateCartonSizeUnit(carton, $event)"><option value="inch">inch</option><option value="cm">cm</option></select></label><button type="button" class="icon" :disabled="disabled || index === 0" :title="index === 0 ? '主纸箱不可删除' : '删除内纸箱'" :aria-label="`删除纸箱 ${index + 1}`" @click="removeSalesCarton(index)"><Trash2 /></button></div></div>
           <div class="inline-fields five">
             <label><span>纸箱名称</span><input v-model="carton.item" :disabled="disabled" aria-label="纸箱名称"></label>
-            <label><span>长 L ({{ cartonSizeUnit(carton) }})</span><input :value="dimensionInputValue(carton.length_in, cartonSizeUnit(carton))" :disabled="disabled" type="number" min="0" :step="cartonSizeUnit(carton) === 'cm' ? 0.1 : 0.01" :aria-label="`纸箱长度 ${cartonSizeUnit(carton)}`" @input="updateCartonDimension(carton, 'length_in', $event)"></label>
-            <label><span>宽 W ({{ cartonSizeUnit(carton) }})</span><input :value="dimensionInputValue(carton.width_in, cartonSizeUnit(carton))" :disabled="disabled" type="number" min="0" :step="cartonSizeUnit(carton) === 'cm' ? 0.1 : 0.01" :aria-label="`纸箱宽度 ${cartonSizeUnit(carton)}`" @input="updateCartonDimension(carton, 'width_in', $event)"></label>
-            <label><span>高 H ({{ cartonSizeUnit(carton) }})</span><input :value="dimensionInputValue(carton.height_in, cartonSizeUnit(carton))" :disabled="disabled" type="number" min="0" :step="cartonSizeUnit(carton) === 'cm' ? 0.1 : 0.01" :aria-label="`纸箱高度 ${cartonSizeUnit(carton)}`" @input="updateCartonDimension(carton, 'height_in', $event)"></label>
+            <label><span>长 L ({{ cartonSizeUnit(carton) }}){{ justPlayCartonAutomatic && index === 0 ? '（自动）' : '' }}</span><input :value="dimensionInputValue(carton.length_in, cartonSizeUnit(carton))" :readonly="justPlayCartonAutomatic && index === 0" :disabled="disabled" type="number" min="0" :step="cartonSizeUnit(carton) === 'cm' ? 0.1 : 0.01" :aria-label="`纸箱长度 ${cartonSizeUnit(carton)}`" @input="updateCartonDimension(carton, 'length_in', $event)"></label>
+            <label><span>宽 W ({{ cartonSizeUnit(carton) }}){{ justPlayCartonAutomatic && index === 0 ? '（自动）' : '' }}</span><input :value="dimensionInputValue(carton.width_in, cartonSizeUnit(carton))" :readonly="justPlayCartonAutomatic && index === 0" :disabled="disabled" type="number" min="0" :step="cartonSizeUnit(carton) === 'cm' ? 0.1 : 0.01" :aria-label="`纸箱宽度 ${cartonSizeUnit(carton)}`" @input="updateCartonDimension(carton, 'width_in', $event)"></label>
+            <label><span>高 H ({{ cartonSizeUnit(carton) }}){{ justPlayCartonAutomatic && index === 0 ? '（自动）' : '' }}</span><input :value="dimensionInputValue(carton.height_in, cartonSizeUnit(carton))" :readonly="justPlayCartonAutomatic && index === 0" :disabled="disabled" type="number" min="0" :step="cartonSizeUnit(carton) === 'cm' ? 0.1 : 0.01" :aria-label="`纸箱高度 ${cartonSizeUnit(carton)}`" @input="updateCartonDimension(carton, 'height_in', $event)"></label>
             <label><span>一箱装的个数</span><input v-model.number="carton.qty_per_carton" :disabled="disabled" type="number" min="1" step="1" aria-label="一箱装的个数"></label>
           </div>
           <div class="calculation-strip">
@@ -1376,6 +1424,8 @@ function addDickieMaterialPrice() {
 </template>
 
 <style scoped>
+.justplay-carton-note{margin:10px;color:#0f766e;font-size:12px}.carton-card input[readonly]{background:#f0fdfa;color:#0f766e}
+.justplay-packaging-items{display:grid;gap:12px;padding:12px}.justplay-packaging-items article{border:1px solid #dbe5ea;border-radius:9px;background:#f8fafc;padding:12px}.justplay-packaging-items article>strong{color:#334155;font-size:13px}.justplay-packaging-items .inline-fields{padding:10px 0 0}.justplay-packaging-warning{margin:0 12px 12px;color:#b45309;font-size:12px}
 .section-payload-form{display:grid;gap:12px;padding:12px;background:#f8fafc}.payload-standard-notice{display:flex;align-items:center;gap:10px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa;padding:10px 12px}.payload-standard-notice strong{flex:0 0 auto;color:#0f766e;font-size:13px}.payload-standard-notice span{color:#475569;font-size:12px}.quote-pricing-assignment{display:grid;gap:9px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:11px 12px}.quote-pricing-assignment header>div{display:grid;gap:3px}.quote-pricing-assignment header strong{color:#0c4a6e;font-size:13px}.quote-pricing-assignment header span{color:#475569;font-size:11px;line-height:1.45}.quote-pricing-assignment-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:7px}.quote-pricing-assignment-grid article{display:grid;grid-template-columns:minmax(0,1fr) 118px;align-items:center;gap:8px;border:1px solid #dbeafe;border-radius:8px;background:#fff;padding:8px}.quote-pricing-assignment-grid article>strong{overflow:hidden;color:#334155;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.payload-block{overflow:hidden;border:1px solid #dbe5ea;border-radius:11px;background:#fff}.payload-block>header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:11px 12px;background:#f8fafc}.payload-block>header>div{display:grid}.payload-block header strong{color:#334155;font-size:13px}.payload-block header span{margin-top:2px;color:#64748b;font-size:11px}.payload-block button,.subhead button{display:inline-flex;min-height:32px;align-items:center;gap:5px;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:0 10px;color:#0f766e;font-size:12px;font-weight:800}.payload-block button svg,.subhead button svg{width:14px;height:14px}.payload-block button:disabled{cursor:not-allowed;opacity:.4}.payload-table-scroll{overflow:auto}.payload-table-scroll table{width:100%;min-width:620px;border-collapse:collapse}.payload-table-scroll table.wide{min-width:1050px}.payload-table-scroll table.extraWide{min-width:1850px}.payload-table-scroll table.caixingToolPlan{min-width:2700px}.payload-table-scroll table.painting{min-width:2850px}.payload-table-scroll th{background:#eef2f6;padding:8px;color:#64748b;font-size:11px;text-align:left;white-space:nowrap}.payload-table-scroll td{border-top:1px solid #eef2f6;padding:6px}.payload-table-scroll input,.payload-table-scroll select,.payload-table-scroll textarea,.inline-fields input,.inline-fields select{width:100%;min-width:70px;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:0 8px;color:#334155;font-size:13px}.payload-table-scroll input,.payload-table-scroll select,.inline-fields input,.inline-fields select{height:34px}.payload-table-scroll textarea{min-height:52px;padding-block:7px;resize:vertical}.payload-table-scroll input:focus,.payload-table-scroll select:focus,.payload-table-scroll textarea:focus,.inline-fields input:focus,.inline-fields select:focus{border-color:#14b8a6;outline:2px solid rgb(20 184 166/.12)}.payload-table-scroll input:disabled,.payload-table-scroll select:disabled,.payload-table-scroll textarea:disabled,.inline-fields input:disabled,.inline-fields select:disabled{background:#f8fafc;color:#64748b}.payload-table-scroll .icon,.nested-head .icon{display:grid;width:30px;min-height:30px;place-items:center;border-color:transparent;background:transparent;padding:0;color:#94a3b8}.payload-table-scroll .icon:hover:not(:disabled),.nested-head .icon:hover:not(:disabled){background:#fef2f2;color:#dc2626}.empty{padding:22px!important;color:#94a3b8;text-align:center;font-size:12px}.inline-fields{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:10px;padding:12px}.inline-fields.four{grid-template-columns:repeat(4,minmax(130px,1fr))}.inline-fields.five{grid-template-columns:repeat(5,minmax(110px,1fr));padding:0}.inline-fields label{display:grid;gap:5px}.inline-fields label span{color:#64748b;font-size:11px;font-weight:700}.nested-card{margin:10px;border:1px solid #e2e8f0;border-radius:9px;background:#fff}.nested-head,.subhead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px}.nested-head{border-bottom:1px solid #eef2f6;background:#f8fafc}.nested-head strong{color:#475569;font-size:12px}.subhead{border-top:1px solid #eef2f6}.subhead span{color:#475569;font-size:11px;font-weight:800}.subhead button{min-height:28px;border-color:#dbe5ea;background:#fff;color:#475569;font-size:11px}.disabled{--form-disabled:1}
 .payload-table-scroll table.packagingMaterials{min-width:1750px}.payload-table-scroll tfoot td{border-top:1px solid #99f6e4;background:#f0fdfa;color:#475569;font-size:12px;font-weight:800}.packaging-base{padding-bottom:4px}.dimension-grid{display:grid;grid-template-columns:1fr;gap:10px;padding:4px 12px 10px}.dimension-card{overflow:hidden;border:1px solid #e2e8f0;border-radius:9px;background:#f8fafc}.dimension-card>strong{display:block;padding:9px 12px 0;color:#475569;font-size:12px}.dimension-card-title{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px 0}.dimension-card-title>strong{color:#475569;font-size:12px}.dimension-unit-control{display:flex!important;grid-template-columns:none!important;align-items:center;gap:7px}.dimension-unit-control span{white-space:nowrap}.dimension-unit-control select{height:30px;min-width:78px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:0 8px;color:#334155;font-size:12px}.dimension-unit-control select:focus{border-color:#14b8a6;outline:2px solid rgb(20 184 166/.12)}.dimension-unit-control select:disabled{background:#f1f5f9;color:#64748b}.nested-head-actions{display:flex;align-items:center;gap:8px}.dimension-card .inline-fields{padding-top:8px}.carton-card .inline-fields{padding:10px}.calculation-strip{display:flex;flex-wrap:wrap;gap:10px;margin:0 10px 10px;border:1px solid #fde68a;border-radius:8px;background:#fffbeb;padding:10px;color:#475569;font-size:12px}.calculation-strip span{display:inline-flex;gap:5px}.calculation-strip b{color:#0f766e;font-weight:800}.calculated-cell{background:#ecfdf5!important;color:#0f766e!important;font-variant-numeric:tabular-nums;font-weight:900!important}.packaging-empty{margin:0 12px 12px;border:1px dashed #cbd5e1;border-radius:9px}
 .sales-testing-fee-total{padding:14px 14px 8px}.sales-testing-fee-total label,.sales-testing-fee-breakdown label{display:grid;gap:6px}.sales-testing-fee-total label{max-width:430px}.sales-testing-fee-total span,.sales-testing-fee-breakdown span{color:#64748b;font-size:11px;font-weight:800}.sales-testing-fee-total input,.sales-testing-fee-breakdown input{height:38px;width:100%;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 10px;color:#334155;font-size:13px}.sales-testing-fee-total input:focus,.sales-testing-fee-breakdown input:focus{border-color:#14b8a6;outline:2px solid rgb(20 184 166/.12)}.sales-testing-fee-total input:disabled,.sales-testing-fee-breakdown input:disabled{background:#f8fafc;color:#64748b}.sales-testing-fee-breakdown{display:grid;grid-template-columns:minmax(180px,430px) minmax(180px,430px);gap:12px;padding:8px 14px 14px}.sales-testing-fee-result output{display:flex;height:38px;align-items:center;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:0 10px;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:900}.sales-testing-fee-formula{display:flex;gap:10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 14px;color:#64748b;font-size:11px;line-height:1.5}.sales-testing-fee-formula strong{color:#0f766e}@media(max-width:720px){.sales-testing-fee-breakdown{grid-template-columns:1fr}}

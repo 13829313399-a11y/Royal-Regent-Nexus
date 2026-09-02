@@ -475,6 +475,10 @@ export interface SalesShippingPricing {
   freight_pct?: number
   lifting_pct?: number
 }
+export interface JustPlayPackagingInputs {
+  adhesive_extra_hkd: number | ''
+  paper_pallet_extra_hkd: number | ''
+}
 export interface SalesPayload {
   paper_price_factor: number
   inner_paper_price_factor?: number
@@ -484,6 +488,7 @@ export interface SalesPayload {
   testing_fee_moqs: number[]
   testing_fee_moq?: number
   packaging_materials: SalesPackagingMaterialRow[]
+  justplay_packaging?: JustPlayPackagingInputs
   product_size_in: SalesDimensions
   color_box_size_unit?: SalesDimensionUnit
   color_box_size_in: SalesDimensions
@@ -773,24 +778,83 @@ export function calculatePackagingMaterialAmountHkd(row: Pick<SalesPackagingMate
   return quantity * calculatePackagingMaterialEffectiveUnitHkd(row, rmbHkdRate)
 }
 
+export function normalizeJustPlayPackagingInputs(value: unknown): JustPlayPackagingInputs {
+  const source = objectValue(value)
+  const input = (key: string, fallback: number): number | '' => {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) return fallback
+    if (source[key] === '' || source[key] == null) return ''
+    const parsed = Number(source[key])
+    if (parsed < 0) return parsed
+    return Number.isFinite(parsed) ? Math.round((parsed + Number.EPSILON) * 100) / 100 : ''
+  }
+  return {
+    adhesive_extra_hkd: input('adhesive_extra_hkd', 0),
+    paper_pallet_extra_hkd: input('paper_pallet_extra_hkd', 0),
+  }
+}
+
+export function justPlayPackagingInputsValid(value: unknown) {
+  const inputs = normalizeJustPlayPackagingInputs(value)
+  return inputs.adhesive_extra_hkd !== '' && inputs.adhesive_extra_hkd >= 0
+    && inputs.paper_pallet_extra_hkd !== '' && inputs.paper_pallet_extra_hkd >= 0
+}
+
+export function calculateJustPlayMainCartonDimensions(colorBox: SalesDimensions) {
+  const length = positivePreviewNumber(colorBox.length)
+  const width = positivePreviewNumber(colorBox.width)
+  const height = positivePreviewNumber(colorBox.height)
+  return {
+    length_in: length ? length + 0.75 : 0,
+    width_in: width ? width + 0.75 : 0,
+    height_in: height ? height + 1 : 0,
+  }
+}
+
+export function resolveSalesCartons(payload: Pick<SalesPayload, 'pricing_mode' | 'color_box_size_in' | 'cartons'>) {
+  if (payload.pricing_mode !== 'component' || !payload.cartons.length) return payload.cartons
+  return [
+    { ...payload.cartons[0]!, ...calculateJustPlayMainCartonDimensions(payload.color_box_size_in) },
+    ...payload.cartons.slice(1),
+  ]
+}
+
+export function calculateJustPlayCartonsPerPallet(
+  carton: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'height_in'> | undefined,
+) {
+  if (!carton) return 0
+  const length = positivePreviewNumber(carton.length_in)
+  const width = positivePreviewNumber(carton.width_in)
+  const height = positivePreviewNumber(carton.height_in)
+  if (!length || !width || !height) return 0
+  return Math.floor(1150 / (width * 25.4))
+    * Math.floor(1000 / (length * 25.4))
+    * Math.floor(1300 / (height * 25.4))
+}
+
 export function calculateJustPlayAdhesivePackagingCostHkd(
   carton: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'qty_per_carton'> | undefined,
+  parameters?: JustPlayPackagingInputs,
 ) {
   if (!carton) return 0
   const length = positivePreviewNumber(carton.length_in)
   const width = positivePreviewNumber(carton.width_in)
   const quantity = positivePreviewNumber(carton.qty_per_carton)
-  return length && width && quantity
-    ? 3.9 / 2150 * (length * 2 + width * 4 + 6) / quantity + 0.06
+  const extra = normalizeJustPlayPackagingInputs(parameters).adhesive_extra_hkd
+  return length && width && quantity && extra !== '' && extra >= 0
+    ? 3.9 / 2150 * (length * 2 + width * 4 + 6) / quantity + extra
     : 0
 }
 
 export function calculateJustPlayPaperPalletCostHkd(
-  carton: Pick<SalesCartonRow, 'qty_per_carton'> | undefined,
+  carton: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'height_in' | 'qty_per_carton'> | undefined,
+  parameters?: JustPlayPackagingInputs,
 ) {
   if (!carton) return 0
   const quantity = positivePreviewNumber(carton.qty_per_carton)
-  return quantity ? 19 / 24 / quantity + 0.05 : 0
+  const cartonsPerPallet = calculateJustPlayCartonsPerPallet(carton)
+  const inputs = normalizeJustPlayPackagingInputs(parameters)
+  return quantity && cartonsPerPallet > 0 && inputs.paper_pallet_extra_hkd !== '' && inputs.paper_pallet_extra_hkd >= 0
+    ? 19 / cartonsPerPallet / quantity + inputs.paper_pallet_extra_hkd : 0
 }
 
 export function calculateEngineeringMaterialUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
@@ -1605,13 +1669,20 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     testing_fee_total_usd: numberValue(source.testing_fee_total_usd),
     testing_fee_moqs: testingFeeMoqValues(source.testing_fee_moqs, source.testing_fee_moq),
     packaging_materials: packagingMaterialRows(source.packaging_materials),
+    ...(source.pricing_mode === 'component' || Object.prototype.hasOwnProperty.call(source, 'justplay_packaging')
+      ? { justplay_packaging: normalizeJustPlayPackagingInputs(source.justplay_packaging) }
+      : {}),
     // The historical keys were suffixed `_cm`, although the desk values were
     // entered as inches. Migrate them one-for-one; converting by 2.54 here
     // would corrupt existing quotes such as 5.25 × 8.75 × 3.
     product_size_in: dimensions(source.product_size_in ?? source.product_size_cm),
     color_box_size_unit: normalizeSalesDimensionUnit(source.color_box_size_unit),
     color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
-    cartons: salesCartonRows(source.cartons),
+    cartons: resolveSalesCartons({
+      pricing_mode: source.pricing_mode === 'component' ? 'component' : undefined,
+      color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
+      cartons: salesCartonRows(source.cartons),
+    }),
     freight_calc: {
       enabled: normalizedFreightEnabled || normalizedLiftingEnabled,
       freight_enabled: normalizedFreightEnabled,

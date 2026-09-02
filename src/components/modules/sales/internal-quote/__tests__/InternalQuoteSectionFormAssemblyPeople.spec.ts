@@ -51,4 +51,24 @@ describe('InternalQuoteSectionForm assembly total people', () => {
     expect(modelValue.groups[1].total_persons).toBe(4)
     expect(wrapper.get('#internal-quote-assembly-packaging-work').text()).toContain('10.400')
   })
+
+  it('explains that JustPlay packaging labor follows the business packaging multiplier', () => {
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'assembly',
+        modelValue: assemblyModel(),
+        pricingMode: 'component',
+        pricingComponents: [{ id: 'component-01', name: '主体', markup_x: 1.15 }],
+        activePricingComponentId: 'component-01',
+        'onUpdate:modelValue': () => undefined,
+      },
+    })
+
+    expect(wrapper.get('#internal-quote-assembly-packaging-work').text()).toContain(
+      '业务部包装',
+    )
+    expect(wrapper.get('#internal-quote-assembly-packaging-work').text()).toContain(
+      '导出时归入包装明细',
+    )
+  })
 })

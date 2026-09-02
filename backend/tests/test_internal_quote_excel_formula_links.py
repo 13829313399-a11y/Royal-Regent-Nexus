@@ -1,9 +1,12 @@
 import json
+from io import BytesIO
 from types import SimpleNamespace
 
-from openpyxl import Workbook
+import pytest
+from openpyxl import Workbook, load_workbook
 
 from app.services.internal_quote_excel import _build_summary_sheet
+from app.services.internal_quote_calculator import calculate_section
 
 
 def _section(
@@ -26,6 +29,148 @@ def _find_row(sheet, column: int, value: object) -> int:
         for row in range(1, sheet.max_row + 1)
         if sheet.cell(row, column).value == value
     )
+
+
+@pytest.mark.parametrize("component_mode", [False, True])
+@pytest.mark.parametrize("color_box_unit", ["inch", "cm"])
+@pytest.mark.parametrize("unit,carton_count", [("inch", 1), ("inch", 2), ("cm", 2), ("inch", 3)])
+def test_carton_export_uses_each_packing_quantity_and_counts_flat_cards_once(component_mode, color_box_unit, unit, carton_count):
+    snapshot = {"fx": {"rmb_hkd": ".85", "hkd_usd": "7.8"}, "paper_price_factor": "2.75"}
+    cartons = [
+        {"item": "主纸箱", "size_unit": unit, "length_in": 18, "width_in": 12, "height_in": 10, "qty_per_carton": 24,
+         "flat_cards": [{"name": "外箱平卡", "length_in": 10, "width_in": 4, "quantity": 2}]},
+        {"item": "内纸箱", "size_unit": unit, "length_in": 5, "width_in": 5, "height_in": 4, "qty_per_carton": 6,
+         "flat_cards": [{"name": "内箱平卡", "length_in": 3, "width_in": 2, "quantity": 1}]},
+        {"item": "内纸箱2", "size_unit": unit, "length_in": 8, "width_in": 6, "height_in": 5, "qty_per_carton": 12},
+    ][:carton_count]
+    payload = {"cartons": cartons, "paper_price_factor": 2.75, "inner_paper_price_factor": 3.25,
+               "color_box_size_in": {"length": 17.25, "width": 11.25, "height": 9}, "color_box_size_unit": color_box_unit,
+               "testing_fee_enabled": False, "freight_calc": {"enabled": False}}
+    if component_mode:
+        payload["pricing_mode"] = "component"
+    calculation = calculate_section("sales", payload, snapshot, "TEST-CARTON")
+    # Independently calculated from the screenshot dimensions and each carton quantity.
+    expected = .1686666666666667 + .22 / 24
+    if carton_count >= 2:
+        expected += .13 + .0165 / 6
+    if carton_count == 3:
+        expected += .104
+    assert float(calculation["totals"]["carton_hkd"]) == pytest.approx(expected, abs=.00005)
+    entries = [{"section": "sales", "is_global": True, "label": row["item"], "amount_hkd": row.get("per_piece_hkd", row.get("amount_hkd")), **row}
+               for row in calculation["line_breakdown"]]
+    shipping = {"markup": "1.2", "misc_ratio": ".02", "rows": [], "freight_enabled": False, "lifting_enabled": False}
+    if component_mode:
+        shipping.update(pricing_mode="component", pricing_groups=[{"id": "main", "name": "主体", "markup": "1.15", "cost_hkd": "0"}],
+                        pricing_entries=entries, global_pricing={"entries": entries, "markup": "1.25", "cost_hkd": calculation["totals"]["total_hkd"]})
+    workbook = Workbook()
+    try:
+        _build_summary_sheet(workbook, SimpleNamespace(product_name="内外箱验证", quote_no="CARTON-TEST", customer="JustPlay" if component_mode else "普通客", region_code="mainland", remark=""),
+                             [_section("sales", payload=payload, calculation=calculation)], snapshot,
+                             {"shipping_pricing": shipping, "t1": [], "t2": [], "t3": [], "t4": []},
+                             {"factory_price_hkd": calculation["totals"]["total_hkd"], "carton_hkd": calculation["totals"]["carton_hkd"]}, [])
+        sheet = workbook["报价明细"]
+        outer = _find_row(sheet, 14, f"外箱 ({unit}):")
+        packing = _find_row(sheet, 14, "装箱：")
+        total = _find_row(sheet, 14, "合计")
+        board = _find_row(sheet, 14, "纸板价")
+        color_box = _find_row(sheet, 14, f"彩盒尺寸 ({color_box_unit})")
+        for column, base, offset in ((15, 17.25, ".75"), (16, 11.25, ".75"), (17, 9, "1")):
+            letter = chr(ord('A') + column - 1)
+            assert sheet.cell(color_box, column).value == pytest.approx(base * (2.54 if color_box_unit == "cm" else 1))
+            if component_mode:
+                color_ref = f"{letter}{color_box}" + ("/2.54" if color_box_unit == "cm" else "")
+                expected_formula = f"=IF({letter}{color_box}>0,({color_ref}+{float(offset):g})" + ("*2.54" if unit == "cm" else "") + ",0)"
+                assert sheet.cell(outer, column).value == expected_formula
+            else:
+                assert sheet.cell(outer, column).value == pytest.approx((base + float(offset)) * (2.54 if unit == "cm" else 1))
+        assert sheet.cell(packing, 15).value == ([24, "6/24", "6/12/24"][carton_count - 1])
+        assert sheet.cell(total, 15).value.startswith("=SUM(" if carton_count > 1 else "=IFERROR(")
+        assert f"O{board}" in sheet.cell(total, 15).value
+        price_labels = ["箱价："] if carton_count == 1 else ["外箱价：", "内箱价：", "内箱2价："][:carton_count]
+        for index, label in enumerate(price_labels):
+            price = _find_row(sheet, 14, label)
+            dimension_row = outer + index
+            formula = sheet.cell(price, 15).value
+            assert f"O{dimension_row}" in formula and f"P{dimension_row}" in formula and f"Q{dimension_row}" in formula
+            assert ("$N$6" if index == 0 else "$O$6") in formula
+            assert "_报价明细计算" not in formula
+            if carton_count > 1:
+                assert f"O{packing}" in formula
+                detail_label = ["外纸箱", "内纸箱", "内纸箱2"][index]
+                assert sheet.cell(_find_row(sheet, 3, detail_label), 4).value == f"=O{price}"
+        if carton_count > 1:
+            assert _find_row(sheet, 3, "内纸箱") < _find_row(sheet, 3, "外纸箱")
+            assert sheet.cell(_find_row(sheet, 3, "平卡"), 4).value == f"=O{board}"
+        if component_mode:
+            adhesive = sheet.cell(_find_row(sheet, 3, "胶纸/胶水/胶针"), 4).value
+            assert f"O{packing}" in adhesive
+            if unit == "cm":
+                assert f"O{outer}/2.54" in adhesive
+            pallet_formula = sheet.cell(_find_row(sheet, 3, "纸托板成本"), 4).value
+            assert pallet_formula.startswith("=19/30/")
+            assert f"O{packing}" in pallet_formula
+            assert pallet_formula.endswith("+0.00")
+            # Both costs must divide by the outer carton quantity, including "inner/outer" layouts.
+            if carton_count == 1:
+                quantity_ref = f"O{packing}"
+            elif carton_count == 2:
+                quantity_ref = f'VALUE(RIGHT(O{packing},LEN(O{packing})-FIND("/",O{packing})))'
+            else:
+                quantity_ref = f'VALUE(TRIM(MID(SUBSTITUTE(O{packing},"/",REPT(" ",32)),65,32)))'
+            assert adhesive.endswith(f"/{quantity_ref}+0.00")
+            assert pallet_formula == f"=19/30/{quantity_ref}+0.00"
+            pallet = next(row for row in calculation["line_breakdown"] if row.get("formula_code") == "paper_pallet")
+            assert pallet["cartons_per_pallet"] == "30.0000"
+        for row in range(outer, total + 1):
+            assert sheet.cell(row, 14).border.left.style
+            assert sheet.cell(row, 17).border.right.style
+    finally:
+        workbook.close()
+
+
+@pytest.mark.parametrize("detached_index", [0, 1])
+def test_carton_override_keeps_live_carton_and_own_flat_card_formulas(detached_index):
+    cartons = [
+        {"item": "主纸箱", "length_in": 18, "width_in": 12, "height_in": 10, "qty_per_carton": 24,
+         "flat_cards": [{"length_in": 10, "width_in": 4, "quantity": 2}]},
+        {"item": "内纸箱", "length_in": 5, "width_in": 5, "height_in": 4, "qty_per_carton": 6,
+         "flat_cards": [{"length_in": 3, "width_in": 2, "quantity": 1}]},
+    ]
+    cartons[detached_index]["markup_override"] = "1.08"
+    payload = {"cartons": cartons, "paper_price_factor": 2.75, "inner_paper_price_factor": 3.25,
+               "testing_fee_enabled": False, "freight_calc": {"enabled": False}}
+    snapshot = {"fx": {"rmb_hkd": ".85", "hkd_usd": "7.8"}}
+    calculation = calculate_section("sales", payload, snapshot, "TEST-CARTON-OVERRIDE")
+    line = calculation["line_breakdown"][detached_index]
+    entry = {**line, "section": "sales", "label": line["item"], "amount_hkd": line["per_piece_hkd"]}
+    summary = {"t1": [], "t2": [], "t3": [], "t4": [], "shipping_pricing": {
+        "markup": "1.2", "misc_ratio": ".02", "rows": [], "pricing_mode": "standard",
+        "pricing_entries": [entry], "pricing_groups": [
+            {"id": "main", "name": "主倍率汇总", "markup": "1.2", "cost_hkd": "0"},
+            {"id": "detail-01", "name": line["item"], "markup": "1.08", "cost_hkd": line["per_piece_hkd"]},
+        ],
+    }}
+    workbook = Workbook()
+    try:
+        _build_summary_sheet(workbook, SimpleNamespace(product_name="内外箱独立倍率", quote_no="CARTON-SPLIT", region_code="mainland", remark=""),
+                             [_section("sales", payload=payload, calculation=calculation)], snapshot, summary,
+                             {"carton_hkd": calculation["totals"]["carton_hkd"]})
+        sheet = workbook["报价明细"]
+        label = "外纸箱" if detached_index == 0 else "内纸箱"
+        detail_rows = [row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 3).value == label]
+        assert len(detail_rows) == 2
+        assert sheet.cell(detail_rows[0], 4).value == "=0"
+        price = _find_row(sheet, 14, "外箱价：" if detached_index == 0 else "内箱价：")
+        detached_formula = sheet.cell(detail_rows[1], 4).value
+        assert detached_formula.startswith(f"=O{price}+(")
+        packing = _find_row(sheet, 14, "装箱：")
+        assert f"O{packing}" in detached_formula
+        own_board_formula = detached_formula.split("+(", 1)[1][:-1]
+        main_board = sheet.cell(_find_row(sheet, 3, "平卡"), 4).value
+        assert main_board.endswith(f"-({own_board_formula})")
+        assert sheet.cell(detail_rows[1] + 2, 4).value == 1.08
+    finally:
+        workbook.close()
 
 
 def test_export_links_molding_assembly_cartons_and_flat_cards_to_source_cells():
@@ -215,23 +360,32 @@ def test_export_links_molding_assembly_cartons_and_flat_cards_to_source_cells():
         inner_row = _find_row(sheet, 14, "内箱 (cm):")
         flat_card_row = _find_row(sheet, 14, "主平卡 (cm):")
         paperboard_row = _find_row(sheet, 14, "纸板价")
-        carton_price_row = _find_row(sheet, 14, "箱价：")
+        carton_price_row = _find_row(sheet, 14, "外箱价：")
+        inner_price_row = _find_row(sheet, 14, "内箱价：")
         packing_qty_row = _find_row(sheet, 14, "装箱：")
         total_row = _find_row(sheet, 14, "合计")
         assert inner_row == outer_row + 1
+        assert sheet.cell(packing_qty_row, 15).value == "1/4"
+        outer_quantity = f'VALUE(RIGHT(O{packing_qty_row},LEN(O{packing_qty_row})-FIND("/",O{packing_qty_row})))'
+        inner_quantity = f'VALUE(LEFT(O{packing_qty_row},FIND("/",O{packing_qty_row})-1))'
         assert sheet.cell(flat_card_row, 17).value == 2.0
         assert sheet.cell(paperboard_row, 15).value == (
-            f"=O{flat_card_row}/2.54*P{flat_card_row}/2.54*Q{flat_card_row}*$P$6/1000"
+            f"=O{flat_card_row}/2.54*P{flat_card_row}/2.54*Q{flat_card_row}*$P$6/1000/{outer_quantity}"
         )
         assert sheet.cell(carton_price_row, 15).value == (
             f"=(O{outer_row}/2.54+P{outer_row}/2.54+2)"
-            f"*(P{outer_row}/2.54+Q{outer_row}/2.54+1)*$N$6*2/1000"
-            f"+((O{inner_row}/2.54+P{inner_row}/2.54+2)"
-            f"*(P{inner_row}/2.54+Q{inner_row}/2.54+1)*$O$6*2/1000)*O{packing_qty_row}"
+            f"*(P{outer_row}/2.54+Q{outer_row}/2.54+1)*$N$6*2/1000/{outer_quantity}"
+        )
+        assert sheet.cell(inner_price_row, 15).value == (
+            f"=(O{inner_row}/2.54+P{inner_row}/2.54+2)"
+            f"*(P{inner_row}/2.54+Q{inner_row}/2.54+1)*$O$6*2/1000/{inner_quantity}"
         )
         assert sheet.cell(total_row, 15).value == (
-            f"=IFERROR(O{carton_price_row}/O{packing_qty_row},0)"
+            f"=SUM(O{paperboard_row}:O{inner_price_row})"
         )
+        assert sheet.cell(_find_row(sheet, 3, "内纸箱"), 4).value == f"=O{inner_price_row}"
+        assert sheet.cell(_find_row(sheet, 3, "外纸箱"), 4).value == f"=O{carton_price_row}"
+        assert sheet.cell(_find_row(sheet, 3, "平卡"), 4).value == f"=O{paperboard_row}"
     finally:
         workbook.close()
 
@@ -368,7 +522,14 @@ def test_export_renders_formula_driven_split_pricing_groups():
         workbook.close()
 
 
-def test_export_renders_justplay_components_before_one_global_packaging_block():
+@pytest.mark.parametrize("parameters,expected_extras", [
+    (None, ("0.00", "0.00")),
+    ({"adhesive_extra_hkd": 0.12, "cartons_per_pallet": 40, "paper_pallet_extra_hkd": 0.07}, ("0.12", "0.07")),
+    ({"adhesive_extra_hkd": 0, "cartons_per_pallet": 30, "paper_pallet_extra_hkd": 0}, ("0.00", "0.00")),
+    ({"adhesive_extra_hkd": 0.062, "paper_pallet_extra_hkd": 0.049}, ("0.06", "0.05")),
+    ({"adhesive_extra_hkd": 0.125, "paper_pallet_extra_hkd": 0.045}, ("0.13", "0.05")),
+])
+def test_export_renders_justplay_components_before_one_global_packaging_block(parameters, expected_extras):
     workbook = Workbook()
     quote = SimpleNamespace(
         product_name="JustPlay 分配输出测试",
@@ -381,10 +542,12 @@ def test_export_renders_justplay_components_before_one_global_packaging_block():
         "sales",
         payload={
             "pricing_mode": "component",
+            **({"justplay_packaging": parameters} if parameters is not None else {}),
             "pricing_components": [
                 {"id": "component-01", "name": "主体", "markup_x": "1.15"},
                 {"id": "component-02", "name": "镜子", "markup_x": "1.05"},
             ],
+            "color_box_size_in": {"length": 11.25, "width": 9.25, "height": 7},
             "testing_fee_enabled": False,
             "cartons": [
                 {
@@ -468,6 +631,18 @@ def test_export_renders_justplay_components_before_one_global_packaging_block():
                     "production_qty": "3500",
                     "formula_allocation_factor": "1",
                 },
+                {
+                    "section": "assembly",
+                    "kind": "assembly_process",
+                    "category": "packaging",
+                    "label": "成品 A",
+                    "amount_hkd": "0.26",
+                    "is_global": True,
+                    "persons": "2",
+                    "teams": "1",
+                    "production_qty": "2000",
+                    "formula_allocation_factor": "1",
+                },
                 {"section": "sales", "kind": "packaging_material", "category": "color_box_inner_card", "label": "彩盒/内卡", "amount_hkd": "0.8", "is_global": True},
                 {"section": "sales", "kind": "justplay_fixed_packaging", "category": "other_purchase", "label": "胶纸/胶水/胶针", "formula_code": "adhesive", "amount_hkd": "0.0811627907", "is_global": True},
                 {"section": "sales", "kind": "justplay_fixed_packaging", "category": "other_purchase", "label": "纸托板成本", "formula_code": "paper_pallet", "amount_hkd": "0.1819444444", "is_global": True},
@@ -479,6 +654,18 @@ def test_export_renders_justplay_components_before_one_global_packaging_block():
                 "markup": "1.25",
                 "settlement": "0.97",
                 "entries": [
+                    {
+                        "section": "assembly",
+                        "kind": "assembly_process",
+                        "category": "packaging",
+                        "label": "成品 A",
+                        "amount_hkd": "0.26",
+                        "is_global": True,
+                        "persons": "2",
+                        "teams": "1",
+                        "production_qty": "2000",
+                        "formula_allocation_factor": "1",
+                    },
                     {"section": "sales", "kind": "packaging_material", "category": "color_box_inner_card", "label": "彩盒/内卡", "amount_hkd": "0.8", "is_global": True},
                     {"section": "sales", "kind": "justplay_fixed_packaging", "category": "other_purchase", "label": "胶纸/胶水/胶针", "formula_code": "adhesive", "amount_hkd": "0.0811627907", "is_global": True},
                     {"section": "sales", "kind": "justplay_fixed_packaging", "category": "other_purchase", "label": "纸托板成本", "formula_code": "paper_pallet", "amount_hkd": "0.1819444444", "is_global": True},
@@ -549,14 +736,31 @@ def test_export_renders_justplay_components_before_one_global_packaging_block():
         packaging_cost_row = _find_row(sheet, 3, "彩盒/内卡")
         assert packaging_cost_row > packaging_title_row
         assert sheet.cell(packaging_cost_row, 4).value == 0.8
+        packaging_labor_row = _find_row(sheet, 3, "包装人工 - 成品 A")
+        assert packaging_title_row < packaging_labor_row < packaging_cost_row
+        assert sheet.cell(packaging_labor_row, 2).value == "装配工"
+        assert sheet.cell(packaging_labor_row, 4).value == "=2*$M$4/2000"
         outer_carton_row = _find_row(sheet, 14, "外箱 (inch):")
         packing_qty_row = _find_row(sheet, 14, "装箱：")
         adhesive_row = _find_row(sheet, 3, "胶纸/胶水/胶针")
         paper_pallet_row = _find_row(sheet, 3, "纸托板成本")
+        assert packaging_title_row < adhesive_row < paper_pallet_row
         assert sheet.cell(adhesive_row, 4).value == (
-            f"=3.9/2150*(O{outer_carton_row}*2+P{outer_carton_row}*4+6)/O{packing_qty_row}+0.06"
+            f"=3.9/2150*(O{outer_carton_row}*2+P{outer_carton_row}*4+6)/O{packing_qty_row}+{expected_extras[0]}"
         )
-        assert sheet.cell(paper_pallet_row, 4).value == f"=19/24/O{packing_qty_row}+0.05"
+        # 12 x 10 x 8 inch carton => 4 x 3 x 6 = 72, ignoring historical manual counts.
+        assert sheet.cell(paper_pallet_row, 4).value == f"=19/72/O{packing_qty_row}+{expected_extras[1]}"
+        for detail_row in (adhesive_row, paper_pallet_row):
+            assert sheet.cell(detail_row, 4).data_type == "f"
+            assert sheet.cell(detail_row, 4).number_format == "0.000"
+        for exported_sheet in workbook:
+            for row in exported_sheet.iter_rows():
+                for cell in row:
+                    assert cell.value not in (
+                        "胶纸及纸托板参数", "每托板装箱数",
+                        "胶纸附加金额 (HKD/件)", "纸托板附加金额 (HKD/件)",
+                    )
+                    assert "INT(1150/" not in str(cell.value)
         assert sheet.cell(adhesive_row, 1).value == ""
         assert sheet.cell(paper_pallet_row, 1).value == ""
         carton_cost_row = _find_row(sheet, 3, "纸箱")
@@ -649,5 +853,18 @@ def test_export_renders_justplay_components_before_one_global_packaging_block():
         tax_amount_row = legacy_header_row + 10
         assert str(sheet.cell(tax_amount_row, 4).value).count("SUMIF") >= 3
         assert "_报价明细计算" not in str(sheet.cell(tax_amount_row, 4).value)
+        # Saving the deliverable must preserve real, visible Excel formulas, not text/results.
+        with BytesIO() as output:
+            workbook.save(output)
+            output.seek(0)
+            saved = load_workbook(output, data_only=False)
+            try:
+                for detail_row in (adhesive_row, paper_pallet_row):
+                    cell = saved["报价明细"].cell(detail_row, 4)
+                    assert cell.data_type == "f"
+                    assert cell.value == sheet.cell(detail_row, 4).value
+                    assert "_报价明细计算" not in cell.value
+            finally:
+                saved.close()
     finally:
         workbook.close()
