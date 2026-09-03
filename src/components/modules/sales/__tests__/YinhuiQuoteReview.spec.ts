@@ -9,6 +9,15 @@ function fixture(): YinhuiConversionResult {
   }}
 }
 describe('Silverlit export review', () => {
+  it('shows customs fees separately with source lineage and includes them once in the total', () => {
+    const result=fixture()
+    result.quoteData.documentFees=[{description:'Documents / Customs Fee',source:'明细!D91',quantity:1,amountHkd:.18539692,internalHkd:.16}]
+    const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false}})
+    expect(wrapper.text()).toContain('报关 / 文件费（总表 H32）')
+    expect(wrapper.text()).toContain('明细!D91')
+    expect(wrapper.text()).toContain('EX-FACTORY HKD 5.185397')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
+  })
   it('requires review again after changing a quotation field', async () => {
     const result=fixture(); const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:true}})
     await wrapper.get('[data-testid="yinhui-model"]').setValue('0020')

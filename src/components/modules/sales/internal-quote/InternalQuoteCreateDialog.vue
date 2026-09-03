@@ -2,6 +2,8 @@
 import { Building2, CheckCircle2, Copy, Eye, FileImage, FilePlus2, FileText, Plus, Snowflake, Trash2, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
+import InternalQuoteHistoryPicker from './InternalQuoteHistoryPicker.vue'
+import type { ApiInternalQuoteHistoryProduct } from '@/api/internalQuote'
 import type {
   InternalQuote,
   InternalQuoteBusinessOwner,
@@ -43,6 +45,7 @@ const emit = defineEmits<{
 }>()
 
 const errorMessage = ref('')
+const historyTarget = ref<{ kind: 'product' | 'component'; productIndex?: number; componentIndex?: number } | null>(null)
 const documentPreview = ref<{ file: File; url: string; kind: 'image' | 'pdf' | 'file' } | null>(null)
 type QuoteCreateForm = InternalQuoteCreatePayload & {
   quoteType: 'single' | 'series' | 'multi_region'
@@ -64,7 +67,6 @@ const form = reactive<QuoteCreateForm>({
   participatingSections: [...mandatorySectionCodes],
   quoteType: 'single',
   products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
-  pricingComponents: [],
 })
 const selectedDepartmentDefinitions = computed(() => internalQuoteSectionDefinitions.filter((item) => (
   normalizeParticipation(form.participatingSections).includes(item.code)
@@ -81,13 +83,27 @@ const isJustPlay = computed(() => (
   && String(form.customer).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'justplay'
 ))
 
-watch(isJustPlay, (enabled) => {
-  if (enabled && !form.pricingComponents?.length) form.pricingComponents = ['主体', '配件1']
-  if (!enabled) form.pricingComponents = []
-}, { immediate: true })
+function initializeProductComponents() {
+  for (const product of form.products) {
+    if (!isJustPlay.value) product.componentImageFiles = undefined
+    product.pricingComponents = isJustPlay.value
+      ? [...(product.pricingComponents?.length ? product.pricingComponents : form.products[0]?.pricingComponents ?? ['主体', '配件1'])]
+      : undefined
+  }
+}
+
+watch(isJustPlay, initializeProductComponents, { immediate: true })
+watch(() => form.customer, () => {
+  historyTarget.value = null
+  for (const product of form.products) {
+    product.historySource = undefined
+    product.componentSources = undefined
+  }
+})
 
 watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners[0]?.id, props.customers[0]] as const, ([open]) => {
   closeDocumentPreview()
+  historyTarget.value = null
   if (!open) return
   errorMessage.value = ''
   if (props.mode === 'clone' && props.sourceQuote) {
@@ -116,7 +132,6 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
         imageFile: null,
         documentFiles: [],
       }],
-      pricingComponents: [],
     })
     return
   }
@@ -135,8 +150,8 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
     participatingSections: [...mandatorySectionCodes],
     quoteType: 'single',
     products: [{ productName: '', quantity: 10000, regionCode: '', imageFile: null, documentFiles: [] }],
-    pricingComponents: [],
   })
+  initializeProductComponents()
 }, { immediate: true })
 
 function submit() {
@@ -175,16 +190,18 @@ function submit() {
     return
   }
   if (isJustPlay.value) {
-    const componentNames = (form.pricingComponents ?? []).map((name) => name.trim()).filter(Boolean)
-    if (!componentNames.length) {
-      errorMessage.value = '华康B JustPlay 报价至少要建立一个分项。'
-      return
+    for (const [index, product] of form.products.entries()) {
+      const componentNames = (product.pricingComponents ?? []).map((name) => name.trim())
+      if (!componentNames.length || componentNames.length > 50 || componentNames.some((name) => !name || name.length > 64)) {
+        errorMessage.value = `第 ${index + 1} 款必须填写主体及配件名称；最多 49 个配件，每个名称不超过 64 个字符。`
+        return
+      }
+      if (componentNames.length !== new Set(componentNames.map((name) => name.toLocaleLowerCase())).size) {
+        errorMessage.value = `第 ${index + 1} 款的 JustPlay 分项名称不能重复。`
+        return
+      }
+      product.pricingComponents = componentNames
     }
-    if (componentNames.length !== new Set(componentNames.map((name) => name.toLocaleLowerCase())).size) {
-      errorMessage.value = 'JustPlay 分项名称不能重复。'
-      return
-    }
-    form.pricingComponents = componentNames
   }
   const participating = new Set(normalizeParticipation(form.participatingSections))
   if (form.products.some((product) => (product.documentFiles ?? []).some((document) => !participating.has(document.department)))) {
@@ -195,12 +212,18 @@ function submit() {
     ...product,
     productName: product.productName.trim(),
     quantity: Number(product.quantity),
+    imageFile: isJustPlay.value ? null : product.imageFile,
+    componentImageFiles: isJustPlay.value ? product.componentImageFiles : undefined,
+    pricingComponents: isJustPlay.value ? [...(product.pricingComponents ?? [])] : undefined,
+    componentSources: isJustPlay.value && product.componentSources
+      ? (product.pricingComponents ?? []).map((_, index) => product.componentSources?.[index] ?? null) : undefined,
   }))
   emit('confirm', {
     ...form,
     productName: normalizedProducts[0]!.productName,
     quantity: normalizedProducts[0]!.quantity,
     products: normalizedProducts,
+    pricingComponents: isJustPlay.value ? [...(normalizedProducts[0]?.pricingComponents ?? [])] : [],
     participatingSections: normalizeParticipation(form.participatingSections),
   })
 }
@@ -220,7 +243,8 @@ function changeQuoteType() {
     const baseName = first.productName.replace(/—(?:大陆价|印尼价)$/, '') || '产品名'
     form.products = [
       { ...first, productName: `${baseName}—大陆价`, regionCode: 'mainland' },
-      { productName: `${baseName}—印尼价`, quantity: first.quantity, regionCode: 'indonesia', imageFile: null, documentFiles: [] },
+      { productName: `${baseName}—印尼价`, quantity: first.quantity, regionCode: 'indonesia', imageFile: null, documentFiles: [],
+        pricingComponents: isJustPlay.value ? [...(first.pricingComponents ?? ['主体', '配件1'])] : undefined },
     ]
     return
   }
@@ -229,7 +253,8 @@ function changeQuoteType() {
 
 function addProduct() {
   if (form.products.length >= 20 || form.quoteType !== 'series') return
-  form.products.push({ productName: '', quantity: form.products[0]?.quantity ?? 10000, regionCode: '', imageFile: null, documentFiles: [] })
+  form.products.push({ productName: '', quantity: form.products[0]?.quantity ?? 10000, regionCode: '', imageFile: null, documentFiles: [],
+    pricingComponents: isJustPlay.value ? [...(form.products[0]?.pricingComponents ?? ['主体', '配件1'])] : undefined })
 }
 
 function removeProduct(index: number) {
@@ -237,21 +262,106 @@ function removeProduct(index: number) {
   form.products.splice(index, 1)
 }
 
-function addPricingComponent() {
-  if (!isJustPlay.value || (form.pricingComponents?.length ?? 0) >= 50) return
-  form.pricingComponents ??= []
-  form.pricingComponents.push(`配件${form.pricingComponents.length}`)
+function addPricingComponent(productIndex: number) {
+  const components = form.products[productIndex]?.pricingComponents
+  if (!isJustPlay.value || !components || components.length >= 50) return
+  let suffix = components.length
+  while (components.some((name) => name.trim() === `配件${suffix}`)) suffix += 1
+  components.push(`配件${suffix}`)
+  form.products[productIndex]?.componentSources?.push(null)
 }
 
-function removePricingComponent(index: number) {
-  if (!isJustPlay.value || (form.pricingComponents?.length ?? 0) <= 1) return
-  form.pricingComponents?.splice(index, 1)
+function removePricingComponent(productIndex: number, componentIndex: number) {
+  if (!isJustPlay.value || componentIndex === 0) return
+  form.products[productIndex]?.pricingComponents?.splice(componentIndex, 1)
+  form.products[productIndex]?.componentImageFiles?.splice(componentIndex, 1)
+  form.products[productIndex]?.componentSources?.splice(componentIndex, 1)
+}
+
+function changeAccessoryCount(productIndex: number, event: Event) {
+  const count = Number((event.target as HTMLSelectElement).value)
+  const components = form.products[productIndex]?.pricingComponents
+  if (!isJustPlay.value || !components || !Number.isInteger(count) || count < 0 || count > 49) return
+  if (components.length > count + 1) components.splice(count + 1)
+  form.products[productIndex]?.componentImageFiles?.splice(count + 1)
+  form.products[productIndex]?.componentSources?.splice(count + 1)
+  while (components.length < count + 1) addPricingComponent(productIndex)
+}
+
+function historySelection(product: ApiInternalQuoteHistoryProduct, componentId?: string) {
+  const component = product.components.find(item => item.id === componentId)
+  const region = product.region_code === 'mainland' ? '大陆价' : product.region_code === 'indonesia' ? '印尼价' : '未分地区'
+  return { quote_id: product.quote_id, fingerprint: product.fingerprint, component_id: componentId,
+    label: `${product.quote_no} / ${product.version_label} / ${region} / ${product.product_name}${component ? ` / ${component.name}` : ''}` }
+}
+
+function acceptHistory(items: Array<{ product: ApiInternalQuoteHistoryProduct; componentId?: string }>) {
+  const target = historyTarget.value
+  if (!target) return
+  errorMessage.value = ''
+  if (target.kind === 'product') {
+    const emptyFirst = form.products.length === 1 && !form.products[0]?.productName.trim()
+      && !form.products[0]?.historySource && !form.products[0]?.componentSources?.some(Boolean)
+      && !form.products[0]?.imageFile && !form.products[0]?.documentFiles?.length
+      && !form.products[0]?.componentImageFiles?.some(Boolean)
+    const newCount = target.productIndex !== undefined ? form.products.length : form.products.length - Number(emptyFirst) + items.length
+    if (newCount > 20) { errorMessage.value = '一批报价最多 20 款，请减少选择。'; historyTarget.value = null; return }
+    if (items.some(({ product }) => isJustPlay.value && !product.components.length)) {
+      errorMessage.value = '所选历史 JustPlay 产品尚未建立分项，请先完善原产品分项。'; historyTarget.value = null; return
+    }
+    const added = items.map(({ product }): InternalQuoteCreateProduct => ({ productName: product.product_name, quantity: product.qty,
+      regionCode: target.productIndex !== undefined && form.quoteType === 'multi_region' ? form.products[target.productIndex]!.regionCode : product.region_code,
+      imageFile: null, documentFiles: [], historySource: historySelection(product),
+      pricingComponents: isJustPlay.value ? product.components.map(c => c.name) : undefined,
+      componentSources: isJustPlay.value ? product.components.map(c => historySelection(product, c.id)) : undefined,
+    }))
+    if (target.productIndex !== undefined) form.products.splice(target.productIndex, 1, added[0]!)
+    else { if (emptyFirst) form.products.splice(0, 1); form.products.push(...added) }
+    if (form.quoteType === 'single' && form.products.length > 1) form.quoteType = 'series'
+  } else {
+    const product = form.products[target.productIndex!]
+    if (!product?.pricingComponents) return
+    const names = product.pricingComponents
+    if (target.componentIndex === undefined && names.length + items.length > 50) {
+      errorMessage.value = '每款最多 1 个主体和 49 个配件。'; historyTarget.value = null; return
+    }
+    product.componentSources ??= names.map(() => null)
+    product.componentImageFiles ??= names.map(() => null)
+    for (const item of items) {
+      const name = item.product.components.find(c => c.id === item.componentId)?.name ?? '配件'
+      const index = target.componentIndex ?? names.length
+      let unique = name
+      let suffix = 2
+      while (names.some((current, i) => i !== index && current.trim().toLowerCase() === unique.toLowerCase())) unique = `${name.slice(0, 57)} (${suffix++})`
+      names[index] = unique
+      product.componentSources[index] = historySelection(item.product, item.componentId)
+      product.componentImageFiles[index] = null
+    }
+  }
+  form.participatingSections = normalizeParticipation([...form.participatingSections, ...items.flatMap(item => (
+    item.componentId ? item.product.component_sections?.[item.componentId] ?? item.product.participating_sections
+      : item.product.participating_sections
+  ))])
+  historyTarget.value = null
+}
+
+function clearHistory(product: InternalQuoteCreateProduct) {
+  product.historySource = undefined
+  product.componentSources = undefined
 }
 
 function selectProductImage(index: number, event: Event) {
   const input = event.target as HTMLInputElement
   const product = form.products[index]
   if (product) product.imageFile = input.files?.[0] ?? null
+}
+
+function selectComponentImage(productIndex: number, componentIndex: number, event: Event) {
+  const input = event.target as HTMLInputElement
+  const product = form.products[productIndex]
+  if (!product) return
+  const images = product.componentImageFiles ?? (product.componentImageFiles = [])
+  images[componentIndex] = input.files?.[0] ?? null
 }
 
 function selectProductDocuments(index: number, event: Event) {
@@ -389,25 +499,13 @@ onBeforeUnmount(closeDocumentPreview)
               </label>
             </div>
 
-            <section v-if="isJustPlay" class="quote-product-list quote-pricing-component-list">
-              <div class="quote-product-list-head">
-                <div><strong>JustPlay 报价分项</strong><span>建单时确定主体与配件；各部门报价时直接选择归属，输出仍使用现有字段映射。</span></div>
-                <button type="button" :disabled="(form.pricingComponents?.length ?? 0) >= 50" @click="addPricingComponent"><Plus />新增配件</button>
-              </div>
-              <div class="quote-pricing-component-rows">
-                <label v-for="(_component, index) in form.pricingComponents" :key="index">
-                  <span>{{ index === 0 ? '主分项' : `配件 ${index}` }}</span>
-                  <input v-model="form.pricingComponents![index]" type="text" maxlength="64" :placeholder="index === 0 ? '例如：主体' : `例如：配件${index}`">
-                  <button type="button" :disabled="(form.pricingComponents?.length ?? 0) <= 1" :aria-label="`移除分项 ${index + 1}`" @click="removePricingComponent(index)"><Trash2 /></button>
-                </label>
-              </div>
-              <p>第一个分项是未选择明细的默认归属；创建后右侧原 MOQ 区域会改为各分项倍率。</p>
-            </section>
-
             <section class="quote-product-list">
               <div class="quote-product-list-head">
-                <div><strong>产品清单</strong><span>第 1 款为基准款；创建后可把整份部门报价复制到其他款。</span></div>
-                <button v-if="form.quoteType === 'series'" type="button" :disabled="form.products.length >= 20" @click="addProduct"><Plus />新增产品</button>
+                <div><strong>产品清单</strong><span>{{ isJustPlay ? '每款独立设置配件；新增产品默认复制当前第 1 款的配件个数和名称，之后互不影响。' : '第 1 款为基准款；创建后可把整份部门报价复制到其他款。' }}</span></div>
+                <div class="quote-component-actions">
+                  <button v-if="mode === 'create' && form.quoteType !== 'multi_region'" type="button" :disabled="busy" @click="historyTarget = { kind: 'product' }"><Copy />引用历史产品</button>
+                  <button v-if="form.quoteType === 'series'" type="button" :disabled="form.products.length >= 20" @click="addProduct"><Plus />新增产品</button>
+                </div>
               </div>
               <div class="quote-product-rows">
                 <article v-for="(product, index) in form.products" :key="index" class="quote-product-row">
@@ -416,8 +514,8 @@ onBeforeUnmount(closeDocumentPreview)
                   <label><span>出货数量 <b>*</b></span><input v-model.number="product.quantity" type="number" min="1" step="1"></label>
                   <div class="quote-product-assets">
                     <div class="quote-product-asset-pickers">
-                      <label class="quote-product-image"><span>产品主图</span><input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" @change="selectProductImage(index, $event)"><small><FileImage />{{ product.imageFile?.name || '选择图片' }}</small></label>
-                      <button v-if="product.imageFile" type="button" class="quote-asset-preview" @click="openDocumentPreview(product.imageFile)"><Eye />预览主图</button>
+                      <label v-if="!isJustPlay" class="quote-product-image"><span>产品主图</span><input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" @change="selectProductImage(index, $event)"><small><FileImage />{{ product.imageFile?.name || '选择图片' }}</small></label>
+                      <button v-if="!isJustPlay && product.imageFile" type="button" class="quote-asset-preview" @click="openDocumentPreview(product.imageFile)"><Eye />预览主图</button>
                       <label v-if="mode === 'create'" class="quote-product-documents"><span>产品资料</span><input type="file" multiple accept=".xls,.xlsx,.doc,.docx,.pdf,.jpg,.jpeg" @change="selectProductDocuments(index, $event)"><small><FileText />添加资料</small></label>
                     </div>
                     <div v-if="product.documentFiles?.length" class="quote-product-document-list">
@@ -433,12 +531,46 @@ onBeforeUnmount(closeDocumentPreview)
                   <span v-if="product.regionCode" class="quote-region-badge">{{ product.regionCode === 'mainland' ? '大陆价' : '印尼价' }}</span>
                   <button v-if="form.quoteType === 'series' && form.products.length > 1" type="button" class="quote-remove-product" aria-label="移除产品" @click="removeProduct(index)"><Trash2 /></button>
                   <b v-if="index === 0" class="quote-baseline-badge">基准款</b>
+                  <div v-if="mode === 'create'" class="quote-history-source">
+                    <button type="button" @click="historyTarget = { kind: 'product', productIndex: index }">{{ product.historySource ? '更换整款来源' : '引用整款到本产品' }}</button>
+                    <template v-if="product.historySource"><span>整款来源：{{ product.historySource.label }}（含图片及包装资料）</span><button type="button" @click="clearHistory(product)">取消本款引用</button></template>
+                    <label v-if="product.historySource || product.componentSources?.some(Boolean)">材料 / 机型参考价<select :value="product.historyReferenceMode ?? 'source'" @change="product.historyReferenceMode = ($event.target as HTMLSelectElement).value as 'source' | 'current'"><option value="source">沿用历史参考价（冲突时提示）</option><option value="current">使用当前参考表重新核价</option></select></label>
+                  </div>
+                  <section v-if="isJustPlay" class="quote-product-list quote-pricing-component-list quote-product-components">
+                    <div class="quote-product-list-head">
+                      <div><strong>本款 JustPlay 报价分项</strong><span>1 个主体 + {{ Math.max(0, (product.pricingComponents?.length ?? 1) - 1) }} 个配件；名称可分别修改。</span></div>
+                      <div class="quote-component-actions">
+                        <label class="quote-accessory-count"><span>配件个数</span><select :value="(product.pricingComponents?.length ?? 1) - 1" :aria-label="`第 ${index + 1} 款配件个数`" @change="changeAccessoryCount(index, $event)"><option v-for="count in 50" :key="count - 1" :value="count - 1">{{ count - 1 }} 个</option></select></label>
+                        <button type="button" :disabled="(product.pricingComponents?.length ?? 0) >= 50" @click="addPricingComponent(index)"><Plus />新增配件</button>
+                        <button type="button" :disabled="(product.pricingComponents?.length ?? 0) >= 50" @click="historyTarget = { kind: 'component', productIndex: index }"><Copy />引用历史配件</button>
+                      </div>
+                    </div>
+                    <div class="quote-pricing-component-rows">
+                      <div v-for="(_component, componentIndex) in product.pricingComponents" :key="componentIndex" class="quote-component-card">
+                        <span>{{ componentIndex === 0 ? '主体' : `配件 ${componentIndex}` }}</span>
+                        <input v-model="product.pricingComponents![componentIndex]" type="text" maxlength="64" :aria-label="`第 ${index + 1} 款${componentIndex === 0 ? '主体' : `配件 ${componentIndex}`}名称`" :placeholder="componentIndex === 0 ? '例如：主体' : `例如：配件${componentIndex}`">
+                        <button v-if="componentIndex > 0" type="button" :aria-label="`移除第 ${index + 1} 款配件 ${componentIndex}`" @click="removePricingComponent(index, componentIndex)"><Trash2 /></button>
+                        <div class="quote-component-asset">
+                          <button type="button" @click="historyTarget = { kind: 'component', productIndex: index, componentIndex }">{{ product.componentSources?.[componentIndex] ? '替换历史配件' : '选择历史分项' }}</button>
+                          <small v-if="product.componentSources?.[componentIndex]" class="quote-component-source">来源：{{ product.componentSources[componentIndex]!.label }} · 含原分项图片</small>
+                          <button v-if="product.componentSources?.[componentIndex]" type="button" @click="product.componentSources![componentIndex] = null">取消分项引用</button>
+                          <label class="quote-component-image-picker"><FileImage /><span>{{ product.componentImageFiles?.[componentIndex]?.name || '选择本分项图片' }}</span><input type="file" accept=".jpg,.jpeg,.png,.webp" :aria-label="`第 ${index + 1} 款${_component}图片`" @change="selectComponentImage(index, componentIndex, $event)"></label>
+                          <template v-if="product.componentImageFiles?.[componentIndex]">
+                            <button type="button" @click="openDocumentPreview(product.componentImageFiles[componentIndex]!)">预览</button>
+                            <button type="button" @click="product.componentImageFiles![componentIndex] = null">移除图片</button>
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                    <p>图片仅用于当前分项，导出放在对应明细右侧；新增产品只复制分项名称和个数，不复制图片。模具及喷油映射后统一选择明细归属。</p>
+                  </section>
                 </article>
               </div>
-              <p>产品主图与资料在同一区域维护；资料必须分配给参与部门，支持 Excel、Word、PDF 和 JPG/JPEG，创建后继续在对应部门资料栏预览。</p>
+              <p>{{ isJustPlay ? '图片在各分项内提供；' : '产品主图与资料在同一区域维护；' }}资料必须分配给参与部门，支持 Excel、Word、PDF 和 JPG/JPEG，创建后继续在对应部门资料栏预览。</p>
             </section>
 
             <section class="quote-create-baseline">
+              <p v-if="form.products.some(p => p.historySource || p.componentSources?.some(Boolean))" class="quote-history-notice">历史明细独立复制，不影响原单。材料/机型参考价按每款的选择冻结，汇率、倍率及地区运费按新单重新核价；配件重组不复制共享包装。请建单后核对包装、人工及电子公共费用，再重新提交审核。</p>
               <div class="quote-baseline-title">
                 <Building2 aria-hidden="true" />
                 <div><strong>当前厂区：{{ factoryName }}</strong><span>统一车间 {{ factoryId }}-workshop，不在页面内重复切换厂区</span></div>
@@ -493,9 +625,11 @@ onBeforeUnmount(closeDocumentPreview)
       </div>
     </Transition>
   </Teleport>
+  <InternalQuoteHistoryPicker :open="!!historyTarget && open" :factory-id="factoryId" :customer="form.customer" :is-just-play="isJustPlay" :kind="historyTarget?.kind ?? 'product'" :multiple="historyTarget?.kind === 'product' ? historyTarget.productIndex === undefined : historyTarget?.componentIndex === undefined" @close="historyTarget = null" @confirm="acceptHistory" />
 </template>
 
 <style scoped>
+.quote-history-source{grid-column:2/-1;display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;color:#475569}.quote-history-source button{border:1px solid #99f6e4;border-radius:7px;background:#f0fdfa;padding:7px;color:#0f766e}.quote-component-source{width:100%;font-size:11px;color:#64748b;overflow-wrap:anywhere}.quote-history-notice{background:#fffbeb;border:1px solid #fde68a;padding:10px!important;color:#92400e!important;border-radius:8px}
 .quote-dialog-backdrop{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:24px;background:rgb(15 23 42/.5);backdrop-filter:blur(5px)}
 .quote-dialog{width:min(980px,100%);max-height:min(920px,calc(100vh - 48px));overflow:auto;border:1px solid #d8e2e7;border-radius:18px;background:#fff;box-shadow:0 30px 80px rgb(15 23 42/.24)}
 .quote-dialog-head,.quote-dialog-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 22px;border-color:#e2e8f0;background:#f8fafc}
@@ -510,7 +644,7 @@ onBeforeUnmount(closeDocumentPreview)
 .quote-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.quote-form-grid label{display:grid;gap:6px}.quote-form-grid label.wide{grid-column:1/-1}.quote-form-grid label>span{color:#475569;font-size:11px;font-weight:800}.quote-form-grid b{color:#dc2626}.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{width:100%;border:1px solid #dbe5ea;border-radius:9px;background:#fff;padding:9px 11px;color:#0f172a;font-size:13px;outline:none}.quote-form-grid textarea{resize:vertical}
 .quote-owner-hint{color:#64748b;font-size:11px;line-height:1.5}
 .quote-product-list{display:grid;gap:10px;border:1px solid #dbe5ea;border-radius:12px;background:#f8fafc;padding:14px}.quote-product-list-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.quote-product-list-head>div{display:grid;gap:3px}.quote-product-list-head strong{color:#0f172a;font-size:14px}.quote-product-list-head span,.quote-product-list>p{margin:0;color:#64748b;font-size:11px;line-height:1.5}.quote-product-list-head button{display:inline-flex;align-items:center;gap:5px;border:1px solid #99f6e4;border-radius:8px;background:#fff;padding:7px 10px;color:#0f766e;font-size:11px;font-weight:900}.quote-product-list-head button svg{width:14px}.quote-product-rows{display:grid;gap:8px}.quote-product-row{position:relative;display:grid;grid-template-columns:34px minmax(170px,1.35fr) minmax(95px,.55fr) minmax(330px,2fr) auto;align-items:start;gap:9px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;padding:10px}.quote-product-number{align-self:center;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:900}.quote-product-row label{display:grid;gap:5px}.quote-product-row label>span{color:#475569;font-size:10px;font-weight:800}.quote-product-row label b{color:#dc2626}.quote-product-row input[type=text],.quote-product-row input[type=number]{min-width:0;width:100%;border:1px solid #dbe5ea;border-radius:8px;padding:8px 9px;color:#0f172a;font-size:12px}.quote-product-image input,.quote-product-documents input{position:absolute;width:1px;height:1px;opacity:0}.quote-product-image small,.quote-product-documents small{display:flex;min-width:0;align-items:center;justify-content:center;gap:5px;overflow:hidden;border:1px dashed #99f6e4;border-radius:8px;padding:8px 9px;color:#0f766e;font-size:11px;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}.quote-product-image small svg,.quote-product-documents small svg{width:14px;flex:0 0 auto}.quote-product-assets{display:grid;gap:7px}.quote-product-asset-pickers{display:grid;grid-template-columns:minmax(120px,1fr) auto minmax(105px,.7fr);align-items:end;gap:6px}.quote-asset-preview{display:inline-flex;height:34px;align-items:center;gap:4px;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:0 8px;color:#0f766e;font-size:10px;font-weight:900}.quote-asset-preview svg{width:13px}.quote-product-document-list{display:grid;gap:5px}.quote-product-document-list>div{display:grid;grid-template-columns:minmax(0,1fr) 86px 28px;gap:5px}.quote-document-name{display:flex;min-width:0;align-items:center;gap:5px;overflow:hidden;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:6px 7px;color:#475569;font-size:10px;text-align:left;text-overflow:ellipsis;white-space:nowrap}.quote-document-name svg{width:12px;flex:0 0 auto}.quote-product-document-list select{min-width:0;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:5px;color:#0f766e;font-size:10px;font-weight:800}.quote-document-remove{display:grid;place-items:center;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#dc2626}.quote-document-remove svg{width:12px}.quote-baseline-badge,.quote-region-badge{position:absolute;top:6px;right:8px;border-radius:999px;padding:3px 6px;font-size:9px}.quote-baseline-badge{background:#ccfbf1;color:#0f766e}.quote-region-badge{right:62px;background:#eff6ff;color:#1d4ed8}.quote-remove-product{display:grid;width:30px;height:30px;place-items:center;border:1px solid #fecaca;border-radius:8px;background:#fff;color:#dc2626}.quote-remove-product svg{width:14px}
-.quote-pricing-component-list{border-color:#99f6e4;background:#f0fdfa}.quote-pricing-component-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.quote-pricing-component-rows label{display:grid;grid-template-columns:auto minmax(0,1fr) 30px;align-items:center;gap:8px;border:1px solid #ccfbf1;border-radius:9px;background:#fff;padding:8px}.quote-pricing-component-rows label>span{color:#0f766e;font-size:11px;font-weight:900}.quote-pricing-component-rows input{min-width:0;border:1px solid #dbe5ea;border-radius:7px;padding:7px 8px;color:#0f172a;font-size:12px}.quote-pricing-component-rows label>button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#dc2626}.quote-pricing-component-rows label>button svg{width:13px}
+.quote-pricing-component-list{border-color:#99f6e4;background:#f0fdfa}.quote-pricing-component-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.quote-pricing-component-rows .quote-component-card{display:grid;grid-template-columns:auto minmax(0,1fr) 30px;align-items:center;gap:8px;border:1px solid #ccfbf1;border-radius:9px;background:#fff;padding:8px}.quote-pricing-component-rows .quote-component-card>span{color:#0f766e;font-size:11px;font-weight:900}.quote-pricing-component-rows input{min-width:0;border:1px solid #dbe5ea;border-radius:7px;padding:7px 8px;color:#0f172a;font-size:12px}.quote-pricing-component-rows .quote-component-card>button{display:grid;width:30px;height:30px;place-items:center;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#dc2626}.quote-pricing-component-rows .quote-component-card>button svg{width:13px}
 .quote-create-preview-backdrop{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:28px;background:rgb(15 23 42/.66)}.quote-create-preview{display:grid;width:min(900px,100%);max-height:calc(100vh - 56px);overflow:hidden;border:1px solid #cbd5e1;border-radius:16px;background:#fff;box-shadow:0 28px 80px rgb(15 23 42/.35)}.quote-create-preview header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:12px 14px}.quote-create-preview header>div{display:grid;min-width:0}.quote-create-preview header strong{overflow:hidden;color:#0f172a;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.quote-create-preview header span{margin-top:2px;color:#64748b;font-size:10px}.quote-create-preview header button{display:grid;width:32px;height:32px;place-items:center;border:0;border-radius:8px;background:#fff;color:#64748b}.quote-create-preview header svg{width:16px}.quote-create-preview>img{display:block;max-width:100%;max-height:calc(100vh - 150px);margin:auto;object-fit:contain}.quote-create-preview>iframe{width:min(900px,90vw);height:calc(100vh - 150px);border:0}.quote-create-file-preview{display:grid;min-height:280px;place-items:center;align-content:center;gap:9px;padding:30px;color:#64748b;text-align:center}.quote-create-file-preview>svg{width:44px;color:#0d9488}.quote-create-file-preview strong{color:#0f172a;font-size:15px}.quote-create-file-preview span{max-width:480px;font-size:12px;line-height:1.6}
 .quote-create-baseline{display:grid;gap:12px;border:1px solid #dbe5ea;border-radius:12px;background:#f8fafc;padding:15px}.quote-baseline-title{display:flex;align-items:center;gap:9px}.quote-baseline-title>svg{width:20px;color:#0f766e}.quote-baseline-title div{display:grid}.quote-baseline-title strong{color:#0f172a;font-size:13px}.quote-baseline-title span{margin-top:2px;color:#64748b;font-size:11px}.quote-segment-pills{display:flex;flex-wrap:wrap;gap:7px}.quote-segment-pills span{display:inline-flex;align-items:center;gap:4px;border:1px solid #ccfbf1;border-radius:999px;background:#fff;padding:5px 8px;color:#0f766e;font-size:10px;font-weight:800}.quote-segment-pills svg{width:12px;height:12px}.quote-create-baseline p{display:flex;align-items:flex-start;gap:6px;margin:0;color:#64748b;font-size:11px;line-height:1.5}.quote-create-baseline p svg{width:15px;height:15px;flex:0 0 auto;color:#0d9488}.quote-form-error{margin:0;border-radius:8px;background:#fef2f2;padding:9px 11px;color:#b91c1c;font-size:12px}
 .quote-primary-button,.quote-secondary-button{display:inline-flex;min-height:38px;align-items:center;justify-content:center;gap:7px;border-radius:9px;padding:0 16px;font-size:12px;font-weight:900}.quote-primary-button{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-primary-button:hover{background:#115e59}.quote-secondary-button{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-primary-button svg{width:16px;height:16px}.quote-dialog-enter-active,.quote-dialog-leave-active{transition:opacity .16s ease}.quote-dialog-enter-active .quote-dialog,.quote-dialog-leave-active .quote-dialog{transition:transform .18s ease}.quote-dialog-enter-from,.quote-dialog-leave-to{opacity:0}.quote-dialog-enter-from .quote-dialog,.quote-dialog-leave-to .quote-dialog{transform:translateY(8px) scale(.985)}
@@ -519,4 +653,12 @@ onBeforeUnmount(closeDocumentPreview)
 @media(max-width:760px){.quote-optional-segments{grid-template-columns:repeat(2,minmax(0,1fr))}.quote-type-choice{grid-template-columns:1fr}.quote-product-row{grid-template-columns:30px 1fr}.quote-product-row label,.quote-product-assets{grid-column:2}.quote-product-asset-pickers{grid-template-columns:1fr auto}.quote-product-documents{grid-column:1/-1}.quote-remove-product{grid-column:2}.quote-region-badge{right:8px;top:32px}}
 @media(max-width:650px){.quote-dialog-backdrop{padding:0}.quote-dialog{max-height:100vh;border-radius:0}.quote-department-choice,.quote-form-grid,.quote-pricing-component-rows{grid-template-columns:1fr}.quote-form-grid label.wide{grid-column:auto}.quote-dialog-actions{position:sticky;bottom:0}.quote-participation-heading{align-items:flex-start;flex-direction:column;gap:3px}}
 @media(prefers-reduced-motion:reduce){.quote-icon-button,.quote-primary-button,.quote-secondary-button,.quote-department-choice label,.quote-optional-segments label,.quote-form-grid input,.quote-form-grid select,.quote-form-grid textarea{transition:none}}
+.quote-product-components{grid-column:2/-1;min-width:0;margin-top:4px}
+.quote-product-list-head>.quote-component-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.quote-product-row .quote-accessory-count{display:flex;align-items:center;gap:6px}
+.quote-accessory-count select{border:1px solid #99f6e4;border-radius:7px;background:#fff;padding:6px;color:#0f766e;font-size:12px}
+.quote-product-components .quote-pricing-component-rows label{grid-column:auto}
+@media(max-width:760px){.quote-product-components{grid-column:1/-1}.quote-product-components .quote-product-list-head{align-items:flex-start;flex-direction:column}.quote-product-components .quote-pricing-component-rows{grid-template-columns:1fr}}
+.quote-component-asset{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.quote-component-asset label{display:flex;max-width:100%;color:#0f766e;cursor:pointer;font-size:12px}.quote-component-asset label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.quote-component-asset input{position:absolute;width:1px;height:1px;opacity:0}.quote-component-asset button{font-size:12px;color:#0f766e;border:1px solid #99f6e4;border-radius:6px;padding:4px 8px}
+.quote-component-asset .quote-component-image-picker{display:flex;align-items:center;gap:6px;border:1px dashed #99f6e4;border-radius:7px;background:#f0fdfa;padding:7px 9px;min-height:32px}.quote-component-image-picker svg{width:15px;height:15px;flex-shrink:0}
 </style>

@@ -9,6 +9,8 @@ from typing import Any, Iterable
 from zipfile import BadZipFile
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
+from openpyxl.formula.translate import Translator
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -25,11 +27,12 @@ from app.models.internal_quote import (
     InternalQuoteSection,
 )
 from app.schemas.internal_quote import SECTION_CODE_ORDER
+from app.services.internal_quote_calculator import resolve_justplay_carton_basis, resolve_justplay_packaging_inputs, resolve_sales_cartons
 
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v17"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v28"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -135,7 +138,10 @@ def _list_of_dicts(value: object) -> list[dict[str, Any]]:
 
 
 def _section_payload(section: InternalQuoteSection | None) -> dict[str, Any]:
-    return _json_object(section.payload_json) if section is not None else {}
+    payload = _json_object(section.payload_json) if section is not None else {}
+    if section is not None and section.department == "sales" and payload.get("pricing_mode") == "component":
+        payload = {**payload, "cartons": resolve_sales_cartons(payload)}
+    return payload
 
 
 def _section_calculation(section: InternalQuoteSection | None) -> dict[str, Any]:
@@ -353,11 +359,12 @@ def _excel_row_pixels(height: float | None) -> int:
 
 def _latest_product_image_attachment(
     attachments: list[InternalQuoteAttachment] | None,
+    image_department: str = "product-image",
 ) -> InternalQuoteAttachment | None:
     candidates = [
         attachment
         for attachment in attachments or []
-        if getattr(attachment, "department", "") == "product-image"
+        if getattr(attachment, "department", "") == image_department
         and str(getattr(attachment, "content_type", "")).lower().startswith("image/")
         and bool(getattr(attachment, "content", b""))
     ]
@@ -380,10 +387,11 @@ def _add_product_image_to_region(
     max_row: int,
     min_column: int,
     max_column: int,
+    image_department: str = "product-image",
 ) -> bool:
     """Fit the current product image into the blank block above carton data."""
 
-    attachment = _latest_product_image_attachment(attachments)
+    attachment = _latest_product_image_attachment(attachments, image_department)
     if attachment is None or min_row > max_row or min_column > max_column:
         return False
 
@@ -622,6 +630,8 @@ def _pricing_entry_category(entry: dict[str, Any]) -> str:
     if section_code == "electronic":
         return "电子"
     if section_code == "painting":
+        if kind == "painting_quick_labor":
+            return "喷油工"
         return "油漆" if "paint" in kind or "漆" in label else "喷油工"
     if section_code == "slush":
         return "搪胶"
@@ -630,7 +640,10 @@ def _pricing_entry_category(entry: dict[str, Any]) -> str:
     if section_code == "sewing":
         return "车衣"
     if section_code == "assembly":
-        return "装配工" if not re.search(r"包装|pack", label, re.IGNORECASE) else "包装人工"
+        is_packaging_labor = category == "packaging" or bool(
+            re.search(r"包装|pack", label, re.IGNORECASE)
+        )
+        return "包装人工" if is_packaging_labor else "装配工"
     if section_code == "sales":
         if kind == "carton":
             return "纸箱"
@@ -1861,6 +1874,31 @@ def _line_amount(line: dict[str, Any]) -> float | str:
     return ""
 
 
+def _carton_detail_label(index: int, count: int) -> str:
+    if count == 1:
+        return "纸箱"
+    return "外纸箱" if index == 0 else "内纸箱" if index == 1 else f"内纸箱{index}"
+
+
+def _carton_price_label(index: int, count: int) -> str:
+    if count == 1:
+        return "箱价："
+    return "外箱价：" if index == 0 else "内箱价：" if index == 1 else f"内箱{index}价："
+
+
+def _carton_quantity_reference(cell: str, index: int, count: int) -> str:
+    """Read each packing quantity from the visible inner/outer packing cell."""
+    if count <= 1:
+        return cell
+    if count == 2:
+        return (
+            f'VALUE(RIGHT({cell},LEN({cell})-FIND("/",{cell})))'
+            if index == 0 else f'VALUE(LEFT({cell},FIND("/",{cell})-1))'
+        )
+    position = count - 1 if index == 0 else index - 1
+    return f'VALUE(TRIM(MID(SUBSTITUTE({cell},"/",REPT(" ",32)),{position * 32 + 1},32)))'
+
+
 def _build_summary_sheet(
     workbook: Workbook,
     quote: InternalQuote,
@@ -2263,7 +2301,18 @@ def _build_summary_sheet(
     add_detail("¥13%", "其他外购", "其他外购", t2.get("other_buy"))
     add_detail("¥13%", "其他外购", "胶袋", t1.get("glue_bag"))
     add_detail("¥13%", "彩盒/内卡", "彩盒/内卡", color_box_amount)
-    add_detail("", "纸箱", "纸箱", t2.get("carton", cost_context.get("carton_hkd")))
+    cartons = _list_of_dicts(sales_payload.get("cartons", []))
+    carton_detail_offsets: dict[int, int] = {}
+    paperboard_detail_offset = None
+    carton_order = [*range(1, len(cartons)), 0] if cartons else []
+    for index in carton_order:
+        carton_detail_offsets[index] = len(detail_rows)
+        add_formula_detail("", "纸箱", _carton_detail_label(index, len(cartons)), "=0")
+    if len(cartons) > 1 and any(row.get("flat_cards") for row in cartons):
+        paperboard_detail_offset = len(detail_rows)
+        add_formula_detail("", "纸箱", "平卡", "=0")
+    if not cartons:
+        add_detail("", "纸箱", "纸箱", t2.get("carton", cost_context.get("carton_hkd")))
 
     detail_start_row = mold_total_row + 4
     detail_slots = max(1, len(detail_rows))
@@ -2291,15 +2340,16 @@ def _build_summary_sheet(
     # seven-row visual offset.
     packaging_offset = min(7, max(0, len(detail_rows) - 8))
     packaging_start_row = detail_start_row + packaging_offset
-    cartons = _list_of_dicts(sales_payload.get("cartons", []))
     carton = cartons[0] if cartons else {}
     color_box_unit = _dimension_unit(sales_payload.get("color_box_size_unit"))
+    justplay_basis = resolve_justplay_carton_basis(sales_payload) if sales_payload.get("pricing_mode") == "component" and cartons else None
+    pdq_unit = _dimension_unit(sales_payload.get("pdq_size_unit"))
     dimension_columns = [side_start_column + offset for offset in range(1, 4)]
     dimension_letters = [get_column_letter(column) for column in dimension_columns]
     packaging_rows: list[list[object]] = []
     dimension_row_offsets: set[int] = set()
     carton_row_metadata: list[tuple[int, str]] = []
-    flat_card_row_offsets: list[int] = []
+    flat_card_row_offsets: list[tuple[int, int]] = []
 
     for index, current_carton in enumerate(cartons or [{}]):
         carton_unit = _dimension_unit(current_carton.get("size_unit"))
@@ -2316,14 +2366,14 @@ def _build_summary_sheet(
     # Flat-card source dimensions are canonical inches in the quotation
     # payload.  Display them as centimetres here so the exported formula stays
     # auditable in the same shape as the business workbook (cm ÷ 2.54).
-    for current_carton in cartons:
+    for carton_index, current_carton in enumerate(cartons):
         for flat_index, flat_card in enumerate(
             _list_of_dicts(current_carton.get("flat_cards", [])),
             start=1,
         ):
             row_offset = len(packaging_rows)
             dimension_row_offsets.add(row_offset)
-            flat_card_row_offsets.append(row_offset)
+            flat_card_row_offsets.append((row_offset, carton_index))
             flat_name = _safe_text(flat_card.get("name")) or f"平卡{flat_index}"
             packaging_rows.append(
                 [
@@ -2346,6 +2396,11 @@ def _build_summary_sheet(
             ),
         ]
     )
+    pdq_offset = None
+    if justplay_basis and justplay_basis["source"] == "pdq":
+        pdq_offset = len(packaging_rows)
+        dimension_row_offsets.add(pdq_offset)
+        packaging_rows.append([f"PDQ 尺寸 ({pdq_unit})", *_dimensions_for_unit(sales_payload.get("pdq_size_in"), pdq_unit)])
     product_offset = len(packaging_rows)
     dimension_row_offsets.add(product_offset)
     packaging_rows.append(
@@ -2358,14 +2413,27 @@ def _build_summary_sheet(
         ]
     )
 
+    counts_offset = None
+    if justplay_basis and justplay_basis["source"] != "pdq":
+        packaging_rows.append(["尺寸来源", "产品" if justplay_basis["source"] == "product" else "彩盒", "", ""])
+        counts_offset = len(packaging_rows)
+        dimension_row_offsets.add(counts_offset)
+        packaging_rows.append(["方向个数", *[int(justplay_basis["counts"][axis]) for axis in ("length", "width", "height")]])
+
     cuft_offset = len(packaging_rows)
     packaging_rows.append(["CUFT:", "", "", ""])
     paperboard_offset = len(packaging_rows)
     packaging_rows.append(["纸板价", "", "", ""])
-    carton_price_offset = len(packaging_rows)
-    packaging_rows.append(["箱价：", "", "", ""])
+    carton_price_offsets: list[int] = []
+    for index in range(max(1, len(cartons))):
+        carton_price_offsets.append(len(packaging_rows))
+        packaging_rows.append([_carton_price_label(index, max(1, len(cartons))), "", "", ""])
     packing_qty_offset = len(packaging_rows)
-    packaging_rows.append(["装箱：", _number(carton.get("qty_per_carton", "")), "PCS/1CTN", ""])
+    packing_qty: object = (
+        "/".join(format(_float_value(cartons[index].get("qty_per_carton")), ".10g") for index in carton_order)
+        if len(cartons) > 1 else _number(carton.get("qty_per_carton", ""))
+    )
+    packaging_rows.append(["装箱：", packing_qty, "PCS/1CTN", ""])
     total_offset = len(packaging_rows)
     packaging_rows.append(["合计", "", "", ""])
 
@@ -2378,15 +2446,36 @@ def _build_summary_sheet(
         ]
 
     outer_inputs = dimension_inputs(*carton_row_metadata[0])
+    if justplay_basis:
+        source_offset, source_unit = (
+            (pdq_offset, pdq_unit) if pdq_offset is not None else
+            (product_offset, "inch") if justplay_basis["source"] == "product" else
+            (color_box_offset, color_box_unit)
+        )
+        source_inputs = dimension_inputs(source_offset, source_unit)
+        outer_unit = carton_row_metadata[0][1]
+        for index, offset in enumerate(("0.75", "0.75", "1")):
+            source_cell = f"{dimension_letters[index]}{packaging_start_row + source_offset}"
+            count_ref = f"{dimension_letters[index]}{packaging_start_row + counts_offset}" if counts_offset is not None else None
+            expression = f"({source_inputs[index]}" + (f"*{count_ref}" if count_ref else "") + f"+{offset})"
+            if outer_unit == "cm":
+                expression += "*2.54"
+            packaging_rows[carton_row_metadata[0][0]][index + 1] = f"=IF({source_cell}>0,{expression},0)"
     packaging_rows[cuft_offset][1] = (
         f"={outer_inputs[0]}*{outer_inputs[1]}*{outer_inputs[2]}/1728"
     )
 
+    packing_qty_reference = f"{dimension_letters[0]}{packaging_start_row + packing_qty_offset}"
+    quantity_references = [
+        _carton_quantity_reference(packing_qty_reference, index, len(cartons))
+        for index in range(max(1, len(cartons)))
+    ]
     flat_card_formulas = [
         f"{dimension_letters[0]}{packaging_start_row + row_offset}/2.54"
         f"*{dimension_letters[1]}{packaging_start_row + row_offset}/2.54"
         f"*{dimension_letters[2]}{packaging_start_row + row_offset}*$P$6/1000"
-        for row_offset in flat_card_row_offsets
+        + (f"/{quantity_references[carton_index]}" if len(cartons) > 1 else "")
+        for row_offset, carton_index in flat_card_row_offsets
     ]
     packaging_rows[paperboard_offset][1] = (
         "=" + "+".join(flat_card_formulas) if flat_card_formulas else "=0"
@@ -2399,24 +2488,23 @@ def _build_summary_sheet(
             f"*({inputs[1]}+{inputs[2]}+1)*{factor_cell}*2/1000"
         )
 
-    outer_carton_formula = carton_price_formula(*carton_row_metadata[0], "$N$6")
-    packing_qty_reference = (
-        f"{dimension_letters[0]}{packaging_start_row + packing_qty_offset}"
-    )
-    inner_carton_formulas = [
-        f"({carton_price_formula(row_offset, unit, '$O$6')})*{packing_qty_reference}"
-        for row_offset, unit in carton_row_metadata[1:]
-    ]
-    packaging_rows[carton_price_offset][1] = (
-        f"={outer_carton_formula}"
-        + ("+" + "+".join(inner_carton_formulas) if inner_carton_formulas else "")
-    )
-    carton_price_reference = (
-        f"{dimension_letters[0]}{packaging_start_row + carton_price_offset}"
-    )
+    for index, (row_offset, unit) in enumerate(carton_row_metadata):
+        formula = carton_price_formula(row_offset, unit, "$N$6" if index == 0 else "$O$6")
+        packaging_rows[carton_price_offsets[index]][1] = "=" + formula + (
+            f"/{quantity_references[index]}" if len(cartons) > 1 else ""
+        )
+    paperboard_reference = f"{dimension_letters[0]}{packaging_start_row + paperboard_offset}"
+    carton_price_references = [f"{dimension_letters[0]}{packaging_start_row + offset}" for offset in carton_price_offsets]
     packaging_rows[total_offset][1] = (
-        f"=IFERROR({carton_price_reference}/{packing_qty_reference},0)"
+        f"=SUM({paperboard_reference}:{carton_price_references[-1]})" if len(cartons) > 1
+        else f"=IFERROR(({carton_price_references[0]}+{paperboard_reference})/{packing_qty_reference},0)"
     )
+    # Detail and management totals must follow the same visible formulas.
+    for index, detail_offset in carton_detail_offsets.items():
+        reference = carton_price_references[index] if len(cartons) > 1 else f"{dimension_letters[0]}{packaging_start_row + total_offset}"
+        sheet.cell(detail_start_row + detail_offset, 4).value = f"={reference}"
+    if paperboard_detail_offset is not None:
+        sheet.cell(detail_start_row + paperboard_detail_offset, 4).value = f"={paperboard_reference}"
 
     for offset, values in enumerate(packaging_rows):
         row_index = packaging_start_row + offset
@@ -2434,11 +2522,13 @@ def _build_summary_sheet(
                     else "center"
                 ),
                 wrap_text=False,
-                size=11 if column in dimension_columns and offset in dimension_row_offsets else 10,
+                size=(8 if justplay_basis and column == side_start_column and offset in dimension_row_offsets
+                      else 11 if column in dimension_columns and offset in dimension_row_offsets else 10),
                 number_format=(
                     "0.000_ "
                     if column == side_start_column + 1
-                    and offset in {cuft_offset, paperboard_offset, carton_price_offset, total_offset}
+                    and offset in {cuft_offset, paperboard_offset, *carton_price_offsets, total_offset}
+                    else "@" if column == side_start_column + 1 and offset == packing_qty_offset and len(cartons) > 1
                     else None
                 ),
                 font_name="Times New Roman" if column in dimension_columns and offset in dimension_row_offsets else "宋体",
@@ -2788,6 +2878,10 @@ def _build_summary_sheet(
                 detail_row = detail_row_start + entry_offset
                 category = _pricing_entry_summary_category(entry)
                 description = _safe_text(entry.get("label")) or category
+                entry_carton_index = next((
+                    index for index, row in enumerate(cartons)
+                    if str(entry.get("kind") or "") == "carton" and _safe_text(row.get("item")) == description
+                ), None)
                 source_row = next(
                     (
                         row
@@ -2797,6 +2891,9 @@ def _build_summary_sheet(
                     ),
                     None,
                 )
+                if entry_carton_index is not None:
+                    source_row = detail_start_row + carton_detail_offsets[entry_carton_index]
+                    description = _carton_detail_label(entry_carton_index, len(cartons))
                 if source_row is None:
                     source_row = next(
                         (
@@ -2807,16 +2904,26 @@ def _build_summary_sheet(
                         None,
                     )
                 amount_numeric = _float_value(entry.get("amount_hkd"))
+                carton_entry_formula = None
                 if source_row is not None and amount_numeric > 0:
                     source_cell = sheet.cell(source_row, 4)
                     source_value = source_cell.value
                     amount_label = format(amount_numeric, ".10g")
-                    if isinstance(source_value, str) and source_value.startswith("="):
+                    if entry_carton_index is not None:
+                        carton_entry_formula = str(source_value)
+                        source_cell.value = "=0"
+                        flat_terms = [term for term, (_, owner) in zip(flat_card_formulas, flat_card_row_offsets) if owner == entry_carton_index]
+                        if paperboard_detail_offset is not None and flat_terms:
+                            flat_formula = "+".join(flat_terms)
+                            carton_entry_formula += f"+({flat_formula})"
+                            flat_cell = sheet.cell(detail_start_row + paperboard_detail_offset, 4)
+                            flat_cell.value = f"=({str(flat_cell.value)[1:]})-({flat_formula})"
+                    elif isinstance(source_value, str) and source_value.startswith("="):
                         source_cell.value = f"=({source_value[1:]})-{amount_label}"
                     else:
                         remaining = _float_value(source_value) - amount_numeric
                         source_cell.value = 0.0 if abs(remaining) < 0.0000001 else remaining
-                amount_formula = _pricing_entry_amount(entry)
+                amount_formula = carton_entry_formula or _pricing_entry_amount(entry)
                 if not (
                     isinstance(amount_formula, str) and amount_formula.startswith("=")
                 ):
@@ -3419,6 +3526,63 @@ def _build_summary_sheet(
         )
 
 
+def _justplay_electronic_category(name: object, specification: object = "") -> str:
+    """Classify purchased parts, keeping holders/contacts and PCB assemblies in PCB."""
+    value = _plain_text(name).upper()
+    if re.search(r"电池(?:盒|座|片|扣|弹簧)|BATTERY\s*(?:HOLDER|BOX|CONTACT|CLIP)|PCB", value):
+        return "PCB"
+    if re.search(r"电池|BATTER(?:Y|IES)", value):
+        return "电池"
+    if re.search(r"喇叭|扬声器|SPEAKER|LOUDSPEAKER", value):
+        return "喇叭"
+    if re.search(r"(?<![A-Z])LEDS?(?![A-Z])|发光二极管", value):
+        return "LED"
+    if re.search(r"(?<![A-Z])IC(?![A-Z])|集成电路|芯片", value):
+        return "IC"
+    # Imported child rows often have no name, only a specification.
+    if not value and specification:
+        return _justplay_electronic_category(specification)
+    return "PCB"
+
+
+def _justplay_electronic_source_parts(section: InternalQuoteSection | None) -> list[dict[str, Any]]:
+    """Read original calculated line costs, before the summary's overhead allocation."""
+    payload = _section_payload(section)
+    source_rows: list[dict[str, Any]] = []
+
+    def walk(rows, parent_name="", parent_component=""):
+        for row in _list_of_dicts(rows):
+            name = _plain_text(row.get("item")) or parent_name
+            component = _plain_text(row.get("pricing_component_id")) or parent_component
+            walk(row.get("children"), name, component)
+            source_rows.append({**row, "source_name": name, "pricing_component_id": component})
+
+    if payload.get("quote_mode") == "quick":
+        walk(payload.get("quick_quotes"))
+    else:
+        walk(payload.get("components"))
+    lines = _calculation_lines(section, "electronic_component")
+    # The calculator emits children before parents. Only pair identical row
+    # sequences; a legacy snapshot must never borrow another row's identity.
+    paired = len(source_rows) == len(lines) and all(
+        _plain_text(source.get("item")) == _plain_text(line.get("item"))
+        for source, line in zip(source_rows, lines)
+    )
+    result = []
+    for index, line in enumerate(lines):
+        source = source_rows[index] if paired else line
+        name = source.get("source_name", line.get("item"))
+        specification = source.get("specification", line.get("specification", ""))
+        result.append({
+            "category": _justplay_electronic_category(name, specification),
+            "name": _plain_text(name),
+            "specification": _plain_text(specification),
+            "amount_hkd": _float_value(line.get("amount_hkd", line.get("line_hkd"))),
+            "pricing_component_id": line.get("pricing_component_id") or source.get("pricing_component_id", ""),
+        })
+    return result
+
+
 def _replace_with_component_summary_sheet(
     workbook: Workbook,
     quote: InternalQuote,
@@ -3447,7 +3611,10 @@ def _replace_with_component_summary_sheet(
     pricing_entries = _list_of_dicts(shipping.get("pricing_entries", []))
     global_pricing = _dict_value(shipping.get("global_pricing", {}))
     global_entries = _list_of_dicts(global_pricing.get("entries", []))
+    customer_supplied_entries = _list_of_dicts(_dict_value(shipping.get("customer_supplied_pricing", {})).get("entries", []))
     by_code = {section.department: section for section in sections}
+    sales_payload = _section_payload(by_code.get("sales"))
+    cartons = _list_of_dicts(sales_payload.get("cartons", []))
     source_summary_start = next(
         (
             row
@@ -3588,6 +3755,129 @@ def _replace_with_component_summary_sheet(
     component_usd_rows: list[int] = []
     component_mold_ranges: list[tuple[int, int]] = []
     visible_detail_ranges: list[tuple[int, int]] = []
+    customer_supplied_cost_rows: list[int] = []
+    separate_departments = (("electronic", "电子"), ("sewing", "车缝"), ("hair", "车发"))
+    separate_codes = {code for code, _ in separate_departments}
+    electronic_parts = _justplay_electronic_source_parts(by_code.get("electronic"))
+
+    def render_department_block(start_row, component_id, component_name, department_name, entries, markup):
+        _template_cell(target, start_row, 3, f"{component_name} · {department_name}",
+                       color=TEMPLATE_BLUE, fill="FFFF00", bold=True, horizontal="left", wrap_text=False)
+        _template_cell(target, start_row, 4, "出厂价", wrap_text=False)
+        row = start_row + 1
+        if department_name == "电子":
+            electronic_entries = [entry for entry in entries if entry.get("section") == "electronic"]
+            battery_entries = [entry for entry in entries if entry.get("section") != "electronic"]
+            parts = [part for part in electronic_parts if assigned_component_id(part) == component_id]
+            if not parts:
+                # Old/manual snapshots may not retain the source section. Keep
+                # their amount intact, classifying only the labels they do have.
+                parts = [{"category": _justplay_electronic_category(entry.get("label")),
+                          "name": _safe_text(entry.get("label")), "specification": "",
+                          "amount_hkd": _float_value(entry.get("amount_hkd"))}
+                         for entry in electronic_entries]
+            buckets = {key: sum(part["amount_hkd"] for part in parts if part["category"] == key)
+                       for key in ("IC", "LED", "喇叭", "电池")}
+            included_battery = buckets["电池"]
+            external_battery = sum(_float_value(entry.get("amount_hkd")) for entry in battery_entries)
+            electronic_total = sum(_float_value(entry.get("amount_hkd")) for entry in electronic_entries)
+            residual = electronic_total - included_battery - sum(buckets[key] for key in ("IC", "LED", "喇叭"))
+            if residual < -0.0005:
+                raise ValueError(f"{component_name}电子总价不足以覆盖 IC、LED、喇叭和电池明细，请核对上传报价及配件归属")
+            buckets["电池"] += external_battery
+            # The visible source total excludes batteries. If a battery came
+            # from the electronic quote, subtract it here before adding its
+            # standalone detail, preserving the authoritative component total.
+            _merge_and_style(target, f"F{start_row}:G{start_row}", "电子总价 HKD（不含电池）", size=9)
+            total_formula = f"={format(electronic_total, '.12g')}"
+            if included_battery:
+                total_formula += f"-D{row + 4}"
+                if external_battery:
+                    total_formula += f"+{format(external_battery, '.12g')}"
+            _template_cell(target, start_row, 8, total_formula, number_format="0.000")
+            detail_values = []
+            for key in ("IC", "LED", "喇叭", "PCB", "电池"):
+                specifications = list(dict.fromkeys(
+                    part["specification"] or part["name"] for part in parts
+                    if part["category"] == key and (part["specification"] or part["name"]) not in ("", key)
+                )) if key != "PCB" else []
+                if key == "电池":
+                    specifications = list(dict.fromkeys(specifications + [
+                        _plain_text(entry.get("label")) for entry in battery_entries
+                        if _plain_text(entry.get("label")) not in ("", "电池")
+                    ]))
+                label = key + (f"（{'；'.join(specifications)}）" if specifications else "")
+                amount = f"=H{start_row}-SUM(D{row}:D{row + 2})" if key == "PCB" else buckets[key]
+                category = "电池" if key == "电池" else "电子"
+                detail_values.append(("¥13%", category, label, amount))
+        else:
+            detail_values = [(_pricing_entry_tax_tag(entry), _pricing_entry_summary_category(entry),
+                              _safe_text(entry.get("label")) or department_name, _pricing_entry_amount(entry))
+                             for entry in entries]
+        for values in detail_values:
+            for column, value in enumerate(values, 1):
+                _template_cell(target, row, column, value, horizontal="left" if column in {2, 3} else "center",
+                               number_format="0.000" if column == 4 else None, wrap_text=False,
+                               border=Border(left=TEMPLATE_MEDIUM) if column == 1 else None)
+            if department_name == "电子":
+                target.cell(row, 3).alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                target.row_dimensions[row].height = min(409, max(15, 15 * ((len(str(values[2])) + 17) // 18)))
+            row += 1
+        visible_detail_ranges.append((start_row + 1, row - 1))
+        # Every block contributes once to the final USD sum. Department costs are
+        # excluded from the component's primary block, including its adjustment.
+        formulas = [
+            ("成本金额：", f"=SUM(D{start_row + 1}:D{row - 1})", "0.00"),
+            ("×", markup, "0.000"),
+            ("÷", "=1-$Q$6", "0.0000"),
+            (f"{department_name}报价（HKD）：", f"=D{row}*D{row + 1}/D{row + 2}", "0.00"),
+            ("美金兑港币汇率：", "=$R$4", "0.00"),
+            (f"{department_name}单价（USD）：", f"=D{row + 3}/D{row + 4}", "0.000"),
+        ]
+        for offset, (label, value, number_format) in enumerate(formulas):
+            border = Border(bottom=TEMPLATE_MEDIUM) if offset == 2 else None
+            color = TEMPLATE_BLUE if offset >= 3 else TEMPLATE_BLACK
+            for column, cell_value in ((3, label), (4, value)):
+                _template_cell(target, row + offset, column, cell_value,
+                               horizontal="right" if column == 3 else "center", border=border,
+                               color=color, bold=offset in {0, 3, 5},
+                               number_format=number_format if column == 4 else None)
+        end_row = row + 5
+        _apply_outline_border(target, start_row, end_row, 1, 8, TEMPLATE_MEDIUM)
+        component_usd_rows.append(end_row)
+        return end_row + 3
+
+    def render_customer_supplied_block(start_row, component_name, entries):
+        _template_cell(target, start_row, 3, f"{component_name} · 客供物料",
+                       color=TEMPLATE_BLUE, fill="FFFF00", bold=True, horizontal="left", wrap_text=False)
+        _template_cell(target, start_row, 4, "出厂价", wrap_text=False)
+        row = start_row + 1
+        for entry in entries:
+            unit_price = format(_float_value(entry.get("unit_price_hkd")), ".12g")
+            fee_rate = format(_float_value(entry.get("fee_rate_percent")) / 100, ".12g")
+            for col, value in ((2, "其他外购"), (3, _safe_text(entry.get("label"))),
+                               (4, f"=ROUND({unit_price}*{fee_rate},4)")):
+                _template_cell(target, row, col, value, horizontal="left" if col in {2, 3} else "center",
+                               number_format="0.0000" if col == 4 else None)
+            target.cell(row, 4).comment = Comment("物料单价 HKD × 保管费率；仅收保管费，不加倍率、杂项率或税；金额按系统精度保留四位小数。", "Royal Regent Nexus")
+            row += 1
+        visible_detail_ranges.append((start_row + 1, row - 1))
+        customer_supplied_cost_rows.append(row)
+        for offset, (label, value, fmt) in enumerate((
+            ("成本金额：", f"=SUM(D{start_row + 1}:D{row - 1})", "0.00"),
+            ("美金兑港币汇率：", "=$R$4", "0.00"),
+            ("保管费单价（USD）：", f"=D{row}/D{row + 1}", "0.000"),
+        )):
+            for col, cell_value in ((3, label), (4, value)):
+                _template_cell(target, row + offset, col, cell_value,
+                               horizontal="right" if col == 3 else "center",
+                               color=TEMPLATE_BLUE if offset else TEMPLATE_BLACK,
+                               bold=offset in {0, 2}, number_format=fmt if col == 4 else None,
+                               border=Border(top=TEMPLATE_MEDIUM) if offset == 0 else None)
+        _apply_outline_border(target, start_row, row + 2, 1, 8, TEMPLATE_MEDIUM)
+        component_usd_rows.append(row + 2)
+        return row + 5
+
     current_row = 8
     for index, group in enumerate(pricing_groups):
         component_id = str(group.get("id") or "")
@@ -3602,6 +3892,18 @@ def _replace_with_component_summary_sheet(
             and assigned_component_id(entry) == component_id
             and str(entry.get("kind") or "") != "injection"
         ]
+
+        department_entries = {
+            code: [entry for entry in component_entries if entry.get("section") == code]
+            for code, _ in separate_departments
+        }
+        component_batteries = [entry for entry in component_entries
+                              if entry.get("section") == "engineering" and _pricing_entry_category(entry) == "电池"]
+        department_entries["electronic"].extend(component_batteries)
+        component_entries = [entry for entry in component_entries
+                             if entry.get("section") not in separate_codes and entry not in component_batteries]
+        separated_cost = sum(_float_value(entry.get("amount_hkd"))
+                             for entries in department_entries.values() for entry in entries)
 
         title_row = current_row
         target.merge_cells(
@@ -3731,7 +4033,7 @@ def _replace_with_component_summary_sheet(
                     _pricing_entry_amount(entry),
                 )
             )
-        expected_cost = _float_value(group.get("cost_hkd"))
+        expected_cost = _float_value(group.get("cost_hkd")) - separated_cost
         mold_cost = sum(
             _float_value(line.get("material_cost_hkd"))
             + _float_value(line.get("molding_cost_hkd"))
@@ -3823,7 +4125,19 @@ def _replace_with_component_summary_sheet(
         )
         _apply_outline_border(target, detail_title_row, usd_row, 1, 8, TEMPLATE_MEDIUM)
         component_usd_rows.append(usd_row)
+        _add_product_image_to_region(
+            target, attachments, min_row=title_row, max_row=usd_row,
+            min_column=side_start_column, max_column=side_end_column,
+            image_department=f"component-image:{component_id}",
+        )
         current_row = usd_row + 3
+        for code, department_name in separate_departments:
+            if department_entries[code]:
+                current_row = render_department_block(current_row, component_id, component_name, department_name,
+                                                      department_entries[code], _float_value(group.get("markup")))
+        supplied = [entry for entry in customer_supplied_entries if assigned_component_id(entry) == component_id]
+        if supplied:
+            current_row = render_customer_supplied_block(current_row, component_name, supplied)
 
     all_route_rows = _list_of_dicts(shipping.get("rows", []))
     if all_route_rows and _safe_text(all_route_rows[0].get("name")) == "出厂价":
@@ -3835,6 +4149,7 @@ def _replace_with_component_summary_sheet(
     quote_price_end_column = max(quote_price_columns)
 
     packaging_title_row = current_row
+    packaging_inputs = resolve_justplay_packaging_inputs(_section_payload(by_code.get("sales")))
     _template_cell(target, packaging_title_row, 3, "包装明细", fill="FFFF00", bold=True, color=TEMPLATE_BLUE, wrap_text=False)
     _template_cell(target, packaging_title_row, 4, "出厂价", fill="FFFF00", bold=True, color=TEMPLATE_BLUE, wrap_text=False)
     for column, route in enumerate(route_rows, start=5):
@@ -3887,18 +4202,44 @@ def _replace_with_component_summary_sheet(
         global_entries,
         key=lambda item: str(item.get("kind") or "") == "carton",
     )
+    if len(cartons) > 1 and any(str(entry.get("kind") or "") == "carton" for entry in global_entries):
+        ordered_global_entries = [entry for entry in ordered_global_entries if str(entry.get("kind") or "") != "carton"]
+        for index in [*range(1, len(cartons)), 0]:
+            ordered_global_entries.append({
+                "section": "sales", "kind": "carton", "label": _carton_detail_label(index, len(cartons)),
+                "carton_price_label": _carton_price_label(index, len(cartons)),
+            })
+        if any(row.get("flat_cards") for row in cartons):
+            ordered_global_entries.append({"section": "sales", "kind": "carton", "label": "平卡", "carton_price_label": "纸板价"})
     for entry in ordered_global_entries:
         category = _pricing_entry_summary_category(entry)
         is_carton = category == "纸箱" or str(entry.get("kind") or "") == "carton"
-        if is_carton and carton_rendered:
+        if is_carton and carton_rendered and not entry.get("carton_price_label"):
             continue
         description = _safe_text(entry.get("label")) or category
+        if (
+            str(entry.get("section") or "") == "assembly"
+            and str(entry.get("category") or "") == "packaging"
+        ):
+            description = (
+                "包装人工"
+                if description == "包装人工"
+                else f"包装人工 - {description}"
+            )
         if is_carton:
             carton_rendered = True
-            description = "纸箱"
+            source_price_row = next((
+                row for row in range(source_packaging_start, source_summary_start)
+                if source.cell(row, side_start_column).value == entry.get("carton_price_label")
+            ), None) if entry.get("carton_price_label") else None
+            target_price_row = (
+                packaging_title_row + source_price_row - source_packaging_start
+                if source_price_row is not None else target_packaging_total_row
+            )
+            description = _safe_text(entry.get("label")) if source_price_row is not None else "纸箱"
             amount: object = (
-                f"={get_column_letter(side_start_column + 1)}{target_packaging_total_row}"
-                if target_packaging_total_row is not None
+                f"={get_column_letter(side_start_column + 1)}{target_price_row}"
+                if target_price_row is not None
                 else _pricing_entry_amount(entry)
             )
         elif (
@@ -3908,12 +4249,26 @@ def _replace_with_component_summary_sheet(
         ):
             length_ref = f"{get_column_letter(side_start_column + 1)}{target_outer_carton_row}"
             width_ref = f"{get_column_letter(side_start_column + 2)}{target_outer_carton_row}"
-            quantity_ref = f"{get_column_letter(side_start_column + 1)}{target_packing_qty_row}"
-            amount = (
-                f"=3.9/2150*({length_ref}*2+{width_ref}*4+6)/{quantity_ref}+0.06"
-                if str(entry.get("formula_code") or "") == "adhesive"
-                else f"=19/24/{quantity_ref}+0.05"
+            if cartons and _dimension_unit(cartons[0].get("size_unit")) == "cm":
+                length_ref += "/2.54"
+                width_ref += "/2.54"
+            quantity_ref = _carton_quantity_reference(
+                f"{get_column_letter(side_start_column + 1)}{target_packing_qty_row}", 0, len(cartons),
             )
+            # Keep the cost arithmetic in the detail cell, as in the customer template.
+            # Pallet capacity is the calculated export-time count, not another Excel formula.
+            if str(entry.get("formula_code") or "") == "adhesive":
+                amount = (
+                    f"=3.9/2150*({length_ref}*2+{width_ref}*4+6)/{quantity_ref}"
+                    f"+{packaging_inputs['adhesive_extra_hkd']:.1f}"
+                )
+            elif packaging_inputs["cartons_per_pallet"] > 0:
+                amount = (
+                    f"=19/{packaging_inputs['cartons_per_pallet']:.0f}/{quantity_ref}"
+                    f"+{packaging_inputs['paper_pallet_extra_hkd']:.1f}"
+                )
+            else:
+                amount = "=0"
         else:
             source_detail_row = next(
                 (
@@ -4072,6 +4427,19 @@ def _replace_with_component_summary_sheet(
             packaging_title_row,
             link_computed=True,
         )
+        if source_packaging_total_row is not None:
+            # Keep carton inputs and formulas on the visible JustPlay sheet;
+            # moving the block must not turn its formulas into hidden-sheet links.
+            for source_row in range(source_packaging_start, source_packaging_total_row + 1):
+                target_row = packaging_title_row + source_row - source_packaging_start
+                for column in range(side_start_column, side_end_column + 1):
+                    source_cell = source.cell(source_row, column)
+                    target_cell = target.cell(target_row, column)
+                    value = source_cell.value
+                    target_cell.value = (
+                        Translator(value, origin=source_cell.coordinate).translate_formula(target_cell.coordinate)
+                        if isinstance(value, str) and value.startswith("=") else value
+                    )
 
     lift_cost_row = packaging_usd_row + 3
     lift_markup_row = lift_cost_row + 1
@@ -4309,7 +4677,11 @@ def _replace_with_component_summary_sheet(
         target.cell(second_value_row, 12).value = _float_value(
             selected_route.get("lift_hkd")
         )
-        target.cell(second_value_row, 13).value = f"=D{first_value_row}*$Q$6"
+        custody_cost_formula = "+".join(f"$D${row}" for row in customer_supplied_cost_rows)
+        target.cell(second_value_row, 13).value = (
+            f"=(D{first_value_row}-({custody_cost_formula}))*$Q$6"
+            if custody_cost_formula else f"=D{first_value_row}*$Q$6"
+        )
         additional_tax_formula = visible_sumif("C", '"附加税"')[1:]
         indonesia_formula = visible_sumif("C", '"印尼运费"')[1:]
         target.cell(second_value_row, 14).value = (
@@ -4412,15 +4784,6 @@ def _replace_with_component_summary_sheet(
             f"=N{third_value_row}-O{deduction_row}"
         )
 
-    first_component_end = component_usd_rows[0] if component_usd_rows else packaging_title_row - 1
-    _add_product_image_to_region(
-        target,
-        attachments,
-        min_row=8,
-        max_row=max(8, first_component_end),
-        min_column=side_start_column,
-        max_column=side_end_column,
-    )
     target.freeze_panes = "A8"
     target.sheet_view.showGridLines = source.sheet_view.showGridLines
     target.sheet_properties.pageSetUpPr.fitToPage = True

@@ -39,7 +39,7 @@ function formulaAndStyle(bytes: ArrayBuffer) {
   const zip = unzipSync(new Uint8Array(bytes))
   return YINHUI_SHEET_NAMES.map((_, i) => {
     const doc = new DOMParser().parseFromString(strFromU8(zip[`xl/worksheets/sheet${i + 1}.xml`]!), 'application/xml')
-    const formula = Array.from(doc.getElementsByTagName('c')).filter(c => c.getElementsByTagName('f').length).map(c => [c.getAttribute('r'), new XMLSerializer().serializeToString(c.getElementsByTagName('f')[0]!)])
+    const formula = Array.from(doc.getElementsByTagName('c')).filter(c => c.getElementsByTagName('f').length && !(i === 0 && c.getAttribute('r') === 'J32')).map(c => [c.getAttribute('r'), new XMLSerializer().serializeToString(c.getElementsByTagName('f')[0]!)])
     const style = Array.from(doc.getElementsByTagName('c')).map(c => [c.getAttribute('r'), c.getAttribute('s')])
     const geometry = ['cols', 'mergeCells', 'pageMargins', 'pageSetup'].map(name => doc.getElementsByTagName(name)[0]?.outerHTML)
     const heights = Array.from(doc.getElementsByTagName('row')).map(r => [r.getAttribute('r'), r.getAttribute('ht'), r.getAttribute('customHeight')])
@@ -73,7 +73,7 @@ describe('Silverlit temporary independent mapping', () => {
     expect(d.freightFclHkd).toBe(1.2); expect(d.freightLclHkd).toBe(2.3)
     expect(yinhuiTotals(d).exFactory).toBeCloseTo(20.965, 6)
   })
-  it('preserves every customer formula, cell style, font, border, merge, row height and column width', () => {
+  it('preserves customer formulas and formatting except the approved H32 fee term in J32', () => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
     const out = buffer(createYinhuiCustomerQuoteWorkbook(result, template))
     expect(formulaAndStyle(out)).toEqual(formulaAndStyle(template))
@@ -84,6 +84,10 @@ describe('Silverlit temporary independent mapping', () => {
     expect(read.sheets[0]?.rows[43]?.[16]).toBe('in')
     expect(read.sheets[0]?.rows[37]?.[3]).toBe('30 days')
     expect(read.sheets[0]?.rows[31]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory,6)
+    expect(parseXlsxWorkbook(out, {includeFormulas:true}).sheets[0]?.cellFormulas?.J32).toBe('J30-J31+H32')
+    expect(read.sheets[0]?.rows[31]?.[7]).toBe(.1)
+    expect(read.sheets[0]?.rows[29]?.[9]).toBeCloseTo(20.865,6)
+    expect(read.sheets[1]?.rows.flat().join(' ')).not.toContain('Documents / Customs Fee')
     expect(read.sheets[0]?.rows[33]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).lcl!,6)
     expect(read.sheets[3]?.rows[65]?.[10]).toBe(0)
     expect(read.sheets[0]?.rows[32]?.[8]).toBe('#DIV/0!') // the unfilled original route, not a changed formula
@@ -269,7 +273,7 @@ describe('Silverlit temporary independent mapping', () => {
     result.quoteData.tools[0]!.weightG = 198
     expect(() => createYinhuiCustomerQuoteWorkbook(result,variant)).toThrow(/料重公式/)
   })
-  it('adds carton components and fabric, groups battery contacts, and retains compound quantities', () => {
+  it('adds carton components and fabric, preserves individual battery contacts, and retains compound quantities', () => {
     const input = changedLegacy(sheets => {
       const rows = sheets[0]!.rows
       rows[28]![2] = '螺丝M2(2*2PCS)'
@@ -284,20 +288,76 @@ describe('Silverlit temporary independent mapping', () => {
     expect(d.fabric).toMatchObject([{description:'Fabric Assembly',quantity:1,amountHkd:2.1}])
     expect(d.electronic).toMatchObject([{description:'PCBA',quantity:1,amountHkd:5.25}])
     expect(d.mechanical[0]?.quantity).toBe(4)
-    expect(d.mechanical.filter(r => /Battery Contact/.test(r.description))).toMatchObject([{quantity:1,amountHkd:.33}])
+    expect(d.mechanical.filter(r => /Battery .*Contact/.test(r.description))).toMatchObject([
+      {description:'AA Battery Positive Contact(1PCS)',quantity:1,amountHkd:.11,source:'明细!D32'},
+      {description:'AA Battery Negative Contact(1PCS)',quantity:1,amountHkd:.22,source:'明细!D33'},
+    ])
   })
-  it('routes PC and PVC sheet parts to purchased plastic even when the source category says hardware', () => {
+  it('routes PC and PVC sheet parts to mechanical without changing their source amounts', () => {
     const input = changedLegacy(sheets => {
       const rows = sheets[0]!.rows
       rows[28]![1] = '五金'; rows[28]![2] = '磨砂PC片 0.5*14*25 (1PCS)'; rows[28]![3] = .15; rows[28]![4] = .165
       rows[31] = [null,'五金','印花PVC片 0.3*57.8*115MM (1PCS)',.43,.473]
     })
     const d = convertYinhuiInternalQuote(input, '银辉00012.xlsx').quoteData
-    expect(d.plastic).toMatchObject([
+    expect(d.mechanical).toMatchObject([
       {description:'Frosted PC Sheet  0.5*14*25 (1PCS)',quantity:1,amountHkd:.165},
       {description:'Printed PVC Sheet  0.3*57.8*115MM (1PCS)',quantity:1,amountHkd:.473},
     ])
-    expect(d.mechanical).toEqual([])
+    expect(d.plastic).toEqual([])
+  })
+  it('separates an in-block customs fee from packaging, applies its multiplier once, and keeps freight unchanged', () => {
+    const input = changedLegacy(sheets => {
+      const rows = sheets[0]!.rows
+      rows[32] = [null,'报关费','报关费用/文件费/操作费用：',.15,.165]
+      rows[42] = []
+      rows[24]![4] = '盐田柜'; rows[24]![5] = '盐田散'
+      rows[25] = [null,'运费','Freight',0,.2,.3]
+    })
+    const result = convertYinhuiInternalQuote(input,'银辉00012.xlsx')
+    expect(result.quoteData.documentFees).toMatchObject([{amountHkd:.165,internalHkd:.15,source:'明细!D33'}])
+    expect(result.quoteData.packagingRows.some(r => /Customs/.test(r.description))).toBe(false)
+    expect(result.quoteData.freightFclHkd).toBeCloseTo(.22,8)
+    const parsed = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result,template)))
+    expect(parsed.sheets[0]?.rows[31]?.[7]).toBe(.165)
+    expect(parsed.sheets[0]?.rows[31]?.[9]).toBeCloseTo(19.93,8)
+    expect(parsed.sheets[0]?.rows[29]?.[9]).toBeCloseTo(19.765,8)
+    expect(result.sheets[0]?.details.find(r => r.description === 'Documents / Customs Fee')?.customerPriceHkd).toBe(.165)
+    result.quoteData.documentFees![0]!.amountHkd = -1
+    expect(() => validateYinhuiExport(result.quoteData)).toThrow(/金额/)
+  })
+  it('uses the 88753 customer layout for 30 mechanical lines and both battery information rows', () => {
+    const result = convertYinhuiInternalQuote(legacy(),'银辉00012.xlsx')
+    result.quoteData.templateId = '88753'
+    result.quoteData.mechanical = Array.from({length:30},(_,i) => ({description:`Part ${i+1}`,source:`test!${i}`,quantity:1,amountHkd:.1,internalHkd:.09}))
+    result.quoteData.electronic.push({description:'Rechargeable Battery',source:'test',quantity:1,amountHkd:2,internalHkd:1,isBattery:true})
+    result.quoteData.adaptor = 'not included'; result.quoteData.tryMe = 'NO'
+    const variant = buffer(readFileSync(`public/templates/${YINHUI_PROFILES['88753'].file}`))
+    const out = buffer(createYinhuiCustomerQuoteWorkbook(result,variant))
+    const read = parseXlsxWorkbook(out)
+    expect(read.sheets[2]?.rows[47]?.[1]).toBe('Part 30')
+    expect(read.sheets[2]?.rows[17]?.[10]).toBeCloseTo(3,8)
+    expect(read.sheets[0]?.rows[56]?.[5]).toBe('Battery (2PCS)')
+    expect(read.sheets[0]?.rows[57]?.[5]).toBe('Rechargeable Battery')
+    expect(read.sheets[0]?.rows[58]?.[3]).toBe('not included')
+    expect(read.sheets[0]?.rows[59]?.[3]).toBe('NO')
+    expect(formulaAndStyle(out)).toEqual(formulaAndStyle(variant))
+    expect(() => createYinhuiCustomerQuoteWorkbook(result,template)).toThrow(/容量/)
+    const clean = parseXlsxWorkbook(buffer(sanitizeYinhuiTemplate(variant)))
+    expect(clean.sheets[0]?.rows[57]?.[5]).not.toContain('Battery 4PCS')
+  })
+  it('extends mechanical rows with matching styles and updates subtotal, shared and cross-sheet formulas', () => {
+    const expanded = buffer(sanitizeYinhuiTemplate(template,{mechanicalCapacity:29}))
+    const result = convertYinhuiInternalQuote(legacy(),'银辉00012.xlsx')
+    result.quoteData.mechanical = Array.from({length:29},(_,i) => ({description:`Part ${i+1}`,source:'test',quantity:2,amountHkd:.1,internalHkd:.09}))
+    const output = buffer(createYinhuiCustomerQuoteWorkbook(result,expanded))
+    const read = parseXlsxWorkbook(output,{includeFormulas:true})
+    expect(read.sheets[2]?.rows[17]?.[10]).toBeCloseTo(2.9,8)
+    expect(read.sheets[2]?.cellFormulas?.K18).toBe('SUM(J19:J47)')
+    expect(read.sheets[2]?.cellFormulas?.J47).toBe('I47*H47')
+    expect(read.sheets[0]?.cellFormulas?.H15).toBe("'BOM (1)'!K48")
+    expect(read.sheets[0]?.rows[31]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory,8)
+    expect(formulaAndStyle(output)).toEqual(formulaAndStyle(expanded))
   })
   it('treats a trailing long parenthesized number as a model reference, not BOM quantity', () => {
     const input = changedLegacy(sheets => {
@@ -388,6 +448,22 @@ describe('Silverlit temporary independent mapping', () => {
     const output = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template, {missingMaterialPricesConfirmed:missing})))
     expect(output.sheets[4]?.rows[7]?.[14]).toBe(missing ? '' : 24)
     expect(output.sheets[0]?.rows[31]?.[9]).toBeCloseTo(missing ? 8.9 : 11.3, 6)
+  })
+  it('applies the corrected sheet and fee mapping to approved P4 quotes in the matching gift-box layout', () => {
+    const artifact = p4()
+    artifact.productName = 'GOAL GO BOT #88753'
+    ;(artifact.sections.engineering.calculation.line_breakdown as unknown[]).push({kind:'material',category:'hardware',item:'Frosted PC Sheet',quantity:1,amount_hkd:.5})
+    ;(artifact.sections.sales.calculation.line_breakdown as unknown[]).push({kind:'packaging_material',item:'Documents Fee',quantity:1,amount_hkd:.15})
+    const result = convertYinhuiP4InternalQuote(artifact, 'approved.xlsx')
+    expect(result.quoteData).toMatchObject({templateId:'88753',packaging:'Gift Box'})
+    expect(result.quoteData.mechanical).toContainEqual(expect.objectContaining({description:'Frosted PC Sheet',amountHkd:.55}))
+    expect(result.quoteData.documentFees).toMatchObject([{amountHkd:.165,source:'业务/Documents Fee'}])
+    expect(yinhuiTotals(result.quoteData).packaging).toBeCloseTo(3.3,8)
+    const giftTemplate = buffer(readFileSync('public/templates/yinhui-88753-template.bin'))
+    const output = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, giftTemplate)))
+    expect(output.sheets[0]?.rows[29]?.[9]).toBeCloseTo(11.015,8)
+    expect(output.sheets[0]?.rows[31]?.[7]).toBe(.165)
+    expect(output.sheets[0]?.rows[31]?.[9]).toBeCloseTo(11.18,8)
   })
   it('keeps P4 customer, factory and unsupported-cost boundaries explicit', () => {
     const a = p4(); a.customer = 'BuzzBee'; expect(() => convertYinhuiP4InternalQuote(a,'a.xlsx')).toThrow(/客户/)

@@ -5,6 +5,7 @@ export const YINHUI_MATERIAL_PRICES_HKD_KG = { ABS: 15.65, TPR: 18.8, PP: 12.6, 
 // Customer-supplied layout families, never saved quotation amounts or MOQ values.
 export const YINHUI_PROFILES = {
   standard: { label: '机器人 / 标准六表', file: 'yinhui-customer-quote-template.bin', product: '', packaging: 'Window Box' },
+  '88753': { label: '88753 Goal Go Bot 礼盒', file: 'yinhui-88753-template.bin', product: 'Goal Go Bot', packaging: 'Gift Box' },
   '81283': { label: '81283 活动环', file: 'yinhui-81283-template.bin', product: 'ACTIVE RING', packaging: 'Closed Box' },
   '88636': { label: '88636 Rescue Bear', file: 'yinhui-88636-template.bin', product: 'Rescue Polar Bear', packaging: 'Color Box (S)' },
   '89115': { label: '89115 Pee Pee Puppy', file: 'yinhui-89115-template.bin', product: 'Pee Pee Puppy', packaging: 'Closed Box' },

@@ -11,7 +11,7 @@ from app.models.internal_quote import InternalQuotePricingBaseline
 from app.models.molding_sample import MoldingSampleMaterialPrice
 
 
-FORMULA_VERSION = "rr2-2026-v2"
+FORMULA_VERSION = "rr2-2026-v7"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -169,7 +169,21 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "testing_fee_moqs": "list of positive integer MOQ tiers when testing_fee_total_usd>0",
         "testing_fee_moq": "legacy single MOQ; read when testing_fee_moqs is absent",
         "packaging_materials": [{"item": "text", "specification": "text", "category": "blister|color_box_inner_card|leaflet_manual|other_purchase", "quantity": "decimal>=0", "unit_price_rmb": "decimal>=0; original RMB source or derived", "unit_price_hkd": "decimal>=0; original HKD source or derived", "unit_price_source_currency": "RMB|HKD; omitted legacy rows prefer RMB unless only HKD exists", "loss_rate": "decimal>0; multiplier, default 1", "tax_rate_percent": "0..100", "remark": "text", "disney_description": "text", "disney_unit_price_usd": "decimal>=0", "disney_included": "decimal>0"}],
-        "justplay_fixed_packaging": "when pricing_mode=component, automatically add 胶纸/胶水/胶针 = 3.9/2150*(main carton length*2+width*4+6)/qty+0.06 and 纸托板成本 = 19/24/qty+0.05, in HKD/PCS",
+        "justplay_packaging": {
+            "adhesive_extra_hkd": "decimal>=0 HKD/PCS; rounded to 1 decimal; defaults to 0",
+            "paper_pallet_extra_hkd": "decimal>=0 HKD/PCS; rounded to 1 decimal; defaults to 0",
+            "pallet_length_mm": "decimal>0 mm; defaults to 1000 along carton length",
+            "pallet_width_mm": "decimal>0 mm; defaults to 1150 along carton width",
+            "pallet_height_mm": "decimal>0 mm; defaults to 1300 along carton height",
+        },
+        "justplay_cartons_per_pallet": "floor(pallet_width_mm/(main carton width*25.4))*floor(pallet_length_mm/(length*25.4))*floor(pallet_height_mm/(height*25.4)); canonical inch carton dimensions, editable mm pallet space; historical manual counts ignored",
+        "justplay_main_carton": "component mode: complete PDQ dimensions + (0.75,0.75,1) take priority; otherwise selected color-box/product dimensions * directional counts + allowances; canonical inches; manual main dimensions ignored; inner cartons unchanged",
+        "justplay_carton": {"dimension_source": "color_box|product; default color_box", "length_count": "positive integer; default 1", "width_count": "positive integer; default 1", "height_count": "positive integer; default 1"},
+        "pdq_size_in": {"length": "optional decimal>0 canonical inch", "width": "optional decimal>0 canonical inch", "height": "optional decimal>0 canonical inch"},
+        "pdq_size_unit": "cm|inch display/input preference; default inch; partial PDQ is invalid",
+        "justplay_fixed_packaging": "component mode only: adhesive = 3.9/2150*(main carton length*2+width*4+6)/qty+adhesive_extra_hkd; pallet = 19/cartons_per_pallet/qty+paper_pallet_extra_hkd; HKD/PCS",
+        "customer_supplied_materials": [{"item": "material name", "unit_price_hkd": "decimal>=0; material value per finished item", "fee_rate_percent": "0..100; 3 means 3%", "pricing_component_id": "owning JustPlay component; missing/obsolete falls back to first"}],
+        "customer_supplied_fee": "JustPlay only: unit_price_hkd * fee_rate_percent / 100; only the custody fee enters the quote, no markup, misc gross-up or tax deduction; USD = fee / frozen HKD/USD rate",
         "product_size_in": {"length": "optional decimal>0 inch", "width": "optional decimal>0 inch", "height": "optional decimal>0 inch"},
         "color_box_size_unit": "cm|inch; display/input preference, default inch",
         "color_box_size_in": {"length": "decimal>0 canonical inch", "width": "decimal>0 canonical inch", "height": "decimal>0 canonical inch"},
@@ -1245,10 +1259,14 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
         return
     operation_names = ("clamp", "pad_print", "spray", "edge", "paint", "dip", "wipe", "pp_water")
     total = ZERO
+    labor_total = ZERO
+    material_total = ZERO
+    has_direct_costs = False
     for index, row in enumerate(payload.get("rows", []) or []):
         if not isinstance(row, dict):
             raise CalculationInputError(f"喷油第 {index + 1} 行格式无效")
         line_total = ZERO
+        paint_operation_total = ZERO
         operations = row.get("operations", {}) or {}
         if not isinstance(operations, dict):
             raise CalculationInputError(f"喷油第 {index + 1} 行工序格式无效")
@@ -1258,11 +1276,27 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
             if not isinstance(values, dict):
                 raise CalculationInputError(f"喷油第 {index + 1} 行 {operation} 格式无效")
             operation_total = decimal_value(values.get("quantity"), "工序数量") * decimal_value(values.get("unit_price_hkd"), "工序单价")
+            if operation == "paint":
+                paint_operation_total = operation_total
             line_total += operation_total
             operation_breakdown[operation] = decimal_text(operation_total)
         total += line_total
         name = str(row.get("name") or row.get("item") or "")
         position = str(row.get("position") or "")
+        if row.get("cost_allocation") == "direct":
+            # Historical quick quotes retain their actual labor/material split after recombination.
+            has_direct_costs = True
+            material = paint_operation_total
+            labor = line_total - material
+            labor_total += labor
+            material_total += material
+            for kind, label, amount in (("painting_quick_labor", "喷油工", labor),
+                                         ("painting_quick_paint", "油漆（含税）", material)):
+                result["line_breakdown"].append({**_pricing_metadata(row), "kind": kind,
+                    "item": f"{name} · {label}", "amount_hkd": decimal_text(amount)})
+            continue
+        labor_total += line_total * Decimal("0.70")
+        material_total += line_total * Decimal("0.30")
         result["line_breakdown"].append({
             **_pricing_metadata(row),
             "kind": "painting",
@@ -1276,6 +1310,9 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
         })
     result["currency_totals"]["HKD"] = decimal_text(total)
     result["totals"] = {"total_hkd": decimal_text(total)}
+    if has_direct_costs:
+        result["totals"].update(painting_labor_hkd=decimal_text(labor_total),
+                                paint_material_hkd=decimal_text(material_total))
 
 
 def _slush(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
@@ -1654,6 +1691,51 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
     }
 
 
+def resolve_justplay_carton_basis(payload: dict[str, Any]) -> dict[str, Any]:
+    """Choose one complete inch-valued source; partial PDQ never falls back."""
+    axes = (("length", "长度"), ("width", "宽度"), ("height", "高度"))
+    pdq = payload.get("pdq_size_in") or {}
+    if not isinstance(pdq, dict):
+        raise CalculationInputError("PDQ 尺寸格式无效")
+    pdq_values = {axis: decimal_value(pdq.get(axis), f"PDQ {label}") for axis, label in axes}
+    uses_pdq = any(value != ZERO for value in pdq_values.values())
+    config = payload.get("justplay_carton") or {}
+    if not isinstance(config, dict):
+        raise CalculationInputError("JustPlay 纸箱配置格式无效")
+    source = "pdq" if uses_pdq else config.get("dimension_source", "color_box")
+    if source not in {"pdq", "color_box", "product"}:
+        raise CalculationInputError("主纸箱尺寸来源必须为彩盒或产品")
+    label = {"pdq": "PDQ", "color_box": "彩盒", "product": "产品"}[source]
+    dimensions = pdq if uses_pdq else payload.get(f"{source}_size_in")
+    if dimensions is None:
+        dimensions = payload.get(f"{source}_size_cm", {})
+    if not isinstance(dimensions, dict):
+        raise CalculationInputError(f"{label}尺寸格式无效")
+    base = {axis: positive_value(dimensions.get(axis), f"{label}{name}") for axis, name in axes}
+    counts = {}
+    for axis, name in axes:
+        count = Decimal(1) if uses_pdq else positive_value(config.get(f"{axis}_count", 1), f"{name}方向个数")
+        if count != count.to_integral_value():
+            raise CalculationInputError(f"{name}方向个数必须为正整数")
+        counts[axis] = count
+    return {"source": source, "dimensions": base, "counts": counts}
+
+
+def resolve_sales_cartons(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    cartons = payload.get("cartons", []) or []
+    if payload.get("pricing_mode") != "component" or not cartons:
+        return cartons
+    if not isinstance(cartons, list) or not isinstance(cartons[0], dict):
+        raise CalculationInputError("主纸箱格式无效")
+    basis = resolve_justplay_carton_basis(payload)
+    # Both current and historical dimension keys store canonical inches.
+    derived = {
+        f"{axis}_in": str(basis["dimensions"][axis] * basis["counts"][axis] + Decimal(offset))
+        for axis, label, offset in (("length", "长度", "0.75"), ("width", "宽度", "0.75"), ("height", "高度", "1"))
+    }
+    return [{**cartons[0], **derived}, *cartons[1:]]
+
+
 def _sales_packaging(
     payload: dict[str, Any],
     snapshot: dict[str, Any],
@@ -1678,7 +1760,7 @@ def _sales_packaging(
             "宽度": decimal_value(dimensions.get("width"), f"{label}宽度"),
             "高度": decimal_value(dimensions.get("height"), f"{label}高度"),
         }
-        # 产品和彩盒尺寸按 inch 留存，只作为业务资料，不参与纸箱成本公式。
+        # JustPlay chooses one complete source (PDQ, color box or product).
         # `_cm` 是历史误命名别名；其既有数值同样按 inch 读取，不做二次换算。
         # 整组未填写（前端序列化为 0）时允许继续计算；一旦开始填写，三项必须完整。
         if any(value > ZERO for value in dimension_values.values()):
@@ -1812,15 +1894,55 @@ def _sales_packaging_materials(
     return total_hkd, total_rmb
 
 
+def resolve_justplay_packaging_inputs(payload: dict[str, Any]) -> dict[str, Decimal]:
+    source = payload.get("justplay_packaging", {})
+    if not isinstance(source, dict):
+        raise CalculationInputError("JustPlay 胶纸及纸托板参数格式无效")
+    inputs: dict[str, Decimal] = {}
+    for key, label, fallback in (
+        ("adhesive_extra_hkd", "胶纸/胶水/胶针附加金额", "0"),
+        ("paper_pallet_extra_hkd", "纸托板附加金额", "0"),
+    ):
+        value = source.get(key, fallback)
+        if value in (None, ""):
+            raise CalculationInputError(f"请填写{label}")
+        inputs[key] = decimal_value(value, label).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    for key, label, fallback in (
+        ("pallet_length_mm", "托板长度 mm", "1000"),
+        ("pallet_width_mm", "托板宽度 mm", "1150"),
+        ("pallet_height_mm", "托板高度 mm", "1300"),
+    ):
+        inputs[key] = positive_value(source.get(key, fallback), label)
+    # Historical manual counts are no longer authoritative. Dimensions are stored in inches.
+    inputs["cartons_per_pallet"] = ZERO
+    cartons = resolve_sales_cartons(payload)
+    if cartons:
+        main_carton = cartons[0]
+        if not isinstance(main_carton, dict):
+            raise CalculationInputError("主纸箱格式无效")
+        width_mm = positive_value(main_carton.get("width_in"), "主纸箱宽度") * Decimal("25.4")
+        length_mm = positive_value(main_carton.get("length_in"), "主纸箱长度") * Decimal("25.4")
+        height_mm = positive_value(main_carton.get("height_in"), "主纸箱高度") * Decimal("25.4")
+        inputs["cartons_per_pallet"] = (
+            (inputs["pallet_width_mm"] // width_mm)
+            * (inputs["pallet_length_mm"] // length_mm)
+            * (inputs["pallet_height_mm"] // height_mm)
+        )
+    return inputs
+
+
 def _sales_justplay_fixed_packaging(
     payload: dict[str, Any],
     result: dict[str, Any],
 ) -> Decimal:
     if payload.get("pricing_mode") != "component":
         return ZERO
+    inputs = resolve_justplay_packaging_inputs(payload)
     cartons = payload.get("cartons", []) or []
     if not cartons:
         return ZERO
+    if inputs["cartons_per_pallet"] == ZERO:
+        raise CalculationInputError("主纸箱尺寸超出纸托板可装范围，无法计算纸托板装箱数")
     main_carton = cartons[0]
     if not isinstance(main_carton, dict):
         raise CalculationInputError("主纸箱格式无效")
@@ -1831,16 +1953,18 @@ def _sales_justplay_fixed_packaging(
         Decimal("3.9") / Decimal("2150")
         * (length * 2 + width * 4 + Decimal("6"))
         / qty_per_carton
-        + Decimal("0.06")
+        + inputs["adhesive_extra_hkd"]
     )
-    paper_pallet_cost = Decimal("19") / Decimal("24") / qty_per_carton + Decimal("0.05")
+    paper_pallet_cost = Decimal("19") / inputs["cartons_per_pallet"] / qty_per_carton + inputs["paper_pallet_extra_hkd"]
     shared = {
         "kind": "justplay_fixed_packaging",
         "owner": "sales",
         "category": "other_purchase",
         "carton_length_in": decimal_text(length),
         "carton_width_in": decimal_text(width),
+        "carton_height_in": decimal_text(positive_value(main_carton.get("height_in"), "主纸箱高度")),
         "qty_per_carton": decimal_text(qty_per_carton),
+        **{key: decimal_text(value) for key, value in inputs.items()},
     }
     result["line_breakdown"].extend([
         {
@@ -1848,14 +1972,14 @@ def _sales_justplay_fixed_packaging(
             "formula_code": "adhesive",
             "item": "胶纸/胶水/胶针",
             "amount_hkd": decimal_text(adhesive_cost),
-            "formula": "3.9 ÷ 2150 × (主纸箱长 × 2 + 主纸箱宽 × 4 + 6) ÷ 每箱数量 + 0.06",
+            "formula": "3.9 ÷ 2150 × (主纸箱长 × 2 + 主纸箱宽 × 4 + 6) ÷ 每箱数量 + 胶纸附加金额",
         },
         {
             **shared,
             "formula_code": "paper_pallet",
             "item": "纸托板成本",
             "amount_hkd": decimal_text(paper_pallet_cost),
-            "formula": "19 ÷ 24 ÷ 每箱数量 + 0.05",
+            "formula": "19 ÷ 每托板装箱数 ÷ 每箱数量 + 纸托板附加金额",
         },
     ])
     return adhesive_cost + paper_pallet_cost
@@ -2013,7 +2137,40 @@ def _sales_freight_options(
     return options
 
 
+def _sales_customer_supplied_materials(payload: dict[str, Any], result: dict[str, Any]) -> Decimal:
+    rows = payload.get("customer_supplied_materials", [])
+    if not isinstance(rows, list):
+        raise CalculationInputError("客供物料明细格式无效")
+    if rows and payload.get("pricing_mode") != "component":
+        raise CalculationInputError("客供物料仅适用于 JustPlay 分项报价")
+    total = ZERO
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise CalculationInputError(f"客供物料第 {index + 1} 行格式无效")
+        item = str(row.get("item") or "").strip()
+        if not item:
+            raise CalculationInputError(f"请填写客供物料第 {index + 1} 行物料名称")
+        if row.get("unit_price_hkd") in (None, "") or row.get("fee_rate_percent") in (None, ""):
+            raise CalculationInputError(f"请填写客供物料第 {index + 1} 行单价及费率，可填 0")
+        unit_price = decimal_value(row.get("unit_price_hkd"), "客供物料单价 HKD")
+        fee_percent = decimal_value(row.get("fee_rate_percent"), "客供物料费率 %")
+        if fee_percent > 100:
+            raise CalculationInputError("客供物料费率必须在 0% 至 100% 之间")
+        # Round line evidence once so the authority and visible Excel rows agree.
+        amount = Decimal(decimal_text(unit_price * fee_percent / 100))
+        total += amount
+        result["line_breakdown"].append({
+            "kind": "customer_supplied_material", "item": item,
+            "pricing_component_id": str(row.get("pricing_component_id") or "").strip(),
+            "unit_price_hkd": str(unit_price), "fee_rate_percent": str(fee_percent),
+            "amount_hkd": decimal_text(amount),
+            "formula": "物料单价 HKD × 保管费率 ÷ 100；不取倍率、不加杂项、不退税",
+        })
+    return total
+
+
 def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any], context: dict[str, Any]) -> None:
+    payload = {**payload, "cartons": resolve_sales_cartons(payload)}
     base_factory_price = decimal_value(context.get("factory_price_hkd"), "出厂价")
     shipping_source = payload.get("shipping", {})
     if shipping_source in (None, ""):
@@ -2120,7 +2277,8 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
     carton_total_hkd, carton_cuft = _sales_packaging(payload, snapshot, result)
     packaging_material_total_hkd += _sales_justplay_fixed_packaging(payload, result)
     freight_options = _sales_freight_options(payload, snapshot, result)
-    sales_total_hkd = packaging_material_total_hkd + carton_total_hkd
+    customer_supplied_hkd = _sales_customer_supplied_materials(payload, result)
+    sales_total_hkd = packaging_material_total_hkd + carton_total_hkd + customer_supplied_hkd
     factory_price = base_factory_price + sales_total_hkd
     additional_tax = decimal_value(payload.get("additional_tax_hkd"), "附加税")
     indonesia_freight = decimal_value(payload.get("indonesia_freight_hkd"), "印尼运费")
@@ -2170,8 +2328,8 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
         freight = per_piece * freight_share
         lift = per_piece * lift_share
         with_freight = shipping_floor + freight + lift
-        after_markup = with_freight * markup
-        after_settlement = after_markup / settlement
+        after_markup = (with_freight - customer_supplied_hkd) * markup
+        after_settlement = after_markup / settlement + customer_supplied_hkd
         total_usd = after_settlement / fx_hkd_usd + mold_amortization_usd
         scenario_results.append({
             "name": str(row.get("name", f"场景{index + 1}")),
@@ -2190,6 +2348,8 @@ def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, 
         "factory_price_hkd": decimal_text(factory_price),
         "packaging_material_hkd": decimal_text(packaging_material_total_hkd),
         "packaging_material_rmb": decimal_text(packaging_material_total_rmb),
+        "customer_supplied_hkd": decimal_text(customer_supplied_hkd),
+        "customer_supplied_usd": decimal_text(customer_supplied_hkd / fx_hkd_usd),
         "carton_hkd": decimal_text(carton_total_hkd),
         "carton_cuft": decimal_text(carton_cuft),
         "testing_fee_enabled": testing_fee_enabled,
@@ -2253,7 +2413,7 @@ def calculate_section(
         )
     if (
         section_code == "sales"
-        and any(field in payload for field in ("paper_price_factor", "inner_paper_price_factor", "packaging_materials", "product_size_in", "color_box_size_in", "product_size_cm", "color_box_size_cm", "cartons"))
+        and any(field in payload for field in ("paper_price_factor", "inner_paper_price_factor", "packaging_materials", "product_size_in", "color_box_size_in", "pdq_size_in", "justplay_carton", "product_size_cm", "color_box_size_cm", "cartons"))
         and not payload.get("cartons")
     ):
         result["warnings"].append(

@@ -193,10 +193,12 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
           { id: 'component-02', name: '镜子', costHkd: 40, pricingBaseHkd: 40, markup: 1.15, settlement: .97, quotedHkd: 47.423, inheritsMainMarkup: true },
         ],
         globalPricing: { costHkd: 15, pricingBaseHkd: 15, markup: 1.25, settlement: .97, quotedHkd: 19.33 },
+        customerSuppliedHkd: 1.234,
       },
     } as InternalQuote['rr2CostSummary']
 
     const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: componentQuote, canEditMarkup: true } })
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe(`HKD ${((60 * 1.15 + 40 * 1.15 + 15 * 1.25) / .97 + 1.234).toFixed(2)}`)
     expect(wrapper.find('[data-testid="live-quote-markup-moq-0"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('JustPlay 分项倍率')
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-component-markup-1"]').element.value).toBe('1.15')
@@ -205,6 +207,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
 
     await wrapper.get('[data-testid="live-quote-component-markup-1"]').setValue('1.05')
     await wrapper.get('[data-testid="live-quote-component-markup-2"]').setValue('1.30')
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe(`HKD ${((60 * 1.15 + 40 * 1.05 + 15 * 1.30) / .97 + 1.234).toFixed(2)}`)
     await wrapper.get('[data-testid="save-quote-markup"]').trigger('click')
     expect(wrapper.emitted('updateMarkup')?.[0]?.[0]).toMatchObject({
       miscRatio: '0.0300',

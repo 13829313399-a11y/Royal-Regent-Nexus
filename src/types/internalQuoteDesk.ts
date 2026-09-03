@@ -216,11 +216,13 @@ export interface InternalQuoteRr2CostSummary {
     pricingMode: 'standard' | 'component'
     pricingGroups: InternalQuotePricingGroup[]
     globalPricing: InternalQuoteGlobalPricing
+    customerSuppliedHkd?: number
     rows: InternalQuoteShippingPriceRow[]
   }
 }
 
 export interface InternalQuote {
+  historySources?: InternalQuoteHistoryEvidence[]
   id: string
   quoteNo: string
   productName: string
@@ -295,11 +297,32 @@ export interface InternalQuoteCreatePayload {
 }
 
 export interface InternalQuoteCreateProduct {
+  historySource?: InternalQuoteHistorySelection
+  historyReferenceMode?: 'source' | 'current'
+  componentSources?: Array<InternalQuoteHistorySelection | null>
+  componentImageFiles?: Array<File | null>
   productName: string
   quantity: number
   regionCode: '' | 'mainland' | 'indonesia'
   imageFile?: File | null
   documentFiles?: InternalQuoteCreateDocument[]
+  pricingComponents?: string[]
+}
+
+export interface InternalQuoteHistorySelection {
+  quote_id: string
+  fingerprint: string
+  component_id?: string
+  label?: string
+}
+
+export interface InternalQuoteHistoryEvidence extends InternalQuoteHistorySelection {
+  quote_no: string
+  product_name: string
+  region_code: string
+  version_label: string
+  component_name: string
+  target_component_id: string
 }
 
 export interface InternalQuoteCreateDocument {

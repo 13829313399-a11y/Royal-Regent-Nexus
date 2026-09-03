@@ -9,6 +9,40 @@ function statuses(code: Parameters<typeof normalizeInternalQuotePayload>[0], val
 }
 
 describe('internal quote form block progress', () => {
+  it('accepts product-only or PDQ carton sources and blocks partial PDQ instead of using color-box fallback', () => {
+    const value = {
+      pricing_mode: 'component', pricing_components: [{ id: 'main', name: '主体', markup_x: 1.2 }],
+      product_size_in: { length: 5, width: 4, height: 3 },
+      justplay_carton: { dimension_source: 'product', length_count: 2, width_count: 2, height_count: 2 },
+      cartons: [{ item: '主纸箱', qty_per_carton: 8 }],
+    }
+    expect(statuses('sales', value)).toMatchObject({ cartons: 'complete', 'justplay-packaging': 'complete' })
+    const pdq = { ...value, product_size_in: {}, pdq_size_in: { length: 10, width: 5, height: 4 } }
+    expect(statuses('sales', pdq)).toMatchObject({ cartons: 'complete', 'justplay-packaging': 'complete' })
+    expect(statuses('sales', { ...value, pdq_size_in: { length: 10 } })).toMatchObject({ cartons: 'partial', 'justplay-packaging': 'partial' })
+    expect(statuses('sales', { ...value, justplay_carton: { ...value.justplay_carton, length_count: 0 } })).toMatchObject({ cartons: 'partial' })
+  })
+
+  it('tracks JustPlay special packaging separately and rejects incomplete parameters', () => {
+    const value = {
+      pricing_mode: 'component',
+      pricing_components: [{ id: 'main', name: '主体', markup_x: 1.2 }],
+      color_box_size_in: { length: 9.25, width: 4.25, height: 3 },
+      cartons: [{ item: '主纸箱', length_in: 10, width_in: 5, height_in: 4, qty_per_carton: 2 }],
+      justplay_packaging: { adhesive_extra_hkd: 0, cartons_per_pallet: 30, paper_pallet_extra_hkd: 0 },
+    }
+    expect(statuses('sales', value)['justplay-packaging']).toBe('complete')
+    expect(statuses('sales', { ...value, justplay_packaging: { ...value.justplay_packaging, cartons_per_pallet: 0 } })['justplay-packaging']).toBe('complete')
+    expect(statuses('sales', { ...value, cartons: [{ ...value.cartons[0], height_in: 0 }] })['justplay-packaging']).toBe('complete')
+    expect(statuses('sales', { ...value, color_box_size_in: { ...value.color_box_size_in, height: 0 } })['justplay-packaging']).toBe('partial')
+    expect(statuses('sales', { ...value, color_box_size_in: { ...value.color_box_size_in, width: 50 } })['justplay-packaging']).toBe('partial')
+    expect(statuses('sales', { ...value, justplay_packaging: { ...value.justplay_packaging, adhesive_extra_hkd: '' } })['justplay-packaging']).toBe('partial')
+    for (const pallet_width_mm of ['', 0, 1]) {
+      expect(statuses('sales', { ...value, justplay_packaging: { ...value.justplay_packaging, pallet_width_mm } })['justplay-packaging']).toBe('partial')
+    }
+    expect(statuses('sales', {})).not.toHaveProperty('justplay-packaging')
+  })
+
   it('uses the same 部分 suffix for every department block navigation title', () => {
     const codes = ['engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'hair', 'assembly', 'sales'] as const
     for (const code of codes) {

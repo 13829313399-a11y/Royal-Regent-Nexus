@@ -72,10 +72,20 @@ def _nonnegative_decimal_text(value: str, field_name: str) -> str:
     return format(parsed, "f")
 
 
+class InternalQuoteHistoryReference(BaseModel):
+    quote_id: str = Field(min_length=1, max_length=64)
+    fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    component_id: str = Field(default="", max_length=48)
+
+
 class InternalQuoteProductCreateRequest(BaseModel):
     product_name: str = Field(min_length=1, max_length=255)
     qty: int = Field(gt=0)
     region_code: InternalQuoteRegionCode = ""
+    pricing_components: list[str] | None = Field(default=None, max_length=50)
+    history_source: InternalQuoteHistoryReference | None = None
+    history_reference_mode: Literal["source", "current"] = "source"
+    component_sources: list[InternalQuoteHistoryReference | None] | None = Field(default=None, max_length=50)
 
     @field_validator("product_name")
     @classmethod
@@ -162,10 +172,35 @@ class InternalQuoteCreateRequest(BaseModel):
             raise ValueError("JustPlay 分项名称不能重复")
         if any(len(name) > 64 for name in component_names):
             raise ValueError("JustPlay 分项名称不能超过 64 个字符")
-        if is_justplay and not component_names:
-            raise ValueError("华康B JustPlay 报价至少要建立一个分项")
         if not is_justplay and component_names:
             raise ValueError("只有华康B JustPlay 报价可以在建单时建立分项")
+        baseline_names = component_names
+        for index, product in enumerate(products, start=1):
+            names = (
+                [name.strip() for name in product.pricing_components]
+                if product.pricing_components is not None
+                else list(baseline_names)
+            )
+            if is_justplay and not names:
+                raise ValueError(f"华康B JustPlay 报价第 {index} 款至少要建立一个分项")
+            if not is_justplay and names:
+                raise ValueError("只有华康B JustPlay 报价可以在建单时建立分项")
+            if any(not name for name in names):
+                raise ValueError(f"第 {index} 款的 JustPlay 分项名称不能为空")
+            if len(names) != len({name.casefold() for name in names}):
+                raise ValueError(f"第 {index} 款的 JustPlay 分项名称不能重复")
+            if any(len(name) > 64 for name in names):
+                raise ValueError(f"第 {index} 款的 JustPlay 分项名称不能超过 64 个字符")
+            product.pricing_components = names
+            if product.history_source and product.history_source.component_id:
+                raise ValueError("整款引用不能指定配件")
+            if product.component_sources is not None:
+                if not is_justplay or len(product.component_sources) != len(names):
+                    raise ValueError("配件来源必须与本款 JustPlay 分项逐一对应")
+                if any(source and not source.component_id for source in product.component_sources):
+                    raise ValueError("请指定要引用的历史配件")
+            if index == 1:
+                baseline_names = names
         self.pricing_components = component_names
         self.products = products
         return self
@@ -693,6 +728,7 @@ class InternalQuoteSectionOut(BaseModel):
 
 
 class InternalQuoteOut(BaseModel):
+    history_sources: list[dict[str, Any]] = Field(default_factory=list)
     id: str
     factory_id: str
     workshop_code: str
@@ -839,6 +875,7 @@ class InternalQuoteReferenceSetOut(BaseModel):
 
 
 class InternalQuoteImportConfirmRequest(BaseModel):
+    component_assignments: dict[str, str] = Field(default_factory=dict, max_length=5000)
     revision: int = Field(ge=1)
     # Kept for backward compatibility with older clients. Internal quote
     # imports now always replace the data region owned by their template.
@@ -846,6 +883,8 @@ class InternalQuoteImportConfirmRequest(BaseModel):
 
 
 class InternalQuoteImportPreviewOut(BaseModel):
+    assignment_rows: list[dict[str, Any]] = Field(default_factory=list)
+    assignment_components: list[dict[str, Any]] = Field(default_factory=list)
     batch_id: str
     quote_id: str
     import_type: InternalQuoteImportType
@@ -876,6 +915,7 @@ class InternalQuoteImportConfirmOut(BaseModel):
 
 
 class InternalQuoteAttachmentOut(BaseModel):
+    pricing_component_id: str = ""
     id: str
     quote_id: str
     department: str

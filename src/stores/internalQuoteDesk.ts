@@ -425,6 +425,7 @@ function rr2CostSummary(summary?: Pick<ApiInternalQuoteSummary, 'rr2_cost_summar
         settlement: numberValue(shipping?.global_pricing?.settlement),
         quotedHkd: numberValue(shipping?.global_pricing?.quoted_hkd),
       },
+      customerSuppliedHkd: numberValue(shipping?.customer_supplied_hkd),
       rows: (shipping?.rows ?? []).map((item) => ({
         name: String(item.name ?? '出货场景'),
         totalCartons: numberValue(item.total_cartons),
@@ -479,6 +480,7 @@ function toQuote(
     quantity: source.qty,
     targetDate: source.target_date,
     remark: source.remark,
+    historySources: source.history_sources ?? [],
     createdAt: source.created_at,
     updatedAt: source.updated_at,
     status: uiStatus(source.status),
@@ -1185,10 +1187,18 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
             product_name: product.productName.trim(),
             qty: Number(product.quantity),
             region_code: product.regionCode,
+            ...(product.pricingComponents !== undefined ? { pricing_components: [...product.pricingComponents] } : {}),
+            ...(product.historySource ? { history_source: {
+              quote_id: product.historySource.quote_id, fingerprint: product.historySource.fingerprint,
+            } } : {}),
+            ...((product.historySource || product.componentSources?.some(Boolean)) ? { history_reference_mode: product.historyReferenceMode ?? 'source' } : {}),
+            ...(product.componentSources ? { component_sources: product.componentSources.map((source) => source ? {
+              quote_id: source.quote_id, fingerprint: source.fingerprint, component_id: source.component_id,
+            } : null) } : {}),
           })),
           pricing_components: payload.pricingComponents ?? [],
         })
-        const quote = toQuote(created)
+        let quote = toQuote(created)
         let batchProducts = products.length > 1
           ? (await internalQuoteApi.listBatchProducts(created.id)).map(toBatchProduct)
           : []
@@ -1196,6 +1206,21 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         for (const [index, product] of products.entries()) {
           const targetQuoteId = batchProducts[index]?.quoteId ?? (index === 0 ? created.id : '')
           if (!targetQuoteId) continue
+          if (product.componentImageFiles?.some(Boolean)) {
+            let detail = targetQuoteId === created.id ? created : await internalQuoteApi.get(targetQuoteId)
+            const sales = detail.sections.find((section) => section.department === 'sales')
+            const components = (sales?.payload?.pricing_components ?? []) as Array<{ id: string; name: string }>
+            for (const [componentIndex, file] of product.componentImageFiles.entries()) {
+              if (!file || !components[componentIndex]) continue
+              try {
+                await internalQuoteApi.uploadComponentImage(targetQuoteId, components[componentIndex]!.id, file, detail.header_revision)
+                detail = { ...detail, header_revision: detail.header_revision + 1 }
+              } catch (error) {
+                assetErrors.push(`${product.productName} / ${components[componentIndex]!.name}图片：${getApiErrorMessage(error)}`)
+              }
+            }
+            if (targetQuoteId === created.id) quote = toQuote(detail)
+          }
           if (product.imageFile) {
             try {
               await internalQuoteApi.uploadProductImage(targetQuoteId, product.imageFile)
@@ -1486,8 +1511,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         this.fileBusy = false
       }
     },
-    confirmImport(quoteId: string, batchId: string, revision: number) {
-      return this.executeMutation(quoteId, () => internalQuoteApi.confirmImport(quoteId, batchId, revision))
+    confirmImport(quoteId: string, batchId: string, revision: number, componentAssignments?: Record<string, string>) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.confirmImport(quoteId, batchId, revision, componentAssignments))
     },
     uploadAttachment(quoteId: string, sectionCode: InternalQuoteSectionCode, file: File) {
       return this.executeMutation(quoteId, () => internalQuoteApi.uploadAttachment(quoteId, sectionCode, file))

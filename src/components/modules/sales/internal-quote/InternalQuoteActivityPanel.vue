@@ -189,7 +189,8 @@ const quoteHkd = computed(() => {
     ? salesSettlementDivisorForMiscRatio(miscRatio)
     : Math.max(1 - savedMiscRatio.value, .0001)
   const groups = pricingSummary.value?.shippingPricing.pricingGroups ?? []
-  if (!groups.length) return costHkd.value * normalizedMarkup.value
+  const custodyFee = pricingSummary.value?.shippingPricing.customerSuppliedHkd ?? 0
+  if (!groups.length) return Math.max(0, costHkd.value - custodyFee) * normalizedMarkup.value + custodyFee
   const componentMarkupById = new Map(componentMarkupRows.value.map((row) => [row.id, Number(row.markup)]))
   const componentQuote = groups.reduce((total, group, index) => {
     const groupMarkup = isComponentPricing.value
@@ -201,6 +202,7 @@ const quoteHkd = computed(() => {
   const globalPricing = pricingSummary.value?.shippingPricing.globalPricing
   const packagingMarkup = componentMarkupById.get(salesPackagingPricingGroupId) ?? normalizedMarkup.value
   return componentQuote + (globalPricing?.pricingBaseHkd ?? 0) * packagingMarkup / settlement
+    + custodyFee
 })
 const quoteRmb = computed(() => quoteHkd.value * props.quote.fxRmbHkd)
 const quoteUsd = computed(() => props.quote.fxHkdUsd ? quoteHkd.value / props.quote.fxHkdUsd : 0)
