@@ -38,6 +38,7 @@ const apiMock = vi.hoisted(() => ({
   previewImport: vi.fn(),
   confirmImport: vi.fn(),
   uploadAttachment: vi.fn(),
+  uploadComponentImage: vi.fn(),
   listBatchProducts: vi.fn(),
   downloadAttachment: vi.fn(),
   createExport: vi.fn(),
@@ -528,6 +529,46 @@ describe('internal quote desk real API state', () => {
 
     expect(apiMock.uploadAttachment).toHaveBeenNthCalledWith(1, 'created-1', 'engineering', engineeringFile)
     expect(apiMock.uploadAttachment).toHaveBeenNthCalledWith(2, 'created-1', 'sales', salesFile)
+  })
+
+  it('sends stable history references and explicit reference-price choice without UI labels', async () => {
+    apiMock.listBatchProducts.mockResolvedValueOnce([])
+    const store = useInternalQuoteDeskStore()
+    const ref = { quote_id: 'old-A', fingerprint: 'a'.repeat(64), label: '仅用于显示' }
+    await store.createQuote({
+      quoteNo: 'IQ-HISTORY', productName: '新组合', customer: 'JustPlay', versionLabel: 'V1',
+      initiatorDepartment: 'sales-business', businessOwnerId: 'owner-1', businessOwner: '业务负责人',
+      targetCustomerPrice: '无', quantity: 1000, targetDate: '', remark: '',
+      participatingSections: ['sales', 'engineering', 'assembly'],
+      products: [{ productName: '新组合', quantity: 1000, regionCode: '', pricingComponents: ['主体', '新配件'],
+        historySource: ref, historyReferenceMode: 'current', componentSources: [{ ...ref, component_id: 'old-phone' }, null] }],
+    }, 'huakang-b')
+    expect(apiMock.create.mock.calls[0][0].products).toEqual([{
+      product_name: '新组合', qty: 1000, region_code: '', pricing_components: ['主体', '新配件'],
+      history_source: { quote_id: 'old-A', fingerprint: ref.fingerprint }, history_reference_mode: 'current',
+      component_sources: [{ quote_id: 'old-A', fingerprint: ref.fingerprint, component_id: 'old-phone' }, null],
+    }])
+  })
+
+  it('uploads each component image against its server identity and advances the header revision', async () => {
+    const created = quote({ id: 'created-1', header_revision: 1 })
+    created.sections[0]!.payload = { pricing_mode: 'component', pricing_components: [{ id: 'stable-a', name: '主体' }, { id: 'stable-b', name: '电话' }] }
+    apiMock.create.mockResolvedValueOnce(created)
+    apiMock.listBatchProducts.mockResolvedValueOnce([])
+    apiMock.uploadComponentImage.mockResolvedValue({ id: 'image' })
+    const store = useInternalQuoteDeskStore()
+    const imageA = new File(['a'], '主体.png', { type: 'image/png' })
+    const imageB = new File(['b'], '电话.png', { type: 'image/png' })
+    const result = await store.createQuote({
+      quoteNo: 'IQ-JP-IMAGES', productName: 'A款', customer: 'JustPlay', versionLabel: 'V1',
+      initiatorDepartment: 'sales-business', businessOwnerId: 'owner-1', businessOwner: '业务负责人',
+      targetCustomerPrice: '无', quantity: 1000, targetDate: '', remark: '',
+      participatingSections: ['sales', 'engineering', 'assembly'],
+      products: [{ productName: 'A款', quantity: 1000, regionCode: '', pricingComponents: ['主体', '电话'], componentImageFiles: [imageA, imageB] }],
+    }, 'huakang-b')
+    expect(apiMock.uploadComponentImage).toHaveBeenNthCalledWith(1, 'created-1', 'stable-a', imageA, 1)
+    expect(apiMock.uploadComponentImage).toHaveBeenNthCalledWith(2, 'created-1', 'stable-b', imageB, 2)
+    expect(result.headerRevision).toBe(3)
   })
 
   it('loads and saves the pricing baseline with its optimistic revision', async () => {

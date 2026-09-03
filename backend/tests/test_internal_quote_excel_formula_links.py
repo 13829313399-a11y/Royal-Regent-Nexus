@@ -31,10 +31,11 @@ def _find_row(sheet, column: int, value: object) -> int:
     )
 
 
-@pytest.mark.parametrize("component_mode", [False, True])
+@pytest.mark.parametrize("mode", ["ordinary", "legacy", "color_box", "product", "pdq"])
 @pytest.mark.parametrize("color_box_unit", ["inch", "cm"])
 @pytest.mark.parametrize("unit,carton_count", [("inch", 1), ("inch", 2), ("cm", 2), ("inch", 3)])
-def test_carton_export_uses_each_packing_quantity_and_counts_flat_cards_once(component_mode, color_box_unit, unit, carton_count):
+def test_carton_export_uses_each_packing_quantity_and_counts_flat_cards_once(mode, color_box_unit, unit, carton_count):
+    component_mode = mode != "ordinary"
     snapshot = {"fx": {"rmb_hkd": ".85", "hkd_usd": "7.8"}, "paper_price_factor": "2.75"}
     cartons = [
         {"item": "主纸箱", "size_unit": unit, "length_in": 18, "width_in": 12, "height_in": 10, "qty_per_carton": 24,
@@ -48,6 +49,13 @@ def test_carton_export_uses_each_packing_quantity_and_counts_flat_cards_once(com
                "testing_fee_enabled": False, "freight_calc": {"enabled": False}}
     if component_mode:
         payload["pricing_mode"] = "component"
+    if mode in {"color_box", "product", "pdq"}:
+        payload["justplay_carton"] = {"dimension_source": "product" if mode == "product" else "color_box", "length_count": 2, "width_count": 3, "height_count": 4}
+        payload["color_box_size_in"] = {"length": 8.625, "width": 3.75, "height": 2.25}
+        payload["product_size_in"] = {"length": 8.625, "width": 3.75, "height": 2.25}
+    if mode == "pdq":
+        payload["pdq_size_in"] = {"length": 17.25, "width": 11.25, "height": 9}
+        payload["pdq_size_unit"] = color_box_unit
     calculation = calculate_section("sales", payload, snapshot, "TEST-CARTON")
     # Independently calculated from the screenshot dimensions and each carton quantity.
     expected = .1686666666666667 + .22 / 24
@@ -76,14 +84,23 @@ def test_carton_export_uses_each_packing_quantity_and_counts_flat_cards_once(com
         color_box = _find_row(sheet, 14, f"彩盒尺寸 ({color_box_unit})")
         for column, base, offset in ((15, 17.25, ".75"), (16, 11.25, ".75"), (17, 9, "1")):
             letter = chr(ord('A') + column - 1)
-            assert sheet.cell(color_box, column).value == pytest.approx(base * (2.54 if color_box_unit == "cm" else 1))
+            count = [2, 3, 4][column - 15] if mode in {"color_box", "product", "pdq"} else 1
+            assert sheet.cell(color_box, column).value == pytest.approx(base / count * (2.54 if color_box_unit == "cm" else 1))
             if component_mode:
-                color_ref = f"{letter}{color_box}" + ("/2.54" if color_box_unit == "cm" else "")
-                expected_formula = f"=IF({letter}{color_box}>0,({color_ref}+{float(offset):g})" + ("*2.54" if unit == "cm" else "") + ",0)"
+                source_row = (_find_row(sheet, 14, f"PDQ 尺寸 ({color_box_unit})") if mode == "pdq" else
+                              _find_row(sheet, 14, "产品尺寸 (in)") if mode == "product" else color_box)
+                source_ref = f"{letter}{source_row}" + ("/2.54" if color_box_unit == "cm" and mode != "product" else "")
+                count_ref = "" if mode == "pdq" else f"*{letter}{_find_row(sheet, 14, '方向个数')}"
+                expected_formula = f"=IF({letter}{source_row}>0,({source_ref}{count_ref}+{float(offset):g})" + ("*2.54" if unit == "cm" else "") + ",0)"
                 assert sheet.cell(outer, column).value == expected_formula
             else:
                 assert sheet.cell(outer, column).value == pytest.approx((base + float(offset)) * (2.54 if unit == "cm" else 1))
         assert sheet.cell(packing, 15).value == ([24, "6/24", "6/12/24"][carton_count - 1])
+        if mode == "pdq":
+            assert _find_row(sheet, 14, f"PDQ 尺寸 ({color_box_unit})") == color_box + 1
+            assert not any(cell.value == "方向个数" for cell in sheet['N'])
+        else:
+            assert not any(str(cell.value).startswith("PDQ 尺寸") for cell in sheet['N'])
         assert sheet.cell(total, 15).value.startswith("=SUM(" if carton_count > 1 else "=IFERROR(")
         assert f"O{board}" in sheet.cell(total, 15).value
         price_labels = ["箱价："] if carton_count == 1 else ["外箱价：", "内箱价：", "内箱2价："][:carton_count]
@@ -109,7 +126,7 @@ def test_carton_export_uses_each_packing_quantity_and_counts_flat_cards_once(com
             pallet_formula = sheet.cell(_find_row(sheet, 3, "纸托板成本"), 4).value
             assert pallet_formula.startswith("=19/30/")
             assert f"O{packing}" in pallet_formula
-            assert pallet_formula.endswith("+0.00")
+            assert pallet_formula.endswith("+0.0")
             # Both costs must divide by the outer carton quantity, including "inner/outer" layouts.
             if carton_count == 1:
                 quantity_ref = f"O{packing}"
@@ -117,8 +134,8 @@ def test_carton_export_uses_each_packing_quantity_and_counts_flat_cards_once(com
                 quantity_ref = f'VALUE(RIGHT(O{packing},LEN(O{packing})-FIND("/",O{packing})))'
             else:
                 quantity_ref = f'VALUE(TRIM(MID(SUBSTITUTE(O{packing},"/",REPT(" ",32)),65,32)))'
-            assert adhesive.endswith(f"/{quantity_ref}+0.00")
-            assert pallet_formula == f"=19/30/{quantity_ref}+0.00"
+            assert adhesive.endswith(f"/{quantity_ref}+0.0")
+            assert pallet_formula == f"=19/30/{quantity_ref}+0.0"
             pallet = next(row for row in calculation["line_breakdown"] if row.get("formula_code") == "paper_pallet")
             assert pallet["cartons_per_pallet"] == "30.0000"
         for row in range(outer, total + 1):
@@ -523,11 +540,12 @@ def test_export_renders_formula_driven_split_pricing_groups():
 
 
 @pytest.mark.parametrize("parameters,expected_extras", [
-    (None, ("0.00", "0.00")),
-    ({"adhesive_extra_hkd": 0.12, "cartons_per_pallet": 40, "paper_pallet_extra_hkd": 0.07}, ("0.12", "0.07")),
-    ({"adhesive_extra_hkd": 0, "cartons_per_pallet": 30, "paper_pallet_extra_hkd": 0}, ("0.00", "0.00")),
-    ({"adhesive_extra_hkd": 0.062, "paper_pallet_extra_hkd": 0.049}, ("0.06", "0.05")),
-    ({"adhesive_extra_hkd": 0.125, "paper_pallet_extra_hkd": 0.045}, ("0.13", "0.05")),
+    (None, ("0.0", "0.0")),
+    ({"adhesive_extra_hkd": 0.12, "cartons_per_pallet": 40, "paper_pallet_extra_hkd": 0.07}, ("0.1", "0.1")),
+    ({"adhesive_extra_hkd": 0, "cartons_per_pallet": 30, "paper_pallet_extra_hkd": 0}, ("0.0", "0.0")),
+    ({"adhesive_extra_hkd": 0.062, "paper_pallet_extra_hkd": 0.049}, ("0.1", "0.0")),
+    ({"adhesive_extra_hkd": 0.125, "paper_pallet_extra_hkd": 0.045}, ("0.1", "0.0")),
+    ({"pallet_length_mm": 1000, "pallet_width_mm": 1200, "pallet_height_mm": 1500, "adhesive_extra_hkd": 0.15}, ("0.2", "0.0")),
 ])
 def test_export_renders_justplay_components_before_one_global_packaging_block(parameters, expected_extras):
     workbook = Workbook()
@@ -749,7 +767,8 @@ def test_export_renders_justplay_components_before_one_global_packaging_block(pa
             f"=3.9/2150*(O{outer_carton_row}*2+P{outer_carton_row}*4+6)/O{packing_qty_row}+{expected_extras[0]}"
         )
         # 12 x 10 x 8 inch carton => 4 x 3 x 6 = 72, ignoring historical manual counts.
-        assert sheet.cell(paper_pallet_row, 4).value == f"=19/72/O{packing_qty_row}+{expected_extras[1]}"
+        expected_capacity = 84 if parameters and parameters.get("pallet_height_mm") == 1500 else 72
+        assert sheet.cell(paper_pallet_row, 4).value == f"=19/{expected_capacity}/O{packing_qty_row}+{expected_extras[1]}"
         for detail_row in (adhesive_row, paper_pallet_row):
             assert sheet.cell(detail_row, 4).data_type == "f"
             assert sheet.cell(detail_row, 4).number_format == "0.000"

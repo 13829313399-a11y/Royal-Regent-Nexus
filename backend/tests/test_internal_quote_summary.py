@@ -118,7 +118,8 @@ def test_justplay_components_are_created_only_for_huakang_b_and_seed_sales_paylo
     seeded = json.loads(_initial_section_payloads(payload)["sales"])
     assert seeded == {
         "pricing_mode": "component",
-        "justplay_packaging": {"adhesive_extra_hkd": 0, "paper_pallet_extra_hkd": 0},
+        "justplay_packaging": {"adhesive_extra_hkd": 0, "paper_pallet_extra_hkd": 0,
+                              "pallet_length_mm": 1000, "pallet_width_mm": 1150, "pallet_height_mm": 1300},
         "pricing_components": [
             {"id": "component-01", "name": "主体"},
             {"id": "component-02", "name": "镜子"},

@@ -222,6 +222,9 @@ def prefill_molding_from_engineering(
         sync_text("item", source.get("item") or source.get("chinese_name"))
         sync_text("mold_no", source.get("mold_no"))
         sync_text("disney_mold_no", source.get("disney_mold_no"))
+        if source.get("pricing_component_id"):
+            row["pricing_component_id"] = source["pricing_component_id"]
+            synced_fields.append("pricing_component_id")
         source_material = _text(source.get("material"))
         source_material_type = _text(source.get("material_type"))
         generic_material_hint = _generic_material_hint(source_material, source_material_type)

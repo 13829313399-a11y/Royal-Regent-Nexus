@@ -1,5 +1,5 @@
 import { http } from '@/lib/http'
-import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
+import type { InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 export interface InternalQuoteHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
@@ -37,6 +37,7 @@ export interface ApiInternalQuoteSection {
 }
 
 export interface ApiInternalQuote {
+  history_sources?: InternalQuoteHistoryEvidence[]
   id: string
   factory_id: string
   workshop_code: string
@@ -174,6 +175,7 @@ export interface ApiInternalQuoteSummary {
       pricing_mode?: 'standard' | 'component'
       pricing_groups?: Array<Record<string, string>>
       global_pricing?: Record<string, unknown>
+      customer_supplied_hkd?: string
       rows: Array<Record<string, unknown>>
     }
   }
@@ -184,6 +186,7 @@ export interface ApiInternalQuoteSummary {
 export type ApiInternalQuoteRr2CostSummary = NonNullable<ApiInternalQuoteSummary['rr2_cost_summary']>
 
 export interface ApiInternalQuoteAttachment {
+  pricing_component_id?: string
   id: string
   quote_id: string
   department: string
@@ -221,6 +224,8 @@ export interface ApiInternalQuoteExport {
 }
 
 export interface ApiInternalQuoteImportPreview {
+  assignment_rows?: Array<{ key: string; label: string; source_row: string | number; mold_no: string }>
+  assignment_components?: Array<{ id: string; name: string }>
   batch_id: string
   quote_id: string
   import_type: 'mold' | 'hardware' | 'electronic' | 'molding' | 'painting' | 'slush' | 'sewing' | 'hair' | 'assembly'
@@ -445,6 +450,24 @@ export interface InternalQuoteReferenceMaterialsUpdateRequest {
   material_prices: ApiInternalQuoteMaterialBaselineRow[]
 }
 
+export interface ApiInternalQuoteHistoryProduct {
+  quote_id: string
+  quote_no: string
+  batch_quote_no: string
+  product_name: string
+  customer: string
+  region_code: '' | 'mainland' | 'indonesia'
+  version_label: string
+  status: string
+  qty: number
+  fingerprint: string
+  is_justplay: boolean
+  components: Array<{ id: string; name: string }>
+  component_sections?: Record<string, InternalQuoteSectionCode[]>
+  participating_sections: InternalQuoteSectionCode[]
+  updated_at: string
+}
+
 export interface InternalQuoteCreateRequest {
   factory_id: string
   workshop_code: string
@@ -468,6 +491,9 @@ export interface InternalQuoteCreateRequest {
     qty: number
     region_code: '' | 'mainland' | 'indonesia'
     pricing_components?: string[]
+    history_source?: InternalQuoteHistorySelection
+    history_reference_mode?: 'source' | 'current'
+    component_sources?: Array<InternalQuoteHistorySelection | null>
   }>
   pricing_components?: string[]
 }
@@ -551,6 +577,11 @@ function backendQuoteStatus(status: string | undefined) {
 
 export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
   return {
+    async historyProducts(factoryId: string, options: { keyword?: string; customer?: string; region_code?: string; page?: number } = {}) {
+      return (await client.get<{ items: ApiInternalQuoteHistoryProduct[]; total: number }>('/internal-quotes/history-products', {
+        params: { factory_id: factoryId, page_size: 10, ...options },
+      })).data
+    },
     async list(factoryId: string, options: { status?: string; keyword?: string; customer?: string; page?: number; pageSize?: number } = {}) {
       const response = await client.get<ApiInternalQuotePage>('/internal-quotes', {
         params: {
@@ -794,8 +825,8 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       )
       return response.data
     },
-    async confirmImport(quoteId: string, batchId: string, revision: number) {
-      const response = await client.post<ApiInternalQuoteImportConfirm>(`/internal-quotes/${quoteId}/imports/${batchId}/confirm`, { revision })
+    async confirmImport(quoteId: string, batchId: string, revision: number, componentAssignments?: Record<string, string>) {
+      const response = await client.post<ApiInternalQuoteImportConfirm>(`/internal-quotes/${quoteId}/imports/${batchId}/confirm`, { revision, ...(componentAssignments ? { component_assignments: componentAssignments } : {}) })
       return response.data
     },
     async uploadAttachment(quoteId: string, department: string, file: File) {
@@ -818,6 +849,17 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
         payload,
       )
       return response.data
+    },
+    async uploadComponentImage(quoteId: string, componentId: string, file: File, revision: number) {
+      const form = new FormData()
+      form.append('file', file)
+      form.append('revision', String(revision))
+      const response = await client.post<ApiInternalQuoteAttachment>(`/internal-quotes/${quoteId}/components/${encodeURIComponent(componentId)}/image`, form,
+        { headers: { 'Content-Type': 'multipart/form-data' } })
+      return response.data
+    },
+    async deleteComponentImage(quoteId: string, componentId: string, revision: number) {
+      await client.delete(`/internal-quotes/${quoteId}/components/${encodeURIComponent(componentId)}/image`, { params: { revision } })
     },
     async uploadProductImage(quoteId: string, file: File) {
       const form = new FormData()

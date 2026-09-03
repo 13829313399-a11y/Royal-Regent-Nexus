@@ -47,7 +47,7 @@ export interface EngineeringMoldPartRow {
   output_count: number
   quantity: number
 }
-export interface EngineeringMoldRow {
+export interface EngineeringMoldRow extends QuotePricingMetadata {
   item: string
   mold_no: string
   chinese_name: string
@@ -244,6 +244,7 @@ export type PaintingOperationCode = 'clamp' | 'pad_print' | 'spray' | 'edge' | '
 export interface PaintingOperationValue { quantity: number; unit_price_hkd: number }
 export type PaintingOperations = Record<PaintingOperationCode, PaintingOperationValue>
 export interface PaintingRow extends QuotePricingMetadata {
+  cost_allocation?: 'direct'
   image_reference: string
   name: string
   position: string
@@ -478,7 +479,37 @@ export interface SalesShippingPricing {
 export interface JustPlayPackagingInputs {
   adhesive_extra_hkd: number | ''
   paper_pallet_extra_hkd: number | ''
+  pallet_length_mm?: number | ''
+  pallet_width_mm?: number | ''
+  pallet_height_mm?: number | ''
 }
+export interface JustPlayCartonInputs {
+  dimension_source: 'color_box' | 'product'
+  length_count: number
+  width_count: number
+  height_count: number
+}
+export interface CustomerSuppliedMaterialRow {
+  item: string
+  unit_price_hkd: number | ''
+  fee_rate_percent: number | ''
+  pricing_component_id?: string
+}
+
+export function customerSuppliedMaterialValid(row: CustomerSuppliedMaterialRow): boolean {
+  return Boolean(row.item.trim()) && row.unit_price_hkd !== '' && row.fee_rate_percent !== ''
+    && Number.isFinite(Number(row.unit_price_hkd)) && Number(row.unit_price_hkd) >= 0
+    && Number.isFinite(Number(row.fee_rate_percent)) && Number(row.fee_rate_percent) >= 0 && Number(row.fee_rate_percent) <= 100
+}
+
+export function calculateCustomerSuppliedFeeHkd(row: CustomerSuppliedMaterialRow): number {
+  if (!customerSuppliedMaterialValid(row)) return 0
+  const amount = Number(row.unit_price_hkd) * Number(row.fee_rate_percent) / 100
+  // Counter binary rounding at half a unit in the fourth decimal place;
+  // the authoritative Decimal calculator and Excel ROUND both round up there.
+  return Math.round((amount + Number.EPSILON) * 10000) / 10000
+}
+
 export interface SalesPayload {
   paper_price_factor: number
   inner_paper_price_factor?: number
@@ -488,10 +519,14 @@ export interface SalesPayload {
   testing_fee_moqs: number[]
   testing_fee_moq?: number
   packaging_materials: SalesPackagingMaterialRow[]
+  customer_supplied_materials?: CustomerSuppliedMaterialRow[]
   justplay_packaging?: JustPlayPackagingInputs
   product_size_in: SalesDimensions
   color_box_size_unit?: SalesDimensionUnit
   color_box_size_in: SalesDimensions
+  pdq_size_in?: SalesDimensions
+  pdq_size_unit?: SalesDimensionUnit
+  justplay_carton?: JustPlayCartonInputs
   cartons: SalesCartonRow[]
   freight_calc: SalesFreightCalculation
   shipping?: SalesShippingPricing
@@ -780,16 +815,21 @@ export function calculatePackagingMaterialAmountHkd(row: Pick<SalesPackagingMate
 
 export function normalizeJustPlayPackagingInputs(value: unknown): JustPlayPackagingInputs {
   const source = objectValue(value)
-  const input = (key: string, fallback: number): number | '' => {
+  const input = (key: string, fallback: number, roundExtra = false): number | '' => {
     if (!Object.prototype.hasOwnProperty.call(source, key)) return fallback
     if (source[key] === '' || source[key] == null) return ''
     const parsed = Number(source[key])
     if (parsed < 0) return parsed
-    return Number.isFinite(parsed) ? Math.round((parsed + Number.EPSILON) * 100) / 100 : ''
+    if (!Number.isFinite(parsed)) return ''
+    return roundExtra ? Math.round((parsed + Number.EPSILON) * 10) / 10 : parsed
   }
   return {
-    adhesive_extra_hkd: input('adhesive_extra_hkd', 0),
-    paper_pallet_extra_hkd: input('paper_pallet_extra_hkd', 0),
+    adhesive_extra_hkd: input('adhesive_extra_hkd', 0, true),
+    paper_pallet_extra_hkd: input('paper_pallet_extra_hkd', 0, true),
+    // Preserve the historical axis mapping: 1000 along carton length, 1150 across width.
+    pallet_length_mm: input('pallet_length_mm', 1000),
+    pallet_width_mm: input('pallet_width_mm', 1150),
+    pallet_height_mm: input('pallet_height_mm', 1300),
   }
 }
 
@@ -797,38 +837,69 @@ export function justPlayPackagingInputsValid(value: unknown) {
   const inputs = normalizeJustPlayPackagingInputs(value)
   return inputs.adhesive_extra_hkd !== '' && inputs.adhesive_extra_hkd >= 0
     && inputs.paper_pallet_extra_hkd !== '' && inputs.paper_pallet_extra_hkd >= 0
+    && positivePreviewNumber(inputs.pallet_length_mm) > 0
+    && positivePreviewNumber(inputs.pallet_width_mm) > 0
+    && positivePreviewNumber(inputs.pallet_height_mm) > 0
 }
 
-export function calculateJustPlayMainCartonDimensions(colorBox: SalesDimensions) {
-  const length = positivePreviewNumber(colorBox.length)
-  const width = positivePreviewNumber(colorBox.width)
-  const height = positivePreviewNumber(colorBox.height)
+export function normalizeJustPlayCartonInputs(value: unknown): JustPlayCartonInputs {
+  const source = objectValue(value)
   return {
-    length_in: length ? length + 0.75 : 0,
-    width_in: width ? width + 0.75 : 0,
-    height_in: height ? height + 1 : 0,
+    dimension_source: source.dimension_source === 'product' ? 'product' : 'color_box',
+    length_count: numberValue(source.length_count, 1),
+    width_count: numberValue(source.width_count, 1),
+    height_count: numberValue(source.height_count, 1),
   }
 }
 
-export function resolveSalesCartons(payload: Pick<SalesPayload, 'pricing_mode' | 'color_box_size_in' | 'cartons'>) {
+type JustPlayCartonPayload = Pick<SalesPayload, 'color_box_size_in' | 'product_size_in' | 'pdq_size_in' | 'justplay_carton'>
+export function justPlayCartonState(payload: JustPlayCartonPayload) {
+  const inputs = normalizeJustPlayCartonInputs(payload.justplay_carton)
+  const axes = ['length', 'width', 'height'] as const
+  const pdq = payload.pdq_size_in
+  const usesPdq = axes.some(axis => pdq?.[axis] != null && pdq[axis] !== 0)
+  const source = usesPdq ? 'pdq' : inputs.dimension_source
+  const base = (usesPdq ? pdq : source === 'product' ? payload.product_size_in : payload.color_box_size_in)
+    ?? { length: 0, width: 0, height: 0 }
+  const counts = usesPdq ? [1, 1, 1] : [inputs.length_count, inputs.width_count, inputs.height_count]
+  const label = usesPdq ? 'PDQ' : source === 'product' ? '产品' : '彩盒'
+  const error = !axes.every(axis => positivePreviewNumber(base[axis]) > 0)
+    ? `请补齐${label}长、宽、高，三项必须大于 0。`
+    : !counts.every(count => Number.isInteger(count) && count > 0)
+      ? '长度、宽度、高度方向个数必须为正整数。' : ''
+  return { source, usesPdq, base, counts, error }
+}
+
+export function calculateJustPlayMainCartonDimensions(payload: JustPlayCartonPayload) {
+  const { base, counts, error } = justPlayCartonState(payload)
+  return {
+    length_in: error ? 0 : base.length * counts[0]! + 0.75,
+    width_in: error ? 0 : base.width * counts[1]! + 0.75,
+    height_in: error ? 0 : base.height * counts[2]! + 1,
+  }
+}
+
+export function resolveSalesCartons(payload: JustPlayCartonPayload & Pick<SalesPayload, 'pricing_mode' | 'cartons'>) {
   if (payload.pricing_mode !== 'component' || !payload.cartons.length) return payload.cartons
   return [
-    { ...payload.cartons[0]!, ...calculateJustPlayMainCartonDimensions(payload.color_box_size_in) },
+    { ...payload.cartons[0]!, ...calculateJustPlayMainCartonDimensions(payload) },
     ...payload.cartons.slice(1),
   ]
 }
 
 export function calculateJustPlayCartonsPerPallet(
   carton: Pick<SalesCartonRow, 'length_in' | 'width_in' | 'height_in'> | undefined,
+  parameters?: Partial<JustPlayPackagingInputs>,
 ) {
   if (!carton) return 0
   const length = positivePreviewNumber(carton.length_in)
   const width = positivePreviewNumber(carton.width_in)
   const height = positivePreviewNumber(carton.height_in)
   if (!length || !width || !height) return 0
-  return Math.floor(1150 / (width * 25.4))
-    * Math.floor(1000 / (length * 25.4))
-    * Math.floor(1300 / (height * 25.4))
+  const inputs = normalizeJustPlayPackagingInputs(parameters)
+  return Math.floor(positivePreviewNumber(inputs.pallet_width_mm) / (width * 25.4))
+    * Math.floor(positivePreviewNumber(inputs.pallet_length_mm) / (length * 25.4))
+    * Math.floor(positivePreviewNumber(inputs.pallet_height_mm) / (height * 25.4))
 }
 
 export function calculateJustPlayAdhesivePackagingCostHkd(
@@ -851,7 +922,7 @@ export function calculateJustPlayPaperPalletCostHkd(
 ) {
   if (!carton) return 0
   const quantity = positivePreviewNumber(carton.qty_per_carton)
-  const cartonsPerPallet = calculateJustPlayCartonsPerPallet(carton)
+  const cartonsPerPallet = calculateJustPlayCartonsPerPallet(carton, parameters)
   const inputs = normalizeJustPlayPackagingInputs(parameters)
   return quantity && cartonsPerPallet > 0 && inputs.paper_pallet_extra_hkd !== '' && inputs.paper_pallet_extra_hkd >= 0
     ? 19 / cartonsPerPallet / quantity + inputs.paper_pallet_extra_hkd : 0
@@ -1391,6 +1462,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   if (code === 'engineering') {
     const hasLegacyCartons = Object.prototype.hasOwnProperty.call(source, 'cartons')
     const normalizedMolds: EngineeringMoldRow[] = rows(source.molds).map((row) => ({
+      ...pricingMetadata(row),
       ...importBatchMetadata(row),
       item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), chinese_name: textValue(row.chinese_name), mold_base_type: textValue(row.mold_base_type ?? row.mold_type),
       mold_base_material: textValue(row.mold_base_material), structure: textValue(row.structure), process: textValue(row.process), material: textValue(row.material), material_type: textValue(row.material_type), color: textValue(row.color), cavity: textValue(row.cavity),
@@ -1524,6 +1596,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       name: textValue(row.name ?? row.item),
       position: textValue(row.position),
       operations: paintingOperations(row.operations),
+      ...(row.cost_allocation === 'direct' ? { cost_allocation: 'direct' as const } : {}),
       remark: textValue(row.remark ?? row.note),
       ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
     })),
@@ -1661,6 +1734,15 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   const hasShippingPricing = Object.prototype.hasOwnProperty.call(source, 'shipping') || Boolean(legacyScenarioWithSettlement)
   const miscPricing = normalizedSalesMiscPricing(shippingSource, legacyScenarioWithSettlement?.settlement)
   const normalizedPricingComponents = pricingComponents(source.pricing_components)
+  const cartonDimensions = {
+    product_size_in: dimensions(source.product_size_in ?? source.product_size_cm),
+    color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
+    ...(source.pricing_mode === 'component' || source.justplay_carton || source.pdq_size_in ? {
+      pdq_size_in: dimensions(source.pdq_size_in),
+      pdq_size_unit: normalizeSalesDimensionUnit(source.pdq_size_unit),
+      justplay_carton: normalizeJustPlayCartonInputs(source.justplay_carton),
+    } : {}),
+  }
   return {
     paper_price_factor: paperPriceFactor,
     ...(hasInnerPaperPriceFactor ? { inner_paper_price_factor: numberValue(source.inner_paper_price_factor, paperPriceFactor) } : {}),
@@ -1669,18 +1751,25 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     testing_fee_total_usd: numberValue(source.testing_fee_total_usd),
     testing_fee_moqs: testingFeeMoqValues(source.testing_fee_moqs, source.testing_fee_moq),
     packaging_materials: packagingMaterialRows(source.packaging_materials),
+    ...(source.pricing_mode === 'component' || Object.prototype.hasOwnProperty.call(source, 'customer_supplied_materials') ? {
+      customer_supplied_materials: rows(source.customer_supplied_materials).map((row) => ({
+        item: textValue(row.item),
+        unit_price_hkd: row.unit_price_hkd === '' ? '' as const : numberValue(row.unit_price_hkd),
+        fee_rate_percent: row.fee_rate_percent === '' ? '' as const : numberValue(row.fee_rate_percent),
+        ...(textValue(row.pricing_component_id).trim() ? { pricing_component_id: textValue(row.pricing_component_id).trim() } : {}),
+      })),
+    } : {}),
     ...(source.pricing_mode === 'component' || Object.prototype.hasOwnProperty.call(source, 'justplay_packaging')
       ? { justplay_packaging: normalizeJustPlayPackagingInputs(source.justplay_packaging) }
       : {}),
     // The historical keys were suffixed `_cm`, although the desk values were
     // entered as inches. Migrate them one-for-one; converting by 2.54 here
     // would corrupt existing quotes such as 5.25 × 8.75 × 3.
-    product_size_in: dimensions(source.product_size_in ?? source.product_size_cm),
+    ...cartonDimensions,
     color_box_size_unit: normalizeSalesDimensionUnit(source.color_box_size_unit),
-    color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
     cartons: resolveSalesCartons({
       pricing_mode: source.pricing_mode === 'component' ? 'component' : undefined,
-      color_box_size_in: dimensions(source.color_box_size_in ?? source.color_box_size_cm),
+      ...cartonDimensions,
       cartons: salesCartonRows(source.cartons),
     }),
     freight_calc: {
