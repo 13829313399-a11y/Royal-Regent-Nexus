@@ -16,6 +16,19 @@ class PricingLine(BaseModel):
         return value.strip()
 
 
+class QuoteDescriptionTranslationRequest(BaseModel):
+    factory_id: Literal["huaxing"]
+    customer_id: Literal["yinhui"]
+    texts: list[str] = Field(min_length=1, max_length=200)
+
+    @field_validator("texts")
+    @classmethod
+    def bound_texts(cls, texts: list[str]) -> list[str]:
+        if any(not text.strip() or len(text) > 1000 for text in texts) or sum(map(len, texts)) > 20000:
+            raise ValueError("物料名称过长或为空，请分批翻译。")
+        return texts
+
+
 class DiscountRule(BaseModel):
     id: str
     label: str = ""

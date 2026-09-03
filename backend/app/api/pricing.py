@@ -1,13 +1,29 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.schemas.pricing import PricingContext, PricingQuoteCreate, PricingQuoteOut
+from app.schemas.pricing import PricingContext, PricingQuoteCreate, PricingQuoteOut, QuoteDescriptionTranslationRequest
+from app.core.config import settings
+from app.services.quote_translation import translate_quote_descriptions
 from app.services.auth import AuthContext, ensure_permission_in_scope, get_current_user
 from app.services.pricing import create_quote, get_pricing_context, list_quotes
 
 
 router = APIRouter(prefix="/api/pricing")
+
+
+@router.post("/translate-descriptions")
+def translate_pricing_descriptions(
+    payload: QuoteDescriptionTranslationRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    ensure_permission_in_scope(db, current_user, "customer_price:import_internal_quote", payload.factory_id, "sales-business")
+    if not settings.document_tools_enabled:
+        raise HTTPException(status_code=503, detail="本地翻译已被管理员关闭。")
+    response.headers["Cache-Control"] = "no-store"
+    return translate_quote_descriptions(payload.texts, model_dir=settings.document_translation_model_dir, device=settings.document_translation_device)
 
 
 @router.get("/context", response_model=PricingContext)

@@ -1,5 +1,7 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { translateQuoteDescriptions } from '@/api/quoteTranslation'
+vi.mock('@/api/quoteTranslation',()=>({translateQuoteDescriptions:vi.fn()}))
 import YinhuiQuoteReview from '../YinhuiQuoteReview.vue'
 import type { YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
 function fixture(): YinhuiConversionResult {
@@ -9,6 +11,52 @@ function fixture(): YinhuiConversionResult {
   }}
 }
 describe('Silverlit export review', () => {
+  beforeEach(()=>{ vi.mocked(translateQuoteDescriptions).mockReset() })
+  it('automatically translates newly imported Chinese and disables confirmation while running', async () => {
+    const result=fixture();result.quoteData.mechanical[0]!.description='配重塊 4.0mm'
+    let resolve!: (value: Awaited<ReturnType<typeof translateQuoteDescriptions>>) => void
+    vi.mocked(translateQuoteDescriptions).mockImplementation(()=>new Promise(r=>{resolve=r}))
+    const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:true}})
+    expect(translateQuoteDescriptions).toHaveBeenCalledWith(['配重塊 4.0mm'],'huaxing',expect.any(AbortSignal))
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
+    resolve({engine:'local',warning:'',items:[{source:'配重塊 4.0mm',translation:'Counterweight 4.0mm',needs_review:false}]})
+    await flushPromises()
+    expect(result.quoteData.mechanical[0]).toMatchObject({description:'Counterweight 4.0mm',originalDescription:'配重塊 4.0mm',amountHkd:1,quantity:2})
+    expect(wrapper.text()).toContain('已自动翻译 1 项')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([false])
+  })
+  it('preserves names on failure and allows retry', async () => {
+    const result=fixture();result.quoteData.mechanical[0]!.description='配重塊'
+    vi.mocked(translateQuoteDescriptions).mockRejectedValueOnce(new Error('服务未就绪')).mockResolvedValueOnce({engine:'local',warning:'',items:[{source:'配重塊',translation:'Counterweight',needs_review:false}]})
+    const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false}})
+    await flushPromises()
+    expect(wrapper.text()).toContain('服务未就绪')
+    expect(result.quoteData.mechanical[0]!.description).toBe('配重塊')
+    await wrapper.get('[data-testid="yinhui-translate"]').trigger('click')
+    await flushPromises()
+    expect(result.quoteData.mechanical[0]!.description).toBe('Counterweight')
+  })
+  it('cancels stale work when the import is replaced or the component unmounts', async () => {
+    const result=fixture();result.quoteData.mechanical[0]!.description='配重塊'
+    let resolve!: (value: Awaited<ReturnType<typeof translateQuoteDescriptions>>) => void
+    vi.mocked(translateQuoteDescriptions).mockImplementation(()=>new Promise(r=>{resolve=r}))
+    const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false}})
+    const signal=vi.mocked(translateQuoteDescriptions).mock.calls[0]![2]!
+    await wrapper.setProps({result:fixture()})
+    expect(signal.aborted).toBe(true)
+    resolve({engine:'local',warning:'',items:[{source:'配重塊',translation:'Counterweight',needs_review:false}]})
+    await flushPromises()
+    expect(result.quoteData.mechanical[0]!.description).toBe('配重塊')
+    wrapper.unmount()
+  })
+  it('does not run translation in a disabled or different-factory review', async () => {
+    const result=fixture();result.quoteData.mechanical[0]!.description='配重塊'
+    const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false,disabled:true}})
+    expect(translateQuoteDescriptions).not.toHaveBeenCalled()
+    await wrapper.setProps({disabled:false,factoryId:'huadeng'})
+    expect(translateQuoteDescriptions).not.toHaveBeenCalled()
+  })
   it('shows customs fees separately with source lineage and includes them once in the total', () => {
     const result=fixture()
     result.quoteData.documentFees=[{description:'Documents / Customs Fee',source:'明细!D91',quantity:1,amountHkd:.18539692,internalHkd:.16}]
