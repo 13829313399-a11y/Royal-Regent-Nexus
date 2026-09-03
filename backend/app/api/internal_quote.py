@@ -169,6 +169,22 @@ def get_internal_quotes(
     )
 
 
+@router.get("/history-products")
+def get_history_products(
+    factory_id: str = Query(min_length=1, max_length=64),
+    keyword: str = Query(default="", max_length=128),
+    customer: str = Query(default="", max_length=128),
+    region_code: str = Query(default="", pattern="^(|mainland|indonesia)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=30),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.internal_quote_history import list_history_products
+    return list_history_products(db, current_user, factory_id, keyword=keyword, customer=customer,
+                                 region_code=region_code, page=page, page_size=page_size)
+
+
 @router.get("/business-owners", response_model=list[InternalQuoteBusinessOwnerOut])
 def get_internal_quote_business_owners(
     factory_id: str = Query(min_length=1, max_length=64),
@@ -771,6 +787,26 @@ async def post_internal_quote_product_image(
         current_user,
         request,
     )
+
+
+@router.post("/{quote_id}/components/{component_id}/image", response_model=InternalQuoteAttachmentOut)
+async def post_component_image(
+    quote_id: str, component_id: str, request: Request,
+    revision: int = Form(...), file: UploadFile = File(...),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.internal_quote_artifacts import save_component_image
+    return save_component_image(db, quote_id, component_id, revision, current_user,
+                                file_name=file.filename or "", content=await file.read(), request=request)
+
+
+@router.delete("/{quote_id}/components/{component_id}/image")
+def delete_component_image(
+    quote_id: str, component_id: str, request: Request, revision: int = Query(..., ge=1),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.internal_quote_artifacts import save_component_image
+    return save_component_image(db, quote_id, component_id, revision, current_user, request=request)
 
 
 @router.get("/{quote_id}/attachments", response_model=list[InternalQuoteAttachmentOut])

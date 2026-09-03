@@ -1,4 +1,5 @@
 import pytest
+from decimal import Decimal, ROUND_HALF_UP
 
 from app.services.internal_quote_calculator import CalculationInputError, DEFAULT_MACHINE_PRICES, calculate_section, resolve_sales_cartons
 
@@ -31,6 +32,63 @@ def calculate(section_code: str, payload: dict, **context):
         "IQREF-TEST",
         context=context,
     )
+
+
+def test_historical_direct_paint_cost_keeps_small_material_amount_out_of_labor():
+    result = calculate("painting", {"rows": [{"name": "历史快捷油漆", "cost_allocation": "direct",
+        "operations": {"paint": {"quantity": 1, "unit_price_hkd": "0.00006"}}}]})
+    assert result["totals"]["painting_labor_hkd"] == "0.0000"
+    assert result["totals"]["paint_material_hkd"] == "0.0001"
+    assert result["totals"]["total_hkd"] == "0.0001"
+
+
+@pytest.mark.parametrize("source", ["color_box", "product", "pdq"])
+def test_justplay_pdq_or_directional_counts_drive_all_carton_costs(source):
+    # All three choices yield 18 x 12 x 10 inches, despite stale submitted dimensions.
+    payload = {
+        "pricing_mode": "component",
+        "color_box_size_in": {"length": 8.625, "width": 3.75, "height": 2.25},
+        "product_size_in": {"length": 8.625, "width": 3.75, "height": 2.25},
+        "justplay_carton": {"dimension_source": source if source != "pdq" else "product", "length_count": 2, "width_count": 3, "height_count": 4},
+        "cartons": [{"item": "主纸箱", "length_in": 99, "width_in": 99, "height_in": 99, "qty_per_carton": 24}],
+        "justplay_packaging": {"adhesive_extra_hkd": .06, "paper_pallet_extra_hkd": .05},
+        "freight_calc": {"cap_40": 1980},
+    }
+    if source == "pdq":
+        payload["pdq_size_in"] = {"length": 17.25, "width": 11.25, "height": 9}
+        payload["pdq_size_unit"] = "cm"  # Display preference never changes inch storage.
+        payload["justplay_carton"].update(length_count=0, width_count=0, height_count=0)
+    result = calculate_section("sales", payload, {**SNAPSHOT, "freight": {"routes": [{
+        "route_key": "hk40", "route_name": "港柜", "capacity_key": "cap_40", "freight_hkd": 8000, "lifting_hkd": 1200,
+    }]}}, "PDQ-TEST")
+    resolved = resolve_sales_cartons(payload)[0]
+    assert [float(resolved[field]) for field in ("length_in", "width_in", "height_in")] == [18, 12, 10]
+    assert resolved["qty_per_carton"] == 24
+    carton = next(row for row in result["line_breakdown"] if row["kind"] == "carton")
+    assert carton["cuft"] == "1.2500"
+    assert carton["per_piece_hkd"] == "0.1687"
+    adhesive = next(row for row in result["line_breakdown"] if row.get("formula_code") == "adhesive")
+    pallet = next(row for row in result["line_breakdown"] if row.get("formula_code") == "paper_pallet")
+    assert adhesive["amount_hkd"] == "0.1068"
+    assert pallet["cartons_per_pallet"] == "30.0000"
+    assert pallet["amount_hkd"] == "0.1264"
+    freight = result["totals"]["freight_options"][0]
+    assert freight["total_cartons"] == "1584.0000"
+    assert freight["freight_per_piece_hkd"] == "0.2104"
+
+
+@pytest.mark.parametrize("patch, error", [
+    ({"pdq_size_in": {"length": 10}}, "PDQ"),
+    ({"pdq_size_in": {"length": 10, "width": 5, "height": -1}}, "PDQ"),
+    ({"justplay_carton": {"length_count": 0}}, "长度方向个数"),
+    ({"justplay_carton": {"width_count": 1.5}}, "宽度方向个数"),
+    ({"justplay_carton": {"height_count": ""}}, "高度方向个数"),
+    ({"justplay_carton": {"dimension_source": "product"}}, "产品"),
+])
+def test_justplay_carton_rejects_partial_pdq_or_invalid_selected_basis(patch, error):
+    with pytest.raises(CalculationInputError, match=error):
+        calculate("sales", {"pricing_mode": "component", "color_box_size_in": {"length": 10, "width": 5, "height": 4},
+                            "cartons": [{"qty_per_carton": 6}], **patch})
 
 
 @pytest.mark.parametrize("unit", ["inch", "cm"])
@@ -78,7 +136,7 @@ def test_justplay_color_box_changes_also_update_freight_capacity():
 
 
 @pytest.mark.parametrize(("parameters", "amounts", "total"), [
-    ({"adhesive_extra_hkd": "0.12", "cartons_per_pallet": "40", "paper_pallet_extra_hkd": "0.07"}, ["0.2075", "0.8617"], "1.0692"),
+    ({"adhesive_extra_hkd": "0.12", "cartons_per_pallet": "40", "paper_pallet_extra_hkd": "0.07"}, ["0.1875", "0.8917"], "1.0792"),
     ({"adhesive_extra_hkd": 0, "cartons_per_pallet": 24, "paper_pallet_extra_hkd": 0}, ["0.0875", "0.7917"], "0.8792"),
 ])
 def test_justplay_packaging_uses_editable_parameters(parameters, amounts, total):
@@ -91,9 +149,9 @@ def test_justplay_packaging_uses_editable_parameters(parameters, amounts, total)
     rows = [row for row in result["line_breakdown"] if row["kind"] == "justplay_fixed_packaging"]
     assert [row["amount_hkd"] for row in rows] == amounts
     assert result["totals"]["packaging_material_hkd"] == total
-    assert rows[0]["adhesive_extra_hkd"] == f"{float(parameters['adhesive_extra_hkd']):.4f}"
+    assert rows[0]["adhesive_extra_hkd"] == f"{Decimal(str(parameters['adhesive_extra_hkd'])).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP):.4f}"
     assert rows[1]["cartons_per_pallet"] == "12.0000"  # 4 wide * 1 long * 3 high; ignore legacy manual count
-    assert rows[1]["paper_pallet_extra_hkd"] == f"{float(parameters['paper_pallet_extra_hkd']):.4f}"
+    assert rows[1]["paper_pallet_extra_hkd"] == f"{Decimal(str(parameters['paper_pallet_extra_hkd'])).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP):.4f}"
 
 
 @pytest.mark.parametrize("parameters", [
@@ -122,11 +180,37 @@ def test_justplay_pallet_count_is_derived_and_oversize_cartons_cannot_be_priced(
     payload["justplay_packaging"]["paper_pallet_extra_hkd"] = "0.049"
     result = calculate("sales", payload)
     pallet = next(row for row in result["line_breakdown"] if row.get("formula_code") == "paper_pallet")
-    assert pallet["paper_pallet_extra_hkd"] == "0.0500"
-    assert pallet["amount_hkd"] == "0.0764"
+    assert pallet["paper_pallet_extra_hkd"] == "0.0000"
+    assert pallet["amount_hkd"] == "0.0264"
     payload["color_box_size_in"]["width"] = 50
     with pytest.raises(CalculationInputError, match="超出纸托板可装范围"):
         calculate("sales", payload)
+
+
+@pytest.mark.parametrize("pallet,expected", [
+    ({"pallet_length_mm": 1400, "pallet_width_mm": 1000, "pallet_height_mm": 800}, 27),
+    ({"pallet_length_mm": 914.4, "pallet_width_mm": 609.6, "pallet_height_mm": 508}, 8),
+    ({"pallet_length_mm": 914.3, "pallet_width_mm": 609.6, "pallet_height_mm": 508}, 4),
+])
+def test_editable_pallet_mm_dimensions_floor_each_axis(pallet, expected):
+    payload = {"pricing_mode": "component", "pdq_size_in": {"length": 17.25, "width": 11.25, "height": 9},
+               "cartons": [{"item": "主纸箱", "qty_per_carton": 24}],
+               "justplay_packaging": {**pallet, "cartons_per_pallet": 999, "adhesive_extra_hkd": ".15", "paper_pallet_extra_hkd": ".049"}}
+    result = calculate("sales", payload)
+    paper = next(r for r in result["line_breakdown"] if r.get("formula_code") == "paper_pallet")
+    assert Decimal(paper["cartons_per_pallet"]) == expected
+    assert paper["paper_pallet_extra_hkd"] == "0.0000"
+    assert paper["adhesive_extra_hkd"] == "0.2000"
+    assert Decimal(paper["amount_hkd"]) == (Decimal(19) / expected / 24).quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
+    for key, value in pallet.items():
+        assert Decimal(paper[key]) == Decimal(str(value))
+
+
+@pytest.mark.parametrize("key", ["pallet_length_mm", "pallet_width_mm", "pallet_height_mm"])
+@pytest.mark.parametrize("value", [0, -1, "", None, "NaN", "Infinity"])
+def test_invalid_pallet_space_never_silently_uses_old_defaults(key, value):
+    with pytest.raises(CalculationInputError, match="托板"):
+        calculate("sales", {"pricing_mode": "component", "justplay_packaging": {key: value}})
 
 
 def test_engineering_electronic_and_molding_decimal_vectors():

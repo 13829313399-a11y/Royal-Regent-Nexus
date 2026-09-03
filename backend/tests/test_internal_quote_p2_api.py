@@ -125,7 +125,7 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
             "/api/internal-quotes/calculation-contracts?factory_id=huaxing"
         )
         assert contract.status_code == 200
-        assert contract.json()["formula_version"] == "rr2-2026-v4"
+        assert contract.json()["formula_version"] == "rr2-2026-v7"
         assert set(contract.json()["sections"]) == {
             "sales",
             "engineering",
@@ -151,7 +151,7 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
         quote_id = created["id"]
         old_reference_id = created["reference_snapshot_id"]
         assert old_reference_id.startswith("IQREF-")
-        assert created["formula_version"] == "rr2-2026-v4"
+        assert created["formula_version"] == "rr2-2026-v7"
         assert all(
             section["calculation_status"] == "pending"
             and section["calculation_reference_snapshot_id"] == old_reference_id
@@ -377,7 +377,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         assert engineering.status_code == 200, engineering.text
         engineering_section = engineering.json()
         assert engineering_section["calculation_status"] == "valid"
-        assert engineering_section["calculation"]["formula_version"] == "rr2-2026-v4"
+        assert engineering_section["calculation"]["formula_version"] == "rr2-2026-v7"
         assert engineering_section["calculation"]["totals"]["hardware_hkd"] == "20.0000"
         assert engineering_section["calculation"]["totals"]["mold_amortization_usd"] == "1.2403"
 
@@ -456,7 +456,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
         assert summary.status_code == 200
         body = summary.json()
-        assert body["formula_version"] == "rr2-2026-v4"
+        assert body["formula_version"] == "rr2-2026-v7"
         assert body["components_hkd"]["hardware_hkd"] == "20.0000"
         assert body["calculation_phase"] == "blocked"
         assert any(
@@ -944,7 +944,7 @@ def test_old_formula_is_reported_and_can_be_recalculated_without_changing_refere
 
         summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
         assert summary.status_code == 200, summary.text
-        assert summary.json()["current_formula_version"] == "rr2-2026-v4"
+        assert summary.json()["current_formula_version"] == "rr2-2026-v7"
         assert any(row["code"] == "formula_version_stale" for row in summary.json()["warnings"])
 
         recalculated = client.post(
@@ -953,7 +953,7 @@ def test_old_formula_is_reported_and_can_be_recalculated_without_changing_refere
         )
         assert recalculated.status_code == 200, recalculated.text
         body = recalculated.json()
-        assert body["formula_version"] == "rr2-2026-v4"
+        assert body["formula_version"] == "rr2-2026-v7"
         assert body["reference_snapshot_id"] != old_reference_id
         fresh_summary = client.get(f"/api/internal-quotes/{quote_id}/summary").json()
         assert not any(row["code"] == "formula_version_stale" for row in fresh_summary["warnings"])

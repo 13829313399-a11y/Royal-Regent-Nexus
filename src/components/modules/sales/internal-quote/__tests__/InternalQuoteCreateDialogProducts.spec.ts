@@ -27,6 +27,25 @@ async function addProduct() {
 }
 
 describe('JustPlay per-product component creation', () => {
+  it('binds images to the selected component and does not copy them to B', async () => {
+    await createDialog()
+    await wrapper.get('input[value="series"]').setValue(true)
+    await wrapper.get('[aria-label="第 1 款配件个数"]').setValue('2')
+    const file = new File(['image'], '镜子.png', { type: 'image/png' })
+    const input = wrapper.get('[aria-label="第 1 款配件2图片"]')
+    Object.defineProperty(input.element, 'files', { value: [file] })
+    await input.trigger('change')
+    await wrapper.get('[aria-label="移除第 1 款配件 1"]').trigger('click')
+    expect(wrapper.get('.quote-component-asset').text()).not.toContain('镜子.png')
+    await addProduct()
+    await wrapper.findAll('.quote-product-name input')[1]!.setValue('B款')
+    await wrapper.get('.quote-primary-button').trigger('click')
+    const payload = wrapper.emitted('confirm')![0]![0] as InternalQuoteCreatePayload
+    expect(payload.products![0]!.componentImageFiles?.[1]).toBe(file)
+    expect(payload.products![1]!.componentImageFiles).toBeUndefined()
+    expect(payload.products![0]!.imageFile).toBeNull()
+    expect(wrapper.find('.quote-product-image').exists()).toBe(false)
+  })
   it('copies the current first product into B and C, while keeping all edits independent', async () => {
     await createDialog()
     await wrapper.get('input[value="series"]').setValue(true)

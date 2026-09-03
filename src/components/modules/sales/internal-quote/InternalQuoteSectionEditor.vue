@@ -5,6 +5,8 @@ import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/api/internalQuote'
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
+import InternalQuoteImportAssignment from './InternalQuoteImportAssignment.vue'
+import InternalQuoteMappedAssignment from './InternalQuoteMappedAssignment.vue'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { cloneInternalQuotePayload, normalizeInternalQuotePayload, salesPackagingPricingGroupId, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
@@ -42,6 +44,9 @@ const draftPayload = ref<Record<string, unknown>>({})
 const baselinePayload = ref('')
 const draftRevision = ref(props.section.revision)
 const importPreview = ref<ApiInternalQuoteImportPreview>()
+const importAssignments = ref<Record<string, string>>({})
+watch(() => importPreview.value?.batch_id, () => { importAssignments.value = {} })
+const assignmentComplete = computed(() => (importPreview.value?.assignment_rows ?? []).every(row => Boolean(importAssignments.value[row.key])))
 const previewAttachmentTarget = ref<InternalQuoteAttachmentRecord>()
 const deleteAttachmentTarget = ref<InternalQuoteAttachmentRecord>()
 const actionReason = ref('')
@@ -540,7 +545,12 @@ async function confirmImport() {
   }
   resetFeedback()
   try {
-    await quoteStore.confirmImport(props.quote.id, importPreview.value.batch_id, importPreview.value.target_revision)
+    if (!assignmentComplete.value) { localError.value = '请为每条映射明细选择应用分项，或选择不采用。'; return }
+    if (importPreview.value.assignment_rows?.length) {
+      await quoteStore.confirmImport(props.quote.id, importPreview.value.batch_id, importPreview.value.target_revision, importAssignments.value)
+    } else {
+      await quoteStore.confirmImport(props.quote.id, importPreview.value.batch_id, importPreview.value.target_revision)
+    }
     localMessage.value = '报价单已导入并按模板负责区域更新，分段已重新计算。'
     importPreview.value = undefined
   } catch (error) { localError.value = errorText(error) }
@@ -632,9 +642,11 @@ function confirmRemoveParticipation() {
       <header><div><FileSpreadsheet /><span><strong>{{ importOption(importPreview.import_type)?.label }} · {{ importPreview.source_file_name }}</strong><small>{{ importPreview.sheet_name }} · 表头第 {{ importPreview.header_row }} 行 · 识别 {{ importPreview.row_count }} 行 · 预览不会修改正式数据</small></span></div><button type="button" aria-label="关闭导入预览" @click="importPreview = undefined"><XCircle /></button></header>
       <div class="preview-metrics"><span>当前 {{ Number(importPreview.diff_summary.existing_rows ?? 0) }} 行</span><span>本次识别 {{ Number(importPreview.diff_summary.imported_rows ?? 0) }} 行</span><span>导入后 {{ Number(importPreview.diff_summary.replace_result_rows ?? 0) }} 行</span></div>
       <div v-if="importPreview.warnings.length" class="preview-warnings"><p v-for="warning in importPreview.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
-      <footer><strong class="replace-only-note">确认后按模板负责的数据区域更新；重复导入不会累计金额</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable" @click="confirmImport">确认导入</button></footer>
+      <InternalQuoteImportAssignment v-if="importPreview.assignment_rows?.length" :key="importPreview.batch_id" v-model="importAssignments" :rows="importPreview.assignment_rows" :components="importPreview.assignment_components ?? []" :disabled="quoteStore.submitting" />
+      <footer><strong class="replace-only-note">确认后按模板负责的数据区域更新；重复导入不会累计金额</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable || !assignmentComplete" @click="confirmImport">确认导入</button></footer>
     </section>
 
+    <InternalQuoteMappedAssignment v-if="pricingMode === 'component' && ['engineering', 'painting'].includes(section.code)" v-model="draftPayload" :code="section.code" :components="pricingComponents" :disabled="!editable" />
     <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="emit('block-progress', section.code, $event)" @preview-attachment="previewAttachment" />
 
     <InternalQuoteAttachmentPreview

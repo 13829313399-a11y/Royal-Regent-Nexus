@@ -6,9 +6,10 @@ import { internalQuoteAttachmentPreviewUrl } from '@/api/internalQuote'
 import InternalQuotePricingFields from './InternalQuotePricingFields.vue'
 import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
-import { calculateJustPlayMainCartonDimensions, calculateJustPlayCartonsPerPallet, normalizeJustPlayPackagingInputs, justPlayPackagingInputsValid, previewEngineeringMoldPartSplit, type JustPlayPackagingInputs } from '@/lib/internalQuoteSectionPayload'
+import { calculateJustPlayMainCartonDimensions, justPlayCartonState, normalizeJustPlayCartonInputs, calculateJustPlayCartonsPerPallet, normalizeJustPlayPackagingInputs, justPlayPackagingInputsValid, previewEngineeringMoldPartSplit, type JustPlayPackagingInputs, type JustPlayCartonInputs } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 import type { QuotePricingMetadata, SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
+import { calculateCustomerSuppliedFeeHkd, type CustomerSuppliedMaterialRow } from '@/lib/internalQuoteSectionPayload'
 
 const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; activePricingComponentId?: string; mainMarkup?: number }>()
 const model = defineModel<Record<string, unknown>>({ required: true })
@@ -24,12 +25,18 @@ const emit = defineEmits<{
 }>()
 
 const sales = computed(() => model.value as unknown as SalesPayload)
+const customerSuppliedRows = computed(() => (sales.value.customer_supplied_materials ?? []).filter(belongsToCurrentPricingComponent))
+const customerSuppliedTotal = computed(() => customerSuppliedRows.value.reduce((total, row) => total + calculateCustomerSuppliedFeeHkd(row), 0))
+function addCustomerSuppliedMaterial() {
+  sales.value.customer_supplied_materials ??= []
+  sales.value.customer_supplied_materials.push(assignCurrentPricingComponent<CustomerSuppliedMaterialRow>({ item: '', unit_price_hkd: 0, fee_rate_percent: 0 }))
+}
 const justPlayCartonAutomatic = computed(() => props.code === 'sales' && (props.pricingMode ?? sales.value.pricing_mode) === 'component')
 watchEffect(() => {
   if (!justPlayCartonAutomatic.value) return
   const mainCarton = sales.value.cartons[0]
   if (!mainCarton) return
-  const derived = calculateJustPlayMainCartonDimensions(sales.value.color_box_size_in)
+  const derived = calculateJustPlayMainCartonDimensions(sales.value)
   for (const key of ['length_in', 'width_in', 'height_in'] as const) {
     if (mainCarton[key] !== derived[key]) mainCarton[key] = derived[key]
   }
@@ -71,15 +78,16 @@ const slush = computed(() => model.value as unknown as SlushPayload)
 const sewing = computed(() => model.value as unknown as SewingPayload)
 const hair = computed(() => model.value as unknown as HairPayload)
 const assembly = computed(() => model.value as unknown as AssemblyPayload)
-const pricingComponentIds = computed(() => new Set((props.pricingComponents ?? []).map((component) => component.id)))
+const effectivePricingComponents = computed(() => props.pricingComponents ?? (props.code === 'sales' ? sales.value.pricing_components ?? [] : []))
+const pricingComponentIds = computed(() => new Set(effectivePricingComponents.value.map((component) => component.id)))
 const currentPricingComponentId = computed(() => {
   if (props.pricingMode !== 'component') return ''
   if (props.activePricingComponentId && pricingComponentIds.value.has(props.activePricingComponentId)) return props.activePricingComponentId
-  return props.pricingComponents?.[0]?.id ?? ''
+  return effectivePricingComponents.value[0]?.id ?? ''
 })
 function resolvedPricingComponentId(meta: QuotePricingMetadata) {
   const id = String(meta.pricing_component_id ?? '')
-  return pricingComponentIds.value.has(id) ? id : props.pricingComponents?.[0]?.id ?? ''
+  return pricingComponentIds.value.has(id) ? id : effectivePricingComponents.value[0]?.id ?? ''
 }
 function belongsToCurrentPricingComponent(meta: QuotePricingMetadata) {
   return props.pricingMode !== 'component' || resolvedPricingComponentId(meta) === currentPricingComponentId.value
@@ -187,8 +195,9 @@ const hardwareRows = computed(() => engineering.value.materials.filter((row) => 
 const auxiliaryRows = computed(() => engineering.value.materials.filter((row) => row.category === 'auxiliary' && belongsToCurrentPricingComponent(row)))
 const hardwareTotal = computed(() => hardwareRows.value.reduce((total, row) => total + calculateEngineeringMaterialAmountHkd(row, props.rmbHkdRate), 0))
 const auxiliaryTotal = computed(() => auxiliaryRows.value.reduce((total, row) => total + calculateEngineeringMaterialAmountHkd(row, props.rmbHkdRate), 0))
-const moldQuoteTotalRmb = computed(() => engineering.value.molds.reduce((total, row) => total + Number(row.cost_rmb || 0), 0))
-const moldQuoteTotalHkd = computed(() => engineering.value.molds.reduce((total, row) => total + calculateEngineeringMoldPriceHkd(row, props.rmbHkdRate), 0))
+const visibleEngineeringMolds = computed(() => engineering.value.molds.filter(belongsToCurrentPricingComponent))
+const moldQuoteTotalRmb = computed(() => visibleEngineeringMolds.value.reduce((total, row) => total + Number(row.cost_rmb || 0), 0))
+const moldQuoteTotalHkd = computed(() => visibleEngineeringMolds.value.reduce((total, row) => total + calculateEngineeringMoldPriceHkd(row, props.rmbHkdRate), 0))
 const moldAllocation = computed(() => calculateEngineeringMoldAllocation(engineering.value))
 const visibleElectronicQuickRows = computed(() => electronic.value.quick_quotes.filter(belongsToCurrentPricingComponent))
 const visibleElectronicComponents = computed(() => electronic.value.components.filter(belongsToCurrentPricingComponent))
@@ -364,13 +373,13 @@ function addEngineeringMoldPart(row: EngineeringMoldRow) {
   row.parts.push(engineeringMoldPartRow())
 }
 function addEngineeringMold() {
-  engineering.value.molds.push({
+  engineering.value.molds.push(assignCurrentPricingComponent({
     item: '', mold_no: '', chinese_name: '', mold_base_type: '', mold_base_material: '', structure: '', process: '', material: '', material_type: '', color: '', cavity: '', quantity: 1,
     net_weight_g: 0, cycle_time_seconds: 0, mold_size: '', mold_specification: '', image_reference: '', image_attachment_ids: [], cost_rmb: 0, remark: '', machine_code: '', target_output: 0, parts: [], source_row: 0,
     disney_mold_no: '', disney_parts: '', disney_material: '', disney_cavities: 0, disney_parts_per_shot: 0, disney_tool_cost_usd: 0,
     dickie_project_name_en: '', dickie_mold_no: '', dickie_parts_en: '', dickie_resin: '', dickie_mold_size: '', dickie_mold_material: '', dickie_cavities: 0, dickie_parts_per_shot: 0, dickie_mold_cost_hkd: 0, dickie_remark_en: '',
     caixing_tool_plan_ref: '', caixing_mold_cost_hkd: 0, caixing_customer_mold_cost_hkd: 0,
-  })
+  }))
 }
 function addProductionMoldCost() { engineering.value.production_mold_costs.push({ item: '', cost_rmb: 0 }) }
 function addSalesTestingFeeMoq() { (sales.value.testing_fee_moqs ??= []).push(0) }
@@ -396,6 +405,27 @@ const colorBoxSizeUnit = computed<SalesDimensionUnit>({
   get: () => normalizeSalesDimensionUnit(sales.value.color_box_size_unit),
   set: (value) => { sales.value.color_box_size_unit = normalizeSalesDimensionUnit(value) },
 })
+const pdqSizeUnit = computed<SalesDimensionUnit>({
+  get: () => normalizeSalesDimensionUnit(sales.value.pdq_size_unit),
+  set: value => { sales.value.pdq_size_unit = normalizeSalesDimensionUnit(value) },
+})
+const justPlayCarton = computed(() => normalizeJustPlayCartonInputs(sales.value.justplay_carton))
+const cartonState = computed(() => justPlayCartonState(sales.value))
+const cartonDimensionAxes = [
+  { key: 'length', label: '长度', count: 'length_count' },
+  { key: 'width', label: '宽度', count: 'width_count' },
+  { key: 'height', label: '高度', count: 'height_count' },
+] as const
+function updateJustPlayCarton(key: keyof JustPlayCartonInputs, event: Event) {
+  const value = (event.target as HTMLInputElement).value
+  sales.value.justplay_carton = { ...justPlayCarton.value, [key]: key === 'dimension_source' ? value : Number(value) }
+}
+function updatePdqDimension(key: SalesDimensionKey, event: Event) {
+  sales.value.pdq_size_in = {
+    ...(sales.value.pdq_size_in ?? { length: 0, width: 0, height: 0 }),
+    [key]: dimensionValueToInches((event.target as HTMLInputElement).value, pdqSizeUnit.value),
+  }
+}
 function cartonSizeUnit(carton: SalesCartonRow) { return normalizeSalesDimensionUnit(carton.size_unit) }
 function dimensionInputValue(value: unknown, unit: SalesDimensionUnit) { return dimensionValueFromInches(value, unit) }
 function updateColorBoxDimension(key: SalesDimensionKey, event: Event) {
@@ -416,7 +446,7 @@ type JustPlayExtraKey = 'adhesive_extra_hkd' | 'paper_pallet_extra_hkd'
 const editingJustPlayExtra = ref<JustPlayExtraKey | null>(null)
 function justPlayExtraDisplay(key: JustPlayExtraKey) {
   const value = justPlayPackagingInputs.value[key]
-  return value === '' || editingJustPlayExtra.value === key ? value : value.toFixed(2)
+  return value === '' || editingJustPlayExtra.value === key ? value : value.toFixed(1)
 }
 function updateJustPlayPackagingInput(key: keyof JustPlayPackagingInputs, event: Event) {
   const raw = (event.target as HTMLInputElement).value
@@ -425,14 +455,24 @@ function updateJustPlayPackagingInput(key: keyof JustPlayPackagingInputs, event:
 function finishJustPlayExtra(key: JustPlayExtraKey, event: Event) {
   const input = event.target as HTMLInputElement
   const value = input.value === '' ? '' : Number(input.value)
-  const rounded = value === '' || !Number.isFinite(value) ? '' : Math.round((value + Number.EPSILON) * 100) / 100
+  const rounded = value === '' || !Number.isFinite(value) ? '' : Math.round((value + Number.EPSILON) * 10) / 10
   sales.value.justplay_packaging = { ...justPlayPackagingInputs.value, [key]: rounded }
   editingJustPlayExtra.value = null
-  input.value = rounded === '' ? '' : rounded.toFixed(2)
+  input.value = rounded === '' ? '' : rounded.toFixed(1)
 }
 const justPlayAdhesivePackagingCost = computed(() => calculateJustPlayAdhesivePackagingCostHkd(primaryCarton.value, justPlayPackagingInputs.value))
 const justPlayPaperPalletCost = computed(() => calculateJustPlayPaperPalletCostHkd(primaryCarton.value, justPlayPackagingInputs.value))
-const justPlayCartonsPerPallet = computed(() => calculateJustPlayCartonsPerPallet(primaryCarton.value))
+const justPlayCartonsPerPallet = computed(() => calculateJustPlayCartonsPerPallet(primaryCarton.value, justPlayPackagingInputs.value))
+const justPlayPalletFields = [
+  { key: 'pallet_length_mm', label: '托板长度 mm' },
+  { key: 'pallet_width_mm', label: '托板宽度 mm' },
+  { key: 'pallet_height_mm', label: '托板高度 mm' },
+] as const
+const justPlayPackagingWarning = computed(() => {
+  if (!justPlayPackagingInputsValid(justPlayPackagingInputs.value)) return '请填写两项附加金额（可填 0，保留一位小数），以及大于 0 的托板长、宽、高（mm）。'
+  if (cartonState.value.error) return cartonState.value.error
+  return justPlayCartonsPerPallet.value <= 0 ? '主纸箱须能放入所填写的托板空间，请检查托板与主纸箱尺寸，才能自动计算装箱数及纸托板成本。' : ''
+})
 const justPlayFixedPackagingTotal = computed(() => justPlayAdhesivePackagingCost.value + justPlayPaperPalletCost.value)
 const packagingMaterialTotal = computed(() => (
   sales.value.packaging_materials.reduce((total, row) => total + calculatePackagingMaterialAmountHkd(row, props.rmbHkdRate), 0)
@@ -684,7 +724,7 @@ function addDickieMaterialPrice() {
           <table class="extraWide engineeringMolds">
             <thead><tr><th>#</th><th>模具名称</th><th>中文名称</th><th>模号</th><th>模胚类型</th><th>模胚材质</th><th>模具结构</th><th>工艺</th><th>材质</th><th>料型</th><th>颜色</th><th>出模数</th><th>套数</th><th>净重 (g)</th><th>周期 (秒)</th><th>模具尺寸</th><th>模具规格</th><th>图片</th><th>模具价格 RMB</th><th>模价 HKD（自动）</th><th>备注</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in engineering.molds" :key="index">
+              <tr v-for="(row,index) in visibleEngineeringMolds" :key="index">
                 <td>{{ index + 1 }}</td>
                 <td><textarea v-model="row.item" :disabled="disabled" rows="2" aria-label="模具名称" /></td>
                 <td><textarea v-model="row.chinese_name" :disabled="disabled" rows="2" aria-label="模具中文名称" /></td>
@@ -714,15 +754,15 @@ function addDickieMaterialPrice() {
                 <td><input v-model.number="row.cost_rmb" :disabled="disabled" type="number" min="0" step="0.01" aria-label="模具价格 RMB"></td>
                 <td class="calculated-cell">{{ calculated(calculateEngineeringMoldPriceHkd(row, props.rmbHkdRate)) }}</td>
                 <td><textarea v-model="row.remark" :disabled="disabled" rows="2" aria-label="模具备注" /></td>
-                <td><button type="button" class="icon" :disabled="disabled" @click="remove(engineering.molds,index)"><Trash2 /></button></td>
+                <td><button type="button" class="icon" :disabled="disabled" @click="removeItem(engineering.molds,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!engineering.molds.length"><td colspan="22" class="empty">暂无模具明细，可新增或从模具报价单预览导入</td></tr>
+              <tr v-if="!visibleEngineeringMolds.length"><td colspan="22" class="empty">暂无模具明细，可新增或从模具报价单预览导入</td></tr>
             </tbody>
-            <tfoot v-if="engineering.molds.length"><tr><td colspan="18">模具报价小计（RMB→HKD {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</td><td>RMB {{ calculated(moldQuoteTotalRmb) }}</td><td>HKD {{ calculated(moldQuoteTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
+            <tfoot v-if="visibleEngineeringMolds.length"><tr><td colspan="18">模具报价小计（RMB→HKD {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</td><td>RMB {{ calculated(moldQuoteTotalRmb) }}</td><td>HKD {{ calculated(moldQuoteTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
           </table>
         </div>
-        <div v-if="engineering.molds.length" class="engineering-mold-parts">
-          <article v-for="(row,index) in engineering.molds" :key="moldRowKey(row)" class="nested-card engineering-mold-part-card">
+        <div v-if="visibleEngineeringMolds.length" class="engineering-mold-parts">
+          <article v-for="(row,index) in visibleEngineeringMolds" :key="moldRowKey(row)" class="nested-card engineering-mold-part-card">
             <div class="nested-head">
               <div><strong>{{ row.mold_no || `模具 ${index + 1}` }} 配件子行</strong><span>{{ row.item || row.chinese_name || '请先填写模具名称' }}</span></div>
               <div class="nested-actions">
@@ -1228,6 +1268,29 @@ function addDickieMaterialPrice() {
           </div>
         </template>
       </section>
+      <section v-if="justPlayCartonAutomatic" :id="blockDomId('customer-supplied-materials')" class="payload-block sales-customer-supplied" data-form-block>
+        <header>
+          <div><strong>客供物料部分</strong><span>按当前配件填写。保管费 = 单价 × 费率；只收保管费，不取倍率、不加杂项、不退税，导出时单独列示并换算 USD。</span></div>
+          <button type="button" :disabled="disabled" aria-label="新增客供物料" @click="addCustomerSuppliedMaterial"><Plus />新增客供物料</button>
+        </header>
+        <div class="payload-table-scroll">
+          <table class="customerSuppliedMaterials">
+            <thead><tr><th>#</th><th>物料名称</th><th>物料单价 HKD/件</th><th>保管费率 %</th><th>保管费 HKD/件（自动）</th><th /></tr></thead>
+            <tbody>
+              <tr v-for="(row,index) in customerSuppliedRows" :key="index">
+                <td>{{ index + 1 }}</td>
+                <td><input v-model="row.item" :disabled="disabled" aria-label="客供物料名称"></td>
+                <td><input v-model.number="row.unit_price_hkd" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="客供物料单价 HKD"></td>
+                <td><input v-model.number="row.fee_rate_percent" :disabled="disabled" type="number" min="0" max="100" step="0.01" aria-label="客供物料费率 %"></td>
+                <td class="calculated-cell"><output aria-label="客供物料保管费 HKD">{{ fixedDecimal(calculateCustomerSuppliedFeeHkd(row), 4) }}</output></td>
+                <td><button type="button" class="icon" :disabled="disabled" aria-label="删除客供物料" @click="removeItem(sales.customer_supplied_materials!,row)"><Trash2 /></button></td>
+              </tr>
+              <tr v-if="!customerSuppliedRows.length"><td colspan="6" class="empty">当前配件暂无客供物料，可按需要新增</td></tr>
+            </tbody>
+            <tfoot v-if="customerSuppliedRows.length"><tr><td colspan="4">当前配件保管费合计</td><td colspan="2">HKD {{ fixedDecimal(customerSuppliedTotal, 4) }}</td></tr></tfoot>
+          </table>
+        </div>
+      </section>
       <section :id="blockDomId('packaging-materials')" class="payload-block sales-packaging-materials" data-form-block>
         <header>
           <div><strong>包装材料部分</strong><span>由业务部填写；RMB、HKD 原单价任选一种填写，损耗率默认 1，计价结果由系统生成。</span></div>
@@ -1264,21 +1327,23 @@ function addDickieMaterialPrice() {
           <article>
             <strong>胶纸/胶水/胶针</strong>
             <div class="inline-fields">
-              <label><span>胶纸附加金额 HKD/件</span><input :value="justPlayExtraDisplay('adhesive_extra_hkd')" :disabled="disabled" type="number" min="0" step="0.01" aria-label="胶纸附加金额 HKD/件" @focus="editingJustPlayExtra = 'adhesive_extra_hkd'" @input="updateJustPlayPackagingInput('adhesive_extra_hkd', $event)" @blur="finishJustPlayExtra('adhesive_extra_hkd', $event)"></label>
+              <label><span>胶纸附加金额 HKD/件</span><input :value="justPlayExtraDisplay('adhesive_extra_hkd')" :disabled="disabled" type="number" min="0" step="0.1" aria-label="胶纸附加金额 HKD/件" @focus="editingJustPlayExtra = 'adhesive_extra_hkd'" @input="updateJustPlayPackagingInput('adhesive_extra_hkd', $event)" @blur="finishJustPlayExtra('adhesive_extra_hkd', $event)"></label>
               <label class="sales-testing-fee-result"><span>单件成本 HKD（自动）</span><output aria-label="胶纸单件成本 HKD">{{ calculated(justPlayAdhesivePackagingCost) }}</output></label>
             </div>
           </article>
           <article>
             <strong>纸托板成本</strong>
             <div class="inline-fields">
+              <label v-for="field in justPlayPalletFields" :key="field.key"><span>{{ field.label }}</span><input :value="justPlayPackagingInputs[field.key]" :disabled="disabled" type="number" min="0" step="any" :aria-label="field.label" @input="updateJustPlayPackagingInput(field.key, $event)"></label>
+            </div>
+            <div class="inline-fields">
               <label class="sales-testing-fee-result"><span>每托板装箱数（自动）</span><output aria-label="每托板装箱数">{{ justPlayCartonsPerPallet }}</output></label>
-              <label><span>纸托板附加金额 HKD/件</span><input :value="justPlayExtraDisplay('paper_pallet_extra_hkd')" :disabled="disabled" type="number" min="0" step="0.01" aria-label="纸托板附加金额 HKD/件" @focus="editingJustPlayExtra = 'paper_pallet_extra_hkd'" @input="updateJustPlayPackagingInput('paper_pallet_extra_hkd', $event)" @blur="finishJustPlayExtra('paper_pallet_extra_hkd', $event)"></label>
+              <label><span>纸托板附加金额 HKD/件</span><input :value="justPlayExtraDisplay('paper_pallet_extra_hkd')" :disabled="disabled" type="number" min="0" step="0.1" aria-label="纸托板附加金额 HKD/件" @focus="editingJustPlayExtra = 'paper_pallet_extra_hkd'" @input="updateJustPlayPackagingInput('paper_pallet_extra_hkd', $event)" @blur="finishJustPlayExtra('paper_pallet_extra_hkd', $event)"></label>
               <label class="sales-testing-fee-result"><span>单件成本 HKD（自动）</span><output aria-label="纸托板单件成本 HKD">{{ calculated(justPlayPaperPalletCost) }}</output></label>
             </div>
           </article>
         </div>
-        <p v-if="!justPlayPackagingInputsValid(justPlayPackagingInputs)" class="justplay-packaging-warning" role="alert">请填写两项附加金额，可填 0，保留两位小数。</p>
-        <p v-if="justPlayCartonsPerPallet <= 0" class="justplay-packaging-warning" role="alert">请补齐彩盒长、宽、高；由彩盒计算的主纸箱须能放入 1150 × 1000 × 1300 毫米的托板空间，才能自动计算装箱数及纸托板成本。</p>
+        <p v-if="justPlayPackagingWarning" class="justplay-packaging-warning" role="alert">{{ justPlayPackagingWarning }}</p>
         <div class="calculation-strip"><span>胶纸及纸托板合计：<b>HKD {{ calculated(justPlayFixedPackagingTotal) }}</b></span></div>
       </section>
       <section v-if="isDisney" class="payload-block disney-packaging-fields">
@@ -1297,7 +1362,7 @@ function addDickieMaterialPrice() {
         </div>
         <div class="dimension-grid">
           <article class="dimension-card">
-            <strong>产品尺寸 (in，可不填)</strong>
+            <strong>产品尺寸 (in{{ justPlayCartonAutomatic && cartonState.source === 'product' ? '，当前计算来源' : '，可不填' }})</strong>
             <div class="inline-fields">
               <label><span>长 L</span><input v-model.number="sales.product_size_in.length" :disabled="disabled" type="number" min="0" step="0.01" aria-label="产品长度 IN"></label>
               <label><span>宽 W</span><input v-model.number="sales.product_size_in.width" :disabled="disabled" type="number" min="0" step="0.01" aria-label="产品宽度 IN"></label>
@@ -1314,10 +1379,27 @@ function addDickieMaterialPrice() {
               <label><span>宽 W ({{ colorBoxSizeUnit }})</span><input :value="dimensionInputValue(sales.color_box_size_in.width, colorBoxSizeUnit)" :disabled="disabled" type="number" min="0" :step="colorBoxSizeUnit === 'cm' ? 0.1 : 0.01" :aria-label="`彩盒宽度 ${colorBoxSizeUnit}`" @input="updateColorBoxDimension('width', $event)"></label>
               <label><span>高 H ({{ colorBoxSizeUnit }})</span><input :value="dimensionInputValue(sales.color_box_size_in.height, colorBoxSizeUnit)" :disabled="disabled" type="number" min="0" :step="colorBoxSizeUnit === 'cm' ? 0.1 : 0.01" :aria-label="`彩盒高度 ${colorBoxSizeUnit}`" @input="updateColorBoxDimension('height', $event)"></label>
             </div>
+            <template v-if="justPlayCartonAutomatic">
+              <div class="inline-fields">
+                <label><span>无 PDQ 时的尺寸来源</span><select :value="justPlayCarton.dimension_source" :disabled="disabled || cartonState.usesPdq" aria-label="主纸箱尺寸来源" @change="updateJustPlayCarton('dimension_source', $event)"><option value="color_box">按彩盒尺寸</option><option value="product">按产品尺寸</option></select></label>
+              </div>
+              <div class="inline-fields">
+                <label v-for="axis in cartonDimensionAxes" :key="axis.key"><span>{{ axis.label }}方向个数</span><input :value="justPlayCarton[axis.count]" :disabled="disabled || cartonState.usesPdq" type="number" min="1" step="1" :aria-label="`${axis.label}方向个数`" @input="updateJustPlayCarton(axis.count, $event)"></label>
+              </div>
+              <p class="justplay-carton-note">方向个数仅用于无 PDQ 时的纸箱尺寸计算，不会修改每箱产品数量。</p>
+            </template>
           </article>
+          <article v-if="justPlayCartonAutomatic" class="dimension-card pdq-dimensions">
+            <div class="dimension-card-title"><strong>PDQ 尺寸（选填，有填写时优先使用）</strong><label class="dimension-unit-control"><span>单位</span><select v-model="pdqSizeUnit" :disabled="disabled" aria-label="PDQ 尺寸单位"><option value="inch">inch</option><option value="cm">cm</option></select></label></div>
+            <div class="inline-fields">
+              <label v-for="axis in cartonDimensionAxes" :key="axis.key"><span>{{ axis.label }} ({{ pdqSizeUnit }})</span><input :value="dimensionInputValue(sales.pdq_size_in?.[axis.key] ?? 0, pdqSizeUnit)" :disabled="disabled" type="number" min="0" :step="pdqSizeUnit === 'cm' ? 0.1 : 0.01" :aria-label="`PDQ ${axis.label} ${pdqSizeUnit}`" @input="updatePdqDimension(axis.key, $event)"></label>
+            </div>
+            <p class="justplay-carton-note">三项全部留空或为 0 表示不使用 PDQ；使用时请完整填写长、宽、高，不乘方向个数。</p>
+          </article>
+          <p v-if="justPlayCartonAutomatic && cartonState.error" class="justplay-packaging-warning" role="alert">{{ cartonState.error }}</p>
         </div>
         <article v-for="(carton,index) in sales.cartons" :key="index" class="nested-card carton-card">
-          <p v-if="justPlayCartonAutomatic && index === 0" class="justplay-carton-note">主纸箱尺寸按彩盒自动计算（英寸）：长、宽各加 0.75，高加 1；请在上方填写彩盒尺寸。</p>
+          <p v-if="justPlayCartonAutomatic && index === 0" class="justplay-carton-note">{{ cartonState.usesPdq ? '主纸箱按 PDQ 尺寸自动计算：长、宽各加 0.75，高加 1。' : `主纸箱按${justPlayCarton.dimension_source === 'product' ? '产品' : '彩盒'}尺寸 × 各方向个数自动计算：长、宽再加 0.75，高再加 1。` }}计算单位为英寸。</p>
           <div class="nested-head"><strong>{{ index === 0 ? '主纸箱' : `内纸箱 ${index}` }}</strong><div class="nested-head-actions"><label class="dimension-unit-control"><span>尺寸单位</span><select :value="cartonSizeUnit(carton)" :disabled="disabled" :aria-label="`纸箱 ${index + 1} 尺寸单位`" @change="updateCartonSizeUnit(carton, $event)"><option value="inch">inch</option><option value="cm">cm</option></select></label><button type="button" class="icon" :disabled="disabled || index === 0" :title="index === 0 ? '主纸箱不可删除' : '删除内纸箱'" :aria-label="`删除纸箱 ${index + 1}`" @click="removeSalesCarton(index)"><Trash2 /></button></div></div>
           <div class="inline-fields five">
             <label><span>纸箱名称</span><input v-model="carton.item" :disabled="disabled" aria-label="纸箱名称"></label>
@@ -1452,4 +1534,5 @@ function addDickieMaterialPrice() {
 .mold-split-preview ol{margin:0;padding-left:24px}.mold-split-preview li{padding:4px}.mold-split-preview li b{margin-left:16px;font-size:11px}
 .mold-split-preview .nested-actions{display:flex;gap:8px}.mold-split-preview button{border:1px solid #5eead4;border-radius:6px;background:#fff;padding:7px 12px}
 .mold-split-preview button:disabled{opacity:.5;cursor:not-allowed}
+.payload-table-scroll table.customerSuppliedMaterials{min-width:760px;width:100%}.customerSuppliedMaterials th:first-child,.customerSuppliedMaterials td:first-child{width:48px}.customerSuppliedMaterials th:nth-child(2),.customerSuppliedMaterials td:nth-child(2){width:38%}.customerSuppliedMaterials th:last-child,.customerSuppliedMaterials td:last-child{width:56px}.customerSuppliedMaterials output{color:#0f766e;font-weight:800;font-variant-numeric:tabular-nums}
 </style>

@@ -438,7 +438,8 @@ def test_justplay_packaging_parameters_round_trip_and_preview_without_saving(mon
         assert created.status_code == 201, created.text
         quote_id = created.json()["id"]
         sales = next(item for item in created.json()["sections"] if item["department"] == "sales")
-        parameters = {"adhesive_extra_hkd": 0, "cartons_per_pallet": 40, "paper_pallet_extra_hkd": .07}
+        parameters = {"adhesive_extra_hkd": 0, "cartons_per_pallet": 40, "paper_pallet_extra_hkd": .07,
+                      "pallet_length_mm": 1300, "pallet_width_mm": 1200, "pallet_height_mm": 1400}
         payload = {
             **sales["payload"],
             "justplay_packaging": parameters,
@@ -452,27 +453,35 @@ def test_justplay_packaging_parameters_round_trip_and_preview_without_saving(mon
                            json={"revision": sales["revision"], "payload": payload})
         assert saved.status_code == 200, saved.text
         assert saved.json()["payload"]["justplay_packaging"] == parameters
-        assert saved.json()["calculation"]["totals"]["packaging_material_hkd"] == "0.9492"
+        assert saved.json()["calculation"]["totals"]["packaging_material_hkd"] == "0.5834"
         revision = saved.json()["revision"]
         preview = client.post(f"/api/internal-quotes/{quote_id}/sections/sales/preview", json={
             "revision": revision,
             "payload": {**payload, "justplay_packaging": {**parameters, "adhesive_extra_hkd": .12}},
         })
         assert preview.status_code == 200, preview.text
-        assert preview.json()["calculation"]["totals"]["packaging_material_hkd"] == "1.0692"
+        assert preview.json()["calculation"]["totals"]["packaging_material_hkd"] == "0.6834"
+        resized = client.post(f"/api/internal-quotes/{quote_id}/cost-preview", json={"drafts": [{
+            "section_code": "sales", "revision": revision,
+            "payload": {**payload, "justplay_packaging": {**parameters, "pallet_length_mm": 650}},
+        }]})
+        assert resized.status_code == 200, resized.text
+        resized_pallet = next(r for r in resized.json()["calculations"]["sales"]["line_breakdown"] if r.get("formula_code") == "paper_pallet")
+        assert resized_pallet["cartons_per_pallet"] == "12.0000"
+        assert resized_pallet["amount_hkd"] == "0.8917"
         carton_preview = client.post(f"/api/internal-quotes/{quote_id}/sections/sales/preview", json={
             "revision": revision,
             "payload": {**payload, "color_box_size_in": {"length": 17.25, "width": 11.25, "height": 9},
                         "cartons": [{**payload["cartons"][0], "length_in": 99, "width_in": 99, "height_in": 99}]},
         })
         assert carton_preview.status_code == 200, carton_preview.text
-        assert carton_preview.json()["calculation"]["totals"]["packaging_material_hkd"] == "0.4683"
+        assert carton_preview.json()["calculation"]["totals"]["packaging_material_hkd"] == "0.4983"
         assert carton_preview.json()["calculation"]["totals"]["carton_hkd"] == "2.0240"
         detail = client.get(f"/api/internal-quotes/{quote_id}").json()
         reloaded = next(item for item in detail["sections"] if item["department"] == "sales")
         assert reloaded["payload"]["justplay_packaging"] == parameters
         assert reloaded["revision"] == revision
-        assert reloaded["calculation"]["totals"]["packaging_material_hkd"] == "0.9492"
+        assert reloaded["calculation"]["totals"]["packaging_material_hkd"] == "0.5834"
         invalid = client.put(f"/api/internal-quotes/{quote_id}/sections/sales", json={
             "revision": revision,
             "payload": {**payload, "color_box_size_in": {"length": 23, "width": 50, "height": 14.5}},
@@ -481,6 +490,46 @@ def test_justplay_packaging_parameters_round_trip_and_preview_without_saving(mon
         assert "超出纸托板可装范围" in invalid.json()["detail"]
         after_invalid = client.get(f"/api/internal-quotes/{quote_id}").json()
         assert next(item for item in after_invalid["sections"] if item["department"] == "sales")["revision"] == revision
+
+
+def test_justplay_pdq_dimensions_and_counts_persist_and_preview_without_mutating_saved_quote(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_jp_pdq", "sales_customer_owner", "sales-business", "huakang-b")
+        request = create_payload(suffix="JP-PDQ")
+        request.update(factory_id="huakang-b", workshop_code="huakang-b-workshop", workshop_name="华康B",
+                       customer="JustPlay", pricing_components=["主体"])
+        created = client.post("/api/internal-quotes", json=request)
+        assert created.status_code == 201, created.text
+        quote_id = created.json()["id"]
+        sales = next(item for item in created.json()["sections"] if item["department"] == "sales")
+        payload = {**sales["payload"], "testing_fee_enabled": False, "freight_calc": {"enabled": False},
+                   "product_size_in": {"length": 8.625, "width": 3.75, "height": 2.25},
+                   "justplay_carton": {"dimension_source": "product", "length_count": 2, "width_count": 3, "height_count": 4},
+                   "pdq_size_in": {"length": 0, "width": 0, "height": 0}, "pdq_size_unit": "cm",
+                   "cartons": [{"item": "主纸箱", "length_in": 99, "width_in": 99, "height_in": 99, "qty_per_carton": 24}]}
+        saved = client.put(f"/api/internal-quotes/{quote_id}/sections/sales", json={"revision": sales["revision"], "payload": payload})
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["calculation"]["totals"]["carton_hkd"] == "0.1687"
+        revision = saved.json()["revision"]
+        pdq_payload = {**payload, "pdq_size_in": {"length": 10, "width": 5, "height": 4}}
+        preview = client.post(f"/api/internal-quotes/{quote_id}/sections/sales/preview", json={"revision": revision, "payload": pdq_payload})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["calculation"]["totals"]["carton_hkd"] == "0.0498"
+        invalid = client.put(f"/api/internal-quotes/{quote_id}/sections/sales", json={"revision": revision, "payload": {**pdq_payload, "pdq_size_in": {"length": 10}}})
+        assert invalid.status_code == 400, invalid.text
+        assert "PDQ" in invalid.json()["detail"]
+        detail = client.get(f"/api/internal-quotes/{quote_id}").json()
+        reloaded = next(item for item in detail["sections"] if item["department"] == "sales")
+        assert reloaded["revision"] == revision
+        assert reloaded["payload"]["justplay_carton"] == payload["justplay_carton"]
+        assert reloaded["payload"]["pdq_size_in"] == payload["pdq_size_in"]
+        saved_pdq = client.put(f"/api/internal-quotes/{quote_id}/sections/sales", json={"revision": revision, "payload": pdq_payload})
+        assert saved_pdq.status_code == 200, saved_pdq.text
+        final = client.get(f"/api/internal-quotes/{quote_id}").json()
+        final_sales = next(item for item in final["sections"] if item["department"] == "sales")
+        assert final_sales["payload"]["pdq_size_in"] == pdq_payload["pdq_size_in"]
+        assert final_sales["payload"]["pdq_size_unit"] == "cm"
+        assert final_sales["calculation"] == preview.json()["calculation"]
 
 
 def test_section_live_preview_uses_authoritative_calculator_without_persisting(monkeypatch):

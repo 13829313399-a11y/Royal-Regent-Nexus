@@ -50,6 +50,7 @@ from app.services.internal_quote import (
     _get_quote,
     _get_section,
     _invalidate_downstream_dependencies,
+    _invalidate_final_release,
     _json_object,
     _rr2_cost_summary,
     _section_out,
@@ -67,6 +68,12 @@ from app.services.internal_quote_excel import (
     build_internal_quote_engineering_workbook,
     build_internal_quote_workbook,
 )
+from app.services.internal_quote_components import (
+    COMPONENT_IMAGE_PREFIX, quote_components, component_image_department,
+    import_assignment_rows, apply_import_assignments,
+)
+
+
 from app.services.internal_quote_import import IMPORT_TYPE_DEPARTMENTS, parse_internal_quote_workbook
 
 
@@ -205,6 +212,8 @@ def _preview_payload(batch: InternalQuoteImportBatch) -> dict[str, Any]:
         "payload_fragment": preview.get("payload_fragment", {}),
         "diff_summary": preview.get("diff_summary", {}),
         "warnings": preview.get("warnings", []),
+        "assignment_rows": preview.get("assignment_rows", []),
+        "assignment_components": preview.get("assignment_components", []),
         "status": batch.status,
         "created_by_name": batch.created_by_name,
         "created_at": batch.created_at,
@@ -309,6 +318,11 @@ def create_import_preview(
             for image in parsed.embedded_images
         ],
     }
+    components = quote_components(db, quote)
+    if components and import_type in {"mold", "painting"}:
+        preview["assignment_rows"] = import_assignment_rows(import_type, parsed.payload_fragment)
+        preview["assignment_components"] = components
+        preview["warnings"].append("一次映射当前产品的全部明细；逐条分配到主体/配件后再确认，将替换本部门对应模板区域。")
     preview["diff_summary"]["append_result_rows"] = (
         int(preview["diff_summary"]["existing_rows"]) + parsed.row_count
     )
@@ -763,6 +777,12 @@ def confirm_import_batch(
     if not isinstance(fragment, dict):
         raise HTTPException(status_code=400, detail="导入预览批次结构无效")
     effective_mode = "replace"
+    components = quote_components(db, quote)
+    if components and batch.import_type in {"mold", "painting"}:
+        fragment = apply_import_assignments(batch.import_type, fragment, payload.component_assignments, components)
+        preview["component_assignments"] = payload.component_assignments
+    elif payload.component_assignments:
+        raise HTTPException(status_code=400, detail="当前导入不支持分项分配")
     fragment = _tag_import_fragment(batch.import_type, fragment, batch.id)
     preview["payload_fragment"] = fragment
     source_workbook_attachment_id = _materialize_imported_source_workbook(
@@ -864,6 +884,7 @@ def _attachment_out(
     import_batch: InternalQuoteImportBatch | None = None,
 ) -> InternalQuoteAttachmentOut:
     return InternalQuoteAttachmentOut(
+        pricing_component_id=(attachment.department[len(COMPONENT_IMAGE_PREFIX):] if attachment.department.startswith(COMPONENT_IMAGE_PREFIX) else ""),
         id=attachment.id,
         quote_id=attachment.quote_id,
         department=attachment.department,
@@ -885,7 +906,7 @@ def _can_access_attachment_department(
     quote: InternalQuote,
     department: str,
 ) -> bool:
-    if department == "product-image":
+    if department == "product-image" or department.startswith(COMPONENT_IMAGE_PREFIX):
         return True
     if any(
         has_permission_in_scope(user, permission, quote.factory_id, scope_department)
@@ -1042,6 +1063,67 @@ def upload_product_image(
     db.commit()
     db.refresh(attachment)
     return _attachment_out(attachment)
+
+
+def _component_image_quote(db, quote_id, component_id, revision, user):
+    quote = db.scalar(select(InternalQuote).where(InternalQuote.id == quote_id).with_for_update())
+    if quote is None:
+        raise HTTPException(404, "报价不存在")
+    _ensure_active(quote)
+    ensure_quote_permission(db, user, "internal_quote:create", quote.factory_id, ("sales-business", "engineering"))
+    _check_revision(quote.header_revision, revision, "报价资料")
+    if quote.status not in {"drafting", "rejected"} or quote.final_release_status in {"pending", "approved"}:
+        raise HTTPException(409, "报价已提交或审核完成，请先退回修改后维护分项图片")
+    if component_id not in {str(c["id"]) for c in quote_components(db, quote)}:
+        raise HTTPException(400, "分项不属于当前 JustPlay 产品")
+    return quote
+
+
+def save_component_image(db, quote_id, component_id, revision, user, *, file_name="", content=None, request=None):
+    quote = _component_image_quote(db, quote_id, component_id, revision, user)
+    department = component_image_department(component_id)
+    attachment = None
+    if content is not None:
+        clean_name = safe_file_name(file_name)
+        extension, content_type = _validate_attachment(clean_name, content)
+        if extension not in IMAGE_EXTENSIONS:
+            raise HTTPException(400, "分项主图仅支持 JPG/JPEG/PNG/WEBP 图片")
+        # Validate decoded image content as well as its filename before persistence.
+        from PIL import Image
+        try:
+            with Image.open(BytesIO(content)) as image:
+                image.verify()
+        except Exception as error:
+            raise HTTPException(400, "分项图片无法读取，请上传有效图片") from error
+        attachment = InternalQuoteAttachment(
+            id=f"IQATT-{uuid4().hex}", quote_id=quote.id, factory_id=quote.factory_id,
+            department=department, file_name=clean_name, content_type=content_type,
+            size_bytes=len(content), sha256=digest(content), content=content,
+            uploaded_by=user.id, uploaded_by_name=user.display_name, uploaded_at=now_text(),
+        )
+    existing = db.scalars(select(InternalQuoteAttachment).where(
+        InternalQuoteAttachment.quote_id == quote.id, InternalQuoteAttachment.department == department,
+    )).all()
+    for old in existing:
+        db.delete(old)
+    if attachment is not None:
+        db.add(attachment)
+    old_revision = quote.header_revision
+    quote.header_revision += 1
+    quote.updated_at = now_text()
+    _invalidate_final_release(db, quote, reason="component_image_changed")
+    # Header revision is part of the export identity, even for historical exports.
+    for record in db.scalars(select(InternalQuoteExportFile).where(
+        InternalQuoteExportFile.quote_id == quote.id, InternalQuoteExportFile.status == "current",
+    )).all():
+        record.status = "superseded"
+        record.superseded_at = now_text()
+    _add_audit(db, quote, user, "upload_component_image" if attachment else "delete_component_image",
+               detail=canonical_json({"component_id": component_id, "attachment_id": attachment.id if attachment else "",
+                                      "previous_attachment_ids": [a.id for a in existing]}),
+               old_revision=old_revision, new_revision=quote.header_revision, request=request)
+    db.commit()
+    return _attachment_out(attachment) if attachment else {"deleted": True}
 
 
 def list_attachments(
