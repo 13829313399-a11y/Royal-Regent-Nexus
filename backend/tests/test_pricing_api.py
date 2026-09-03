@@ -182,3 +182,25 @@ def test_engineering_user_cannot_use_customer_pricing(monkeypatch):
         login(client, "engineer_pricing", "engineer")
         response = client.get("/api/pricing/context?customer_id=buzzbee&factory_id=huaxing")
         assert response.status_code == 403
+
+
+def test_quote_translation_requires_import_permission_and_correct_factory(monkeypatch):
+    payload={"factory_id":"huaxing","customer_id":"yinhui","texts":["配重塊 4.0mm"]}
+    with make_client(monkeypatch) as client:
+        assert client.post('/api/pricing/translate-descriptions',json=payload).status_code == 401
+        login(client,"translation_engineer","engineer")
+        assert client.post('/api/pricing/translate-descriptions',json=payload).status_code == 403
+        login(client,"translation_foreign","sales_customer_owner","huadeng")
+        assert client.post('/api/pricing/translate-descriptions',json=payload).status_code == 403
+        login(client,"translation_sales","sales_customer_owner")
+        result=client.post('/api/pricing/translate-descriptions',json=payload)
+        assert result.status_code == 200
+        assert result.headers['cache-control'] == 'no-store'
+        assert result.json()['items'][0]['source'] == payload['texts'][0]
+        assert 'Counterweight' in result.json()['items'][0]['translation']
+        assert client.post('/api/pricing/translate-descriptions',json={**payload,"factory_id":"huadeng"}).status_code == 422
+        assert client.post('/api/pricing/translate-descriptions',json={**payload,"customer_id":"buzzbee"}).status_code == 422
+        assert client.post('/api/pricing/translate-descriptions',json={**payload,"texts":["x"*1001]}).status_code == 422
+        config=importlib.import_module('app.core.config')
+        monkeypatch.setattr(config.settings,'document_tools_enabled',False)
+        assert client.post('/api/pricing/translate-descriptions',json=payload).status_code == 503

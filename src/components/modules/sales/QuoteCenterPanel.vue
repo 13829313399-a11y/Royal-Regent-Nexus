@@ -1425,7 +1425,7 @@ async function exportCustomerQuoteExcel() {
         </div>
       </div>
 
-      <YinhuiQuoteReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiConversionResult" v-model:confirmed="yinhuiConfirmed" :result="yinhuiConversionResult" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote" />
+      <YinhuiQuoteReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiConversionResult" v-model:confirmed="yinhuiConfirmed" :result="yinhuiConversionResult" :factory-id="activeFactoryId" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote" />
 
       <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <label
