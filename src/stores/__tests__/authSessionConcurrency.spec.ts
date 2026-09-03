@@ -13,6 +13,7 @@ vi.mock('@/api/auth', () => ({
 }))
 
 import { useAuthStore } from '../auth'
+import { useAppStore } from '../app'
 
 const user = {
   id: 'admin',
@@ -24,6 +25,7 @@ const user = {
   factory_scopes: ['*'],
   department_scopes: ['*'],
   force_password_change: false,
+  profile: { primary_factory_id: 'huakang-a', primary_department: 'engineering', position: '', confirmation_status: 'confirmed' },
 }
 
 describe('auth session loading', () => {
@@ -107,5 +109,50 @@ describe('auth session loading', () => {
     await expect(pendingRefresh).resolves.toBe(true)
     expect(authStore.isAuthenticated).toBe(true)
     expect(authStore.currentUser?.username).toBe('admin')
+    expect(useAppStore().activeFactoryId).toBe('huakang-a')
+  })
+
+  it('does not let a stale successful probe restore a logged-out factory binding', async () => {
+    let resolveProbe: (value: typeof user) => void = () => undefined
+    authApiMock.getMe.mockImplementationOnce(() => new Promise((resolve) => { resolveProbe = resolve }))
+    const store = useAuthStore()
+    const pending = store.ensureSession()
+    store.clearSession()
+    resolveProbe(user)
+    await expect(pending).resolves.toBe(false)
+    expect(useAppStore().authenticatedFactoryContext).toBeNull()
+    expect(useAppStore().activeFactoryId).toBe('group')
+  })
+
+  it('does not let an old successful refresh replace a different account factory', async () => {
+    let resolveRefresh: (value: typeof user) => void = () => undefined
+    const store = useAuthStore()
+    store.applySession(user)
+    authApiMock.getMe.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))
+    const pending = store.refreshSession()
+    authApiMock.login.mockResolvedValue({ ...user, id: 'b', profile: { ...user.profile, primary_factory_id: 'huakang-d' } })
+    await store.login({ username: 'b', password: 'test-password' })
+    resolveRefresh(user)
+    await pending
+    expect(store.currentUser?.id).toBe('b')
+    expect(useAppStore().activeFactoryId).toBe('huakang-d')
+  })
+
+  it('starts a new factory selection when the same account logs in again', async () => {
+    const store = useAuthStore()
+    store.applySession(user)
+    useAppStore().setActiveFactory('huadeng')
+    authApiMock.login.mockResolvedValue(user)
+    await store.login({ username: 'admin', password: 'test-password' })
+    expect(useAppStore().activeFactoryId).toBe('huakang-a')
+  })
+
+  it('clears the factory binding on logout even when the logout request fails', async () => {
+    const store = useAuthStore()
+    store.applySession(user)
+    authApiMock.logout.mockRejectedValueOnce(new Error('network unavailable'))
+    await expect(store.logout()).rejects.toThrow('network unavailable')
+    expect(useAppStore().authenticatedFactoryContext).toBeNull()
+    expect(useAppStore().activeFactoryId).toBe('group')
   })
 })

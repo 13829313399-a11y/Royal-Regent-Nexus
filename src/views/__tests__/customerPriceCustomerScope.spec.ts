@@ -25,7 +25,6 @@ function mountPanel(
   deniedPermissions: string[] = [],
   factoryId = 'huaxing',
 ) {
-  useAppStore().setActiveFactory(factoryId as 'huaxing' | 'huakang-a' | 'huakang-b' | 'huakang-c' | 'huakang-d' | 'huadeng')
   const effectiveAccess = customerPricePermissions.map((permissionCode) => ({
     permission_code: permissionCode,
     factory_id: factoryId,
@@ -58,11 +57,11 @@ function mountPanel(
     force_password_change: false,
   })
 
+  useAppStore().setActiveFactory(factoryId as 'huaxing' | 'huakang-a' | 'huakang-b' | 'huakang-c' | 'huakang-d' | 'huadeng')
   return mount(QuoteCenterPanel)
 }
 
 function mountCrossFactoryPosition(scopeMode: 'cross_factory_read' | 'cross_factory_operate') {
-  useAppStore().setActiveFactory('huadeng')
   useAuthStore().applySession({
     id: 'user-cross-factory-sales',
     username: 'cross-factory-sales',
@@ -96,6 +95,7 @@ function mountCrossFactoryPosition(scopeMode: 'cross_factory_read' | 'cross_fact
     force_password_change: false,
   })
 
+  useAppStore().setActiveFactory('huadeng')
   return mount(QuoteCenterPanel)
 }
 

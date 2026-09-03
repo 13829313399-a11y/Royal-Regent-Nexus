@@ -4,7 +4,7 @@ import {
   shouldEnforcePagePermissions,
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
-import { getDepartmentModule, isFactoryContextId, isModuleDepartmentId } from '@/data/enterpriseMock'
+import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
@@ -457,13 +457,14 @@ export const router = createRouter({
 let routeLoadingStartedAt = 0
 let routeLoadingTimer: ReturnType<typeof window.setTimeout> | undefined
 let lastAuthorizationRefreshAt = 0
+let latestNavigationVersion = 0
 const browserBackExitGuard = installBrowserBackExitGuard(router)
 
 type AuthorizationRefreshResult = 'refreshed' | 'password-change' | 'forbidden' | 'login' | 'unchanged'
 
 interface AuthorizationRefreshStore {
   isAuthenticated: boolean
-  currentUser?: { force_password_change?: boolean } | null
+  currentUser?: { id?: string; profile?: { primary_factory_id?: string } | null; force_password_change?: boolean } | null
   refreshSession: () => Promise<boolean>
   canAny: (permissions: string[], factoryId?: string, department?: string) => boolean
 }
@@ -473,10 +474,38 @@ interface AuthorizationRefreshRouter {
     value: {
       name?: unknown
       fullPath?: string
+      query?: Record<string, unknown>
       meta: Record<string, unknown>
     }
   }
   replace: (location: { name: string; query?: Record<string, string> }) => unknown
+}
+
+function factoryQueryForRoute(route: { name?: unknown; query?: Record<string, unknown> }) {
+  const query = route.query ?? {}
+  return route.name === 'login' || route.name === 'change-password'
+    ? router.resolve(resolvePostLoginRedirect(router, query.redirect)).query
+    : query
+}
+
+function postLoginRedirectLocation(fullPath: string) {
+  // A path-only route object does not carry the query/hash parsed from a URL.
+  const { path, query, hash } = router.resolve(fullPath)
+  return { path, query, hash, replace: true }
+}
+
+function syncAuthenticatedFactoryContextForRoute(
+  authStore: Pick<AuthorizationRefreshStore, 'currentUser'>,
+  query: Record<string, unknown>,
+) {
+  const user = authStore.currentUser
+  if (!user?.id) return
+  const appStore = useAppStore()
+  appStore.setRequestedFactoryContext(query.factory)
+  appStore.syncAuthenticatedFactoryContext({
+    userId: user.id,
+    primaryFactoryId: user.profile?.primary_factory_id,
+  })
 }
 
 export async function refreshAndRevalidateAuthorization(
@@ -497,6 +526,8 @@ export async function refreshAndRevalidateAuthorization(
     }
     return 'unchanged'
   }
+
+  syncAuthenticatedFactoryContextForRoute(authStore, factoryQueryForRoute(currentRoute))
 
   if (isPublicRoute) return 'refreshed'
 
@@ -557,6 +588,7 @@ const finishRouteLoading = () => {
 }
 
 router.beforeEach(async (to) => {
+  const navigationVersion = ++latestNavigationVersion
   if (routeLoadingTimer) {
     window.clearTimeout(routeLoadingTimer)
   }
@@ -565,10 +597,8 @@ router.beforeEach(async (to) => {
   const appStore = useAppStore()
   appStore.startRouteLoading()
 
-  const requestedFactory = Array.isArray(to.query.factory) ? to.query.factory[0] : to.query.factory
-  if (typeof requestedFactory === 'string' && isFactoryContextId(requestedFactory)) {
-    appStore.setActiveFactory(requestedFactory)
-  }
+  const factoryQuery = factoryQueryForRoute(to)
+  appStore.setRequestedFactoryContext(factoryQuery.factory)
 
   const authStore = useAuthStore()
   if (to.name === 'login') {
@@ -577,6 +607,8 @@ router.beforeEach(async (to) => {
     }
 
     if (authStore.isAuthenticated || await authStore.ensureSession()) {
+      if (navigationVersion !== latestNavigationVersion) return false
+      syncAuthenticatedFactoryContextForRoute(authStore, factoryQuery)
       if (authStore.currentUser?.force_password_change) {
         const redirect = resolvePostLoginRedirect(router, to.query.redirect)
         return {
@@ -585,20 +617,27 @@ router.beforeEach(async (to) => {
           replace: true,
         }
       }
-      return { path: resolvePostLoginRedirect(router, to.query.redirect), replace: true }
+      return postLoginRedirectLocation(resolvePostLoginRedirect(router, to.query.redirect))
     }
 
     return true
   }
 
   const requiresAuth = to.meta.requiresAuth !== false
-  if (requiresAuth && !await authStore.ensureSession()) {
-    return {
-      name: 'login',
-      query: { redirect: to.fullPath },
-      replace: true,
+  if (requiresAuth) {
+    const hasSession = await authStore.ensureSession()
+    // An older /auth/me may finish after a newer login/navigation has already won.
+    if (navigationVersion !== latestNavigationVersion) return false
+    if (!hasSession) {
+      return {
+        name: 'login',
+        query: { redirect: to.fullPath },
+        replace: true,
+      }
     }
   }
+
+  syncAuthenticatedFactoryContextForRoute(authStore, factoryQuery)
 
   if (authStore.currentUser?.force_password_change) {
     if (to.name === 'change-password') return true
@@ -611,10 +650,7 @@ router.beforeEach(async (to) => {
   }
 
   if (to.name === 'change-password') {
-    return {
-      path: resolvePostLoginRedirect(router, to.query.redirect),
-      replace: true,
-    }
+    return postLoginRedirectLocation(resolvePostLoginRedirect(router, to.query.redirect))
   }
 
   const permissions = Array.isArray(to.meta.permissions) ? to.meta.permissions as string[] : []
