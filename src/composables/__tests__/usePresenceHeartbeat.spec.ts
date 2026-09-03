@@ -80,4 +80,27 @@ describe('presence heartbeat lifecycle', () => {
     await flushPromises()
     wrapper.unmount()
   })
+
+  it('pauses during forced password change and resumes once the restricted session is replaced', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const authStore = useAuthStore()
+    authStore.applySession({ ...currentUser(), force_password_change: true })
+    const wrapper = mount(Host, { global: { plugins: [pinia] } })
+    window.dispatchEvent(new Event('focus'))
+    vi.advanceTimersByTime(120_000)
+    await flushPromises()
+    expect(sendHeartbeat).not.toHaveBeenCalled()
+
+    authStore.applySession(currentUser())
+    await flushPromises()
+    expect(sendHeartbeat).toHaveBeenCalledTimes(1)
+
+    authStore.applySession({ ...currentUser(), force_password_change: true })
+    await flushPromises()
+    vi.advanceTimersByTime(120_000)
+    await flushPromises()
+    expect(sendHeartbeat).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
 })

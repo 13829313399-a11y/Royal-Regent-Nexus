@@ -21,6 +21,7 @@ export function usePresenceHeartbeat() {
   function canSend() {
     return !disposed
       && authStore.isAuthenticated
+      && !authStore.currentUser?.force_password_change
       && typeof document !== 'undefined'
       && document.visibilityState === 'visible'
       && (typeof navigator === 'undefined' || navigator.onLine !== false)

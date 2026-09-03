@@ -12,4 +12,5 @@ app.use(pinia)
 app.use(router)
 installUnauthorizedSessionHandler(router, pinia)
 
-app.mount('#app')
+// Resolve the initial session and factory before rendering the shared shell.
+void router.isReady().then(() => app.mount('#app'))
