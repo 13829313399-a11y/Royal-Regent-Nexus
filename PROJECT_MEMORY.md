@@ -39,8 +39,6 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 - Business timestamps are interpreted and displayed in `Asia/Shanghai`.
 - API routing is rooted under `/api`; application health is exposed through `/health`.
 - The former AI assistant, Workbench, Provider integration, cloud document enhancement, background Tasks, Artifacts, Vision, Skills, Prompts, controlled actions, operational alerts and scheduling layout inference have been removed. No `/api/ai/*` or `/workbench/ai` route remains. Historical Alembic revisions are retained only to preserve upgrade-chain continuity; migration `20260826_0084` removes their runtime tables and alert rows.
-- The repository and production retire the injection-scheduling frontend and backend runtime. The production-module center retains a non-navigable `注塑排产中枢` card marked `重构中`; no module route, API registration or module-specific permission remains. Historical database tables and business data are deliberately retained.
-- Alembic has one current repository head: `20260901_0088`. Historical injection migrations and local SQLite business data at `0088` remain intact for migration-chain and recovery purposes. The last verified production PostgreSQL revision is also `0088`, upgraded only after a complete backup was restored to an isolated database and migration, startup guards and health checks passed there. Reverify live state before a new deployment.
 
 ## 3. Architecture and Source-of-Truth Entry Points
 
@@ -252,9 +250,14 @@ Indonesia invoice reconciliation compares the supported Faith Jet and RRI PDF in
 
 ### Injection-Scheduling Center
 
-The production module center retains only the `注塑排产中枢` catalog card. It has no route, link, keyboard focus or module-specific permission requirement and displays `重构中`. The former frontend workspace, API client, components, types, backend router, models, schemas, services, scheduling/import logic, template resource and module-specific tests are not part of the active application. Any future rebuild must reconfirm the workflow, data boundary, permissions and interface contract instead of depending on the retired runtime.
+The injection-scheduling runtime is retired. Keep only the non-navigable `注塑排产中枢` production card marked `重构中`. The former dedicated page, API clients, components, backend routers/services/schemas, permission registrations and module-only dependencies are removed. The old URL resolves through the generic module placeholder; no `/api/injection-scheduling` routes are registered. `/api/injection` still belongs to molding-sample production and remains operational.
 
-Migrations `20260827_0085`, `20260831_0087` and `20260901_0088` remain immutable history so existing databases can continue to identify their revision and preserve business data. Application startup no longer imports injection models, runs an injection schema gate or lets `create_all` recreate its tables. The local SQLite database remains at `0088`; deleting or migrating away its retained injection data requires a separate, explicit data-removal request and backup-first plan. The last verified production application revision is `2026e33b6fd15a9c220c63a4397981fbbb33e326` at schema `0088`, with its database container and volumes preserved and verified database/API/Web rollback artifacts retained. The retired runtime is absent from production; historical injection data remains intact. Reverify live state before a new deployment.
+The single repository head is `20260903_0095`, which permanently drops both `injection_schedule_*` and `injection_scheduling_*` table families, removes their three generations of permission registrations/grants, invalidates affected authorization previews and removes module IAM seed state. It checks external dependencies before deletion and refuses downgrade because lost records require a verified backup. Historical migration scripts remain immutable for version-chain continuity; they have no dependency on removed application code.
+
+The user explicitly authorized purging the local scheduling database. The local business database is now at `20260903_0095`, with no scheduling business tables or active module permissions; the card displays `历史数据 / 已清空`. Unrelated business records, accounts and shared system authorization audit snapshots remain protected. A verified full pre-purge backup is stored outside the application repository under `D:\RR\maintenance-backups`; it is recovery material, not active application data. Source input files are not database rows and were not erased. This local purge does not establish a production deployment or production database change.
+
+The deployment record merged from `origin/main` identifies production application revision `2026e33b6fd15a9c220c63a4397981fbbb33e326` at schema `20260901_0088`, with the scheduling runtime already retired but historical data and verified rollback artifacts retained. This is a prior deployment record, not a live check; reverify production before any further rollout.
+
 ### Huakang A 3D Printing Management
 
 3D printing management is a connected Huakang A-only production capability:
@@ -333,7 +336,7 @@ Several cards and dashboards in the module catalog remain planning, design or de
 - Many module cards and dashboard metrics still use demonstration data and need explicit replacement plans before they can be treated as operational.
 - The repository alone cannot confirm the live production `AUTHZ_MODE`, permission-write posture, database head or deployed application revision.
 - The former AI subsystem is retired. Historical migration files remain only so existing databases can advance safely to `20260826_0084`; application code must not import or recreate the removed routes, models, services, tables, provider settings or UI surfaces. The checked-in `Dockerfile.backend` still runs an AI `SkillRegistry` validation against removed application source, so a clean API image build requires a recipe correction. A deployment that reuses a verified existing dependency layer with unchanged dependency manifests and replaces application source from a pinned Git tree does not establish that the standard clean build works.
-- The injection-scheduling runtime is retired in the repository and production. Historical migrations and database tables/data remain deliberately preserved but have no active frontend route or backend API surface. Its historical migration regression `test_injection_scheduling_v2_rebuilds_current_backend_contract` still expects 10 `injection_scheduling:*` permission rows after upgrade to head, while retained legacy rows plus the 0087 read/edit additions produce 12; that stale assertion remains outside this retirement change.
+- Injection scheduling is retired and its local data has been purged at `20260903_0095`. PostgreSQL execution of the 0089–0095 migration chain has not been validated on a live database; a production rollout requires its own verified backup, migration rehearsal and authorization. A merged PR does not deploy or modify production data.
 
 ## 9. Current Next Steps
 
@@ -343,6 +346,7 @@ The smallest unresolved decisions that require product or operational confirmati
 - Schedule the Huakang A 3D printing cutover, provide production deployment access, and field-accept one idle printer before enabling remote control across all printers.
 - Confirm the Customer Order Center exception thresholds, the Indonesia schedule phase, the normalized persistence model and the confirmed-demand contract with PMC.
 - Confirm the intended production authorization mode and IAM-write rollout before enabling permission configuration changes.
+- Before any future injection-scheduling rebuild, reconfirm the workflow, data boundary, permissions and interface contract. Do not restore the retired runtime or assume purged records can be recreated without a verified backup.
 - Inventory the remaining demonstration module cards, then prioritize each as an implemented integration, a deliberately retained placeholder or a removal candidate.
 
 When one of these decisions becomes an implemented, verified long-lived fact, update the relevant section in place and remove the corresponding unresolved item.

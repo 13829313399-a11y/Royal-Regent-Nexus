@@ -121,7 +121,9 @@ INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION = "20260827_0085"
 CARTON_AD_HOC_RECEIPT_MIGRATION_REVISION = "20260830_0086"
 INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION = "20260831_0087"
 INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION = "20260901_0088"
-HEAD_MIGRATION_REVISION = INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION
+# Historical rebuild tests stop before the later destructive retirement.
+INJECTION_SCHEDULING_HISTORY_REVISION = INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION
+HEAD_MIGRATION_REVISION = "20260903_0095"
 INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_factory_settings",
     "injection_schedule_order_demands",
@@ -4312,7 +4314,7 @@ def test_injection_scheduling_module_removal_drops_runtime_contract(tmp_path):
 
 def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
     database_path = tmp_path / "injection_scheduling_v2_current_0052.db"
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
 
     with sqlite3.connect(database_path) as connection:
@@ -4419,12 +4421,24 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
             "alternative_no",
             "replay_of_run_id",
         } <= run_columns
-        assert connection.execute(
-            """
-            SELECT COUNT(*) FROM auth_permissions
-            WHERE code LIKE 'injection_scheduling:%'
-            """
-        ).fetchone() == (10,)
+        assert {
+            row[0] for row in connection.execute(
+                "SELECT code FROM auth_permissions WHERE code LIKE 'injection_scheduling:%'"
+            )
+        } == {
+            "injection_scheduling:admin",
+            "injection_scheduling:edit",
+            "injection_scheduling:export",
+            "injection_scheduling:import",
+            "injection_scheduling:manage_import_profiles",
+            "injection_scheduling:manage_master",
+            "injection_scheduling:manage_rules",
+            "injection_scheduling:publish",
+            "injection_scheduling:read",
+            "injection_scheduling:report",
+            "injection_scheduling:rollback",
+            "injection_scheduling:schedule",
+        }
         assert connection.execute(
             """
             SELECT profile_code, status, revision
@@ -4468,7 +4482,7 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
         assert "required_dimension_fields" not in config_json
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        ).fetchone() == (INJECTION_SCHEDULING_HISTORY_REVISION,)
 
     allowed_startup = _run_dispatch_init_db(database_path)
     assert allowed_startup.returncode == 0, allowed_startup.stderr
@@ -4487,7 +4501,7 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
         legacy_before = _snapshot_legacy_injection_scheduling_tables(connection)
         assert legacy_before
 
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
 
     with sqlite3.connect(database_path) as connection:
@@ -4504,7 +4518,7 @@ def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
         assert _snapshot_legacy_injection_scheduling_tables(connection) == legacy_before
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        ).fetchone() == (INJECTION_SCHEDULING_HISTORY_REVISION,)
 
         def columns(table_name: str) -> set[str]:
             return {
@@ -4756,7 +4770,7 @@ def test_shared_mold_upgrade_preserves_existing_mold_and_changes_scope(tmp_path)
         )
         connection.commit()
 
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
@@ -4787,7 +4801,7 @@ def test_injection_schedule_center_upgrade_rejects_exact_name_conflict(tmp_path)
         )
         connection.commit()
 
-    rejected = _run_dispatch_alembic(database_path, "upgrade", "head")
+    rejected = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert rejected.returncode != 0
     assert "exact target table names already exist" in rejected.stderr
     assert "injection_schedule_machines" in rejected.stderr
@@ -4811,7 +4825,7 @@ def test_injection_schedule_center_upgrade_rejects_exact_name_conflict(tmp_path)
 
 def test_injection_schedule_center_audit_events_are_database_immutable(tmp_path):
     database_path = tmp_path / "injection_schedule_center_immutable_audit.db"
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
 
     with sqlite3.connect(database_path) as connection:
@@ -4866,7 +4880,7 @@ def test_injection_schedule_center_audit_events_are_database_immutable(tmp_path)
 
 def test_injection_schedule_center_empty_downgrade_preserves_legacy_data(tmp_path):
     database_path = tmp_path / "injection_schedule_center_empty_downgrade.db"
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         legacy_before = _snapshot_legacy_injection_scheduling_tables(connection)
@@ -4908,7 +4922,7 @@ def test_injection_schedule_center_empty_downgrade_preserves_legacy_data(tmp_pat
 
 def test_injection_schedule_center_downgrade_rejects_business_data(tmp_path):
     database_path = tmp_path / "injection_schedule_center_data_guard.db"
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         connection.execute(
@@ -4983,7 +4997,7 @@ def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path)
 
 def test_injection_scheduling_profile_downgrade_rejects_lifecycle_data(tmp_path):
     database_path = tmp_path / "injection_scheduling_profile_downgrade_guard.db"
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         connection.execute(
@@ -5015,7 +5029,7 @@ def test_injection_scheduling_profile_downgrade_rejects_lifecycle_data(tmp_path)
 
 def test_injection_scheduling_public_planning_downgrade_rejects_artifacts(tmp_path):
     database_path = tmp_path / "injection_scheduling_public_planning_downgrade.db"
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         connection.execute(
@@ -5123,7 +5137,7 @@ def test_injection_scheduling_profile_upgrade_preserves_existing_import_batch(tm
         )
         connection.commit()
 
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", INJECTION_SCHEDULING_HISTORY_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
@@ -5143,7 +5157,7 @@ def test_injection_scheduling_profile_upgrade_preserves_existing_import_batch(tm
         )
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_MIGRATION_REVISION,)
+        ).fetchone() == (INJECTION_SCHEDULING_HISTORY_REVISION,)
 
 
 def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path):
