@@ -10,6 +10,7 @@ export const YINHUI_HKD_USD = 7.8
 type Material = string
 export interface YinhuiCostRow {
   description: string
+  originalDescription?: string
   source: string
   quantity: number
   amountHkd: number
@@ -20,6 +21,7 @@ export interface YinhuiToolRow {
   moldNo: string
   partNo: string
   description: string
+  originalDescription?: string
   usage: number
   cavity: number
   weightG: number
@@ -114,7 +116,7 @@ const translations: Array<[RegExp, string]> = [
   [/双安全压簧/g, 'Double Safety Compression Spring '], [/密绕拉簧/g, 'Close-wound Extension Spring '],
   [/胶钉带/g, 'Plastic Fastener Tie '], [/透明胶圈/g, 'Clear Elastic Band '],
   [/介子头螺丝/g, 'Washer Head Screw '], [/直花钉轴/g, 'Knurled Pin '], [/钉轴/g, 'Pin '],
-  [/单面强力背胶/g, 'Strong Single-sided Adhesive'], [/度/g, ' deg'],
+  [/单面强力背胶/g, 'Strong Single-sided Adhesive'], [/厚度/g, 'Thickness '], [/硬度/g, 'Hardness '], [/(?<=\d)\s*度/g, ' deg'],
   [/电子[（(]\d+[）)]/g, 'PCBA'], [/车[缝縫][（(]\d+[）)]/g, 'Fabric Assembly'],
   [/螺絲/g, 'Screw '], [/丝母/g, 'Nut '], [/机牙/g, 'Machine Screw '],
   [/(AA[ A]*)电池(?:负正片|正负片)/g, '$1 Battery Positive-Negative Contact'],
@@ -168,7 +170,7 @@ function emptyData(): YinhuiQuoteData {
     assemblyHkd: 0, sprayingHkd: 0, packagingLaborHkd: 0, battery: '', internalTotalHkd: 0 }
 }
 function addCost(data: YinhuiQuoteData, category: string, description: string, quantity: number, amountHkd: number, internalHkd: number, source: string) {
-  const line: YinhuiCostRow = { description: translate(description), quantity, amountHkd: round(amountHkd), internalHkd, source }
+  const line: YinhuiCostRow = { description: translate(description), originalDescription: description, quantity, amountHkd: round(amountHkd), internalHkd, source }
   if (/报关|報關|文件[费費]|\bcustoms?\b|\bdocuments?\s*(?:fee|cost)s?\b/i.test(`${category} ${description}`)) (data.documentFees ||= []).push({ ...line, description: 'Documents / Customs Fee' })
   else if (/装配工|assembly/i.test(category)) {
     if (/包装|包裝|packing/i.test(description)) data.packagingLaborHkd += amountHkd

@@ -256,6 +256,20 @@ def _cached_offline_translator(model_dir: str, device: str) -> OfflineDocumentTr
     return OfflineDocumentTranslator(model_dir, device=device)
 
 
+def translate_texts_locally(
+    texts: Sequence[str],
+    direction: TranslationDirection,
+    *,
+    model_dir: str | Path,
+    device: str = "cpu",
+) -> list[str]:
+    """Reuse the document engine without creating or persisting a document."""
+    if direction not in MODEL_SUBDIRECTORIES:
+        raise DocumentTranslationError("翻译方向无效。")
+    translator = _cached_offline_translator(str(Path(model_dir).resolve()), device)
+    return translator.translate_batch(texts, direction)
+
+
 def document_translation_status(model_dir: str | Path) -> dict[str, object]:
     root = Path(model_dir)
     directions = {
