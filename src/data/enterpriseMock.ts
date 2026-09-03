@@ -129,6 +129,7 @@ export interface EnterpriseModule {
   factoryIds?: FactoryContextId[]
   permissions?: string[]
   strictAccess?: boolean
+  permissionDepartment?: string
 }
 
 export interface MoldingSampleSummary {
@@ -926,6 +927,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         factoryIds: ['huakang-a'],
         permissions: ['three_d_printing:read'],
         strictAccess: true,
+        permissionDepartment: 'three-d-printing',
         statusMetrics: [
           { label: '机台', value: '11', tone: 'teal' },
           { label: '数据', value: '云端', tone: 'blue' },

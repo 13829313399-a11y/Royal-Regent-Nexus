@@ -49,7 +49,7 @@ const visibleModules = computed(() => {
       if (
         module.strictAccess
         && module.permissions?.length
-        && !authStore.canAny(module.permissions, factory.id, 'three-d-printing')
+        && !authStore.canAny(module.permissions, factory.id, module.permissionDepartment)
       ) return false
       return true
     })
