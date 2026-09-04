@@ -248,8 +248,38 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_REVISION = "20260723_0030"
 INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION = "20260721_0029"
 INTERNAL_QUOTE_BASELINE_TABLE = "internal_quote_pricing_baselines"
 INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
-THREE_D_PRINTING_REVISION = "20260729_0041"
+THREE_D_PRINTING_REVISION = "20260904_0096"
 THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset({"20260728_0039", "20260729_0040"})
+THREE_D_PRINTING_V2_TABLES = {
+    "three_d_printing_sites", "three_d_printing_network_gateways",
+    "three_d_printing_connector_instances", "three_d_printing_printer_connections",
+    "three_d_printing_printer_state_events", "three_d_printing_material_aliases",
+    "three_d_printing_migration_batches", "three_d_printing_migration_row_results",
+}
+THREE_D_PRINTING_V2_COLUMNS = {
+    "three_d_printing_production_records": {
+        "site_id", "device_job_key", "legacy_status", "run_status",
+        "reconciliation_status", "data_quality_flags_json", "product_snapshot_json",
+        "cost_profile_version", "calculated_cost_snapshot_json", "migration_batch_id", "source_system",
+    },
+    "three_d_printing_inventory_movements": {
+        "idempotency_key", "movement_status", "reversal_of_movement_id", "reservation_id",
+        "source_event_id", "migration_batch_id", "raw_material_name", "affects_balance",
+    },
+    "three_d_printing_printer_commands": {
+        "connector_instance_id", "lease_id", "leased_until", "attempt_count", "next_attempt_at", "result_evidence_json",
+    },
+    "three_d_printing_printers": {"site_id"},
+    "three_d_printing_product_images": {"legacy_sha256"},
+    'three_d_printing_sites': {'timezone', 'name', 'updated_at', 'id', 'site_code', 'created_at', 'enabled', 'factory_id'},
+    'three_d_printing_network_gateways': {'tunnel_address', 'packet_loss_percent', 'factory_id', 'advertised_cidr', 'status', 'site_id', 'last_error', 'config_revision', 'id', 'latency_ms', 'last_handshake_at', 'gateway_key', 'vpn_type'},
+    'three_d_printing_connector_instances': {'capabilities_json', 'status', 'instance_id', 'site_id', 'last_error', 'id', 'started_at', 'last_seen_at', 'connector_key', 'leader_printer_count', 'version', 'factory_id'},
+    'three_d_printing_printer_connections': {'last_disconnect_at', 'lan_host', 'printer_id', 'connection_revision', 'site_id', 'mqtt_port', 'leader_instance_id', 'leader_lease_id', 'leader_leased_until', 'connection_owner', 'credential_ref', 'certificate_fingerprint', 'connection_enabled', 'last_connect_at', 'factory_id'},
+    'three_d_printing_printer_state_events': {'connection_session_id', 'error_text', 'printer_id', 'machine_no', 'current_file', 'payload_version', 'raw_payload_json', 'observed_at', 'progress', 'id', 'temperatures_json', 'remaining_minutes', 'state', 'connector_instance_id', 'received_at', 'error_code', 'sequence', 'factory_id'},
+    'three_d_printing_material_aliases': {'source', 'approved_by', 'raw_name', 'id', 'canonical_material_id', 'approved_at', 'normalized_name', 'factory_id'},
+    'three_d_printing_migration_batches': {'image_count', 'checkpoint_json', 'started_at', 'source_updated_at_ms', 'source_sha256', 'summary_json', 'reconciliation_json', 'status', 'source_size_bytes', 'leased_until', 'id', 'error_code', 'factory_id', 'code_revision', 'migration_version', 'completed_at', 'site_id', 'image_bytes', 'source_system', 'lease_id', 'expected_counts_json'},
+    'three_d_printing_migration_row_results': {'target_id', 'status', 'batch_id', 'updated_at', 'source_hash', 'id', 'legacy_id', 'error_code', 'entity_type', 'attempt_count', 'target_hash', 'factory_id'},
+}
 QC_INSPECTION_REVISION = "20260824_0082"
 QC_INSPECTION_REQUIRED_TABLES = {
     "qc_customer_configs",
@@ -447,15 +477,22 @@ def ensure_internal_quote_baseline_freight_schema_ready() -> None:
 
 
 def ensure_three_d_printing_schema_ready() -> None:
-    """Do not let create_all bypass the 3D schema or factory reassignment."""
+    """Reject partial/old schemas before create_all can disguise a missed migration."""
     with engine.connect() as connection:
         inspector = inspect(connection)
-        if "alembic_version" not in set(inspector.get_table_names()):
+        tables = set(inspector.get_table_names())
+        if "alembic_version" not in tables and not any(name.startswith("three_d_printing_") for name in tables):
             return
         current_revision = connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar_one_or_none()
-    if current_revision not in THREE_D_PRINTING_PREVIOUS_REVISIONS:
+        ).scalar_one_or_none() if "alembic_version" in tables else None
+        missing = THREE_D_PRINTING_V2_TABLES - tables
+        for table, required in THREE_D_PRINTING_V2_COLUMNS.items():
+            if table not in tables:
+                missing.add(table)
+            else:
+                missing.update(f"{table}.{name}" for name in required - {column["name"] for column in inspector.get_columns(table)})
+    if not missing and current_revision not in THREE_D_PRINTING_PREVIOUS_REVISIONS:
         return
     raise RuntimeError(
         "检测到数据库尚未完成 3D 打印机管理迁移 "

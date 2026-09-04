@@ -1,58 +1,85 @@
-"""Migrate the legacy local 3D printing ``data.json`` into Nexus.
+"""Analyze, import and reconcile authoritative SQLite/WAL snapshots.
 
-Run a dry check first:
-
-    python scripts/migrate_legacy_three_d_printing.py --source C:/path/to/data.json --dry-run
-
-After the old application enters its agreed read-only cutover window:
-
-    python scripts/migrate_legacy_three_d_printing.py --source C:/path/to/data.json
-
-The importer is keyed by legacy IDs and the source SHA-256. Re-running the
-same snapshot is a no-op; a newer snapshot updates the matching legacy rows
-without deleting Nexus-only records.
+Analysis and dry runs never load the Nexus database. Import/reconcile require
+the installed v2 schema; schema upgrades are a separate Alembic operation.
+The old JSON importer remains available only with explicit fallback + import.
 """
+# ruff: noqa: TC004 -- Runtime aliases are populated by _load_import_runtime, never on analyze.
 
 from __future__ import annotations
 
 import argparse
 import base64
+import json
+import re
+import subprocess
+import sys
+import tempfile
 from collections import Counter
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
-import json
 from pathlib import Path
-import re
-import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
 
-
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.config import settings  # noqa: E402
-from app.db import SessionLocal  # noqa: E402
-from app.models.three_d_printing import (  # noqa: E402
-    ThreeDPrintingAuditEvent,
-    ThreeDPrintingDayStatus,
-    ThreeDPrintingInventory,
-    ThreeDPrintingInventoryMovement,
-    ThreeDPrintingMaintenance,
-    ThreeDPrintingMaterial,
-    ThreeDPrintingMigrationRun,
-    ThreeDPrintingPrinter,
-    ThreeDPrintingProduct,
-    ThreeDPrintingProductImage,
-    ThreeDPrintingProductionRecord,
-    ThreeDPrintingSchedule,
-    ThreeDPrintingSetting,
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from legacy_sqlite_reader import (
+    SnapshotError,
+    assert_no_secrets,
+    capture_snapshot,
+    file_fingerprint,
+    read_json,
 )
+from legacy_three_d_analysis import analyze_state
+from scan_three_d_secrets import SafeParser
+
+if TYPE_CHECKING:
+    from app.core.config import settings
+    from app.db import SessionLocal
+    from app.models.three_d_printing import (
+        ThreeDPrintingAuditEvent,
+        ThreeDPrintingDayStatus,
+        ThreeDPrintingInventory,
+        ThreeDPrintingInventoryMovement,
+        ThreeDPrintingMaintenance,
+        ThreeDPrintingMaterial,
+        ThreeDPrintingMigrationRun,
+        ThreeDPrintingPrinter,
+        ThreeDPrintingProduct,
+        ThreeDPrintingProductImage,
+        ThreeDPrintingProductionRecord,
+        ThreeDPrintingSchedule,
+        ThreeDPrintingSetting,
+    )
+
+
+def _load_import_runtime() -> None:
+    """Legacy importer only. Analyze/help must not initialize app.db/settings."""
+    from app.core.config import settings
+    from app.db import SessionLocal
+    from app.models import three_d_printing as models
+
+    # Preserve the existing mapper API while deferring DB-specific dependencies.
+    names = (
+        "ThreeDPrintingAuditEvent", "ThreeDPrintingDayStatus", "ThreeDPrintingInventory",
+        "ThreeDPrintingInventoryMovement", "ThreeDPrintingMaintenance", "ThreeDPrintingMaterial",
+        "ThreeDPrintingMigrationRun", "ThreeDPrintingPrinter", "ThreeDPrintingProduct",
+        "ThreeDPrintingProductImage", "ThreeDPrintingProductionRecord", "ThreeDPrintingSchedule",
+        "ThreeDPrintingSetting",
+    )
+    globals().update({name: getattr(models, name) for name in names})
+    globals().update(settings=settings, SessionLocal=SessionLocal)
 
 
 FACTORY_ID = "huakang-a"
@@ -115,7 +142,7 @@ def load_source(path: Path) -> tuple[bytes, dict[str, Any]]:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"旧数据文件不是有效 UTF-8 JSON：{exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError("旧数据文件根节点必须是对象")
+        raise TypeError("旧数据文件根节点必须是对象")
     required = {"settings", "materials", "products", "records", "inventory"}
     missing = sorted(required - payload.keys())
     if missing:
@@ -261,10 +288,12 @@ def migrate(
     report: dict[str, Any],
     *,
     source: Path,
-    asset_dir: Path,
+    asset_dir: Path | None,
 ) -> dict[str, Any]:
+    _load_import_runtime()
     source_sha = report["sourceSha256"]
     started_at = now_text()
+    asset_dir = asset_dir or Path(settings.three_d_asset_dir)
     asset_root = asset_dir.expanduser().resolve()
     asset_root.mkdir(parents=True, exist_ok=True)
     run_id = f"3dmigration-{uuid4().hex}"
@@ -892,43 +921,230 @@ def _map_maintenance(
     return row
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="迁移旧版3D打印机管理数据")
-    parser.add_argument("--source", required=True, type=Path, help="旧版 data.json 路径")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = SafeParser(description="迁移旧版3D打印机管理数据")
+    sources = parser.add_mutually_exclusive_group(required=True)
+    sources.add_argument("--source", type=Path, help="SQLite快照或显式兼容JSON")
+    sources.add_argument("--source-dir", type=Path, help="含SQLite/WAL的冻结目录")
+    sources.add_argument("--source-zip", type=Path, help="旧ZIP，只读取白名单文件")
     parser.add_argument(
         "--asset-dir",
         type=Path,
-        default=Path(settings.three_d_asset_dir),
         help="产品图片持久化目录；默认使用 THREE_D_ASSET_DIR",
     )
+    parser.add_argument("--factory-id", default=FACTORY_ID, choices=[FACTORY_ID])
+    parser.add_argument("--site-code", default="heyuan", choices=["heyuan"])
+    parser.add_argument("--mode", choices=["analyze", "dry-run", "import", "reconcile"], default="analyze")
+    parser.add_argument("--allow-json-fallback", action="store_true", help="允许分析可能过期的JSON；不能用于本次正式切换")
+    parser.add_argument("--wal-checkpoint-confirmed", action="store_true")
+    parser.add_argument("--snapshot-dir", type=Path, help="可选，保留一致性快照的新目录")
+    parser.add_argument("--expected-audit", type=Path, help="可选，核对本次上传审计的验收基线")
     parser.add_argument("--dry-run", action="store_true", help="仅校验和统计，不写数据库")
+    parser.add_argument("--migration-batch", help="续跑或对账的迁移批次 ID；对账时必填")
+    parser.add_argument("--resume", action="store_true", help="从指定批次已提交的 checkpoint 续跑")
+    parser.add_argument("--chunk-size", type=int, default=200, choices=range(100, 501), metavar="100..500")
     parser.add_argument("--report", type=Path, help="可选的 JSON 报告输出路径")
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def _load_target_runtime(args: argparse.Namespace, source: Path, snapshot: Path | None = None) -> tuple[Any, Path]:
+    """Load application dependencies only after read-only source validation."""
+    from app.core.config import settings
+    from sqlalchemy.engine import make_url
+
+    # Refuse a configured target that is the authoritative source itself. This
+    # check precedes app.db import, which can initialize SQLite directories.
+    target = make_url(settings.database_url)
+    protected_roots = [source if source.is_dir() else source.parent]
+    if snapshot is not None:
+        protected_roots.append(snapshot.resolve().parent)
+    if target.get_backend_name() == "sqlite" and target.database not in (None, "", ":memory:"):
+        target_path = Path(target.database).expanduser().resolve()
+        if any(root in target_path.parents or target_path == root for root in protected_roots):
+            raise SnapshotError("target_database_overlaps_source")
+        if args.report and args.report.expanduser().resolve() == target_path:
+            raise SnapshotError("report_output_overlaps_target_database")
+    asset_dir = (args.asset_dir or Path(settings.three_d_asset_dir)).expanduser().resolve()
+    if any(asset_dir == root or root in asset_dir.parents or asset_dir in root.parents for root in protected_roots):
+        raise SnapshotError("asset_directory_overlaps_source")
+    if args.report and (args.report.expanduser().resolve() == asset_dir or asset_dir in args.report.expanduser().resolve().parents):
+        raise SnapshotError("report_output_overlaps_asset_directory")
+
+    from app.db import SessionLocal, ensure_three_d_printing_schema_ready
+
+    try:
+        ensure_three_d_printing_schema_ready()
+    except RuntimeError:
+        raise SnapshotError("target_schema_upgrade_required") from None
+    return SessionLocal, asset_dir
+
+
+def _run_sqlite_migration(args: argparse.Namespace, captured: Any, source: Path) -> dict[str, Any]:
+    session_factory, asset_dir = _load_target_runtime(args, source, captured.path)
+    from legacy_three_d_importer import MigrationError, run_migration
+
+    try:
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=BACKEND_DIR, capture_output=True,
+            text=True, timeout=10, check=False,
+        )
+        code_revision = revision.stdout.strip() if revision.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        code_revision = ""
+    if not re.fullmatch(r"[0-9a-f]{40,64}", code_revision):
+        code_revision = ""
+    try:
+        return run_migration(
+            captured.path, captured.manifest, session_factory=session_factory,
+            asset_dir=asset_dir, mode=args.mode, migration_batch=args.migration_batch,
+            chunk_size=args.chunk_size, resume=args.resume, code_revision=code_revision,
+        )
+    except MigrationError as exc:
+        batch_id = getattr(exc, "batch_id", None)
+        if isinstance(batch_id, str) and re.fullmatch(r"3dbatch-[0-9a-f]{32}", batch_id):
+            return {"status": "failed", "batch_id": batch_id, "error_codes": [exc.code],
+                    "reconciliation": {"passed": False, "issues": [{"code": exc.code}]}}
+        raise SnapshotError(exc.code) from None
+
+
+def _baseline_check(report: dict[str, Any], audit_path: Path) -> dict[str, Any]:
+    audit = json.loads(audit_path.read_text(encoding="utf-8-sig"))
+    keys = {
+        "authoritative_sqlite": ("materials", "products", "product_images", "record_dates", "date_min", "date_max",
+                                 "records_stored", "records_active", "records_tombstoned", "inventory_items", "stock_in_logs", "schedules", "maintenance"),
+        "records_quality": ("open_records_missing_end_time", "records_with_start_and_end", "status_counts"),
+        "images_quality": ("rows", "total_bytes", "orphan_image_rows", "products_with_image"),
+        "materials_inventory_quality": ("inventory_total_g", "stock_in_total_g", "stock_in_total_cost"),
+        "business_totals_active_records": ("quantity_total", "planned_material_g_total", "design_fee_total", "quoted_revenue_total"),
+    }
+    checked: list[str] = []
+    mismatches: list[str] = []
+    for section, fields in keys.items():
+        for field in fields:
+            label = section + "." + field
+            checked.append(label)
+            if section not in audit or field not in audit[section] or report.get(section, {}).get(field) != audit[section][field]:
+                mismatches.append(label)
+    manifest = report.get("manifest", {})
+    if manifest.get("source", {}).get("kind") == "zip":
+        checked.append("source.zip_sha256")
+        if manifest["source"]["sha256"] != audit.get("source", {}).get("zip_sha256"):
+            mismatches.append("source.zip_sha256")
+    checked.append("source.sqlite_updated_at_ms")
+    if manifest.get("checks", {}).get("state_updated_at_ms") != audit.get("source", {}).get("sqlite_updated_at_ms"):
+        mismatches.append("source.sqlite_updated_at_ms")
+    return {"status": "passed" if not mismatches else "failed", "checked_fields": checked, "mismatched_fields": mismatches}
+
+
+def _analyze_source(args: argparse.Namespace) -> dict[str, Any]:
+    source = (args.source_dir or args.source_zip or args.source).expanduser().resolve()
+    if source.is_dir():
+        if (source / "data.sqlite").is_file():
+            pass  # SQLite always wins, even if a JSON filename was supplied.
+        elif (source / "snapshot.sqlite").is_file():
+            source = source / "snapshot.sqlite"
+        else:
+            source = source / "data.json"
+    elif source.suffix.lower() == ".json" and (source.parent / "data.sqlite").is_file():
+        source = source.parent
+    if source.suffix.lower() == ".json" and source.is_file():
+        if args.mode == "reconcile" or args.migration_batch or args.resume:
+            raise SnapshotError("checkpoint_migration_requires_sqlite")
+        if args.expected_audit:
+            raise SnapshotError("authoritative_audit_requires_sqlite")
+        if not args.allow_json_fallback:
+            raise SnapshotError("json_fallback_requires_explicit_allow")
+        print("警告：JSON可能过期，不是本次生产切换的权威数据源。", file=sys.stderr)
+        payload = read_json(source)
+        if args.mode == "import" and not args.dry_run:
+            _session_factory, asset_dir = _load_target_runtime(args, source)
+            raw, payload = load_source(source)
+            assert_no_secrets(payload)
+            report = migrate(payload, analyze(payload, raw, source), source=source, asset_dir=asset_dir)
+            report["warnings"] = ["legacy_json_import_not_authoritative_for_cutover"]
+            return report
+        report = analyze_state(payload, [], source_kind="json_fallback")
+        report["source"] = file_fingerprint(source)
+        return report
+    # Default analysis leaves no transport artifacts. --snapshot-dir retains a bundle.
+    with tempfile.TemporaryDirectory(prefix="three-d-analysis-") as temporary:
+        captured = capture_snapshot(source, args.snapshot_dir or Path(temporary) / "snapshot",
+                                    wal_checkpoint_confirmed=args.wal_checkpoint_confirmed)
+        report = analyze_state(captured.state, captured.images)
+        report["manifest"] = captured.manifest
+        report["image_manifest"] = captured.images
+        if captured.fallback_state is not None:
+            json_report = analyze_state(captured.fallback_state, [], source_kind="json_fallback")
+            report["data_json_snapshot"] = json_report["data_json_snapshot"]
+            report["data_json_gap_vs_sqlite"] = {
+                key: value - json_report["data_json_snapshot"].get(key, 0)
+                for key, value in report["authoritative_sqlite"].items()
+                if type(value) is int and type(json_report["data_json_snapshot"].get(key)) is int
+            }
+            report.setdefault("warnings", []).append("compatibility_json_compared_only_never_imported")
+        if args.expected_audit:
+            report["baseline_validation"] = _baseline_check(report, args.expected_audit)
+        # A failed acceptance baseline must never be followed by target writes.
+        if args.mode in {"import", "reconcile"} and not args.dry_run:
+            if report.get("baseline_validation", {}).get("status") == "failed":
+                report["status"] = "analyzed_with_errors"
+                return report
+            report.update(_run_sqlite_migration(args, captured, source))
+        return report
 
 
 def main() -> int:
-    args = parse_args()
-    source = args.source.expanduser().resolve()
-    if not source.is_file():
-        raise FileNotFoundError(f"找不到旧数据文件：{source}")
-    raw, payload = load_source(source)
-    report = analyze(payload, raw, source)
-    if args.dry_run:
-        report["status"] = "dry_run"
-    else:
-        report = migrate(
-            payload,
-            report,
-            source=source,
-            asset_dir=args.asset_dir,
-        )
-    rendered = json.dumps(report, ensure_ascii=False, indent=2)
-    if args.report:
-        report_path = args.report.expanduser().resolve()
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(rendered + "\n", encoding="utf-8")
-    print(rendered)
-    return 0
+    try:
+        args = parse_args()
+        # Refuse existing reports, including any source JSON supplied by mistake.
+        if args.report and args.report.expanduser().resolve().exists():
+            raise SnapshotError("report_output_already_exists")
+        source_path = (args.source_dir or args.source_zip or args.source).expanduser().resolve()
+        if source_path.is_dir() and args.report and source_path in args.report.expanduser().resolve().parents:
+            raise SnapshotError("report_output_overlaps_source")
+        if args.snapshot_dir and args.report:
+            snapshot_root = args.snapshot_dir.expanduser().resolve()
+            report_path = args.report.expanduser().resolve()
+            if report_path == snapshot_root or snapshot_root in report_path.parents:
+                raise SnapshotError("report_output_overlaps_snapshot_directory")
+        if args.mode == "reconcile" and not args.migration_batch:
+            raise SnapshotError("reconcile_requires_migration_batch")
+        if args.resume and (args.mode != "import" or not args.migration_batch or args.dry_run):
+            raise SnapshotError("resume_requires_import_and_migration_batch")
+        if args.migration_batch and args.mode not in {"import", "reconcile"}:
+            raise SnapshotError("migration_batch_requires_import_or_reconcile")
+        report = _analyze_source(args)
+        report.update(schema_version=1, factory_id=FACTORY_ID, site_code="heyuan")
+        report.setdefault("status", "dry_run" if args.dry_run or args.mode == "dry-run" else "analyzed")
+        blocking = report.get("images_quality", {}).get("invalid_images", 0) > 0
+        blocking = blocking or report.get("baseline_validation", {}).get("status") == "failed"
+        blocking = blocking or report.get("status") in {"failed", "imported_with_errors", "reconciliation_failed"}
+        blocking = blocking or report.get("reconciliation", {}).get("passed") is False
+        if report.get("source_kind") == "sqlite" and args.mode in {"import", "reconcile"} and not args.dry_run:
+            blocking = blocking or report.get("status") not in {"reconciled", "already_reconciled"}
+            blocking = blocking or report.get("reconciliation", {}).get("passed") is not True
+        if blocking and report.get("status") in {"analyzed", "dry_run"}:
+            report["status"] = "analyzed_with_errors"
+        assert_no_secrets(report)
+        rendered = json.dumps(report, ensure_ascii=False, indent=2)
+        if args.report:
+            report_path = args.report.expanduser().resolve()
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            with report_path.open("x", encoding="utf-8") as stream:
+                stream.write(rendered + "\n")
+            # Keep terminal logs small and exclude source business names/row data.
+            print(json.dumps({"status": report["status"], "report_written": True,
+                              "batch_id": report.get("batch_id"),
+                              "counts": report.get("authoritative_sqlite", report.get("data_json_snapshot", {})),
+                              "reconciliation_passed": report.get("reconciliation", {}).get("passed"),
+                              "baseline_validation": report.get("baseline_validation")}, ensure_ascii=False))
+        else:
+            print(rendered)
+        return 2 if blocking else 0
+    except Exception:  # noqa: BLE001 -- CLI boundary must never expose source data or connection secrets.
+        exc = sys.exc_info()[1]
+        print(json.dumps({"status": "failed", "error_code": exc.code if isinstance(exc, SnapshotError) else "analysis_failed"}))
+        return 2
 
 
 if __name__ == "__main__":
