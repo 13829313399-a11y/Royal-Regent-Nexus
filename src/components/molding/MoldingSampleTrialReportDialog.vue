@@ -84,7 +84,7 @@ watch(
 )
 
 function closeDialog() { previewVisible.value = false; reportZoom.value = 1; emit('close') }
-function toggleReportZoom() { reportZoom.value = reportZoom.value === 1 ? 1.3 : 1 }
+function toggleReportZoom() { reportZoom.value = reportZoom.value === 1 ? 2 : 1 }
 function saveTrialReport() {
   if (selectedItem.value && props.canSave && !props.readOnly) {
     emit('save', { itemId: selectedItem.value.id, data: cloneReportData(draft.value) })
@@ -180,5 +180,6 @@ async function confirmPrint() {
 </template>
 
 <style>
-.molding-sample-trial-report-zoom-canvas > .molding-trial-report-sheet { box-shadow: 0 1px 8px rgb(15 23 42 / 20%); }
+.molding-sample-trial-report-zoom-canvas { margin-inline: auto; }
+.molding-sample-trial-report-zoom-canvas > .molding-trial-report-sheet { margin: 0; box-shadow: 0 1px 8px rgb(15 23 42 / 20%); }
 </style>
