@@ -102,8 +102,18 @@ function findButton(wrapper: ReturnType<typeof mountView>, label: string) {
   return button
 }
 
+async function openOrderMoreActions(card: any, orderNo: string) {
+  await card.get(`button[aria-label="更多 ${orderNo} 订单操作"]`).trigger('click')
+}
+
 function businessDateOffset(days: number) {
   const current = new Date(`${new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })}T00:00:00Z`)
+  current.setUTCDate(current.getUTCDate() + days)
+  return current.toISOString().slice(0, 10)
+}
+
+function dateOffsetFrom(value: string, days: number) {
+  const current = new Date(`${value}T00:00:00Z`)
   current.setUTCDate(current.getUTCDate() + days)
   return current.toISOString().slice(0, 10)
 }
@@ -122,6 +132,8 @@ function orderFixture(orderNo: string, dueDate: string, status = 'CONFIRMED') {
     product_name: '',
     product_order_quantity: '100',
     order_date: businessDateOffset(-7),
+    customer_due_date: dateOffsetFrom(dueDate, 3),
+    safety_lead_days: 3,
     due_date: dueDate,
     status,
     note: '',
@@ -214,6 +226,8 @@ describe('CartonProcurementView frontend workspace', () => {
       product_name: '',
       product_order_quantity: String(payload.product_order_quantity),
       order_date: payload.order_date,
+      customer_due_date: payload.customer_due_date,
+      safety_lead_days: 3,
       due_date: payload.due_date,
       status: 'CONFIRMED',
       note: payload.note,
@@ -354,6 +368,9 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
 
     const summary = wrapper.get('[aria-label="订单交期提醒汇总"]')
+    const filterToolbar = wrapper.get('[aria-label="订单筛选与批量操作"]')
+    expect(summary.classes()).toContain('!mt-2')
+    expect(summary.element.nextElementSibling).toBe(filterToolbar.element)
     expect(summary.text()).toContain('逾期 1')
     expect(summary.text()).toContain('今日 0')
     expect(summary.text()).toContain('未来 3 天 1')
@@ -361,6 +378,8 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.get('[data-order-no="CT-SOON"]').text()).toContain('剩 2 天')
     expect(wrapper.get('[data-order-no="CT-FUTURE"]').text()).toContain('距交期 8 天')
     expect(wrapper.get('[data-order-no="CT-COMPLETED"]').text()).toContain('交付已完成')
+    expect(wrapper.get('[aria-label="CT-COMPLETED 到货进度"]').text()).toContain('100/100')
+    expect(wrapper.get('[aria-label="CT-COMPLETED 到货进度"]').text()).toContain('已齐')
     expect(wrapper.findAll('[data-order-no]').map((card) => card.attributes('data-order-no'))).toEqual([
       'CT-OVERDUE',
       'CT-SOON',
@@ -406,9 +425,35 @@ describe('CartonProcurementView frontend workspace', () => {
     const orderSelector = firstOrder.get('input[aria-label^="选择订单 "]')
 
     expect(selectionToolbar.element.nextElementSibling).toBe(firstOrder.element)
+    expect(selectionToolbar.classes()).toContain('bg-slate-200/90')
+    expect(selectionToolbar.get('.order-ledger-grid').exists()).toBe(true)
+    expect(firstOrder.get('.order-ledger-grid').exists()).toBe(true)
+    expect(firstOrder.classes()).toContain('mt-2')
+    expect(firstOrder.classes()).toContain('shadow-sm')
     expect(selectAll.classes()).toContain('size-5')
     expect(orderSelector.classes()).toContain('size-5')
-    expect(orderSelector.element.parentElement?.tagName).toBe('LABEL')
+    expect(orderSelector.element.parentElement?.tagName).toBe('DIV')
+  })
+
+  it('derives the plan due date from the customer due date and warns on short lead time', async () => {
+    const wrapper = mountView('orders')
+    await flushPromises()
+    await findButton(wrapper, '新建纸箱订单').trigger('click')
+
+    const orderDate = wrapper.get('input[aria-label="下单日期"]')
+    const customerDueDate = wrapper.get('input[aria-label="客户交期"]')
+    const planDueDate = wrapper.get('input[aria-label="计划交期"]')
+    expect(planDueDate.attributes('readonly')).toBeDefined()
+
+    await customerDueDate.setValue(dateOffsetFrom((orderDate.element as HTMLInputElement).value, 10))
+    expect((planDueDate.element as HTMLInputElement).value).toBe(
+      dateOffsetFrom((orderDate.element as HTMLInputElement).value, 7),
+    )
+    expect(wrapper.text()).not.toContain('不足默认 3 天安全提前量')
+
+    await customerDueDate.setValue(dateOffsetFrom((orderDate.element as HTMLInputElement).value, 1))
+    expect((planDueDate.element as HTMLInputElement).value).toBe((orderDate.element as HTMLInputElement).value)
+    expect(wrapper.get('[role="alert"]').text()).toContain('不足默认 3 天安全提前量')
   })
 
   it('groups multiple paper items under one contract and keeps paper quality separate from specification', async () => {
@@ -417,14 +462,53 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.get('select[aria-label="客户筛选"]').element.parentElement)
       .toBe(findButton(wrapper, '客户资料维护').element.parentElement)
 
-    expect(wrapper.text()).toContain('合同内纸品明细 · 4 行')
+    const firstOrder = wrapper.get('[data-order-no="CT-260805-006"]')
+    expect(firstOrder.text()).not.toContain('CT-260805-006')
+    expect(firstOrder.text()).toContain('08/05')
+    expect(firstOrder.text()).not.toContain('2026-08-05')
+    expect(wrapper.get('[aria-label="订单批量选择"]').text()).toContain('纸品明细')
+    expect(wrapper.get('[aria-label="订单批量选择"]').text()).not.toContain('产品数量')
+    const materialSummary = firstOrder.get('[aria-label="CT-260805-006 纸品明细"]')
+    expect(materialSummary.text()).toContain('纸箱合计 150 箱')
+    expect(materialSummary.text()).toContain('外箱 30箱')
+    expect(materialSummary.text()).toContain('内箱 120箱')
+    expect(materialSummary.text()).toContain('滑板纸 3,600张')
+    expect(materialSummary.text()).toContain('卡纸 3,600张')
+    const arrivalProgress = firstOrder.get('[aria-label="CT-260805-006 到货进度"]')
+    expect(arrivalProgress.text()).toContain('0/150')
+    expect(arrivalProgress.text()).toContain('待 150 箱')
+    const detailButton = firstOrder.get('[aria-label="CT-260805-006 操作"]').get('button[aria-label="查看 CT-260805-006 完整订单明细"]')
+    expect(detailButton.text()).toBe('明细')
+    expect(detailButton.attributes('title')).toContain('悬停预览完整明细')
+    const actionGroup = firstOrder.get('[aria-label="CT-260805-006 操作"]').get('div')
+    expect(actionGroup.classes()).toContain('justify-start')
+    expect(actionGroup.classes()).toContain('gap-1')
+    expect(detailButton.classes()).toContain('rounded-md')
+    expect(detailButton.classes()).toContain('col-start-3')
+    expect(firstOrder.find('[aria-label="CT-260805-006 展开纸品明细"]').exists()).toBe(false)
+    await detailButton.trigger('mouseenter')
+    expect(wrapper.get('[data-testid="order-detail-overlay"]').classes()).toContain('pointer-events-none')
+    expect(wrapper.text()).toContain('悬停预览 · 单击明细可固定')
+    await detailButton.trigger('mouseleave')
+    expect(wrapper.find('[data-testid="order-detail-overlay"]').exists()).toBe(false)
+    await detailButton.trigger('click')
+    await detailButton.trigger('mouseleave')
+    expect(wrapper.get('[data-testid="order-detail-overlay"]').classes()).toContain('pointer-events-auto')
+    expect(wrapper.get('[role="dialog"]').attributes('aria-modal')).toBe('true')
+    expect(wrapper.text()).toContain('已固定显示')
+    expect(wrapper.text()).toContain('订单明细 — SC700145365 / 203302044')
+    expect(wrapper.text()).toContain('共 4 项纸品')
     expect(wrapper.text()).toContain('纸品类型')
     expect(wrapper.text()).toContain('纸质')
     expect(wrapper.text()).toContain('规格')
     expect(wrapper.text()).toContain('每箱个数')
-    expect(wrapper.text()).toContain('纸箱数量（自动）')
+    expect(wrapper.text()).toContain('纸品数量')
+    expect(wrapper.text()).toContain('已入库')
+    expect(wrapper.text()).toContain('待入库')
+    expect(wrapper.text()).toContain('入库进度')
     expect(wrapper.text()).toContain('滑板纸')
     expect(wrapper.text()).toContain('卡纸')
+    await wrapper.get('button[aria-label="关闭订单明细"]').trigger('click')
 
     await findButton(wrapper, '新建纸箱订单').trigger('click')
     expect(wrapper.get('input[aria-label="纸箱供应商"]').attributes('disabled')).toBeDefined()
@@ -437,6 +521,8 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('input[aria-label="订单数量"]').setValue('3601')
     expect(wrapper.get('output[aria-label="纸箱数量 1"]').text()).toBe('31')
     await wrapper.get('input[aria-label="订单数量"]').setValue('3600')
+    await wrapper.get('input[aria-label="客户交期"]').setValue(businessDateOffset(8))
+    expect((wrapper.get('input[aria-label="计划交期"]').element as HTMLInputElement).value).toBe(businessDateOffset(5))
     await findButton(wrapper, '新增纸品明细').trigger('click')
     await wrapper.get('input[aria-label="纸质 2"]').setValue('A9A')
     await wrapper.get('input[aria-label="规格 2"]').setValue('29 × 19 cm')
@@ -447,13 +533,17 @@ describe('CartonProcurementView frontend workspace', () => {
 
     expect(wrapper.text()).toContain('SC-DEMO-001')
     expect(wrapper.text()).toContain('203399999')
-    expect(wrapper.text()).toContain('合同内纸品明细 · 2 行')
+    const createdOrder = wrapper.get('[data-order-no="CT-260805-ABC123"]')
+    await createdOrder.get('button[aria-label="查看 CT-260805-ABC123 完整订单明细"]').trigger('click')
+    expect(wrapper.text()).toContain('共 2 项纸品')
     expect(wrapper.text()).toContain('A9A')
+    await wrapper.get('button[aria-label="关闭订单明细"]').trigger('click')
     expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONFIRMED' }))
     expect(wrapper.text()).toContain('已进入待下单')
     expect(wrapper.text()).toContain('含 2 条纸品明细')
-    expect(wrapper.text()).toContain('提交供应商前仍可修改、追加或取消')
+    expect(wrapper.text()).toContain('确认锁定前仍可修改、追加或取消')
 
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-260805-ABC123"]'), 'CT-260805-ABC123')
     await wrapper.get('button[aria-label="管理 CT-260805-ABC123 采购单"]').trigger('click')
     await flushPromises()
     await findButton(wrapper, '导出累计参考').trigger('click')
@@ -601,7 +691,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     await wrapper.get('input[aria-label="选择订单 CT-BATCH-ISSUE-001"]').setValue(true)
     await wrapper.get('input[aria-label="选择订单 CT-BATCH-ISSUE-002"]').setValue(true)
-    await findButton(wrapper, '发行供应商单（2）').trigger('click')
+    await findButton(wrapper, '发行供应商采购单（2）').trigger('click')
     await flushPromises()
 
     expect(cartonApiMock.issuePurchaseOrders).toHaveBeenCalledWith(
@@ -679,6 +769,7 @@ describe('CartonProcurementView frontend workspace', () => {
 
     const wrapper = mountView('orders')
     await flushPromises()
+    await openOrderMoreActions(wrapper.get(`[data-order-no="${order.order_no}"]`), order.order_no)
     await wrapper.get(`button[aria-label="管理 ${order.order_no} 采购单"]`).trigger('click')
     await flushPromises()
 
@@ -753,6 +844,7 @@ describe('CartonProcurementView frontend workspace', () => {
     cartonApiMock.updateOrder.mockImplementation(async (current: any, payload: any) => ({
       ...current,
       contract_no: payload.contract_no,
+      customer_due_date: payload.customer_due_date,
       due_date: payload.due_date,
       note: payload.note,
       revision: current.revision + 1,
@@ -770,10 +862,11 @@ describe('CartonProcurementView frontend workspace', () => {
     const wrapper = mountView('orders')
     await flushPromises()
 
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-CONTROLLED"]'), 'CT-CONTROLLED')
     await wrapper.get('button[aria-label="修改 CT-CONTROLLED 订单"]').trigger('click')
     expect(wrapper.text()).toContain('修改纸箱合同订单 CT-CONTROLLED')
     expect(wrapper.get('input[aria-label="合同号"]').attributes('disabled')).toBeUndefined()
-    await wrapper.get('input[aria-label="计划交期"]').setValue(businessDateOffset(7))
+    await wrapper.get('input[aria-label="客户交期"]').setValue(businessDateOffset(10))
     await wrapper.get('textarea[aria-label="订单修改原因"]').setValue('客户确认调整计划交期')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -782,11 +875,14 @@ describe('CartonProcurementView frontend workspace', () => {
       expect.objectContaining({ order_no: 'CT-CONTROLLED', revision: 1 }),
       expect.objectContaining({
         contract_no: 'SC-CT-CONTROLLED',
+        customer_due_date: businessDateOffset(10),
+        due_date: businessDateOffset(7),
         reason: '客户确认调整计划交期',
       }),
     )
     expect(wrapper.text()).toContain('已按原因完成第 2 版修订')
 
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-CONTROLLED"]'), 'CT-CONTROLLED')
     await wrapper.get('button[aria-label="取消 CT-CONTROLLED"]').trigger('click')
     await wrapper.get('textarea[aria-label="订单取消退单原因"]').setValue('客户正式取消该合同')
     await wrapper.get('form').trigger('submit')
@@ -820,17 +916,18 @@ describe('CartonProcurementView frontend workspace', () => {
     const orderCard = () => wrapper.get('[data-order-no="CT-SUBMIT"]')
 
     expect(orderCard().find('button[aria-label="登记 CT-SUBMIT 收料"]').exists()).toBe(false)
-    await orderCard().get('button[aria-label="提交 CT-SUBMIT 给供应商"]').trigger('click')
+    await orderCard().get('button[aria-label="确认订单 CT-SUBMIT 并锁定"]').trigger('click')
     expect(wrapper.text()).toContain('锁定普通编辑')
-    await findButton(wrapper, '确认提交并锁定').trigger('click')
+    await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click')
     await flushPromises()
 
     expect(cartonApiMock.submitOrderToSupplier).toHaveBeenCalledWith(
       'huaxing',
       expect.objectContaining({ order_no: 'CT-SUBMIT', revision: 1 }),
     )
-    expect(orderCard().text()).toContain('已提交供应商')
+    expect(orderCard().text()).toContain('已确认锁定')
     expect(orderCard().find('button[aria-label="修改 CT-SUBMIT 订单"]').exists()).toBe(false)
+    await openOrderMoreActions(orderCard(), 'CT-SUBMIT')
     expect(orderCard().find('button[aria-label="追加 CT-SUBMIT 订单"]').exists()).toBe(true)
     expect(orderCard().find('button[aria-label="减单 CT-SUBMIT"]').exists()).toBe(true)
     expect(orderCard().find('button[aria-label="取消 CT-SUBMIT"]').exists()).toBe(false)
@@ -862,6 +959,7 @@ describe('CartonProcurementView frontend workspace', () => {
     const wrapper = mountView('orders')
     await flushPromises()
 
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-ADJUST"]'), 'CT-ADJUST')
     await wrapper.get('button[aria-label="追加 CT-ADJUST 订单"]').trigger('click')
     expect((wrapper.get('textarea[aria-label="追加订单原因"]').element as HTMLTextAreaElement).value).toBe('客人追加订单')
     await wrapper.get('input[aria-label="追加订单数量"]').setValue(600)
@@ -873,8 +971,10 @@ describe('CartonProcurementView frontend workspace', () => {
       600,
       '客人追加订单',
       submitted.due_date,
+      submitted.customer_due_date,
     )
 
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-ADJUST"]'), 'CT-ADJUST')
     await wrapper.get('button[aria-label="减单 CT-ADJUST"]').trigger('click')
     expect((wrapper.get('textarea[aria-label="减单原因"]').element as HTMLTextAreaElement).value).toBe('客人退单')
     await wrapper.get('input[aria-label="减单数量"]').setValue(600)
@@ -889,6 +989,7 @@ describe('CartonProcurementView frontend workspace', () => {
     )
     expect(wrapper.text()).toContain('已减少 600 件')
 
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-ADJUST"]'), 'CT-ADJUST')
     await wrapper.get('button[aria-label="减单 CT-ADJUST"]').trigger('click')
     await wrapper.get('input[aria-label="减单数量"]').setValue(3600)
     await wrapper.get('textarea[aria-label="减单原因"]').setValue('主管确认客户整张订单退单')
@@ -941,14 +1042,18 @@ describe('CartonProcurementView frontend workspace', () => {
 
     const partialCard = wrapper.get('[data-order-no="CT-PARTIAL-APPEND"]')
     const completedCard = wrapper.get('[data-order-no="CT-COMPLETED-APPEND"]')
+    await openOrderMoreActions(partialCard, 'CT-PARTIAL-APPEND')
     expect(partialCard.find('button[aria-label="追加 CT-PARTIAL-APPEND 订单"]').exists()).toBe(true)
     expect(partialCard.get('button[aria-label="减单 CT-PARTIAL-APPEND"]').text()).toContain('减少未入库量')
+    await openOrderMoreActions(completedCard, 'CT-COMPLETED-APPEND')
     expect(completedCard.find('button[aria-label="追加 CT-COMPLETED-APPEND 订单"]').exists()).toBe(true)
     expect(completedCard.find('button[aria-label="减单 CT-COMPLETED-APPEND"]').exists()).toBe(false)
 
     await completedCard.get('button[aria-label="追加 CT-COMPLETED-APPEND 订单"]').trigger('click')
     expect(wrapper.get('[data-testid="append-order-form"]').text()).toContain('追加后会自动恢复为“部分到货”')
     await wrapper.get('input[aria-label="追加订单数量"]').setValue(60)
+    await wrapper.get('input[aria-label="追加订单客户交期"]').setValue(businessDateOffset(12))
+    expect((wrapper.get('input[aria-label="追加订单计划交期"]').element as HTMLInputElement).value).toBe(businessDateOffset(9))
     await wrapper.get('textarea[aria-label="追加订单原因"]').setValue('全部到货后客户追加六十套')
     await wrapper.get('[data-testid="append-order-form"]').trigger('submit')
     await flushPromises()
@@ -958,10 +1063,12 @@ describe('CartonProcurementView frontend workspace', () => {
       expect.objectContaining({ order_no: 'CT-COMPLETED-APPEND', status: 'COMPLETED' }),
       60,
       '全部到货后客户追加六十套',
-      completed.due_date,
+      businessDateOffset(9),
+      businessDateOffset(12),
     )
     expect(wrapper.text()).toContain('已恢复为“部分到货”')
     expect(wrapper.get('[data-order-no="CT-COMPLETED-APPEND"]').text()).toContain('部分收料')
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-COMPLETED-APPEND"]'), 'CT-COMPLETED-APPEND')
     expect(wrapper.get('[data-order-no="CT-COMPLETED-APPEND"]').find('button[aria-label="减单 CT-COMPLETED-APPEND"]').exists()).toBe(true)
   })
 
@@ -982,6 +1089,7 @@ describe('CartonProcurementView frontend workspace', () => {
     const wrapper = mountView('orders')
     await flushPromises()
     const card = wrapper.get('[data-order-no="CT-PENDING-RECEIPT"]')
+    await openOrderMoreActions(card, 'CT-PENDING-RECEIPT')
     expect(card.find('button[aria-label="追加 CT-PENDING-RECEIPT 订单"]').exists()).toBe(true)
     await card.get('button[aria-label="减单 CT-PENDING-RECEIPT"]').trigger('click')
     const quantityInput = wrapper.get('input[aria-label="减单数量"]')
@@ -1021,6 +1129,7 @@ describe('CartonProcurementView frontend workspace', () => {
 
     const wrapper = mountView('orders')
     await flushPromises()
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-PARTIAL-REDUCE"]'), 'CT-PARTIAL-REDUCE')
     await wrapper.get('button[aria-label="减单 CT-PARTIAL-REDUCE"]').trigger('click')
     const form = wrapper.get('[data-testid="reduce-order-form"]')
     expect(form.text()).toContain('减少未入库量')
@@ -1055,6 +1164,8 @@ describe('CartonProcurementView frontend workspace', () => {
     const wrapper = mountView('orders')
     await flushPromises()
     const card = wrapper.get('[data-order-no="CT-NO-ADJUST"]')
+    await openOrderMoreActions(card, 'CT-NO-ADJUST')
+    expect(card.find('button[aria-label="管理 CT-NO-ADJUST 采购单"]').exists()).toBe(true)
     expect(card.find('button[aria-label="追加 CT-NO-ADJUST 订单"]').exists()).toBe(false)
     expect(card.find('button[aria-label="减单 CT-NO-ADJUST"]').exists()).toBe(false)
   })
@@ -1079,9 +1190,9 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('input[aria-label="选择订单 CT-BULK-PENDING"]').setValue(true)
     await wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').setValue(true)
 
-    await findButton(wrapper, '提交供应商（1）').trigger('click')
-    expect(wrapper.text()).toContain('批量提交 1 张待下单订单')
-    await findButton(wrapper, '确认提交并锁定').trigger('click')
+    await findButton(wrapper, '确认订单并锁定（1）').trigger('click')
+    expect(wrapper.text()).toContain('批量确认并锁定 1 张待下单订单')
+    await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click')
     await flushPromises()
 
     expect(cartonApiMock.bulkSubmitOrdersToSupplier).toHaveBeenCalledWith(
@@ -1091,8 +1202,8 @@ describe('CartonProcurementView frontend workspace', () => {
         expect.objectContaining({ order_no: 'CT-BULK-SUBMITTED' }),
       ]),
     )
-    expect(wrapper.text()).toContain('已提交 1 张订单并锁定；跳过 1 张非待下单订单')
-    expect(wrapper.get('[data-order-no="CT-BULK-PENDING"]').text()).toContain('已提交供应商')
+    expect(wrapper.text()).toContain('已确认并锁定 1 张订单；跳过 1 张非待下单订单')
+    expect(wrapper.get('[data-order-no="CT-BULK-PENDING"]').text()).toContain('已确认锁定')
     expect((wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').element as HTMLInputElement).checked).toBe(true)
   })
 
@@ -1174,7 +1285,8 @@ describe('CartonProcurementView frontend workspace', () => {
 
     expect(cartonApiMock.uploadHistoryOrders).toHaveBeenCalledWith('huaxing', file)
     expect(wrapper.text()).toContain('新增 1 张订单、4 条纸品明细')
-    expect(wrapper.text()).toContain('HIST-2025-001')
+    expect(wrapper.find('[data-order-no="HIST-2025-001"]').exists()).toBe(true)
+    expect(wrapper.get('[data-order-no="HIST-2025-001"]').text()).not.toContain('HIST-2025-001')
   })
 
   it('calculates effective receipts from manual unusable quantities without posting inventory', async () => {
@@ -1606,7 +1718,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(logTable.findAll('thead th').map((cell) => cell.text())).toEqual(['时间', '操作人', '操作', '业务对象', '变更内容'])
     expect(logTable.findAll('tbody tr')).toHaveLength(4)
     expect(logTable.text()).toContain('CT-004')
-    expect(logTable.text()).toContain('提交供应商')
+    expect(logTable.text()).toContain('确认订单并锁定')
     expect(logTable.text()).toContain('追加订单')
     expect(logTable.text()).toContain('订单退单')
 

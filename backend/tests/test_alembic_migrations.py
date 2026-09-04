@@ -122,11 +122,12 @@ INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION = "20260827_0085"
 CARTON_AD_HOC_RECEIPT_MIGRATION_REVISION = "20260830_0086"
 CARTON_ORDER_ADJUST_MIGRATION_REVISION = "20260904_0096"
 CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION = "20260904_0097"
+CARTON_CUSTOMER_DUE_MIGRATION_REVISION = "20260904_0098"
 INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION = "20260831_0087"
 INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION = "20260901_0088"
 # Historical rebuild tests stop before the later destructive retirement.
 INJECTION_SCHEDULING_HISTORY_REVISION = INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION
-HEAD_MIGRATION_REVISION = CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION
+HEAD_MIGRATION_REVISION = CARTON_CUSTOMER_DUE_MIGRATION_REVISION
 INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_factory_settings",
     "injection_schedule_order_demands",
@@ -5360,6 +5361,60 @@ def test_carton_purchase_order_issue_migration_refuses_destructive_downgrade(tmp
     )
     assert downgraded.returncode != 0
     assert "cannot downgrade carton purchase-order issues" in downgraded.stderr
+
+
+def test_carton_customer_due_migration_preserves_legacy_plan_dates(tmp_path):
+    database_path = tmp_path / "carton_customer_due_0098.db"
+    base = _run_dispatch_alembic(
+        database_path,
+        "upgrade",
+        CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION,
+    )
+    assert base.returncode == 0, base.stderr
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO carton_orders(
+                id, factory_id, order_no, customer_code, customer_name,
+                supplier_id, supplier_name_snapshot, contract_no, item_no,
+                product_name, product_order_quantity, order_date, due_date,
+                status, note, revision, created_by, created_by_name,
+                updated_by, updated_by_name, created_at, updated_at
+            ) VALUES (
+                'CTO-DUE-LEGACY', 'huaxing', 'CT-DUE-LEGACY', 'DICKIE', 'Dickie',
+                'SUPPLIER-1', '河源东康纸品有限公司', 'SC-DUE-LEGACY', 'ITEM-DUE',
+                '产品', 100, '2026-09-01', '2026-09-08',
+                'CONFIRMED', '', 1, 'admin', '管理员',
+                'admin', '管理员', '2026-09-01T00:00:00+08:00', '2026-09-01T00:00:00+08:00'
+            )
+            """
+        )
+        connection.commit()
+
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            """
+            SELECT customer_due_date, safety_lead_days, due_date
+            FROM carton_orders
+            WHERE id = 'CTO-DUE-LEGACY'
+            """
+        ).fetchone() == (None, 3, "2026-09-08")
+
+    downgraded = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION,
+    )
+    assert downgraded.returncode == 0, downgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info('carton_orders')").fetchall()
+        }
+        assert "customer_due_date" not in columns
+        assert "safety_lead_days" not in columns
 
 
 def test_carton_units_per_carton_migration_preserves_required_quantity(tmp_path):

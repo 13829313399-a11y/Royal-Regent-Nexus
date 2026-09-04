@@ -66,6 +66,8 @@ from app.schemas.carton_procurement import (
     CartonReceiptCreate,
     CartonReceiptLineOut,
     CartonReceiptOut,
+    DEFAULT_CARTON_SAFETY_LEAD_DAYS,
+    derive_carton_plan_due_date,
 )
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
 from app.services.carton_procurement_imports import (
@@ -434,6 +436,8 @@ def create_order(
         product_name=product_name,
         product_order_quantity=payload.product_order_quantity,
         order_date=payload.order_date,
+        customer_due_date=payload.customer_due_date,
+        safety_lead_days=DEFAULT_CARTON_SAFETY_LEAD_DAYS,
         due_date=payload.due_date,
         status="CONFIRMED",
         note=payload.note,
@@ -638,6 +642,8 @@ def _purchase_order_pending_change(
             "item_no": order.item_no,
             "product_name": order.product_name,
             "order_date": order.order_date,
+            "customer_due_date": order.customer_due_date,
+            "safety_lead_days": order.safety_lead_days,
             "due_date": order.due_date,
             "status": order.status,
             "note": order.note,
@@ -690,7 +696,7 @@ def create_purchase_order_issue(
     if order.revision != expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
-        raise HTTPException(status_code=409, detail="只有已提交供应商的订单可以生成供应商采购单")
+        raise HTTPException(status_code=409, detail="只有已确认并锁定的订单可以发行供应商采购单")
 
     issues = _purchase_order_issues(db, order.id)
     latest_issue = issues[0] if issues else None
@@ -883,7 +889,7 @@ def update_order(
     if order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}:
         raise HTTPException(
             status_code=409,
-            detail="订单已提交供应商并锁定，不能再修改；收料差异请通过收料或库存流水处理",
+            detail="订单已确认并锁定，不能再修改；收料差异请通过收料或库存流水处理",
         )
 
     existing_lines = _order_lines(db, order.id)
@@ -928,13 +934,28 @@ def update_order(
             target_line_signatures != [_order_line_signature(line) for line in existing_lines],
         )
     )
-    schedule_changed = payload.due_date != order.due_date or payload.note != order.note
+    if order.customer_due_date is not None and payload.customer_due_date is None:
+        if payload.due_date != order.due_date:
+            raise HTTPException(
+                status_code=422,
+                detail="已有客户交期的订单必须通过客户交期自动计算计划交期",
+            )
+        target_customer_due_date = order.customer_due_date
+        target_due_date = order.due_date
+    else:
+        target_customer_due_date = payload.customer_due_date
+        target_due_date = payload.due_date
+    schedule_changed = (
+        target_customer_due_date != order.customer_due_date
+        or target_due_date != order.due_date
+        or payload.note != order.note
+    )
     if not structural_changed and not schedule_changed:
         raise HTTPException(status_code=422, detail="订单内容没有发生变化")
     if structural_changed and _order_has_business_activity(db, order):
         raise HTTPException(
             status_code=409,
-            detail="订单已有收料或库存流水，只能修改计划交期和备注",
+            detail="订单已有收料或库存流水，只能修改客户交期、自动计划交期和备注",
         )
 
     before = {
@@ -944,6 +965,8 @@ def update_order(
         "item_no": order.item_no,
         "product_order_quantity": order.product_order_quantity,
         "order_date": order.order_date,
+        "customer_due_date": order.customer_due_date,
+        "safety_lead_days": order.safety_lead_days,
         "due_date": order.due_date,
         "note": order.note,
         "lines": [_order_line_signature(line) for line in existing_lines],
@@ -991,7 +1014,9 @@ def update_order(
         for line in existing_lines[len(payload.lines):]:
             db.delete(line)
 
-    order.due_date = payload.due_date
+    order.customer_due_date = target_customer_due_date
+    order.safety_lead_days = DEFAULT_CARTON_SAFETY_LEAD_DAYS
+    order.due_date = target_due_date
     order.note = payload.note
     order.revision += 1
     order.updated_by = user.id
@@ -1016,6 +1041,8 @@ def update_order(
                 "item_no": order.item_no,
                 "product_order_quantity": order.product_order_quantity,
                 "order_date": order.order_date,
+                "customer_due_date": order.customer_due_date,
+                "safety_lead_days": order.safety_lead_days,
                 "due_date": order.due_date,
                 "note": order.note,
                 "lines": target_line_signatures,
@@ -1042,9 +1069,9 @@ def submit_order_to_supplier(
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status == "PENDING_SUPPLIER":
-        raise HTTPException(status_code=409, detail="订单已经提交供应商")
+        raise HTTPException(status_code=409, detail="订单已经确认并锁定")
     if order.status != "CONFIRMED":
-        raise HTTPException(status_code=409, detail="只有待下单且未提交供应商的订单可以提交")
+        raise HTTPException(status_code=409, detail="只有待下单且尚未确认锁定的订单可以确认")
 
     previous_status = order.status
     order.status = "PENDING_SUPPLIER"
@@ -1131,7 +1158,7 @@ def cancel_order(
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"DRAFT", "CONFIRMED"}:
-        raise HTTPException(status_code=409, detail="订单已提交供应商或已结束，不能取消")
+        raise HTTPException(status_code=409, detail="订单已确认锁定或已结束，不能取消")
     if _order_has_business_activity(db, order):
         raise HTTPException(status_code=409, detail="订单已有收料或库存流水，不能取消")
 
@@ -1177,11 +1204,31 @@ def append_order(
         "COMPLETED",
     }:
         raise HTTPException(status_code=409, detail="当前订单状态不能追加")
-    if payload.due_date and payload.due_date < order.order_date:
+    if payload.customer_due_date:
+        try:
+            target_due_date = derive_carton_plan_due_date(
+                order.order_date,
+                payload.customer_due_date,
+                DEFAULT_CARTON_SAFETY_LEAD_DAYS,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        target_customer_due_date = payload.customer_due_date
+    else:
+        if order.customer_due_date is not None and payload.due_date and payload.due_date != order.due_date:
+            raise HTTPException(
+                status_code=422,
+                detail="已有客户交期的订单必须通过客户交期自动计算计划交期",
+            )
+        target_customer_due_date = order.customer_due_date
+        target_due_date = payload.due_date or order.due_date
+    if target_due_date < order.order_date:
         raise HTTPException(status_code=422, detail="计划交期不能早于下单日期")
 
     previous_status = order.status
     before_quantity = quantity(order.product_order_quantity)
+    before_customer_due_date = order.customer_due_date
+    before_due_date = order.due_date
     after_quantity = quantity(before_quantity + payload.additional_quantity)
     lines = _order_lines(db, order.id)
     before_required = {line.id: quantity(line.required_quantity) for line in lines}
@@ -1190,8 +1237,9 @@ def append_order(
     order.product_order_quantity = after_quantity
     if previous_status == "COMPLETED":
         order.status = "PARTIALLY_RECEIVED"
-    if payload.due_date:
-        order.due_date = payload.due_date
+    order.customer_due_date = target_customer_due_date
+    order.safety_lead_days = DEFAULT_CARTON_SAFETY_LEAD_DAYS
+    order.due_date = target_due_date
     order.revision += 1
     order.updated_by = user.id
     order.updated_by_name = user.display_name
@@ -1209,6 +1257,11 @@ def append_order(
             "additional_quantity": payload.additional_quantity,
             "before_quantity": before_quantity,
             "after_quantity": after_quantity,
+            "before_customer_due_date": before_customer_due_date,
+            "after_customer_due_date": order.customer_due_date,
+            "safety_lead_days": order.safety_lead_days,
+            "before_due_date": before_due_date,
+            "after_due_date": order.due_date,
             "before_required": before_required,
             "after_required": {line.id: quantity(line.required_quantity) for line in lines},
             "previous_status": previous_status,
@@ -1266,7 +1319,7 @@ def reduce_order(
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}:
-        raise HTTPException(status_code=409, detail="减单仅适用于已提交供应商或部分到货的订单")
+        raise HTTPException(status_code=409, detail="减单仅适用于已确认锁定或部分到货的订单")
 
     before_quantity = quantity(order.product_order_quantity)
     reduction_quantity = quantity(payload.reduction_quantity)
@@ -1388,7 +1441,7 @@ def return_order(
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PARTIALLY_RECEIVED", "COMPLETED"}:
-        raise HTTPException(status_code=409, detail="退单仅用于已发生入库的订单；未提交订单请取消，已提交未入库订单不可取消")
+        raise HTTPException(status_code=409, detail="退单仅用于已发生入库的订单；未确认锁定的订单请取消，已确认锁定但未入库的订单不可取消")
 
     lines = _order_lines(db, order.id)
     line_ids = [line.id for line in lines]
@@ -1512,7 +1565,7 @@ def bulk_cancel_orders(
         if order.revision != item.expected_revision:
             raise HTTPException(status_code=409, detail=f"订单 {item.order_no} 已更新，请刷新后重试")
         if order.status not in {"DRAFT", "CONFIRMED"}:
-            raise HTTPException(status_code=409, detail=f"订单 {item.order_no} 已提交供应商或已结束，不能批量取消")
+            raise HTTPException(status_code=409, detail=f"订单 {item.order_no} 已确认锁定或已结束，不能批量取消")
         if _order_has_business_activity(db, order):
             raise HTTPException(status_code=409, detail=f"订单 {item.order_no} 已有收料或库存流水，不能批量取消")
         orders.append(order)
@@ -1687,6 +1740,8 @@ def order_out(db: Session, order: CartonOrder) -> CartonOrderOut:
         product_name=order.product_name,
         product_order_quantity=order.product_order_quantity,
         order_date=order.order_date,
+        customer_due_date=order.customer_due_date,
+        safety_lead_days=order.safety_lead_days,
         due_date=order.due_date,
         status=order.status,
         note=order.note,
@@ -1935,7 +1990,7 @@ def create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext)
     if ineligible_orders:
         raise HTTPException(
             status_code=409,
-            detail=f"订单 {', '.join(sorted(ineligible_orders))} 必须先提交供应商，且保持待收料状态，才能登记收料",
+            detail=f"订单 {', '.join(sorted(ineligible_orders))} 必须先确认并锁定，且保持待收料状态，才能登记收料",
         )
     ad_hoc_customers = {
         customer_code: get_active_customer(db, factory_id, customer_code)
@@ -2226,7 +2281,7 @@ def confirm_receipt(
     if ineligible_orders:
         raise HTTPException(
             status_code=409,
-            detail=f"订单 {', '.join(sorted(ineligible_orders))} 当前未处于已提交供应商的待收料状态，不能确认入库",
+            detail=f"订单 {', '.join(sorted(ineligible_orders))} 当前未处于已确认锁定的待收料状态，不能确认入库",
         )
     order_ids: set[str] = set()
     for line in lines:

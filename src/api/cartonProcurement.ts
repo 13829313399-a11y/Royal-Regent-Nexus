@@ -61,6 +61,8 @@ export interface CartonOrderResponse {
   product_name: string
   product_order_quantity: string
   order_date: string
+  customer_due_date?: string | null
+  safety_lead_days?: number
   due_date: string
   status: string
   note: string
@@ -116,6 +118,7 @@ export interface CartonOrderCreateRequest {
   product_name?: string
   product_order_quantity: number
   order_date: string
+  customer_due_date?: string | null
   due_date: string
   status: 'CONFIRMED'
   note: string
@@ -532,6 +535,7 @@ export const cartonProcurementApi = {
     additionalQuantity: number,
     reason: string,
     dueDate?: string,
+    customerDueDate?: string,
   ) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/append`,
@@ -540,6 +544,7 @@ export const cartonProcurementApi = {
         expected_revision: order.revision,
         additional_quantity: additionalQuantity,
         reason,
+        customer_due_date: customerDueDate || null,
         due_date: dueDate || null,
       },
     )

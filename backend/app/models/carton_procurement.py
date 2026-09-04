@@ -88,6 +88,8 @@ class CartonOrder(Base):
     product_name: Mapped[str] = mapped_column(String(255), default="")
     product_order_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     order_date: Mapped[str] = mapped_column(String(10), index=True)
+    customer_due_date: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    safety_lead_days: Mapped[int] = mapped_column(Integer, default=3)
     due_date: Mapped[str] = mapped_column(String(10), index=True)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", index=True)
     note: Mapped[str] = mapped_column(Text, default="")
