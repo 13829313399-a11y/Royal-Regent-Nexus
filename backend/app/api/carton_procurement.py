@@ -32,11 +32,15 @@ from app.schemas.carton_procurement import (
     CartonInventoryReversalRequest,
     CartonOrderAppendRequest,
     CartonOrderBulkCancelRequest,
+    CartonOrderBulkSubmitRequest,
     CartonOrderCancelRequest,
     CartonOrderCreate,
     CartonOrderHistorySuggestionListOut,
     CartonOrderListOut,
     CartonOrderOut,
+    CartonPurchaseOrderContextOut,
+    CartonPurchaseOrderIssueCreate,
+    CartonOrderReduceRequest,
     CartonOrderSelectionRequest,
     CartonOrderSubmitRequest,
     CartonOrderUpdate,
@@ -55,6 +59,7 @@ from app.services.carton_procurement import (
     CARTON_DEPARTMENTS,
     append_order,
     bulk_cancel_orders,
+    bulk_submit_orders_to_supplier,
     cancel_order,
     confirm_receipt,
     create_customer,
@@ -62,6 +67,8 @@ from app.services.carton_procurement import (
     create_inventory_movement,
     create_inventory_movements_bulk,
     create_order,
+    create_purchase_order_issue,
+    create_purchase_order_issues_batch,
     create_receipt,
     delete_customer,
     delete_unmatched_delivery_import,
@@ -71,6 +78,7 @@ from app.services.carton_procurement import (
     get_latest_import_batch,
     get_order_by_no,
     get_order_lines,
+    get_purchase_order_issue,
     inventory_balances,
     list_customers,
     list_closings,
@@ -82,6 +90,8 @@ from app.services.carton_procurement import (
     list_orders,
     list_receipts,
     order_out,
+    purchase_order_context,
+    reduce_order,
     receipt_out,
     require_carton_factory,
     reverse_inventory_movement,
@@ -96,6 +106,8 @@ from app.services.carton_procurement import (
 from app.services.carton_procurement_export import (
     XLSX_MEDIA_TYPE,
     build_combined_purchase_order_workbook,
+    build_purchase_order_issue_batch_workbook,
+    build_purchase_order_issue_workbook,
     build_purchase_order_workbook,
 )
 from app.services.carton_procurement_history_import import import_history_orders
@@ -286,7 +298,21 @@ def post_order_append(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    order = get_order_by_no(db, require_carton_factory(payload.factory_id), order_no)
+    if order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
+        _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
     return order_out(db, append_order(db, order_no, payload, current_user))
+
+
+@router.post("/orders/{order_no}/reduce", response_model=CartonOrderOut)
+def post_order_reduce(
+    order_no: str,
+    payload: CartonOrderReduceRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
+    return order_out(db, reduce_order(db, order_no, payload, current_user))
 
 
 @router.post("/orders/{order_no}/cancel", response_model=CartonOrderOut)
@@ -319,6 +345,16 @@ def post_orders_bulk_cancel(
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
     return [order_out(db, order) for order in bulk_cancel_orders(db, payload, current_user)]
+
+
+@router.post("/orders/bulk-submit-supplier", response_model=list[CartonOrderOut])
+def post_orders_bulk_submit_supplier(
+    payload: CartonOrderBulkSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return [order_out(db, order) for order in bulk_submit_orders_to_supplier(db, payload, current_user)]
 
 
 @router.post(
@@ -367,6 +403,66 @@ def get_purchase_order_workbook(
     )
 
 
+@router.get(
+    "/orders/{order_no}/purchase-order-context",
+    response_model=CartonPurchaseOrderContextOut,
+)
+def get_purchase_order_context(
+    order_no: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    return purchase_order_context(db, order)
+
+
+@router.post("/orders/{order_no}/purchase-order-issues.xlsx")
+def post_purchase_order_issue_workbook(
+    order_no: str,
+    payload: CartonPurchaseOrderIssueCreate,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(
+        db, current_user, "carton_procurement:order_write", payload.factory_id
+    )
+    order = get_order_by_no(db, factory_id, order_no)
+    issue = create_purchase_order_issue(db, order, payload.expected_revision, current_user)
+    content = build_purchase_order_issue_workbook(issue)
+    file_name = f"{issue.document_no}_{issue.document_type}.xlsx"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
+            "X-Purchase-Order-Issue-Id": issue.id,
+            "X-Purchase-Order-Document-No": issue.document_no,
+        },
+    )
+
+
+@router.get("/orders/{order_no}/purchase-order-issues/{issue_id}.xlsx")
+def get_purchase_order_issue_workbook(
+    order_no: str,
+    issue_id: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    issue = get_purchase_order_issue(db, factory_id, order, issue_id)
+    content = build_purchase_order_issue_workbook(issue)
+    file_name = f"{issue.document_no}_{issue.document_type}.xlsx"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}"},
+    )
+
+
 @router.post("/orders/purchase-orders.xlsx")
 def post_combined_purchase_order_workbook(
     payload: CartonOrderSelectionRequest,
@@ -380,11 +476,32 @@ def post_combined_purchase_order_workbook(
         order = get_order_by_no(db, factory_id, order_no)
         orders.append((order, get_order_lines(db, order.id)))
     content = build_combined_purchase_order_workbook(orders, generated_at=generated_at)
-    file_name = f"纸箱合并采购单_{generated_at.strftime('%Y%m%d_%H%M%S')}.xlsx"
+    file_name = f"纸箱累计对账表_{generated_at.strftime('%Y%m%d_%H%M%S')}.xlsx"
     return StreamingResponse(
         BytesIO(content),
         media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}"},
+    )
+
+
+@router.post("/orders/purchase-order-issues.xlsx")
+def post_purchase_order_issue_batch_workbook(
+    payload: CartonOrderBulkSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    generated_at = business_now()
+    issues = create_purchase_order_issues_batch(db, payload, current_user)
+    content = build_purchase_order_issue_batch_workbook(issues, generated_at=generated_at)
+    file_name = f"供应商采购单批次_{generated_at.strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
+            "X-Purchase-Order-Issue-Count": str(len(issues)),
+        },
     )
 
 

@@ -404,7 +404,7 @@ def test_supplier_submission_transition_is_audited_and_required_before_receipt(m
                 "reason": "提交后尝试追加订单数量",
             },
         )
-        assert blocked_append.status_code == 409
+        assert blocked_append.status_code == 403
         blocked_cancel = client.post(
             f"/api/carton-procurement/orders/{order['order_no']}/cancel",
             json={
@@ -472,6 +472,474 @@ def test_supplier_submission_transition_is_audited_and_required_before_receipt(m
         )
         assert actor_filtered.status_code == 200, actor_filtered.text
         assert actor_filtered.json()["total"] == 1
+
+
+def test_bulk_supplier_submission_submits_pending_orders_and_skips_other_statuses(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        pending = _create_order(client, submit_supplier=False)
+        already_submitted = _submit_order(client, _create_order(client, submit_supplier=False))
+
+        response = client.post(
+            "/api/carton-procurement/orders/bulk-submit-supplier",
+            json={
+                "factory_id": "huaxing",
+                "items": [
+                    {"order_no": pending["order_no"], "expected_revision": pending["revision"]},
+                    {
+                        "order_no": already_submitted["order_no"],
+                        "expected_revision": already_submitted["revision"],
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        submitted = response.json()
+        assert len(submitted) == 1
+        assert submitted[0]["order_no"] == pending["order_no"]
+        assert submitted[0]["status"] == "PENDING_SUPPLIER"
+        assert submitted[0]["revision"] == pending["revision"] + 1
+
+        atomic_first = _create_order(client, submit_supplier=False)
+        atomic_stale = _create_order(client, submit_supplier=False)
+        conflict = client.post(
+            "/api/carton-procurement/orders/bulk-submit-supplier",
+            json={
+                "factory_id": "huaxing",
+                "items": [
+                    {
+                        "order_no": atomic_first["order_no"],
+                        "expected_revision": atomic_first["revision"],
+                    },
+                    {
+                        "order_no": atomic_stale["order_no"],
+                        "expected_revision": atomic_stale["revision"] + 1,
+                    },
+                ],
+            },
+        )
+        assert conflict.status_code == 409, conflict.text
+        listed = client.get(
+            "/api/carton-procurement/orders",
+            params={"factory_id": "huaxing", "limit": 200},
+        )
+        assert listed.status_code == 200, listed.text
+        statuses = {item["order_no"]: item["status"] for item in listed.json()["items"]}
+        assert statuses[atomic_first["order_no"]] == "CONFIRMED"
+        assert statuses[atomic_stale["order_no"]] == "CONFIRMED"
+
+        audit = client.get(
+            "/api/carton-procurement/audit-events",
+            params={"factory_id": "huaxing", "event_type": "ORDER_SUBMITTED_SUPPLIER"},
+        )
+        assert audit.status_code == 200, audit.text
+        assert audit.json()["total"] == 2
+        bulk_event = next(
+            item for item in audit.json()["items"] if item["detail"]["order_no"] == pending["order_no"]
+        )
+        assert bulk_event["detail"]["bulk"] is True
+
+
+def test_supervisor_adjusts_submitted_order_and_protects_pending_receipt_quantities(monkeypatch):
+    with make_client(monkeypatch) as client:
+        warehouse_profile = login_as(client, "warehouse_keeper")
+        assert "carton_procurement:order_adjust" not in warehouse_profile["permissions"]
+        _freeze_carton_time(monkeypatch)
+        submitted = _create_order(client)
+
+        denied_append = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": submitted["revision"],
+                "additional_quantity": "600",
+                "reason": "普通仓管尝试调整已提交订单",
+            },
+        )
+        assert denied_append.status_code == 403, denied_append.text
+        denied_reduce = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": submitted["revision"],
+                "reduction_quantity": "600",
+                "reason": "普通仓管尝试减少已提交订单",
+            },
+        )
+        assert denied_reduce.status_code == 403, denied_reduce.text
+
+        manager_profile = login_as(client, "carton_supervisor")
+        assert "carton_procurement:order_adjust" in manager_profile["permissions"]
+        appended_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": submitted["revision"],
+                "additional_quantity": "600",
+                "reason": "客户确认追加六百套产品",
+            },
+        )
+        assert appended_response.status_code == 200, appended_response.text
+        appended = appended_response.json()
+        assert appended["status"] == "PENDING_SUPPLIER"
+        assert Decimal(appended["product_order_quantity"]) == Decimal("4200")
+        assert Decimal(appended["lines"][0]["required_quantity"]) == Decimal("35")
+
+        reduced_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": appended["revision"],
+                "reduction_quantity": "600",
+                "reason": "客户确认减少六百套产品",
+            },
+        )
+        assert reduced_response.status_code == 200, reduced_response.text
+        reduced = reduced_response.json()
+        assert reduced["status"] == "PENDING_SUPPLIER"
+        assert Decimal(reduced["product_order_quantity"]) == Decimal("3600")
+        assert Decimal(reduced["lines"][0]["required_quantity"]) == Decimal("30")
+
+        returned_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": reduced["revision"],
+                "reduction_quantity": "3600",
+                "reason": "客户确认整张订单全部退单",
+            },
+        )
+        assert returned_response.status_code == 200, returned_response.text
+        returned = returned_response.json()
+        assert returned["status"] == "CANCELLED"
+        # A full return closes the operational balance at zero while retaining
+        # the original contracted quantities on the cancelled order as history.
+        assert Decimal(returned["product_order_quantity"]) == Decimal("3600")
+        assert Decimal(returned["lines"][0]["required_quantity"]) == Decimal("30")
+
+        login_as(client, "warehouse_keeper")
+        receipt_order = _create_order(client)
+        pending_receipt = _create_receipt(client, receipt_order)
+        assert pending_receipt["status"] == "PENDING_CONFIRMATION"
+        login_as(client, "carton_supervisor")
+        reduced_around_pending = client.post(
+            f"/api/carton-procurement/orders/{receipt_order['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": receipt_order["revision"],
+                "reduction_quantity": "100",
+                "reason": "保留待确认数量后减少未收料部分",
+            },
+        )
+        assert reduced_around_pending.status_code == 200, reduced_around_pending.text
+        pending_adjusted = reduced_around_pending.json()
+        assert pending_adjusted["status"] == "PENDING_SUPPLIER"
+        assert Decimal(pending_adjusted["product_order_quantity"]) == Decimal("3500")
+
+        blocked_below_pending = client.post(
+            f"/api/carton-procurement/orders/{receipt_order['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": pending_adjusted["revision"],
+                "reduction_quantity": "2540",
+                "reason": "尝试减到低于待确认收料数量",
+            },
+        )
+        assert blocked_below_pending.status_code == 409, blocked_below_pending.text
+        assert "超过尚未入库的可退范围" in blocked_below_pending.json()["detail"]
+
+        audit = client.get(
+            "/api/carton-procurement/audit-events",
+            params={"factory_id": "huaxing", "event_type": "ORDER_REDUCED"},
+        )
+        assert audit.status_code == 200, audit.text
+        assert audit.json()["total"] == 3
+        assert {item["detail"]["full_return"] for item in audit.json()["items"]} == {False, True}
+        full_return_event = next(
+            item for item in audit.json()["items"] if item["detail"]["full_return"]
+        )
+        assert Decimal(full_return_event["detail"]["after_quantity"]) == 0
+        assert all(
+            Decimal(value) == 0
+            for value in full_return_event["detail"]["after_required"].values()
+        )
+
+
+def test_supervisor_can_append_and_reduce_unreceived_balance_after_partial_receipt(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        order = _create_order(client)
+        partial_receipt = _create_receipt(client, order)
+        confirmed = client.post(
+            f"/api/carton-procurement/receipts/{partial_receipt['id']}/confirm",
+            json={"factory_id": "huaxing", "expected_revision": partial_receipt["revision"]},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+
+        partially_received = client.get(
+            "/api/carton-procurement/orders",
+            params={"factory_id": "huaxing"},
+        ).json()["items"][0]
+        assert partially_received["status"] == "PARTIALLY_RECEIVED"
+
+        denied_append = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": partially_received["revision"],
+                "additional_quantity": "600",
+                "reason": "普通仓管尝试在入库后追加",
+            },
+        )
+        assert denied_append.status_code == 403, denied_append.text
+
+        login_as(client, "carton_supervisor")
+        appended_partial_response = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": partially_received["revision"],
+                "additional_quantity": "600",
+                "reason": "部分到货后客户追加六百套",
+            },
+        )
+        assert appended_partial_response.status_code == 200, appended_partial_response.text
+        appended_partial = appended_partial_response.json()
+        assert appended_partial["status"] == "PARTIALLY_RECEIVED"
+        assert Decimal(appended_partial["product_order_quantity"]) == Decimal("4200")
+        assert Decimal(appended_partial["lines"][0]["required_quantity"]) == Decimal("35")
+        assert Decimal(appended_partial["lines"][0]["received_quantity"]) == Decimal("9")
+        assert Decimal(appended_partial["lines"][0]["remaining_quantity"]) == Decimal("26")
+
+        reduced_partial_response = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": appended_partial["revision"],
+                "reduction_quantity": "100",
+                "reason": "部分到货后减少未入库数量",
+            },
+        )
+        assert reduced_partial_response.status_code == 200, reduced_partial_response.text
+        reduced_partial = reduced_partial_response.json()
+        assert reduced_partial["status"] == "PARTIALLY_RECEIVED"
+        assert Decimal(reduced_partial["product_order_quantity"]) == Decimal("4100")
+        assert Decimal(reduced_partial["lines"][0]["received_quantity"]) == Decimal("9")
+
+        login_as(client, "warehouse_keeper")
+        completion_receipt_response = client.post(
+            "/api/carton-procurement/receipts",
+            json={
+                "factory_id": "huaxing",
+                "delivery_note_no": "DN26080502",
+                "delivery_date": "2026-08-05",
+                "note": "补齐追加前后的待入库数量",
+                "lines": [
+                    {
+                        "order_line_id": reduced_partial["lines"][0]["id"],
+                        "delivered_quantity": "26",
+                        "received_quantity": "26",
+                        "damaged_quantity": "0",
+                        "rejected_quantity": "0",
+                        "unusable_quantity": "0",
+                        "location": "纸箱仓 A-03",
+                        "feedback_note": "数量核对无误",
+                    },
+                    {
+                        "order_line_id": reduced_partial["lines"][1]["id"],
+                        "delivered_quantity": "4100",
+                        "received_quantity": "4100",
+                        "damaged_quantity": "0",
+                        "rejected_quantity": "0",
+                        "unusable_quantity": "0",
+                        "location": "纸箱仓 B-01",
+                        "feedback_note": "数量核对无误",
+                    }
+                ],
+            },
+        )
+        assert completion_receipt_response.status_code == 201, completion_receipt_response.text
+        completion_receipt = completion_receipt_response.json()
+        completion_confirmed = client.post(
+            f"/api/carton-procurement/receipts/{completion_receipt['id']}/confirm",
+            json={"factory_id": "huaxing", "expected_revision": completion_receipt["revision"]},
+        )
+        assert completion_confirmed.status_code == 200, completion_confirmed.text
+
+        completed = client.get(
+            "/api/carton-procurement/orders",
+            params={"factory_id": "huaxing"},
+        ).json()["items"][0]
+        assert completed["status"] == "COMPLETED"
+
+        login_as(client, "carton_supervisor")
+        appended_completed_response = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": completed["revision"],
+                "additional_quantity": "600",
+                "reason": "全部到货后客户再次追加六百套",
+            },
+        )
+        assert appended_completed_response.status_code == 200, appended_completed_response.text
+        reopened = appended_completed_response.json()
+        assert reopened["status"] == "PARTIALLY_RECEIVED"
+        assert Decimal(reopened["product_order_quantity"]) == Decimal("4700")
+        assert Decimal(reopened["lines"][0]["required_quantity"]) == Decimal("40")
+        assert Decimal(reopened["lines"][0]["received_quantity"]) == Decimal("35")
+        assert Decimal(reopened["lines"][0]["remaining_quantity"]) == Decimal("5")
+
+        blocked_below_received = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": reopened["revision"],
+                "reduction_quantity": "601",
+                "reason": "尝试减少超过尚未入库的数量",
+            },
+        )
+        assert blocked_below_received.status_code == 409, blocked_below_received.text
+        assert "超过尚未入库的可退范围" in blocked_below_received.json()["detail"]
+
+        close_balance_response = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": reopened["revision"],
+                "reduction_quantity": "600",
+                "reason": "退掉全部尚未入库的追加数量",
+            },
+        )
+        assert close_balance_response.status_code == 200, close_balance_response.text
+        closed_again = close_balance_response.json()
+        assert closed_again["status"] == "COMPLETED"
+        assert Decimal(closed_again["product_order_quantity"]) == Decimal("4100")
+        assert all(Decimal(line["remaining_quantity"]) == 0 for line in closed_again["lines"])
+
+        blocked_completed_reduce = client.post(
+            f"/api/carton-procurement/orders/{order['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": closed_again["revision"],
+                "reduction_quantity": "1",
+                "reason": "全部到货后尝试继续减单",
+            },
+        )
+        assert blocked_completed_reduce.status_code == 409, blocked_completed_reduce.text
+
+        audit = client.get(
+            "/api/carton-procurement/audit-events",
+            params={"factory_id": "huaxing", "event_type": "ORDER_APPENDED"},
+        )
+        assert audit.status_code == 200, audit.text
+        reopened_event = next(
+            item for item in audit.json()["items"]
+            if item["detail"]["previous_status"] == "COMPLETED"
+        )
+        assert reopened_event["detail"]["status"] == "PARTIALLY_RECEIVED"
+
+
+def test_completed_order_append_locks_exact_completed_product_baseline(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        _ensure_dickie_customer(client)
+
+        payload = _order_payload()
+        payload["product_order_quantity"] = "2100"
+        payload["lines"] = [payload["lines"][0]]
+        created_response = client.post("/api/carton-procurement/orders", json=payload)
+        assert created_response.status_code == 201, created_response.text
+        submitted = _submit_order(client, created_response.json())
+        assert Decimal(submitted["lines"][0]["required_quantity"]) == Decimal("18")
+
+        receipt_response = client.post(
+            "/api/carton-procurement/receipts",
+            json={
+                "factory_id": "huaxing",
+                "delivery_note_no": "DN260805-ROUNDING",
+                "delivery_date": "2026-08-05",
+                "lines": [
+                    {
+                        "order_line_id": submitted["lines"][0]["id"],
+                        "delivered_quantity": "18",
+                        "received_quantity": "18",
+                        "damaged_quantity": "0",
+                        "rejected_quantity": "0",
+                        "unusable_quantity": "0",
+                        "location": "纸箱仓 A-03",
+                    }
+                ],
+            },
+        )
+        assert receipt_response.status_code == 201, receipt_response.text
+        receipt = receipt_response.json()
+        confirmed_response = client.post(
+            f"/api/carton-procurement/receipts/{receipt['id']}/confirm",
+            json={"factory_id": "huaxing", "expected_revision": receipt["revision"]},
+        )
+        assert confirmed_response.status_code == 200, confirmed_response.text
+
+        completed = client.get(
+            "/api/carton-procurement/orders",
+            params={"factory_id": "huaxing"},
+        ).json()["items"][0]
+        assert completed["status"] == "COMPLETED"
+        assert Decimal(completed["maximum_reducible_quantity"]) == 0
+
+        login_as(client, "carton_supervisor")
+        appended_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": completed["revision"],
+                "additional_quantity": "1000",
+            },
+        )
+        assert appended_response.status_code == 200, appended_response.text
+        appended = appended_response.json()
+        assert Decimal(appended["product_order_quantity"]) == Decimal("3100")
+        assert Decimal(appended["maximum_reducible_quantity"]) == Decimal("1000")
+
+        blocked_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": appended["revision"],
+                "reduction_quantity": "1059",
+                "reason": "",
+            },
+        )
+        assert blocked_response.status_code == 409, blocked_response.text
+        assert "当前最大可减 1000" in blocked_response.json()["detail"]
+
+        reduced_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": appended["revision"],
+                "reduction_quantity": "1000",
+            },
+        )
+        assert reduced_response.status_code == 200, reduced_response.text
+        reduced = reduced_response.json()
+        assert reduced["status"] == "COMPLETED"
+        assert Decimal(reduced["product_order_quantity"]) == Decimal("2100")
+
+        audit_response = client.get(
+            "/api/carton-procurement/audit-events",
+            params={"factory_id": "huaxing"},
+        )
+        assert audit_response.status_code == 200, audit_response.text
+        events = audit_response.json()["items"]
+        append_event = next(item for item in events if item["event_type"] == "ORDER_APPENDED")
+        reduce_event = next(item for item in events if item["event_type"] == "ORDER_REDUCED")
+        assert append_event["detail"]["reason"] == "客人追加订单"
+        assert reduce_event["detail"]["reason"] == "客人退单"
 
 
 def test_order_update_and_cancel_are_controlled_by_supplier_submission(monkeypatch):
@@ -654,12 +1122,13 @@ def test_order_append_bulk_cancel_export_filters_and_audit(monkeypatch):
         assert combined.headers["content-type"].startswith(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        assert "纸箱合并采购单" in unquote(combined.headers["content-disposition"])
+        assert "纸箱累计对账表" in unquote(combined.headers["content-disposition"])
         assert unquote(combined.headers["content-disposition"]).endswith(".xlsx")
         combined_workbook = load_workbook(BytesIO(combined.content), data_only=False)
-        assert combined_workbook.sheetnames == ["纸箱合并采购单"]
-        combined_sheet = combined_workbook["纸箱合并采购单"]
-        assert "华兴厂纸箱合并采购单" in combined_sheet["A1"].value
+        assert combined_workbook.sheetnames == ["纸箱累计对账表"]
+        combined_sheet = combined_workbook["纸箱累计对账表"]
+        assert "华兴厂纸箱累计对账表" in combined_sheet["A1"].value
+        assert "不代表向供应商" in combined_sheet.cell(row=combined_sheet.max_row, column=1).value
         assert combined_sheet["I4"].value == "河源东康纸品有限公司"
         assert combined_sheet["O7"].value == "单位"
         exported_order_nos = {
@@ -859,6 +1328,184 @@ def test_purchase_order_export_contains_grouped_lines_and_formula(monkeypatch):
         assert sheet["G10"].value == "=ROUNDUP(F10/E10,0)"
         assert "无需供应商回签确认" in sheet[f"A{sheet.max_row}"].value
         workbook.close()
+
+
+def test_purchase_order_issues_export_only_net_supplier_change(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        _ensure_dickie_customer(client)
+        payload = _order_payload()
+        payload["product_order_quantity"] = "2100"
+        payload["lines"] = [payload["lines"][0]]
+        created_response = client.post("/api/carton-procurement/orders", json=payload)
+        assert created_response.status_code == 201, created_response.text
+        submitted = _submit_order(client, created_response.json())
+
+        initial_context_response = client.get(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-context",
+            params={"factory_id": "huaxing"},
+        )
+        assert initial_context_response.status_code == 200, initial_context_response.text
+        initial_context = initial_context_response.json()
+        assert initial_context["pending_type"] == "INITIAL"
+        assert Decimal(initial_context["pending_product_quantity"]) == Decimal("2100")
+        assert initial_context["issues"] == []
+
+        initial_issue_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-issues.xlsx",
+            json={"factory_id": "huaxing", "expected_revision": submitted["revision"]},
+        )
+        assert initial_issue_response.status_code == 200, initial_issue_response.text
+        assert initial_issue_response.headers["x-purchase-order-document-no"].endswith("-P00")
+        initial_workbook = load_workbook(BytesIO(initial_issue_response.content), data_only=False)
+        initial_sheet = initial_workbook["首次采购单"]
+        assert initial_sheet["G10"].value == 18
+        assert "本次变化" in initial_sheet[f"A{initial_sheet.max_row - 2}"].value
+        initial_workbook.close()
+
+        login_as(client, "carton_supervisor")
+        appended_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": submitted["revision"],
+                "additional_quantity": "1000",
+            },
+        )
+        assert appended_response.status_code == 200, appended_response.text
+        appended = appended_response.json()
+        assert Decimal(appended["lines"][0]["required_quantity"]) == Decimal("26")
+
+        append_context_response = client.get(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-context",
+            params={"factory_id": "huaxing"},
+        )
+        assert append_context_response.status_code == 200, append_context_response.text
+        append_context = append_context_response.json()
+        assert append_context["pending_type"] == "APPEND"
+        assert Decimal(append_context["pending_product_quantity"]) == Decimal("1000")
+        assert len(append_context["issues"]) == 1
+
+        append_issue_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-issues.xlsx",
+            json={"factory_id": "huaxing", "expected_revision": appended["revision"]},
+        )
+        assert append_issue_response.status_code == 200, append_issue_response.text
+        assert append_issue_response.headers["x-purchase-order-document-no"].endswith("-A01")
+        append_workbook = load_workbook(BytesIO(append_issue_response.content), data_only=False)
+        append_sheet = append_workbook["追加采购单"]
+        assert append_sheet["F6"].value == 1000
+        assert append_sheet["F10"].value == 18
+        assert append_sheet["G10"].value == 8
+        assert append_sheet["H10"].value == 26
+        assert "不得把“变更后累计”重复作为新增订单" in append_sheet[f"A{append_sheet.max_row - 2}"].value
+        append_workbook.close()
+
+        no_change_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-issues.xlsx",
+            json={"factory_id": "huaxing", "expected_revision": appended["revision"]},
+        )
+        assert no_change_response.status_code == 409, no_change_response.text
+        assert "没有尚未生成" in no_change_response.json()["detail"]
+
+        reduced_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/reduce",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": appended["revision"],
+                "reduction_quantity": "100",
+            },
+        )
+        assert reduced_response.status_code == 200, reduced_response.text
+        reduced = reduced_response.json()
+        reduce_context = client.get(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-context",
+            params={"factory_id": "huaxing"},
+        ).json()
+        assert reduce_context["pending_type"] == "REDUCE"
+        assert Decimal(reduce_context["pending_product_quantity"]) == Decimal("-100")
+
+        reduce_issue_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-issues.xlsx",
+            json={"factory_id": "huaxing", "expected_revision": reduced["revision"]},
+        )
+        assert reduce_issue_response.status_code == 200, reduce_issue_response.text
+        assert reduce_issue_response.headers["x-purchase-order-document-no"].endswith("-R01")
+        reduce_workbook = load_workbook(BytesIO(reduce_issue_response.content), data_only=False)
+        reduce_sheet = reduce_workbook["减单通知"]
+        assert reduce_sheet["F6"].value == -100
+        assert reduce_sheet["G10"].value == -1
+        reduce_workbook.close()
+
+        final_context = client.get(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-context",
+            params={"factory_id": "huaxing"},
+        ).json()
+        assert final_context["pending_type"] == "NONE"
+        assert [item["document_type"] for item in final_context["issues"]] == [
+            "REDUCE", "APPEND", "INITIAL"
+        ]
+
+        append_issue = next(
+            item for item in final_context["issues"] if item["document_type"] == "APPEND"
+        )
+        redownload_response = client.get(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-issues/{append_issue['id']}.xlsx",
+            params={"factory_id": "huaxing"},
+        )
+        assert redownload_response.status_code == 200, redownload_response.text
+        redownload_workbook = load_workbook(BytesIO(redownload_response.content), data_only=False)
+        assert redownload_workbook["追加采购单"]["G10"].value == 8
+        redownload_workbook.close()
+
+        appended_again_response = client.post(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/append",
+            json={
+                "factory_id": "huaxing",
+                "expected_revision": reduced["revision"],
+                "additional_quantity": "120",
+            },
+        )
+        assert appended_again_response.status_code == 200, appended_again_response.text
+        appended_again = appended_again_response.json()
+
+        second_payload = _order_payload()
+        second_payload["product_order_quantity"] = "240"
+        second_payload["lines"] = [second_payload["lines"][0]]
+        second_created_response = client.post("/api/carton-procurement/orders", json=second_payload)
+        assert second_created_response.status_code == 201, second_created_response.text
+        second_submitted = _submit_order(client, second_created_response.json())
+
+        batch_response = client.post(
+            "/api/carton-procurement/orders/purchase-order-issues.xlsx",
+            json={
+                "factory_id": "huaxing",
+                "items": [
+                    {
+                        "order_no": appended_again["order_no"],
+                        "expected_revision": appended_again["revision"],
+                    },
+                    {
+                        "order_no": second_submitted["order_no"],
+                        "expected_revision": second_submitted["revision"],
+                    },
+                ],
+            },
+        )
+        assert batch_response.status_code == 200, batch_response.text
+        assert batch_response.headers["x-purchase-order-issue-count"] == "2"
+        batch_workbook = load_workbook(BytesIO(batch_response.content), data_only=False)
+        batch_sheet = batch_workbook["供应商采购单批次"]
+        document_numbers = {
+            batch_sheet.cell(row=row, column=2).value
+            for row in range(6, batch_sheet.max_row)
+            if batch_sheet.cell(row=row, column=2).value
+        }
+        assert f"{submitted['order_no']}-A02" in document_numbers
+        assert f"{second_submitted['order_no']}-P00" in document_numbers
+        assert "只执行“本次箱数变化”" in batch_sheet["A2"].value
+        batch_workbook.close()
 
 
 def test_receipt_confirmation_is_human_gated_idempotent_and_creates_inventory(monkeypatch):

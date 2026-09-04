@@ -31,14 +31,20 @@ const cartonApiMock = vi.hoisted(() => ({
   createOrder: vi.fn(),
   updateOrder: vi.fn(),
   submitOrderToSupplier: vi.fn(),
+  bulkSubmitOrdersToSupplier: vi.fn(),
   cancelOrder: vi.fn(),
   appendOrder: vi.fn(),
+  reduceOrder: vi.fn(),
   returnOrder: vi.fn(),
   bulkCancelOrders: vi.fn(),
   uploadHistoryOrders: vi.fn(),
   searchOrderHistoryItems: vi.fn(),
   uploadHistoryInventory: vi.fn(),
   exportPurchaseOrder: vi.fn(),
+  getPurchaseOrderContext: vi.fn(),
+  issuePurchaseOrder: vi.fn(),
+  downloadPurchaseOrderIssue: vi.fn(),
+  issuePurchaseOrders: vi.fn(),
   exportPurchaseOrders: vi.fn(),
   uploadReceipt: vi.fn(),
   deleteReceiptImport: vi.fn(),
@@ -148,7 +154,7 @@ function orderFixture(orderNo: string, dueDate: string, status = 'CONFIRMED') {
 
 describe('CartonProcurementView frontend workspace', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
     appStoreMock.activeProductionFactory = { id: 'huaxing', name: '华兴', shortName: '华兴' }
     authStoreMock.can.mockReturnValue(true)
     cartonApiMock.listCustomers.mockRejectedValue(new Error('offline test'))
@@ -164,6 +170,27 @@ describe('CartonProcurementView frontend workspace', () => {
     cartonApiMock.latestReceiptImport.mockResolvedValue(null)
     cartonApiMock.deleteReceiptImport.mockResolvedValue(undefined)
     cartonApiMock.exportPurchaseOrder.mockResolvedValue(new Blob(['xlsx']))
+    cartonApiMock.getPurchaseOrderContext.mockResolvedValue({
+      factory_id: 'huaxing',
+      order_no: 'CT-DEFAULT',
+      order_revision: 1,
+      pending_type: 'NONE',
+      pending_product_quantity: '0',
+      pending_line_count: 0,
+      can_generate: false,
+      latest_document_no: '',
+      historical_baseline: false,
+      issues: [],
+    })
+    cartonApiMock.issuePurchaseOrder.mockResolvedValue({
+      blob: new Blob(['issued-xlsx']),
+      documentNo: 'CT-DEFAULT-P00',
+    })
+    cartonApiMock.downloadPurchaseOrderIssue.mockResolvedValue(new Blob(['issued-xlsx']))
+    cartonApiMock.issuePurchaseOrders.mockResolvedValue({
+      blob: new Blob(['issued-batch-xlsx']),
+      issueCount: 1,
+    })
     cartonApiMock.exportPurchaseOrders.mockResolvedValue(new Blob(['combined-xlsx']))
     cartonApiMock.searchOrderHistoryItems.mockResolvedValue([])
     Object.defineProperty(window.URL, 'createObjectURL', {
@@ -342,6 +369,48 @@ describe('CartonProcurementView frontend workspace', () => {
     ])
   })
 
+  it('filters orders by an exact order date', async () => {
+    const selectedOrderDate = businessDateOffset(-2)
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([
+      { ...orderFixture('CT-SELECTED-DATE', businessDateOffset(5)), order_date: selectedOrderDate },
+      { ...orderFixture('CT-OTHER-DATE', businessDateOffset(5)), order_date: businessDateOffset(-5) },
+    ])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+
+    const dateFilter = wrapper.get('input[aria-label="订单下单日期筛选"]')
+    expect(dateFilter.attributes('type')).toBe('date')
+    await dateFilter.setValue(selectedOrderDate)
+
+    expect(wrapper.findAll('[data-order-no]').map((card) => card.attributes('data-order-no'))).toEqual([
+      'CT-SELECTED-DATE',
+    ])
+
+    await dateFilter.setValue('')
+    expect(wrapper.findAll('[data-order-no]')).toHaveLength(2)
+  })
+
+  it('places an enlarged bulk selector directly above enlarged order selectors', async () => {
+    const wrapper = mountView('orders')
+    await flushPromises()
+
+    const selectionToolbar = wrapper.get('[aria-label="订单批量选择"]')
+    const firstOrder = wrapper.get('[data-order-no]')
+    const selectAll = wrapper.get('input[aria-label="全选当前订单结果"]')
+    const orderSelector = firstOrder.get('input[aria-label^="选择订单 "]')
+
+    expect(selectionToolbar.element.nextElementSibling).toBe(firstOrder.element)
+    expect(selectAll.classes()).toContain('size-5')
+    expect(orderSelector.classes()).toContain('size-5')
+    expect(orderSelector.element.parentElement?.tagName).toBe('LABEL')
+  })
+
   it('groups multiple paper items under one contract and keeps paper quality separate from specification', async () => {
     const wrapper = mountView('orders')
 
@@ -381,11 +450,13 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('合同内纸品明细 · 2 行')
     expect(wrapper.text()).toContain('A9A')
     expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONFIRMED' }))
-    expect(wrapper.text()).toContain('已确认')
+    expect(wrapper.text()).toContain('已进入待下单')
     expect(wrapper.text()).toContain('含 2 条纸品明细')
     expect(wrapper.text()).toContain('提交供应商前仍可修改、追加或取消')
 
-    await wrapper.get('button[aria-label="导出 CT-260805-ABC123 采购单"]').trigger('click')
+    await wrapper.get('button[aria-label="管理 CT-260805-ABC123 采购单"]').trigger('click')
+    await flushPromises()
+    await findButton(wrapper, '导出累计参考').trigger('click')
     await flushPromises()
     expect(cartonApiMock.exportPurchaseOrder).toHaveBeenCalledWith('huaxing', 'CT-260805-ABC123')
     expect(wrapper.text()).toContain('CT-260805-ABC123 采购单已生成并开始下载')
@@ -475,7 +546,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('本次合同、数量和日期仍需单独填写')
   })
 
-  it('exports selected orders as one combined purchase order workbook', async () => {
+  it('exports selected orders as one cumulative reconciliation workbook', async () => {
     const first = orderFixture('CT-COMBINE-001', businessDateOffset(4), 'CONFIRMED')
     const second = orderFixture('CT-COMBINE-002', businessDateOffset(6), 'PENDING_SUPPLIER')
     cartonApiMock.listCustomers.mockResolvedValue([])
@@ -493,18 +564,134 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     await wrapper.get('input[aria-label="选择订单 CT-COMBINE-001"]').setValue(true)
     await wrapper.get('input[aria-label="选择订单 CT-COMBINE-002"]').setValue(true)
-    await findButton(wrapper, '合并导出采购单').trigger('click')
+    await findButton(wrapper, '导出累计对账表').trigger('click')
     await flushPromises()
 
     expect(cartonApiMock.exportPurchaseOrders).toHaveBeenCalledWith(
       'huaxing',
       expect.arrayContaining(['CT-COMBINE-001', 'CT-COMBINE-002']),
     )
-    expect(downloadedFilename).toMatch(/^纸箱合并采购单_\d{4}-\d{2}-\d{2}\.xlsx$/)
+    expect(downloadedFilename).toMatch(/^纸箱累计对账表_\d{4}-\d{2}-\d{2}\.xlsx$/)
     expect(downloadedFilename).not.toContain('.zip')
-    expect(wrapper.text()).toContain('已将 2 张订单合并导出为一个采购单')
-    expect(wrapper.get('[role="status"]').text()).toContain('已将 2 张订单合并为一个采购单，文件已开始下载')
+    expect(wrapper.text()).toContain('已将 2 张订单合并导出为累计对账表')
+    expect(wrapper.get('[role="status"]').text()).toContain('已将 2 张订单合并为累计对账表，文件已开始下载')
+    expect(wrapper.get('[role="status"]').text()).toContain('不代表新增下单')
     downloadSpy.mockRestore()
+  })
+
+  it('issues a selected batch using only orders with pending supplier changes', async () => {
+    const first = orderFixture('CT-BATCH-ISSUE-001', businessDateOffset(4), 'PENDING_SUPPLIER')
+    const second = orderFixture('CT-BATCH-ISSUE-002', businessDateOffset(6), 'COMPLETED')
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([first, second])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.issuePurchaseOrders.mockResolvedValue({
+      blob: new Blob(['issued-batch-xlsx']),
+      issueCount: 1,
+    })
+    let downloadedFilename = ''
+    const downloadSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloadedFilename = this.download
+    })
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+    await wrapper.get('input[aria-label="选择订单 CT-BATCH-ISSUE-001"]').setValue(true)
+    await wrapper.get('input[aria-label="选择订单 CT-BATCH-ISSUE-002"]').setValue(true)
+    await findButton(wrapper, '发行供应商单（2）').trigger('click')
+    await flushPromises()
+
+    expect(cartonApiMock.issuePurchaseOrders).toHaveBeenCalledWith(
+      'huaxing',
+      expect.arrayContaining([
+        expect.objectContaining({ order_no: 'CT-BATCH-ISSUE-001', revision: 1 }),
+        expect.objectContaining({ order_no: 'CT-BATCH-ISSUE-002', revision: 1 }),
+      ]),
+    )
+    expect(downloadedFilename).toMatch(/^供应商采购单批次_\d{4}-\d{2}-\d{2}\.xlsx$/)
+    expect(wrapper.get('[role="status"]').text()).toContain('已固定发行 1 份供应商采购单')
+    expect(wrapper.get('[role="status"]').text()).toContain('跳过 1 张无待发行变化的订单')
+    downloadSpy.mockRestore()
+  })
+
+  it('issues only the pending supplier delta and keeps immutable purchase-order history', async () => {
+    const order = orderFixture('CT-ISSUE-001', businessDateOffset(6), 'PENDING_SUPPLIER')
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([order])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    const initialIssue = {
+      id: 'CPI-INITIAL',
+      factory_id: 'huaxing',
+      order_no: order.order_no,
+      document_no: `${order.order_no}-P00`,
+      document_type: 'INITIAL',
+      issue_sequence: 1,
+      source_order_revision: 1,
+      before_product_quantity: '0',
+      after_product_quantity: '2100',
+      product_quantity_delta: '2100',
+      generated_by: 'admin',
+      generated_by_name: '系统管理员',
+      generated_at: '2026-09-04T10:00:00+08:00',
+    }
+    const pendingContext = {
+      factory_id: 'huaxing',
+      order_no: order.order_no,
+      order_revision: 1,
+      pending_type: 'APPEND',
+      pending_product_quantity: '1000',
+      pending_line_count: 1,
+      can_generate: true,
+      latest_document_no: initialIssue.document_no,
+      historical_baseline: true,
+      issues: [initialIssue],
+    }
+    cartonApiMock.getPurchaseOrderContext
+      .mockResolvedValueOnce(pendingContext)
+      .mockResolvedValueOnce({
+        ...pendingContext,
+        pending_type: 'NONE',
+        pending_product_quantity: '0',
+        pending_line_count: 0,
+        can_generate: false,
+        latest_document_no: `${order.order_no}-A01`,
+        issues: [{
+          ...initialIssue,
+          id: 'CPI-APPEND',
+          document_no: `${order.order_no}-A01`,
+          document_type: 'APPEND',
+          issue_sequence: 2,
+          before_product_quantity: '2100',
+          after_product_quantity: '3100',
+          product_quantity_delta: '1000',
+        }, initialIssue],
+      })
+    cartonApiMock.issuePurchaseOrder.mockResolvedValue({
+      blob: new Blob(['append-xlsx']),
+      documentNo: `${order.order_no}-A01`,
+    })
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+    await wrapper.get(`button[aria-label="管理 ${order.order_no} 采购单"]`).trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('系统升级前的当前累计数量已登记为历史基线')
+    expect(wrapper.text()).toContain('追加采购单')
+    expect(wrapper.text()).toContain('产品数量变化 +1,000')
+    expect(wrapper.text()).toContain(initialIssue.document_no)
+    await findButton(wrapper, '生成并下载追加采购单').trigger('click')
+    await flushPromises()
+
+    expect(cartonApiMock.issuePurchaseOrder).toHaveBeenCalledWith('huaxing', order)
+    expect(wrapper.text()).toContain(`${order.order_no}-A01 追加采购单已固定生成并开始下载`)
+    expect(wrapper.text()).toContain('当前累计数量与最近一次采购单快照一致')
   })
 
   it('explains beside the batch export control when only offline demo orders are available', async () => {
@@ -512,7 +699,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     await wrapper.get('input[aria-label="选择订单 CT-260731-018"]').setValue(true)
 
-    const exportButton = findButton(wrapper, '合并导出采购单')
+    const exportButton = findButton(wrapper, '导出累计对账表')
     expect(exportButton.attributes('disabled')).toBeDefined()
     expect(wrapper.get('[role="status"]').text()).toContain('后端未连接，当前演示订单不能导出')
     expect(cartonApiMock.exportPurchaseOrders).not.toHaveBeenCalled()
@@ -531,7 +718,7 @@ describe('CartonProcurementView frontend workspace', () => {
     const wrapper = mountView('orders')
     await flushPromises()
     await wrapper.get('input[aria-label="选择订单 CT-EXPORT-FAIL"]').setValue(true)
-    await findButton(wrapper, '合并导出采购单').trigger('click')
+    await findButton(wrapper, '导出累计对账表').trigger('click')
     await flushPromises()
 
     expect(wrapper.get('[role="status"]').text()).toContain('合并导出失败：订单已不存在')
@@ -634,7 +821,7 @@ describe('CartonProcurementView frontend workspace', () => {
 
     expect(orderCard().find('button[aria-label="登记 CT-SUBMIT 收料"]').exists()).toBe(false)
     await orderCard().get('button[aria-label="提交 CT-SUBMIT 给供应商"]').trigger('click')
-    expect(wrapper.text()).toContain('提交后不可修改、追加或取消')
+    expect(wrapper.text()).toContain('锁定普通编辑')
     await findButton(wrapper, '确认提交并锁定').trigger('click')
     await flushPromises()
 
@@ -644,9 +831,269 @@ describe('CartonProcurementView frontend workspace', () => {
     )
     expect(orderCard().text()).toContain('已提交供应商')
     expect(orderCard().find('button[aria-label="修改 CT-SUBMIT 订单"]').exists()).toBe(false)
-    expect(orderCard().find('button[aria-label="追加 CT-SUBMIT 订单"]').exists()).toBe(false)
+    expect(orderCard().find('button[aria-label="追加 CT-SUBMIT 订单"]').exists()).toBe(true)
+    expect(orderCard().find('button[aria-label="减单 CT-SUBMIT"]').exists()).toBe(true)
     expect(orderCard().find('button[aria-label="取消 CT-SUBMIT"]').exists()).toBe(false)
     expect(orderCard().find('button[aria-label="登记 CT-SUBMIT 收料"]').exists()).toBe(true)
+  })
+
+  it('allows a supervisor to append, reduce, and fully return a submitted order', async () => {
+    const submitted = orderFixture('CT-ADJUST', businessDateOffset(5), 'PENDING_SUPPLIER')
+    const appended = { ...submitted, product_order_quantity: '4200', revision: 2 }
+    const reduced = { ...appended, product_order_quantity: '3600', revision: 3 }
+    const returned = {
+      ...reduced,
+      status: 'CANCELLED',
+      revision: 4,
+    }
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders
+      .mockResolvedValueOnce([submitted])
+      .mockResolvedValueOnce([appended])
+      .mockResolvedValueOnce([reduced])
+      .mockResolvedValueOnce([returned])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.appendOrder.mockResolvedValue(appended)
+    cartonApiMock.reduceOrder.mockResolvedValueOnce(reduced).mockResolvedValueOnce(returned)
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+
+    await wrapper.get('button[aria-label="追加 CT-ADJUST 订单"]').trigger('click')
+    expect((wrapper.get('textarea[aria-label="追加订单原因"]').element as HTMLTextAreaElement).value).toBe('客人追加订单')
+    await wrapper.get('input[aria-label="追加订单数量"]').setValue(600)
+    await wrapper.get('[data-testid="append-order-form"]').trigger('submit')
+    await flushPromises()
+    expect(cartonApiMock.appendOrder).toHaveBeenCalledWith(
+      'huaxing',
+      expect.objectContaining({ order_no: 'CT-ADJUST', status: 'PENDING_SUPPLIER' }),
+      600,
+      '客人追加订单',
+      submitted.due_date,
+    )
+
+    await wrapper.get('button[aria-label="减单 CT-ADJUST"]').trigger('click')
+    expect((wrapper.get('textarea[aria-label="减单原因"]').element as HTMLTextAreaElement).value).toBe('客人退单')
+    await wrapper.get('input[aria-label="减单数量"]').setValue(600)
+    await wrapper.get('[data-testid="reduce-order-form"]').trigger('submit')
+    await flushPromises()
+    expect(cartonApiMock.reduceOrder).toHaveBeenNthCalledWith(
+      1,
+      'huaxing',
+      expect.objectContaining({ order_no: 'CT-ADJUST', revision: 2 }),
+      600,
+      '客人退单',
+    )
+    expect(wrapper.text()).toContain('已减少 600 件')
+
+    await wrapper.get('button[aria-label="减单 CT-ADJUST"]').trigger('click')
+    await wrapper.get('input[aria-label="减单数量"]').setValue(3600)
+    await wrapper.get('textarea[aria-label="减单原因"]').setValue('主管确认客户整张订单退单')
+    await wrapper.get('[data-testid="reduce-order-form"]').trigger('submit')
+    await flushPromises()
+    expect(cartonApiMock.reduceOrder).toHaveBeenNthCalledWith(
+      2,
+      'huaxing',
+      expect.objectContaining({ order_no: 'CT-ADJUST', revision: 3 }),
+      3600,
+      '主管确认客户整张订单退单',
+    )
+    expect(wrapper.get('[data-order-no="CT-ADJUST"]').text()).toContain('已取消')
+  })
+
+  it('allows supervisor append after receipt or completion and exposes only reducible balance', async () => {
+    const partial = {
+      ...orderFixture('CT-PARTIAL-APPEND', businessDateOffset(5), 'PARTIALLY_RECEIVED'),
+      lines: [{
+        ...orderFixture('CT-PARTIAL-APPEND', businessDateOffset(5), 'PARTIALLY_RECEIVED').lines[0],
+        received_quantity: '40',
+        remaining_quantity: '60',
+      }],
+    }
+    const completed = orderFixture('CT-COMPLETED-APPEND', businessDateOffset(6), 'COMPLETED')
+    const reopened = {
+      ...completed,
+      status: 'PARTIALLY_RECEIVED',
+      product_order_quantity: '160',
+      revision: 2,
+      lines: [{
+        ...completed.lines[0],
+        required_quantity: '160',
+        received_quantity: '100',
+        remaining_quantity: '60',
+      }],
+    }
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders
+      .mockResolvedValueOnce([partial, completed])
+      .mockResolvedValueOnce([partial, reopened])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.appendOrder.mockResolvedValue(reopened)
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+
+    const partialCard = wrapper.get('[data-order-no="CT-PARTIAL-APPEND"]')
+    const completedCard = wrapper.get('[data-order-no="CT-COMPLETED-APPEND"]')
+    expect(partialCard.find('button[aria-label="追加 CT-PARTIAL-APPEND 订单"]').exists()).toBe(true)
+    expect(partialCard.get('button[aria-label="减单 CT-PARTIAL-APPEND"]').text()).toContain('减少未入库量')
+    expect(completedCard.find('button[aria-label="追加 CT-COMPLETED-APPEND 订单"]').exists()).toBe(true)
+    expect(completedCard.find('button[aria-label="减单 CT-COMPLETED-APPEND"]').exists()).toBe(false)
+
+    await completedCard.get('button[aria-label="追加 CT-COMPLETED-APPEND 订单"]').trigger('click')
+    expect(wrapper.get('[data-testid="append-order-form"]').text()).toContain('追加后会自动恢复为“部分到货”')
+    await wrapper.get('input[aria-label="追加订单数量"]').setValue(60)
+    await wrapper.get('textarea[aria-label="追加订单原因"]').setValue('全部到货后客户追加六十套')
+    await wrapper.get('[data-testid="append-order-form"]').trigger('submit')
+    await flushPromises()
+
+    expect(cartonApiMock.appendOrder).toHaveBeenCalledWith(
+      'huaxing',
+      expect.objectContaining({ order_no: 'CT-COMPLETED-APPEND', status: 'COMPLETED' }),
+      60,
+      '全部到货后客户追加六十套',
+      completed.due_date,
+    )
+    expect(wrapper.text()).toContain('已恢复为“部分到货”')
+    expect(wrapper.get('[data-order-no="CT-COMPLETED-APPEND"]').text()).toContain('部分收料')
+    expect(wrapper.get('[data-order-no="CT-COMPLETED-APPEND"]').find('button[aria-label="减单 CT-COMPLETED-APPEND"]').exists()).toBe(true)
+  })
+
+  it('reserves pending receipt quantity when calculating the maximum reduction', async () => {
+    const submitted = orderFixture('CT-PENDING-RECEIPT', businessDateOffset(5), 'PENDING_SUPPLIER')
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([submitted])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.listReceipts.mockResolvedValue([{
+      id: 'RECEIPT-PENDING',
+      status: 'PENDING_CONFIRMATION',
+      lines: [{ order_line_id: submitted.lines[0].id, effective_quantity: '40' }],
+    }])
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+    const card = wrapper.get('[data-order-no="CT-PENDING-RECEIPT"]')
+    expect(card.find('button[aria-label="追加 CT-PENDING-RECEIPT 订单"]').exists()).toBe(true)
+    await card.get('button[aria-label="减单 CT-PENDING-RECEIPT"]').trigger('click')
+    const quantityInput = wrapper.get('input[aria-label="减单数量"]')
+    expect(quantityInput.attributes('max')).toBe('60')
+    expect(wrapper.get('[data-testid="reduce-order-form"]').text()).toContain('最大可减60')
+  })
+
+  it('reduces the unreceived balance and closes a partially received order', async () => {
+    const partial = {
+      ...orderFixture('CT-PARTIAL-REDUCE', businessDateOffset(5), 'PARTIALLY_RECEIVED'),
+      lines: [{
+        ...orderFixture('CT-PARTIAL-REDUCE', businessDateOffset(5), 'PARTIALLY_RECEIVED').lines[0],
+        received_quantity: '40',
+        remaining_quantity: '60',
+      }],
+    }
+    const completed = {
+      ...partial,
+      status: 'COMPLETED',
+      product_order_quantity: '40',
+      revision: 2,
+      lines: [{
+        ...partial.lines[0],
+        required_quantity: '40',
+        remaining_quantity: '0',
+      }],
+    }
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders
+      .mockResolvedValueOnce([partial])
+      .mockResolvedValueOnce([completed])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.reduceOrder.mockResolvedValue(completed)
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+    await wrapper.get('button[aria-label="减单 CT-PARTIAL-REDUCE"]').trigger('click')
+    const form = wrapper.get('[data-testid="reduce-order-form"]')
+    expect(form.text()).toContain('减少未入库量')
+    expect(form.text()).toContain('最大可减60')
+    await wrapper.get('input[aria-label="减单数量"]').setValue(60)
+    await wrapper.get('textarea[aria-label="减单原因"]').setValue('客户取消全部未入库数量')
+    await form.trigger('submit')
+    await flushPromises()
+
+    expect(cartonApiMock.reduceOrder).toHaveBeenCalledWith(
+      'huaxing',
+      expect.objectContaining({ order_no: 'CT-PARTIAL-REDUCE', status: 'PARTIALLY_RECEIVED' }),
+      60,
+      '客户取消全部未入库数量',
+    )
+    expect(wrapper.text()).toContain('状态转为“全部到货”')
+    const completedCard = wrapper.get('[data-order-no="CT-PARTIAL-REDUCE"]')
+    expect(completedCard.text()).toContain('已完成')
+    expect(completedCard.find('button[aria-label="减单 CT-PARTIAL-REDUCE"]').exists()).toBe(false)
+  })
+
+  it('hides submitted-order adjustments without supervisor permission', async () => {
+    const submitted = orderFixture('CT-NO-ADJUST', businessDateOffset(5), 'PENDING_SUPPLIER')
+    authStoreMock.can.mockImplementation((permission: string) => permission !== 'carton_procurement:order_adjust')
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([submitted])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+    const card = wrapper.get('[data-order-no="CT-NO-ADJUST"]')
+    expect(card.find('button[aria-label="追加 CT-NO-ADJUST 订单"]').exists()).toBe(false)
+    expect(card.find('button[aria-label="减单 CT-NO-ADJUST"]').exists()).toBe(false)
+  })
+
+  it('bulk submits only pending orders and keeps skipped selections', async () => {
+    const pendingOrder = orderFixture('CT-BULK-PENDING', businessDateOffset(5), 'CONFIRMED')
+    const submittedOrder = orderFixture('CT-BULK-SUBMITTED', businessDateOffset(6), 'PENDING_SUPPLIER')
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([pendingOrder, submittedOrder])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.bulkSubmitOrdersToSupplier.mockResolvedValue([{
+      ...pendingOrder,
+      status: 'PENDING_SUPPLIER',
+      revision: pendingOrder.revision + 1,
+    }])
+
+    const wrapper = mountView('orders')
+    await flushPromises()
+    await wrapper.get('input[aria-label="选择订单 CT-BULK-PENDING"]').setValue(true)
+    await wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').setValue(true)
+
+    await findButton(wrapper, '提交供应商（1）').trigger('click')
+    expect(wrapper.text()).toContain('批量提交 1 张待下单订单')
+    await findButton(wrapper, '确认提交并锁定').trigger('click')
+    await flushPromises()
+
+    expect(cartonApiMock.bulkSubmitOrdersToSupplier).toHaveBeenCalledWith(
+      'huaxing',
+      expect.arrayContaining([
+        expect.objectContaining({ order_no: 'CT-BULK-PENDING' }),
+        expect.objectContaining({ order_no: 'CT-BULK-SUBMITTED' }),
+      ]),
+    )
+    expect(wrapper.text()).toContain('已提交 1 张订单并锁定；跳过 1 张非待下单订单')
+    expect(wrapper.get('[data-order-no="CT-BULK-PENDING"]').text()).toContain('已提交供应商')
+    expect((wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').element as HTMLInputElement).checked).toBe(true)
   })
 
   it('downloads the mapping template and imports grouped history orders', async () => {
@@ -1596,17 +2043,18 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.get('textarea[aria-label="追加订单原因"]').element.value).toContain('EX-INCREASE')
     await wrapper.get('button[aria-label="关闭追加订单"]').trigger('click')
 
-    await panel.get('button[aria-label="退单 EX-DECREASE"]').trigger('click')
-    expect(wrapper.text()).toContain('退单 CT-BUSINESS-RETURN')
-    expect(wrapper.get('textarea[aria-label="订单取消退单原因"]').element.value).toContain('EX-DECREASE')
-    await wrapper.get('button[aria-label="关闭取消订单"]').trigger('click')
-
     await panel.get('button[aria-label="按提醒新建 EX-MISSING"]').trigger('click')
     expect(wrapper.text()).toContain('新建纸箱合同订单')
     expect(wrapper.get('input[aria-label="合同号"]').element.value).toBe('SC-BUSINESS-MISSING')
     expect(wrapper.get('input[aria-label="货号"]').element.value).toBe('ITEM-MISSING')
     expect(wrapper.get('input[aria-label="订单数量"]').element.value).toBe('120')
     expect(wrapper.get('textarea[aria-label="订单备注"]').element.value).toContain('EX-MISSING')
+    await wrapper.get('button[aria-label="关闭新建订单"]').trigger('click')
+
+    await panel.get('button[aria-label="退单 EX-DECREASE"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已经入库，禁止追加、减单或退单')
+    expect(wrapper.find('textarea[aria-label="订单取消退单原因"]').exists()).toBe(false)
   })
 
   it('shows persisted receipt history and filters it with the receipt search', async () => {

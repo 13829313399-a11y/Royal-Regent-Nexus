@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import subprocess
@@ -119,11 +120,13 @@ CARTON_MARK_MANUAL_RELEASE_MIGRATION_REVISION = "20260825_0083"
 AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION = "20260826_0084"
 INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION = "20260827_0085"
 CARTON_AD_HOC_RECEIPT_MIGRATION_REVISION = "20260830_0086"
+CARTON_ORDER_ADJUST_MIGRATION_REVISION = "20260904_0096"
+CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION = "20260904_0097"
 INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION = "20260831_0087"
 INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION = "20260901_0088"
 # Historical rebuild tests stop before the later destructive retirement.
 INJECTION_SCHEDULING_HISTORY_REVISION = INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION
-HEAD_MIGRATION_REVISION = "20260903_0095"
+HEAD_MIGRATION_REVISION = CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION
 INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_factory_settings",
     "injection_schedule_order_demands",
@@ -176,6 +179,7 @@ CARTON_PROCUREMENT_TABLES = {
     "carton_suppliers",
     "carton_orders",
     "carton_order_lines",
+    "carton_purchase_order_issues",
     "carton_import_batches",
     "carton_receipts",
     "carton_receipt_lines",
@@ -5181,10 +5185,181 @@ def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path
             SELECT COUNT(*) FROM auth_permissions
             WHERE code LIKE 'carton_procurement:%'
             """
-        ).fetchone() == (8,)
+        ).fetchone() == (9,)
+        assert connection.execute(
+            """
+            SELECT name FROM auth_permissions
+            WHERE code = 'carton_procurement:order_adjust'
+            """
+        ).fetchone() == ("主管调整已提交纸箱订单",)
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (HEAD_MIGRATION_REVISION,)
+
+
+def test_carton_order_adjust_migration_grants_existing_supervisor_roles(tmp_path):
+    database_path = tmp_path / "carton_order_adjust_0096.db"
+    base = _run_dispatch_alembic(database_path, "upgrade", "20260903_0095")
+    assert base.returncode == 0, base.stderr
+    expected_role_ids = {
+        "admin",
+        "manager",
+        "position_general_manager",
+        "position_carton_manager",
+        "position_carton_supervisor",
+    }
+    with sqlite3.connect(database_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO auth_roles (id, code, name, description)
+            VALUES (?, ?, ?, '')
+            """,
+            [(role_id, role_id, role_id) for role_id in sorted(expected_role_ids)],
+        )
+        connection.commit()
+
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        granted_role_ids = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT role_permissions.role_id
+                FROM auth_role_permissions AS role_permissions
+                JOIN auth_permissions AS permissions
+                  ON permissions.id = role_permissions.permission_id
+                WHERE permissions.code = 'carton_procurement:order_adjust'
+                """
+            ).fetchall()
+        }
+        assert granted_role_ids == expected_role_ids
+
+
+def test_carton_purchase_order_issue_migration_backfills_supplier_baseline(tmp_path):
+    database_path = tmp_path / "carton_purchase_order_issue_0097.db"
+    base = _run_dispatch_alembic(database_path, "upgrade", CARTON_ORDER_ADJUST_MIGRATION_REVISION)
+    assert base.returncode == 0, base.stderr
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO carton_orders(
+                id, factory_id, order_no, customer_code, customer_name,
+                supplier_id, supplier_name_snapshot, contract_no, item_no,
+                product_name, product_order_quantity, order_date, due_date,
+                status, note, revision, created_by, created_by_name,
+                updated_by, updated_by_name, created_at, updated_at
+            ) VALUES (
+                'CTO-PO-BASE', 'huaxing', 'CT-PO-BASE', 'DICKIE', 'Dickie',
+                'SUPPLIER-1', '河源东康纸品有限公司', 'SC-PO-BASE', 'ITEM-PO-BASE',
+                '产品', 2100, '2026-09-01', '2026-09-08',
+                'PENDING_SUPPLIER', '', 7, 'admin', '管理员',
+                'admin', '管理员', '2026-09-01T00:00:00+08:00', '2026-09-01T00:00:00+08:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO carton_order_lines(
+                id, factory_id, order_id, line_no, customer_code,
+                contract_no, item_no, packaging_type, paper_quality,
+                specification, dimension_unit, usage_quantity,
+                required_quantity, unit, unit_price, currency,
+                price_source, note
+            ) VALUES (
+                'CTL-PO-BASE', 'huaxing', 'CTO-PO-BASE', 1, 'DICKIE',
+                'SC-PO-BASE', 'ITEM-PO-BASE', '外箱', 'A33+B',
+                '31.5 × 11.125 × 11.25', 'in', 120,
+                18, '个', 3.46, 'CNY', 'manual', ''
+            )
+            """
+        )
+        connection.commit()
+
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        baseline = connection.execute(
+            """
+            SELECT document_no, document_type, issue_sequence,
+                   source_order_revision, before_product_quantity,
+                   after_product_quantity, product_quantity_delta, snapshot_json
+            FROM carton_purchase_order_issues
+            WHERE order_id = 'CTO-PO-BASE'
+            """
+        ).fetchone()
+        assert baseline[:7] == (
+            "CT-PO-BASE-BASE",
+            "LEGACY_BASELINE",
+            0,
+            7,
+            2100,
+            2100,
+            0,
+        )
+        snapshot = json.loads(baseline[7])
+        assert snapshot["lines"][0]["after_required_quantity"] == "18"
+
+    downgraded = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        CARTON_ORDER_ADJUST_MIGRATION_REVISION,
+    )
+    assert downgraded.returncode == 0, downgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert "carton_purchase_order_issues" not in {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+
+def test_carton_purchase_order_issue_migration_refuses_destructive_downgrade(tmp_path):
+    database_path = tmp_path / "carton_purchase_order_issue_downgrade_guard.db"
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO carton_orders(
+                id, factory_id, order_no, customer_code, customer_name,
+                supplier_id, supplier_name_snapshot, contract_no, item_no,
+                product_name, product_order_quantity, order_date, due_date,
+                status, note, revision, created_by, created_by_name,
+                updated_by, updated_by_name, created_at, updated_at
+            ) VALUES (
+                'CTO-PO-GUARD', 'huaxing', 'CT-PO-GUARD', 'DICKIE', 'Dickie',
+                'SUPPLIER-1', '河源东康纸品有限公司', 'SC-PO-GUARD', 'ITEM-PO-GUARD',
+                '产品', 100, '2026-09-01', '2026-09-08',
+                'PENDING_SUPPLIER', '', 1, 'admin', '管理员',
+                'admin', '管理员', '2026-09-01T00:00:00+08:00', '2026-09-01T00:00:00+08:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO carton_purchase_order_issues(
+                id, factory_id, order_id, order_no, document_no, document_type,
+                issue_sequence, source_order_revision, before_product_quantity,
+                after_product_quantity, product_quantity_delta, snapshot_json,
+                generated_by, generated_by_name, generated_at
+            ) VALUES (
+                'CPOI-GUARD', 'huaxing', 'CTO-PO-GUARD', 'CT-PO-GUARD',
+                'CT-PO-GUARD-P00', 'INITIAL', 1, 1, 0, 100, 100, '{}',
+                'admin', '管理员', '2026-09-04T10:00:00+08:00'
+            )
+            """
+        )
+        connection.commit()
+
+    downgraded = _run_dispatch_alembic(
+        database_path,
+        "downgrade",
+        CARTON_ORDER_ADJUST_MIGRATION_REVISION,
+    )
+    assert downgraded.returncode != 0
+    assert "cannot downgrade carton purchase-order issues" in downgraded.stderr
 
 
 def test_carton_units_per_carton_migration_preserves_required_quantity(tmp_path):

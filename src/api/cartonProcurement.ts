@@ -71,7 +71,39 @@ export interface CartonOrderResponse {
   updated_by_name: string
   created_at: string
   updated_at: string
+  maximum_reducible_quantity?: string
   lines: CartonOrderLineResponse[]
+}
+
+export type CartonPurchaseOrderDocumentType = 'LEGACY_BASELINE' | 'INITIAL' | 'APPEND' | 'REDUCE' | 'ADJUSTMENT'
+
+export interface CartonPurchaseOrderIssueResponse {
+  id: string
+  factory_id: string
+  order_no: string
+  document_no: string
+  document_type: CartonPurchaseOrderDocumentType
+  issue_sequence: number
+  source_order_revision: number
+  before_product_quantity: string
+  after_product_quantity: string
+  product_quantity_delta: string
+  generated_by: string
+  generated_by_name: string
+  generated_at: string
+}
+
+export interface CartonPurchaseOrderContextResponse {
+  factory_id: string
+  order_no: string
+  order_revision: number
+  pending_type: 'NONE' | 'INITIAL' | 'APPEND' | 'REDUCE' | 'ADJUSTMENT'
+  pending_product_quantity: string
+  pending_line_count: number
+  can_generate: boolean
+  latest_document_no: string
+  historical_baseline: boolean
+  issues: CartonPurchaseOrderIssueResponse[]
 }
 
 export interface CartonOrderCreateRequest {
@@ -470,6 +502,19 @@ export const cartonProcurementApi = {
     )
     return response.data
   },
+  async bulkSubmitOrdersToSupplier(factoryId: string, orders: CartonOrderResponse[]) {
+    const response = await http.post<CartonOrderResponse[]>(
+      '/carton-procurement/orders/bulk-submit-supplier',
+      {
+        factory_id: factoryId,
+        items: orders.map((order) => ({
+          order_no: order.order_no,
+          expected_revision: order.revision,
+        })),
+      },
+    )
+    return response.data
+  },
   async cancelOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/cancel`,
@@ -496,6 +541,23 @@ export const cartonProcurementApi = {
         additional_quantity: additionalQuantity,
         reason,
         due_date: dueDate || null,
+      },
+    )
+    return response.data
+  },
+  async reduceOrder(
+    factoryId: string,
+    order: CartonOrderResponse,
+    reductionQuantity: number,
+    reason: string,
+  ) {
+    const response = await http.post<CartonOrderResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/reduce`,
+      {
+        factory_id: factoryId,
+        expected_revision: order.revision,
+        reduction_quantity: reductionQuantity,
+        reason,
       },
     )
     return response.data
@@ -557,6 +619,51 @@ export const cartonProcurementApi = {
       { params: { factory_id: factoryId }, responseType: 'blob', timeout: 30_000 },
     )
     return response.data
+  },
+  async getPurchaseOrderContext(factoryId: string, orderNo: string) {
+    const response = await http.get<CartonPurchaseOrderContextResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(orderNo)}/purchase-order-context`,
+      { params: { factory_id: factoryId } },
+    )
+    return response.data
+  },
+  async issuePurchaseOrder(factoryId: string, order: CartonOrderResponse) {
+    const response = await http.post<Blob>(
+      `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/purchase-order-issues.xlsx`,
+      {
+        factory_id: factoryId,
+        expected_revision: order.revision,
+      },
+      { responseType: 'blob', timeout: 30_000 },
+    )
+    return {
+      blob: response.data,
+      documentNo: String(response.headers['x-purchase-order-document-no'] || order.order_no),
+    }
+  },
+  async downloadPurchaseOrderIssue(factoryId: string, orderNo: string, issueId: string) {
+    const response = await http.get<Blob>(
+      `/carton-procurement/orders/${encodeURIComponent(orderNo)}/purchase-order-issues/${encodeURIComponent(issueId)}.xlsx`,
+      { params: { factory_id: factoryId }, responseType: 'blob', timeout: 30_000 },
+    )
+    return response.data
+  },
+  async issuePurchaseOrders(factoryId: string, orders: CartonOrderResponse[]) {
+    const response = await http.post<Blob>(
+      '/carton-procurement/orders/purchase-order-issues.xlsx',
+      {
+        factory_id: factoryId,
+        items: orders.map((order) => ({
+          order_no: order.order_no,
+          expected_revision: order.revision,
+        })),
+      },
+      { responseType: 'blob', timeout: 60_000 },
+    )
+    return {
+      blob: response.data,
+      issueCount: Number(response.headers['x-purchase-order-issue-count'] || 0),
+    }
   },
   async exportPurchaseOrders(factoryId: string, orderNos: string[]) {
     const response = await http.post<Blob>(

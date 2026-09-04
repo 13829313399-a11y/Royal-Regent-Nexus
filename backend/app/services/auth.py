@@ -261,6 +261,7 @@ ROLE_PERMISSIONS = {
         "molding_sample:notification_read",
         "carton_procurement:read",
         "carton_procurement:order_write",
+        "carton_procurement:order_adjust",
         "carton_procurement:receipt_write",
         "carton_procurement:inventory_write",
         "carton_procurement:closing_manage",
