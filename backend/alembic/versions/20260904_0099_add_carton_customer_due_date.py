@@ -1,7 +1,7 @@
 """Add customer due dates and safety-lead snapshots to carton orders.
 
-Revision ID: 20260904_0098
-Revises: 20260904_0097
+Revision ID: 20260904_0099
+Revises: 20260904_0098
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "20260904_0098"
-down_revision = "20260904_0097"
+revision = "20260904_0099"
+down_revision = "20260904_0098"
 branch_labels = None
 depends_on = None
 

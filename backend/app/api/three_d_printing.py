@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from hmac import compare_digest
 from io import BytesIO
-from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -36,6 +37,7 @@ from app.schemas.three_d_printing import (
     ThreeDEdgeHeartbeat,
     ThreeDEdgeStatusBatch,
     ThreeDInventoryAdjustment,
+    ThreeDInventoryMovementOut,
     ThreeDInventoryOut,
     ThreeDMaintenanceInput,
     ThreeDMaintenanceOut,
@@ -46,11 +48,11 @@ from app.schemas.three_d_printing import (
     ThreeDPrinterCommandCreate,
     ThreeDPrinterCommandOut,
     ThreeDProductInput,
-    ThreeDProductOut,
-    ThreeDProductUpdate,
     ThreeDProductionRecordInput,
     ThreeDProductionRecordOut,
     ThreeDProductionRecordUpdate,
+    ThreeDProductOut,
+    ThreeDProductUpdate,
     ThreeDScheduleInput,
     ThreeDScheduleOut,
     ThreeDScheduleStatusUpdate,
@@ -58,13 +60,19 @@ from app.schemas.three_d_printing import (
     ThreeDSettingsOut,
     ThreeDSettingsUpdate,
     ThreeDStockInInput,
-    ThreeDInventoryMovementOut,
 )
 from app.services.auth import (
     AuthContext,
     ensure_permission_in_scope,
     get_current_user,
     has_permission_in_scope,
+)
+from app.services.three_d_migration_queries import (
+    get_migration_batch,
+    get_migration_reconciliation,
+    list_migration_batches,
+    list_migration_rows,
+    require_migration_administrator,
 )
 from app.services.three_d_printing import (
     MAX_PRODUCT_IMAGE_BYTES,
@@ -110,8 +118,70 @@ from app.services.three_d_printing import (
     update_settings,
 )
 
-
 router = APIRouter(prefix="/api/three-d-printing", tags=["three-d-printing"])
+MigrationDb = Annotated[Session, Depends(get_db)]
+MigrationUser = Annotated[AuthContext, Depends(get_current_user)]
+
+
+@router.get("/migration-batches")
+def get_migration_batches(
+    factory_id: str,
+    db: MigrationDb,
+    current_user: MigrationUser,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+):
+    factory_id = require_migration_administrator(current_user, factory_id)
+    return list_migration_batches(db, factory_id=factory_id, page=page, page_size=page_size)
+
+
+@router.get("/migration-batches/{batch_id}")
+def get_migration_batch_detail(
+    batch_id: str,
+    factory_id: str,
+    db: MigrationDb,
+    current_user: MigrationUser,
+):
+    factory_id = require_migration_administrator(current_user, factory_id)
+    return get_migration_batch(db, factory_id=factory_id, batch_id=batch_id)
+
+
+@router.get("/migration-batches/{batch_id}/rows")
+def get_migration_batch_rows(
+    batch_id: str,
+    factory_id: str,
+    db: MigrationDb,
+    current_user: MigrationUser,
+    status: str = "",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+):
+    factory_id = require_migration_administrator(current_user, factory_id)
+    return list_migration_rows(db, factory_id=factory_id, batch_id=batch_id, status=status, page=page, page_size=page_size)
+
+
+@router.get("/migration-batches/{batch_id}/row-errors")
+def get_migration_batch_row_errors(
+    batch_id: str,
+    factory_id: str,
+    db: MigrationDb,
+    current_user: MigrationUser,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+):
+    factory_id = require_migration_administrator(current_user, factory_id)
+    return list_migration_rows(db, factory_id=factory_id, batch_id=batch_id, status="failed", page=page, page_size=page_size)
+
+
+@router.get("/migration-batches/{batch_id}/reconciliation")
+def get_migration_batch_reconciliation(
+    batch_id: str,
+    factory_id: str,
+    db: MigrationDb,
+    current_user: MigrationUser,
+):
+    factory_id = require_migration_administrator(current_user, factory_id)
+    return get_migration_reconciliation(db, factory_id=factory_id, batch_id=batch_id)
 
 
 def _request_id(request: Request) -> str:
