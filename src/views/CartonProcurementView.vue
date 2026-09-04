@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   GitBranch,
   LayoutDashboard,
+  Minus,
   PackageCheck,
   Pencil,
   Plus,
@@ -40,6 +41,8 @@ import {
   type CartonInventoryMovementResponse,
   type CartonOrderHistorySuggestionResponse,
   type CartonOrderResponse,
+  type CartonPurchaseOrderContextResponse,
+  type CartonPurchaseOrderIssueResponse,
   type CartonReceiptResponse,
 } from '@/api/cartonProcurement'
 import {
@@ -103,11 +106,18 @@ const backendLoading = ref(false)
 const savingOrder = ref(false)
 const exportingOrderNo = ref('')
 const exportingSelectedOrders = ref(false)
+const issuingSelectedPurchaseOrders = ref(false)
+const purchaseOrderDialogNo = ref('')
+const purchaseOrderContextRecord = ref<CartonPurchaseOrderContextResponse | null>(null)
+const loadingPurchaseOrderContext = ref(false)
+const issuingPurchaseOrder = ref(false)
+const downloadingPurchaseOrderIssueId = ref('')
 const selectedOrderNos = ref<string[]>([])
 const combinedPurchaseOrderMessage = ref('')
 const combinedPurchaseOrderTone = ref<'progress' | 'success' | 'error'>('progress')
 const orderStatusFilter = ref('ALL')
 const orderDueFilter = ref<'ALL' | 'OVERDUE' | 'TODAY' | 'DUE_SOON' | 'UPCOMING'>('ALL')
+const orderDateFilter = ref('')
 const orderSort = ref<'URGENCY' | 'DUE_ASC' | 'DUE_DESC' | 'ORDER_DESC'>('URGENCY')
 const historyOrderFileInput = ref<HTMLInputElement | null>(null)
 const importingHistoryOrders = ref(false)
@@ -117,15 +127,22 @@ const showOrderModal = ref(false)
 const editingOrderNo = ref('')
 const orderChangeReason = ref('')
 const submitSupplierOrderNo = ref('')
+const bulkSubmitSupplierOrderNos = ref<string[]>([])
 const submittingSupplierOrder = ref(false)
 const cancelOrderNo = ref('')
 const cancelOrderReason = ref('')
 const cancellingOrder = ref(false)
 const appendOrderNo = ref('')
 const appendOrderQuantity = ref(0)
-const appendOrderReason = ref('')
+const DEFAULT_APPEND_ORDER_REASON = '客人追加订单'
+const DEFAULT_REDUCE_ORDER_REASON = '客人退单'
+const appendOrderReason = ref(DEFAULT_APPEND_ORDER_REASON)
 const appendOrderDueDate = ref('')
 const appendingOrder = ref(false)
+const reduceOrderNo = ref('')
+const reduceOrderQuantity = ref(0)
+const reduceOrderReason = ref(DEFAULT_REDUCE_ORDER_REASON)
+const reducingOrder = ref(false)
 const showCustomerModal = ref(false)
 const customerSearch = ref('')
 const savingCustomer = ref(false)
@@ -375,6 +392,14 @@ const canManageCustomers = computed(() =>
   authStore.can('carton_procurement:customer_manage', selectedFactoryId.value, 'carton')
   || authStore.can('carton_procurement:customer_manage', selectedFactoryId.value, 'pmc-warehouse'),
 )
+const canAdjustSubmittedOrders = computed(() =>
+  authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'carton')
+  || authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'pmc-warehouse'),
+)
+const canIssuePurchaseOrders = computed(() =>
+  authStore.can('carton_procurement:order_write', selectedFactoryId.value, 'carton')
+  || authStore.can('carton_procurement:order_write', selectedFactoryId.value, 'pmc-warehouse'),
+)
 const activeCustomers = computed(() => customerRecords.value.filter((customer) => customer.status === 'ACTIVE'))
 const selectedOrderCustomer = computed(() =>
   activeCustomers.value.find((customer) => customer.customer_code === orderForm.customerCode) ?? null,
@@ -382,6 +407,31 @@ const selectedOrderCustomer = computed(() =>
 const editingOrderRecord = computed(() =>
   orderRecords.value.find((order) => order.order_no === editingOrderNo.value) ?? null,
 )
+const appendingOrderRecord = computed(() =>
+  orderRecords.value.find((order) => order.order_no === appendOrderNo.value) ?? null,
+)
+const appendOrderGuidance = computed(() => {
+  if (appendingOrderRecord.value?.status === 'COMPLETED') {
+    return '该订单已经全部到货；追加后会自动恢复为“部分到货”，新增差额可继续登记入库。'
+  }
+  if (appendingOrderRecord.value?.status === 'PARTIALLY_RECEIVED') {
+    return '该订单已有入库记录；追加只增加需求量，不修改既有入库流水，追加后仍为“部分到货”。'
+  }
+  return '系统会沿用原订单纸品规则重新计算需求量，并生成追单提醒和操作记录。'
+})
+const reducingOrderRecord = computed(() =>
+  orderRecords.value.find((order) => order.order_no === reduceOrderNo.value) ?? null,
+)
+const purchaseOrderDialogRecord = computed(() =>
+  orderRecords.value.find((order) => order.order_no === purchaseOrderDialogNo.value) ?? null,
+)
+const reduceOrderMaximumQuantity = computed(() => (
+  reducingOrderRecord.value ? maximumReducibleProductQuantity(reducingOrderRecord.value) : 0
+))
+const reduceOrderRemainingQuantity = computed(() => Math.max(
+  0,
+  Number(reducingOrderRecord.value?.product_order_quantity ?? 0) - Number(reduceOrderQuantity.value || 0),
+))
 const editingOrderHasPostedReceipts = computed(() =>
   Boolean(editingOrderRecord.value?.lines.some((line) => Number(line.received_quantity) > 0)),
 )
@@ -441,8 +491,11 @@ const visibleOrders = computed(() => localOrders.filter((row) => {
     || rawOrder?.status === orderStatusFilter.value
   const dueMatches = orderDueFilter.value === 'ALL'
     || orderDueReminder(row).level === orderDueFilter.value
+  const orderDateMatches = !orderDateFilter.value
+    || row.orderDate === orderDateFilter.value
   return statusMatches
     && dueMatches
+    && orderDateMatches
     && matchesCustomer(row.customer)
     && includesSearch([
       row.id,
@@ -460,6 +513,9 @@ const visibleOrders = computed(() => localOrders.filter((row) => {
 const selectedOrders = computed(() => orderRecords.value.filter((order) =>
   selectedOrderNos.value.includes(order.order_no),
 ))
+const selectedSubmittableOrderCount = computed(() =>
+  selectedOrders.value.filter((order) => order.status === 'CONFIRMED').length,
+)
 const selectedOrdersCanCancel = computed(() =>
   selectedOrders.value.length > 0
   && selectedOrders.value.every((order) => order.status === 'CONFIRMED'),
@@ -950,6 +1006,7 @@ watch(selectedFactoryId, (factoryId) => {
   selectedInventoryTargetIds.value = []
   orderStatusFilter.value = 'ALL'
   orderDueFilter.value = 'ALL'
+  orderDateFilter.value = ''
   orderSort.value = 'URGENCY'
   void loadBackendData(factoryId)
 }, { immediate: true })
@@ -1026,7 +1083,7 @@ watch([selectedCustomer, globalSearch], () => {
 })
 
 watch(selectedOrderNos, () => {
-  if (!exportingSelectedOrders.value) combinedPurchaseOrderMessage.value = ''
+  if (!exportingSelectedOrders.value && !issuingSelectedPurchaseOrders.value) combinedPurchaseOrderMessage.value = ''
 }, { deep: true })
 
 function setActiveTab(tab: CartonTab) {
@@ -1267,7 +1324,7 @@ function orderStatusLabel(status: string) {
   return ({
     DRAFT: '草稿',
     PENDING_SUPPLIER: '已提交供应商',
-    CONFIRMED: '已确认',
+    CONFIRMED: '待下单',
     PARTIALLY_RECEIVED: '部分收料',
     COMPLETED: '已完成',
     CANCELLED: '已取消',
@@ -1280,6 +1337,44 @@ function rawOrderStatus(orderNo: string) {
 
 function canEditConfirmedOrder(orderNo: string) {
   return rawOrderStatus(orderNo) === 'CONFIRMED'
+}
+
+function canAppendOrder(orderNo: string) {
+  const status = rawOrderStatus(orderNo)
+  return status === 'CONFIRMED'
+    || (['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(status) && canAdjustSubmittedOrders.value)
+}
+
+function pendingReceiptQuantity(orderLineId: string) {
+  return receiptRecords.value.reduce((total, receipt) => {
+    if (receipt.status !== 'PENDING_CONFIRMATION') return total
+    return total + receipt.lines.reduce((lineTotal, line) => (
+      line.order_line_id === orderLineId ? lineTotal + Number(line.effective_quantity || 0) : lineTotal
+    ), 0)
+  }, 0)
+}
+
+function maximumReducibleProductQuantity(order: CartonOrderResponse) {
+  if (order.maximum_reducible_quantity !== undefined) {
+    return Math.max(0, Number(order.maximum_reducible_quantity))
+  }
+  const protectedProductQuantity = order.lines.reduce((maximum, line) => {
+    const protectedPaperQuantity = Number(line.received_quantity || 0) + pendingReceiptQuantity(line.id)
+    if (protectedPaperQuantity <= 0) return maximum
+    const unitsPerCarton = Number(line.usage_quantity || 0)
+    return Math.max(maximum, protectedPaperQuantity * unitsPerCarton)
+  }, 0)
+  return Math.max(0, Number(order.product_order_quantity) - protectedProductQuantity)
+}
+
+function canReduceSubmittedOrder(orderNo: string) {
+  const order = orderRecords.value.find((item) => item.order_no === orderNo)
+  return Boolean(
+    order
+    && ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(order.status)
+    && canAdjustSubmittedOrders.value
+    && maximumReducibleProductQuantity(order) > 0,
+  )
 }
 
 function canReceiveOrder(orderNo: string) {
@@ -1731,7 +1826,7 @@ async function createLocalOrder() {
     showOrderModal.value = false
     actionMessage.value = currentOrder
       ? `正式纸箱订单 ${saved.order_no} 已按原因完成第 ${saved.revision} 版修订。`
-      : `正式纸箱订单 ${saved.order_no} 已确认，含 ${saved.lines.length} 条纸品明细；提交供应商前仍可修改、追加或取消。`
+      : `正式纸箱订单 ${saved.order_no} 已进入待下单，含 ${saved.lines.length} 条纸品明细；提交供应商前仍可修改、追加或取消。`
   } catch (error) {
     actionMessage.value = `${currentOrder ? '订单修改' : '订单新建'}失败：${getApiErrorMessage(error)}`
   } finally {
@@ -1742,26 +1837,70 @@ async function createLocalOrder() {
 function openSubmitSupplierOrder(orderNo: string) {
   const order = orderRecords.value.find((item) => item.order_no === orderNo)
   if (!order || order.status !== 'CONFIRMED') {
-    actionMessage.value = '只有已确认且尚未提交供应商的订单可以执行此操作。'
+    actionMessage.value = '只有待下单且尚未提交供应商的订单可以执行此操作。'
     return
   }
+  bulkSubmitSupplierOrderNos.value = []
   submitSupplierOrderNo.value = orderNo
 }
 
+function openBulkSubmitSupplierOrders() {
+  if (!selectedOrders.value.length) {
+    actionMessage.value = '请先勾选需要提交供应商的订单。'
+    return
+  }
+  if (!selectedSubmittableOrderCount.value) {
+    actionMessage.value = '所选订单中没有“待下单”订单。'
+    return
+  }
+  submitSupplierOrderNo.value = ''
+  bulkSubmitSupplierOrderNos.value = selectedOrders.value.map((order) => order.order_no)
+}
+
+function closeSubmitSupplierDialog() {
+  submitSupplierOrderNo.value = ''
+  bulkSubmitSupplierOrderNos.value = []
+}
+
 async function confirmSubmitSupplierOrder() {
+  if (bulkSubmitSupplierOrderNos.value.length) {
+    const selected = orderRecords.value.filter((order) => bulkSubmitSupplierOrderNos.value.includes(order.order_no))
+    if (!selected.length) {
+      actionMessage.value = '所选订单状态已变化，请刷新后重试。'
+      closeSubmitSupplierDialog()
+      return
+    }
+    submittingSupplierOrder.value = true
+    try {
+      const savedOrders = await cartonProcurementApi.bulkSubmitOrdersToSupplier(selectedFactoryId.value, selected)
+      savedOrders.forEach(replaceOrderState)
+      const submittedOrderNos = new Set(savedOrders.map((order) => order.order_no))
+      selectedOrderNos.value = selectedOrderNos.value.filter((orderNo) => !submittedOrderNos.has(orderNo))
+      const skippedCount = selected.length - savedOrders.length
+      closeSubmitSupplierDialog()
+      auditRecords.value = await cartonProcurementApi.listAuditEvents(selectedFactoryId.value)
+      actionMessage.value = `已提交 ${savedOrders.length} 张订单并锁定${skippedCount ? `；跳过 ${skippedCount} 张非待下单订单` : ''}。`
+    } catch (error) {
+      actionMessage.value = `批量提交供应商失败：${getApiErrorMessage(error)}`
+    } finally {
+      submittingSupplierOrder.value = false
+    }
+    return
+  }
+
   const order = orderRecords.value.find((item) => item.order_no === submitSupplierOrderNo.value)
   if (!order || order.status !== 'CONFIRMED') {
     actionMessage.value = '订单状态已变化，请刷新后重试。'
-    submitSupplierOrderNo.value = ''
+    closeSubmitSupplierDialog()
     return
   }
   submittingSupplierOrder.value = true
   try {
     const saved = await cartonProcurementApi.submitOrderToSupplier(selectedFactoryId.value, order)
     replaceOrderState(saved)
-    submitSupplierOrderNo.value = ''
+    closeSubmitSupplierDialog()
     auditRecords.value = await cartonProcurementApi.listAuditEvents(selectedFactoryId.value)
-    actionMessage.value = `订单 ${saved.order_no} 已提交供应商并锁定；现在可以登记收料，订单不可再修改、追加或取消。`
+    actionMessage.value = `订单 ${saved.order_no} 已提交供应商并锁定普通编辑；尚未收料时仅主管可追加或减单。`
   } catch (error) {
     actionMessage.value = `提交供应商失败：${getApiErrorMessage(error)}`
   } finally {
@@ -1825,6 +1964,7 @@ function auditEventLabel(eventType: string) {
     ORDER_SUBMITTED_SUPPLIER: '提交供应商',
     ORDER_UPDATED: '订单修改',
     ORDER_APPENDED: '追加订单',
+    ORDER_REDUCED: '订单减单 / 退单',
     ORDER_CANCELLED: '订单取消',
     ORDER_RETURNED: '订单退单',
     RECEIPT_CREATED: '收料单创建',
@@ -1863,13 +2003,16 @@ function clearAuditFilters() {
 }
 
 function auditDetailSummary(detail: Record<string, unknown>) {
-  const preferredKeys = ['reason', 'change_reason', 'additional_quantity', 'old_quantity', 'new_quantity', 'status', 'receipt_no', 'document_no', 'count']
+  const preferredKeys = ['reason', 'change_reason', 'additional_quantity', 'reduction_quantity', 'before_quantity', 'after_quantity', 'old_quantity', 'new_quantity', 'status', 'receipt_no', 'document_no', 'count']
   const entries = preferredKeys
     .filter((key) => detail[key] !== undefined && detail[key] !== null && detail[key] !== '')
     .map((key) => `${({
       reason: '原因',
       change_reason: '修改原因',
       additional_quantity: '追加数量',
+      reduction_quantity: '减少数量',
+      before_quantity: '调整前数量',
+      after_quantity: '调整后数量',
       old_quantity: '原数量',
       new_quantity: '新数量',
       status: '状态',
@@ -1903,7 +2046,7 @@ function auditDetailSummary(detail: Record<string, unknown>) {
 function openBulkCancelOrders() {
   if (!selectedOrdersCanCancel.value) {
     actionMessage.value = selectedOrders.value.length
-      ? '批量取消只允许选择尚未提交供应商的已确认订单。'
+      ? '批量取消只允许选择尚未提交供应商的待下单订单。'
       : '请先勾选需要批量取消的订单。'
     return
   }
@@ -1934,39 +2077,89 @@ function clearInventoryBalanceFilters() {
 
 function openAppendOrder(orderNo: string) {
   const order = orderRecords.value.find((item) => item.order_no === orderNo)
-  if (!order || order.status !== 'CONFIRMED') {
-    actionMessage.value = '订单提交供应商后已锁定，不能追加。'
+  if (!order || !canAppendOrder(orderNo)) {
+    actionMessage.value = ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(order?.status ?? '')
+      ? '提交供应商后的订单只有主管可以追加。'
+      : '该订单当前不能追加。'
     return
   }
   appendOrderNo.value = orderNo
   appendOrderQuantity.value = 0
-  appendOrderReason.value = ''
+  appendOrderReason.value = DEFAULT_APPEND_ORDER_REASON
   appendOrderDueDate.value = order.due_date
 }
 
 async function confirmAppendOrder() {
   const order = orderRecords.value.find((item) => item.order_no === appendOrderNo.value)
-  if (!order || appendOrderQuantity.value <= 0 || appendOrderReason.value.trim().length < 4) {
-    actionMessage.value = '追加数量必须大于 0，且追加原因至少填写 4 个字。'
+  if (!order || appendOrderQuantity.value <= 0) {
+    actionMessage.value = '追加数量必须大于 0。'
     return
   }
   appendingOrder.value = true
   try {
+    const wasCompleted = order.status === 'COMPLETED'
     const saved = await cartonProcurementApi.appendOrder(
       selectedFactoryId.value,
       order,
       appendOrderQuantity.value,
-      appendOrderReason.value.trim(),
+      appendOrderReason.value.trim() || DEFAULT_APPEND_ORDER_REASON,
       appendOrderDueDate.value,
     )
     replaceOrderState(saved)
     appendOrderNo.value = ''
     await loadBackendData()
-    actionMessage.value = `订单 ${saved.order_no} 已追加 ${formatNumber(appendOrderQuantity.value)} 件，追单提醒和操作记录已生成。`
+    actionMessage.value = wasCompleted
+      ? `订单 ${saved.order_no} 已追加 ${formatNumber(appendOrderQuantity.value)} 件，并已恢复为“部分到货”，可继续登记新增数量。`
+      : `订单 ${saved.order_no} 已追加 ${formatNumber(appendOrderQuantity.value)} 件，追单提醒和操作记录已生成。`
   } catch (error) {
     actionMessage.value = `订单追加失败：${getApiErrorMessage(error)}`
   } finally {
     appendingOrder.value = false
+  }
+}
+
+function openReduceOrder(orderNo: string) {
+  const order = orderRecords.value.find((item) => item.order_no === orderNo)
+  if (!order || !canReduceSubmittedOrder(orderNo)) {
+    actionMessage.value = ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(order?.status ?? '')
+      ? '只有主管可以减少未入库数量，且不能低于已入库及待确认收料数量。'
+      : '当前订单状态不能减单。'
+    return
+  }
+  reduceOrderNo.value = orderNo
+  reduceOrderQuantity.value = 0
+  reduceOrderReason.value = DEFAULT_REDUCE_ORDER_REASON
+}
+
+async function confirmReduceOrder() {
+  const order = orderRecords.value.find((item) => item.order_no === reduceOrderNo.value)
+  const maximumReduction = order ? maximumReducibleProductQuantity(order) : 0
+  if (!order || reduceOrderQuantity.value <= 0 || reduceOrderQuantity.value > maximumReduction) {
+    actionMessage.value = `减单数量必须大于 0，且不能超过可减数量 ${formatNumber(maximumReduction)}。`
+    return
+  }
+  const reductionQuantity = reduceOrderQuantity.value
+  reducingOrder.value = true
+  try {
+    const wasPartiallyReceived = order.status === 'PARTIALLY_RECEIVED'
+    const saved = await cartonProcurementApi.reduceOrder(
+      selectedFactoryId.value,
+      order,
+      reductionQuantity,
+      reduceOrderReason.value.trim() || DEFAULT_REDUCE_ORDER_REASON,
+    )
+    replaceOrderState(saved)
+    reduceOrderNo.value = ''
+    await loadBackendData()
+    actionMessage.value = saved.status === 'CANCELLED'
+      ? `订单 ${saved.order_no} 已减至 0 并转为已取消（退单），操作记录已保存。`
+      : wasPartiallyReceived && saved.status === 'COMPLETED'
+        ? `订单 ${saved.order_no} 已退掉全部未入库数量，现有入库量已满足调整后订单，状态转为“全部到货”。`
+        : `订单 ${saved.order_no} 已减少 ${formatNumber(reductionQuantity)} 件，纸箱需求量已重新计算并留痕。`
+  } catch (error) {
+    actionMessage.value = `订单减单失败：${getApiErrorMessage(error)}`
+  } finally {
+    reducingOrder.value = false
   }
 }
 
@@ -1982,6 +2175,90 @@ async function exportPurchaseOrder(orderNo: string) {
   } finally {
     exportingOrderNo.value = ''
   }
+}
+
+function purchaseOrderTypeLabel(type: CartonPurchaseOrderContextResponse['pending_type'] | CartonPurchaseOrderIssueResponse['document_type']) {
+  return {
+    NONE: '暂无待生成变更',
+    LEGACY_BASELINE: '历史累计基线',
+    INITIAL: '首次采购单',
+    APPEND: '追加采购单',
+    REDUCE: '减单通知',
+    ADJUSTMENT: '采购变更单',
+  }[type]
+}
+
+function signedQuantity(value: string | number) {
+  const quantity = Number(value || 0)
+  return `${quantity > 0 ? '+' : ''}${formatNumber(quantity)}`
+}
+
+async function loadPurchaseOrderContext() {
+  if (!purchaseOrderDialogNo.value || !apiConnected.value) return
+  loadingPurchaseOrderContext.value = true
+  try {
+    purchaseOrderContextRecord.value = await cartonProcurementApi.getPurchaseOrderContext(
+      selectedFactoryId.value,
+      purchaseOrderDialogNo.value,
+    )
+  } catch (error) {
+    actionMessage.value = `采购单记录读取失败：${getApiErrorMessage(error)}`
+    purchaseOrderContextRecord.value = null
+  } finally {
+    loadingPurchaseOrderContext.value = false
+  }
+}
+
+async function openPurchaseOrderDialog(orderNo: string) {
+  purchaseOrderDialogNo.value = orderNo
+  purchaseOrderContextRecord.value = null
+  await loadPurchaseOrderContext()
+}
+
+function closePurchaseOrderDialog() {
+  if (issuingPurchaseOrder.value || downloadingPurchaseOrderIssueId.value) return
+  purchaseOrderDialogNo.value = ''
+  purchaseOrderContextRecord.value = null
+}
+
+async function issuePendingPurchaseOrder() {
+  const order = purchaseOrderDialogRecord.value
+  const context = purchaseOrderContextRecord.value
+  if (!order || !context?.can_generate || issuingPurchaseOrder.value) return
+  issuingPurchaseOrder.value = true
+  try {
+    const result = await cartonProcurementApi.issuePurchaseOrder(selectedFactoryId.value, order)
+    downloadWorkbook(result.blob, `${result.documentNo}_${purchaseOrderTypeLabel(context.pending_type)}.xlsx`)
+    actionMessage.value = `${result.documentNo} ${purchaseOrderTypeLabel(context.pending_type)}已固定生成并开始下载。`
+    await loadPurchaseOrderContext()
+  } catch (error) {
+    actionMessage.value = `供应商采购单生成失败：${await getApiErrorMessageAsync(error)}`
+  } finally {
+    issuingPurchaseOrder.value = false
+  }
+}
+
+async function downloadPurchaseOrderIssue(issue: CartonPurchaseOrderIssueResponse) {
+  if (!purchaseOrderDialogNo.value || downloadingPurchaseOrderIssueId.value) return
+  downloadingPurchaseOrderIssueId.value = issue.id
+  try {
+    const blob = await cartonProcurementApi.downloadPurchaseOrderIssue(
+      selectedFactoryId.value,
+      purchaseOrderDialogNo.value,
+      issue.id,
+    )
+    downloadWorkbook(blob, `${issue.document_no}_${purchaseOrderTypeLabel(issue.document_type)}.xlsx`)
+    actionMessage.value = `${issue.document_no} 已按原生成版本重新下载。`
+  } catch (error) {
+    actionMessage.value = `采购单历史下载失败：${await getApiErrorMessageAsync(error)}`
+  } finally {
+    downloadingPurchaseOrderIssueId.value = ''
+  }
+}
+
+async function exportCumulativePurchaseOrderReference() {
+  if (!purchaseOrderDialogNo.value) return
+  await exportPurchaseOrder(purchaseOrderDialogNo.value)
 }
 
 function downloadWorkbook(blob: Blob, filename: string) {
@@ -2027,13 +2304,13 @@ async function exportSelectedPurchaseOrders() {
 
   exportingSelectedOrders.value = true
   combinedPurchaseOrderTone.value = 'progress'
-  combinedPurchaseOrderMessage.value = `正在合并生成 ${orderNos.length} 张订单的采购单，请稍候…`
+    combinedPurchaseOrderMessage.value = `正在合并生成 ${orderNos.length} 张订单的累计对账表，请稍候…`
   try {
     const blob = await cartonProcurementApi.exportPurchaseOrders(selectedFactoryId.value, orderNos)
-    downloadWorkbook(blob, `纸箱合并采购单_${businessTodayIso()}.xlsx`)
+    downloadWorkbook(blob, `纸箱累计对账表_${businessTodayIso()}.xlsx`)
     combinedPurchaseOrderTone.value = 'success'
-    combinedPurchaseOrderMessage.value = `已将 ${orderNos.length} 张订单合并为一个采购单，文件已开始下载。`
-    actionMessage.value = `已将 ${orderNos.length} 张订单合并导出为一个采购单。`
+    combinedPurchaseOrderMessage.value = `已将 ${orderNos.length} 张订单合并为累计对账表，文件已开始下载；该文件不代表新增下单。`
+    actionMessage.value = `已将 ${orderNos.length} 张订单合并导出为累计对账表。`
   } catch (error) {
     const message = `合并导出失败：${await getApiErrorMessageAsync(error)}`
     combinedPurchaseOrderTone.value = 'error'
@@ -2389,6 +2666,40 @@ async function removeCustomer(customer: CartonCustomerResponse) {
   }
 }
 
+async function issueSelectedPurchaseOrders() {
+  if (!selectedOrderNos.value.length || issuingSelectedPurchaseOrders.value) return
+  if (!apiConnected.value) {
+    combinedPurchaseOrderTone.value = 'error'
+    combinedPurchaseOrderMessage.value = '后端未连接，当前演示订单不能发行供应商采购单。'
+    return
+  }
+  const orders = selectedOrders.value
+  if (orders.length !== selectedOrderNos.value.length) {
+    combinedPurchaseOrderTone.value = 'error'
+    combinedPurchaseOrderMessage.value = '所选订单已发生变化，请刷新订单列表后重新勾选。'
+    return
+  }
+
+  issuingSelectedPurchaseOrders.value = true
+  combinedPurchaseOrderTone.value = 'progress'
+  combinedPurchaseOrderMessage.value = `正在核对 ${orders.length} 张订单，只发行尚未生成的首次、追加或减单净变化…`
+  try {
+    const result = await cartonProcurementApi.issuePurchaseOrders(selectedFactoryId.value, orders)
+    downloadWorkbook(result.blob, `供应商采购单批次_${businessTodayIso()}.xlsx`)
+    const skippedCount = Math.max(0, orders.length - result.issueCount)
+    combinedPurchaseOrderTone.value = 'success'
+    combinedPurchaseOrderMessage.value = `已固定发行 ${result.issueCount} 份供应商采购单${skippedCount ? `；跳过 ${skippedCount} 张无待发行变化的订单` : ''}。供应商只按“本次箱数变化”执行。`
+    actionMessage.value = `已发行 ${result.issueCount} 份不可变供应商采购单。`
+  } catch (error) {
+    const message = `供应商采购单批量发行失败：${await getApiErrorMessageAsync(error)}`
+    combinedPurchaseOrderTone.value = 'error'
+    combinedPurchaseOrderMessage.value = message
+    actionMessage.value = message
+  } finally {
+    issuingSelectedPurchaseOrders.value = false
+  }
+}
+
 function resetOrderForm() {
   const remembered = readOrderFormMemory()
   editingOrderNo.value = ''
@@ -2577,7 +2888,7 @@ function openBusinessAlertOrder(alert: BusinessOrderAlert) {
     return
   }
 
-  if (alert.kind === 'QUANTITY_INCREASE' && alert.order?.status === 'CONFIRMED') {
+  if (alert.kind === 'QUANTITY_INCREASE' && alert.order && canAppendOrder(alert.order.order_no)) {
     openAppendOrder(alert.order.order_no)
     appendOrderQuantity.value = alert.differenceQuantity
     appendOrderReason.value = `业务排期数量增加（${alert.alertNo}）`
@@ -2596,9 +2907,22 @@ function openBusinessAlertOrder(alert: BusinessOrderAlert) {
     return
   }
 
+  if (alert.kind === 'QUANTITY_DECREASE' && alert.order && canReduceSubmittedOrder(alert.order.order_no)) {
+    openReduceOrder(alert.order.order_no)
+    reduceOrderQuantity.value = alert.scheduleQuantity <= 0
+      ? Number(alert.order.product_order_quantity)
+      : Math.abs(alert.differenceQuantity)
+    reduceOrderReason.value = `业务排期数量减少（${alert.alertNo}）`
+    return
+  }
+
   if (alert.kind === 'QUANTITY_DECREASE' && alert.order && ['PARTIALLY_RECEIVED', 'COMPLETED'].includes(alert.order.status)) {
-    openCancelOrder(alert.order.order_no)
-    cancelOrderReason.value = `业务排期退单提醒（${alert.alertNo}）`
+    globalSearch.value = alert.order.order_no
+    orderStatusFilter.value = 'ALL'
+    setActiveTab('orders')
+    void nextTick(() => {
+      actionMessage.value = `订单 ${alert.order!.order_no} 已经入库，禁止追加、减单或退单；如有差异请按库存冲销流程处理。`
+    })
     return
   }
 
@@ -2606,9 +2930,11 @@ function openBusinessAlertOrder(alert: BusinessOrderAlert) {
     globalSearch.value = alert.orderNo
     orderStatusFilter.value = 'ALL'
     setActiveTab('orders')
-    actionMessage.value = alert.orderStatus === 'PENDING_SUPPLIER'
-      ? `订单 ${alert.orderNo} 已提交供应商并锁定；请核对业务更新并线下确认后续处理。`
-      : `已定位提醒 ${alert.alertNo} 关联的订单 ${alert.orderNo}。`
+    void nextTick(() => {
+      actionMessage.value = alert.orderStatus === 'PENDING_SUPPLIER'
+        ? `订单 ${alert.orderNo} 已提交供应商；仅主管可在尚未收料时追加或减单。`
+        : `已定位提醒 ${alert.alertNo} 关联的订单 ${alert.orderNo}。`
+    })
     return
   }
   openBusinessAlertException(alert)
@@ -3354,7 +3680,7 @@ function refreshDemo() {
         <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div>
             <h2 class="font-bold text-slate-950">纸箱合同订单台账</h2>
-            <p class="mt-1 text-[11px] text-slate-500">新建后先进入“已确认”；人工提交供应商后整单锁定，且只有已提交订单才能登记入库。</p>
+            <p class="mt-1 text-[11px] text-slate-500">待下单提交供应商后整单锁定；主管可继续追加，也可减少尚未入库部分；全部到货后追加会恢复为“部分到货”。</p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <a href="/templates/carton-history-order-import-template.xlsx" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
@@ -3374,13 +3700,16 @@ function refreshDemo() {
         </div>
 
         <div class="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">订单状态</span><select v-model="orderStatusFilter" aria-label="订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="ALL">全部状态</option><option value="PENDING_SUPPLIER">已提交供应商</option><option value="CONFIRMED">已确认</option><option value="PARTIALLY_RECEIVED">部分收料</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option></select></label>
+          <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">订单状态</span><select v-model="orderStatusFilter" aria-label="订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="ALL">全部状态</option><option value="CONFIRMED">待下单</option><option value="PENDING_SUPPLIER">已提交供应商</option><option value="PARTIALLY_RECEIVED">部分收料</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option></select></label>
           <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">交期</span><select v-model="orderDueFilter" aria-label="订单交期筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="ALL">全部交期</option><option value="OVERDUE">已逾期</option><option value="TODAY">今日交期</option><option value="DUE_SOON">3 天内</option><option value="UPCOMING">后续交期</option></select></label>
+          <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">下单日期</span><input v-model="orderDateFilter" type="date" aria-label="订单下单日期筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-700 outline-none focus:border-teal-500"></label>
           <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">排序</span><select v-model="orderSort" aria-label="订单排序" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="URGENCY">紧急交期优先</option><option value="DUE_ASC">交期由近到远</option><option value="DUE_DESC">交期由远到近</option><option value="ORDER_DESC">下单日期最新</option></select></label>
           <label class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 px-3 text-[11px] font-bold text-slate-700"><input type="checkbox" :checked="orderedVisibleOrders.length > 0 && orderedVisibleOrders.every((order) => selectedOrderNos.includes(order.id))" @change="toggleVisibleOrders(($event.target as HTMLInputElement).checked)">全选当前结果</label>
           <span class="h-9 rounded-lg bg-slate-100 px-3 py-2 text-[11px] font-bold text-slate-600">已选 {{ selectedOrderNos.length }} 张</span>
-          <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || exportingSelectedOrders" :title="!apiConnected ? '后端未连接，当前演示订单不能导出' : ''" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="exportSelectedPurchaseOrders"><Download class="size-3.5" />{{ exportingSelectedOrders ? '合并生成中…' : '合并导出采购单' }}</button>
-          <button type="button" :disabled="!selectedOrdersCanCancel || cancellingOrder" title="仅尚未提交供应商的已确认订单可批量取消" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="openBulkCancelOrders"><X class="size-3.5" />批量取消</button>
+          <button type="button" :disabled="!apiConnected || !selectedSubmittableOrderCount || submittingSupplierOrder" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white disabled:text-slate-400" @click="openBulkSubmitSupplierOrders"><ShieldCheck class="size-3.5" />{{ submittingSupplierOrder ? '正在提交…' : `提交供应商（${selectedSubmittableOrderCount}）` }}</button>
+          <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || issuingSelectedPurchaseOrders || !canIssuePurchaseOrders" title="仅发行所选订单尚未生成的首次、追加或减单净变化" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300" @click="issueSelectedPurchaseOrders"><Send class="size-3.5" />{{ issuingSelectedPurchaseOrders ? '发行中…' : `发行供应商单（${selectedOrderNos.length}）` }}</button>
+          <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || exportingSelectedOrders" :title="!apiConnected ? '后端未连接，当前演示订单不能导出' : '累计对账表不代表向供应商新增下单'" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="exportSelectedPurchaseOrders"><Download class="size-3.5" />{{ exportingSelectedOrders ? '合并生成中…' : '导出累计对账表' }}</button>
+          <button type="button" :disabled="!selectedOrdersCanCancel || cancellingOrder" title="仅尚未提交供应商的待下单订单可批量取消" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="openBulkCancelOrders"><X class="size-3.5" />批量取消</button>
           <p
             v-if="selectedOrderNos.length && (!apiConnected || combinedPurchaseOrderMessage)"
             role="status"
@@ -3449,16 +3778,17 @@ function refreshDemo() {
                 <button v-if="canEditConfirmedOrder(row.id)" type="button" :disabled="!apiConnected" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[10px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700 disabled:cursor-not-allowed disabled:text-slate-400" :aria-label="`修改 ${row.id} 订单`" @click="openEditOrderModal(row.id)">
                   <Pencil class="size-3.5" />修改
                 </button>
-                <button v-if="canEditConfirmedOrder(row.id)" type="button" :disabled="!apiConnected" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-200 bg-white px-2.5 text-[10px] font-bold text-amber-700 disabled:opacity-40" :aria-label="`追加 ${row.id} 订单`" @click="openAppendOrder(row.id)"><Plus class="size-3.5" />追加</button>
+                <button v-if="canAppendOrder(row.id)" type="button" :disabled="!apiConnected" :title="rawOrderStatus(row.id) === 'COMPLETED' ? '追加后恢复为部分到货，新增数量可继续入库' : '追加订单数量'" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-amber-200 bg-white px-2.5 text-[10px] font-bold text-amber-700 disabled:opacity-40" :aria-label="`追加 ${row.id} 订单`" @click="openAppendOrder(row.id)"><Plus class="size-3.5" />追加</button>
+                <button v-if="canReduceSubmittedOrder(row.id)" type="button" :disabled="!apiConnected || reducingOrder" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 text-[10px] font-bold text-red-700 disabled:opacity-40" :aria-label="`减单 ${row.id}`" @click="openReduceOrder(row.id)"><Minus class="size-3.5" />{{ rawOrderStatus(row.id) === 'PARTIALLY_RECEIVED' ? '减少未入库量' : '减单 / 退单' }}</button>
                 <button v-if="canEditConfirmedOrder(row.id)" type="button" :disabled="!apiConnected || submittingSupplierOrder" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2.5 text-[10px] font-bold text-teal-700 transition hover:bg-teal-100 disabled:opacity-40" :aria-label="`提交 ${row.id} 给供应商`" @click="openSubmitSupplierOrder(row.id)"><ShieldCheck class="size-3.5" />提交供应商</button>
-                <button v-if="canEditConfirmedOrder(row.id) || canReturnOrder(row.id)" type="button" :disabled="!apiConnected || cancellingOrder" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 text-[10px] font-bold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" :aria-label="`${canReturnOrder(row.id) ? '退单' : '取消'} ${row.id}`" @click="openCancelOrder(row.id)">
-                  <X class="size-3.5" />{{ canReturnOrder(row.id) ? '退单' : '取消' }}
+                <button v-if="canEditConfirmedOrder(row.id)" type="button" :disabled="!apiConnected || cancellingOrder" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 text-[10px] font-bold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" :aria-label="`取消 ${row.id}`" @click="openCancelOrder(row.id)">
+                  <X class="size-3.5" />取消
                 </button>
                 <button v-if="canReceiveOrder(row.id)" type="button" :disabled="!apiConnected" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-2.5 text-[10px] font-bold text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" :aria-label="`登记 ${row.id} 收料`" @click="openManualReceipt(row.id)">
                   <Truck class="size-3.5" />登记收料
                 </button>
-                <button type="button" :disabled="!apiConnected || Boolean(exportingOrderNo)" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-2.5 text-[10px] font-bold text-teal-700 transition hover:bg-teal-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" :aria-label="`导出 ${row.id} 采购单`" @click="exportPurchaseOrder(row.id)">
-                  <Download class="size-3.5" />{{ exportingOrderNo === row.id ? '生成中…' : '导出采购单' }}
+                <button type="button" :disabled="!apiConnected" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-2.5 text-[10px] font-bold text-teal-700 transition hover:bg-teal-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" :aria-label="`管理 ${row.id} 采购单`" @click="openPurchaseOrderDialog(row.id)">
+                  <Download class="size-3.5" />采购单 / 变更
                 </button>
               </div>
             </div>
@@ -4105,7 +4435,7 @@ function refreshDemo() {
     <div v-if="showOrderModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" @click.self="showOrderModal = false">
       <form class="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white shadow-2xl" @submit.prevent="createLocalOrder">
         <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
-          <div><h2 class="text-[16px] font-bold text-slate-950">{{ editingOrderNo ? `修改纸箱合同订单 ${editingOrderNo}` : '新建纸箱合同订单' }}</h2><p class="mt-1 text-[11px] text-slate-500">{{ editingOrderNo ? '已确认且尚未提交供应商的订单可以修订，保存后生成新版本并保留原因。' : '先创建为“已确认”订单；复核无误后再从台账提交供应商并锁定。' }}</p></div>
+          <div><h2 class="text-[16px] font-bold text-slate-950">{{ editingOrderNo ? `修改纸箱合同订单 ${editingOrderNo}` : '新建纸箱合同订单' }}</h2><p class="mt-1 text-[11px] text-slate-500">{{ editingOrderNo ? '待下单且尚未提交供应商的订单可以修订，保存后生成新版本并保留原因。' : '先创建为“待下单”订单；复核无误后再从台账提交供应商并锁定。' }}</p></div>
           <button type="button" :aria-label="editingOrderNo ? '关闭修改订单' : '关闭新建订单'" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="showOrderModal = false"><X class="size-4" /></button>
         </div>
         <div class="space-y-5 p-5">
@@ -4158,25 +4488,25 @@ function refreshDemo() {
           <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同备注</span><textarea v-model="orderForm.note" aria-label="订单备注" rows="3" placeholder="历史规格来源、刀模版本或特殊交付要求" class="w-full rounded-lg border border-slate-200 px-3 py-2 outline-none focus:border-teal-500"></textarea></label>
           <label v-if="editingOrderNo" class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">修改原因 *</span><textarea v-model="orderChangeReason" aria-label="订单修改原因" rows="2" minlength="4" maxlength="500" placeholder="说明客户通知、数量修正或交期变化原因" class="w-full rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 outline-none focus:border-amber-500"></textarea></label>
         </div>
-        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4"><p class="text-[10px] text-slate-500">{{ editingOrderNo ? '保存后版本号递增并写入修改原因。' : '创建后仍可修改、追加或取消；必须另行“提交供应商”后才允许入库。' }}</p><div class="flex gap-2"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="showOrderModal = false">返回</button><button type="submit" :disabled="savingOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ savingOrder ? '正在保存…' : editingOrderNo ? '保存订单修订' : '创建已确认订单' }}</button></div></div>
+        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4"><p class="text-[10px] text-slate-500">{{ editingOrderNo ? '保存后版本号递增并写入修改原因。' : '创建后仍可修改、追加或取消；必须另行“提交供应商”后才允许入库。' }}</p><div class="flex gap-2"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="showOrderModal = false">返回</button><button type="submit" :disabled="savingOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ savingOrder ? '正在保存…' : editingOrderNo ? '保存订单修订' : '创建待下单订单' }}</button></div></div>
       </form>
     </div>
 
-    <div v-if="submitSupplierOrderNo" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4" @click.self="submitSupplierOrderNo = ''">
+    <div v-if="submitSupplierOrderNo || bulkSubmitSupplierOrderNos.length" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4" @click.self="closeSubmitSupplierDialog">
       <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="submit-supplier-title">
         <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
-          <div><h2 id="submit-supplier-title" class="text-[16px] font-bold text-slate-950">提交订单 {{ submitSupplierOrderNo }} 给供应商</h2><p class="mt-1 text-[11px] text-slate-500">确认后订单进入“已提交供应商”状态，并开放收料入库。</p></div>
-          <button type="button" aria-label="关闭提交供应商确认" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="submitSupplierOrderNo = ''"><X class="size-4" /></button>
+          <div><h2 id="submit-supplier-title" class="text-[16px] font-bold text-slate-950">{{ bulkSubmitSupplierOrderNos.length ? `批量提交 ${selectedSubmittableOrderCount} 张待下单订单` : `提交订单 ${submitSupplierOrderNo} 给供应商` }}</h2><p class="mt-1 text-[11px] text-slate-500">确认后订单进入“已提交供应商”状态，并开放收料入库；所选的其他状态订单会自动跳过。</p></div>
+          <button type="button" aria-label="关闭提交供应商确认" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="closeSubmitSupplierDialog"><X class="size-4" /></button>
         </div>
-        <div class="p-5"><div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-[12px] font-semibold leading-6 text-amber-900">此操作会锁定订单：提交后不可修改、追加或取消。请先确认合同、数量、纸品明细和交期均已复核。</div></div>
-        <div class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="submitSupplierOrderNo = ''">返回检查</button><button type="button" :disabled="submittingSupplierOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60" @click="confirmSubmitSupplierOrder">{{ submittingSupplierOrder ? '正在提交…' : '确认提交并锁定' }}</button></div>
+        <div class="p-5"><div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-[12px] font-semibold leading-6 text-amber-900">此操作会锁定普通编辑：提交后客户、合同、货号和纸品资料不可直接修改；主管可继续追加，也可减少尚未入库且未进入待确认收料单的数量。</div></div>
+        <div class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="closeSubmitSupplierDialog">返回检查</button><button type="button" :disabled="submittingSupplierOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60" @click="confirmSubmitSupplierOrder">{{ submittingSupplierOrder ? '正在提交…' : '确认提交并锁定' }}</button></div>
       </div>
     </div>
 
     <div v-if="cancelOrderNo" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4" @click.self="cancelOrderNo = ''">
       <form class="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl" @submit.prevent="confirmCancelOrder">
         <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
-          <div><h2 class="text-[16px] font-bold text-slate-950">{{ cancelOrderNo === '__BULK__' ? `批量取消 ${selectedOrders.length} 张订单` : canReturnOrder(cancelOrderNo) ? `退单 ${cancelOrderNo}` : `取消订单 ${cancelOrderNo}` }}</h2><p class="mt-1 text-[11px] text-slate-500">{{ cancelOrderNo === '__BULK__' ? '仅尚未提交供应商的已确认订单可批量取消，全部校验通过后一次生效。' : canReturnOrder(cancelOrderNo) ? '退单用于已发生入库的订单，会将当前可用库存转出并保留原订单。' : '该订单尚未提交供应商，可以取消；取消后保留审计记录。' }}</p></div>
+          <div><h2 class="text-[16px] font-bold text-slate-950">{{ cancelOrderNo === '__BULK__' ? `批量取消 ${selectedOrders.length} 张订单` : canReturnOrder(cancelOrderNo) ? `退单 ${cancelOrderNo}` : `取消订单 ${cancelOrderNo}` }}</h2><p class="mt-1 text-[11px] text-slate-500">{{ cancelOrderNo === '__BULK__' ? '仅尚未提交供应商的待下单订单可批量取消，全部校验通过后一次生效。' : canReturnOrder(cancelOrderNo) ? '退单用于已发生入库的订单，会将当前可用库存转出并保留原订单。' : '该订单尚未提交供应商，可以取消；取消后保留审计记录。' }}</p></div>
           <button type="button" aria-label="关闭取消订单" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="cancelOrderNo = ''"><X class="size-4" /></button>
         </div>
         <div class="p-5"><label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">{{ cancelOrderNo === '__BULK__' ? '批量取消原因' : canReturnOrder(cancelOrderNo) ? '退单原因' : '取消原因' }} *</span><textarea v-model="cancelOrderReason" aria-label="订单取消退单原因" rows="4" minlength="4" maxlength="500" placeholder="例如：客户正式取消合同" class="w-full rounded-lg border border-red-200 bg-red-50/40 px-3 py-2 outline-none focus:border-red-500"></textarea></label></div>
@@ -4184,11 +4514,67 @@ function refreshDemo() {
       </form>
     </div>
 
+    <div v-if="purchaseOrderDialogNo" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" @click.self="closePurchaseOrderDialog">
+      <div class="max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="purchase-order-dialog-title">
+        <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+          <div><h2 id="purchase-order-dialog-title" class="text-[16px] font-bold text-slate-950">供应商采购单 · {{ purchaseOrderDialogNo }}</h2><p class="mt-1 text-[11px] text-slate-500">合同订单保留累计数量；供应商执行只认每张采购单的“本次变化”列。</p></div>
+          <button type="button" aria-label="关闭采购单记录" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="closePurchaseOrderDialog"><X class="size-4" /></button>
+        </div>
+        <div v-if="loadingPurchaseOrderContext" class="p-8 text-center text-[12px] font-semibold text-slate-500">正在读取采购单发行记录…</div>
+        <div v-else-if="purchaseOrderContextRecord" class="space-y-4 p-5">
+          <div v-if="purchaseOrderContextRecord.historical_baseline" class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-[11px] leading-5 text-blue-800">系统升级前的当前累计数量已登记为历史基线；后续追加或减单只导出相对该基线的净变化，避免重复下单。</div>
+          <section class="rounded-xl border p-4" :class="purchaseOrderContextRecord.can_generate ? 'border-amber-200 bg-amber-50/60' : 'border-slate-200 bg-slate-50'">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div class="text-[10px] font-bold uppercase tracking-wide text-slate-500">当前待处理</div>
+                <div class="mt-1 text-[15px] font-bold text-slate-950">{{ purchaseOrderTypeLabel(purchaseOrderContextRecord.pending_type) }}</div>
+                <p v-if="purchaseOrderContextRecord.pending_type !== 'NONE'" class="mt-1 text-[11px] text-slate-600">产品数量变化 {{ signedQuantity(purchaseOrderContextRecord.pending_product_quantity) }}；{{ purchaseOrderContextRecord.pending_line_count }} 条纸品产生箱数变化。</p>
+                <p v-else class="mt-1 text-[11px] text-slate-500">当前累计数量与最近一次采购单快照一致，无需再次向供应商下单。</p>
+              </div>
+              <button v-if="purchaseOrderContextRecord.can_generate && canIssuePurchaseOrders" type="button" :disabled="issuingPurchaseOrder" class="h-9 rounded-lg bg-amber-600 px-4 text-[11px] font-bold text-white disabled:opacity-50" @click="issuePendingPurchaseOrder">{{ issuingPurchaseOrder ? '正在固定生成…' : `生成并下载${purchaseOrderTypeLabel(purchaseOrderContextRecord.pending_type)}` }}</button>
+            </div>
+            <p v-if="purchaseOrderContextRecord.pending_type !== 'NONE' && !purchaseOrderContextRecord.can_generate" class="mt-3 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-amber-800">请先提交供应商并锁定订单，再生成正式采购单。</p>
+            <p v-else-if="purchaseOrderContextRecord.can_generate && !canIssuePurchaseOrders" class="mt-3 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-red-700">当前账号可查看记录，但没有生成供应商采购单的权限。</p>
+          </section>
+
+          <section class="overflow-hidden rounded-xl border border-slate-200">
+            <div class="flex items-center justify-between bg-slate-50 px-4 py-3"><div><h3 class="text-[12px] font-bold text-slate-900">不可变采购单历史</h3><p class="mt-0.5 text-[10px] text-slate-500">重新下载始终使用当时快照，不会套用订单后续数量。</p></div><span class="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-slate-600">{{ purchaseOrderContextRecord.issues.length }} 份</span></div>
+            <div v-if="purchaseOrderContextRecord.issues.length" class="divide-y divide-slate-100">
+              <div v-for="issue in purchaseOrderContextRecord.issues" :key="issue.id" class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <div><div class="flex items-center gap-2"><b class="font-mono text-[12px] text-slate-900">{{ issue.document_no }}</b><span class="rounded-full bg-teal-50 px-2 py-0.5 text-[9px] font-bold text-teal-700">{{ purchaseOrderTypeLabel(issue.document_type) }}</span></div><p class="mt-1 text-[10px] text-slate-500">产品变化 {{ signedQuantity(issue.product_quantity_delta) }} · {{ issue.generated_by_name || '—' }} · {{ issue.generated_at.slice(0, 16).replace('T', ' ') }}</p></div>
+                <button type="button" :disabled="Boolean(downloadingPurchaseOrderIssueId)" class="h-8 rounded-lg border border-teal-200 bg-white px-3 text-[10px] font-bold text-teal-700 disabled:opacity-40" @click="downloadPurchaseOrderIssue(issue)">{{ downloadingPurchaseOrderIssueId === issue.id ? '下载中…' : '重新下载原版本' }}</button>
+              </div>
+            </div>
+            <div v-else class="px-4 py-6 text-center text-[11px] text-slate-400">还没有正式生成过供应商采购单</div>
+          </section>
+
+          <div class="rounded-xl border border-slate-200 bg-white p-4"><div class="flex flex-wrap items-center justify-between gap-3"><div><div class="text-[11px] font-bold text-slate-800">当前累计对账表</div><p class="mt-1 text-[10px] text-slate-500">仅供内部核对当前总量，不代表向供应商追加下单。</p></div><button type="button" :disabled="Boolean(exportingOrderNo)" class="h-8 rounded-lg border border-slate-200 px-3 text-[10px] font-bold text-slate-600 disabled:opacity-40" @click="exportCumulativePurchaseOrderReference">{{ exportingOrderNo ? '生成中…' : '导出累计参考' }}</button></div></div>
+        </div>
+        <div class="flex justify-end border-t border-slate-200 bg-slate-50 px-5 py-4"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="closePurchaseOrderDialog">关闭</button></div>
+      </div>
+    </div>
+
     <div v-if="appendOrderNo" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4" @click.self="appendOrderNo = ''">
-      <form class="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl" @submit.prevent="confirmAppendOrder">
-        <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4"><div><h2 class="text-[16px] font-bold text-slate-950">追加订单 {{ appendOrderNo }}</h2><p class="mt-1 text-[11px] text-slate-500">以原订单纸品规则增加产品数量，系统将重新计算需求数并生成追单提醒。</p></div><button type="button" aria-label="关闭追加订单" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="appendOrderNo = ''"><X class="size-4" /></button></div>
-        <div class="grid gap-4 p-5 sm:grid-cols-2"><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">追加产品数量 *</span><input v-model.number="appendOrderQuantity" aria-label="追加订单数量" type="number" min="1" class="h-10 w-full rounded-lg border border-amber-200 px-3 text-right font-semibold outline-none focus:border-amber-500"></label><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">新计划交期</span><input v-model="appendOrderDueDate" aria-label="追加订单交期" type="date" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-amber-500"></label><label class="space-y-1.5 sm:col-span-2"><span class="text-[11px] font-bold text-slate-600">追加原因 *</span><textarea v-model="appendOrderReason" aria-label="追加订单原因" rows="4" minlength="4" maxlength="500" placeholder="例如：客户追加生产数量" class="w-full rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2 outline-none focus:border-amber-500"></textarea></label></div>
+      <form data-testid="append-order-form" class="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl" @submit.prevent="confirmAppendOrder">
+        <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4"><div><h2 class="text-[16px] font-bold text-slate-950">追加订单 {{ appendOrderNo }}</h2><p class="mt-1 text-[11px] text-slate-500">{{ appendOrderGuidance }}</p></div><button type="button" aria-label="关闭追加订单" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="appendOrderNo = ''"><X class="size-4" /></button></div>
+        <div class="grid gap-4 p-5 sm:grid-cols-2"><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">追加产品数量 *</span><input v-model.number="appendOrderQuantity" aria-label="追加订单数量" type="number" min="1" class="h-10 w-full rounded-lg border border-amber-200 px-3 text-right font-semibold outline-none focus:border-amber-500"></label><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">新计划交期</span><input v-model="appendOrderDueDate" aria-label="追加订单交期" type="date" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-amber-500"></label><label class="space-y-1.5 sm:col-span-2"><span class="text-[11px] font-bold text-slate-600">追加原因（默认已填写，可修改）</span><textarea v-model="appendOrderReason" aria-label="追加订单原因" rows="3" maxlength="500" placeholder="如有其他原因，可在这里修改" class="w-full rounded-lg border border-amber-200 bg-amber-50/40 px-3 py-2 outline-none focus:border-amber-500"></textarea></label></div>
         <div class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="appendOrderNo = ''">返回</button><button type="submit" :disabled="appendingOrder" class="h-9 rounded-lg bg-amber-600 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ appendingOrder ? '正在追加…' : '确认追加并留痕' }}</button></div>
+      </form>
+    </div>
+
+    <div v-if="reduceOrderNo" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4" @click.self="reduceOrderNo = ''">
+      <form data-testid="reduce-order-form" class="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl" @submit.prevent="confirmReduceOrder">
+        <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+          <div><h2 class="text-[16px] font-bold text-slate-950">{{ reducingOrderRecord?.status === 'PARTIALLY_RECEIVED' ? '减少未入库量' : '减单 / 退单' }} {{ reduceOrderNo }}</h2><p class="mt-1 text-[11px] text-slate-500">{{ reducingOrderRecord?.status === 'PARTIALLY_RECEIVED' ? '仅可减少尚未入库且未进入待确认收料单的数量；减完全部余量后订单自动转为“全部到货”。' : '尚无入库时可部分减单或整单退单；待确认收料数量会预留保护。' }}</p></div>
+          <button type="button" aria-label="关闭减单" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="reduceOrderNo = ''"><X class="size-4" /></button>
+        </div>
+        <div class="space-y-4 p-5">
+          <div class="grid grid-cols-3 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[12px]"><div><span class="block text-slate-500">当前产品数量</span><b class="mt-1 block text-slate-900">{{ formatNumber(Number(reducingOrderRecord?.product_order_quantity ?? 0)) }}</b></div><div><span class="block text-slate-500">最大可减</span><b class="mt-1 block text-amber-700">{{ formatNumber(reduceOrderMaximumQuantity) }}</b></div><div><span class="block text-slate-500">调整后数量</span><b class="mt-1 block" :class="reduceOrderRemainingQuantity === 0 ? 'text-red-700' : 'text-teal-700'">{{ formatNumber(reduceOrderRemainingQuantity) }}</b></div></div>
+          <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">{{ reducingOrderRecord?.status === 'PARTIALLY_RECEIVED' ? '减少未入库产品数量' : '减少产品数量' }} *</span><input v-model.number="reduceOrderQuantity" aria-label="减单数量" type="number" min="1" :max="reduceOrderMaximumQuantity" class="h-10 w-full rounded-lg border border-red-200 px-3 text-right font-semibold outline-none focus:border-red-500"></label>
+          <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">减单 / 退单原因（默认已填写，可修改）</span><textarea v-model="reduceOrderReason" aria-label="减单原因" rows="3" maxlength="500" placeholder="如有其他原因，可在这里修改" class="w-full rounded-lg border border-red-200 bg-red-50/40 px-3 py-2 outline-none focus:border-red-500"></textarea></label>
+          <div class="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold leading-5 text-amber-900">最大可减数量已经按每条纸品的已入库量与待确认收料量计算；确认后只降低未入库需求，不修改任何既有收料单或库存流水。</div>
+        </div>
+        <div class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="reduceOrderNo = ''">返回</button><button type="submit" :disabled="reducingOrder" class="h-9 rounded-lg bg-red-600 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ reducingOrder ? '正在处理…' : reduceOrderRemainingQuantity === 0 ? '确认整单退单' : reducingOrderRecord?.status === 'PARTIALLY_RECEIVED' ? '确认减少未入库量' : '确认减单并留痕' }}</button></div>
       </form>
     </div>
 

@@ -77,6 +77,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'carton_mark:customer_manage': '维护箱唛客户',
   'carton_procurement:read': '查看纸箱采购台账',
   'carton_procurement:order_write': '维护纸箱订单',
+  'carton_procurement:order_adjust': '主管调整已提交纸箱订单',
   'carton_procurement:receipt_write': '登记并确认纸箱收料',
   'carton_procurement:inventory_write': '纸箱库存出库与调整',
   'carton_procurement:closing_manage': '管理纸箱库存月结',
