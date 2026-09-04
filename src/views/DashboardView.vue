@@ -9,13 +9,16 @@ import MetricCard from '@/components/dashboard/MetricCard.vue'
 import ModuleHealthPanel from '@/components/dashboard/ModuleHealthPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
+import { useAppStore } from '@/stores/app'
+
+const appStore = useAppStore()
 </script>
 
 <template>
   <div class="app-page dashboard-page space-y-6">
     <PageHeader
       eyebrow="Group Operations"
-      title="集团运营总览"
+      :title="appStore.activeFactoryId === 'group' ? '集团运营总览' : `${appStore.activeFactory.name} · 运营总览`"
       description="6 个厂区 · 5 个核心部门 · 统一模块入口与跨厂区事项"
     >
       <template #actions>

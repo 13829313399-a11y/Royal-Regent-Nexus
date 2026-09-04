@@ -130,10 +130,6 @@ async function mountRuntimeView(
   const pinia = createPinia()
   setActivePinia(pinia)
 
-  if (options.activeFactoryId) {
-    useAppStore().setActiveFactory(options.activeFactoryId)
-  }
-
   const permissions = options.permissions ?? [
     'molding_sample:read',
     'molding_sample:export',
@@ -185,6 +181,10 @@ async function mountRuntimeView(
     effective_access: options.effectiveAccess,
     force_password_change: false,
   })
+
+  if (options.activeFactoryId) {
+    useAppStore().setActiveFactory(options.activeFactoryId)
+  }
 
   const wrapper = mount(component, {
     global: {

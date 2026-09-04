@@ -48,7 +48,7 @@ const getTopBarFactoryLabel = (factory: (typeof factoryContexts)[number]) => (
 function selectFactory(factoryId: FactoryContextId) {
   appStore.setActiveFactory(factoryId)
 
-  if (!route.path.startsWith('/modules')) {
+  if (!route.path.startsWith('/modules') && route.query.factory === undefined) {
     return
   }
 

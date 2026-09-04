@@ -30,6 +30,7 @@ describe('TopBar factory switcher', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     routerReplaceMock.mockReset()
+    routeState.path = '/modules/engineering'
     routeState.query = { layout: 'cards', factory: 'huaxing' }
   })
 
@@ -96,5 +97,26 @@ describe('TopBar factory switcher', () => {
         factory: factoryId,
       },
     }))
+  })
+
+  it.each([true, false])('keeps a manual dashboard switch consistent with an existing factory query: %s', async (hasQuery) => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    routeState.path = '/'
+    routeState.query = hasQuery ? { factory: 'huakang-a' } : {}
+    const store = useAppStore()
+    store.setRequestedFactoryContext(routeState.query.factory)
+    store.syncAuthenticatedFactoryContext({ userId: 'a', primaryFactoryId: 'huakang-a' })
+    const wrapper = shallowMount(TopBar, { global: { plugins: [pinia] } })
+    await wrapper.get('button[aria-label="切换至华登"]').trigger('click')
+    expect(store.activeFactoryId).toBe('huadeng')
+    if (hasQuery) {
+      expect(routerReplaceMock).toHaveBeenCalledWith(expect.objectContaining({ path: '/', query: { factory: 'huadeng' } }))
+    } else {
+      expect(routerReplaceMock).not.toHaveBeenCalled()
+      store.syncAuthenticatedFactoryContext({ userId: 'a', primaryFactoryId: 'huakang-a' })
+      expect(store.activeFactoryId).toBe('huadeng')
+    }
+    wrapper.unmount()
   })
 })

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { useAppStore } from '@/stores/app'
 import {
   authApi,
   type AuthEffectiveAccess,
@@ -185,8 +186,13 @@ export const useAuthStore = defineStore('auth', {
       this.isAuthenticated = true
       this.hasLoadedSession = true
       this.sessionVersion += 1
+      useAppStore().syncAuthenticatedFactoryContext({
+        userId: user.id,
+        primaryFactoryId: user.profile?.primary_factory_id,
+      })
     },
     clearSession() {
+      useAppStore().resetAuthenticatedFactoryContext()
       this.currentUser = null
       this.roles = []
       this.permissions = []
@@ -203,6 +209,8 @@ export const useAuthStore = defineStore('auth', {
     },
     async login(payload: LoginRequest) {
       const user = await authApi.login(payload)
+      // Even a new login by the same account starts a fresh factory selection.
+      useAppStore().resetAuthenticatedFactoryContext()
       this.applySession(user)
       return user
     },
