@@ -126,7 +126,8 @@ INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION = "20260831_0087"
 INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION = "20260901_0088"
 # Historical rebuild tests stop before the later destructive retirement.
 INJECTION_SCHEDULING_HISTORY_REVISION = INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION
-HEAD_MIGRATION_REVISION = CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION
+THREE_D_PRINTING_V2_MIGRATION_REVISION = "20260904_0098"
+HEAD_MIGRATION_REVISION = THREE_D_PRINTING_V2_MIGRATION_REVISION
 INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_factory_settings",
     "injection_schedule_order_demands",
@@ -270,6 +271,7 @@ def test_alembic_has_single_molding_sample_head():
     script = ScriptDirectory.from_config(config)
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
+    assert script.get_revision(THREE_D_PRINTING_V2_MIGRATION_REVISION).down_revision == CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION
 
     password_reset_claim_revision = script.get_revision(
         PASSWORD_RESET_CLAIM_MIGRATION_REVISION

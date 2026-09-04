@@ -71,3 +71,14 @@ backend/models/document-translation/
 # Local Netlify folder
 .netlify
 edge/three-d-printing-agent/config.json
+
+# 3D cutover source packages, snapshots and device/VPN secrets stay outside Git.
+backend/data/three-d-legacy/
+three-d-migration-work/
+three-d-snapshots/
+services/three-d-printer-connector/config.json
+services/three-d-printer-connector/secrets/
+deploy/three-d-printing/secrets/
+**/three_d_printers.json
+**/three_d_vpn_private_key
+**/three-d-*.private.key

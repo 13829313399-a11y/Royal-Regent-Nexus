@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:rr-nexus:three-d-legacy-snapshot:v1",
+  "title": "3D legacy SQLite transport manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tool_version", "factory_id", "site_code", "captured_at_utc", "source", "snapshot", "checks", "counts", "wal_checkpoint_confirmed", "metadata_policy"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "tool_version": {"const": "three-d-snapshot-v1"},
+    "factory_id": {"const": "huakang-a"},
+    "site_code": {"const": "heyuan"},
+    "captured_at_utc": {"type": "string", "format": "date-time"},
+    "wal_checkpoint_confirmed": {"type": "boolean"},
+    "metadata_policy": {"const": "allowlist_no_config_no_raw_payload"},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "components"],
+      "properties": {
+        "kind": {"enum": ["zip", "frozen_directory", "sqlite_file", "live_sqlite"]},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "json_comparison_error": {"const": "invalid_compatibility_json"},
+        "wal_validation": {
+          "type": "object", "additionalProperties": false,
+          "required": ["valid_frames", "committed_frames", "obsolete_tail_frames"],
+          "properties": {
+            "valid_frames": {"type": "integer", "minimum": 0},
+            "committed_frames": {"type": "integer", "minimum": 0},
+            "obsolete_tail_frames": {"type": "integer", "minimum": 0}
+          }
+        },
+        "components": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "data.sqlite": {"$ref": "#/$defs/fingerprint"},
+            "data.sqlite-wal": {"$ref": "#/$defs/fingerprint"},
+            "data.sqlite-shm": {"$ref": "#/$defs/fingerprint"},
+            "data.json": {"$ref": "#/$defs/fingerprint"}
+          }
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object", "additionalProperties": false, "required": ["file", "size_bytes", "sha256"],
+      "properties": {"file": {"const": "snapshot.sqlite"}, "size_bytes": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["quick_check", "integrity_check", "state_updated_at_ms", "state_updated_at_utc", "state_json_chars"],
+      "properties": {
+        "quick_check": {"const": "ok"}, "integrity_check": {"const": "ok"},
+        "state_updated_at_ms": {"type": "integer"},
+        "state_updated_at_utc": {"type": "string", "format": "date-time"},
+        "state_json_chars": {"type": "integer", "minimum": 1}
+      }
+    },
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["materials", "products", "business_date_keys", "production_records", "product_images", "image_total_bytes", "invalid_images"],
+      "properties": {
+        "materials": {"type": "integer", "minimum": 0}, "products": {"type": "integer", "minimum": 0},
+        "business_date_keys": {"type": "integer", "minimum": 0}, "production_records": {"type": "integer", "minimum": 0},
+        "product_images": {"type": "integer", "minimum": 0}, "image_total_bytes": {"type": "integer", "minimum": 0},
+        "invalid_images": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "fingerprint": {
+      "type": "object", "additionalProperties": false, "required": ["size_bytes", "sha256"],
+      "properties": {"size_bytes": {"type": "integer", "minimum": 0}, "sha256": {"$ref": "#/$defs/sha256"}}
+    }
+  }
+}

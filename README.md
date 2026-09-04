@@ -16,6 +16,15 @@ Before implementing any requirement, read and maintain `PROJECT_MEMORY.md`.
 
 For agent operating rules, read and maintain `AGENTS.md`.
 
+## Huakang A 3D migration
+
+The existing 3D production module is being upgraded toward a cloud connector
+over a site VPN. It provides read-only SQLite/WAL capture and analysis, an
+additive v2 schema, resumable image/data import and administrator reconciliation
+APIs. Database upgrades and imports are explicit operations; direct-printer
+cutover remains a later phase. Use the [3D migration runbook](docs/three-d-printing-deployment.md).
+The legacy JSON snapshot is not the authoritative cutover source.
+
 The development server is configured for:
 
 ```txt
