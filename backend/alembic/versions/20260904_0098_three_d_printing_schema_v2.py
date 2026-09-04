@@ -7,8 +7,8 @@ Downgrade only supports an empty 3D domain; restore a coordinated backup otherwi
 import sqlalchemy as sa
 from alembic import op
 
-revision = "20260904_0096"
-down_revision = "20260903_0095"
+revision = "20260904_0098"
+down_revision = "20260904_0097"
 branch_labels = None
 depends_on = None
 

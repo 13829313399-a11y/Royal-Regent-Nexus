@@ -1,4 +1,4 @@
-"""Isolated real 0040 -> 0096 DDL, seeded shell, and migration failure goldens."""
+"""Isolated real 0040 -> 0098 DDL, seeded shell, and migration failure goldens."""
 from __future__ import annotations
 
 import importlib.util
@@ -43,7 +43,7 @@ def target(tmp_path):
         old = migration("20260729_0040_*.py")
         old._create_tables()
         old._install_audit_immutability()
-        migration("20260904_0096_*.py").upgrade()
+        migration("20260904_0098_*.py").upgrade()
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as db:
         seed_three_d_printing_defaults(db)

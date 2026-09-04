@@ -1,4 +1,4 @@
-"""Real 0040 domain DDL -> 0096 upgrade, isolated from business databases."""
+"""Real 0040 domain DDL -> 0098 upgrade, isolated from business databases."""
 from __future__ import annotations
 
 import importlib.util
@@ -29,7 +29,7 @@ def load_migration(name):
 
 @pytest.fixture
 def migration():
-    return load_migration("20260904_0096_*.py")
+    return load_migration("20260904_0098_*.py")
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def db(tmp_path):
             old._create_tables()
             old._install_audit_immutability()
             connection.exec_driver_sql("CREATE TABLE alembic_version(version_num VARCHAR(32) PRIMARY KEY)")
-            connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('20260903_0095')")
+            connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('20260904_0097')")
         yield connection
     engine.dispose()
 
@@ -161,11 +161,11 @@ def test_postgresql_offline_ddl_compiles_and_revision_has_single_head(migration)
 def test_readiness_guard_rejects_old_and_partial_new_schema(db, migration, monkeypatch):
     from app import db as app_db
     monkeypatch.setattr(app_db, "engine", db.engine)
-    with pytest.raises(RuntimeError, match="0096"):
+    with pytest.raises(RuntimeError, match="0098"):
         app_db.ensure_three_d_printing_schema_ready()
     apply(db, migration)
     app_db.ensure_three_d_printing_schema_ready()
     db.exec_driver_sql("ALTER TABLE three_d_printing_migration_batches DROP COLUMN checkpoint_json")
     db.commit()
-    with pytest.raises(RuntimeError, match="0096"):
+    with pytest.raises(RuntimeError, match="0098"):
         app_db.ensure_three_d_printing_schema_ready()
