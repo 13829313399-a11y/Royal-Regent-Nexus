@@ -396,6 +396,21 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.findAll('[data-order-no]')).toHaveLength(2)
   })
 
+  it('places an enlarged bulk selector directly above enlarged order selectors', async () => {
+    const wrapper = mountView('orders')
+    await flushPromises()
+
+    const selectionToolbar = wrapper.get('[aria-label="订单批量选择"]')
+    const firstOrder = wrapper.get('[data-order-no]')
+    const selectAll = wrapper.get('input[aria-label="全选当前订单结果"]')
+    const orderSelector = firstOrder.get('input[aria-label^="选择订单 "]')
+
+    expect(selectionToolbar.element.nextElementSibling).toBe(firstOrder.element)
+    expect(selectAll.classes()).toContain('size-5')
+    expect(orderSelector.classes()).toContain('size-5')
+    expect(orderSelector.element.parentElement?.tagName).toBe('LABEL')
+  })
+
   it('groups multiple paper items under one contract and keeps paper quality separate from specification', async () => {
     const wrapper = mountView('orders')
 

@@ -3704,8 +3704,6 @@ function refreshDemo() {
           <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">交期</span><select v-model="orderDueFilter" aria-label="订单交期筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="ALL">全部交期</option><option value="OVERDUE">已逾期</option><option value="TODAY">今日交期</option><option value="DUE_SOON">3 天内</option><option value="UPCOMING">后续交期</option></select></label>
           <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">下单日期</span><input v-model="orderDateFilter" type="date" aria-label="订单下单日期筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-700 outline-none focus:border-teal-500"></label>
           <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">排序</span><select v-model="orderSort" aria-label="订单排序" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-semibold outline-none focus:border-teal-500"><option value="URGENCY">紧急交期优先</option><option value="DUE_ASC">交期由近到远</option><option value="DUE_DESC">交期由远到近</option><option value="ORDER_DESC">下单日期最新</option></select></label>
-          <label class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 px-3 text-[11px] font-bold text-slate-700"><input type="checkbox" :checked="orderedVisibleOrders.length > 0 && orderedVisibleOrders.every((order) => selectedOrderNos.includes(order.id))" @change="toggleVisibleOrders(($event.target as HTMLInputElement).checked)">全选当前结果</label>
-          <span class="h-9 rounded-lg bg-slate-100 px-3 py-2 text-[11px] font-bold text-slate-600">已选 {{ selectedOrderNos.length }} 张</span>
           <button type="button" :disabled="!apiConnected || !selectedSubmittableOrderCount || submittingSupplierOrder" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white disabled:text-slate-400" @click="openBulkSubmitSupplierOrders"><ShieldCheck class="size-3.5" />{{ submittingSupplierOrder ? '正在提交…' : `提交供应商（${selectedSubmittableOrderCount}）` }}</button>
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || issuingSelectedPurchaseOrders || !canIssuePurchaseOrders" title="仅发行所选订单尚未生成的首次、追加或减单净变化" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300" @click="issueSelectedPurchaseOrders"><Send class="size-3.5" />{{ issuingSelectedPurchaseOrders ? '发行中…' : `发行供应商单（${selectedOrderNos.length}）` }}</button>
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || exportingSelectedOrders" :title="!apiConnected ? '后端未连接，当前演示订单不能导出' : '累计对账表不代表向供应商新增下单'" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="exportSelectedPurchaseOrders"><Download class="size-3.5" />{{ exportingSelectedOrders ? '合并生成中…' : '导出累计对账表' }}</button>
@@ -3748,6 +3746,20 @@ function refreshDemo() {
         </div>
 
         <div class="space-y-3">
+          <div aria-label="订单批量选择" class="flex min-h-12 flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+            <label class="inline-flex min-h-10 cursor-pointer items-center gap-2.5 rounded-lg pr-2 text-[12px] font-bold text-slate-700 transition hover:bg-teal-50 hover:text-teal-700">
+              <input
+                type="checkbox"
+                aria-label="全选当前订单结果"
+                class="size-5 shrink-0 cursor-pointer accent-teal-600 disabled:cursor-not-allowed disabled:opacity-40"
+                :checked="orderedVisibleOrders.length > 0 && orderedVisibleOrders.every((order) => selectedOrderNos.includes(order.id))"
+                :disabled="orderedVisibleOrders.length === 0"
+                @change="toggleVisibleOrders(($event.target as HTMLInputElement).checked)"
+              >
+              全选当前结果
+            </label>
+            <span class="rounded-lg bg-slate-100 px-3 py-2 text-[11px] font-bold text-slate-600">已选 {{ selectedOrderNos.length }} 张</span>
+          </div>
           <article
             v-for="row in orderedVisibleOrders"
             :key="row.id"
@@ -3758,7 +3770,11 @@ function refreshDemo() {
             <div class="grid grid-cols-2 gap-x-4 gap-y-2 border-b border-slate-200 bg-slate-50/70 px-3 py-2.5 sm:grid-cols-3 lg:grid-cols-[1.15fr_1.1fr_0.9fr_0.6fr_1.05fr_auto] lg:items-center">
               <div class="min-w-0">
                 <div class="text-[9px] font-bold uppercase tracking-wide text-slate-400">合同订单</div>
-                <div class="mt-0.5 flex min-w-0 items-baseline gap-2"><input v-model="selectedOrderNos" type="checkbox" :value="row.id" :aria-label="`选择订单 ${row.id}`"><span class="truncate text-[13px] font-bold text-slate-950">{{ row.id }}</span><span class="shrink-0 text-[9px] text-slate-400">{{ row.orderDate }}</span></div>
+                <label class="mt-0.5 flex min-w-0 cursor-pointer items-center gap-2">
+                  <input v-model="selectedOrderNos" type="checkbox" :value="row.id" :aria-label="`选择订单 ${row.id}`" class="size-5 shrink-0 cursor-pointer accent-teal-600">
+                  <span class="truncate text-[13px] font-bold text-slate-950">{{ row.id }}</span>
+                  <span class="shrink-0 text-[9px] text-slate-400">{{ row.orderDate }}</span>
+                </label>
               </div>
               <div class="min-w-0">
                 <div class="text-[9px] font-bold uppercase tracking-wide text-slate-400">客户 / 合同号</div>
