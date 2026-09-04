@@ -238,6 +238,13 @@ TEST_USER_SPECS = {
         "pmc-warehouse",
     ),
     "carton_warehouse": ("user-carton-warehouse", "华兴纸箱仓管", "carton_warehouse_keeper", "huaxing", "pmc-warehouse"),
+    "carton_supervisor": (
+        "user-carton-supervisor",
+        "华兴纸箱主管",
+        "position_carton_supervisor",
+        "huaxing",
+        "carton",
+    ),
     "qa_inspector": ("user-qa-inspector", "华兴QA检验员", "qa_inspector", "huaxing", "qa"),
     "molding_clerk": ("user-molding-clerk", "华兴啤机部文员", "molding_clerk", "huaxing", "molding"),
     "c_engineer": ("user-c-engineer", "华康C工程师", "engineer", "huakang-c", "engineering"),

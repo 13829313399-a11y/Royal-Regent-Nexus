@@ -302,18 +302,40 @@ class CartonOrderAppendRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
     additional_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
-    reason: str = Field(min_length=4, max_length=500)
+    reason: str = Field(default="客人追加订单", min_length=4, max_length=500)
     due_date: str | None = None
 
-    @field_validator("factory_id", "reason")
+    @field_validator("factory_id")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return _strip(value)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def default_reason(cls, value: object) -> str:
+        return _strip(value) if isinstance(value, str) and value.strip() else "客人追加订单"
 
     @field_validator("due_date")
     @classmethod
     def validate_optional_date(cls, value: str | None) -> str | None:
         return _validate_iso_date(value) if value is not None else None
+
+
+class CartonOrderReduceRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    reduction_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    reason: str = Field(default="客人退单", min_length=4, max_length=500)
+
+    @field_validator("factory_id")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def default_reason(cls, value: object) -> str:
+        return _strip(value) if isinstance(value, str) and value.strip() else "客人退单"
 
 
 class CartonOrderActionItem(BaseModel):
@@ -324,6 +346,23 @@ class CartonOrderActionItem(BaseModel):
     @classmethod
     def strip_order_no(cls, value: str) -> str:
         return _strip(value)
+
+
+class CartonOrderBulkSubmitRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    items: list[CartonOrderActionItem] = Field(min_length=1, max_length=100)
+
+    @field_validator("factory_id")
+    @classmethod
+    def strip_factory_id(cls, value: str) -> str:
+        return _strip(value)
+
+    @model_validator(mode="after")
+    def validate_unique_orders(self):
+        order_nos = [item.order_no for item in self.items]
+        if len(order_nos) != len(set(order_nos)):
+            raise ValueError("批量操作不能重复选择同一张订单")
+        return self
 
 
 class CartonOrderBulkCancelRequest(BaseModel):
@@ -445,6 +484,7 @@ class CartonOrderOut(BaseModel):
     updated_by_name: str
     created_at: str
     updated_at: str
+    maximum_reducible_quantity: Decimal
     lines: list[CartonOrderLineOut]
 
 
@@ -454,6 +494,50 @@ class CartonOrderListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonOrderOut]
+
+
+CartonPurchaseOrderDocumentType = Literal[
+    "LEGACY_BASELINE", "INITIAL", "APPEND", "REDUCE", "ADJUSTMENT"
+]
+
+
+class CartonPurchaseOrderIssueCreate(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+
+    @field_validator("factory_id")
+    @classmethod
+    def strip_factory_id(cls, value: str) -> str:
+        return _strip(value)
+
+
+class CartonPurchaseOrderIssueOut(BaseModel):
+    id: str
+    factory_id: str
+    order_no: str
+    document_no: str
+    document_type: CartonPurchaseOrderDocumentType
+    issue_sequence: int
+    source_order_revision: int
+    before_product_quantity: Decimal
+    after_product_quantity: Decimal
+    product_quantity_delta: Decimal
+    generated_by: str
+    generated_by_name: str
+    generated_at: str
+
+
+class CartonPurchaseOrderContextOut(BaseModel):
+    factory_id: str
+    order_no: str
+    order_revision: int
+    pending_type: Literal["NONE", "INITIAL", "APPEND", "REDUCE", "ADJUSTMENT"]
+    pending_product_quantity: Decimal
+    pending_line_count: int
+    can_generate: bool
+    latest_document_no: str
+    historical_baseline: bool
+    issues: list[CartonPurchaseOrderIssueOut] = Field(default_factory=list)
 
 
 class CartonHistoryOrderImportOut(BaseModel):

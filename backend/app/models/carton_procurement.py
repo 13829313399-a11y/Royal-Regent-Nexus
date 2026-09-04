@@ -147,6 +147,42 @@ class CartonOrderLine(Base):
     note: Mapped[str] = mapped_column(Text, default="")
 
 
+class CartonPurchaseOrderIssue(Base):
+    __tablename__ = "carton_purchase_order_issues"
+    __table_args__ = (
+        UniqueConstraint("factory_id", "document_no", name="uq_carton_po_issue_factory_document"),
+        UniqueConstraint("order_id", "issue_sequence", name="uq_carton_po_issue_order_sequence"),
+        ForeignKeyConstraint(
+            ["order_id", "factory_id"],
+            ["carton_orders.id", "carton_orders.factory_id"],
+            name="fk_carton_po_issue_order_factory",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("issue_sequence >= 0", name="ck_carton_po_issue_sequence"),
+        CheckConstraint(
+            "document_type IN ('LEGACY_BASELINE', 'INITIAL', 'APPEND', 'REDUCE', 'ADJUSTMENT')",
+            name="ck_carton_po_issue_document_type",
+        ),
+        Index("ix_carton_po_issue_factory_order", "factory_id", "order_id", "issue_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    order_id: Mapped[str] = mapped_column(String(96), index=True)
+    order_no: Mapped[str] = mapped_column(String(64), index=True)
+    document_no: Mapped[str] = mapped_column(String(96), index=True)
+    document_type: Mapped[str] = mapped_column(String(24), index=True)
+    issue_sequence: Mapped[int] = mapped_column(Integer)
+    source_order_revision: Mapped[int] = mapped_column(Integer)
+    before_product_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    after_product_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    product_quantity_delta: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    snapshot_json: Mapped[str] = mapped_column(Text)
+    generated_by: Mapped[str] = mapped_column(String(64), index=True)
+    generated_by_name: Mapped[str] = mapped_column(String(128), default="")
+    generated_at: Mapped[str] = mapped_column(String(40), index=True)
+
+
 class CartonImportBatch(Base):
     __tablename__ = "carton_import_batches"
     __table_args__ = (

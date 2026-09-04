@@ -41,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v22"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v23"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 100
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 93
+    assert len(registered_codes) == 101
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 94
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -246,6 +246,7 @@ def test_fixed_system_position_definition_contract():
         )
     )
     customer_manage = "carton_procurement:customer_manage"
+    order_adjust = "carton_procurement:order_adjust"
     carton_manager = positions.get_system_position("position_carton_manager")
     carton_supervisor = positions.get_system_position("position_carton_supervisor")
     carton_warehouse_keeper = positions.get_system_position("position_carton_warehouse_keeper")
@@ -256,6 +257,10 @@ def test_fixed_system_position_definition_contract():
     assert customer_manage in carton_supervisor.permission_codes
     assert customer_manage not in carton_warehouse_keeper.permission_codes
     assert customer_manage not in positions.get_system_position("position_warehouse_keeper").permission_codes
+    assert order_adjust in carton_manager.permission_codes
+    assert order_adjust in carton_supervisor.permission_codes
+    assert order_adjust not in carton_warehouse_keeper.permission_codes
+    assert order_adjust not in positions.get_system_position("position_warehouse_keeper").permission_codes
     carton_mark_customer_manage = "carton_mark:customer_manage"
     assert carton_mark_customer_manage in carton_manager.permission_codes
     assert carton_mark_customer_manage in carton_supervisor.permission_codes
