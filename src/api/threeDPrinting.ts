@@ -22,12 +22,16 @@ const factoryId = 'huakang-a' as const
 const base = '/three-d-printing'
 
 export const threeDPrintingApi = {
+  async collection<T>(kind: string, params: Record<string, string | number> = {}) {
+    return (await http.get<{ items: T[]; total: number; page: number; page_size: number }>(`${base}/collections/${kind}`, { params: { factory_id: factoryId, ...params } })).data
+  },
   async dashboard(dateFrom = '', dateTo = '') {
     const response = await http.get<ThreeDDashboard>(`${base}/dashboard`, {
       params: {
         factory_id: factoryId,
         date_from: dateFrom || undefined,
         date_to: dateTo || undefined,
+        compact: true,
       },
     })
     return response.data
@@ -81,28 +85,41 @@ export const threeDPrintingApi = {
     const response = await http.put<ThreeDProductionRecord>(`${base}/records/${id}`, payload)
     return response.data
   },
-  async deleteRecord(id: string) {
-    await http.delete(`${base}/records/${id}`, { params: { factory_id: factoryId } })
+  async deleteRecord(id: string, revision: number, reason: string, key: string) {
+    await http.delete(`${base}/records/${id}`, { params: { factory_id: factoryId, revision, reason, idempotency_key: key } })
   },
-  async setDayOff(businessDate: string, isDayOff: boolean, revision = 1) {
+  async deletedRecords() {
+    return (await http.get<ThreeDProductionRecord[]>(`${base}/records/deleted`, { params: { factory_id: factoryId } })).data
+  },
+  async restoreRecord(id: string, revision: number, reason: string, key: string) {
+    return (await http.post<ThreeDProductionRecord>(`${base}/records/${id}/restore`, {
+      factory_id: factoryId, revision, reason, idempotency_key: key,
+    })).data
+  },
+  async setDayOff(businessDate: string, isDayOff: boolean, revision: number, reason: string, key: string) {
     await http.put(`${base}/day-status`, {
       factory_id: factoryId,
       business_date: businessDate,
       is_day_off: isDayOff,
+      reason,
+      idempotency_key: key,
       revision,
     })
   },
-  async adjustInventory(materialName: string, targetStockG: number, minStockG: number, reason: string) {
+  async adjustInventory(materialName: string, targetStockG: number, minStockG: number, reason: string, revision: number, key: string) {
     const response = await http.post<ThreeDInventory>(`${base}/inventory/adjust`, {
       factory_id: factoryId,
       material_name: materialName,
       target_stock_g: targetStockG,
+      revision,
+      idempotency_key: key,
       min_stock_g: minStockG,
       reason,
     })
     return response.data
   },
   async stockIn(payload: {
+    idempotency_key: string
     business_date: string
     material_name: string
     amount_g: number

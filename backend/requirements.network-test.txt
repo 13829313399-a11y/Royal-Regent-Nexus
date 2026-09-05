@@ -1,0 +1,3 @@
+# Local TLS test certificates only; the deployed doctor uses Python's standard library.
+-r requirements.txt
+cryptography>=44,<50

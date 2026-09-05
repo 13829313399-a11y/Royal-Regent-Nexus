@@ -155,17 +155,20 @@ def test_postgresql_offline_ddl_compiles_and_revision_has_single_head(migration)
     assert "DROP TABLE" not in sql
     config = Config(str(BACKEND / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND / "alembic"))
-    assert ScriptDirectory.from_config(config).get_heads() == [migration.revision]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260904_0099"]
 
 
 def test_readiness_guard_rejects_old_and_partial_new_schema(db, migration, monkeypatch):
     from app import db as app_db
     monkeypatch.setattr(app_db, "engine", db.engine)
-    with pytest.raises(RuntimeError, match="0098"):
+    with pytest.raises(RuntimeError, match="0099"):
         app_db.ensure_three_d_printing_schema_ready()
     apply(db, migration)
+    with pytest.raises(RuntimeError, match="0099"):
+        app_db.ensure_three_d_printing_schema_ready()
+    apply(db, load_migration("20260904_0099_*.py"))
     app_db.ensure_three_d_printing_schema_ready()
     db.exec_driver_sql("ALTER TABLE three_d_printing_migration_batches DROP COLUMN checkpoint_json")
     db.commit()
-    with pytest.raises(RuntimeError, match="0098"):
+    with pytest.raises(RuntimeError, match="0099"):
         app_db.ensure_three_d_printing_schema_ready()

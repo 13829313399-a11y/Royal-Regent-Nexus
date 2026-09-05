@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from datetime import timedelta
-from hashlib import sha256
-from io import BytesIO
 import json
 import os
-from pathlib import Path
 import re
+from datetime import timedelta
+from decimal import Decimal
+from hashlib import sha256
+from io import BytesIO
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
 from PIL import Image, UnidentifiedImageError
-from sqlalchemy import and_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -27,6 +28,7 @@ from app.models.three_d_printing import (
     ThreeDPrintingMaterial,
     ThreeDPrintingPrinter,
     ThreeDPrintingPrinterCommand,
+    ThreeDPrintingPrinterConnection,
     ThreeDPrintingProduct,
     ThreeDPrintingProductImage,
     ThreeDPrintingProductionRecord,
@@ -44,17 +46,29 @@ from app.schemas.three_d_printing import (
     ThreeDMaterialUpdate,
     ThreeDPrinterCommandCreate,
     ThreeDProductInput,
-    ThreeDProductUpdate,
     ThreeDProductionRecordInput,
     ThreeDProductionRecordUpdate,
+    ThreeDProductUpdate,
+    ThreeDRecordAction,
     ThreeDScheduleInput,
     ThreeDScheduleStatusUpdate,
     ThreeDScheduleUpdate,
     ThreeDSettingsUpdate,
     ThreeDStockInInput,
 )
-from app.services.auth import AuthContext
-
+from app.services.auth import AuthContext, time_window_is_active
+from app.services.three_d_connector import OWNER as CONNECTOR_OWNER
+from app.services.three_d_connector import create_command as create_connector_command
+from app.services.three_d_consistency import (
+    atomic_write,
+    freeze_cost,
+    frozen_totals,
+    record_inputs,
+)
+from app.services.three_d_network_health import (
+    network_blocks_control,
+    network_health_snapshot,
+)
 
 THREE_D_FACTORY_ID = "huakang-a"
 THREE_D_DEPARTMENTS = ("three-d-printing", "production", "management")
@@ -198,6 +212,7 @@ def seed_three_d_printing_defaults(db: Session) -> None:
     db.commit()
 
 
+@atomic_write
 def update_settings(
     db: Session,
     payload: ThreeDSettingsUpdate,
@@ -227,8 +242,6 @@ def update_settings(
         detail={"revision": record.revision},
         request_id=request_id,
     )
-    db.commit()
-    db.refresh(record)
     return record
 
 
@@ -285,6 +298,7 @@ def create_material(
     return record
 
 
+@atomic_write
 def update_material(
     db: Session,
     material_id: str,
@@ -308,14 +322,7 @@ def update_material(
     record.price_per_kg = payload.price_per_kg
     record.revision += 1
     record.updated_at = _now()
-    inventory = _inventory_by_name(db, factory_id, old_name)
-    if inventory is not None and old_name != name:
-        existing_inventory = _inventory_by_name(db, factory_id, name)
-        if existing_inventory is not None:
-            raise HTTPException(status_code=409, detail="新材料名称已有库存记录")
-        inventory.material_name = name
-        inventory.revision += 1
-        inventory.updated_at = record.updated_at
+    # Raw inventory buckets and immutable movements retain their original names.
     add_audit(
         db,
         factory_id=factory_id,
@@ -327,8 +334,6 @@ def update_material(
         detail={"oldName": old_name, "name": name, "revision": record.revision},
         request_id=request_id,
     )
-    db.commit()
-    db.refresh(record)
     return record
 
 
@@ -400,6 +405,7 @@ def create_product(
     return record
 
 
+@atomic_write
 def update_product(
     db: Session,
     product_id: str,
@@ -424,20 +430,11 @@ def update_product(
     record.revision += 1
     record.updated_at = _now()
     if old_name != record.name:
-        for production_record in db.scalars(
-            select(ThreeDPrintingProductionRecord).where(
-                ThreeDPrintingProductionRecord.factory_id == factory_id,
-                ThreeDPrintingProductionRecord.product_id == record.id,
-                ThreeDPrintingProductionRecord.deleted_at == "",
-            )
-        ):
-            production_record.product_name = record.name
-            production_record.updated_at = record.updated_at
-            production_record.revision += 1
         for schedule in db.scalars(
             select(ThreeDPrintingSchedule).where(
                 ThreeDPrintingSchedule.factory_id == factory_id,
                 ThreeDPrintingSchedule.product_id == record.id,
+                ThreeDPrintingSchedule.status == "pending",
             )
         ):
             schedule.product_name = record.name
@@ -454,8 +451,6 @@ def update_product(
         detail={"oldName": old_name, "name": record.name, "revision": record.revision},
         request_id=request_id,
     )
-    db.commit()
-    db.refresh(record)
     return record
 
 
@@ -684,14 +679,15 @@ def _move_inventory(
     remark: str = "",
     source_record_id: str = "",
     legacy_id: str | None = None,
-    floor_at_zero: bool = False,
+    allow_negative: bool = False,
+    idempotency_key: str | None = None,
+    reversal_of: str | None = None,
 ) -> ThreeDPrintingInventoryMovement:
     inventory = _ensure_inventory(db, factory_id, material_name)
-    current = float(inventory.stock_g)
-    target = current + delta_g
-    if target < 0 and not floor_at_zero:
+    current = Decimal(str(inventory.stock_g))
+    target = (current + Decimal(str(delta_g))).quantize(Decimal("0.0001"))
+    if target < 0 and Decimal(str(delta_g)) < 0 and not allow_negative:
         raise HTTPException(status_code=409, detail=f"{material_name}库存不足")
-    target = max(target, 0)
     actual_delta = target - current
     inventory.stock_g = target
     inventory.revision += 1
@@ -703,6 +699,8 @@ def _move_inventory(
         material_name=material_name,
         movement_type=movement_type,
         delta_g=actual_delta,
+        idempotency_key=idempotency_key or f"move:{uuid4().hex}",
+        reversal_of_movement_id=reversal_of,
         balance_after_g=target,
         business_date=business_date,
         vendor=vendor,
@@ -718,6 +716,7 @@ def _move_inventory(
     return movement
 
 
+@atomic_write
 def adjust_inventory(
     db: Session,
     payload: ThreeDInventoryAdjustment,
@@ -726,6 +725,8 @@ def adjust_inventory(
 ) -> ThreeDPrintingInventory:
     factory_id = require_three_d_factory(payload.factory_id)
     inventory = _ensure_inventory(db, factory_id, payload.material_name.strip())
+    if inventory.revision != payload.revision and not (payload.revision == 0 and inventory.stock_g == 0 and inventory.revision == 1):
+        raise HTTPException(409, "库存已更新，请刷新后重试")
     current = float(inventory.stock_g)
     _move_inventory(
         db,
@@ -753,11 +754,10 @@ def adjust_inventory(
         detail={"from": current, "to": payload.target_stock_g, "reason": payload.reason},
         request_id=request_id,
     )
-    db.commit()
-    db.refresh(inventory)
     return inventory
 
 
+@atomic_write
 def create_stock_in(
     db: Session,
     payload: ThreeDStockInInput,
@@ -789,16 +789,104 @@ def create_stock_in(
         detail={"materialName": movement.material_name, "amountG": payload.amount_g},
         request_id=request_id,
     )
-    db.commit()
-    db.refresh(movement)
     return movement
 
 
+def _approve_negative(payload, user: AuthContext) -> None:
+    if not payload.allow_negative_stock:
+        return
+    if not payload.reason.strip():
+        raise HTTPException(422, "批准负库存必须填写原因")
+    if not any(grant.role_id in {"admin", "position_3d_supervisor", "position_3d_manager", "position_production_supervisor"}
+               and grant.factory_id in {"*", payload.factory_id}
+               and time_window_is_active(grant.valid_from, grant.valid_until) for grant in user.grants):
+        raise HTTPException(403, "仅本厂主管或管理员可明确批准负库存")
+
+
+def _require_workday(db, factory_id, business_date):
+    day = db.scalar(select(ThreeDPrintingDayStatus).where(
+        ThreeDPrintingDayStatus.factory_id == factory_id,
+        ThreeDPrintingDayStatus.business_date == business_date))
+    if day and day.is_day_off:
+        raise HTTPException(409, "该日期已标为休息日，请先恢复工作日")
+
+
+def _action_record(db, record_id, factory_id, revision):
+    require_three_d_factory(factory_id)
+    record = db.get(ThreeDPrintingProductionRecord, record_id)
+    if record is None or record.factory_id != factory_id:
+        raise HTTPException(404, "生产记录不存在")
+    if record.revision != revision:
+        raise HTTPException(409, "生产记录已被其他用户更新，请刷新后重试")
+    return record
+
+
+def _consume_record(db, record, actor_id, actor_name, reason, allow_negative=False):
+    flags = set(_load_json(record.data_quality_flags_json or "[]", []))
+    was_shortage = "material_shortage" in flags
+    flags.discard("material_shortage")
+    flags.discard("negative_inventory_approved")
+    record.inventory_consumed = False
+    amount = (Decimal(str(record.weight_g)) * record.quantity).quantize(Decimal("0.0001"))
+    if record.status not in {"running", "done"} or amount <= 0:
+        record.data_quality_flags_json = _json(sorted(flags))
+        return
+    inventory = _ensure_inventory(db, record.factory_id, record.material_name) if record.material_name else None
+    if inventory is None or (Decimal(str(inventory.stock_g)) < amount and not allow_negative):
+        flags.add("material_shortage")
+        record.reconciliation_status = "pending"
+        record.data_quality_flags_json = _json(sorted(flags))
+        return
+    movement = _move_inventory(db, factory_id=record.factory_id, material_name=record.material_name,
+                              delta_g=-amount, movement_type="production_consume", business_date=record.business_date,
+                              actor_id=actor_id, actor_name=actor_name, source_record_id=record.id,
+                              remark=reason, allow_negative=allow_negative,
+                              idempotency_key=f"consume:{record.id}:{record.revision}")
+    record.inventory_consumed = True
+    if was_shortage and "pending_device_reconciliation" not in flags:
+        record.reconciliation_status = "resolved"
+    if movement.balance_after_g < 0:
+        flags.add("negative_inventory_approved")
+    record.data_quality_flags_json = _json(sorted(flags))
+
+
+def _reverse_record(db, record, actor_id, actor_name, reason):
+    db.flush()
+    movements = list(db.scalars(select(ThreeDPrintingInventoryMovement).where(
+        ThreeDPrintingInventoryMovement.factory_id == record.factory_id,
+        ThreeDPrintingInventoryMovement.source_record_id == record.id,
+        ThreeDPrintingInventoryMovement.affects_balance.is_(True))))
+    reversed_ids = {m.reversal_of_movement_id for m in movements if m.reversal_of_movement_id}
+    active = [m for m in movements if m.movement_type == "production_consume" and m.id not in reversed_ids]
+    if record.inventory_consumed and not active:
+        raise HTTPException(409, "缺少原扣料流水，不能推算返还数量，请先核对库存")
+    for movement in active:
+        # Reverse actual evidence (including old truncated amounts), never today's weight.
+        _move_inventory(db, factory_id=record.factory_id, material_name=movement.material_name,
+                        delta_g=-Decimal(str(movement.delta_g)), movement_type="production_reversal",
+                        business_date=business_today(), actor_id=actor_id, actor_name=actor_name,
+                        source_record_id=record.id, remark=reason, allow_negative=True,
+                        idempotency_key=f"reverse:{movement.id}", reversal_of=movement.id)
+    record.inventory_consumed = False
+
+
+def _delete_record(db, record, user, reason, request_id):
+    before = production_record_out(record)
+    _reverse_record(db, record, user.id, _actor_name(user), reason)
+    record.deleted_at = _now()
+    record.updated_at = record.deleted_at
+    record.revision += 1
+    add_audit(db, factory_id=record.factory_id, entity_type="production_record", entity_id=record.id,
+              action="soft_delete", actor_id=user.id, actor_name=_actor_name(user), request_id=request_id,
+              detail={"before": before, "after": production_record_out(record), "reason": reason})
+
+
 def _validate_record_payload(payload: ThreeDProductionRecordInput) -> None:
-    if payload.status == "running" and not payload.product_name.strip():
+    if payload.status in {"running", "done"} and not payload.product_name.strip():
         raise HTTPException(status_code=422, detail="生产中记录必须填写产品名称")
 
 
+@atomic_write
 def create_production_record(
     db: Session,
     payload: ThreeDProductionRecordInput,
@@ -807,6 +895,7 @@ def create_production_record(
 ) -> ThreeDPrintingProductionRecord:
     factory_id = require_three_d_factory(payload.factory_id)
     _validate_record_payload(payload)
+    _require_workday(db, factory_id, payload.business_date)
     now = _now()
     record = ThreeDPrintingProductionRecord(
         id=f"3drec-{uuid4().hex}",
@@ -817,16 +906,16 @@ def create_production_record(
         status=payload.status,
         product_id=payload.product_id,
         product_name=payload.product_name.strip()
-        if payload.status == "running"
+        if payload.status in {"running", "done"}
         else "空闲"
         if payload.status == "idle"
         else "故障",
-        material_name=payload.material_name.strip() if payload.status == "running" else "",
-        weight_g=payload.weight_g if payload.status == "running" else 0,
-        quantity=payload.quantity if payload.status == "running" else 0,
-        duration_hours=payload.duration_hours if payload.status == "running" else 0,
-        design_fee=payload.design_fee if payload.status == "running" else 0,
-        quoted_price=payload.quoted_price if payload.status == "running" else 0,
+        material_name=payload.material_name.strip() if payload.status in {"running", "done"} else "",
+        weight_g=payload.weight_g if payload.status in {"running", "done"} else 0,
+        quantity=payload.quantity if payload.status in {"running", "done"} else 0,
+        duration_hours=payload.duration_hours if payload.status in {"running", "done"} else 0,
+        design_fee=payload.design_fee if payload.status in {"running", "done"} else 0,
+        quoted_price=payload.quoted_price if payload.status in {"running", "done"} else 0,
         customer=payload.customer.strip(),
         remark=payload.remark.strip(),
         auto_record=False,
@@ -839,25 +928,9 @@ def create_production_record(
     )
     db.add(record)
     db.flush()
-    if (
-        record.status == "running"
-        and record.material_name
-        and float(record.weight_g) > 0
-    ):
-        _move_inventory(
-            db,
-            factory_id=factory_id,
-            material_name=record.material_name,
-            delta_g=-(float(record.weight_g) * record.quantity),
-            movement_type="production_consume",
-            business_date=record.business_date,
-            actor_id=user.id,
-            actor_name=_actor_name(user),
-            source_record_id=record.id,
-            remark="新增生产记录自动扣减",
-            floor_at_zero=True,
-        )
-        record.inventory_consumed = True
+    _approve_negative(payload, user)
+    _consume_record(db, record, user.id, _actor_name(user), payload.reason, payload.allow_negative_stock)
+    freeze_cost(record, ensure_settings(db, factory_id), _material_by_name(db, factory_id, record.material_name), initial=True, reason=payload.reason)
     add_audit(
         db,
         factory_id=factory_id,
@@ -866,14 +939,13 @@ def create_production_record(
         action="create",
         actor_id=user.id,
         actor_name=_actor_name(user),
-        detail={"businessDate": record.business_date, "machineNo": record.machine_no},
+        detail={"after": production_record_out(record), "reason": payload.reason, "negativeStockApproved": payload.allow_negative_stock},
         request_id=request_id,
     )
-    db.commit()
-    db.refresh(record)
     return record
 
 
+@atomic_write
 def update_production_record(
     db: Session,
     record_id: str,
@@ -888,27 +960,49 @@ def update_production_record(
         raise HTTPException(status_code=404, detail="生产记录不存在")
     if record.revision != payload.revision:
         raise HTTPException(status_code=409, detail="生产记录已被其他用户更新")
+    _approve_negative(payload, user)
+    if not payload.reason.strip():
+        raise HTTPException(422, "修改历史记录必须填写原因")
+    _require_workday(db, factory_id, payload.business_date)
+    before = production_record_out(record)
+    previous_inputs = record_inputs(record)
+    previous_ledger = (record.status in {"running", "done"}, record.material_name, float(record.weight_g), record.quantity)
     record.business_date = payload.business_date
     record.machine_no = payload.machine_no
     record.status = payload.status
     record.product_id = payload.product_id
     record.product_name = (
         payload.product_name.strip()
-        if payload.status == "running"
+        if payload.status in {"running", "done"}
         else "空闲"
         if payload.status == "idle"
         else "故障"
     )
-    record.material_name = payload.material_name.strip() if payload.status == "running" else ""
-    record.weight_g = payload.weight_g if payload.status == "running" else 0
-    record.quantity = payload.quantity if payload.status == "running" else 0
-    record.duration_hours = payload.duration_hours if payload.status == "running" else 0
-    record.design_fee = payload.design_fee if payload.status == "running" else 0
-    record.quoted_price = payload.quoted_price if payload.status == "running" else 0
+    record.material_name = payload.material_name.strip() if payload.status in {"running", "done"} else ""
+    record.weight_g = payload.weight_g if payload.status in {"running", "done"} else 0
+    record.quantity = payload.quantity if payload.status in {"running", "done"} else 0
+    record.duration_hours = payload.duration_hours if payload.status in {"running", "done"} else 0
+    record.design_fee = payload.design_fee if payload.status in {"running", "done"} else 0
+    record.quoted_price = payload.quoted_price if payload.status in {"running", "done"} else 0
     record.customer = payload.customer.strip()
     record.remark = payload.remark.strip()
     record.revision += 1
     record.updated_at = _now()
+    next_ledger = (record.status in {"running", "done"}, record.material_name, float(record.weight_g), record.quantity)
+    historical = record.source_system != "nexus" or record.legacy_id is not None
+    if next_ledger != previous_ledger or "material_shortage" in _load_json(record.data_quality_flags_json, []):
+        if historical:
+            if not payload.history_only_correction:
+                raise HTTPException(409, "迁移记录无逐笔扣料凭证，请明确选择仅修正历史；余额差异须单独盘点调整")
+            if record.inventory_consumed:
+                raise HTTPException(409, "历史记录存在未对账扣料，请先核对原流水")
+        else:
+            _reverse_record(db, record, user.id, _actor_name(user), payload.reason)
+            _consume_record(db, record, user.id, _actor_name(user), payload.reason, payload.allow_negative_stock)
+    cost_fields = ("weight", "time", "qty", "price", "designFee", "material")
+    if previous_inputs["material"] != record.material_name or any(Decimal(str(previous_inputs[k])) != Decimal(str(record_inputs(record)[k])) for k in cost_fields if k != "material"):
+        freeze_cost(record, ensure_settings(db, factory_id), None, reason=payload.reason)
+    record.product_snapshot_json = _json(record_inputs(record))
     add_audit(
         db,
         factory_id=factory_id,
@@ -917,42 +1011,49 @@ def update_production_record(
         action="update",
         actor_id=user.id,
         actor_name=_actor_name(user),
-        detail={"revision": record.revision, "autoRecord": record.auto_record},
+        detail={"before": before, "after": production_record_out(record), "reason": payload.reason, "historyOnlyCorrection": payload.history_only_correction},
         request_id=request_id,
     )
-    db.commit()
-    db.refresh(record)
     return record
 
 
+@atomic_write
 def delete_production_record(
-    db: Session,
-    record_id: str,
-    factory_id: str,
-    user: AuthContext,
-    request_id: str = "",
+    db: Session, record_id: str, factory_id: str, user: AuthContext,
+    request_id: str = "", *, revision: int, reason: str, idempotency_key: str,
 ) -> None:
-    factory_id = require_three_d_factory(factory_id)
-    record = db.get(ThreeDPrintingProductionRecord, record_id)
-    if record is None or record.factory_id != factory_id or record.deleted_at:
-        raise HTTPException(status_code=404, detail="生产记录不存在")
-    record.deleted_at = _now()
+    record = _action_record(db, record_id, factory_id, revision)
+    if record.deleted_at:
+        raise HTTPException(409, "记录已经撤销")
+    if not reason.strip():
+        raise HTTPException(422, "请填写撤销原因")
+    _delete_record(db, record, user, reason, request_id)
+
+
+@atomic_write
+def restore_production_record(db: Session, record_id: str, payload: ThreeDRecordAction,
+                              user: AuthContext, request_id: str = "") -> ThreeDPrintingProductionRecord:
+    record = _action_record(db, record_id, payload.factory_id, payload.revision)
+    if not record.deleted_at:
+        raise HTTPException(409, "记录未被撤销")
+    if not payload.reason.strip():
+        raise HTTPException(422, "请填写恢复原因")
+    _approve_negative(payload, user)
+    _require_workday(db, payload.factory_id, record.business_date)
+    before = production_record_out(record)
+    record.deleted_at = ""
     record.revision += 1
-    record.updated_at = record.deleted_at
-    add_audit(
-        db,
-        factory_id=factory_id,
-        entity_type="production_record",
-        entity_id=record.id,
-        action="soft_delete",
-        actor_id=user.id,
-        actor_name=_actor_name(user),
-        detail={"businessDate": record.business_date, "machineNo": record.machine_no},
-        request_id=request_id,
-    )
-    db.commit()
+    record.updated_at = _now()
+    # Legacy opening balances already include old activity; never replay it.
+    if record.source_system == "nexus" and record.legacy_id is None:
+        _consume_record(db, record, user.id, _actor_name(user), payload.reason, payload.allow_negative_stock)
+    add_audit(db, factory_id=record.factory_id, entity_type="production_record", entity_id=record.id,
+              action="restore", actor_id=user.id, actor_name=_actor_name(user), request_id=request_id,
+              detail={"before": before, "after": production_record_out(record), "reason": payload.reason})
+    return record
 
 
+@atomic_write
 def update_day_status(
     db: Session,
     payload: ThreeDDayStatusUpdate,
@@ -966,6 +1067,10 @@ def update_day_status(
             ThreeDPrintingDayStatus.business_date == payload.business_date,
         )
     )
+    if (record.revision if record else 0) != payload.revision:
+        raise HTTPException(409, "日期状态已更新，请刷新后重试")
+    if not payload.reason.strip():
+        raise HTTPException(422, "请填写批量操作原因")
     now = _now()
     if record is None:
         record = ThreeDPrintingDayStatus(
@@ -992,9 +1097,7 @@ def update_day_status(
                 ThreeDPrintingProductionRecord.deleted_at == "",
             )
         ):
-            production_record.deleted_at = now
-            production_record.updated_at = now
-            production_record.revision += 1
+            _delete_record(db, production_record, user, payload.reason, request_id)
             affected += 1
     add_audit(
         db,
@@ -1007,8 +1110,6 @@ def update_day_status(
         detail={"businessDate": payload.business_date, "softDeletedRecords": affected},
         request_id=request_id,
     )
-    db.commit()
-    db.refresh(record)
     return record
 
 
@@ -1355,6 +1456,8 @@ def _open_auto_record(
             ThreeDPrintingProductionRecord.factory_id == factory_id,
             ThreeDPrintingProductionRecord.machine_no == machine_no,
             ThreeDPrintingProductionRecord.auto_record.is_(True),
+            ThreeDPrintingProductionRecord.source_system == "nexus",
+            ThreeDPrintingProductionRecord.legacy_id.is_(None),
             ThreeDPrintingProductionRecord.print_end_at == "",
             ThreeDPrintingProductionRecord.deleted_at == "",
         )
@@ -1404,21 +1507,8 @@ def _create_auto_record(
     )
     db.add(record)
     db.flush()
-    if material_name and float(record.weight_g) > 0:
-        _move_inventory(
-            db,
-            factory_id=factory_id,
-            material_name=material_name,
-            delta_g=-(float(record.weight_g) * record.quantity),
-            movement_type="production_consume",
-            business_date=record.business_date,
-            actor_id=agent.id,
-            actor_name=agent.name,
-            source_record_id=record.id,
-            remark="打印机开始任务自动扣减",
-            floor_at_zero=True,
-        )
-        record.inventory_consumed = True
+    _consume_record(db, record, agent.id, agent.name, "打印机开始任务自动扣减")
+    freeze_cost(record, ensure_settings(db, factory_id), _material_by_name(db, factory_id, record.material_name), initial=True)
     add_audit(
         db,
         factory_id=factory_id,
@@ -1437,6 +1527,7 @@ def _create_auto_record(
     return record
 
 
+@atomic_write
 def apply_edge_status_batch(
     db: Session,
     *,
@@ -1457,6 +1548,7 @@ def apply_edge_status_batch(
     agent.status = "online"
     agent.last_seen_at = now
     agent.updated_at = now
+    network_unavailable = network_blocks_control(db)
     results: list[ThreeDPrintingPrinter] = []
     for status in statuses:
         printer = db.scalar(
@@ -1465,7 +1557,6 @@ def apply_edge_status_batch(
                 ThreeDPrintingPrinter.machine_no == status.machine_no,
             )
         )
-        previous_state = printer.state if printer else "OFFLINE"
         if printer is None:
             printer = ThreeDPrintingPrinter(
                 id=f"3dprinter-{uuid4().hex}",
@@ -1483,6 +1574,11 @@ def apply_edge_status_batch(
             )
             db.add(printer)
             db.flush()
+        connection = db.get(ThreeDPrintingPrinterConnection, printer.id)
+        if connection is not None and connection.connection_owner == CONNECTOR_OWNER:
+            # Cloud-owned devices cannot be overwritten or auto-settled by the old Edge.
+            results.append(printer)
+            continue
         observed_at = status.observed_at or now
         printer.name = status.name.strip() or printer.name
         printer.printer_type = status.printer_type.strip() or printer.printer_type
@@ -1501,7 +1597,7 @@ def apply_edge_status_batch(
         printer.revision += 1
         printer.updated_at = now
         open_record = _open_auto_record(db, factory_id, status.machine_no)
-        if printer.connected and printer.state == "RUNNING":
+        if printer.connected and not network_unavailable and printer.state == "RUNNING":
             if open_record is None:
                 _create_auto_record(
                     db,
@@ -1512,12 +1608,11 @@ def apply_edge_status_batch(
                 )
             elif not open_record.material_name and status.live_material:
                 open_record.material_name = status.live_material
+                freeze_cost(open_record, ensure_settings(db, factory_id), None, reason="设备补充材料信息")
+                _consume_record(db, open_record, agent.id, agent.name, "设备补充材料信息")
                 open_record.updated_at = now
                 open_record.revision += 1
-        elif status.connected and open_record is not None and (
-            printer.state in FINISHED_PRINTER_STATES
-            or (previous_state == "RUNNING" and printer.state != "PAUSE")
-        ):
+        elif status.connected and not network_unavailable and open_record is not None and printer.state in FINISHED_PRINTER_STATES:
             open_record.print_end_at = observed_at
             open_record.updated_at = now
             open_record.revision += 1
@@ -1535,9 +1630,6 @@ def apply_edge_status_batch(
                 detail={"machineNo": status.machine_no, "state": printer.state},
             )
         results.append(printer)
-    db.commit()
-    for printer in results:
-        db.refresh(printer)
     return results
 
 
@@ -1550,9 +1642,14 @@ def create_printer_command(
     request_id: str = "",
 ) -> ThreeDPrintingPrinterCommand:
     factory_id = require_three_d_factory(payload.factory_id)
+    if network_blocks_control(db):
+        raise HTTPException(409, "站点网络不可用或探测过期，暂停远程指令")
     printer = db.get(ThreeDPrintingPrinter, printer_id)
     if printer is None or printer.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="打印机不存在")
+    connection = db.get(ThreeDPrintingPrinterConnection, printer_id)
+    if connection is not None and connection.connection_owner == CONNECTOR_OWNER:
+        return create_connector_command(db, printer_id=printer_id, payload=payload, user=user)
     existing = db.scalar(
         select(ThreeDPrintingPrinterCommand).where(
             ThreeDPrintingPrinterCommand.factory_id == factory_id,
@@ -1615,6 +1712,8 @@ def claim_printer_commands(
     )
     if agent is None:
         raise HTTPException(status_code=409, detail="边缘代理尚未注册")
+    if network_blocks_control(db):
+        return []
     now_dt = business_now()
     now = now_dt.isoformat(timespec="seconds")
     pending = list(
@@ -1623,6 +1722,10 @@ def claim_printer_commands(
             .where(
                 ThreeDPrintingPrinterCommand.factory_id == factory_id,
                 ThreeDPrintingPrinterCommand.status == "pending",
+                ~select(ThreeDPrintingPrinterConnection.printer_id).where(
+                    ThreeDPrintingPrinterConnection.printer_id == ThreeDPrintingPrinterCommand.printer_id,
+                    ThreeDPrintingPrinterConnection.connection_owner == CONNECTOR_OWNER,
+                ).exists(),
             )
             .order_by(ThreeDPrintingPrinterCommand.requested_at)
             .limit(limit)
@@ -1755,6 +1858,16 @@ def product_out(
 
 def production_record_out(record: ThreeDPrintingProductionRecord) -> dict[str, Any]:
     return {
+        "run_status": record.run_status,
+        "reconciliation_status": record.reconciliation_status,
+        "source_system": record.source_system,
+        "inventory_consumed": record.inventory_consumed,
+        "material_status": "material_shortage" if "material_shortage" in _load_json(record.data_quality_flags_json, []) else "consumed" if record.inventory_consumed else "not_consumed",
+        "data_quality_flags": _load_json(record.data_quality_flags_json, []),
+        "cost_profile_version": record.cost_profile_version,
+        "calculated_cost_snapshot": _load_json(record.calculated_cost_snapshot_json, {}),
+        "frozen_totals": frozen_totals(record),
+        "deleted_at": record.deleted_at,
         "id": record.id,
         "factory_id": record.factory_id,
         "legacy_id": record.legacy_id or "",
@@ -1798,6 +1911,9 @@ def inventory_out(record: ThreeDPrintingInventory) -> dict[str, Any]:
 
 def inventory_movement_out(record: ThreeDPrintingInventoryMovement) -> dict[str, Any]:
     return {
+        "reversal_of_movement_id": record.reversal_of_movement_id or "",
+        "idempotency_key": record.idempotency_key or "",
+        "affects_balance": record.affects_balance,
         "id": record.id,
         "factory_id": record.factory_id,
         "material_name": record.material_name,
@@ -1853,9 +1969,10 @@ def maintenance_out(record: ThreeDPrintingMaintenance) -> dict[str, Any]:
     }
 
 
-def printer_out(record: ThreeDPrintingPrinter) -> dict[str, Any]:
+def printer_out(record: ThreeDPrintingPrinter, *, network_stale: bool = False) -> dict[str, Any]:
     last_seen = parse_business_timestamp(record.last_seen_at)
-    stale = last_seen is None or (business_now() - last_seen).total_seconds() > 30
+    age = (business_now() - last_seen).total_seconds() if last_seen else None
+    stale = network_stale or age is None or age > 30 or age < -5
     return {
         "id": record.id,
         "factory_id": record.factory_id,
@@ -1865,7 +1982,7 @@ def printer_out(record: ThreeDPrintingPrinter) -> dict[str, Any]:
         "model": record.model,
         "enabled": record.enabled,
         "connected": record.connected and not stale,
-        "state": "OFFLINE" if stale else record.state,
+        "state": ("STALE" if record.last_seen_at or network_stale else "OFFLINE") if stale else record.state,
         "current_file": record.current_file,
         "progress_percent": record.progress_percent,
         "remaining_minutes": record.remaining_minutes,
@@ -1901,6 +2018,7 @@ def dashboard_snapshot(
     factory_id: str,
     date_from: str = "",
     date_to: str = "",
+    compact: bool = False,
 ) -> dict[str, Any]:
     factory_id = require_three_d_factory(factory_id)
     setting = ensure_settings(db, factory_id)
@@ -1922,6 +2040,7 @@ def dashboard_snapshot(
                 ThreeDPrintingProduct.is_active.is_(True),
             )
             .order_by(ThreeDPrintingProduct.name, ThreeDPrintingProduct.id)
+            .limit(50 if compact else None)
         )
     )
     images = {
@@ -1930,6 +2049,7 @@ def dashboard_snapshot(
             select(ThreeDPrintingProductImage).where(
                 ThreeDPrintingProductImage.factory_id == factory_id,
                 ThreeDPrintingProductImage.is_current.is_(True),
+                ThreeDPrintingProductImage.product_id.in_([p.id for p in products]),
             )
         )
     }
@@ -1949,7 +2069,7 @@ def dashboard_snapshot(
                 ThreeDPrintingProductionRecord.business_date.desc(),
                 ThreeDPrintingProductionRecord.machine_no,
                 ThreeDPrintingProductionRecord.created_at,
-            )
+            ).limit(50 if compact else None)
         )
     )
     inventories = list(
@@ -1967,7 +2087,7 @@ def dashboard_snapshot(
                 ThreeDPrintingInventoryMovement.business_date.desc(),
                 ThreeDPrintingInventoryMovement.created_at.desc(),
             )
-            .limit(500)
+            .limit(50 if compact else 500)
         )
     )
     schedules = list(
@@ -1978,7 +2098,7 @@ def dashboard_snapshot(
                 ThreeDPrintingSchedule.business_date,
                 ThreeDPrintingSchedule.priority,
                 ThreeDPrintingSchedule.id,
-            )
+            ).limit(50 if compact else None)
         )
     )
     maintenance = list(
@@ -1988,7 +2108,7 @@ def dashboard_snapshot(
             .order_by(
                 ThreeDPrintingMaintenance.business_date.desc(),
                 ThreeDPrintingMaintenance.id,
-            )
+            ).limit(50 if compact else None)
         )
     )
     printers = list(
@@ -2008,46 +2128,31 @@ def dashboard_snapshot(
             .order_by(ThreeDPrintingDayStatus.business_date)
         )
     )
-    material_price = {material.name: _float(material.price_per_kg) for material in materials}
-    revenue = 0.0
-    material_cost = 0.0
-    electricity_cost = 0.0
+    revenue = material_cost = electricity_cost = labor_cost = 0.0
+    incomplete_cost_records = 0
     production_dates: set[str] = set()
-    for record in records:
-        if record.status != "running":
+    summary_records = db.scalars(select(ThreeDPrintingProductionRecord).where(*record_filters)).yield_per(250) if compact else records
+    record_count = 0
+    for record in summary_records:
+        record_count += 1
+        if record.status not in {"running", "done"}:
             continue
-        quantity = record.quantity or 1
-        weight = _float(record.weight_g)
-        duration = _float(record.duration_hours)
-        price_kg = material_price.get(record.material_name, 0)
-        item_material_cost = (
-            weight * _float(setting.material_loss_rate) * price_kg / 1000
-        ) * quantity
-        total_time = duration * quantity
-        item_electricity = (
-            total_time / 12
-        ) * _float(setting.electricity_per_machine_day)
-        item_labor = (
-            total_time / 12
-        ) * (_float(setting.labor_per_day) / max(setting.machine_count, 1))
-        calculated_price = (
-            item_material_cost + item_electricity + item_labor
-        ) * (1 + _float(setting.profit_rate_percent) / 100)
-        fallback_price = _float(record.quoted_price) * quantity
-        revenue += (calculated_price if calculated_price > 0 else fallback_price) + _float(
-            record.design_fee
-        )
-        material_cost += item_material_cost
-        electricity_cost += item_electricity
+        totals = frozen_totals(record)
+        incomplete_cost_records += int(any(value is None for value in totals.values()))
+        revenue += totals["revenue"] or 0
+        material_cost += totals["materialCost"] or 0
+        electricity_cost += totals["electricityCost"] or 0
+        labor_cost += totals["laborCost"] or 0
         production_dates.add(record.business_date)
-    labor_cost = len(production_dates) * _float(setting.labor_per_day)
-    maintenance_cost = sum(_float(item.cost) for item in maintenance)
+    maintenance_cost = _float(db.scalar(select(func.sum(ThreeDPrintingMaintenance.cost)).where(ThreeDPrintingMaintenance.factory_id == factory_id)))
     total_cost = material_cost + electricity_cost + labor_cost + maintenance_cost
+    network = network_health_snapshot(db)
     return {
         "factory_id": factory_id,
         "generated_at": _now(),
         "settings": _settings_out(setting),
-        "printers": [printer_out(item) for item in printers],
+        "network_health": network,
+        "printers": [printer_out(item, network_stale=network["configured"] and network["status"] != "healthy") for item in printers],
         "materials": [material_out(item) for item in materials],
         "products": [product_out(item, images.get(item.id)) for item in products],
         "records": [production_record_out(item) for item in records],
@@ -2056,7 +2161,10 @@ def dashboard_snapshot(
         "schedules": [schedule_out(item) for item in schedules],
         "maintenance": [maintenance_out(item) for item in maintenance],
         "day_off_dates": day_off_dates,
+        "day_statuses": [{"business_date": day.business_date, "revision": day.revision, "is_day_off": day.is_day_off} for day in db.scalars(select(ThreeDPrintingDayStatus).where(ThreeDPrintingDayStatus.factory_id == factory_id))],
         "summary": {
+            "incompleteCostRecordCount": incomplete_cost_records,
+            "costBasis": "frozen_record_allocated_labor",
             "revenue": round(revenue, 2),
             "materialCost": round(material_cost, 2),
             "electricityCost": round(electricity_cost, 2),
@@ -2065,8 +2173,8 @@ def dashboard_snapshot(
             "totalCost": round(total_cost, 2),
             "balance": round(revenue - total_cost, 2),
             "productionDays": len(production_dates),
-            "recordCount": len(records),
-            "productCount": len(products),
+            "recordCount": record_count,
+            "productCount": db.scalar(select(func.count()).select_from(ThreeDPrintingProduct).where(ThreeDPrintingProduct.factory_id == factory_id, ThreeDPrintingProduct.is_active.is_(True))),
             "lowInventoryCount": sum(
                 1 for item in inventories if _float(item.stock_g) < _float(item.min_stock_g)
             ),

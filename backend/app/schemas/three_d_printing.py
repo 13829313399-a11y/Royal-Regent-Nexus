@@ -7,10 +7,10 @@ class ThreeDSettingsUpdate(BaseModel):
     factory_id: str
     revision: int = Field(ge=1)
     machine_count: int = Field(ge=1, le=100)
-    electricity_per_machine_day: float = Field(ge=0)
-    labor_per_day: float = Field(ge=0)
-    material_loss_rate: float = Field(gt=0, le=10)
-    profit_rate_percent: float = Field(ge=0, le=1000)
+    electricity_per_machine_day: float = Field(ge=0, allow_inf_nan=False)
+    labor_per_day: float = Field(ge=0, allow_inf_nan=False)
+    material_loss_rate: float = Field(gt=0, le=10, allow_inf_nan=False)
+    profit_rate_percent: float = Field(ge=0, le=1000, allow_inf_nan=False)
 
 
 class ThreeDSettingsOut(BaseModel):
@@ -28,7 +28,7 @@ class ThreeDMaterialInput(BaseModel):
     factory_id: str
     name: str = Field(min_length=1, max_length=255)
     material_type: str = Field(default="", max_length=64)
-    price_per_kg: float = Field(ge=0)
+    price_per_kg: float = Field(ge=0, allow_inf_nan=False)
 
 
 class ThreeDMaterialUpdate(ThreeDMaterialInput):
@@ -53,10 +53,10 @@ class ThreeDProductInput(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     customer: str = Field(default="", max_length=255)
     material_name: str = Field(default="", max_length=255)
-    weight_g: float = Field(default=0, ge=0)
-    duration_hours: float = Field(default=0, ge=0)
+    weight_g: float = Field(default=0, ge=0, allow_inf_nan=False)
+    duration_hours: float = Field(default=0, ge=0, allow_inf_nan=False)
     default_quantity: int = Field(default=1, ge=1)
-    quoted_price: float = Field(default=0, ge=0)
+    quoted_price: float = Field(default=0, ge=0, allow_inf_nan=False)
 
 
 class ThreeDProductUpdate(ThreeDProductInput):
@@ -84,18 +84,22 @@ class ThreeDProductOut(BaseModel):
 
 
 class ThreeDProductionRecordInput(BaseModel):
+    history_only_correction: bool = False
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    reason: str = Field(default="", max_length=1000)
+    allow_negative_stock: bool = False
     factory_id: str
     business_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     machine_no: int = Field(ge=1, le=100)
-    status: Literal["running", "idle", "fault"]
+    status: Literal["running", "done", "idle", "fault"]
     product_id: str = ""
     product_name: str = Field(default="", max_length=255)
     material_name: str = Field(default="", max_length=255)
-    weight_g: float = Field(default=0, ge=0)
+    weight_g: float = Field(default=0, ge=0, allow_inf_nan=False)
     quantity: int = Field(default=1, ge=0)
-    duration_hours: float = Field(default=0, ge=0)
-    design_fee: float = Field(default=0, ge=0)
-    quoted_price: float = Field(default=0, ge=0)
+    duration_hours: float = Field(default=0, ge=0, allow_inf_nan=False)
+    design_fee: float = Field(default=0, ge=0, allow_inf_nan=False)
+    quoted_price: float = Field(default=0, ge=0, allow_inf_nan=False)
     customer: str = Field(default="", max_length=255)
     remark: str = Field(default="", max_length=4000)
 
@@ -105,6 +109,16 @@ class ThreeDProductionRecordUpdate(ThreeDProductionRecordInput):
 
 
 class ThreeDProductionRecordOut(BaseModel):
+    run_status: str = "unknown"
+    reconciliation_status: str = "none"
+    source_system: str
+    inventory_consumed: bool
+    material_status: str
+    data_quality_flags: list[str]
+    cost_profile_version: str
+    calculated_cost_snapshot: dict[str, Any]
+    frozen_totals: dict[str, Any]
+    deleted_at: str
     id: str
     factory_id: str
     legacy_id: str = ""
@@ -130,7 +144,18 @@ class ThreeDProductionRecordOut(BaseModel):
     updated_at: str
 
 
+class ThreeDRecordAction(BaseModel):
+    factory_id: str
+    revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=1000)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    allow_negative_stock: bool = False
+
+
 class ThreeDDayStatusUpdate(BaseModel):
+    revision: int = Field(ge=0)
+    reason: str = Field(default="休息日批量撤销", max_length=1000)
+    idempotency_key: str = Field(min_length=1, max_length=128)
     factory_id: str
     business_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     is_day_off: bool
@@ -148,24 +173,30 @@ class ThreeDInventoryOut(BaseModel):
 
 
 class ThreeDInventoryAdjustment(BaseModel):
+    revision: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=128)
     factory_id: str
     material_name: str = Field(min_length=1, max_length=255)
-    target_stock_g: float = Field(ge=0)
-    min_stock_g: float | None = Field(default=None, ge=0)
+    target_stock_g: float = Field(ge=0, allow_inf_nan=False)
+    min_stock_g: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     reason: str = Field(min_length=1, max_length=1000)
 
 
 class ThreeDStockInInput(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=128)
     factory_id: str
     business_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     material_name: str = Field(min_length=1, max_length=255)
-    amount_g: float = Field(gt=0)
+    amount_g: float = Field(gt=0, allow_inf_nan=False)
     vendor: str = Field(default="", max_length=255)
-    cost: float = Field(default=0, ge=0)
+    cost: float = Field(default=0, ge=0, allow_inf_nan=False)
     remark: str = Field(default="", max_length=1000)
 
 
 class ThreeDInventoryMovementOut(BaseModel):
+    reversal_of_movement_id: str = ""
+    idempotency_key: str = ""
+    affects_balance: bool = True
     id: str
     factory_id: str
     material_name: str
@@ -187,7 +218,7 @@ class ThreeDScheduleInput(BaseModel):
     product_name: str = Field(min_length=1, max_length=255)
     customer: str = Field(default="", max_length=255)
     material_name: str = Field(min_length=1, max_length=255)
-    weight_g: float = Field(gt=0)
+    weight_g: float = Field(gt=0, allow_inf_nan=False)
     quantity: int = Field(default=1, ge=1)
     machine_no: int = Field(default=0, ge=0, le=100)
     priority: Literal["high", "normal", "low"] = "normal"
@@ -231,7 +262,7 @@ class ThreeDMaintenanceInput(BaseModel):
     machine_no: int = Field(default=0, ge=0, le=100)
     maintenance_type: str = Field(min_length=1, max_length=64)
     description: str = Field(min_length=1, max_length=4000)
-    cost: float = Field(default=0, ge=0)
+    cost: float = Field(default=0, ge=0, allow_inf_nan=False)
     vendor: str = Field(default="", max_length=255)
     remark: str = Field(default="", max_length=2000)
 
@@ -359,6 +390,7 @@ class ThreeDAuditEventOut(BaseModel):
 
 
 class ThreeDDashboardOut(BaseModel):
+    network_health: dict[str, Any] = Field(default_factory=dict)
     factory_id: str
     generated_at: str
     settings: ThreeDSettingsOut
@@ -370,5 +402,6 @@ class ThreeDDashboardOut(BaseModel):
     inventory_movements: list[ThreeDInventoryMovementOut]
     schedules: list[ThreeDScheduleOut]
     maintenance: list[ThreeDMaintenanceOut]
+    day_statuses: list[dict[str, Any]] = []
     day_off_dates: list[str]
     summary: dict[str, Any]

@@ -1,0 +1,14 @@
+# Optional overlay for an existing company-managed Linux VPN container.
+# The VPN image/configuration must be reviewed by network operations first.
+services:
+  vpn:
+    profiles: [three-d-connector]
+    image: ${THREE_D_VPN_IMAGE:?Set reviewed VPN image pinned by digest}
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun:/dev/net/tun]
+    volumes:
+      - ${THREE_D_VPN_CONFIG_DIR:?Set protected VPN configuration directory}:/etc/rr-vpn:ro
+    restart: unless-stopped
+  printer-connector:
+    network_mode: service:vpn
+    depends_on: [vpn]

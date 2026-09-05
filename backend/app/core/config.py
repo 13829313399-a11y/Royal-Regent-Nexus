@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     authz_writes_enabled: bool = False
     three_d_asset_dir: str = str(BACKEND_DIR / "data" / "three-d-printing-assets")
     three_d_edge_agent_token: str = ""
+    three_d_network_health_token: str = ""
+    three_d_connector_enabled: bool = False
+    three_d_connector_token: str = ""
+    three_d_connector_control_enabled: bool = False
+    three_d_connector_verified_machines: list[int] = []
     three_d_command_ttl_seconds: int = 120
     three_d_command_poll_interval_seconds: int = 3
     customer_order_test_duplicate_confirmation_enabled: bool | None = None

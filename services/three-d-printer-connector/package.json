@@ -1,0 +1,13 @@
+{
+  "name": "three-d-printer-connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/bambu/BambuAdapter.mjs",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

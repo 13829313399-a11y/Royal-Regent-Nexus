@@ -248,9 +248,10 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_REVISION = "20260723_0030"
 INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION = "20260721_0029"
 INTERNAL_QUOTE_BASELINE_TABLE = "internal_quote_pricing_baselines"
 INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
-THREE_D_PRINTING_REVISION = "20260904_0098"
+THREE_D_PRINTING_REVISION = "20260904_0099"
 THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset({"20260728_0039", "20260729_0040"})
 THREE_D_PRINTING_V2_TABLES = {
+    "three_d_printing_operations_items",
     "three_d_printing_sites", "three_d_printing_network_gateways",
     "three_d_printing_connector_instances", "three_d_printing_printer_connections",
     "three_d_printing_printer_state_events", "three_d_printing_material_aliases",
