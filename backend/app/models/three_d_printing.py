@@ -15,6 +15,27 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
 
+class ThreeDPrintingOperationsItem(Base):
+    """Versioned typed resource documents; validated by the operations domain schemas."""
+    __tablename__ = "three_d_printing_operations_items"
+    __table_args__ = (
+        CheckConstraint("factory_id = 'huakang-a'", name="ck_3d_ops_factory"),
+        CheckConstraint("kind IN ('spool','request','file_alias','profile','file','run_evidence')", name="ck_3d_ops_kind"),
+        CheckConstraint("length(data_json) <= 16384", name="ck_3d_ops_payload"),
+        UniqueConstraint("factory_id", "kind", "resource_key", name="uq_3d_ops_resource"),
+    )
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    resource_key: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    data_json: Mapped[str] = mapped_column(Text, default="{}")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(96))
+    created_at: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[str] = mapped_column(String(32))
+
+
 class ThreeDPrintingSetting(Base):
     __tablename__ = "three_d_printing_settings"
 
@@ -274,7 +295,7 @@ class ThreeDPrintingInventoryMovement(Base):
     __table_args__ = (
         Index("uq_3d_movement_id_factory", "id", "factory_id", unique=True),
         ForeignKeyConstraint(["migration_batch_id", "factory_id"], ["three_d_printing_migration_batches.id", "three_d_printing_migration_batches.factory_id"], name="fk_3d_movement_batch", ondelete="RESTRICT"),
-        ForeignKeyConstraint(["reversal_of_movement_id", "factory_id"], ["three_d_printing_inventory_movements.id", "three_d_printing_inventory_movements.factory_id"], name="fk_3d_movement_reversal", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["reversal_of_movement_id", "factory_id"], ["three_d_printing_inventory_movements.id", "three_d_printing_inventory_movements.factory_id"], name="fk_3d_movement_reversal", ondelete="RESTRICT", use_alter=True),
         ForeignKeyConstraint(["source_event_id", "factory_id"], ["three_d_printing_printer_state_events.id", "three_d_printing_printer_state_events.factory_id"], name="fk_3d_movement_event", ondelete="RESTRICT"),
         UniqueConstraint("factory_id", "idempotency_key", name="uq_3d_movement_idempotency"),
         UniqueConstraint(

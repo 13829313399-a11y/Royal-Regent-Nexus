@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "factory_id": "huakang-a",
+  "site_id": "3dsite-huakang-a-heyuan",
+  "gateway_key": "huakang-a-heyuan-vpn-a",
+  "vpn": {
+    "type": "wireguard",
+    "interface": "wg-3d",
+    "connector_ip": "10.250.30.10",
+    "gateway_ip": "10.250.30.2",
+    "cloud_endpoint": "vpn.example.invalid:51820",
+    "cloud_public_key": "REPLACE_PUBLIC_KEY",
+    "gateway_public_key": "REPLACE_PUBLIC_KEY"
+  },
+  "lan": {
+    "cidr": "10.33.30.0/24",
+    "interface": "eth1.330",
+    "gateway_ip": "10.33.30.1",
+    "snat": false
+  },
+  "printers": [
+    {
+      "machine_no": 1,
+      "ip": "10.33.30.101",
+      "credential_ref": "printer-01",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 2,
+      "ip": "10.33.30.102",
+      "credential_ref": "printer-02",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 3,
+      "ip": "10.33.30.103",
+      "credential_ref": "printer-03",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 4,
+      "ip": "10.33.30.104",
+      "credential_ref": "printer-04",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 5,
+      "ip": "10.33.30.105",
+      "credential_ref": "printer-05",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 6,
+      "ip": "10.33.30.106",
+      "credential_ref": "printer-06",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 7,
+      "ip": "10.33.30.107",
+      "credential_ref": "printer-07",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 8,
+      "ip": "10.33.30.108",
+      "credential_ref": "printer-08",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 9,
+      "ip": "10.33.30.109",
+      "credential_ref": "printer-09",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 10,
+      "ip": "10.33.30.110",
+      "credential_ref": "printer-10",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    },
+    {
+      "machine_no": 11,
+      "ip": "10.33.30.111",
+      "credential_ref": "printer-11",
+      "cert_sha256": "REPLACE_VERIFIED_CERT_SHA256"
+    }
+  ]
+}
