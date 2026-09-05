@@ -12,7 +12,7 @@ process.on('message', async message => {
       worker = new ConnectorWorker({
         client: new ConnectorClient({ baseUrl: process.env.THREE_D_TEST_API,
           instanceId: message.instance, token: process.env.THREE_D_TEST_TOKEN }),
-        secretStore: { get: () => ({ serial: 'TEST-SERIAL', access_code: 'test-only' }) },
+        secretStore: { get: () => ({ serial: 'TEST-SERIAL', access_code: 'test-access-code' }) },
         clock: () => performance.now() + offset, pollMs: 500,
         adapterFactory: (config, options) => new BambuAdapter(config, { ...options,
           transport: value => tls.connect({ ...value, host: '127.0.0.1', port: message.ports[config.machineNo - 1] }),
