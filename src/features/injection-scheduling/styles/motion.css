@@ -1,0 +1,159 @@
+.inj-pill-indicator {
+  transition:
+    transform var(--inj-panel) var(--inj-ease),
+    width var(--inj-panel) var(--inj-ease),
+    opacity 140ms;
+}
+.inj-workspace button {
+  transition:
+    background var(--inj-fast),
+    border-color var(--inj-fast),
+    box-shadow var(--inj-control),
+    transform var(--inj-fast) var(--inj-ease);
+}
+.inj-workspace
+  button:not(
+    .inj-run-bar,
+    .inj-column-title,
+    .inj-column-filter,
+    .inj-demand-card
+  ):active:not(:disabled) {
+  transform: scale(0.98);
+}
+.inj-workspace .inj-button.inj-primary {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.inj-button.inj-primary::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 20%,
+    #ffffff20 48%,
+    transparent 76%
+  );
+  transform: translateX(-110%);
+}
+.inj-button.inj-primary:hover:not(:disabled)::after,
+.inj-button.inj-primary:focus-visible:not(:disabled)::after {
+  animation: inj-sweep 460ms var(--inj-ease);
+}
+.inj-disclosure {
+  transition: grid-template-rows 240ms var(--inj-ease);
+}
+.inj-progress i,
+.inj-run-progress {
+  transition: width 360ms var(--inj-ease);
+}
+.inj-header,
+.inj-global-toolbar,
+.inj-signal-bar {
+  animation: inj-enter 240ms var(--inj-ease) both;
+}
+.inj-global-toolbar {
+  animation-delay: 30ms;
+}
+.inj-signal-bar {
+  animation-delay: 60ms;
+}
+.inj-first-pool-item {
+  animation: inj-enter 220ms var(--inj-ease) both;
+  animation-delay: var(--inj-enter-delay, 0ms);
+}
+.inj-modal,
+.inj-drawer {
+  animation: inj-enter 240ms var(--inj-ease);
+}
+.inj-spin {
+  animation: inj-spin 800ms linear infinite;
+}
+.inj-sync i {
+  animation: inj-sync 2.4s ease-out;
+}
+.inj-skeleton {
+  animation: inj-skeleton 1.2s ease-in-out infinite;
+}
+.inj-run-changed {
+  animation: inj-changed 600ms ease-out;
+}
+.inj-metric-value {
+  animation: inj-value 260ms ease-out;
+}
+@keyframes inj-value {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes inj-changed {
+  from {
+    box-shadow: 0 0 0 4px #22745344;
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.inj-dragging .inj-run-bar,
+.inj-machine-row {
+  transition: none !important;
+  animation: none !important;
+}
+@keyframes inj-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes inj-sync {
+  0% {
+    box-shadow: 0 0 0 0 #21745644;
+  }
+  65% {
+    box-shadow: 0 0 0 5px #21745600;
+  }
+}
+@keyframes inj-sweep {
+  to {
+    transform: translateX(110%);
+  }
+}
+@keyframes inj-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes inj-skeleton {
+  to {
+    background-position: -200% 0;
+  }
+}
+.inj-no-motion *,
+.inj-no-motion *::before,
+.inj-no-motion *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .inj-workspace *,
+  .inj-workspace *::before,
+  .inj-workspace *::after,
+  .inj-overlay-root * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  .inj-workspace button:active:not(:disabled) {
+    transform: none;
+  }
+}

@@ -7,7 +7,13 @@ import {
   ref,
   watch,
 } from 'vue';
+import { X, Maximize2, Minimize2 } from '@lucide/vue';
+import InjSegmentedControl from './components/ui/InjSegmentedControl.vue';
+import InjLoadingState from './components/ui/InjLoadingState.vue';
+import InjButton from './components/ui/InjButton.vue';
+import { useInjectionViewState } from './composables/useInjectionViewState';
 import { useInjectionStore } from '@/stores/injectionScheduling';
+import { injectionApi as api } from '@/api/injectionScheduling';
 import {
   dateText,
   displayValue,
@@ -18,6 +24,7 @@ import {
 } from './types';
 const props = defineProps<{
   creating?: boolean;
+  docked?: boolean;
   canPlan: boolean;
   canReport: boolean;
 }>();
@@ -32,10 +39,64 @@ const store = useInjectionStore(),
   changed = ref<string[]>([]),
   panel = ref<HTMLElement>(),
   expanded = ref(false);
-const demand = computed(() =>
-    props.creating ? {} : store.detail?.demand || {},
+const view = useInjectionViewState(),
+  saving = ref(false);
+const ready = computed(
+  () => props.creating || store.detail?.demand.id === store.selectedId,
+);
+const tabOptions = computed(() =>
+  (props.creating ? ['参数'] : ['概览', '参数', '排程', '报工', '记录']).map(
+    (value) => ({ value, label: value }),
   ),
-  run = computed(() => (props.creating ? null : store.detail?.run));
+);
+const chooseTab = (value: string) => {
+  if (store.busy || changed.value.length) {
+    store.error = '请先保存或取消本次修改';
+    return;
+  }
+  tab.value = value;
+};
+watch(expanded, (value) => (view.inspectorExpanded = value));
+const demand = computed(() =>
+    props.creating || !ready.value ? {} : store.detail?.demand || {},
+  ),
+  run = computed(() =>
+    props.creating || !ready.value ? null : store.detail?.run,
+  );
+const liveRun = computed(() => store.runs.find((r) => r.id === run.value?.id));
+const forecastUnknown = computed(
+  () =>
+    liveRun.value?.forecast_unknown || run.value?.explanation?.forecast_unknown,
+);
+const batchOrders = ref<DataRow[]>([]),
+  batchError = ref('');
+let batchGeneration = 0;
+watch(
+  () => [run.value?.id, store.factory],
+  async () => {
+    const generation = ++batchGeneration,
+      factory = store.factory;
+    batchOrders.value = [];
+    batchError.value = '';
+    const ids: string[] =
+      liveRun.value?.demand_ids || run.value?.snapshot?.demand_ids || [];
+    if (ids.length < 2) return;
+    try {
+      const details = await Promise.all(
+        ids.map((id) => api.get('/demands/' + id, { factory_id: factory })),
+      );
+      if (generation === batchGeneration)
+        batchOrders.value = details.map((detail) => detail.demand);
+    } catch {
+      if (generation === batchGeneration)
+        batchError.value = '批次订单读取未完成，请重新打开详情。';
+    }
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  batchGeneration++;
+});
 const editable = computed(() => store.fields.filter((f) => f.editable));
 const sourceNames: Record<string, string> = {
   ORDER_OVERRIDE: '本单覆盖',
@@ -43,7 +104,18 @@ const sourceNames: Record<string, string> = {
   LEGACY: '原表',
   DEFAULT: '默认建议',
   IMPORT: '导入值',
+  LEGACY_CACHE: '原表',
 };
+function sourceLabel(source: unknown) {
+  const value: Record<string, any> =
+    typeof source === 'object' && source
+      ? (source as DataRow)
+      : { kind: String(source) };
+  return (
+    (sourceNames[value.kind] || '已记录来源') +
+    (value.source_row ? ' · 原行 ' + value.source_row : '')
+  );
+}
 let previousFocus: HTMLElement | null = null;
 function reset() {
   form.value = Object.fromEntries(
@@ -77,6 +149,7 @@ function edit(key: string) {
   store.dirty = true;
 }
 async function save() {
+  saving.value = true;
   try {
     const keys = props.creating
       ? editable.value.filter((f) => form.value[f.key] !== '').map((f) => f.key)
@@ -104,18 +177,23 @@ async function save() {
     }
   } catch (e) {
     store.showError(e);
+  } finally {
+    saving.value = false;
   }
 }
 function close() {
-  if (changed.value.length) {
+  if (changed.value.length || store.busy) {
     store.error = '参数尚未保存，请先保存或取消本次修改';
     return;
   }
   emit('close');
 }
 function keydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') close();
-  if (event.key === 'Tab') {
+  if (event.key === 'Escape' && !event.isComposing) {
+    event.stopPropagation();
+    close();
+  }
+  if (event.key === 'Tab' && !props.docked) {
     const nodes = panel.value?.querySelectorAll<HTMLElement>(
       'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]',
     );
@@ -150,13 +228,17 @@ const templateLabels0: Record<string, string> = {
 };
 </script>
 <template>
-  <div class="inj-drawer-backdrop" @click.self="close">
+  <div
+    class="inj-drawer-backdrop"
+    :class="{ 'inj-inspector-dock': docked }"
+    @click.self="close"
+  >
     <aside
       ref="panel"
       class="inj-drawer"
       :class="{ expanded: expanded }"
-      role="dialog"
-      aria-modal="true"
+      :role="docked ? 'region' : 'dialog'"
+      :aria-modal="docked ? undefined : true"
       :aria-label="creating ? '新增需求' : '需求详情'"
       tabindex="-1"
       @keydown="keydown"
@@ -170,23 +252,23 @@ const templateLabels0: Record<string, string> = {
             {{ creating ? '新增需求' : demand.mold_code || '未识别模号' }}
           </h2>
         </div>
-        <span class="inj-spacer" /><button @click="expanded = !expanded">
-          {{ expanded ? '收窄' : '展开' }}</button
-        ><button aria-label="关闭详情" @click="close">×</button>
-      </header>
-      <nav class="inj-tabs">
-        <button
-          v-for="name in creating
-            ? ['参数']
-            : ['概览', '参数', '排程', '报工', '记录']"
-          :key="name"
-          :class="{ active: tab === name }"
-          @click="tab = name"
+        <span class="inj-spacer" /><button
+          v-if="!docked"
+          :aria-label="expanded ? '收窄详情' : '展开详情'"
+          @click="expanded = !expanded"
         >
-          {{ name }}
-        </button>
-      </nav>
-      <div class="inj-drawer-content">
+          <Minimize2 v-if="expanded" /><Maximize2 v-else /></button
+        ><button aria-label="关闭详情" @click="close"><X /></button>
+      </header>
+      <InjSegmentedControl
+        class="inj-detail-tabs"
+        :model-value="tab"
+        :options="tabOptions"
+        label="详情页签"
+        @update:model-value="chooseTab"
+      />
+      <InjLoadingState v-if="!ready" label="正在读取所选需求…" />
+      <div v-if="ready" class="inj-drawer-content">
         <p v-if="store.error" role="alert" class="inj-error-text">
           {{ store.error }}
         </p>
@@ -219,7 +301,13 @@ const templateLabels0: Record<string, string> = {
             <dt>计划日目标</dt>
             <dd>{{ numberText(demand.target_shots_per_day) }}</dd>
             <dt>预计完成</dt>
-            <dd>{{ dateText(demand.planned_end_at) }}</dd>
+            <dd>
+              {{
+                forecastUnknown
+                  ? '等待恢复，预计结束未知'
+                  : dateText(demand.planned_end_at)
+              }}
+            </dd>
             <dt>交货完成期</dt>
             <dd>{{ dateText(demand.delivery_due_at) }}</dd>
             <dt>交期余量</dt>
@@ -229,6 +317,29 @@ const templateLabels0: Record<string, string> = {
             <dt>未排原因</dt>
             <dd>{{ demand.unplaced_reason || '—' }}</dd>
           </dl>
+          <section
+            v-if="batchOrders.length > 1"
+            class="inj-batch-orders"
+            aria-label="批次订单"
+          >
+            <h3>同批次订单 · {{ batchOrders.length }} 单</h3>
+            <button
+              v-for="order in batchOrders"
+              :key="order.id"
+              :disabled="store.dirty || store.busy"
+              :aria-current="order.id === demand.id ? 'true' : undefined"
+              @click="store.select(order.id, true)"
+            >
+              <strong class="inj-mono">{{ order.order_no || '无单号' }}</strong
+              ><span>{{
+                order.item_no || order.part_name || order.mold_code
+              }}</span
+              ><small>本单欠 {{ numberText(order.remaining_shots) }} 啤</small>
+            </button>
+          </section>
+          <p v-if="batchError" role="alert" class="inj-error-text">
+            {{ batchError }}
+          </p>
           <p class="inj-help">
             预计时间由排程计算；实际进度只来自开工和报数。
           </p></template
@@ -242,8 +353,7 @@ const templateLabels0: Record<string, string> = {
               ><span
                 >{{ field.label }}
                 <small v-if="demand.field_sources?.[field.key]">{{
-                  sourceNames[demand.field_sources[field.key]] ||
-                  demand.field_sources[field.key]
+                  sourceLabel(demand.field_sources[field.key])
                 }}</small></span
               ><textarea
                 v-if="
@@ -282,7 +392,7 @@ const templateLabels0: Record<string, string> = {
               <dt>预计结束</dt>
               <dd>
                 {{
-                  run.forecast_unknown
+                  forecastUnknown
                     ? '等待恢复，预计结束未知'
                     : dateText(run.planned_end_at)
                 }}
@@ -402,7 +512,7 @@ const templateLabels0: Record<string, string> = {
           </ol></template
         >
       </div>
-      <footer v-if="tab === '参数' && canPlan" class="inj-actions">
+      <footer v-if="ready && tab === '参数' && canPlan" class="inj-actions">
         <span>{{ changed.length ? '有未保存修改' : '' }}</span
         ><button
           @click="
@@ -411,9 +521,14 @@ const templateLabels0: Record<string, string> = {
           "
         >
           取消本次修改</button
-        ><button class="inj-primary" :disabled="store.busy" @click="save">
+        ><InjButton
+          primary
+          :pending="saving"
+          :disabled="store.busy"
+          @click="save"
+        >
           {{ creating ? '新增并计算' : '保存参数并重算' }}
-        </button>
+        </InjButton>
       </footer>
     </aside>
   </div>

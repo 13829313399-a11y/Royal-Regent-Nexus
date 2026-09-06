@@ -1,5 +1,23 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { vInjDialog } from '@/features/injection-scheduling/composables/injDialog';
+import {
+  computed,
+  ref,
+  toRef,
+  watch,
+  onMounted,
+  onBeforeUnmount,
+  nextTick,
+} from 'vue';
+import { Pin, PanelLeftOpen } from '@lucide/vue';
+import DemandPool from './components/DemandPool.vue';
+import MachineBoard from './components/MachineBoard.vue';
+import InjSegmentedControl from './components/ui/InjSegmentedControl.vue';
+import { useInjMotionPreference } from './composables/useInjMotionPreference';
+import {
+  useInjectionViewState,
+  rowHeight,
+} from './composables/useInjectionViewState';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useInjectionStore } from '@/stores/injectionScheduling';
 import { dateText, numberText, statusText, type DataRow } from './types';
@@ -7,15 +25,20 @@ const props = defineProps<{
   mode: 'timeline' | 'machines';
   canPlan: boolean;
   canReport: boolean;
+  collapsePool?: boolean;
 }>();
 const runningOnly = defineModel<boolean>('runningOnly', { default: false });
 const emit = defineEmits<{ report: [DataRow]; action: [DataRow, string] }>();
 const store = useInjectionStore(),
-  poolOpen = ref(true),
-  zoom = ref('shift'),
-  date = ref(new Date().toLocaleDateString('en-CA')),
-  workshop = ref(''),
-  machineSearch = ref('');
+  view = useInjectionViewState();
+const zoom = toRef(view, 'zoom'),
+  date = toRef(view, 'date'),
+  workshop = toRef(view, 'workshop'),
+  machineSearch = toRef(view, 'machineSearch');
+const viewContext = view.contextGeneration;
+const { motionAllowed } = useInjMotionPreference();
+const machineColumnWidth = 200;
+const machineRowHeight = computed(() => rowHeight(view.density, 'timeline'));
 const drag = ref<{ run_id?: string; demand_id?: string; a?: number } | null>(
     null,
   ),
@@ -71,11 +94,85 @@ const machineVirtual = useVirtualizer(
   computed(() => ({
     count: visibleMachines.value.length,
     getScrollElement: () => scroller.value ?? null,
-    estimateSize: () => 64,
+    estimateSize: () => machineRowHeight.value,
+    getItemKey: (i: number) => visibleMachines.value[i]!.id,
     overscan: 5,
   })),
 );
 const machineRows = computed(() => machineVirtual.value.getVirtualItems());
+watch(machineRowHeight, () => nextTick(() => machineVirtual.value.measure()));
+const rememberScroll = () => {
+  if (viewContext !== view.contextGeneration) return;
+  if (scroller.value)
+    view.scroll.timeline = {
+      top: scroller.value.scrollTop,
+      left: scroller.value.scrollLeft,
+    };
+};
+const restoreScroll = () =>
+  nextTick(() => {
+    const pos = view.scroll.timeline;
+    if (scroller.value && pos) {
+      scroller.value.scrollTop = pos.top;
+      scroller.value.scrollLeft = pos.left;
+    }
+  });
+onMounted(restoreScroll);
+watch(() => props.mode, restoreScroll);
+onBeforeUnmount(rememberScroll);
+const gridLines = computed(() =>
+  Array.from(
+    { length: slots.value + 1 },
+    (_, i) => (slotStart(i) - start.value) * scale.value,
+  ),
+);
+const dayHeaders = computed(() => {
+  const result: { label: string; left: number; width: number }[] = [];
+  for (let i = 0; i < slots.value; i++) {
+    const instant = new Date(slotStart(i)),
+      label = instant.toLocaleDateString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        weekday: 'short',
+      });
+    const previous = result.at(-1),
+      size = (slotStart(i + 1) - slotStart(i)) * scale.value;
+    if (previous?.label === label) previous.width += size;
+    else
+      result.push({
+        label,
+        left: (slotStart(i) - start.value) * scale.value,
+        width: size,
+      });
+  }
+  return result;
+});
+const changedRunIds = ref<string[]>([]);
+let flashTimer: ReturnType<typeof setTimeout> | undefined;
+watch(
+  () => store.lastResult,
+  (result) => {
+    clearTimeout(flashTimer);
+    changedRunIds.value = motionAllowed.value
+      ? (result?.changed_runs || []).map((r: any) =>
+          typeof r === 'string' ? r : r.id || r.run_id,
+        )
+      : [];
+    if (changedRunIds.value.length)
+      flashTimer = setTimeout(() => {
+        changedRunIds.value = [];
+      }, 600);
+  },
+);
+onBeforeUnmount(() => clearTimeout(flashTimer));
+function dragEnd() {
+  drag.value = null;
+  target.value = '';
+  dragError.value = '';
+}
+function tooltip(run: DataRow) {
+  return `${info(run).mold_code} | ${statusText[run.status]} | ${info(run).order_no || ''} | ${info(run).color_name || ''} · ${info(run).material_raw || ''} | ${dateText(run.planned_start_at)} → ${run.forecast_unknown ? '等待恢复，预计结束未知' : dateText(run.planned_end_at)}`;
+}
 const workshops = computed(() => [
   ...new Set(store.machines.map((m) => m.workshop).filter(Boolean)),
 ]);
@@ -183,14 +280,13 @@ async function confirmOversized() {
   if (result) oversizedMove.value = null;
 }
 function progress(run: DataRow) {
-  return Math.min(
-    100,
-    Math.max(
-      0,
-      (100 * Number(run.physical_shots || 0)) /
-        Number(run.planned_physical_shots || 1),
-    ),
-  );
+  const denominator = Number(run.planned_physical_shots);
+  return denominator > 0 && run.physical_shots != null
+    ? Math.min(
+        100,
+        Math.max(0, (100 * Number(run.physical_shots)) / denominator),
+      )
+    : null;
 }
 function slotLabel(i: number) {
   const instant = new Date(slotStart(i));
@@ -226,11 +322,17 @@ function upcoming(machine: DataRow) {
 }
 </script>
 <template>
-  <section class="inj-board">
+  <section
+    class="inj-board"
+    :class="{ 'inj-dragging': !!drag }"
+    :style="{
+      '--inj-machine-column': machineColumnWidth + 'px',
+      '--inj-machine-row': machineRowHeight + 'px',
+    }"
+    @dragend="dragEnd"
+  >
     <div class="inj-toolbar">
-      <button v-if="mode === 'timeline'" @click="poolOpen = !poolOpen">
-        {{ poolOpen ? '收起' : '展开' }}需求池</button
-      ><select v-model="workshop" aria-label="车间">
+      <select v-model="workshop" aria-label="车间">
         <option value="">全部车间</option>
         <option v-for="w in workshops" :key="w">{{ w }}</option></select
       ><input
@@ -245,72 +347,61 @@ function upcoming(machine: DataRow) {
         >
           今天
         </button>
-        <div class="inj-segmented">
-          <button
-            v-for="(name, key) in { day: '日', shift: '班次', hour: '小时' }"
-            :key="key"
-            :class="{ active: zoom === key }"
-            @click="zoom = key"
-          >
-            {{ name }}
-          </button>
-        </div></template
+        <InjSegmentedControl
+          v-model="zoom"
+          :options="[
+            { value: 'day', label: '日' },
+            { value: 'shift', label: '班次' },
+            { value: 'hour', label: '小时' },
+          ]"
+          label="时间轴缩放" /></template
       ><span class="inj-spacer" /><span class="inj-legend"
         ><i class="inj-dot" /> 在产 <i class="inj-dot planned" /> 计划
         <i class="inj-dot setup" /> 换模 / 清洗</span
       >
     </div>
     <div v-if="mode === 'timeline'" class="inj-schedule-body">
-      <aside v-if="poolOpen" class="inj-pool">
-        <header>
-          <strong>未排需求</strong
-          ><span>{{ numberText(store.summary.pending_count) }}</span>
-        </header>
-        <p class="inj-muted">按交期排列 · 拖入机台即可排产</p>
-        <button
-          v-for="d in store.pending"
-          :key="d.id"
-          class="inj-demand-card"
-          :class="{ selected: store.selectedId === d.id }"
-          :draggable="canPlan"
-          @dragstart="beginDrag($event, d, 'demand')"
-          @click="store.select(d.id)"
-          @dblclick="store.select(d.id, true)"
+      <DemandPool
+        :rows="store.pending"
+        :total="store.summary.pending_count || 0"
+        :selected-id="store.selectedId"
+        :can-drag="canPlan && !store.busy && !store.dirty"
+        :rail="collapsePool || view.focusMode"
+        :loading="store.loading"
+        :error="store.error"
+        @select="(id, open) => store.select(id, open)"
+        @drag="(event, row) => beginDrag(event, row, 'demand')"
+      />
+      <div ref="scroller" class="inj-gantt-scroll" @scroll="rememberScroll">
+        <div
+          :style="{
+            width: chartWidth + machineColumnWidth + 'px',
+            minHeight: '100%',
+          }"
         >
-          <strong>{{ d.mold_code || '待识别模号' }}</strong
-          ><span
-            >{{ d.order_no || '无单号' }} ·
-            {{ d.color_name || '颜色待补' }}</span
-          ><span
-            ><b>{{ numberText(d.remaining_shots) }}</b> 啤
-            <em>{{ d.required_machine_a ?? '?' }} A</em></span
-          ><small :class="{ 'inj-error-text': d.unplaced_reason }">{{
-            d.unplaced_reason || '交期 ' + dateText(d.delivery_due_at)
-          }}</small>
-        </button>
-        <p
-          v-if="store.summary.pending_count > store.pending.length"
-          class="inj-muted"
-        >
-          先显示 {{ store.pending.length }} 条；全字段计划表可查找全部未排需求。
-        </p>
-        <p v-if="!store.pending.length" class="inj-empty">没有待排需求</p>
-      </aside>
-      <div ref="scroller" class="inj-gantt-scroll">
-        <div :style="{ width: chartWidth + 174 + 'px', minHeight: '100%' }">
           <div class="inj-time-header">
             <div class="inj-machine-label">
               机台 / 能力 <small>{{ visibleMachines.length }} 台</small>
             </div>
-            <div class="inj-time-slots">
-              <span
-                v-for="i in slots"
-                :key="i"
-                :style="{
-                  width: (slotStart(i) - slotStart(i - 1)) * scale + 'px',
-                }"
-                >{{ slotLabel(i - 1) }}</span
-              >
+            <div class="inj-time-scale">
+              <div class="inj-date-slots">
+                <span
+                  v-for="day in dayHeaders"
+                  :key="day.label"
+                  :style="{ width: day.width + 'px' }"
+                  >{{ day.label }}</span
+                >
+              </div>
+              <div class="inj-time-slots">
+                <span
+                  v-for="i in slots"
+                  :key="i"
+                  :style="{
+                    width: (slotStart(i) - slotStart(i - 1)) * scale + 'px',
+                  }"
+                  >{{ slotLabel(i - 1) }}</span
+                >
+              </div>
             </div>
           </div>
           <div
@@ -342,7 +433,7 @@ function upcoming(machine: DataRow) {
                   >{{ visibleMachines[vr.index]!.workshop }} ·
                   {{
                     current(visibleMachines[vr.index]!)
-                      ? '在产 / 暂停'
+                      ? statusText[current(visibleMachines[vr.index]!)!.status]
                       : statusText[
                           visibleMachines[vr.index]!.operating_status
                         ] || '待开工'
@@ -353,9 +444,15 @@ function upcoming(machine: DataRow) {
                 class="inj-machine-track"
                 :style="{
                   width: chartWidth + 'px',
-                  backgroundSize: width + 'px 100%',
                 }"
               >
+                <i
+                  v-for="(line, index) in gridLines"
+                  :key="'grid' + index"
+                  class="inj-grid-line"
+                  :style="{ left: line + 'px' }"
+                  aria-hidden="true"
+                />
                 <div
                   v-for="e in store.events.filter((e) =>
                     isEventFor(e, visibleMachines[vr.index]!),
@@ -396,11 +493,25 @@ function upcoming(machine: DataRow) {
                     class="inj-run-bar"
                     :class="[
                       run.status.toLowerCase(),
-                      { selected: selectedAsset === run.mold_asset_id },
+                      {
+                        selected: store.detail?.run?.id === run.id,
+                        related:
+                          selectedAsset &&
+                          selectedAsset === run.mold_asset_id &&
+                          store.detail?.run?.id !== run.id,
+                        'inj-run-changed': changedRunIds.includes(run.id),
+                      },
                     ]"
                     :style="bar(production.start, production.end)"
-                    :draggable="canPlan && run.status === 'PLANNED'"
-                    :title="`${info(run).mold_code} | ${statusText[run.status]} | ${dateText(run.planned_start_at)} → ${run.forecast_unknown ? '等待恢复' : dateText(run.planned_end_at)}`"
+                    :draggable="
+                      canPlan &&
+                      !store.busy &&
+                      !store.dirty &&
+                      run.status === 'PLANNED'
+                    "
+                    :title="tooltip(run)"
+                    :aria-label="tooltip(run)"
+                    @keydown.enter="selectRun(run, true)"
                     @dragstart="beginDrag($event, run, 'run')"
                     @dragover.stop="over($event, visibleMachines[vr.index]!)"
                     @drop="drop($event, visibleMachines[vr.index]!, run.id)"
@@ -408,13 +519,14 @@ function upcoming(machine: DataRow) {
                     @dblclick="selectRun(run, true)"
                   >
                     <span
-                      v-if="run.status === 'RUNNING'"
+                      v-if="run.status === 'RUNNING' && progress(run) !== null"
                       class="inj-run-progress"
                       :style="{ width: progress(run) + '%' }"
                     /><span class="inj-run-text"
-                      >{{ run.pinned ? '⌖ ' : '' }}{{ info(run).mold_code }}
+                      ><Pin v-if="run.pinned" />{{ info(run).mold_code }}
                       <small
                         >{{ info(run).color_name }} ·
+                        {{ info(run).material_raw }} ·
                         {{
                           run.forecast_unknown
                             ? '等待恢复'
@@ -441,137 +553,27 @@ function upcoming(machine: DataRow) {
         </div>
       </div>
     </div>
-    <div v-else class="inj-machine-cards">
-      <article
-        v-for="m in visibleMachines"
-        :key="m.id"
-        class="inj-machine-card"
-        :class="{
-          running: current(m)?.status === 'RUNNING',
-          paused: current(m)?.status === 'PAUSED',
-        }"
-      >
-        <header>
-          <strong
-            >{{ m.code }}
-            <span
-              >{{ m.machine_a ?? '?' }}A / {{ m.clamp_ton ?? '?' }}T</span
-            ></strong
-          ><span class="inj-badge">{{
-            current(m)
-              ? statusText[current(m)!.status]
-              : statusText[m.operating_status] || '空闲 / 待开工'
-          }}</span>
-        </header>
-        <p class="inj-muted">
-          {{ m.workshop || '未分车间' }} ·
-          {{
-            m.speed_class === 'HIGH_SPEED'
-              ? '高速'
-              : m.speed_class === 'ELECTRIC'
-                ? '全电'
-                : '普通速度'
-          }}
-          ·
-          {{ m.manipulator || '机械手未录' }}
-        </p>
-        <template v-if="current(m)"
-          ><h3>{{ info(current(m)!).mold_code }}</h3>
-          <p>
-            {{ info(current(m)!).order_no || '未填订单' }}
-            <span class="inj-muted">{{
-              (info(current(m)!).demand_ids?.length || 1) > 1
-                ? '等 ' + info(current(m)!).demand_ids.length + ' 单'
-                : ''
-            }}</span>
-          </p>
-          <p>
-            {{ info(current(m)!).color_name || '颜色待补' }} ·
-            {{ info(current(m)!).material_raw || '材料待补' }}
-          </p>
-          <div class="inj-progress">
-            <i :style="{ width: progress(current(m)!) + '%' }" />
-          </div>
-          <p class="inj-inline">
-            <strong>实际 {{ numberText(current(m)!.physical_shots) }} 啤</strong
-            ><span class="inj-spacer" />{{ progress(current(m)!).toFixed(1) }}%
-          </p>
-          <p class="inj-muted">
-            本班
-            {{
-              current(m)!.current_shift_shots == null
-                ? '未报'
-                : numberText(current(m)!.current_shift_shots) + ' 啤'
-            }}
-            · 余 {{ numberText(current(m)!.remaining_shots) }} 啤
-          </p>
-          <p class="inj-muted">
-            {{
-              current(m)!.forecast_unknown
-                ? '等待恢复 · 预计结束未知'
-                : '预计结束 ' + dateText(current(m)!.planned_end_at)
-            }}
-          </p></template
-        >
-        <div v-else class="inj-idle">
-          {{
-            ['MAINTENANCE', 'FAULT', 'DISABLED'].includes(m.operating_status)
-              ? m.notes || '设备停工'
-              : '当前没有实际开工批次'
-          }}<small v-if="m.recovery_at"
-            >预计恢复 {{ dateText(m.recovery_at) }}</small
-          >
-        </div>
-        <div class="inj-next-run">
-          下一批
-          <strong>{{
-            upcoming(m) ? info(upcoming(m)!).mold_code : '暂无'
-          }}</strong
-          ><small v-if="upcoming(m)"
-            >{{ info(upcoming(m)!).color_name }} ·
-            {{ dateText(upcoming(m)!.planned_start_at) }}</small
-          >
-        </div>
-        <footer>
-          <button
-            v-if="current(m) && canReport"
-            class="inj-primary"
-            @click="emit('report', current(m)!)"
-          >
-            报数</button
-          ><button
-            v-if="current(m) || upcoming(m)"
-            @click="selectRun((current(m) || upcoming(m))!, true)"
-          >
-            详情</button
-          ><button
-            v-if="canReport && !current(m) && upcoming(m)"
-            @click="emit('action', upcoming(m)!, 'start')"
-          >
-            开工</button
-          ><button
-            v-if="current(m) && canReport"
-            @click="
-              emit(
-                'action',
-                current(m)!,
-                current(m)!.status === 'PAUSED' ? 'resume' : 'pause',
-              )
-            "
-          >
-            {{ current(m)!.status === 'PAUSED' ? '恢复' : '暂停' }}
-          </button>
-        </footer>
-      </article>
-      <div v-if="!visibleMachines.length" class="inj-empty">
-        {{
-          store.machines.length
-            ? runningOnly
-              ? '当前没有符合筛选条件的实际在产机台。'
-              : '没有符合筛选条件的机台。'
-            : '还没有设备，请到基础资料新增机台或导入计划。'
-        }}
-      </div>
+    <MachineBoard
+      v-else
+      :machines="visibleMachines"
+      :queues="queues"
+      :can-report="canReport"
+      :running-only="runningOnly"
+      @select="selectRun"
+      @action="(run, verb) => emit('action', run, verb)"
+      @report="(run) => emit('report', run)"
+    />
+    <div v-if="drag" class="inj-drag-brief" role="status">
+      {{ drag.a ?? '?' }}A 模 ·
+      {{
+        target
+          ? store.machines.find((m) => m.id === target)?.code +
+            ' / ' +
+            store.machines.find((m) => m.id === target)?.machine_a +
+            'A'
+          : '拖入目标机台'
+      }}
+      · {{ dragError || '放到批次上可插入该批之前' }}
     </div>
     <div v-if="dragError" class="inj-inline inj-error-text">
       {{ dragError }}
@@ -582,6 +584,12 @@ function upcoming(machine: DataRow) {
         role="dialog"
         aria-modal="true"
         aria-label="手动使用大机"
+        v-inj-dialog="{
+          close: () => {
+            oversizedMove = null;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>本次手动使用大机</h2>
         <p>{{ oversizedMove.description }}</p>
