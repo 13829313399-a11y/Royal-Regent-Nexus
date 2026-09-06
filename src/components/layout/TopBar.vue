@@ -20,7 +20,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   toggleNavigation: []
 }>()
-const brandLogoSrc = '/brand/huadeng_group_dynamic_logo.svg'
+const brandLogoSrc = '/brand/huadeng_group_dynamic_logo_topbar.svg'
 const navigationTriggerRef = ref<HTMLButtonElement | null>(null)
 
 const searchPlaceholder = computed(() => {
