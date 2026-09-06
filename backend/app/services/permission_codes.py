@@ -4,6 +4,13 @@ This module intentionally has no database or authorization-service imports so
 the fixed system-position catalog can depend on it without creating a cycle.
 """
 
+INJECTION_SCHEDULING_PERMISSION_CODES = (
+    "injection_scheduling:read",
+    "injection_scheduling:plan",
+    "injection_scheduling:report",
+    "injection_scheduling:master_write",
+)
+
 MOLDING_SAMPLE_PERMISSION_CODES = (
     "molding_sample:read",
     "molding_sample:cross_factory_read",
@@ -137,6 +144,7 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
+    *INJECTION_SCHEDULING_PERMISSION_CODES,
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
     *CARTON_PROCUREMENT_PERMISSION_CODES,

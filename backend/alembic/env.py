@@ -23,6 +23,7 @@ from app.models import (
     carton_procurement,  # noqa: F401
     customer_order,  # noqa: F401
     internal_quote,  # noqa: F401
+    injection_scheduling,  # noqa: F401
     molding_sample,  # noqa: F401
     pricing,  # noqa: F401
     qc_inspection,  # noqa: F401
