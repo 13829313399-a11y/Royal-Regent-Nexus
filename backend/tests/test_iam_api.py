@@ -66,6 +66,7 @@ def create_user(
                 updated_at=now,
             )
         )
+        db.flush()
         binding_id = f"{user_id}:{role_id}:{factory_id}:{department}"
         db.add(
             models.AuthUserRole(
@@ -76,6 +77,7 @@ def create_user(
                 department=department,
             )
         )
+        db.flush()
         db.add(
             models.AuthRoleBindingMetadata(
                 user_role_id=binding_id,
@@ -535,10 +537,10 @@ def test_scoped_manager_cross_scope_change_requires_direct_superadmin_action(mon
             f"/api/iam/users/{target_id}/access/preview",
             json={
                 "base_revision": 1,
-                "reason": "申请跨厂查看排产",
+                "reason": "申请跨厂维护报价参考资料",
                 "overrides": [
                     {
-                        "permission_code": "carton_mark:read",
+                        "permission_code": "internal_quote:reference_manage",
                         "effect": "allow",
                         "factory_id": "huadeng",
                         "department": "engineering",
@@ -692,19 +694,19 @@ def test_role_template_preview_commit_updates_bound_user_revision(monkeypatch):
         assert invalid_preview.status_code == 400
         assert "范围不相容" in invalid_preview.json()["detail"]
 
-        desired_codes = sorted(set(role_access["permission_codes"]) | {"carton_mark:read"})
+        desired_codes = sorted(set(role_access["permission_codes"]) | {"internal_quote:reference_manage"})
 
         preview = client.post(
             "/api/iam/roles/engineer/access/preview",
             json={
                 "base_version": role_access["version"],
-                "reason": "工程师增加排产查看权限",
+                "reason": "工程师增加报价参考资料维护权限",
                 "permission_codes": desired_codes,
             },
         )
         assert preview.status_code == 200, preview.text
         assert preview.json()["affected_user_count"] == 1
-        assert any(item["permission_code"] == "carton_mark:read" for item in preview.json()["diffs"])
+        assert any(item["permission_code"] == "internal_quote:reference_manage" for item in preview.json()["diffs"])
 
         commit = client.post(
             "/api/iam/roles/engineer/access/commit",
@@ -718,7 +720,7 @@ def test_role_template_preview_commit_updates_bound_user_revision(monkeypatch):
         assert commit.json()["authorization_version"] == role_access["version"] + 1
 
         updated_role = client.get("/api/iam/roles/engineer/access").json()
-        assert "carton_mark:read" in updated_role["permission_codes"]
+        assert "internal_quote:reference_manage" in updated_role["permission_codes"]
         updated_user = client.get(f"/api/iam/users/{engineer_id}/access").json()
         assert updated_user["authorization_version"] == 2
 
@@ -782,7 +784,7 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert all(item["is_editable"] is False for item in positions)
         assert all(item["source"] == "code" for item in positions)
         assert all(item["scope_mode_locked"] is True for item in positions)
-        assert all(item["definition_version"] == "fixed-v16" for item in positions)
+        assert all(item["definition_version"] == "fixed-v24" for item in positions)
         assert all(len(item["definition_hash"]) == 64 for item in positions)
 
         general_manager = next(
@@ -1043,7 +1045,7 @@ def test_role_template_commit_rejects_changed_binding_snapshot(monkeypatch, bind
                 "base_version": role_access["version"],
                 "reason": "验证绑定用户快照",
                 "permission_codes": sorted(
-                    set(role_access["permission_codes"]) | {"carton_mark:read"}
+                    set(role_access["permission_codes"]) | {"internal_quote:reference_manage"}
                 ),
             },
         )
@@ -1102,6 +1104,7 @@ def test_system_position_preview_replaces_legacy_grants_and_overrides(monkeypatc
                     department="*",
                 )
             )
+            db.flush()
             db.add(
                 models.AuthRoleBindingMetadata(
                     user_role_id=legacy_binding_id,

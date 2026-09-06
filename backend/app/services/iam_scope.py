@@ -26,6 +26,7 @@ VALID_ACCESS_KINDS = {READ_ACCESS_KIND, OPERATE_ACCESS_KIND}
 # their read-only contract is explicitly recorded here and in IAM metadata.
 READ_PERMISSION_CODES = frozenset(
     {
+        "injection_scheduling:read",
         "molding_sample:read",
         "molding_sample:cross_factory_read",
         "molding_sample:cross_factory_cost_read",
