@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vInjDialog } from '@/features/injection-scheduling/composables/injDialog';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAppStore } from '@/stores/app';
@@ -19,6 +20,36 @@ import ScheduleBoard from '@/features/injection-scheduling/ScheduleBoard.vue';
 import ShiftReports from '@/features/injection-scheduling/ShiftReports.vue';
 import MasterData from '@/features/injection-scheduling/MasterData.vue';
 import DemandDrawer from '@/features/injection-scheduling/DemandDrawer.vue';
+import {
+  ArrowLeft,
+  ArrowRight,
+  ChevronDown,
+  ArrowUp,
+  ArrowDown,
+  Search,
+  Plus,
+  Filter,
+  Upload,
+  Download,
+  Ellipsis,
+  RefreshCw,
+  CircleHelp,
+  WandSparkles,
+  Undo2,
+  Focus,
+  X,
+  Factory,
+  ChartGantt,
+  LayoutGrid,
+  Table2,
+  ClipboardList,
+  Database,
+} from '@lucide/vue';
+import InjSegmentedControl from '@/features/injection-scheduling/components/ui/InjSegmentedControl.vue';
+import InjButton from '@/features/injection-scheduling/components/ui/InjButton.vue';
+import InjLoadingState from '@/features/injection-scheduling/components/ui/InjLoadingState.vue';
+import { provideInjectionViewState } from '@/features/injection-scheduling/composables/useInjectionViewState';
+import { useInjMotionPreference } from '@/features/injection-scheduling/composables/useInjMotionPreference';
 import '@/features/injection-scheduling/injection.css';
 
 const route = useRoute(),
@@ -26,7 +57,9 @@ const route = useRoute(),
   app = useAppStore(),
   auth = useAuthStore(),
   store = useInjectionStore();
-const tab = ref('timeline'),
+const view = provideInjectionViewState();
+const { motionAllowed } = useInjMotionPreference();
+const tab = ref(view.planningView),
   runningOnly = ref(false),
   newDemand = ref(false),
   filterOpen = ref(false),
@@ -52,13 +85,55 @@ const autoOptions = ref(false),
   findIndex = ref(0),
   findCount = ref(0),
   help = ref(false);
-const titleTabs: Record<string, string> = {
-  timeline: '排程甘特',
-  machines: '机台看板',
-  table: '全字段计划表',
-  reports: '白夜班报工',
-  master: '基础资料',
+const section = computed(() =>
+  ['timeline', 'machines', 'table'].includes(tab.value)
+    ? 'planning'
+    : tab.value,
+);
+const sectionOptions = [
+  { value: 'planning', label: '排产工作台', icon: ChartGantt },
+  { value: 'reports', label: '白夜班报工', icon: ClipboardList },
+  { value: 'master', label: '基础资料', icon: Database },
+];
+const planningOptions = [
+  { value: 'timeline', label: '甘特', icon: ChartGantt },
+  { value: 'machines', label: '看板', icon: LayoutGrid },
+  { value: 'table', label: '计划表', icon: Table2 },
+];
+const pendingActionKey = ref(''),
+  moreOpen = ref(false),
+  riskOpen = ref(false),
+  viewportWidth = ref(window.innerWidth);
+const docked = computed(() => viewportWidth.value >= 1280 && !newDemand.value);
+const resize = () => {
+  viewportWidth.value = window.innerWidth;
 };
+async function pending(key: string, action: () => Promise<unknown>) {
+  if (pendingActionKey.value) return;
+  pendingActionKey.value = key;
+  try {
+    return await action();
+  } finally {
+    pendingActionKey.value = '';
+  }
+}
+watch(tab, (key) => {
+  if (['timeline', 'machines', 'table'].includes(key)) view.planningView = key;
+});
+watch([() => store.factory, () => auth.currentUser?.id], () => {
+  view.contextGeneration++;
+  store.selectedId = null;
+  store.detail = null;
+  store.drawer = false;
+  selectedReport.value = '';
+  newDemand.value = false;
+  view.scroll = {};
+  view.table = null;
+  view.workshop = '';
+  view.machineSearch = '';
+  findIndex.value = 0;
+  findCount.value = 0;
+});
 const allowed = (action: string) =>
   !!store.factory &&
   ['production', 'molding', 'management'].some((dept) =>
@@ -72,7 +147,21 @@ const factoryContext = computed(() => {
   const id = typeof query === 'string' ? query : app.activeFactoryId;
   return id in factories ? (id as FactoryId) : null;
 });
-watch(factoryContext, (id) => void store.setFactory(id), { immediate: true });
+const factoryLoading = ref(false);
+let factoryLoadGeneration = 0;
+watch(
+  factoryContext,
+  async (id) => {
+    const generation = ++factoryLoadGeneration;
+    factoryLoading.value = true;
+    try {
+      await store.setFactory(id);
+    } finally {
+      if (generation === factoryLoadGeneration) factoryLoading.value = false;
+    }
+  },
+  { immediate: true },
+);
 async function changeFactory(event: Event) {
   const id = (event.target as HTMLSelectElement).value as FactoryId;
   if (!id) return;
@@ -84,7 +173,7 @@ function switchTab(key: string) {
     store.error = '当前有未保存输入，请先保存或取消本次修改';
     return;
   }
-  tab.value = key;
+  tab.value = key === 'planning' ? view.planningView : key;
   store.error = '';
 }
 async function search() {
@@ -94,7 +183,8 @@ async function search() {
   findCount.value = store.total;
 }
 async function find(step: number) {
-  if (!store.search.text) return;
+  if (!store.search.text || store.dirty || store.busy) return;
+  switchTab('table');
   try {
     const r = await api.post('/demands/locate', {
       ...store.query,
@@ -155,7 +245,7 @@ async function applyFilter() {
   filterOpen.value = false;
 }
 async function schedule(save = true) {
-  await store.mutate('/schedule/auto', {
+  const result = await store.mutate('/schedule/auto', {
     scope: {
       mode: autoMode.value,
       ...(autoMode.value === 'SELECTED'
@@ -167,7 +257,8 @@ async function schedule(save = true) {
     },
     save,
   });
-  if (save) autoOptions.value = false;
+  if (result && save) autoOptions.value = false;
+  return result;
 }
 async function upload(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0];
@@ -241,6 +332,10 @@ async function applyAction() {
   if (result) action.value = null;
 }
 function openReport(run: DataRow) {
+  if (store.dirty || store.busy) {
+    store.error = '请先保存或取消当前输入';
+    return;
+  }
   store.drawer = false;
   selectedReport.value = run.id;
   tab.value = 'reports';
@@ -253,11 +348,13 @@ const statLabels = [
 ];
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
-  if (window.innerWidth < 760) tab.value = 'machines';
+  window.addEventListener('resize', resize);
   timer = setInterval(() => void store.poll(), 5000);
 });
 onBeforeUnmount(() => {
+  factoryLoadGeneration++;
   clearInterval(timer);
+  window.removeEventListener('resize', resize);
 });
 
 const templateLabels0: Record<string, string> = {
@@ -322,7 +419,15 @@ const templateLabels1: Record<string, string> = {
 };
 </script>
 <template>
-  <main class="inj-workspace" :aria-busy="store.loading || store.busy">
+  <main
+    class="inj-workspace"
+    :class="{
+      'inj-focus-mode': view.focusMode,
+      'inj-no-motion': !motionAllowed,
+    }"
+    :data-density="view.density"
+    :aria-busy="factoryLoading || store.loading || store.busy"
+  >
     <header class="inj-header">
       <RouterLink
         class="inj-back"
@@ -331,12 +436,9 @@ const templateLabels1: Record<string, string> = {
           query: store.factory ? { factory: store.factory } : {},
         }"
         aria-label="返回生产模块"
-        >←</RouterLink
-      >
-      <div class="inj-title">
-        <h1>注塑排产中枢</h1>
-        <span>计划与执行工作台</span>
-      </div>
+        ><ArrowLeft
+      /></RouterLink>
+      <h1>注塑排产中枢</h1>
       <select
         :value="store.factory || ''"
         aria-label="当前厂区"
@@ -346,32 +448,60 @@ const templateLabels1: Record<string, string> = {
         <option value="" disabled>选择厂区</option>
         <option v-for="(label, key) in factories" :key="key" :value="key">
           {{ label }}
-        </option></select
-      ><span class="inj-header-date">{{
-        new Date().toLocaleDateString('zh-CN', {
-          month: 'long',
-          day: 'numeric',
-          weekday: 'long',
-        })
-      }}</span
-      ><span class="inj-spacer" /><span
+        </option>
+      </select>
+      <InjSegmentedControl
+        v-if="store.factory"
+        class="inj-workspaces"
+        :model-value="section"
+        :options="sectionOptions"
+        label="工作区"
+        :disabled="store.busy || store.dirty"
+        @update:model-value="switchTab"
+      />
+      <span class="inj-spacer" />
+      <span
         class="inj-sync"
         :class="{ stale: store.stale }"
-        ><i />{{
-          store.busy
-            ? '保存中…'
-            : store.stale
-              ? '有更新 / 请刷新'
-              : store.syncedAt
-                ? '已同步 ' + store.syncedAt
-                : '尚未读取'
+        :title="'每 5 秒检查资料更新 · ' + store.syncedAt"
+        ><i :key="store.syncedAt" />{{
+          store.stale
+            ? '有更新待刷新'
+            : store.syncedAt
+              ? '定时同步 ' + store.syncedAt
+              : '正在连接'
         }}</span
-      ><button :disabled="store.busy || store.dirty" @click="store.refresh">
-        刷新</button
-      ><button aria-label="操作说明" @click="help = !help">?</button>
+      >
+      <InjButton
+        aria-label="刷新工作台"
+        :disabled="store.busy || store.dirty"
+        :pending="pendingActionKey === 'refresh'"
+        @click="pending('refresh', store.refresh)"
+        ><template #icon><RefreshCw /></template
+      ></InjButton>
+      <button
+        aria-label="操作说明"
+        class="inj-help-button"
+        @click="help = !help"
+      >
+        <CircleHelp />
+      </button>
+      <div id="inj-primary-slot">
+        <InjButton
+          v-if="canPlan && section === 'planning'"
+          primary
+          :disabled="store.busy || store.dirty"
+          :pending="pendingActionKey === 'auto'"
+          @click="
+            autoMode = 'UNSCHEDULED';
+            pending('auto', () => schedule());
+          "
+          ><template #icon><WandSparkles /></template>自动排产</InjButton
+        >
+      </div>
     </header>
     <div v-if="!store.factory" class="inj-factory-empty">
-      <span class="inj-empty-symbol">▦</span>
+      <Factory class="inj-empty-symbol" />
       <h2>选择要排产的厂区</h2>
       <p>各厂独立维护机台、需求和报数，公共模具资料由四厂共享。</p>
       <div class="inj-inline">
@@ -387,20 +517,162 @@ const templateLabels1: Record<string, string> = {
         </button>
       </div>
     </div>
-    <template v-else
-      ><div class="inj-navigation">
-        <nav class="inj-tabs">
-          <button
-            v-for="(label, key) in titleTabs"
-            :key="key"
-            :class="{ active: tab === key }"
-            :disabled="store.busy || store.dirty"
-            @click="switchTab(key)"
+    <template v-else>
+      <div
+        v-if="['timeline', 'table', 'machines'].includes(tab)"
+        class="inj-global-toolbar"
+        :inert="store.dirty || store.busy"
+      >
+        <InjSegmentedControl
+          :model-value="tab"
+          :options="planningOptions"
+          label="排产视图"
+          @update:model-value="switchTab"
+        />
+        <div class="inj-search">
+          <Search aria-hidden="true" />
+          <select v-model="store.search.field" aria-label="查找字段">
+            <option value="mold_code">模号</option>
+            <option value="order_no">单号</option>
+            <option value="item_no">货号</option>
+            <option value="machine_code">机号</option>
+            <option value="order_note">备注</option>
+            <option value="all">全部文本</option></select
+          ><select v-model="store.search.mode" aria-label="查找模式">
+            <option value="exact">精确</option>
+            <option value="contains">包含</option>
+            <option value="prefix">前缀</option>
+            <option value="in">批量列表</option></select
+          ><textarea
+            v-if="store.search.mode === 'in'"
+            v-model="store.search.text"
+            rows="4"
+            placeholder="粘贴一列完整编码"
+            aria-label="查找内容"
+          /><input
+            v-else
+            v-model="store.search.text"
+            placeholder="输入编码，Enter 查找"
+            aria-label="查找内容"
+            @keydown.enter="
+              search();
+              tab = 'table';
+            "
+          /><button
+            @click="
+              search();
+              tab = 'table';
+            "
           >
-            {{ label }}
+            查找
           </button>
-        </nav>
-        <div class="inj-stats">
+        </div>
+        <span v-if="store.search.text" class="inj-muted"
+          >{{ findCount }} 处 · 当前 {{ findCount ? findIndex + 1 : 0 }}</span
+        ><button v-if="store.search.text" title="上一处" @click="find(-1)">
+          <ArrowUp /></button
+        ><button v-if="store.search.text" title="下一处" @click="find(1)">
+          <ArrowDown /></button
+        ><button
+          @click="
+            filterDraft = store.filter
+              ? JSON.parse(JSON.stringify(store.filter))
+              : filterDraft;
+            filterOpen = !filterOpen;
+          "
+        >
+          <Filter /> 筛选{{ store.filter ? ' · 已应用' : '' }}</button
+        ><button
+          v-if="store.filter || store.search.text"
+          @click="
+            store.filter = null;
+            store.search.text = '';
+            store.cursor = 0;
+            store.loadTable();
+          "
+        >
+          清除</button
+        ><span class="inj-spacer" /><button
+          v-if="canPlan"
+          :disabled="store.busy || store.dirty"
+          @click="newDemand = true"
+        >
+          <Plus /> 新增需求</button
+        ><button
+          v-if="canPlan"
+          :disabled="store.busy || store.dirty"
+          @click="fileInput?.click()"
+        >
+          <Upload /> 导入 Excel</button
+        ><button @click="exportOpen = true">导出</button>
+        <details
+          class="inj-more"
+          :open="moreOpen"
+          @toggle="moreOpen = ($event.target as HTMLDetailsElement).open"
+        >
+          <summary><Ellipsis />更多</summary>
+          <div class="inj-menu">
+            <button
+              v-if="canPlan"
+              @click="
+                autoOptions = true;
+                moreOpen = false;
+              "
+            >
+              <WandSparkles />排产范围与预览
+            </button>
+            <button
+              v-if="canPlan"
+              :disabled="store.busy || store.dirty"
+              @click="
+                pending('undo', () => store.mutate('/schedule/undo'));
+                moreOpen = false;
+              "
+            >
+              <Undo2 />撤销排产
+            </button>
+            <button
+              @click="
+                view.focusMode = !view.focusMode;
+                moreOpen = false;
+              "
+            >
+              <Focus />{{ view.focusMode ? '退出' : '进入' }}焦点模式
+            </button>
+            <label
+              >行密度<select v-model="view.density" aria-label="行密度">
+                <option value="compact">紧凑</option>
+                <option value="comfortable">舒适</option>
+              </select></label
+            >
+            <button
+              @click="
+                help = true;
+                moreOpen = false;
+              "
+            >
+              <CircleHelp />操作说明
+            </button>
+          </div>
+        </details>
+        <input
+          ref="fileInput"
+          hidden
+          type="file"
+          accept=".xlsx"
+          @change="upload"
+        />
+      </div>
+      <div class="inj-signal-bar">
+        <button
+          class="inj-risk-toggle"
+          :aria-expanded="riskOpen"
+          @click="riskOpen = !riskOpen"
+        >
+          生产摘要 · 风险 {{ numberText(store.summary.late_count)
+          }}<ChevronDown />
+        </button>
+        <div class="inj-stats" :class="{ open: riskOpen }">
           <button
             v-for="item in statLabels"
             :key="item[0]"
@@ -428,6 +700,8 @@ const templateLabels1: Record<string, string> = {
           >
             <span>{{ item[1] }}</span
             ><strong
+              :key="String(store.summary[item[0]!])"
+              class="inj-metric-value"
               >{{ numberText(store.summary[item[0]!])
               }}<small v-if="item[0] === 'running_count'">
                 / {{ store.summary.machine_count ?? 0 }}</small
@@ -435,204 +709,109 @@ const templateLabels1: Record<string, string> = {
             >
           </button>
         </div>
-        <div class="inj-auto">
-          <button
-            v-if="canPlan"
-            class="inj-primary"
-            :disabled="store.busy || store.dirty"
-            @click="
-              autoMode = 'UNSCHEDULED';
-              schedule();
-            "
-          >
-            自动排产</button
+        <span class="inj-spacer" /><span
+          v-if="section !== 'planning'"
+          class="inj-inline"
           ><button
             v-if="canPlan"
-            title="排产范围与预览"
-            :disabled="store.busy || store.dirty"
-            @click="autoOptions = !autoOptions"
+            :disabled="store.dirty || store.busy"
+            @click="autoOptions = true"
           >
-            ⌄</button
-          ><button
-            v-if="canPlan"
-            :disabled="store.busy || store.dirty"
-            @click="store.mutate('/schedule/undo')"
-          >
-            撤销
-          </button>
-        </div>
-      </div>
-      <div
-        v-if="['timeline', 'table', 'machines'].includes(tab)"
-        class="inj-global-toolbar"
-        :inert="store.dirty || store.busy"
-      >
-        <div class="inj-search">
-          <select v-model="store.search.field" aria-label="查找字段">
-            <option value="mold_code">模号</option>
-            <option value="order_no">单号</option>
-            <option value="item_no">货号</option>
-            <option value="machine_code">机号</option>
-            <option value="order_note">备注</option>
-            <option value="all">全部文本</option></select
-          ><select v-model="store.search.mode" aria-label="查找模式">
-            <option value="exact">精确</option>
-            <option value="contains">包含</option>
-            <option value="prefix">前缀</option>
-            <option value="in">批量列表</option></select
-          ><textarea
-            v-if="store.search.mode === 'in'"
-            v-model="store.search.text"
-            rows="1"
-            placeholder="粘贴一列完整编码"
-            aria-label="查找内容"
-          /><input
-            v-else
-            v-model="store.search.text"
-            placeholder="输入完整模号，按 Enter 查找"
-            aria-label="查找内容"
-            @keydown.enter="
-              search();
-              tab = 'table';
-            "
-          /><button
-            @click="
-              search();
-              tab = 'table';
-            "
-          >
-            查找
-          </button>
-        </div>
-        <span v-if="store.search.text" class="inj-muted"
-          >{{ findCount }} 处</span
-        ><button v-if="store.search.text" title="上一处" @click="find(-1)">
-          ↑</button
-        ><button v-if="store.search.text" title="下一处" @click="find(1)">
-          ↓</button
-        ><button
-          @click="
-            filterDraft = store.filter
-              ? JSON.parse(JSON.stringify(store.filter))
-              : filterDraft;
-            filterOpen = !filterOpen;
-          "
+            排产范围</button
+          ><button @click="exportOpen = true">导出</button></span
         >
-          筛选{{ store.filter ? ' · 已应用' : '' }}</button
-        ><button
-          v-if="store.filter || store.search.text"
-          @click="
-            store.filter = null;
-            store.search.text = '';
-            store.cursor = 0;
-            store.loadTable();
-          "
+        <span v-else class="inj-scope-note"
+          >需求查找结果在计划表 · 数量单位：物理啤数</span
         >
-          清除</button
-        ><span class="inj-spacer" /><button
-          v-if="canPlan"
-          :disabled="store.busy || store.dirty"
-          @click="newDemand = true"
-        >
-          ＋ 需求</button
-        ><button
-          v-if="canPlan"
-          :disabled="store.busy || store.dirty"
-          @click="fileInput?.click()"
-        >
-          导入 Excel</button
-        ><button @click="exportOpen = true">导出</button
-        ><input
-          ref="fileInput"
-          hidden
-          type="file"
-          accept=".xlsx"
-          @change="upload"
-        />
       </div>
       <div v-if="store.filter && tab === 'table'" class="inj-condition-strip">
         {{ factories[store.factory] }} · {{ filterLabel(store.filter) }}
       </div>
       <div v-if="store.error" class="inj-alert" role="alert">
         <strong>操作未完成</strong><span>{{ store.error }}</span
-        ><button @click="store.error = ''" aria-label="关闭错误提示">×</button>
+        ><button @click="store.error = ''" aria-label="关闭错误提示">
+          <X />
+        </button>
       </div>
       <div v-else-if="store.notice" class="inj-notice" role="status">
         {{ store.notice
         }}<button @click="store.notice = ''" aria-label="关闭保存提示">
-          ×
+          <X />
         </button>
       </div>
-      <div class="inj-content">
+      <div
+        class="inj-content"
+        :class="{ 'inj-has-inspector': (store.drawer || newDemand) && docked }"
+      >
+        <InjLoadingState
+          v-if="factoryLoading || (store.loading && !store.syncedAt)"
+        />
         <ScheduleBoard
-          v-if="tab === 'timeline' || tab === 'machines'"
+          :key="view.contextGeneration"
+          v-else-if="tab === 'timeline' || tab === 'machines'"
           v-model:running-only="runningOnly"
           :mode="tab"
+          :collapse-pool="store.drawer && docked && viewportWidth < 1600"
           :can-plan="canPlan"
           :can-report="canReport"
           @report="openReport"
           @action="beginAction"
         /><PlanTable
+          :key="view.contextGeneration"
           v-else-if="tab === 'table'"
           :can-edit="canPlan"
         /><ShiftReports
+          :key="view.contextGeneration"
           v-else-if="tab === 'reports'"
           :can-report="canReport"
           :selected-run-id="selectedReport"
-        /><MasterData v-else :can-write="canMaster" />
+        /><MasterData
+          :key="view.contextGeneration"
+          v-else
+          :can-write="canMaster"
+        />
+        <DemandDrawer
+          v-if="store.drawer || newDemand"
+          :docked="docked"
+          :creating="newDemand"
+          :can-plan="canPlan"
+          :can-report="canReport"
+          @close="
+            newDemand = false;
+            store.drawer = false;
+          "
+          @action="beginAction"
+          @report="openReport"
+        />
       </div>
-      <footer
-        v-if="store.detail && ['timeline', 'machines', 'table'].includes(tab)"
-        class="inj-selection-strip"
-      >
-        <div>
-          <small>选中需求</small
-          ><strong>{{ store.detail.demand.mold_code }}</strong>
-        </div>
-        <div>
-          <small>订单 / 颜色</small
+      <footer class="inj-statusbar">
+        <span>{{ factories[store.factory] }} · {{ store.total }} 条需求</span
+        ><template v-if="store.detail?.demand.id === store.selectedId"
+          ><span class="inj-mono">{{ store.detail.demand.mold_code }}</span
           ><span
-            >{{ store.detail.demand.order_no }} ·
-            {{ store.detail.demand.color_name }}</span
+            >欠数 {{ numberText(store.detail.demand.remaining_shots) }}</span
+          ><button
+            :disabled="store.dirty || store.busy"
+            @click="store.drawer = true"
           >
-        </div>
-        <div>
-          <small>需求欠数 / 日目标</small
-          ><span
-            >{{ numberText(store.detail.demand.remaining_shots) }} /
-            {{ numberText(store.detail.demand.target_shots_per_day) }}</span
-          >
-        </div>
-        <div>
-          <small>预计完成 / 交期</small
-          ><span
-            >{{ dateText(store.detail.demand.planned_end_at) }} /
-            {{ dateText(store.detail.demand.delivery_due_at) }}</span
-          >
-        </div>
-        <span class="inj-spacer" /><button @click="store.drawer = true">
-          打开详情 →
-        </button>
+            打开详情<ArrowRight /></button></template
+        ><span class="inj-spacer" /><span>{{
+          store.dirty ? '有未保存输入' : '物理啤数 · 计划与实际分别记录'
+        }}</span>
       </footer>
     </template>
-    <DemandDrawer
-      v-if="store.drawer || newDemand"
-      :creating="newDemand"
-      :can-plan="canPlan"
-      :can-report="canReport"
-      @close="
-        newDemand = false;
-        store.drawer = false;
-      "
-      @action="beginAction"
-      @report="openReport"
-    />
     <div v-if="filterOpen" class="inj-modal-backdrop">
       <section
-        class="inj-modal inj-wide-modal"
+        class="inj-modal inj-filter-modal"
         role="dialog"
         aria-modal="true"
         aria-label="自定义筛选"
+        v-inj-dialog="{
+          close: () => {
+            filterOpen = false;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>自定义筛选</h2>
         <p>条件作用于本厂全部需求，统计和导出共用同一条件。</p>
@@ -657,6 +836,12 @@ const templateLabels1: Record<string, string> = {
         role="dialog"
         aria-modal="true"
         aria-label="自动排产范围"
+        v-inj-dialog="{
+          close: () => {
+            autoOptions = false;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>自动排产范围</h2>
         <select v-model="autoMode">
@@ -702,10 +887,16 @@ const templateLabels1: Record<string, string> = {
     </div>
     <div v-if="importPreview" class="inj-modal-backdrop">
       <section
-        class="inj-modal inj-wide-modal"
+        class="inj-modal inj-import-modal"
         role="dialog"
         aria-modal="true"
         aria-label="导入预览"
+        v-inj-dialog="{
+          close: () => {
+            importPreview = null;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>计划表导入预览 · {{ factories[store.factory!] }}</h2>
         <p>只读取“计划表”。检查候选需求、原表问题和更新差异后应用。</p>
@@ -773,9 +964,12 @@ const templateLabels1: Record<string, string> = {
           ><button
             class="inj-primary"
             :disabled="store.busy"
-            @click="applyImport"
+            @click="pending('import', applyImport)"
           >
-            应用所选需求
+            <RefreshCw
+              v-if="pendingActionKey === 'import'"
+              class="inj-spin"
+            />应用所选需求
           </button>
         </div>
       </section>
@@ -786,6 +980,12 @@ const templateLabels1: Record<string, string> = {
         role="dialog"
         aria-modal="true"
         aria-label="导出计划"
+        v-inj-dialog="{
+          close: () => {
+            exportOpen = false;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>导出当前筛选范围</h2>
         <p>包含全部匹配需求、标准交换表、机台分组计划表和口径说明。</p>
@@ -807,8 +1007,15 @@ const templateLabels1: Record<string, string> = {
         <p class="inj-error-text">{{ store.error }}</p>
         <div class="inj-actions">
           <button @click="exportOpen = false">取消</button
-          ><button class="inj-primary" :disabled="store.busy" @click="download">
-            导出 Excel
+          ><button
+            class="inj-primary"
+            :disabled="store.busy"
+            @click="pending('export', download)"
+          >
+            <RefreshCw
+              v-if="pendingActionKey === 'export'"
+              class="inj-spin"
+            />导出 Excel
           </button>
         </div>
       </section>
@@ -819,6 +1026,12 @@ const templateLabels1: Record<string, string> = {
         role="dialog"
         aria-modal="true"
         aria-label="生产操作"
+        v-inj-dialog="{
+          close: () => {
+            action = null;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>{{ templateLabels1[action.verb] }}</h2>
         <p>
@@ -851,9 +1064,12 @@ const templateLabels1: Record<string, string> = {
             :disabled="
               store.busy || (action.verb === 'transfer' && !targetMachine)
             "
-            @click="applyAction"
+            @click="pending('execution', applyAction)"
           >
-            记录并更新
+            <RefreshCw
+              v-if="pendingActionKey === 'execution'"
+              class="inj-spin"
+            />记录并更新
           </button>
         </div>
       </section>
@@ -864,6 +1080,12 @@ const templateLabels1: Record<string, string> = {
         role="dialog"
         aria-modal="true"
         aria-label="操作说明"
+        v-inj-dialog="{
+          close: () => {
+            help = false;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>日常使用</h2>
         <ol>

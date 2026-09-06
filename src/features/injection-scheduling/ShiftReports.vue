@@ -1,5 +1,26 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { vInjDialog } from '@/features/injection-scheduling/composables/injDialog';
+import {
+  computed,
+  ref,
+  watch,
+  nextTick,
+  onMounted,
+  onBeforeUnmount,
+} from 'vue';
+import {
+  Sun,
+  Moon,
+  Save,
+  Check,
+  CircleAlert,
+  Pencil,
+  Minus,
+  LoaderCircle,
+} from '@lucide/vue';
+import InjSegmentedControl from './components/ui/InjSegmentedControl.vue';
+import InjButton from './components/ui/InjButton.vue';
+import InjLoadingState from './components/ui/InjLoadingState.vue';
 import { injectionApi as api } from '@/api/injectionScheduling';
 import { useInjectionStore } from '@/stores/injectionScheduling';
 import {
@@ -9,7 +30,14 @@ import {
   productionShift,
   type DataRow,
 } from './types';
-defineProps<{ canReport: boolean; selectedRunId?: string }>();
+const props = defineProps<{ canReport: boolean; selectedRunId?: string }>();
+const headerReady = ref(false),
+  pendingActionKey = ref(''),
+  root = ref<HTMLElement>(),
+  submittedIds = ref<string[]>([]);
+onMounted(() => {
+  headerReady.value = !!document.getElementById('inj-primary-slot');
+});
 const store = useInjectionStore(),
   date = ref(productionShift(store.settings).date),
   shift = ref(productionShift(store.settings).shift),
@@ -47,9 +75,66 @@ const rows = computed(() =>
   ),
 );
 let generation = 0;
+const loading = ref(false),
+  hasLoaded = ref(false),
+  loadFailed = ref(false);
+onBeforeUnmount(() => {
+  generation++;
+});
+const selectedMissing = computed(
+  () =>
+    !loading.value &&
+    props.selectedRunId &&
+    !rows.value.some((r) => r.id === props.selectedRunId),
+);
+let focusedRunId: string | undefined;
+watch(
+  () => props.selectedRunId,
+  () => {
+    focusedRunId = undefined;
+  },
+);
+watch(
+  () => [props.selectedRunId, rows.value],
+  async () => {
+    if (
+      !props.selectedRunId ||
+      loading.value ||
+      selectedMissing.value ||
+      focusedRunId === props.selectedRunId ||
+      store.dirty
+    )
+      return;
+    const selected = props.selectedRunId;
+    await nextTick();
+    if (selected !== props.selectedRunId || store.dirty) return;
+    const input = Array.from(
+      root.value?.querySelectorAll<HTMLInputElement>('input[data-run-id]') ||
+        [],
+    ).find((el) => el.dataset.runId === selected);
+    input?.scrollIntoView?.({ block: 'nearest' });
+    input?.focus();
+    if (input) focusedRunId = selected;
+  },
+  { immediate: true },
+);
+function stateIcon(id: string) {
+  return pendingActionKey.value && submittedIds.value.includes(id)
+    ? LoaderCircle
+    : outcomes.value[id] && !['待保存', '已保存'].includes(outcomes.value[id]!)
+      ? CircleAlert
+      : outcomes.value[id] === '待保存'
+        ? Pencil
+        : reportByRun.value[id] || outcomes.value[id] === '已保存'
+          ? Check
+          : Minus;
+}
+
 async function load() {
   if (!store.factory) return;
   const id = ++generation;
+  loading.value = true;
+  loadFailed.value = false;
   try {
     const [list, timeline] = await Promise.all([
       api.get('/shift-reports', {
@@ -65,8 +150,14 @@ async function load() {
     if (id !== generation) return;
     reports.value = list.rows;
     allRuns.value = timeline.runs;
+    hasLoaded.value = true;
   } catch (e) {
-    store.showError(e);
+    if (id === generation) {
+      loadFailed.value = true;
+      store.showError(e);
+    }
+  } finally {
+    if (id === generation) loading.value = false;
   }
 }
 watch(
@@ -124,7 +215,8 @@ function payload(run: DataRow) {
       : reportByRun.value[run.id]?.scrap_units || {},
   };
 }
-async function save(list: DataRow[]) {
+async function save(list: DataRow[], key = 'all') {
+  if (store.busy || !props.canReport || pendingActionKey.value) return;
   const items: any[] = [],
     ids: string[] = [];
   for (const run of list) {
@@ -139,7 +231,15 @@ async function save(list: DataRow[]) {
     }
   }
   if (!items.length) return;
-  const response = await store.mutate('/shift-reports/bulk', { rows: items });
+  submittedIds.value = ids;
+  pendingActionKey.value = key;
+  let response;
+  try {
+    response = await store.mutate('/shift-reports/bulk', { rows: items });
+  } finally {
+    pendingActionKey.value = '';
+    submittedIds.value = [];
+  }
   if (response) {
     response.results.forEach((r: any) => {
       const id = ids[r.index]!;
@@ -153,6 +253,9 @@ async function save(list: DataRow[]) {
     });
     store.dirty = Object.keys(drafts.value).length > 0;
     await load();
+  } else {
+    for (const id of ids)
+      outcomes.value[id] = store.error || '保存未完成，输入已保留';
   }
 }
 function products(run: DataRow): string[] {
@@ -205,28 +308,39 @@ function applyPaste() {
 }
 </script>
 <template>
-  <section class="inj-reports">
+  <section ref="root" class="inj-reports">
+    <Teleport v-if="headerReady && canReport" to="#inj-primary-slot"
+      ><InjButton
+        primary
+        :disabled="store.busy"
+        :pending="pendingActionKey === 'all'"
+        @click="save(rows)"
+        ><template #icon><Save /></template>保存已填报数</InjButton
+      ></Teleport
+    >
     <div class="inj-toolbar">
       <input
         v-model="date"
         type="date"
         aria-label="生产日期"
         :disabled="Object.keys(drafts).length > 0"
-      /><select
-        v-model="shift"
-        aria-label="生产班次"
-        :disabled="Object.keys(drafts).length > 0"
-      >
-        <option value="DAY">白班</option>
-        <option value="NIGHT">夜班</option></select
-      ><input
+      /><InjSegmentedControl
+        :model-value="shift"
+        :options="[
+          { value: 'DAY', label: '白班', icon: Sun },
+          { value: 'NIGHT', label: '夜班', icon: Moon },
+        ]"
+        label="生产班次"
+        :disabled="Object.keys(drafts).length > 0 || store.busy"
+        @update:model-value="shift = $event"
+      /><input
         v-model="term"
         placeholder="机号 / 模号 / 单号"
         aria-label="报工查找"
       /><label><input v-model="onlyRunning" type="checkbox" />只看在产</label
       ><label><input v-model="onlyUnreported" type="checkbox" />只看未报</label
       ><span class="inj-spacer" /><button
-        v-if="canReport"
+        v-if="canReport && !headerReady"
         :disabled="store.busy"
         class="inj-primary"
         @click="save(rows)"
@@ -252,7 +366,20 @@ function applyPaste() {
       }}；夜班 {{ store.settings.night_start }}–次日
       {{ store.settings.day_start }}。填写本班累计物理啤数，修改后替换原值。
     </p>
-    <div class="inj-grid-scroll">
+    <p v-if="selectedMissing" class="inj-notice">
+      所选批次不在当前报工筛选中。<button
+        :disabled="store.dirty || store.busy"
+        @click="
+          term = '';
+          onlyRunning = false;
+          onlyUnreported = false;
+        "
+      >
+        清除本页筛选
+      </button>
+    </p>
+    <InjLoadingState v-if="loading && !hasLoaded" label="正在读取本班报工" />
+    <div v-else class="inj-grid-scroll">
       <table class="inj-report-grid">
         <thead>
           <tr>
@@ -304,11 +431,12 @@ function applyPaste() {
                 :disabled="!canReport || store.busy"
                 inputmode="numeric"
                 :aria-label="(run.machine_code || '机台') + '累计啤数'"
+                :data-run-id="run.id"
                 :placeholder="reportByRun[run.id] ? '已报' : '未报'"
                 @input="
                   draft(run.id, ($event.target as HTMLInputElement).value)
                 "
-                @keydown.enter="save([run])"
+                @keydown.enter="!$event.isComposing && save([run], run.id)"
                 @keydown.esc="cancelRun(run.id)"
                 @paste="paste($event, run)"
               />
@@ -372,30 +500,43 @@ function applyPaste() {
             </td>
             <td>
               <span
+                class="inj-report-state"
                 :class="{
                   'inj-error-text':
                     outcomes[run.id] &&
                     !['待保存', '已保存'].includes(outcomes[run.id]!),
                 }"
-                >{{
+                ><component
+                  :is="stateIcon(run.id)"
+                  :class="{
+                    'inj-spin':
+                      pendingActionKey && submittedIds.includes(run.id),
+                  }"
+                  aria-hidden="true"
+                />{{
                   outcomes[run.id] ||
                   (reportByRun[run.id]
                     ? '已报 ' + numberText(reportByRun[run.id]!.physical_shots)
                     : '未报')
                 }}</span
-              ><button
+              ><InjButton
+                :pending="pendingActionKey === run.id"
                 v-if="canReport && drafts[run.id] != null"
                 :disabled="store.busy"
-                @click="save([run])"
+                @click="save([run], run.id)"
               >
-                保存
-              </button>
+                <template #icon><Save /></template>保存
+              </InjButton>
             </td>
           </tr>
         </tbody>
       </table>
       <div v-if="!rows.length" class="inj-empty">
-        没有符合条件的已开工批次。请先在机台看板或详情中开工，再填写报数。
+        {{
+          loadFailed
+            ? '报工读取失败，请刷新重试。'
+            : '没有符合条件的已开工批次。请先在机台看板或详情中开工，再填写报数。'
+        }}
       </div>
     </div>
     <div v-if="pastePreview" class="inj-modal-backdrop">
@@ -404,6 +545,12 @@ function applyPaste() {
         role="dialog"
         aria-modal="true"
         aria-label="报数粘贴预览"
+        v-inj-dialog="{
+          close: () => {
+            pastePreview = null;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>报数粘贴预览</h2>
         <p>

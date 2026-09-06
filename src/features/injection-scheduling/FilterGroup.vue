@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { ref } from 'vue';
+import { Plus, X } from '@lucide/vue';
+const fieldTerm = ref('');
 import type { FieldSpec, FilterNode } from './types';
 import { parseValue } from './types';
 const props = defineProps<{
@@ -80,11 +83,16 @@ function setValue(index: number, node: FilterNode, raw: string) {
           })
         "
       >
-        <option value="and">同时满足 AND</option>
-        <option value="or">任一满足 OR</option></select
-      ><button @click="add()">＋ 条件</button
-      ><button v-if="(depth || 0) < 4" @click="add(true)">＋ 分组</button>
+        <option value="and">全部满足</option>
+        <option value="or">任一满足</option></select
+      ><button @click="add()"><Plus />条件</button
+      ><button v-if="(depth || 0) < 4" @click="add(true)"><Plus />分组</button>
     </div>
+    <input
+      v-model="fieldTerm"
+      aria-label="搜索筛选字段"
+      placeholder="搜索可选字段"
+    />
     <div
       v-for="(node, index) in modelValue.children"
       :key="index"
@@ -109,7 +117,16 @@ function setValue(index: number, node: FilterNode, raw: string) {
             })
           "
         >
-          <option v-for="field in fields" :key="field.key" :value="field.key">
+          <option
+            v-for="field in fields.filter(
+              (f) =>
+                f.key === node.field ||
+                !fieldTerm ||
+                (f.label + f.key).includes(fieldTerm),
+            )"
+            :key="field.key"
+            :value="field.key"
+          >
             {{ field.label }}
           </option></select
         ><select
@@ -130,6 +147,20 @@ function setValue(index: number, node: FilterNode, raw: string) {
             {{ names[op] || op }}
           </option></select
         ><input
+          :type="
+            ['in', 'not_in', 'between'].includes(node.op || '')
+              ? 'text'
+              : fields.find((f) => f.key === node.field)?.value_type ===
+                  'datetime'
+                ? 'date'
+                : ['number', 'integer'].includes(
+                      fields.find((f) => f.key === node.field)?.value_type ||
+                        '',
+                    ) || node.op === 'next_days'
+                  ? 'number'
+                  : 'text'
+          "
+          step="any"
           v-if="
             !['is_empty', 'not_empty', 'today', 'overdue'].includes(node.op!)
           "
@@ -140,7 +171,7 @@ function setValue(index: number, node: FilterNode, raw: string) {
             setValue(index, node, ($event.target as HTMLInputElement).value)
           "
       /></template>
-      <button aria-label="移除条件" @click="remove(index)">×</button>
+      <button aria-label="移除条件" @click="remove(index)"><X /></button>
     </div>
   </div>
 </template>

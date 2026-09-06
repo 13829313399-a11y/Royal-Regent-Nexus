@@ -1,5 +1,19 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { vInjDialog } from '@/features/injection-scheduling/composables/injDialog';
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
+import {
+  Plus,
+  Save,
+  Boxes,
+  Cpu,
+  CalendarDays,
+  SlidersHorizontal,
+  Library,
+} from '@lucide/vue';
+import MasterParameterEditor from './components/MasterParameterEditor.vue';
+import InjButton from './components/ui/InjButton.vue';
+import InjLoadingState from './components/ui/InjLoadingState.vue';
+import { parseParameter } from './parameterAdapter';
 import { injectionApi as api } from '@/api/injectionScheduling';
 import { useInjectionStore } from '@/stores/injectionScheduling';
 import {
@@ -10,6 +24,20 @@ import {
   type DataRow,
 } from './types';
 defineProps<{ canWrite: boolean }>();
+const headerReady = ref(false);
+onMounted(() => {
+  headerReady.value = !!document.getElementById('inj-primary-slot');
+});
+const originalSettings = ref<Record<string, unknown>>({}),
+  originalSettingsText = ref<Record<string, string>>({});
+const savingSettings = ref(false);
+const masterSections = [
+  { value: 'molds', label: '公共模具库', icon: Library },
+  { value: 'machines', label: '本厂设备', icon: Cpu },
+  { value: 'mold-assets', label: '实物模具', icon: Boxes },
+  { value: 'calendar-events', label: '班制日历', icon: CalendarDays },
+  { value: 'settings', label: '排产参数', icon: SlidersHorizontal },
+];
 const originalForm = ref<Record<string, string>>({});
 const enumOptions: Record<string, Record<string, string>> = {
   machine_family: {
@@ -179,35 +207,61 @@ const parameterLabels: Record<string, string> = {
   setup_interruptible: '换模是否允许切分',
 };
 let generation = 0;
+const loading = ref(false),
+  loadedSection = ref(''),
+  loadFailed = ref(false);
+const sectionReady = computed(
+  () => loadedSection.value === `${store.factory}/${section.value}`,
+);
+onBeforeUnmount(() => {
+  generation++;
+});
 async function load() {
   if (!store.factory) return;
   const id = ++generation;
+  const requestedSection = section.value;
+  const sectionKey = `${store.factory}/${requestedSection}`;
+  loading.value = true;
+  loadFailed.value = false;
   try {
-    if (section.value === 'settings') {
+    if (requestedSection === 'settings') {
       const r = await api.get('/settings', { factory_id: store.factory });
-      if (id === generation)
+      if (id === generation) {
+        originalSettings.value = r.parameters;
         settingsDraft.value = Object.fromEntries(
           Object.entries(r.parameters).map(([k, v]) => [
             k,
             typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v),
           ]),
         );
+        originalSettingsText.value = { ...settingsDraft.value };
+        loadedSection.value = sectionKey;
+      }
       return;
     }
-    const r = await api.get('/' + section.value, { factory_id: store.factory });
-    if (id === generation) rows.value = r.rows;
-    if (section.value === 'calendar-events') {
+    const r = await api.get('/' + requestedSection, {
+      factory_id: store.factory,
+    });
+    if (id !== generation) return;
+    rows.value = r.rows;
+    if (requestedSection === 'calendar-events') {
       const result = await api.get('/mold-assets', {
         factory_id: store.factory,
       });
       if (id === generation) assets.value = result.rows;
     }
-    if (section.value === 'mold-assets')
-      molds.value = (
-        await api.get('/molds', { factory_id: store.factory })
-      ).rows;
+    if (requestedSection === 'mold-assets') {
+      const result = await api.get('/molds', { factory_id: store.factory });
+      if (id === generation) molds.value = result.rows;
+    }
+    if (id === generation) loadedSection.value = sectionKey;
   } catch (e) {
-    store.showError(e);
+    if (id === generation) {
+      loadFailed.value = true;
+      store.showError(e);
+    }
+  } finally {
+    if (id === generation) loading.value = false;
   }
 }
 watch(
@@ -295,16 +349,14 @@ async function save() {
   }
 }
 async function saveSettings() {
+  savingSettings.value = true;
   try {
     const data: Record<string, unknown> = {};
     for (const [key, raw] of Object.entries(settingsDraft.value)) {
-      const original = store.settings[key];
       data[key] =
-        typeof original === 'object' || typeof original === 'boolean'
-          ? JSON.parse(raw)
-          : typeof original === 'number'
-            ? Number(raw)
-            : raw;
+        raw === originalSettingsText.value[key]
+          ? originalSettings.value[key]
+          : parseParameter(raw, originalSettings.value[key]);
     }
     const result = await store.mutate('/settings', { data }, 'patch');
     if (result) {
@@ -314,6 +366,8 @@ async function saveSettings() {
     }
   } catch (e) {
     store.showError(e);
+  } finally {
+    savingSettings.value = false;
   }
 }
 async function saveStatus() {
@@ -361,27 +415,38 @@ const templateLabels0: Record<string, string> = {
 </script>
 <template>
   <section class="inj-master">
+    <nav class="inj-master-nav" aria-label="基础资料分类">
+      <strong>资源与排产配置</strong
+      ><button
+        v-for="item in masterSections"
+        :key="item.value"
+        :aria-current="section === item.value ? 'page' : undefined"
+        :disabled="store.dirty || store.busy"
+        @click="
+          section = item.value;
+          term = '';
+        "
+      >
+        <component :is="item.icon" />{{ item.label }}
+      </button>
+    </nav>
+    <Teleport v-if="headerReady && canWrite" to="#inj-primary-slot"
+      ><InjButton
+        v-if="section === 'settings'"
+        primary
+        :disabled="store.busy || !sectionReady"
+        :pending="savingSettings"
+        @click="saveSettings"
+        ><template #icon><Save /></template>保存参数并重算</InjButton
+      ><InjButton
+        v-else
+        primary
+        :disabled="store.dirty || store.busy || !sectionReady"
+        @click="open()"
+        ><template #icon><Plus /></template>新增资料</InjButton
+      ></Teleport
+    >
     <div class="inj-toolbar">
-      <div class="inj-segmented">
-        <button
-          v-for="(label, key) in {
-            molds: '公共模具库',
-            machines: '本厂设备',
-            'mold-assets': '实物模具',
-            'calendar-events': '班制日历',
-            settings: '排产参数',
-          }"
-          :key="key"
-          :class="{ active: section === key }"
-          :disabled="store.dirty"
-          @click="
-            section = key;
-            term = '';
-          "
-        >
-          {{ label }}
-        </button>
-      </div>
       <span class="inj-spacer" /><span class="inj-badge">{{
         section === 'molds' ? '四厂共享' : factories[store.factory!]
       }}</span
@@ -391,31 +456,65 @@ const templateLabels0: Record<string, string> = {
         placeholder="查找资料"
         aria-label="基础资料查找"
       /><button
-        v-if="canWrite && section !== 'settings'"
+        v-if="canWrite && section !== 'settings' && !headerReady"
         class="inj-primary"
         @click="open()"
       >
-        ＋ 新增
+        <Plus /> 新增
       </button>
     </div>
-    <div v-if="section === 'settings'" class="inj-settings">
+    <InjLoadingState v-if="loading && !sectionReady" label="正在读取基础资料" />
+    <div
+      v-else-if="!sectionReady && loadFailed"
+      class="inj-empty"
+      role="status"
+    >
+      资料读取失败，请重试。
+      <button @click="load">重新读取</button>
+    </div>
+    <div v-else-if="section === 'settings'" class="inj-settings">
       <p class="inj-help">
         班制、允许上放和休息时间为可调整配置，保存后重新计算本厂未来排程。
       </p>
-      <div class="inj-form-grid">
-        <label v-for="(value, key) in settingsDraft" :key="key"
-          ><span>{{ parameterLabels[key] || key }}</span
-          ><textarea
-            v-if="typeof store.settings[key] === 'object'"
-            v-model="settingsDraft[key]"
-            :disabled="!canWrite"
-            rows="5"
-            @input="store.dirty = true" /><input
-            v-else
-            v-model="settingsDraft[key]"
-            :disabled="!canWrite || key === 'business_timezone'"
-            @input="store.dirty = true"
-        /></label>
+      <div class="inj-parameter-groups">
+        <template v-for="(_, key) in settingsDraft" :key="key">
+          <MasterParameterEditor
+            v-if="typeof originalSettings[key] === 'object'"
+            v-model="settingsDraft[key]!"
+            :kind="String(key)"
+            :label="parameterLabels[key] || String(key)"
+            :disabled="!canWrite || store.busy"
+            @update:model-value="store.dirty = true"
+          />
+          <section v-else class="inj-parameter">
+            <label
+              ><span>{{ parameterLabels[key] || key }}</span
+              ><select
+                v-if="typeof originalSettings[key] === 'boolean'"
+                v-model="settingsDraft[key]"
+                :disabled="!canWrite || store.busy"
+                @change="store.dirty = true"
+              >
+                <option value="true">是</option>
+                <option value="false">否</option></select
+              ><input
+                v-else
+                v-model="settingsDraft[key]"
+                :type="
+                  ['day_start', 'night_start'].includes(String(key))
+                    ? 'time'
+                    : typeof originalSettings[key] === 'number'
+                      ? 'number'
+                      : 'text'
+                "
+                step="any"
+                :disabled="
+                  !canWrite || store.busy || key === 'business_timezone'
+                "
+                @input="store.dirty = true"
+            /></label>
+          </section>
+        </template>
       </div>
       <div v-if="canWrite" class="inj-actions">
         <button
@@ -426,6 +525,7 @@ const templateLabels0: Record<string, string> = {
         >
           放弃修改</button
         ><button
+          v-if="!headerReady"
           class="inj-primary"
           :disabled="store.busy"
           @click="saveSettings"
@@ -497,6 +597,12 @@ const templateLabels0: Record<string, string> = {
         role="dialog"
         aria-modal="true"
         aria-label="基础资料编辑"
+        v-inj-dialog="{
+          close: () => {
+            close();
+          },
+          busy: store.busy,
+        }"
       >
         <h2>{{ creating ? '新增' : '编辑' }}{{ templateLabels0[section] }}</h2>
         <p v-if="edit" class="inj-muted">当前版本 {{ edit.revision }}</p>
@@ -504,9 +610,7 @@ const templateLabels0: Record<string, string> = {
         <form @submit.prevent="save">
           <div class="inj-form-grid">
             <label
-              v-for="s in specs[section]?.filter(
-                (s) => advanced || !['json', 'list'].includes(s.type || ''),
-              )"
+              v-for="s in specs[section]?.filter((s) => s.type !== 'json')"
               :key="s.key"
               ><span>{{ s.label }}{{ s.required ? ' *' : '' }}</span
               ><select
@@ -587,9 +691,17 @@ const templateLabels0: Record<string, string> = {
                 @input="store.dirty = true"
             /></label>
           </div>
-          <button type="button" class="inj-link" @click="advanced = !advanced">
-            {{ advanced ? '收起' : '展开' }}其他工艺参数
-          </button>
+          <div class="inj-parameter-groups">
+            <MasterParameterEditor
+              v-for="field in specs[section]?.filter((f) => f.type === 'json')"
+              :key="field.key"
+              v-model="form[field.key]!"
+              :kind="field.key"
+              :label="field.label"
+              :disabled="!canWrite || store.busy"
+              @update:model-value="store.dirty = true"
+            />
+          </div>
           <div class="inj-actions">
             <button type="button" @click="close">取消</button
             ><button v-if="canWrite" class="inj-primary" :disabled="store.busy">
@@ -605,6 +717,12 @@ const templateLabels0: Record<string, string> = {
         role="dialog"
         aria-modal="true"
         aria-label="设备状态"
+        v-inj-dialog="{
+          close: () => {
+            statusMachine = null;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>{{ statusMachine.code }} · 设备状态</h2>
         <p>停工会暂停正在执行的批次并重新计算后续计划。</p>
@@ -641,6 +759,12 @@ const templateLabels0: Record<string, string> = {
         role="dialog"
         aria-modal="true"
         aria-label="实物模具调厂"
+        v-inj-dialog="{
+          close: () => {
+            relocation = null;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>{{ relocation.asset_code }} · 调厂</h2>
         <p>将重新计算源厂和目标厂的可用性。需要两厂的基础资料权限。</p>

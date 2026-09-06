@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { vInjDialog } from '@/features/injection-scheduling/composables/injDialog';
+import {
+  computed,
+  nextTick,
+  ref,
+  watch,
+  onMounted,
+  onBeforeUnmount,
+} from 'vue';
 import {
   getCoreRowModel,
   useVueTable,
@@ -17,10 +25,29 @@ import {
   type DataRow,
   type FilterNode,
 } from './types';
+import {
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ArrowDown,
+  Filter,
+  X,
+  GripVertical,
+} from '@lucide/vue';
+import {
+  useInjectionViewState,
+  rowHeight,
+} from './composables/useInjectionViewState';
+import PlanCell from './components/PlanCell.vue';
 import FilterGroup from './FilterGroup.vue';
 
 const props = defineProps<{ canEdit: boolean }>();
-const store = useInjectionStore();
+const store = useInjectionStore(),
+  view = useInjectionViewState();
+const viewContext = view.contextGeneration;
+const tableRowHeight = computed(() => rowHeight(view.density, 'table'));
+const columnSearch = ref(''),
+  draggedColumn = ref('');
 const columnFilter = ref<FilterNode | null>(null);
 async function applyColumnFilter() {
   store.filter = columnFilter.value;
@@ -36,11 +63,11 @@ watch(
 );
 const scroll = ref<HTMLElement>(),
   columnPanel = ref(false),
-  preset = ref('常用'),
-  sizing = ref<ColumnSizingState>({}),
-  visibility = ref<VisibilityState>({}),
-  order = ref<string[]>([]),
-  freeze = ref(2);
+  preset = ref(view.table?.preset || '常用'),
+  sizing = ref<ColumnSizingState>(view.table?.sizing || {}),
+  visibility = ref<VisibilityState>(view.table?.visibility || {}),
+  order = ref<string[]>(view.table?.order || []),
+  freeze = ref(view.table?.freeze ?? 2);
 const selected = ref<string[]>([]),
   active = ref({ row: 0, column: 0 }),
   anchor = ref({ row: 0, column: 0 });
@@ -102,6 +129,7 @@ const table = useVueTable({
     return columns.value;
   },
   getCoreRowModel: getCoreRowModel(),
+  getRowId: (row) => row.id,
   columnResizeMode: 'onChange',
   state: {
     get columnSizing() {
@@ -127,11 +155,83 @@ const virtual = useVirtualizer(
   computed(() => ({
     count: model.value.length,
     getScrollElement: () => scroll.value ?? null,
-    estimateSize: () => 36,
+    estimateSize: () => tableRowHeight.value,
+    getItemKey: (index: number) => model.value[index]!.id,
     overscan: 8,
   })),
 );
 const virtualRows = computed(() => virtual.value.getVirtualItems());
+watch(tableRowHeight, () => nextTick(() => virtual.value.measure()));
+const columnGroups: Record<string, string> = {
+  identity: '订单识别',
+  schedule: '排程',
+  process: '工艺参数',
+  quantity: '数量',
+  delivery: '交期',
+  source: '原表来源',
+  status: '状态',
+  machine: '机台',
+  requirements: '设备要求',
+  audit: '记录',
+  material: '材料',
+};
+const columnGroupLabel = (group?: string) =>
+  group ? columnGroups[group] || group : '';
+const filteredColumns = computed(() =>
+  table
+    .getAllLeafColumns()
+    .filter(
+      (c) =>
+        !columnSearch.value ||
+        [
+          c.id,
+          store.fieldMap[c.id]?.label,
+          columnGroupLabel(store.fieldMap[c.id]?.group),
+        ]
+          .join(' ')
+          .includes(columnSearch.value),
+    ),
+);
+function dropColumn(id: string) {
+  const keys = table
+    .getAllLeafColumns()
+    .map((c) => c.id)
+    .filter((key) => key !== draggedColumn.value);
+  const i = keys.indexOf(id);
+  if (i >= 0 && draggedColumn.value) {
+    keys.splice(i, 0, draggedColumn.value);
+    order.value = keys;
+  }
+  draggedColumn.value = '';
+}
+function rememberScroll() {
+  if (viewContext !== view.contextGeneration) return;
+  if (scroll.value)
+    view.scroll.table = {
+      top: scroll.value.scrollTop,
+      left: scroll.value.scrollLeft,
+    };
+}
+onMounted(() =>
+  nextTick(() => {
+    const position = view.scroll.table;
+    if (scroll.value && position) {
+      scroll.value.scrollTop = position.top;
+      scroll.value.scrollLeft = position.left;
+    }
+  }),
+);
+onBeforeUnmount(() => {
+  if (viewContext !== view.contextGeneration) return;
+  rememberScroll();
+  view.table = {
+    preset: preset.value,
+    sizing: { ...sizing.value },
+    visibility: { ...visibility.value },
+    order: [...order.value],
+    freeze: freeze.value,
+  };
+});
 const selectedSummary = computed(() =>
   store.rows
     .filter((r) => selected.value.includes(r.id))
@@ -164,7 +264,13 @@ function applyPreset() {
       ...store.fields.map((f) => f.key).filter((k) => !common.includes(k)),
     ];
 }
-watch(() => store.fields, applyPreset, { immediate: true });
+watch(
+  () => store.fields,
+  () => {
+    if (!view.table) applyPreset();
+  },
+  { immediate: true },
+);
 watch(
   () => store.factory,
   () => {
@@ -253,6 +359,7 @@ async function commit() {
   }
 }
 function keydown(event: KeyboardEvent, row: DataRow, key: string) {
+  if (event.isComposing) return;
   if (editing.value) {
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -432,7 +539,10 @@ function restoreView(id: string) {
 }
 </script>
 <template>
-  <section class="inj-table-area">
+  <section
+    class="inj-table-area"
+    :style="{ '--inj-table-row': tableRowHeight + 'px' }"
+  >
     <div class="inj-toolbar" :inert="store.dirty || store.busy">
       <select v-model="preset" aria-label="列视图" @change="applyPreset">
         <option>常用</option>
@@ -455,7 +565,23 @@ function restoreView(id: string) {
         >{{ numberText(store.total) }} 条</strong
       >
     </div>
-    <div v-if="columnPanel" class="inj-columns-panel">
+    <aside
+      v-if="columnPanel"
+      :inert="store.dirty || store.busy"
+      class="inj-columns-panel"
+      aria-label="计划表列管理"
+    >
+      <header>
+        <h3>列管理</h3>
+        <button aria-label="关闭列管理" @click="columnPanel = false">
+          <X />
+        </button>
+      </header>
+      <input
+        v-model="columnSearch"
+        aria-label="查找列"
+        placeholder="搜索字段名称或分组"
+      />
       <div class="inj-inline">
         <label
           >冻结左列
@@ -467,20 +593,36 @@ function restoreView(id: string) {
         ><button @click="columnPanel = false">完成</button>
       </div>
       <div class="inj-column-list">
-        <label v-for="column in table.getAllLeafColumns()" :key="column.id"
+        <label
+          v-for="column in filteredColumns"
+          :key="column.id"
+          :draggable="!store.dirty && !store.busy"
+          @dragstart="draggedColumn = column.id"
+          @dragover.prevent
+          @drop.prevent="dropColumn(column.id)"
           ><input
             type="checkbox"
             :checked="column.getIsVisible()"
             @change="column.toggleVisibility()"
-          />{{ store.fieldMap[column.id]?.label
-          }}<button title="向前移动" @click="reorder(column.id, -1)">←</button
+          /><GripVertical class="inj-column-grip" /><span
+            >{{ store.fieldMap[column.id]?.label
+            }}<small>{{
+              columnGroupLabel(store.fieldMap[column.id]?.group)
+            }}</small></span
+          ><button title="向前移动" @click="reorder(column.id, -1)">←</button
           ><button title="向后移动" @click="reorder(column.id, 1)">
             →
           </button></label
         >
       </div>
-    </div>
-    <div ref="scroll" class="inj-grid-scroll" @copy="copy" @paste="paste">
+    </aside>
+    <div
+      ref="scroll"
+      class="inj-grid-scroll"
+      @scroll="rememberScroll"
+      @copy="copy"
+      @paste="paste"
+    >
       <table
         class="inj-grid"
         :style="{ width: table.getTotalSize() + 38 + 'px' }"
@@ -512,14 +654,15 @@ function restoreView(id: string) {
                 @click="sortBy(column.id, $event.shiftKey)"
               >
                 {{ store.fieldMap[column.id]?.label }}
-                <span>{{
-                  store.sort.find((s) => s.field === column.id)?.direction ===
-                  'asc'
-                    ? '↑'
-                    : store.sort.some((s) => s.field === column.id)
-                      ? '↓'
-                      : ''
-                }}</span></button
+                <component
+                  :is="
+                    store.sort.find((s) => s.field === column.id)?.direction ===
+                    'asc'
+                      ? ArrowUp
+                      : ArrowDown
+                  "
+                  v-if="store.sort.some((s) => s.field === column.id)"
+                /></button
               ><button
                 class="inj-column-filter"
                 :title="'筛选' + store.fieldMap[column.id]?.label"
@@ -531,7 +674,7 @@ function restoreView(id: string) {
                   }
                 "
               >
-                ⌕
+                <Filter />
               </button>
               <div
                 class="inj-resizer"
@@ -584,6 +727,11 @@ function restoreView(id: string) {
               "
               :class="{
                 'inj-cell-range': inRange(vr.index, ci),
+                'inj-cell-active':
+                  active.row === vr.index && active.column === ci,
+                'inj-cell-number': ['number', 'integer'].includes(
+                  store.fieldMap[column.id]?.value_type || '',
+                ),
                 'inj-derived': !store.fieldMap[column.id]?.editable,
                 'inj-negative':
                   column.id === 'delivery_slack_hours' &&
@@ -613,12 +761,11 @@ function restoreView(id: string) {
                 class="inj-cell-editor"
                 :aria-label="store.fieldMap[column.id]?.label"
                 @click.stop
-              /><span v-else>{{
-                displayValue(
-                  model[vr.index]!.original[column.id],
-                  store.fieldMap[column.id],
-                )
-              }}</span>
+              /><PlanCell
+                v-else
+                :value="model[vr.index]!.original[column.id]"
+                :field="store.fieldMap[column.id]"
+              />
             </td>
           </tr>
           <tr
@@ -662,7 +809,10 @@ function restoreView(id: string) {
         "
       >
         上一页</button
-      ><span>{{ store.cursor + 1 }}–{{ store.cursor + store.rows.length }}</span
+      ><span
+        >{{ store.rows.length ? store.cursor + 1 : 0 }}–{{
+          store.cursor + store.rows.length
+        }}</span
       ><button
         :disabled="store.nextCursor === null || store.dirty || store.busy"
         @click="
@@ -679,6 +829,12 @@ function restoreView(id: string) {
         role="dialog"
         aria-modal="true"
         aria-label="列筛选"
+        v-inj-dialog="{
+          close: () => {
+            columnFilter = null;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>列筛选</h2>
         <FilterGroup v-model="columnFilter" :fields="store.fields" />
@@ -695,7 +851,7 @@ function restoreView(id: string) {
       class="inj-toolbar"
       :inert="store.dirty || store.busy"
     >
-      <strong>已选 {{ selectedSummary.count }} 条</strong
+      <strong>本页已选 {{ selectedSummary.count }} 条</strong
       ><span
         >计划 {{ numberText(selectedSummary.planned) }} / 欠数
         {{ numberText(selectedSummary.remaining) }}</span
@@ -742,6 +898,13 @@ function restoreView(id: string) {
         role="dialog"
         aria-modal="true"
         aria-label="粘贴预览"
+        v-inj-dialog="{
+          close: () => {
+            pendingPaste = null;
+            store.dirty = false;
+          },
+          busy: store.busy,
+        }"
       >
         <h2>粘贴预览</h2>
         <p>
