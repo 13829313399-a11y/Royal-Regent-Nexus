@@ -336,7 +336,7 @@ watch([quoteId, () => costSummary.value.indonesiaFreightHkd], ([, amount]) => {
 
     <p v-if="message" class="quote-page-message success">{{ message }}</p>
     <p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p>
-    <p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
+    <p v-if="quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.id" class="quote-page-message error" role="status">{{ quoteStore.refreshWarning }} <button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="quoteStore.refreshAfterMutation(quote.id)">重新读取</button></p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
     <p v-if="isReadOnly" class="quote-readonly-banner"><LockKeyhole aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；审核、最终放行及受控导出仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的审核、最终放行或受控导出权限。' }}</p>
 
     <section class="quote-cost-overview">

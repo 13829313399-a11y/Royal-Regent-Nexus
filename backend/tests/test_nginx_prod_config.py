@@ -6,7 +6,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 def test_document_translation_proxy_has_route_specific_half_hour_timeout():
     config = (REPOSITORY_ROOT / "nginx.prod.conf").read_text(encoding="utf-8")
     translation_start = config.index(
-        "location ~ ^/api/tools/(?:document-translation(?:/artifact)?|pdf-translation)$"
+        "location ~ ^/api/tools/(?:document-translation|pdf-translation)$"
     )
     generic_api_start = config.index("location /api/")
 

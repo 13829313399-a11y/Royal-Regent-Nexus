@@ -4,6 +4,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
+from functools import wraps
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -11,6 +12,8 @@ from fastapi import HTTPException, Request
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from app.services.transaction_lock import lock_transaction
 
 from app.models.auth import AuthUser, AuthUserRole, EmployeeProfile, SystemNotification
 from app.models.internal_quote import (
@@ -242,6 +245,25 @@ def _initiator_department(user: AuthContext, factory_id: str) -> str:
         if has_permission_in_scope(user, "internal_quote:clone", factory_id, department):
             return department
     raise HTTPException(status_code=403, detail="仅业务部或工程部可复制内部报价")
+
+
+def quote_write(operation):
+    @wraps(operation)
+    def serialized(db: Session, quote_id: str, *args, **kwargs):
+        identity = db.execute(select(InternalQuote.factory_id, InternalQuote.batch_id).where(
+            InternalQuote.id == quote_id,
+        )).first()
+        if identity is None:
+            raise HTTPException(404, "内部报价不存在或已被删除")
+        lock_transaction(db, "internal-quote", f"{identity.factory_id}:{identity.batch_id or quote_id}")
+        try:
+            return operation(db, quote_id, *args, **kwargs)
+        except IntegrityError as error:
+            db.rollback()
+            if "internal_quote_section_revisions" in str(error) or "uq_internal_quote_section_revisions" in str(error):
+                raise HTTPException(409, "报价已被其他操作更新，请重新读取后核对保存") from error
+            raise
+    return serialized
 
 
 def _get_quote(db: Session, quote_id: str) -> InternalQuote:
@@ -2902,6 +2924,20 @@ def _without_import_batch_ids(value: object) -> object:
     return value
 
 
+def _remap_attachment_ids(value: object, mapping: dict[str, str]) -> object:
+    if isinstance(value, dict):
+        return {
+            key: [mapping[item] for item in child if item in mapping]
+            if key == "image_attachment_ids" and isinstance(child, list)
+            else _remap_attachment_ids(child, mapping)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_remap_attachment_ids(item, mapping) for item in value]
+    return value
+
+
+@quote_write
 def copy_batch_baseline_to_product(
     db: Session,
     quote_id: str,
@@ -2985,13 +3021,48 @@ def copy_batch_baseline_to_product(
     )
     _create_reference_set(db, target, user, source_type="batch_baseline_copy", snapshot=source_snapshot)
 
+    db.execute(delete(InternalQuoteImportBatch).where(InternalQuoteImportBatch.quote_id == target.id))
+    db.execute(
+        delete(InternalQuoteAttachment).where(
+            InternalQuoteAttachment.quote_id == target.id,
+            InternalQuoteAttachment.department != "product-image",
+            ~InternalQuoteAttachment.department.in_(retained_component_images),
+        )
+    )
+
+    source_attachments = db.scalars(
+        select(InternalQuoteAttachment).where(
+            InternalQuoteAttachment.quote_id == baseline.id,
+            InternalQuoteAttachment.department != "product-image",
+            ~InternalQuoteAttachment.department.startswith("component-image:"),
+        )
+    ).all()
+    attachment_ids = {attachment.id: f"IQATT-{uuid4().hex}" for attachment in source_attachments}
+    for attachment in source_attachments:
+        db.add(InternalQuoteAttachment(
+            id=attachment_ids[attachment.id],
+            quote_id=target.id,
+            factory_id=target.factory_id,
+            department=attachment.department,
+            file_name=attachment.file_name,
+            content_type=attachment.content_type,
+            size_bytes=attachment.size_bytes,
+            sha256=attachment.sha256,
+            content=attachment.content,
+            uploaded_by=user.id,
+            uploaded_by_name=user.display_name,
+            uploaded_at=timestamp,
+        ))
+
     for code in SECTION_NAMES:
         source_section = source_by_code.get(code)
         target_section = target_by_code.get(code)
         if source_section is None or target_section is None:
             continue
         old_revision = target_section.revision
-        copied_payload = _without_import_batch_ids(_json_object(source_section.payload_json))
+        copied_payload = _remap_attachment_ids(
+            _without_import_batch_ids(_json_object(source_section.payload_json)), attachment_ids,
+        )
         if code == "sales" and baseline.region_code != target.region_code:
             # Indonesia freight belongs to the destination-specific product,
             # not to the batch baseline.  Preserve an Indonesia target's own
@@ -3038,36 +3109,6 @@ def copy_batch_baseline_to_product(
             request=request,
         )
 
-    db.execute(delete(InternalQuoteImportBatch).where(InternalQuoteImportBatch.quote_id == target.id))
-    db.execute(
-        delete(InternalQuoteAttachment).where(
-            InternalQuoteAttachment.quote_id == target.id,
-            InternalQuoteAttachment.department != "product-image",
-            ~InternalQuoteAttachment.department.in_(retained_component_images),
-        )
-    )
-    source_attachments = db.scalars(
-        select(InternalQuoteAttachment).where(
-            InternalQuoteAttachment.quote_id == baseline.id,
-            InternalQuoteAttachment.department != "product-image",
-            ~InternalQuoteAttachment.department.startswith("component-image:"),
-        )
-    ).all()
-    for attachment in source_attachments:
-        db.add(InternalQuoteAttachment(
-            id=f"IQATT-{uuid4().hex}",
-            quote_id=target.id,
-            factory_id=target.factory_id,
-            department=attachment.department,
-            file_name=attachment.file_name,
-            content_type=attachment.content_type,
-            size_bytes=attachment.size_bytes,
-            sha256=attachment.sha256,
-            content=attachment.content,
-            uploaded_by=user.id,
-            uploaded_by_name=user.display_name,
-            uploaded_at=timestamp,
-        ))
     _derive_quote_status(db, target)
     _add_audit(
         db,
@@ -3092,6 +3133,7 @@ def copy_batch_baseline_to_product(
     return quote_to_out(db, target)
 
 
+@quote_write
 def update_quote_header(
     db: Session,
     quote_id: str,
@@ -3221,6 +3263,7 @@ def update_quote_header(
     return quote_to_out(db, quote)
 
 
+@quote_write
 def add_quote_participation(
     db: Session,
     quote_id: str,
@@ -3330,6 +3373,7 @@ def add_quote_participation(
     return quote_to_out(db, quote)
 
 
+@quote_write
 def remove_quote_participation(
     db: Session,
     quote_id: str,
@@ -3459,6 +3503,7 @@ def remove_quote_participation(
     return quote_to_out(db, quote)
 
 
+@quote_write
 def clone_quote(
     db: Session,
     quote_id: str,
@@ -3833,6 +3878,7 @@ def _save_section_in_transaction(
     return section
 
 
+@quote_write
 def save_section(
     db: Session,
     quote_id: str,
@@ -3858,6 +3904,7 @@ def save_section(
     return _section_out(section)
 
 
+@quote_write
 def save_whole_product_sections(
     db: Session,
     quote_id: str,
@@ -3924,6 +3971,7 @@ def save_whole_product_sections(
     )
 
 
+@quote_write
 def submit_section(
     db: Session,
     quote_id: str,
@@ -4001,6 +4049,7 @@ def submit_section(
     return _section_out(section)
 
 
+@quote_write
 def request_section_na(
     db: Session,
     quote_id: str,
@@ -4066,6 +4115,7 @@ def request_section_na(
     return _section_out(section)
 
 
+@quote_write
 def withdraw_section_submission(
     db: Session,
     quote_id: str,
@@ -4120,6 +4170,7 @@ def withdraw_section_submission(
     return _section_out(section)
 
 
+@quote_write
 def review_section(
     db: Session,
     quote_id: str,
@@ -4252,6 +4303,7 @@ def review_section(
     return _section_out(section)
 
 
+@quote_write
 def reopen_section(
     db: Session,
     quote_id: str,
@@ -4627,6 +4679,7 @@ def _replace_quote_reference_set(
     return quote_to_out(db, quote)
 
 
+@quote_write
 def sync_quote_reference_set(
     db: Session,
     quote_id: str,
@@ -4657,6 +4710,7 @@ def sync_quote_reference_set(
     )
 
 
+@quote_write
 def recalculate_quote_formula(
     db: Session,
     quote_id: str,
@@ -4689,6 +4743,7 @@ def recalculate_quote_formula(
     )
 
 
+@quote_write
 def update_quote_reference_fx(
     db: Session,
     quote_id: str,
@@ -4736,6 +4791,7 @@ def update_quote_reference_fx(
     )
 
 
+@quote_write
 def update_quote_reference_materials(
     db: Session,
     quote_id: str,
@@ -4822,6 +4878,7 @@ def get_quote_timeline(
     )
 
 
+@quote_write
 def archive_quote(
     db: Session,
     quote_id: str,
@@ -4877,6 +4934,7 @@ def archive_quote(
     return quote_to_out(db, selected_quote)
 
 
+@quote_write
 def delete_quote(
     db: Session,
     quote_id: str,

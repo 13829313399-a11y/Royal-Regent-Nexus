@@ -15,6 +15,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.services.transaction_lock import lock_transaction
 from app.core.time import business_now, business_today
 from app.models.carton_procurement import (
     CartonAuditEvent,
@@ -1452,6 +1453,7 @@ def return_order(
     user: AuthContext,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     order = get_order_by_no(db, factory_id, order_no)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
@@ -2254,6 +2256,7 @@ def confirm_receipt(
     user: AuthContext,
 ) -> CartonReceipt:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     receipt = db.get(CartonReceipt, receipt_id)
     if receipt is None or receipt.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="收料单不存在")
@@ -2527,6 +2530,7 @@ def relocate_inventory(
     db: Session, payload: CartonInventoryRelocateRequest, user: AuthContext,
 ) -> CartonInventoryBalanceOut:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     # Serialize location revisions per factory on both SQLite and PostgreSQL.
     locked = db.execute(
         update(CartonSupplier).where(CartonSupplier.factory_id == factory_id)
@@ -2569,6 +2573,7 @@ def _prepare_inventory_movement(
     user: AuthContext,
 ) -> tuple[CartonInventoryMovement, Decimal]:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     order_line: CartonOrderLine | None = None
     reference: CartonInventoryMovement | None = None
     if payload.order_line_id:
@@ -2663,6 +2668,7 @@ def create_inventory_movements_bulk(
     user: AuthContext,
 ) -> list[CartonInventoryMovementOut]:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     prepared: list[tuple[CartonInventoryMovement, Decimal]] = []
     for item in payload.items:
         prepared.append(
@@ -2761,6 +2767,7 @@ def reverse_inventory_movement(
     user: AuthContext,
 ) -> CartonInventoryMovementOut:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     original = db.get(CartonInventoryMovement, movement_id)
     if original is None or original.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="库存流水不存在")
