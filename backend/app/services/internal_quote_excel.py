@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v28"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v29"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -590,7 +590,96 @@ def _apply_molding_row_formulas(
     sheet.cell(row_index, 11).number_format = "0.000_ "
 
 
+def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[str, Any]]:
+    """Recover original supplier inputs without confusing derived currency prices.
+
+    Saved calculations can predate source-price metadata. Pair the complete
+    source sequence with calculated rows, never match duplicate item names alone.
+    """
+    payload = _section_payload(section)
+    code = getattr(section, "department", "")
+    if section is None or getattr(section, "calculation_status", "valid") != "valid" or getattr(section, "is_required", True) is False:
+        return []
+    kind, field = {
+        "engineering": ("material", "materials"),
+        "sales": ("packaging_material", "packaging_materials"),
+        "electronic": ("electronic_component", "components"),
+    }.get(code, ("", ""))
+    if not kind:
+        return []
+    quick = code == "electronic" and payload.get("quote_mode") == "quick"
+    sources: list[dict[str, Any]] = []
+
+    def walk(rows):
+        for source in _list_of_dicts(rows):
+            if code == "electronic" and not quick:
+                walk(source.get("children"))
+            sources.append(source)
+
+    walk(payload.get("quick_quotes" if quick else field))
+    lines = _calculation_lines(section, kind)
+    paired = len(sources) == len(lines) and all(
+        _plain_text(source.get("item")) == _plain_text(line.get("item"))
+        for source, line in zip(sources, lines)
+    )
+    result = []
+    for index, line in enumerate(lines):
+        entry = {**line, "section": code, "label": line.get("item", ""), "source_line_index": index,
+                 "amount_hkd": line.get("amount_hkd", line.get("line_hkd", 0))}
+        if paired:
+            source = sources[index]
+            if code == "electronic" or line.get("category") == "hardware":
+                currency = "RMB" if "unit_price_rmb" in source or line.get("category") == "hardware" else "HKD"
+            else:
+                currency = str(line.get("unit_price_source_currency") or source.get("unit_price_source_currency") or
+                               ("RMB" if source.get("unit_price_rmb") not in (None, "") else "HKD")).upper()
+            price = source.get(f"unit_price_{currency.lower()}")
+            if price not in (None, ""):
+                entry.update(source_unit_price=price, unit_price_source_currency=currency,
+                             quantity=1 if quick else source.get("quantity", 0),
+                             loss_rate=1 if code == "electronic" else source.get("loss_rate", 1))
+        if entry.get("source_unit_price") is None:
+            currency = str(entry.get("unit_price_source_currency") or "")
+            price = entry.get(f"base_unit_price_{currency.lower()}")
+            if currency in {"RMB", "HKD"} and price not in (None, ""):
+                entry["source_unit_price"] = price
+        result.append(entry)
+    return result
+
+
+def _purchase_pricing_entries(entries, sections) -> list[dict[str, Any]]:
+    remaining = [line for section in sections for line in _purchase_source_lines(section)
+                 if _float_value(line.get("amount_hkd")) > 0]
+    result = []
+    for entry in entries:
+        match = next((line for line in remaining
+                      if line.get("section") == entry.get("section")
+                      and line.get("kind") == entry.get("kind")
+                      and (_plain_text(line.get("label")) or {"electronic": "电子", "engineering": "工程采购", "sales": "包装材料"}.get(line.get("section")))
+                      == _plain_text(entry.get("label"))), None)
+        if match is not None:
+            remaining.remove(match)
+            enriched = {**match, **entry}
+            if abs(_float_value(entry.get("amount_hkd")) - _float_value(match.get("amount_hkd"))) < 0.00005:
+                # Four-decimal snapshot rounding is not a supplier surcharge.
+                enriched["formula_allocation_factor"] = 1
+            result.append(enriched)
+        else:
+            result.append(entry)
+    return result
+
+
 def _pricing_entry_amount(entry: dict[str, Any]) -> object:
+    if entry.get("source_unit_price") not in (None, "") and entry.get("quantity") not in (None, ""):
+        price = _float_value(entry["source_unit_price"])
+        formula = f"={format(price, '.15g')}"
+        if entry.get("unit_price_source_currency") == "RMB":
+            formula += "/$L$4"
+        for field in ("quantity", "loss_rate", "formula_allocation_factor"):
+            factor = _float_value(entry.get(field), 1.0)
+            if abs(factor - 1.0) >= 0.000000000001:
+                formula += f"*{format(factor, '.15g')}"
+        return price if formula == f"={format(price, '.15g')}" else formula
     if str(entry.get("section") or "") != "assembly":
         return _float_value(entry.get("amount_hkd"))
     if str(entry.get("kind") or "") not in {
@@ -684,6 +773,8 @@ def _pricing_entry_summary_category(entry: dict[str, Any]) -> str:
         return "装配工"
     if category == "包装材料":
         return "其他外购"
+    if category == "利宝":
+        return "利宝/说明书"
     if section_code == "engineering" and category not in {
         "五金",
         "吸塑",
@@ -2213,6 +2304,37 @@ def _build_summary_sheet(
     ) -> None:
         detail_rows.append((tax_tag, category, description, formula))
 
+    sales_owns_materials = bool(sales_payload.get("packaging_materials")) or (
+        sales_payload.get("pricing_mode") == "component" and bool(sales_payload.get("cartons")))
+    purchase_entries = _purchase_pricing_entries(_list_of_dicts(shipping.get("pricing_entries", [])), sections)
+    allocated_purchases = {(entry.get("section"), entry["source_line_index"]): entry
+                           for entry in purchase_entries if "source_line_index" in entry}
+    purchase_lines = [allocated_purchases.get((line.get("section"), line["source_line_index"]), line)
+                      for section in sections for line in _purchase_source_lines(section)
+                      if not (sales_owns_materials and line.get("section") == "engineering"
+                              and line.get("category") == "packaging")]
+
+    def ordinary_purchase_category(line):
+        category = _pricing_entry_summary_category(line)
+        if category in {"五金", "电子"} and re.search(r"马达|motor", f"{line.get('label', '')} {line.get('specification', '')}", re.IGNORECASE):
+            return "马达"
+        return category
+
+    def add_purchase_details(tax_tag: str, category: str, amount: object) -> None:
+        matches = [line for line in purchase_lines
+                   if ordinary_purchase_category(line) == category
+                   and _float_value(line.get("amount_hkd")) > 0]
+        if not matches:
+            add_detail(tax_tag, category, category, amount)
+            return
+        for line in matches:
+            detail_rows.append((tax_tag, category, _safe_text(line.get("label")) or category,
+                                _pricing_entry_amount(line)))
+        # Electronic department totals include supplier overhead/profit/tax.
+        # Preserve those costs separately instead of disguising them as unit prices.
+        remainder = _float_value(amount) - sum(_float_value(line.get("amount_hkd")) for line in matches)
+        add_detail(tax_tag, category, f"{category}其他费用/调整", remainder)
+
     # The user-facing summary intentionally exposes one molding-material total
     # ("料价").  The tax summaries below are driven by the tax tags on these
     # authoritative detail rows instead of rebuilding categories a second time.
@@ -2287,20 +2409,19 @@ def _build_summary_sheet(
     # released workbook uses SUMIF against column B, so classifying sewing and
     # hair as generic purchases both hides their business meaning and breaks
     # the summary formulas.
-    add_detail("¥13%", "五金", "五金", t1.get("hardware"))
-    add_detail("¥13%", "电子", "电子", t1.get("electronic"))
-    add_detail("¥13%", "马达", "马达", t1.get("motor"))
-    add_detail("¥6%", "吸塑", "吸塑", t1.get("suction"))
+    add_purchase_details("¥13%", "五金", t1.get("hardware"))
+    add_purchase_details("¥13%", "电子", t1.get("electronic"))
+    add_purchase_details("¥13%", "马达", t1.get("motor"))
+    add_purchase_details("¥6%", "吸塑", t1.get("suction"))
     add_detail("¥13%", "车发", "车发", sewing_hair)
     add_detail(sewing_cloth_material_tax_tag, "车衣", "车衣物料", sewing_cloth_material)
     add_detail("", "车衣", "车衣人工", sewing_cloth_labor)
     add_detail("", "车衣", "车缝未分类成本", sewing_adjustment)
-    add_detail("¥13%", "电池", "电池", t2.get("battery"))
-    add_detail("¥13%", "利宝/说明书", "利宝/说明书", t2.get("libao"))
-    add_detail("¥1%", "电镀", "电镀", t2.get("plating"))
-    add_detail("¥13%", "其他外购", "其他外购", t2.get("other_buy"))
-    add_detail("¥13%", "其他外购", "胶袋", t1.get("glue_bag"))
-    add_detail("¥13%", "彩盒/内卡", "彩盒/内卡", color_box_amount)
+    add_purchase_details("¥13%", "电池", t2.get("battery"))
+    add_purchase_details("¥13%", "利宝/说明书", t2.get("libao"))
+    add_purchase_details("¥1%", "电镀", t2.get("plating"))
+    add_purchase_details("¥13%", "其他外购", _float_value(t2.get("other_buy")) + _float_value(t1.get("glue_bag")))
+    add_purchase_details("¥13%", "彩盒/内卡", color_box_amount)
     cartons = _list_of_dicts(sales_payload.get("cartons", []))
     carton_detail_offsets: dict[int, int] = {}
     paperboard_detail_offset = None
@@ -2801,7 +2922,7 @@ def _build_summary_sheet(
     pricing_rows: list[dict[str, int | float]] = []
     detached_detail_ranges: list[tuple[int, int]] = []
     pricing_groups = _list_of_dicts(shipping.get("pricing_groups", []))
-    pricing_entries = _list_of_dicts(shipping.get("pricing_entries", []))
+    pricing_entries = purchase_entries
     split_pricing = shipping.get("pricing_mode") == "component" or len(pricing_groups) > 1
     standard_detail_split = (
         shipping.get("pricing_mode") == "standard" and len(pricing_groups) > 1
@@ -2859,6 +2980,7 @@ def _build_summary_sheet(
             )
 
         group_quote_rows: list[int] = []
+        detached_purchase_rows: set[int] = set()
         first_markup_row = int(group_layouts[0]["markup_row"])
         for layout in group_layouts:
             index = int(layout["index"])
@@ -2876,7 +2998,7 @@ def _build_summary_sheet(
 
             for entry_offset, entry in enumerate(entries):
                 detail_row = detail_row_start + entry_offset
-                category = _pricing_entry_summary_category(entry)
+                category = ordinary_purchase_category(entry) if standard_detail_split else _pricing_entry_summary_category(entry)
                 description = _safe_text(entry.get("label")) or category
                 entry_carton_index = next((
                     index for index, row in enumerate(cartons)
@@ -2888,12 +3010,15 @@ def _build_summary_sheet(
                         for row in range(detail_start_row, detail_formula_end_row + 1)
                         if _safe_text(sheet.cell(row, 2).value) == category
                         and _safe_text(sheet.cell(row, 3).value) == description
+                        and row not in detached_purchase_rows
                     ),
                     None,
                 )
                 if entry_carton_index is not None:
                     source_row = detail_start_row + carton_detail_offsets[entry_carton_index]
                     description = _carton_detail_label(entry_carton_index, len(cartons))
+                elif source_row is not None and entry.get("source_unit_price") is not None:
+                    detached_purchase_rows.add(source_row)
                 if source_row is None:
                     source_row = next(
                         (
@@ -2919,7 +3044,9 @@ def _build_summary_sheet(
                             flat_cell = sheet.cell(detail_start_row + paperboard_detail_offset, 4)
                             flat_cell.value = f"=({str(flat_cell.value)[1:]})-({flat_formula})"
                     elif isinstance(source_value, str) and source_value.startswith("="):
-                        source_cell.value = f"=({source_value[1:]})-{amount_label}"
+                        detached_amount = _pricing_entry_amount(entry)
+                        detached_expression = str(detached_amount)[1:] if isinstance(detached_amount, str) else amount_label
+                        source_cell.value = "=0" if source_value[1:] == detached_expression else f"=({source_value[1:]})-({detached_expression})"
                     else:
                         remaining = _float_value(source_value) - amount_numeric
                         source_cell.value = 0.0 if abs(remaining) < 0.0000001 else remaining
@@ -3561,7 +3688,7 @@ def _justplay_electronic_source_parts(section: InternalQuoteSection | None) -> l
         walk(payload.get("quick_quotes"))
     else:
         walk(payload.get("components"))
-    lines = _calculation_lines(section, "electronic_component")
+    lines = _purchase_source_lines(section)
     # The calculator emits children before parents. Only pair identical row
     # sequences; a legacy snapshot must never borrow another row's identity.
     paired = len(source_rows) == len(lines) and all(
@@ -3574,6 +3701,7 @@ def _justplay_electronic_source_parts(section: InternalQuoteSection | None) -> l
         name = source.get("source_name", line.get("item"))
         specification = source.get("specification", line.get("specification", ""))
         result.append({
+            "source_amount": _pricing_entry_amount(line),
             "category": _justplay_electronic_category(name, specification),
             "name": _plain_text(name),
             "specification": _plain_text(specification),
@@ -3608,9 +3736,9 @@ def _replace_with_component_summary_sheet(
     target = workbook.create_sheet("报价明细", 0)
     shipping = _dict_value(rr2_cost_summary.get("shipping_pricing", {}))
     pricing_groups = _list_of_dicts(shipping.get("pricing_groups", []))
-    pricing_entries = _list_of_dicts(shipping.get("pricing_entries", []))
+    pricing_entries = _purchase_pricing_entries(_list_of_dicts(shipping.get("pricing_entries", [])), sections)
     global_pricing = _dict_value(shipping.get("global_pricing", {}))
-    global_entries = _list_of_dicts(global_pricing.get("entries", []))
+    global_entries = _purchase_pricing_entries(_list_of_dicts(global_pricing.get("entries", [])), sections)
     customer_supplied_entries = _list_of_dicts(_dict_value(shipping.get("customer_supplied_pricing", {})).get("entries", []))
     by_code = {section.department: section for section in sections}
     sales_payload = _section_payload(by_code.get("sales"))
@@ -3784,32 +3912,37 @@ def _replace_with_component_summary_sheet(
             residual = electronic_total - included_battery - sum(buckets[key] for key in ("IC", "LED", "喇叭"))
             if residual < -0.0005:
                 raise ValueError(f"{component_name}电子总价不足以覆盖 IC、LED、喇叭和电池明细，请核对上传报价及配件归属")
-            buckets["电池"] += external_battery
             # The visible source total excludes batteries. If a battery came
             # from the electronic quote, subtract it here before adding its
             # standalone detail, preserving the authoritative component total.
             _merge_and_style(target, f"F{start_row}:G{start_row}", "电子总价 HKD（不含电池）", size=9)
+            detail_values = []
+            for key in ("IC", "LED", "喇叭", "PCB", "电池"):
+                category = "电池" if key == "电池" else "电子"
+                selected = [part for part in parts if part["category"] == key and part["amount_hkd"] > 0]
+                for part in selected:
+                    description = part["name"] or part["specification"] or key
+                    if part["specification"] and part["specification"] != description:
+                        description += f"（{part['specification']}）"
+                    label = description if description == key else f"{key}（{description}）"
+                    detail_values.append(("¥13%", category, label, part.get("source_amount", part["amount_hkd"])))
+                if key == "PCB":
+                    pcb_offset = len(detail_values)
+                    label = "PCB其他费用/调整" if selected else "PCB"
+                    detail_values.append(("¥13%", category, label, f"=H{start_row}-SUM(D{row}:D{row + pcb_offset - 1})"))
+                if key == "电池":
+                    for entry in battery_entries:
+                        detail_values.append(("¥13%", category, _safe_text(entry.get("label")) or key,
+                                              _pricing_entry_amount(entry)))
+                if not selected and key != "PCB" and not (key == "电池" and battery_entries):
+                    detail_values.append(("¥13%", category, key, 0))
             total_formula = f"={format(electronic_total, '.12g')}"
             if included_battery:
-                total_formula += f"-D{row + 4}"
+                battery_start = row + pcb_offset + 1
+                total_formula += f"-SUM(D{battery_start}:D{row + len(detail_values) - 1})"
                 if external_battery:
                     total_formula += f"+{format(external_battery, '.12g')}"
             _template_cell(target, start_row, 8, total_formula, number_format="0.000")
-            detail_values = []
-            for key in ("IC", "LED", "喇叭", "PCB", "电池"):
-                specifications = list(dict.fromkeys(
-                    part["specification"] or part["name"] for part in parts
-                    if part["category"] == key and (part["specification"] or part["name"]) not in ("", key)
-                )) if key != "PCB" else []
-                if key == "电池":
-                    specifications = list(dict.fromkeys(specifications + [
-                        _plain_text(entry.get("label")) for entry in battery_entries
-                        if _plain_text(entry.get("label")) not in ("", "电池")
-                    ]))
-                label = key + (f"（{'；'.join(specifications)}）" if specifications else "")
-                amount = f"=H{start_row}-SUM(D{row}:D{row + 2})" if key == "PCB" else buckets[key]
-                category = "电池" if key == "电池" else "电子"
-                detail_values.append(("¥13%", category, label, amount))
         else:
             detail_values = [(_pricing_entry_tax_tag(entry), _pricing_entry_summary_category(entry),
                               _safe_text(entry.get("label")) or department_name, _pricing_entry_amount(entry))
@@ -4281,7 +4414,7 @@ def _replace_with_component_summary_sheet(
             )
             amount = (
                 f"={quote_sheetname(source.title)}!D{source_detail_row}"
-                if source_detail_row is not None
+                if source_detail_row is not None and entry.get("source_unit_price") is None
                 else _pricing_entry_amount(entry)
             )
         for column, value in enumerate(
