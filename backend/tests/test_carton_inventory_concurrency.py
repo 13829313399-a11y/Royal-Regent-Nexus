@@ -1,4 +1,5 @@
 import importlib
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from threading import Barrier
@@ -34,7 +35,7 @@ def test_concurrent_outbound_cannot_overdraw_the_same_stock(monkeypatch):
         monkeypatch.setattr(service, "lock_transaction", synchronized_lock)
         def outbound(number):
             return client.post(base + "/movements", json={
-                **params, "reference_movement_id": balance["latest_movement_id"],
+                **params, "request_id": uuid4().hex, "reference_movement_id": balance["latest_movement_id"],
                 "movement_type": "OUTBOUND", "quantity": "7", "location": "A-01",
                 "document_no": f"OUT-{number}", "reason": "并发出库回归",
             })

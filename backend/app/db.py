@@ -579,11 +579,29 @@ def ensure_injection_v3_schema_ready() -> None:
             )
 
 
+def ensure_carton_stocktake_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        missing = []
+        for name in ("carton_stocktakes", "carton_stocktake_lines"):
+            if name not in names:
+                missing.append(name)
+            else:
+                columns = {column["name"] for column in inspector.get_columns(name)}
+                missing.extend(f"{name}.{column.name}" for column in Base.metadata.tables[name].columns if column.name not in columns)
+        if missing:
+            raise RuntimeError("库存盘点尚未迁移至 20260907_0102；请备份并完成迁移后启动。缺少：" + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
         carton_procurement,  # noqa: F401
+        carton_stocktake,  # noqa: F401
         customer_order,  # noqa: F401
         internal_quote,  # noqa: F401
         injection_scheduling,  # noqa: F401
@@ -609,6 +627,7 @@ def init_db() -> None:
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()
     ensure_injection_v3_schema_ready()
+    ensure_carton_stocktake_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import { postCartonInventoryRequest } from './cartonInventoryRequest'
 
 export interface CartonCustomerResponse {
   id: string
@@ -277,6 +278,18 @@ export interface CartonAuditEventResponse {
   created_at: string
 }
 
+export interface CartonPricingIssue {
+  movement_id: string
+  document_no: string
+  item_no: string
+  packaging_type: string
+  occurred_at: string
+  unit: string
+  currency: string
+  message: string
+  can_price: boolean
+}
+
 export interface CartonClosingResponse {
   id: string
   factory_id: string
@@ -289,6 +302,8 @@ export interface CartonClosingResponse {
   adjustment_quantity: string
   ending_quantity: string
   ending_amount: string
+  pricing_issues?: CartonPricingIssue[]
+  snapshot_stale?: boolean
   currency: string
   status: 'DRAFT' | 'PENDING' | 'CONFIRMED' | 'LOCKED'
   revision: number
@@ -440,6 +455,11 @@ export interface CartonDashboardResponse {
 }
 
 export const cartonProcurementApi = {
+  async confirmInventoryPrice(movementId: string, payload: {
+    factory_id: string; unit_price: string; zero_price_confirmed: boolean; reason: string
+  }) {
+    await http.post(`/carton-procurement/inventory/movements/${encodeURIComponent(movementId)}/price-confirmation`, payload)
+  },
   async listCustomers(factoryId: string, includeInactive = true) {
     const response = await http.get<{ items: CartonCustomerResponse[] }>('/carton-procurement/customers', {
       params: { factory_id: factoryId, include_inactive: includeInactive },
@@ -474,17 +494,15 @@ export const cartonProcurementApi = {
     dueTo?: string
     search?: string
   } = {}) {
-    const response = await http.get<{ items: CartonOrderResponse[] }>('/carton-procurement/orders', {
-      params: {
-        factory_id: factoryId,
-        status_filter: filters.status ?? '',
-        due_from: filters.dueFrom ?? '',
-        due_to: filters.dueTo ?? '',
-        search: filters.search ?? '',
-        limit: 200,
-      },
-    })
-    return response.data.items
+    const items: CartonOrderResponse[] = []
+    while (true) {
+      const response = await http.get<{ items: CartonOrderResponse[]; total: number }>('/carton-procurement/orders', {
+        params: { factory_id: factoryId, status_filter: filters.status ?? '', due_from: filters.dueFrom ?? '',
+          due_to: filters.dueTo ?? '', search: filters.search ?? '', limit: 200, offset: items.length },
+      })
+      items.push(...response.data.items)
+      if (!response.data.items.length || items.length >= response.data.total) return items
+    }
   },
   async createOrder(payload: CartonOrderCreateRequest) {
     const response = await http.post<CartonOrderResponse>('/carton-procurement/orders', payload)
@@ -695,11 +713,10 @@ export const cartonProcurementApi = {
     return response.data
   },
   async createInventoryMovement(payload: CartonInventoryMovementCreateRequest) {
-    const response = await http.post<CartonInventoryMovementResponse>(
+    return postCartonInventoryRequest<CartonInventoryMovementResponse>(
       '/carton-procurement/inventory/movements',
       payload,
     )
-    return response.data
   },
   async relocateInventory(payload: {
     factory_id: string
@@ -724,11 +741,11 @@ export const cartonProcurementApi = {
       location: string
     }>
   }) {
-    const response = await http.post<CartonInventoryMovementResponse[]>(
+    return postCartonInventoryRequest<CartonInventoryMovementResponse[]>(
       '/carton-procurement/inventory/movements/bulk',
-      payload,
+      { ...payload, items: [...payload.items].sort((a, b) =>
+        (a.order_line_id || a.reference_movement_id || '').localeCompare(b.order_line_id || b.reference_movement_id || '')) },
     )
-    return response.data
   },
   async listInventorySummary(factoryId: string, dateFrom = '', dateTo = '') {
     const response = await http.get<CartonInventoryFlowSummaryResponse[]>(
@@ -814,10 +831,20 @@ export const cartonProcurementApi = {
     return response.data
   },
   async listReceipts(factoryId: string) {
-    const response = await http.get<{ items: CartonReceiptResponse[] }>('/carton-procurement/receipts', {
-      params: { factory_id: factoryId, limit: 200 },
+    const items: CartonReceiptResponse[] = []
+    while (true) {
+      const response = await http.get<{ items: CartonReceiptResponse[]; total: number }>('/carton-procurement/receipts', {
+        params: { factory_id: factoryId, limit: 200, offset: items.length },
+      })
+      items.push(...response.data.items)
+      if (!response.data.items.length || items.length >= response.data.total) return items
+    }
+  },
+  async reverseReceipt(factoryId: string, receiptId: string, expectedRevision: number, reason: string) {
+    const response = await http.post<CartonReceiptResponse>(`/carton-procurement/receipts/${encodeURIComponent(receiptId)}/reverse`, {
+      factory_id: factoryId, expected_revision: expectedRevision, reason,
     })
-    return response.data.items
+    return response.data
   },
   async createReceipt(payload: {
     factory_id: string
@@ -860,6 +887,12 @@ export const cartonProcurementApi = {
     const response = await http.post<CartonClosingResponse[]>('/carton-procurement/closings/generate', {
       factory_id: factoryId,
       period,
+    })
+    return response.data
+  },
+  async unlockClosing(factoryId: string, closing: CartonClosingResponse, reason: string) {
+    const response = await http.post<CartonClosingResponse>(`/carton-procurement/closings/${encodeURIComponent(closing.id)}/unlock`, {
+      factory_id: factoryId, expected_revision: closing.revision, reason,
     })
     return response.data
   },
