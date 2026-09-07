@@ -1,3 +1,4 @@
+from uuid import uuid4
 import json
 import os
 import sqlite3
@@ -400,6 +401,15 @@ def test_grouped_order_calculation_and_factory_scope(monkeypatch):
         assert order["lines"][0]["specification"] == "31.5 × 11.125 × 11.25"
         assert Decimal(order["lines"][0]["required_quantity"]) == Decimal("30.0000")
         assert Decimal(order["lines"][1]["required_quantity"]) == Decimal("3600.0000")
+
+        timeline = client.get("/api/carton-procurement/inventory/order-timeline",
+                              params={"factory_id": "huaxing", "order_id": order["id"]})
+        assert timeline.status_code == 200, timeline.text
+        created_event = next(row for row in timeline.json()["events"] if row["event_type"] == "ORDER_CREATED")
+        assert Decimal(created_event["quantity_change"]) == Decimal("3600")
+        assert created_event["quantity_before"] == "0"
+        assert created_event["quantity_basis"] == "ORDER_PRODUCT"
+        assert created_event["contract_no"] == order["contract_no"]
 
         listed = client.get(
             "/api/carton-procurement/orders",
@@ -1313,6 +1323,7 @@ def test_batch_receipt_bulk_outbound_summary_and_return(monkeypatch):
         outbound = client.post(
             "/api/carton-procurement/inventory/movements/bulk",
             json={
+                "request_id": uuid4().hex,
                 "factory_id": "huaxing",
                 "document_no": "OUT-BULK-001",
                 "reason": "客户要货",
@@ -1792,6 +1803,7 @@ def test_manual_full_receipt_without_import_batch_completes_order(monkeypatch):
                         "unusable_quantity": "0",
                         "location": f"A-{index:02d}",
                         "feedback_note": "人工录入",
+                        "unit_price": "2.567891",
                     }
                     for index, line in enumerate(order["lines"], start=1)
                 ],
@@ -1801,6 +1813,7 @@ def test_manual_full_receipt_without_import_batch_completes_order(monkeypatch):
         receipt = receipt_response.json()
         assert receipt["import_batch_id"] is None
         assert receipt["status"] == "PENDING_CONFIRMATION"
+        assert all(Decimal(line["unit_price"]) == Decimal("2.567891") for line in receipt["lines"])
 
         confirmed = client.post(
             f"/api/carton-procurement/receipts/{receipt['id']}/confirm",
@@ -1823,6 +1836,10 @@ def test_manual_full_receipt_without_import_batch_completes_order(monkeypatch):
             params={"factory_id": "huaxing"},
         ).json()
         assert movements["total"] == len(order["lines"])
+        assert all(Decimal(row["unit_price"]) == Decimal("2.567891") for row in movements["items"])
+        assert {line["id"]: line["unit_price"] for line in refreshed_order["lines"]} == {
+            line["id"]: line["unit_price"] for line in order["lines"]
+        }
 
 
 def test_manual_movement_reversal_and_locked_month(monkeypatch):
@@ -1840,6 +1857,7 @@ def test_manual_movement_reversal_and_locked_month(monkeypatch):
         outbound = client.post(
             "/api/carton-procurement/inventory/movements",
             json={
+                "request_id": uuid4().hex,
                 "factory_id": "huaxing",
                 "order_line_id": order_line_id,
                 "movement_type": "OUTBOUND",
@@ -1876,7 +1894,10 @@ def test_manual_movement_reversal_and_locked_month(monkeypatch):
         assert closing["currency"] == "CNY"
         assert Decimal(closing["ending_quantity"]) == Decimal("9.0000")
 
+        login_as(client, "admin")
         for next_status in ("PENDING", "CONFIRMED", "LOCKED"):
+            if next_status == "LOCKED":
+                monkeypatch.setattr("app.services.carton_procurement.business_now", lambda: datetime(2026, 9, 1, tzinfo=ZoneInfo("Asia/Shanghai")))
             response = client.post(
                 f"/api/carton-procurement/closings/{closing['id']}/status",
                 json={
@@ -1888,9 +1909,12 @@ def test_manual_movement_reversal_and_locked_month(monkeypatch):
             assert response.status_code == 200, response.text
             closing = response.json()
 
+        # A backdated posting into the locked period must still be rejected.
+        _freeze_carton_time(monkeypatch)
         blocked = client.post(
             "/api/carton-procurement/inventory/movements",
             json={
+                "request_id": uuid4().hex,
                 "factory_id": "huaxing",
                 "order_line_id": order_line_id,
                 "movement_type": "ADJUSTMENT",
@@ -2706,6 +2730,7 @@ def test_standalone_history_inventory_supports_outbound_adjustment_and_reversal(
         outbound = client.post(
             "/api/carton-procurement/inventory/movements",
             json={
+                "request_id": uuid4().hex,
                 "factory_id": "huaxing",
                 "order_line_id": None,
                 "reference_movement_id": balance["latest_movement_id"],
@@ -2728,6 +2753,7 @@ def test_standalone_history_inventory_supports_outbound_adjustment_and_reversal(
         negative = client.post(
             "/api/carton-procurement/inventory/movements",
             json={
+                "request_id": uuid4().hex,
                 "factory_id": "huaxing",
                 "reference_movement_id": outbound.json()["id"],
                 "movement_type": "ADJUSTMENT",
@@ -2830,6 +2856,7 @@ def test_receipt_history_can_be_searched_after_confirmation(monkeypatch):
             movement = client.post(
                 "/api/carton-procurement/inventory/movements",
                 json={
+                    "request_id": uuid4().hex,
                     "factory_id": "huaxing",
                     "order_line_id": balance["order_line_id"],
                     "movement_type": movement_type,
