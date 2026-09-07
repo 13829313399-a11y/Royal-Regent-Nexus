@@ -19,6 +19,7 @@ from app.models.carton_procurement import (
 )
 from app.schemas.carton_procurement import CartonHistoryInventoryImportOut
 from app.services.auth import AuthContext
+from app.services.transaction_lock import lock_transaction
 from app.services.carton_procurement import (
     MAX_IMPORT_BYTES,
     _audit,
@@ -233,6 +234,7 @@ def import_history_inventory(
     user: AuthContext,
 ) -> CartonHistoryInventoryImportOut:
     factory_id = require_carton_factory(factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     filename = Path(filename or "").name
     suffix = Path(filename).suffix.lower()
     if suffix not in HISTORY_INVENTORY_SUFFIXES:

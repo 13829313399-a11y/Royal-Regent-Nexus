@@ -89,6 +89,7 @@ const currentProductImageUrl = computed(() => {
 })
 const isMultiProduct = computed(() => batchProducts.value.length > 1)
 const batchReady = computed(() => batchProducts.value.length > 0
+  && !(quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.value.id)
   && batchProducts.value.every((product) => product.status === 'fully_approved'))
 const isWholeQuoteReview = computed(() => quote.value.moduleVersion === 'v3')
 const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
@@ -933,7 +934,7 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <p v-if="message" class="quote-page-message success">{{ message }}</p><p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
+    <p v-if="message" class="quote-page-message success">{{ message }}</p><p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p><p v-if="quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.id" class="quote-page-message error" role="status">{{ quoteStore.refreshWarning }} <button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="quoteStore.refreshAfterMutation(quote.id)">重新读取</button></p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
     <p v-if="quoteStore.conflictMessage" class="quote-page-message conflict"><span>{{ quoteStore.conflictMessage }}</span><button type="button" @click="loadQuote">放弃本地表单并重新读取</button></p>
 
     <div class="quote-collaboration-grid" :class="{ 'whole-review-layout': isWholeQuoteReview }">

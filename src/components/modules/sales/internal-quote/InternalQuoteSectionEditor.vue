@@ -505,6 +505,10 @@ async function handleUploadFile(event: Event) {
   if (!file || !editable.value) return
   resetFeedback()
   try {
+    if (isImportWorkbook(file) && importOptions.value.length && isDirty.value) {
+      localError.value = '当前有未保存修改，请先保存草稿，再重新选择报价单导入。'
+      return
+    }
     const detected = await detectImportPreview(file)
     if (detected) {
       importPreview.value = detected
@@ -538,6 +542,11 @@ async function downloadImportTemplate(option?: ImportOption) {
 }
 
 async function confirmImport() {
+  if (isDirty.value) {
+    importPreview.value = undefined
+    localError.value = '预览后有未保存修改，请先保存草稿，再重新选择报价单导入。'
+    return
+  }
   if (!importPreview.value || !editable.value) {
     importPreview.value = undefined
     localError.value = '当前账号没有确认导入该分段的权限。'
@@ -569,12 +578,12 @@ function previewAttachment(attachment: InternalQuoteAttachmentRecord) {
 
 function requestDeleteImportAttachment(attachment: InternalQuoteAttachmentRecord) {
   resetFeedback()
-  if (!attachment.isImportSource || !editable.value) {
-    localError.value = '当前附件不能联动删除，或本分段当前不可编辑。'
+  if (!editable.value) {
+    localError.value = '本分段当前不可编辑，无法删除附件。'
     return
   }
   if (isDirty.value) {
-    localError.value = '当前有未保存修改，请先保存草稿或放弃修改，再删除导入附件。'
+    localError.value = '当前有未保存修改，请先保存草稿或放弃修改，再删除附件。'
     return
   }
   deleteAttachmentTarget.value = attachment
@@ -583,11 +592,22 @@ function requestDeleteImportAttachment(attachment: InternalQuoteAttachmentRecord
 async function confirmDeleteImportAttachment() {
   const attachment = deleteAttachmentTarget.value
   if (!attachment || !editable.value || quoteStore.submitting) return
+  if (isDirty.value) {
+    localError.value = '当前有未保存修改，请先保存草稿，再删除附件。'
+    deleteAttachmentTarget.value = undefined
+    return
+  }
   resetFeedback()
   try {
-    await quoteStore.deleteImportAttachment(props.quote.id, attachment.id, props.section.revision)
+    if (attachment.isImportSource) {
+      await quoteStore.deleteImportAttachment(props.quote.id, attachment.id, props.section.revision)
+    } else {
+      await quoteStore.deleteSupportingAttachment(props.quote.id, attachment.id, props.section.revision)
+    }
     deleteAttachmentTarget.value = undefined
-    localMessage.value = `已删除 ${attachment.fileName}，并清除该文件导入生成的相关报价数据。`
+    localMessage.value = attachment.isImportSource
+      ? `已删除 ${attachment.fileName}，并清除该文件仍在使用的导入数据。`
+      : `已删除附件 ${attachment.fileName}。`
   } catch (error) { localError.value = errorText(error) }
 }
 
@@ -658,7 +678,7 @@ function confirmRemoveParticipation() {
 
     <section class="calculation-snapshot"><header><strong>服务端权威计算快照</strong><span>保存后由服务端重算；前端不生成正式金额</span></header><div class="snapshot-table-scroll"><table><thead><tr><th>项目</th><th>类型</th><th>金额 HKD</th></tr></thead><tbody><tr v-for="line in section.lines" :key="line.id"><td>{{ line.item }}</td><td>{{ line.specification }}</td><td class="calculated-amount-cell">{{ detailAmount(line.amountHkd) }}</td></tr><tr v-if="!section.lines.length"><td colspan="3" class="empty">保存有效明细后显示服务端计算结果</td></tr></tbody><tfoot><tr><td colspan="2">{{ section.label }}权威小计</td><td class="calculated-amount-cell">HKD {{ detailAmount(section.totalHkd) }}</td></tr></tfoot></table></div></section>
 
-    <section class="quote-attachments"><header><strong>本部门资料 / 分段附件</strong><span>仅显示分配给当前部门的资料；导入源文件可连同其生成的报价数据一起删除</span></header><div><span v-for="attachment in section.attachments" :key="attachment.id" class="attachment-pill"><button type="button" class="attachment-download" :title="`${attachment.uploadedBy} · ${attachment.uploadedAt} · ${attachment.sha256}`" @click="downloadAttachment(attachment.id, attachment.fileName)"><Paperclip />{{ attachment.fileName }}<Download /></button><button type="button" class="attachment-preview" :title="`在右侧预览 ${attachment.fileName}`" :aria-label="`预览 ${attachment.fileName}`" @click="emit('preview-file', section.code, attachment)"><Eye />预览</button><button v-if="attachment.isImportSource" type="button" class="attachment-delete" :disabled="!editable || quoteStore.submitting" :title="`删除 ${attachment.fileName} 及其导入数据`" :aria-label="`删除 ${attachment.fileName} 及其导入数据`" @click="requestDeleteImportAttachment(attachment)"><Trash2 /></button></span><em v-if="!section.attachments.length">暂无分配给本部门的资料</em></div></section>
+    <section class="quote-attachments"><header><strong>本部门资料 / 分段附件</strong><span>仅显示分配给当前部门的资料；导入源文件可连同其生成的报价数据一起删除</span></header><div><span v-for="attachment in section.attachments" :key="attachment.id" class="attachment-pill"><button type="button" class="attachment-download" :title="`${attachment.uploadedBy} · ${attachment.uploadedAt} · ${attachment.sha256}`" @click="downloadAttachment(attachment.id, attachment.fileName)"><Paperclip />{{ attachment.fileName }}<Download /></button><button type="button" class="attachment-preview" :title="`在右侧预览 ${attachment.fileName}`" :aria-label="`预览 ${attachment.fileName}`" @click="emit('preview-file', section.code, attachment)"><Eye />预览</button><button type="button" class="attachment-delete" :disabled="!editable || quoteStore.submitting" :title="`删除 ${attachment.fileName}${attachment.isImportSource ? ' 及其导入数据' : ''}`" :aria-label="`删除 ${attachment.fileName}${attachment.isImportSource ? ' 及其导入数据' : ''}`" @click="requestDeleteImportAttachment(attachment)"><Trash2 /></button></span><em v-if="!section.attachments.length">暂无分配给本部门的资料</em></div></section>
 
     <p v-if="localMessage" class="quote-local-message"><CheckCircle2 />{{ localMessage }}</p>
     <p v-if="localError" class="quote-local-error"><AlertCircle />{{ localError }}</p>
@@ -693,8 +713,8 @@ function confirmRemoveParticipation() {
     <Teleport to="body">
       <div v-if="deleteAttachmentTarget" class="unsaved-draft-backdrop" role="presentation" @click.self="deleteAttachmentTarget = undefined">
         <section class="unsaved-draft-dialog remove-department-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-import-attachment-title">
-          <header><span><Trash2 /></span><div><h3 id="delete-import-attachment-title">删除导入附件和相关数据？</h3><p>{{ deleteAttachmentTarget.fileName }}</p></div></header>
-          <p class="unsaved-draft-note remove-note"><AlertCircle />该文件导入生成的本部门明细、关联模具图片和计算结果会一起清除，并生成新的 revision。此操作无法直接恢复。</p>
+          <header><span><Trash2 /></span><div><h3 id="delete-import-attachment-title">{{ deleteAttachmentTarget.isImportSource ? '删除导入附件和相关数据？' : '删除附件？' }}</h3><p>{{ deleteAttachmentTarget.fileName }}</p></div></header>
+          <p class="unsaved-draft-note remove-note"><AlertCircle />{{ deleteAttachmentTarget.isImportSource ? '该文件仍在使用的导入明细及关联图片会被清除，并重新计算；手工明细和其他文件的明细保留。此操作无法直接恢复。' : '仅删除该附件，报价明细保留。仍被明细引用的图片需先移除引用并保存。此操作无法直接恢复。' }}</p>
           <footer><button type="button" class="cancel" :disabled="quoteStore.submitting" @click="deleteAttachmentTarget = undefined">取消</button><button type="button" class="remove-confirm" :disabled="quoteStore.submitting" @click="confirmDeleteImportAttachment"><Trash2 />确认删除</button></footer>
         </section>
       </div>

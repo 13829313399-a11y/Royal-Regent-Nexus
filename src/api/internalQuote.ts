@@ -888,6 +888,11 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
         params: { revision },
       })
     },
+    async deleteSupportingAttachment(quoteId: string, attachmentId: string, revision: number) {
+      await client.delete(`/internal-quotes/${quoteId}/attachments/${attachmentId}/supporting`, {
+        params: { revision },
+      })
+    },
     async createExport(quoteId: string) {
       const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/exports`)
       return response.data
