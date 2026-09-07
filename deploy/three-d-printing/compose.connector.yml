@@ -1,0 +1,28 @@
+# Explicit opt-in profile. Configuration alone does not transfer printer ownership.
+services:
+  printer-connector:
+    profiles: [three-d-connector]
+    build: ../../services/three-d-printer-connector
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      THREE_D_API_URL: ${THREE_D_API_URL:?Set private API URL}
+      THREE_D_CONNECTOR_TOKEN_FILE: /run/secrets/connector-token
+      THREE_D_SECRET_DIR: /run/printer-secrets
+    volumes:
+      - type: bind
+        source: ${THREE_D_TOKEN_FILE:?Set token file outside Git}
+        target: /run/secrets/connector-token
+        read_only: true
+      - type: bind
+        source: ${THREE_D_SECRET_DIRECTORY:?Set protected secret directory}
+        target: /run/printer-secrets
+        read_only: true
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    stop_grace_period: 15s

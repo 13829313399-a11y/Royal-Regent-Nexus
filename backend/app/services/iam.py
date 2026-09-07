@@ -118,6 +118,7 @@ DEPARTMENT_NAMES = {
     "warehouse": "仓库（历史部门代码）",
 }
 MODULE_NAMES = {
+    "injection_scheduling": "注塑排产中枢",
     "molding_sample": "啤办管理",
     "carton_mark": "箱唛管理",
     "customer_price": "客户报价",

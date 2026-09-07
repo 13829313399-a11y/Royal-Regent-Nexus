@@ -1,0 +1,16 @@
+[Unit]
+Description=Heyuan 3D network health (TCP/TLS only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Review privileges for the selected VPN CLI; this template requires trusted root-owned files.
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/rr-3d-network/doctor.py --config /etc/rr-3d-network/config.json --mode probe --nft-json /var/lib/rr-3d-network/cloud.nft.json --nft-json /var/lib/rr-3d-network/gateway.nft.json --report-url https://REPLACE_RR_HOST/api/three-d-printing/network/health --token-file /run/secrets/three-d-network-token
+TimeoutStartSec=85
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

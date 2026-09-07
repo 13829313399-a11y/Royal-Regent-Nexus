@@ -27,6 +27,7 @@ from app.models.three_d_printing import (
     ThreeDPrintingPrinter,
     ThreeDPrintingProduct,
     ThreeDPrintingProductImage,
+    ThreeDPrintingProductionRecord,
 )
 from app.schemas.three_d_printing import (
     ThreeDAuditEventOut,
@@ -53,6 +54,7 @@ from app.schemas.three_d_printing import (
     ThreeDProductionRecordUpdate,
     ThreeDProductOut,
     ThreeDProductUpdate,
+    ThreeDRecordAction,
     ThreeDScheduleInput,
     ThreeDScheduleOut,
     ThreeDScheduleStatusUpdate,
@@ -73,6 +75,11 @@ from app.services.three_d_migration_queries import (
     list_migration_batches,
     list_migration_rows,
     require_migration_administrator,
+)
+from app.services.three_d_network_health import (
+    NetworkHealthReport,
+    network_health_snapshot,
+    store_network_health,
 )
 from app.services.three_d_printing import (
     MAX_PRODUCT_IMAGE_BYTES,
@@ -106,6 +113,7 @@ from app.services.three_d_printing import (
     register_edge_agent,
     remove_product_image,
     require_three_d_factory,
+    restore_production_record,
     save_product_image,
     schedule_out,
     update_day_status,
@@ -218,11 +226,31 @@ def _ensure_edge_token(x_edge_token: str) -> None:
         raise HTTPException(status_code=401, detail="3D边缘代理认证失败")
 
 
+@router.post("/network/health")
+def post_network_health(payload: NetworkHealthReport, request: Request, db: Session = Depends(get_db)):
+    token = settings.three_d_network_health_token
+    if len(token) < 32:
+        raise HTTPException(503, "站点健康采集凭据尚未配置")
+    supplied = request.headers.get("X-Three-D-Network-Token", "")
+    if not compare_digest(supplied.encode(), token.encode()):
+        raise HTTPException(401, "网络采集认证失败")
+    store_network_health(db, payload)
+    return network_health_snapshot(db)
+
+
+@router.get("/network/health")
+def get_network_health(factory_id: str, db: Session = Depends(get_db),
+                       current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "three_d_printing:read", factory_id)
+    return network_health_snapshot(db)
+
+
 @router.get("/dashboard", response_model=ThreeDDashboardOut)
 def get_dashboard(
     factory_id: str,
     date_from: str = "",
     date_to: str = "",
+    compact: bool = False,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -232,7 +260,39 @@ def get_dashboard(
         factory_id=factory_id,
         date_from=date_from,
         date_to=date_to,
+        compact=compact,
     )
+
+
+@router.get("/collections/{kind}")
+def collection(kind: str, factory_id: str, db: MigrationDb, current_user: MigrationUser,
+               page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100),
+               q: str = Query("", max_length=100), machine_no: int = Query(0, ge=0, le=11),
+               state: str = Query("", max_length=32), source: str = Query("", max_length=64),
+               date_from: str = Query("", max_length=10), date_to: str = Query("", max_length=10),
+               quality: str = Query("", max_length=32), customer: str = Query("", max_length=100), material: str = Query("", max_length=100)):
+    from app.services.three_d_workspace import page as query_page
+    _ensure_permission(db, current_user, "three_d_printing:read", factory_id)
+    return query_page(db, kind, page=page, page_size=page_size, q=q, machine_no=machine_no,
+                      state=state, source=source, date_from=date_from, date_to=date_to,
+                      quality=quality, customer=customer, material=material)
+
+
+@router.get("/printers/{printer_id}/timeline")
+def printer_timeline(printer_id: str, factory_id: str, db: MigrationDb, current_user: MigrationUser):
+    from app.services.three_d_workspace import printer_detail
+    _ensure_permission(db, current_user, "three_d_printing:read", factory_id)
+    return printer_detail(db, printer_id)
+
+
+@router.get("/live/events")
+def live_events(request: Request, factory_id: str):
+    from app.services.three_d_live import events, snapshot
+
+    initial = snapshot(request, factory_id)
+    return StreamingResponse(events(request, factory_id, initial, request.headers.get("last-event-id", "")[:128]),
+                             media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
 
 
 @router.put("/settings", response_model=ThreeDSettingsOut)
@@ -419,6 +479,8 @@ def put_record(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "three_d_printing:operate", payload.factory_id)
+    if payload.history_only_correction:
+        _ensure_permission(db, current_user, "three_d_printing:audit_read", payload.factory_id)
     return production_record_out(
         update_production_record(
             db,
@@ -435,6 +497,9 @@ def delete_record(
     record_id: str,
     factory_id: str,
     request: Request,
+    revision: int = Query(..., ge=1),
+    reason: str = Query(..., min_length=1, max_length=1000),
+    idempotency_key: str = Query(..., min_length=1, max_length=128),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -444,8 +509,25 @@ def delete_record(
         record_id,
         factory_id,
         current_user,
-        _request_id(request),
+        _request_id(request), revision=revision, reason=reason, idempotency_key=idempotency_key,
     )
+
+
+@router.post("/records/{record_id}/restore", response_model=ThreeDProductionRecordOut)
+def restore_record(record_id: str, payload: ThreeDRecordAction, request: Request,
+                   db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "three_d_printing:operate", payload.factory_id)
+    _ensure_permission(db, current_user, "three_d_printing:audit_read", payload.factory_id)
+    return production_record_out(restore_production_record(db, record_id, payload, current_user, _request_id(request)))
+
+
+@router.get("/records/deleted", response_model=list[ThreeDProductionRecordOut])
+def deleted_records(factory_id: str, db: Session = Depends(get_db),
+                    current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "three_d_printing:audit_read", factory_id)
+    return [production_record_out(row) for row in db.scalars(select(ThreeDPrintingProductionRecord).where(
+        ThreeDPrintingProductionRecord.factory_id == factory_id,
+        ThreeDPrintingProductionRecord.deleted_at != "").order_by(ThreeDPrintingProductionRecord.deleted_at.desc()).limit(500))]
 
 
 @router.put("/day-status", status_code=200)

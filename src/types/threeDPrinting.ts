@@ -43,6 +43,7 @@ export interface ThreeDProduct {
 }
 
 export interface ThreeDPrinter {
+  status_stale?: boolean
   id: string
   factory_id: 'huakang-a'
   machine_no: number
@@ -63,6 +64,16 @@ export interface ThreeDPrinter {
 }
 
 export interface ThreeDProductionRecord {
+  run_status?: string
+  reconciliation_status?: string
+  source_system: string
+  inventory_consumed: boolean
+  material_status: string
+  data_quality_flags: string[]
+  cost_profile_version: string
+  calculated_cost_snapshot: Record<string, unknown>
+  frozen_totals: Record<string, number | null>
+  deleted_at: string
   id: string
   factory_id: 'huakang-a'
   legacy_id: string
@@ -164,6 +175,7 @@ export interface ThreeDAuditEvent {
 }
 
 export interface ThreeDDashboard {
+  network_health?: { configured: boolean; status: string; observed_at: string; failed_machine_numbers: number[]; message: string }
   factory_id: 'huakang-a'
   generated_at: string
   settings: ThreeDSettings
@@ -176,6 +188,7 @@ export interface ThreeDDashboard {
   schedules: ThreeDSchedule[]
   maintenance: ThreeDMaintenance[]
   day_off_dates: string[]
+  day_statuses: { business_date: string; revision: number; is_day_off: boolean }[]
   summary: {
     revenue?: number
     materialCost?: number
@@ -212,6 +225,14 @@ export type ThreeDMaterialPayload = Pick<
 
 export type ThreeDRecordPayload = Omit<
   ThreeDProductionRecord,
+  | 'source_system'
+  | 'inventory_consumed'
+  | 'material_status'
+  | 'data_quality_flags'
+  | 'cost_profile_version'
+  | 'calculated_cost_snapshot'
+  | 'frozen_totals'
+  | 'deleted_at'
   | 'id'
   | 'legacy_id'
   | 'auto_record'
@@ -221,7 +242,7 @@ export type ThreeDRecordPayload = Omit<
   | 'revision'
   | 'created_at'
   | 'updated_at'
-> & { revision?: number }
+> & { revision?: number; reason?: string; idempotency_key: string; allow_negative_stock?: boolean; history_only_correction?: boolean }
 
 export type ThreeDSchedulePayload = Omit<
   ThreeDSchedule,

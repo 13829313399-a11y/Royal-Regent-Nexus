@@ -88,6 +88,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_price:read",
                         "customer_order:audit_read",
                         "customer_order:read",
+                        "injection_scheduling:read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",

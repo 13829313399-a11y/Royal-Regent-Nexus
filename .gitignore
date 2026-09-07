@@ -46,6 +46,9 @@ backend/models/document-translation/
 !/design-qa.md
 !/docs/aliyun-docker-deploy.md
 !/docs/three-d-printing-deployment.md
+!/docs/three-d-pr06-acceptance.md
+!/docs/three-d-pr07-pr09-acceptance.md
+!/deploy/three-d-printing/README.md
 !/docs/injection-production-hub-context-memory.md
 !/docs/document-studio/baseline.md
 !/docs/document-studio/implementation-status.md
@@ -54,8 +57,11 @@ backend/models/document-translation/
 !/docs/document-studio-runtime-diagnostics.md
 !/docs/business/internal-quote-collaboration-design.md
 !/docs/business/qc-complete-business-process.md
+!/docs/business/injection-scheduling-v3.md
 !/docs/business/internal-quote-l6-release-readiness.md
 !/edge/three-d-printing-agent/README.md
+!/deploy/three-d-printing/network/README.md
+!/services/three-d-printer-connector/README.md
 
 # Editor directories and files
 .vscode/*
@@ -79,6 +85,9 @@ three-d-snapshots/
 services/three-d-printer-connector/config.json
 services/three-d-printer-connector/secrets/
 deploy/three-d-printing/secrets/
+deploy/three-d-printing/network/config.json
+deploy/three-d-printing/network/generated/
+deploy/three-d-printing/network/reports/
 **/three_d_printers.json
 **/three_d_vpn_private_key
 **/three-d-*.private.key

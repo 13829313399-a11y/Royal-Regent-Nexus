@@ -248,9 +248,10 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_REVISION = "20260723_0030"
 INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION = "20260721_0029"
 INTERNAL_QUOTE_BASELINE_TABLE = "internal_quote_pricing_baselines"
 INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
-THREE_D_PRINTING_REVISION = "20260904_0098"
+THREE_D_PRINTING_REVISION = "20260904_0099"
 THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset({"20260728_0039", "20260729_0040"})
 THREE_D_PRINTING_V2_TABLES = {
+    "three_d_printing_operations_items",
     "three_d_printing_sites", "three_d_printing_network_gateways",
     "three_d_printing_connector_instances", "three_d_printing_printer_connections",
     "three_d_printing_printer_state_events", "three_d_printing_material_aliases",
@@ -554,6 +555,30 @@ def ensure_sqlite_legacy_columns() -> None:
                 )
 
 
+def ensure_injection_v3_schema_ready() -> None:
+    from app.models import injection_scheduling  # noqa: F401
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        missing = []
+        for table in Base.metadata.sorted_tables:
+            if not table.name.startswith("injection_v3_"):
+                continue
+            if table.name not in names:
+                missing.append(table.name)
+                continue
+            columns = {c["name"] for c in inspector.get_columns(table.name)}
+            missing.extend(f"{table.name}.{c.name}" for c in table.columns if c.name not in columns)
+        if missing:
+            raise RuntimeError(
+                "注塑排产 V3 尚未迁移至 20260905_0100；请在备份与迁移演练后升级目标数据库。缺少："
+                + ", ".join(missing)
+            )
+
+
 def init_db() -> None:
     from app.models import (
         auth,  # noqa: F401
@@ -561,6 +586,7 @@ def init_db() -> None:
         carton_procurement,  # noqa: F401
         customer_order,  # noqa: F401
         internal_quote,  # noqa: F401
+        injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
         qc_inspection,  # noqa: F401
@@ -582,10 +608,13 @@ def init_db() -> None:
     ensure_three_d_printing_schema_ready()
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()
+    ensure_injection_v3_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 
     with SessionLocal() as db:
+        from app.services.injection_scheduling.common import seed_settings
+        seed_settings(db)
         seed_auth_defaults(db)
         seed_carton_supplier_defaults(db)
         seed_internal_quote_pricing_baseline_defaults(db)

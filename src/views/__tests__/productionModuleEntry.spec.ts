@@ -13,16 +13,16 @@ const customerPriceArtifactPanelSource = readFileSync(join(process.cwd(), 'src/c
 const customerPriceConversionViewSource = readFileSync(join(process.cwd(), 'src/views/CustomerPriceConversionView.vue'), 'utf8')
 
 describe('production module entry', () => {
-  it('keeps the injection scheduling card while its runtime module is retired', () => {
+  it('restores the scheduling workbench behind its dedicated permission without duplicating the card', () => {
     expect(enterpriseSource).toContain("id: 'injection-scheduling'")
     expect(enterpriseSource).toContain("title: '注塑排产中枢'")
-    expect(enterpriseSource).toContain("status: '重构中'")
-    expect(enterpriseSource).toContain("stats: '暂未开放 · 等待重新建设'")
-    expect(enterpriseSource).not.toContain("route: '/modules/production/injection-scheduling'")
-    expect(enterpriseSource).not.toContain("permissions: ['injection_scheduling:read']")
+    expect(enterpriseSource.match(/id: 'injection-scheduling'/g)).toHaveLength(1)
+    expect(enterpriseSource).toContain("route: getDepartmentRoute('production', 'injection-scheduling')")
+    expect(enterpriseSource).toContain("permissions: ['injection_scheduling:read']")
     expect(enterpriseSource).not.toContain('production:injection_scheduling:')
-    expect(routerSource).not.toContain("path: '/modules/production/injection-scheduling'")
-    expect(routerSource).not.toContain('InjectionSchedulingView.vue')
+    expect(routerSource).toContain("path: '/modules/production/injection-scheduling'")
+    expect(routerSource).toContain('InjectionSchedulingView.vue')
+    expect(routerSource).toMatch(/name: 'injection-scheduling'[\s\S]{0,350}strictPermissions: true/)
   })
 
   it('keeps the molding sample production task wired to the real task page', () => {

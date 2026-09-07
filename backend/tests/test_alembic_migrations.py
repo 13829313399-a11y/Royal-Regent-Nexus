@@ -122,12 +122,13 @@ INJECTION_SCHEDULE_CENTER_MIGRATION_REVISION = "20260827_0085"
 CARTON_AD_HOC_RECEIPT_MIGRATION_REVISION = "20260830_0086"
 CARTON_ORDER_ADJUST_MIGRATION_REVISION = "20260904_0096"
 CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION = "20260904_0097"
-CARTON_CUSTOMER_DUE_MIGRATION_REVISION = "20260904_0099"
+CARTON_CUSTOMER_DUE_MIGRATION_REVISION = "20260907_0101"
 INJECTION_SCHEDULE_APPLICATION_MIGRATION_REVISION = "20260831_0087"
 INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION = "20260901_0088"
 # Historical rebuild tests stop before the later destructive retirement.
 INJECTION_SCHEDULING_HISTORY_REVISION = INJECTION_SCHEDULE_SHARED_MOLD_MIGRATION_REVISION
 THREE_D_PRINTING_V2_MIGRATION_REVISION = "20260904_0098"
+INJECTION_V3_MIGRATION_REVISION = "20260905_0100"
 HEAD_MIGRATION_REVISION = CARTON_CUSTOMER_DUE_MIGRATION_REVISION
 INJECTION_SCHEDULE_CENTER_TABLES = {
     "injection_schedule_factory_settings",
@@ -273,7 +274,7 @@ def test_alembic_has_single_molding_sample_head():
 
     assert script.get_heads() == [HEAD_MIGRATION_REVISION]
     assert script.get_revision(THREE_D_PRINTING_V2_MIGRATION_REVISION).down_revision == CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION
-    assert script.get_revision(CARTON_CUSTOMER_DUE_MIGRATION_REVISION).down_revision == THREE_D_PRINTING_V2_MIGRATION_REVISION
+    assert script.get_revision(CARTON_CUSTOMER_DUE_MIGRATION_REVISION).down_revision == INJECTION_V3_MIGRATION_REVISION
 
     password_reset_claim_revision = script.get_revision(
         PASSWORD_RESET_CLAIM_MIGRATION_REVISION
@@ -3058,7 +3059,11 @@ def test_injection_schedule_rebuild_removal_drops_schema_permissions_and_marker(
                 """
             ).fetchall()
         }
-        assert rebuilt_tables == INJECTION_SCHEDULE_CENTER_TABLES
+        # 0095 retired both historical table families. 0100 creates only V3.
+        assert rebuilt_tables == set()
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'injection_v3_%'"
+        ).fetchone() == (16,)
         assert not (
             {
                 "injection_schedule_tasks",
@@ -4492,8 +4497,14 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (INJECTION_SCHEDULING_HISTORY_REVISION,)
 
-    allowed_startup = _run_dispatch_init_db(database_path)
-    assert allowed_startup.returncode == 0, allowed_startup.stderr
+    # This test deliberately stops at the old schema, before retirement and V3.
+    # Current startup must not silently create new tables in that historical DB.
+    blocked_startup = _run_dispatch_init_db(database_path)
+    assert blocked_startup.returncode != 0
+    assert "Alembic upgrade head" in blocked_startup.stderr
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (INJECTION_SCHEDULING_HISTORY_REVISION,)
+        assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'injection_v3_%'").fetchone() == (0,)
 
 
 def test_injection_schedule_center_isolated_factory_scoped_rebuild(tmp_path):
@@ -4975,8 +4986,9 @@ def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path)
     )
     assert before_upgrade.returncode == 0, before_upgrade.stderr
 
-    allowed = _run_dispatch_init_db(migrated_database)
-    assert allowed.returncode == 0, allowed.stderr
+    blocked = _run_dispatch_init_db(migrated_database)
+    assert blocked.returncode != 0
+    assert "Alembic upgrade head" in blocked.stderr
     with sqlite3.connect(migrated_database) as connection:
         table_names = {
             row[0]
@@ -4985,6 +4997,7 @@ def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path)
             ).fetchall()
         }
         assert not (table_names & INJECTION_SCHEDULE_CENTER_TABLES)
+        assert not any(name.startswith("injection_v3_") for name in table_names)
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone() == (AI_SUBSYSTEM_REMOVAL_MIGRATION_REVISION,)
@@ -5000,6 +5013,8 @@ def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path)
             ).fetchall()
         }
         assert not (fresh_table_names & INJECTION_SCHEDULE_CENTER_TABLES)
+        assert len([name for name in fresh_table_names if name.startswith("injection_v3_")]) == 16
+        assert connection.execute("SELECT COUNT(*) FROM injection_v3_factory_settings").fetchone() == (4,)
         assert "alembic_version" not in fresh_table_names
 
 
@@ -5280,7 +5295,8 @@ def test_carton_purchase_order_issue_migration_backfills_supplier_baseline(tmp_p
         )
         connection.commit()
 
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    # Exercise 0097's own upgrade/downgrade; later modules have independent guards.
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         baseline = connection.execute(
@@ -5321,7 +5337,7 @@ def test_carton_purchase_order_issue_migration_backfills_supplier_baseline(tmp_p
 
 def test_carton_purchase_order_issue_migration_refuses_destructive_downgrade(tmp_path):
     database_path = tmp_path / "carton_purchase_order_issue_downgrade_guard.db"
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         connection.execute(
@@ -5367,11 +5383,11 @@ def test_carton_purchase_order_issue_migration_refuses_destructive_downgrade(tmp
 
 
 def test_carton_customer_due_migration_preserves_legacy_plan_dates(tmp_path):
-    database_path = tmp_path / "carton_customer_due_0098.db"
+    database_path = tmp_path / "carton_customer_due_0101.db"
     base = _run_dispatch_alembic(
         database_path,
         "upgrade",
-        CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION,
+        INJECTION_V3_MIGRATION_REVISION,
     )
     assert base.returncode == 0, base.stderr
     with sqlite3.connect(database_path) as connection:
@@ -5408,7 +5424,7 @@ def test_carton_customer_due_migration_preserves_legacy_plan_dates(tmp_path):
     downgraded = _run_dispatch_alembic(
         database_path,
         "downgrade",
-        CARTON_PURCHASE_ORDER_ISSUE_MIGRATION_REVISION,
+        INJECTION_V3_MIGRATION_REVISION,
     )
     assert downgraded.returncode == 0, downgraded.stderr
     with sqlite3.connect(database_path) as connection:

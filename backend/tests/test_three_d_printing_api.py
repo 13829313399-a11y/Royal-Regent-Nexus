@@ -131,6 +131,8 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
         stock = client.post(
             "/api/three-d-printing/inventory/adjust",
             json={
+                "revision": 0,
+                "idempotency_key": "baseline-adjust",
                 "factory_id": "huakang-a",
                 "material_name": "PLA",
                 "target_stock_g": 10000,
@@ -171,6 +173,7 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
         record = client.post(
             "/api/three-d-printing/records",
             json={
+                "idempotency_key": "baseline-create-record",
                 "factory_id": "huakang-a",
                 "business_date": "2026-07-29",
                 "machine_no": 1,

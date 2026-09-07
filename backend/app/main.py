@@ -15,6 +15,7 @@ from app.api.customer_order import router as customer_order_router
 from app.api.directory import router as directory_router
 from app.api.iam import router as iam_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
+from app.api.injection_scheduling import router as injection_scheduling_router
 from app.api.internal_quote import (
     customer_price_artifact_router,
 )
@@ -26,6 +27,7 @@ from app.api.pricing import router as pricing_router
 from app.api.qc_inspection import router as qc_inspection_router
 from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
+from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.api.tools import router as tools_router
 from app.core.config import settings
@@ -37,7 +39,12 @@ request_timing_logger = logging.getLogger("uvicorn.error")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+    from app.services.three_d_live import hub
+    hub.start()
+    try:
+        yield
+    finally:
+        await hub.stop()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -99,13 +106,17 @@ app.include_router(directory_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(indonesia_invoice_router)
+app.include_router(injection_scheduling_router)
 app.include_router(iam_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(system_router)
+from app.api.three_d_operations import router as three_d_operations_router
+app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)
+app.include_router(three_d_connector_router)
 app.include_router(tools_router)
 
 
