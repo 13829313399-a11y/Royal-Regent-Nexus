@@ -67,6 +67,11 @@ class PreparedBatch:
 
 
 HUADENG_CUSTOMER_MAPPINGS: dict[str, HuadengCustomerMappingSpec] = {
+    "goliath": HuadengCustomerMappingSpec(
+        "goliath", "Goliath", (".pdf",), (".xlsx",),
+        "HUADENG_GOLIATH_FORMAL_PO_V1", "HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3",
+        "正式 PO 按列提取完整合同号、客户 PO、货号、数量和 CRD；只输出最新统一排期，外箱和中文品名仅从该排期唯一历史值继承。",
+    ),
     "casdon": HuadengCustomerMappingSpec(
         "casdon", "Casdon", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
         "HUADENG_CASDON_PO_V1", "HUADENG_CASDON_SCHEDULE_APPEND_V2",

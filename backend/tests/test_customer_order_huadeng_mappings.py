@@ -32,7 +32,7 @@ def _workbook_bytes(sheet_name: str, headers: dict[int, str], row: dict[int, obj
 
 def test_huadeng_mapping_registry_is_factory_scoped() -> None:
     assert set(service.HUADENG_CUSTOMER_MAPPINGS) == {
-        "casdon", "jakks", "simba", "spin", "spin-master",
+        "casdon", "jakks", "simba", "spin", "spin-master", "goliath",
     }
     assert {
         code: CUSTOMER_FACTORY_IDS[code]
@@ -43,6 +43,7 @@ def test_huadeng_mapping_registry_is_factory_scoped() -> None:
         "simba": "huadeng",
         "spin": "huadeng",
         "spin-master": "huadeng",
+        "goliath": "huadeng",
     }
     with pytest.raises(service.HuadengCustomerOrderError, match="只属于华登厂区"):
         service.create_huadeng_customer_preview(
@@ -507,6 +508,7 @@ TOTAL USD 306.70
         "total_usd": 306.7,
         "ship_date": "2026-10-13",
         "special_note": "OPEN WINDOW BOX",
+        "product_packaging": "OPEN WINDOW BOX",
     }
     assert any("标准 CONTRACT PDF" in warning for warning in parsed["warnings"])
 

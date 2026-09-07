@@ -71,6 +71,11 @@ from app.services.customer_order_manual import (
     coerce_manual_value,
     decorate_manual_resolution_policy,
 )
+from app.services.customer_order_unified import (
+    create_unified_customer_preview,
+    export_unified_customer_schedule,
+    is_unified_schedule,
+)
 
 
 router = APIRouter(prefix="/api/customer-orders", tags=["customer-orders"])
@@ -109,6 +114,10 @@ for customer_code in HUAKANG_C_CUSTOMER_MAPPINGS:
     CUSTOMER_FACTORY_OPTIONS[customer_code] = tuple(
         dict.fromkeys((*existing, "huakang-c", "huakang-d"))
     )
+# Retired entry points are unavailable for new previews/exports. Legacy specs
+# and names remain readable for historical compatibility and audit records.
+CUSTOMER_FACTORY_OPTIONS.pop("spin-master", None)
+CUSTOMER_FACTORY_OPTIONS["jp"] = ("huakang-c",)
 CUSTOMER_NAMES = {
     "buzzbee": "BuzzBee",
     "dickie": "Dickie",
@@ -192,23 +201,67 @@ def _get_mapped_customer_spec(customer_code: str, factory_id: str):
 
 
 def _create_mapped_customer_preview(*, customer_code: str, **kwargs):
-    if kwargs.get("factory_id") == "huakang-a":
-        return create_huakang_a_customer_preview(customer_code=customer_code, **kwargs)
-    if kwargs.get("factory_id") in {"huakang-c", "huakang-d"}:
-        return create_huakang_c_customer_preview(customer_code=customer_code, **kwargs)
-    if customer_code in HUADENG_CUSTOMER_MAPPINGS:
-        return create_huadeng_customer_preview(customer_code=customer_code, **kwargs)
-    return create_huaxing_customer_preview(customer_code=customer_code, **kwargs)
+    return create_unified_customer_preview(customer_code=customer_code, **kwargs)
 
 
 def _export_mapped_customer_schedule(*, customer_code: str, **kwargs):
-    if kwargs.get("factory_id") == "huakang-a":
-        return export_huakang_a_customer_schedule(customer_code=customer_code, **kwargs)
-    if kwargs.get("factory_id") in {"huakang-c", "huakang-d"}:
-        return export_huakang_c_customer_schedule(customer_code=customer_code, **kwargs)
-    if customer_code in HUADENG_CUSTOMER_MAPPINGS:
-        return export_huadeng_customer_schedule(customer_code=customer_code, **kwargs)
-    return export_huaxing_customer_schedule(customer_code=customer_code, **kwargs)
+    return export_unified_customer_schedule(customer_code=customer_code, **kwargs)
+
+
+def _create_unified_single_preview(
+    *, customer_code: str, po_file_name: str, po_content: bytes, **kwargs,
+):
+    if not is_unified_schedule(kwargs["schedule_content"]):
+        if customer_code == "buzzbee":
+            return create_buzzbee_preview(
+                po_file_name=po_file_name,
+                po_content=po_content,
+                **kwargs,
+            )
+    return create_unified_customer_preview(
+        customer_code=customer_code,
+        po_files=[(po_file_name, po_content)],
+        **kwargs,
+    )
+
+
+def _export_unified_single_schedule(
+    *, customer_code: str, po_file_name: str, po_content: bytes, **kwargs,
+):
+    if not is_unified_schedule(kwargs["schedule_content"]):
+        if customer_code == "buzzbee":
+            return export_buzzbee_schedule(
+                po_file_name=po_file_name,
+                po_content=po_content,
+                **kwargs,
+            )
+    return export_unified_customer_schedule(
+        customer_code=customer_code,
+        po_files=[(po_file_name, po_content)],
+        **kwargs,
+    )
+
+
+def _create_special_batch_preview(*, customer_code: str, **kwargs):
+    if is_unified_schedule(kwargs["schedule_content"]):
+        return create_unified_customer_preview(customer_code=customer_code, **kwargs)
+    legacy = {
+        "buzzbee": create_buzzbee_batch_preview,
+        "dickie": create_dickie_batch_preview,
+        "caixing": create_caixing_batch_preview,
+    }
+    return legacy[customer_code](**kwargs)
+
+
+def _export_special_batch_schedule(*, customer_code: str, **kwargs):
+    if is_unified_schedule(kwargs["schedule_content"]):
+        return export_unified_customer_schedule(customer_code=customer_code, **kwargs)
+    legacy = {
+        "buzzbee": export_buzzbee_batch_schedule,
+        "dickie": export_dickie_batch_schedule,
+        "caixing": export_caixing_batch_schedule,
+    }
+    return legacy[customer_code](**kwargs)
 
 
 def _validate_upload(
@@ -683,7 +736,8 @@ async def preview_buzzbee_customer_order(
         raise HTTPException(status_code=400, detail="PO 和客户排期文件都不能为空")
     try:
         preview = await run_in_threadpool(
-            create_buzzbee_preview,
+            _create_unified_single_preview,
+            customer_code="buzzbee",
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_file_name=po_file.filename or "",
@@ -728,7 +782,8 @@ async def preview_buzzbee_customer_order_batch(
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
         preview = await run_in_threadpool(
-            create_buzzbee_batch_preview,
+            _create_special_batch_preview,
+            customer_code="buzzbee",
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
@@ -789,7 +844,8 @@ async def export_buzzbee_customer_schedule(
         raise HTTPException(status_code=400, detail="PO 和客户排期文件都不能为空")
     try:
         output, file_name, preview = await run_in_threadpool(
-            export_buzzbee_schedule,
+            _export_unified_single_schedule,
+            customer_code="buzzbee",
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_file_name=po_file.filename or "",
@@ -819,7 +875,9 @@ async def export_buzzbee_customer_schedule(
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
             "X-Output-Template": preview["target_template"],
-            "X-Workbook-Password-Required": "true",
+            "X-Workbook-Password-Required": (
+                "true" if preview.get("_schedule_encrypted") or output.startswith(b"\xd0\xcf\x11\xe0") else "false"
+            ),
             "X-Skipped-Issue-Count": str(len(actual_issue_keys)),
             "X-Content-SHA256": audit.output_sha256,
             "X-Preview-Fingerprint": audit.preview_fingerprint,
@@ -871,7 +929,8 @@ async def export_buzzbee_customer_schedule_batch(
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
         output, file_name, preview = await run_in_threadpool(
-            export_buzzbee_batch_schedule,
+            _export_special_batch_schedule,
+            customer_code="buzzbee",
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
@@ -900,7 +959,9 @@ async def export_buzzbee_customer_schedule_batch(
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
             "X-Output-Template": preview["target_template"],
-            "X-Workbook-Password-Required": "true",
+            "X-Workbook-Password-Required": (
+                "true" if preview.get("_schedule_encrypted") or output.startswith(b"\xd0\xcf\x11\xe0") else "false"
+            ),
             "X-PO-File-Count": str(preview["po_file_count"]),
             "X-Skipped-Issue-Count": str(len(actual_issue_keys)),
             "X-Content-SHA256": audit.output_sha256,
@@ -937,7 +998,8 @@ async def preview_dickie_customer_order_batch(
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
         preview = await run_in_threadpool(
-            create_dickie_batch_preview,
+            _create_special_batch_preview,
+            customer_code="dickie",
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
@@ -997,7 +1059,8 @@ async def export_dickie_customer_schedule_batch(
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
         output, file_name, preview = await run_in_threadpool(
-            export_dickie_batch_schedule,
+            _export_special_batch_schedule,
+            customer_code="dickie",
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
@@ -1026,7 +1089,9 @@ async def export_dickie_customer_schedule_batch(
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
             "X-Output-Template": preview["target_template"],
-            "X-Workbook-Password-Required": "true",
+            "X-Workbook-Password-Required": (
+                "true" if preview.get("_schedule_encrypted") or output.startswith(b"\xd0\xcf\x11\xe0") else "false"
+            ),
             "X-PO-File-Count": str(preview["po_file_count"]),
             "X-Skipped-Issue-Count": str(len(actual_issue_keys)),
             "X-Content-SHA256": audit.output_sha256,
@@ -1059,7 +1124,7 @@ async def preview_caixing_customer_order_batch(
     _validate_upload(
         schedule_file,
         kind="客户排期",
-        supported=(".xls", ".xlsx"),
+        supported=(".xlsx",),
     )
     uploaded_po_files = await _read_po_uploads(po_files, supported=(".pdf",))
     schedule_content = await schedule_file.read()
@@ -1067,7 +1132,8 @@ async def preview_caixing_customer_order_batch(
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
         preview = await run_in_threadpool(
-            create_caixing_batch_preview,
+            _create_special_batch_preview,
+            customer_code="caixing",
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
@@ -1123,7 +1189,7 @@ async def export_caixing_customer_schedule_batch(
     _validate_upload(
         schedule_file,
         kind="客户排期",
-        supported=(".xls", ".xlsx"),
+        supported=(".xlsx",),
     )
     uploaded_po_files = await _read_po_uploads(po_files, supported=(".pdf",))
     schedule_content = await schedule_file.read()
@@ -1131,7 +1197,8 @@ async def export_caixing_customer_schedule_batch(
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
         output, file_name, preview = await run_in_threadpool(
-            export_caixing_batch_schedule,
+            _export_special_batch_schedule,
+            customer_code="caixing",
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
@@ -1233,7 +1300,7 @@ async def preview_mapped_customer_order_batch(
     _validate_upload(
         schedule_file,
         kind="客户排期",
-        supported=spec.schedule_extensions,
+        supported=(".xlsx",),
     )
     uploaded_po_files = await _read_po_uploads(
         po_files,
@@ -1265,6 +1332,7 @@ async def preview_mapped_customer_order_batch(
         HuadengCustomerOrderError,
         HuakangACustomerOrderError,
         HuakangCCustomerOrderError,
+        CustomerOrderWorkbookError,
     ) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1310,7 +1378,7 @@ async def export_mapped_customer_order_batch(
     _validate_upload(
         schedule_file,
         kind="客户排期",
-        supported=spec.schedule_extensions,
+        supported=(".xlsx",),
     )
     uploaded_po_files = await _read_po_uploads(
         po_files,
@@ -1338,6 +1406,7 @@ async def export_mapped_customer_order_batch(
         HuadengCustomerOrderError,
         HuakangACustomerOrderError,
         HuakangCCustomerOrderError,
+        CustomerOrderWorkbookError,
     ) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     actual_issue_keys, audit = _complete_export_control(

@@ -24,6 +24,7 @@ export type HuaxingMappedCustomerCode =
   | 'barter'
 
 export type HuadengMappedCustomerCode =
+  | 'goliath'
   | 'casdon'
   | 'jakks'
   | 'simba'
