@@ -144,7 +144,7 @@ def test_empty_downgrade_roundtrip_and_big_integer_source_timestamp(db, migratio
     assert db.exec_driver_sql("PRAGMA foreign_key_check").all() == []
 
 
-def test_postgresql_offline_ddl_compiles_and_revision_has_single_head(migration):
+def test_postgresql_offline_ddl_compiles_and_migration_history_has_single_head(migration):
     output = StringIO()
     context = MigrationContext.configure(dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output, "literal_binds": True})
     with Operations.context(context):
@@ -155,7 +155,7 @@ def test_postgresql_offline_ddl_compiles_and_revision_has_single_head(migration)
     assert "DROP TABLE" not in sql
     config = Config(str(BACKEND / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND / "alembic"))
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260905_0100"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260907_0101"]
 
 
 def test_readiness_guard_rejects_old_and_partial_new_schema(db, migration, monkeypatch):

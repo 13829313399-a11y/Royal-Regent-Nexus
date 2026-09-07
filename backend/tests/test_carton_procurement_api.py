@@ -186,6 +186,79 @@ def test_customer_master_crud_permission_and_order_snapshot(monkeypatch):
         assert "已停用" in blocked_order.json()["detail"]
 
 
+def test_customer_due_date_drives_server_plan_and_preserves_legacy_orders(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _freeze_carton_time(monkeypatch)
+        _ensure_dickie_customer(client)
+
+        planned_payload = _order_payload()
+        planned_payload.update(
+            {
+                "contract_no": "SC-CUSTOMER-DUE",
+                "item_no": "ITEM-CUSTOMER-DUE",
+                "customer_due_date": "2026-08-20",
+                "due_date": "2026-12-31",
+            }
+        )
+        planned_response = client.post(
+            "/api/carton-procurement/orders",
+            json=planned_payload,
+        )
+        assert planned_response.status_code == 201, planned_response.text
+        planned_order = planned_response.json()
+        assert planned_order["customer_due_date"] == "2026-08-20"
+        assert planned_order["safety_lead_days"] == 3
+        assert planned_order["due_date"] == "2026-08-17"
+
+        urgent_payload = _order_payload()
+        urgent_payload.update(
+            {
+                "contract_no": "SC-URGENT-DUE",
+                "item_no": "ITEM-URGENT-DUE",
+                "customer_due_date": "2026-08-06",
+                "due_date": "2026-12-31",
+            }
+        )
+        urgent_response = client.post(
+            "/api/carton-procurement/orders",
+            json=urgent_payload,
+        )
+        assert urgent_response.status_code == 201, urgent_response.text
+        assert urgent_response.json()["due_date"] == "2026-08-05"
+
+        invalid_payload = _order_payload()
+        invalid_payload.update(
+            {
+                "contract_no": "SC-INVALID-DUE",
+                "item_no": "ITEM-INVALID-DUE",
+                "customer_due_date": "2026-08-04",
+            }
+        )
+        invalid_response = client.post(
+            "/api/carton-procurement/orders",
+            json=invalid_payload,
+        )
+        assert invalid_response.status_code == 422
+        assert "客户交期不能早于下单日期" in invalid_response.text
+
+        legacy_payload = _order_payload()
+        legacy_payload.update(
+            {
+                "contract_no": "SC-LEGACY-DUE",
+                "item_no": "ITEM-LEGACY-DUE",
+            }
+        )
+        legacy_response = client.post(
+            "/api/carton-procurement/orders",
+            json=legacy_payload,
+        )
+        assert legacy_response.status_code == 201, legacy_response.text
+        legacy_order = legacy_response.json()
+        assert legacy_order["customer_due_date"] is None
+        assert legacy_order["due_date"] == "2026-08-12"
+
+
 def _create_receipt(client, order: dict[str, object]) -> dict[str, object]:
     first_line = order["lines"][0]
     response = client.post(
@@ -382,7 +455,7 @@ def test_supplier_submission_transition_is_audited_and_required_before_receipt(m
             },
         )
         assert blocked_receipt.status_code == 409, blocked_receipt.text
-        assert "必须先提交供应商" in blocked_receipt.json()["detail"]
+        assert "必须先确认并锁定" in blocked_receipt.json()["detail"]
 
         submitted = _submit_order(client, order)
         assert submitted["status"] == "PENDING_SUPPLIER"
@@ -393,7 +466,7 @@ def test_supplier_submission_transition_is_audited_and_required_before_receipt(m
             json={"factory_id": "huaxing", "expected_revision": submitted["revision"]},
         )
         assert duplicate_submit.status_code == 409
-        assert "已经提交供应商" in duplicate_submit.json()["detail"]
+        assert "已经确认并锁定" in duplicate_submit.json()["detail"]
 
         blocked_append = client.post(
             f"/api/carton-procurement/orders/{order['order_no']}/append",
@@ -410,7 +483,7 @@ def test_supplier_submission_transition_is_audited_and_required_before_receipt(m
             json={
                 "factory_id": "huaxing",
                 "expected_revision": submitted["revision"],
-                "reason": "提交供应商后尝试取消订单",
+                "reason": "确认锁定后尝试取消订单",
             },
         )
         assert blocked_cancel.status_code == 409
@@ -424,7 +497,7 @@ def test_supplier_submission_transition_is_audited_and_required_before_receipt(m
             },
         )
         assert blocked_return.status_code == 409
-        assert "已提交未入库订单不可取消" in blocked_return.json()["detail"]
+        assert "已确认锁定但未入库的订单不可取消" in blocked_return.json()["detail"]
 
         receipt = _create_receipt(client, submitted)
         assert receipt["status"] == "PENDING_CONFIRMATION"
@@ -1035,7 +1108,7 @@ def test_order_update_and_cancel_are_controlled_by_supplier_submission(monkeypat
             json=schedule_update,
         )
         assert schedule_only.status_code == 409, schedule_only.text
-        assert "已提交供应商并锁定" in schedule_only.json()["detail"]
+        assert "已确认并锁定" in schedule_only.json()["detail"]
 
         structural_update = {
             **schedule_update,
@@ -1048,7 +1121,7 @@ def test_order_update_and_cancel_are_controlled_by_supplier_submission(monkeypat
             json=structural_update,
         )
         assert blocked_update.status_code == 409
-        assert "已提交供应商" in blocked_update.json()["detail"]
+        assert "已确认并锁定" in blocked_update.json()["detail"]
 
         blocked_cancel = client.post(
             f"/api/carton-procurement/orders/{active_order['order_no']}/cancel",
@@ -1075,13 +1148,16 @@ def test_order_append_bulk_cancel_export_filters_and_audit(monkeypatch):
                 "expected_revision": order["revision"],
                 "additional_quantity": "600",
                 "reason": "客户正式追加六百套产品",
-                "due_date": "2026-08-15",
+                "customer_due_date": "2026-08-18",
+                "due_date": "2026-12-31",
             },
         )
         assert appended.status_code == 200, appended.text
         appended_order = appended.json()
         assert Decimal(appended_order["product_order_quantity"]) == Decimal("4200.000000")
         assert Decimal(appended_order["lines"][0]["required_quantity"]) == Decimal("35.0000")
+        assert appended_order["customer_due_date"] == "2026-08-18"
+        assert appended_order["safety_lead_days"] == 3
         assert appended_order["due_date"] == "2026-08-15"
 
         reminders = client.get(
@@ -1220,7 +1296,7 @@ def test_batch_receipt_bulk_outbound_summary_and_return(monkeypatch):
             },
         )
         assert blocked_pre_inventory_return.status_code == 409
-        assert "已提交未入库订单不可取消" in blocked_pre_inventory_return.json()["detail"]
+        assert "已确认锁定但未入库的订单不可取消" in blocked_pre_inventory_return.json()["detail"]
         confirmed = client.post(
             f"/api/carton-procurement/receipts/{receipt['id']}/confirm",
             json={"factory_id": "huaxing", "expected_revision": receipt["revision"]},
@@ -1446,6 +1522,31 @@ def test_purchase_order_issues_export_only_net_supplier_change(monkeypatch):
         assert [item["document_type"] for item in final_context["issues"]] == [
             "REDUCE", "APPEND", "INITIAL"
         ]
+
+        reuse_batch_response = client.post(
+            "/api/carton-procurement/orders/purchase-order-issues.xlsx",
+            json={
+                "factory_id": "huaxing",
+                "items": [{
+                    "order_no": reduced["order_no"],
+                    "expected_revision": reduced["revision"],
+                }],
+            },
+        )
+        assert reuse_batch_response.status_code == 200, reuse_batch_response.text
+        assert reuse_batch_response.headers["x-purchase-order-issue-count"] == "1"
+        reuse_batch_workbook = load_workbook(BytesIO(reuse_batch_response.content), data_only=False)
+        reuse_batch_sheet = reuse_batch_workbook["供应商采购单批次"]
+        assert any(
+            reuse_batch_sheet.cell(row=row, column=2).value == f"{reduced['order_no']}-R01"
+            for row in range(6, reuse_batch_sheet.max_row)
+        )
+        reuse_batch_workbook.close()
+        context_after_reuse = client.get(
+            f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-context",
+            params={"factory_id": "huaxing"},
+        ).json()
+        assert len(context_after_reuse["issues"]) == len(final_context["issues"])
 
         append_issue = next(
             item for item in final_context["issues"] if item["document_type"] == "APPEND"
@@ -2599,6 +2700,8 @@ def test_standalone_history_inventory_supports_outbound_adjustment_and_reversal(
         assert balance["order_line_id"] is None
         assert balance["latest_movement_id"]
         assert balance["latest_document_no"] == "STOCKTAKE-OPERABLE"
+        # Opening stock is a historical adjustment, not a recorded receipt.
+        assert balance["latest_inbound_at"] is None
 
         outbound = client.post(
             "/api/carton-procurement/inventory/movements",
@@ -2615,6 +2718,12 @@ def test_standalone_history_inventory_supports_outbound_adjustment_and_reversal(
         )
         assert outbound.status_code == 201, outbound.text
         assert Decimal(outbound.json()["balance"]) == Decimal("60.0000")
+        after_outbound = client.get(
+            "/api/carton-procurement/inventory/balances",
+            params={"factory_id": "huaxing"},
+        ).json()[0]
+        assert after_outbound["latest_movement_at"].startswith("2026-08-05")
+        assert after_outbound["latest_inbound_at"] == balance["latest_inbound_at"]
 
         negative = client.post(
             "/api/carton-procurement/inventory/movements",
@@ -2636,6 +2745,11 @@ def test_standalone_history_inventory_supports_outbound_adjustment_and_reversal(
         )
         assert reversed_movement.status_code == 201, reversed_movement.text
         assert Decimal(reversed_movement.json()["balance"]) == Decimal("100.0000")
+        after_reversal = client.get(
+            "/api/carton-procurement/inventory/balances",
+            params={"factory_id": "huaxing"},
+        ).json()[0]
+        assert after_reversal["latest_inbound_at"] == balance["latest_inbound_at"]
 
 
 def test_import_batch_history_is_persisted_and_filterable(monkeypatch):
@@ -2703,3 +2817,32 @@ def test_receipt_history_can_be_searched_after_confirmation(monkeypatch):
         assert history.json()["total"] == 1
         assert history.json()["items"][0]["status"] == "POSTED"
         assert history.json()["items"][0]["lines"][0]["contract_no"] == order["contract_no"]
+
+        balance = client.get(
+            "/api/carton-procurement/inventory/balances",
+            params={"factory_id": "huaxing"},
+        ).json()[0]
+        assert balance["latest_inbound_at"] == FIXED_NOW.isoformat()
+        import app.services.carton_procurement as service
+
+        for index, movement_type in enumerate(("OUTBOUND", "ADJUSTMENT")):
+            monkeypatch.setattr(service, "business_now", lambda: FIXED_NOW.replace(day=6, second=index))
+            movement = client.post(
+                "/api/carton-procurement/inventory/movements",
+                json={
+                    "factory_id": "huaxing",
+                    "order_line_id": balance["order_line_id"],
+                    "movement_type": movement_type,
+                    "quantity": "1",
+                    "document_no": f"DATE-CHECK-{movement_type}",
+                    "reason": "核对入库时间不受后续作业影响",
+                },
+            )
+            assert movement.status_code == 201, movement.text
+            balances = client.get(
+                "/api/carton-procurement/inventory/balances",
+                params={"factory_id": "huaxing"},
+            ).json()
+            changed = next(row for row in balances if row["latest_movement_id"] == movement.json()["id"])
+            assert changed["latest_movement_at"].startswith("2026-08-06")
+            assert changed["latest_inbound_at"] == balance["latest_inbound_at"]
