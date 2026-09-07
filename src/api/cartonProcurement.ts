@@ -239,6 +239,8 @@ export interface CartonInventoryBalanceResponse {
   latest_movement_id: string
   latest_document_no: string
   latest_movement_at: string
+  latest_inbound_at?: string | null
+  location_revision?: number
 }
 
 export interface CartonInventoryMovementCreateRequest {
@@ -696,6 +698,18 @@ export const cartonProcurementApi = {
     const response = await http.post<CartonInventoryMovementResponse>(
       '/carton-procurement/inventory/movements',
       payload,
+    )
+    return response.data
+  },
+  async relocateInventory(payload: {
+    factory_id: string
+    reference_movement_id: string
+    expected_location_revision: number
+    location: string
+    note: string
+  }) {
+    const response = await http.post<CartonInventoryBalanceResponse>(
+      '/carton-procurement/inventory/relocations', payload,
     )
     return response.data
   },

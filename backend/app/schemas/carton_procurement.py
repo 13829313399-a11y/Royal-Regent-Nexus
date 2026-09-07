@@ -748,6 +748,19 @@ class CartonReceiptConfirmRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class CartonInventoryRelocateRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    reference_movement_id: str = Field(min_length=1, max_length=96)
+    expected_location_revision: int = Field(ge=0)
+    location: str = Field(min_length=1, max_length=128)
+    note: str = Field(default="", max_length=2000)
+
+    @field_validator("factory_id", "reference_movement_id", "location", "note", mode="before")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+
 class CartonInventoryMovementCreate(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
@@ -912,6 +925,8 @@ class CartonInventoryBalanceOut(BaseModel):
     latest_movement_id: str
     latest_document_no: str
     latest_movement_at: str
+    latest_inbound_at: str | None = None
+    location_revision: int = 0
 
 
 class CartonClosingGenerateRequest(BaseModel):

@@ -30,6 +30,7 @@ from app.schemas.carton_procurement import (
     CartonInventoryMovementListOut,
     CartonInventoryMovementOut,
     CartonInventoryReversalRequest,
+    CartonInventoryRelocateRequest,
     CartonOrderAppendRequest,
     CartonOrderBulkCancelRequest,
     CartonOrderBulkSubmitRequest,
@@ -95,6 +96,7 @@ from app.services.carton_procurement import (
     receipt_out,
     require_carton_factory,
     reverse_inventory_movement,
+    relocate_inventory,
     return_order,
     search_order_history_items,
     submit_order_to_supplier,
@@ -786,6 +788,16 @@ def post_inventory_movement(
 ):
     _ensure_permission(db, current_user, "carton_procurement:inventory_write", payload.factory_id)
     return create_inventory_movement(db, payload, current_user)
+
+
+@router.post("/inventory/relocations", response_model=CartonInventoryBalanceOut)
+def post_inventory_relocation(
+    payload: CartonInventoryRelocateRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:inventory_write", payload.factory_id)
+    return relocate_inventory(db, payload, current_user)
 
 
 @router.post(

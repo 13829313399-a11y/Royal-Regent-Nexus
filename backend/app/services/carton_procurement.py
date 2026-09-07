@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -48,6 +48,7 @@ from app.schemas.carton_procurement import (
     CartonInventoryMovementCreate,
     CartonInventoryMovementOut,
     CartonInventoryReversalRequest,
+    CartonInventoryRelocateRequest,
     CartonOrderAppendRequest,
     CartonOrderBulkCancelRequest,
     CartonOrderBulkSubmitRequest,
@@ -776,47 +777,61 @@ def create_purchase_order_issues_batch(
 ) -> list[CartonPurchaseOrderIssue]:
     factory_id = require_carton_factory(payload.factory_id)
     pending_orders: list[tuple[CartonOrder, int]] = []
+    reusable_issues: dict[str, CartonPurchaseOrderIssue] = {}
+    selected_order_nos: list[str] = []
     for item in payload.items:
         order = get_order_by_no(db, factory_id, item.order_no)
+        selected_order_nos.append(order.order_no)
         if order.revision != item.expected_revision:
             db.rollback()
             raise HTTPException(status_code=409, detail=f"订单 {item.order_no} 已更新，请刷新后重试")
-        if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
-            continue
         issues = _purchase_order_issues(db, order.id)
         pending_type, _, _, _ = _purchase_order_pending_change(
             order,
             _order_lines(db, order.id),
             issues[0] if issues else None,
         )
-        if pending_type != "NONE":
+        if (
+            order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}
+            and pending_type != "NONE"
+        ):
             pending_orders.append((order, item.expected_revision))
+            continue
+        latest_visible_issue = next(
+            (issue for issue in issues if issue.document_type != "LEGACY_BASELINE"),
+            None,
+        )
+        if latest_visible_issue is not None:
+            reusable_issues[order.order_no] = latest_visible_issue
 
-    if not pending_orders:
-        raise HTTPException(status_code=409, detail="所选订单没有待发行的首次、追加或减单采购单")
+    if not pending_orders and not reusable_issues:
+        raise HTTPException(status_code=409, detail="所选订单没有待发行变化或可重新下载的历史采购单")
 
-    created: list[CartonPurchaseOrderIssue] = []
+    created_by_order: dict[str, CartonPurchaseOrderIssue] = {}
     try:
         for order, expected_revision in pending_orders:
-            created.append(
-                create_purchase_order_issue(
-                    db,
-                    order,
-                    expected_revision,
-                    user,
-                    commit=False,
-                )
+            created_by_order[order.order_no] = create_purchase_order_issue(
+                db,
+                order,
+                expected_revision,
+                user,
+                commit=False,
             )
-        db.commit()
+        if created_by_order:
+            db.commit()
     except HTTPException:
         db.rollback()
         raise
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="采购单批次与其他操作冲突，请刷新后重试") from exc
-    for issue in created:
+    for issue in created_by_order.values():
         db.refresh(issue)
-    return created
+    return [
+        issue
+        for order_no in selected_order_nos
+        if (issue := created_by_order.get(order_no) or reusable_issues.get(order_no)) is not None
+    ]
 
 
 def get_purchase_order_issue(
@@ -2446,6 +2461,19 @@ def list_movements(
     return len(with_balances), with_balances[offset : offset + limit]
 
 
+def _inventory_locations(db: Session, factory_id: str) -> dict[str, tuple[str, int]]:
+    locations: dict[str, tuple[str, int]] = {}
+    for event in db.scalars(
+        select(CartonAuditEvent).where(
+            CartonAuditEvent.factory_id == factory_id,
+            CartonAuditEvent.event_type == "INVENTORY_LOCATION_CHANGED",
+        ).order_by(CartonAuditEvent.sequence)
+    ):
+        detail = json.loads(event.detail_json)
+        locations[detail["inventory_key"]] = (detail["to_location"], event.sequence)
+    return locations
+
+
 def inventory_balances(
     db: Session,
     factory_id: str,
@@ -2461,12 +2489,16 @@ def inventory_balances(
     )
     totals: dict[str, Decimal] = defaultdict(Decimal)
     latest: dict[str, CartonInventoryMovement] = {}
+    latest_inbound: dict[str, str] = {}
+    locations = _inventory_locations(db, factory_id)
     for row in rows:
         if customer_code and row.customer_code != customer_code:
             continue
         key = _movement_key(row)
         totals[key] += row.quantity
         latest[key] = row
+        if row.movement_type == "INBOUND":
+            latest_inbound[key] = row.occurred_at
     return [
         CartonInventoryBalanceOut(
             factory_id=row.factory_id,
@@ -2480,13 +2512,55 @@ def inventory_balances(
             specification=row.specification,
             unit=row.unit,
             balance=quantity(totals[key]),
-            latest_location=row.location,
+            latest_location=locations.get(key, (row.location, 0))[0],
+            location_revision=locations.get(key, (row.location, 0))[1],
             latest_movement_id=row.id,
             latest_document_no=row.document_no,
             latest_movement_at=row.occurred_at,
+            latest_inbound_at=latest_inbound.get(key),
         )
         for key, row in latest.items()
     ]
+
+
+def relocate_inventory(
+    db: Session, payload: CartonInventoryRelocateRequest, user: AuthContext,
+) -> CartonInventoryBalanceOut:
+    factory_id = require_carton_factory(payload.factory_id)
+    # Serialize location revisions per factory on both SQLite and PostgreSQL.
+    locked = db.execute(
+        update(CartonSupplier).where(CartonSupplier.factory_id == factory_id)
+        .values(updated_at=CartonSupplier.updated_at)
+    )
+    if not locked.rowcount:
+        raise HTTPException(status_code=409, detail="当前厂区尚未初始化库存服务")
+    reference = db.get(CartonInventoryMovement, payload.reference_movement_id)
+    if reference is None or reference.factory_id != factory_id:
+        raise HTTPException(status_code=404, detail="库存结存记录不存在")
+    balance = next((row for row in inventory_balances(db, factory_id)
+                    if row.latest_movement_id == reference.id), None)
+    if balance is None or balance.location_revision != payload.expected_location_revision:
+        raise HTTPException(status_code=409, detail="库存或仓位已更新，请刷新后重新调仓")
+    if balance.balance <= 0:
+        raise HTTPException(status_code=409, detail="当前没有可调仓的库存")
+    if payload.location == balance.latest_location:
+        raise HTTPException(status_code=422, detail="目标仓位与当前仓位相同")
+    key = _movement_key(reference)
+    _audit(db, user, factory_id, "INVENTORY_LOCATION_CHANGED", "carton_inventory_location",
+           f"INV-{hashlib.sha256(key.encode()).hexdigest()}", {
+               "inventory_key": key, "reference_movement_id": reference.id,
+               "customer_name": balance.customer_name, "contract_no": balance.contract_no,
+               "item_no": balance.item_no, "quantity": balance.balance, "unit": balance.unit,
+               "from_location": balance.latest_location, "to_location": payload.location,
+               "reason": payload.note or "整条库存调仓",
+           })
+    db.flush()
+    result = balance.model_copy(update={
+        "latest_location": payload.location,
+        "location_revision": _inventory_locations(db, factory_id)[key][1],
+    })
+    db.commit()
+    return result
 
 
 def _prepare_inventory_movement(
@@ -2533,6 +2607,7 @@ def _prepare_inventory_movement(
     timestamp = now_text()
     _ensure_period_open(db, factory_id, customer_code, timestamp)
     current = _inventory_balance_for_key(db, factory_id, movement_key)
+    current_location = _inventory_locations(db, factory_id).get(movement_key)
     signed_quantity = -payload.quantity if payload.movement_type == "OUTBOUND" else payload.quantity
     if payload.movement_type == "OUTBOUND" and current < payload.quantity:
         raise HTTPException(status_code=409, detail="库存不足，不能出库")
@@ -2555,7 +2630,7 @@ def _prepare_inventory_movement(
         unit=unit,
         unit_price=unit_price,
         currency=currency,
-        location=payload.location or (reference.location if reference is not None else ""),
+        location=current_location[0] if current_location else payload.location or (reference.location if reference is not None else ""),
         document_no=payload.document_no,
         source_type="MANUAL",
         source_id=movement_id,
