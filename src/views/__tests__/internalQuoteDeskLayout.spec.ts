@@ -174,7 +174,7 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionEditorSource).toContain('确认导入')
     expect(sectionEditorSource).toContain('deleteImportAttachment')
     expect(sectionEditorSource).toContain('删除导入附件和相关数据？')
-    expect(sectionEditorSource).toContain('该文件导入生成的本部门明细、关联模具图片和计算结果会一起清除')
+    expect(sectionEditorSource).toContain('该文件仍在使用的导入明细及关联图片会被清除')
     expect(sectionEditorSource).toContain('未识别为本部门结构化报价单，已作为普通附件保存')
     for (const text of ['onBeforeRouteUpdate', 'onBeforeRouteLeave', 'beforeunload', '有未保存修改', '是否先保存为草稿', '不保存并切换', '继续填写', '保存草稿并切换', 'confirmUnsavedNavigation']) expect(sectionEditorSource).toContain(text)
     for (const text of ['isOwnPendingSubmission', 'canWithdraw', '返回修改', '内容没有变化，沿用 revision', '相同内容不会重复生成版本']) expect(sectionEditorSource).toContain(text)

@@ -21,6 +21,7 @@ def _fail(message: str, status: int = 409):
 
 def _lock(db: Session, factory: str):
     ledger.require_carton_factory(factory)
+    ledger.lock_transaction(db, "carton-inventory", factory)
     result = db.execute(update(CartonSupplier).where(CartonSupplier.factory_id == factory)
                         .values(updated_at=CartonSupplier.updated_at))
     if not result.rowcount:

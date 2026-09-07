@@ -15,6 +15,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.services.transaction_lock import lock_transaction
 from app.core.time import business_now, business_today
 from app.models.carton_procurement import (
     CartonAuditEvent,
@@ -2276,6 +2277,7 @@ def _ensure_period_open(db: Session, factory_id: str, customer_code: str, occurr
 
 def _lock_receipt_factory(db: Session, factory_id: str) -> None:
     # Receipt confirmation, correction and dependent order edits share this lock.
+    lock_transaction(db, "carton-inventory", factory_id)
     db.execute(update(CartonSupplier).where(CartonSupplier.factory_id == factory_id)
                .values(updated_at=CartonSupplier.updated_at))
     db.expire_all()
@@ -2581,6 +2583,7 @@ def relocate_inventory(
     db: Session, payload: CartonInventoryRelocateRequest, user: AuthContext,
 ) -> CartonInventoryBalanceOut:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     # Serialize location revisions per factory on both SQLite and PostgreSQL.
     locked = db.execute(
         update(CartonSupplier).where(CartonSupplier.factory_id == factory_id)
@@ -2984,6 +2987,7 @@ def reverse_inventory_movement(
     user: AuthContext,
 ) -> CartonInventoryMovementOut:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     original = db.get(CartonInventoryMovement, movement_id)
     if original is None or original.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="库存流水不存在")
@@ -3582,6 +3586,7 @@ def _prior_locked_price_issues(db: Session, closing: CartonClosing) -> list[Cart
 
 def confirm_inventory_price(db: Session, movement_id: str, payload: CartonInventoryPriceConfirmRequest, user: AuthContext) -> None:
     factory_id = require_carton_factory(payload.factory_id)
+    lock_transaction(db, "carton-inventory", factory_id)
     # Serialize price decisions with one another; original quantity/price evidence
     # is never overwritten. The existing closing permission guards this action.
     db.execute(update(CartonSupplier).where(CartonSupplier.factory_id == factory_id)

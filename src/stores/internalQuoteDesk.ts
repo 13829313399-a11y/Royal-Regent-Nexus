@@ -568,6 +568,10 @@ function responseCurrentRevision(error: unknown) {
 }
 
 function mutationMessage(error: unknown) {
+  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+  if (['ECONNABORTED', 'ETIMEDOUT', 'ERR_NETWORK'].includes(code)) {
+    return '网络中断或请求超时，服务端处理结果尚未确认。本页输入已保留，请先重新读取报价核对，再决定是否重试。'
+  }
   const message = getApiErrorMessage(error)
   if (responseStatus(error) !== 409) return message
   const current = responseCurrentRevision(error)
@@ -620,6 +624,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     submitting: false,
     fileBusy: false,
     errorMessage: '',
+    refreshWarning: '',
+    refreshWarningQuoteId: '',
     customerErrorMessage: '',
     dashboardErrorMessage: '',
     livePreviewErrorMessage: '',
@@ -664,6 +670,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.currentFactoryId = factoryId
       this.quotes = []
       this.batchProductsByQuoteId = {}
+      this.refreshWarning = ''
       this.quoteListTotal = 0
       this.quoteListPage = 1
       this.quoteListPageSize = 10
@@ -1133,6 +1140,33 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       const detail = await internalQuoteApi.get(quoteId)
       return toQuote(detail)
     },
+    applySavedSections(quoteId: string, sections: ApiInternalQuoteSection[]) {
+      const quote = this.getQuoteById(quoteId)
+      if (!quote) return
+      for (const saved of sections) {
+        const index = quote.sections.findIndex((section) => section.code === saved.department)
+        if (index >= 0) {
+          const attachments = quote.sections[index]!.attachments
+          quote.sections[index] = { ...toSection(saved, []), attachments }
+        }
+      }
+    },
+    async refreshAfterMutation(quoteId: string) {
+      const generation = this.factoryContextGeneration
+      const refreshed = await this.loadQuote(quoteId)
+      if (generation !== this.factoryContextGeneration) return undefined
+      const detailError = this.errorMessage
+      const products = await this.loadBatchProducts(quoteId)
+      if (generation !== this.factoryContextGeneration) return undefined
+      this.refreshWarningQuoteId = quoteId
+      if (!refreshed || detailError || !products.length) {
+        this.refreshWarning = `操作已成功保存；页面资料尚未完整刷新，请重新读取后继续。${detailError || this.errorMessage}`
+      } else {
+        this.refreshWarning = ''
+      }
+      this.errorMessage = ''
+      return refreshed
+    },
     async executeMutation(quoteId: string, operation: () => Promise<unknown>, refreshQuote = true) {
       this.clearLiveCostPreview(quoteId)
       this.submitting = true
@@ -1140,11 +1174,12 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.conflictMessage = ''
       try {
         const result = await operation()
+        const receipt = result as { section?: ApiInternalQuoteSection; department?: string; sections?: ApiInternalQuoteSection[] } | undefined
+        if (receipt?.section) this.applySavedSections(quoteId, [receipt.section])
+        else if (receipt?.department) this.applySavedSections(quoteId, [result as ApiInternalQuoteSection])
+        else if (receipt?.sections) this.applySavedSections(quoteId, receipt.sections)
         if (refreshQuote) {
-          const refreshed = await this.loadQuote(quoteId)
-          if (!refreshed) {
-            throw new Error(`操作已在服务端成功，但页面未能读取最新报价。${this.errorMessage || '请重新读取最新 revision 后继续。'}`)
-          }
+          await this.refreshAfterMutation(quoteId)
         }
         return result
       } catch (error) {
@@ -1260,12 +1295,18 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     async loadBatchProducts(quoteId: string) {
       if (!quoteId) return [] as InternalQuoteBatchProduct[]
+      const generation = this.factoryContextGeneration
       try {
         const products = (await internalQuoteApi.listBatchProducts(quoteId)).map(toBatchProduct)
+        if (generation !== this.factoryContextGeneration) return [] as InternalQuoteBatchProduct[]
         for (const item of products) this.batchProductsByQuoteId[item.quoteId] = products
         this.batchProductsByQuoteId[quoteId] = products
         return products
       } catch (error) {
+        if (generation !== this.factoryContextGeneration) return [] as InternalQuoteBatchProduct[]
+        const previous = this.batchProductsByQuoteId[quoteId] ?? []
+        for (const item of previous) delete this.batchProductsByQuoteId[item.quoteId]
+        delete this.batchProductsByQuoteId[quoteId]
         this.errorMessage = getApiErrorMessage(error)
         return [] as InternalQuoteBatchProduct[]
       }
@@ -1390,7 +1431,6 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.conflictMessage = ''
       try {
         const latestBeforeSave = await internalQuoteApi.get(quoteId)
-        const alreadyPersisted = new Set<InternalQuoteSectionCode>()
         for (const draft of orderedDrafts) {
           const latestSection = latestBeforeSave.sections.find((section) => section.department === draft.sectionCode)
           if (!latestSection) throw new Error(`${definitionFor(draft.sectionCode).label}已不在当前报价中，请重新读取页面后再试。`)
@@ -1398,8 +1438,6 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           const latestFingerprint = fingerprint(draft.sectionCode, latestSection.payload)
           if (latestFingerprint === fingerprint(draft.sectionCode, draft.payload)) {
             currentRevisions.set(draft.sectionCode, latestSection.revision)
-            alreadyPersisted.add(draft.sectionCode)
-            savedSections.push(latestSection)
             continue
           }
           if (latestFingerprint === fingerprint(draft.sectionCode, draft.baselinePayload)) {
@@ -1410,7 +1448,6 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
 
         const pendingDrafts = orderedDrafts
-          .filter((draft) => !alreadyPersisted.has(draft.sectionCode))
           .map((draft) => ({
             sectionCode: draft.sectionCode,
             revision: currentRevisions.get(draft.sectionCode) ?? draft.revision,
@@ -1419,13 +1456,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         if (pendingDrafts.length) {
           const result = await internalQuoteApi.saveWholeProduct(quoteId, pendingDrafts)
           savedSections.push(...result.sections)
+          this.applySavedSections(quoteId, result.sections)
         }
 
-        const refreshed = await this.loadQuote(quoteId)
-        if (!refreshed) {
-          throw new Error(`全部部门已写入服务器，但页面未能读取最新报价。${this.errorMessage || '请重新读取最新 revision 后继续。'}`)
-        }
-        return { quote: refreshed, sections: savedSections }
+        const refreshed = await this.refreshAfterMutation(quoteId)
+        return { quote: refreshed ?? this.getQuoteById(quoteId), sections: savedSections }
       } catch (error) {
         const message = mutationMessage(error)
         if (responseStatus(error) === 409) this.conflictMessage = message
@@ -1528,8 +1563,22 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     deleteImportAttachment(quoteId: string, attachmentId: string, revision: number) {
       return this.executeMutation(
         quoteId,
-        () => internalQuoteApi.deleteImportAttachment(quoteId, attachmentId, revision),
+        async () => {
+          await internalQuoteApi.deleteImportAttachment(quoteId, attachmentId, revision)
+          this.removeAttachmentReceipt(quoteId, attachmentId)
+        },
       )
+    },
+    removeAttachmentReceipt(quoteId: string, attachmentId: string) {
+      this.getQuoteById(quoteId)?.sections.forEach((section) => {
+        section.attachments = section.attachments.filter((attachment) => attachment.id !== attachmentId)
+      })
+    },
+    deleteSupportingAttachment(quoteId: string, attachmentId: string, revision: number) {
+      return this.executeMutation(quoteId, async () => {
+        await internalQuoteApi.deleteSupportingAttachment(quoteId, attachmentId, revision)
+        this.removeAttachmentReceipt(quoteId, attachmentId)
+      })
     },
     createExport(quoteId: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.createExport(quoteId))

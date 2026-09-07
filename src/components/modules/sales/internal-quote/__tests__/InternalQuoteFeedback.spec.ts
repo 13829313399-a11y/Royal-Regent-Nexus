@@ -62,6 +62,21 @@ describe('internal quote feedback regressions', () => {
     wrapper.unmount()
   })
 
+  it('blocks a structured import before uploading when there are unsaved edits', async () => {
+    const { wrapper } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
+    const store = useInternalQuoteDeskStore()
+    const preview = vi.spyOn(store, 'previewImport')
+    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('手工修改')
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { value: [new File(['xlsx'], '报价.xlsx')] })
+    await input.trigger('change')
+    await flushPromises()
+    expect(preview).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请先保存草稿，再重新选择报价单导入')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('keeps unsaved edits and the exit warning after a failed save', async () => {
     const { wrapper, save } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
     await wrapper.get('input[aria-label="模具子配件名称"]').setValue('手工改名')

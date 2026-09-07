@@ -74,13 +74,13 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).toContain('exportMappedBatch')
   })
 
-  it('registers Casdon, Jakks, Simba, Spin and Spin Master under Huadeng', () => {
-    for (const code of ['casdon', 'jakks', 'simba', 'spin', 'spin-master']) {
+  it('registers Casdon, Jakks, Simba and Spin under Huadeng', () => {
+    for (const code of ['casdon', 'jakks', 'simba', 'spin']) {
       expect(workspaceSource).toContain(`code: '${code}'`)
     }
     expect(workspaceSource).toContain('huadeng: [')
     expect(workspaceSource).toContain('HUADENG_CASDON_NEW_ORDER_V1')
-    expect(workspaceSource).toContain('HUADENG_SPIN_MASTER_NEW_ORDER_V1')
+    expect(workspaceSource).not.toContain("code: 'spin-master'")
   })
 
   it('registers independent 360, Green Toys and HeadStart mappings under Huakang A', () => {
@@ -102,13 +102,13 @@ describe('customer order center static frontend', () => {
       po_file_name: 'RL-100-1.xls',
       po_file_names: ['RL-100-1.xls'],
       po_file_count: 1,
-      schedule_file_name: '华康A 360排期.xlsx',
+      schedule_file_name: '河源业务统一排期.xlsx',
       source_po_sha256: 'po',
       source_po_sha256s: ['po'],
       source_schedule_sha256: 'schedule',
       input_template: 'HUAKANG_A_360_PO_RELEASE_V1',
-      target_template: 'HUAKANG_A_360_NEW_ORDER_V1',
-      output_file_name: '华康A 360排期_360新单.xlsx',
+      target_template: 'HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1',
+      output_file_name: '河源业务统一排期_360新单.xlsx',
       summary: { total: 0, valid: 0, warning: 0, blocked: 0 },
       rows: [],
       warnings: [],
@@ -135,9 +135,9 @@ describe('customer order center static frontend', () => {
     await wrapper.get('[data-testid="customer-choice-360"]').trigger('click')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf,.xls,.xlsx,.xlsm')
-    expect(inputs[1]!.attributes('accept')).toBe('.xlsx,.xlsm')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx')
     const po = new File(['po'], 'RL-100-1.xls')
-    const schedule = new File(['schedule'], '华康A 360排期.xlsx')
+    const schedule = new File(['schedule'], '河源业务统一排期.xlsx')
     Object.defineProperty(inputs[0]!.element, 'files', { configurable: true, value: [po] })
     Object.defineProperty(inputs[1]!.element, 'files', { configurable: true, value: [schedule] })
     await inputs[0]!.trigger('change')
@@ -167,15 +167,15 @@ describe('customer order center static frontend', () => {
     await wrapper.get('[data-testid="customer-choice-green-toys"]').trigger('click')
     let inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.png,.jpg,.jpeg')
-    expect(inputs[1]!.attributes('accept')).toBe('.xlsx,.xlsm')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx')
 
     await wrapper.get('[data-testid="customer-choice-headstart"]').trigger('click')
     inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')
-    expect(inputs[1]!.attributes('accept')).toBe('.xlsx,.xlsm')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx')
   })
 
-  it('moves INDEX, JAZAWARES, MAXX, STROTTMAN and JP external orders to Huakang D', () => {
+  it('offers INDEX, JAZAWARES, MAXX and STROTTMAN external orders in Huakang D', () => {
     expect(workspaceSource).toContain("'huakang-c': [")
     expect(workspaceSource).toContain("CUSTOMER_PROFILES_BY_FACTORY['huakang-d'] = CUSTOMER_PROFILES_BY_FACTORY['huakang-c']")
     expect(workspaceSource).toContain("CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] = []")
@@ -184,14 +184,13 @@ describe('customer order center static frontend', () => {
       'HUAKANG_C_JAZWARES_NEW_ORDER_V1',
       'HUAKANG_C_MAXX_NEW_ORDER_V1',
       'HUAKANG_C_STROTTMAN_NEW_ORDER_V1',
-      'HUAKANG_C_JP_NEW_ORDER_V1',
     ]) {
       expect(workspaceSource).toContain(template)
     }
-    expect(workspaceSource).toContain('旧系统无真实样例验收，结果必须逐字段复核')
+    expect(workspaceSource).not.toContain("code: 'jp'")
   })
 
-  it('shows the five external customers in Huakang D and routes INDEX with Huakang D scope', async () => {
+  it('shows four external customers without JP in Huakang D and routes INDEX with Huakang D scope', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-huakang-c-mapped-preview-v1',
       customer_code: 'index',
@@ -199,13 +198,13 @@ describe('customer order center static frontend', () => {
       po_file_name: 'INDEX PO.pdf',
       po_file_names: ['INDEX PO.pdf'],
       po_file_count: 1,
-      schedule_file_name: 'INDEX排期.xls',
+      schedule_file_name: '河源业务统一排期.xlsx',
       source_po_sha256: 'po',
       source_po_sha256s: ['po'],
       source_schedule_sha256: 'schedule',
       input_template: 'HUAKANG_C_INDEX_PO_V1',
-      target_template: 'HUAKANG_C_INDEX_NEW_ORDER_V1',
-      output_file_name: 'INDEX排期_INDEX新单.xlsx',
+      target_template: 'HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1',
+      output_file_name: '河源业务统一排期_INDEX新单.xlsx',
       summary: { total: 0, valid: 0, warning: 0, blocked: 0 },
       rows: [],
       warnings: [],
@@ -219,24 +218,24 @@ describe('customer order center static frontend', () => {
     })
 
     const customerButtons = wrapper.findAll('[data-testid^="customer-choice-"]')
-    expect(customerButtons).toHaveLength(5)
+    expect(customerButtons).toHaveLength(4)
     expect(customerButtons.map((button) => button.text())).toEqual(
       expect.arrayContaining([
         expect.stringContaining('INDEX'),
         expect.stringContaining('JAZAWARES'),
         expect.stringContaining('MAXX'),
         expect.stringContaining('STROTTMAN'),
-        expect.stringContaining('JP'),
       ]),
     )
     expect(wrapper.text()).not.toContain('BuzzBee')
+    expect(wrapper.find('[data-testid="customer-choice-jp"]').exists()).toBe(false)
 
     await wrapper.get('[data-testid="customer-choice-index"]').trigger('click')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf,.xls,.xlsx,.xlsm')
-    expect(inputs[1]!.attributes('accept')).toBe('.xls,.xlsx,.xlsm')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx')
     const po = new File(['po'], 'INDEX PO.pdf')
-    const schedule = new File(['schedule'], 'INDEX排期.xls')
+    const schedule = new File(['schedule'], '河源业务统一排期.xlsx')
     Object.defineProperty(inputs[0]!.element, 'files', { configurable: true, value: [po] })
     Object.defineProperty(inputs[1]!.element, 'files', { configurable: true, value: [schedule] })
     await inputs[0]!.trigger('change')
@@ -266,21 +265,21 @@ describe('customer order center static frontend', () => {
     expect(wrapper.findAll('[data-testid^="customer-choice-"]')).toHaveLength(0)
   })
 
-  it('shows only the five Huadeng customers and routes Spin Master through mapped APIs', async () => {
+  it('shows five Huadeng customers including Goliath and routes Spin through mapped APIs', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-huadeng-mapped-preview-v1',
-      customer_code: 'spin-master',
+      customer_code: 'spin',
       factory_id: 'huadeng',
-      po_file_name: 'Spin Master PO.xls',
-      po_file_names: ['Spin Master PO.xls'],
+      po_file_name: 'Spin PO.pdf',
+      po_file_names: ['Spin PO.pdf'],
       po_file_count: 1,
-      schedule_file_name: 'Spin Master排期.xls',
+      schedule_file_name: '河源业务统一排期.xlsx',
       source_po_sha256: 'po',
       source_po_sha256s: ['po'],
       source_schedule_sha256: 'schedule',
-      input_template: 'HUADENG_SPIN_MASTER_PO_V1',
-      target_template: 'HUADENG_SPIN_MASTER_NEW_ORDER_V1',
-      output_file_name: 'Spin Master新单.xlsx',
+      input_template: 'HUADENG_SPIN_PO_V1',
+      target_template: 'HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1',
+      output_file_name: '河源业务统一排期_Spin新单.xlsx',
       summary: { total: 0, valid: 0, warning: 0, blocked: 0 },
       rows: [],
       warnings: [],
@@ -297,15 +296,17 @@ describe('customer order center static frontend', () => {
     expect(wrapper.text()).toContain('Casdon')
     expect(wrapper.text()).toContain('Jakks')
     expect(wrapper.text()).toContain('Simba')
-    expect(wrapper.text()).toContain('Spin Master')
+    expect(wrapper.find('[data-testid="customer-choice-goliath"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Spin')
+    expect(wrapper.find('[data-testid="customer-choice-spin-master"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('BuzzBee')
 
-    await wrapper.get('[data-testid="customer-choice-spin-master"]').trigger('click')
+    await wrapper.get('[data-testid="customer-choice-spin"]').trigger('click')
     const inputs = wrapper.findAll('input[type="file"]')
-    expect(inputs[0]!.attributes('accept')).toBe('.pdf,.xls,.xlsx,.xlsm')
-    expect(inputs[1]!.attributes('accept')).toBe('.xls,.xlsx')
-    const po = new File(['po'], 'Spin Master PO.xls')
-    const schedule = new File(['schedule'], 'Spin Master排期.xls')
+    expect(inputs[0]!.attributes('accept')).toBe('.pdf,.xlsx,.xlsm')
+    expect(inputs[1]!.attributes('accept')).toBe('.xlsx')
+    const po = new File(['po'], 'Spin PO.pdf')
+    const schedule = new File(['schedule'], '河源业务统一排期.xlsx')
     Object.defineProperty(inputs[0]!.element, 'files', { configurable: true, value: [po] })
     Object.defineProperty(inputs[1]!.element, 'files', { configurable: true, value: [schedule] })
     await inputs[0]!.trigger('change')
@@ -315,7 +316,7 @@ describe('customer order center static frontend', () => {
     await flushPromises()
 
     expect(customerOrderApiMock.previewMappedBatch).toHaveBeenLastCalledWith(
-      'spin-master',
+      'spin',
       [po],
       schedule,
       expect.any(String),
@@ -443,7 +444,7 @@ describe('customer order center static frontend', () => {
     expect(scheduleView.text()).not.toContain('生成更新后的总排期')
   })
 
-  it('accepts the original xls schedule only for Caixing', async () => {
+  it('uses the unified xlsx schedule for Caixing', async () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: {
         activeSection: 'import',
@@ -457,14 +458,14 @@ describe('customer order center static frontend', () => {
 
     await wrapper.get('[data-testid="customer-choice-caixing"]').trigger('click')
     const scheduleInput = wrapper.findAll('input[type="file"]')[1]!
-    expect(scheduleInput.attributes('accept')).toBe('.xls,.xlsx')
+    expect(scheduleInput.attributes('accept')).toBe('.xlsx')
     Object.defineProperty(scheduleInput.element, 'files', {
       configurable: true,
-      value: [new File(['schedule'], '2026年彩星生产排期表.xls')],
+      value: [new File(['schedule'], '河源业务统一排期.xlsx')],
     })
     await scheduleInput.trigger('change')
 
-    expect(wrapper.text()).toContain('2026年彩星生产排期表.xls')
+    expect(wrapper.text()).toContain('河源业务统一排期.xlsx')
   })
 
   it('writes a manual value for a missing field and clears the blocker', async () => {
@@ -1066,7 +1067,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.text()).toContain('彩星 V2')
     expect(wrapper.text()).toContain('重复订单是否允许确认以当前环境策略和预览结果为准')
-    expect(wrapper.text()).toContain('正单评审表 / 接单表 / ITEM表')
+    expect(wrapper.text()).toContain('ITEM表 / 接单表 / 正单评审表')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')
 

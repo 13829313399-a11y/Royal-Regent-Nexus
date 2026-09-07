@@ -317,21 +317,21 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       targetTemplate: 'HUAKANG_C_STROTTMAN_NEW_ORDER_V1',
       ruleDescription: '按Special Instructions把Case换算成PCS和每箱件数；多个走货日取最早日期写主列，其余保留在备注。',
     },
-    {
-      code: 'jp',
-      name: 'JP',
-      version: 'V1·需复核',
-      poAccept: '.pdf,.xls,.xlsx,.xlsm',
-      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
-      scheduleAccept: '.xls,.xlsx,.xlsm',
-      scheduleExtensions: ['.xls', '.xlsx', '.xlsm'],
-      poDescription: '华康车衣中文采购单（需文字层）',
-      templateDescription: 'JP内部排期总表',
-      targetTemplate: 'HUAKANG_C_JP_NEW_ORDER_V1',
-      ruleDescription: '读取采购单编号、日期、交货日、货号、数量和版本；仅写入原单明确提供的出厂价。旧系统无真实样例验收，结果必须逐字段复核。',
-    },
   ],
   huadeng: [
+    {
+      code: 'goliath',
+      name: 'Goliath',
+      version: 'V1',
+      poAccept: '.pdf',
+      poExtensions: ['.pdf'],
+      scheduleAccept: '.xlsx',
+      scheduleExtensions: ['.xlsx'],
+      poDescription: 'Goliath Far East 正式 Purchase Order PDF',
+      templateDescription: 'Goliath 最新河源业务统一排期',
+      targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3',
+      ruleDescription: '按完整合同号、客户 PO 和完整货号映射，数量与走货期取原 PO，缺少箱规时只继承最新排期的唯一历史值。',
+    },
     {
       code: 'casdon',
       name: 'Casdon',
@@ -380,36 +380,49 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       scheduleAccept: '.xlsx',
       scheduleExtensions: ['.xlsx'],
       poDescription: 'Spin 电子 PDF 或 WPS 转换 Excel PO',
-      templateDescription: 'Spin Master 排货表（中国）',
+      templateDescription: 'Spin 排货表（中国）',
       targetTemplate: 'HUADENG_SPIN_NEW_ORDER_V1',
       ruleDescription: '按 PO 修订版去重，按客户与货号继承排期主数据；USD 按 7.75 换算 HKD，人工排期字段保持空白。',
     },
-    {
-      code: 'spin-master',
-      name: 'Spin Master',
-      version: 'V1',
-      poAccept: '.pdf,.xls,.xlsx,.xlsm',
-      poExtensions: ['.pdf', '.xls', '.xlsx', '.xlsm'],
-      scheduleAccept: '.xls,.xlsx',
-      scheduleExtensions: ['.xls', '.xlsx'],
-      poDescription: 'Spin Master PDF 或 WPS 转换 Excel PO',
-      templateDescription: 'SPIN排期 / SPIN总汇',
-      targetTemplate: 'HUADENG_SPIN_MASTER_NEW_ORDER_V1',
-      ruleDescription: '使用独立 SPIN排期 / SPIN总汇模板；按合同、客户 PO、货号、数量、交期和金额组合去重。',
-    },
   ],
 }
+
+const UNIFIED_SCHEDULE_ACCEPT = '.xlsx'
+const UNIFIED_SCHEDULE_EXTENSIONS = ['.xlsx']
+const UNIFIED_SCHEDULE_DESCRIPTION = '河源业务统一排期（ITEM表 / 接单表 / 正单评审表）'
+const UNIFIED_SCHEDULE_TEMPLATE = 'HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1'
+
+Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => {
+  profiles.forEach((profile) => {
+    profile.scheduleAccept = UNIFIED_SCHEDULE_ACCEPT
+    profile.scheduleExtensions = UNIFIED_SCHEDULE_EXTENSIONS
+    profile.templateDescription = UNIFIED_SCHEDULE_DESCRIPTION
+    profile.targetTemplate = UNIFIED_SCHEDULE_TEMPLATE
+    profile.ruleDescription = `${profile.ruleDescription} 输出统一写入河源业务统一排期：三张表只使用“取消单”上方空行，接单表和正单评审表 C:G 同步 ITEM表 D:H；ITEM表只在 A:AB 写入可取得字段，缺失字段留空。`
+    if (factoryId === 'huakang-a') {
+      profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4'
+      profile.templateDescription = `华康A ${profile.name} 最新统一排期（含客户专属列）`
+      profile.ruleDescription = '只校验公共区域字段，客户专属列可增减或调整顺序，已配置的专属字段按实际表头定位。三张表分别在取消单前追加，接单表和正单评审表 C:G 同步 ITEM表 D:H。历史 PO 按客户编号与货号查重，保留原有记录、公式及人工生产和出货字段。'
+    }
+  })
+})
 
 // External customer orders are now owned by Huakang D.  Keep the backend's
 // Huakang C route compatible for saved historical previews, but do not offer
 // those external profiles from the Huakang C customer-order workspace.
 CUSTOMER_PROFILES_BY_FACTORY['huakang-d'] = CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] ?? []
 CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] = []
+for (const factoryId of ['huadeng', 'huakang-d']) {
+  for (const profile of CUSTOMER_PROFILES_BY_FACTORY[factoryId] ?? []) {
+    profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3'
+    profile.ruleDescription = '只校验主要公共字段，客户专属列按实际表头定位。三张表分别在取消单前追加，按客户订单识别号和产品编号核对历史；保留已有记录、公式、生产及实际出货字段。'
+  }
+}
 
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
   'disney', 'edu', '360', 'green-toys', 'headstart', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'barter',
-  'casdon', 'jakks', 'simba', 'spin', 'spin-master',
-  'index', 'jazwares', 'strottman', 'jp',
+  'casdon', 'jakks', 'simba', 'spin', 'goliath',
+  'index', 'jazwares', 'strottman',
 ])
 
 function isMappedCustomerCode(code: CustomerOrderCustomerCode): code is MappedCustomerCode {
@@ -494,7 +507,7 @@ const selectedCustomerCode = ref<CustomerOrderCustomerCode | ''>('')
 const poFiles = ref<File[]>([])
 const scheduleFile = ref<File | null>(null)
 const draggingUpload = ref<'po' | 'schedule' | null>(null)
-const selectedScheduleFile = ref('尚未选择客户排期')
+const selectedScheduleFile = ref('尚未选择河源业务统一排期')
 const receivedDate = ref(formatLocalDate(new Date()))
 const previewBatch = ref<CustomerOrderImportPreview | null>(null)
 const parseFailureMessage = ref('')
@@ -1094,7 +1107,7 @@ const previewRuleNotice = computed(() => {
 
 const generatedOutputDescription = computed(() => {
   const customerName = previewCustomerName.value || selectedCustomerName.value
-  const targetTemplate = previewBatch.value?.target_template || selectedCustomer.value?.targetTemplate || '客户排期模板'
+  const targetTemplate = previewBatch.value?.target_template || selectedCustomer.value?.targetTemplate || UNIFIED_SCHEDULE_TEMPLATE
   const confirmationText = skippedIssueCount.value > 0
     ? `本批已人工确认/跳过 ${skippedIssueCount.value} 项。`
     : '本批没有人工确认或跳过项。'
@@ -1143,13 +1156,13 @@ const traceFields = computed(() => {
     { label: 'Contract No.', value: row.contractNo, source: lineage.contract_no || row.contractSource },
     { label: '客名/国家', value: row.customerCountry, source: lineage.customer_country || `${inputKind} · 客户与市场识别` },
     { label: '产品编号', value: row.productNo, source: lineage.product_no || row.productSource },
-    { label: '中文名称', value: row.productNameZh, source: lineage.product_name_zh || `当前客户排期 · 货号 ${row.productNo}` },
+    { label: '中文名称', value: row.productNameZh, source: lineage.product_name_zh || `河源业务统一排期 · 货号 ${row.productNo}` },
     { label: '产品名称', value: row.productNameEn, source: lineage.product_name_en || `${sheetName} · 产品名称区域` },
     { label: '数量', value: row.quantity, source: lineage.quantity || `${inputKind} · Quantity` },
     { label: '装箱数', value: row.unitsPerCarton, source: lineage.units_per_carton || `${inputKind} · Shipping Carton Packing` },
     { label: '箱数', value: row.cartonCount, source: lineage.carton_count || '系统计算 · 数量 ÷ 装箱数' },
     { label: '国家标准', value: row.standard, source: lineage.standard || '模板规则 · 按客户/国家映射' },
-    { label: '单价HK', value: row.unitPriceHkd, source: lineage.unit_price_hkd || '当前客户排期 · 产品最近有效单价' },
+    { label: '单价HK', value: row.unitPriceHkd, source: lineage.unit_price_hkd || '河源业务统一排期 · 产品最近有效单价' },
     { label: '金额HK', value: row.amountHkd, source: lineage.amount_hkd || '系统计算 · 数量 × 单价HK' },
     { label: '包装', value: row.packaging, source: lineage.packaging || `${inputKind} · 包装REF` },
     { label: '行Q', value: row.lineQ, source: lineage.line_q || `${inputKind} · 验货/交付日期规则` },
@@ -1199,7 +1212,7 @@ function resetImportBatch() {
   clearPreviewState()
   poFiles.value = []
   scheduleFile.value = null
-  selectedScheduleFile.value = '尚未选择客户排期'
+  selectedScheduleFile.value = '尚未选择河源业务统一排期'
 }
 
 function selectCustomer(customerCode: CustomerOrderCustomerCode) {
@@ -1241,7 +1254,7 @@ function applySelectedFiles(kind: 'po' | 'schedule', files: File[]) {
       poFiles.value = []
     } else {
       scheduleFile.value = null
-      selectedScheduleFile.value = '尚未选择客户排期'
+      selectedScheduleFile.value = '尚未选择河源业务统一排期'
     }
     const fileName = ignoredMacFiles[0]?.name ?? '所选文件'
     notify(`已忽略 ${fileName}：这是 Mac 解压产生的隐藏资源文件，不是真实${kind === 'po' ? ' PO' : '排期'}。请选择同名且不带“._”前缀的文件。`)
@@ -1365,7 +1378,7 @@ async function parseSelectedFiles() {
     return
   }
   if (poFiles.value.length === 0 || !scheduleFile.value) {
-    notify(`请先选择一份或多份 ${selectedCustomer.value.name} PO 和当前客户排期。`)
+    notify(`请先选择一份或多份 ${selectedCustomer.value.name} PO 和河源业务统一排期。`)
     return
   }
   const requestId = ++parseRequestSequence
@@ -1880,7 +1893,7 @@ onBeforeUnmount(() => {
                 <span class="upload-card__type">文件 02 · 客户输出模板</span>
                 <div class="upload-card__icon upload-card__icon--green"><Layers3 aria-hidden="true" /></div>
                 <h3>导入客户现有排期</h3>
-                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；用于定位接单、评审及 Item 表结构。` : '请先选择客户，防止把其他客户排期套入错误模板。' }}</p>
+                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；仅在“取消单”上方追加，写入可取得的映射字段。` : '请先选择客户，再导入河源业务统一排期。' }}</p>
                 <strong>{{ selectedScheduleFile }}</strong>
                 <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
                 <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
@@ -1941,7 +1954,7 @@ onBeforeUnmount(() => {
                   <tbody>
                     <tr v-for="item in poImportQueue" :key="item.key"><td><FileSpreadsheet aria-hidden="true" /> {{ item.fileName }}</td><td>客户PO</td><td>{{ selectedCustomerName }}</td><td>{{ item.inputTemplate }}</td><td><span class="status-chip status-chip--active">已选择</span></td><td>本批</td></tr>
                     <tr v-if="poImportQueue.length === 0"><td><FileSpreadsheet aria-hidden="true" /> 尚未选择 PO 文件</td><td>客户PO</td><td>{{ selectedCustomerName }}</td><td>解析后识别</td><td><span class="status-chip status-chip--warning">待选择</span></td><td>本批</td></tr>
-                    <tr><td><FileSpreadsheet aria-hidden="true" /> {{ selectedScheduleFile }}</td><td>客户排期</td><td>{{ selectedCustomerName }} / {{ factoryName }}</td><td>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</td><td><span :class="['status-chip', scheduleFile ? 'status-chip--active' : 'status-chip--warning']">{{ scheduleFile ? '已选择' : '待选择' }}</span></td><td>本次</td></tr>
+                    <tr><td><FileSpreadsheet aria-hidden="true" /> {{ selectedScheduleFile }}</td><td>河源统一排期</td><td>{{ selectedCustomerName }} / {{ factoryName }}</td><td>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</td><td><span :class="['status-chip', scheduleFile ? 'status-chip--active' : 'status-chip--warning']">{{ scheduleFile ? '已选择' : '待选择' }}</span></td><td>本次</td></tr>
                   </tbody>
                 </table>
               </div>
