@@ -61,6 +61,8 @@ export interface CartonOrderResponse {
   product_name: string
   product_order_quantity: string
   order_date: string
+  customer_due_date?: string | null
+  safety_lead_days?: number
   due_date: string
   status: string
   note: string
@@ -116,6 +118,7 @@ export interface CartonOrderCreateRequest {
   product_name?: string
   product_order_quantity: number
   order_date: string
+  customer_due_date?: string | null
   due_date: string
   status: 'CONFIRMED'
   note: string
@@ -236,6 +239,8 @@ export interface CartonInventoryBalanceResponse {
   latest_movement_id: string
   latest_document_no: string
   latest_movement_at: string
+  latest_inbound_at?: string | null
+  location_revision?: number
 }
 
 export interface CartonInventoryMovementCreateRequest {
@@ -532,6 +537,7 @@ export const cartonProcurementApi = {
     additionalQuantity: number,
     reason: string,
     dueDate?: string,
+    customerDueDate?: string,
   ) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/append`,
@@ -540,6 +546,7 @@ export const cartonProcurementApi = {
         expected_revision: order.revision,
         additional_quantity: additionalQuantity,
         reason,
+        customer_due_date: customerDueDate || null,
         due_date: dueDate || null,
       },
     )
@@ -691,6 +698,18 @@ export const cartonProcurementApi = {
     const response = await http.post<CartonInventoryMovementResponse>(
       '/carton-procurement/inventory/movements',
       payload,
+    )
+    return response.data
+  },
+  async relocateInventory(payload: {
+    factory_id: string
+    reference_movement_id: string
+    expected_location_revision: number
+    location: string
+    note: string
+  }) {
+    const response = await http.post<CartonInventoryBalanceResponse>(
+      '/carton-procurement/inventory/relocations', payload,
     )
     return response.data
   },
