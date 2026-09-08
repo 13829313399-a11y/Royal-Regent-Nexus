@@ -62,6 +62,7 @@ export interface YinhuiQuoteData {
 export interface YinhuiConversionResult {
   sourceFileName: string
   warnings: string[]
+  manualReviewReasons?: string[]
   quoteData: YinhuiQuoteData
   sheets: Array<{
     id: string; name: string; sourceFileName: string; rowCount: number
@@ -207,7 +208,7 @@ export function yinhuiTotals(data: YinhuiQuoteData) {
     lcl: data.freightLclHkd === null ? null : exFactory + data.freightLclHkd,
     tooling: sum(data.tools.map((r) => r.toolingHkd)) }
 }
-function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[]): YinhuiConversionResult {
+function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[], manualReviewReasons: string[] = []): YinhuiConversionResult {
   // Only the first packaging detail row has the customer's three dimension input cells.
   const colorBox = data.packagingRows.findIndex((r) => /color box/i.test(r.description))
   if (colorBox > 0) data.packagingRows.unshift(data.packagingRows.splice(colorBox, 1)[0]!)
@@ -222,7 +223,7 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
   if (data.documentFees?.length) groups.push(['Documents / Customs Fee', total.documentFees])
   const details = groups.map(([description, price], i) => ({ id: `${sheetId}-${i}`, sheetId, sheetName: summaryName, itemNo: String(i + 1), description,
     internalPriceHkd: 0, customerPriceHkd: round(price), previousCustomerPriceHkd: round(price), differenceHkd: 0, marginBand: '独立客表口径', compareStatus: '持平' as const }))
-  return { sourceFileName, quoteData: data, warnings: [...new Set(warnings)], sheets: [{ id: sheetId, name: summaryName, sourceFileName,
+  return { sourceFileName, quoteData: data, warnings: [...new Set(warnings)], manualReviewReasons: [...new Set(manualReviewReasons)], sheets: [{ id: sheetId, name: summaryName, sourceFileName,
     rowCount: details.length, totalInternalHkd: round(data.internalTotalHkd), totalCustomerHkd: round(total.exFactory), details }] }
 }
 
@@ -236,6 +237,7 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   if (!main || !/银辉|銀輝|silverlit|yinhui/i.test(sourceFileName + workbook.sheets.flatMap((s) => s.rows.slice(0, 10).flat()).join(' '))) throw new Error('银辉原表需要“明细”页及银辉客户标识，请勿导入其他客户报价或报客成品表')
   const data = emptyData()
   const warnings = ['临时映射按单 BOM 汇入第一组；第二组保留空表，不推断 RX/TX 拆分。', '采用当前内部报价金额，不复制示例客表的手填金额、四舍五入金额或旧 MOQ。']
+  const manualReviewReasons: string[] = []
   const rows = main.rows
   const header = rows.findIndex((r) => text(r[2]) === '名称' && /料型/.test(text(r[3])) && /料重/.test(text(r[4])))
   if (header < 1) throw new Error('银辉内部明细未找到名称/料型/料重表头')
@@ -349,23 +351,55 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     type Group = { mold: string; rows: PlanRow[] }
     type Segment = { group: Group; resin: string; rows: PlanRow[] }
     const groups: Group[] = []; let group: Group | undefined
-    for (const row of plan.rows) {
-      const detail = hasValue(row[columns.description]) && hasValue(row[columns.partNo])
-        && typeof row[columns.cavity] === 'number' && typeof row[columns.usage] === 'number' && typeof row[columns.weight] === 'number'
+    for (const [planRowIndex, row] of plan.rows.entries()) {
+      const description = text(row[columns.description])
+      const mold = text(row[columns.mold])
+      const headerLike = /^(?:description|chinesename|中文名[称稱])$/.test(headerText(row[columns.description]))
+      const otherFields = [columns.mold, columns.partNo, columns.material, columns.cavity, columns.usage, columns.weight]
+      const onlyMoldRow = hasValue(row[columns.mold]) && [columns.description, columns.partNo, columns.material, columns.cavity, columns.usage, columns.weight].every(column => !hasValue(row[column]))
+        && /^[^\s]{1,40}$/.test(mold) && !/^(?:moldno\.?|模[号號])$/i.test(headerText(row[columns.mold]))
+      const suspectedDetail = !headerLike && (hasValue(row[columns.description])
+        ? otherFields.some(column => hasValue(row[column]))
+        : onlyMoldRow || [columns.cavity, columns.usage, columns.weight].some(column => hasValue(row[column])) || [columns.mold, columns.partNo, columns.material].filter(column => hasValue(row[column])).length >= 2)
+      if (!suspectedDetail) continue
+      if (onlyMoldRow) {
+        group = { mold, rows: [] }; groups.push(group)
+        manualReviewReasons.push(`Tool Plan 第 ${planRowIndex + 1} 行仅填写模号“${mold}”，已作为待核对的新模具分组，后续零件暂归入该组。`)
+        continue
+      }
       // Some legacy plans repeat a part name in the mold column on a detail
-      // row. A real mold-group start also carries its material.
-      if (detail && hasValue(row[columns.mold]) && hasValue(row[columns.material])) { group = { mold: text(row[columns.mold]), rows: [] }; groups.push(group) }
-      if (!group || !detail) continue
-      const cavity = positive(row[columns.cavity], 'Tool Plan出模数')
+      // row. A real mold-group start also carries its material. If that material
+      // cell is missing, accept a mold-like code as a new group but flag it.
+      const startsGroup = hasValue(row[columns.mold]) && (hasValue(row[columns.material]) || /^(?=.*\d)[a-z0-9][a-z0-9._/-]*$/i.test(mold) || !group)
+      if (startsGroup) {
+        group = { mold, rows: [] }; groups.push(group)
+        if (!hasValue(row[columns.material])) manualReviewReasons.push(`Tool Plan 第 ${planRowIndex + 1} 行模具 ${mold} 未填写料型，已按主明细料型计价。`)
+      } else if (hasValue(row[columns.mold]) && !hasValue(row[columns.material])) {
+        manualReviewReasons.push(`Tool Plan 第 ${planRowIndex + 1} 行模号列“${mold}”有值但料型为空，无法确定是新模具还是零件别名；暂接在当前模具组，请人工核对。`)
+      }
+      if (!description || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/i.test(description)) {
+        manualReviewReasons.push(`Tool Plan 第 ${planRowIndex + 1} 行的零件描述${description ? `为公式错误“${description}”` : '为空'}，已跳过并改由主明细匹配或生成临时行。`)
+        continue
+      }
+      if (!group) {
+        manualReviewReasons.push(`Tool Plan 第 ${planRowIndex + 1} 行“${description || mold || '未命名'}”无法确定所属模具，已跳过该行。`)
+        continue
+      }
+      const cavity = Number(row[columns.cavity])
       // Legacy Qty/Toy may legitimately be 0 for a plugged/insert-mold cavity.
       // Compact "/ up" is a divisor and therefore must remain strictly positive.
-      const sourceUsage = columns.usageIsMoldOutput
-        ? positive(row[columns.usage], 'Tool Plan每啤成品数')
-        : numeric(row[columns.usage], 'Tool Plan用量')
+      const sourceUsage = Number(row[columns.usage])
+      const weight = Number(row[columns.weight])
+      if (!(cavity > 0) || !(weight > 0) || !Number.isFinite(sourceUsage) || (columns.usageIsMoldOutput ? !(sourceUsage > 0) : sourceUsage < 0)) {
+        manualReviewReasons.push(`Tool Plan 第 ${planRowIndex + 1} 行“${description || mold || '未命名'}”的出模数、用量或重量格式无法识别，已跳过该行。`)
+        continue
+      }
+      const partNo = text(row[columns.partNo])
+      if (!partNo) manualReviewReasons.push(`Tool Plan 第 ${planRowIndex + 1} 行“${description}”未填写零件号，已保留空白并允许人工核对。`)
       group.rows.push({
-        description: text(row[columns.description]), partNo: text(row[columns.partNo]), resin: text(row[columns.material]), cavity,
+        description, partNo, resin: text(row[columns.material]), cavity,
         usage: columns.usageIsMoldOutput ? cavity / sourceUsage : sourceUsage,
-        weight: positive(row[columns.weight], 'Tool Plan重量'),
+        weight,
       })
     }
     const segments = groups.flatMap(group => {
@@ -384,13 +418,23 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
       const firstName = simplified(injection.description.split('*')[0] || '')
       let matches = segments.filter(segment => !used.has(segment) && simplified(segment.rows[0]?.description || '') === firstName)
       if (matches.length !== 1) matches = segments.filter(segment => !used.has(segment) && Math.abs(sum(segment.rows.map(row => row.usage * row.weight)) - injection.weight) <= .03)
-      if (matches.length !== 1) throw new Error(`银辉无法唯一匹配注塑第 ${injection.row} 行到 Tool Plan：${injection.description}`)
+      if (matches.length !== 1) {
+        manualReviewReasons.push(`注塑第 ${injection.row} 行“${injection.description}”无法与 Tool Plan 唯一匹配，已改用主明细的料重、料型、啤工和出模套数生成临时行；模号、零件号留空。`)
+        data.tools.push({ moldNo: '', partNo: '', description: injection.description, usage: 1, cavity: injection.cavity, weightG: injection.weight, material: injection.material, laborHkd: injection.labor, toolingHkd: 0 })
+        continue
+      }
       const matched = matches[0]!; used.add(matched)
-      if (matched.resin && material(matched.resin) !== injection.material) warnings.push(`模具 ${matched.group.mold} 料型 ${matched.resin} 与明细 ${injection.material} 不一致；按当前明细 ${injection.material} 计价。`)
+      if (matched.resin) {
+        try {
+          if (material(matched.resin) !== injection.material) warnings.push(`模具 ${matched.group.mold} 料型 ${matched.resin} 与明细 ${injection.material} 不一致；按当前明细 ${injection.material} 计价。`)
+        } catch {
+          manualReviewReasons.push(`Tool Plan 模具 ${matched.group.mold} 的料型“${matched.resin}”无法识别；已按主明细 ${injection.material} 计价。`)
+        }
+      }
       const writeMold = !moldWritten.has(matched.group); moldWritten.add(matched.group)
       matched.rows.forEach((row, i) => data.tools.push({ moldNo: i === 0 && writeMold ? matched.group.mold : '', partNo: row.partNo, description: row.description, usage: row.usage, cavity: row.cavity, weightG: i === 0 ? injection.weight : 0, material: injection.material, laborHkd: i === 0 ? injection.labor : 0, toolingHkd: 0 }))
     }
-    if (used.size !== segments.length) throw new Error('银辉 Tool Plan 存在未匹配模具或料型分段，不能遗漏输出')
+    if (used.size !== segments.length) manualReviewReasons.push(`Tool Plan 有 ${segments.length - used.size} 个模具或料型分段未与主明细匹配，未自动写入客表，请人工核对模具费和零件资料。`)
   } else {
     warnings.push('内部文件无独立 Tool Plan：按明细模组拆出零件，用该组总料重和啤工计价；没有依据的客户模号、零件号留空。')
     for (const injection of injections) {
@@ -486,7 +530,8 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   }
   data.image = extractYinhuiProductImage(buffer, main.name)
   if (!data.image) warnings.push('未读取到主产品图，请在报客前补充确认。')
-  return finish(data, sourceFileName, warnings)
+  if (manualReviewReasons.length) warnings.push('Tool Plan 版式或对应关系存在不确定项，已允许进入人工核对；金额可能受影响，确认放行前必须逐项核对。')
+  return finish(data, sourceFileName, warnings, manualReviewReasons)
 }
 
 export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, sourceFileName: string): YinhuiConversionResult {
@@ -608,6 +653,7 @@ export function validateYinhuiExport(data: YinhuiQuoteData) {
     positive(line.quantity, 'BOM 用量'); numeric(line.amountHkd, 'BOM 金额')
     if (!line.description.trim() || /[\u3400-\u9fff]/.test(line.description)) throw new Error(`请在核对区补全英文物料名称：${line.description || line.source}`)
   }
+  for (const line of data.tools) if (!line.description.trim() || /[\u3400-\u9fff]/.test(line.description) || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/i.test(line.description.trim())) throw new Error(`请在核对区补全英文物料名称：${line.description || line.moldNo || 'Tool Plan'}`)
   if (/[\u3400-\u9fff]/.test(data.productName)) throw new Error('请在核对区填写英文产品名称')
 }
 export function buildYinhuiCustomerQuoteFileName(result: YinhuiConversionResult) {
