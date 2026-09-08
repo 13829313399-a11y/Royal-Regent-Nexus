@@ -57,6 +57,13 @@ export const http: AxiosInstance = axios.create({
   },
 })
 
+http.interceptors.request.use((config) => {
+  if (/^\/internal-quotes(?:\/|$)/.test(config.url ?? '') && config.timeout === 15000) {
+    config.timeout = 120_000
+  }
+  return config
+})
+
 http.interceptors.response.use(
   (response) => response,
   (error: AxiosError<ApiErrorPayload>) => {

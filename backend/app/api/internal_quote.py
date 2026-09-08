@@ -3,6 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.db import get_db
 from app.schemas.internal_quote import (
@@ -112,6 +113,7 @@ from app.services.internal_quote_artifacts import (
     list_export_files,
     list_import_batches,
     delete_import_attachment,
+    delete_supporting_attachment,
     upload_attachment,
     upload_product_image,
 )
@@ -684,7 +686,8 @@ async def post_internal_quote_import_preview(
     current_user: AuthContext = Depends(get_current_user),
 ):
     content = await file.read()
-    return create_import_preview(
+    return await run_in_threadpool(
+        create_import_preview,
         db,
         quote_id,
         import_type,
@@ -755,7 +758,8 @@ async def post_internal_quote_attachment(
     current_user: AuthContext = Depends(get_current_user),
 ):
     content = await file.read()
-    return upload_attachment(
+    return await run_in_threadpool(
+        upload_attachment,
         db,
         quote_id,
         department,
@@ -779,7 +783,8 @@ async def post_internal_quote_product_image(
     current_user: AuthContext = Depends(get_current_user),
 ):
     content = await file.read()
-    return upload_product_image(
+    return await run_in_threadpool(
+        upload_product_image,
         db,
         quote_id,
         file.filename or "",
@@ -796,7 +801,7 @@ async def post_component_image(
     db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
 ):
     from app.services.internal_quote_artifacts import save_component_image
-    return save_component_image(db, quote_id, component_id, revision, current_user,
+    return await run_in_threadpool(save_component_image, db, quote_id, component_id, revision, current_user,
                                 file_name=file.filename or "", content=await file.read(), request=request)
 
 
@@ -897,6 +902,16 @@ def delete_internal_quote_import_attachment(
         request,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/{quote_id}/attachments/{attachment_id}/supporting", status_code=204)
+def delete_internal_quote_supporting_attachment(
+    quote_id: str, attachment_id: str, request: Request,
+    revision: int = Query(ge=1), db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    delete_supporting_attachment(db, quote_id, attachment_id, revision, current_user, request)
+    return Response(status_code=204)
 
 
 @router.post(
