@@ -1,7 +1,11 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { http, getApiErrorMessage } from "@/lib/http";
 import { threeDPrintingApi } from "@/api/threeDPrinting";
-import type { ThreeDProductionRecord } from "@/types/threeDPrinting";
+import type {
+  ThreeDProductionRecord,
+  ThreeDInventoryMovement,
+  ThreeDSchedule,
+} from "@/types/threeDPrinting";
 import { useWorkspaceContext } from "../context";
 export function useOperations() {
   type Kind =
@@ -26,6 +30,7 @@ export function useOperations() {
     label: string;
     type?: string;
     default?: unknown;
+    multiple?: boolean;
   }
 
   const base = "/three-d-printing/operations";
@@ -47,6 +52,8 @@ export function useOperations() {
 
   const form = reactive<Record<string, unknown>>({}),
     selectedFiles = ref<string[]>([]);
+  const completionRuns = reactive<Record<string, string>>({});
+  const completionFeedback = reactive<Record<string, string>>({});
 
   const labels: Record<Kind, string> = {
     spool: "卷材与 AMS",
@@ -110,7 +117,13 @@ export function useOperations() {
     profile: [
       { name: "machine_no", label: "机号（1–11）", type: "number", default: 1 },
       { name: "materials", label: "适用材料（逗号分隔）", type: "array" },
-      { name: "product_ids", label: "适配产品ID（空白为不限）", type: "array" },
+      {
+        name: "product_ids",
+        label: "适配产品（留空为不限）",
+        type: "products",
+        multiple: true,
+        default: [],
+      },
       {
         name: "service_interval_hours",
         label: "保养间隔(h)",
@@ -137,13 +150,25 @@ export function useOperations() {
       { name: "product_id", label: "对应产品", type: "product" },
       { name: "file_name", label: "打印机上报文件名" },
       { name: "version", label: "版本号" },
-      { name: "file_id", label: "附件ID（可选）" },
+      { name: "file_id", label: "版本附件（可选）", type: "file" },
     ],
     file: [],
     run_evidence: [
-      { name: "record_id", label: "生产记录ID" },
-      { name: "spool_ids", label: "使用卷材ID（逗号分隔）", type: "array" },
-      { name: "file_ids", label: "照片/附件ID（逗号分隔）", type: "array" },
+      { name: "record_id", label: "生产记录", type: "records" },
+      {
+        name: "spool_ids",
+        label: "使用卷材",
+        type: "spool",
+        multiple: true,
+        default: [],
+      },
+      {
+        name: "file_ids",
+        label: "照片与附件",
+        type: "file",
+        multiple: true,
+        default: [],
+      },
       { name: "quality", label: "质量结论", default: "pending" },
       { name: "note", label: "核对说明" },
     ],
@@ -151,7 +176,7 @@ export function useOperations() {
 
   const states: Record<string, string> = {
     active: "有效",
-    submitted: "待审批",
+    submitted: "待排产",
     approved: "已批准",
     rejected: "已驳回",
     scheduled: "已建计划",
@@ -159,18 +184,20 @@ export function useOperations() {
     cancelled: "已取消",
   };
 
-  const fileItems = ref<Item[]>([]),
-    filePage = ref(1),
-    fileTotal = ref(0);
-
   const pending = ref<ThreeDProductionRecord[]>([]),
     pendingTotal = ref(0),
     pendingPage = ref(1),
     matchedProduct = ref(""),
-    selectedRun = ref(""),
-    feedback = ref("");
+    selectedRun = ref("");
 
-  const thread = ref<Record<string, unknown>>();
+  const thread = ref<{
+    record: ThreeDProductionRecord;
+    inventory_movements: ThreeDInventoryMovement[];
+    file_versions: { version: string; file_name: string }[];
+    requests: Item[];
+    run_evidence: Item[];
+    quality_flags: string[];
+  }>();
 
   const advice = ref<
       {
@@ -179,6 +206,12 @@ export function useOperations() {
         reason: string;
         eta?: string;
         late?: boolean;
+        product_name: string;
+        quantity: number;
+        due_date: string;
+        schedule: ThreeDSchedule;
+        warnings?: string[];
+        assigned: boolean;
       }[]
     >([]),
     adviceMessage = ref("");
@@ -208,7 +241,9 @@ export function useOperations() {
   function reset() {
     Object.keys(form).forEach((k) => delete form[k]);
     fields[kind.value].forEach((f) => {
-      form[f.name] = f.default ?? "";
+      form[f.name] = Array.isArray(f.default)
+        ? [...f.default]
+        : (f.default ?? "");
     });
     resourceKey.value = "";
     revision.value = 0;
@@ -217,19 +252,22 @@ export function useOperations() {
     requestKey.value = crypto.randomUUID();
   }
 
+  let listGeneration = 0;
   async function load(value = 1) {
+    const generation = ++listGeneration;
     loading.value = true;
     try {
       const { data } = await http.get(`${base}/resources/${kind.value}`, {
         params: { page: value },
       });
+      if (generation !== listGeneration) return;
       items.value = data.items;
       page.value = value;
       total.value = data.total;
     } catch (e) {
-      message.value = getApiErrorMessage(e);
+      if (generation === listGeneration) message.value = getApiErrorMessage(e);
     } finally {
-      loading.value = false;
+      if (generation === listGeneration) loading.value = false;
     }
   }
 
@@ -271,7 +309,7 @@ export function useOperations() {
         resource_key: resourceKey.value || requestKey.value,
         revision: revision.value,
         idempotency_key: requestKey.value,
-        reason: reason.value,
+        reason: reason.value.trim() || `保存${labels[kind.value]}`,
         data,
       });
       reset();
@@ -285,19 +323,23 @@ export function useOperations() {
   }
 
   async function act(item: Item, action: string) {
-    if (!reason.value.trim()) {
-      message.value = "请先填写操作原因";
-      return;
-    }
+    if (loading.value) return;
     loading.value = true;
     try {
       await http.post(`${base}/resources/${item.id}/actions`, {
         revision: item.revision,
         idempotency_key: `${item.id}-${item.revision}-${action}`,
-        reason: reason.value,
+        reason:
+          reason.value.trim() ||
+          ({
+            schedule: "需求直接排产",
+            cancel: "取消需求",
+            complete: "完成需求",
+          }[action] ??
+            action),
         action,
-        target_id: selectedRun.value,
-        feedback: feedback.value,
+        target_id: action === "complete" ? (completionRuns[item.id] ?? "") : "",
+        feedback: completionFeedback[item.id] ?? "",
       });
       await load(page.value);
       message.value = "操作完成";
@@ -317,22 +359,12 @@ export function useOperations() {
       body.append("file", file);
       await http.post(`${base}/files`, body);
       await load();
-      await loadFiles();
-      message.value = "附件已保存，可复制附件ID关联版本或选择关联需求";
+      message.value = "附件已保存，可在需求、版本或质量凭证中按名称选择";
     } catch (e) {
       message.value = getApiErrorMessage(e);
     } finally {
       loading.value = false;
     }
-  }
-
-  async function loadFiles(value = 1) {
-    const { data } = await http.get(`${base}/resources/file`, {
-      params: { page: value },
-    });
-    fileItems.value = data.items;
-    fileTotal.value = data.total;
-    filePage.value = value;
   }
 
   async function download(item: Item) {
@@ -373,7 +405,7 @@ export function useOperations() {
         target_id: matchedProduct.value,
         revision: run.revision,
         idempotency_key: `match-${run.id}-${run.revision}`,
-        reason: reason.value,
+        reason: reason.value.trim() || "人工匹配生产任务",
       });
       await loadPending(pendingPage.value);
       message.value = "匹配已保存，库存与成本结果请查看追溯";
@@ -399,7 +431,7 @@ export function useOperations() {
         http.get(`${base}/analytics`),
       ]);
       advice.value = a.data.items;
-      adviceMessage.value = a.data.blocked_reason ?? "";
+      adviceMessage.value = a.data.notice ?? a.data.blocked_reason ?? "";
       metrics.value = b.data.machines;
     } catch (e) {
       message.value = getApiErrorMessage(e);
@@ -407,16 +439,36 @@ export function useOperations() {
   }
 
   async function prepare(item: (typeof advice.value)[number]) {
+    editSchedule({ ...item.schedule, machine_no: item.machine_no ?? 0 });
+    activeTab.value = "schedules";
+  }
+
+  async function applyAdvice(item: (typeof advice.value)[number]) {
+    if (loading.value || !item.machine_no) return;
+    loading.value = true;
     try {
-      const result = await threeDPrintingApi.collection<
-        import("@/types/threeDPrinting").ThreeDSchedule
-      >("schedules", { q: item.schedule_id });
-      const job = result.items.find((j) => j.id === item.schedule_id);
-      if (!job) throw new Error("计划已变化，请刷新");
-      editSchedule({ ...job, machine_no: item.machine_no ?? 0 });
-      activeTab.value = "schedules";
+      const s = item.schedule;
+      await threeDPrintingApi.updateSchedule(s.id, {
+        factory_id: "huakang-a",
+        revision: s.revision,
+        business_date: s.business_date,
+        product_id: s.product_id,
+        product_name: s.product_name,
+        customer: s.customer,
+        material_name: s.material_name,
+        weight_g: s.weight_g,
+        quantity: s.quantity,
+        machine_no: item.machine_no,
+        priority: s.priority,
+        status: s.status,
+        remark: s.remark,
+      });
+      await analyze();
+      message.value = `${s.product_name}已分配至${item.machine_no}号机`;
     } catch (e) {
       message.value = getApiErrorMessage(e);
+    } finally {
+      loading.value = false;
     }
   }
 
@@ -430,7 +482,6 @@ export function useOperations() {
     await load();
     await loadPending();
     try {
-      await loadFiles();
       await analyze();
     } catch (e) {
       message.value = getApiErrorMessage(e);
@@ -438,6 +489,7 @@ export function useOperations() {
   });
   return {
     departments,
+    departmentNames,
     base,
     canOperate,
     activeTab,
@@ -454,18 +506,16 @@ export function useOperations() {
     requestKey,
     form,
     selectedFiles,
+    completionRuns,
+    completionFeedback,
     labels,
     fields,
     states,
-    fileItems,
-    filePage,
-    fileTotal,
     pending,
     pendingTotal,
     pendingPage,
     matchedProduct,
     selectedRun,
-    feedback,
     thread,
     advice,
     adviceMessage,
@@ -478,12 +528,12 @@ export function useOperations() {
     save,
     act,
     upload,
-    loadFiles,
     download,
     loadPending,
     match,
     trace,
     analyze,
     prepare,
+    applyAdvice,
   };
 }

@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.core.time import business_now, parse_business_timestamp
 from app.models import three_d_printing as m
@@ -47,7 +47,7 @@ def fail(code, status=409):
         "file_not_found": "关联附件不存在，请重新上传或选择",
         "spool_not_found": "关联卷材不存在或已归档",
         "only_unmatched_connector_run_allowed": "只允许匹配尚未绑定产品、尚未扣料的云端设备任务",
-        "resource_not_editable": "当前状态不允许编辑，请核对审批流程",
+        "resource_not_editable": "当前记录已经完成或取消",
         "resource_too_large": "关联内容过多，请减少附件或批次数量",
     }
     raise HTTPException(
@@ -69,7 +69,7 @@ def out(row):
     }
 
 
-def resources(db, kind, page=1, page_size=50):
+def resources(db, kind, page=1, page_size=50, q=""):
     if kind not in (*SCHEMAS, "file"):
         fail("unknown_resource", 404)
     filters = [
@@ -77,6 +77,14 @@ def resources(db, kind, page=1, page_size=50):
         MODEL.kind == kind,
         MODEL.status != "archived",
     ]
+    if q.strip():
+        filters.append(
+            or_(
+                MODEL.resource_key.contains(q.strip(), autoescape=True),
+                MODEL.data_json.contains(q.strip(), autoescape=True),
+                MODEL.id == q.strip(),
+            )
+        )
     total = db.scalar(select(func.count()).select_from(MODEL).where(*filters))
     rows = db.scalars(
         select(MODEL)
@@ -252,12 +260,14 @@ def act(db, *, item_id, payload, user):
         row.status = "archived"
     elif row.kind == "request":
         transitions = {
+            ("submitted", "schedule"): "scheduled",
             ("submitted", "approve"): "approved",
             ("submitted", "reject"): "rejected",
             ("approved", "schedule"): "scheduled",
             ("scheduled", "complete"): "completed",
             ("submitted", "cancel"): "cancelled",
             ("approved", "cancel"): "cancelled",
+            ("scheduled", "cancel"): "cancelled",
         }
         target = transitions.get((row.status, payload.action))
         if not target:
@@ -324,6 +334,12 @@ def act(db, *, item_id, payload, user):
                 schedule.status = "done"
                 schedule.revision += 1
                 schedule.updated_at = business_now().isoformat()
+        if payload.action == "cancel" and data.get("schedule_id"):
+            schedule = db.get(m.ThreeDPrintingSchedule, data["schedule_id"])
+            if schedule and schedule.factory_id == "huakang-a":
+                schedule.status = "cancelled"
+                schedule.revision += 1
+                schedule.updated_at = business_now().isoformat()
         row.status = target
     else:
         fail("unsupported_action", 422)
@@ -342,8 +358,12 @@ def analytics(db, days=30):
             select(m.ThreeDPrintingProductionRecord).where(
                 m.ThreeDPrintingProductionRecord.factory_id == "huakang-a",
                 m.ThreeDPrintingProductionRecord.deleted_at == "",
-                m.ThreeDPrintingProductionRecord.business_date
-                >= begin.date().isoformat(),
+                or_(
+                    m.ThreeDPrintingProductionRecord.business_date
+                    >= begin.date().isoformat(),
+                    m.ThreeDPrintingProductionRecord.print_end_at
+                    >= begin.date().isoformat(),
+                ),
             )
         )
     )
@@ -360,12 +380,16 @@ def analytics(db, days=30):
                 parse_business_timestamp(row.print_start_at),
                 parse_business_timestamp(row.print_end_at),
             )
-            if start and end and end >= start:
-                timed_records += 1
-                occupied += max(
+            if start and end and end > start:
+                overlap = max(
                     0, (min(end, now) - max(start, begin)).total_seconds() / 3600
                 )
-                expected += float(row.duration_hours)
+                if not overlap:
+                    continue
+                timed_records += 1
+                occupied += overlap
+                elapsed = (end - start).total_seconds() / 3600
+                expected += float(row.duration_hours) * row.quantity * overlap / elapsed
         completed = [r for r in rows if r.run_status in {"succeeded", "failed"}]
         quality = (
             sum(r.run_status == "succeeded" for r in completed) / len(completed)
@@ -436,12 +460,8 @@ def analytics(db, days=30):
 
 def recommendations(db):
     health = network_health_snapshot(db)
-    if not health["configured"] or health["status"] != "healthy":
-        return {
-            "mode": "recommend_only",
-            "items": [],
-            "blocked_reason": "站点网络尚未验证或状态已过期",
-        }
+    live = health["configured"] and health["status"] == "healthy"
+    now = business_now()
     printers = {
         p.machine_no: business.printer_out(p)
         for p in db.scalars(
@@ -453,13 +473,21 @@ def recommendations(db):
     profiles = {
         json.loads(r.data_json)["machine_no"]: json.loads(r.data_json)
         for r in db.scalars(
-            select(MODEL).where(MODEL.kind == "profile", MODEL.status == "active")
+            select(MODEL).where(
+                MODEL.factory_id == "huakang-a",
+                MODEL.kind == "profile",
+                MODEL.status == "active",
+            )
         )
     }
     spools = [
         json.loads(r.data_json)
         for r in db.scalars(
-            select(MODEL).where(MODEL.kind == "spool", MODEL.status == "active")
+            select(MODEL).where(
+                MODEL.factory_id == "huakang-a",
+                MODEL.kind == "spool",
+                MODEL.status == "active",
+            )
         )
     ]
     jobs = list(
@@ -472,71 +500,116 @@ def recommendations(db):
     )
     jobs.sort(
         key=lambda j: (
+            0 if j.machine_no else 1,
             {"high": 0, "normal": 1, "low": 2}.get(j.priority, 1),
             j.business_date,
             j.id,
         )
     )
-    load = {n: p["remaining_minutes"] for n, p in printers.items()}
+    load = {
+        n: max(0, p["remaining_minutes"])
+        if live and p["connected"] and p["state"] == "RUNNING"
+        else 0
+        for n, p in printers.items()
+    }
     proposed = []
     for job in jobs:
         candidates = []
         needed = float(job.weight_g) * job.quantity
-        for n, printer in printers.items():
-            profile = profiles.get(n)
-            if (
-                not profile
-                or profile["maintenance_blocked"]
-                or not printer["enabled"]
-                or not printer["connected"]
-                or bool(printer["error_text"])
-                or printer["nozzle_temperature"] > 320
-                or printer["bed_temperature"] > 130
-                or printer["state"] not in {"IDLE", "FINISH", "RUNNING"}
-            ):
-                continue
-            if job.material_name not in profile["materials"] or (
-                profile["product_ids"] and job.product_id not in profile["product_ids"]
-            ):
-                continue
-            available = sum(
-                s["remaining_g"]
-                for s in spools
-                if s["machine_no"] == n and s["material"] == job.material_name
-            )
-            if needed <= 0 or available < needed:
-                continue
-            candidates.append((load[n], n, available))
-        if not candidates:
-            proposed.append(
-                {
-                    "schedule_id": job.id,
-                    "machine_no": None,
-                    "reason": "无新鲜在线、适配且卷材充足的机台",
-                }
-            )
-            continue
-        minutes, n, available = min(candidates)
+        details = {
+            "schedule_id": job.id,
+            "schedule": business.schedule_out(job),
+            "product_name": job.product_name,
+            "quantity": job.quantity,
+            "due_date": job.business_date,
+            "assigned": bool(job.machine_no),
+        }
         p = db.get(m.ThreeDPrintingProduct, job.product_id)
         duration = float(p.duration_hours) * job.quantity * 60 if p else 0
         if duration <= 0:
             proposed.append(
                 {
-                    "schedule_id": job.id,
+                    **details,
                     "machine_no": None,
-                    "reason": "产品工时缺失，不能估算交期",
+                    "reason": "产品工时缺失，请先补充产品资料",
                 }
             )
             continue
-        eta = business_now() + timedelta(minutes=minutes + duration)
+        for n, printer in printers.items():
+            if job.machine_no and job.machine_no != n:
+                continue
+            profile = profiles.get(n)
+            fresh = live and printer["connected"]
+            if (
+                (profile and profile["maintenance_blocked"])
+                or not printer["enabled"]
+                or (
+                    fresh
+                    and (
+                        bool(printer["error_text"])
+                        or printer["nozzle_temperature"] > 320
+                        or printer["bed_temperature"] > 130
+                        or printer["state"] not in {"IDLE", "FINISH", "RUNNING"}
+                    )
+                )
+            ):
+                continue
+            if profile and (
+                job.material_name not in profile["materials"]
+                or (
+                    profile["product_ids"]
+                    and job.product_id not in profile["product_ids"]
+                )
+            ):
+                continue
+            mounted = [
+                s
+                for s in spools
+                if s["machine_no"] == n and s["material"] == job.material_name
+            ]
+            available = sum(s["remaining_g"] for s in mounted) if mounted else None
+            if available is not None and available < needed:
+                continue
+            warnings = []
+            if not fresh:
+                warnings.append("离线估算，机台可用时间待现场核实")
+            if not profile:
+                warnings.append("未设置机台适配，请核实材料与产品")
+            if available is None:
+                warnings.append("未登记该材料卷材，余量待核实")
+            if needed <= 0:
+                warnings.append("计划重量缺失，耗材量待补充")
+            # Prefer complete machine/material evidence, then the earliest slot.
+            candidates.append((len(warnings), load[n], n, available, warnings))
+        if not candidates:
+            proposed.append(
+                {
+                    **details,
+                    "machine_no": None,
+                    "reason": "指定机台不可用、材料不适配或已登记卷材不足"
+                    if job.machine_no
+                    else "机台暂停排程、材料不适配或已登记卷材不足",
+                }
+            )
+            continue
+        _, minutes, n, available, warnings = min(candidates)
+        eta = now + timedelta(minutes=minutes + duration)
         proposed.append(
             {
-                "schedule_id": job.id,
+                **details,
                 "machine_no": n,
                 "eta": eta.isoformat(),
                 "late": eta.date().isoformat() > job.business_date,
-                "reason": "优先级/交期顺序，适配材料与产品，余料校验后选择最早可用机台",
+                "reason": "保留现有机台分配并计入队列"
+                if job.machine_no
+                else (
+                    "按计划工时推荐机台，未核实信息见提示"
+                    if warnings
+                    else "按优先级与交期排序，选择适配且余料充足的最早可用机台"
+                ),
                 "available_g": available,
+                "warnings": warnings,
+                "estimated": bool(warnings),
             }
         )
         load[n] += duration
@@ -546,7 +619,13 @@ def recommendations(db):
                 used = min(left, spool["remaining_g"])
                 spool["remaining_g"] -= used
                 left -= used
-    return {"mode": "recommend_only", "items": proposed}
+    return {
+        "mode": "recommend_only",
+        "items": proposed,
+        "notice": ""
+        if live
+        else "实时网络未就绪，仍可离线排程；开工时间与余料请按现场情况调整。",
+    }
 
 
 @atomic_write

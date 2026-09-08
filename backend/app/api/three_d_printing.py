@@ -270,12 +270,13 @@ def collection(kind: str, factory_id: str, db: MigrationDb, current_user: Migrat
                q: str = Query("", max_length=100), machine_no: int = Query(0, ge=0, le=11),
                state: str = Query("", max_length=32), source: str = Query("", max_length=64),
                date_from: str = Query("", max_length=10), date_to: str = Query("", max_length=10),
-               quality: str = Query("", max_length=32), customer: str = Query("", max_length=100), material: str = Query("", max_length=100)):
+               quality: str = Query("", max_length=32), customer: str = Query("", max_length=100), material: str = Query("", max_length=100),
+               product_id: str = Query("", max_length=96)):
     from app.services.three_d_workspace import page as query_page
     _ensure_permission(db, current_user, "three_d_printing:read", factory_id)
     return query_page(db, kind, page=page, page_size=page_size, q=q, machine_no=machine_no,
                       state=state, source=source, date_from=date_from, date_to=date_to,
-                      quality=quality, customer=customer, material=material)
+                      quality=quality, customer=customer, material=material, product_id=product_id)
 
 
 @router.get("/printers/{printer_id}/timeline")
