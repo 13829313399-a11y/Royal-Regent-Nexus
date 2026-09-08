@@ -89,6 +89,8 @@ class CartonOrder(Base):
     product_order_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     order_date: Mapped[str] = mapped_column(String(10), index=True)
     customer_due_date: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    master_config_id: Mapped[str] = mapped_column(String(96), default="")
+    master_config_revision: Mapped[int] = mapped_column(Integer, default=0)
     safety_lead_days: Mapped[int] = mapped_column(Integer, default=3)
     due_date: Mapped[str] = mapped_column(String(10), index=True)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", index=True)
@@ -307,6 +309,7 @@ class CartonReceiptLine(Base):
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     location: Mapped[str] = mapped_column(String(128), default="")
     feedback_note: Mapped[str] = mapped_column(Text, default="")
+    location_allocations_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
 
 
 class CartonInventoryMovement(Base):
@@ -358,6 +361,9 @@ class CartonInventoryMovement(Base):
     source_line_id: Mapped[str] = mapped_column(String(96), index=True)
     reversal_of_movement_id: Mapped[str | None] = mapped_column(String(96), nullable=True, index=True)
     reason: Mapped[str] = mapped_column(Text, default="")
+    workshop_id: Mapped[str] = mapped_column(String(96), default="")
+    workshop_name: Mapped[str] = mapped_column(String(128), default="")
+    issue_kind: Mapped[str] = mapped_column(String(24), default="UNKNOWN", server_default="UNKNOWN")
     actor_user_id: Mapped[str] = mapped_column(String(64), index=True)
     actor_name: Mapped[str] = mapped_column(String(128), default="")
     occurred_at: Mapped[str] = mapped_column(String(40), index=True)

@@ -21,6 +21,9 @@ REVIEWER = SimpleNamespace(id="supervisor", display_name="主管")
 
 @pytest.fixture
 def stockdb(db):
+    from app.services.carton_positions import create_location
+    for code in ("A", "B"):
+        create_location(db, "huaxing", "默认仓", code)
     CartonStocktake.__table__.create(db.get_bind())
     CartonStocktakeLine.__table__.create(db.get_bind())
     seed(db, [movement("a", "100", "2")])
@@ -106,8 +109,10 @@ def test_location_change_after_submit_requires_return(stockdb):
     with pytest.raises(HTTPException): action(stockdb, doc, "APPROVE", user=REVIEWER)
     stockdb.rollback()
     returned = action(stockdb, doc, "RETURN", user=REVIEWER, reason="仓位变化重新盘点")
-    submitted = action(stockdb, returned, "SUBMIT")
-    assert submitted["lines"][0]["latest_location"] == "B"
+    submitted = action(stockdb, returned, "SUBMIT", actual="0")
+    # A count stays attached to its original physical position after goods move.
+    assert submitted["lines"][0]["latest_location"] == "待核仓位"
+    assert submitted["lines"][0]["difference"] == 0
     assert action(stockdb, submitted, "APPROVE", user=REVIEWER)["status"] == "POSTED"
 
 
@@ -173,13 +178,20 @@ def test_unreviewed_save_keeps_stale_basis_even_for_net_zero(stockdb):
     assert verified["basis_changed"] is False
 
 
-def test_raw_receipt_location_change_also_blocks_approval(stockdb):
+def test_receipt_into_other_position_does_not_reassign_original_count(stockdb):
+    from app.services import carton_positions as positions
     doc = action(stockdb, create(stockdb), "SUBMIT")
-    seed(stockdb, [movement("b", "5", "2", location="B", at="2026-09-02T09:00:00+08:00")])
-    assert stocktake_detail(stockdb, "huaxing", doc["id"])["lines"][0]["location_changed"] is True
-    with pytest.raises(HTTPException): action(stockdb, doc, "APPROVE", user=REVIEWER)
-    stockdb.rollback()
-    assert not list(stockdb.scalars(select(Movement).where(Movement.source_type == "STOCKTAKE")))
+    target = positions.create_location(stockdb, "huaxing", "默认仓", "B")
+    new = movement("b", "5", "2", at="2026-09-07T09:00:00+08:00")
+    positions.post(stockdb, new, location_id=target.id)
+    event = events_for([new])[0]; event.sequence = None
+    stockdb.add(event); stockdb.commit()
+    detail = stocktake_detail(stockdb, "huaxing", doc["id"])
+    assert detail["lines"][0]["location_changed"] is False
+    posted = action(stockdb, doc, "APPROVE", user=REVIEWER)
+    assert posted["status"] == "POSTED"
+    totals = {r.latest_location: r.balance for r in positions.position_balances(stockdb, "huaxing")}
+    assert totals == {"待核仓位": D(98), "B": D(5)}
 
 
 def test_return_and_recount_preserves_original_submission_evidence(stockdb):
@@ -215,3 +227,19 @@ def test_gain_without_carrying_cost_stays_unpriced(stockdb):
     identifier = posted["lines"][0]["movement_id"]
     assert stockdb.get(Movement, identifier).unit_price == 0
     assert identifier in {row.id for row in load_valuation(stockdb, "huaxing").missing}
+
+
+def test_status_filter_precedes_pagination_and_retains_factory_scope(stockdb):
+    from app.services.carton_stocktake import list_stocktakes
+    for identifier, factory, status, at in [
+        ("FILTER-NEW", "huaxing", "DRAFT", "2026-09-08"),
+        ("FILTER-1", "huaxing", "POSTED", "2026-09-07"),
+        ("FILTER-2", "huaxing", "POSTED", "2026-09-06"),
+        ("FILTER-OTHER", "huakang", "POSTED", "2026-09-09"),
+    ]:
+        stockdb.add(CartonStocktake(id=identifier, factory_id=factory, status=status,
+            created_by="counter", created_by_name="盘点员", created_at=at))
+    stockdb.commit()
+    assert [row["id"] for row in list_stocktakes(stockdb, "huaxing", 1, 0, "POSTED")] == ["FILTER-1"]
+    assert [row["id"] for row in list_stocktakes(stockdb, "huaxing", 1, 1, "POSTED")] == ["FILTER-2"]
+    assert len(list_stocktakes(stockdb, "huaxing")) == 3

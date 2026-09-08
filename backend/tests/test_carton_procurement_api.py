@@ -96,6 +96,12 @@ def _ensure_dickie_customer(client) -> None:
             },
         )
         assert created_customer.status_code == 201, created_customer.text
+        # Warehouse staff select pre-maintained bins; receiving no longer creates
+        # arbitrary master data as a side effect of a free-text label.
+        for bin_code in ["纸箱仓 A-01", "纸箱仓 A-03", "纸箱仓 B-01", "纸箱仓 B-02", "打板区 S-01", "A-00", "A-01", "A-02", "B-02", "C-03"]:
+            location = client.post("/api/carton-procurement/inventory/locations",
+                json={"factory_id": "huaxing", "warehouse": "默认仓", "bin_code": bin_code})
+            assert location.status_code == 201, location.text
         login_as(client, "warehouse_keeper")
 
 
