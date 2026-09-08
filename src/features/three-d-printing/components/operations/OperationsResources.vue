@@ -2,8 +2,10 @@
 import { useOperationsContext } from "../../operationsContext";
 import PageControls from "../PageControls.vue";
 import ProductPicker from "../ProductPicker.vue";
+import EntityPicker from "../EntityPicker.vue";
 const {
   departments,
+  departmentNames,
   canOperate,
   kind,
   items,
@@ -13,18 +15,13 @@ const {
   message,
   reason,
   resourceKey,
-  revision,
   form,
   selectedFiles,
+  completionRuns,
+  completionFeedback,
   labels,
   fields,
   states,
-  fileItems,
-  filePage,
-  fileTotal,
-  pending,
-  selectedRun,
-  feedback,
   editing,
   reset,
   load,
@@ -32,7 +29,6 @@ const {
   save,
   act,
   upload,
-  loadFiles,
   download,
 } = useOperationsContext();
 </script>
@@ -40,7 +36,7 @@ const {
   <div class="panel-card p-5">
     <h2 class="text-xl font-bold">生产协同</h2>
     <p class="mt-2 text-sm text-slate-600">
-      先完善机台适配和卷材实测余量，再查看排程建议。建议需要人工保存计划，不会直接启动打印。
+      需求直接生成计划，卷材、文件与质量凭证按名称关联。机台建议可以直接采用。
     </p>
     <p role="status" class="mt-3 text-amber-800">{{ message }}</p>
     <nav class="my-4 flex flex-wrap gap-2">
@@ -73,8 +69,21 @@ const {
       <div class="form-grid">
         <label v-for="field in fields[kind]" :key="field.name"
           >{{ field.label
-          }}<ProductPicker
-            v-if="field.type === 'product'"
+          }}<EntityPicker
+            v-if="
+              ['records', 'spool', 'file', 'products'].includes(
+                field.type ?? '',
+              )
+            "
+            :kind="field.type as 'records' | 'spool' | 'file' | 'products'"
+            :multiple="field.multiple"
+            :model-value="
+              Array.isArray(form[field.name])
+                ? (form[field.name] as string[])
+                : String(form[field.name] ?? '')
+            "
+            @update:model-value="form[field.name] = $event" /><ProductPicker
+            v-else-if="field.type === 'product'"
             :model-value="String(form[field.name] ?? '')"
             @update:model-value="form[field.name] = $event" /><select
             v-else-if="field.name === 'department'"
@@ -111,24 +120,14 @@ const {
       </div>
       <div v-if="kind === 'request'">
         <p>关联附件</p>
-        <label
-          v-for="file in fileItems"
-          :key="file.id"
-          class="mr-4 inline-flex gap-2"
-          ><input v-model="selectedFiles" type="checkbox" :value="file.id" />{{
-            file.data.name
-          }}</label
-        ><PageControls
-          :page="filePage"
-          :total="fileTotal"
-          @change="loadFiles"
+        <EntityPicker
+          :model-value="selectedFiles"
+          kind="file"
+          multiple
+          @update:model-value="selectedFiles = $event as string[]"
         />
       </div>
-      <label
-        >保存 / 操作原因<input
-          v-model="reason"
-          required
-          maxlength="500" /></label
+      <label>备注（可选）<input v-model="reason" maxlength="500" /></label
       ><button class="action-button" :disabled="loading">保存</button
       ><button
         type="button"
@@ -150,18 +149,20 @@ const {
       <article v-for="item in items" :key="item.id" class="py-4">
         <div class="flex flex-wrap justify-between gap-2">
           <strong>{{
+            (item.kind === "spool" ? item.resource_key : undefined) ??
             item.data.name ??
             item.data.lot ??
             item.data.file_name ??
             item.data.cost_center ??
-            `机台 ${item.data.machine_no}`
+            (item.kind === "profile"
+              ? `机台 ${item.data.machine_no}`
+              : labels[item.kind])
           }}</strong
           ><span
             >{{ states[item.status] ?? item.status }} · 版本
             {{ item.revision }}</span
           >
         </div>
-        <small class="break-all">{{ item.id }} · {{ item.resource_key }}</small>
         <p v-if="item.kind === 'spool'">
           {{ item.data.material }} · {{ item.data.color }} · 剩余
           {{ item.data.remaining_g }}g / {{ item.data.initial_g }}g ·
@@ -177,10 +178,14 @@ const {
           >
         </p>
         <p v-if="item.kind === 'request'">
-          {{ item.data.department }} · {{ item.data.quantity }}件 · 交期
-          {{ item.data.due_date }} · {{ item.data.note }}<br />计划
-          {{ item.data.schedule_id ?? "待审批" }} · 生产记录
-          {{ item.data.record_id ?? "待生产" }}
+          {{
+            departmentNames[String(item.data.department)] ||
+            item.data.department
+          }}
+          · {{ item.data.quantity }}件 · 交期 {{ item.data.due_date }} ·
+          {{ item.data.note }}<br />计划
+          {{ item.data.schedule_id ? "已生成" : "待排产" }} · 生产记录
+          {{ item.data.record_id ? "已绑定" : "待生产" }}
         </p>
         <p v-if="item.kind === 'profile'">
           材料 {{ item.data.materials }} · 保养间隔
@@ -188,11 +193,17 @@ const {
           {{ item.data.maintenance_blocked ? "暂停排程" : "可参与建议" }}
         </p>
         <p v-if="item.kind === 'file_alias'">
-          {{ item.data.product_id }} · 版本 {{ item.data.version }} · 附件
-          {{ item.data.file_id || "未关联" }}
+          版本 {{ item.data.version }} · 附件
+          {{ item.data.file_id ? "已关联" : "未关联" }}
         </p>
         <p v-if="item.kind === 'run_evidence'">
-          生产记录 {{ item.data.record_id }} · {{ item.data.quality }} ·
+          质量
+          {{
+            { passed: "通过", failed: "不通过", pending: "待确认" }[
+              String(item.data.quality)
+            ]
+          }}
+          ·
           {{ item.data.note }}
         </p>
         <button
@@ -202,6 +213,26 @@ const {
         >
           下载附件
         </button>
+        <div
+          v-if="
+            canOperate && item.kind === 'request' && item.status === 'scheduled'
+          "
+          class="my-3 max-w-2xl space-y-2"
+        >
+          <label
+            >选择该需求的完成记录<EntityPicker
+              :model-value="completionRuns[item.id] ?? ''"
+              kind="records"
+              state="succeeded"
+              :product-id="String(item.data.product_id)"
+              @update:model-value="completionRuns[item.id] = String($event)"
+          /></label>
+          <label
+            >完成反馈（可选）<input
+              v-model="completionFeedback[item.id]"
+              maxlength="2000"
+          /></label>
+        </div>
         <div v-if="canOperate" class="mt-2 flex gap-2">
           <button
             v-if="
@@ -215,15 +246,17 @@ const {
           ><template v-if="item.kind === 'request'"
             ><button
               v-for="action in item.status === 'submitted'
-                ? ['approve', 'reject', 'cancel']
+                ? ['schedule', 'cancel']
                 : item.status === 'approved'
                   ? ['schedule', 'cancel']
                   : item.status === 'scheduled'
-                    ? ['complete']
+                    ? ['complete', 'cancel']
                     : []"
               :key="action"
               class="action-button secondary"
-              :disabled="loading"
+              :disabled="
+                loading || (action === 'complete' && !completionRuns[item.id])
+              "
               @click="act(item, action)"
             >
               {{
@@ -241,12 +274,5 @@ const {
       </article>
     </div>
     <p v-if="!items.length" class="py-5 text-slate-500">暂无记录</p>
-    <div v-if="kind === 'request'" class="mt-4 space-y-2">
-      <label>完成生产记录ID<input v-model="selectedRun" /></label
-      ><label>验收反馈<input v-model="feedback" maxlength="2000" /></label>
-      <p class="text-sm">
-        完成时校验成功状态、产品和数量，已分配的生产记录不能重复绑定。
-      </p>
-    </div>
   </div>
 </template>

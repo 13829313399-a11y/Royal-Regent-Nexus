@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { threeDPrintingApi } from "@/api/threeDPrinting";
 import { getApiErrorMessage } from "@/lib/http";
 import type { ThreeDProduct } from "@/types/threeDPrinting";
-defineProps<{ modelValue: string }>();
+const props = defineProps<{ modelValue: string }>();
 const emit = defineEmits<{
   "update:modelValue": [string];
   selected: [ThreeDProduct];
@@ -12,6 +12,24 @@ const query = ref(""),
   items = ref<ThreeDProduct[]>([]),
   message = ref("");
 let generation = 0;
+const selectedProduct = ref<ThreeDProduct>();
+watch(
+  () => props.modelValue,
+  async (id) => {
+    if (!id || items.value.some((item) => item.id === id)) return;
+    try {
+      const result = await threeDPrintingApi.collection<ThreeDProduct>(
+        "products",
+        { q: id, page_size: 50 },
+      );
+      if (props.modelValue === id)
+        selectedProduct.value = result.items.find((item) => item.id === id);
+    } catch (error) {
+      message.value = getApiErrorMessage(error);
+    }
+  },
+  { immediate: true },
+);
 async function search() {
   const current = ++generation;
   try {
@@ -58,7 +76,11 @@ function select(event: Event) {
         v-if="modelValue && !items.some((i) => i.id === modelValue)"
         :value="modelValue"
       >
-        已选择 {{ modelValue }}
+        {{
+          selectedProduct?.id === modelValue
+            ? selectedProduct.name
+            : "已关联产品"
+        }}
       </option>
       <option v-for="item in items" :key="item.id" :value="item.id">
         {{ item.name }} · {{ item.customer }}

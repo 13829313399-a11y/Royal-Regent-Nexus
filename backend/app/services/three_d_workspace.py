@@ -22,6 +22,7 @@ def page(
     quality="",
     customer="",
     material="",
+    product_id="",
 ):
     kinds = {
         "products": (m.ThreeDPrintingProduct, business.product_out),
@@ -100,6 +101,8 @@ def page(
             filters.append(getattr(model, key).contains(value, autoescape=True))
     if machine_no and hasattr(model, "machine_no"):
         filters.append(model.machine_no == machine_no)
+    if product_id and hasattr(model, "product_id"):
+        filters.append(model.product_id == product_id)
     if hasattr(model, "business_date"):
         if date_from:
             filters.append(model.business_date >= date_from)

@@ -75,7 +75,7 @@ def test_spool_revision_idempotency_slot_and_no_stock_repost(environment):
         assert not list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))
 
 
-def test_request_approval_schedule_completion_evidence(environment):
+def test_request_direct_schedule_completion_evidence(environment):
     env = environment
     seed_product(env)
     response, _ = save(
@@ -91,8 +91,6 @@ def test_request_approval_schedule_completion_evidence(environment):
     )
     assert response.status_code == 200, response.text
     item = response.json()
-    action(env, item, "schedule", 409)
-    item = action(env, item, "approve")
     item = action(env, item, "schedule")
     assert item["data"]["schedule_id"]
     action(env, item, "complete", 409, target_id="no-proof")
@@ -267,8 +265,27 @@ def test_paginated_workspace_totals_filters_and_timeline_redaction(environment):
     )
 
 
-def test_advice_is_network_gated_and_analytics_is_non_mutating(environment):
+def test_advice_offline_estimates_and_analytics_is_non_mutating(environment):
     env = environment
+    seed_product(env)
+    with env[1].SessionLocal() as db:
+        db.get(env[2].ThreeDPrintingProduct, "product-0").duration_hours = 1
+        db.add(
+            env[2].ThreeDPrintingSchedule(
+                id="offline-job",
+                factory_id="huakang-a",
+                business_date="2026-09-30",
+                product_id="product-0",
+                product_name="part",
+                material_name="PLA",
+                weight_g=10,
+                quantity=2,
+                machine_no=0,
+                created_at="2026-09-04",
+                updated_at="2026-09-04",
+            )
+        )
+        db.commit()
     response = env[0].get(f"{BASE}/analytics")
     assert response.status_code == 200, response.text
     assert len(response.json()["machines"]) == 11
@@ -293,7 +310,13 @@ def test_advice_is_network_gated_and_analytics_is_non_mutating(environment):
     response = env[0].get(f"{BASE}/recommendations")
     assert response.status_code == 200
     assert response.json()["mode"] == "recommend_only"
-    assert response.json()["blocked_reason"]
+    assert response.json()["notice"]
+    advice = response.json()["items"][0]
+    assert advice["machine_no"] and advice["estimated"]
+    assert len(advice["warnings"]) == 3
+    assert advice["schedule"]["revision"] == 1
+    with env[1].SessionLocal() as db:
+        assert db.get(env[2].ThreeDPrintingSchedule, "offline-job").machine_no == 0
 
 
 def test_quality_spool_snapshot_and_operator_cannot_approve(environment):
@@ -390,7 +413,7 @@ def test_advice_reserves_spool_quantity_without_mutating_jobs(environment):
                     material_name="PLA",
                     weight_g=10,
                     quantity=3,
-                    machine_no=0,
+                    machine_no=1,
                     created_at="2026-09-04",
                     updated_at="2026-09-04",
                 )
@@ -423,7 +446,7 @@ def test_advice_reserves_spool_quantity_without_mutating_jobs(environment):
     assert advice[0]["schedule_id"] == "job-a" and advice[0]["machine_no"] == 1
     assert advice[1]["machine_no"] is None
     with env[1].SessionLocal() as db:
-        assert db.get(env[2].ThreeDPrintingSchedule, "job-a").machine_no == 0
+        assert db.get(env[2].ThreeDPrintingSchedule, "job-a").machine_no == 1
         spool = db.scalar(
             select(env[2].ThreeDPrintingOperationsItem).where(
                 env[2].ThreeDPrintingOperationsItem.kind == "spool"
@@ -444,3 +467,139 @@ def test_advice_reserves_spool_quantity_without_mutating_jobs(environment):
     )
     counters = env[0].get(f"{BASE}/analytics").json()["machines"][0]
     assert counters["temperature_alarm_events"] == 1 and counters["maintenance_due"]
+
+
+def test_operator_can_schedule_directly_retry_once_and_cancel_linked_plan(environment):
+    from test_three_d_printing_api import ensure_three_d_operator, login
+
+    env = environment
+    seed_product(env)
+    ensure_three_d_operator("direct-planner")
+    login(env[0], "direct-planner")
+    response, _ = save(
+        env,
+        "request",
+        {
+            "department": "three-d-printing",
+            "cost_center": "样品室",
+            "product_id": "product-0",
+            "quantity": 2,
+            "due_date": "2026-09-30",
+        },
+    )
+    assert response.status_code == 200, response.text
+    item = response.json()
+    payload = {
+        "revision": item["revision"],
+        "idempotency_key": uuid4().hex,
+        "reason": "直接排产",
+        "action": "schedule",
+    }
+    url = f"{BASE}/resources/{item['id']}/actions"
+    first = env[0].post(url, json=payload)
+    assert first.status_code == 200, first.text
+    assert (
+        env[0].post(url, json=payload).json()["data"]["schedule_id"]
+        == first.json()["data"]["schedule_id"]
+    )
+    cancelled = action(env, first.json(), "cancel")
+    assert cancelled["status"] == "cancelled"
+    with env[1].SessionLocal() as db:
+        schedules = list(db.scalars(select(env[2].ThreeDPrintingSchedule)))
+        assert len(schedules) == 1 and schedules[0].status == "cancelled"
+
+
+def test_advice_keeps_assigned_machine_and_reserves_its_time(environment):
+    env = environment
+    seed_product(env)
+    with env[1].SessionLocal() as db:
+        db.get(env[2].ThreeDPrintingProduct, "product-0").duration_hours = 1
+        for name, machine in [("fixed", 2), ("unassigned", 0)]:
+            db.add(
+                env[2].ThreeDPrintingSchedule(
+                    id=name,
+                    factory_id="huakang-a",
+                    business_date="2026-09-30",
+                    product_id="product-0",
+                    product_name="part",
+                    material_name="PLA",
+                    weight_g=10,
+                    quantity=2,
+                    machine_no=machine,
+                    created_at="2026-09-04",
+                    updated_at="2026-09-04",
+                )
+            )
+        db.commit()
+    items = env[0].get(f"{BASE}/recommendations").json()["items"]
+    fixed = next(i for i in items if i["schedule_id"] == "fixed")
+    other = next(i for i in items if i["schedule_id"] == "unassigned")
+    assert fixed["machine_no"] == 2 and fixed["assigned"]
+    assert other["machine_no"] != 2
+    assert other["schedule"]["machine_no"] == 0
+
+
+def test_resource_search_and_completion_record_filters(environment):
+    env = environment
+    seed_product(env)
+    for key, lot in [("S001", "批次甲"), ("S002", "批次乙")]:
+        response, _ = save(
+            env,
+            "spool",
+            {"material": "PLA", "lot": lot, "initial_g": 1000, "remaining_g": 500},
+            resource_key=key,
+        )
+        assert response.status_code == 200
+    rows = env[0].get(f"{BASE}/resources/spool", params={"q": "批次乙"}).json()
+    assert rows["total"] == 1 and rows["items"][0]["resource_key"] == "S002"
+    ref = session(env)
+    post(env, "/events", event(env, ref, current_file="part.3mf"))
+    post(env, "/events", event(env, ref, 2, "FINISH"))
+    url = "/api/three-d-printing/collections/records"
+    params = {
+        "factory_id": "huakang-a",
+        "product_id": "product-0",
+        "state": "succeeded",
+    }
+    assert env[0].get(url, params=params).json()["total"] == 1
+    assert (
+        env[0].get(url, params={**params, "product_id": "other"}).json()["total"] == 0
+    )
+    assert env[0].get(url, params={**params, "state": "failed"}).json()["total"] == 0
+
+
+def test_analytics_counts_quantity_and_clips_cross_window_runs(environment):
+    from datetime import timedelta
+
+    import pytest
+    from app.core.time import business_now
+
+    env = environment
+    now = business_now()
+    with env[1].SessionLocal() as db:
+        for name, start, end, quantity, hours in [
+            ("boundary", now - timedelta(hours=26), now - timedelta(hours=22), 1, 4),
+            ("multiple", now - timedelta(hours=4), now, 2, 2),
+        ]:
+            db.add(
+                env[2].ThreeDPrintingProductionRecord(
+                    id=name,
+                    factory_id="huakang-a",
+                    machine_no=1,
+                    business_date=start.date().isoformat(),
+                    status="done",
+                    run_status="succeeded",
+                    print_start_at=start.isoformat(),
+                    print_end_at=end.isoformat(),
+                    duration_hours=hours,
+                    quantity=quantity,
+                    created_at=start.isoformat(),
+                    updated_at=end.isoformat(),
+                )
+            )
+        db.commit()
+    row = env[0].get(f"{BASE}/analytics?days=1").json()["machines"][0]
+    assert row["records_with_timing"] == 2
+    assert row["occupied_hours"] == pytest.approx(6, abs=0.01)
+    assert row["performance"] == pytest.approx(1)
+    assert row["availability"] == pytest.approx(0.25, abs=0.001)

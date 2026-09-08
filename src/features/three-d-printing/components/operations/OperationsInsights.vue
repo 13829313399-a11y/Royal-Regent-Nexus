@@ -3,13 +3,14 @@ import { useOperationsContext } from "../../operationsContext";
 
 const {
   canOperate,
-  reason,
   advice,
   adviceMessage,
   metrics,
   percent,
   analyze,
   prepare,
+  applyAdvice,
+  loading,
 } = useOperationsContext();
 </script>
 <template>
@@ -25,19 +26,40 @@ const {
       class="border-b py-3"
     >
       <strong
-        >{{ item.schedule_id }} →
+        >{{ item.product_name }} · {{ item.quantity }}件 →
         {{ item.machine_no ? `${item.machine_no}号机` : "暂不推荐" }}</strong
       >
       <p>
-        {{ item.reason }} · {{ item.eta ?? "" }}
+        交期 {{ item.due_date }} · {{ item.reason }}
+        <span v-if="item.eta">
+          · 预计完成 {{ new Date(item.eta).toLocaleString("zh-CN") }}</span
+        >
         <b v-if="item.late" class="text-rose-700">预计超期</b>
       </p>
+      <p
+        v-for="warning in item.warnings"
+        :key="warning"
+        class="text-sm text-amber-800"
+      >
+        {{ warning }}
+      </p>
+      <button
+        v-if="item.machine_no && canOperate && !item.assigned"
+        class="action-button mt-2 mr-2"
+        :disabled="loading"
+        @click="applyAdvice(item)"
+      >
+        采用机台
+      </button>
+      <span v-if="item.assigned" class="mr-2 text-sm text-teal-700"
+        >已分配</span
+      >
       <button
         v-if="item.machine_no && canOperate"
         class="action-button secondary"
         @click="prepare(item)"
       >
-        带入计划，人工确认
+        调整计划
       </button>
     </article>
     <p class="my-4 text-sm text-slate-500">
