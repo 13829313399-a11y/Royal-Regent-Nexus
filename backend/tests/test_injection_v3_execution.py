@@ -2,7 +2,9 @@
 
 from datetime import timedelta
 
+import pytest
 from app.models.injection_scheduling import CalendarEvent, Demand, MoldAsset, Run
+from app.services.injection_scheduling import planning
 from app.services.injection_scheduling.calculations import now, timestamp
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -465,6 +467,81 @@ def test_explicit_group_preserves_demands_and_rejects_recipe_mix(env):
         )[0].status_code
         == 422
     )
+
+
+@pytest.mark.parametrize("action", ["auto", "move", "group", "original_import"])
+def test_all_planning_paths_accept_preparation_notes_with_unlisted_equipment(
+    env, action
+):
+    _, machine, first = seed_job(env, planned=60)
+    first_notes = {"automation_requirement": "全自动", "fixture_requirement": "吸盘"}
+    ok(write(env, f"/demands/{first['id']}", first_notes, method="patch"))
+    second = more_demand(
+        env,
+        automation_requirement="半自动",
+        fixture_requirement="夹子",
+        requirements_snapshot={
+            "fixture_requirement": "夹子",
+            "required_capabilities": ["AUTOMATIC"],
+        },
+    )
+    identities = {first["id"], second["id"]}
+    if action == "original_import":
+        with Session(env[1]) as db:
+            result = planning.import_original_assignments(
+                db,
+                "huaxing",
+                [
+                    {
+                        "demand_id": demand["id"],
+                        "machine_id": machine["id"],
+                        "legacy_start": now().isoformat(),
+                    }
+                    for demand in (first, second)
+                ],
+                "test-operator",
+            )
+            db.commit()
+        assert not result["unplaced"]
+        assert [run["demand_ids"][0] for run in result["changed_runs"]] == [
+            first["id"],
+            second["id"],
+        ]
+    elif action == "group":
+        result = ok(
+            write(
+                env,
+                "/schedule/group",
+                demand_ids=list(identities),
+                machine_id=machine["id"],
+            )
+        )
+        assert set(result["changed_runs"][0]["demand_ids"]) == identities
+    elif action == "move":
+        for demand_id in identities:
+            ok(
+                write(
+                    env, "/schedule/move", demand_id=demand_id, machine_id=machine["id"]
+                )
+            )
+    else:
+        result = ok(write(env, "/schedule/auto"))
+        assert result["scheduled_count"] == 2 and not result["unplaced"]
+    with Session(env[1]) as db:
+        for demand_id in identities:
+            stored = db.get(Demand, demand_id)
+            assert stored.machine_code == machine["code"]
+            assert stored.planned_start_at is not None
+            assert stored.extras["automation_requirement"] == (
+                "全自动" if demand_id == first["id"] else "半自动"
+            )
+            assert stored.extras["fixture_requirement"] == (
+                "吸盘" if demand_id == first["id"] else "夹子"
+            )
+        assert (
+            db.get(Demand, second["id"]).requirements_snapshot
+            == second["requirements_snapshot"]
+        )
 
 
 def test_co_output_physical_counter_is_not_sum_of_product_equivalents(env):

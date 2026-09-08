@@ -30,25 +30,31 @@ from app.models.injection_scheduling import (
     ShiftReport,
 )
 from app.schemas.injection_scheduling import (
+    BulkStart,
     BulkWrite,
     ExportQuery,
     FactoryId,
     GroupWrite,
     ImportApply,
     MoveWrite,
+    PlanClearPreview,
+    PlanClearWrite,
     Query,
     RecordWrite,
     RelocateWrite,
     ReportWrite,
     RunAction,
     ScheduleWrite,
+    StartPreview,
     Write,
 )
 from app.services.auth import AuthContext, get_current_user
 from app.services.business_authz import ensure_permission_for_departments
 from app.services.injection_scheduling import (
+    bulk_start,
     import_service,
     master_data,
+    plan_clear,
     planning,
     production,
     queries,
@@ -97,6 +103,32 @@ def write(db, user, payload, kind, callback, permission="plan"):
     except Exception:
         db.rollback()
         raise
+
+
+@router.post("/execution/start-preview")
+def preview_bulk_start(
+    payload: StartPreview,
+    db: Session = Depends(get_db),
+    user: AuthContext = Depends(get_current_user),
+):
+    authorize(db, user, payload.factory_id, "report")
+    return bulk_start.preview(db, payload.factory_id, payload.items)
+
+
+@router.post("/execution/bulk-start")
+def commit_bulk_start(
+    payload: BulkStart,
+    db: Session = Depends(get_db),
+    user: AuthContext = Depends(get_current_user),
+):
+    return write(
+        db,
+        user,
+        payload,
+        "bulk_start",
+        lambda: bulk_start.start(db, payload, user.id),
+        permission="report",
+    )
 
 
 @router.get("/field-registry")
@@ -787,6 +819,29 @@ def changes(
         "changed": rev["revision"] != since_revision,
         "synced_at": now().isoformat(),
     }
+
+
+@router.post("/plan-data/clear-preview")
+def preview_plan_clear(
+    payload: PlanClearPreview,
+    db: Session = Depends(get_db),
+    user: AuthContext = Depends(get_current_user),
+):
+    authorize(db, user, payload.factory_id, "plan")
+    return plan_clear.preview(db, payload.factory_id)
+
+
+@router.post("/plan-data/clear")
+def clear_plan_data(
+    payload: PlanClearWrite,
+    db: Session = Depends(get_db),
+    user: AuthContext = Depends(get_current_user),
+):
+    if payload.include_execution:
+        authorize(db, user, payload.factory_id, "report")
+    return write(
+        db, user, payload, "plan.clear", lambda: plan_clear.clear(db, payload, user.id)
+    )
 
 
 @router.get("/views")

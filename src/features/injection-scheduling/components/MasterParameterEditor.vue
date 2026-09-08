@@ -126,6 +126,12 @@ const lines = (v: JsonValue | undefined) =>
 <template>
   <section class="inj-parameter" :aria-label="label">
     <h3>{{ label }}</h3>
+    <p v-if="kind === 'capabilities'" class="inj-muted">
+      全自动状态不影响排期。夹具、吸盘等可人工装卸，记录供现场准备，不作为排产硬性条件。
+    </p>
+    <p v-else-if="kind === 'requirements'" class="inj-muted">
+      夹具要求供现场装配准备，不限制排期。全自动状态也不参与排产限制。
+    </p>
     <template v-if="parsed.valid && supported">
       <div v-if="kind === 'working_days'" class="inj-weekdays">
         <label

@@ -559,6 +559,7 @@ function upcoming(machine: DataRow) {
       :queues="queues"
       :can-report="canReport"
       :running-only="runningOnly"
+      :filter-scope="JSON.stringify([view.workshop, view.machineSearch])"
       @select="selectRun"
       @action="(run, verb) => emit('action', run, verb)"
       @report="(run) => emit('report', run)"
