@@ -497,6 +497,8 @@ def _validate_po_batch(po_files: list[tuple[str, bytes]]) -> None:
 
 
 def _factory_allowed(customer_code: str, factory_id: str) -> bool:
+    if customer_code == 'disney':
+        return factory_id in {'huaxing', 'huakang-d'}
     if customer_code == 'spin-master' or (customer_code == 'jp' and factory_id == 'huakang-d'):
         return False
     if customer_code in {"buzzbee", "dickie", "caixing", "disney", "edu", "360", "yinhui", "seasons", "maxx", "shushupapa", "barter"}:
@@ -1187,10 +1189,12 @@ def create_unified_customer_preview(
     for row in detail_rows:
         row["received_date"] = normalized_received_date
         if huaxing_sheets:
-            huaxing.prepare_row(row, history, customer_code, huaxing_sheets)
+            huaxing.prepare_row(row, history, customer_code, huaxing_sheets, factory_id)
         if regional.enabled(factory_id, customer_code):
             regional.reconcile_product(row, history, factory_id, customer_code)
         _enrich_row(row, history, customer_name)
+        if huaxing.enabled(factory_id, customer_code):
+            row['target_template'] = huaxing.target_template(factory_id)
         if huakang_unified.enabled(factory_id, customer_code):
             row["target_template"] = huakang_unified.TARGET_TEMPLATE
             for field in ("barcode", "port", "printing_requirement", "country"):
@@ -1237,7 +1241,7 @@ def create_unified_customer_preview(
         "source_po_sha256s": hashes,
         "source_schedule_sha256": sha256(schedule_content).hexdigest(),
         "input_template": input_template,
-        "target_template": huakang_unified.TARGET_TEMPLATE if huakang_unified.enabled(factory_id, customer_code) else regional.TARGET_TEMPLATE if regional.enabled(factory_id, customer_code) else huaxing.TARGET_TEMPLATE if huaxing.enabled(factory_id, customer_code) else TARGET_TEMPLATE,
+        "target_template": huakang_unified.TARGET_TEMPLATE if huakang_unified.enabled(factory_id, customer_code) else regional.TARGET_TEMPLATE if regional.enabled(factory_id, customer_code) else huaxing.target_template(factory_id) if huaxing.enabled(factory_id, customer_code) else TARGET_TEMPLATE,
         "output_file_name": output_file_name,
         "summary": {
             "total": len(detail_rows),

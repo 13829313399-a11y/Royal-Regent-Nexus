@@ -118,6 +118,7 @@ for customer_code in HUAKANG_C_CUSTOMER_MAPPINGS:
 # and names remain readable for historical compatibility and audit records.
 CUSTOMER_FACTORY_OPTIONS.pop("spin-master", None)
 CUSTOMER_FACTORY_OPTIONS["jp"] = ("huakang-c",)
+CUSTOMER_FACTORY_OPTIONS["disney"] = ("huaxing", "huakang-d")
 CUSTOMER_NAMES = {
     "buzzbee": "BuzzBee",
     "dickie": "Dickie",
@@ -179,6 +180,8 @@ def _ensure_customer_factory(customer_code: str, factory_id: str) -> None:
 
 
 def _get_mapped_customer_spec(customer_code: str, factory_id: str):
+    if customer_code == "disney" and factory_id == "huakang-d":
+        return get_huaxing_customer_mapping(customer_code)
     if factory_id == "huakang-a":
         try:
             return get_huakang_a_customer_mapping(customer_code)

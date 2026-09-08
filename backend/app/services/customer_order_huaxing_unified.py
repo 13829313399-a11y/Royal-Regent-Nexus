@@ -11,7 +11,13 @@ DICKIE_EXTRA = '恐龙蛋口水车Iteam表'
 
 
 def enabled(factory_id, customer_code):
-    return factory_id == 'huaxing' and customer_code in CUSTOMERS
+    return (factory_id == 'huaxing' and customer_code in CUSTOMERS) or (
+        factory_id == 'huakang-d' and customer_code == 'disney'
+    )
+
+
+def target_template(factory_id):
+    return 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_DISNEY_V1' if factory_id == 'huakang-d' else TARGET_TEMPLATE
 
 
 def item_sheets(workbook, customer_code):
@@ -98,7 +104,7 @@ def map_record(row, record, customer_code):
     return row
 
 
-def prepare_row(row, history, customer_code, available_sheets):
+def prepare_row(row, history, customer_code, available_sheets, factory_id='huaxing'):
     from app.services.customer_order_unified import _key, _text, _issue
     row['_huaxing_customer'] = customer_code
     if customer_code == 'caixing':
@@ -168,7 +174,8 @@ def prepare_row(row, history, customer_code, available_sheets):
             '货号无法唯一匹配最新排期的 ITEM 分类页，请核对分类后再录入'))
     row['item_sheet_name'] = lane
     row['units_per_carton'] = outer_pack(row.get('units_per_carton'))
-    row.setdefault('lineage', {})['mapping_rule'] = '华兴最新统一排期：按实际 ITEM 分类页及公共字段写入，摘要关联对应明细行。'
+    factory_name = '华康D' if factory_id == 'huakang-d' else '华兴'
+    row.setdefault('lineage', {})['mapping_rule'] = f'{factory_name}最新统一排期：按实际 ITEM 分类页及公共字段写入，摘要关联对应明细行。'
     for field in ('contact', 'pdq'):
         values = {h.extras[field] for h in matches if h.source_sheet == lane and h.extras.get(field)}
         if not _text(row.get(field)) and len(values) == 1:
