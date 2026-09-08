@@ -36,11 +36,30 @@ def fail(code, message, status=400):
     raise HTTPException(status, detail={"code": code, "message": message})
 
 
-def owned(db, model, record_id, owner_id):
+def visible_jobs():
+    # Internal task-list tombstone; retain source files and revision provenance.
+    return Job.options_json["_deleted_at"].as_string().is_(None)
+
+
+def owned(db, model, record_id, owner_id, *, include_deleted=False):
     record = db.scalar(select(model).where(model.id == record_id, model.owner_user_id == owner_id))
-    if record is None:
+    if record is None or (model is Job and not include_deleted and record.options_json.get("_deleted_at")):
         fail("NOT_FOUND", "文件或任务不存在，或不属于当前账号", 404)
     return record
+
+
+def withdraw(db, job):
+    # Atomic with worker publication: whichever updates the row first wins.
+    # Revoke the lease even if the worker is offline; stale workers cannot publish.
+    changed = db.execute(update(Job).where(
+        Job.id == job.id, Job.owner_user_id == job.owner_user_id,
+        Job.execution_status.in_(["queued", "running", "awaiting_input"]),
+    ).values(execution_status="cancelled", cancel_requested=True,
+             finished_at=now(), lease_token=None, lease_until=None,
+             error_code="", error_message=""))
+    if changed.rowcount and job.kind == "inspect":
+        db.execute(update(Source).where(Source.inspection_job_id == job.id).values(inspection_status="cancelled"))
+    db.refresh(job)
 
 
 def artifact_data(row):
@@ -67,6 +86,8 @@ def enqueue(db, owner_id, source_id, operation, options, client_request_id=None,
     if client_request_id:
         previous = db.scalar(select(Job).where(Job.owner_user_id == owner_id, Job.client_request_id == client_request_id))
         if previous:
+            if previous.options_json.get("_deleted_at"):
+                fail("TASK_DELETED", "原任务已删除，请重新提交任务", 409)
             if previous.request_fingerprint != fingerprint:
                 fail("REQUEST_CONFLICT", "该提交编号已经用于不同的任务，请重新提交", 409)
             return previous
@@ -82,6 +103,8 @@ def enqueue(db, owner_id, source_id, operation, options, client_request_id=None,
         if client_request_id:
             previous = db.scalar(select(Job).where(Job.owner_user_id == owner_id, Job.client_request_id == client_request_id))
             if previous and previous.request_fingerprint == fingerprint:
+                if previous.options_json.get("_deleted_at"):
+                    fail("TASK_DELETED", "原任务已删除，请重新提交任务", 409)
                 return previous
         fail("REQUEST_CONFLICT", "提交发生冲突，请刷新后重试", 409)
     return row

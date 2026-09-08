@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 
 export type Operation =
   | 'word_to_pdf'
@@ -177,7 +178,7 @@ export const documentTools = {
         source_id,
         operation,
         options,
-        client_request_id: crypto.randomUUID(),
+        client_request_id: createRandomUuid(),
         batch_id,
       })
     ).data,
@@ -207,6 +208,9 @@ export const documentTools = {
     ).data,
   cancel: async (id: string) =>
     (await http.post<Job>(`${root}/jobs/${id}/cancel`)).data,
+  delete: async (id: string) => {
+    await http.delete(`${root}/jobs/${id}`)
+  },
   retry: async (id: string) =>
     (await http.post<{ job_id: string }>(`${root}/jobs/${id}/retry`)).data,
   revise: async (
@@ -227,7 +231,7 @@ export const documentTools = {
     (
       await http.post<{ job_id: string }>(`${root}/packages`, {
         artifact_ids,
-        client_request_id: crypto.randomUUID(),
+        client_request_id: createRandomUuid(),
       })
     ).data,
   suggestions: async (id: string, page_index: number, axis: string) =>
@@ -258,7 +262,7 @@ export const statusLabels: Record<string, string> = {
   awaiting_input: '需要密码',
   succeeded: '已生成',
   failed: '处理失败',
-  cancelled: '已取消',
+  cancelled: '已撤回',
   not_checked: '未检查',
   checking: '正在核验',
   passed: '已执行检查通过',

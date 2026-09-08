@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -118,7 +118,7 @@ def create_job(payload: CreateJob, user: User, db: DB):
 
 @router.get("/jobs")
 def list_jobs(user: User, db: DB, page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100), batch_id: str | None = None, status: str | None = None):
-    filters = [Job.owner_user_id == user.id]
+    filters = [Job.owner_user_id == user.id, service.visible_jobs()]
     if batch_id:
         filters.append(Job.batch_id == batch_id)
     if status:
@@ -185,14 +185,19 @@ def result(job_id: str, user: User, db: DB, table_id: str | None = None, target_
 @router.post("/jobs/{job_id}/cancel")
 def cancel(job_id: str, user: User, db: DB):
     job = service.owned(db, Job, job_id, user.id)
-    if job.execution_status not in service.TERMINAL:
-        job.cancel_requested = True
-        if job.execution_status == "queued":
-            job.execution_status, job.finished_at = "cancelled", service.now()
-            if job.kind == "inspect":
-                db.execute(update(Source).where(Source.inspection_job_id == job.id).values(inspection_status="cancelled"))
+    service.withdraw(db, job)
     db.commit()
     return service.job_data(db, job)
+
+
+@router.delete("/jobs/{job_id}", status_code=204)
+def delete_job(job_id: str, user: User, db: DB):
+    job = service.owned(db, Job, job_id, user.id, include_deleted=True)
+    if not job.options_json.get("_deleted_at"):
+        service.withdraw(db, job)
+        # Logical deletion only: other revisions/packages can still use these files.
+        job.options_json = {**job.options_json, "_deleted_at": service.now()}
+        db.commit()
 
 
 @router.post("/jobs/{job_id}/retry", status_code=202)

@@ -234,7 +234,7 @@
   font-size: 12px;
   font-weight: 650;
 }
-.dt-recent > button {
+.dt-recent-task > button {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -244,7 +244,7 @@
   font-size: 12px;
   border-bottom: 1px solid var(--border);
 }
-.dt-recent > button > span:first-of-type {
+.dt-recent-task > button > span:first-of-type {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -535,8 +535,50 @@
 }
 .dt-task-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin-top: 6px;
+}
+.dt-task-actions .dt-task-actions {
+  margin-top: 0;
+}
+.dt-delete-action {
+  color: var(--destructive);
+}
+.dt-recent-task {
+  padding-bottom: 10px;
+}
+.dt-delete-dialog {
+  inset: 0;
+  margin: auto;
+  width: min(460px, calc(100vw - 32px));
+  max-width: none;
+  height: fit-content;
+  max-height: calc(100dvh - 32px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.dt-delete-dialog .dt-dialog-body {
+  height: auto;
+}
+.dt-delete-dialog p {
+  margin-bottom: 12px;
+  line-height: 1.7;
+  font-size: 13px;
+}
+.dt-delete-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.dt-delete-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+.dt-document-bar {
+  flex-wrap: wrap;
 }
 .dt-task > p {
   color: var(--destructive);
