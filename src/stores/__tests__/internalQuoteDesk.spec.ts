@@ -38,6 +38,8 @@ const apiMock = vi.hoisted(() => ({
   previewImport: vi.fn(),
   confirmImport: vi.fn(),
   uploadAttachment: vi.fn(),
+  deleteImportAttachment: vi.fn(),
+  deleteSupportingAttachment: vi.fn(),
   uploadComponentImage: vi.fn(),
   listBatchProducts: vi.fn(),
   downloadAttachment: vi.fn(),
@@ -177,6 +179,7 @@ describe('internal quote desk real API state', () => {
       machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '999' }],
       freight_routes: [{ route_key: 'hk40', route_name: '香港 40 柜', capacity_key: 'cap_40', freight_hkd: '8200', lifting_hkd: '1200' }],
     })
+    apiMock.listBatchProducts.mockResolvedValue([{ quote_id: 'quote-1', status: 'drafting', product_name: '产品', differing_sections: [] }])
     apiMock.get.mockResolvedValue(quote())
     apiMock.getTimeline.mockResolvedValue({
       business_events: [{ id: 'audit-1', department: 'sales', actor_id: 'u1', actor_name: '业务经办', action: 'create', detail: '', old_revision: null, new_revision: 1, reason: '', created_at: '2026-07-16 09:00' }],
@@ -780,7 +783,7 @@ describe('internal quote desk real API state', () => {
     expect(store.submitting).toBe(false)
   })
 
-  it('retries a partial whole-product save without resubmitting sections already persisted', async () => {
+  it('reconciles revision changes but delegates unchanged calculation checks to the server', async () => {
     const store = useInternalQuoteDeskStore()
     const engineeringPayload = { molds: [{ item: '新模具' }] }
     const moldingBaseline = { injection_lines: [{ item: '原胶件' }], blow_lines: [], injection_loss_rate_percent: 3 }
@@ -815,8 +818,46 @@ describe('internal quote desk real API state', () => {
     expect(apiMock.saveWholeProduct).toHaveBeenCalledTimes(1)
     expect(apiMock.saveWholeProduct).toHaveBeenCalledWith(
       'quote-1',
-      [{ sectionCode: 'molding', revision: 2, payload: moldingPayload }],
+      [{ sectionCode: 'engineering', revision: 2, payload: engineeringPayload }, { sectionCode: 'molding', revision: 2, payload: moldingPayload }],
     )
+  })
+
+  it('recalculates identical payloads when the latest dependency is stale', async () => {
+    const store = useInternalQuoteDeskStore()
+    const payload = { injection_lines: [], blow_lines: [], injection_loss_rate_percent: 3 }
+    apiMock.get.mockResolvedValueOnce(quote({ sections: [
+      { ...section('molding', 1), revision: 2, payload, dependency_status: 'stale', calculation_status: 'stale' },
+    ] }))
+    await store.saveWholeProductSections('quote-1', [
+      { sectionCode: 'molding', revision: 1, payload, baselinePayload: payload },
+    ])
+    expect(apiMock.saveWholeProduct).toHaveBeenCalledWith('quote-1', [
+      { sectionCode: 'molding', revision: 2, payload },
+    ])
+  })
+
+  it('refreshes batch readiness after saving and clears stale products on a failed refresh', async () => {
+    const store = useInternalQuoteDeskStore()
+    await store.loadBatchProducts('quote-1')
+    apiMock.listBatchProducts.mockResolvedValueOnce([
+      { quote_id: 'quote-1', status: 'ready_for_final_review', product_name: '产品', differing_sections: ['engineering'] },
+    ])
+    await store.saveSection('quote-1', 'engineering', 1, {})
+    expect(store.batchProductsByQuoteId['quote-1']?.[0]?.status).toBe('fully_approved')
+    apiMock.listBatchProducts.mockRejectedValueOnce(new Error('批次读取失败'))
+    await store.saveSection('quote-1', 'engineering', 2, {})
+    expect(store.batchProductsByQuoteId['quote-1']).toBeUndefined()
+    expect(store.refreshWarning).toContain('批次读取失败')
+  })
+
+  it('does not restore a deleted supporting file when the attachment refresh fails', async () => {
+    const store = useInternalQuoteDeskStore()
+    await store.loadQuote('quote-1')
+    apiMock.deleteSupportingAttachment.mockResolvedValue(undefined)
+    apiMock.listAttachments.mockRejectedValueOnce(new Error('附件读取失败'))
+    await store.deleteSupportingAttachment('quote-1', 'attachment-1', 1)
+    expect(store.getQuoteById('quote-1')?.sections.flatMap((row) => row.attachments)).toEqual([])
+    expect(store.refreshWarning).toContain('附件读取失败')
   })
 
   it('keeps the saved miscellaneous ratio and selected markup tier after the authoritative refresh', async () => {
@@ -850,14 +891,18 @@ describe('internal quote desk real API state', () => {
     expect(saved.rr2CostSummary.shippingPricing.markupTiers.map((tier) => tier.isActive)).toEqual([false, false, true])
   })
 
-  it('does not report a mutation as complete when the authoritative refresh fails', async () => {
-    apiMock.get.mockRejectedValueOnce(new Error('详情读取失败'))
+  it('retains the save receipt and warns separately when the authoritative refresh fails', async () => {
     const store = useInternalQuoteDeskStore()
+    await store.loadQuote('quote-1')
+    apiMock.get.mockRejectedValueOnce(new Error('详情读取失败'))
 
     await expect(store.saveSection('quote-1', 'engineering', 1, { molds: [] }))
-      .rejects.toThrow('操作已在服务端成功，但页面未能读取最新报价')
+      .resolves.toMatchObject({ revision: 2 })
     expect(apiMock.saveSection).toHaveBeenCalledTimes(1)
-    expect(store.errorMessage).toContain('详情读取失败')
+    expect(store.refreshWarning).toContain('详情读取失败')
+    expect(store.errorMessage).toBe('')
+    expect(store.getQuoteById('quote-1')?.sections.find((row) => row.code === 'engineering')?.revision).toBe(2)
+    expect(apiMock.listBatchProducts).toHaveBeenCalledWith('quote-1')
   })
 
   it('keeps every dirty department in one authoritative live preview', async () => {

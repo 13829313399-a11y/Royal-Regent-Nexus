@@ -8,12 +8,14 @@ import {
 } from '../types'
 
 describe('document studio closed frontend contracts', () => {
-  it('exposes exactly the five documented primary tools', () => {
+  it('exposes the documented primary tools including batch PDF rename', () => {
     expect(DOCUMENT_TOOLS.map(tool => tool.id)).toEqual(DOCUMENT_TOOL_IDS)
+    expect(getDocumentTool('pdf-batch-rename')).toMatchObject({ multiple: true })
   })
 
   it('accepts only closed tool query values', () => {
     expect(isDocumentToolId('pdf-translation')).toBe(true)
+    expect(isDocumentToolId('pdf-batch-rename')).toBe(true)
     expect(isDocumentToolId('document-translation')).toBe(false)
     expect(isDocumentToolId(['pdf-to-excel'])).toBe(false)
   })

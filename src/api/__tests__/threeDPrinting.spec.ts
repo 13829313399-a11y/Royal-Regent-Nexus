@@ -39,6 +39,7 @@ describe('threeDPrintingApi', () => {
           factory_id: 'huakang-a',
           date_from: '2026-07-01',
           date_to: '2026-07-29',
+          compact: true,
         },
       },
     )

@@ -36,6 +36,7 @@ from app.schemas.internal_quote import (
 )
 from app.services.auth import AuthContext, has_permission_in_scope, now_text
 from app.services.internal_quote import (
+    quote_write,
     MUTABLE_SECTION_STATUSES,
     SECTION_DEPARTMENTS,
     _add_audit,
@@ -228,6 +229,7 @@ def _import_out(batch: InternalQuoteImportBatch) -> InternalQuoteImportPreviewOu
     return InternalQuoteImportPreviewOut.model_validate(_preview_payload(batch))
 
 
+@quote_write
 def create_import_preview(
     db: Session,
     quote_id: str,
@@ -553,10 +555,6 @@ def _remove_import_rows(
     hardware_only: bool = False,
 ) -> tuple[list[Any], list[Any]]:
     source_rows = rows if isinstance(rows, list) else []
-    matching_markers = any(
-        isinstance(row, dict) and str(row.get(IMPORT_BATCH_FIELD, "")) in batch_ids
-        for row in source_rows
-    )
     removed: list[Any] = []
     retained: list[Any] = []
     for row in source_rows:
@@ -567,7 +565,7 @@ def _remove_import_rows(
         should_remove = (
             isinstance(row, dict)
             and str(row.get(IMPORT_BATCH_FIELD, "")) in batch_ids
-        ) if matching_markers else True
+        )
         if should_remove:
             removed.append(row)
         else:
@@ -578,6 +576,8 @@ def _remove_import_rows(
 def _clear_import_generated_payload(
     current: dict[str, Any],
     batches: list[InternalQuoteImportBatch],
+    *,
+    all_batches: list[InternalQuoteImportBatch] | None = None,
 ) -> tuple[dict[str, Any], set[str]]:
     cleared = json.loads(json.dumps(current, ensure_ascii=False))
     removed_attachment_ids: set[str] = set()
@@ -596,27 +596,32 @@ def _clear_import_generated_payload(
             cleared[list_field] = retained
             removed_attachment_ids.update(_collect_attachment_ids(removed))
 
-        fragments = [
-            _json_object(batch.preview_json).get("payload_fragment", {})
-            for batch in type_batches
-        ]
-        if import_type == "electronic":
-            for fragment in fragments:
-                if not isinstance(fragment, dict):
-                    continue
-                for key in fragment:
-                    if key != "components":
-                        cleared.pop(key, None)
-        elif import_type == "molding" and any(
-            isinstance(fragment, dict) and "injection_loss_rate_percent" in fragment
-            for fragment in fragments
-        ):
-            cleared.pop("injection_loss_rate_percent", None)
-        elif import_type == "mold" and any(
-            isinstance(fragment, dict) and "amortization_qty" in fragment
-            for fragment in fragments
-        ):
-            cleared.pop("amortization_qty", None)
+        # Scalar costs also have an owner. Deleting an older source must not
+        # remove later overheads/loss rates, or a value edited by the user.
+        owners: dict[str, tuple[str, object]] = {}
+        for batch in sorted(all_batches or batches, key=lambda item: (item.confirmed_revision, item.id)):
+            if batch.import_type != import_type:
+                continue
+            fragment = _json_object(batch.preview_json).get("payload_fragment", {})
+            if not isinstance(fragment, dict):
+                continue
+            fields = (set(fragment) - {"components"}) if import_type == "electronic" else (
+                {"amortization_qty"} if import_type == "mold" else
+                {"injection_loss_rate_percent"} if import_type == "molding" else set()
+            )
+            for key in fields & fragment.keys():
+                owners[key] = (batch.id, fragment[key])
+        for key, (owner_id, value) in owners.items():
+            if owner_id not in batch_ids or key not in cleared:
+                continue
+            same = cleared[key] == value
+            if not same:
+                try:
+                    same = Decimal(str(cleared[key])) == Decimal(str(value))
+                except (ArithmeticError, ValueError):
+                    pass
+            if same:
+                cleared.pop(key, None)
     return cleared, removed_attachment_ids
 
 
@@ -743,6 +748,7 @@ def _materialize_imported_source_workbook(
     return attachment.id
 
 
+@quote_write
 def confirm_import_batch(
     db: Session,
     quote_id: str,
@@ -936,6 +942,7 @@ def _ensure_attachment_access(
         raise HTTPException(status_code=403, detail="当前账号只能访问分配给本部门的报价资料")
 
 
+@quote_write
 def upload_attachment(
     db: Session,
     quote_id: str,
@@ -1000,6 +1007,7 @@ def upload_attachment(
     return _attachment_out(attachment)
 
 
+@quote_write
 def upload_product_image(
     db: Session,
     quote_id: str,
@@ -1079,6 +1087,7 @@ def _component_image_quote(db, quote_id, component_id, revision, user):
     return quote
 
 
+@quote_write
 def save_component_image(db, quote_id, component_id, revision, user, *, file_name="", content=None, request=None):
     quote = _component_image_quote(db, quote_id, component_id, revision, user)
     department = component_image_department(component_id)
@@ -1174,6 +1183,7 @@ def list_attachments(
     ]
 
 
+@quote_write
 def delete_import_attachment(
     db: Session,
     quote_id: str,
@@ -1226,7 +1236,12 @@ def delete_import_attachment(
     cleared_payload, imported_image_ids = _clear_import_generated_payload(
         _json_object(section.payload_json),
         batches,
+        all_batches=candidate_batches,
     )
+    for batch in batches:
+        imported_image_ids.update(
+            str(image_id) for image_id in _json_object(batch.preview_json).get("embedded_image_attachment_ids", [])
+        )
     section.payload_json = canonical_json(cleared_payload)
     section.status = "draft"
     section.revision += 1
@@ -1300,6 +1315,40 @@ def delete_import_attachment(
         reason=reason,
         request=request,
     )
+    db.commit()
+
+
+@quote_write
+def delete_supporting_attachment(
+    db: Session, quote_id: str, attachment_id: str, revision: int,
+    user: AuthContext, request: Request | None = None,
+) -> None:
+    quote = _get_quote(db, quote_id)
+    _ensure_active(quote)
+    attachment = db.get(InternalQuoteAttachment, attachment_id)
+    if attachment is None or attachment.quote_id != quote.id:
+        raise HTTPException(404, "附件不存在")
+    ensure_section_permission(db, user, quote.factory_id, attachment.department, "edit")
+    section = _get_section(db, quote.id, attachment.department)
+    _ensure_section_participates(section)
+    _check_revision(section.revision, revision)
+    if section.status not in MUTABLE_SECTION_STATUSES:
+        raise HTTPException(409, "当前分段已提交或审核完成，请先返回修改后删除附件")
+    listed = list_attachments(db, quote_id, attachment.department, user)
+    if any(item.id == attachment_id and item.is_import_source for item in listed):
+        raise HTTPException(409, "导入源文件必须使用联动删除，不能只删除文件")
+    for row in db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)):
+        if attachment_id in _collect_attachment_ids(_json_object(row.payload_json)):
+            raise HTTPException(409, "该图片仍被报价明细引用，请先移除明细中的图片引用并保存")
+    old_revision = section.revision
+    section.revision += 1
+    section.updated_at = now_text()
+    _add_revision(db, quote, section, user, reason="delete_supporting_attachment")
+    _add_audit(db, quote, user, "delete_supporting_attachment", department=section.department,
+               old_revision=old_revision, new_revision=section.revision,
+               detail=json.dumps({"attachment_id": attachment.id, "file_name": attachment.file_name}, ensure_ascii=False),
+               request=request)
+    db.delete(attachment)
     db.commit()
 
 
@@ -1709,6 +1758,7 @@ def _create_artifact_handoff(
     return handoff
 
 
+@quote_write
 def create_controlled_export(
     db: Session,
     quote_id: str,
@@ -1932,6 +1982,7 @@ def create_controlled_export(
     return _export_out(record)
 
 
+@quote_write
 def create_engineering_workbook_export(
     db: Session,
     quote_id: str,
