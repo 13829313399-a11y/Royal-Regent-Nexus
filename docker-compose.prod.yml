@@ -22,6 +22,7 @@ services:
     logging: *default-logging
 
   api:
+    image: royal-regent-nexus-api:local
     build:
       context: .
       dockerfile: Dockerfile.backend
@@ -32,6 +33,26 @@ services:
         condition: service_healthy
     volumes:
       - three-d-assets:/app/backend/data/three-d-printing-assets
+      - document-assets:/app/backend/data/document-tools
+    restart: unless-stopped
+    logging: *default-logging
+
+  document-tools-worker:
+    image: royal-regent-nexus-api:local
+    env_file:
+      - .env.production
+    command: ["python", "-m", "app.workers.document_tools"]
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - document-assets:/app/backend/data/document-tools
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.workers.document_tools", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     restart: unless-stopped
     logging: *default-logging
 
@@ -52,3 +73,4 @@ services:
 volumes:
   postgres-data:
   three-d-assets:
+  document-assets:

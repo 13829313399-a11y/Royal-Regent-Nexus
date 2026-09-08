@@ -32,6 +32,7 @@ def set_override_effect(username: str, effect: str) -> None:
 @pytest.mark.parametrize("authz_mode", ["legacy", "shadow", "enforce"])
 def test_reviewer_selection_enforces_sales_membership_and_effective_access(monkeypatch, authz_mode):
     monkeypatch.setenv("AUTHZ_MODE", authz_mode)
+    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "true" if authz_mode == "enforce" else "false")
     with make_client(monkeypatch) as client:
         login(client, "creator", "sales_customer_owner", "sales-business")
         ensure_user("sales", "position_sales_supervisor", "sales-business")

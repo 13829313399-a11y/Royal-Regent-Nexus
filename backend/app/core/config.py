@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -30,6 +31,23 @@ class Settings(BaseSettings):
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
+    document_tools_storage_dir: str = str(BACKEND_DIR / "data" / "document-tools")
+    document_tools_worker_concurrency: int = Field(default=2, ge=1, le=8)
+    document_tools_lease_seconds: int = Field(default=90, ge=15, le=600)
+    document_tools_max_attempts: int = Field(default=3, ge=1, le=10)
+    document_tools_max_file_bytes: int = Field(default=100 * 1024 * 1024, ge=1, le=100 * 1024 * 1024)
+    document_tools_max_pages: int = Field(default=200, ge=1, le=1000)
+    document_tools_retention_days: int | None = Field(default=None, ge=1)
+    document_tools_ai_mode: Literal["auto", "off"] = "auto"
+    document_tools_office_command: str = "soffice"
+    document_tools_office_timeout_seconds: int = Field(default=300, ge=10, le=1800)
+    document_tools_uno_python: str = "/usr/bin/python3"
+    document_tools_qwen_api_key: SecretStr = SecretStr("")
+    document_tools_qwen_base_url: str = ""
+    document_tools_qwen_protocol: Literal["dashscope", "openai"] = "dashscope"
+    document_tools_qwen_ocr_model: str = "qwen3.5-ocr"
+    document_tools_qwen_layout_model: str = "qwen3-vl-plus"
+    document_tools_qwen_timeout_seconds: int = Field(default=90, ge=5, le=300)
     @property
     def effective_session_cookie_secure(self) -> bool:
         return self.session_cookie_secure

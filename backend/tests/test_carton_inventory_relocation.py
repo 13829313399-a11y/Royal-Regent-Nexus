@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 
 from test_carton_procurement_api import (
@@ -60,6 +62,7 @@ def test_relocation_changes_only_current_location_and_preserves_history(monkeypa
         assert audits["items"][0]["actor_name"]
 
         outbound = client.post(f"{path}/movements", json={
+            "request_id": uuid4().hex,
             **params, "order_line_id": before["order_line_id"],
             "reference_movement_id": None if before["order_line_id"] else before["latest_movement_id"],
             "movement_type": "OUTBOUND", "quantity": "1", "document_no": "OUT-AFTER-MOVE",
