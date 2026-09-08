@@ -127,6 +127,7 @@ def test_owner_isolation_all_routes(runtime):
         assert client.get('/api/tools/' + path).status_code == 404, path
     for action in ["cancel", "retry"]:
         assert client.post(f'/api/tools/jobs/{job["id"]}/{action}').status_code == 404
+    assert client.delete(f'/api/tools/jobs/{job["id"]}').status_code == 404
     assert client.post('/api/tools/packages', json={"artifact_ids": [artifact["id"]], "client_request_id": jobs.uid()}).status_code == 404
     assert client.get('/api/tools/jobs').json()["total"] == 0
 
@@ -277,3 +278,104 @@ def test_cancel_running_engine_preserves_other_jobs(runtime, monkeypatch):
     pipeline.run_one(sessions)
     assert client.get('/api/tools/jobs/' + source["inspection_job_id"]).json()["execution_status"] == "cancelled"
     assert client.get('/api/tools/jobs/' + other["inspection_job_id"]).json()["execution_status"] == "queued"
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "awaiting_input"])
+def test_withdraw_fences_offline_worker_and_allows_retry(runtime, state):
+    client, sessions, _ = runtime
+    source = upload(client)
+    job_id = source["inspection_job_id"]
+    with sessions() as db:
+        db.execute(update(Job).where(Job.id == job_id).values(
+            execution_status=state, lease_token="old-worker", lease_until=time.time() + 600))
+        db.commit()
+    response = client.post(f'/api/tools/jobs/{job_id}/cancel')
+    assert response.status_code == 200
+    assert response.json()["execution_status"] == "cancelled"
+    assert not jobs.renew(sessions, job_id, "old-worker")
+    with sessions() as db:
+        assert db.scalar(select(Job).where(jobs.lease_filter(job_id, "old-worker"))) is None
+    assert client.get(f'/api/tools/sources/{source["source_id"]}').json()["inspection_status"] == "cancelled"
+    assert client.post(f'/api/tools/jobs/{job_id}/cancel').json()["execution_status"] == "cancelled"
+    assert client.post(f'/api/tools/jobs/{job_id}/retry').status_code == 202
+    assert pipeline.run_one(sessions)
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "awaiting_input", "failed", "cancelled", "succeeded"])
+def test_delete_is_durable_private_idempotent_and_preserves_source(runtime, state):
+    client, sessions, current = runtime
+    source = upload(client)
+    other = upload(client)
+    job_id = source["inspection_job_id"]
+    with sessions() as db:
+        db.execute(update(Job).where(Job.id == job_id).values(execution_status=state))
+        db.commit()
+    source_artifact = client.get(f'/api/tools/jobs/{job_id}').json()["artifacts"][0]
+    original = client.get(f'/api/tools/artifacts/{source_artifact["id"]}/download').content
+    current.id = "bob"
+    assert client.delete(f'/api/tools/jobs/{job_id}').status_code == 404
+    current.id = "alice"
+    assert client.delete(f'/api/tools/jobs/{job_id}').status_code == 204
+    assert client.delete(f'/api/tools/jobs/{job_id}').status_code == 204
+    assert client.get('/api/tools/jobs').json()["total"] == 1
+    assert client.get('/api/tools/jobs', params={"status": state}).json()["total"] == (1 if state == "queued" else 0)
+    for suffix in ["", "/result", "/issues"]:
+        assert client.get(f'/api/tools/jobs/{job_id}{suffix}').status_code == 404
+    for action in ["cancel", "retry"]:
+        assert client.post(f'/api/tools/jobs/{job_id}/{action}').status_code == 404
+    assert client.get(f'/api/tools/sources/{source["source_id"]}').status_code == 200
+    assert client.get(f'/api/tools/artifacts/{source_artifact["id"]}/download').content == original
+    with sessions() as db:
+        deleted = db.get(Job, job_id)
+        assert deleted.options_json["_deleted_at"]
+        assert deleted.execution_status == ("cancelled" if state in ["queued", "running", "awaiting_input"] else state)
+        assert db.get(Job, other["inspection_job_id"]).execution_status == "queued"
+
+
+def test_deleted_parent_keeps_queued_revision_and_package_working(runtime):
+    client, sessions, _ = runtime
+    source, job = converted(runtime)
+    result = client.get(f'/api/tools/jobs/{job["id"]}/result').json()
+    cell = next(c for t in result["tables"] for c in t["cells"] if c["display_text"] == "000123")
+    revision = client.post(f'/api/tools/jobs/{job["id"]}/revise', json={"base_revision": 1,
+        "corrections": [{"target_id": cell["id"], "new_value": "000456", "reason": "verified"}]}).json()["job_id"]
+    artifact = next(a for a in job["artifacts"] if a["role"] == "result")
+    package = client.post('/api/tools/packages', json={"artifact_ids": [artifact["id"]], "client_request_id": jobs.uid()}).json()["job_id"]
+    assert client.delete(f'/api/tools/jobs/{job["id"]}').status_code == 204
+    assert pipeline.run_one(sessions)
+    assert pipeline.run_one(sessions)
+    assert client.get(f'/api/tools/jobs/{revision}').json()["execution_status"] == "succeeded"
+    assert client.get(f'/api/tools/jobs/{package}').json()["execution_status"] == "succeeded"
+    revised = client.get(f'/api/tools/jobs/{revision}/result').json()
+    assert any(c["display_text"] == "000456" for t in revised["tables"] for c in t["cells"])
+    with sessions() as db:
+        assert db.scalar(select(Correction).where(Correction.new_job_id == revision))
+
+
+def test_completed_withdraw_is_noop_and_deleted_request_cannot_resurrect(runtime):
+    client, sessions, _ = runtime
+    source, job = converted(runtime)
+    assert client.post(f'/api/tools/jobs/{job["id"]}/cancel').json()["execution_status"] == "succeeded"
+    with sessions() as db:
+        request_id = db.get(Job, job["id"]).client_request_id
+    assert client.delete(f'/api/tools/jobs/{job["id"]}').status_code == 204
+    response = client.post('/api/tools/jobs', json={"source_id": source["source_id"],
+        "operation": "word_to_excel", "options": {}, "client_request_id": request_id})
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "TASK_DELETED"
+
+
+def test_delete_during_publication_cannot_publish_stale_output(runtime, monkeypatch):
+    client, sessions, _ = runtime
+    source = upload(client)
+    job_id = source["inspection_job_id"]
+    copytree = pipeline.shutil.copytree
+    def withdraw_after_copy(*args, **kwargs):
+        value = copytree(*args, **kwargs)
+        assert client.delete(f'/api/tools/jobs/{job_id}').status_code == 204
+        return value
+    monkeypatch.setattr(pipeline.shutil, "copytree", withdraw_after_copy)
+    pipeline.run_one(sessions)
+    with sessions() as db:
+        assert db.get(Job, job_id).execution_status == "cancelled"
+        assert all(a.role == "source" for a in db.scalars(select(Artifact).where(Artifact.job_id == job_id)))
+        assert db.get(Source, source["source_id"]).manifest_key == ""

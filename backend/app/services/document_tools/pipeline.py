@@ -137,7 +137,7 @@ def run_one(session_factory, claimed=None):
             options = copy.deepcopy(job.options_json)
             ir = None
             if job.kind == "revise":
-                parent = jobs.owned(db, Job, job.parent_job_id, job.owner_user_id)
+                parent = jobs.owned(db, Job, job.parent_job_id, job.owner_user_id, include_deleted=True)
                 ir = DocumentIR.model_validate(jobs.load_ir(db, parent))
                 ir = apply_corrections(ir, db.scalars(select(Correction).where(Correction.new_job_id == job.id)).all())
             if job.kind == "package":

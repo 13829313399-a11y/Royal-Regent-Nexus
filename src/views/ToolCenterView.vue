@@ -29,9 +29,11 @@ import {
   type Source,
 } from '@/api/documentTools'
 import { getApiErrorMessage } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 import PdfCanvas from '@/features/document-tools/PdfCanvas.vue'
 import ToolOptions from '@/features/document-tools/ToolOptions.vue'
 import ResultReview from '@/features/document-tools/ResultReview.vue'
+import TaskActions from '@/features/document-tools/TaskActions.vue'
 import {
   normalizeCuts,
   parseGroups,
@@ -53,7 +55,12 @@ const root = ref<HTMLElement>(),
   workspace = ref<HTMLElement>(),
   picker = ref<HTMLInputElement>(),
   tasksDialog = ref<HTMLDialogElement>(),
+  deleteDialog = ref<HTMLDialogElement>(),
   settingsDialog = ref<HTMLDialogElement>()
+const deletingJob = ref<Job>(),
+  deleteError = ref('')
+let taskMutationSequence = 0,
+  jobListSequence = 0
 const capabilities = ref<Capabilities>(),
   uploads = ref<UploadItem[]>([]),
   jobs = ref<Job[]>([]),
@@ -99,7 +106,7 @@ let poll: ReturnType<typeof setTimeout> | undefined,
   disposed = false,
   selectionSequence = 0,
   lastCapabilitiesAt = 0
-const batchId = crypto.randomUUID()
+const batchId = createRandomUuid()
 const toolIds = Object.keys(operationLabels) as Operation[]
 const engineLabels: Record<string, string> = {
   office: 'Office 渲染',
@@ -349,7 +356,7 @@ async function acceptFiles(files: File[]) {
   notice.value = ''
   for (const file of files) {
     const item: UploadItem = {
-      id: crypto.randomUUID(),
+      id: createRandomUuid(),
       name: file.name,
       size: file.size,
       progress: 0,
@@ -391,7 +398,14 @@ function drop(event: DragEvent) {
   void acceptFiles(Array.from(event.dataTransfer?.files ?? []))
 }
 async function loadJobs() {
+  const ticket = ++jobListSequence
   const response = await documentTools.jobs(taskPage.value)
+  if (ticket !== jobListSequence || disposed) return
+  const lastPage = Math.max(1, Math.ceil(response.total / 20))
+  if (taskPage.value > lastPage) {
+    taskPage.value = lastPage
+    return loadJobs()
+  }
   jobs.value = response.items
   jobTotal.value = response.total
 }
@@ -403,7 +417,8 @@ async function refreshCapabilities() {
   }
 }
 async function refresh(forceCapabilities = false) {
-  if (refreshing.value || disposed) return
+  if (refreshing.value || disposed || busy.value) return
+  const ticket = taskMutationSequence
   refreshing.value = true
   try {
     await Promise.all([
@@ -417,6 +432,7 @@ async function refresh(forceCapabilities = false) {
     )
     for (const item of activeUploads) {
       const job = await documentTools.job(item.jobId!)
+      if (ticket !== taskMutationSequence) return
       item.state =
         job.execution_status === 'succeeded'
           ? 'ready'
@@ -424,19 +440,25 @@ async function refresh(forceCapabilities = false) {
             ? 'inspecting'
             : job.execution_status
       item.error = job.error_message
-      if (currentSource.value?.id === item.sourceId)
-        currentSource.value = await documentTools.source(item.sourceId!)
+      if (currentSource.value?.id === item.sourceId) {
+        const source = await documentTools.source(item.sourceId!)
+        if (ticket !== taskMutationSequence) return
+        if (currentSource.value?.id === source.id) currentSource.value = source
+      }
     }
     if (currentJob.value && isActiveJob(currentJob.value)) {
       const previous = currentJob.value
       const updated = await documentTools.job(previous.id)
+      if (ticket !== taskMutationSequence) return
       if (currentJob.value?.id === previous.id) {
         currentJob.value = updated
         if (updated.execution_status === 'succeeded') {
-          if (currentSource.value)
-            currentSource.value = await documentTools.source(
-              currentSource.value.id,
-            )
+          if (currentSource.value) {
+            const source = await documentTools.source(currentSource.value.id)
+            if (ticket !== taskMutationSequence) return
+            if (currentSource.value?.id === source.id)
+              currentSource.value = source
+          }
           if (updated.operation !== 'inspect') {
             view.value = canCompare.value ? 'compare' : 'result'
             await loadIssues()
@@ -445,7 +467,8 @@ async function refresh(forceCapabilities = false) {
       }
     }
   } catch (problem) {
-    error.value = getApiErrorMessage(problem)
+    if (ticket === taskMutationSequence)
+      error.value = getApiErrorMessage(problem)
   } finally {
     refreshing.value = false
     schedule()
@@ -532,6 +555,64 @@ async function runAction(action: () => Promise<unknown>) {
     error.value = getApiErrorMessage(problem)
   } finally {
     busy.value = false
+  }
+}
+async function withdrawJob(job: Job) {
+  if (busy.value) return
+  taskMutationSequence++
+  jobListSequence++
+  await runAction(async () => {
+    const updated = await documentTools.cancel(job.id)
+    if (currentJob.value?.id === job.id) currentJob.value = updated
+    const item = uploads.value.find((entry) => entry.jobId === job.id)
+    if (item) item.state = updated.execution_status
+    if (
+      job.operation === 'inspect' &&
+      currentSource.value?.id === job.source_id
+    )
+      currentSource.value = await documentTools.source(job.source_id!)
+    notice.value =
+      updated.execution_status === 'cancelled'
+        ? '任务已撤回，原文件保留。需要时可重试；已开始的处理可能稍后停止。'
+        : '任务已结束，无需撤回。'
+  })
+}
+function requestDelete(job: Job) {
+  deletingJob.value = job
+  deleteError.value = ''
+  openDialog(deleteDialog.value)
+}
+async function confirmDelete() {
+  const job = deletingJob.value
+  if (!job || busy.value) return
+  busy.value = true
+  deleteError.value = ''
+  taskMutationSequence++
+  jobListSequence++
+  try {
+    await documentTools.delete(job.id)
+    selectionSequence++
+    checkedArtifacts.value = checkedArtifacts.value.filter(
+      (id) => !job.artifacts.some((artifact) => artifact.id === id),
+    )
+    uploads.value = uploads.value.filter((item) => item.jobId !== job.id)
+    if (currentJob.value?.id === job.id) {
+      resetSourceState()
+      currentJob.value = undefined
+      currentSource.value = undefined
+      selectedUpload.value = ''
+    }
+    jobs.value = jobs.value.filter((item) => item.id !== job.id)
+    deleteDialog.value?.close()
+    deletingJob.value = undefined
+    notice.value = '任务已从列表删除，原文件和其他任务保留。'
+    await loadJobs()
+  } catch (problem) {
+    if (deletingJob.value) deleteError.value = getApiErrorMessage(problem)
+    else error.value = getApiErrorMessage(problem)
+  } finally {
+    busy.value = false
+    schedule()
   }
 }
 async function followJob(jobId: string) {
@@ -897,6 +978,13 @@ onBeforeUnmount(() => {
               ></span
             ><span v-else>原生解析 · 原文对照 · 可编辑结果</span>
           </div>
+          <TaskActions
+            v-if="currentJob"
+            :job="currentJob"
+            :busy="busy"
+            @withdraw="withdrawJob"
+            @delete="requestDelete"
+          />
           <Button
             v-if="narrow || focused"
             variant="outline"
@@ -936,21 +1024,28 @@ onBeforeUnmount(() => {
                 >查看全部</Button
               >
             </div>
-            <button
+            <article
               v-for="job in jobs.slice(0, 3)"
               :key="job.id"
-              type="button"
-              @click="selectJob(job)"
+              class="dt-recent-task"
             >
-              <FileText :size="16" aria-hidden="true" /><span>{{
-                job.source_name || '结果打包'
-              }}</span
-              ><StatusPill
-                :label="stateLabel(job.execution_status)"
-                :tone="tone(job.execution_status)"
-                compact
+              <button type="button" @click="selectJob(job)">
+                <FileText :size="16" aria-hidden="true" /><span>{{
+                  job.source_name || '结果打包'
+                }}</span
+                ><StatusPill
+                  :label="stateLabel(job.execution_status)"
+                  :tone="tone(job.execution_status)"
+                  compact
+                />
+              </button>
+              <TaskActions
+                :job="job"
+                :busy="busy"
+                @withdraw="withdrawJob"
+                @delete="requestDelete"
               />
-            </button>
+            </article>
             <p v-if="!jobs.length">还没有任务。上传第一份文档开始处理。</p>
           </section>
         </div>
@@ -1103,19 +1198,6 @@ onBeforeUnmount(() => {
               :max="currentJob.total_units"
               aria-label="实际处理进度"
             /><Button
-              v-if="currentJob && isActiveJob(currentJob)"
-              variant="ghost"
-              size="sm"
-              :disabled="busy || currentJob.cancel_requested"
-              @click="
-                runAction(async () => {
-                  currentJob = await documentTools.cancel(currentJob!.id)
-                })
-              "
-              >{{
-                currentJob.cancel_requested ? '正在取消…' : '取消任务'
-              }}</Button
-            ><Button
               v-if="
                 currentJob &&
                 ['failed', 'cancelled'].includes(currentJob.execution_status)
@@ -1327,6 +1409,8 @@ onBeforeUnmount(() => {
             >
           </div>
         </section>
+        <p v-if="error" class="dt-job-error" role="alert">{{ error }}</p>
+        <p v-if="notice" class="dt-notice" role="status">{{ notice }}</p>
         <div class="dt-task-controls">
           <Button
             variant="outline"
@@ -1402,18 +1486,12 @@ onBeforeUnmount(() => {
             >
           </div>
           <div class="dt-task-actions">
-            <Button
-              v-if="isActiveJob(job)"
-              variant="ghost"
-              size="sm"
-              :disabled="busy || job.cancel_requested"
-              @click="
-                runAction(async () => {
-                  await documentTools.cancel(job.id)
-                })
-              "
-              >{{ job.cancel_requested ? '取消中' : '取消任务' }}</Button
-            ><Button
+            <TaskActions
+              :job="job"
+              :busy="busy"
+              @withdraw="withdrawJob"
+              @delete="requestDelete"
+            /><Button
               v-if="['failed', 'cancelled'].includes(job.execution_status)"
               variant="outline"
               size="sm"
@@ -1442,6 +1520,51 @@ onBeforeUnmount(() => {
             :disabled="taskPage * 20 >= jobTotal"
             @click="paginateTasks(1)"
             >下一页</Button
+          >
+        </div>
+      </div>
+    </dialog>
+    <dialog
+      ref="deleteDialog"
+      class="dt-dialog dt-delete-dialog"
+      aria-labelledby="dt-delete-title"
+      aria-describedby="dt-delete-description"
+      @cancel="busy && $event.preventDefault()"
+    >
+      <header><h2 id="dt-delete-title">删除这个任务？</h2></header>
+      <div class="dt-dialog-body">
+        <p class="dt-delete-name">
+          {{ deletingJob?.source_name || '结果打包' }}
+        </p>
+        <p id="dt-delete-description">
+          删除后，任务将从最近任务和我的任务中移除。原文件、已生成文件及其他任务会保留，任务记录无法在页面恢复。
+        </p>
+        <p
+          v-if="
+            deletingJob &&
+            ['queued', 'running', 'awaiting_input'].includes(
+              deletingJob.execution_status,
+            )
+          "
+        >
+          此任务尚未结束，删除时会同时撤回，不再发布新结果。
+        </p>
+        <p v-if="deleteError" class="dt-job-error" role="alert">
+          {{ deleteError }}
+        </p>
+        <div class="dt-delete-controls">
+          <Button
+            variant="outline"
+            :disabled="busy"
+            autofocus
+            @click="deleteDialog?.close()"
+            >保留任务</Button
+          >
+          <Button
+            variant="destructive"
+            :disabled="busy"
+            @click="confirmDelete"
+            >{{ busy ? '正在删除…' : '确认删除' }}</Button
           >
         </div>
       </div>
