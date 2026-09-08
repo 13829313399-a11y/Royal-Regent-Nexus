@@ -30,6 +30,7 @@ backend/data/*.db
 backend/data/qa/
 backend/data/*.sqlite
 backend/data/*.sqlite3
+backend/data/document-tools/
 backend/models/document-translation/
 .env
 .env.*
@@ -54,6 +55,7 @@ backend/models/document-translation/
 !/docs/document-studio/baseline.md
 !/docs/document-studio/implementation-status.md
 !/docs/document-studio/activation-runbook.md
+!/docs/document-tools/*.md
 !/docs/document-studio/evaluation.md
 !/docs/document-studio-runtime-diagnostics.md
 !/docs/business/internal-quote-collaboration-design.md

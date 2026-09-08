@@ -23,4 +23,5 @@ pytesseract
 rapidocr>=3.9.1,<4
 onnxruntime>=1.27,<2
 httpx2
+cryptography>=46,<47
 pytest

@@ -316,7 +316,15 @@ def test_system_position_catalog_and_simplified_registration_approval(monkeypatc
         catalog_response = client.get("/api/system/positions")
         assert catalog_response.status_code == 200, catalog_response.text
         catalog = catalog_response.json()
-        assert len(catalog) == 29
+        assert len(catalog) == 32
+        assert {
+            item["code"]: item["name"] for item in catalog
+            if item["position_department"] == "three-d-printing"
+        } == {
+            "position_3d_manager": "3D打印经理",
+            "position_3d_supervisor": "3D打印主管",
+            "position_3d_operator": "3D打印操作员",
+        }
         assert all(item["is_system_position"] is True for item in catalog)
         assert all(item["code"] != "admin" for item in catalog)
         positions_by_department = {

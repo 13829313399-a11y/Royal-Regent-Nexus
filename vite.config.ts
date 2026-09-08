@@ -8,6 +8,11 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [vue(), tailwindcss()],
     server: {
+      // Worker artifacts are data, not frontend sources. HTML previews must
+      // never trigger a full-page reload that discards the current selection.
+      watch: {
+        ignored: ['**/backend/data/**', '**/outputs/**', '**/backend/.pytest-tmp*/**', '**/dist/**'],
+      },
       proxy: {
         '/api': {
           target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000',
