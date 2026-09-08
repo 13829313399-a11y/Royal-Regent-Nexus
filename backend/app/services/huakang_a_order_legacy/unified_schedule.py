@@ -183,10 +183,10 @@ def _insert_rows(workbook, target, start, amount):
         sheet.cell(new_row, column).value = value
 
 
-def output_slots(workbook, count):
+def output_slots(workbook, count, *, sheet_counts=None):
     from app.services.customer_order_unified import SHEETS, _marker_row, _copy_template_row
     result = {}
-    for name in SHEETS:
+    for name, count in (sheet_counts if sheet_counts is not None else dict.fromkeys(SHEETS, count)).items():
         sheet = workbook[name]
         marker = _marker_row(sheet)
         # Any literal value is user-owned, including notes without order keys.

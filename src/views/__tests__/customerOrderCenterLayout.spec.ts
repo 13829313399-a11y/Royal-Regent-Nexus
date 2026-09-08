@@ -1067,7 +1067,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.text()).toContain('彩星 V2')
     expect(wrapper.text()).toContain('重复订单是否允许确认以当前环境策略和预览结果为准')
-    expect(wrapper.text()).toContain('ITEM表 / 接单表 / 正单评审表')
+    expect(wrapper.text()).toContain('华兴 彩星 最新统一排期（含 ITEM 分类页）')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')
 
@@ -1091,7 +1091,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('全部 彩星')
     expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('当前彩星输入规则已启用')
     expect(wrapper.get('[data-testid="order-preview"]').text()).toContain(
-      '先列大货号总数量与总装箱数，再按 ASSORTMENT 展开小货号',
+      '接单表、正单评审表关联实际明细页和行',
     )
     const hierarchyRows = wrapper.findAll('.unified-table tbody tr')
     expect(hierarchyRows[0]!.text()).toContain('大货号')
