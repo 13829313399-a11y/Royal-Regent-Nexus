@@ -69,6 +69,23 @@ class ScheduleConflict(ValueError):
         self.run_id = run_id
 
 
+def scheduling_requirements(job):
+    """Keep removable tooling/automation as source data, outside scheduling gates."""
+    requirements = {
+        key: value
+        for key, value in (job.get("requirements_snapshot") or {}).items()
+        if key not in {"fixture_requirement", "automation_requirement"}
+    }
+    capabilities = [
+        key
+        for key in requirements.pop("required_capabilities", [])
+        if key not in {"AUTOMATIC", "fixtures"}
+    ]
+    if capabilities:
+        requirements["required_capabilities"] = capabilities
+    return requirements
+
+
 def compatible_process(first, second):
     keys = (
         "mold_master_id",
@@ -80,14 +97,13 @@ def compatible_process(first, second):
         "target_shots_per_day",
         "target_basis_hours",
         "required_machine_a",
-        "requirements_snapshot",
         "output_configuration",
         "effective_outputs_per_shot",
-        "automation_requirement",
         "manipulator_requirement",
-        "fixture_requirement",
     )
-    return all(first.get(key) == second.get(key) for key in keys)
+    return all(first.get(key) == second.get(key) for key in keys) and (
+        scheduling_requirements(first) == scheduling_requirements(second)
+    )
 
 
 def priority(job):
@@ -105,7 +121,7 @@ def priority(job):
 
 
 def fit(job, machine, settings, *, manual_oversize=False):
-    req = job.get("requirements_snapshot") or {}
+    req = scheduling_requirements(job)
     if machine["factory_id"] != job["factory_id"]:
         return "FACTORY_MISMATCH"
     if machine.get("operating_status") in {
@@ -146,9 +162,6 @@ def fit(job, machine, settings, *, manual_oversize=False):
     )
     if manipulator and manipulator not in (machine.get("manipulator") or ""):
         return "MANIPULATOR_REQUIRED"
-    fixture = job.get("fixture_requirement") or req.get("fixture_requirement")
-    if fixture and fixture not in capabilities.get("fixtures", []):
-        return "FIXTURE_REQUIRED"
     restrictions = machine.get("restrictions") or {}
     resin = str(job.get("resin") or "").upper()
     if resin in restrictions.get("forbidden_resins", []):
@@ -164,10 +177,6 @@ def fit(job, machine, settings, *, manual_oversize=False):
         job.get("color_name") or ""
     ):
         return "TRANSPARENT_REQUIRED"
-    if job.get("automation_requirement") in {"全自动", "是"} and not capabilities.get(
-        "AUTOMATIC"
-    ):
-        return "AUTOMATION_REQUIRED"
     return None
 
 

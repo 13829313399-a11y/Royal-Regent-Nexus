@@ -6,7 +6,11 @@ from random import Random
 import pytest
 from app.services.injection_scheduling.calculations import timestamp
 from app.services.injection_scheduling.defaults import factory_defaults
-from app.services.injection_scheduling.scheduler import fit, schedule_factory
+from app.services.injection_scheduling.scheduler import (
+    compatible_process,
+    fit,
+    schedule_factory,
+)
 
 AT = timestamp("2026-12-31T08:00:00+08:00")
 
@@ -240,6 +244,59 @@ def test_material_grade_core_pull_high_speed_and_forbidden_code_constraints():
         )
         == "FORBIDDEN_MACHINE"
     )
+
+
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        {},
+        {"AUTOMATIC": False, "fixtures": []},
+        {"AUTOMATIC": True, "fixtures": ["夹子"]},
+    ],
+)
+def test_automation_and_removable_tools_do_not_change_schedule(capabilities):
+    source = snapshot([demand("a")], [machine("one", capabilities=capabilities)])
+    expected = schedule_factory(source, {}, AT)
+    task = source["demands"][0]
+    task.update(
+        automation_requirement="全自动",
+        fixture_requirement="吸盘",
+        requirements_snapshot={
+            "fixture_requirement": "专用夹具",
+            "required_capabilities": ["AUTOMATIC", "fixtures"],
+        },
+    )
+    original = deepcopy(source)
+    result = schedule_factory(source, {}, AT)
+    assert source == original
+    assert fit(task, source["machines"][0], source["settings"]) is None
+    assert result["unplaced"] == []
+    for field in ("machine_id", "planned_start_at", "planned_end_at", "sequence"):
+        assert result["changed_runs"][0][field] == expected["changed_runs"][0][field]
+    task["requirements_snapshot"]["required_capabilities"].append("HEATING")
+    assert fit(task, source["machines"][0], source["settings"]) == "CAPABILITY_REQUIRED"
+
+
+def test_preparation_notes_do_not_split_compatible_orders_or_erase_evidence():
+    first = demand("a", automation_requirement="全自动", fixture_requirement="吸盘")
+    second = demand(
+        "b",
+        automation_requirement="半自动",
+        fixture_requirement="夹子",
+        requirements_snapshot={
+            "fixture_requirement": "夹子",
+            "required_capabilities": ["AUTOMATIC"],
+        },
+    )
+    original = deepcopy([first, second])
+    assert compatible_process(first, second)
+    runs = schedule_factory(snapshot([first, second], [machine("one")]), {}, AT)[
+        "changed_runs"
+    ]
+    assert len(runs) == 1 and runs[0]["demand_ids"] == ["a", "b"]
+    assert [first, second] == original
+    second["requirements_snapshot"]["required_capabilities"].append("CORE_PULL")
+    assert not compatible_process(first, second)
 
 
 def test_inserting_new_recipe_replaces_both_neighbor_transitions_and_is_deterministic():

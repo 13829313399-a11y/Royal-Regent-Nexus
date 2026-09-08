@@ -67,19 +67,6 @@ interface CustomerOrderCustomerProfile {
 const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[]> = {
   huaxing: [
     {
-      code: 'disney',
-      name: 'Disney',
-      version: 'V1',
-      poAccept: '.pdf',
-      poExtensions: ['.pdf'],
-      scheduleAccept: '.xlsx,.xlsm',
-      scheduleExtensions: ['.xlsx', '.xlsm'],
-      poDescription: 'Disney Theme Park / Store / F 系列 / D11 PDF PO',
-      templateDescription: 'Disney ITEM表 / 正单评审表 / 接单表',
-      targetTemplate: 'HUAXING_DISNEY_SCHEDULE_APPEND_V2',
-      ruleDescription: '按货号从现有排期唯一继承中文品名；出厂价不从客户 PO 推算，必须人工填写后导出。',
-    },
-    {
       code: 'buzzbee',
       name: 'BuzzBee',
       version: 'V1',
@@ -404,6 +391,11 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
       profile.templateDescription = `华康A ${profile.name} 最新统一排期（含客户专属列）`
       profile.ruleDescription = '只校验公共区域字段，客户专属列可增减或调整顺序，已配置的专属字段按实际表头定位。三张表分别在取消单前追加，接单表和正单评审表 C:G 同步 ITEM表 D:H。历史 PO 按客户编号与货号查重，保留原有记录、公式及人工生产和出货字段。'
     }
+    if (factoryId === 'huaxing' && profile.code !== 'seasons') {
+      profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
+      profile.templateDescription = `华兴 ${profile.name} 最新统一排期（含 ITEM 分类页）`
+      profile.ruleDescription = '按主要公共字段匹配最新排期，BuzzBee 和迪奇按产品对应 ITEM 分类页。各表在自己的取消单前追加，接单表、正单评审表关联实际明细页和行；合同、SO、客户 PO 分别映射，保留历史订单、公式和人工字段。'
+    }
   })
 })
 
@@ -417,6 +409,18 @@ for (const factoryId of ['huadeng', 'huakang-d']) {
     profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3'
     profile.ruleDescription = '只校验主要公共字段，客户专属列按实际表头定位。三张表分别在取消单前追加，按客户订单识别号和产品编号核对历史；保留已有记录、公式、生产及实际出货字段。'
   }
+}
+
+const disneyProfile = CUSTOMER_PROFILES_BY_FACTORY.huaxing?.find((profile) => profile.code === 'disney')
+if (disneyProfile) {
+  CUSTOMER_PROFILES_BY_FACTORY['huakang-d']!.push({
+    ...disneyProfile,
+    poExtensions: [...disneyProfile.poExtensions],
+    scheduleExtensions: [...disneyProfile.scheduleExtensions],
+    targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_DISNEY_V1',
+    templateDescription: '华康D 迪士尼最新统一排期',
+    ruleDescription: '复用迪士尼 PO 识别规则，只使用本次上传的华康D排期核对历史和写入新单。导入数据仅进入华康D总排期，日期码及出厂价保留人工补录。',
+  })
 }
 
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([

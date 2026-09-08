@@ -214,6 +214,11 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
     if (busy.value || !factory.value) return null
     const expected = epoch
     busy.value = true
+    if (path === '/plan-data/clear') {
+      ++loadSequence
+      ++refreshSequence
+      loading.value = false
+    }
     error.value = ''
     const key = JSON.stringify([factory.value, method, path, data])
     const payload =
@@ -222,7 +227,12 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
         : {
             ...data,
             factory_id: factory.value,
-            base_revision: revision.value,
+            // Review dialogs freeze the board. Submit the version actually reviewed.
+            base_revision:
+              ['/plan-data/clear', '/execution/bulk-start'].includes(path) &&
+              'expected_revision' in data
+                ? data.expected_revision
+                : revision.value,
             client_operation_id: createRandomUuid(),
           }
     uncertainWrite = { key, payload }
@@ -232,14 +242,35 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
       uncertainWrite = null
       lastResult.value = result
       revision.value = result.revision ?? revision.value
-      notice.value =
-        'save' in data && data.save === false
-          ? `预览已完成，尚未保存；${result.unplaced?.length || 0} 条待处理`
-          : result.unplaced?.length
-            ? `已保存；${result.unplaced.length} 条需求待处理，请查看原因`
-            : result.recalculate_required === false
-              ? '导入完成，原计划未变更'
-              : '已保存并重算'
+      if (result.cleared) {
+        ++loadSequence
+        ++refreshSequence
+        selectedId.value = null
+        detail.value = null
+        drawer.value = false
+        filter.value = null
+        search.value.text = ''
+        sort.value = []
+        cursor.value = 0
+        nextCursor.value = null
+        rows.value = []
+        pending.value = []
+        runs.value = []
+        summary.value = {}
+        filteredSummary.value = {}
+        total.value = 0
+      }
+      notice.value = result.cleared
+        ? '本厂计划数据已清空；设备与模具资料已保留，可以重新导入 Excel'
+        : result.bulk_start
+          ? `已开工 ${result.started_count} 台；${result.failed_count} 台未开工`
+          : 'save' in data && data.save === false
+            ? `预览已完成，尚未保存；${result.unplaced?.length || 0} 条待处理`
+            : result.unplaced?.length
+              ? `已保存；${result.unplaced.length} 条需求待处理，请查看原因`
+              : result.recalculate_required === false
+                ? '导入完成，原计划未变更'
+                : '已保存并重算'
       if (result.summary?.conflicts?.length)
         notice.value = `已处理无冲突内容；${result.summary.conflicts.length} 项冲突仍待处理`
       dirty.value = false

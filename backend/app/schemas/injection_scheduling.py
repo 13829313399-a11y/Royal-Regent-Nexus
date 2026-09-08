@@ -1,6 +1,13 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
 FactoryId = Literal["huaxing", "huadeng", "huakang-a", "huakang-b"]
 
@@ -59,6 +66,32 @@ class RunAction(Write):
     target_machine_id: str | None = None
 
 
+class StartSelection(StrictModel):
+    machine_id: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(min_length=1, max_length=128)
+
+
+class ReviewedStart(StartSelection):
+    review_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class StartPreview(StrictModel):
+    factory_id: FactoryId
+    items: list[StartSelection] = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def unique_machines(self):
+        if len({item.machine_id for item in self.items}) != len(self.items):
+            raise ValueError("同一机台只能选择一次")
+        return self
+
+
+class BulkStart(Write, StartPreview):
+    items: list[ReviewedStart] = Field(min_length=1, max_length=1000)
+    expected_revision: int = Field(ge=0)
+    confirm_actual_start: StrictBool
+
+
 class GroupWrite(Write):
     demand_ids: list[str] = Field(min_length=2, max_length=100)
     machine_id: str
@@ -86,6 +119,18 @@ class ReportWrite(Write):
 class ImportApply(Write):
     matches: dict[str, str] = Field(default_factory=dict)
     skip_rows: list[int] = Field(default_factory=list)
+
+
+class PlanClearPreview(StrictModel):
+    factory_id: FactoryId
+
+
+class PlanClearWrite(Write):
+    expected_revision: int = Field(ge=0)
+    preview_token: str = Field(pattern=r"^[a-f0-9]{64}$")
+    confirmation: str = Field(max_length=100)
+    reason: str = Field(min_length=2, max_length=500)
+    include_execution: StrictBool = False
 
 
 class ExportQuery(Query):
