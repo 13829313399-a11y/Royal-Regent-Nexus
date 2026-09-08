@@ -15,6 +15,7 @@ from app.services.internal_quote_excel import (
 from app.services.internal_quote_import import parse_internal_quote_workbook
 from test_internal_quote_excel_formula_links import _find_row, _section
 from test_internal_quote_import import workbook_bytes
+from test_internal_quote_purchase_export import arithmetic_value
 
 
 def _electronic_export_fixture(component_mode=True, inline_battery=False):
@@ -83,48 +84,47 @@ def test_imported_parts_split_by_component_without_allocating_overhead_to_ic_led
         ("b", "镜子", [1, .2, .5], "LR44电池×2", 1.25),
     ]:
         start = _find_row(sheet, 3, f"{name} · 电子")
-        labels = [sheet.cell(start + offset, 3).value for offset in range(1, 6)]
-        assert [label.split("（")[0] for label in labels] == ["IC", "LED", "喇叭", "PCB", "电池"]
-        assert battery_label in labels[-1]
-        assert [sheet.cell(start + offset, 4).value for offset in range(1, 4)] == pytest.approx(raw_costs)
+        cost = next(row for row in range(start + 1, sheet.max_row + 1) if sheet.cell(row, 3).value == "成本金额：")
+        labels = [str(sheet.cell(row, 3).value) for row in range(start + 1, cost)]
+        for category, expected in zip(("IC", "LED", "喇叭"), raw_costs):
+            rows = [row for row in range(start + 1, cost) if str(sheet.cell(row, 3).value).split("（")[0] == category]
+            assert sum(arithmetic_value(sheet, f"D{row}") for row in rows) == pytest.approx(expected)
+            assert all("/$L$4" in sheet.cell(row, 4).value for row in rows)
         if component_id == "a":
-            assert "A1" in labels[0] and "A2" in labels[0] and "B1" not in labels[0]
+            assert any("A1" in label for label in labels) and any("A2" in label for label in labels)
+            assert not any("B1" in label for label in labels)
+            assert sheet.cell(start + 1, 4).value == "=0.425/$L$4"
+            assert sheet.cell(start + 2, 4).value == "=0.85/$L$4*2"
         else:
-            assert "B1" in labels[0] and "A1" not in labels[0]
-        assert sheet.cell(start + 5, 4).value == pytest.approx(.6)
+            assert any("B1" in label for label in labels) and not any("A1" in label for label in labels)
+        battery = _find_row(sheet, 3, battery_label)
+        assert arithmetic_value(sheet, f"D{battery}") == pytest.approx(.6)
+        assert sheet.cell(battery, 2).value == "电池"
         electronic_total = sum(float(entry["amount_hkd"]) for entry in summary["shipping_pricing"]["pricing_entries"]
                                if entry["section"] == "electronic" and entry["pricing_component_id"] == component_id)
-        assert float(sheet.cell(start, 8).value[1:]) == pytest.approx(electronic_total)
-        assert electronic_total > sum(raw_costs)
-        assert sheet.cell(start + 4, 4).value == f"=H{start}-SUM(D{start+1}:D{start+3})"
-        assert sheet.cell(start + 6, 4).value == f"=SUM(D{start+1}:D{start+5})"
-        assert sheet.cell(start + 7, 4).value == markup
-        assert sheet.cell(start + 8, 4).value == "=1-$Q$6"
-        assert sheet.cell(start + 9, 4).value == f"=D{start+6}*D{start+7}/D{start+8}"
-        assert sheet.cell(start + 11, 4).value == f"=D{start+9}/D{start+10}"
-        assert [sheet.cell(start + offset, 2).value for offset in range(1, 6)] == ["电子"] * 4 + ["电池"]
-        # No battery is left in the primary detail block or counted as an adjustment.
+        assert arithmetic_value(sheet, f"D{cost}") == pytest.approx(electronic_total + .6)
+        pcb = next(row for row in range(start + 1, cost) if sheet.cell(row, 3).value == "PCB其他费用/调整")
+        assert sheet.cell(pcb, 4).value == f"=H{start}-SUM(D{start+1}:D{pcb-1})"
+        assert sheet.cell(cost + 1, 4).value == markup
+        assert sheet.cell(cost + 2, 4).value == "=1-$Q$6"
         primary = _find_row(sheet, 3, f"{name}明细")
         assert not any("电池×" in str(sheet.cell(row, 3).value) for row in range(primary, start))
         assert not any(sheet.cell(row, 3).value == "分配调整" for row in range(primary, start))
-        blocks.append((start, electronic_total))
-    # Summary entries are persisted to four decimal places independently.
-    assert sum(total + .6 for _, total in blocks) + .1 == pytest.approx(float(context["factory_price_hkd"]), abs=.0005)
+        blocks.append((start, cost, electronic_total))
+    assert sum(total + .6 for _, _, total in blocks) + .1 == pytest.approx(float(context["factory_price_hkd"]), abs=.0005)
     assert sheet.cell(_find_row(sheet, 3, "电池片"), 2).value == "五金"
-    usd_refs = [f"$D${start+11}" for start, _ in blocks]
+    usd_refs = [f"$D${cost+5}" for _, cost, _ in blocks]
     combined = [cell.value for row in sheet for cell in row if cell.data_type == "f" and all(ref in cell.value for ref in usd_refs)]
     assert combined and all(combined[0].count(ref) == 1 for ref in usd_refs)
-    # The tax summary must include every electronic/battery detail range once.
-    for start, _ in blocks:
+    for start, cost, _ in blocks:
         for category in ("电子", "电池"):
             headers = [cell for row in sheet for cell in row if cell.value == category and cell.column >= 5]
-            assert headers
-            assert any(f'SUMIF($B${start+1}:$B${start+5},{header.coordinate},$D${start+1}:$D${start+5})'
+            assert any(f'SUMIF($B${start+1}:$B${cost-1},{header.coordinate},$D${start+1}:$D${cost-1})'
                        in str(sheet.cell(header.row + 1, header.column).value) for header in headers)
     output = BytesIO()
     workbook.save(output)
     with_formula = load_workbook(BytesIO(output.getvalue()))
-    assert with_formula["报价明细"].cell(blocks[0][0] + 4, 4).data_type == "f"
+    assert with_formula["报价明细"].cell(blocks[0][0] + 1, 4).data_type == "f"
     assert with_formula["报价明细"].cell(blocks[0][0], 1).border.top.style == "medium"
     with_formula.close()
     workbook.close()
@@ -134,21 +134,25 @@ def test_old_electronic_source_battery_and_engineering_battery_are_added_only_on
     workbook, summary, _, _ = _electronic_export_fixture(inline_battery=True)
     sheet = workbook["报价明细"]
     start = _find_row(sheet, 3, "电话 · 电子")
-    assert sheet.cell(start + 5, 4).value == pytest.approx(1)
+    cost = next(row for row in range(start + 1, sheet.max_row + 1) if sheet.cell(row, 3).value == "成本金额：")
+    battery_rows = [row for row in range(start + 1, cost) if sheet.cell(row, 2).value == "电池"]
+    assert len(battery_rows) == 2
+    assert sum(arithmetic_value(sheet, f"D{row}") for row in battery_rows) == pytest.approx(1)
     total = sum(float(entry["amount_hkd"]) for entry in summary["shipping_pricing"]["pricing_entries"]
                 if entry["section"] == "electronic" and entry["pricing_component_id"] == "a")
-    assert sheet.cell(start, 8).value == f"={format(total, '.12g')}-D{start+5}+0.6"
-    assert "旧电子表电池" in sheet.cell(start + 5, 3).value
-    assert "AG13电池×3" in sheet.cell(start + 5, 3).value
+    assert arithmetic_value(sheet, f"H{start}") == pytest.approx(total - .4)
+    assert arithmetic_value(sheet, f"D{cost}") == pytest.approx(total + .6)
+    assert "旧电子表电池" in sheet.cell(battery_rows[0], 3).value
+    assert "AG13电池×3" in sheet.cell(battery_rows[1], 3).value
     workbook.close()
 
 
-def test_ordinary_customer_keeps_existing_electronic_and_battery_layout():
+def test_ordinary_customer_expands_electronic_and_battery_purchase_details():
     workbook, _, _, _ = _electronic_export_fixture(component_mode=False)
     sheet = workbook["报价明细"]
-    assert not any(" · 电子" in str(cell.value) or cell.value == "PCB" for row in sheet for cell in row)
-    assert _find_row(sheet, 3, "电子") > 0
-    assert _find_row(sheet, 3, "电池") > 0
+    assert not any(" · 电子" in str(cell.value) for row in sheet for cell in row)
+    assert sheet.cell(_find_row(sheet, 3, "IC"), 4).value.startswith("=0.85/$L$4*2")
+    assert sheet.cell(_find_row(sheet, 3, "AG13电池×3"), 4).value == "=0.17/$L$4*3"
     workbook.close()
 
 

@@ -3,6 +3,7 @@ import {
   FileOutput,
   FileSpreadsheet,
   FileText,
+  Files,
   Languages,
   Scissors,
 } from '@lucide/vue'
@@ -23,6 +24,7 @@ const icons = {
   'word-to-pdf': FileOutput,
   'pdf-translation': Languages,
   'pdf-split': Scissors,
+  'pdf-batch-rename': Files,
 }
 const activeIndex = computed(() => DOCUMENT_TOOLS.findIndex(tool => tool.id === props.modelValue))
 const tabListRef = ref<HTMLElement | null>(null)

@@ -171,7 +171,7 @@ def test_export_only_uses_rows_above_cancel_and_leaves_ac_ad_for_user(monkeypatc
     )
 
     assert file_name.endswith("_BuzzBee新单.xlsx")
-    assert preview["target_template"] == unified.TARGET_TEMPLATE
+    assert preview["target_template"] == unified.huaxing.TARGET_TEMPLATE
     workbook = openpyxl.load_workbook(BytesIO(output), data_only=False)
     try:
         item = workbook[unified.ITEM_SHEET]
@@ -226,8 +226,8 @@ def test_export_inserts_before_cancel_without_changing_user_sections(monkeypatch
             assert worksheet["A8"].value == "取消单"
             assert worksheet["B9"].value == "用户维护内容"
         assert workbook[unified.REVIEW_SHEET]["A16"].value == "已走货订单"
-        assert workbook[unified.ORDER_SHEET]["H7"].value == '=IF(D7="","","公式")'
-        assert workbook[unified.REVIEW_SHEET]["H7"].value == '=IF(D7="","","公式")'
+        assert workbook[unified.ORDER_SHEET]["H7"].value == '=IF(LEN(\'ITEM表\'!I7)=0,"",\'ITEM表\'!I7)'
+        assert workbook[unified.REVIEW_SHEET]["H7"].value == '=IF(LEN(\'ITEM表\'!I7)=0,"",\'ITEM表\'!I7)'
         assert workbook[unified.ITEM_SHEET]["M7"].value == "=K7/L7"
         assert workbook[unified.ITEM_SHEET]["AC7"].value is None
         assert workbook[unified.ITEM_SHEET]["AD7"].value is None

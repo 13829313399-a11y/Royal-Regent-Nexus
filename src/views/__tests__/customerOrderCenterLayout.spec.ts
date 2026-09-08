@@ -190,7 +190,7 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).not.toContain("code: 'jp'")
   })
 
-  it('shows four external customers without JP in Huakang D and routes INDEX with Huakang D scope', async () => {
+  it('shows five external customers without JP in Huakang D and routes INDEX with Huakang D scope', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-huakang-c-mapped-preview-v1',
       customer_code: 'index',
@@ -218,13 +218,14 @@ describe('customer order center static frontend', () => {
     })
 
     const customerButtons = wrapper.findAll('[data-testid^="customer-choice-"]')
-    expect(customerButtons).toHaveLength(4)
+    expect(customerButtons).toHaveLength(5)
     expect(customerButtons.map((button) => button.text())).toEqual(
       expect.arrayContaining([
         expect.stringContaining('INDEX'),
         expect.stringContaining('JAZAWARES'),
         expect.stringContaining('MAXX'),
         expect.stringContaining('STROTTMAN'),
+        expect.stringContaining('迪士尼'),
       ]),
     )
     expect(wrapper.text()).not.toContain('BuzzBee')
@@ -263,6 +264,86 @@ describe('customer order center static frontend', () => {
     })
 
     expect(wrapper.findAll('[data-testid^="customer-choice-"]')).toHaveLength(0)
+  })
+
+  it.each(['mismatched-response', 'factory-switch'])('rejects Disney preview crossing factory scope: %s', async (scenario) => {
+    let resolvePreview!: (value: unknown) => void
+    customerOrderApiMock.previewMappedBatch.mockReturnValueOnce(new Promise((resolve) => { resolvePreview = resolve }))
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: { activeSection: 'import', factoryId: 'huakang-d', factoryName: '华康D' },
+    })
+    await wrapper.get('[data-testid="customer-choice-disney"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    for (const [index, file] of [new File(['po'], 'Disney.pdf'), new File(['xlsx'], 'D.xlsx')].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))!.trigger('click')
+    if (scenario === 'factory-switch') await wrapper.setProps({ factoryId: 'huaxing' })
+    resolvePreview({ factory_id: scenario === 'factory-switch' ? 'huakang-d' : 'huaxing', rows: [] })
+    await flushPromises()
+    if (scenario === 'mismatched-response') expect(wrapper.text()).toContain('已拒绝展示')
+    expect(wrapper.emitted('navigate')).toBeUndefined()
+    await wrapper.setProps({ activeSection: 'schedule' })
+    expect(wrapper.findAll('.factory-schedule-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0', '0', '0'])
+    wrapper.unmount()
+  })
+
+  it.each(['huakang-d', 'huaxing'])('routes Disney into only the %s factory schedule and clears it on factory change', async (factoryId) => {
+    const targetTemplate = factoryId === 'huakang-d'
+      ? 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_DISNEY_V1' : 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
+    const preview = {
+      customer_code: 'disney', factory_id: factoryId, preview_fingerprint: `${factoryId}-fingerprint`,
+      po_file_count: 1, po_file_names: ['Disney.pdf'], po_file_name: 'Disney.pdf',
+      schedule_file_name: 'schedule.xlsx', output_file_name: 'disney-new.xlsx',
+      input_template: 'DISNEY', target_template: targetTemplate,
+      summary: { total: 1, valid: 1, warning: 0, blocked: 0 }, warnings: [],
+      rows: [{
+        id: 'disney-1', status: 'valid', status_label: '可导出', issues: [], lineage: {},
+        received_date: '2026-09-08', po_no: 'DISNEY-FACTORY-PO', contract_no: '',
+        customer_country: '迪士尼 / DLR', customer_name: '迪士尼', product_no: '1000128076',
+        product_name_zh: `${factoryId}产品`, product_name_en: 'MICKEY', quantity: '2502',
+        units_per_carton: '6', carton_count: '417', standard: '', unit_price_hkd: '', amount_hkd: '',
+        packaging: '', line_q: '', customer_q: '', requested_ship_date: '2026-11-30',
+        input_template: 'DISNEY', target_template: targetTemplate, item_sheet_name: 'ITEM表',
+        source_po_file_name: 'Disney.pdf',
+      }],
+    }
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce(preview)
+    customerOrderApiMock.exportMappedBatch.mockResolvedValueOnce({
+      blob: new Blob(['xlsx']), fileName: 'disney-new.xlsx', passwordRequired: false,
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: { activeSection: 'import', factoryId, factoryName: factoryId },
+    })
+    expect(wrapper.findAll('[data-testid="customer-choice-disney"]')).toHaveLength(1)
+    await wrapper.get('[data-testid="customer-choice-disney"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    expect(inputs[0]!.attributes('accept')).toBe('.pdf')
+    const po = new File(['po'], 'Disney.pdf')
+    const schedule = new File(['schedule'], 'schedule.xlsx')
+    for (const [index, file] of [po, schedule].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    expect(customerOrderApiMock.previewMappedBatch).toHaveBeenLastCalledWith('disney', [po], schedule, expect.any(String), factoryId)
+    await wrapper.setProps({ activeSection: 'preview' })
+    await wrapper.get('[data-testid="preview-next-step"] .button').trigger('click')
+    await flushPromises()
+    expect(customerOrderApiMock.exportMappedBatch).toHaveBeenLastCalledWith(
+      'disney', [po], schedule, expect.any(String), 'disney-new.xlsx', factoryId,
+      [], `${factoryId}-fingerprint`, '', [],
+    )
+    await wrapper.setProps({ activeSection: 'schedule' })
+    expect(wrapper.get('.factory-schedule-table tbody').text()).toContain('DISNEY-FACTORY-PO')
+    expect(wrapper.findAll('.factory-schedule-table tbody tr')).toHaveLength(1)
+    const otherFactory = factoryId === 'huaxing' ? 'huakang-d' : 'huaxing'
+    await wrapper.setProps({ factoryId: otherFactory })
+    expect(wrapper.get('.factory-schedule-table tbody').text()).not.toContain('DISNEY-FACTORY-PO')
+    expect(wrapper.findAll('.factory-schedule-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0', '0', '0'])
+    wrapper.unmount()
   })
 
   it('shows five Huadeng customers including Goliath and routes Spin through mapped APIs', async () => {
@@ -1067,7 +1148,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.get('[data-testid="customer-choice-caixing"]').attributes('aria-pressed')).toBe('true')
     expect(wrapper.text()).toContain('彩星 V2')
     expect(wrapper.text()).toContain('重复订单是否允许确认以当前环境策略和预览结果为准')
-    expect(wrapper.text()).toContain('ITEM表 / 接单表 / 正单评审表')
+    expect(wrapper.text()).toContain('华兴 彩星 最新统一排期（含 ITEM 分类页）')
     const inputs = wrapper.findAll('input[type="file"]')
     expect(inputs[0]!.attributes('accept')).toBe('.pdf')
 
@@ -1091,7 +1172,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('全部 彩星')
     expect(wrapper.get('[data-testid="order-preview"]').text()).toContain('当前彩星输入规则已启用')
     expect(wrapper.get('[data-testid="order-preview"]').text()).toContain(
-      '先列大货号总数量与总装箱数，再按 ASSORTMENT 展开小货号',
+      '接单表、正单评审表关联实际明细页和行',
     )
     const hierarchyRows = wrapper.findAll('.unified-table tbody tr')
     expect(hierarchyRows[0]!.text()).toContain('大货号')

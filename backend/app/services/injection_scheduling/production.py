@@ -84,10 +84,21 @@ def validate_execution(db, factory, run, machine, instant):
         raise HTTPException(409, "该机台或实物模具已有执行中的批次")
 
 
-def action(db, factory, run_id, verb, actor, reason="", target_machine_id=None):
+def action(
+    db,
+    factory,
+    run_id,
+    verb,
+    actor,
+    reason="",
+    target_machine_id=None,
+    *,
+    instant=None,
+    recalculate_after=True,
+):
     run = scoped(db, Run, run_id, factory)
     machine = scoped(db, Machine, run.machine_id, factory)
-    instant = now()
+    instant = instant or now()
     was_unknown = bool(run.explanation.get("forecast_unknown")) or (
         run.status == "PAUSED" and not machine.recovery_at
     )
@@ -188,7 +199,7 @@ def action(db, factory, run_id, verb, actor, reason="", target_machine_id=None):
     touch(run, actor)
     touch(machine, actor)
     db.flush()
-    result = recalculate(db, factory, actor, instant)
+    result = recalculate(db, factory, actor, instant) if recalculate_after else {}
     return {**result, "run": public_run(record(run)), "before": before}
 
 

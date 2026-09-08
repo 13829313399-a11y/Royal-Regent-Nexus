@@ -20,6 +20,7 @@ import ScheduleBoard from '@/features/injection-scheduling/ScheduleBoard.vue';
 import ShiftReports from '@/features/injection-scheduling/ShiftReports.vue';
 import MasterData from '@/features/injection-scheduling/MasterData.vue';
 import DemandDrawer from '@/features/injection-scheduling/DemandDrawer.vue';
+import ClearPlanDialog from '@/features/injection-scheduling/ClearPlanDialog.vue';
 import {
   ArrowLeft,
   ArrowRight,
@@ -44,6 +45,7 @@ import {
   Table2,
   ClipboardList,
   Database,
+  Trash2,
 } from '@lucide/vue';
 import InjSegmentedControl from '@/features/injection-scheduling/components/ui/InjSegmentedControl.vue';
 import InjButton from '@/features/injection-scheduling/components/ui/InjButton.vue';
@@ -101,6 +103,7 @@ const planningOptions = [
   { value: 'table', label: '计划表', icon: Table2 },
 ];
 const pendingActionKey = ref(''),
+  clearPlanOpen = ref(false),
   moreOpen = ref(false),
   riskOpen = ref(false),
   viewportWidth = ref(window.innerWidth);
@@ -133,6 +136,8 @@ watch([() => store.factory, () => auth.currentUser?.id], () => {
   view.machineSearch = '';
   findIndex.value = 0;
   findCount.value = 0;
+  clearPlanOpen.value = false;
+  importPreview.value = null;
 });
 const allowed = (action: string) =>
   !!store.factory &&
@@ -175,6 +180,24 @@ function switchTab(key: string) {
   }
   tab.value = key === 'planning' ? view.planningView : key;
   store.error = '';
+}
+function openPlanClear() {
+  if (store.dirty || store.busy || !canPlan.value) return;
+  moreOpen.value = false;
+  clearPlanOpen.value = true;
+}
+function afterPlanClear() {
+  clearPlanOpen.value = false;
+  importPreview.value = null;
+  importMatches.value = {};
+  skipRows.value = [];
+  selectedReport.value = '';
+  newDemand.value = false;
+  runningOnly.value = false;
+  findIndex.value = 0;
+  findCount.value = 0;
+  view.contextGeneration++;
+  tab.value = 'table';
 }
 async function search() {
   store.cursor = 0;
@@ -591,7 +614,7 @@ const templateLabels1: Record<string, string> = {
             store.loadTable();
           "
         >
-          清除</button
+          清除筛选</button
         ><span class="inj-spacer" /><button
           v-if="canPlan"
           :disabled="store.busy || store.dirty"
@@ -630,6 +653,13 @@ const templateLabels1: Record<string, string> = {
               "
             >
               <Undo2 />撤销排产
+            </button>
+            <button
+              v-if="canPlan"
+              :disabled="store.busy || store.dirty"
+              @click="openPlanClear"
+            >
+              <Trash2 />清空本厂计划数据
             </button>
             <button
               @click="
@@ -800,6 +830,13 @@ const templateLabels1: Record<string, string> = {
         }}</span>
       </footer>
     </template>
+    <ClearPlanDialog
+      v-if="clearPlanOpen"
+      :can-plan="canPlan"
+      :can-report="canReport"
+      @close="clearPlanOpen = false"
+      @cleared="afterPlanClear"
+    />
     <div v-if="filterOpen" class="inj-modal-backdrop">
       <section
         class="inj-modal inj-filter-modal"
@@ -1094,6 +1131,11 @@ const templateLabels1: Record<string, string> = {
           <li>点击自动排产直接保存；拖动批次可调整机台和顺序。</li>
           <li>现场开工后，在白夜班报工输入本班累计数。</li>
           <li>通过全字段表精确查找、批量维护并导出。</li>
+          <li>
+            导错表时，点击“更多 →
+            清空本厂计划数据”，核对全部本厂计划范围并确认。
+            有开工或报工记录时须额外勾选删除确认；设备、模具资料保留，完成后可重新导入。
+          </li>
         </ol>
         <p>
           修改 200 为 250 仅增加 50，随后改为 230 会回减
