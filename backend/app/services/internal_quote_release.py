@@ -31,6 +31,7 @@ from app.schemas.internal_quote import (
 )
 from app.services.auth import AuthContext, can, now_text
 from app.services.internal_quote import (
+    quote_write,
     ALL_QUOTE_DEPARTMENTS,
     ARTIFACT_NOTIFICATION_EVENTS,
     COMPLETED_SECTION_STATUSES,
@@ -563,6 +564,7 @@ def _review_whole_quote(
     )
 
 
+@quote_write
 def withdraw_whole_quote_submission(
     db: Session,
     quote_id: str,
@@ -633,6 +635,7 @@ def withdraw_whole_quote_submission(
     return InternalQuoteFinalReleaseOut(quote=quote_to_out(db, quote))
 
 
+@quote_write
 def submit_final_release(
     db: Session,
     quote_id: str,
@@ -714,6 +717,7 @@ def submit_final_release(
     )
 
 
+@quote_write
 def review_final_release(
     db: Session,
     quote_id: str,

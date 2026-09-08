@@ -1,3 +1,5 @@
+from decimal import Decimal
+from fastapi.encoders import jsonable_encoder
 from io import BytesIO
 from urllib.parse import quote as url_quote
 
@@ -6,11 +8,19 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.schemas.carton_inventory_report import CartonInventoryReportOut
+from app.services.carton_inventory_report import inventory_report
+from app.schemas.carton_order_timeline import CartonOrderTimelineOut
+from app.services.carton_order_timeline import order_timeline
+from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
+from app.services.carton_stocktake import create_stocktake, stocktake_detail, list_stocktakes, act_stocktake
 from app.schemas.carton_procurement import (
     CartonAuditEventListOut,
     CartonClosingGenerateRequest,
     CartonClosingOut,
     CartonClosingStatusRequest,
+    CartonClosingUnlockRequest,
+    CartonInventoryPriceConfirmRequest,
     CartonCustomerCreate,
     CartonCustomerListOut,
     CartonCustomerOut,
@@ -46,6 +56,7 @@ from app.schemas.carton_procurement import (
     CartonOrderSubmitRequest,
     CartonOrderUpdate,
     CartonReceiptConfirmRequest,
+    CartonReceiptReverseRequest,
     CartonReceiptCreate,
     CartonReceiptListOut,
     CartonReceiptOut,
@@ -63,6 +74,8 @@ from app.services.carton_procurement import (
     bulk_submit_orders_to_supplier,
     cancel_order,
     confirm_receipt,
+    confirm_inventory_price,
+    closing_out,
     create_customer,
     create_import_batch,
     create_inventory_movement,
@@ -96,12 +109,14 @@ from app.services.carton_procurement import (
     receipt_out,
     require_carton_factory,
     reverse_inventory_movement,
+    reverse_receipt,
     relocate_inventory,
     return_order,
     search_order_history_items,
     submit_order_to_supplier,
     update_order,
     update_closing_status,
+    unlock_closing,
     update_customer,
     update_exception,
 )
@@ -556,6 +571,16 @@ def post_receipt_confirmation(
     return receipt_out(db, confirm_receipt(db, receipt_id, payload, current_user))
 
 
+@router.post("/receipts/{receipt_id}/reverse", response_model=CartonReceiptOut)
+def post_receipt_reversal(
+    receipt_id: str, payload: CartonReceiptReverseRequest,
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:receipt_write", payload.factory_id)
+    _ensure_permission(db, current_user, "carton_procurement:inventory_write", payload.factory_id)
+    return receipt_out(db, reverse_receipt(db, receipt_id, payload, current_user))
+
+
 @router.post("/receipt-imports", response_model=CartonImportBatchOut, status_code=201)
 async def post_receipt_import(
     factory_id: str,
@@ -750,6 +775,38 @@ async def post_history_inventory_import(
     )
 
 
+@router.get("/stocktakes")
+def stocktakes_list(factory_id: str, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0),
+                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, user, "carton_procurement:read", factory_id)
+    return list_stocktakes(db, factory_id, limit, offset)
+
+
+@router.get("/stocktakes/{identifier}")
+def stocktakes_detail(identifier: str, factory_id: str, db: Session = Depends(get_db),
+                      user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, user, "carton_procurement:read", factory_id)
+    return jsonable_encoder(stocktake_detail(db, factory_id, identifier), custom_encoder={Decimal: str})
+
+
+@router.post("/stocktakes", status_code=201)
+def stocktakes_create(payload: StocktakeCreate, db: Session = Depends(get_db),
+                      user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, user, "carton_procurement:inventory_write", payload.factory_id)
+    return jsonable_encoder(create_stocktake(db, payload, user), custom_encoder={Decimal: str})
+
+
+@router.post("/stocktakes/{identifier}/actions")
+def stocktakes_action(identifier: str, payload: StocktakeAction, db: Session = Depends(get_db),
+                      user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, user, "carton_procurement:inventory_write", payload.factory_id)
+    if payload.action in ("APPROVE", "RETURN", "CANCEL"):
+        doc = stocktake_detail(db, payload.factory_id, identifier)
+        if payload.action != "CANCEL" or doc["created_by"] != user.id:
+            _ensure_permission(db, user, "carton_procurement:order_adjust", payload.factory_id)
+    return jsonable_encoder(act_stocktake(db, identifier, payload, user), custom_encoder={Decimal: str})
+
+
 @router.get("/inventory/balances", response_model=list[CartonInventoryBalanceOut])
 def get_inventory_balances(
     factory_id: str,
@@ -759,6 +816,39 @@ def get_inventory_balances(
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
     return inventory_balances(db, factory_id, customer_code=customer_code.strip())
+
+
+@router.get("/inventory/report", response_model=CartonInventoryReportOut)
+def get_inventory_report(
+    factory_id: str,
+    customer_code: str = Query(default="", max_length=64),
+    date_from: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    search: str = Query(default="", max_length=255),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return inventory_report(db, factory_id, customer_code=customer_code.strip(),
+                            date_from=date_from.strip(), date_to=date_to.strip(), search=search.strip())
+
+
+@router.get("/inventory/order-timeline", response_model=CartonOrderTimelineOut)
+def get_order_timeline(
+    factory_id: str,
+    customer_code: str = Query(default="", max_length=64),
+    date_from: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    search: str = Query(default="", max_length=255),
+    order_id: str = Query(default="", max_length=96),
+    inventory_key: str = Query(default="", max_length=2048),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return order_timeline(db, factory_id, customer_code=customer_code.strip(), date_from=date_from,
+                          date_to=date_to, search=search.strip(), order_id=order_id.strip(),
+                          inventory_key=inventory_key.strip())
 
 
 @router.get("/inventory/summary", response_model=list[CartonInventoryFlowSummaryOut])
@@ -872,12 +962,13 @@ def get_closings(
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
-    return list_closings(
+    rows = list_closings(
         db,
         factory_id,
         period=period.strip(),
         customer_code=customer_code.strip(),
     )
+    return [closing_out(db, row) for row in rows]
 
 
 @router.post("/closings/generate", response_model=list[CartonClosingOut])
@@ -887,7 +978,7 @@ def post_closing_generation(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:closing_manage", payload.factory_id)
-    return generate_closings(db, payload, current_user)
+    return [closing_out(db, row) for row in generate_closings(db, payload, current_user)]
 
 
 @router.post("/closings/{closing_id}/status", response_model=CartonClosingOut)
@@ -898,4 +989,27 @@ def post_closing_status(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:closing_manage", payload.factory_id)
-    return update_closing_status(db, closing_id, payload, current_user)
+    if payload.status == "LOCKED":
+        _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
+    return closing_out(db, update_closing_status(db, closing_id, payload, current_user))
+
+
+@router.post("/closings/{closing_id}/unlock", response_model=CartonClosingOut)
+def post_closing_unlock(
+    closing_id: str, payload: CartonClosingUnlockRequest,
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:closing_manage", payload.factory_id)
+    _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
+    return closing_out(db, unlock_closing(db, closing_id, payload, current_user))
+
+
+@router.post("/inventory/movements/{movement_id}/price-confirmation", status_code=204)
+def post_inventory_price_confirmation(
+    movement_id: str,
+    payload: CartonInventoryPriceConfirmRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:closing_manage", payload.factory_id)
+    confirm_inventory_price(db, movement_id, payload, current_user)

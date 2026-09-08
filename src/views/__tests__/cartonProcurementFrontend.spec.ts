@@ -56,8 +56,11 @@ const cartonApiMock = vi.hoisted(() => ({
   uploadInspectionSchedule: vi.fn(),
   createReceipt: vi.fn(),
   confirmReceipt: vi.fn(),
+  reverseReceipt: vi.fn(),
   generateClosings: vi.fn(),
   updateClosingStatus: vi.fn(),
+  unlockClosing: vi.fn(),
+  confirmInventoryPrice: vi.fn(),
   updateException: vi.fn(),
 }))
 
@@ -478,11 +481,8 @@ describe('CartonProcurementView frontend workspace', () => {
     const orderSelector = firstOrder.get('input[aria-label^="选择订单 "]')
 
     expect(selectionToolbar.element.nextElementSibling).toBe(firstOrder.element)
-    expect(selectionToolbar.classes()).toContain('bg-slate-200/90')
     expect(selectionToolbar.get('.order-ledger-grid').exists()).toBe(true)
     expect(firstOrder.get('.order-ledger-grid').exists()).toBe(true)
-    expect(firstOrder.classes()).toContain('mt-2')
-    expect(firstOrder.classes()).toContain('shadow-sm')
     expect(selectAll.classes()).toContain('size-5')
     expect(orderSelector.classes()).toContain('size-5')
     expect(orderSelector.element.parentElement?.tagName).toBe('DIV')
@@ -512,8 +512,8 @@ describe('CartonProcurementView frontend workspace', () => {
   it('groups multiple paper items under one contract and keeps paper quality separate from specification', async () => {
     const wrapper = mountView('orders')
 
-    expect(wrapper.get('select[aria-label="客户筛选"]').element.parentElement)
-      .toBe(findButton(wrapper, '客户资料维护').element.parentElement)
+    expect(wrapper.findAll('select[aria-label="客户筛选"]')).toHaveLength(1)
+    expect(wrapper.get('[aria-label="订单筛选与批量操作"]').find('select[aria-label="客户筛选"]').exists()).toBe(true)
 
     const firstOrder = wrapper.get('[data-order-no="CT-260805-006"]')
     expect(firstOrder.text()).not.toContain('CT-260805-006')
@@ -1563,7 +1563,10 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('button[aria-label="登记 CT-260805-76C698 收料"]').trigger('click')
 
     expect(wrapper.text()).toContain('人工录入订单收料')
-    expect(wrapper.text()).toContain('CT-260805-76C698')
+    const receiptTable = wrapper.get('[role="dialog"] table')
+    expect(receiptTable.text()).not.toContain('CT-260805-76C698')
+    expect(receiptTable.text()).toContain('3722111')
+    expect(receiptTable.text()).toContain('人工录入')
     expect(wrapper.text()).toContain('全部收齐，确认后自动完成')
     await findButton(wrapper, '保存待确认收料单').trigger('click')
     expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
@@ -1573,6 +1576,19 @@ describe('CartonProcurementView frontend workspace', () => {
 
     await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-MANUAL-260811-001')
     await wrapper.get('input[aria-label="MANUAL-CTL-MANUAL-001 仓位"]').setValue('A-01')
+    const receiptPrice = wrapper.get<HTMLInputElement>('input[aria-label="MANUAL-CTL-MANUAL-001 单价"]')
+    expect(receiptPrice.element.value).toBe('3.46')
+    expect(receiptPrice.element.closest('td')?.textContent).toContain('HKD / 个')
+    for (const price of ['-1', '1.1234567', '1000000000000']) {
+      await receiptPrice.setValue(price)
+      await findButton(wrapper, '保存待确认收料单').trigger('click')
+      expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+      expect(wrapper.get('[data-testid="receipt-save-feedback"]').text()).toContain('单价须为非负数字')
+    }
+    await receiptPrice.setValue('')
+    expect(receiptPrice.element.closest('td')?.textContent).toContain('待核价')
+    await receiptPrice.setValue('2.567891')
+
     await wrapper.get('button[aria-label="关闭收料录入"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
@@ -1593,8 +1609,13 @@ describe('CartonProcurementView frontend workspace', () => {
         delivered_quantity: 3600,
         received_quantity: 3600,
         location: 'A-01',
+        unit_price: 2.567891,
+        currency: 'HKD',
+        unit: '个',
       })],
     }))
+    expect(wrapper.get('input[aria-label="MANUAL-CTL-MANUAL-001 单价"]').attributes('disabled')).toBeDefined()
+    expect(openOrder.lines[0]?.unit_price).toBe('3.46')
     expect(wrapper.get('[data-testid="receipt-save-feedback"]').attributes('role')).toBe('status')
     expect(wrapper.get('[data-testid="receipt-save-feedback"]').text()).toContain('保存成功')
     expect(wrapper.text()).toContain('确认入库并完成订单')
@@ -1603,6 +1624,67 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     expect(cartonApiMock.confirmReceipt).toHaveBeenCalledWith('huaxing', 'CTR-MANUAL-001', 1)
     expect(wrapper.text()).toContain('全部明细已收齐并自动完成')
+  })
+
+  it.each(['row', 'selected'] as const)('starts the remaining receipt batch from %s after posting, while preserving pending receipts', async (entry) => {
+    const orders = ['CT-BATCH-A', 'CT-BATCH-B'].map((number) => orderFixture(number, businessDateOffset(3), 'PENDING_SUPPLIER'))
+    mockReceiptWorkspace(orders)
+    cartonApiMock.createReceipt.mockResolvedValue({
+      id: 'CTR-BATCH-FIRST', receipt_no: 'RC-BATCH-FIRST', status: 'PENDING_CONFIRMATION', revision: 1, lines: [],
+    })
+    cartonApiMock.confirmReceipt.mockImplementation(async () => {
+      cartonApiMock.listOrders.mockResolvedValue(orders.map((order) => ({
+        ...order, status: 'PARTIALLY_RECEIVED', revision: 2,
+        lines: order.lines.map((line) => ({ ...line, received_quantity: '70', remaining_quantity: '30' })),
+      })))
+      return { id: 'CTR-BATCH-FIRST', receipt_no: 'RC-BATCH-FIRST', status: 'POSTED', revision: 2, lines: [] }
+    })
+    const wrapper = mountView('receipts')
+    await flushPromises()
+    const selected = entry === 'row' ? orders.slice(0, 1) : orders
+    const open = async () => {
+      if (entry === 'row') await wrapper.get('button[aria-label="登记 CT-BATCH-A 收料"]').trigger('click')
+      else await findButton(wrapper, '登记所选订单收料').trigger('click')
+      await flushPromises()
+    }
+    if (entry === 'selected') {
+      await wrapper.get('input[aria-label="全选待收订单"]').setValue(true)
+    }
+    await open()
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-FIRST')
+    for (const order of selected) {
+      await wrapper.get(`input[aria-label="MANUAL-LINE-${order.order_no} 实收"]`).setValue('70')
+      await wrapper.get(`input[aria-label="MANUAL-LINE-${order.order_no} 单价"]`).setValue('2.5')
+    }
+    await findButton(wrapper, '保存待确认收料单').trigger('click')
+    await flushPromises()
+    await wrapper.get('button[aria-label="关闭收料录入"]').trigger('click')
+    await open()
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="人工送货单号"]').element.value).toBe('DN-FIRST')
+    expect(wrapper.get('input[aria-label="MANUAL-LINE-CT-BATCH-A 实收"]').attributes('disabled')).toBeDefined()
+    expect(cartonApiMock.createReceipt).toHaveBeenCalledTimes(1)
+    await findButton(wrapper, '确认入库（订单转部分收料）').trigger('click')
+    await flushPromises()
+    expect(cartonApiMock.confirmReceipt).toHaveBeenCalledWith('huaxing', 'CTR-BATCH-FIRST', 1)
+    await wrapper.get('button[aria-label="关闭收料录入"]').trigger('click')
+    await open()
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="人工送货单号"]').element.value).toBe('')
+    expect(wrapper.get('[role="dialog"]').text()).not.toContain('RC-BATCH-FIRST')
+    expect(wrapper.get('[role="dialog"]').text()).toContain(`已选订单 ${selected.length} 张`)
+    for (const order of selected) {
+      const quantity = wrapper.get<HTMLInputElement>(`input[aria-label="MANUAL-LINE-${order.order_no} 实收"]`)
+      expect(quantity.element.value).toBe('30')
+      expect(quantity.attributes('disabled')).toBeUndefined()
+      expect(wrapper.get<HTMLInputElement>(`input[aria-label="MANUAL-LINE-${order.order_no} 送货数量"]`).element.value).toBe('30')
+    }
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-SECOND')
+    await findButton(wrapper, '保存待确认收料单').trigger('click')
+    await flushPromises()
+    expect(cartonApiMock.createReceipt).toHaveBeenLastCalledWith(expect.objectContaining({
+      delivery_note_no: 'DN-SECOND',
+      lines: selected.map((order) => expect.objectContaining({ order_line_id: `LINE-${order.order_no}`, received_quantity: 30, delivered_quantity: 30 })),
+    }))
+    wrapper.unmount()
   })
 
   it('sorts pending receipts by planned due date while preserving selection', async () => {
@@ -1921,7 +2003,7 @@ describe('CartonProcurementView frontend workspace', () => {
     const closingWrapper = mountView('closing')
     expect(closingWrapper.text()).toContain('期间月结与供应商对账页')
     expect(closingWrapper.text()).toContain('客户月结汇总快照')
-    expect(closingWrapper.text()).toContain('不承担日常收发记录')
+    expect(closingWrapper.text()).toContain('当月可以核对确认并继续收发货')
     expect(closingWrapper.text()).not.toContain('逐笔交易流水')
   })
 
@@ -2285,6 +2367,45 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).not.toContain('¥4,400.89')
   })
 
+  it('blocks an unpriced closing and requires explicit free-price evidence before saving', async () => {
+    mockReceiptWorkspace([])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([])
+    const row = {
+      id: 'CLOSING-PRICE', factory_id: 'huaxing', period: '2026-08', customer_code: 'DICKIE',
+      customer_name: 'Dickie', opening_quantity: '0', inbound_quantity: '10', outbound_quantity: '0',
+      adjustment_quantity: '0', ending_quantity: '10', ending_amount: '0', currency: 'CNY',
+      status: 'PENDING', revision: 2,
+      pricing_issues: [{ movement_id: 'MISSING-PRICE', document_no: 'DN-PRICE', item_no: 'ITEM-PRICE',
+        packaging_type: '外箱', occurred_at: '2026-08-05T09:00:00+08:00', unit: '个', currency: 'CNY',
+        message: '入库单价待核实（原单价为 0）', can_price: true }],
+    }
+    cartonApiMock.listClosings.mockResolvedValue([row])
+    const wrapper = mountView('closing')
+    await flushPromises()
+    expect(wrapper.text()).toContain('DN-PRICE')
+    expect(findButton(wrapper, '核对确认').attributes('disabled')).toBeDefined()
+    await findButton(wrapper, '核实单价').trigger('click')
+    const dialog = wrapper.get('[role="dialog"]')
+    await dialog.trigger('submit')
+    expect(dialog.text()).toContain('请输入有效的单价')
+    await dialog.get('input[aria-label="核实入库单价"]').setValue('0')
+    await dialog.trigger('submit')
+    expect(dialog.text()).toContain('零单价需要明确勾选')
+    expect(cartonApiMock.confirmInventoryPrice).not.toHaveBeenCalled()
+    await dialog.get('input[aria-label="确认免费物料"]').setValue(true)
+    await dialog.get('textarea[aria-label="核价依据"]').setValue('供应商确认免费样品')
+    cartonApiMock.confirmInventoryPrice.mockResolvedValue(undefined)
+    cartonApiMock.listClosings.mockResolvedValue([{ ...row, pricing_issues: [], status: 'DRAFT', revision: 3 }])
+    await dialog.trigger('submit')
+    await flushPromises()
+    expect(cartonApiMock.confirmInventoryPrice).toHaveBeenCalledWith('MISSING-PRICE', {
+      factory_id: 'huaxing', unit_price: '0', zero_price_confirmed: true, reason: '供应商确认免费样品',
+    })
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('提交核对')
+    expect(cartonApiMock.updateClosingStatus).not.toHaveBeenCalled()
+  })
+
   it('opens selected inventory in a bulk dialog and submits only after confirmation', async () => {
     const balance = {
       factory_id: 'huaxing', customer_code: 'DICKIE', customer_name: 'Dickie', contract_no: 'SC-001',
@@ -2295,7 +2416,7 @@ describe('CartonProcurementView frontend workspace', () => {
     cartonApiMock.listCustomers.mockResolvedValue([])
     cartonApiMock.listOrders.mockResolvedValue([])
     cartonApiMock.listMovements.mockResolvedValue([])
-    cartonApiMock.listInventoryBalances.mockResolvedValue([balance, { ...balance, order_line_id: 'LINE-ZERO', balance: '0' }])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([balance, { ...balance, contract_no: 'SC-002', order_line_id: 'LINE-2', balance: '50' }, { ...balance, order_line_id: 'LINE-ZERO', balance: '0' }])
     cartonApiMock.listClosings.mockResolvedValue([])
     cartonApiMock.listExceptions.mockResolvedValue([])
     cartonApiMock.createInventoryMovementsBulk.mockResolvedValue([])
@@ -2313,17 +2434,33 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(dialog.text()).toContain('批量出库前请填写来源单据号')
     expect(cartonApiMock.createInventoryMovementsBulk).not.toHaveBeenCalled()
     await wrapper.get('input[aria-label="库存作业单据号"]').setValue('OUT-BULK-001')
+    const firstQuantity = dialog.get('[aria-label="本次出库数量 LINE-1"]')
+    const secondQuantity = dialog.get('[aria-label="本次出库数量 LINE-2"]')
+    expect(dialog.findAll('input[aria-label^="本次出库数量"]').length).toBe(2)
+    for (const invalid of ['', '0', '-1', '101', '1.00001']) {
+      await firstQuantity.setValue(invalid)
+      await dialog.get('form').trigger('submit')
+      expect(cartonApiMock.createInventoryMovementsBulk).not.toHaveBeenCalled()
+    }
+    await firstQuantity.setValue('20')
+    await secondQuantity.setValue('7.5')
+    expect(dialog.text()).toContain('80 个')
+    expect(dialog.text()).toContain('42.5 个')
     await dialog.get('form').trigger('submit')
     await flushPromises()
     expect(cartonApiMock.createInventoryMovementsBulk).toHaveBeenCalledWith({
       factory_id: 'huaxing', document_no: 'OUT-BULK-001', reason: '客户要货',
-      items: [{ order_line_id: 'LINE-1', reference_movement_id: null, quantity: 100, location: 'A-01' }],
+      items: [
+        { order_line_id: 'LINE-1', reference_movement_id: null, quantity: 20, location: 'A-01' },
+        { order_line_id: 'LINE-2', reference_movement_id: null, quantity: 7.5, location: 'A-01' },
+      ],
     })
     expect(cartonApiMock.createInventoryMovement).not.toHaveBeenCalled()
-    expect(dialog.text()).toContain('已按全部结存批量出库 1 条记录')
+    expect(dialog.text()).toContain('已按填写数量批量出库 2 条记录')
     await wrapper.get('button[aria-label="关闭库存作业"]').trigger('click')
     await flushPromises()
-    await findButton(wrapper, '库存调整').trigger('click')
+    await wrapper.get('[aria-label="库存更多操作"]').trigger('click')
+    await findButton(wrapper, '库存数量调整').trigger('click')
     await flushPromises()
     expect(wrapper.get('button[type="submit"]').text()).toContain('确认调整')
     expect(wrapper.get<HTMLInputElement>('input[aria-label="库存作业数量"]').element.value).toBe('0')
@@ -2379,7 +2516,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('调仓完成')
   })
 
-  it('registers outbound inventory and reverses the immutable movement from the ledger', async () => {
+  it.each([false, true])('registers outbound inventory without misreporting a refresh failure (%s)', async (refreshFails) => {
     const inbound = {
       id: 'CIM-IN-1', factory_id: 'huaxing', order_line_id: 'LINE-1', customer_code: 'DICKIE',
       customer_name: 'Dickie', contract_no: 'SC-001', item_no: 'ITEM-001', packaging_type: '外箱',
@@ -2446,6 +2583,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await outboundReason.setValue('借出')
     const inventoryForm = wrapper.findAll('form').find((form) => form.text().includes('登记库存作业'))
     if (!inventoryForm) throw new Error('Inventory form not found')
+    if (refreshFails) cartonApiMock.listInventoryBalances.mockReset().mockRejectedValue(new Error('refresh failed'))
     await inventoryForm.trigger('submit')
     await flushPromises()
 
@@ -2458,6 +2596,17 @@ describe('CartonProcurementView frontend workspace', () => {
       reason: '借出',
     }))
     expect(wrapper.text()).toContain('出库已登记')
+
+    if (refreshFails) {
+      expect(wrapper.text()).toContain('结存暂未刷新')
+      expect(wrapper.text()).not.toContain('出库失败')
+      expect(wrapper.get<HTMLInputElement>('input[aria-label="库存作业数量"]').element.value).toBe('0')
+      expect(wrapper.get<HTMLInputElement>('input[aria-label="库存作业单据号"]').element.value).toBe('')
+      await inventoryForm.trigger('submit')
+      await flushPromises()
+      expect(cartonApiMock.createInventoryMovement).toHaveBeenCalledTimes(1)
+      return
+    }
 
     await wrapper.get('button[aria-label="关闭库存作业"]').trigger('click')
     await flushPromises()
@@ -2606,4 +2755,131 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('input[placeholder="搜索合同 / PO / 货号 / 单据..."]').setValue('ITEM-HISTORY-001')
     expect(wrapper.text()).toContain('ITEM-HISTORY-001')
   })
+  it('filters receipt history and requires a reason before whole-document correction, then permits reentry', async () => {
+    mockReceiptWorkspace([])
+    const doc = {
+      id: 'CTR-FIX', factory_id: 'huaxing', receipt_no: 'RC-FIX', delivery_note_no: 'DN-FIX',
+      delivery_date: '2026-08-11', status: 'POSTED', revision: 2, note: '',
+      created_by_name: '仓管', created_at: '2026-08-11T09:00:00', confirmed_at: '2026-08-11T10:00:00',
+      lines: [{ id: 'CRL-FIX', source_type: 'AD_HOC', order_line_id: null, customer_code: 'DICKIE', customer_name: 'Dickie',
+        contract_no: 'C-FIX', item_no: 'ITEM-FIX', packaging_type: '外箱', paper_quality: 'A33', specification: '1*1*1',
+        delivered_quantity: '10', received_quantity: '10', damaged_quantity: '0', rejected_quantity: '0', unusable_quantity: '0',
+        effective_quantity: '10', unit: '个', unit_price: '2.5', currency: 'CNY', location: 'A-01' }],
+    }
+    cartonApiMock.listReceipts.mockResolvedValue([doc])
+    cartonApiMock.listCustomers.mockResolvedValue([{ customer_code: 'DICKIE', customer_name: 'Dickie', status: 'ACTIVE' }])
+    const wrapper = mountView('receipts')
+    await flushPromises()
+    const search = wrapper.get('input[placeholder="搜索合同 / PO / 货号 / 单据..."]')
+    await search.setValue('not-matching')
+    expect(wrapper.text()).toContain('没有符合条件的收料历史')
+    await search.setValue('C-FIX')
+    expect(wrapper.text()).toContain('DN-FIX')
+    await wrapper.get('select[aria-label="收料历史状态"]').setValue('PENDING_CONFIRMATION')
+    expect(wrapper.text()).toContain('没有符合条件的收料历史')
+    await findButton(wrapper, '清空历史筛选').trigger('click')
+    await wrapper.get('button[aria-label="收料历史送货日期范围"]').trigger('click')
+    await clickCalendarDate(wrapper, '2026-08-12')
+    await clickCalendarDate(wrapper, '2026-08-12')
+    expect(wrapper.text()).toContain('没有符合条件的收料历史')
+    await findButton(wrapper, '清空历史筛选').trigger('click')
+    const detail = wrapper.get('button[aria-label="查看收料单 RC-FIX"]')
+    expect(detail.text()).toBe('明细')
+    expect(wrapper.find('button[aria-label="更正收料单 RC-FIX"]').exists()).toBe(true)
+    expect(wrapper.find('button[aria-label="收料单 RC-FIX 更多操作"]').exists()).toBe(false)
+    await detail.trigger('mouseenter')
+    expect(wrapper.get('[data-testid="receipt-detail-overlay"]').classes()).toContain('pointer-events-none')
+    expect(wrapper.get('[aria-label="收料整单明细"]').text()).toContain('2.5')
+    expect(wrapper.find('input[aria-label="人工送货单号"]').exists()).toBe(false)
+    await detail.trigger('mouseleave')
+    expect(wrapper.find('[data-testid="receipt-detail-overlay"]').exists()).toBe(false)
+    await detail.trigger('focus')
+    expect(wrapper.find('[data-testid="receipt-detail-overlay"]').exists()).toBe(true)
+    await detail.trigger('blur')
+    expect(wrapper.find('[data-testid="receipt-detail-overlay"]').exists()).toBe(false)
+    await detail.trigger('click')
+    await detail.trigger('mouseleave')
+    expect(wrapper.get('[data-testid="receipt-detail-overlay"] [role="dialog"]').attributes('aria-modal')).toBe('true')
+    expect(wrapper.get('[data-testid="receipt-detail-overlay"]').findAll('input')).toHaveLength(0)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="receipt-detail-overlay"]').exists()).toBe(false)
+    expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+    expect(cartonApiMock.confirmReceipt).not.toHaveBeenCalled()
+    expect(wrapper.get('button[aria-label="更正收料单 RC-FIX"]').text()).toBe('冲销')
+    await wrapper.get('button[aria-label="更正收料单 RC-FIX"]').trigger('click')
+    await findButton(wrapper, '确认整单冲销').trigger('submit')
+    expect(cartonApiMock.reverseReceipt).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请填写至少 4 个字的原因')
+    await wrapper.get('textarea[aria-label="收料纠错原因"]').setValue('收料数量填写错误')
+    cartonApiMock.reverseReceipt.mockRejectedValueOnce(new Error('库存不足'))
+    await wrapper.get('form[aria-label="收料纠错确认"]').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('form[aria-label="收料纠错确认"]').text()).toContain('库存不足')
+    const reversed = { ...doc, status: 'REVERSED', revision: 3 }
+    cartonApiMock.reverseReceipt.mockResolvedValueOnce(reversed)
+    cartonApiMock.listReceipts.mockResolvedValue([reversed])
+    await wrapper.get('form[aria-label="收料纠错确认"]').trigger('submit')
+    await flushPromises()
+    expect(cartonApiMock.reverseReceipt).toHaveBeenLastCalledWith('huaxing', 'CTR-FIX', 2, '收料数量填写错误')
+    expect(wrapper.find('form[aria-label="收料纠错确认"]').exists()).toBe(false)
+    await findButton(wrapper, '重新登记').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="人工送货单号"]').element.value).toBe('DN-FIX-更正-RC-FIX')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="HISTORY-CRL-FIX 实收"]').element.value).toBe('10')
+    expect(wrapper.get('input[aria-label="HISTORY-CRL-FIX 单价"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('更正原收料单 RC-FIX')
+  })
+
+  it('separates review from final locking and requires a supervisor confirmation and unlock reason', async () => {
+    mockReceiptWorkspace([])
+    const row = { id: 'CLOSE-STEPS', factory_id: 'huaxing', customer_code: 'DICKIE', customer_name: 'Dickie',
+      period: businessDateOffset(0).slice(0, 7), status: 'CONFIRMED', revision: 3, currency: 'CNY',
+      opening_quantity: '0', inbound_quantity: '10', outbound_quantity: '0', adjustment_quantity: '0',
+      ending_quantity: '10', ending_amount: '20', snapshot_stale: false, pricing_issues: [] }
+    cartonApiMock.listClosings.mockResolvedValue([row])
+    const current = mountView('closing')
+    await flushPromises()
+    expect(findButton(current, '最终锁账').attributes('disabled')).toBeDefined()
+    expect(current.text()).toContain('月份尚未结束，可继续正常收发货')
+    current.unmount()
+    const past = { ...row, period: businessDateOffset(-40).slice(0, 7) }
+    cartonApiMock.listClosings.mockResolvedValue([past])
+    const wrapper = mountView('closing')
+    await flushPromises()
+    await findButton(wrapper, '最终锁账').trigger('click')
+    expect(cartonApiMock.updateClosingStatus).not.toHaveBeenCalled()
+    expect(wrapper.get('form[aria-label="月结最终操作确认"]').text()).toContain('最终锁账后')
+    cartonApiMock.updateClosingStatus.mockResolvedValue({ ...past, status: 'LOCKED', revision: 4 })
+    await wrapper.get('form[aria-label="月结最终操作确认"]').trigger('submit')
+    await flushPromises()
+    expect(cartonApiMock.updateClosingStatus).toHaveBeenCalledWith('huaxing', past, 'LOCKED')
+    await findButton(wrapper, '解锁重核').trigger('click')
+    await wrapper.get('form[aria-label="月结最终操作确认"]').trigger('submit')
+    expect(cartonApiMock.unlockClosing).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请填写至少 4 个字的解锁原因')
+    await wrapper.get('textarea[aria-label="月结解锁原因"]').setValue('月份未结束，误锁账')
+    cartonApiMock.unlockClosing.mockResolvedValue({ ...past, status: 'DRAFT', revision: 5 })
+    await wrapper.get('form[aria-label="月结最终操作确认"]').trigger('submit')
+    await flushPromises()
+    expect(cartonApiMock.unlockClosing).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 4 }), '月份未结束，误锁账')
+    expect(wrapper.text()).toContain('已解锁并退回草稿')
+    expect(findButton(wrapper, '提交核对').attributes('disabled')).toBeUndefined()
+  })
+
+  it('lets warehouse users review but reserves final lock and unlock for supervisors', async () => {
+    mockReceiptWorkspace([])
+    authStoreMock.can.mockImplementation((permission?: string) => permission !== 'carton_procurement:order_adjust')
+    cartonApiMock.listClosings.mockResolvedValue([
+      { id: 'PENDING', period: '2026-08', status: 'PENDING', revision: 2, customer_name: 'Dickie', currency: 'CNY', pricing_issues: [] },
+      { id: 'CONFIRMED', period: '2026-08', status: 'CONFIRMED', revision: 3, customer_name: 'Dickie', currency: 'HKD', pricing_issues: [] },
+      { id: 'LOCKED', period: '2026-07', status: 'LOCKED', revision: 4, customer_name: 'Dickie', currency: 'CNY', pricing_issues: [] },
+    ])
+    const wrapper = mountView('closing')
+    await flushPromises()
+    expect(findButton(wrapper, '核对确认').attributes('disabled')).toBeUndefined()
+    expect(findButton(wrapper, '最终锁账').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('解锁重核')
+    expect(wrapper.text()).toContain('最终锁账须由有权限的主管执行')
+  })
+
 })

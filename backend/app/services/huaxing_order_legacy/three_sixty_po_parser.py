@@ -127,6 +127,7 @@ def _common(text: str, pages: int) -> dict[str, Any]:
         "revision_date": _date(_search(r"Revision Date\s*:\s*([^\n]+)", text)),
         "order_date": _date(_search(r"Order Date\s*:\s*([^\n]+)", text)),
         "customer_po": customer_po,
+        "customer_po_type": _search(r"PURCHASE ORDER RELEASE\s*\(([^)]+)\)", text),
         "customer_release": customer_release,
         "our_contact": our_contact,
     }
@@ -224,6 +225,11 @@ def _release(text: str, meta: dict[str, Any]) -> list[dict[str, Any]]:
         "order_date": meta.get("revision_date") or meta.get("order_date"),
         "po_no": meta.get("customer_po"),
         "customer_po": meta.get("customer_po"),
+        "unified_customer_po": (
+            'CINV-' + str(meta['customer_po'])
+            if str(meta.get('customer_po_type') or '').upper() == 'CINV' and str(meta.get('customer_po') or '').isdigit()
+            else meta.get('customer_po')
+        ),
         "customer_release_no": customer_release,
         "production_no": production_no,
         "contract_no": _search(r"RL-(\d+)-\d+", production_no),
@@ -242,6 +248,7 @@ def _release(text: str, meta: dict[str, Any]) -> list[dict[str, Any]]:
         "quantity": _number(quantity_text),
         "outer_pack": _number(_search(r"Master Carton Qty\s*:\s*([\d,.]+)", item_section)),
         "artwork": artwork,
+        "packaging": _clean(_search(r"Package Type\s*:\s*([^\n]+)", item_section)),
         "vehicle": description,
         "inspection_date": inspection,
         "fcd_date": inspection,

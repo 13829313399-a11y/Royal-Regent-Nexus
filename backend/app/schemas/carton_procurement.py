@@ -748,6 +748,15 @@ class CartonReceiptConfirmRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class CartonReceiptReverseRequest(CartonReceiptConfirmRequest):
+    reason: str = Field(min_length=4, max_length=2000)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def trim_reason(cls, value: str) -> str:
+        return value.strip()
+
+
 class CartonInventoryRelocateRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     reference_movement_id: str = Field(min_length=1, max_length=96)
@@ -762,6 +771,7 @@ class CartonInventoryRelocateRequest(BaseModel):
 
 
 class CartonInventoryMovementCreate(BaseModel):
+    request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
     factory_id: str = Field(min_length=1, max_length=64)
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
     reference_movement_id: str | None = Field(default=None, min_length=1, max_length=96)
@@ -818,6 +828,7 @@ class CartonInventoryBulkItem(BaseModel):
 
 
 class CartonInventoryBulkCreate(BaseModel):
+    request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
     factory_id: str = Field(min_length=1, max_length=64)
     document_no: str = Field(min_length=1, max_length=128)
     reason: str = Field(default="客户要货", min_length=1, max_length=2000)
@@ -952,6 +963,50 @@ class CartonClosingStatusRequest(BaseModel):
     status: Literal["PENDING", "CONFIRMED", "LOCKED"]
 
 
+class CartonClosingUnlockRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=2000)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class CartonInventoryPriceConfirmRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    unit_price: Decimal = Field(ge=0, max_digits=18, decimal_places=6)
+    zero_price_confirmed: bool = False
+    reason: str = Field(min_length=4, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def clean_reason(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 4:
+            raise ValueError("请填写至少 4 个字的核价依据")
+        return value
+
+    @model_validator(mode="after")
+    def require_zero_confirmation(self):
+        if self.unit_price == 0 and not self.zero_price_confirmed:
+            raise ValueError("零单价必须明确确认属于免费物料")
+        return self
+
+
+class CartonPricingIssueOut(BaseModel):
+    movement_id: str
+    document_no: str
+    item_no: str
+    packaging_type: str
+    occurred_at: str
+    unit: str
+    currency: str
+    message: str
+    can_price: bool = False
+
+
 class CartonClosingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -976,6 +1031,8 @@ class CartonClosingOut(BaseModel):
     confirmed_at: str
     locked_by: str
     locked_at: str
+    pricing_issues: list[CartonPricingIssueOut] = Field(default_factory=list)
+    snapshot_stale: bool = False
 
 
 class CartonImportBatchOut(BaseModel):
