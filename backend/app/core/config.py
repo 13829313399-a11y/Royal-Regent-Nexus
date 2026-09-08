@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -31,34 +30,6 @@ class Settings(BaseSettings):
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
-    document_tool_max_file_bytes: int = Field(
-        default=20 * 1024 * 1024,
-        ge=1,
-        le=100 * 1024 * 1024,
-    )
-    document_tool_max_pdf_pages: int = Field(default=80, ge=1, le=200)
-    document_tool_temp_ttl_minutes: int = Field(default=60, ge=5, le=24 * 60)
-    document_office_renderer_enabled: bool = False
-    document_office_renderer_command: str = Field(
-        default="libreoffice",
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
-    )
-    document_office_renderer_timeout_seconds: int = Field(
-        default=120,
-        ge=30,
-        le=300,
-    )
-    document_office_renderer_network_isolation_command: str = Field(
-        default="unshare",
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
-    )
-    document_office_renderer_network_isolation_verified: bool = False
-
-
     @property
     def effective_session_cookie_secure(self) -> bool:
         return self.session_cookie_secure

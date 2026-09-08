@@ -81,6 +81,11 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
     <legend class="px-2 text-sm font-semibold text-slate-900">银辉临时映射 · 输出前核对</legend>
     <p class="mb-3 text-sm text-slate-600">沿用提供的六张客表及其字体、线条。当前明细汇入第一套 BOM；第二套保持空白。报关 / 文件费单列总表 H32，由出厂价公式计入一次，不计入包装材料。此处修改只影响本次报客文件。</p>
     <p class="mb-3 text-xs text-slate-600">版式：{{ profile.label }} · 统一塑料 HKD/kg：{{ Object.entries(YINHUI_MATERIAL_PRICES_HKD_KG).map(([name, price]) => `${name} ${price}`).join(' / ') }}</p>
+    <div v-if="result.manualReviewReasons?.length" class="mb-4 rounded-lg border border-orange-300 bg-orange-100 p-3 text-sm text-orange-950" role="alert" data-testid="yinhui-manual-review">
+      <p class="font-semibold">Tool Plan 未能可靠识别，已转为人工放行</p>
+      <p class="mt-1">系统已保留主明细的料重、料型和啤工生成临时行。以下问题只作提醒，不阻止导入或确认；金额可能受影响，请核对后再放行。</p>
+      <ul class="mt-2 list-disc space-y-1 pl-5"><li v-for="reason in result.manualReviewReasons" :key="reason">{{ reason }}</li></ul>
+    </div>
     <ul class="mb-4 list-disc space-y-1 pl-5 text-sm text-amber-900">
       <li v-for="warning in result.warnings" :key="warning">{{ warning }}</li>
       <li>原模板的 LOCAL DELIVERY / FOB YT 20FT 未提供运费分母，原公式会显示 #DIV/0!；按要求保留公式，发送客户前请补齐或核对这两行。</li>
@@ -131,6 +136,6 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
     </p>
     <p class="mt-3 text-sm font-semibold text-slate-800">{{ total.missingMaterialPrices.length ? '已知成本小计（待补料价）' : 'EX-FACTORY' }} HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / 7.8).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
     <p v-if="error" class="mt-2 text-sm text-red-700" role="alert">{{ error }}</p>
-    <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || translating || disabled" class="mt-1"><span>已核对型号、MOQ、英文描述、图片、料型、模具费及运费；确认按上述临时映射生成。<strong v-if="total.missingMaterialPrices.length">我已知悉缺失料价将留空、当前合计不完整，同意先导出并补齐料价。</strong></span></label>
+    <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || translating || disabled" class="mt-1"><span>已核对型号、MOQ、英文描述、图片、料型、模具费及运费；确认按上述临时映射生成。<strong v-if="result.manualReviewReasons?.length">我已人工核对 Tool Plan 提醒及其金额影响，同意放行。</strong><strong v-if="total.missingMaterialPrices.length">我已知悉缺失料价将留空、当前合计不完整，同意先导出并补齐料价。</strong></span></label>
   </fieldset>
 </template>
