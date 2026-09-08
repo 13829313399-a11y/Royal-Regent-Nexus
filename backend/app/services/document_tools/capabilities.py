@@ -102,6 +102,16 @@ def document_tool_capabilities(settings: Settings) -> dict:
                 reason=disabled_reason,
             ),
         },
+        "pdf-batch-rename": {
+            "available": local_core,
+            "reason_code": "" if local_core else "DOCUMENT_TOOLS_DISABLED",
+            "reason": "" if local_core else disabled_reason,
+            "modes": local_modes(
+                local_core,
+                reason_code="DOCUMENT_TOOLS_DISABLED",
+                reason=disabled_reason,
+            ),
+        },
     }
     return {
         "enabled": enabled,

@@ -6,6 +6,7 @@ const axiosMock = vi.hoisted(() => {
   } = {}
   const instance = {
     interceptors: {
+      request: { use: vi.fn() },
       response: {
         use: vi.fn((_onFulfilled, onRejected) => {
           state.onRejected = onRejected

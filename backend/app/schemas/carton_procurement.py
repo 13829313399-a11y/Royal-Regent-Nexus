@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 import re
 from typing import Literal
@@ -19,6 +19,7 @@ CartonReceiptLineSourceType = Literal["FORMAL_ORDER", "AD_HOC"]
 CartonMovementType = Literal["INBOUND", "OUTBOUND", "ADJUSTMENT", "REVERSAL"]
 CartonClosingStatus = Literal["DRAFT", "PENDING", "CONFIRMED", "LOCKED"]
 CartonCustomerStatus = Literal["ACTIVE", "INACTIVE"]
+DEFAULT_CARTON_SAFETY_LEAD_DAYS = 3
 
 
 BUSINESS_IDENTIFIER_RE = re.compile(
@@ -37,6 +38,19 @@ def _validate_iso_date(value: str) -> str:
     except ValueError as exc:
         raise ValueError("日期必须使用 YYYY-MM-DD 格式") from exc
     return value
+
+
+def derive_carton_plan_due_date(
+    order_date: str,
+    customer_due_date: str,
+    safety_lead_days: int = DEFAULT_CARTON_SAFETY_LEAD_DAYS,
+) -> str:
+    order_day = date.fromisoformat(order_date)
+    customer_day = date.fromisoformat(customer_due_date)
+    if customer_day < order_day:
+        raise ValueError("客户交期不能早于下单日期")
+    planned_day = customer_day - timedelta(days=safety_lead_days)
+    return max(order_day, planned_day).isoformat()
 
 
 def _validate_business_identifier(value: str, *, label: str) -> str:
@@ -185,6 +199,7 @@ class CartonOrderCreate(BaseModel):
     product_name: str = Field(default="", max_length=255)
     product_order_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
     order_date: str
+    customer_due_date: str | None = None
     due_date: str
     status: Literal["DRAFT", "PENDING_SUPPLIER", "CONFIRMED"] = "CONFIRMED"
     note: str = Field(default="", max_length=4000)
@@ -218,9 +233,19 @@ class CartonOrderCreate(BaseModel):
     def validate_dates(cls, value: str) -> str:
         return _validate_iso_date(value)
 
+    @field_validator("customer_due_date")
+    @classmethod
+    def validate_optional_customer_due_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value) if value is not None else None
+
     @model_validator(mode="after")
     def validate_due_date(self):
-        if self.due_date < self.order_date:
+        if self.customer_due_date is not None:
+            self.due_date = derive_carton_plan_due_date(
+                self.order_date,
+                self.customer_due_date,
+            )
+        elif self.due_date < self.order_date:
             raise ValueError("计划交期不能早于下单日期")
         return self
 
@@ -237,6 +262,7 @@ class CartonOrderUpdate(BaseModel):
     product_name: str = Field(default="", max_length=255)
     product_order_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
     order_date: str
+    customer_due_date: str | None = None
     due_date: str
     note: str = Field(default="", max_length=4000)
     lines: list[CartonOrderLineCreate] = Field(min_length=1, max_length=50)
@@ -270,9 +296,19 @@ class CartonOrderUpdate(BaseModel):
     def validate_dates(cls, value: str) -> str:
         return _validate_iso_date(value)
 
+    @field_validator("customer_due_date")
+    @classmethod
+    def validate_optional_customer_due_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value) if value is not None else None
+
     @model_validator(mode="after")
     def validate_due_date(self):
-        if self.due_date < self.order_date:
+        if self.customer_due_date is not None:
+            self.due_date = derive_carton_plan_due_date(
+                self.order_date,
+                self.customer_due_date,
+            )
+        elif self.due_date < self.order_date:
             raise ValueError("计划交期不能早于下单日期")
         return self
 
@@ -303,6 +339,7 @@ class CartonOrderAppendRequest(BaseModel):
     expected_revision: int = Field(ge=1)
     additional_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
     reason: str = Field(default="客人追加订单", min_length=4, max_length=500)
+    customer_due_date: str | None = None
     due_date: str | None = None
 
     @field_validator("factory_id")
@@ -315,7 +352,7 @@ class CartonOrderAppendRequest(BaseModel):
     def default_reason(cls, value: object) -> str:
         return _strip(value) if isinstance(value, str) and value.strip() else "客人追加订单"
 
-    @field_validator("due_date")
+    @field_validator("customer_due_date", "due_date")
     @classmethod
     def validate_optional_date(cls, value: str | None) -> str | None:
         return _validate_iso_date(value) if value is not None else None
@@ -474,6 +511,8 @@ class CartonOrderOut(BaseModel):
     product_name: str
     product_order_quantity: Decimal
     order_date: str
+    customer_due_date: str | None
+    safety_lead_days: int
     due_date: str
     status: CartonOrderStatus
     note: str
@@ -709,7 +748,30 @@ class CartonReceiptConfirmRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class CartonReceiptReverseRequest(CartonReceiptConfirmRequest):
+    reason: str = Field(min_length=4, max_length=2000)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def trim_reason(cls, value: str) -> str:
+        return value.strip()
+
+
+class CartonInventoryRelocateRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    reference_movement_id: str = Field(min_length=1, max_length=96)
+    expected_location_revision: int = Field(ge=0)
+    location: str = Field(min_length=1, max_length=128)
+    note: str = Field(default="", max_length=2000)
+
+    @field_validator("factory_id", "reference_movement_id", "location", "note", mode="before")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return _strip(value)
+
+
 class CartonInventoryMovementCreate(BaseModel):
+    request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
     factory_id: str = Field(min_length=1, max_length=64)
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
     reference_movement_id: str | None = Field(default=None, min_length=1, max_length=96)
@@ -766,6 +828,7 @@ class CartonInventoryBulkItem(BaseModel):
 
 
 class CartonInventoryBulkCreate(BaseModel):
+    request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
     factory_id: str = Field(min_length=1, max_length=64)
     document_no: str = Field(min_length=1, max_length=128)
     reason: str = Field(default="客户要货", min_length=1, max_length=2000)
@@ -873,6 +936,8 @@ class CartonInventoryBalanceOut(BaseModel):
     latest_movement_id: str
     latest_document_no: str
     latest_movement_at: str
+    latest_inbound_at: str | None = None
+    location_revision: int = 0
 
 
 class CartonClosingGenerateRequest(BaseModel):
@@ -896,6 +961,50 @@ class CartonClosingStatusRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
     status: Literal["PENDING", "CONFIRMED", "LOCKED"]
+
+
+class CartonClosingUnlockRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=2000)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class CartonInventoryPriceConfirmRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    unit_price: Decimal = Field(ge=0, max_digits=18, decimal_places=6)
+    zero_price_confirmed: bool = False
+    reason: str = Field(min_length=4, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def clean_reason(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 4:
+            raise ValueError("请填写至少 4 个字的核价依据")
+        return value
+
+    @model_validator(mode="after")
+    def require_zero_confirmation(self):
+        if self.unit_price == 0 and not self.zero_price_confirmed:
+            raise ValueError("零单价必须明确确认属于免费物料")
+        return self
+
+
+class CartonPricingIssueOut(BaseModel):
+    movement_id: str
+    document_no: str
+    item_no: str
+    packaging_type: str
+    occurred_at: str
+    unit: str
+    currency: str
+    message: str
+    can_price: bool = False
 
 
 class CartonClosingOut(BaseModel):
@@ -922,6 +1031,8 @@ class CartonClosingOut(BaseModel):
     confirmed_at: str
     locked_by: str
     locked_at: str
+    pricing_issues: list[CartonPricingIssueOut] = Field(default_factory=list)
+    snapshot_stale: bool = False
 
 
 class CartonImportBatchOut(BaseModel):

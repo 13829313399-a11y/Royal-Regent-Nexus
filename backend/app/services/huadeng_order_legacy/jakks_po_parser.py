@@ -204,6 +204,9 @@ def _parse_standard_contract_pdf_fields(text: str) -> dict[str, Any]:
         "confirmation_no": confirmation_no,
         "country": country,
     })
+    standard_match = re.search(r"PRODUCT\s+MEETS\s+([^\r\n.]+\bSTANDARD)\b", text, re.I)
+    if standard_match:
+        fields["national_standard"] = _clean(standard_match.group(1))
     if customer:
         fields["customer"] = customer
     return fields
@@ -236,6 +239,9 @@ def _parse_standard_contract_pdf_rows(text: str) -> list[dict[str, Any]]:
         )
         notes_match = re.search(r"(?m)^\s*NOTES\s*:\s*([^\r\n]+)", block, re.I)
         description = _clean(match.group(2))
+        continuation = re.match(r"\s*\n([A-Z0-9][A-Z0-9 /-]*)\s+([\d,.]+)\s+CA\s*(?:\n|$)", block, re.I)
+        if continuation:
+            description += ("" if description.endswith("-") else " ") + _clean(continuation.group(1))
         lines.append({
             "item_no": match.group(1).upper(),
             "product_name": description,
@@ -245,7 +251,7 @@ def _parse_standard_contract_pdf_rows(text: str) -> list[dict[str, Any]]:
             "unit": "PCS",
             "inner_pack": "",
             "outer_pack": _number(outer_pack_match.group(1)) if outer_pack_match else "",
-            "cartons": _number(cartons_match.group(1)) if cartons_match else "",
+            "cartons": _number(cartons_match.group(1)) if cartons_match else (_number(continuation.group(2)) if continuation else ""),
             "unit_price_usd": _number(match.group(4)),
             "total_usd": _number(match.group(5)),
             "ship_date": (
@@ -254,6 +260,7 @@ def _parse_standard_contract_pdf_rows(text: str) -> list[dict[str, Any]]:
                 else ""
             ),
             "special_note": _clean(notes_match.group(1)) if notes_match else "",
+            "product_packaging": _clean(notes_match.group(1)) if notes_match else "",
         })
     return lines
 

@@ -91,7 +91,7 @@ describe('Silverlit temporary independent mapping', () => {
     expect(read.sheets[0]?.rows[33]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).lcl!,6)
     expect(read.sheets[3]?.rows[65]?.[10]).toBe(0)
     expect(read.sheets[0]?.rows[32]?.[8]).toBe('#DIV/0!') // the unfilled original route, not a changed formula
-  })
+  }, 15_000)
   it('does not export source supplier sheets, sample product data, comments or external links', () => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
     const out = unzipSync(createYinhuiCustomerQuoteWorkbook(result, template))

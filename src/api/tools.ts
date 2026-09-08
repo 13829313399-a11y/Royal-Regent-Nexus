@@ -6,6 +6,7 @@ export const PDF_TO_WORD_TIMEOUT_MS = 900_000
 export const WORD_TO_PDF_TIMEOUT_MS = 300_000
 export const PDF_TRANSLATION_TIMEOUT_MS = 1_800_000
 export const PDF_SPLIT_TIMEOUT_MS = 300_000
+export const PDF_BATCH_RENAME_TIMEOUT_MS = 900_000
 export const DOCUMENT_TRANSLATION_TIMEOUT_MS = 1_800_000
 
 export type DocumentProcessingMode = 'AUTO' | 'LOCAL'
@@ -138,6 +139,75 @@ export interface PdfTranslationResult {
   processing: DocumentProcessingMetadata
 }
 
+export interface PdfRenameRegionDefinition {
+  key: string
+  label: string
+  page_number: number
+  bbox: [number, number, number, number]
+  required: boolean
+  language: string
+}
+
+export interface PdfRenameRuleDefinition {
+  id: string
+  label: string
+  description: string
+  version: string
+  status: 'active' | 'draft'
+  available: boolean
+  regions: PdfRenameRegionDefinition[]
+  setup_checklist: string[]
+  factory_ids: string[]
+}
+
+export interface PdfRenameRuleCatalog {
+  rules: PdfRenameRuleDefinition[]
+  limits: {
+    max_files: number
+    max_batch_bytes: number
+    max_file_bytes: number
+  }
+}
+
+export interface PdfRenamePreviewField {
+  key: string
+  label: string
+  raw_text: string
+  normalized_text: string
+  route: 'NATIVE_TEXT' | 'LOCAL_OCR'
+  confidence: number | null
+}
+
+export interface PdfRenamePreviewItem {
+  source_file_name: string
+  target_file_name: string
+  interval_name: string
+  status: 'READY' | 'REVIEW' | 'ERROR'
+  fields: PdfRenamePreviewField[]
+  issues: Array<{ code: string; message: string }>
+  manual_override?: boolean
+  manual_override_allowed?: boolean
+}
+
+export interface PdfRenameManualOverride {
+  source_index: number
+  target_file_name: string
+  confirmed: boolean
+}
+
+export interface PdfRenamePreviewResult {
+  rule: PdfRenameRuleDefinition
+  items: PdfRenamePreviewItem[]
+  preview_token: string
+  summary: { total: number; ready: number; review: number; error: number }
+}
+
+export interface PdfRenameExecuteResult {
+  blob: Blob
+  fileName: string
+  fileCount: number
+}
+
 export interface SharedToolsHttpClient {
   get?<T = unknown>(
     url: string,
@@ -251,6 +321,31 @@ async function parseBlobError(error: unknown): Promise<never> {
   }
 }
 
+function parseJsonApiError(error: unknown): never {
+  if (axios.isCancel(error)) {
+    throw new DocumentToolApiError(
+      '本次处理已取消。',
+      'DOCUMENT_REQUEST_CANCELLED',
+      '可调整文件或规则后重新处理。',
+    )
+  }
+  if (axios.isAxiosError(error)) {
+    const payload = error.response?.data as { detail?: unknown } | undefined
+    const detail = payload?.detail && typeof payload.detail === 'object'
+      ? payload.detail as Record<string, unknown>
+      : null
+    if (detail) {
+      throw new DocumentToolApiError(
+        typeof detail.message === 'string' ? detail.message : error.message,
+        typeof detail.code === 'string' ? detail.code : 'DOCUMENT_TOOL_FAILED',
+        typeof detail.action === 'string' ? detail.action : '',
+        detail.retryable === true,
+      )
+    }
+  }
+  throw error
+}
+
 export function createSharedToolsApi(
   client: SharedToolsHttpClient = http,
 ) {
@@ -268,6 +363,74 @@ export function createSharedToolsApi(
       if (!client.get) throw new Error('当前 HTTP 客户端不支持读取翻译服务状态。')
       const response = await client.get<DocumentTranslationStatus>('/tools/document-translation/status')
       return response.data
+    },
+
+    async getPdfRenameRules(factoryId: string, signal?: AbortSignal): Promise<PdfRenameRuleCatalog> {
+      if (!client.get) throw new Error('当前 HTTP 客户端不支持读取批量改名规则。')
+      const response = await client.get<PdfRenameRuleCatalog>(
+        '/tools/pdf-rename/rules',
+        { params: { factory_id: factoryId }, signal },
+      )
+      return response.data
+    },
+
+    async previewPdfRename(
+      pdfFiles: File[],
+      ruleId: string,
+      factoryId: string,
+      signal?: AbortSignal,
+      manualOverrides: PdfRenameManualOverride[] = [],
+    ): Promise<PdfRenamePreviewResult> {
+      const payload = new FormData()
+      pdfFiles.forEach(file => payload.append('pdf_files', file))
+      payload.append('rule_id', ruleId)
+      payload.append('factory_id', factoryId)
+      payload.append('manual_overrides', JSON.stringify(manualOverrides))
+      try {
+        const response = await client.post<PdfRenamePreviewResult>('/tools/pdf-rename/preview', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: PDF_BATCH_RENAME_TIMEOUT_MS,
+          signal,
+        })
+        return response.data
+      }
+      catch (error) {
+        return parseJsonApiError(error)
+      }
+    },
+
+    async executePdfRename(
+      pdfFiles: File[],
+      ruleId: string,
+      previewToken: string,
+      ocrReviewConfirmed: boolean,
+      factoryId: string,
+      signal?: AbortSignal,
+      manualOverrides: PdfRenameManualOverride[] = [],
+    ): Promise<PdfRenameExecuteResult> {
+      const payload = new FormData()
+      pdfFiles.forEach(file => payload.append('pdf_files', file))
+      payload.append('rule_id', ruleId)
+      payload.append('preview_token', previewToken)
+      payload.append('ocr_review_confirmed', String(ocrReviewConfirmed))
+      payload.append('factory_id', factoryId)
+      payload.append('manual_overrides', JSON.stringify(manualOverrides))
+      try {
+        const response = await client.post<Blob>('/tools/pdf-rename/execute', payload, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          responseType: 'blob',
+          timeout: PDF_BATCH_RENAME_TIMEOUT_MS,
+          signal,
+        })
+        return {
+          blob: response.data,
+          fileName: responseFileName(response.headers, 'PDF批量改名结果.zip'),
+          fileCount: headerCount(response.headers, 'x-pdf-rename-file-count'),
+        }
+      }
+      catch (error) {
+        return parseBlobError(error)
+      }
     },
 
     async translateDocument(

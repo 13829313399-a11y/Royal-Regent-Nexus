@@ -19,14 +19,15 @@
       "disney",
       "edu",
       "360",
+      "barter",
       "yinhui",
       "seasons",
       "maxx",
       "shushupapa"
     ],
-    "huadeng": ["casdon", "jakks", "simba", "spin", "spin-master"],
+    "huadeng": ["casdon", "jakks", "simba", "spin", "goliath"],
     "huakang-a": ["360", "green-toys", "headstart"],
     "huakang-c": ["index", "jazwares", "maxx", "strottman", "jp"],
-    "huakang-d": ["index", "jazwares", "maxx", "strottman", "jp"]
+    "huakang-d": ["index", "jazwares", "maxx", "strottman", "disney"]
   }
 }

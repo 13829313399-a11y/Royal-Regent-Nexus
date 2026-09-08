@@ -12,6 +12,8 @@ export interface CartonMaterialLine {
 export interface CartonOrderRow {
   id: string
   orderDate: string
+  customerDueDate?: string | null
+  safetyLeadDays?: number
   customer: string
   contractNo: string
   itemNo: string
