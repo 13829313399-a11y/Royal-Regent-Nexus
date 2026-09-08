@@ -45,6 +45,72 @@ beforeEach(() => {
   api.query.mockResolvedValue(result())
 })
 describe('injection scheduling synchronization', () => {
+  it('uses a refreshed clear preview revision even while the board stays frozen', async () => {
+    const store = useInjectionStore()
+    await store.setFactory('huaxing')
+    store.dirty = true
+    api.post.mockResolvedValue({ revision: 8, cleared: true })
+    await store.mutate('/plan-data/clear', { expected_revision: 7 })
+    expect(api.post.mock.calls.at(-1)![1]).toMatchObject({
+      base_revision: 7,
+      expected_revision: 7,
+    })
+  })
+  it('resets cleared context before reload and discards an older page response', async () => {
+    const store = useInjectionStore()
+    await store.setFactory('huaxing')
+    store.selectedId = 'd-1'
+    store.drawer = true
+    store.detail = { demand: { id: 'd-1' } }
+    store.filter = { field: 'mold_code', op: 'eq', value: 'OLD' }
+    store.search.text = 'OLD'
+    store.cursor = 200
+    store.nextCursor = 300
+    const old = deferred<any>()
+    api.query.mockReturnValueOnce(old.promise)
+    const oldRequest = store.loadTable()
+    api.post.mockResolvedValue({ revision: 2, cleared: true })
+    api.get.mockImplementation(async (path) =>
+      path === '/summary'
+        ? { ...summary(2), total_count: 0 }
+        : { ...summary(2), machines: [], runs: [], events: [] },
+    )
+    api.query.mockResolvedValue({ ...result(2), rows: [], total_count: 0 })
+    api.get.mockClear()
+    await store.mutate('/plan-data/clear', { expected_revision: 1 })
+    old.resolve(result(1))
+    await oldRequest
+    expect(store.rows).toEqual([])
+    expect(store.total).toBe(0)
+    expect(store.selectedId).toBeNull()
+    expect(store.detail).toBeNull()
+    expect(store.drawer).toBe(false)
+    expect(store.filter).toBeNull()
+    expect(store.search.text).toBe('')
+    expect(store.cursor).toBe(0)
+    expect(store.nextCursor).toBeNull()
+    expect(
+      api.get.mock.calls.some(([path]) => path.startsWith('/demands/')),
+    ).toBe(false)
+    expect(store.notice).toContain('可以重新导入 Excel')
+  })
+  it('preserves data on an uncertain clear and retries the identical operation', async () => {
+    const store = useInjectionStore()
+    await store.setFactory('huaxing')
+    store.selectedId = 'd-1'
+    store.dirty = true
+    const data = { expected_revision: 1, preview_token: 'a'.repeat(64) }
+    api.post.mockRejectedValueOnce(new Error('Network Error'))
+    expect(await store.mutate('/plan-data/clear', data)).toBeNull()
+    expect(store.rows).toHaveLength(1)
+    expect(store.selectedId).toBe('d-1')
+    expect(store.dirty).toBe(true)
+    const payload = api.post.mock.calls.at(-1)![1]
+    store.revision = 9
+    api.post.mockResolvedValue({ revision: 2, cleared: true })
+    await store.mutate('/plan-data/clear', data)
+    expect(api.post.mock.calls.at(-1)![1]).toEqual(payload)
+  })
   it('reuses the exact operation after an uncertain network result instead of duplicating creation', async () => {
     const store = useInjectionStore()
     await store.setFactory('huaxing')
@@ -55,6 +121,30 @@ describe('injection scheduling synchronization', () => {
     api.post.mockResolvedValueOnce({ revision: 2 })
     await store.mutate('/demands', { data: { mold_code: 'RETRY-001' } })
     expect(api.post.mock.calls.at(-1)![1]).toEqual(first)
+  })
+  it('uses the reviewed bulk-start revision and reuses the operation after a network failure', async () => {
+    const store = useInjectionStore()
+    await store.setFactory('huaxing')
+    store.dirty = true
+    const data = {
+      expected_revision: 30,
+      confirm_actual_start: true,
+      items: [{ machine_id: 'm1', run_id: 'r1', review_token: 'a'.repeat(64) }],
+    }
+    api.post.mockRejectedValueOnce(new Error('Network Error'))
+    await store.mutate('/execution/bulk-start', data)
+    const first = api.post.mock.calls.at(-1)![1]
+    expect(first).toMatchObject({ base_revision: 30 })
+    store.revision = 99
+    api.post.mockResolvedValueOnce({
+      revision: 31,
+      bulk_start: true,
+      started_count: 1,
+      failed_count: 0,
+    })
+    await store.mutate('/execution/bulk-start', data)
+    expect(api.post.mock.calls.at(-1)![1]).toEqual(first)
+    expect(store.notice).toBe('已开工 1 台；0 台未开工')
   })
   it('keeps the neutral factory empty without loading a fallback factory', async () => {
     const store = useInjectionStore()
