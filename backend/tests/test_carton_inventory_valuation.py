@@ -129,6 +129,9 @@ def test_repricing_refreshes_amount_and_quantity_together(db):
 @pytest.fixture
 def db(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
+    from app.models.carton_positions import CartonLocation, CartonPositionEntry
+    CartonLocation.__table__.create(engine)
+    CartonPositionEntry.__table__.create(engine)
     for cls in (Movement, CartonClosing, Audit, CartonSupplier):
         cls.__table__.create(engine)
     monkeypatch.setattr("app.services.carton_procurement.now_text", lambda: "2026-09-07T09:00:00+08:00")
@@ -238,8 +241,8 @@ def test_previous_locked_amount_is_never_silently_rebased(db):
     previous.ending_amount = D(200)  # preserved old costing snapshot; new valuation is 300
     db.commit()
     current = advance(db, closing(db), "PENDING")
-    assert any("历史锁账金额" in issue.message for issue in closing_out(db, current).pricing_issues)
-    with pytest.raises(HTTPException, match="历史锁账金额"):
+    assert any("历史锁账数量或金额" in issue.message for issue in closing_out(db, current).pricing_issues)
+    with pytest.raises(HTTPException, match="历史锁账数量或金额"):
         advance(db, current, "CONFIRMED")
     assert previous.ending_amount == 200
 

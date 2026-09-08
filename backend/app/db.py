@@ -596,6 +596,34 @@ def ensure_carton_stocktake_schema_ready() -> None:
             raise RuntimeError("库存盘点尚未迁移至 20260907_0102；请备份并完成迁移后启动。缺少：" + ", ".join(missing))
 
 
+def ensure_carton_positions_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        missing = [name for name in ("carton_locations", "carton_position_entries") if name not in names]
+        for table, column in (("carton_receipt_lines", "location_allocations_json"), ("carton_inventory_movements", "issue_kind")):
+            if table not in names or column not in {c["name"] for c in inspector.get_columns(table)}:
+                missing.append(f"{table}.{column}")
+        if missing:
+            raise RuntimeError("分仓库存尚未迁移至 20260908_0103；请备份并完成迁移后启动。缺少：" + ", ".join(missing))
+
+
+def ensure_carton_master_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        missing = [name for name in ("carton_master_records", "carton_master_sources") if name not in names]
+        for name, cols in (("carton_orders", ("master_config_id", "master_config_revision")), ("carton_locations", ("status", "revision")), ("carton_inventory_movements", ("workshop_id", "workshop_name"))):
+            found = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
+            missing.extend(f"{name}.{c}" for c in cols if c not in found)
+        if missing:
+            raise RuntimeError("基础资料尚未迁移至 20260908_0104；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def ensure_document_tools_schema_ready() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -610,7 +638,7 @@ def ensure_document_tools_schema_ready() -> None:
                 columns = {column["name"] for column in inspector.get_columns(name)}
                 missing.extend(f"{name}.{column.name}" for column in Base.metadata.tables[name].columns if column.name not in columns)
         if missing:
-            raise RuntimeError("文档工具尚未迁移至 20260908_0103；请备份并迁移后启动。缺少：" + ", ".join(missing))
+            raise RuntimeError("文档工具尚未迁移至 20260908_0103_docs；请备份并迁移后启动。缺少：" + ", ".join(missing))
 
 
 def init_db() -> None:
@@ -620,6 +648,8 @@ def init_db() -> None:
         carton_mark,  # noqa: F401
         carton_procurement,  # noqa: F401
         carton_stocktake,  # noqa: F401
+        carton_positions,
+        carton_master,  # noqa: F401
         customer_order,  # noqa: F401
         internal_quote,  # noqa: F401
         injection_scheduling,  # noqa: F401
@@ -646,6 +676,8 @@ def init_db() -> None:
     ensure_carton_mark_library_schema_ready()
     ensure_injection_v3_schema_ready()
     ensure_carton_stocktake_schema_ready()
+    ensure_carton_positions_schema_ready()
+    ensure_carton_master_schema_ready()
     ensure_document_tools_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()

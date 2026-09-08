@@ -23,6 +23,11 @@ def test_stocktake_real_api_permissions_factory_cutoff_and_concurrent_review(mon
         assert response.status_code == 201, response.text
         doc = response.json()
         assert isinstance(doc["lines"][0]["current_quantity"], str)
+        listed = client.get("/api/carton-procurement/stocktakes", params={"factory_id": "huaxing", "status": "DRAFT"})
+        assert listed.status_code == 200 and [row["id"] for row in listed.json()] == [doc["id"]]
+        assert client.get("/api/carton-procurement/stocktakes", params={"factory_id": "huaxing", "status": "POSTED"}).json() == []
+        assert client.get("/api/carton-procurement/stocktakes", params={"factory_id": "huaxing", "status": "INVALID"}).status_code == 422
+
         path = f"/api/carton-procurement/stocktakes/{doc['id']}"
         values = dict(factory_id="huaxing", expected_revision=doc["revision"], action="SUBMIT",
                       ledger_token=doc["ledger_token"], cutoff_acknowledged=True,

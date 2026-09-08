@@ -1,3 +1,4 @@
+from typing import Literal
 from decimal import Decimal
 from fastapi.encoders import jsonable_encoder
 from io import BytesIO
@@ -76,6 +77,7 @@ from app.services.carton_procurement import (
     confirm_receipt,
     confirm_inventory_price,
     closing_out,
+    closing_outputs,
     create_customer,
     create_import_batch,
     create_inventory_movement,
@@ -145,6 +147,11 @@ def _ensure_permission(
     factory_id: str,
 ) -> str:
     factory_id = require_carton_factory(factory_id)
+    if permission == "carton_procurement:customer_manage" and any(
+        has_permission_in_scope(user, "carton_procurement:master_manage", factory_id, department)
+        for department in CARTON_DEPARTMENTS
+    ):
+        return factory_id
     if any(
         has_permission_in_scope(user, permission, factory_id, department)
         for department in CARTON_DEPARTMENTS
@@ -239,12 +246,14 @@ def get_orders(
         limit=limit,
         offset=offset,
     )
+    from app.services.carton_usage import usage_by_key
+    usage = usage_by_key(db, factory_id)
     return CartonOrderListOut(
         factory_id=factory_id,
         total=total,
         limit=limit,
         offset=offset,
-        items=[order_out(db, item) for item in items],
+        items=[order_out(db, item, usage=usage) for item in items],
     )
 
 
@@ -734,6 +743,9 @@ def get_inventory_movements(
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    from app.services.carton_procurement import _lock_receipt_factory
+    from app.services.carton_inventory_money import annotate_movements
+    _lock_receipt_factory(db, factory_id)
     total, items = list_movements(
         db,
         factory_id,
@@ -742,6 +754,7 @@ def get_inventory_movements(
         limit=limit,
         offset=offset,
     )
+    items = annotate_movements(db, factory_id, items)
     return CartonInventoryMovementListOut(
         factory_id=factory_id,
         total=total,
@@ -777,9 +790,10 @@ async def post_history_inventory_import(
 
 @router.get("/stocktakes")
 def stocktakes_list(factory_id: str, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0),
+                    status: Literal["", "DRAFT", "SUBMITTED", "POSTED", "CANCELLED"] = "",
                     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, user, "carton_procurement:read", factory_id)
-    return list_stocktakes(db, factory_id, limit, offset)
+    return list_stocktakes(db, factory_id, limit, offset, status)
 
 
 @router.get("/stocktakes/{identifier}")
@@ -815,7 +829,11 @@ def get_inventory_balances(
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
-    return inventory_balances(db, factory_id, customer_code=customer_code.strip())
+    from app.services.carton_procurement import _lock_receipt_factory
+    from app.services.carton_inventory_money import annotate_balances
+    _lock_receipt_factory(db, factory_id)
+    rows = annotate_balances(db, factory_id, inventory_balances(db, factory_id))
+    return [row for row in rows if not customer_code.strip() or row.customer_code == customer_code.strip()]
 
 
 @router.get("/inventory/report", response_model=CartonInventoryReportOut)
@@ -968,7 +986,7 @@ def get_closings(
         period=period.strip(),
         customer_code=customer_code.strip(),
     )
-    return [closing_out(db, row) for row in rows]
+    return closing_outputs(db, rows)
 
 
 @router.post("/closings/generate", response_model=list[CartonClosingOut])
@@ -978,7 +996,7 @@ def post_closing_generation(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:closing_manage", payload.factory_id)
-    return [closing_out(db, row) for row in generate_closings(db, payload, current_user)]
+    return closing_outputs(db, generate_closings(db, payload, current_user))
 
 
 @router.post("/closings/{closing_id}/status", response_model=CartonClosingOut)
@@ -1013,3 +1031,74 @@ def post_inventory_price_confirmation(
 ):
     _ensure_permission(db, current_user, "carton_procurement:closing_manage", payload.factory_id)
     confirm_inventory_price(db, movement_id, payload, current_user)
+
+
+from app.schemas.carton_positions import LocationCreate, PositionTransfer
+from app.services import carton_positions as position_service
+
+@router.get("/inventory/locations")
+def get_carton_locations(factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return position_service.locations(db, factory_id)
+
+@router.post("/inventory/locations", status_code=201)
+def post_carton_location(payload: LocationCreate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    from app.services.carton_master import require_manage
+    from app.services.carton_procurement import _lock_receipt_factory, _audit
+    _lock_receipt_factory(db, payload.factory_id)
+    require_manage(db, current_user, payload.factory_id, payload.warehouse)
+    row = position_service.create_location(db, payload.factory_id, payload.warehouse, payload.bin_code)
+    _audit(db, current_user, payload.factory_id, "INVENTORY_LOCATION_CREATED", "carton_location", row.id, {**position_service.location_out(row), "reason": payload.reason})
+    db.commit()
+    return position_service.location_out(row)
+
+@router.get("/inventory/positions", response_model=list[CartonInventoryBalanceOut])
+def get_carton_positions(factory_id: str, customer_code: str = "", db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    from app.services.carton_procurement import _lock_receipt_factory
+    from app.services.carton_inventory_money import annotate_balances
+    _lock_receipt_factory(db, factory_id)
+    rows = annotate_balances(db, factory_id, position_service.position_balances(db, factory_id))
+    return [row for row in rows if not customer_code.strip() or row.customer_code == customer_code.strip()]
+
+@router.post("/inventory/transfers")
+def post_carton_transfer(payload: PositionTransfer, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:inventory_write", payload.factory_id)
+    return position_service.transfer(db, payload, current_user)
+
+
+from app.services import carton_master as master_service
+from app.schemas.carton_master import MasterSave, LocationUpdate, WarehouseCreate, WarehouseRename
+
+@router.get("/master-data")
+def get_master_data(factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return master_service.workspace(db, factory_id, current_user)
+
+@router.post("/master-data", status_code=201)
+def post_master_data(payload: MasterSave, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return master_service.save_record(db, current_user, payload)
+
+@router.patch("/master-data/{record_id}")
+def patch_master_data(record_id: str, payload: MasterSave, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return master_service.save_record(db, current_user, payload, record_id)
+
+@router.patch("/inventory/locations/{location_id}")
+def patch_master_location(location_id: str, payload: LocationUpdate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return master_service.update_location(db, current_user, location_id, payload)
+
+
+@router.post("/inventory/warehouses", status_code=201)
+def post_carton_warehouse(payload: WarehouseCreate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return master_service.save_warehouse(db, current_user, payload)
+
+
+@router.patch("/inventory/warehouses")
+def rename_carton_warehouse(payload: WarehouseRename, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return master_service.save_warehouse(db, current_user, payload, rename=True)

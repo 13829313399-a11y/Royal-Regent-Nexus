@@ -22,7 +22,7 @@ DOC、DOCX、XLS、XLSX 均有实际成功样本。PDF→Word 的可编辑布局
 
 - 页面：`src/views/ToolCenterView.vue`、`src/features/document-tools/`、`src/api/documentTools.ts`；Vue/PDF.js 预览、窗口表格、局部修正、切线历史、任务抽屉。
 - 后端：`backend/app/{api,schemas,models}/document_tools.py`、`backend/app/services/document_tools/`、`backend/app/workers/document_tools.py`；私有文件、持续任务、租约续期、取消/重试、不可变修订、Range 下载。
-- 迁移：`backend/alembic/versions/20260908_0103_document_tool_jobs.py`；注册与启动检查在 `backend/alembic/env.py`、`backend/app/db.py`，路由在 `backend/app/main.py`。迁移测试的当前 head 更新为 0103。
+- 迁移：`backend/alembic/versions/20260908_0103_document_tool_jobs.py`；注册与启动检查在 `backend/alembic/env.py`、`backend/app/db.py`，路由在 `backend/app/main.py`。开发阶段原 head 为 0103；合并远程纸箱分支后，文档修订标识为 0103_docs，唯一合流 head 为 0105。
 - 配置/部署：环境示例、Python/前端依赖、`docker-compose.prod.yml`、`vite.config.ts`；API 与 worker 共享文件卷。开发服务忽略生成文件，减少 HTML 产物引发的重载。
 - 回归环境：`backend/tests/conftest.py` 隔离旧测试的应用模块重新加载；`test_carton_inventory_relocation.py` 补齐现有接口要求的请求幂等编号。`test_internal_quote_reviewer_withdrawal.py` 显式设置各授权模式的合法写入开关；`test_qc_inspection_migration.py`、`test_three_d_schema_v2.py` 更新当前 head；`test_system_user_management_api.py` 核对已存在的三个 3D 职位及 32 个目录项。未为通过旧测试修改业务逻辑。
 - 本地 LibreOffice 26.8.0 与独立 UNO Python 已实际运行；不更改系统默认 Office。真实密钥仅位于被 Git 忽略的 `backend/.env`。
@@ -106,3 +106,11 @@ Office 20 份、PDF 41 份，共 61 份合成源文件。Office 四方向共 40 
 复杂嵌套/无边框扫描表、遮挡、异常字体、Word 域/修订、专有公式和原打印截断保留明确核验项。本地带章扫描的文字 CER 有 3.33% 错误，不能用关键金额匹配掩盖正文错字。Windows 字体替换清单不可用，未宣称与 Microsoft Office 完全一致。裁切改变可见框，不负责安全脱敏。
 
 默认不自动清理源文件/历史产物；启用保存期限时到期内容与结构接口拒绝读取。生产部署必须使用同一文件卷、备份密码加密 key、演练数据库迁移并重跑该环境真实 smoke；具体步骤见 README。本轮仅完成本地开发与验证。
+
+## 合并远程 main 后的复验
+
+2026-09-08 合并远程 `07838b2` 后，保留纸箱 0103/0104，文档分支修订标识为 `20260908_0103_docs`，合流 head 为 `20260908_0105`。新增三项迁移测试分别从共同 0102、纸箱 0104、文档 0103_docs 升级，均通过；文档表定义保留，完整性和外键检查通过。现有业务数据库未随 Git 合并升级，早期文档开发库的编号更正步骤见 README。
+
+合并后运行文档任务/Office/PDF/千问契约、三条迁移路径、迁移 head、QC、3D schema 与纸箱调仓，共 114 项：111 通过、3 失败（104.40 秒）。QC 的一项失败来自强制子进程 UTF-8 输出而父进程按 GBK 解码；统一 `PYTHONUTF8=1` 后 QC 两项均通过（12.58 秒）。其余两项为纸箱调仓现有测试：调仓响应的 `cost_unit_price` 为 null，而库存列表已返回成本价。相关纸箱 API、服务及该测试与本次拉取的远程 main 完全一致，未降低断言或修改纸箱业务实现，不能将该组记为全绿。
+
+前端本模块 18 项、类型检查、构建通过；构建保留第三方 PURE 注释警告。与 PR 工作流相同的 3D 跟踪文件扫描检查 117 文件，结果 clean。新增 PR 差异的 `git diff --check` 通过。原始日志/JUnit 保留在 `D:/RR/maintenance-logs/document-tools-pr-20260908/`。此次复验不等于生产部署。

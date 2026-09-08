@@ -9,6 +9,11 @@ function statuses(code: Parameters<typeof normalizeInternalQuotePayload>[0], val
 }
 
 describe('internal quote form block progress', () => {
+  it('counts UV-only painting rows as complete only after quantity and price are entered', () => {
+    const row = { name: '外壳', position: '正面', operations: { uv: { quantity: 2, unit_price_hkd: .52 } } }
+    expect(statuses('painting', { rows: [row] }).painting).toBe('complete')
+    expect(statuses('painting', { rows: [{ ...row, operations: { uv: { quantity: 2, unit_price_hkd: 0 } } }] }).painting).toBe('partial')
+  })
   it('accepts product-only or PDQ carton sources and blocks partial PDQ instead of using color-box fallback', () => {
     const value = {
       pricing_mode: 'component', pricing_components: [{ id: 'main', name: '主体', markup_x: 1.2 }],

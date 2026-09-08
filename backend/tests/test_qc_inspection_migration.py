@@ -41,7 +41,7 @@ def test_qc_inspection_migration_upgrades_fresh_sqlite_and_seeds_permissions(
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260908_0103",
+            "20260908_0105",
         )
         table_names = {
             row[0]

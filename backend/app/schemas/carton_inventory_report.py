@@ -45,6 +45,10 @@ class CartonInventoryReportMovement(BaseModel):
 
 
 class CartonInventoryOrderReportRow(BaseModel):
+    current_usage_quantity: Decimal = Decimal(0)
+    current_usage_status: str = "NOT_RECEIVED"
+    current_usage_label: str = "未入库"
+    current_positions: list[dict] = []
     key: str
     order_id: str | None
     order_line_id: str | None

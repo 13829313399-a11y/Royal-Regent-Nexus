@@ -108,7 +108,7 @@ describe('库存汇总工作台', () => {
     expect(rows[3]!.text()).toContain('无单库存')
     expect(wrapper.text()).toContain('2 张订单 · 4 项纸品（含 1 项无单库存）')
   })
-  it('previews only the current order on hover, pins on click and closes on scope change', async () => {
+  it('opens only the current order on click and closes on scope change', async () => {
     const wrapper = mount(CartonInventorySummary, {
       props: { factoryId: 'huaxing', customers: [customer], search: '', refreshKey: 0, connected: true },
       global: { stubs: { CartonOrderTimeline: true } },
@@ -117,11 +117,11 @@ describe('库存汇总工作台', () => {
     expect(wrapper.findAll('[role="tab"]').map(tab => tab.text())).not.toContain('订单流水明细')
     const button = wrapper.get('tbody button')
     await button.trigger('mouseenter')
-    expect(wrapper.get('[data-testid="order-timeline-overlay"]').classes()).toContain('pointer-events-none')
+    expect(wrapper.find('[data-testid="order-timeline-overlay"]').exists()).toBe(false)
     await button.trigger('mouseleave')
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     await button.trigger('focus')
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     await button.trigger('blur')
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     await button.trigger('mouseenter')

@@ -495,7 +495,7 @@ def test_molding_import_replace_updates_both_sections_and_loss_rate():
     assert merged["caixing_tool_plan_rows"] == [{"ref_no": "KEEP"}]
 
 
-def test_painting_import_maps_eight_operation_contract_and_row_metadata():
+def test_painting_import_keeps_legacy_eight_operation_columns_and_row_metadata():
     parsed = parse_internal_quote_workbook(
         workbook_bytes(
             [
@@ -509,6 +509,7 @@ def test_painting_import_maps_eight_operation_contract_and_row_metadata():
     row = parsed.payload_fragment["rows"][0]
     assert row["operations"]["clamp"] == {"quantity": "2.0000", "unit_price_hkd": "0.5000"}
     assert row["operations"]["pad_print"] == {"quantity": "1.0000", "unit_price_hkd": "0.3000"}
+    assert row["operations"]["uv"] == {"quantity": "0.0000", "unit_price_hkd": "0.0000"}
     assert row["operations"]["spray"] == {"quantity": "3.0000", "unit_price_hkd": "0.2000"}
     assert row["operations"]["wipe"] == {"quantity": "0.0000", "unit_price_hkd": "0.0000"}
     assert row["operations"]["pp_water"] == {"quantity": "4.0000", "unit_price_hkd": "0.1000"}
@@ -537,6 +538,43 @@ def test_painting_import_merges_a_two_row_operation_header():
     assert row["source_row"] == 3
     assert row["operations"]["clamp"] == {"quantity": "2.0000", "unit_price_hkd": "0.5000"}
     assert row["operations"]["pad_print"] == {"quantity": "1.0000", "unit_price_hkd": "0.3000"}
+
+
+def test_painting_download_template_maps_uv_and_shifted_operations_without_losing_formulas():
+    content, _ = build_internal_quote_import_template("painting")
+    workbook = load_workbook(BytesIO(content))
+    sheet = workbook.active
+    assert [sheet.cell(2, col).value for col in range(8, 12)] == ["UV", "UV单价", "散枪", "散枪单价"]
+    assert "H3*I3" in sheet["V3"].value
+    assert sheet["V41"].value == "=SUM(V3:V40)"
+    assert len(sheet._images) == 14
+    sheet["H3"], sheet["I3"] = 2, 0.52
+    sheet["J3"], sheet["K3"] = 3, 0.08
+    sheet["W3"] = "UV 与散枪分别核价"
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    parsed = parse_internal_quote_workbook(stream.getvalue(), "painting")
+    row = next(row for row in parsed.payload_fragment["rows"] if row["source_row"] == 3)
+    assert row["operations"]["uv"] == {"quantity": "2.0000", "unit_price_hkd": "0.5200"}
+    assert row["operations"]["spray"] == {"quantity": "3.0000", "unit_price_hkd": "0.0800"}
+    assert row["remark"] == "UV 与散枪分别核价"
+    from app.services.internal_quote_calculator import calculate_section
+    result = calculate_section("painting", {"rows": [row]}, {}, "UV-TEST")
+    assert result["totals"]["total_hkd"] == "1.5800"  # 移印 .30 + UV 1.04 + 散枪 .24
+
+
+@pytest.mark.parametrize("two_row_header", [False, True])
+def test_painting_import_accepts_uv_only_quotes_and_warns_about_missing_unit_price(two_row_header):
+    headers = [["名称", "位置", "UV", "UV单价", "备注"]]
+    if two_row_header:
+        headers = [["名称", "位置", "UV", None, "备注"], [None, None, "数量", "单价", None]]
+    parsed = parse_internal_quote_workbook(workbook_bytes(headers + [
+        ["外壳", "正面", 2, .52, "UV"], ["外壳", "背面", 1, None, "待补价"],
+    ]), "painting")
+    assert parsed.row_count == 2
+    assert parsed.payload_fragment["rows"][0]["operations"]["uv"]["unit_price_hkd"] == "0.5200"
+    assert any("背面/UV 未识别单价" in warning for warning in parsed.warnings)
 
 
 def test_slush_import_maps_visible_quote_fields_and_ignores_source_total():

@@ -262,6 +262,7 @@ ROLE_PERMISSIONS = {
         "carton_procurement:read",
         "carton_procurement:order_write",
         "carton_procurement:order_adjust",
+        "carton_procurement:master_manage",
         "carton_procurement:receipt_write",
         "carton_procurement:inventory_write",
         "carton_procurement:closing_manage",

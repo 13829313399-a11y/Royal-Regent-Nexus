@@ -27,6 +27,7 @@ backend/.venv/
 backend/.venv*/
 backend/.pytest-tmp/
 backend/data/*.db
+backend/data/qa/
 backend/data/*.sqlite
 backend/data/*.sqlite3
 backend/data/document-tools/
@@ -61,6 +62,8 @@ backend/models/document-translation/
 !/docs/business/qc-complete-business-process.md
 !/docs/business/injection-scheduling-v3.md
 !/docs/business/internal-quote-l6-release-readiness.md
+!/docs/business/纸箱模块业务逻辑说明书.md
+!/docs/business/纸箱模块-基础资料建设方案.md
 !/edge/three-d-printing-agent/README.md
 !/deploy/three-d-printing/network/README.md
 !/services/three-d-printer-connector/README.md

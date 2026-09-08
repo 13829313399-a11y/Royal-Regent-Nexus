@@ -504,17 +504,20 @@ describe('internal quote section payload normalization', () => {
     })
   })
 
-  it('previews painting row, process and section totals across all eight operations', () => {
+  it('preserves UV through edits and previews row, process and section totals alongside legacy operations', () => {
     const payload = normalizeInternalQuotePayload('painting', {
       rows: [
-        { name: '外壳', position: '正面', operations: { clamp: { quantity: 2, unit_price_hkd: .12 }, pp_water: { quantity: 3, unit_price_hkd: .08 } } },
+        { name: '外壳', position: '正面', operations: { uv: { quantity: '2', unit_price_hkd: '.52' }, clamp: { quantity: 2, unit_price_hkd: .12 }, pp_water: { quantity: 3, unit_price_hkd: .08 } } },
         { name: '外壳', position: '背面', operations: { pp_water: { quantity: 1, unit_price_hkd: .08 } } },
       ],
     }) as unknown as PaintingPayload
 
-    expect(calculatePaintingRowAmount(payload.rows[0])).toBeCloseTo(.48)
-    expect(calculatePaintingOperationTotals(payload)).toMatchObject({ clamp: .24, pp_water: .32 })
-    expect(payload.rows.reduce((total, row) => total + calculatePaintingRowAmount(row), 0)).toBeCloseTo(.56)
+    expect(payload.rows[0].operations.uv).toEqual({ quantity: 2, unit_price_hkd: .52 })
+    expect(payload.rows[1].operations.uv).toEqual({ quantity: 0, unit_price_hkd: 0 })
+    expect(cloneInternalQuotePayload('painting', payload as unknown as Record<string, unknown>)).toEqual(payload)
+    expect(calculatePaintingRowAmount(payload.rows[0])).toBeCloseTo(1.52)
+    expect(calculatePaintingOperationTotals(payload)).toMatchObject({ uv: 1.04, clamp: .24, pp_water: .32 })
+    expect(calculatePaintingTotalHkd(payload)).toBeCloseTo(1.60)
   })
 
   it('normalizes and previews painting and sewing quick quotes without counting preserved details', () => {

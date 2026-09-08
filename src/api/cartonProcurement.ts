@@ -50,6 +50,8 @@ export interface CartonOrderLineResponse {
 }
 
 export interface CartonOrderResponse {
+  usage_status?: string
+  usage_status_label?: string
   id: string
   factory_id: string
   order_no: string
@@ -110,6 +112,8 @@ export interface CartonPurchaseOrderContextResponse {
 }
 
 export interface CartonOrderCreateRequest {
+  master_config_id?: string
+  master_config_revision?: number
   factory_id: string
   customer_code: string
   customer_name: string
@@ -196,6 +200,12 @@ export interface CartonHistoryInventoryImportResponse {
 }
 
 export interface CartonInventoryMovementResponse {
+  cost_status?: string
+  cost_currency?: string
+  cost_amount?: string | null
+  cost_unit_price?: string | null
+  workshop_id?: string
+  workshop_name?: string
   id: string
   factory_id: string
   order_line_id: string | null
@@ -225,6 +235,16 @@ export interface CartonInventoryMovementResponse {
 }
 
 export interface CartonInventoryBalanceResponse {
+  cost_status?: string
+  cost_currency?: string
+  cost_amount?: string | null
+  cost_unit_price?: string | null
+  position_key?: string
+  inventory_key?: string
+  location_id?: string
+  warehouse?: string
+  bin_code?: string
+  position_revision?: number
   factory_id: string
   customer_code: string
   customer_name: string
@@ -245,6 +265,9 @@ export interface CartonInventoryBalanceResponse {
 }
 
 export interface CartonInventoryMovementCreateRequest {
+  workshop_id?: string
+  location_id?: string
+  issue_kind?: string
   factory_id: string
   order_line_id: string | null
   reference_movement_id: string | null
@@ -290,6 +313,15 @@ export interface CartonPricingIssue {
   can_price: boolean
 }
 
+export interface CartonClosingUnitQuantities {
+  unit: string
+  opening_quantity: string
+  inbound_quantity: string
+  outbound_quantity: string
+  adjustment_quantity: string
+  ending_quantity: string
+}
+
 export interface CartonClosingResponse {
   id: string
   factory_id: string
@@ -304,6 +336,8 @@ export interface CartonClosingResponse {
   ending_amount: string
   pricing_issues?: CartonPricingIssue[]
   snapshot_stale?: boolean
+  quantities_by_unit?: CartonClosingUnitQuantities[]
+  quantity_snapshot_missing?: boolean
   currency: string
   status: 'DRAFT' | 'PENDING' | 'CONFIRMED' | 'LOCKED'
   revision: number
@@ -418,7 +452,8 @@ export interface CartonReceiptResponse {
     unit_price: string
     currency: string
     location: string
-    feedback_note: string
+    location_allocations?: Array<{ location_id: string; quantity: string | number; label?: string }>
+  feedback_note: string
   }>
 }
 
@@ -707,7 +742,7 @@ export const cartonProcurementApi = {
   },
   async listInventoryBalances(factoryId: string) {
     const response = await http.get<CartonInventoryBalanceResponse[]>(
-      '/carton-procurement/inventory/balances',
+      '/carton-procurement/inventory/positions',
       { params: { factory_id: factoryId } },
     )
     return response.data
@@ -731,14 +766,18 @@ export const cartonProcurementApi = {
     return response.data
   },
   async createInventoryMovementsBulk(payload: {
+    workshop_id?: string
+    issue_kind?: string
     factory_id: string
     document_no: string
     reason: string
     items: Array<{
+      workshop_id?: string
       order_line_id: string | null
       reference_movement_id: string | null
       quantity: number
       location: string
+      location_id?: string
     }>
   }) {
     return postCartonInventoryRequest<CartonInventoryMovementResponse[]>(
@@ -847,6 +886,7 @@ export const cartonProcurementApi = {
     return response.data
   },
   async createReceipt(payload: {
+    post_immediately?: boolean
     factory_id: string
     delivery_note_no: string
     delivery_date: string
@@ -870,9 +910,13 @@ export const cartonProcurementApi = {
       unusable_quantity: number
       unit_price: number
       location: string
-      feedback_note: string
+      location_allocations?: Array<{ location_id: string; quantity: string | number; label?: string }>
+  feedback_note: string
     }>
   }) {
+    if (payload.post_immediately) {
+      return postCartonInventoryRequest<CartonReceiptResponse>('/carton-procurement/receipts', payload)
+    }
     const response = await http.post<CartonReceiptResponse>('/carton-procurement/receipts', payload)
     return response.data
   },
