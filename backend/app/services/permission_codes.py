@@ -67,6 +67,7 @@ CARTON_PROCUREMENT_PERMISSION_CODES = (
     "carton_procurement:import",
     "carton_procurement:exception_manage",
     "carton_procurement:customer_manage",
+    "carton_procurement:master_manage",
 )
 
 THREE_D_PRINTING_PERMISSION_CODES = (

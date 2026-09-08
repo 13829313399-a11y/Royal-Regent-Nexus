@@ -15,6 +15,9 @@ from app.services.carton_inventory_report import inventory_report
 def db():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Movement.__table__.create(engine)
+    from app.models.carton_positions import CartonLocation, CartonPositionEntry
+    CartonLocation.__table__.create(engine)
+    CartonPositionEntry.__table__.create(engine)
     Order.__table__.create(engine)
     OrderLine.__table__.create(engine)
     with Session(engine) as session:

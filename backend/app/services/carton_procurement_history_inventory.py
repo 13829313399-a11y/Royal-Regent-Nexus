@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.services import carton_positions as positions
 
 import hashlib
 from datetime import datetime
@@ -323,8 +324,7 @@ def import_history_inventory(
                 warnings.append(f"{row['source']} 未唯一匹配正式订单明细，已作为独立旧库存入账")
 
             movement_id = f"CIM-{uuid4().hex}"
-            db.add(
-                CartonInventoryMovement(
+            movement = CartonInventoryMovement(
                     id=movement_id,
                     factory_id=factory_id,
                     order_line_id=order_line_id,
@@ -351,7 +351,7 @@ def import_history_inventory(
                     actor_name=user.display_name,
                     occurred_at=occurred_at,
                 )
-            )
+            positions.post(db, movement, legacy_location=row["location"])
             movement_ids.append(movement_id)
             total_quantity += row["opening_quantity"]
 

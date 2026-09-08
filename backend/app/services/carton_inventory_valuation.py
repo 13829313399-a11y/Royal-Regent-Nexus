@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement
+from app.services.carton_ledger_time import ledger_rows, ledger_time
 
 
 def cost_key(row: CartonInventoryMovement) -> tuple[str, ...]:
@@ -36,15 +37,14 @@ class CostBalance:
 class Valuation:
     balances: dict[tuple[str, ...], CostBalance] = field(default_factory=dict)
     amounts: dict[str, Decimal] = field(default_factory=dict)
+    unpriced_movements: set[str] = field(default_factory=set)
+    unpriced_pools: set[tuple[str, ...]] = field(default_factory=set)
     missing: list[CartonInventoryMovement] = field(default_factory=list)
     errors: list[tuple[CartonInventoryMovement, str]] = field(default_factory=list)
 
 
 def load_valuation(db: Session, factory_id: str, *, before: str | None = None) -> Valuation:
-    query = select(CartonInventoryMovement).where(CartonInventoryMovement.factory_id == factory_id)
-    if before:
-        query = query.where(CartonInventoryMovement.occurred_at < before)
-    rows = list(db.scalars(query).all())
+    rows = ledger_rows(db, factory_id, before=before)
     events = list(db.scalars(select(CartonAuditEvent).where(
         CartonAuditEvent.factory_id == factory_id,
     ).order_by(CartonAuditEvent.sequence)).all())
@@ -72,15 +72,19 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
         seq = sequence.get(row.id, sequence.get(row.source_id, 0))
         # Unsequenced legacy receipts/initial balances precede issues at the same
         # second. Ambiguous interleaved legacy transactions are not guessed.
-        return (row.occurred_at, seq, row.quantity < 0, row.id)
+        return (ledger_time(row.occurred_at), seq, row.quantity < 0, row.id)
 
     ordered = sorted(rows, key=order_key)
     by_id = {row.id: row for row in rows}
     result = Valuation()
+    # Unknown source prices are independent variables. Carry their quantity
+    # coefficients with the same averaging/reversal arithmetic as real costs.
+    dependencies: dict[tuple[str, ...], dict[str, Decimal]] = defaultdict(dict)
+    movement_dependencies: dict[str, dict[str, Decimal]] = {}
     ambiguous: dict[tuple, list[CartonInventoryMovement]] = defaultdict(list)
     for row in rows:
         if not sequence.get(row.id, sequence.get(row.source_id, 0)):
-            ambiguous[(row.occurred_at, cost_key(row))].append(row)
+            ambiguous[(ledger_time(row.occurred_at), cost_key(row))].append(row)
     for group in ambiguous.values():
         if any(r.quantity < 0 for r in group) and any(r.quantity > 0 for r in group):
             result.errors.append((group[0], "旧流水同秒发生不同进价与出库，缺少可确认的先后顺序"))
@@ -92,7 +96,10 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
             balance = result.balances.setdefault(key, CostBalance())
             qty = Decimal(row.quantity)
             price = prices.get(row.id, Decimal(row.unit_price))
+            pool_dependencies = dependencies[key]
+            unknown: dict[str, Decimal] = {}
             if row.reversal_of_movement_id:
+                unknown = {source: -coefficient for source, coefficient in movement_dependencies.get(row.reversal_of_movement_id, {}).items()}
                 original = by_id.get(row.reversal_of_movement_id)
                 if original is None or original.id not in result.amounts or cost_key(original) != key:
                     result.errors.append((row, "冲销缺少同一物料、币种的原计价记录"))
@@ -103,7 +110,11 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
                 amount = qty * price
                 if price == 0 and row.id not in prices:
                     result.missing.append(row)
+                    unknown = {row.id: qty}
             else:
+                if balance.quantity > 0:
+                    unknown = {source: (-coefficient if balance.quantity + qty == 0 else coefficient * qty / balance.quantity)
+                               for source, coefficient in pool_dependencies.items()}
                 if balance.quantity <= 0 or balance.quantity + qty < 0:
                     result.errors.append((row, "计价库存不足，请核对该物料和币种的入库记录"))
                     amount = qty * price
@@ -111,6 +122,15 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
                     amount = -balance.amount
                 else:
                     amount = qty * balance.amount / balance.quantity
+            movement_dependencies[row.id] = unknown
+            if unknown:
+                result.unpriced_movements.add(row.id)
+            for source, coefficient in unknown.items():
+                updated = pool_dependencies.get(source, Decimal(0)) + coefficient
+                if updated:
+                    pool_dependencies[source] = updated
+                else:
+                    pool_dependencies.pop(source, None)
             balance.quantity += qty
             balance.amount += amount
             result.amounts[row.id] = amount
@@ -127,4 +147,5 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
         candidate.quantity < 0 and cost_key(candidate) == cost_key(row)
         for candidate in ordered[positions[row.id] + 1:positions[reversals[row.id].id]]
     )]
+    result.unpriced_pools = {key for key, sources in dependencies.items() if sources}
     return result

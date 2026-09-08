@@ -59,7 +59,7 @@ onBeforeUnmount(() => { ++version })
   <section aria-label="订单流水明细">
     <div v-if="orderIdentity" class="flex flex-wrap gap-x-8 gap-y-2 border-b border-slate-100 px-4 py-3 text-xs text-slate-500" aria-label="订单基本信息">
       <span>客户 <b class="ml-2 text-slate-800">{{ orderIdentity.customer_name || '未填写' }}</b></span>
-      <span v-if="orderIdentity.product_name">品名 <b class="ml-2 text-slate-800">{{ orderIdentity.product_name }}</b></span>
+      <span v-if="orderIdentity.product_name">产品名称 <b class="ml-2 text-slate-800">{{ orderIdentity.product_name }}</b></span>
     </div>
     <div class="flex flex-wrap items-center gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-3">
       <label class="flex items-center gap-2 text-xs text-slate-600">操作<select v-model="eventType" aria-label="订单流水操作筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-3"><option value="">全部操作</option><option v-for="[value, label] in eventOptions" :key="value" :value="value">{{ label }}</option></select></label>

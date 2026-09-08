@@ -211,9 +211,21 @@ def inventory_report(
             flow_category=category, flow_quantity=flow_quantity,
         ))
 
+    from app.services.carton_usage import usage_by_key
+    from app.services.carton_positions import position_balances, inventory_key
+    usage = usage_by_key(db, factory_id)
+    position_rows = position_balances(db, factory_id)
+    order_rows = _order_report(dated_rows, formal_lines, matched_lines, details, date_from, date_to)
+    for row in order_rows:
+        key = inventory_key(row)
+        state = usage.get(key, {})
+        row.current_usage_quantity = state.get("usage", Decimal(0))
+        row.current_usage_status = state.get("status", "NOT_RECEIVED")
+        row.current_usage_label = state.get("label", "未入库")
+        row.current_positions = [{"location": p.latest_location, "quantity": str(p.balance)} for p in position_rows if p.inventory_key == key and p.balance > 0]
     return CartonInventoryReportOut(
         factory_id=factory_id, date_from=date_from, date_to=date_to,
         rows=[groups[key] for key in sorted(groups, key=lambda key: (-date.fromisoformat(key[0]).toordinal(), key[1], key[2]))],
-        order_rows=_order_report(dated_rows, formal_lines, matched_lines, details, date_from, date_to),
+        order_rows=order_rows,
         movements=list(reversed(details)),
     )

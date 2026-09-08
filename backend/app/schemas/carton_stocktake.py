@@ -7,7 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 class StocktakeCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     factory_id: str = Field(min_length=1, max_length=64)
-    reference_movement_ids: list[str] = Field(min_length=1, max_length=500)
+    reference_movement_ids: list[str] = Field(default_factory=list, max_length=500)
+    position_keys: list[str] = Field(default_factory=list, max_length=500)
 
 
 class StocktakeCount(BaseModel):

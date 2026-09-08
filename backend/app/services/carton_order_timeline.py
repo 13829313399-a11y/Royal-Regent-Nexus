@@ -179,8 +179,11 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
             if not row:
                 continue
             relocation = audit.event_type == "INVENTORY_LOCATION_CHANGED"
-            description = (f"仓位：{detail.get('from_location') or '未填写'} → {detail.get('to_location') or '未填写'}；数量不变。"
-                           if relocation else f"核价：{detail.get('unit_price', '—')} {detail.get('currency', '')}/{row.unit}；数量不变。")
+            if relocation:
+                change = f"调仓 {detail['quantity']} {detail.get('unit', '')}，总数量不变。" if detail.get('quantity') is not None else "数量不变。"
+                description = f"仓位：{detail.get('from_location') or '未填写'} → {detail.get('to_location') or '未填写'}；{change}"
+            else:
+                description = f"核价：{detail.get('unit_price', '—')} {detail.get('currency', '')}/{row.unit}；数量不变。"
             add(Event(**base, **identity(linked_order(row), row), inventory_key=_key(row),
                       event_label="调仓" if relocation else "入库核价", document_no=row.document_no,
                       material_label=f"{row.packaging_type} {row.paper_quality} / {row.specification}",

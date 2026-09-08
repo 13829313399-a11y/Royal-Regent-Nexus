@@ -46,6 +46,10 @@ export interface InventoryOrderReportRow extends Omit<InventoryReportRow, 'busin
   packaging_type: string
   paper_quality: string
   specification: string
+  current_usage_quantity?: string
+  current_usage_status?: string
+  current_usage_label?: string
+  current_positions?: Array<{ location: string; quantity: string }>
   last_movement_at: string
 }
 export interface InventoryReport {

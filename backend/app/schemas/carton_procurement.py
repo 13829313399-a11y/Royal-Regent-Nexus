@@ -190,6 +190,8 @@ class CartonOrderLineCreate(BaseModel):
 
 
 class CartonOrderCreate(BaseModel):
+    master_config_id: str = Field(default="", max_length=96)
+    master_config_revision: int = Field(default=0, ge=0)
     factory_id: str = Field(min_length=1, max_length=64)
     customer_code: str = Field(min_length=1, max_length=64)
     customer_name: str = Field(min_length=1, max_length=255)
@@ -251,6 +253,8 @@ class CartonOrderCreate(BaseModel):
 
 
 class CartonOrderUpdate(BaseModel):
+    master_config_id: str = Field(default="", max_length=96)
+    master_config_revision: int = Field(default=0, ge=0)
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
     reason: str = Field(min_length=4, max_length=500)
@@ -497,6 +501,8 @@ class CartonOrderHistorySuggestionListOut(BaseModel):
 
 
 class CartonOrderOut(BaseModel):
+    usage_status: str = "NOT_RECEIVED"
+    usage_status_label: str = "未入库"
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -592,7 +598,14 @@ class CartonHistoryOrderImportOut(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class CartonLocationAllocation(BaseModel):
+    label: str = Field(default="", max_length=129)
+    location_id: str = Field(min_length=1, max_length=96)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+
+
 class CartonReceiptLineCreate(BaseModel):
+    location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     source_type: CartonReceiptLineSourceType = "FORMAL_ORDER"
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
     customer_code: str = Field(default="", max_length=64)
@@ -667,6 +680,8 @@ class CartonReceiptLineCreate(BaseModel):
 
 
 class CartonReceiptCreate(BaseModel):
+    post_immediately: bool = False
+    request_id: str | None = Field(default=None, min_length=8, max_length=128)
     factory_id: str = Field(min_length=1, max_length=64)
     delivery_note_no: str = Field(min_length=1, max_length=128)
     delivery_date: str
@@ -674,6 +689,12 @@ class CartonReceiptCreate(BaseModel):
     import_batch_id: str | None = Field(default=None, max_length=96)
     note: str = Field(default="", max_length=4000)
     lines: list[CartonReceiptLineCreate] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def require_posting_request(self):
+        if self.post_immediately and not (self.request_id or "").strip():
+            raise ValueError("直接入库必须提供提交标识")
+        return self
 
     @field_validator("factory_id", "delivery_note_no", "note")
     @classmethod
@@ -687,6 +708,7 @@ class CartonReceiptCreate(BaseModel):
 
 
 class CartonReceiptLineOut(BaseModel):
+    location_allocations: list[CartonLocationAllocation] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -771,6 +793,9 @@ class CartonInventoryRelocateRequest(BaseModel):
 
 
 class CartonInventoryMovementCreate(BaseModel):
+    workshop_id: str = Field(default="", max_length=96)
+    location_id: str = ""
+    issue_kind: Literal["USAGE", "RETURN", "LOSS", "LOAN", "OTHER", "UNKNOWN"] = "UNKNOWN"
     request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
     factory_id: str = Field(min_length=1, max_length=64)
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
@@ -804,6 +829,8 @@ class CartonInventoryMovementCreate(BaseModel):
 
 
 class CartonInventoryBulkItem(BaseModel):
+    workshop_id: str = Field(default="", max_length=96)
+    location_id: str = ""
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
     reference_movement_id: str | None = Field(default=None, min_length=1, max_length=96)
     quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
@@ -828,6 +855,8 @@ class CartonInventoryBulkItem(BaseModel):
 
 
 class CartonInventoryBulkCreate(BaseModel):
+    workshop_id: str = Field(default="", max_length=96)
+    issue_kind: Literal["USAGE", "RETURN", "LOSS", "LOAN", "OTHER", "UNKNOWN"] = "UNKNOWN"
     request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
     factory_id: str = Field(min_length=1, max_length=64)
     document_no: str = Field(min_length=1, max_length=128)
@@ -841,7 +870,7 @@ class CartonInventoryBulkCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_unique_targets(self):
-        targets = [item.order_line_id or item.reference_movement_id for item in self.items]
+        targets = [(item.order_line_id or item.reference_movement_id, item.location_id) for item in self.items]
         if len(targets) != len(set(targets)):
             raise ValueError("批量出库不能重复选择同一条库存结存")
         return self
@@ -858,6 +887,12 @@ class CartonInventoryReversalRequest(BaseModel):
 
 
 class CartonInventoryMovementOut(BaseModel):
+    cost_status: str = "待核算"
+    cost_currency: str = ""
+    cost_amount: Decimal | None = None
+    cost_unit_price: Decimal | None = None
+    workshop_id: str = ""
+    workshop_name: str = ""
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -921,6 +956,16 @@ class CartonHistoryInventoryImportOut(BaseModel):
 
 
 class CartonInventoryBalanceOut(BaseModel):
+    cost_status: str = "待核算"
+    cost_currency: str = ""
+    cost_amount: Decimal | None = None
+    cost_unit_price: Decimal | None = None
+    position_key: str = ""
+    inventory_key: str = ""
+    location_id: str = ""
+    warehouse: str = ""
+    bin_code: str = ""
+    position_revision: int = 0
     factory_id: str
     customer_code: str
     customer_name: str
@@ -1007,6 +1052,15 @@ class CartonPricingIssueOut(BaseModel):
     can_price: bool = False
 
 
+class CartonClosingUnitQuantities(BaseModel):
+    unit: str
+    opening_quantity: Decimal
+    inbound_quantity: Decimal
+    outbound_quantity: Decimal
+    adjustment_quantity: Decimal
+    ending_quantity: Decimal
+
+
 class CartonClosingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1033,6 +1087,8 @@ class CartonClosingOut(BaseModel):
     locked_at: str
     pricing_issues: list[CartonPricingIssueOut] = Field(default_factory=list)
     snapshot_stale: bool = False
+    quantities_by_unit: list[CartonClosingUnitQuantities] = Field(default_factory=list)
+    quantity_snapshot_missing: bool = False
 
 
 class CartonImportBatchOut(BaseModel):
