@@ -36,6 +36,14 @@ export const DOCUMENT_TOOLS: readonly DocumentToolDefinition[] = [
     accept: '.pdf,application/pdf',
     extensionLabel: 'PDF',
   },
+  {
+    id: 'pdf-batch-rename',
+    label: '批量改名',
+    description: '按专用规则识别固定区域并生成新文件名',
+    accept: '.pdf,application/pdf',
+    extensionLabel: 'PDF',
+    multiple: true,
+  },
 ] as const
 
 export function getDocumentTool(id: DocumentToolDefinition['id']) {

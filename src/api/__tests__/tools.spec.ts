@@ -6,6 +6,7 @@ import {
   PDF_SPLIT_TIMEOUT_MS,
   PDF_TO_EXCEL_TIMEOUT_MS,
   PDF_TO_WORD_TIMEOUT_MS,
+  PDF_BATCH_RENAME_TIMEOUT_MS,
   WORD_TO_PDF_TIMEOUT_MS,
 } from '@/api/tools'
 
@@ -18,6 +19,7 @@ describe('shared tools api', () => {
     expect(PDF_TO_WORD_TIMEOUT_MS).toBe(15 * 60 * 1000)
     expect(WORD_TO_PDF_TIMEOUT_MS).toBe(5 * 60 * 1000)
     expect(PDF_SPLIT_TIMEOUT_MS).toBe(5 * 60 * 1000)
+    expect(PDF_BATCH_RENAME_TIMEOUT_MS).toBe(15 * 60 * 1000)
   })
 
   it('uploads one Office document with the selected translation direction', async () => {
@@ -274,6 +276,51 @@ describe('shared tools api', () => {
 
     expect(result.tools['word-to-pdf']?.available).toBe(false)
     expect(get).toHaveBeenCalledWith('/tools/capabilities', undefined)
+  })
+
+  it('loads rename rules and keeps preview separate from execution', async () => {
+    const get = vi.fn().mockResolvedValue({
+      data: {
+        rules: [{ id: 'fixed-region-a', available: true }],
+        limits: { max_files: 50, max_batch_bytes: 200, max_file_bytes: 20 },
+      },
+    })
+    const post = vi.fn()
+      .mockResolvedValueOnce({
+        data: {
+          rule: { id: 'fixed-region-a' },
+          items: [],
+          preview_token: 'preview-token',
+          summary: { total: 0, ready: 0, review: 0, error: 0 },
+        },
+        headers: {},
+      })
+      .mockResolvedValueOnce({
+        data: new Blob(['zip']),
+        headers: {
+          'content-disposition': "attachment; filename*=UTF-8''rename.zip",
+          'x-pdf-rename-file-count': '2',
+        },
+      })
+    const api = createSharedToolsApi({ get, post })
+    const files = [new File(['%PDF-a'], 'A.pdf'), new File(['%PDF-b'], 'B.pdf')]
+
+    await api.getPdfRenameRules('huaxing')
+    const overrides = [{ source_index: 1, target_file_name: '#11011-52136+52137.pdf', confirmed: true }]
+    await api.previewPdfRename(files, 'fixed-region-a', 'huaxing', undefined, overrides)
+    const result = await api.executePdfRename(files, 'fixed-region-a', 'preview-token', true, 'huaxing', undefined, overrides)
+
+    expect(get).toHaveBeenCalledWith('/tools/pdf-rename/rules', { params: { factory_id: 'huaxing' }, signal: undefined })
+    expect(post.mock.calls[0]?.[0]).toBe('/tools/pdf-rename/preview')
+    expect((post.mock.calls[0]?.[1] as FormData).getAll('pdf_files')).toEqual(files)
+    expect((post.mock.calls[0]?.[1] as FormData).get('factory_id')).toBe('huaxing')
+    expect(JSON.parse(String((post.mock.calls[0]?.[1] as FormData).get('manual_overrides')))).toEqual(overrides)
+    expect(post.mock.calls[1]?.[0]).toBe('/tools/pdf-rename/execute')
+    expect((post.mock.calls[1]?.[1] as FormData).get('preview_token')).toBe('preview-token')
+    expect((post.mock.calls[1]?.[1] as FormData).get('ocr_review_confirmed')).toBe('true')
+    expect((post.mock.calls[1]?.[1] as FormData).get('factory_id')).toBe('huaxing')
+    expect(JSON.parse(String((post.mock.calls[1]?.[1] as FormData).get('manual_overrides')))).toEqual(overrides)
+    expect(result).toMatchObject({ fileName: 'rename.zip', fileCount: 2 })
   })
 
   it('exposes stable document error code and actionable advice', async () => {

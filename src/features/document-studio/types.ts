@@ -4,6 +4,7 @@ export const DOCUMENT_TOOL_IDS = [
   'word-to-pdf',
   'pdf-translation',
   'pdf-split',
+  'pdf-batch-rename',
 ] as const
 
 export type DocumentToolId = typeof DOCUMENT_TOOL_IDS[number]
@@ -20,6 +21,7 @@ export interface DocumentToolDefinition {
   description: string
   accept: string
   extensionLabel: string
+  multiple?: boolean
 }
 
 export const MAX_DOCUMENT_FILE_BYTES = 20 * 1024 * 1024
