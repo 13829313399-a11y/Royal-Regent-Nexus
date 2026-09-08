@@ -240,7 +240,7 @@ export interface BlowRow extends Omit<QuotePricingMetadata, 'markup_override'> {
 }
 export interface MoldingPayload { injection_loss_rate_percent: number; injection_lines: InjectionRow[]; blow_lines: BlowRow[]; caixing_tool_plan_rows: CaixingToolPlanRow[] }
 
-export type PaintingOperationCode = 'clamp' | 'pad_print' | 'spray' | 'edge' | 'paint' | 'dip' | 'wipe' | 'pp_water'
+export type PaintingOperationCode = 'clamp' | 'pad_print' | 'uv' | 'spray' | 'edge' | 'paint' | 'dip' | 'wipe' | 'pp_water'
 export interface PaintingOperationValue { quantity: number; unit_price_hkd: number }
 export type PaintingOperations = Record<PaintingOperationCode, PaintingOperationValue>
 export interface PaintingRow extends QuotePricingMetadata {
@@ -541,7 +541,7 @@ export interface SalesPayload {
 
 export type InternalQuoteSectionPayload = SalesPayload | EngineeringPayload | ElectronicPayload | MoldingPayload | PaintingPayload | SlushPayload | SewingPayload | AssemblyPayload
 
-const operationCodes: PaintingOperationCode[] = ['clamp', 'pad_print', 'spray', 'edge', 'paint', 'dip', 'wipe', 'pp_water']
+const operationCodes: PaintingOperationCode[] = ['clamp', 'pad_print', 'uv', 'spray', 'edge', 'paint', 'dip', 'wipe', 'pp_water']
 
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -1875,5 +1875,5 @@ export function cloneInternalQuotePayload(code: InternalQuoteSectionCode, value:
 }
 
 export const paintingOperationLabels: Record<PaintingOperationCode, string> = {
-  clamp: '夹模', pad_print: '移印', spray: '散枪', edge: '边模', paint: '油色', dip: '浸油', wipe: '抹油', pp_water: '擦PP水',
+  clamp: '夹模', pad_print: '移印', uv: 'UV', spray: '散枪', edge: '边模', paint: '油色', dip: '浸油', wipe: '抹油', pp_water: '擦PP水',
 }

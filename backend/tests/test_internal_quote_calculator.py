@@ -34,6 +34,25 @@ def calculate(section_code: str, payload: dict, **context):
     )
 
 
+def test_painting_uv_cost_is_counted_once_with_existing_operations_and_metadata():
+    result = calculate("painting", {"rows": [{
+        "name": "外壳", "position": "正面", "pricing_component_id": "shell", "markup_override": "1.3",
+        "operations": {"uv": {"quantity": 2, "unit_price_hkd": "0.52"},
+                       "spray": {"quantity": 3, "unit_price_hkd": "0.08"}},
+    }]})
+    assert result["status"] == "valid"
+    assert result["totals"]["total_hkd"] == "1.2800"
+    assert result["line_breakdown"][0]["operations"]["uv"] == "1.0400"
+    assert result["line_breakdown"][0]["pricing_component_id"] == "shell"
+
+
+@pytest.mark.parametrize("field,value", [("quantity", -1), ("unit_price_hkd", -1), ("unit_price_hkd", "NaN")])
+def test_painting_uv_rejects_invalid_cost_inputs(field, value):
+    operation = {"quantity": 2, "unit_price_hkd": "0.52", field: value}
+    with pytest.raises(CalculationInputError):
+        calculate("painting", {"rows": [{"operations": {"uv": operation}}]})
+
+
 def test_historical_direct_paint_cost_keeps_small_material_amount_out_of_labor():
     result = calculate("painting", {"rows": [{"name": "历史快捷油漆", "cost_allocation": "direct",
         "operations": {"paint": {"quantity": 1, "unit_price_hkd": "0.00006"}}}]})

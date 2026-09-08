@@ -31,6 +31,7 @@ MAX_OOXML_ENTRIES = 5000
 PAINTING_PROCESSES = (
     ("夹模", "clamp"),
     ("移印", "pad_print"),
+    ("UV", "uv"),
     ("散枪", "spray"),
     ("边模", "edge"),
     ("油色", "paint"),
@@ -300,7 +301,7 @@ def find_header(
         "molding": ("模具名称|货名", "啤净重|日产量|预估料重", "材质|用料"),
         "sewing": ("物料名称|布料名称", "裁片部位|部位", "用量|用量/码", "价钱|总价钱"),
         "assembly": ("工序名称|做工名称", "人数"),
-        "painting": ("名称|位置", "夹模|移印|散枪|边模|抹油|擦PP水"),
+        "painting": ("名称|位置", "夹模|移印|UV|散枪|边模|抹油|擦PP水"),
         "slush": ("产品编号|产品编码|货号", "胶件名称|零件名称|产品名称", "材料|材质", "用量|数量"),
         "hair": ("货名|名称", "单价", "重量", "单位"),
     }[import_type]
@@ -1013,7 +1014,7 @@ def _parse_painting(
             )
     if not output:
         raise ValueError("已识别喷油表头，但没有解析到喷油工序明细")
-    warnings.append("源表总报价和合计仅用于核对，不直接导入；保存后按八类工序数量 × 单价由服务端重算")
+    warnings.append("源表总报价和合计仅用于核对，不直接导入；保存后按含 UV 的九类工序数量 × 单价由服务端重算")
     warnings.append("嵌入喷油图片不自动写入报价；图片单元格文本会保存为附件引用，原报价单可另存为分段附件")
     return {"rows": output}, len(output), warnings
 
