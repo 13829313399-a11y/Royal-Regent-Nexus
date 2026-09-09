@@ -62,6 +62,8 @@ backend/models/document-translation/
 !/docs/business/internal-quote-l6-release-readiness.md
 !/docs/business/纸箱模块业务逻辑说明书.md
 !/docs/business/纸箱模块-基础资料建设方案.md
+!/docs/business/纸箱月结与供应商对账方案.md
+!/docs/business/纸箱全流程核查报告.md
 !/edge/three-d-printing-agent/README.md
 !/deploy/three-d-printing/network/README.md
 !/services/three-d-printer-connector/README.md
@@ -94,3 +96,9 @@ deploy/three-d-printing/network/reports/
 **/three_d_printers.json
 **/three_d_vpn_private_key
 **/three-d-*.private.key
+
+# Local carton acceptance databases, evidence and template previews
+backend/data/
+outputs/history-order-template-20260909/
+outputs/opening-inventory-template-20260909/
+!/docs/business/纸箱上线前最终验收报告.md

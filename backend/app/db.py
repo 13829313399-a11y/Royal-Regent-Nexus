@@ -624,6 +624,43 @@ def ensure_carton_master_schema_ready() -> None:
             raise RuntimeError("基础资料尚未迁移至 20260908_0104；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def ensure_carton_supplier_settlement_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        missing = []
+        name = "carton_supplier_settlements"
+        if name not in names:
+            missing.append(name)
+        else:
+            columns = {c["name"] for c in inspector.get_columns(name)}
+            missing.extend(f"{name}.{c.name}" for c in Base.metadata.tables[name].columns if c.name not in columns)
+        if "carton_receipts" not in names or "acceptance_date" not in {c["name"] for c in inspector.get_columns("carton_receipts")}:
+            missing.append("carton_receipts.acceptance_date")
+        if missing:
+            raise RuntimeError("供应商月结尚未迁移至 20260909_0105；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
+def ensure_carton_explicit_quantity_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        required = {"carton_orders": ("product_order_quantity",), "carton_order_lines": ("usage_quantity",),
+                    "carton_purchase_order_issues": ("before_product_quantity", "after_product_quantity", "product_quantity_delta")}
+        missing = []
+        for name, nullable_columns in required.items():
+            columns = {c["name"]: c for c in inspector.get_columns(name)} if name in names else {}
+            if name == "carton_orders" and "quantity_basis" not in columns:
+                missing.append("carton_orders.quantity_basis")
+            missing.extend(f"{name}.{column}" for column in nullable_columns if column not in columns or not columns[column]["nullable"])
+        if missing:
+            raise RuntimeError("历史订单显式纸品需求尚未迁移至 20260909_0106；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
         auth,  # noqa: F401
@@ -632,6 +669,7 @@ def init_db() -> None:
         carton_stocktake,  # noqa: F401
         carton_positions,
         carton_master,  # noqa: F401
+        carton_supplier_settlement,  # noqa: F401
         customer_order,  # noqa: F401
         internal_quote,  # noqa: F401
         injection_scheduling,  # noqa: F401
@@ -660,6 +698,8 @@ def init_db() -> None:
     ensure_carton_stocktake_schema_ready()
     ensure_carton_positions_schema_ready()
     ensure_carton_master_schema_ready()
+    ensure_carton_supplier_settlement_schema_ready()
+    ensure_carton_explicit_quantity_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

@@ -21,7 +21,7 @@ function leave(event: FocusEvent) { if (!root.value?.contains(event.relatedTarge
 </script>
 <template>
   <div ref="root" class="relative space-y-1.5" @focusout="leave" @keydown.esc.stop="open = false">
-    <label class="block"><span class="text-[11px] font-bold text-slate-600">客户 *</span><input :value="query" aria-label="订单客户" autocomplete="off" :disabled="disabled" placeholder="输入客户名称搜索，再选择" class="mt-1.5 h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50" @input="input" @focus="open = true"></label>
+    <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">客户 *</span><input :value="query" aria-label="订单客户" autocomplete="off" :disabled="disabled" placeholder="输入客户名称搜索，再选择" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50" @input="input" @focus="open = true"></label>
     <div v-if="open && !disabled" class="absolute left-0 top-full z-40 max-h-64 w-full overflow-auto rounded-lg border border-teal-200 bg-white p-1.5 shadow-lg" aria-label="客户候选">
       <button v-for="row in matches" :key="row.id" type="button" :aria-label="`选择客户 ${row.customer_name}`" class="block w-full rounded-md p-2 text-left text-xs hover:bg-teal-50 focus:bg-teal-50" @click="choose(row.customer_code)">{{ row.customer_name }}</button>
       <p v-if="!matches.length" class="p-2 text-xs text-slate-500">没有匹配的启用客户。</p>

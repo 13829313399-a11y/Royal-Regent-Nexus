@@ -24,6 +24,7 @@ from app.models import (
     carton_stocktake,  # noqa: F401
     carton_positions,
     carton_master,  # noqa: F401
+    carton_supplier_settlement,  # noqa: F401
     customer_order,  # noqa: F401
     internal_quote,  # noqa: F401
     injection_scheduling,  # noqa: F401
