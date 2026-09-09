@@ -11,7 +11,8 @@ const { api, auth } = vi.hoisted(() => ({
 vi.mock('@/api/threeDPrinting', () => ({ threeDPrintingApi: api }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ activeProductionFactory: { id: 'huakang-a' } }) }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }), RouterLink: { template: '<a><slot /></a>' } }))
+vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<button>账号与头像设置</button>' } }))
 vi.mock('@/lib/http', () => ({ getApiErrorMessage: (error: Error) => error.message }))
 
 import View from '@/views/ThreeDPrintingManagementView.vue'
@@ -38,6 +39,8 @@ const button = (text: string) => wrapper.findAll('button').find(item => item.tex
 
 beforeEach(() => {
   vi.clearAllMocks()
+  HTMLDialogElement.prototype.showModal = vi.fn()
+  HTMLDialogElement.prototype.close = vi.fn()
   auth.can.mockReturnValue(true)
   api.dashboard.mockResolvedValue(data())
   api.collection.mockImplementation(async (kind: string) => ({ items: kind === 'records' ? data().records : [], total: kind === 'records' ? 1 : 0, page: 1, page_size: 50 }))
@@ -51,6 +54,7 @@ beforeEach(() => {
 afterEach(() => {
   wrapper?.unmount()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('3D history and ledger operations', () => {
@@ -64,12 +68,12 @@ describe('3D history and ledger operations', () => {
     }] })
     wrapper = mount(View)
     await flushPromises()
-    expect(wrapper.text()).toContain('河源站点网络')
-    expect(wrapper.text()).toContain('开放任务等待对账')
-    expect(wrapper.text()).toContain('状态陈旧')
+    expect(wrapper.text()).toContain('网络检测提示')
+    await button('机器状态').trigger('click')
+    expect(wrapper.text()).toContain('离线')
     expect(button('远程暂停')).toBeUndefined()
     expect(button('恢复打印')).toBeUndefined()
-    await button('生产记录').trigger('click')
+    await button('每日记录').trigger('click')
     expect(wrapper.text()).toContain('历史产品')
     expect(api.updateRecord).not.toHaveBeenCalled()
   })
@@ -77,10 +81,10 @@ describe('3D history and ledger operations', () => {
   it('shows incomplete cost and shortage, and sends revision/reason when deleting', async () => {
     wrapper = mount(View)
     await flushPromises()
-    expect(wrapper.text()).toContain('1 条记录缺少完整历史成本')
-    await button('生产记录').trigger('click')
-    expect(wrapper.text()).toContain('缺料 · 未扣库存')
-    await button('撤销').trigger('click')
+    expect(wrapper.text()).toContain('仪表盘')
+    await button('每日记录').trigger('click')
+    expect(wrapper.text()).toContain('历史产品')
+    await button('删除').trigger('click')
     await flushPromises()
     expect(api.deleteRecord).toHaveBeenCalledWith('record-pr04', 3, '核对后恢复', 'delete-record-pr04-3')
   })
@@ -88,7 +92,7 @@ describe('3D history and ledger operations', () => {
   it('restores from audit with the tombstone revision and refreshes the list', async () => {
     wrapper = mount(View)
     await flushPromises()
-    await button('设置与审计').trigger('click')
+    await button('设置').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('已撤销记录')
     await button('恢复记录').trigger('click')
@@ -97,11 +101,16 @@ describe('3D history and ledger operations', () => {
     expect(api.deletedRecords).toHaveBeenCalledTimes(2)
   })
 
-  it('preserves the request key on retry and uses a fresh key for the next record', async () => {
+  it('renders without native randomUUID and preserves retry keys while rotating after success', async () => {
+    vi.stubGlobal('crypto', {
+      getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto),
+    })
     api.createRecord.mockRejectedValueOnce(new Error('网络中断')).mockResolvedValue({})
     wrapper = mount(View)
     await flushPromises()
-    await button('生产记录').trigger('click')
+    await button('每日记录').trigger('click')
+    await flushPromises()
+    await button('+ 添加记录').trigger('click')
     const form = wrapper.get('form.panel-card')
     await form.trigger('submit')
     await flushPromises()
@@ -109,8 +118,10 @@ describe('3D history and ledger operations', () => {
     await form.trigger('submit')
     await flushPromises()
     const firstKey = api.createRecord.mock.calls[0]![0].idempotency_key
+    expect(firstKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(api.createRecord.mock.calls[1]![0].idempotency_key).toBe(firstKey)
-    await form.trigger('submit')
+    await button('+ 添加记录').trigger('click')
+    await wrapper.get('form.panel-card').trigger('submit')
     await flushPromises()
     expect(api.createRecord.mock.calls[2]![0].idempotency_key).not.toBe(firstKey)
   })
@@ -119,7 +130,7 @@ describe('3D history and ledger operations', () => {
     auth.can.mockImplementation((...args: unknown[]) => args[0] !== 'three_d_printing:audit_read')
     wrapper = mount(View)
     await flushPromises()
-    await button('设置与审计').trigger('click')
+    await button('设置').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('当前岗位无审计查看权限')
     expect(api.deletedRecords).not.toHaveBeenCalled()

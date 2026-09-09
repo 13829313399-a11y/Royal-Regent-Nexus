@@ -38,7 +38,10 @@ beforeEach(() => {
     page_size: 50,
   });
 });
-afterEach(() => wrapper?.unmount());
+afterEach(() => {
+  wrapper?.unmount();
+  vi.unstubAllGlobals();
+});
 
 describe("3D operations workspace", () => {
   it("queries products beyond the dashboard first page and emits the selected model", async () => {
@@ -60,7 +63,10 @@ describe("3D operations workspace", () => {
     expect(wrapper.emitted("selected")?.[0]).toEqual([product]);
   });
 
-  it("preserves a save retry key on failure and hides mutation forms for readers", async () => {
+  it("works without native randomUUID, preserves retry keys, and hides forms for readers", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto),
+    });
     const canOperate = ref(true);
     wrapper = mount(OperationsPage, {
       global: {
@@ -97,6 +103,11 @@ describe("3D operations workspace", () => {
     );
     expect(first.data.remaining_g).toBe(1000);
     expect(first.reason).toBe("保存卷材与 AMS");
+    expect(first.idempotency_key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    await input("卷材编号").setValue("spool-next");
+    await form.trigger("submit");
+    await flushPromises();
+    expect(mocks.post.mock.calls[2]![1].idempotency_key).not.toBe(first.idempotency_key);
     canOperate.value = false;
     await flushPromises();
     expect(wrapper.find("form").exists()).toBe(false);

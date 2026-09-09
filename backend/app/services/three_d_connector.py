@@ -19,6 +19,8 @@ from app.services.three_d_network_health import network_health_snapshot
 FACTORY = "huakang-a"
 SITE = "3dsite-huakang-a-heyuan"
 OWNER = "cloud-connector"
+OBSERVER = "cloud-observer"
+CONNECTED_OWNERS = (OWNER, OBSERVER)
 LEADER_SECONDS = 30
 COMMAND_SECONDS = 8
 MAX_ATTEMPTS = 3
@@ -111,8 +113,8 @@ def connection(db, printer_id):
         )
         .with_for_update()
     )
-    if row is None or not row.connection_enabled or row.connection_owner != OWNER:
-        raise HTTPException(409, "打印机尚未独占移交给云端连接器")
+    if row is None or not row.connection_enabled or row.connection_owner not in CONNECTED_OWNERS:
+        raise HTTPException(409, "打印机尚未启用云端连接")
     printer = db.get(m.ThreeDPrintingPrinter, printer_id)
     if (
         printer is None
@@ -236,7 +238,7 @@ def heartbeat(db, payload):
         select(m.ThreeDPrintingPrinterConnection)
         .where(
             m.ThreeDPrintingPrinterConnection.factory_id == FACTORY,
-            m.ThreeDPrintingPrinterConnection.connection_owner == OWNER,
+            m.ThreeDPrintingPrinterConnection.connection_owner.in_(CONNECTED_OWNERS),
         )
         .order_by(m.ThreeDPrintingPrinterConnection.printer_id)
         .with_for_update()
@@ -264,7 +266,7 @@ def list_printers(db, payload):
         .where(
             m.ThreeDPrintingPrinterConnection.factory_id == FACTORY,
             m.ThreeDPrintingPrinterConnection.site_id == SITE,
-            m.ThreeDPrintingPrinterConnection.connection_owner == OWNER,
+            m.ThreeDPrintingPrinterConnection.connection_owner.in_(CONNECTED_OWNERS),
             m.ThreeDPrintingPrinterConnection.connection_enabled.is_(True),
         )
         .order_by(m.ThreeDPrintingPrinterConnection.printer_id)
@@ -312,7 +314,7 @@ def acquire(db, payload):
         "generation": metadata(printer).get("generation", 0)
         if metadata(printer).get("lease_id") == row.leader_lease_id
         else 0,
-        "control_verified": printer.machine_no
+        "control_verified": row.connection_owner == OWNER and printer.machine_no
         in settings.three_d_connector_verified_machines,
     }
 
@@ -356,14 +358,12 @@ def mark_unavailable(db, printer, actor, now):
         printer.connected, printer.state = False, "STALE"
         printer.revision += 1
         printer.updated_at = stamp(now)
-    reconcile_event(
-        db,
-        printer,
-        SimpleNamespace(device_job_key="", state="STALE"),
-        actor,
-        now,
-        connected=False,
-    )
+    row = db.get(m.ThreeDPrintingPrinterConnection, printer.id)
+    if row is None or row.connection_owner != OBSERVER:
+        reconcile_event(
+            db, printer, SimpleNamespace(device_job_key="", state="STALE"),
+            actor, now, connected=False,
+        )
     notify(db, "printer_state", printer.id)
 
 
@@ -444,7 +444,7 @@ def start_session(db, payload):
 
 @write
 def store_event(db, payload):
-    instance, _, printer, now, meta = require_session(db, payload)
+    instance, row, printer, now, meta = require_session(db, payload)
     encoded = encode(payload.model_dump(mode="json"))
     existing = db.get(m.ThreeDPrintingPrinterStateEvent, payload.event_id)
     if existing:
@@ -505,6 +505,10 @@ def store_event(db, payload):
     if payload.observed_at:
         printer.last_seen_at = stamp(payload.observed_at)
     meta.update(
+        nozzle_target=payload.nozzle_target,
+        bed_target=payload.bed_target,
+        layer_num=payload.layer_num,
+        total_layers=payload.total_layers,
         sequence=payload.sequence,
         device_job_key=payload.device_job_key,
         observed_at=stamp(payload.observed_at)
@@ -516,12 +520,16 @@ def store_event(db, payload):
     printer.updated_at = stamp(now)
     from app.services.three_d_run_reconciliation import reconcile_event
 
-    reconcile_event(db, printer, payload, instance.id, now, connected=connected)
+    if row.connection_owner != OBSERVER:
+        reconcile_event(db, printer, payload, instance.id, now, connected=connected)
     notify(db, "printer_state", event.id)
     return {"event_id": event.id, "accepted": True, "duplicate": False}
 
 
 def command_live(db, printer, meta, now, action):
+    row = db.get(m.ThreeDPrintingPrinterConnection, printer.id)
+    if row is None or row.connection_owner != OWNER:
+        raise HTTPException(409, "当前为只读接入，不能控制打印机")
     if (
         not settings.three_d_connector_enabled
         or not settings.three_d_connector_control_enabled
@@ -546,7 +554,9 @@ def reconcile(db, payload):
     from app.schemas.three_d_connector import StateEvent
     from app.services.three_d_run_reconciliation import reconcile_event
 
-    instance, _, printer, now, meta = require_session(db, payload)
+    instance, row, printer, now, meta = require_session(db, payload)
+    if row.connection_owner == OBSERVER:
+        return {"reconciled": False, "reason": "observation_only"}
     event = db.scalar(
         select(m.ThreeDPrintingPrinterStateEvent).where(
             m.ThreeDPrintingPrinterStateEvent.printer_id == printer.id,
@@ -678,10 +688,11 @@ def intent_current(evidence, meta, session_id):
 
 @write
 def claim_command(db, payload):
-    instance, _, printer, now, meta = require_session(db, payload)
+    instance, row, printer, now, meta = require_session(db, payload)
     require_network(db)
     if (
-        not settings.three_d_connector_control_enabled
+        row.connection_owner != OWNER
+        or not settings.three_d_connector_control_enabled
         or printer.machine_no not in settings.three_d_connector_verified_machines
     ):
         return {"commands": []}

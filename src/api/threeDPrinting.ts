@@ -178,9 +178,9 @@ export const threeDPrintingApi = {
     })
     return response.data
   },
-  async exportWorkbook() {
+  async exportWorkbook(dateFrom = '', dateTo = '') {
     const response = await http.get<Blob>(`${base}/export.xlsx`, {
-      params: { factory_id: factoryId },
+      params: { factory_id: factoryId, date_from: dateFrom || undefined, date_to: dateTo || undefined },
       responseType: 'blob',
       timeout: 30_000,
     })
