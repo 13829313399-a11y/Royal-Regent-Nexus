@@ -51,6 +51,10 @@ class StateEvent(SessionRef):
     live_material: str = Field(default="", max_length=255)
     nozzle_temperature: float = Field(default=0, ge=0, le=500, allow_inf_nan=False)
     bed_temperature: float = Field(default=0, ge=0, le=200, allow_inf_nan=False)
+    nozzle_target: float = Field(default=0, ge=0, le=500, allow_inf_nan=False)
+    bed_target: float = Field(default=0, ge=0, le=200, allow_inf_nan=False)
+    layer_num: int = Field(default=0, ge=0, le=100000)
+    total_layers: int = Field(default=0, ge=0, le=100000)
     error_code: str = Field(default="", max_length=64)
 
     @field_validator("observed_at")

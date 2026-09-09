@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { ref } from "vue";
+import { threeDPrintingApi } from "@/api/threeDPrinting";
+import type { ThreeDMaintenance } from "@/types/threeDPrinting";
+import LegacyDialog from "../components/LegacyDialog.vue";
 import PageControls from "../components/PageControls.vue";
 import { useWorkspaceContext } from "../context";
 const {
@@ -6,6 +10,8 @@ const {
   loadPage,
   dashboard,
   saving,
+  mutate,
+  errorMessage,
   canOperate,
   maintenanceForm,
   money,
@@ -13,10 +19,55 @@ const {
   removeMaintenance,
   Wrench,
 } = useWorkspaceContext();
+const showForm = ref(false);
+const editId = ref("");
+const revision = ref(1);
+function openAdd() {
+  editId.value = "";
+  Object.assign(maintenanceForm, {
+    business_date: new Date().toLocaleDateString("en-CA"),
+    machine_no: 0,
+    maintenance_type: "日常保养",
+    description: "",
+    cost: 0,
+    vendor: "",
+    remark: "",
+  });
+  showForm.value = true;
+}
+function edit(item: ThreeDMaintenance) {
+  editId.value = item.id;
+  revision.value = item.revision;
+  for (const key of Object.keys(
+    maintenanceForm,
+  ) as (keyof typeof maintenanceForm)[])
+    Object.assign(maintenanceForm, { [key]: item[key] });
+  showForm.value = true;
+}
+
+async function saveForm() {
+  if (editId.value)
+    await mutate(
+      () =>
+        threeDPrintingApi.updateMaintenance(editId.value, {
+          factory_id: "huakang-a",
+          ...maintenanceForm,
+          revision: revision.value,
+        }),
+      "维修记录已更新",
+    );
+  else await submitMaintenance();
+  if (!errorMessage.value) showForm.value = false;
+}
 </script>
 <template>
   <template v-if="dashboard">
     <section class="space-y-5">
+      <div class="legacy-toolbar">
+        <button v-if="canOperate" class="action-button" @click="openAdd">
+          + 添加维修记录
+        </button>
+      </div>
       <form
         class="collection-filters flex flex-wrap gap-3 rounded-xl border bg-white p-3"
         @submit.prevent="loadPage('maintenance')"
@@ -33,52 +84,54 @@ const {
         :busy="listPages.maintenance!.busy"
         @change="loadPage('maintenance', $event)"
       />
-      <form
-        v-if="canOperate"
-        class="panel-card p-5"
-        @submit.prevent="submitMaintenance"
-      >
-        <div class="section-heading">
-          <div>
-            <h2>新增维护记录</h2>
-            <p>保养、维修和耗材更换统一纳入成本。</p>
+      <LegacyDialog v-if="showForm" title="维修记录" @close="showForm = false">
+        <form
+          v-if="canOperate"
+          class="panel-card p-5"
+          @submit.prevent="saveForm"
+        >
+          <div class="section-heading">
+            <div>
+              <h2>新增维护记录</h2>
+              <p>保养、维修和耗材更换统一纳入成本。</p>
+            </div>
           </div>
-        </div>
-        <div class="form-grid">
-          <label
-            >日期<input
-              v-model="maintenanceForm.business_date"
-              required
-              type="date" /></label
-          ><label
-            >机号(0=公共)<input
-              v-model.number="maintenanceForm.machine_no"
-              min="0"
-              max="100"
-              type="number" /></label
-          ><label
-            >类型<input
-              v-model="maintenanceForm.maintenance_type"
-              required /></label
-          ><label
-            >费用<input
-              v-model.number="maintenanceForm.cost"
-              min="0"
-              step="0.01"
-              type="number" /></label
-          ><label>供应商<input v-model="maintenanceForm.vendor" /></label
-          ><label class="md:col-span-2"
-            >维护内容<input
-              v-model="maintenanceForm.description"
-              required /></label
-          ><label class="md:col-span-2"
-            >备注<input v-model="maintenanceForm.remark"
-          /></label>
-        </div>
-        <button class="action-button mt-4" type="submit" :disabled="saving">
-          <Wrench class="size-4" />保存维护记录
-        </button>
-      </form>
+          <div class="form-grid">
+            <label
+              >日期<input
+                v-model="maintenanceForm.business_date"
+                required
+                type="date" /></label
+            ><label
+              >机号(0=公共)<input
+                v-model.number="maintenanceForm.machine_no"
+                min="0"
+                max="100"
+                type="number" /></label
+            ><label
+              >类型<input
+                v-model="maintenanceForm.maintenance_type"
+                required /></label
+            ><label
+              >费用<input
+                v-model.number="maintenanceForm.cost"
+                min="0"
+                step="0.01"
+                type="number" /></label
+            ><label>供应商<input v-model="maintenanceForm.vendor" /></label
+            ><label class="md:col-span-2"
+              >维护内容<input
+                v-model="maintenanceForm.description"
+                required /></label
+            ><label class="md:col-span-2"
+              >备注<input v-model="maintenanceForm.remark"
+            /></label>
+          </div>
+          <button class="action-button mt-4" type="submit" :disabled="saving">
+            <Wrench class="size-4" />保存维护记录
+          </button>
+        </form>
+      </LegacyDialog>
       <div class="panel-card p-5">
         <div class="section-heading">
           <div>
@@ -110,6 +163,9 @@ const {
                 <td>{{ item.vendor || "—" }}</td>
                 <td>{{ money(item.cost) }}</td>
                 <td v-if="canOperate">
+                  <button class="mr-3 text-blue-700" @click="edit(item)">
+                    编辑
+                  </button>
                   <button
                     class="text-rose-600"
                     type="button"

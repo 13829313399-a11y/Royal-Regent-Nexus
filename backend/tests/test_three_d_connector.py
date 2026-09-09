@@ -239,6 +239,75 @@ def func_count(model):
     return func.count(model.id)
 
 
+def test_observer_streams_state_without_creating_runs_or_commands(environment):
+    from pathlib import Path
+    import importlib.util
+
+    env = environment
+    spec = importlib.util.spec_from_file_location("observer_setup", Path(__file__).resolve().parents[2] / "deploy/three-d-printing/enable_observer.py")
+    setup = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(setup)
+    with env[1].SessionLocal() as db:
+        row = db.get(env[2].ThreeDPrintingPrinterConnection, env[5][0])
+        row.connection_owner = "edge-legacy"
+        row.connection_enabled = False
+        db.commit()
+        first = setup.enable(db, 1)
+        db.commit()
+        assert setup.enable(db, 1) == first
+        assert row.connection_enabled and row.connection_owner == env[3].OBSERVER
+        db.commit()
+    ref = session(env)
+    grant = post(env, "/leases/acquire", {k: ref[k] for k in ("instance_id", "printer_id")})
+    assert grant["control_verified"] is False
+    assert {"printer_id": ref["printer_id"]} in post(
+        env, "/printers", {"instance_id": ref["instance_id"]}
+    )["printers"]
+    post(env, "/events", event(env, ref, progress_percent=42,
+                               nozzle_target=255, bed_target=70, layer_num=84, total_layers=200))
+    with env[1].SessionLocal() as db:
+        printer = db.get(env[2].ThreeDPrintingPrinter, ref["printer_id"])
+        assert printer.connected and printer.state == "RUNNING"
+        assert printer.progress_percent == 42
+        output = importlib.import_module("app.services.three_d_printing").printer_out(printer)
+        assert {key: output[key] for key in ("nozzle_target", "bed_target", "layer_num", "total_layers")} == {
+            "nozzle_target": 255, "bed_target": 70, "layer_num": 84, "total_layers": 200,
+        }
+    request_command(env, expected=409)
+    assert post(env, "/commands/claim", ref)["commands"] == []
+    assert post(env, "/reconcile", ref) == {"reconciled": False, "reason": "observation_only"}
+    post(env, "/events", event(env, ref, 2, "FINISH"))
+    post(env, "/leases/release", {k: ref[k] for k in ("instance_id", "printer_id", "leader_lease_id")})
+    with env[1].SessionLocal() as db:
+        assert db.scalar(select(func_count(env[2].ThreeDPrintingProductionRecord))) == 0
+        assert db.scalar(select(func_count(env[2].ThreeDPrintingPrinterCommand))) == 0
+        assert db.get(env[2].ThreeDPrintingPrinter, ref["printer_id"]).state == "STALE"
+
+
+def test_observer_preserves_existing_run_and_cannot_dispatch_old_command(environment):
+    env = environment
+    ref = session(env)
+    post(env, "/events", event(env, ref))
+    request_command(env)
+    command = post(env, "/commands/claim", ref)["commands"][0]
+    with env[1].SessionLocal() as db:
+        record = db.scalar(select(env[2].ThreeDPrintingProductionRecord))
+        before = {c.name: getattr(record, c.name) for c in record.__table__.columns}
+        db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"]).connection_owner = env[3].OBSERVER
+        db.commit()
+    post(env, "/commands/dispatch", {
+        **ref, "command_id": command["command_id"], "command_lease_id": command["command_lease_id"]
+    }, 409)
+    post(env, "/events", event(env, ref, 2, "FINISH"))
+    assert post(env, "/reconcile", ref)["reason"] == "observation_only"
+    env[4][0] += timedelta(seconds=31)
+    post(env, "/heartbeat", {"instance_id": ref["instance_id"], "version": "test"})
+    with env[1].SessionLocal() as db:
+        record = db.scalar(select(env[2].ThreeDPrintingProductionRecord))
+        assert {c.name: getattr(record, c.name) for c in record.__table__.columns} == before
+        assert db.get(env[2].ThreeDPrintingPrinter, ref["printer_id"]).state == "STALE"
+
+
 def test_command_claim_dispatch_evidence_and_immutable_idempotent_result(environment):
     env = environment
     ref = session(env)
@@ -311,11 +380,15 @@ def test_unsent_lease_reclaim_fences_old_ack_but_sent_command_never_retries(
         assert row.status == "unknown" and row.attempt_count == 2
 
 
-def test_old_edge_cannot_overwrite_or_claim_cloud_owned_printer(environment):
+@pytest.mark.parametrize("mode", ["cloud-connector", "cloud-observer"])
+def test_old_edge_cannot_overwrite_or_claim_cloud_owned_printer(environment, mode):
     env = environment
     ref = session(env)
     post(env, "/events", event(env, ref))
     request_command(env)
+    with env[1].SessionLocal() as db:
+        db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"]).connection_owner = mode
+        db.commit()
     headers = {"X-Edge-Token": EDGE_TOKEN}
     response = env[0].post(
         PUBLIC + "/edge/heartbeat",
