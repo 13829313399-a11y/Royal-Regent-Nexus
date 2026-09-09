@@ -109,3 +109,11 @@ class WarehouseRename(BaseModel):
     new_name: str = Field(min_length=1, max_length=64)
     expected_locations: dict[str, int] = Field(min_length=1)
     reason: str = Field(min_length=4, max_length=500)
+
+
+class WarehouseDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    factory_id: str = Field(min_length=1, max_length=64)
+    warehouse: str = Field(min_length=1, max_length=64)
+    expected_locations: dict[str, int] = Field(min_length=1)
+    reason: str = Field(min_length=4, max_length=500)

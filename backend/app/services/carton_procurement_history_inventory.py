@@ -2,6 +2,7 @@ from __future__ import annotations
 from app.services import carton_positions as positions
 
 import hashlib
+import json
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -227,13 +228,80 @@ def _match_order_line(
     return exact[0] if len(exact) == 1 else (None, None)
 
 
+def preview_history_inventory(db: Session,factory_id: str,filename: str,content: bytes,options=None) -> dict:
+    if options is not None:
+        from app.services.carton_opening_preview import preview_opening_inventory
+        return preview_opening_inventory(db,factory_id,filename,content,options)
+    from app.services.carton_opening_preview import check_file, digest, encoded
+    from app.models.carton_procurement import CartonCustomer, CartonClosing
+    from app.models.carton_positions import CartonLocation
+    factory_id=require_carton_factory(factory_id);filename=Path(filename or "").name
+    check_file(filename,content)
+    movements=list(db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.factory_id==factory_id)))
+    locations=list(db.scalars(select(CartonLocation).where(CartonLocation.factory_id==factory_id)))
+    customers=list(db.scalars(select(CartonCustomer).where(CartonCustomer.factory_id==factory_id)))
+    closings=list(db.scalars(select(CartonClosing).where(CartonClosing.factory_id==factory_id)))
+    evidence={"factory":factory_id,"file":hashlib.sha256(content).hexdigest(),"legacy":True,
+        "movements":sorted((r.id,str(r.quantity),str(r.unit_price),r.source_line_id) for r in movements),
+        "locations":sorted((r.id,r.revision,r.warehouse,r.bin_code,r.status) for r in locations),
+        "customers":sorted((r.id,r.revision,r.customer_name,r.status) for r in customers),
+        "closings":sorted((r.id,r.revision,r.status) for r in closings)}
+    result={"factory_id":factory_id,"original_filename":filename,"source_fingerprint":digest(evidence),"row_count":0,
+        "skipped_count":0,"missing_price_count":0,"rows":[],"warnings":[],"errors":[],"totals":[]}
+    try: rows,warnings=_parse_rows(filename,content)
+    except HTTPException as exc:
+        result["errors"].append(str(exc.detail));return result
+    result.update(row_count=len(rows),warnings=warnings)
+    existing={r.source_line_id:r for r in movements if r.source_type=="HISTORY_INVENTORY"}
+    seen={};totals={}
+    for row in rows:
+        try:
+            customer=get_active_customer_by_name(db,factory_id,row["customer_name"])
+            row.update(customer_code=customer.customer_code,customer_name=customer.customer_name)
+            key=_source_line_id(factory_id,row)
+            previous=existing.get(key) or seen.get(key)
+            if previous is not None:
+                get=previous.get if isinstance(previous,dict) else lambda field:getattr(previous,field)
+                prior_quantity=get("opening_quantity") if isinstance(previous,dict) else previous.quantity
+                prior_date=get("snapshot_date") if isinstance(previous,dict) else str(previous.occurred_at)[:10]
+                if prior_quantity!=row["opening_quantity"] or get("unit_price")!=row["unit_price"] or prior_date!=row["snapshot_date"] or any(
+                    _normalized(get(field))!=_normalized(row[field]) for field in ("customer_code","contract_no","item_no","packaging_type","paper_quality","specification","unit","currency")):
+                    raise HTTPException(409,detail=f"{row['source']} 同一期初身份已有不同数量或价格，请核实")
+            row.update(status="DUPLICATE" if previous is not None else "READY",warnings=[])
+            if previous is not None: result["skipped_count"]+=1
+            else:
+                if any(c.status=="LOCKED" and c.customer_code==row["customer_code"] and c.period>=row["snapshot_date"][:7] for c in closings):
+                    raise HTTPException(422,detail=f"{row['source']} 库存基准日所在或后续月份已锁账")
+                seen[key]=row
+            amount=(row["opening_quantity"]*row["unit_price"]).quantize(Decimal(".01"),rounding=ROUND_HALF_UP) if row["unit_price"]>0 else None
+            view={**row,"unit_price":row["unit_price"] if row["unit_price"]>0 else None,"amount":amount}
+            if row["status"]=="READY":
+                bucket=totals.setdefault((row["unit"],row["currency"]),{"unit":row["unit"],"currency":row["currency"],"quantity":Decimal(0),"amount":Decimal(0),"missing_price_count":0})
+                bucket["quantity"]+=row["opening_quantity"]
+                if amount is None:
+                    bucket["missing_price_count"]+=1;result["missing_price_count"]+=1
+                    view["warnings"].append("单价未核实，入账后标记待核价")
+                else: bucket["amount"]+=amount
+            result["rows"].append(view)
+        except HTTPException as exc: result["errors"].append(str(exc.detail))
+    for bucket in totals.values():
+        if bucket["missing_price_count"]: bucket["amount"]=None
+    result["totals"]=list(totals.values())
+    return json.loads(encoded(result))
+
+
 def import_history_inventory(
     db: Session,
     factory_id: str,
     filename: str,
     content: bytes,
     user: AuthContext,
+    options: str | dict | None = None,
+    expected_preview_fingerprint: str | None = None,
 ) -> CartonHistoryInventoryImportOut:
+    if options is not None:
+        from app.services.carton_opening_preview import import_opening_inventory
+        return import_opening_inventory(db,factory_id,filename,content,user,options,expected_preview_fingerprint)
     factory_id = require_carton_factory(factory_id)
     lock_transaction(db, "carton-inventory", factory_id)
     filename = Path(filename or "").name
@@ -246,6 +314,10 @@ def import_history_inventory(
         raise HTTPException(status_code=413, detail="历史库存文件不能超过 20MB")
 
     rows, warnings = _parse_rows(filename, content)
+    if expected_preview_fingerprint:
+        reviewed=preview_history_inventory(db,factory_id,filename,content)
+        if reviewed["source_fingerprint"]!=expected_preview_fingerprint:
+            raise HTTPException(409,detail="期初文件、客户、仓位或库存已变化，请重新预览")
     source_hash = hashlib.sha256(content).hexdigest()
     source_id = f"CHI-{source_hash[:32]}"
     existing_file_rows = list(
@@ -283,16 +355,19 @@ def import_history_inventory(
         row["customer_name"] = customer.customer_name
 
     source_line_ids = [_source_line_id(factory_id, row) for row in rows]
-    existing_line_ids = set(
+    existing_lines = list(
         db.scalars(
-            select(CartonInventoryMovement.source_line_id).where(
+            select(CartonInventoryMovement).where(
                 CartonInventoryMovement.factory_id == factory_id,
                 CartonInventoryMovement.source_type == "HISTORY_INVENTORY",
                 CartonInventoryMovement.source_line_id.in_(source_line_ids),
             )
         ).all()
     )
+    existing_by_id={line.source_line_id:line for line in existing_lines}
+    existing_line_ids=set(existing_by_id)
     seen: set[str] = set()
+    staged_rows={}
     movement_ids: list[str] = []
     skipped_count = 0
     matched_count = 0
@@ -302,10 +377,18 @@ def import_history_inventory(
     try:
         for row, source_line_id in zip(rows, source_line_ids, strict=True):
             if source_line_id in existing_line_ids or source_line_id in seen:
+                previous=existing_by_id.get(source_line_id) or staged_rows[source_line_id]
+                get=previous.get if isinstance(previous,dict) else lambda key:getattr(previous,key)
+                old_quantity=get("opening_quantity") if isinstance(previous,dict) else previous.quantity
+                old_date=get("snapshot_date") if isinstance(previous,dict) else str(previous.occurred_at)[:10]
+                if old_quantity!=row["opening_quantity"] or get("unit_price")!=row["unit_price"] or old_date!=row["snapshot_date"] or any(
+                    _normalized(get(field))!=_normalized(row[field]) for field in ("customer_code","contract_no","item_no","packaging_type","paper_quality","specification","unit","currency")):
+                    raise HTTPException(409,detail=f"{row['source']} 与已存在的期初身份使用了不同数量、价格或纸品资料，请核实，不能静默跳过或覆盖")
                 skipped_count += 1
                 warnings.append(f"{row['source']} 与既有或本文件其他记录重复，已跳过")
                 continue
             seen.add(source_line_id)
+            staged_rows[source_line_id]=row
             customer = customer_cache[_normalized(row["customer_name"])]
 
             occurred_at = datetime.fromisoformat(row["snapshot_date"]).replace(

@@ -194,10 +194,28 @@ def position_balances(db, factory, customer_code=""):
     # Separate SELECTs could mix two commits under PostgreSQL READ COMMITTED.
     snapshot = _position_snapshot(db, factory)
     totals, revisions, transfers = defaultdict(Decimal), {}, {}
+    flows = defaultdict(lambda: defaultdict(Decimal))
+    originals = {movement.id: movement for _, movement, _, _ in snapshot if movement is not None}
     latest, location_map, by_id = {}, {}, {}
     for part, movement, location, canonical in snapshot:
         pk = position_key(canonical, part.location_id)
         totals[pk] += part.quantity
+        original = movement
+        if movement is not None and movement.movement_type == "REVERSAL":
+            original = originals.get(movement.reversal_of_movement_id)
+            if original is None or original.movement_type == "REVERSAL" or inventory_key(original) != canonical:
+                raise HTTPException(409, "库存冲销缺少一致的原始流水，无法生成可靠仓位收发汇总")
+        if part.transfer_id:
+            field = "transfer_quantity"
+        elif original is not None and original.source_type == "HISTORY_INVENTORY":
+            field = "opening_quantity"
+        elif original is not None and original.movement_type == "INBOUND":
+            field = "inbound_quantity"
+        elif original is not None and original.movement_type == "OUTBOUND":
+            field = "outbound_quantity"
+        else:
+            field = "adjustment_quantity"
+        flows[pk][field] += -part.quantity if field == "outbound_quantity" else part.quantity
         revisions[pk] = part.id
         if part.transfer_id:
             transfers[pk] = part.id
@@ -217,7 +235,9 @@ def position_balances(db, factory, customer_code=""):
         loc = location_map[loc_id]
         values = {name: getattr(row, name) for name in ("factory_id", "customer_code", "customer_name",
             "contract_no", "item_no", "order_line_id", "packaging_type", "paper_quality", "specification", "unit")}
-        result.append(CartonInventoryBalanceOut(**values, balance=balance, latest_location=label(loc),
+        quantities = {field: flows[pk][field] for field in ("inbound_quantity", "outbound_quantity",
+            "opening_quantity", "transfer_quantity", "adjustment_quantity")}
+        result.append(CartonInventoryBalanceOut(**values, **quantities, balance=balance, latest_location=label(loc),
             latest_movement_id=row.id, latest_document_no=row.document_no, latest_movement_at=row.occurred_at,
             latest_inbound_at=identity_inbound.get(key), location_revision=transfers.get(pk, 0), position_revision=revisions[pk],
             position_key=pk, inventory_key=key, location_id=loc_id, warehouse=loc.warehouse, bin_code=loc.bin_code))

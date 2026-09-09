@@ -254,3 +254,46 @@ it('matches partial normalized contract numbers and emits only the selected cont
     expect(config.data.lines[0]!.paper_quality).toBe('A33')
     wrapper.unmount()
   })
+
+
+it('requires explicit warehouse deletion confirmation, preserves refusal and sends the complete warehouse revision set', async () => {
+  const locations = [
+    { id: 'P1', factory_id: 'huaxing', warehouse: 'A', bin_code: '01', label: 'A/01', revision: 3 },
+    { id: 'P2', factory_id: 'huaxing', warehouse: 'A', bin_code: '02', label: 'A/02', revision: 5 },
+  ]
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, locations })
+  const remove = vi.spyOn(cartonMasterApi, 'deleteWarehouse').mockRejectedValueOnce(new Error('used')).mockResolvedValue({ deleted: true })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
+  await flushPromises()
+  await wrapper.get('[aria-label="修改仓库 A"]').trigger('click')
+  await wrapper.findAll('button').find(b => b.text() === '删除仓库')!.trigger('click')
+  expect(remove).not.toHaveBeenCalled()
+  expect(wrapper.text()).toContain('全部 2 个仓位')
+  expect(wrapper.text()).toContain('有库存、收料、出入库、调仓或盘点记录')
+  await wrapper.get('form[aria-label="维护仓库"]').trigger('submit'); await flushPromises()
+  expect(remove).toHaveBeenCalledWith('huaxing', 'A', { P1: 3, P2: 5 }, '删除未使用空仓')
+  expect(wrapper.find('form[aria-label="维护仓库"]').exists()).toBe(true)
+  expect(wrapper.find('[role="alert"]').text()).toBe('请求失败')
+  get.mockResolvedValue({ ...emptyMaster(), can_manage: true, locations: [] })
+  await wrapper.get('form[aria-label="维护仓库"]').trigger('submit'); await flushPromises()
+  expect(wrapper.find('form[aria-label="维护仓库"]').exists()).toBe(false)
+  expect(wrapper.find('[aria-label="修改仓库 A"]').exists()).toBe(false)
+  expect(wrapper.emitted('changed')).toHaveLength(1)
+  wrapper.unmount(); vi.restoreAllMocks()
+})
+
+it('does not expose whole-warehouse deletion to a warehouse-only maintainer or retain it after factory changes', async () => {
+  const locations = [{ id: 'P1', factory_id: 'huaxing', warehouse: 'A', bin_code: '01', label: 'A/01', revision: 3 }]
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), warehouses: ['A'], locations })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
+  await flushPromises()
+  expect(wrapper.find('[aria-label="修改仓库 A"]').exists()).toBe(false)
+  get.mockResolvedValue({ ...emptyMaster(), can_manage: true, locations })
+  await wrapper.findAll('button').find(b => b.text() === '刷新资料')!.trigger('click'); await flushPromises()
+  await wrapper.get('[aria-label="修改仓库 A"]').trigger('click')
+  await wrapper.findAll('button').find(b => b.text() === '删除仓库')!.trigger('click')
+  get.mockResolvedValue(emptyMaster())
+  await wrapper.setProps({ factoryId: 'huadeng' }); await flushPromises()
+  expect(wrapper.find('form[aria-label="维护仓库"]').exists()).toBe(false)
+  wrapper.unmount(); vi.restoreAllMocks()
+})

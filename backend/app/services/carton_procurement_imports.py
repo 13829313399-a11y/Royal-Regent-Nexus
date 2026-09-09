@@ -867,7 +867,7 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                     }
                 )
                 schedule_quantity = _number(row.get("quantity")) or Decimal(0)
-                if import_type == "WEEKLY_SCHEDULE" and schedule_quantity != Decimal(order.product_order_quantity):
+                if import_type == "WEEKLY_SCHEDULE" and (order.product_order_quantity is None or schedule_quantity != Decimal(order.product_order_quantity)):
                     row["match_status"] = "QUANTITY_MISMATCH"
                     row["suggestion"] = f"排期数量 {schedule_quantity} 与订单数量 {order.product_order_quantity} 不一致，请人工确认"
                 else:
