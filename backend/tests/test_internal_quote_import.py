@@ -550,7 +550,7 @@ def test_painting_download_template_maps_uv_and_shifted_operations_without_losin
     assert len(sheet._images) == 14
     sheet["H3"], sheet["I3"] = 2, 0.52
     sheet["J3"], sheet["K3"] = 3, 0.08
-    sheet["W3"] = "UV 与散枪分别核价"
+    sheet["Y3"] = "UV 与散枪分别核价"
     stream = BytesIO()
     workbook.save(stream)
     workbook.close()

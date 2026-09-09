@@ -4,7 +4,7 @@ import { computed, ref, watchEffect } from 'vue'
 import { canonicalizeMoldingReferences, moldingMaterialReferences as getMoldingMaterials, moldingMachineReferences as getMoldingMachines, moldingMaterialOptions, selectedMoldingMaterial, selectedMoldingMachine, normalizedReferenceToken, type MoldingMaterialSelection, type MoldingMaterialReference } from '@/lib/internalQuoteMoldingReferences'
 import { internalQuoteAttachmentPreviewUrl } from '@/api/internalQuote'
 import InternalQuotePricingFields from './InternalQuotePricingFields.vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingRowSplit, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { calculateJustPlayMainCartonDimensions, justPlayCartonState, normalizeJustPlayCartonInputs, calculateJustPlayCartonsPerPallet, normalizeJustPlayPackagingInputs, justPlayPackagingInputsValid, previewEngineeringMoldPartSplit, type JustPlayPackagingInputs, type JustPlayCartonInputs } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
@@ -178,6 +178,10 @@ const operationCodes = Object.keys(paintingOperationLabels) as PaintingOperation
 const visiblePaintingRows = computed(() => painting.value.rows.filter(belongsToCurrentPricingComponent))
 const visiblePaintingPayload = computed<PaintingPayload>(() => ({ ...painting.value, rows: visiblePaintingRows.value }))
 const paintingOperationTotals = computed(() => calculatePaintingOperationTotals(visiblePaintingPayload.value))
+const paintingSplitTotals = computed(() => visiblePaintingRows.value.reduce((sum, row) => {
+  const split = calculatePaintingRowSplit(row)
+  return { paint: sum.paint + (split.paint ?? 0), labor: sum.labor + (split.labor ?? 0), valid: sum.valid && split.valid }
+}, { paint: 0, labor: 0, valid: true }))
 const paintingTotal = computed(() => calculatePaintingTotalHkd(visiblePaintingPayload.value))
 const paintingQuickPaintTax = computed(() => calculatePaintingQuickPaintTaxHkd(painting.value))
 const paintingQuickTotal = computed(() => calculatePaintingQuickTotalHkd(painting.value))
@@ -616,9 +620,19 @@ function addCaixingToolPlanRow() { molding.value.caixing_tool_plan_rows.push({ r
 function addBlow() { molding.value.blow_lines.push(assignCurrentPricingComponent({ item: '', daily_capacity: '', material: '', grade: '', estimated_weight_g: 0, labor_hkd: 0, burr_hkd: 0, profit_multiplier: 1.05, quantity: 1, output_count: '', mold_price_rmb: 0, remark: '' })) }
 function addPainting() {
   painting.value.rows.push(assignCurrentPricingComponent({
+    cost_allocation: 'split', paint_cost_hkd: null, labor_cost_hkd: null,
     image_reference: '', name: '', position: '', remark: '',
     operations: Object.fromEntries(operationCodes.map((code) => [code, { quantity: 0, unit_price_hkd: 0 }])) as PaintingPayload['rows'][number]['operations'],
   }))
+}
+function setPaintingSplit(row: PaintingPayload['rows'][number], field: 'paint_cost_hkd' | 'labor_cost_hkd', event: Event) {
+  if (row.cost_allocation !== 'split') {
+    row.cost_allocation = 'split'
+    row.paint_cost_hkd = null
+    row.labor_cost_hkd = null
+  }
+  const value = (event.target as HTMLInputElement).value
+  row[field] = value === '' ? null : Number(value)
 }
 function addDisneyDecoration() { painting.value.disney_decorations.push({ application_type: '', rate_per_op_usd: 0, operations: 0 }) }
 function addSlush() { slush.value.lines.push(assignCurrentPricingComponent({ product_code: '', item: '', material: '', weight_g: 0, daily_output_24h: 0, quantity: 1, unit_price_hkd: 0, remark: '' })) }
@@ -1032,11 +1046,11 @@ function addDickieMaterialPrice() {
         </div>
       </section>
       <section v-else :id="blockDomId('painting')" class="payload-block painting-card" data-form-block>
-        <header><div><strong>喷油/移印/UV部分</strong><span>按名称与位置录入含 UV 的九类工序数量和港币单价；图片请填写附件名称或引用，原报价单可作为分段附件留存。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('painting')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('painting')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addPainting"><Plus />新增喷油/移印/UV</button></div></header>
+        <header><div><strong>喷油/移印/UV部分</strong><span>填写工序数量和港币单价，并拆分油漆、人工；只填其中一项时另一项按总报价差额计算，两项都空则待填写。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('painting')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('painting')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addPainting"><Plus />新增喷油/移印/UV</button></div></header>
         <div class="payload-table-scroll">
           <table class="painting">
             <thead>
-              <tr><th rowspan="2">#</th><th rowspan="2">图片 / 附件引用</th><th rowspan="2">名称</th><th rowspan="2">位置</th><template v-for="code in operationCodes" :key="code"><th colspan="2">{{ paintingOperationLabels[code] }}</th></template><th rowspan="2">报价 HKD<br>（预览）</th><th rowspan="2">备注</th><th rowspan="2" /></tr>
+              <tr><th rowspan="2">#</th><th rowspan="2">图片 / 附件引用</th><th rowspan="2">名称</th><th rowspan="2">位置</th><template v-for="code in operationCodes" :key="code"><th colspan="2">{{ paintingOperationLabels[code] }}</th></template><th rowspan="2">报价 HKD<br>（预览）</th><th rowspan="2">油漆 HKD</th><th rowspan="2">人工 HKD</th><th rowspan="2">备注</th><th rowspan="2" /></tr>
               <tr><template v-for="code in operationCodes" :key="`${code}-sub`"><th>数量</th><th>单价 HKD</th></template></tr>
             </thead>
             <tbody>
@@ -1047,12 +1061,14 @@ function addDickieMaterialPrice() {
                 <td><input v-model="row.position" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行位置`"></td>
                 <template v-for="code in operationCodes" :key="code"><td><input v-model.number="row.operations[code].quantity" :disabled="disabled" type="number" min="0" step="1" :aria-label="`${paintingOperationLabels[code]}数量`"></td><td><input v-model.number="row.operations[code].unit_price_hkd" :disabled="disabled" type="number" min="0" step="0.001" :aria-label="`${paintingOperationLabels[code]}单价 HKD`"></td></template>
                 <td class="snapshot-cell amount">{{ calculated(calculatePaintingRowAmount(row)) }}</td>
+                <td><input :value="row.paint_cost_hkd ?? ''" :disabled="disabled" type="number" min="0" step="0.0001" :aria-label="`喷油第 ${index + 1} 行油漆 HKD`" :placeholder="calculatePaintingRowSplit(row).paint === null ? '待填写' : calculated(calculatePaintingRowSplit(row).paint!)" @input="setPaintingSplit(row, 'paint_cost_hkd', $event)"></td>
+                <td><input :value="row.labor_cost_hkd ?? ''" :disabled="disabled" type="number" min="0" step="0.0001" :aria-label="`喷油第 ${index + 1} 行人工 HKD`" :placeholder="calculatePaintingRowSplit(row).labor === null ? '待填写' : calculated(calculatePaintingRowSplit(row).labor!)" @input="setPaintingSplit(row, 'labor_cost_hkd', $event)"><small v-if="!calculatePaintingRowSplit(row).valid">待填写或核对拆分金额</small></td>
                 <td><input v-model="row.remark" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行备注`"></td>
                 <td><button type="button" class="icon" :disabled="disabled" @click="removeItem(painting.rows,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!visiblePaintingRows.length"><td :colspan="operationCodes.length * 2 + 7" class="empty">当前配件暂无喷油/移印/UV明细，可新增或从喷油报价单预览导入</td></tr>
+              <tr v-if="!visiblePaintingRows.length"><td :colspan="operationCodes.length * 2 + 9" class="empty">当前配件暂无喷油/移印/UV明细，可新增或从喷油报价单预览导入</td></tr>
             </tbody>
-            <tfoot v-if="visiblePaintingRows.length"><tr><td colspan="4">工序合计</td><template v-for="code in operationCodes" :key="`${code}-total`"><td colspan="2" class="painting-operation-total">HKD {{ calculated(paintingOperationTotals[code]) }}</td></template><td class="calculated-cell">HKD {{ calculated(paintingTotal) }}</td><td colspan="2" /></tr></tfoot>
+            <tfoot v-if="visiblePaintingRows.length"><tr><td colspan="4">工序合计</td><template v-for="code in operationCodes" :key="`${code}-total`"><td colspan="2" class="painting-operation-total">HKD {{ calculated(paintingOperationTotals[code]) }}</td></template><td class="calculated-cell">HKD {{ calculated(paintingTotal) }}</td><td class="calculated-cell">{{ paintingSplitTotals.valid ? calculated(paintingSplitTotals.paint) : "待核对" }}</td><td class="calculated-cell">{{ paintingSplitTotals.valid ? calculated(paintingSplitTotals.labor) : "待核对" }}</td><td colspan="2" /></tr></tfoot>
           </table>
         </div>
         <div class="painting-summary-card"><strong>二、喷油/移印/UV成本汇总</strong><span>当前填入预览</span><b>HKD {{ calculated(paintingTotal) }}</b><span>正式金额</span><b>保存后由服务端权威重算</b></div>
