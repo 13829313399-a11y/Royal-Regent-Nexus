@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { reactive } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAppStore } from '@/stores/app'
+import { pdfRenameApi } from '@/api/pdfRename'
 import ToolCenterView from '@/views/ToolCenterView.vue'
 import { navigationGroups } from '@/data/enterpriseMock'
 import {
@@ -13,6 +17,11 @@ import {
 
 vi.mock('@/features/document-tools/PdfCanvas.vue', () => ({
   default: { template: '<div data-pdf-preview />', props: ['url'] },
+}))
+const routeState = reactive<{ query: Record<string, string> }>({ query: { factory: 'group' } })
+vi.mock('vue-router', () => ({
+  useRoute: () => routeState,
+  useRouter: () => ({ replace: async ({ query }: { query: Record<string, string> }) => { routeState.query = query } }),
 }))
 const job: Job = {
   id: 'inspect-1',
@@ -75,6 +84,9 @@ async function upload(wrapper: VueWrapper, files: File[]) {
   await flushPromises()
 }
 beforeEach(() => {
+  setActivePinia(createPinia())
+  routeState.query = { factory: 'group' }
+  vi.spyOn(pdfRenameApi, 'getPdfRenameRules').mockResolvedValue({ rules: [], limits: { max_files: 50, max_file_bytes: 20 * 1024 * 1024, max_batch_bytes: 200 * 1024 * 1024 } })
   vi.spyOn(documentTools, 'capabilities').mockResolvedValue({
     operations: Object.entries(operationLabels).map(([id, label]) => ({
       id: id as keyof typeof operationLabels,
@@ -111,6 +123,51 @@ afterEach(() => {
 })
 
 describe('public tool center', () => {
+  it.each(['group', 'huadeng', 'huakang-a', 'huakang-b', 'huakang-c', 'huakang-d'] as const)('does not expose or mount renaming in %s, even with a deep link', async (factory) => {
+    useAppStore().setActiveFactory(factory)
+    routeState.query = { factory, tool: 'pdf-batch-rename' }
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('批量改名')
+    expect(pdfRenameApi.getPdfRenameRules).not.toHaveBeenCalled()
+    expect(wrapper.find('[aria-label="华兴 PDF 批量改名"]').exists()).toBe(false)
+    expect(wrapper.get('.dt-desk').isVisible()).toBe(true)
+  })
+
+  it('adds Huaxing renaming, keeps conversion selections, and closes the rename workspace on factory change', async () => {
+    useAppStore().setActiveFactory('huaxing')
+    routeState.query = { factory: 'huaxing' }
+    const wrapper = render()
+    await flushPromises()
+    await upload(wrapper, [new File(['document'], 'source.pdf')])
+    await wrapper.get('.dt-tools button:last-child').trigger('click')
+    await flushPromises()
+    expect(routeState.query.tool).toBe('pdf-batch-rename')
+    expect(pdfRenameApi.getPdfRenameRules).toHaveBeenCalledWith('huaxing', expect.any(AbortSignal))
+    expect((wrapper.get('.dt-desk').element as HTMLElement).style.display).toBe('none')
+    expect(wrapper.get('[aria-label="华兴 PDF 批量改名"]').isVisible()).toBe(true)
+    await wrapper.findAll('button').find(button => button.text() === '返回文档转换')!.trigger('click')
+    await flushPromises()
+    expect(routeState.query.tool).toBeUndefined()
+    // Check v-show directly: jsdom can cache computed display across toggles.
+    expect((wrapper.get('.dt-desk').element as HTMLElement).style.display).toBe('')
+    expect(wrapper.get('.dt-document-bar').text()).toContain('source.pdf')
+    await wrapper.get('.dt-tools button:last-child').trigger('click')
+    await flushPromises()
+    useAppStore().setActiveFactory('group')
+    routeState.query = { factory: 'group', tool: 'pdf-batch-rename' }
+    await flushPromises()
+    expect(wrapper.find('[aria-label="华兴 PDF 批量改名"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('批量改名')
+  })
+
+  it('opens the restored Huaxing deep link directly', async () => {
+    useAppStore().setActiveFactory('huaxing')
+    routeState.query = { factory: 'huaxing', tool: 'pdf-batch-rename' }
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.get('[aria-label="华兴 PDF 批量改名"]').isVisible()).toBe(true)
+  })
   it('uses the measured middle workspace width for comparison and leaves comparison when it narrows', async () => {
     const observers: Array<{
       callback: ResizeObserverCallback
