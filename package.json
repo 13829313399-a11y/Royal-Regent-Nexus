@@ -19,6 +19,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fflate": "^0.8.3",
+    "pdfjs-dist": "^6.3.289",
     "pinia": "^3.0.4",
     "reka-ui": "^2.10.0",
     "tailwind-merge": "^3.6.0",

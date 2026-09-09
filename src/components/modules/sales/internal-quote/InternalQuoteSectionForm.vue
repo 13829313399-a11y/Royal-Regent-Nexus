@@ -1032,7 +1032,7 @@ function addDickieMaterialPrice() {
         </div>
       </section>
       <section v-else :id="blockDomId('painting')" class="payload-block painting-card" data-form-block>
-        <header><div><strong>喷油/移印/UV部分</strong><span>按名称与位置录入八类工序数量和港币单价；图片请填写附件名称或引用，原报价单可作为分段附件留存。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('painting')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('painting')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addPainting"><Plus />新增喷油/移印/UV</button></div></header>
+        <header><div><strong>喷油/移印/UV部分</strong><span>按名称与位置录入含 UV 的九类工序数量和港币单价；图片请填写附件名称或引用，原报价单可作为分段附件留存。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('painting')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('painting')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addPainting"><Plus />新增喷油/移印/UV</button></div></header>
         <div class="payload-table-scroll">
           <table class="painting">
             <thead>
@@ -1050,7 +1050,7 @@ function addDickieMaterialPrice() {
                 <td><input v-model="row.remark" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行备注`"></td>
                 <td><button type="button" class="icon" :disabled="disabled" @click="removeItem(painting.rows,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!visiblePaintingRows.length"><td colspan="23" class="empty">当前配件暂无喷油/移印/UV明细，可新增或从喷油报价单预览导入</td></tr>
+              <tr v-if="!visiblePaintingRows.length"><td :colspan="operationCodes.length * 2 + 7" class="empty">当前配件暂无喷油/移印/UV明细，可新增或从喷油报价单预览导入</td></tr>
             </tbody>
             <tfoot v-if="visiblePaintingRows.length"><tr><td colspan="4">工序合计</td><template v-for="code in operationCodes" :key="`${code}-total`"><td colspan="2" class="painting-operation-total">HKD {{ calculated(paintingOperationTotals[code]) }}</td></template><td class="calculated-cell">HKD {{ calculated(paintingTotal) }}</td><td colspan="2" /></tr></tfoot>
           </table>

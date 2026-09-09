@@ -155,7 +155,9 @@ def test_postgresql_offline_ddl_compiles_and_migration_history_has_single_head(m
     assert "DROP TABLE" not in sql
     config = Config(str(BACKEND / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND / "alembic"))
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260907_0102"]
+    script = ScriptDirectory.from_config(config)
+    assert script.get_current_head() is not None
+    assert len(script.get_heads()) == 1
 
 
 def test_readiness_guard_rejects_old_and_partial_new_schema(db, migration, monkeypatch):

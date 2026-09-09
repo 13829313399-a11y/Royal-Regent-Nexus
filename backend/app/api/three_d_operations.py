@@ -31,9 +31,10 @@ def resources(
     factory_id: str = "huakang-a",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    q: str = Query("", max_length=255),
 ):
     guard(db, user, factory_id)
-    return service.resources(db, kind, page, page_size)
+    return service.resources(db, kind, page, page_size, q)
 
 
 @router.post("/resources/{kind}")

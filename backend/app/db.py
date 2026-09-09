@@ -661,8 +661,26 @@ def ensure_carton_explicit_quantity_schema_ready() -> None:
             raise RuntimeError("历史订单显式纸品需求尚未迁移至 20260909_0106；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def ensure_document_tools_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        missing = []
+        for name in ("document_tool_sources", "document_tool_jobs", "document_tool_artifacts", "document_tool_corrections"):
+            if name not in names:
+                missing.append(name)
+            else:
+                columns = {column["name"] for column in inspector.get_columns(name)}
+                missing.extend(f"{name}.{column.name}" for column in Base.metadata.tables[name].columns if column.name not in columns)
+        if missing:
+            raise RuntimeError("文档工具尚未迁移至 20260908_0103_docs；请备份并迁移后启动。缺少：" + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
+        document_tools,  # noqa: F401
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
         carton_procurement,  # noqa: F401
@@ -700,6 +718,7 @@ def init_db() -> None:
     ensure_carton_master_schema_ready()
     ensure_carton_supplier_settlement_schema_ready()
     ensure_carton_explicit_quantity_schema_ready()
+    ensure_document_tools_schema_ready()
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 

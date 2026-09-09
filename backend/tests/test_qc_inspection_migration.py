@@ -4,8 +4,16 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+
+def _current_head():
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
+    return ScriptDirectory.from_config(config).get_current_head()
 
 
 def _run_alembic(database_url: str, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -41,7 +49,7 @@ def test_qc_inspection_migration_upgrades_fresh_sqlite_and_seeds_permissions(
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260905_0100",
+            _current_head(),
         )
         table_names = {
             row[0]

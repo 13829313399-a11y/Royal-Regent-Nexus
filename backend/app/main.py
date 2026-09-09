@@ -9,6 +9,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 
 from app.api.auth import router as auth_router
+from app.api.document_tools import router as document_tools_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_procurement import router as carton_procurement_router
 from app.api.carton_supplier_settlement import router as carton_supplier_settlement_router
@@ -99,6 +100,7 @@ async def record_request_timing(request: Request, call_next):
 
 
 app.include_router(auth_router)
+app.include_router(document_tools_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_procurement_router)
 app.include_router(carton_supplier_settlement_router)
