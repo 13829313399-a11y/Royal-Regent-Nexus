@@ -36,7 +36,7 @@ const modeText = (rule: NumberRule) => rule.mode === 'OFF' ? '' : rule.mode === 
 <template>
   <div class="space-y-4" aria-label="基础设置">
     <article class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-teal-200 bg-teal-50/40 p-4" aria-label="本厂通用交期">
-      <div><h3 class="font-bold text-slate-900">本厂通用交期</h3><p class="mt-1 text-xs text-slate-500">客户未单独设置时沿用；只影响新单，旧单与追加保留原提前量。</p></div>
+      <div><h3 class="font-bold text-slate-900">本厂通用交期</h3><p class="mt-1 text-xs text-slate-500">客户未单独设置时沿用；只影响新单，旧单与追加保留原提前量。</p><p class="mt-2 text-xs leading-5 text-slate-500">安全提前量：纸品计划到货比客户交期提前几天。交期建议：按下单日期加建议天数，供落单时选择采纳。</p></div>
       <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs"><span>采购安全提前量 <b class="ml-1 text-base text-teal-800">{{ factoryDates.lead_days }}</b> 天</span><span>客户交期建议 <b class="ml-1">{{ factoryDates.customer_days == null ? '不提供' : `下单后 ${factoryDates.customer_days} 天` }}</b></span><span v-if="factoryRule?.status === 'INACTIVE'" class="text-amber-700">独立设置已停用，采用系统默认</span><button v-if="workspace.can_manage" type="button" class="rounded-lg border border-teal-200 bg-white px-3 py-2 text-teal-700" @click="emit('rule', '')">设置通用交期</button></div>
     </article>
 
@@ -76,7 +76,7 @@ const modeText = (rule: NumberRule) => rule.mode === 'OFF' ? '' : rule.mode === 
               <button type="button" :aria-label="`添加 ${g.warehouse} 仓位`" class="whitespace-nowrap rounded-lg border border-teal-200 bg-white px-3 py-2 text-teal-700 hover:bg-teal-50" @click="emit('location', undefined, g.warehouse)">添加仓位</button>
               <button v-if="workspace.can_manage" type="button" :aria-label="`修改仓库 ${g.warehouse}`" class="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600 hover:bg-slate-50" @click="emit('warehouse', g.warehouse)">修改</button>
             </div>
-          </div><p v-if="!warehouseGroups.length" class="py-2 text-slate-400">暂无匹配的仓库仓位</p><p class="mt-2 text-[11px] text-slate-500">停用保留历史，更名不移动库存；实际转移库存请使用调仓。</p>
+          </div><p v-if="!warehouseGroups.length" class="py-2 text-slate-400">暂无匹配的仓库仓位</p><p class="mt-2 text-[11px] text-slate-500">未使用空仓可在“修改”中删除；有库存或历史记录的只能停用。更名不移动库存，实际转移请使用调仓。</p>
         </div>
       </div>
     </article>

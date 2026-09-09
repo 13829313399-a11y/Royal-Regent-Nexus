@@ -159,15 +159,16 @@ class CartonCustomerListOut(BaseModel):
 
 class CartonOrderLineCreate(BaseModel):
     packaging_type: str = Field(min_length=1, max_length=64)
-    paper_quality: str = Field(min_length=1, max_length=128)
-    specification: str = Field(min_length=1, max_length=255)
+    paper_quality: str = Field(default="", max_length=128)
+    specification: str = Field(default="", max_length=255)
     dimension_unit: str = Field(default="", max_length=16)
-    usage_quantity: Decimal = Field(
-        gt=0,
+    usage_quantity: Decimal | None = Field(
+        default=None, gt=0,
         max_digits=18,
         decimal_places=8,
         description="每箱个数；纸箱数量按产品订单数量除以每箱个数并向上取整",
     )
+    required_quantity: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=4)
     unit: str = Field(min_length=1, max_length=32)
     unit_price: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=6)
     currency: str = Field(default="CNY", min_length=3, max_length=8)
@@ -199,7 +200,8 @@ class CartonOrderCreate(BaseModel):
     contract_no: str = Field(min_length=1, max_length=128)
     item_no: str = Field(min_length=1, max_length=128)
     product_name: str = Field(default="", max_length=255)
-    product_order_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    quantity_basis: Literal["CALCULATED", "EXPLICIT"] = "CALCULATED"
+    product_order_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=6)
     order_date: str
     customer_due_date: str | None = None
     due_date: str
@@ -242,7 +244,7 @@ class CartonOrderCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_due_date(self):
-        if self.customer_due_date is not None:
+        if self.customer_due_date is not None and self.quantity_basis == "CALCULATED":
             self.due_date = derive_carton_plan_due_date(
                 self.order_date,
                 self.customer_due_date,
@@ -264,7 +266,8 @@ class CartonOrderUpdate(BaseModel):
     contract_no: str = Field(min_length=1, max_length=128)
     item_no: str = Field(min_length=1, max_length=128)
     product_name: str = Field(default="", max_length=255)
-    product_order_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    quantity_basis: Literal["CALCULATED", "EXPLICIT"] = "CALCULATED"
+    product_order_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=6)
     order_date: str
     customer_due_date: str | None = None
     due_date: str
@@ -307,7 +310,7 @@ class CartonOrderUpdate(BaseModel):
 
     @model_validator(mode="after")
     def validate_due_date(self):
-        if self.customer_due_date is not None:
+        if self.customer_due_date is not None and self.quantity_basis == "CALCULATED":
             self.due_date = derive_carton_plan_due_date(
                 self.order_date,
                 self.customer_due_date,
@@ -338,10 +341,16 @@ class CartonOrderSubmitRequest(BaseModel):
         return _strip(value)
 
 
+class CartonOrderLineTarget(BaseModel):
+    order_line_id: str = Field(min_length=1, max_length=96)
+    required_quantity: Decimal = Field(ge=0, max_digits=18, decimal_places=4)
+
+
 class CartonOrderAppendRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
-    additional_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    additional_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=6)
+    line_quantities: list[CartonOrderLineTarget] = Field(default_factory=list, max_length=50)
     reason: str = Field(default="客人追加订单", min_length=4, max_length=500)
     customer_due_date: str | None = None
     due_date: str | None = None
@@ -365,7 +374,8 @@ class CartonOrderAppendRequest(BaseModel):
 class CartonOrderReduceRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
-    reduction_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6)
+    reduction_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=6)
+    line_quantities: list[CartonOrderLineTarget] = Field(default_factory=list, max_length=50)
     reason: str = Field(default="客人退单", min_length=4, max_length=500)
 
     @field_validator("factory_id")
@@ -453,10 +463,12 @@ class CartonOrderLineOut(BaseModel):
     paper_quality: str
     specification: str
     dimension_unit: str
-    usage_quantity: Decimal
+    usage_quantity: Decimal | None
     required_quantity: Decimal
     received_quantity: Decimal
     remaining_quantity: Decimal
+    pending_received_quantity: Decimal = Decimal(0)
+    maximum_reducible_quantity: Decimal = Decimal(0)
     unit: str
     unit_price: Decimal
     currency: str
@@ -515,7 +527,8 @@ class CartonOrderOut(BaseModel):
     contract_no: str
     item_no: str
     product_name: str
-    product_order_quantity: Decimal
+    quantity_basis: Literal["CALCULATED", "EXPLICIT"] = "CALCULATED"
+    product_order_quantity: Decimal | None
     order_date: str
     customer_due_date: str | None
     safety_lead_days: int
@@ -529,7 +542,7 @@ class CartonOrderOut(BaseModel):
     updated_by_name: str
     created_at: str
     updated_at: str
-    maximum_reducible_quantity: Decimal
+    maximum_reducible_quantity: Decimal | None
     lines: list[CartonOrderLineOut]
 
 
@@ -564,9 +577,9 @@ class CartonPurchaseOrderIssueOut(BaseModel):
     document_type: CartonPurchaseOrderDocumentType
     issue_sequence: int
     source_order_revision: int
-    before_product_quantity: Decimal
-    after_product_quantity: Decimal
-    product_quantity_delta: Decimal
+    before_product_quantity: Decimal | None
+    after_product_quantity: Decimal | None
+    product_quantity_delta: Decimal | None
     generated_by: str
     generated_by_name: str
     generated_at: str
@@ -577,7 +590,7 @@ class CartonPurchaseOrderContextOut(BaseModel):
     order_no: str
     order_revision: int
     pending_type: Literal["NONE", "INITIAL", "APPEND", "REDUCE", "ADJUSTMENT"]
-    pending_product_quantity: Decimal
+    pending_product_quantity: Decimal | None
     pending_line_count: int
     can_generate: bool
     latest_document_no: str
@@ -680,6 +693,7 @@ class CartonReceiptLineCreate(BaseModel):
 
 
 class CartonReceiptCreate(BaseModel):
+    acceptance_date: str | None = None
     post_immediately: bool = False
     request_id: str | None = Field(default=None, min_length=8, max_length=128)
     factory_id: str = Field(min_length=1, max_length=64)
@@ -705,6 +719,11 @@ class CartonReceiptCreate(BaseModel):
     @classmethod
     def validate_date(cls, value: str) -> str:
         return _validate_iso_date(value)
+
+    @field_validator("acceptance_date")
+    @classmethod
+    def validate_acceptance_date(cls, value):
+        return _validate_iso_date(value) if value else None
 
 
 class CartonReceiptLineOut(BaseModel):
@@ -736,6 +755,7 @@ class CartonReceiptLineOut(BaseModel):
 
 
 class CartonReceiptOut(BaseModel):
+    acceptance_date: str | None = None
     id: str
     factory_id: str
     receipt_no: str
@@ -956,6 +976,11 @@ class CartonHistoryInventoryImportOut(BaseModel):
 
 
 class CartonInventoryBalanceOut(BaseModel):
+    inbound_quantity: Decimal | None = None
+    outbound_quantity: Decimal | None = None
+    opening_quantity: Decimal | None = None
+    transfer_quantity: Decimal | None = None
+    adjustment_quantity: Decimal | None = None
     cost_status: str = "待核算"
     cost_currency: str = ""
     cost_amount: Decimal | None = None

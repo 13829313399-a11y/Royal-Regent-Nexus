@@ -12,6 +12,7 @@ const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse
 const workspace = ref(emptyMaster()), busy = ref(false), error = ref(''), loading = ref(false)
 const tab = ref('SETTINGS'), search = ref(''), customer = ref(''), editing = ref(false), editingId = ref('')
 const statusFilter = ref('ALL'), preferredOnly = ref(false)
+const warehouseDeleting = ref(false)
 const warehouseEditing = ref(false), warehouseOriginal = ref(''), locationWarehouseLocked = ref(false)
 const sourceRow = ref<MasterRecord | null>(null), locationRow = ref<CartonLocation | null>(null)
 const container = ref<HTMLElement | null>(null)
@@ -180,6 +181,7 @@ async function saveLocation() {
 }
 function editWarehouse(name = '') {
   if (!workspace.value.can_manage) return
+  warehouseDeleting.value = false
   warehouseOriginal.value = name
   warehouseForm.name = name; warehouseForm.bin = ''; warehouseForm.reason = name ? '修改仓库名称' : '添加仓库资料'
   warehouseForm.revisions = Object.fromEntries(workspace.value.locations.filter(row => row.warehouse === name).map(row => [row.id, row.revision || 1]))
@@ -190,7 +192,8 @@ async function saveWarehouse() {
   const factory = props.factoryId, original = warehouseOriginal.value
   busy.value = true; error.value = ''
   try {
-    if (original) await cartonMasterApi.renameWarehouse(factory, original, warehouseForm.name, warehouseForm.revisions, warehouseForm.reason)
+    if (warehouseDeleting.value && original) await cartonMasterApi.deleteWarehouse(factory, original, warehouseForm.revisions, warehouseForm.reason)
+    else if (original) await cartonMasterApi.renameWarehouse(factory, original, warehouseForm.name, warehouseForm.revisions, warehouseForm.reason)
     else await cartonMasterApi.createWarehouse(factory, warehouseForm.name, warehouseForm.bin, warehouseForm.reason)
     if (factory !== props.factoryId) return
     warehouseEditing.value = false; await load(); emit('changed')
@@ -248,8 +251,8 @@ async function saveWarehouse() {
 
             <div v-if="!paperOnly" class="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
               <div class="grid gap-3 sm:grid-cols-2">
-                <label class="font-semibold">采购安全提前量 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.lead_days" type="number" min="0" max="365" aria-label="默认采购提前天数" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 3 天' : '默认 3 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"></label>
-                <label class="font-semibold">客户交期建议 <span class="font-normal text-slate-500">（下单后自然日）</span><input v-model="form.data.customer_days" :disabled="form.data.customer_days_disabled" type="number" min="0" max="730" aria-label="客户交期建议天数" :placeholder="form.data.customer_days_disabled ? '已关闭建议' : form.customer_code ? '空白沿用本厂，未设置则不建议' : '空白不提供建议'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2 disabled:bg-slate-100 disabled:text-slate-400"></label>
+                <label class="font-semibold">采购安全提前量 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.lead_days" type="number" min="0" max="365" aria-label="默认采购提前天数" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 3 天' : '默认 3 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"><span class="mt-1 block font-normal leading-5 text-slate-500">计划交期＝客户交期－提前天数。例如客户 20 日要货，提前 3 天，计划 17 日到货。</span></label>
+                <label class="font-semibold">客户交期建议 <span class="font-normal text-slate-500">（下单后自然日）</span><input v-model="form.data.customer_days" :disabled="form.data.customer_days_disabled" type="number" min="0" max="730" aria-label="客户交期建议天数" :placeholder="form.data.customer_days_disabled ? '已关闭建议' : form.customer_code ? '空白沿用本厂，未设置则不建议' : '空白不提供建议'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2 disabled:bg-slate-100 disabled:text-slate-400"><span class="mt-1 block font-normal leading-5 text-slate-500">建议客户交期＝下单日期＋建议天数。仅供人工采纳，以客户实际要求为准。</span></label>
               </div>
               <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-slate-500"><span>仅新单采用；旧单及追加保留原提前量。</span><label class="inline-flex items-center gap-1.5"><input v-model="form.data.customer_days_disabled" type="checkbox" aria-label="关闭客户交期建议"> 不提供交期建议</label></div>
             </div>
@@ -289,7 +292,26 @@ async function saveWarehouse() {
         <div class="flex justify-end border-t p-4"><button :disabled="busy" class="rounded-lg bg-teal-700 px-5 py-2 text-sm font-bold text-white disabled:opacity-50">{{ busy ? '保存中…' : '保存基础资料' }}</button></div>
       </form>
     </div>
-    <div v-if="warehouseEditing" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4"><form role="dialog" aria-modal="true" aria-label="维护仓库" class="w-full max-w-lg space-y-4 rounded-xl bg-white p-5 text-sm" @submit.prevent="saveWarehouse"><div class="flex justify-between"><b>{{ warehouseOriginal ? '修改仓库' : '添加仓库' }}</b><button type="button" :disabled="busy" @click="warehouseEditing = false">关闭</button></div><label class="block">仓库名称<input v-model="warehouseForm.name" required maxlength="64" aria-label="仓库名称" class="mt-1 h-9 w-full rounded border px-2"></label><label v-if="!warehouseOriginal" class="block">首个仓位<input v-model="warehouseForm.bin" required maxlength="64" aria-label="首个仓位" placeholder="例如 A01" class="mt-1 h-9 w-full rounded border px-2"></label><p class="text-xs text-slate-500">{{ warehouseOriginal ? '整组仓位同步更名，保留原仓位编号、库存和历史记录；维护授权随仓库更名保留。' : '先填写一个仓位建立仓库，之后可在该仓库旁继续添加仓位。' }}</p><input v-model="warehouseForm.reason" required minlength="4" maxlength="500" aria-label="仓库维护原因" class="h-9 w-full rounded border px-2"><p v-if="error" role="alert" class="text-red-700">{{ error }}</p><button :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-white">保存仓库</button></form></div>
+    <div v-if="warehouseEditing" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4">
+      <form role="dialog" aria-modal="true" aria-label="维护仓库" class="w-full max-w-lg space-y-4 rounded-xl bg-white p-5 text-sm" @submit.prevent="saveWarehouse">
+        <div class="flex justify-between"><b>{{ warehouseDeleting ? '删除未使用仓库' : warehouseOriginal ? '修改仓库' : '添加仓库' }}</b><button type="button" :disabled="busy" @click="warehouseEditing = false">关闭</button></div>
+        <template v-if="warehouseDeleting">
+          <div class="rounded-lg border border-amber-200 bg-amber-50 p-3 leading-6"><b>确认删除仓库 {{ warehouseOriginal }}？</b><p>将删除该仓库及其全部 {{ Object.keys(warehouseForm.revisions).length }} 个仓位。</p><p>仅从未使用的空仓可以删除。有库存、收料、出入库、调仓或盘点记录的仓库会保留，请改为停用仓位。</p><p>该仓库的维护授权也会移除。</p></div>
+        </template>
+        <template v-else>
+          <label class="block">仓库名称<input v-model="warehouseForm.name" required maxlength="64" aria-label="仓库名称" class="mt-1 h-9 w-full rounded border px-2"></label>
+          <label v-if="!warehouseOriginal" class="block">首个仓位<input v-model="warehouseForm.bin" required maxlength="64" aria-label="首个仓位" placeholder="例如 A01" class="mt-1 h-9 w-full rounded border px-2"></label>
+          <p class="text-xs text-slate-500">{{ warehouseOriginal ? '整组仓位同步更名，保留原仓位编号、库存和历史记录；维护授权随仓库更名保留。' : '先填写一个仓位建立仓库，之后可在该仓库旁继续添加仓位。' }}</p>
+        </template>
+        <label class="block">{{ warehouseDeleting ? '删除原因' : '维护原因' }}<input v-model="warehouseForm.reason" required minlength="4" maxlength="500" aria-label="仓库维护原因" class="mt-1 h-9 w-full rounded border px-2"></label>
+        <p v-if="error" role="alert" class="text-red-700">{{ error }}</p>
+        <div class="flex justify-between gap-3">
+          <button v-if="warehouseOriginal && !warehouseDeleting" type="button" :disabled="busy" class="rounded-lg border border-red-200 px-4 py-2 text-red-700" @click="warehouseDeleting = true; warehouseForm.reason = '删除未使用空仓'; error = ''">删除仓库</button>
+          <button v-if="warehouseDeleting" type="button" :disabled="busy" class="rounded-lg border px-4 py-2" @click="warehouseDeleting = false; warehouseForm.reason = '修改仓库名称'; error = ''">返回修改</button>
+          <button :disabled="busy" class="ml-auto rounded-lg px-4 py-2 text-white" :class="warehouseDeleting ? 'bg-red-700' : 'bg-teal-700'">{{ warehouseDeleting ? '确认删除仓库' : '保存仓库' }}</button>
+        </div>
+      </form>
+    </div>
     <div v-if="locationRow" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4"><form role="dialog" aria-modal="true" aria-label="维护仓位" class="w-full max-w-lg space-y-4 rounded-xl bg-white p-5 text-sm" @submit.prevent="saveLocation"><div class="flex justify-between"><b>仓库／仓位维护</b><button type="button" :disabled="busy" @click="locationRow = null">关闭</button></div><label class="block">仓库<input v-model="locationForm.warehouse" :readonly="locationWarehouseLocked" required maxlength="64" aria-label="维护仓库名称" class="mt-1 h-9 w-full rounded border px-2"></label><label class="block">仓位<input v-model="locationForm.bin_code" :required="!!locationRow.bin_code || !locationRow.id" maxlength="64" aria-label="维护仓位编号" class="mt-1 h-9 w-full rounded border px-2"></label><label v-if="locationRow.id" class="block">状态<select v-model="locationForm.status" aria-label="仓位状态" class="ml-2 h-9 rounded border"><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select></label><p class="text-xs text-slate-500">更名不移动库存；停用后禁止新增入库，可继续清退及受控纠错。有库存请先核对是否需要调仓。</p><input v-model="locationForm.reason" required minlength="4" placeholder="维护原因，至少 4 个字" aria-label="仓位维护原因" class="h-9 w-full rounded border px-2"><p v-if="error" role="alert" class="text-red-700">{{ error }}</p><button :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-white">保存仓位</button></form></div>
     <div v-if="sourceRow" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" @click.self="sourceRow = null"><div role="dialog" aria-modal="true" aria-label="基础资料历史来源" class="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-xl bg-white p-5"><div class="flex justify-between"><b>{{ sourceRow.code }} · 历史来源</b><button type="button" @click="sourceRow = null">关闭</button></div><div v-for="(source, i) in sourceRow.sources" :key="i" class="border-b py-3 text-xs"><b>{{ source.order_date }} · {{ source.contract_no }} · {{ source.item_no }}</b><div class="mt-1 text-slate-500">{{ source.order_no }}</div><div v-for="(line, j) in source.configuration.lines" :key="j" class="mt-1">{{ line.packaging_type }} {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件</div></div></div></div>
   </section>
