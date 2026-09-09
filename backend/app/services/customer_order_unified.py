@@ -388,6 +388,8 @@ def _enrich_row(
         "unit_price_hkd": "unit_price_hkd",
     }
     for target, source in inherited.items():
+        if row.get('_regional_customer') == 'ubtech' and target == 'unit_price_hkd':
+            continue
         if not _text(row.get(target)):
             value = _unique_history_value(history, product_no, source, row["customer_name"])
             if value:
@@ -497,6 +499,8 @@ def _validate_po_batch(po_files: list[tuple[str, bytes]]) -> None:
 
 
 def _factory_allowed(customer_code: str, factory_id: str) -> bool:
+    if customer_code == 'ubtech':
+        return factory_id == 'huakang-d'
     if customer_code == 'disney':
         return factory_id in {'huaxing', 'huakang-d'}
     if customer_code == 'spin-master' or (customer_code == 'jp' and factory_id == 'huakang-d'):
@@ -513,6 +517,8 @@ def _factory_allowed(customer_code: str, factory_id: str) -> bool:
 
 
 def _customer_name(customer_code: str, factory_id: str) -> str:
+    if customer_code == 'ubtech':
+        return '优必选'
     if customer_code == "360" and factory_id == "huakang-a":
         from app.services.customer_order_huakang_a import get_huakang_a_customer_mapping
         return get_huakang_a_customer_mapping(customer_code).name
@@ -1126,6 +1132,9 @@ def _create_customer_rows(
     received_date: str,
     history: list[UnifiedHistoryRow],
 ) -> tuple[list[dict[str, Any]], list[str], str]:
+    if customer_code == 'ubtech':
+        from app.services.customer_order_ubtech import create_rows
+        return create_rows(po_files, received_date, history)
     if customer_code in {"buzzbee", "dickie", "caixing"}:
         return _parse_special_rows(customer_code, po_files, received_date, history)
     if customer_code == "360" and factory_id == "huakang-a":
@@ -1162,6 +1171,8 @@ def create_unified_customer_preview(
         raise CustomerOrderUnifiedError("来单日期必须是 YYYY-MM-DD") from exc
 
     history = read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code)
+    if customer_code == 'ubtech':
+        history = [h for h in history if '优必选' in h.customer_name or 'UBTECH' in h.customer_name.upper()]
     customer_name = _customer_name(customer_code, factory_id)
     try:
         rows, parser_warnings, input_template = _create_customer_rows(
@@ -1206,6 +1217,9 @@ def create_unified_customer_preview(
             huakang_unified.round_cartons(row)
         elif regional.enabled(factory_id, customer_code):
             regional.enrich(row, history, factory_id, customer_code)
+        if customer_code == 'ubtech':
+            from app.services.customer_order_ubtech import finish_row
+            finish_row(row)
     _mark_batch_duplicates(detail_rows)
     file_names = [name for name, _ in po_files]
     hashes = [sha256(content).hexdigest() for _, content in po_files]
@@ -1241,7 +1255,7 @@ def create_unified_customer_preview(
         "source_po_sha256s": hashes,
         "source_schedule_sha256": sha256(schedule_content).hexdigest(),
         "input_template": input_template,
-        "target_template": huakang_unified.TARGET_TEMPLATE if huakang_unified.enabled(factory_id, customer_code) else regional.TARGET_TEMPLATE if regional.enabled(factory_id, customer_code) else huaxing.target_template(factory_id) if huaxing.enabled(factory_id, customer_code) else TARGET_TEMPLATE,
+        "target_template": detail_rows[0]['target_template'] if customer_code == 'ubtech' else huakang_unified.TARGET_TEMPLATE if huakang_unified.enabled(factory_id, customer_code) else regional.TARGET_TEMPLATE if regional.enabled(factory_id, customer_code) else huaxing.target_template(factory_id) if huaxing.enabled(factory_id, customer_code) else TARGET_TEMPLATE,
         "output_file_name": output_file_name,
         "summary": {
             "total": len(detail_rows),
@@ -1381,7 +1395,7 @@ def _write_item_row(worksheet, row_number: int, row: dict[str, Any]) -> None:
     units_cell = worksheet.cell(row_number, 12)
     if quantity_cell.value is not None and units_cell.value not in (None, 0):
         worksheet.cell(row_number, 13).value = (
-            f"=CEILING(K{row_number}/L{row_number},1)" if row.get("_huakang_customer")
+            f"=CEILING(K{row_number}/L{row_number},1)" if row.get("_huakang_customer") or row.get('_regional_customer') == 'ubtech'
             else f"=K{row_number}/L{row_number}"
         )
     else:
@@ -1444,6 +1458,9 @@ def _recalculate_preview_row(row: dict[str, Any]) -> None:
         row["amount_hkd"] = _number_text(quantity * price, 2)
     if row.get("_huakang_customer"):
         huakang_unified.round_cartons(row)
+    if row.get('_regional_customer') == 'ubtech':
+        from app.services.customer_order_ubtech import finish_row
+        finish_row(row)
 
 
 def _validate_resolutions(preview: dict[str, Any], requested: set[str]) -> None:
@@ -1515,8 +1532,14 @@ def export_unified_customer_schedule(
                     huakang_unified.write_extras(workbook[ITEM_SHEET], row_number, row, customer_code)
                 else:
                     regional.write_extras(workbook[ITEM_SHEET], row_number, row, factory_id, customer_code)
+                if customer_code == 'ubtech':
+                    from app.services.customer_order_ubtech import write_extensions
+                    write_extensions(workbook[ITEM_SHEET], row_number, row)
                 for name in (ORDER_SHEET, REVIEW_SHEET):
                     _write_summary_row(workbook[name], slots_by_sheet[name][index], row, item_row=row_number, item_sheet=workbook[ITEM_SHEET])
+                    if customer_code == 'ubtech':
+                        from app.services.customer_order_ubtech import write_summary
+                        write_summary(workbook[name], slots_by_sheet[name][index], row, slots_by_sheet[ORDER_SHEET][index])
         else:
             slots = _ensure_output_slots(workbook, len(rows))
             for row_number, row in zip(slots, rows, strict=True):

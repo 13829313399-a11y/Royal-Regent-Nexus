@@ -44,6 +44,7 @@ export type HuakangCMappedCustomerCode =
   | 'jp'
 
 export type MappedCustomerCode =
+  | 'ubtech'
   | HuaxingMappedCustomerCode
   | HuadengMappedCustomerCode
   | HuakangAMappedCustomerCode
