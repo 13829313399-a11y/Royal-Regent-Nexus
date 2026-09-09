@@ -49,7 +49,7 @@ def canonical_lines(lines):
     for line in lines:
         get = line.get if isinstance(line, dict) else lambda k, default="": getattr(line, k, default)
         result.append({**{k: str(get(k, "") or "").strip() for k in ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit")},
-                       "usage_quantity": format(Decimal(str(get("usage_quantity", 0))).normalize(), "f")})
+                       "usage_quantity": format(Decimal(str((get("usage_quantity", 0) or 0))).normalize(), "f")})
     return sorted(result, key=encoded)
 
 
@@ -131,6 +131,8 @@ def sync_history(db, factory):
             ("CONFIG", order.item_no, config, digest([order.item_no, config])),
             ("CONTRACT", order.contract_no, {"item_nos": [order.item_no]}, digest([order.customer_code, order.contract_no])),
         ):
+            if kind == "CONFIG" and (not lines.get(order.id) or any(line.usage_quantity is None or line.required_quantity <= 0 or not line.paper_quality or not line.specification for line in lines[order.id])):
+                continue
             key = (kind, identity)
             row = records.get(key)
             if row is None:
@@ -408,3 +410,117 @@ def save_warehouse(db, user, payload, *, rename=False):
                    {"reason": payload.reason, "before": before, "after": after, "warehouse_rename": True})
     db.commit()
     return [location_out(row) for row in rows]
+
+
+def _warehouse_has_history(db, factory, rows):
+    """Check immutable use, not net stock; legacy labels survive catalog renames."""
+    from app.models.carton_positions import CartonPositionEntry
+    from app.models.carton_procurement import CartonReceiptLine, CartonInventoryMovement
+    from app.models.carton_stocktake import CartonStocktakeLine
+    from app.services.carton_positions import location_out
+    identifiers = {row.id for row in rows}
+    if db.scalar(select(CartonPositionEntry.id).where(CartonPositionEntry.factory_id == factory,
+            CartonPositionEntry.location_id.in_(identifiers)).limit(1)) is not None:
+        return "已有库存流水或调仓历史"
+
+    def normalized(value):
+        return "/".join(part.strip() for part in str(value or "").strip().upper().replace("／", "/").split("/"))
+
+    labels, warehouses = set(), set()
+
+    def remember(snapshot):
+        if isinstance(snapshot, dict) and snapshot.get("id") in identifiers:
+            warehouses.add(normalized(snapshot.get("warehouse")))
+            labels.add(normalized(snapshot.get("label")))
+            if snapshot.get("warehouse") and snapshot.get("bin_code"):
+                labels.add(normalized(snapshot["warehouse"] + "/" + snapshot["bin_code"]))
+
+    for row in rows:
+        remember(location_out(row))
+    events = list(db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory)))
+    for event in events:
+        if event.entity_type == "carton_location" and event.entity_id in identifiers:
+            detail = json.loads(event.detail_json)
+            remember(detail)
+            remember(detail.get("before"))
+            remember(detail.get("after"))
+    labels.discard(""); warehouses.discard("")
+
+    def refers(value):
+        if isinstance(value, list):
+            return any(refers(item) for item in value)
+        if not isinstance(value, dict):
+            return False
+        for key, item in value.items():
+            if key in {"location_id", "from_location_id", "to_location_id"} and isinstance(item, str) and item in identifiers:
+                return True
+            if key in {"location", "latest_location", "from_location", "to_location", "label"} and normalized(item) in labels | warehouses:
+                return True
+            if key == "warehouse" and normalized(item) in warehouses:
+                return True
+            if key == "position_key" and isinstance(item, str):
+                try:
+                    position = json.loads(item)
+                except (TypeError, ValueError):
+                    position = None
+                if isinstance(position, list) and len(position) == 2 and isinstance(position[1], str) and position[1] in identifiers:
+                    return True
+            if isinstance(item, (dict, list)) and refers(item):
+                return True
+        return False
+
+    # Draft, voided and posted receipt lines all remain business evidence.
+    for row in db.scalars(select(CartonReceiptLine).where(CartonReceiptLine.factory_id == factory)):
+        if refers({"location": row.location, "allocations": json.loads(row.location_allocations_json or "[]")}):
+            return "已被收料单引用（包括未入库或已作废单据）"
+    for row in db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.factory_id == factory)):
+        if refers({"location": row.location}):
+            return "已有历史库存流水"
+    for row in db.scalars(select(CartonStocktakeLine).where(CartonStocktakeLine.factory_id == factory)):
+        if refers(json.loads(row.snapshot_json)) or refers({"position_key": row.inventory_key}):
+            return "已有盘点记录（包括已取消盘点）"
+    for event in events:
+        # Catalog editing and grant changes do not count as business use.
+        if event.entity_type in {"carton_location", "carton_warehouse", "carton_master"}:
+            continue
+        if refers(json.loads(event.detail_json)):
+            return "已有业务操作历史引用"
+    return ""
+
+
+def delete_warehouse(db, user, payload):
+    from app.models.carton_positions import CartonLocation
+    from app.services.carton_positions import location_out, unknown_id
+    from app.services.carton_procurement import _lock_receipt_factory, _audit, now_text
+    factory, warehouse = payload.factory_id, payload.warehouse.upper()
+    _lock_receipt_factory(db, factory)
+    require_manage(db, user, factory)
+    rows = list(db.scalars(select(CartonLocation).where(CartonLocation.factory_id == factory,
+        CartonLocation.warehouse == warehouse)))
+    if warehouse == "待核仓位" or any(row.id == unknown_id(factory) for row in rows):
+        raise HTTPException(422, "系统待核仓位不可删除，请使用调仓")
+    if not rows:
+        raise HTTPException(404, "仓库不存在，请刷新资料")
+    if {row.id: row.revision for row in rows} != payload.expected_locations:
+        raise HTTPException(409, "仓库或仓位资料已变化，请刷新后重新核对删除范围")
+    reason = _warehouse_has_history(db, factory, rows)
+    if reason:
+        raise HTTPException(409, f"该仓库{reason}，不能删除；请保留并停用仓位")
+    before = [location_out(row) for row in rows]
+    # Name-based permissions must not be inherited if a new warehouse reuses this name.
+    for grant in db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "ACCESS")):
+        data = json.loads(grant.data_json)
+        if warehouse not in data.get("warehouses", []):
+            continue
+        previous = record_out(grant)
+        grant.data_json = encoded({**data, "warehouses": [name for name in data["warehouses"] if name != warehouse]})
+        grant.revision += 1
+        grant.updated_at = now_text()
+        _audit(db, user, factory, "MASTER_DATA_SAVED", "carton_master", grant.id,
+               {"reason": payload.reason, "before": previous, "after": record_out(grant), "warehouse_deleted": warehouse})
+    for row in rows:
+        db.delete(row)
+    _audit(db, user, factory, "MASTER_WAREHOUSE_DELETED", "carton_warehouse", "CWH-" + digest([factory, warehouse]),
+           {"reason": payload.reason, "warehouse": warehouse, "before": before, "after": [], "deleted_location_count": len(rows)})
+    db.commit()
+    return {"deleted": True}

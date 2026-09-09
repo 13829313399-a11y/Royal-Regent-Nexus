@@ -12,6 +12,7 @@ from app.api.auth import router as auth_router
 from app.api.document_tools import router as document_tools_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_procurement import router as carton_procurement_router
+from app.api.carton_supplier_settlement import router as carton_supplier_settlement_router
 from app.api.customer_order import router as customer_order_router
 from app.api.directory import router as directory_router
 from app.api.iam import router as iam_router
@@ -102,6 +103,7 @@ app.include_router(auth_router)
 app.include_router(document_tools_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_procurement_router)
+app.include_router(carton_supplier_settlement_router)
 app.include_router(customer_order_router)
 app.include_router(directory_router)
 app.include_router(internal_quote_router)

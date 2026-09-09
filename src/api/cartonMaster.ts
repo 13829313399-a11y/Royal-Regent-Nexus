@@ -41,6 +41,9 @@ export function numberWarning(rule: NumberRule, value: string) {
     (rule.characters === 'DIGITS' && !/^\d+$/.test(value)) || (rule.characters === 'ALNUM_DASH' && !/^[A-Za-z0-9_-]+$/.test(value))
 }
 export const cartonMasterApi = {
+  async deleteWarehouse(factory_id: string, warehouse: string, expected_locations: Record<string, number>, reason: string) {
+    return (await http.post<{ deleted: boolean }>('/carton-procurement/inventory/warehouses/delete', { factory_id, warehouse, expected_locations, reason })).data
+  },
   async createWarehouse(factory_id: string, warehouse: string, bin_code: string, reason: string) {
     return (await http.post<CartonLocation[]>('/carton-procurement/inventory/warehouses', { factory_id, warehouse, bin_code, reason })).data
   },
