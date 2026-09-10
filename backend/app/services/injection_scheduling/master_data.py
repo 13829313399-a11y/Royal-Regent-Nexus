@@ -123,15 +123,18 @@ def write_master(db, kind, factory, data, actor, identity=None, record_revision=
         obj.factory_id = factory
         if not str(values.get("code") or "").strip():
             raise HTTPException(422, "请填写机号")
-        other = db.scalar(
-            select(Machine).where(
-                Machine.factory_id == factory,
-                Machine.code == values["code"],
-                Machine.id != identity if identity else True,
+        code = str(values["code"]).strip()
+        if any(
+            normalize_code(other.code) == normalize_code(code)
+            for other in db.scalars(
+                select(Machine).where(
+                    Machine.factory_id == factory,
+                    Machine.id != identity if identity else True,
+                )
             )
-        )
-        if other:
+        ):
             raise HTTPException(409, "本厂已有此机号")
+        data = {**data, "code": code}
         if "notes" in data and state_from_text(data["notes"]) == "MAINTENANCE":
             raise HTTPException(
                 422, "备注显示设备需要检修，请使用设备状态操作同步暂停与重算"
