@@ -71,7 +71,7 @@ from app.services.injection_scheduling.common import (
     touch,
 )
 from app.services.injection_scheduling.enrichment import apply_demand_fields, enrich
-from app.services.injection_scheduling.field_registry import FIELDS
+from app.services.injection_scheduling.field_registry import FACTORIES, FIELDS
 
 router = APIRouter(prefix="/api/injection-scheduling", tags=["注塑排产"])
 
@@ -747,14 +747,40 @@ async def upload_plan(
                 {
                     "source_row": r["source_row"],
                     "fields": r["fields"],
-                    "issues": r["issues"],
+                    "issues": r.get("preview_issues", r["issues"]),
                     "row_role": r["row_role"],
+                    "match_candidates": r.get("match_candidates", []),
                 }
                 for r in obj.evidence["demands"]
             ],
         }
 
     return write(db, user, payload, "import.preview", apply)
+
+
+@router.get("/templates/plan")
+def download_plan_template(
+    factory_id: FactoryId,
+    task_rows: int = 10,
+    db: Session = Depends(get_db),
+    user: AuthContext = Depends(get_current_user),
+):
+    authorize(db, user, factory_id, "plan")
+    from urllib.parse import quote
+
+    from app.services.injection_scheduling.template_download import download_template
+
+    try:
+        content = download_template(db, factory_id, task_rows)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return Response(
+        content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(FACTORIES[factory_id] + '统一啤机计划表.xlsx')}"
+        },
+    )
 
 
 @router.get("/imports/{batch_id}")
