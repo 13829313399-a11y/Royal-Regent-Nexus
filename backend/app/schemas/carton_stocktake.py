@@ -22,7 +22,8 @@ class StocktakeAction(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
-    action: Literal["SAVE", "SUBMIT", "APPROVE", "RETURN", "CANCEL"]
+    action: Literal["SAVE", "SUBMIT", "APPROVE", "CONFIRM", "RETURN", "CANCEL"]
+    posting_confirmed: bool = False
     ledger_token: str = Field(default="", max_length=64)
     cutoff_acknowledged: bool = False
     lines: list[StocktakeCount] = Field(default_factory=list, max_length=500)

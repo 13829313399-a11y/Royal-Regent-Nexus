@@ -2446,6 +2446,7 @@ function auditEventLabel(eventType: string) {
     INVENTORY_LOCATION_CHANGED: '库存调仓',
     STOCKTAKE_CREATED: '生成盘点单',
     STOCKTAKE_SAVE: '盘点草稿保存',
+    STOCKTAKE_CONFIRM: '盘点确认提交并入账',
     STOCKTAKE_SUBMIT: '盘点提交复核',
     STOCKTAKE_APPROVE: '盘点复核入账',
     STOCKTAKE_RETURN: '盘点退回重盘',
