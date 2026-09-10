@@ -58,10 +58,6 @@ async function open(props = { canPlan: true, canReport: true }) {
 }
 const button = (w: ReturnType<typeof mount>, label: string) =>
   w.findAll('button').find((b) => b.text() === label)!;
-async function fill(w: ReturnType<typeof mount>) {
-  await w.get('textarea').setValue('误导入旧版计划');
-  await w.get('input[aria-label="清空确认文字"]').setValue('清空华兴计划数据');
-}
 
 it('previews the entire factory independently of visible rows and cancels without writing', async () => {
   const store = useInjectionStore();
@@ -82,26 +78,22 @@ it('previews the entire factory independently of visible rows and cancels withou
   expect(store.dirty).toBe(false);
 });
 
-it('requires exact factory text, reason and an explicit execution acknowledgment', async () => {
+it('clears the displayed scope including production records with one confirmation click', async () => {
   const store = useInjectionStore();
   const mutate = vi.spyOn(store, 'mutate').mockResolvedValue({ cleared: true });
   const w = await open();
-  expect(button(w, '确认清空').attributes('disabled')).toBeDefined();
-  await fill(w);
-  expect(button(w, '确认清空').attributes('disabled')).toBeDefined();
-  await w.get('input[type="checkbox"]').setValue(true);
-  await w.get('input[aria-label="清空确认文字"]').setValue('清空华登计划数据');
-  expect(button(w, '确认清空').attributes('disabled')).toBeDefined();
-  await w
-    .get('input[aria-label="清空确认文字"]')
-    .setValue(preview.confirmation_text);
-  await button(w, '确认清空').trigger('click');
+  expect(w.find('input, textarea').exists()).toBe(false);
+  expect(w.text()).toContain('点击“确认清除”将一并删除这些生产记录');
+  expect(button(w, '重新预览')).toBeUndefined();
+  expect(mutate).not.toHaveBeenCalled();
+  expect(button(w, '确认清除').attributes('disabled')).toBeUndefined();
+  await button(w, '确认清除').trigger('click');
   await flushPromises();
   expect(mutate).toHaveBeenCalledExactlyOnceWith('/plan-data/clear', {
     expected_revision: 40,
     preview_token: preview.preview_token,
     confirmation: preview.confirmation_text,
-    reason: '误导入旧版计划',
+    reason: '用户确认清除本厂计划数据',
     include_execution: true,
   });
   expect(w.emitted('cleared')).toHaveLength(1);
@@ -109,36 +101,41 @@ it('requires exact factory text, reason and an explicit execution acknowledgment
 
 it('does not offer an execution reset to an account without report permission', async () => {
   const w = await open({ canPlan: true, canReport: false });
-  await fill(w);
-  expect(w.get('input[type="checkbox"]').attributes('disabled')).toBeDefined();
   expect(w.text()).toContain('没有报工权限');
-  expect(button(w, '确认清空').attributes('disabled')).toBeDefined();
+  expect(button(w, '确认清除').attributes('disabled')).toBeDefined();
 });
 
 it('does not require report permission or the extra checkbox for an unstarted import', async () => {
+  const mutate = vi.spyOn(useInjectionStore(), 'mutate').mockResolvedValue({ cleared: true });
   api.post.mockResolvedValue({
     ...preview,
     requires_execution_confirmation: false,
   });
   const w = await open({ canPlan: true, canReport: false });
-  await fill(w);
   expect(w.find('input[type="checkbox"]').exists()).toBe(false);
-  expect(button(w, '确认清空').attributes('disabled')).toBeUndefined();
+  expect(button(w, '确认清除').attributes('disabled')).toBeUndefined();
+  await button(w, '确认清除').trigger('click');
+  expect(mutate).toHaveBeenCalledExactlyOnceWith('/plan-data/clear', {
+    expected_revision: 40,
+    preview_token: preview.preview_token,
+    confirmation: preview.confirmation_text,
+    reason: '用户确认清除本厂计划数据',
+    include_execution: false,
+  });
 });
 
-it('shows a failed clear, preserves the reason, and resets confirmation on fresh preview', async () => {
+it('requires a fresh preview and another confirmation click after a failed clear', async () => {
   const store = useInjectionStore();
-  vi.spyOn(store, 'mutate').mockImplementation(async () => {
+  const mutate = vi.spyOn(store, 'mutate').mockImplementation(async () => {
     store.error = '预览后资料已更新，请重新预览清空范围';
     return null;
   });
   const w = await open();
-  await fill(w);
-  await w.get('input[type="checkbox"]').setValue(true);
-  await button(w, '确认清空').trigger('click');
+  await button(w, '确认清除').trigger('click');
   await flushPromises();
   expect(w.get('[role="alert"]').text()).toContain('重新预览');
   expect(w.emitted('cleared')).toBeUndefined();
+  expect(button(w, '确认清除').attributes('disabled')).toBeDefined();
   api.post.mockResolvedValue({
     ...preview,
     revision: 41,
@@ -146,24 +143,23 @@ it('shows a failed clear, preserves the reason, and resets confirmation on fresh
   });
   await button(w, '重新预览').trigger('click');
   await flushPromises();
-  expect((w.get('textarea').element as HTMLTextAreaElement).value).toBe(
-    '误导入旧版计划',
-  );
-  expect(
-    (w.get('input[aria-label="清空确认文字"]').element as HTMLInputElement)
-      .value,
-  ).toBe('');
-  expect(
-    (w.get('input[type="checkbox"]').element as HTMLInputElement).checked,
-  ).toBe(false);
-  expect(button(w, '确认清空').attributes('disabled')).toBeDefined();
+  expect(mutate).toHaveBeenCalledTimes(1);
+  expect(button(w, '确认清除').attributes('disabled')).toBeUndefined();
+  mutate.mockResolvedValue({ cleared: true });
+  await button(w, '确认清除').trigger('click');
+  await flushPromises();
+  expect(mutate).toHaveBeenLastCalledWith('/plan-data/clear', expect.objectContaining({
+    expected_revision: 41,
+    preview_token: 'b'.repeat(64),
+  }));
+  expect(w.emitted('cleared')).toHaveLength(1);
 });
 
 it('keeps clearing unavailable for empty data or a failed preview', async () => {
   api.post.mockRejectedValue(new Error('预览失败'));
   const w = await open();
   expect(w.get('[role="alert"]').text()).toBeTruthy();
-  expect(button(w, '确认清空').attributes('disabled')).toBeDefined();
+  expect(button(w, '确认清除').attributes('disabled')).toBeDefined();
   api.post.mockResolvedValue({
     ...preview,
     can_clear: false,
@@ -173,7 +169,7 @@ it('keeps clearing unavailable for empty data or a failed preview', async () => 
   await flushPromises();
   expect(w.text()).toContain('暂无可清空');
   expect(w.find('textarea').exists()).toBe(false);
-  expect(button(w, '确认清空').attributes('disabled')).toBeDefined();
+  expect(button(w, '确认清除').attributes('disabled')).toBeDefined();
 });
 
 it('discards a late preview after switching factory', async () => {
@@ -206,9 +202,7 @@ it('does not close or submit a second clear while the write is pending', async (
     });
   });
   const w = await open();
-  await fill(w);
-  await w.get('input[type="checkbox"]').setValue(true);
-  await button(w, '确认清空').trigger('click');
+  await button(w, '确认清除').trigger('click');
   await w.get('[role="dialog"]').trigger('keydown', { key: 'Escape' });
   expect(w.emitted('close')).toBeUndefined();
   expect(button(w, '取消').attributes('disabled')).toBeDefined();

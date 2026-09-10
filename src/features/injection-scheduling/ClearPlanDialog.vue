@@ -30,21 +30,16 @@ const store = useInjectionStore();
 const targetFactory = store.factory!;
 const preview = ref<ClearPreview | null>(null);
 const loading = ref(false),
-  error = ref(''),
-  reason = ref('');
-const confirmation = ref(''),
-  includeExecution = ref(false);
+  error = ref('');
 let generation = 0;
 const canSubmit = computed(
   () =>
     props.canPlan &&
     !loading.value &&
+    !error.value &&
     !store.busy &&
     preview.value?.can_clear &&
-    confirmation.value === preview.value.confirmation_text &&
-    reason.value.trim().length >= 2 &&
-    (!preview.value.requires_execution_confirmation ||
-      (props.canReport && includeExecution.value)),
+    (!preview.value.requires_execution_confirmation || props.canReport),
 );
 const items = [
   ['demands', '需求'],
@@ -62,8 +57,6 @@ async function loadPreview() {
   loading.value = true;
   error.value = '';
   preview.value = null;
-  confirmation.value = '';
-  includeExecution.value = false;
   try {
     const result = await api.post<ClearPreview>('/plan-data/clear-preview', {
       factory_id: targetFactory,
@@ -84,10 +77,11 @@ async function submit() {
   const result = await store.mutate('/plan-data/clear', {
     expected_revision: preview.value.revision,
     preview_token: preview.value.preview_token,
-    confirmation: confirmation.value,
-    reason: reason.value.trim(),
-    include_execution:
-      preview.value.requires_execution_confirmation && includeExecution.value,
+    // The single confirmation button acknowledges the displayed preview while
+    // preserving the existing API's factory, audit and execution contract.
+    confirmation: preview.value.confirmation_text,
+    reason: '用户确认清除本厂计划数据',
+    include_execution: preview.value.requires_execution_confirmation,
   });
   if (store.factory !== targetFactory) return;
   if (result?.cleared) emit('cleared');
@@ -169,44 +163,15 @@ onBeforeUnmount(() => {
                 {{ numberText(preview.counts.active_runs) }} 条在产/暂停）及
                 {{ numberText(preview.counts.shift_reports) }} 条报工。
               </p>
-              <label class="inj-clear-check">
-                <input
-                  type="checkbox"
-                  v-model="includeExecution"
-                  :disabled="!canReport || store.busy"
-                />
-                <span
-                  >我确认同时删除这些开工、报工记录，并解除相关生产占用</span
-                >
-              </label>
+              <p>
+                点击“确认清除”将一并删除这些生产记录，并解除相关机台占用。
+              </p>
               <p v-if="!canReport">
                 当前账号没有报工权限，无法清空包含生产记录的数据。
               </p>
             </div>
-            <label class="inj-clear-field"
-              >清空原因
-              <textarea
-                v-model="reason"
-                :disabled="store.busy"
-                rows="2"
-                minlength="2"
-                maxlength="500"
-                placeholder="例如：误导入旧版计划，需要重新导入"
-              />
-            </label>
-            <label class="inj-clear-field"
-              >请输入“{{ preview.confirmation_text }}”确认
-              <input
-                v-model="confirmation"
-                :disabled="store.busy"
-                autocomplete="off"
-                maxlength="100"
-                aria-label="清空确认文字"
-              />
-            </label>
             <p class="inj-muted">
-              清空前会保存审计快照。此操作不能通过“撤销排产”恢复；完成后可重新导入
-              Excel。
+              确认后将清除以上数据，此操作不能通过“撤销排产”恢复。完成后可重新导入 Excel。
             </p>
           </template>
           <p v-else class="inj-clear-preserved" role="status">
@@ -217,6 +182,7 @@ onBeforeUnmount(() => {
       </div>
       <footer class="inj-actions">
         <InjButton
+          v-if="error"
           :disabled="store.busy"
           :pending="loading"
           @click="loadPreview"
@@ -229,7 +195,7 @@ onBeforeUnmount(() => {
           :disabled="!canSubmit"
           :pending="store.busy"
           @click="submit"
-          >确认清空</InjButton
+          >确认清除</InjButton
         >
       </footer>
     </section>
@@ -311,23 +277,6 @@ onBeforeUnmount(() => {
   display: inline-block;
   vertical-align: text-bottom;
   margin-right: 4px;
-}
-.inj-clear-check {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  line-height: 1.6;
-}
-.inj-clear-check input {
-  flex: none;
-  margin-top: 4px;
-  width: 16px;
-  height: 16px;
-}
-.inj-clear-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 .inj-clear-imports {
   overflow-wrap: anywhere;
