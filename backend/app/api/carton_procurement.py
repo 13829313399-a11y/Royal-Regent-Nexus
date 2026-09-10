@@ -4,7 +4,7 @@ from fastapi.encoders import jsonable_encoder
 from io import BytesIO
 from urllib.parse import quote as url_quote
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -129,8 +129,8 @@ from app.services.carton_procurement_export import (
     build_purchase_order_issue_workbook,
     build_purchase_order_workbook,
 )
-from app.services.carton_procurement_history_import import import_history_orders
-from app.services.carton_procurement_history_inventory import import_history_inventory
+from app.services.carton_procurement_history_import import import_history_orders, preview_history_orders
+from app.services.carton_procurement_history_inventory import import_history_inventory, preview_history_inventory
 from app.core.time import business_now
 
 
@@ -391,6 +391,7 @@ def post_orders_bulk_submit_supplier(
 async def post_history_order_import(
     factory_id: str,
     file: UploadFile = File(...),
+    expected_preview_fingerprint: str | None = Form(default=None),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -404,7 +405,19 @@ async def post_history_order_import(
         file.filename or "history-orders.xlsx",
         content,
         current_user,
+        expected_preview_fingerprint=expected_preview_fingerprint,
     )
+
+
+@router.post("/history-orders/preview")
+async def post_history_order_preview(
+    factory_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db,current_user,"carton_procurement:order_write",factory_id)
+    return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",await file.read())
 
 
 @router.get("/orders/{order_no}/purchase-order.xlsx")
@@ -772,6 +785,8 @@ def get_inventory_movements(
 async def post_history_inventory_import(
     factory_id: str,
     file: UploadFile = File(...),
+    options: str | None = Form(default=None),
+    expected_preview_fingerprint: str | None = Form(default=None),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -785,7 +800,21 @@ async def post_history_inventory_import(
         file.filename or "history-inventory.xlsx",
         content,
         current_user,
+        options=options,
+        expected_preview_fingerprint=expected_preview_fingerprint,
     )
+
+
+@router.post("/inventory/history-imports/preview")
+async def post_history_inventory_preview(
+    factory_id: str,
+    file: UploadFile = File(...),
+    options: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id=_ensure_permission(db,current_user,"carton_procurement:inventory_write",factory_id)
+    return preview_history_inventory(db,factory_id,file.filename or "history-inventory.xlsx",await file.read(),options=options)
 
 
 @router.get("/stocktakes")
@@ -1069,7 +1098,7 @@ def post_carton_transfer(payload: PositionTransfer, db: Session = Depends(get_db
 
 
 from app.services import carton_master as master_service
-from app.schemas.carton_master import MasterSave, LocationUpdate, WarehouseCreate, WarehouseRename
+from app.schemas.carton_master import MasterSave, LocationUpdate, WarehouseCreate, WarehouseRename, WarehouseDelete
 
 @router.get("/master-data")
 def get_master_data(factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
@@ -1102,3 +1131,9 @@ def post_carton_warehouse(payload: WarehouseCreate, db: Session = Depends(get_db
 def rename_carton_warehouse(payload: WarehouseRename, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
     return master_service.save_warehouse(db, current_user, payload, rename=True)
+
+
+@router.post("/inventory/warehouses/delete")
+def delete_carton_warehouse(payload: WarehouseDelete, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return master_service.delete_warehouse(db, current_user, payload)

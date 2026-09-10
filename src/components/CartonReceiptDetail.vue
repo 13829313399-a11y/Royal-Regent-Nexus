@@ -26,7 +26,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', escape))
       </div>
       <div class="min-h-0 overflow-auto">
         <div class="flex flex-wrap gap-x-8 gap-y-3 border-b border-slate-100 bg-slate-50/60 px-5 py-4 text-xs text-slate-600">
-          <span>收料单 <b class="ml-2 text-slate-900">{{ receipt.receipt_no }}</b></span><span>送货日期 <b class="ml-2 text-slate-900">{{ receipt.delivery_date }}</b></span><span>状态 <b class="ml-2 text-teal-700">{{ status }}</b></span>
+          <span>收料单 <b class="ml-2 text-slate-900">{{ receipt.receipt_no }}</b></span><span>送货日期 <b class="ml-2 text-slate-900">{{ receipt.delivery_date }}</b></span><span>实际验收日期 <b class="ml-2 text-slate-900">{{ receipt.acceptance_date || '历史未记录' }}</b></span><span>状态 <b class="ml-2 text-teal-700">{{ status }}</b></span>
           <span>登记人 <b class="ml-2 text-slate-900">{{ receipt.created_by_name || '未记录' }}</b></span><span v-if="receipt.confirmed_at">确认人 <b class="ml-2 text-slate-900">{{ receipt.confirmed_by_name || '未记录' }}</b></span>
         </div>
         <table aria-label="收料整单明细" class="w-full min-w-[1160px] text-left text-xs">

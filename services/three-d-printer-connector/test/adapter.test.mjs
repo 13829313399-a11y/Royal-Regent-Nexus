@@ -4,6 +4,15 @@ import { once } from 'node:events';
 import { BambuAdapter } from '../src/bambu/BambuAdapter.mjs';
 import { Decoder, mqttString, packet, publishBody, publishPacket } from '../src/bambu/mqtt.mjs';
 import { initialStatus, mergeReport } from '../src/bambu/status.mjs';
+
+test('zero device error clears an earlier error while partial reports preserve it', () => {
+  const failed = mergeReport(initialStatus(), { print_error: 123 }, 'now');
+  assert.equal(failed.error_code, '123');
+  assert.equal(mergeReport(failed, { mc_percent: 12 }, 'later').error_code, '123');
+  for (const print_error of [0, '0']) {
+    assert.equal(mergeReport(failed, { print_error }, 'later').error_code, '');
+  }
+});
 import { simulator, fingerprint, until } from './simulator.mjs';
 
 const config = (n = 1) => ({ factoryId: 'huakang-a', machineNo: n, host: `10.33.30.${100 + n}`,
@@ -49,6 +58,38 @@ test('partial report preserves AMS/material, bounds values and leaves unproven j
   assert.equal(next.state, 'RUNNING');
   assert.throws(() => mergeReport(first, { mc_percent: 'NaN' }, ''), /number/);
   assert.equal(mergeReport(first, { gcode_state: 'FIRMWARE_NEW_STATE' }, '').state, 'UNKNOWN');
+});
+
+test('external spool 254 uses the reported material and preserves an explicitly unset type', () => {
+  for (const tray_now of [254, '254']) {
+    const state = mergeReport(initialStatus(), { ams: { tray_now }, vt_tray: { id: '254', tray_type: 'PETG' } }, 'now');
+    assert.equal(state.live_material, 'PETG');
+    const unset = mergeReport(state, { vt_tray: { tray_type: '' } }, 'later');
+    assert.equal(unset.live_material, '');
+  }
+});
+
+test('external spool metadata and selection may arrive separately in either order', () => {
+  const reports = [{ ams: { tray_now: '254' } }, { vt_tray: { tray_type: 'PLA' } }];
+  for (const sequence of [reports, [...reports].reverse()]) {
+    const state = sequence.reduce((value, report) => mergeReport(value, report, 'now'), initialStatus());
+    assert.equal(state.live_material, 'PLA');
+    assert.equal(mergeReport(state, { subtask_id: 'new-job' }, 'later').live_material, 'PLA');
+    assert.equal(JSON.stringify(state).includes('trays'), false);
+  }
+});
+
+test('AMS selection resolves cached tray details and does not reuse the previous spool material', () => {
+  const loaded = mergeReport(initialStatus(), { ams: { ams: [{ id: '1', tray: [
+    { id: '0', tray_type: 'PLA' }, { id: '1', tray_type: 'ABS' }
+  ] }] } }, 'now');
+  const selected = mergeReport(loaded, { ams: { tray_now: '5' } }, 'later');
+  assert.equal(selected.live_material, 'ABS');
+  assert.equal(mergeReport(selected, { ams: { tray_now: '4' } }, 'later').live_material, 'PLA');
+  for (const tray_now of ['6', '254', '255'])
+    assert.equal(mergeReport(selected, { ams: { tray_now } }, 'later').live_material, '');
+  assert.equal(selected.live_material, 'ABS');
+  assert.equal(mergeReport(initialStatus(), { ams: { tray_now: '5' } }, 'reconnected').live_material, '');
 });
 
 test('refuses public destinations, inline secrets and missing leader before opening sockets', () => {

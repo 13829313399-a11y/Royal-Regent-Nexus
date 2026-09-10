@@ -138,6 +138,34 @@ def test_full_import_replay_history_aliases_and_frozen_costs(tmp_path, target):
     assert file_fingerprint(source[0]) == before
 
 
+def test_import_preserves_live_printer_identity_and_replay_accepts_new_telemetry(tmp_path, target):
+    factory, _ = target
+    with factory() as db:
+        printer = db.scalar(sa.select(m.ThreeDPrintingPrinter).where(m.ThreeDPrintingPrinter.machine_no == 1))
+        printer.connected = True
+        printer.id = "3dprinter-huakang-b-1"
+        printer.state = "RUNNING"
+        printer.progress_percent = 67
+        printer.status_payload_json = '{"connector":{"sequence":100}}'
+        printer.revision = 3
+        db.commit()
+        before = {c.name: getattr(printer,c.name) for c in printer.__table__.columns}
+    source = snapshot(tmp_path)
+    result = run(source,target)
+    assert result["status"] == "reconciled", result
+    with factory() as db:
+        printer = db.get(m.ThreeDPrintingPrinter,before['id'])
+        assert {c.name: getattr(printer,c.name) for c in printer.__table__.columns} == before
+        checkpoint = db.scalar(sa.select(m.ThreeDPrintingMigrationRowResult).where(
+            m.ThreeDPrintingMigrationRowResult.entity_type == "printers",
+            m.ThreeDPrintingMigrationRowResult.target_id == printer.id,
+        ))
+        checkpoint.target_hash = importer._hash({c.name: getattr(printer,c.name) for c in printer.__table__.columns})
+        printer.progress_percent = 68
+        db.commit()
+    assert run(source,target)['status'] == 'already_reconciled'
+
+
 def test_interrupt_preserves_checkpoint_and_requires_explicit_resume(tmp_path, target, monkeypatch):
     source = snapshot(tmp_path)
     original = importer._import_item

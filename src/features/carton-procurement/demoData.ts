@@ -5,7 +5,7 @@ export interface CartonMaterialLine {
   packagingType: string
   paperQuality: string
   specification: string
-  unitsPerCarton: number
+  unitsPerCarton: number | null
   unit: string
 }
 
@@ -17,7 +17,7 @@ export interface CartonOrderRow {
   customer: string
   contractNo: string
   itemNo: string
-  orderQuantity: number
+  orderQuantity: number | null
   materials: CartonMaterialLine[]
   dueDate: string
   status: string

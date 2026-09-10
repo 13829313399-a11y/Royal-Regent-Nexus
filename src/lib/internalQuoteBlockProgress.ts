@@ -10,7 +10,7 @@ import type {
   SewingPayload,
   SlushPayload,
 } from '@/lib/internalQuoteSectionPayload'
-import { calculateJustPlayCartonsPerPallet, customerSuppliedMaterialValid, justPlayCartonState, justPlayPackagingInputsValid, resolveSalesCartons, salesFreightCalculationModes } from '@/lib/internalQuoteSectionPayload'
+import { calculatePaintingRowSplit, calculateJustPlayCartonsPerPallet, customerSuppliedMaterialValid, justPlayCartonState, justPlayPackagingInputsValid, resolveSalesCartons, salesFreightCalculationModes } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 export type InternalQuoteBlockStatus = 'missing' | 'partial' | 'complete' | 'optional' | 'automatic'
@@ -127,9 +127,9 @@ function paintingBlocks(payload: PaintingPayload): InternalQuoteFormBlock[] {
   }
   const complete = payload.rows.length > 0 && payload.rows.every((row) => {
     const pricedOperation = Object.values(row.operations).some((operation) => positive(operation.quantity) && positive(operation.unit_price_hkd))
-    return Boolean(text(row.name) && text(row.position) && pricedOperation)
+    return Boolean(text(row.name) && text(row.position) && pricedOperation && calculatePaintingRowSplit(row).valid)
   })
-  return [block('painting', '喷油/移印/UV部分', 'required', payload.rows.length > 0, complete, '必须；名称、位置及至少一种工序的数量和单价必填')]
+  return [block('painting', '喷油/移印/UV部分', 'required', payload.rows.length > 0, complete, '必须；名称、位置及至少一种工序的数量和单价必填；新明细须核对油漆、人工拆分')]
 }
 
 function slushBlocks(payload: SlushPayload): InternalQuoteFormBlock[] {

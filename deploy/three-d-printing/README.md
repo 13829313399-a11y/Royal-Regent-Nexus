@@ -1,6 +1,12 @@
 # 3D 打印离线交付与后续现场执行
 
-本目录的脚本已用于隔离演练。当前不部署、不安装现场 VPN、不升级业务库、不停止旧系统。所有 `--execute`、Compose 启动和现场命令留到后续批准的维护窗口。
+云端应用和独立 Connector 已部署，Windows 现场网关已加入同一 Tailscale 网络，11 条打印机主机路由已生效。现场执行包位于本机 `D:/RR/3D现场配置包`。云端服务目录为 `/opt/royal-regent/three-d`；云端实测 11 台 TCP/TLS 均通过，证书与现场报告一致。1～11 号机均已启用 `cloud-observer` 只读接入，持续接收真实 MQTT 状态；本地开发连接仍禁用。旧程序及 Bambu Studio 可以继续运行，打印控制权未移交。
+
+当前 Windows 接入使用 `network/windows-site.ps1`：Install 安装、Login 登录并启用无人值守、Routes 合并发布打印机主机路由、Inspect 读取网卡与 TCP/TLS 结果。Inspect 不登录 MQTT、不发送打印命令。`network/tailscale_doctor.py` 在云端检测真实 Tailscale 路由和设备 TLS，不要求 Windows 提供 Linux nftables 文件；缺少公网暴露证据保持 unknown，不冒充检查通过，也不再当作网络不通。明确 unsafe、实际探测失败或报告过期仍产生异常状态。
+
+`prepare_connections.py --printers <CSV>` 幂等补齐禁用的设备连接，保留已有配置；`--network-config <JSON>` 用现场报告配置更新禁用设备的地址与证书，不转移设备所有权。`rr-three-d-network.timer` 每 30 秒进行不登录 MQTT 的网络检测并回传 API。Tailscale 探测超时为 10 秒以适应 DERP 中继，systemd 服务总超时为 75 秒；主机 Python 3.10 使用 `timezone.utc`。
+
+`enable_observer.py --machine 2` 使用后端环境将单台已有连接启用为只读模式，重复执行不会重置会话。该模式保存状态与温度，但跳过自动生产记录及库存处理；显式对账、控制命令创建/领取/下发也不会在该模式执行。旧 Edge 上报不会覆盖云端观测值。断线只使状态过期，不改变已有生产任务。只读接入不要求停止旧程序或修改现场防火墙；旧版单机断开工具不用于此流程。下方单机切换步骤用于真正移交生产控制权。
 
 ## 工具和默认行为
 

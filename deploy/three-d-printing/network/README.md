@@ -1,12 +1,14 @@
 # PR-05 河源站点网络实施手册
 
-本目录提供参数校验、WireGuard / IPsec / Tailscale 模板、只读诊断及健康上报。当前完成的是本地实现和隔离测试；真实 VLAN、VPN、11 台设备连通性及现场 ACL 尚未验收。不会自动安装、修改路由、防火墙或停止旧 Edge。PR-06 常驻云端 Printer Connector 已完成本地集成；Windows 路由审核计划使用 `windows-tailscale-plan.ps1`，恢复与单机切换见 [执行手册](../README.md)。当前按用户要求暂不部署。
+云端 Connector 和 Tailscale 客户端已安装，进入 Windows 现场接入阶段。现场使用 `windows-site.ps1` 安装、登录、发布路由和诊断，`windows-start.ps1` 提供操作菜单；`windows-tailscale-plan.ps1` 仍保留原只读计划用途。实际 VPN、11 台设备身份与连通性仍待现场确认，恢复与单机切换见 [执行手册](../README.md)。
+
+Windows 方案的云端采集使用 `tailscale_doctor.py`：用 `--site-report <现场报告> --config <network.json>` 生成实际网关与证书配置，再用 `--config <network.json>` 探测。配置生成前需将报告中的机号/IP 与物理打印机对应；首次观察到的证书不等于已证明设备身份。该方案不要求 Linux VLAN 网卡名或 Windows nftables 快照。报告里的 exposure=unknown 保留其真实含义，但不会再单独把健康网络判为断线；unsafe 仍判异常。服务同机上报支持 `http://127.0.0.1/api/three-d-printing/network/health`，远程上报仍使用 HTTPS。定时任务每 30 秒一次，配置完现场网关和设备后启用。
 
 ## 先确认现场，不要求业务使用者懂 VPN
 
 实际现场仅有 Windows 电脑、无人能填写网络参数，使用者不在现场。先在原来能连接打印机的 Windows 电脑做只读地址/网关及历史地址 TCP 检查，不能要求先提供 Linux 设备。[Tailscale 官方支持 Windows 子网网关](https://tailscale.com/docs/features/subnet-routers?tab=windows)，可根据报告评估复用现有电脑。下面的 nftables/systemd/XFRM 和关闭 Tailscale SNAT 参数是 Linux 方案，不能直接用于 Windows；Windows 转发、访问规则、自动运行与健康采集仍需适配和验收。不要同时启动新旧打印机写入端。检查电脑网络只能取得线索，不能证明交换机 VLAN 隔离。
 
-请负责网络或电脑维护的同事提供：打印机网络掩码、默认网关、交换机/VLAN；11 台固定 IP 与机器编号；能接入该 VLAN 且常开的 Linux 网关；云服务器的系统、管理入口及是否有重叠网段。旧配置的 IP 只是历史线索，不能据此认定掩码是 /24。私钥、设备访问码不进入聊天、工单或 Git。
+现场报告会采集 Windows 网卡地址、掩码、默认网关和 11 台打印机的 TCP/TLS 结果；现场电脑需能访问这些打印机并保持开机。旧配置的 IP 只是历史线索，不能据此认定掩码是 /24。私钥、设备访问码不进入聊天、工单或 Git。下文 WireGuard/IPsec、nftables 和 Linux 网卡模板仅供对应 Linux 网关方案参考，不适用于当前 Windows 操作步骤。
 
 没有现成企业 VPN 时可先采用 Tailscale 子网路由器：云服务器和河源 Linux 网关加入同一受控 tailnet，网关发布打印机子网，云端接收路由。普通用户仅访问网站 HTTPS，无需加入 tailnet。已有 WireGuard/IPsec 运维规范时可用相应模板，只启用一种。参考 [Tailscale 子网路由器官方说明](https://tailscale.com/docs/features/subnet-routers)。
 

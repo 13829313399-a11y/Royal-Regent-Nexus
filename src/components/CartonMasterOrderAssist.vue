@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { masterDueRules, numberWarning, type MasterRecord, type MasterPaper } from '@/api/cartonMaster'
+import { type MasterRecord, type MasterPaper } from '@/api/cartonMaster'
 const props = defineProps<{ records: MasterRecord[]; customer: string; item: string; contract: string; product: string; lines: MasterPaper[]; disabled?: boolean }>()
 const emit = defineEmits<{ select: [MasterRecord] }>()
 const normalize = (value: string) => value.normalize('NFKC').toLowerCase().replace(/[\s_./-]+/g, '')
@@ -8,16 +8,13 @@ const candidates = computed(() => props.records.filter(r => r.kind === 'CONFIG' 
 const exact = computed(() => candidates.value.filter(r => r.code === props.item))
 const signature = (lines: MasterPaper[]) => JSON.stringify(lines.map(l => [l.packaging_type.trim(), l.paper_quality.trim(), l.specification.trim(), l.dimension_unit.trim(), l.unit.trim(), Number(l.usage_quantity)]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))))
 const differs = computed(() => exact.value.length > 0 && !exact.value.some(r => r.data.product_name === props.product && signature(r.data.lines || []) === signature(props.lines)))
-const rules = computed(() => masterDueRules(props.records, props.customer))
 const contractRecord = computed(() => props.records.find(r => r.kind === 'CONTRACT' && r.customer_code === props.customer && r.code === props.contract))
 const otherCustomerContract = computed(() => !contractRecord.value && props.contract && props.records.some(r => r.kind === 'CONTRACT' && r.customer_code !== props.customer && r.code === props.contract))
 </script>
 <template>
-  <div v-if="candidates.length || numberWarning(rules.contract_rule, contract) || numberWarning(rules.item_rule, item) || otherCustomerContract || (contractRecord && item && !contractRecord.data.item_nos?.includes(item)) || contractRecord?.status === 'INACTIVE'" class="space-y-2 rounded-xl border border-teal-100 bg-teal-50/40 p-3" aria-label="基础资料落单辅助">
+  <div v-if="candidates.length || otherCustomerContract || (contractRecord && item && !contractRecord.data.item_nos?.includes(item)) || contractRecord?.status === 'INACTIVE'" class="space-y-2 rounded-xl border border-teal-100 bg-teal-50/40 p-3" aria-label="基础资料落单辅助">
     <div class="flex items-center justify-between"><b class="text-xs text-teal-800">货号基础资料</b><span class="text-[10px] text-slate-500">带出产品名称、纸品、单位和装箱数</span></div>
     <p v-if="exact.length > 1 || differs" role="status" class="rounded-lg bg-amber-50 p-2 text-xs text-amber-800">{{ exact.length > 1 ? `此货号有 ${exact.length} 套历史配置。` : '' }}{{ differs ? '本次包装与已有配置不同，可能下错装箱方式。' : '' }}请核对纸品类型、纸质、规格、尺寸单位、计量单位和装箱数；核对无误可保留；正式确认后单独记录，不覆盖标准装。</p>
-    <p v-if="numberWarning(rules.contract_rule, contract)" class="text-xs text-amber-800">合同号与客户格式不同，请核对。{{ rules.contract_rule.mode === 'BLOCK' ? '该客户已开启正式保存前检查。' : '' }}</p>
-    <p v-if="numberWarning(rules.item_rule, item)" class="text-xs text-amber-800">货号与客户格式不同，请核对。{{ rules.item_rule.mode === 'BLOCK' ? '该客户已开启正式保存前检查。' : '' }}</p>
     <p v-if="contractRecord && item && !contractRecord.data.item_nos?.includes(item)" class="text-xs text-amber-800">本合同首次使用该货号，请核对本次要求；正式确认后自动补充历史关联。</p>
     <p v-if="otherCustomerContract" class="text-xs text-amber-800">此合同号在其他客户的资料中出现过，请核对客户归属；如确属本客户新合同，可继续落单。</p>
     <p v-if="contractRecord?.status === 'INACTIVE'" class="text-xs text-red-700">该合同已停用，不能用于新订单；请核对合同号或联系主管。</p>

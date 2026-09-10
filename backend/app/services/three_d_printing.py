@@ -57,7 +57,7 @@ from app.schemas.three_d_printing import (
     ThreeDStockInInput,
 )
 from app.services.auth import AuthContext, time_window_is_active
-from app.services.three_d_connector import OWNER as CONNECTOR_OWNER
+from app.services.three_d_connector import CONNECTED_OWNERS as CONNECTOR_OWNERS
 from app.services.three_d_connector import create_command as create_connector_command
 from app.services.three_d_consistency import (
     atomic_write,
@@ -1575,7 +1575,7 @@ def apply_edge_status_batch(
             db.add(printer)
             db.flush()
         connection = db.get(ThreeDPrintingPrinterConnection, printer.id)
-        if connection is not None and connection.connection_owner == CONNECTOR_OWNER:
+        if connection is not None and connection.connection_owner in CONNECTOR_OWNERS:
             # Cloud-owned devices cannot be overwritten or auto-settled by the old Edge.
             results.append(printer)
             continue
@@ -1648,7 +1648,7 @@ def create_printer_command(
     if printer is None or printer.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="打印机不存在")
     connection = db.get(ThreeDPrintingPrinterConnection, printer_id)
-    if connection is not None and connection.connection_owner == CONNECTOR_OWNER:
+    if connection is not None and connection.connection_owner in CONNECTOR_OWNERS:
         return create_connector_command(db, printer_id=printer_id, payload=payload, user=user)
     existing = db.scalar(
         select(ThreeDPrintingPrinterCommand).where(
@@ -1724,7 +1724,7 @@ def claim_printer_commands(
                 ThreeDPrintingPrinterCommand.status == "pending",
                 ~select(ThreeDPrintingPrinterConnection.printer_id).where(
                     ThreeDPrintingPrinterConnection.printer_id == ThreeDPrintingPrinterCommand.printer_id,
-                    ThreeDPrintingPrinterConnection.connection_owner == CONNECTOR_OWNER,
+                    ThreeDPrintingPrinterConnection.connection_owner.in_(CONNECTOR_OWNERS),
                 ).exists(),
             )
             .order_by(ThreeDPrintingPrinterCommand.requested_at)
@@ -1970,6 +1970,7 @@ def maintenance_out(record: ThreeDPrintingMaintenance) -> dict[str, Any]:
 
 
 def printer_out(record: ThreeDPrintingPrinter, *, network_stale: bool = False) -> dict[str, Any]:
+    telemetry = json.loads(record.status_payload_json or "{}").get("connector", {})
     last_seen = parse_business_timestamp(record.last_seen_at)
     age = (business_now() - last_seen).total_seconds() if last_seen else None
     stale = network_stale or age is None or age > 30 or age < -5
@@ -1992,6 +1993,7 @@ def printer_out(record: ThreeDPrintingPrinter, *, network_stale: bool = False) -
         "error_text": record.error_text,
         "last_seen_at": record.last_seen_at,
         "status_stale": stale,
+        **{key: telemetry[key] for key in ("nozzle_target", "bed_target", "layer_num", "total_layers") if key in telemetry},
     }
 
 
@@ -2133,19 +2135,61 @@ def dashboard_snapshot(
     production_dates: set[str] = set()
     summary_records = db.scalars(select(ThreeDPrintingProductionRecord).where(*record_filters)).yield_per(250) if compact else records
     record_count = 0
+    daily = {}
+    legacy_days = {}
+    machine_hours = {p.machine_no: 0.0 for p in printers}
     for record in summary_records:
         record_count += 1
         if record.status not in {"running", "done"}:
             continue
         totals = frozen_totals(record)
+        # The old operating view charges one full labor day, while immutable
+        # record snapshots retain their original per-record cost allocation.
+        if record.business_date not in day_off_dates:
+            legacy_day = legacy_days.setdefault(record.business_date, {
+                "date": record.business_date, "revenue": 0.0, "materialCost": 0.0,
+                "electricityCost": 0.0, "laborCost": _float(setting.labor_per_day),
+                "hours": 0.0, "machines": set(),
+            })
+            for key in ("revenue", "materialCost", "electricityCost"):
+                legacy_day[key] += totals[key] or 0
+            legacy_day["hours"] += _float(record.duration_hours) * record.quantity
+            legacy_day["machines"].add(record.machine_no)
         incomplete_cost_records += int(any(value is None for value in totals.values()))
         revenue += totals["revenue"] or 0
         material_cost += totals["materialCost"] or 0
         electricity_cost += totals["electricityCost"] or 0
         labor_cost += totals["laborCost"] or 0
         production_dates.add(record.business_date)
-    maintenance_cost = _float(db.scalar(select(func.sum(ThreeDPrintingMaintenance.cost)).where(ThreeDPrintingMaintenance.factory_id == factory_id)))
+        day = daily.setdefault(record.business_date, {"date": record.business_date, "revenue": 0.0, "totalCost": 0.0})
+        day["revenue"] += totals["revenue"] or 0
+        day["totalCost"] += sum(totals[k] or 0 for k in ("materialCost", "electricityCost", "laborCost"))
+        machine_hours[record.machine_no] = machine_hours.get(record.machine_no, 0) + _float(record.duration_hours) * record.quantity
+    maintenance_filters = [ThreeDPrintingMaintenance.factory_id == factory_id]
+    if date_from:
+        maintenance_filters.append(ThreeDPrintingMaintenance.business_date >= date_from)
+    if date_to:
+        maintenance_filters.append(ThreeDPrintingMaintenance.business_date <= date_to)
+    maintenance_cost = 0.0
+    for repair in db.scalars(select(ThreeDPrintingMaintenance).where(*maintenance_filters)):
+        cost = _float(repair.cost)
+        maintenance_cost += cost
+        daily.setdefault(repair.business_date, {"date": repair.business_date, "revenue": 0.0, "totalCost": 0.0})["totalCost"] += cost
     total_cost = material_cost + electricity_cost + labor_cost + maintenance_cost
+    legacy_daily = []
+    for _, day in sorted(legacy_days.items()):
+        cost = sum(day[key] for key in ("materialCost", "electricityCost", "laborCost"))
+        legacy_daily.append({
+            **{key: round(day[key], 2) for key in ("revenue", "materialCost", "electricityCost", "laborCost")},
+            "date": day["date"], "totalCost": round(cost, 2),
+            "balance": round(day["revenue"] - cost, 2),
+            "runningMachines": len(day["machines"]),
+            "utilization": day["hours"] / (12 * max(1, setting.machine_count)),
+        })
+    legacy_display = {key: round(sum(day[key] for day in legacy_daily), 2)
+                      for key in ("revenue", "materialCost", "electricityCost", "laborCost", "totalCost", "balance")}
+    legacy_display.update(daily=legacy_daily, productionDays=len(legacy_daily),
+                          maintenanceCost=round(maintenance_cost, 2), costBasis="daily_fixed_labor")
     network = network_health_snapshot(db)
     return {
         "factory_id": factory_id,
@@ -2163,6 +2207,9 @@ def dashboard_snapshot(
         "day_off_dates": day_off_dates,
         "day_statuses": [{"business_date": day.business_date, "revision": day.revision, "is_day_off": day.is_day_off} for day in db.scalars(select(ThreeDPrintingDayStatus).where(ThreeDPrintingDayStatus.factory_id == factory_id))],
         "summary": {
+            "legacyDisplay": legacy_display,
+            "daily": [{**d, "revenue": round(d["revenue"], 2), "totalCost": round(d["totalCost"], 2), "balance": round(d["revenue"] - d["totalCost"], 2)} for _, d in sorted(daily.items())],
+            "machineHours": [{"machine_no": n, "hours": round(hours, 2)} for n, hours in sorted(machine_hours.items())],
             "incompleteCostRecordCount": incomplete_cost_records,
             "costBasis": "frozen_record_allocated_labor",
             "revenue": round(revenue, 2),

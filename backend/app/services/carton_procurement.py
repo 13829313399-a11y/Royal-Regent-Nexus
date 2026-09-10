@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.services.transaction_lock import lock_transaction
 from app.core.time import business_now, business_today
+from app.models.carton_supplier_settlement import CartonSupplierSettlement  # noqa: F401 - register additive schema
 from app.models.carton_procurement import (
     CartonAuditEvent,
     CartonClosing,
@@ -405,6 +406,45 @@ def _new_number(prefix: str) -> str:
     return f"{prefix}-{business_now().strftime('%y%m%d')}-{uuid4().hex[:6].upper()}"
 
 
+def _input_required(payload, line, *, allow_zero=False):
+    if payload.quantity_basis == "EXPLICIT":
+        if line.required_quantity is None or line.required_quantity < 0 or (line.required_quantity == 0 and not allow_zero):
+            raise HTTPException(422, "直接填写需求时，每行纸品需求数量必须大于 0")
+        return quantity(line.required_quantity)
+    if payload.product_order_quantity is None or line.usage_quantity is None:
+        raise HTTPException(422, "按装箱数计算需求必须填写产品订单数量和每箱个数")
+    if not line.paper_quality or not line.specification:
+        raise HTTPException(422, "请补全纸质和规格")
+    return required_carton_quantity(payload.product_order_quantity, line.usage_quantity)
+
+
+def _require_receipt_material(line):
+    if not line.paper_quality.strip() or not line.specification.strip() or not line.unit.strip():
+        raise HTTPException(422, f"{line.contract_no} / {line.packaging_type}：入库前请补齐纸质、规格和单位")
+
+
+def _require_order_complete(db, order):
+    lines = _order_lines(db, order.id)
+    if not lines or any(not line.paper_quality.strip() or not line.specification.strip() or not line.unit.strip() for line in lines):
+        raise HTTPException(422, "订单纸质、规格或单位尚未完善，请先修改订单")
+    if not any(line.required_quantity > 0 for line in lines):
+        raise HTTPException(422, "订单没有可执行的纸品需求")
+    if order.quantity_basis == "CALCULATED" and (order.product_order_quantity is None or any(line.usage_quantity is None for line in lines)):
+        raise HTTPException(422, "按装箱数计算的订单缺少数量依据")
+
+
+def _explicit_targets(order, lines, targets, *, append):
+    target = {item.order_line_id: quantity(item.required_quantity) for item in targets}
+    if len(target) != len(targets) or set(target) != {line.id for line in lines}:
+        raise HTTPException(422, "直接填写需求的订单必须逐行提供全部纸品的目标需求，不能重复或遗漏")
+    deltas = [target[line.id] - line.required_quantity for line in lines]
+    if append and (any(delta < 0 for delta in deltas) or not any(delta > 0 for delta in deltas)):
+        raise HTTPException(422, "追加须至少增加一种纸品，其他纸品需求不得减少")
+    if not append and (any(delta > 0 for delta in deltas) or not any(delta < 0 for delta in deltas)):
+        raise HTTPException(422, "减单须至少减少一种纸品，其他纸品需求不得增加")
+    return target
+
+
 def create_order(
     db: Session,
     payload: CartonOrderCreate,
@@ -417,7 +457,7 @@ def create_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     rules = master_data.validate_order(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
-    planned = derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"]) if payload.customer_due_date else payload.due_date
+    planned = derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"]) if payload.customer_due_date and payload.quantity_basis == "CALCULATED" else payload.due_date
     customer = get_active_customer(db, factory_id, payload.customer_code)
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
     product_name = payload.product_name
@@ -450,6 +490,7 @@ def create_order(
         contract_no=payload.contract_no,
         item_no=payload.item_no,
         product_name=product_name,
+        quantity_basis=payload.quantity_basis,
         product_order_quantity=payload.product_order_quantity,
         order_date=payload.order_date,
         customer_due_date=payload.customer_due_date,
@@ -469,10 +510,7 @@ def create_order(
     )
     db.add(order)
     for index, line in enumerate(payload.lines, start=1):
-        required_quantity = required_carton_quantity(
-            payload.product_order_quantity,
-            line.usage_quantity,
-        )
+        required_quantity = _input_required(payload, line)
         if required_quantity <= 0:
             raise HTTPException(status_code=422, detail=f"第 {index} 行计算后的需求数量必须大于 0")
         db.add(
@@ -513,6 +551,8 @@ def create_order(
             "item_no": order.item_no,
             "product_name": order.product_name,
             "product_order_quantity": order.product_order_quantity,
+            "quantity_basis": order.quantity_basis,
+            "paper_demand": [{"packaging_type": line.packaging_type, "paper_quality": line.paper_quality, "specification": line.specification, "unit": line.unit, "required_quantity": str(_input_required(payload, line)), "usage_quantity": str(line.usage_quantity) if line.usage_quantity is not None else None} for line in payload.lines],
             "status": "CONFIRMED",
             "product_name_source": product_name_source,
         },
@@ -600,16 +640,14 @@ def _purchase_order_pending_change(
     latest_issue: CartonPurchaseOrderIssue | None,
 ) -> tuple[str, Decimal, int, dict[str, object]]:
     previous = _purchase_order_snapshot(latest_issue)
-    before_product_quantity = quantity(
-        Decimal(str(previous.get("after_product_quantity", 0)))
-    )
+    before_product_quantity = quantity(Decimal(str(previous.get("after_product_quantity") or 0)))
     before_due_date = str(previous.get("after_due_date", ""))
     previous_lines = {
         str(item.get("id", "")): item
         for item in previous.get("lines", [])
         if isinstance(item, dict)
     }
-    product_delta = quantity(order.product_order_quantity - before_product_quantity)
+    product_delta = quantity(order.product_order_quantity - before_product_quantity) if order.product_order_quantity is not None else Decimal(0)
     line_snapshots: list[dict[str, object]] = []
     for line in lines:
         previous_line = previous_lines.get(line.id, {})
@@ -625,7 +663,7 @@ def _purchase_order_pending_change(
                 "paper_quality": line.paper_quality,
                 "specification": line.specification,
                 "dimension_unit": line.dimension_unit,
-                "usage_quantity": str(line.usage_quantity),
+                "usage_quantity": str(line.usage_quantity) if line.usage_quantity is not None else None,
                 "unit": line.unit,
                 "unit_price": str(line.unit_price),
                 "currency": line.currency,
@@ -641,11 +679,12 @@ def _purchase_order_pending_change(
         Decimal(str(item["required_quantity_delta"])) != 0 for item in line_snapshots
     )
     due_date_changed = bool(before_due_date and before_due_date != order.due_date)
+    paper_delta = sum((Decimal(item["required_quantity_delta"]) for item in line_snapshots), Decimal(0))
     if latest_issue is None:
         pending_type = "INITIAL"
-    elif product_delta > 0:
+    elif product_delta > 0 or (order.quantity_basis == "EXPLICIT" and paper_delta > 0):
         pending_type = "APPEND"
-    elif product_delta < 0:
+    elif product_delta < 0 or (order.quantity_basis == "EXPLICIT" and paper_delta < 0):
         pending_type = "REDUCE"
     elif changed_line_count or due_date_changed:
         pending_type = "ADJUSTMENT"
@@ -672,14 +711,49 @@ def _purchase_order_pending_change(
             "note": order.note,
             "revision": order.revision,
         },
-        "before_product_quantity": str(before_product_quantity),
-        "after_product_quantity": str(quantity(order.product_order_quantity)),
-        "product_quantity_delta": str(product_delta),
+        "before_product_quantity": str(before_product_quantity) if order.quantity_basis == "CALCULATED" or previous.get("after_product_quantity") is not None else None,
+        "after_product_quantity": str(quantity(order.product_order_quantity)) if order.product_order_quantity is not None else None,
+        "quantity_basis": order.quantity_basis,
+        "product_quantity_delta": str(product_delta) if order.quantity_basis == "CALCULATED" else None,
         "before_due_date": before_due_date,
         "after_due_date": order.due_date,
         "lines": line_snapshots,
     }
     return pending_type, product_delta, changed_line_count, snapshot
+
+
+def register_history_order_placed(db: Session, order: CartonOrder, user: AuthContext):
+    """Record already placed demand without issuing a supplier purchase document."""
+    if _purchase_order_issues(db, order.id):
+        return
+    if order.status != "CONFIRMED" or _order_has_business_activity(db, order):
+        raise HTTPException(409, "仅未收料的历史待下单订单可以转为历史已下单")
+    if not db.scalar(select(CartonAuditEvent.id).where(
+        CartonAuditEvent.factory_id == order.factory_id,
+        CartonAuditEvent.entity_id == order.id,
+        CartonAuditEvent.event_type == "HISTORY_ORDER_IMPORTED",
+    ).limit(1)):
+        raise HTTPException(409, "订单没有历史导入来源，不允许跳过正常下单流程")
+    previous_status = order.status
+    order.status = "PENDING_SUPPLIER"
+    order.revision += 1
+    order.updated_by = user.id
+    order.updated_by_name = user.display_name
+    order.updated_at = now_text()
+    _, _, _, snapshot = _purchase_order_pending_change(order, _order_lines(db, order.id), None)
+    db.add(CartonPurchaseOrderIssue(
+        id=f"CPOI-{uuid4().hex}", factory_id=order.factory_id, order_id=order.id,
+        order_no=order.order_no, document_no=f"{order.order_no}-HISTORY",
+        document_type="LEGACY_BASELINE", issue_sequence=0, source_order_revision=order.revision,
+        before_product_quantity=order.product_order_quantity, after_product_quantity=order.product_order_quantity,
+        product_quantity_delta=Decimal(0) if order.product_order_quantity is not None else None,
+        snapshot_json=json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+        generated_by=user.id, generated_by_name=user.display_name, generated_at=now_text(),
+    ))
+    _audit(db, user, order.factory_id, "HISTORY_ORDER_PLACED", "carton_order", order.id,
+           {"order_no": order.order_no, "previous_status": previous_status, "status": order.status,
+            "reason": "历史订单已在系统外下单，直接待收料，不重复发行采购单"})
+    db.flush()
 
 
 def purchase_order_context(
@@ -699,7 +773,7 @@ def purchase_order_context(
         order_no=order.order_no,
         order_revision=order.revision,
         pending_type=pending_type,
-        pending_product_quantity=product_delta,
+        pending_product_quantity=product_delta if order.quantity_basis == "CALCULATED" else None,
         pending_line_count=changed_line_count,
         can_generate=eligible_status and pending_type != "NONE",
         latest_document_no=visible_issues[0].document_no if visible_issues else "",
@@ -721,6 +795,7 @@ def create_purchase_order_issue(
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
         raise HTTPException(status_code=409, detail="只有已确认并锁定的订单可以发行供应商采购单")
 
+    _require_order_complete(db, order)
     issues = _purchase_order_issues(db, order.id)
     latest_issue = issues[0] if issues else None
     pending_type, product_delta, _, snapshot = _purchase_order_pending_change(
@@ -736,8 +811,8 @@ def create_purchase_order_issue(
     else:
         prefix = {"APPEND": "A", "REDUCE": "R", "ADJUSTMENT": "C"}[pending_type]
         document_no = f"{order.order_no}-{prefix}{type_sequence:02d}"
-    before_quantity = quantity(Decimal(str(snapshot["before_product_quantity"])))
-    after_quantity = quantity(Decimal(str(snapshot["after_product_quantity"])))
+    before_quantity = quantity(Decimal(str(snapshot["before_product_quantity"]))) if snapshot["before_product_quantity"] is not None else None
+    after_quantity = quantity(Decimal(str(snapshot["after_product_quantity"]))) if snapshot["after_product_quantity"] is not None else None
     timestamp = now_text()
     issue = CartonPurchaseOrderIssue(
         id=f"CPOI-{uuid4().hex}",
@@ -750,7 +825,7 @@ def create_purchase_order_issue(
         source_order_revision=order.revision,
         before_product_quantity=before_quantity,
         after_product_quantity=after_quantity,
-        product_quantity_delta=product_delta,
+        product_quantity_delta=product_delta if order.quantity_basis == "CALCULATED" else None,
         snapshot_json=json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
         generated_by=user.id,
         generated_by_name=user.display_name,
@@ -900,7 +975,7 @@ def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
         str(line.paper_quality),
         str(line.specification),
         str(line.dimension_unit),
-        str(Decimal(line.usage_quantity).normalize()),
+        str(Decimal(line.usage_quantity).normalize()) if line.usage_quantity is not None else "",
         str(line.unit),
         str(Decimal(line.unit_price).normalize()),
         normalize_currency(str(line.currency)),
@@ -951,7 +1026,7 @@ def update_order(
             line.paper_quality,
             line.specification,
             line.dimension_unit,
-            str(Decimal(line.usage_quantity).normalize()),
+            str(Decimal(line.usage_quantity).normalize()) if line.usage_quantity is not None else "",
             line.unit,
             str(Decimal(line.unit_price).normalize()),
             normalize_currency(line.currency),
@@ -967,12 +1042,14 @@ def update_order(
             payload.contract_no != order.contract_no,
             payload.item_no != order.item_no,
             payload.product_name != order.product_name,
-            Decimal(payload.product_order_quantity) != Decimal(order.product_order_quantity),
+            payload.product_order_quantity != order.product_order_quantity,
+            payload.quantity_basis != order.quantity_basis,
+            payload.quantity_basis == "EXPLICIT" and [line.required_quantity for line in payload.lines] != [line.required_quantity for line in existing_lines],
             payload.order_date != order.order_date,
             target_line_signatures != [_order_line_signature(line) for line in existing_lines],
         )
     )
-    if order.customer_due_date is not None and payload.customer_due_date is None:
+    if order.quantity_basis == "CALCULATED" and order.customer_due_date is not None and payload.customer_due_date is None:
         if payload.due_date != order.due_date:
             raise HTTPException(
                 status_code=422,
@@ -983,7 +1060,7 @@ def update_order(
     else:
         target_customer_due_date = payload.customer_due_date
         target_due_date = payload.due_date
-    if target_customer_due_date:
+    if target_customer_due_date and payload.quantity_basis == "CALCULATED":
         target_due_date = derive_carton_plan_due_date(payload.order_date, target_customer_due_date, order.safety_lead_days)
     # Existing orders retain their snapshot: changing a date/note must not reapply
     # newly introduced master rules or invalidate a previously selected configuration.
@@ -1014,6 +1091,8 @@ def update_order(
         "due_date": order.due_date,
         "note": order.note,
         "lines": [_order_line_signature(line) for line in existing_lines],
+        "quantity_basis": order.quantity_basis,
+        "required_quantities": [str(line.required_quantity) for line in existing_lines],
     }
     if structural_changed:
         order.customer_code = target_customer_code
@@ -1023,15 +1102,11 @@ def update_order(
         order.contract_no = payload.contract_no
         order.item_no = payload.item_no
         order.product_name = payload.product_name
+        order.quantity_basis = payload.quantity_basis
         order.product_order_quantity = payload.product_order_quantity
         order.order_date = payload.order_date
         for index, input_line in enumerate(payload.lines, start=1):
-            required_quantity = required_carton_quantity(
-                payload.product_order_quantity,
-                input_line.usage_quantity,
-            )
-            if required_quantity <= 0:
-                raise HTTPException(status_code=422, detail=f"第 {index} 行计算后的需求数量必须大于 0")
+            required_quantity = _input_required(payload, input_line, allow_zero=(index <= len(existing_lines) and existing_lines[index - 1].required_quantity == 0))
             line = existing_lines[index - 1] if index <= len(existing_lines) else CartonOrderLine(
                 id=f"CTL-{uuid4().hex}",
                 factory_id=factory_id,
@@ -1086,6 +1161,8 @@ def update_order(
                 "contract_no": order.contract_no,
                 "item_no": order.item_no,
                 "product_order_quantity": order.product_order_quantity,
+                "quantity_basis": order.quantity_basis,
+                "required_quantities": [str(line.required_quantity) for line in _order_lines(db, order.id)],
                 "order_date": order.order_date,
                 "customer_due_date": order.customer_due_date,
                 "safety_lead_days": order.safety_lead_days,
@@ -1117,8 +1194,9 @@ def submit_order_to_supplier(
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status == "PENDING_SUPPLIER":
         raise HTTPException(status_code=409, detail="订单已经确认并锁定")
-    if order.status != "CONFIRMED":
+    if order.status not in {"CONFIRMED", "DRAFT"}:
         raise HTTPException(status_code=409, detail="只有待下单且尚未确认锁定的订单可以确认")
+    _require_order_complete(db, order)
 
     master_data.validate_order(db, factory_id, order.customer_code, order.contract_no, order.item_no)
     previous_status = order.status
@@ -1159,8 +1237,9 @@ def bulk_submit_orders_to_supplier(
     orders: list[CartonOrder] = []
     for item in payload.items:
         order = get_order_by_no(db, factory_id, item.order_no)
-        if order.status != "CONFIRMED":
+        if order.status not in {"CONFIRMED", "DRAFT"}:
             continue
+        _require_order_complete(db, order)
         if order.revision != item.expected_revision:
             raise HTTPException(status_code=409, detail=f"订单 {item.order_no} 已更新，请刷新后重试")
         orders.append(order)
@@ -1258,7 +1337,7 @@ def append_order(
         "COMPLETED",
     }:
         raise HTTPException(status_code=409, detail="当前订单状态不能追加")
-    if payload.customer_due_date:
+    if payload.customer_due_date and order.quantity_basis == "CALCULATED":
         try:
             target_due_date = derive_carton_plan_due_date(
                 order.order_date,
@@ -1269,25 +1348,35 @@ def append_order(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         target_customer_due_date = payload.customer_due_date
     else:
-        if order.customer_due_date is not None and payload.due_date and payload.due_date != order.due_date:
+        if order.quantity_basis == "CALCULATED" and order.customer_due_date is not None and payload.due_date and payload.due_date != order.due_date:
             raise HTTPException(
                 status_code=422,
                 detail="已有客户交期的订单必须通过客户交期自动计算计划交期",
             )
-        target_customer_due_date = order.customer_due_date
+        target_customer_due_date = payload.customer_due_date or order.customer_due_date
         target_due_date = payload.due_date or order.due_date
     if target_due_date < order.order_date:
         raise HTTPException(status_code=422, detail="计划交期不能早于下单日期")
 
     previous_status = order.status
-    before_quantity = quantity(order.product_order_quantity)
+    before_quantity = quantity(order.product_order_quantity) if order.product_order_quantity is not None else None
     before_customer_due_date = order.customer_due_date
     before_due_date = order.due_date
-    after_quantity = quantity(before_quantity + payload.additional_quantity)
     lines = _order_lines(db, order.id)
     before_required = {line.id: quantity(line.required_quantity) for line in lines}
-    for line in lines:
-        line.required_quantity = required_carton_quantity(after_quantity, line.usage_quantity)
+    if order.quantity_basis == "EXPLICIT":
+        if payload.additional_quantity is not None:
+            raise HTTPException(422, "直接填写需求的订单请逐纸品追加，不能以产品数量换算")
+        target = _explicit_targets(order, lines, payload.line_quantities, append=True)
+        after_quantity = before_quantity
+        for line in lines:
+            line.required_quantity = target[line.id]
+    else:
+        if payload.additional_quantity is None or payload.line_quantities:
+            raise HTTPException(422, "按装箱数计算的订单必须填写产品追加数量")
+        after_quantity = quantity(before_quantity + payload.additional_quantity)
+        for line in lines:
+            line.required_quantity = required_carton_quantity(after_quantity, line.usage_quantity)
     order.product_order_quantity = after_quantity
     if previous_status == "COMPLETED":
         received = _posted_received_by_line(db, [line.id for line in lines])
@@ -1311,6 +1400,8 @@ def append_order(
             "order_no": order.order_no,
             "reason": payload.reason,
             "additional_quantity": payload.additional_quantity,
+            "quantity_basis": order.quantity_basis,
+            "line_labels": {line.id: {"packaging_type": line.packaging_type, "paper_quality": line.paper_quality, "specification": line.specification, "unit": line.unit} for line in lines},
             "before_quantity": before_quantity,
             "after_quantity": after_quantity,
             "before_customer_due_date": before_customer_due_date,
@@ -1341,7 +1432,7 @@ def append_order(
             item_no=order.item_no,
             title=f"追加订单 {order.order_no} 待仓库复核",
             description=(
-                f"产品订单数量由 {before_quantity} 追加 {payload.additional_quantity} 至 {after_quantity}；"
+                (f"纸品需求由 {before_required} 调整至 {target}；" if order.quantity_basis == "EXPLICIT" else f"产品订单数量由 {before_quantity} 追加 {payload.additional_quantity} 至 {after_quantity}；") +
                 f"原因：{payload.reason}"
             ),
             owner_department="纸箱仓",
@@ -1378,12 +1469,19 @@ def reduce_order(
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}:
         raise HTTPException(status_code=409, detail="减单仅适用于已确认锁定或部分到货的订单")
 
-    before_quantity = quantity(order.product_order_quantity)
-    reduction_quantity = quantity(payload.reduction_quantity)
-    if reduction_quantity > before_quantity:
-        raise HTTPException(status_code=422, detail="减单数量不能超过当前订单数量")
-
-    after_quantity = quantity(before_quantity - reduction_quantity)
+    before_quantity = quantity(order.product_order_quantity) if order.product_order_quantity is not None else None
+    if order.quantity_basis == "EXPLICIT":
+        if payload.reduction_quantity is not None:
+            raise HTTPException(422, "直接填写需求的订单请逐纸品减单，不能以产品数量换算")
+        reduction_quantity = None
+        after_quantity = before_quantity
+    else:
+        if payload.reduction_quantity is None or payload.line_quantities:
+            raise HTTPException(422, "按装箱数计算的订单必须填写产品减单数量")
+        reduction_quantity = quantity(payload.reduction_quantity)
+        if reduction_quantity > before_quantity:
+            raise HTTPException(status_code=422, detail="减单数量不能超过当前订单数量")
+        after_quantity = quantity(before_quantity - reduction_quantity)
     lines = _order_lines(db, order.id)
     line_ids = [line.id for line in lines]
     posted_received = _posted_received_by_line(db, line_ids)
@@ -1404,7 +1502,7 @@ def reduce_order(
     )
     before_required = {line.id: quantity(line.required_quantity) for line in lines}
     full_return = after_quantity == 0
-    after_required = {
+    after_required = _explicit_targets(order, lines, payload.line_quantities, append=False) if order.quantity_basis == "EXPLICIT" else {
         line.id: (
             Decimal("0")
             if full_return
@@ -1412,12 +1510,14 @@ def reduce_order(
         )
         for line in lines
     }
+    if order.quantity_basis == "EXPLICIT":
+        full_return = not any(after_required.values())
     protected_violations = [
         line
         for line in lines
         if after_required[line.id] < protected_quantity[line.id]
     ]
-    if after_quantity < protected_product_quantity or protected_violations:
+    if (protected_product_quantity is not None and after_quantity < protected_product_quantity) or protected_violations:
         details = "；".join(
             f"{line.packaging_type}调整后需求 {after_required[line.id]}，"
             f"已入库及待确认 {protected_quantity[line.id]}"
@@ -1425,7 +1525,7 @@ def reduce_order(
         )
         maximum_reduction = max(
             Decimal(0), quantity(before_quantity - protected_product_quantity)
-        )
+        ) if protected_product_quantity is not None else "请按各纸品已入库及待确认数量核对"
         raise HTTPException(
             status_code=409,
             detail=(
@@ -1468,6 +1568,8 @@ def reduce_order(
             "order_no": order.order_no,
             "reason": payload.reason,
             "reduction_quantity": reduction_quantity,
+            "quantity_basis": order.quantity_basis,
+            "line_labels": {line.id: {"packaging_type": line.packaging_type, "paper_quality": line.paper_quality, "specification": line.specification, "unit": line.unit} for line in lines},
             "before_quantity": before_quantity,
             "after_quantity": after_quantity,
             "before_required": before_required,
@@ -1501,6 +1603,8 @@ def return_order(
     if order.status not in {"PARTIALLY_RECEIVED", "COMPLETED"}:
         raise HTTPException(status_code=409, detail="退单仅用于已发生入库的订单；未确认锁定的订单请取消，已确认锁定但未入库的订单不可取消")
 
+    from app.services.carton_supplier_settlement import ensure_open
+    ensure_open(db, factory_id, order.supplier_id, now_text()[:7])
     lines = _order_lines(db, order.id)
     line_ids = [line.id for line in lines]
     pending_receipts = list(
@@ -1737,6 +1841,8 @@ def _protected_product_quantity(
     posted_received: dict[str, Decimal],
     pending_received: dict[str, Decimal],
 ) -> Decimal:
+    if order.quantity_basis == "EXPLICIT":
+        return None
     current_quantity = quantity(order.product_order_quantity)
     protected_cartons = {
         line.id: quantity(
@@ -1808,6 +1914,7 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
         contract_no=order.contract_no,
         item_no=order.item_no,
         product_name=order.product_name,
+        quantity_basis=order.quantity_basis,
         product_order_quantity=order.product_order_quantity,
         order_date=order.order_date,
         customer_due_date=order.customer_due_date,
@@ -1822,10 +1929,8 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
         updated_by_name=order.updated_by_name,
         created_at=order.created_at,
         updated_at=order.updated_at,
-        maximum_reducible_quantity=max(
-            Decimal(0),
-            quantity(order.product_order_quantity - protected_product_quantity),
-        ),
+        maximum_reducible_quantity=(max(Decimal(0), quantity(order.product_order_quantity - protected_product_quantity))
+                                    if protected_product_quantity is not None else None),
         lines=[
             CartonOrderLineOut(
                 id=line.id,
@@ -1836,6 +1941,8 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
                 dimension_unit=line.dimension_unit,
                 usage_quantity=line.usage_quantity,
                 required_quantity=line.required_quantity,
+                pending_received_quantity=pending_received.get(line.id, Decimal(0)),
+                maximum_reducible_quantity=max(Decimal(0), line.required_quantity - received.get(line.id, Decimal(0)) - pending_received.get(line.id, Decimal(0))),
                 received_quantity=received.get(line.id, Decimal(0)),
                 remaining_quantity=max(
                     Decimal(0), quantity(line.required_quantity - received.get(line.id, Decimal(0)))
@@ -1951,6 +2058,8 @@ def search_order_history_items(
     )
     grouped: dict[tuple[str, str], dict[str, object]] = {}
     for order in recent_orders:
+        if order.product_order_quantity is None or any(line.usage_quantity is None or line.required_quantity <= 0 or not line.paper_quality or not line.specification for line in _order_lines(db, order.id)):
+            continue
         key = (order.customer_code, order.item_no)
         if key not in grouped:
             grouped[key] = {"order": order, "order_count": 0}
@@ -2090,6 +2199,10 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
+    from app.services.carton_supplier_settlement import date_check, ensure_open
+    if payload.acceptance_date:
+        date_check(payload.acceptance_date)
+        ensure_open(db, factory_id, supplier.id, payload.acceptance_date[:7])
     formal_inputs = [line for line in payload.lines if line.source_type == "FORMAL_ORDER"]
     line_ids = [line.order_line_id for line in formal_inputs if line.order_line_id]
     if len(line_ids) != len(set(line_ids)):
@@ -2114,11 +2227,31 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         for order in orders.values()
         if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}
     ]
+    if any(order.supplier_id != supplier.id for order in orders.values()):
+        raise HTTPException(status_code=422, detail="收料供应商必须与关联订单的供应商一致，请分供应商登记")
     if ineligible_orders:
         raise HTTPException(
             status_code=409,
             detail=f"订单 {', '.join(sorted(ineligible_orders))} 必须先确认并锁定，且保持待收料状态，才能登记收料",
         )
+    for input_line in formal_inputs:
+        line = by_id[input_line.order_line_id]
+        if not line.paper_quality.strip() or not line.specification.strip():
+            order = orders[line.order_id]
+            if not any(issue.document_type == "LEGACY_BASELINE" for issue in _purchase_order_issues(db, order.id)):
+                _require_receipt_material(line)
+            before = {"paper_quality": line.paper_quality, "specification": line.specification}
+            line.paper_quality = line.paper_quality or input_line.paper_quality.strip()
+            line.specification = line.specification or input_line.specification.strip()
+            _require_receipt_material(line)
+            _audit(db, user, factory_id, "HISTORY_ORDER_MATERIAL_COMPLETED", "carton_order", order.id,
+                   {"order_no": order.order_no, "line_id": line.id, "before": before,
+                    "after": {"paper_quality": line.paper_quality, "specification": line.specification}})
+            order.revision += 1
+            order.updated_at = now_text()
+            order.updated_by = user.id
+            order.updated_by_name = user.display_name
+        _require_receipt_material(line)
     _ensure_receipt_capacity(db, by_id, {
         line.order_line_id: quantity(line.received_quantity - line.damaged_quantity
                                      - line.rejected_quantity - line.unusable_quantity)
@@ -2141,6 +2274,7 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         receipt_no=_new_number("RC"),
         delivery_note_no=payload.delivery_note_no,
         delivery_date=payload.delivery_date,
+        acceptance_date=payload.acceptance_date,
         supplier_id=supplier.id,
         supplier_name_snapshot=supplier.supplier_name,
         import_batch_id=payload.import_batch_id,
@@ -2271,6 +2405,7 @@ def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
         receipt_no=receipt.receipt_no,
         delivery_note_no=receipt.delivery_note_no,
         delivery_date=receipt.delivery_date,
+        acceptance_date=receipt.acceptance_date,
         supplier_id=receipt.supplier_id,
         supplier_name=receipt.supplier_name_snapshot,
         import_batch_id=receipt.import_batch_id,
@@ -2394,9 +2529,23 @@ def confirm_receipt(
         raise HTTPException(status_code=409, detail="当前收料单状态不能确认")
     if receipt.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="收料单已被其他人更新，请刷新后重试")
+    from app.services.carton_supplier_settlement import date_check, ensure_open
+    if receipt.acceptance_date:
+        date_check(receipt.acceptance_date)
+    ensure_open(db, factory_id, receipt.supplier_id, (receipt.acceptance_date or now_text()[:10])[:7])
     lines = _receipt_lines(db, receipt.id)
     if not lines:
         raise HTTPException(status_code=409, detail="收料单没有可确认的明细")
+    # Validate the whole receipt before posting any line, including legacy drafts.
+    missing_prices = [line for line in lines if line.effective_quantity > 0 and (
+        line.unit_price is None or line.unit_price <= 0
+    )]
+    if missing_prices:
+        labels = "、".join(
+            f"{line.contract_no} / {line.item_no} · {line.packaging_type}"
+            for line in missing_prices
+        )
+        raise HTTPException(status_code=422, detail=f"入库必须填写大于 0 的单价：{labels}。请补齐后再确认入库。")
     timestamp = now_text()
     formal_lines = [line for line in lines if line.source_type == "FORMAL_ORDER"]
     order_line_ids = [line.order_line_id for line in formal_lines if line.order_line_id]
@@ -2424,11 +2573,15 @@ def confirm_receipt(
         for order in receipt_orders.values()
         if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}
     ]
+    if any(order.supplier_id != receipt.supplier_id for order in receipt_orders.values()):
+        raise HTTPException(status_code=409, detail="原收料供应商与关联订单不一致，请先更正收料单")
     if ineligible_orders:
         raise HTTPException(
             status_code=409,
             detail=f"订单 {', '.join(sorted(ineligible_orders))} 当前未处于已确认锁定的待收料状态，不能确认入库",
         )
+    for order_line in order_lines.values():
+        _require_receipt_material(order_line)
     _ensure_receipt_capacity(db, order_lines, {})
     order_ids: set[str] = set()
     for line in lines:
@@ -2616,7 +2769,7 @@ def inventory_balances(
         key = _movement_key(row)
         totals[key] += row.quantity
         latest[key] = row
-        if row.movement_type == "INBOUND":
+        if row.movement_type == "INBOUND" or (row.source_type == "HISTORY_INVENTORY" and row.movement_type == "ADJUSTMENT" and row.quantity > 0):
             latest_inbound[key] = row.occurred_at
     return [
         CartonInventoryBalanceOut(
@@ -2668,8 +2821,12 @@ def relocate_inventory(db: Session, payload: CartonInventoryRelocateRequest, use
     positions.transfer(db, PositionTransfer(factory_id=payload.factory_id, request_id=uuid4().hex,
         position_key=source.position_key, expected_position_revision=source.position_revision,
         location_id=target.id, quantity=source.balance, note=payload.note), user)
-    return next(row for row in inventory_balances(db, payload.factory_id)
-                if row.inventory_key == source.inventory_key)
+    # Transfer commits its own transaction. Read the resulting balance and cost
+    # together under the same lock used by the normal balance endpoint.
+    from app.services.carton_inventory_money import annotate_balances
+    _lock_receipt_factory(db, payload.factory_id)
+    balances = annotate_balances(db, payload.factory_id, inventory_balances(db, payload.factory_id))
+    return next(row for row in balances if row.inventory_key == source.inventory_key)
 
 
 def _prepare_inventory_movement(
@@ -2755,6 +2912,10 @@ def _prepare_inventory_movement(
     )
     if signed_quantity < 0:
         movement.unit_price = _issue_cost_price(db, movement)
+    from app.services.carton_supplier_settlement import movement_guard, return_supplier
+    if movement.movement_type == "OUTBOUND" and movement.issue_kind == "RETURN" and not return_supplier(db, movement):
+        raise HTTPException(status_code=409, detail="该库存无法确定供应商，暂不能登记退供应商；请先核实原收料来源。库存尚未扣减。")
+    movement_guard(db, movement)
     positions.post(db, movement, location_id=payload.location_id, legacy_location=movement.location)
     event = _audit(db, user, factory_id, "INVENTORY_MOVEMENT_CREATED", "carton_inventory_movement", movement.id, {"movement_type": movement.movement_type, "quantity": movement.quantity})
     return movement, quantity(current + signed_quantity), event
@@ -2931,6 +3092,8 @@ def reverse_receipt(
         raise HTTPException(status_code=404, detail="收料单不存在")
     if receipt.revision != payload.expected_revision or receipt.status not in {"PENDING_CONFIRMATION", "POSTED"}:
         raise HTTPException(status_code=409, detail="收料单状态或版本已变化，请刷新后重试")
+    from app.services.carton_supplier_settlement import receipt_guard
+    receipt_guard(db, receipt)
     previous_status = receipt.status
     lines = _receipt_lines(db, receipt.id)
     timestamp = now_text()
@@ -3031,6 +3194,8 @@ def reverse_inventory_movement(
     original = db.get(CartonInventoryMovement, movement_id)
     if original is None or original.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="库存流水不存在")
+    from app.services.carton_supplier_settlement import movement_guard
+    movement_guard(db, original)
     if original.movement_type in {"INBOUND", "REVERSAL"}:
         raise HTTPException(status_code=409, detail="收料入库须通过收料冲销流程处理，当前流水不能直接冲销")
     if db.scalar(
@@ -3710,6 +3875,8 @@ def confirm_inventory_price(db: Session, movement_id: str, payload: CartonInvent
     row = db.get(CartonInventoryMovement, movement_id)
     if row is None or row.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="库存流水不存在")
+    from app.services.carton_supplier_settlement import movement_guard
+    movement_guard(db, row)
     if row.quantity <= 0 or row.movement_type == "REVERSAL" or row.unit_price != 0:
         raise HTTPException(status_code=409, detail="仅可核实缺价的入库或期初正调整记录")
     existing = db.scalar(select(CartonAuditEvent.id).where(

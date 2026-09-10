@@ -42,6 +42,9 @@ def test_concurrent_outbound_cannot_overdraw_the_same_stock(monkeypatch):
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(outbound, [1, 2]))
         assert sorted(r.status_code for r in responses) == [201, 409], [r.text for r in responses]
+        # The barrier coordinates the two writes only; reads now acquire this
+        # lock too and must not wait for a nonexistent second reader.
+        monkeypatch.setattr(service, "lock_transaction", original)
         movements = client.get(base + "/movements", params=params).json()["items"]
         assert sum(Decimal(row["quantity"]) for row in movements) == Decimal(3)
         assert Decimal(client.get(base + "/balances", params=params).json()[0]["balance"]) == Decimal(3)

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ref, watch } from "vue";
+import LegacyDialog from "../components/LegacyDialog.vue";
 import ProductPicker from "../components/ProductPicker.vue";
 import PageControls from "../components/PageControls.vue";
 import { useWorkspaceContext } from "../context";
@@ -9,6 +11,7 @@ const {
   loadPage,
   dashboard,
   saving,
+  errorMessage,
   canOperate,
   scheduleForm,
   chooseScheduleProduct,
@@ -17,11 +20,45 @@ const {
   removeSchedule,
   CalendarDays,
   Trash2,
+  todayText,
 } = useWorkspaceContext();
+const showForm = ref(false);
+function openAdd() {
+  scheduleEditId.value = "";
+  Object.assign(scheduleForm, {
+    business_date: todayText(),
+    product_id: "",
+    product_name: "",
+    customer: "",
+    material_name: "",
+    weight_g: 1,
+    quantity: 1,
+    machine_no: 0,
+    priority: "normal",
+    status: "pending",
+    remark: "",
+  });
+  showForm.value = true;
+}
+watch(
+  () => scheduleEditId.value,
+  (value) => {
+    if (value) showForm.value = true;
+  },
+);
+async function saveForm() {
+  await submitSchedule();
+  if (!errorMessage.value) showForm.value = false;
+}
 </script>
 <template>
   <template v-if="dashboard">
     <section class="space-y-5">
+      <div class="legacy-toolbar">
+        <button v-if="canOperate" class="action-button" @click="openAdd">
+          + 添加排期
+        </button>
+      </div>
       <form
         class="collection-filters flex flex-wrap gap-3 rounded-xl border bg-white p-3"
         @submit.prevent="loadPage('schedules')"
@@ -38,67 +75,71 @@ const {
         :busy="listPages.schedules!.busy"
         @change="loadPage('schedules', $event)"
       />
-      <form
-        v-if="canOperate"
-        class="panel-card p-5"
-        @submit.prevent="submitSchedule"
-      >
-        <div class="section-heading">
-          <div>
-            <h2>
-              {{ scheduleEditId ? "编辑计划（确认后保存）" : "新增生产计划" }}
-            </h2>
-            <p>计划可分配机台并按待排、打印、完成、取消流转。</p>
+      <LegacyDialog v-if="showForm" title="排期" @close="showForm = false">
+        <form
+          v-if="canOperate"
+          class="panel-card p-5"
+          @submit.prevent="saveForm"
+        >
+          <div class="section-heading">
+            <div>
+              <h2>
+                {{ scheduleEditId ? "编辑计划（确认后保存）" : "新增生产计划" }}
+              </h2>
+              <p>计划可分配机台并按待排、打印、完成、取消流转。</p>
+            </div>
           </div>
-        </div>
-        <div class="form-grid">
-          <label
-            >日期<input
-              v-model="scheduleForm.business_date"
-              required
-              type="date" /></label
-          ><label
-            >产品<ProductPicker
-              v-model="scheduleForm.product_id"
-              @selected="chooseScheduleProduct" /></label
-          ><label
-            >产品名称<input
-              v-model="scheduleForm.product_name"
-              required /></label
-          ><label>客户<input v-model="scheduleForm.customer" /></label
-          ><label
-            >材料<input v-model="scheduleForm.material_name" required /></label
-          ><label
-            >单件重量(g)<input
-              v-model.number="scheduleForm.weight_g"
-              min="0.01"
-              step="0.01"
-              type="number" /></label
-          ><label
-            >数量<input
-              v-model.number="scheduleForm.quantity"
-              min="1"
-              type="number" /></label
-          ><label
-            >机号(0=待分配)<input
-              v-model.number="scheduleForm.machine_no"
-              min="0"
-              max="100"
-              type="number" /></label
-          ><label
-            >优先级<select v-model="scheduleForm.priority">
-              <option value="high">高</option>
-              <option value="normal">普通</option>
-              <option value="low">低</option>
-            </select></label
-          ><label class="md:col-span-2"
-            >备注<input v-model="scheduleForm.remark"
-          /></label>
-        </div>
-        <button class="action-button mt-4" type="submit" :disabled="saving">
-          <CalendarDays class="size-4" />保存计划
-        </button>
-      </form>
+          <div class="form-grid">
+            <label
+              >日期<input
+                v-model="scheduleForm.business_date"
+                required
+                type="date" /></label
+            ><label
+              >产品<ProductPicker
+                v-model="scheduleForm.product_id"
+                @selected="chooseScheduleProduct" /></label
+            ><label
+              >产品名称<input
+                v-model="scheduleForm.product_name"
+                required /></label
+            ><label>客户<input v-model="scheduleForm.customer" /></label
+            ><label
+              >材料<input
+                v-model="scheduleForm.material_name"
+                required /></label
+            ><label
+              >单件重量(g)<input
+                v-model.number="scheduleForm.weight_g"
+                min="0.01"
+                step="0.01"
+                type="number" /></label
+            ><label
+              >数量<input
+                v-model.number="scheduleForm.quantity"
+                min="1"
+                type="number" /></label
+            ><label
+              >机号(0=待分配)<input
+                v-model.number="scheduleForm.machine_no"
+                min="0"
+                max="100"
+                type="number" /></label
+            ><label
+              >优先级<select v-model="scheduleForm.priority">
+                <option value="high">高</option>
+                <option value="normal">普通</option>
+                <option value="low">低</option>
+              </select></label
+            ><label class="md:col-span-2"
+              >备注<input v-model="scheduleForm.remark"
+            /></label>
+          </div>
+          <button class="action-button mt-4" type="submit" :disabled="saving">
+            <CalendarDays class="size-4" />保存计划
+          </button>
+        </form>
+      </LegacyDialog>
       <div class="panel-card p-5">
         <div class="section-heading">
           <div>
@@ -136,7 +177,13 @@ const {
                 </td>
                 <td v-if="canOperate">
                   <div class="row-actions">
-                    <button type="button" @click="editSchedule(item)">
+                    <button
+                      type="button"
+                      @click="
+                        showForm = true;
+                        editSchedule(item);
+                      "
+                    >
                       编辑</button
                     ><button
                       v-if="item.status === 'pending'"

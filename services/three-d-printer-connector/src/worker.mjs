@@ -3,7 +3,7 @@ import { BambuAdapter } from './bambu/BambuAdapter.mjs';
 
 const stateFields = ['event_id', 'sequence', 'observed_at', 'connected', 'state', 'current_file',
   'device_job_key', 'progress_percent', 'remaining_minutes', 'live_material', 'nozzle_temperature',
-  'bed_temperature', 'error_code'];
+  'bed_temperature', 'nozzle_target', 'bed_target', 'layer_num', 'total_layers', 'error_code'];
 
 /** One boot ID per process, bounded per-printer queues, no disk command replay. */
 export class ConnectorWorker {

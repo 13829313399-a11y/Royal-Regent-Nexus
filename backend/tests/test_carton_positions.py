@@ -62,6 +62,51 @@ def test_split_receipt_position_limits_transfer_retry_and_cost(db):
         pos.transfer(db, payload.model_copy(update={"quantity": D(1)}), USER)
 
 
+def test_position_flow_totals_use_allocations_and_preserve_reversal_categories(db):
+    row, a, b = setup(db)
+    opening = movement("opening", "10", "2", movement_type="ADJUSTMENT", source_type="HISTORY_INVENTORY")
+    pos.post(db, opening, location_id=a.id)
+    adjustment = movement("count", "-2", "2", movement_type="ADJUSTMENT", source_type="STOCKTAKE")
+    pos.post(db, adjustment, location_id=a.id)
+    issue = movement("issue", "-8", "2", issue_kind="RETURN")
+    pos.post(db, issue, location_id=a.id)
+    undo = movement("undo", "8", "2", movement_type="REVERSAL", reversal_of_movement_id=issue.id)
+    pos.post(db, undo, reverse=issue)
+    receipt = movement("extra", "5", "2", source_type="RECEIPT")
+    pos.post(db, receipt, allocations=[{"location_id": a.id, "quantity": "2"}, {"location_id": b.id, "quantity": "3"}])
+    undo_receipt = movement("undo-extra", "-5", "2", movement_type="REVERSAL", reversal_of_movement_id=receipt.id)
+    pos.post(db, undo_receipt, reverse=receipt)
+    source = next(r for r in pos.position_balances(db, "huaxing") if r.location_id == a.id)
+    pos.transfer(db, PositionTransfer(factory_id="huaxing", request_id=uuid4().hex,
+        position_key=source.position_key, expected_position_revision=source.position_revision,
+        location_id=b.id, quantity="20"), USER)
+    results = {r.location_id: r for r in pos.position_balances(db, "huaxing")}
+    assert (results[a.id].inbound_quantity, results[b.id].inbound_quantity) == (70, 30)
+    assert results[a.id].outbound_quantity == 0  # Return and its reversal net to zero, never become receipt.
+    assert results[a.id].opening_quantity == 10
+    assert results[a.id].adjustment_quantity == -2
+    assert (results[a.id].transfer_quantity, results[b.id].transfer_quantity) == (-20, 20)
+    assert (results[a.id].balance, results[b.id].balance) == (58, 50)
+    for result in results.values():
+        assert result.balance == (result.opening_quantity + result.inbound_quantity - result.outbound_quantity
+            + result.transfer_quantity + result.adjustment_quantity)
+    assert pos.position_balances(db, "huadeng") == []
+
+
+def test_position_flow_totals_include_history_beyond_movement_page_limit(db):
+    location = pos.create_location(db, "huaxing", "全量仓", "A")
+    rows = [movement(f"receipt-{i}", "0.0001", "2", source_type="RECEIPT") for i in range(501)]
+    db.add_all(rows)
+    db.flush()
+    db.add_all([CartonPositionEntry(factory_id="huaxing", inventory_key=pos.inventory_key(row),
+        location_id=location.id, movement_id=row.id, transfer_id="", quantity=row.quantity,
+        occurred_at=row.occurred_at) for row in rows])
+    result = pos.position_balances(db, "huaxing")[0]
+    assert result.inbound_quantity == result.balance == D("0.0501")
+    assert result.model_dump(mode="json")["inbound_quantity"] == "0.0501"
+    assert result.outbound_quantity == result.opening_quantity == result.transfer_quantity == result.adjustment_quantity == 0
+
+
 def test_two_positions_same_material_bulk_atomic_and_usage(db):
     row, a, b = setup(db)
     request = dict(factory_id="huaxing", request_id=uuid4().hex, document_no="BULK", issue_kind="USAGE",
