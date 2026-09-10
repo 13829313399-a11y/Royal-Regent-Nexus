@@ -4,7 +4,7 @@ import Component from '../CartonOpeningInventoryImport.vue'
 const api = vi.hoisted(() => ({ previewHistoryInventory: vi.fn(), uploadHistoryInventory: vi.fn() }))
 vi.mock('@/api/cartonProcurement', () => ({ cartonProcurementApi: api }))
 const file = new File(['xlsx'], '期初库存.xlsx')
-const options = { customer_name: '迪奇', warehouse: 'A', snapshot_date: '2026-09-01', dimension_unit: 'in', currency: 'CNY' }
+const options = { customer_name: '迪奇', warehouse: 'A', dimension_unit: 'in', currency: 'CNY' }
 const props = { factoryId: 'huaxing', connected: true, canImport: true,
   customers: [{ customer_name: '迪奇', customer_code: 'D', status: 'ACTIVE' }],
   locations: [{ id: 'L1', factory_id: 'huaxing', warehouse: 'A', bin_code: 'A1', label: 'A／A1', status: 'ACTIVE' }] }
@@ -17,7 +17,6 @@ function preview() {
 async function configure(wrapper: VueWrapper) {
   await wrapper.get('[aria-label="期初库存客户"]').setValue('迪奇')
   await wrapper.get('[aria-label="期初库存仓库"]').setValue('A')
-  await wrapper.get('[aria-label="期初基准日期"]').setValue('2026-09-01')
   await wrapper.get('[aria-label="期初尺寸单位"]').setValue('in')
 }
 async function choose(wrapper: VueWrapper) {
@@ -28,9 +27,31 @@ async function choose(wrapper: VueWrapper) {
 function button(wrapper: VueWrapper, text: string) { return wrapper.findAll('button').find(item => item.text() === text)! }
 describe('opening inventory import', () => {
   beforeEach(() => { vi.resetAllMocks(); api.previewHistoryInventory.mockResolvedValue(preview()) })
+  it('keeps the selected file while the user fills required settings', async () => {
+    const wrapper = mount(Component, { props })
+    expect(button(wrapper, '导入期初库存').attributes('disabled')).toBeUndefined()
+    await choose(wrapper)
+    expect(api.previewHistoryInventory).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('文件已选择，请补填尺寸单位')
+    await button(wrapper, '重新预览').trigger('click')
+    expect(api.previewHistoryInventory).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('文件已选择，请补填尺寸单位')
+    await wrapper.get('[aria-label="期初尺寸单位"]').setValue('in')
+    await button(wrapper, '重新预览').trigger('click'); await flushPromises()
+    expect(api.previewHistoryInventory).toHaveBeenCalledWith('huaxing', file, { ...options, customer_name: '', warehouse: '' })
+    expect(api.uploadHistoryInventory).not.toHaveBeenCalled()
+  })
+  it('allows row-specific customers and warehouses without batch defaults', async () => {
+    const wrapper = mount(Component, { props })
+    await wrapper.get('[aria-label="期初尺寸单位"]').setValue('in')
+    expect(button(wrapper, '导入期初库存').attributes('disabled')).toBeUndefined()
+    await choose(wrapper)
+    expect(api.previewHistoryInventory).toHaveBeenCalledWith('huaxing', file, { ...options, customer_name: '', warehouse: '' })
+  })
   it('previews batch conditions and remaining quantities before explicit posting', async () => {
     const wrapper = mount(Component, { props })
-    expect(button(wrapper, '导入期初库存').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, '导入期初库存').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[aria-label="期初基准日期"]').exists()).toBe(false)
     await configure(wrapper); await choose(wrapper)
     expect(api.previewHistoryInventory).toHaveBeenCalledWith('huaxing', file, options)
     expect(wrapper.text()).toContain('待核价')
@@ -45,15 +66,15 @@ describe('opening inventory import', () => {
     expect(wrapper.find('[aria-label="期初库存导入预览"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('已入账 1 行')
   })
-  it('invalidates review when batch date changes and ignores its late preview', async () => {
+  it('invalidates review when dimension unit changes and ignores its late preview', async () => {
     let finish!: (value: ReturnType<typeof preview>) => void
     api.previewHistoryInventory.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     const wrapper = mount(Component, { props }); await configure(wrapper); await choose(wrapper)
-    await wrapper.get('[aria-label="期初基准日期"]').setValue('2026-09-02')
+    await wrapper.get('[aria-label="期初尺寸单位"]').setValue('cm')
     finish(preview()); await flushPromises()
     expect(wrapper.find('[aria-label="期初库存导入预览"]').exists()).toBe(false)
     await button(wrapper, '重新预览').trigger('click'); await flushPromises()
-    expect(api.previewHistoryInventory).toHaveBeenLastCalledWith('huaxing', file, { ...options, snapshot_date: '2026-09-02' })
+    expect(api.previewHistoryInventory).toHaveBeenLastCalledWith('huaxing', file, { ...options, dimension_unit: 'cm' })
   })
   it('blocks the whole batch when the preview contains amount or location errors', async () => {
     const data = preview(); data.errors.push('第5行金额不一致')

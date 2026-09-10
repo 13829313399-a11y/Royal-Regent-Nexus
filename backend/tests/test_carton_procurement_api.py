@@ -2730,8 +2730,8 @@ def test_standalone_history_inventory_supports_outbound_adjustment_and_reversal(
         assert balance["order_line_id"] is None
         assert balance["latest_movement_id"]
         assert balance["latest_document_no"] == "STOCKTAKE-OPERABLE"
-        # Opening stock is a historical adjustment, not a recorded receipt.
-        assert balance["latest_inbound_at"] is None
+        # Opening stock stays an adjustment but its document date is searchable.
+        assert balance["latest_inbound_at"].startswith("2025-08-05")
 
         outbound = client.post(
             "/api/carton-procurement/inventory/movements",

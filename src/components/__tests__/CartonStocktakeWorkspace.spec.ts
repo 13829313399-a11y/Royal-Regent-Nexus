@@ -125,7 +125,7 @@ describe('库存盘点工作台', () => {
   it('separates creator and supervisor review controls', async () => {
     mocks.detail.mockResolvedValue(detail('SUBMITTED'))
     let wrapper = await open()
-    expect(wrapper.text()).toContain('等待另一位有复核权限的主管处理')
+    expect(wrapper.text()).toContain('本单由你创建或提交，不能自行复核')
     expect(wrapper.findAll('button').some(item => item.text() === '复核并差额入账')).toBe(false)
     wrapper.unmount(); mocks.user.id = 'manager'; wrapper = await open()
     expect(button(wrapper, '复核并差额入账').exists()).toBe(true)

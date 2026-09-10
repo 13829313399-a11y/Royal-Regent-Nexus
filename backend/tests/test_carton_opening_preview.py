@@ -4,9 +4,62 @@ import pytest
 from fastapi import HTTPException
 from openpyxl import Workbook
 from app.services.carton_opening_preview import parse_rows,options_from_json
+from app.services.carton_opening_preview import inbound_time
+from datetime import datetime
 
 OPTIONS={"customer_name":"迪奇","warehouse":"A","snapshot_date":"2026-09-01","dimension_unit":"cm","currency":"CNY"}
 HEADERS=["PO","货号","纸品／纸质","长","宽","高","仓位","期初库存数量","单价"]
+
+
+def test_original_inbound_time_overrides_legacy_batch_date_and_preserves_time():
+    content=workbook([["PO","I","A535B外箱",30,20,15,"A1",10,2,"B","2026-08-20 09:30"]],HEADERS+["仓库","原入库时间"])
+    rows,_=parse_rows("stock.xlsx",content,options_from_json(OPTIONS))
+    assert rows[0]["warehouse"]=="B"
+    assert rows[0]["original_inbound_at"]=="2026-08-20T09:30:00+08:00"
+    assert rows[0]["snapshot_date"]=="2026-08-20"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("2026年8月1日", "2026-08-01T00:00:00+08:00"),
+    ("2026/8/1 09:30:12", "2026-08-01T09:30:12+08:00"),
+    (datetime(2026,8,1,9,30), "2026-08-01T09:30:00+08:00"),
+    ("2026-07-31T23:30:00Z", "2026-08-01T07:30:00+08:00"),
+    (46235.5, "2026-08-01T12:00:00+08:00"),
+])
+def test_row_time_formats_are_normalized_without_losing_clock_time(raw, expected):
+    assert inbound_time(raw,0,"第3行")==expected
+
+
+def test_1904_excel_epoch_keeps_time():
+    assert inbound_time(44773.5,1,"第3行")=="2026-08-01T12:00:00+08:00"
+
+
+def test_1904_workbook_with_unformatted_numeric_date_uses_workbook_epoch():
+    from openpyxl.utils.datetime import MAC_EPOCH
+    wb=Workbook();wb.epoch=MAC_EPOCH
+    wb.active.append(HEADERS+["入库时间"])
+    wb.active.append(["PO","I","A33外箱",30,20,15,"A1",10,2,44773.5])
+    content=BytesIO();wb.save(content)
+    rows,_=parse_rows("stock.xlsx",content.getvalue(),options_from_json({"dimension_unit":"cm"}))
+    assert rows[0]["occurred_at"]=="2026-08-01T12:00:00+08:00"
+
+
+@pytest.mark.parametrize("value", [None,"","8月1日","2026-02-30","2026-08-01 25:00","garbage 2026-08-01"])
+def test_missing_or_invalid_row_date_reports_source(value):
+    options={key:value for key,value in OPTIONS.items() if key!="snapshot_date"}
+    content=workbook([["PO","I","A33外箱",30,20,15,"A1",10,2,value]],HEADERS+["入库时间"])
+    with pytest.raises(HTTPException) as exc:
+        parse_rows("stock.xlsx",content,options_from_json(options))
+    assert "第 3 行" in exc.value.detail and "入库时间" in exc.value.detail
+
+
+def test_row_time_with_native_excel_datetime_and_zero_row_without_date():
+    options={key:value for key,value in OPTIONS.items() if key!="snapshot_date"}
+    content=workbook([["PO","I","A33外箱",30,20,15,"A1",10,2,datetime(2026,8,1,9,30)],
+                      ["PO","ZERO","A33外箱",30,20,15,"A1",0,2,None]],HEADERS+["入库时间"])
+    rows,_=parse_rows("stock.xlsx",content,options_from_json(options))
+    assert rows[0]["occurred_at"]=="2026-08-01T09:30:00+08:00"
+    assert rows[1]["status"]=="ZERO"
 
 
 def workbook(rows,headers=HEADERS):
@@ -38,8 +91,8 @@ def test_invalid_opening_quantity_is_not_sourced_from_inbound_columns(quantity):
 
 
 def test_original_amount_is_ignored_but_opening_amount_is_checked():
-    rows,_=parse_rows("stock.xlsx",workbook([["PO","ITEM","A33外箱",30,20,15,"A1",10,2,999,"8月1日"]],HEADERS+["入库金额","日期"]),options_from_json(OPTIONS))
-    assert rows[0]["amount"]==20 and rows[0]["snapshot_date"]=="2026-09-01"
+    rows,_=parse_rows("stock.xlsx",workbook([["PO","ITEM","A33外箱",30,20,15,"A1",10,2,999,"2026年8月1日"]],HEADERS+["入库金额","日期"]),options_from_json(OPTIONS))
+    assert rows[0]["amount"]==20 and rows[0]["snapshot_date"]=="2026-08-01"
     assert any("原入库" in warning for warning in rows[0]["warnings"])
     with pytest.raises(HTTPException) as exc:
         parse_rows("stock.xlsx",workbook([["PO","ITEM","A33外箱",30,20,15,"A1",10,2,999]],HEADERS+["原结余金额"]),options_from_json(OPTIONS))
@@ -54,7 +107,7 @@ def test_eight_column_original_quality_header_is_supported_and_units_required():
     with pytest.raises(HTTPException): options_from_json({**OPTIONS,"snapshot_date":"9月1日"})
 
 
-@pytest.mark.parametrize("field,value",[("客户名称","其他客户"),("仓库","B"),("尺寸单位","in"),("币种","USD"),("盘点日期","2026-08-01")])
+@pytest.mark.parametrize("field,value",[("尺寸单位","in"),("币种","USD")])
 def test_batch_settings_cannot_silently_override_explicit_row_fields(field,value):
     with pytest.raises(HTTPException) as exc:
         parse_rows("stock.xlsx",workbook([["PO","I","A33外箱",30,20,15,"A1",10,2,value]],HEADERS+[field]),options_from_json(OPTIONS))

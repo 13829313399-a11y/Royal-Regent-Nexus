@@ -25,7 +25,7 @@ describe('historical order review', () => {
     expect(api.uploadHistoryOrders).not.toHaveBeenCalled()
     await wrapper.trigger('click')
     expect(wrapper.emitted('close')).toBeUndefined()
-    await wrapper.findAll('button').find(b => b.text() === '确认导入待下单订单')!.trigger('click')
+    await wrapper.findAll('button').find(b => b.text() === '确认历史已下单并导入')!.trigger('click')
     await flushPromises()
     expect(api.uploadHistoryOrders).toHaveBeenCalledWith('huaxing', file, 'reviewed-file')
     expect(wrapper.emitted('imported')).toEqual([[result]])
@@ -35,7 +35,7 @@ describe('historical order review', () => {
     api.previewHistoryOrders.mockResolvedValue(data)
     const wrapper = mount(Dialog, { props: { file, factoryId: 'huaxing' } })
     await flushPromises()
-    expect(wrapper.findAll('button').find(b => b.text() === '确认导入待下单订单')!.attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').find(b => b.text() === '确认历史已下单并导入')!.attributes('disabled')).toBeDefined()
     expect(api.uploadHistoryOrders).not.toHaveBeenCalled()
   })
   it('ignores a preview from the previous factory', async () => {

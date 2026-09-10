@@ -207,7 +207,7 @@ export interface CartonHistoryInventoryImportResponse {
 export interface OpeningInventoryOptions {
   customer_name: string
   warehouse: string
-  snapshot_date: string
+  snapshot_date?: string
   dimension_unit: 'cm' | 'in'
   currency: string
 }
@@ -218,7 +218,7 @@ export interface OpeningInventoryPreview {
   rows: Array<{ source: string; customer_name: string; contract_no: string; item_no: string
     packaging_type: string; paper_quality: string; specification: string; unit: string
     opening_quantity: string; unit_price: string | null; amount: string | null
-    currency: string; location: string; status: 'READY' | 'DUPLICATE' | 'ZERO'; warnings: string[] }>
+    currency: string; location: string; warehouse?: string; original_inbound_at?: string; occurred_at?: string; status: 'READY' | 'DUPLICATE' | 'ZERO'; warnings: string[] }>
   totals: Array<{ unit: string; currency: string; quantity: string; amount: string | null; missing_price_count: number }>
 }
 
@@ -680,7 +680,7 @@ export const cartonProcurementApi = {
   async previewHistoryOrders(factoryId: string, file: File) {
     const form = new FormData()
     form.append('file', file)
-    return (await http.post<CartonHistoryOrderPreview>('/carton-procurement/history-orders/preview', form, { params: { factory_id: factoryId } })).data
+    return (await http.post<CartonHistoryOrderPreview>('/carton-procurement/history-orders/preview', form, { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } })).data
   },
   async uploadHistoryOrders(factoryId: string, file: File, fingerprint?: string) {
     const form = new FormData()
@@ -843,7 +843,7 @@ export const cartonProcurementApi = {
     const form = new FormData()
     form.append('file', file)
     form.append('options', JSON.stringify(options))
-    return (await http.post<OpeningInventoryPreview>('/carton-procurement/inventory/history-imports/preview', form, { params: { factory_id: factoryId } })).data
+    return (await http.post<OpeningInventoryPreview>('/carton-procurement/inventory/history-imports/preview', form, { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } })).data
   },
   async uploadHistoryInventory(factoryId: string, file: File, options?: OpeningInventoryOptions, fingerprint?: string) {
     const form = new FormData()
