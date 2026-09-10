@@ -136,6 +136,16 @@ def page(
         items = [serialize(row, images.get(row.id)) for row in rows]
     else:
         items = [serialize(row) for row in rows]
+    if kind == "records":
+        product_ids = {row.product_id for row in rows if row.product_id}
+        images = {image.product_id: image for image in db.scalars(select(m.ThreeDPrintingProductImage).where(
+            m.ThreeDPrintingProductImage.factory_id == "huakang-a",
+            m.ThreeDPrintingProductImage.product_id.in_(product_ids),
+            m.ThreeDPrintingProductImage.is_current.is_(True),
+        ))}
+        for item in items:
+            image = images.get(item["product_id"])
+            item["product_image_url"] = f"/api/three-d-printing/products/{image.product_id}/image?factory_id=huakang-a&v={image.sha256}" if image else ""
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 

@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useAppStore } from '@/stores/app'
+import PdfBatchRenameWorkspace from '@/features/pdf-rename/PdfBatchRenameWorkspace.vue'
 import {
   ArrowRight,
   FileText,
@@ -39,6 +42,28 @@ import {
   parseGroups,
 } from '@/features/document-tools/coordinates'
 import '@/features/document-tools/workbench.css'
+
+const appStore = useAppStore()
+const route = useRoute()
+const router = useRouter()
+// Do not use activeProductionFactory: its group fallback is Huaxing.
+const isHuaxing = computed(() => appStore.activeFactoryId === 'huaxing'
+  && (!route.query.factory || route.query.factory === 'huaxing'))
+const renameActive = computed(() => isHuaxing.value && route.query.tool === 'pdf-batch-rename')
+function selectRename(active: boolean) {
+  const query = { ...route.query }
+  if (active && isHuaxing.value) query.tool = 'pdf-batch-rename'
+  else delete query.tool
+  focused.value = false
+  void router.replace({ query })
+}
+watch(isHuaxing, (allowed) => {
+  if (!allowed && route.query.tool === 'pdf-batch-rename') {
+    const query = { ...route.query }
+    delete query.tool
+    void router.replace({ query })
+  }
+}, { immediate: true, flush: 'sync' })
 
 interface UploadItem {
   id: string
@@ -833,11 +858,14 @@ onBeforeUnmount(() => {
     class="app-page dt-workbench"
     :class="{ 'dt-narrow': narrow, 'dt-phone': phone, 'dt-focus': focused }"
   >
-    <PageHeader title="公共工具栏" description="文档转换与精确分页"
+    <PageHeader title="公共工具栏" :description="isHuaxing ? '文档转换、精确分页与批量改名 · 华兴厂区' : '文档转换与精确分页'"
       ><template #actions
-        ><Button variant="outline" size="sm" @click="openDialog(tasksDialog)"
+        ><Button v-if="isHuaxing" variant="outline" size="sm" :aria-pressed="renameActive" @click="selectRename(!renameActive)"
+          ><Files :size="15" aria-hidden="true" />{{ renameActive ? '返回文档转换' : '批量改名' }}</Button
+        ><Button v-if="!renameActive" variant="outline" size="sm" @click="openDialog(tasksDialog)"
           ><Files :size="15" aria-hidden="true" />我的任务</Button
         ><Button
+          v-if="!renameActive"
           variant="outline"
           size="sm"
           :aria-pressed="focused"
@@ -857,12 +885,12 @@ onBeforeUnmount(() => {
       aria-label="上传文档"
       @change="picked"
     />
-    <div v-if="error" class="dt-alert" role="alert">
+    <div v-if="error && !renameActive" class="dt-alert" role="alert">
       <AlertCircle :size="16" aria-hidden="true" /><span>{{ error }}</span
       ><Button variant="ghost" size="sm" @click="initialize">重新连接</Button>
     </div>
-    <p v-if="notice" class="dt-notice" role="status">{{ notice }}</p>
-    <details v-if="capabilities?.engines" class="dt-engine-status">
+    <p v-if="notice && !renameActive" class="dt-notice" role="status">{{ notice }}</p>
+    <details v-if="capabilities?.engines && !renameActive" class="dt-engine-status">
       <summary>处理引擎状态</summary>
       <Button
         variant="ghost"
@@ -882,13 +910,20 @@ onBeforeUnmount(() => {
       >
     </details>
     <div
-      v-if="capabilities && !capabilities.worker.online"
+      v-if="capabilities && !capabilities.worker.online && !renameActive"
       class="dt-warning"
       role="status"
     >
       后台处理服务暂未在线，文件和任务会保留；服务恢复后继续处理。
     </div>
+    <PdfBatchRenameWorkspace
+      v-if="renameActive"
+      :key="appStore.activeFactoryId"
+      :factory-id="appStore.activeFactoryId"
+      context-label="华兴厂区（仅华兴可用）"
+    />
     <div
+      v-show="!renameActive"
       class="dt-desk"
       :class="{ dragging }"
       @dragover.prevent="dragging = true"
@@ -913,6 +948,9 @@ onBeforeUnmount(() => {
             /><FileText v-else :size="16" aria-hidden="true" /><span>{{
               operationLabels[tool]
             }}</span>
+          </button>
+          <button v-if="isHuaxing" type="button" :aria-pressed="renameActive" @click="selectRename(true)">
+            <Files :size="16" aria-hidden="true" /><span>批量改名 · 华兴</span>
           </button>
         </nav>
         <div class="dt-rail-heading">
@@ -1294,7 +1332,7 @@ onBeforeUnmount(() => {
         </section>
       </aside>
     </div>
-    <div v-if="hasResult && (narrow || focused)" class="dt-mobile-results">
+    <div v-if="hasResult && (narrow || focused) && !renameActive" class="dt-mobile-results">
       <a
         v-for="artifact in results"
         :key="artifact.id"

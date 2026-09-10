@@ -1,0 +1,548 @@
+.legacy-workspace {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  background: var(--background);
+  color: var(--foreground);
+  min-height: calc(100vh - 64px);
+  font-family: inherit;
+}
+.legacy-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  align-self: start;
+  z-index: 30;
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.legacy-brand {
+  padding: 24px 17px;
+  color: var(--primary);
+  font-weight: 700;
+  border-bottom: 1px solid var(--border);
+}
+.legacy-brand small {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 400;
+  margin-top: 3px;
+}
+.legacy-sidebar nav {
+  padding: 12px 5px;
+}
+.legacy-sidebar nav button,
+.legacy-more button {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: 100%;
+  padding: 13px 18px;
+  text-align: left;
+  font-size: 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.legacy-sidebar nav button.active {
+  background: var(--accent);
+  color: var(--primary);
+  font-weight: 700;
+}
+.legacy-more {
+  padding: 0 20px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.legacy-sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.legacy-sidebar-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 12px;
+  background: var(--card);
+}
+.legacy-sync {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 5px 10px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.legacy-sync span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.legacy-sync i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+}
+.legacy-sync i.connected {
+  background: var(--primary);
+}
+.legacy-sync button {
+  padding: 5px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.legacy-sync button:hover {
+  background: var(--accent);
+  color: var(--primary);
+}
+.legacy-home-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+}
+.legacy-home-link:hover {
+  background: var(--accent);
+}
+.legacy-sidebar-account {
+  margin-top: 12px;
+}
+.legacy-account-label {
+  display: block;
+  margin: 0 4px 6px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.legacy-sidebar-account .account-menu__trigger {
+  width: 100%;
+  height: auto;
+  min-height: 48px;
+  padding: 8px;
+}
+.legacy-sidebar-account .account-menu__details {
+  display: block;
+  flex: 1;
+}
+.legacy-sidebar-account .account-menu__details span {
+  max-width: 130px;
+}
+.legacy-sidebar-account [role="menu"] {
+  position: absolute;
+  inset: auto auto calc(100% + 8px) 0;
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 90px);
+  overflow-y: auto;
+}
+.legacy-main {
+  padding: 24px;
+  min-width: 0;
+}
+.legacy-main > h1 {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 20px;
+}
+.legacy-workspace .panel-card,
+.legacy-workspace .metric-card {
+  background: var(--card);
+  color: var(--card-foreground);
+  border-radius: calc(var(--radius) + 4px);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 5px #00000008;
+}
+.legacy-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  background: var(--card);
+  border-radius: calc(var(--radius) + 4px);
+  box-shadow: 0 2px 4px #0001;
+}
+.legacy-toolbar input,
+.legacy-toolbar select {
+  width: auto;
+  margin: 0;
+  height: 34px;
+}
+.legacy-workspace .action-button,
+.legacy-dialog .action-button {
+  color: var(--primary-foreground);
+  background: var(--primary);
+  min-height: 32px;
+  font-size: 13px;
+  padding: 6px 13px;
+  border-radius: 6px;
+}
+.legacy-workspace .action-button.secondary,
+.legacy-dialog .action-button.secondary {
+  background: var(--card);
+  color: var(--secondary-foreground);
+  border: 1px solid var(--border);
+}
+.legacy-workspace .action-button.green {
+  background: var(--primary);
+}
+.legacy-machine-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.legacy-machine {
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 4px);
+  padding: 17px 12px;
+  text-align: center;
+  background: var(--card);
+  min-height: 185px;
+  cursor: pointer;
+}
+.legacy-machine.running {
+  background: color-mix(in oklch, var(--accent) 40%, var(--card));
+  border-color: color-mix(in oklch, var(--primary) 55%, var(--border));
+}
+.legacy-machine.waiting {
+  background: var(--card);
+  border-color: var(--border);
+}
+.legacy-machine.fault {
+  background: color-mix(in oklch, var(--destructive) 4%, var(--card));
+  border-color: color-mix(in oklch, var(--destructive) 35%, var(--border));
+}
+.machine-number {
+  font-size: 17px;
+  font-weight: 700;
+}
+.live-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--primary);
+  font-size: 10px;
+  border-radius: calc(var(--radius) + 4px);
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+.live-badge.offline {
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.machine-model {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin-top: 3px;
+}
+.machine-state {
+  font-size: 11px;
+  border-radius: 10px;
+  background: var(--color-amber-100);
+  color: var(--color-amber-800);
+  padding: 2px 7px;
+  display: inline-block;
+  margin-top: 3px;
+}
+.running .machine-state {
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+.fault .machine-state {
+  color: var(--primary-foreground);
+  background: var(--destructive);
+}
+.idle .machine-state {
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+.machine-file {
+  font-size: 12px;
+  margin-top: 11px;
+  min-height: 27px;
+  overflow-wrap: anywhere;
+}
+.machine-detail {
+  font-size: 10px;
+  color: var(--muted-foreground);
+  margin-top: 5px;
+}
+.machine-progress {
+  height: 4px;
+  background: var(--muted);
+  border-radius: 3px;
+  margin: 8px 0;
+}
+.machine-progress i {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  border-radius: 3px;
+}
+.machine-error {
+  font-size: 11px;
+  color: var(--destructive);
+}
+.legacy-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 18px 20px;
+}
+.legacy-panel-head h2 {
+  font-weight: 700;
+  font-size: 15px;
+}
+.legacy-panel-head span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.legacy-workspace table th {
+  background: var(--muted);
+  color: var(--foreground);
+  text-align: center;
+  font-size: 12px;
+  white-space: nowrap;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.legacy-workspace table td {
+  vertical-align: middle;
+  text-align: center;
+  padding: 10px 8px;
+  font-size: 12px;
+}
+.legacy-record-table {
+  min-width: 1500px !important;
+}
+.record-product {
+  min-width: 200px;
+  max-width: 310px;
+  text-align: left !important;
+}
+.record-remark {
+  min-width: 90px;
+  max-width: 200px;
+  overflow-wrap: anywhere;
+}
+.record-image {
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
+  margin: auto;
+}
+.legacy-workspace .tag.auto {
+  background: var(--accent);
+  color: var(--primary);
+  font-size: 10px;
+  padding: 1px 5px;
+  margin-right: 3px;
+}
+.legacy-dialog {
+  margin: auto;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  width: min(900px, 94vw);
+  max-height: 90vh;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 16px 64px #0004;
+}
+.legacy-dialog::backdrop {
+  background: #0006;
+}
+.legacy-dialog > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.legacy-dialog > header h2 {
+  font-size: 18px;
+  font-weight: 700;
+}
+.legacy-dialog > header button {
+  font-size: 28px;
+}
+.legacy-dialog-body {
+  padding: 12px;
+  overflow: auto;
+}
+.legacy-dialog .panel-card {
+  border: 0;
+  box-shadow: none;
+}
+.legacy-dialog .section-heading {
+  display: none;
+}
+.legacy-error,
+.legacy-success {
+  padding: 12px;
+  margin-bottom: 16px;
+  background: color-mix(in oklch, var(--destructive) 8%, var(--card));
+  color: var(--destructive);
+  border-radius: 6px;
+}
+.legacy-success {
+  background: var(--accent);
+  color: var(--primary);
+}
+.legacy-sidebar nav button:hover,
+.legacy-more button:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.legacy-workspace .action-button:hover,
+.legacy-dialog .action-button:hover {
+  background: color-mix(in oklch, var(--primary) 88%, var(--foreground));
+}
+.legacy-workspace .action-button.secondary:hover,
+.legacy-dialog .action-button.secondary:hover {
+  background: var(--secondary);
+}
+.legacy-workspace .row-actions {
+  color: var(--primary);
+}
+.legacy-workspace .row-actions .danger {
+  color: var(--destructive);
+}
+.legacy-workspace .metric-card strong {
+  color: var(--foreground);
+}
+.legacy-workspace .metric-card span,
+.legacy-workspace label {
+  color: var(--muted-foreground);
+}
+.legacy-workspace input,
+.legacy-workspace select,
+.legacy-dialog input,
+.legacy-dialog select {
+  background: var(--card);
+  color: var(--foreground);
+  border-color: var(--input);
+}
+.legacy-workspace input:focus,
+.legacy-workspace select:focus {
+  border-color: var(--ring);
+}
+.legacy-workspace button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.legacy-workspace table td {
+  color: var(--foreground);
+  border-color: var(--border);
+}
+.legacy-workspace tbody tr:hover {
+  background: color-mix(in oklch, var(--accent) 45%, var(--card));
+}
+.legacy-workspace .collection-filters {
+  background: var(--card);
+  border-color: var(--border);
+}
+.complete .machine-state {
+  background: var(--color-emerald-50);
+  color: var(--color-emerald-700);
+}
+
+@media (max-width: 1100px) {
+  .legacy-workspace {
+    grid-template-columns: 175px minmax(0, 1fr);
+  }
+  .legacy-machine-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .legacy-main {
+    padding: 16px;
+  }
+}
+@media (max-width: 700px) {
+  .legacy-workspace {
+    display: block;
+  }
+  .legacy-sidebar nav {
+    display: flex;
+    overflow: auto;
+    padding: 5px;
+  }
+  .legacy-sidebar nav button,
+  .legacy-more button {
+    width: auto;
+    flex-shrink: 0;
+    padding: 9px;
+  }
+  .legacy-sidebar .legacy-brand {
+    padding: 10px 16px;
+  }
+  .legacy-sidebar {
+    height: auto;
+    max-height: 55dvh;
+    border-bottom: 1px solid var(--border);
+  }
+  .legacy-sidebar-scroll {
+    flex: initial;
+    overflow: visible;
+  }
+  .legacy-sidebar-footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+  }
+  .legacy-sidebar-account {
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+  }
+  .legacy-account-label,
+  .legacy-sync,
+  .legacy-more {
+    display: none;
+  }
+  .legacy-sidebar-account .account-menu__trigger {
+    min-height: 38px;
+    padding: 4px 8px;
+  }
+  .legacy-sidebar-account [role="menu"] {
+    position: fixed;
+    inset: 174px 12px auto;
+    width: auto;
+    max-width: none;
+    max-height: calc(100dvh - 190px);
+  }
+  .legacy-home-link {
+    flex-shrink: 0;
+    padding: 9px;
+  }
+
+  .legacy-machine-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .legacy-main {
+    padding: 12px;
+  }
+  .legacy-machine {
+    min-height: 175px;
+    padding: 12px 8px;
+  }
+  .legacy-toolbar {
+    padding: 12px;
+    gap: 8px;
+  }
+  .legacy-main > h1 {
+    font-size: 20px;
+    margin-bottom: 12px;
+  }
+}

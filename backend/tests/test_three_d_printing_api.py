@@ -202,6 +202,16 @@ def test_admin_business_flow_image_storage_and_factory_lock(monkeypatch):
         assert len(body["products"]) == 1
         assert len(body["records"]) == 1
         assert body["inventory"][0]["stock_g"] == 9800
+        # The operating view mirrors the old daily fixed-labor summary, while
+        # immutable record allocations remain available for historical reports.
+        legacy = body["summary"]["legacyDisplay"]
+        assert legacy["laborCost"] == 220
+        assert legacy["totalCost"] == 241.62
+        assert body["summary"]["laborCost"] == 6.67
+        rows = client.get("/api/three-d-printing/collections/records",
+                          params={"factory_id": "huakang-a"}).json()["items"]
+        assert rows[0]["product_image_url"].startswith(image.json()["image_url"] + "&v=")
+        assert client.get(rows[0]["product_image_url"]).status_code == 200
 
         wrong_factory = client.get(
             "/api/three-d-printing/dashboard",
