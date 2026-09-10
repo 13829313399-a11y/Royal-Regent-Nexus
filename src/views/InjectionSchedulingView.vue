@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { vInjDialog } from '@/features/injection-scheduling/composables/injDialog';
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { useAppStore } from '@/stores/app';
-import { useAuthStore } from '@/stores/auth';
-import { useInjectionStore } from '@/stores/injectionScheduling';
-import { injectionApi as api } from '@/api/injectionScheduling';
+import { vInjDialog } from "@/features/injection-scheduling/composables/injDialog";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { useAppStore } from "@/stores/app";
+import { useAuthStore } from "@/stores/auth";
+import { useInjectionStore } from "@/stores/injectionScheduling";
+import { injectionApi as api } from "@/api/injectionScheduling";
 import {
   dateText,
   factories,
@@ -13,14 +13,14 @@ import {
   type DataRow,
   type FactoryId,
   type FilterNode,
-} from '@/features/injection-scheduling/types';
-import FilterGroup from '@/features/injection-scheduling/FilterGroup.vue';
-import PlanTable from '@/features/injection-scheduling/PlanTable.vue';
-import ScheduleBoard from '@/features/injection-scheduling/ScheduleBoard.vue';
-import ShiftReports from '@/features/injection-scheduling/ShiftReports.vue';
-import MasterData from '@/features/injection-scheduling/MasterData.vue';
-import DemandDrawer from '@/features/injection-scheduling/DemandDrawer.vue';
-import ClearPlanDialog from '@/features/injection-scheduling/ClearPlanDialog.vue';
+} from "@/features/injection-scheduling/types";
+import FilterGroup from "@/features/injection-scheduling/FilterGroup.vue";
+import PlanTable from "@/features/injection-scheduling/PlanTable.vue";
+import ScheduleBoard from "@/features/injection-scheduling/ScheduleBoard.vue";
+import ShiftReports from "@/features/injection-scheduling/ShiftReports.vue";
+import MasterData from "@/features/injection-scheduling/MasterData.vue";
+import DemandDrawer from "@/features/injection-scheduling/DemandDrawer.vue";
+import ClearPlanDialog from "@/features/injection-scheduling/ClearPlanDialog.vue";
 import {
   ArrowLeft,
   ArrowRight,
@@ -46,13 +46,13 @@ import {
   ClipboardList,
   Database,
   Trash2,
-} from '@lucide/vue';
-import InjSegmentedControl from '@/features/injection-scheduling/components/ui/InjSegmentedControl.vue';
-import InjButton from '@/features/injection-scheduling/components/ui/InjButton.vue';
-import InjLoadingState from '@/features/injection-scheduling/components/ui/InjLoadingState.vue';
-import { provideInjectionViewState } from '@/features/injection-scheduling/composables/useInjectionViewState';
-import { useInjMotionPreference } from '@/features/injection-scheduling/composables/useInjMotionPreference';
-import '@/features/injection-scheduling/injection.css';
+} from "@lucide/vue";
+import InjSegmentedControl from "@/features/injection-scheduling/components/ui/InjSegmentedControl.vue";
+import InjButton from "@/features/injection-scheduling/components/ui/InjButton.vue";
+import InjLoadingState from "@/features/injection-scheduling/components/ui/InjLoadingState.vue";
+import { provideInjectionViewState } from "@/features/injection-scheduling/composables/useInjectionViewState";
+import { useInjMotionPreference } from "@/features/injection-scheduling/composables/useInjMotionPreference";
+import "@/features/injection-scheduling/injection.css";
 
 const route = useRoute(),
   router = useRouter(),
@@ -66,43 +66,45 @@ const tab = ref(view.planningView),
   newDemand = ref(false),
   filterOpen = ref(false),
   filterDraft = ref<FilterNode>({
-    op: 'and',
-    children: [{ field: 'remaining_shots', op: 'gt', value: 0 }],
+    op: "and",
+    children: [{ field: "remaining_shots", op: "gt", value: 0 }],
   }),
   fileInput = ref<HTMLInputElement>();
 const importPreview = ref<any>(null),
   importMatches = ref<Record<string, string>>({}),
   skipRows = ref<number[]>([]),
   exportOpen = ref(false),
-  exportStart = ref(new Date().toLocaleDateString('en-CA')),
+  exportStart = ref(new Date().toLocaleDateString("en-CA")),
   exportDays = ref(14),
   exportFormulas = ref(false);
+const templateOpen = ref(false),
+  templateTaskRows = ref(10);
 const autoOptions = ref(false),
-  autoMode = ref('UNSCHEDULED'),
+  autoMode = ref("UNSCHEDULED"),
   autoMachines = ref<string[]>([]),
   action = ref<{ run: DataRow; verb: string } | null>(null),
-  reason = ref(''),
-  targetMachine = ref(''),
-  selectedReport = ref(''),
+  reason = ref(""),
+  targetMachine = ref(""),
+  selectedReport = ref(""),
   findIndex = ref(0),
   findCount = ref(0),
   help = ref(false);
 const section = computed(() =>
-  ['timeline', 'machines', 'table'].includes(tab.value)
-    ? 'planning'
+  ["timeline", "machines", "table"].includes(tab.value)
+    ? "planning"
     : tab.value,
 );
 const sectionOptions = [
-  { value: 'planning', label: '排产工作台', icon: ChartGantt },
-  { value: 'reports', label: '白夜班报工', icon: ClipboardList },
-  { value: 'master', label: '基础资料', icon: Database },
+  { value: "planning", label: "排产工作台", icon: ChartGantt },
+  { value: "reports", label: "白夜班报工", icon: ClipboardList },
+  { value: "master", label: "基础资料", icon: Database },
 ];
 const planningOptions = [
-  { value: 'timeline', label: '甘特', icon: ChartGantt },
-  { value: 'machines', label: '看板', icon: LayoutGrid },
-  { value: 'table', label: '计划表', icon: Table2 },
+  { value: "timeline", label: "甘特", icon: ChartGantt },
+  { value: "machines", label: "看板", icon: LayoutGrid },
+  { value: "table", label: "计划表", icon: Table2 },
 ];
-const pendingActionKey = ref(''),
+const pendingActionKey = ref(""),
   clearPlanOpen = ref(false),
   moreOpen = ref(false),
   riskOpen = ref(false),
@@ -117,39 +119,40 @@ async function pending(key: string, action: () => Promise<unknown>) {
   try {
     return await action();
   } finally {
-    pendingActionKey.value = '';
+    pendingActionKey.value = "";
   }
 }
 watch(tab, (key) => {
-  if (['timeline', 'machines', 'table'].includes(key)) view.planningView = key;
+  if (["timeline", "machines", "table"].includes(key)) view.planningView = key;
 });
 watch([() => store.factory, () => auth.currentUser?.id], () => {
   view.contextGeneration++;
   store.selectedId = null;
   store.detail = null;
   store.drawer = false;
-  selectedReport.value = '';
+  selectedReport.value = "";
   newDemand.value = false;
   view.scroll = {};
   view.table = null;
-  view.workshop = '';
-  view.machineSearch = '';
+  view.workshop = "";
+  view.machineSearch = "";
   findIndex.value = 0;
   findCount.value = 0;
   clearPlanOpen.value = false;
   importPreview.value = null;
+  templateOpen.value = false;
 });
 const allowed = (action: string) =>
   !!store.factory &&
-  ['production', 'molding', 'management'].some((dept) =>
-    auth.can('injection_scheduling:' + action, store.factory!, dept),
+  ["production", "molding", "management"].some((dept) =>
+    auth.can("injection_scheduling:" + action, store.factory!, dept),
   );
-const canPlan = computed(() => allowed('plan')),
-  canReport = computed(() => allowed('report')),
-  canMaster = computed(() => allowed('master_write'));
+const canPlan = computed(() => allowed("plan")),
+  canReport = computed(() => allowed("report")),
+  canMaster = computed(() => allowed("master_write"));
 const factoryContext = computed(() => {
   const query = route.query.factory;
-  const id = typeof query === 'string' ? query : app.activeFactoryId;
+  const id = typeof query === "string" ? query : app.activeFactoryId;
   return id in factories ? (id as FactoryId) : null;
 });
 const factoryLoading = ref(false);
@@ -175,11 +178,11 @@ async function changeFactory(event: Event) {
 }
 function switchTab(key: string) {
   if (store.dirty || store.busy) {
-    store.error = '当前有未保存输入，请先保存或取消本次修改';
+    store.error = "当前有未保存输入，请先保存或取消本次修改";
     return;
   }
-  tab.value = key === 'planning' ? view.planningView : key;
-  store.error = '';
+  tab.value = key === "planning" ? view.planningView : key;
+  store.error = "";
 }
 function openPlanClear() {
   if (store.dirty || store.busy || !canPlan.value) return;
@@ -191,13 +194,13 @@ function afterPlanClear() {
   importPreview.value = null;
   importMatches.value = {};
   skipRows.value = [];
-  selectedReport.value = '';
+  selectedReport.value = "";
   newDemand.value = false;
   runningOnly.value = false;
   findIndex.value = 0;
   findCount.value = 0;
   view.contextGeneration++;
-  tab.value = 'table';
+  tab.value = "table";
 }
 async function search() {
   store.cursor = 0;
@@ -207,9 +210,9 @@ async function search() {
 }
 async function find(step: number) {
   if (!store.search.text || store.dirty || store.busy) return;
-  switchTab('table');
+  switchTab("table");
   try {
-    const r = await api.post('/demands/locate', {
+    const r = await api.post("/demands/locate", {
       ...store.query,
       cursor: Math.max(0, findIndex.value + step),
     });
@@ -227,36 +230,36 @@ async function find(step: number) {
 function filterLabel(node: FilterNode): string {
   if (node.children)
     return (
-      '(' +
-      node.children.map(filterLabel).join(node.op === 'or' ? ' 或 ' : ' 且 ') +
-      ')'
+      "(" +
+      node.children.map(filterLabel).join(node.op === "or" ? " 或 " : " 且 ") +
+      ")"
     );
   return (
-    (store.fieldMap[node.field || '']?.label || node.field) +
-    ' ' +
+    (store.fieldMap[node.field || ""]?.label || node.field) +
+    " " +
     (
       {
-        eq: '=',
-        gt: '>',
-        gte: '≥',
-        lt: '<',
-        lte: '≤',
-        ne: '≠',
-        is_empty: '为空',
-        not_empty: '非空',
-        in: '属于',
-        next_days: '未来天数',
-        contains: '包含',
-        prefix: '开头',
-        not_in: '排除',
-        between: '区间',
-        today: '今天',
-        overdue: '逾期',
-        on_day: '某天',
+        eq: "=",
+        gt: ">",
+        gte: "≥",
+        lt: "<",
+        lte: "≤",
+        ne: "≠",
+        is_empty: "为空",
+        not_empty: "非空",
+        in: "属于",
+        next_days: "未来天数",
+        contains: "包含",
+        prefix: "开头",
+        not_in: "排除",
+        between: "区间",
+        today: "今天",
+        overdue: "逾期",
+        on_day: "某天",
       } as Record<string, string>
-    )[node.op || ''] +
-    ' ' +
-    (Array.isArray(node.value) ? node.value.join('、') : (node.value ?? ''))
+    )[node.op || ""] +
+    " " +
+    (Array.isArray(node.value) ? node.value.join("、") : (node.value ?? ""))
   );
 }
 async function applyFilter() {
@@ -268,10 +271,10 @@ async function applyFilter() {
   filterOpen.value = false;
 }
 async function schedule(save = true) {
-  const result = await store.mutate('/schedule/auto', {
+  const result = await store.mutate("/schedule/auto", {
     scope: {
       mode: autoMode.value,
-      ...(autoMode.value === 'SELECTED'
+      ...(autoMode.value === "SELECTED"
         ? {
             machine_ids: autoMachines.value,
             demand_ids: store.selectedId ? [store.selectedId] : [],
@@ -287,7 +290,7 @@ async function upload(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0];
   if (!file || !store.factory) return;
   store.busy = true;
-  store.error = '';
+  store.error = "";
   try {
     const result = await api.upload(store.factory, file, store.revision);
     store.revision = result.revision;
@@ -298,13 +301,13 @@ async function upload(event: Event) {
     store.showError(e);
   } finally {
     store.busy = false;
-    (event.target as HTMLInputElement).value = '';
+    (event.target as HTMLInputElement).value = "";
     await store.refresh();
   }
 }
 async function applyImport() {
   const result = await store.mutate(
-    '/imports/' + importPreview.value.batch_id + '/apply',
+    "/imports/" + importPreview.value.batch_id + "/apply",
     {
       matches: importMatches.value,
       skip_rows: skipRows.value,
@@ -315,12 +318,12 @@ async function applyImport() {
     store.error = result.summary.conflicts
       .map(
         (c: any) =>
-          `原行 ${c.source_row ?? c.row ?? ''}：${c.message || c.reason || c.code || JSON.stringify(c)}`,
+          `原行 ${c.source_row ?? c.row ?? ""}：${c.message || c.reason || c.code || JSON.stringify(c)}`,
       )
-      .join('；');
+      .join("；");
   } else if (result) {
     importPreview.value = null;
-    tab.value = 'table';
+    tab.value = "table";
   }
 }
 async function download() {
@@ -340,90 +343,102 @@ async function download() {
     store.busy = false;
   }
 }
+async function downloadTemplate() {
+  if (!store.factory) return;
+  const factory = store.factory;
+  try {
+    await api.downloadTemplate(factory, templateTaskRows.value);
+    if (store.factory === factory) templateOpen.value = false;
+  } catch (e) {
+    store.showError(e);
+  }
+}
 function beginAction(run: DataRow, verb: string) {
-  reason.value = '';
-  targetMachine.value = '';
+  reason.value = "";
+  targetMachine.value = "";
   action.value = { run, verb };
-  store.error = '';
+  store.error = "";
 }
 async function applyAction() {
   if (!action.value) return;
   const result = await store.mutate(
-    '/runs/' + action.value.run.id + '/' + action.value.verb,
+    "/runs/" + action.value.run.id + "/" + action.value.verb,
     { reason: reason.value, target_machine_id: targetMachine.value || null },
   );
   if (result) action.value = null;
 }
 function openReport(run: DataRow) {
   if (store.dirty || store.busy) {
-    store.error = '请先保存或取消当前输入';
+    store.error = "请先保存或取消当前输入";
     return;
   }
   store.drawer = false;
   selectedReport.value = run.id;
-  tab.value = 'reports';
+  tab.value = "reports";
 }
 const statLabels = [
-  ['pending_count', '待排需求'],
-  ['running_count', '实际在产'],
-  ['late_count', '交期风险'],
-  ['unresolved_count', '待处理资料'],
+  ["pending_count", "待排需求"],
+  ["running_count", "实际在产"],
+  ["late_count", "交期风险"],
+  ["unresolved_count", "待处理资料"],
 ];
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
-  window.addEventListener('resize', resize);
+  window.addEventListener("resize", resize);
   timer = setInterval(() => void store.poll(), 5000);
 });
 onBeforeUnmount(() => {
   factoryLoadGeneration++;
   clearInterval(timer);
-  window.removeEventListener('resize', resize);
+  window.removeEventListener("resize", resize);
 });
 
 const templateLabels0: Record<string, string> = {
-  machine_count: '机台',
-  candidate_count: '候选需求',
-  demand_count: '需求',
-  new_count: '新增',
-  update_count: '更新',
-  ambiguous_count: '需匹配',
-  historical_cell_count: '历史数量格',
-  formula_count: '公式格',
-  task_candidate_count: '候选需求',
-  old_machine_count: '旧车间机台',
-  new_machine_count: '新车间机台',
-  machine_area_task_count: '机台区需求',
-  tail_task_count: '尾部需求',
-  numeric_order_quantity_rows: '有计划数的行',
-  cached_remaining_quantity_rows: '有原表欠数的行',
-  order_quantity_sum: '原表计划合计',
-  cached_produced_quantity_sum: '原表已啤合计',
-  cached_remaining_quantity_sum: '原表欠数合计',
-  standard_remaining_sum: '按计划减已啤计算欠数',
-  quantity_sum_gap: '欠数口径差异',
-  numeric_shift_cell_count: '历史报数格',
-  numeric_shift_quantity_sum: '历史逐班合计',
-  shift_sum_minus_cached_M: '逐班与已啤差异',
-  formula_cell_count: '原表公式格',
-  cached_na_cells: '原表错误值',
-  dated_shift_column_count: '日期班次列',
-  creates: '新增需求',
-  updates: '更新需求',
-  conflicts: '待解决冲突',
+  machine_count: "机台",
+  candidate_count: "候选需求",
+  demand_count: "需求",
+  new_count: "新增",
+  update_count: "更新",
+  ambiguous_count: "需匹配",
+  historical_cell_count: "历史数量格",
+  formula_count: "公式格",
+  task_candidate_count: "候选需求",
+  old_machine_count: "旧车间机台",
+  new_machine_count: "新车间机台",
+  machine_area_task_count: "机台区需求",
+  tail_task_count: "尾部需求",
+  numeric_order_quantity_rows: "有计划数的行",
+  cached_remaining_quantity_rows: "有原表欠数的行",
+  order_quantity_sum: "原表计划合计",
+  cached_produced_quantity_sum: "原表已啤合计",
+  cached_remaining_quantity_sum: "原表欠数合计",
+  standard_remaining_sum: "按计划减已啤计算欠数",
+  quantity_sum_gap: "欠数口径差异",
+  numeric_shift_cell_count: "历史报数格",
+  numeric_shift_quantity_sum: "历史逐班合计",
+  shift_sum_minus_cached_M: "逐班与已啤差异",
+  formula_cell_count: "原表公式格",
+  cached_na_cells: "原表错误值",
+  dated_shift_column_count: "日期班次列",
+  creates: "新增需求",
+  assigned_count: "表内已排机",
+  unchanged_count: "无需更新",
+  updates: "更新需求",
+  conflicts: "待解决冲突",
 };
 const issueNames: Record<string, string> = {
-  MISSING_QUANTITY: '数量待补',
-  WRONG_AS_REFERENCE: '原表异常值仅留作参考',
-  SOURCE_CELL_ERROR: '原表单元格错误',
-  INVALID_LEGACY_DATE: '原表日期无法识别',
-  MISSING_REMAINING_FORMULA: '原表欠数公式缺失',
-  AMBIGUOUS_DEMAND: '存在多个同编码需求，请明确匹配',
-  UNKNOWN_SCOPED_DEMAND: '未找到当前厂区的需求',
+  MISSING_QUANTITY: "数量待补",
+  WRONG_AS_REFERENCE: "原表异常值仅留作参考",
+  SOURCE_CELL_ERROR: "原表单元格错误",
+  INVALID_LEGACY_DATE: "原表日期无法识别",
+  MISSING_REMAINING_FORMULA: "原表欠数公式缺失",
+  AMBIGUOUS_DEMAND: "存在多个同编码需求，请明确匹配",
+  UNKNOWN_SCOPED_DEMAND: "未找到当前厂区的需求",
 };
 function issueText(issue: any) {
-  return typeof issue === 'string'
+  return typeof issue === "string"
     ? issue
-    : issue.message || issueNames[issue.code] || '原表资料需核对';
+    : issue.message || issueNames[issue.code] || "原表资料需核对";
 }
 const importSummary = computed(() =>
   Object.entries(importPreview.value?.summary || {})
@@ -434,11 +449,11 @@ const importSummary = computed(() =>
     })),
 );
 const templateLabels1: Record<string, string> = {
-  start: '实际开工',
-  pause: '暂停批次',
-  resume: '恢复生产',
-  transfer: '转机',
-  finish: '结束批次',
+  start: "实际开工",
+  pause: "暂停批次",
+  resume: "恢复生产",
+  transfer: "转机",
+  finish: "结束批次",
 };
 </script>
 <template>
@@ -489,10 +504,10 @@ const templateLabels1: Record<string, string> = {
         :title="'每 5 秒检查资料更新 · ' + store.syncedAt"
         ><i :key="store.syncedAt" />{{
           store.stale
-            ? '有更新待刷新'
+            ? "有更新待刷新"
             : store.syncedAt
-              ? '定时同步 ' + store.syncedAt
-              : '正在连接'
+              ? "定时同步 " + store.syncedAt
+              : "正在连接"
         }}</span
       >
       <InjButton
@@ -604,7 +619,7 @@ const templateLabels1: Record<string, string> = {
             filterOpen = !filterOpen;
           "
         >
-          <Filter /> 筛选{{ store.filter ? ' · 已应用' : '' }}</button
+          <Filter /> 筛选{{ store.filter ? " · 已应用" : "" }}</button
         ><button
           v-if="store.filter || store.search.text"
           @click="
@@ -627,6 +642,12 @@ const templateLabels1: Record<string, string> = {
           @click="fileInput?.click()"
         >
           <Upload /> 导入 Excel</button
+        ><button
+          v-if="canPlan"
+          :disabled="store.busy"
+          @click="templateOpen = true"
+        >
+          下载统一模板</button
         ><button @click="exportOpen = true">导出</button>
         <details
           class="inj-more"
@@ -667,7 +688,7 @@ const templateLabels1: Record<string, string> = {
                 moreOpen = false;
               "
             >
-              <Focus />{{ view.focusMode ? '退出' : '进入' }}焦点模式
+              <Focus />{{ view.focusMode ? "退出" : "进入" }}焦点模式
             </button>
             <label
               >行密度<select v-model="view.density" aria-label="行密度">
@@ -826,7 +847,7 @@ const templateLabels1: Record<string, string> = {
           >
             打开详情<ArrowRight /></button></template
         ><span class="inj-spacer" /><span>{{
-          store.dirty ? '有未保存输入' : '物理啤数 · 计划与实际分别记录'
+          store.dirty ? "有未保存输入" : "物理啤数 · 计划与实际分别记录"
         }}</span>
       </footer>
     </template>
@@ -937,6 +958,14 @@ const templateLabels1: Record<string, string> = {
       >
         <h2>计划表导入预览 · {{ factories[store.factory!] }}</h2>
         <p>只读取“计划表”。检查候选需求、原表问题和更新差异后应用。</p>
+        <p v-if="importPreview.summary?.template_version">
+          统一模板：{{
+            importPreview.summary.template_version === "RR_INJECTION_HUAXING_V2"
+              ? "按机台分组和任务行顺序"
+              : "按表内机号及机内顺序"
+          }}生成待开工计划。表外已有队列保留在前，
+          时间结合本厂班历、换模换色和设备占用计算。设备和公共模具资料需预先维护。
+        </p>
         <div class="inj-import-summary">
           <span v-for="item in importSummary" :key="item.label"
             ><strong>{{ item.label }}</strong> {{ item.value }}</span
@@ -949,6 +978,9 @@ const templateLabels1: Record<string, string> = {
                 <th>跳过</th>
                 <th>原行</th>
                 <th>模号 / 单号</th>
+                <th v-if="importPreview.summary?.template_version">
+                  机号 / 机内顺序
+                </th>
                 <th>计划 / 已啤 / 欠数</th>
                 <th>待处理问题</th>
               </tr>
@@ -968,13 +1000,19 @@ const templateLabels1: Record<string, string> = {
                   {{ row.fields.mold_code
                   }}<small>{{ row.fields.order_no }}</small>
                 </td>
+                <td v-if="importPreview.summary?.template_version">
+                  {{ row.fields.machine_code || "未排机" }}
+                  <small v-if="row.fields.machine_code"
+                    >第 {{ row.fields.queue_order }} 批</small
+                  >
+                </td>
                 <td>
                   {{ numberText(row.fields.planned_shots) }} /
                   {{ numberText(row.fields.completed_shots) }} /
                   {{ numberText(row.fields.remaining_shots) }}
                 </td>
                 <td>
-                  {{ row.issues?.map(issueText).join('；') }}
+                  {{ row.issues?.map(issueText).join("；") }}
                   <select
                     v-if="row.match_candidates?.length > 1"
                     v-model="importMatches[String(row.source_row)]"
@@ -986,7 +1024,7 @@ const templateLabels1: Record<string, string> = {
                       :key="candidate.id"
                       :value="candidate.id"
                     >
-                      原行 {{ candidate.source_row ?? '手工新增' }} · 版本
+                      原行 {{ candidate.source_row ?? "手工新增" }} · 版本
                       {{ candidate.revision }} · {{ candidate.id.slice(-6) }}
                     </option>
                   </select>
@@ -1107,6 +1145,59 @@ const templateLabels1: Record<string, string> = {
               v-if="pendingActionKey === 'execution'"
               class="inj-spin"
             />记录并更新
+          </button>
+        </div>
+      </section>
+    </div>
+    <div v-if="templateOpen" class="inj-modal-backdrop">
+      <section
+        class="inj-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="下载本厂统一模板"
+        v-inj-dialog="{
+          close: () => {
+            templateOpen = false;
+          },
+          busy: pendingActionKey === 'template',
+        }"
+      >
+        <h2>下载{{ store.factory ? factories[store.factory] : "" }}统一模板</h2>
+        <p>
+          保留原机号，自动带入本厂
+          {{ store.machines.length }} 台设备及公共模具参数。
+        </p>
+        <label
+          >每台预留任务行
+          <select
+            v-model.number="templateTaskRows"
+            :disabled="pendingActionKey === 'template'"
+          >
+            <option :value="5">5 行</option>
+            <option :value="10">10 行</option>
+            <option :value="20">20 行</option>
+          </select>
+        </label>
+        <p>
+          任务按机台分组从上到下排队。行数不足时，可在组内插入整行并复制同组公式；未排机订单放到待排区。
+        </p>
+        <p v-if="!store.machines.length" class="inj-error-text">
+          请先在基础资料维护本厂设备，再下载模板。
+        </p>
+        <p v-if="store.error" class="inj-error-text">{{ store.error }}</p>
+        <div class="inj-actions">
+          <button
+            :disabled="pendingActionKey === 'template'"
+            @click="templateOpen = false"
+          >
+            取消
+          </button>
+          <button
+            class="inj-primary"
+            :disabled="!store.machines.length || !!pendingActionKey"
+            @click="pending('template', downloadTemplate)"
+          >
+            {{ pendingActionKey === "template" ? "正在生成…" : "下载模板" }}
           </button>
         </div>
       </section>

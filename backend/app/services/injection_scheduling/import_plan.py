@@ -47,6 +47,14 @@ def text(value):
 
 def parse_plan(content, sheet_name="计划表", explicit_mapping=None):
     source = read_sheet(content, sheet_name)
+    from .huaxing_template import read_huaxing_template
+    from .unified_plan import read_unified
+
+    unified = read_huaxing_template(source) or read_unified(source)
+    if unified is not None:
+        if explicit_mapping:
+            raise ValueError("统一模板使用固定映射，不接受自定义列映射")
+        return unified
     from .exchange import read_exchange
 
     exchange = read_exchange(source)
