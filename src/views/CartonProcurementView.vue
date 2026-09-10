@@ -6,6 +6,7 @@ import { estimateMoney, moneyLabel, unitCostLabel, moneyTotals, type InventoryMo
 import CartonPaperPicker from '@/components/CartonPaperPicker.vue'
 import CartonMasterWorkspace from '@/components/CartonMasterWorkspace.vue'
 import CartonMasterOrderAssist from '@/components/CartonMasterOrderAssist.vue'
+import CartonNumberRuleHint from '@/components/CartonNumberRuleHint.vue'
 import CartonMasterLookup from '@/components/CartonMasterLookup.vue'
 import CartonCustomerPicker from '@/components/CartonCustomerPicker.vue'
 import { cartonMasterApi, emptyMaster, masterDueRules, masterPaperOptions, type MasterRecord } from '@/api/cartonMaster'
@@ -2429,6 +2430,8 @@ function auditEventLabel(eventType: string) {
     INVENTORY_LOCATION_CREATED: '仓位建档',
     ORDER_CREATED: '订单创建确认',
     ORDER_SUBMITTED_SUPPLIER: '确认订单并锁定',
+    HISTORY_ORDER_PLACED: '历史已下单转待收料',
+    HISTORY_ORDER_MATERIAL_COMPLETED: '收料补齐历史纸品资料',
     ORDER_UPDATED: '订单修改',
     ORDER_APPENDED: '追加订单',
     ORDER_REDUCED: '订单减单 / 退单',
@@ -2879,7 +2882,7 @@ async function handleHistoryOrderFile(event: Event) {
 }
 async function completeHistoryImport(result: import('@/api/cartonProcurement').CartonHistoryOrderImportResponse) {
   historyImportFile.value = null
-  const message = `历史订单“${result.original_filename}”已导入 ${result.imported_count} 张、${result.imported_line_count} 条纸品，重复跳过 ${result.skipped_count} 张。请核对待下单订单的资料后确认锁定。`
+  const message = `历史订单“${result.original_filename}”已导入 ${result.imported_count} 张、${result.imported_line_count} 条纸品，重复跳过 ${result.skipped_count} 张。历史订单已直接进入待收料，无需再次确认锁定或发行采购单。`
   await loadBackendData()
   actionMessage.value = message + (apiConnected.value ? '' : ' 列表刷新失败，请刷新查看已保存订单。')
 }
@@ -3939,6 +3942,10 @@ async function saveReceiptFeedback() {
   ].some((value) => !value.trim()))
   if (incompleteAdHocLine) {
     setReceiptFeedback('入库未完成：非正式/打板收料必须补齐客户、货号、纸品类型、纸质、规格和单位。')
+    return
+  }
+  if (receiptLines.some(row => row.sourceType === 'FORMAL_ORDER' && (Number(row.deliveryQuantity) > 0 || Number(row.receivedQuantity) > 0) && (!row.paperQuality.trim() || !row.specification.trim()))) {
+    setReceiptFeedback('入库未完成：请补齐本次收料纸品的纸质和规格。')
     return
   }
   if (receiptUnsubmittedOrderNos.value.length) {
@@ -5337,8 +5344,8 @@ function refreshDemo() {
             <p class="mt-3 text-sm text-slate-600">{{ relocationTarget.packagingType }} · {{ relocationTarget.paperQuality }} · {{ relocationTarget.specification }}</p>
           </div>
           <div class="grid gap-3 sm:grid-cols-2">
-            <div><span class="block text-xs font-semibold text-slate-500">当前仓位</span><div class="mt-2 flex h-11 items-center rounded-lg bg-slate-100 px-3 font-semibold text-slate-600">{{ relocationTarget.location || '未设置仓位' }}</div></div>
-            <label><span class="block text-xs font-semibold text-teal-700">目标仓位 *</span><CartonLocationPicker v-model="relocationLocation" :locations="inventoryLocations" :factory-id="selectedFactoryId" :disabled="relocationBusy" @created="refreshLocations" /></label><label class="block space-y-2 text-sm sm:col-span-2">调仓数量<input v-model.number="relocationQuantity" :disabled="relocationBusy" type="number" min="0.0001" step="0.0001" :max="relocationTarget?.balance" aria-label="调仓数量" class="h-10 w-full rounded-lg border px-3"><span v-if="relocationQuantity > 0 && relocationQuantity <= relocationTarget.balance" class="block text-xs text-teal-700">调后本仓剩余 {{ formatNumber(relocationTarget.balance - relocationQuantity) }} {{ relocationTarget.unit }}；目标仓位增加 {{ formatNumber(relocationQuantity) }} {{ relocationTarget.unit }}。</span></label>
+            <div><span class="block text-xs font-semibold text-slate-500">当前仓位</span><div class="mt-2 flex h-9 items-center rounded-lg bg-slate-100 px-3 font-semibold text-slate-600">{{ relocationTarget.location || '未设置仓位' }}</div></div>
+            <label><span class="block text-xs font-semibold text-teal-700">目标仓位 *</span><CartonLocationPicker class="mt-2" v-model="relocationLocation" :locations="inventoryLocations" :factory-id="selectedFactoryId" :disabled="relocationBusy" @created="refreshLocations" /></label><label class="block space-y-2 text-sm sm:col-span-2">调仓数量<input v-model.number="relocationQuantity" :disabled="relocationBusy" type="number" min="0.0001" step="0.0001" :max="relocationTarget?.balance" aria-label="调仓数量" class="h-10 w-full rounded-lg border px-3"><span v-if="relocationQuantity > 0 && relocationQuantity <= relocationTarget.balance" class="block text-xs text-teal-700">调后本仓剩余 {{ formatNumber(relocationTarget.balance - relocationQuantity) }} {{ relocationTarget.unit }}；目标仓位增加 {{ formatNumber(relocationQuantity) }} {{ relocationTarget.unit }}。</span></label>
           </div>
           <label class="block"><span class="text-xs font-semibold text-slate-600">调仓备注 <span class="font-normal text-slate-400">（选填）</span></span><textarea v-model="relocationNote" :disabled="relocationBusy" aria-label="调仓备注" maxlength="2000" rows="2" placeholder="例如 库位整理，移至靠近出货区" class="mt-2 w-full resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-500" /></label>
           <p class="text-xs leading-5 text-slate-500">来源仓位扣减、目标仓位增加；不计入入库或领用数量。历史收发保留原仓位，调仓详情可在订单流水和操作日志中查看。</p>
@@ -5449,6 +5456,12 @@ function refreshDemo() {
                       <input v-model="row.packagingType" :aria-label="`${row.id} 纸品类型`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="纸品类型 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                       <input v-model="row.paperQuality" :aria-label="`${row.id} 纸质`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="纸质 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                       <input v-model="row.specification" :aria-label="`${row.id} 规格`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="规格 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                    </div>
+                    <div v-else-if="orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && (!line.paper_quality || !line.specification)))" class="w-48 space-y-1.5">
+                      <div class="font-semibold">{{ row.packagingType }}</div>
+                      <input v-model="row.paperQuality" :aria-label="`${row.id} 纸质`" :disabled="Boolean(currentReceipt) || savingReceipt || orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && Boolean(line.paper_quality)))" placeholder="补填纸质 *" class="h-8 w-full rounded-md border border-amber-300 px-2 text-xs">
+                      <input v-model="row.specification" :aria-label="`${row.id} 规格`" :disabled="Boolean(currentReceipt) || savingReceipt || orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && Boolean(line.specification)))" placeholder="补填规格 *" class="h-8 w-full rounded-md border border-amber-300 px-2 text-xs">
+                      <p class="text-[10px] text-amber-700">历史资料待补齐，入库后保留记录</p>
                     </div>
                     <template v-else><div class="font-semibold">{{ row.description }}</div><div class="mt-0.5 text-xs text-slate-500">{{ row.specification }}</div></template>
                   </td>
@@ -5602,9 +5615,9 @@ function refreshDemo() {
             <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <CartonCustomerPicker v-model="orderForm.customerCode" :customers="customerRecords" :can-create="masterLoaded && masterWorkspace.can_manage" :disabled="editingOrderStructureLocked" @create="createOrderCustomer" />
               <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">纸箱供应商</span><input value="河源东康纸品有限公司（系统固定）" aria-label="纸箱供应商" disabled class="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-slate-500"></label>
-              <CartonMasterLookup :records="masterLoaded ? masterWorkspace.records : []" :customer="orderForm.customerCode" :query="orderForm.contractNo" field="contract" :disabled="editingOrderStructureLocked || !masterLoaded" @select="orderForm.contractNo = $event.code"><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同号 *</span><input v-model="orderForm.contractNo" aria-label="合同号" :disabled="editingOrderStructureLocked" placeholder="例如 SC700145365" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-500"><span class="block text-[9px] text-slate-400">支持中英文、数字及 - _ . / # ( ) + &</span></label></CartonMasterLookup>
+              <CartonMasterLookup :records="masterLoaded ? masterWorkspace.records : []" :customer="orderForm.customerCode" :query="orderForm.contractNo" field="contract" :disabled="editingOrderStructureLocked || !masterLoaded" @select="orderForm.contractNo = $event.code"><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同号 *</span><input v-model="orderForm.contractNo" aria-label="合同号" :disabled="editingOrderStructureLocked" placeholder="例如 SC700145365" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-500"></label><template #hint><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode" :rule="masterDueRules(masterWorkspace.records, orderForm.customerCode).contract_rule" :value="orderForm.contractNo" label="合同号" /><span v-else class="mt-1.5 block text-[9px] text-slate-400">支持中英文、数字及 - _ . / # ( ) + &</span></template></CartonMasterLookup>
               <div class="relative space-y-1.5">
-                <CartonMasterLookup :records="masterLoaded ? masterWorkspace.records : []" :customer="orderForm.customerCode" :query="orderForm.itemNo" field="item" :disabled="editingOrderStructureLocked || !masterLoaded" @select="applyMaster($event)"><label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">货号 *</span><input v-model="orderForm.itemNo" aria-label="货号" :disabled="editingOrderStructureLocked" autocomplete="off" placeholder="例如 203302044" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-500" @focus="showHistoryItemSuggestions = historyItemSuggestionsLoading || historyItemSuggestions.length > 0" @keydown.esc="showHistoryItemSuggestions = false"></label></CartonMasterLookup>
+                <CartonMasterLookup :records="masterLoaded ? masterWorkspace.records : []" :customer="orderForm.customerCode" :query="orderForm.itemNo" field="item" :disabled="editingOrderStructureLocked || !masterLoaded" @select="applyMaster($event)"><label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">货号 *</span><input v-model="orderForm.itemNo" aria-label="货号" :disabled="editingOrderStructureLocked" autocomplete="off" placeholder="例如 203302044" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-500" @focus="showHistoryItemSuggestions = historyItemSuggestionsLoading || historyItemSuggestions.length > 0" @keydown.esc="showHistoryItemSuggestions = false"></label><template #hint><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode" :rule="masterDueRules(masterWorkspace.records, orderForm.customerCode).item_rule" :value="orderForm.itemNo" label="货号" /></template></CartonMasterLookup>
                 <div v-if="!masterLoaded && showHistoryItemSuggestions && (historyItemSuggestionsLoading || historyItemSuggestions.length > 0)" class="absolute left-0 top-[60px] z-30 max-h-80 w-[min(42rem,90vw)] overflow-y-auto rounded-xl border border-teal-200 bg-white p-1.5 shadow-2xl" aria-label="历史货号候选">
                   <div v-if="historyItemSuggestionsLoading" class="px-3 py-3 text-[11px] font-semibold text-slate-500">正在查找近似历史货号…</div>
                   <button v-for="suggestion in historyItemSuggestions" :key="`${suggestion.customer_code}-${suggestion.item_no}`" type="button" :aria-label="`复用历史货号 ${suggestion.item_no} ${suggestion.customer_name}`" class="block w-full rounded-lg px-3 py-2.5 text-left hover:bg-teal-50" @mousedown.prevent="applyHistoryItemSuggestion(suggestion)">
@@ -5698,7 +5711,7 @@ function refreshDemo() {
         </div>
         <div v-if="loadingPurchaseOrderContext" class="p-8 text-center text-[12px] font-semibold text-slate-500">正在读取采购单发行记录…</div>
         <div v-else-if="purchaseOrderContextRecord" class="space-y-4 p-5">
-          <div v-if="purchaseOrderContextRecord.historical_baseline" class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-[11px] leading-5 text-blue-800">系统升级前的当前累计数量已登记为历史基线；后续追加或减单只导出相对该基线的净变化，避免重复下单。</div>
+          <div v-if="purchaseOrderContextRecord.historical_baseline" class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-[11px] leading-5 text-blue-800">历史已下单数量已登记为历史基线；后续追加或减单只导出相对该基线的净变化，避免重复下单。</div>
           <section class="rounded-xl border p-4" :class="purchaseOrderContextRecord.can_generate ? 'border-amber-200 bg-amber-50/60' : 'border-slate-200 bg-slate-50'">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>

@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from uuid import uuid4
@@ -26,9 +26,10 @@ from app.schemas.carton_procurement import CartonHistoryInventoryImportOut
 
 class OpeningOptions(BaseModel):
     model_config=ConfigDict(extra="forbid",str_strip_whitespace=True)
-    customer_name: str=Field(min_length=1,max_length=255)
-    warehouse: str=Field(min_length=1,max_length=64)
-    snapshot_date: str
+    customer_name: str=Field(default="",max_length=255)
+    warehouse: str=Field(default="",max_length=64)
+    # Compatibility for old clients only; the current UI reads each document row.
+    snapshot_date: str = ""
     dimension_unit: Literal["cm","in"]
     currency: Literal["CNY"]="CNY"
 
@@ -43,7 +44,7 @@ ALIASES={
     "unit_price":{"单价","结余单价"},"opening_amount":{"原结余金额","结余金额","期初金额"},
     "document_no":{"来源单号","单据号","盘点单号"},"legacy_row_no":{"历史库存行号","原库存行号"},
     "note":{"备注","说明"},"ignored_inbound":{"入库箱","入库数量","入库箱数"},
-    "ignored_amount":{"入库金额","原入库金额"},"ignored_date":{"日期","原日期","入库日期"},
+    "ignored_amount":{"入库金额","原入库金额"},"original_inbound_at":{"原入库时间","入库时间","原入库日期","日期","原日期","入库日期"},
     "customer_name":{"客户名称","客户"},"warehouse":{"仓库"},"snapshot_date":{"库存基准日期","盘点日期","库存日期"},
     "dimension_unit":{"尺寸单位","规格单位"},"currency":{"币种"},
 }
@@ -59,10 +60,42 @@ def fail(source,message): raise HTTPException(422,detail=f"{source}：{message}"
 def options_from_json(raw):
     try:
         options=OpeningOptions.model_validate(json.loads(raw) if isinstance(raw,str) else raw)
-        options.snapshot_date=date_value(options.snapshot_date,0,"导入设置","库存基准日期",True)
+        if options.snapshot_date:
+            options.snapshot_date=date_value(options.snapshot_date,0,"导入设置","库存基准日期",True)
         return options
     except (ValidationError,ValueError,TypeError) as exc:
-        raise HTTPException(422,detail="请明确选择客户、仓库、完整库存基准日期和尺寸单位（cm/in），币种为CNY") from exc
+        raise HTTPException(422,detail="请选择尺寸单位（cm/in），币种为CNY；入库时间在文件中逐行填写，客户、仓库可逐行填写") from exc
+
+
+def inbound_time(value, datemode, source):
+    """Keep source time precision and normalize accounting dates to China time."""
+    local = timezone(timedelta(hours=8))
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, date):
+            parsed = datetime.combine(value, datetime.min.time())
+        elif isinstance(value, (int, float)) and 20_000 <= float(value) <= 80_000:
+            if datemode:
+                import xlrd
+                parsed = xlrd.xldate_as_datetime(float(value), datemode)
+            else:
+                parsed = datetime(1899, 12, 30) + timedelta(days=float(value))
+            # Excel serial arithmetic may introduce sub-millisecond noise.
+            parsed = (parsed + timedelta(microseconds=500_000)).replace(microsecond=0)
+        else:
+            text = str(value or "").strip()
+            text = re.sub(r"^(\d{4})[年/.-](\d{1,2})[月/.-](\d{1,2})日?", r"\1-\2-\3", text)
+            match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})(.*)", text)
+            if not match:
+                raise ValueError()
+            y, m, d, rest = match.groups()
+            parsed = datetime.fromisoformat(f"{int(y):04d}-{int(m):02d}-{int(d):02d}{rest}".replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=local)
+        return parsed.astimezone(local).isoformat(timespec="seconds")
+    except (ValueError, TypeError, OverflowError):
+        fail(source, "入库时间必须是带四位年份的完整日期或时间，例如 2026-09-02 或 2026-09-02 09:30；请在文件中补齐")
 
 
 def dimensions(spec):
@@ -92,17 +125,15 @@ def parse_rows(filename,content,options):
             if not any(_text(_cell(row,mapping,key)) for key in ALIASES): continue
             source=f"“{sheet}”第 {rownum} 行"
             if len(rows_out)>=5000: fail("期初库存导入","单次最多5000行")
-            for field in ("customer_name","warehouse","dimension_unit","currency"):
+            for field in ("dimension_unit","currency"):
                 cell=_text(_cell(row,mapping,field))
                 if cell and normalize(cell)!=normalize(getattr(options,field)):
                     label={"customer_name":"客户","warehouse":"仓库","dimension_unit":"尺寸单位","currency":"币种"}[field]
                     fail(source,f"行内{label}与批次设置不一致，请分批导入，不能覆盖行内原值")
-            row_date=_cell(row,mapping,"snapshot_date")
-            if _text(row_date) and date_value(row_date,datemode,source,"库存基准日期",True)!=options.snapshot_date:
-                fail(source,"行内库存基准日期与批次设置不一致")
-            entry={key:_text(_cell(row,mapping,key)) for key in ("contract_no","item_no","packaging_type","paper_quality","location","document_no","legacy_row_no","note")}
+            entry={key:_text(_cell(row,mapping,key)) for key in ("contract_no","item_no","packaging_type","paper_quality","location","document_no","legacy_row_no","note","original_inbound_at")}
             if not entry["item_no"]: fail(source,"货号不能为空")
-            entry.update(source=source,source_sheet=sheet,source_row=rownum,customer_name=options.customer_name,
+            entry.update(source=source,source_sheet=sheet,source_row=rownum,customer_name=_text(_cell(row,mapping,"customer_name")) or options.customer_name,
+                warehouse=_text(_cell(row,mapping,"warehouse")) or options.warehouse,
                 snapshot_date=options.snapshot_date,currency=options.currency,dimension_unit=options.dimension_unit,warnings=[])
             quantity=number(_cell(row,mapping,"opening_quantity"),source,"期初库存数量")
             if quantity is None: fail(source,"期初库存数量不能为空，不能用入库箱数代替")
@@ -117,6 +148,13 @@ def parse_rows(filename,content,options):
                 entry.update(status="ZERO",specification="",unit=_text(_cell(row,mapping,"unit")) or "个",amount=None)
                 entry["warnings"].append("结余为0，本行不入账")
                 rows_out.append(entry);continue
+            raw_time = _cell(row,mapping,"original_inbound_at")
+            old_date = _cell(row,mapping,"snapshot_date")
+            entry["occurred_at"] = inbound_time(raw_time if _text(raw_time) else (old_date if _text(old_date) else options.snapshot_date), datemode, source)
+            entry["snapshot_date"] = entry["occurred_at"][:10]
+            entry["original_inbound_at"] = entry["occurred_at"]
+            if _text(old_date) and date_value(old_date,datemode,source,"库存基准日期",True)!=entry["snapshot_date"]:
+                fail(source,"行内库存基准日期与入库时间不一致，请核实原表")
             if entry["unit_price"] is None:
                 entry["warnings"].append("单价未核实，按待核价入账，不表示免费")
             combined=_text(_cell(row,mapping,"paper"))
@@ -163,8 +201,8 @@ def parse_rows(filename,content,options):
             if amount is not None:
                 if entry["amount"] is None: entry["warnings"].append("原结余金额缺少可核实单价，暂不用于估价或倒推单价")
                 elif amount!=entry["amount"]: fail(source,"原结余金额与期初数量×单价不一致，请核实")
-            if any(_text(_cell(row,mapping,key)) for key in ("ignored_inbound","ignored_amount","ignored_date")):
-                entry["warnings"].append("原入库箱数、入库金额和原日期未计入期初；使用结余数量及批次库存基准日期")
+            if any(_text(_cell(row,mapping,key)) for key in ("ignored_inbound","ignored_amount","original_inbound_at")):
+                entry["warnings"].append("按本行入库时间登记期初结余；原入库箱数和入库金额不重放，不计供应商进货")
             entry["status"]="READY";rows_out.append(entry)
             if len(rows_out)>5000: fail("期初库存导入","单次最多5000行")
     if not found or not rows_out: fail("期初库存导入","未找到可导入数据，请填写期初库存模板")
@@ -181,7 +219,25 @@ def semantic(row):
     return tuple(normalize(row[key]) for key in ("customer_code","contract_no","item_no","packaging_type","paper_quality","specification","unit","location_id"))
 
 
+def conflicting_file_rows(row, old):
+    """Explain the actual collision; different materials never share this key."""
+    differences=[]
+    for key,label in (("opening_quantity","数量"),("unit_price","单价"),("occurred_at","入库时间")):
+        if old[key]!=row[key]:
+            def display(value):
+                if value is None: return "待核价"
+                if isinstance(value,Decimal): return format(value.normalize(),"f")
+                return str(value)
+            differences.append(f"{label}：前行 {display(old[key])}，本行 {display(row[key])}")
+    identity=f"合同 {row['contract_no'] or '未填写'}，货号 {row['item_no']}，{row['paper_quality']}{row['packaging_type']}，{row['specification']}，{row['location']}"
+    return (f"与{old['source']}的客户、合同、货号、纸品类型、纸质、规格、单位及仓位相同（{identity}），"
+            + "；".join(differences)
+            + "。请核对是否为重复记录或需要累计的分笔结余；不同纸质可分行导入，本批尚未入账")
+
+
 def _preview(db,factory,filename,content,options):
+    from app.services.carton_procurement import business_now
+    now = business_now().astimezone(timezone(timedelta(hours=8)))
     locations=list(db.scalars(select(CartonLocation).where(CartonLocation.factory_id==factory)))
     customers=list(db.scalars(select(CartonCustomer).where(CartonCustomer.factory_id==factory)))
     movements=list(db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.factory_id==factory)))
@@ -189,7 +245,7 @@ def _preview(db,factory,filename,content,options):
     lines=list(db.scalars(select(CartonOrderLine).where(CartonOrderLine.factory_id==factory)))
     closings=list(db.scalars(select(CartonClosing).where(CartonClosing.factory_id==factory)))
     parts=list(db.scalars(select(CartonPositionEntry).where(CartonPositionEntry.factory_id==factory)))
-    evidence={"version":1,"factory":factory,"file":hashlib.sha256(content).hexdigest(),"options":options.model_dump(),
+    evidence={"version":5,"factory":factory,"file":hashlib.sha256(content).hexdigest(),"options":options.model_dump(),
         "customers":sorted((r.id,r.revision,r.customer_name,r.status) for r in customers),
         "locations":sorted((r.id,r.revision,r.warehouse,r.bin_code,r.status) for r in locations),
         "movements":sorted((r.id,str(r.quantity),str(r.unit_price),r.currency,r.source_line_id) for r in movements),
@@ -200,14 +256,9 @@ def _preview(db,factory,filename,content,options):
         "skipped_count":0,"missing_price_count":0,"rows":[],"warnings":[],"errors":[],"totals":[]}
     try:
         rows,warnings=parse_rows(filename,content,options)
-        customer=get_active_customer_by_name(db,factory,options.customer_name)
     except HTTPException as exc:
         result["errors"].append(str(exc.detail));return result,[]
     result["row_count"]=len(rows);result["warnings"]=warnings
-    warehouse=options.warehouse.strip().upper()
-    scoped=[r for r in locations if r.warehouse.upper()==warehouse]
-    if not scoped:
-        result["errors"].append("所选仓库不存在，请先在基础资料中建立仓库及仓位")
     locations_by_id={r.id:r for r in locations};orders_by_id={r.id:r for r in orders}
     line_by_id={line.id:line for line in lines}
     parts_by_movement=defaultdict(list)
@@ -226,25 +277,35 @@ def _preview(db,factory,filename,content,options):
         existing.setdefault(semantic(saved),[]).append(movement)
     seen={};prepared=[];totals={}
     for row in rows:
-        row.update(customer_code=customer.customer_code,customer_name=customer.customer_name)
         if row["status"]=="ZERO":
             result["skipped_count"]+=1;result["rows"].append(row);continue
         try:
+            if datetime.fromisoformat(row["occurred_at"]) > now:
+                fail(row["source"], "入库时间不能晚于当前时间，请核实文件日期和时分秒")
+            if row["customer_name"]:
+                customer=get_active_customer_by_name(db,factory,row["customer_name"])
+                row.update(customer_code=customer.customer_code,customer_name=customer.customer_name)
+            else:
+                row.update(customer_code="__OPENING_UNASSIGNED__",customer_name="未指定客户")
+                row["warnings"].append("未填客户，按未指定客户的独立期初库存入账，不自动关联订单")
+            warehouse=row["warehouse"].strip().upper()
+            scoped=[loc for loc in locations if not warehouse or loc.warehouse.upper()==warehouse]
+            if warehouse and not scoped: fail(row["source"],"该行仓库不存在，请先维护基础资料")
             if normalize(row["location"]) in {"待核仓位","未分仓位"}:
                 candidates=[loc for loc in locations if loc.id==positions.unknown_id(factory) and loc.status=="ACTIVE"]
                 row["warnings"].append("已明确指定系统待核仓位；实际位置核实后请调仓")
             else:
                 label=row["location"].strip().upper()
                 candidates=[loc for loc in scoped if loc.status=="ACTIVE" and label in {loc.bin_code.upper(),positions.label(loc).upper(),f"{loc.warehouse}/{loc.bin_code}".upper(),f"{loc.warehouse} / {loc.bin_code}".upper()}]
-            if len(candidates)!=1: fail(row["source"],"仓位未唯一匹配所选仓库的启用仓位，请核对，系统不会自动建立或猜测仓位")
-            loc=candidates[0];row.update(location_id=loc.id,location=positions.label(loc))
+            if len(candidates)!=1: fail(row["source"],"仓位未唯一匹配启用仓位，请填写明确的仓库及仓位（重名时须填仓库），系统不会自动建立仓位")
+            loc=candidates[0];row.update(location_id=loc.id,location=positions.label(loc),warehouse=loc.warehouse)
             canonical_spec=row["specification"]
-            matches=[line for line in lines if line.customer_code==customer.customer_code and normalize(line.item_no)==normalize(row["item_no"])
+            matches=[line for line in lines if line.customer_code==row["customer_code"] and normalize(line.item_no)==normalize(row["item_no"])
                 and row["contract_no"] and normalize(line.contract_no)==normalize(row["contract_no"])
                 and line.packaging_type==row["packaging_type"] and line.paper_quality==row["paper_quality"] and line.unit==row["unit"]
                 and line.dimension_unit==options.dimension_unit and dimensions(line.specification)==row["dimensions"]]
             key=semantic(row)
-            source_line_id="CHI2-LINE-"+digest([factory,key,options.snapshot_date])[:48]
+            source_line_id="CHI2-LINE-"+digest([factory,key,row["occurred_at"]])[:48]
             row["source_line_id"]=source_line_id
             previous=existing.get(key,[])
             uncertain_openings=[movement for movement in movements if movement.source_type=="HISTORY_INVENTORY" and not movement.order_line_id
@@ -256,20 +317,21 @@ def _preview(db,factory,filename,content,options):
             if previous:
                 if len(previous)!=1: fail(row["source"],"已有多笔同库存身份的期初记录，请先核实，不能再次累计")
                 saved=previous[0]
-                same_date=str(saved.occurred_at)[:10]==options.snapshot_date
+                same_date=inbound_time(saved.occurred_at,0,row["source"])==row["occurred_at"]
                 same_value=saved.quantity==row["opening_quantity"] and saved.unit_price==(row["unit_price"] or Decimal(0)) and saved.currency==row["currency"]
-                if not same_date or not same_value: fail(row["source"],"同一库存身份已有不同基准日、数量或价格的期初记录，请核实原单；不能覆盖或再次累计")
+                if not same_date or not same_value: fail(row["source"],"同一库存身份已有不同入库时间、数量或价格的期初记录，请核实原单；不能覆盖或再次累计")
                 row.update(status="DUPLICATE",existing_movement_id=saved.id)
                 row["warnings"].append("相同库存身份及期初数值已入账，本次跳过")
                 result["skipped_count"]+=1
             elif key in seen:
                 old=seen[key]
-                if old["opening_quantity"]!=row["opening_quantity"] or old["unit_price"]!=row["unit_price"]: fail(row["source"],"同一文件相同库存身份出现不同数量或单价，不能合并或静默丢弃")
+                if old["opening_quantity"]!=row["opening_quantity"] or old["unit_price"]!=row["unit_price"] or old["occurred_at"]!=row["occurred_at"]:
+                    fail(row["source"],conflicting_file_rows(row,old))
                 row["status"]="DUPLICATE";row["warnings"].append("与本文件前行相同，跳过重复期初")
                 result["skipped_count"]+=1
             else:
-                if any(c.status=="LOCKED" and c.customer_code==customer.customer_code and c.period>=options.snapshot_date[:7] for c in closings):
-                    fail(row["source"],"基准日所在或后续月份已锁账，请先由主管核对锁账范围")
+                if any(c.status=="LOCKED" and c.customer_code==row["customer_code"] and c.period>=row["snapshot_date"][:7] for c in closings):
+                    fail(row["source"],"入库时间所在或后续月份已锁账，请先由主管核对锁账范围")
                 seen[key]=row
             if len(matches)==1:
                 row.update(order_line_id=matches[0].id,posting_specification=matches[0].specification)
@@ -313,14 +375,14 @@ def import_opening_inventory(db,factory_id,filename,content,user,options,expecte
         source_id="CHI2-"+source_hash[:32]
         ids=[];matched=0;total=Decimal(0)
         for row in prepared:
-            occurred_at=options.snapshot_date+"T00:00:00+08:00"
+            occurred_at=row["occurred_at"]
             _ensure_period_open(db,factory,row["customer_code"],occurred_at)
             movement=CartonInventoryMovement(id="CIM-"+uuid4().hex,factory_id=factory,
                 order_line_id=row["order_line_id"],customer_code=row["customer_code"],customer_name=row["customer_name"],
                 contract_no=row["contract_no"],item_no=row["item_no"],packaging_type=row["packaging_type"],paper_quality=row["paper_quality"],
                 specification=row["posting_specification"],movement_type="ADJUSTMENT",quantity=row["opening_quantity"],unit=row["unit"],
                 unit_price=row["unit_price"] or Decimal(0),currency=row["currency"],location=row["location"],
-                document_no=row["document_no"] or "OPEN-"+options.snapshot_date+"-"+row["source_line_id"][-8:],
+                document_no=row["document_no"] or "OPEN-"+row["snapshot_date"]+"-"+row["source_line_id"][-8:],
                 source_type="HISTORY_INVENTORY",source_id=source_id,source_line_id=row["source_line_id"],
                 reversal_of_movement_id=None,reason=row["note"] or "期初库存结余导入",actor_user_id=user.id,actor_name=user.display_name,occurred_at=occurred_at)
             positions.post(db,movement,location_id=row["location_id"])
@@ -332,7 +394,7 @@ def import_opening_inventory(db,factory_id,filename,content,user,options,expecte
                  "totals":preview["totals"],"source_fingerprint":expected_preview_fingerprint,
                  "rows":json.loads(encoded([{**{key:row.get(key) for key in ("source","source_sheet","source_row","legacy_row_no","document_no",
                     "customer_code","contract_no","item_no","packaging_type","paper_quality","specification","dimension_unit","unit",
-                    "opening_quantity","unit_price","amount","currency","location","location_id","source_line_id","note")},
+                    "opening_quantity","unit_price","amount","currency","location","location_id","source_line_id","note","warehouse","original_inbound_at","occurred_at")},
                     "movement_id":movement_id} for row,movement_id in zip(prepared,ids,strict=True)]))})
         db.commit()
         return CartonHistoryInventoryImportOut(factory_id=factory,original_filename=filename,row_count=preview["row_count"],

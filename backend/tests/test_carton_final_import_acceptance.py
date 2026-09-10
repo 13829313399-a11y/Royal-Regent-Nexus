@@ -10,10 +10,20 @@ from openpyxl import load_workbook
 from test_molding_sample_api import make_client,login_as
 from test_carton_history_identity_api import _customer
 from test_carton_history_preview_api import upload as order_upload
-from test_carton_opening_preview_api import upload as opening_upload,setup as opening_setup,BATCH
+from test_carton_opening_preview_api import upload as opening_upload,setup as _base_opening_setup,BATCH
 
 BASE="/api/carton-procurement"
 ROOT=Path(__file__).resolve().parents[2]
+
+
+def opening_setup(client, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.services import carton_procurement
+    result = _base_opening_setup(client, monkeypatch)
+    # The published template now posts its August document dates, not BATCH's date.
+    monkeypatch.setattr(carton_procurement, "business_now", lambda: datetime(2026,9,1,10,tzinfo=ZoneInfo("Asia/Shanghai")))
+    return result
 
 
 def examples_as_input(path,main_sheet,example_rows):
@@ -48,24 +58,10 @@ def test_actual_eight_field_history_template_import_edit_lock_issue_preserves_un
         assert first["product_order_quantity"] is None
         assert [(row["packaging_type"],Decimal(row["required_quantity"])) for row in other["lines"]]==[("内箱",200),("外箱",100),("卡纸",100)]
         assert all(row["usage_quantity"] is None for order in saved for row in order["lines"])
-        blocked=client.post(f"{BASE}/orders/{first['order_no']}/submit-supplier",json={"factory_id":"huaxing","expected_revision":first["revision"]})
-        assert blocked.status_code==422,blocked.text
-        paper={**first["lines"][0],"paper_quality":"A33+B","specification":"30*20*15","dimension_unit":"cm","unit_price":"2.5"}
-        payload={key:first[key] for key in ("factory_id","customer_code","customer_name","contract_no","item_no","product_name",
-            "quantity_basis","product_order_quantity","order_date","due_date","customer_due_date")}
-        payload.update(lines=[paper],expected_revision=first["revision"],reason="上线前核实历史材料")
-        amended=client.patch(f"{BASE}/orders/{first['order_no']}",json=payload)
-        assert amended.status_code==200,amended.text
-        assert amended.json()["product_order_quantity"] is None
-        submitted=client.post(f"{BASE}/orders/{first['order_no']}/submit-supplier",json={"factory_id":"huaxing","expected_revision":amended.json()["revision"]})
-        assert submitted.status_code==200,submitted.text
-        issued=client.post(f"{BASE}/orders/{first['order_no']}/purchase-order-issues.xlsx",json={"factory_id":"huaxing","expected_revision":submitted.json()["revision"]})
-        assert issued.status_code==200,issued.text
-        workbook=load_workbook(BytesIO(issued.content),data_only=True)
-        cells=[cell.value for row in workbook.active for cell in row]
-        assert "000203307004" in cells
+        assert first["status"] == "PENDING_SUPPLIER"
         context=client.get(f"{BASE}/orders/{first['order_no']}/purchase-order-context",params={"factory_id":"huaxing"}).json()
-        assert context["issues"][0]["after_product_quantity"] is None
+        assert context["historical_baseline"] and context["pending_type"] == "NONE"
+        assert context["issues"] == [] and not context["can_generate"]
         master=client.get(f"{BASE}/master-data",params={"factory_id":"huaxing"})
         assert master.status_code==200,master.text
         assert not [record for record in master.json()["records"] if record["kind"]=="CONFIG"]

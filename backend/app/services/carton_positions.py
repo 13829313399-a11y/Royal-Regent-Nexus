@@ -225,7 +225,8 @@ def position_balances(db, factory, customer_code=""):
             by_id[movement.id] = movement
     rows = sorted(by_id.values(), key=lambda row: (ledger_time(row.occurred_at), row.id))
     latest_identity = {inventory_key(row): row for row in rows}
-    identity_inbound = {inventory_key(row): row.occurred_at for row in rows if row.movement_type == "INBOUND"}
+    identity_inbound = {inventory_key(row): row.occurred_at for row in rows
+        if row.movement_type == "INBOUND" or (row.source_type == "HISTORY_INVENTORY" and row.movement_type == "ADJUSTMENT" and row.quantity > 0)}
     result = []
     for pk, balance in totals.items():
         key, loc_id = json.loads(pk)

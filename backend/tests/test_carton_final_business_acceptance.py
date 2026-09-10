@@ -129,7 +129,7 @@ def test_complete_order_import_opening_receive_issue_and_two_month_closing(monke
         old = orders()[0]
         assert old["quantity_basis"] == "EXPLICIT" and old["product_order_quantity"] is None
         assert D(old["lines"][0]["received_quantity"]) == 0
-        old = post(f"/orders/{old['order_no']}/submit-supplier", {"expected_revision": old["revision"]})
+        assert old["status"] == "PENDING_SUPPLIER"
         check("历史订单30个需求导入并锁定，库存未增加", stock, 195)
 
         day("2026-09-10")

@@ -418,6 +418,11 @@ def _input_required(payload, line, *, allow_zero=False):
     return required_carton_quantity(payload.product_order_quantity, line.usage_quantity)
 
 
+def _require_receipt_material(line):
+    if not line.paper_quality.strip() or not line.specification.strip() or not line.unit.strip():
+        raise HTTPException(422, f"{line.contract_no} / {line.packaging_type}：入库前请补齐纸质、规格和单位")
+
+
 def _require_order_complete(db, order):
     lines = _order_lines(db, order.id)
     if not lines or any(not line.paper_quality.strip() or not line.specification.strip() or not line.unit.strip() for line in lines):
@@ -715,6 +720,40 @@ def _purchase_order_pending_change(
         "lines": line_snapshots,
     }
     return pending_type, product_delta, changed_line_count, snapshot
+
+
+def register_history_order_placed(db: Session, order: CartonOrder, user: AuthContext):
+    """Record already placed demand without issuing a supplier purchase document."""
+    if _purchase_order_issues(db, order.id):
+        return
+    if order.status != "CONFIRMED" or _order_has_business_activity(db, order):
+        raise HTTPException(409, "仅未收料的历史待下单订单可以转为历史已下单")
+    if not db.scalar(select(CartonAuditEvent.id).where(
+        CartonAuditEvent.factory_id == order.factory_id,
+        CartonAuditEvent.entity_id == order.id,
+        CartonAuditEvent.event_type == "HISTORY_ORDER_IMPORTED",
+    ).limit(1)):
+        raise HTTPException(409, "订单没有历史导入来源，不允许跳过正常下单流程")
+    previous_status = order.status
+    order.status = "PENDING_SUPPLIER"
+    order.revision += 1
+    order.updated_by = user.id
+    order.updated_by_name = user.display_name
+    order.updated_at = now_text()
+    _, _, _, snapshot = _purchase_order_pending_change(order, _order_lines(db, order.id), None)
+    db.add(CartonPurchaseOrderIssue(
+        id=f"CPOI-{uuid4().hex}", factory_id=order.factory_id, order_id=order.id,
+        order_no=order.order_no, document_no=f"{order.order_no}-HISTORY",
+        document_type="LEGACY_BASELINE", issue_sequence=0, source_order_revision=order.revision,
+        before_product_quantity=order.product_order_quantity, after_product_quantity=order.product_order_quantity,
+        product_quantity_delta=Decimal(0) if order.product_order_quantity is not None else None,
+        snapshot_json=json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+        generated_by=user.id, generated_by_name=user.display_name, generated_at=now_text(),
+    ))
+    _audit(db, user, order.factory_id, "HISTORY_ORDER_PLACED", "carton_order", order.id,
+           {"order_no": order.order_no, "previous_status": previous_status, "status": order.status,
+            "reason": "历史订单已在系统外下单，直接待收料，不重复发行采购单"})
+    db.flush()
 
 
 def purchase_order_context(
@@ -2195,8 +2234,24 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
             status_code=409,
             detail=f"订单 {', '.join(sorted(ineligible_orders))} 必须先确认并锁定，且保持待收料状态，才能登记收料",
         )
-    for order in orders.values():
-        _require_order_complete(db, order)
+    for input_line in formal_inputs:
+        line = by_id[input_line.order_line_id]
+        if not line.paper_quality.strip() or not line.specification.strip():
+            order = orders[line.order_id]
+            if not any(issue.document_type == "LEGACY_BASELINE" for issue in _purchase_order_issues(db, order.id)):
+                _require_receipt_material(line)
+            before = {"paper_quality": line.paper_quality, "specification": line.specification}
+            line.paper_quality = line.paper_quality or input_line.paper_quality.strip()
+            line.specification = line.specification or input_line.specification.strip()
+            _require_receipt_material(line)
+            _audit(db, user, factory_id, "HISTORY_ORDER_MATERIAL_COMPLETED", "carton_order", order.id,
+                   {"order_no": order.order_no, "line_id": line.id, "before": before,
+                    "after": {"paper_quality": line.paper_quality, "specification": line.specification}})
+            order.revision += 1
+            order.updated_at = now_text()
+            order.updated_by = user.id
+            order.updated_by_name = user.display_name
+        _require_receipt_material(line)
     _ensure_receipt_capacity(db, by_id, {
         line.order_line_id: quantity(line.received_quantity - line.damaged_quantity
                                      - line.rejected_quantity - line.unusable_quantity)
@@ -2525,8 +2580,8 @@ def confirm_receipt(
             status_code=409,
             detail=f"订单 {', '.join(sorted(ineligible_orders))} 当前未处于已确认锁定的待收料状态，不能确认入库",
         )
-    for order in receipt_orders.values():
-        _require_order_complete(db, order)
+    for order_line in order_lines.values():
+        _require_receipt_material(order_line)
     _ensure_receipt_capacity(db, order_lines, {})
     order_ids: set[str] = set()
     for line in lines:
@@ -2714,7 +2769,7 @@ def inventory_balances(
         key = _movement_key(row)
         totals[key] += row.quantity
         latest[key] = row
-        if row.movement_type == "INBOUND":
+        if row.movement_type == "INBOUND" or (row.source_type == "HISTORY_INVENTORY" and row.movement_type == "ADJUSTMENT" and row.quantity > 0):
             latest_inbound[key] = row.occurred_at
     return [
         CartonInventoryBalanceOut(
@@ -2857,7 +2912,9 @@ def _prepare_inventory_movement(
     )
     if signed_quantity < 0:
         movement.unit_price = _issue_cost_price(db, movement)
-    from app.services.carton_supplier_settlement import movement_guard
+    from app.services.carton_supplier_settlement import movement_guard, return_supplier
+    if movement.movement_type == "OUTBOUND" and movement.issue_kind == "RETURN" and not return_supplier(db, movement):
+        raise HTTPException(status_code=409, detail="该库存无法确定供应商，暂不能登记退供应商；请先核实原收料来源。库存尚未扣减。")
     movement_guard(db, movement)
     positions.post(db, movement, location_id=payload.location_id, legacy_location=movement.location)
     event = _audit(db, user, factory_id, "INVENTORY_MOVEMENT_CREATED", "carton_inventory_movement", movement.id, {"movement_type": movement.movement_type, "quantity": movement.quantity})

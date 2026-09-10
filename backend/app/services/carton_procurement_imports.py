@@ -197,7 +197,7 @@ def _sheet_rows(filename: str, content: bytes) -> list[tuple[str, list[list[Any]
         try:
             for sheet in workbook.worksheets:
                 rows = [list(row) for row in sheet.iter_rows(values_only=True, max_row=MAX_IMPORT_ROWS)]
-                result.append((sheet.title, rows, 0))
+                result.append((sheet.title, rows, 1 if workbook.epoch.year == 1904 else 0))
         finally:
             workbook.close()
         return result

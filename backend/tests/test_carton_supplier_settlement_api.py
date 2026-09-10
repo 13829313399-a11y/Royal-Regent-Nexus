@@ -122,7 +122,23 @@ def test_legacy_acceptance_correction_missing_price_and_reversal(monkeypatch):
         assert reversed_response.status_code == 200, reversed_response.text
         assert not view(client, "2026-09")["sources"]
         zero = draft(client, row, 2, acceptance_date="2026-10-02", lines=[{"order_line_id": row["lines"][0]["id"], "delivered_quantity": "2", "received_quantity": "2", "unit_price": "0"}])
+        assert confirm(client, zero.json()).status_code == 422
+        # New receipts require a positive price. Seed a legacy already-posted
+        # unpriced record separately to retain the month-end compatibility check.
+        from app.db import SessionLocal
+        from app.models.carton_procurement import CartonReceiptLine, CartonInventoryMovement
+        from sqlalchemy import select
+        with SessionLocal() as db:
+            line = db.scalar(select(CartonReceiptLine).where(CartonReceiptLine.receipt_id == zero.json()["id"]))
+            line.unit_price = Decimal("2")
+            db.commit()
         assert confirm(client, zero.json()).status_code == 200
+        with SessionLocal() as db:
+            line = db.scalar(select(CartonReceiptLine).where(CartonReceiptLine.receipt_id == zero.json()["id"]))
+            line.unit_price = Decimal("0")
+            for movement in db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.source_type == "RECEIPT", CartonInventoryMovement.source_id == zero.json()["id"])):
+                movement.unit_price = Decimal("0")
+            db.commit()
         work = view(client)
         assert work["sources"][0]["amount"] is None
         saved = client.post(BASE + "/supplier-settlements", json=payload(work)).json()

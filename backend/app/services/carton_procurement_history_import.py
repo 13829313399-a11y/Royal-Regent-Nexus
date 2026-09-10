@@ -377,7 +377,7 @@ def _fill_master(db: Session, factory: str, group: list[dict]):
             row["line"] = line.model_copy(update=updates)
             row.setdefault("row_warnings", []).append(f"{line.packaging_type}的{'、'.join(missing)}由唯一匹配基础资料 {record.id}（版本{record.revision}）带出；未复制价格或推断装箱数")
         elif missing:
-            row.setdefault("row_warnings", []).append(f"{line.packaging_type}资料{'存在多个匹配' if candidates else '未完整匹配'}，缺失纸质/规格须补齐后才能确认订单")
+            row.setdefault("row_warnings", []).append(f"{line.packaging_type}资料{'存在多个匹配' if candidates else '未完整匹配'}，缺失纸质/规格可在收料时补齐后入库")
 
 
 def _payload(factory: str, group: list[dict], customer) -> CartonOrderCreate:
@@ -443,14 +443,14 @@ def _preview(db: Session, factory: str, filename: str, content: bytes):
             continue
         missing=any(not line.paper_quality or not line.specification for line in payload.lines)
         messages=list(dict.fromkeys(message for row in group for message in row.get("row_warnings",[])))
-        if missing: messages.append("导入为待下单；缺失的纸质、规格须补齐后才能确认锁定")
+        if missing: messages.append("导入后直接待收料；缺失的纸质、规格须在入库时补齐")
         if duplicate:
             result["skipped_count"]+=1
             messages.append("已存在，将跳过避免重复建单")
         else:
             result["incomplete_count" if missing else "ready_count"]+=1
         view=payload.model_dump(mode="json")
-        view.update(order_no=first["order_no"],source_rows=list(dict.fromkeys(r["source"] for r in group)),
+        view.update(status="PENDING_SUPPLIER",order_no=first["order_no"],source_rows=list(dict.fromkeys(r["source"] for r in group)),
             duplicate=duplicate,ready=not missing,warnings=messages)
         result["orders"].append(view)
         prepared.append((group,payload,duplicate))
@@ -513,6 +513,8 @@ def import_history_orders(
                 commit=False,
                 audit_event="HISTORY_ORDER_IMPORTED",
             )
+            from app.services.carton_procurement import register_history_order_placed
+            register_history_order_placed(db, order, user)
             imported_orders.append(order.order_no)
             imported_line_count += len(group)
         db.commit()

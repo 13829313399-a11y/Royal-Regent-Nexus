@@ -16,11 +16,11 @@ def test_eight_column_import_saves_three_demand_lines_without_fabricating_invent
         response=upload(client,content,preview=False,fingerprint=preview["source_fingerprint"])
         assert response.status_code==201,response.text
         order=_orders(client)[0]
-        assert order["status"]=="CONFIRMED" and order["product_order_quantity"] is None
+        assert order["status"]=="PENDING_SUPPLIER" and order["product_order_quantity"] is None
         assert {line["packaging_type"]:float(line["required_quantity"]) for line in order["lines"]}=={"内箱":200,"外箱":100,"卡纸":300}
         assert all(line["usage_quantity"] is None and float(line["received_quantity"])==0 for line in order["lines"])
         response=client.post(f"{BASE}/orders/{order['order_no']}/submit-supplier",json={"factory_id":"huaxing","expected_revision":order["revision"]})
-        assert response.status_code==422,response.text
+        assert response.status_code==409,response.text
         assert client.get(f"{BASE}/inventory/movements",params={"factory_id":"huaxing"}).json()["total"]==0
 
 
@@ -47,7 +47,7 @@ def test_preview_is_read_only_confirmation_keeps_explicit_papers_and_no_inventor
         orders=_orders(client)
         assert {o["order_no"] for o in orders}=={"H1","H2"}
         assert all(o["quantity_basis"]=="EXPLICIT" for o in orders)
-        assert all(o["status"]=="CONFIRMED" and o["product_order_quantity"] is None for o in orders)
+        assert all(o["status"]=="PENDING_SUPPLIER" and o["product_order_quantity"] is None for o in orders)
         assert all(o["supplier_id"]==preview["supplier_id"] for o in orders)
         assert all(float(o["lines"][0]["received_quantity"])==0 for o in orders)
         movements=client.get(f"{BASE}/inventory/movements",params={"factory_id":"huaxing"})
@@ -76,7 +76,7 @@ def test_unknown_customer_and_incomplete_material_are_explicit_not_guessed(monke
         order=_orders(client)[0]
         assert order["lines"][0]["paper_quality"]==""
         response=client.post(f"{BASE}/orders/{order['order_no']}/submit-supplier",json={"factory_id":"huaxing","expected_revision":order["revision"]})
-        assert response.status_code==422,response.text
+        assert response.status_code==409,response.text
 
 
 def test_preview_rejects_file_or_customer_state_change_atomically(monkeypatch):

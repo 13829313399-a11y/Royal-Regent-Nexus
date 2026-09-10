@@ -23,9 +23,10 @@ function choose(row: MasterRecord) {
 }
 </script>
 <template>
-  <div ref="root" class="relative" @focusin="open = true" @input="open = true" @focusout="leave" @keydown.esc.stop="open = false">
+  <div ref="root" class="self-start" @focusin="open = true" @input="open = true" @focusout="leave" @keydown.esc.stop="open = false">
+    <div class="relative">
     <slot />
-    <div v-if="open && !disabled && query.trim()" class="absolute left-0 top-full z-40 mt-1 max-h-64 w-full min-w-64 overflow-y-auto rounded-lg border border-teal-200 bg-white p-1.5 shadow-lg" :aria-label="`${field === 'contract' ? '合同号' : field === 'item' ? '货号' : '产品名称'}基础资料候选`">
+    <div v-if="open && !disabled && query.trim()" class="absolute left-0 top-full z-40 max-h-64 w-full min-w-64 overflow-y-auto rounded-lg border border-teal-200 bg-white p-1.5 shadow-lg" :aria-label="`${field === 'contract' ? '合同号' : field === 'item' ? '货号' : '产品名称'}基础资料候选`">
       <button v-for="row in matches.slice(0, 8)" :key="row.id" type="button" class="block w-full rounded-md p-2 text-left text-xs hover:bg-teal-50 focus:bg-teal-50 focus:outline-none" @click="choose(row)">
         <b class="break-all">{{ row.code }}<template v-if="field !== 'contract'"> · {{ row.data.product_name }} · {{ row.data.packing_name || '其他包装' }}</template></b>
         <div v-if="field === 'contract'" class="mt-1 break-all text-slate-500">关联货号：{{ row.data.item_nos?.join('、') || '暂无' }}</div>
@@ -34,5 +35,7 @@ function choose(row: MasterRecord) {
       <p v-if="matches.length > 8" class="p-2 text-xs text-slate-500">还有 {{ matches.length - 8 }} 项，请继续输入缩小范围。</p>
       <p v-if="!matches.length" class="p-2 text-xs text-slate-500">暂无匹配资料，可继续手动填写。</p>
     </div>
+    </div>
+    <slot name="hint" />
   </div>
 </template>
