@@ -198,11 +198,15 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
     if doc.status in ("POSTED", "CANCELLED"):
         _fail("盘点单已结束，不能重复操作")
     action = payload.action
+    if action == "CONFIRM" and not payload.posting_confirmed:
+        _fail("请核对盘点结果并确认提交入账", 422)
     if action != "CANCEL":
         quantities, locations, token, rows, basis = _state(db, doc, lines)
     if action != "CANCEL" and any(not line.inventory_key.startswith("[") for line in lines):
         _fail("该盘点单按旧整笔库存建立，请保留原证据并取消后按仓位重新盘点")
-    if action in ("SAVE", "SUBMIT"):
+    if action == "CONFIRM" and token != payload.ledger_token:
+        _fail("库存已变化，请刷新并重新核对盘点差额后确认入账")
+    if action in ("SAVE", "SUBMIT") or (action == "CONFIRM" and doc.status == "DRAFT"):
         if doc.status != "DRAFT" or doc.created_by != user.id:
             _fail("只有创建人可以填写草稿盘点单", 403)
         if token != payload.ledger_token:
@@ -210,14 +214,14 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
         counts = {count.id: count for count in payload.lines}
         if len(counts) != len(payload.lines) or set(counts) != {line.id for line in lines}:
             _fail("请完整填写本单明细，不能重复或包含其他盘点单明细", 422)
-        if action == "SUBMIT" and not payload.cutoff_acknowledged:
+        if action in ("SUBMIT", "CONFIRM") and not payload.cutoff_acknowledged:
             _fail("请确认实盘数量已按页面账面截止时间核对", 422)
         accept_basis = basis == doc.basis_token or payload.cutoff_acknowledged
         for line in lines:
             count = counts[line.id]
             book = quantities[line.inventory_key] if accept_basis else line.count_book_quantity
             diff = None if count.actual_quantity is None else ledger.quantity(count.actual_quantity - book)
-            if action == "SUBMIT" and (diff is None or (diff != 0 and not count.reason)):
+            if action in ("SUBMIT", "CONFIRM") and (diff is None or (diff != 0 and not count.reason)):
                 _fail("实盘数量不可留空，有差异的明细必须填写原因", 422)
             line.actual_quantity, line.difference, line.reason = count.actual_quantity, diff, count.reason
             line.count_book_quantity = book
@@ -227,17 +231,18 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
             if accept_basis and line.inventory_key in locations:
                 snapshot["latest_location"] = locations[line.inventory_key][0]
                 line.snapshot_json = json.dumps(snapshot, ensure_ascii=False)
-        if action == "SUBMIT":
+        if action in ("SUBMIT", "CONFIRM"):
             doc.status = "SUBMITTED"
             doc.submitted_by, doc.submitted_by_name, doc.submitted_at = user.id, user.display_name, ledger.now_text()
         if accept_basis:
             doc.basis_token = basis
-    elif action == "APPROVE":
+    if action in ("APPROVE", "CONFIRM"):
         if doc.status != "SUBMITTED":
             _fail("只能复核已提交的盘点单")
-        if user.id in (doc.created_by, doc.submitted_by):
+        if action == "APPROVE" and user.id in (doc.created_by, doc.submitted_by):
             _fail("盘点创建人或提交人不能复核自己的盘点单，请由另一位主管复核", 403)
         valuation = load_valuation(db, doc.factory_id)
+        posting_at = ledger.now_text()
         references = {row.id: row for row in rows}
         for line in lines:
             if locations.get(line.inventory_key, ("", 0)) != (json.loads(line.snapshot_json)["latest_location"], line.location_revision):
@@ -251,7 +256,7 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
             if any(cost_key(row) == key for row, _ in valuation.errors):
                 _fail("盘点库存存在历史计价异常，请先核对")
             # Validate every line's period, including zero differences, before accepting the document.
-            ledger._ensure_period_open(db, doc.factory_id, reference.customer_code, ledger.now_text())
+            ledger._ensure_period_open(db, doc.factory_id, reference.customer_code, posting_at)
             if line.difference == 0:
                 continue
             carrying = valuation.balances.get(key)
@@ -264,14 +269,14 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
                 movement_type="ADJUSTMENT", quantity=line.difference, unit_price=price,
                 location=json.loads(line.snapshot_json)["latest_location"], document_no=doc.id,
                 source_type="STOCKTAKE", source_id=doc.id, source_line_id=line.id, reason=line.reason,
-                actor_user_id=user.id, actor_name=user.display_name, occurred_at=ledger.now_text())
+                actor_user_id=user.id, actor_name=user.display_name, occurred_at=posting_at)
             positions.post(db, movement, location_id=json.loads(line.snapshot_json)["location_id"])
             line.movement_id = movement.id
             ledger._audit(db, user, doc.factory_id, "INVENTORY_MOVEMENT_CREATED", "carton_inventory_movement", movement.id,
                           {"stocktake_id": doc.id, "quantity": line.difference, "movement_type": "ADJUSTMENT"})
         doc.status = "POSTED"
-        doc.reviewed_by, doc.reviewed_by_name, doc.reviewed_at = user.id, user.display_name, ledger.now_text()
-    else:
+        doc.reviewed_by, doc.reviewed_by_name, doc.reviewed_at = user.id, user.display_name, posting_at
+    elif action in ("RETURN", "CANCEL"):
         if action == "RETURN" and doc.status != "SUBMITTED":
             _fail("只能退回待复核的盘点单")
         if not payload.reason:
@@ -282,8 +287,8 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
             doc.submitted_by = doc.submitted_by_name = doc.submitted_at = ""
     doc.revision += 1
     evidence = {"reason": payload.reason, "revision": doc.revision, "status": doc.status}
-    if action == "SUBMIT":
-        evidence.update({"cutoff_at": doc.submitted_at, "lines": [
+    if action in ("SUBMIT", "CONFIRM"):
+        evidence.update({"posting_confirmed": payload.posting_confirmed, "cutoff_at": doc.submitted_at, "lines": [
             {"id": line.id, "book_quantity": str(line.count_book_quantity),
              "actual_quantity": str(line.actual_quantity), "difference": str(line.difference),
              "reason": line.reason, "location": json.loads(line.snapshot_json)["latest_location"],
