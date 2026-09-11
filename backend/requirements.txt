@@ -9,6 +9,8 @@ python-dotenv
 python-multipart
 openpyxl
 xlrd>=2.0.1,<3
+xlwt==1.3.0
+xlutils==2.0.0
 msoffcrypto-tool>=5.4,<6
 lxml>=5,<7
 ctranslate2>=4.8,<5

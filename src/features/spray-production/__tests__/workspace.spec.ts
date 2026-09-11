@@ -6,15 +6,29 @@ import { useSprayWorkspace } from '../workspace'
 import ReportsPage from '../pages/ReportsPage.vue'
 import EntryForm from '../components/EntryForm.vue'
 
-vi.mock('@/api/sprayProduction', () => ({sprayProductionApi:{summary:vi.fn(),collection:vi.fn(),balances:vi.fn(),command:vi.fn()}}))
+vi.mock('@/api/sprayProduction', () => ({sprayProductionApi:{summary:vi.fn(),collection:vi.fn(),balances:vi.fn(),command:vi.fn(),preferences:vi.fn()}}))
 const snapshot = (factory:string):SpraySummary => ({factory_id:factory,revision:1,as_of:'2026-09-11T00:00:00Z',data_mode:'live',coverage:'no_data',counts:{},permissions:['read','report']})
 beforeEach(() => {
   vi.resetAllMocks(); setActivePinia(createPinia())
   vi.mocked(api.summary).mockImplementation(async factory=>snapshot(factory))
   vi.mocked(api.collection).mockResolvedValue({items:[],total:0,page:1,page_size:1000})
   vi.mocked(api.balances).mockResolvedValue({})
+  vi.mocked(api.preferences).mockResolvedValue([])
 })
 describe('spray factory workspace', () => {
+  it('loads records beyond page one and keeps the final record searchable',async()=>{
+    vi.mocked(api.collection).mockImplementation(async(_scope,kind,_signal,page=1)=>({items:kind==='orders'?(page===1?Array.from({length:1000},(_,i)=>({id:'order-'+i})):[{id:'last-order',document_no:'0000123'}]):[],total:kind==='orders'?1001:0,page,page_size:1000}))
+    const s=useSprayWorkspace();await s.load('huaxing')
+    expect(s.items('orders')).toHaveLength(1001);expect(s.find('orders','last-order')?.document_no).toBe('0000123');expect(s.truncated).toBe(false)
+  })
+  it('saves a draft without reloading production or restoring another factory preference',async()=>{
+    const s=useSprayWorkspace();await s.load('huaxing');vi.mocked(api.summary).mockClear()
+    vi.mocked(api.command).mockResolvedValue({id:'draft',revision:1})
+    vi.mocked(api.preferences).mockResolvedValue([{id:'draft',kind:'report_draft',name:'现场快录',revision:1,payload:{lines:[]}}])
+    await s.savePreference('report_draft','现场快录',{lines:[]})
+    expect(api.summary).not.toHaveBeenCalled();expect(s.preferences).toHaveLength(1)
+    await s.load('huadeng');expect(s.preferences).toHaveLength(0)
+  })
   it('does not download payroll or costs for a production-only account', async () => {
     const s = useSprayWorkspace(); await s.load('huaxing')
     expect(vi.mocked(api.collection).mock.calls.map(c=>c[1])).not.toEqual(expect.arrayContaining(['rates','purchases','imports','settlements']))
@@ -42,6 +56,17 @@ describe('spray factory workspace', () => {
   })
 })
 describe('spray entry',()=>{
+  it('restores the persistent submission receipt before retrying after a refresh',async()=>{
+    const s=useSprayWorkspace();await s.load('huaxing')
+    vi.mocked(api.preferences).mockResolvedValue([{id:'draft',kind:'report_draft',name:'现场快录',revision:1,payload:{operation_id:'persisted-receipt',date:'2026-09-11',shift:'白班',team:'一组',people:'甲',lines:[{task_id:'',activity:'调机',regular_qty:'0',regular_hours:'3',overtime_qty:'0',overtime_hours:'0',good:'0',held:'0',rework:'0',scrap:'0',rate_id:''}]}}])
+    vi.mocked(api.command).mockImplementation(async(_scope,action)=>{if(action==='reports')throw new Error('response lost');return {id:'draft',revision:2}})
+    const wrapper=mount(ReportsPage);await flushPromises()
+    expect(wrapper.get('[aria-label="第1行 正班小时"]').element).toHaveProperty('value','3')
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    const report=vi.mocked(api.command).mock.calls.find(c=>c[1]==='reports')
+    expect(report?.[2].operation_id).toBe('persisted-receipt');expect(wrapper.get('[aria-label="第1行 正班小时"]').element).toHaveProperty('value','3')
+    wrapper.unmount()
+  })
   it('pastes 20 complete rows, refuses one invalid row without partial replacement',async()=>{
     const s=useSprayWorkspace();await s.load('huaxing')
     const wrapper=mount(ReportsPage)

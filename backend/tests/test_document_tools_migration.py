@@ -27,7 +27,7 @@ def test_both_schema_branches_upgrade_without_losing_document_tables(tmp_path, s
         previous = dict(connection.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name LIKE 'document_tool_%'"))
     upgrade("head")
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("20260911_0108",)]
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("20260911_0110",)]
         tables = dict(connection.execute("SELECT name, sql FROM sqlite_master WHERE type='table'"))
         assert {"document_tool_sources", "document_tool_jobs", "document_tool_artifacts", "document_tool_corrections", "carton_locations", "carton_position_entries", "carton_master_records", "carton_master_sources"} <= tables.keys()
         assert all(tables[name] == sql for name, sql in previous.items())

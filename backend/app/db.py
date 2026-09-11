@@ -725,8 +725,11 @@ def init_db() -> None:
         names = set(inspector.get_table_names())
         if "alembic_version" in names:
             missing = [name for name in Base.metadata.tables if name.startswith("spray_") and name not in names]
+            for table, column in [("spray_order_lines", "graph_route"),("spray_steps","predecessors"),("spray_tasks","shared_allocations"),("spray_resources","shared_requirements")]:
+                if table in names and column not in {c["name"] for c in inspector.get_columns(table)}:
+                    missing.append(table + "." + column)
             if missing:
-                raise RuntimeError("喷油模块需要迁移至 20260911_0106；请先备份并迁移。缺少：" + ", ".join(missing))
+                raise RuntimeError("喷油模块需要迁移至 20260911_0110；请先备份并迁移。缺少：" + ", ".join(missing))
     Base.metadata.create_all(bind=engine)
     ensure_sqlite_legacy_columns()
 
