@@ -18,6 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
+    spray_production,  # noqa: F401
     document_tools,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
