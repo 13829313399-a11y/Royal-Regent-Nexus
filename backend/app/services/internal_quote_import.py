@@ -949,6 +949,7 @@ def _parse_molding(
 def _parse_painting(
     rows: list[list[object]],
     header_index: int,
+    formula_rows: list[list[object]] | None = None,
     **_: object,
 ) -> tuple[dict[str, Any], int, list[str]]:
     header = rows[header_index]
@@ -956,6 +957,12 @@ def _parse_painting(
     name_column = preferred_column_index(header, ("名称", "零件名称", "产品名称"))
     position_column = preferred_column_index(header, ("位置", "部位"))
     note_column = preferred_column_index(header, ("备注", "说明"))
+    paint_column = preferred_column_index(header, ("油漆", "油漆HKD", "油漆价", "油漆价HKD"))
+    labor_column = preferred_column_index(header, ("人工", "人工HKD", "喷油工", "喷油工HKD"))
+    total_column = preferred_column_index(header, ("总报价", "总报价HKD"))
+    split_columns = paint_column is not None or labor_column is not None
+    if split_columns and (paint_column is None or labor_column is None):
+        raise ValueError("喷油新模板必须同时包含油漆和人工表头")
     process_columns: list[tuple[str, str, int, int]] = []
     for label, key in PAINTING_PROCESSES:
         qty_column = next(
@@ -983,7 +990,9 @@ def _parse_painting(
         name = text(value_at(row, name_column))
         position = text(value_at(row, position_column))
         row_label = position or name
-        if not row_label or re.search(r"合计|小计|总报价|[:：]$", row_label):
+        if not row_label or re.search(r"合计|小计|总报价|[:：]$", row_label) or any(
+            normalized(value) in {"合计", "小计", "总计"} for value in row[:3]
+        ):
             continue
         operations = {
             key: {"quantity": "0.0000", "unit_price_hkd": "0.0000"}
@@ -1002,8 +1011,30 @@ def _parse_painting(
                 "unit_price_hkd": decimal_text(max(unit, Decimal("0"))),
             }
         if has_quantity:
+            split_fields: dict[str, Any] = {}
+            if split_columns:
+                from app.services.internal_quote_painting import split_painting_cost
+                split_fields = {"cost_allocation": "split"}
+                for key, column in (("paint_cost_hkd", paint_column), ("labor_cost_hkd", labor_column)):
+                    raw = value_at(row, column)
+                    formula = text(value_at(formula_rows[source_row - 1], column)) if formula_rows else ""
+                    # Recompute the supplied same-row labor formula even when Excel's cache is stale/missing.
+                    expected = f"={get_column_letter(total_column + 1)}{source_row}-{get_column_letter(paint_column + 1)}{source_row}" if total_column is not None else ""
+                    if key == "labor_cost_hkd" and expected and re.sub(r"\s|\$", "", formula).upper() == expected:
+                        raw = None
+                    elif formula.startswith("=") and raw is None:
+                        raise ValueError(f"第 {source_row} 行油漆/人工公式没有计算结果，请在 Excel 中重新计算并保存")
+                    split_fields[key] = None if raw is None or raw == "" else text(raw)
+                operation_total = sum((Decimal(v["quantity"]) * Decimal(v["unit_price_hkd"]) for v in operations.values()), Decimal("0"))
+                try:
+                    split = split_painting_cost(split_fields, operation_total)
+                except ValueError as exc:
+                    raise ValueError(f"第 {source_row} 行 {row_label}：{exc}") from exc
+                if split is None:
+                    warnings.append(f"第 {source_row} 行 {row_label} 油漆、人工待填写")
             output.append(
                 {
+                    **split_fields,
                     "image_reference": text(value_at(row, image_column)),
                     "name": name,
                     "position": position,
@@ -1014,7 +1045,7 @@ def _parse_painting(
             )
     if not output:
         raise ValueError("已识别喷油表头，但没有解析到喷油工序明细")
-    warnings.append("源表总报价和合计仅用于核对，不直接导入；保存后按含 UV 的九类工序数量 × 单价由服务端重算")
+    warnings.append("油漆、人工分别汇总；人工=总报价-油漆的公式由工序明细重算，空白拆分待填写，不重复加计工序总价" if split_columns else "源表总报价和合计仅用于核对，不直接导入；保存后按含 UV 的九类工序数量 × 单价由服务端重算")
     warnings.append("嵌入喷油图片不自动写入报价；图片单元格文本会保存为附件引用，原报价单可另存为分段附件")
     return {"rows": output}, len(output), warnings
 
@@ -1554,6 +1585,14 @@ def parse_internal_quote_workbook(
         )
         for image in embedded_images:
             embedded_images_by_row.setdefault(image.source_row, []).append(image)
+    formula_rows = None
+    if import_type == "painting":
+        formula_workbook = load_workbook(BytesIO(content), data_only=False, read_only=True)
+        try:
+            formula_rows = [list(row) for row in formula_workbook[sheet_name].iter_rows(
+                max_row=len(rows), max_col=MAX_WORKBOOK_COLUMNS, values_only=True)]
+        finally:
+            formula_workbook.close()
     fragment, row_count, warnings = PARSERS[import_type](
         rows,
         header_index,
@@ -1561,6 +1600,7 @@ def parse_internal_quote_workbook(
         fallback_qty=fallback_qty,
         sheet_name=sheet_name,
         embedded_images_by_row=embedded_images_by_row,
+        **({"formula_rows": formula_rows} if import_type == "painting" else {}),
         **({"fallback_product_name": fallback_product_name} if import_type == "hair" else {}),
     )
     if import_type == "mold":

@@ -412,6 +412,15 @@ for (const factoryId of ['huadeng', 'huakang-d']) {
 }
 
 const disneyProfile = CUSTOMER_PROFILES_BY_FACTORY.huaxing?.find((profile) => profile.code === 'disney')
+CUSTOMER_PROFILES_BY_FACTORY['huakang-d']!.push({
+  code: 'ubtech', name: '优必选', version: 'V1',
+  poAccept: '.pdf', poExtensions: ['.pdf'],
+  scheduleAccept: '.xlsx', scheduleExtensions: ['.xlsx'],
+  poDescription: '优必选 UBTECH 人民币 Purchase Order PDF',
+  templateDescription: '华康D 优必选河源业务统一排期',
+  targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_UBTECH_V1',
+  ruleDescription: '来单日期取确认邮件日期；走货期默认取PO需求日期，可人工更正。订单换算价按人民币÷0.85及÷7.75写入专属列，出厂价保留手工填写。装箱取当前排期唯一历史值，箱数向上取整；只进入华康D总排期。',
+})
 if (disneyProfile) {
   CUSTOMER_PROFILES_BY_FACTORY['huakang-d']!.push({
     ...disneyProfile,
@@ -426,7 +435,7 @@ if (disneyProfile) {
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
   'disney', 'edu', '360', 'green-toys', 'headstart', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'barter',
   'casdon', 'jakks', 'simba', 'spin', 'goliath',
-  'index', 'jazwares', 'strottman',
+  'index', 'jazwares', 'strottman', 'ubtech',
 ])
 
 function isMappedCustomerCode(code: CustomerOrderCustomerCode): code is MappedCustomerCode {
@@ -868,13 +877,13 @@ const blockingIssueDetails = computed(() => {
 
 const blockingResolutionItems = computed(() => (
   (previewBatch.value?.rows ?? []).flatMap((row) => row.issues
-    .filter((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue))
+    .filter((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue) || issue.can_edit)
     .map((issue) => ({ row, issue })))
 ))
 const bulkSkippableIssueKeys = computed(() => [...new Set(
   blockingResolutionItems.value
     .map(({ issue }) => issue)
-    .filter((issue) => issue.can_skip && !isIssueManuallyOverridden(issue))
+    .filter((issue) => issue.severity !== 'warning' && issue.can_skip && !isIssueManuallyOverridden(issue))
     .map((issue) => issue.skip_key),
 )])
 const allSkippableIssuesSelected = computed(() => (
@@ -2001,8 +2010,8 @@ onBeforeUnmount(() => {
             <p>来源：<b>{{ previewBatch?.input_template || '请先导入 PO 与排期' }}</b> · 输出目标：<b>{{ previewBatch?.target_template || selectedCustomer?.targetTemplate || '待选择客户' }}</b></p>
           </div>
           <div class="view-heading__actions">
-            <button v-if="blockingResolutionItems.length" type="button" class="button button--ghost" @click="resolveBlockedRow">
-              {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : '查看已处理阻断项' }}
+            <button v-if="blockingResolutionItems.length" type="button" class="button button--ghost" data-testid="open-field-resolution" @click="resolveBlockedRow">
+              {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : blockingResolutionItems.some(({ issue }) => issue.severity === 'warning' && issue.can_edit) ? '更正日期/补录字段' : '查看已处理阻断项' }}
             </button>
             <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
           </div>
@@ -2130,7 +2139,7 @@ onBeforeUnmount(() => {
                       </ul>
                     </td>
                     <td class="resolution-column">
-                      <div v-if="row.issues?.some((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue))" class="issue-resolution-list">
+                      <div v-if="row.issues?.some((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue) || issue.can_edit)" class="issue-resolution-list">
                         <template v-for="issue in (row.issues ?? []).filter((item) => item.severity === 'blocked' || isConfirmationIssue(item))" :key="`${row.id}-${issue.code}-${issue.field}`">
                           <div class="issue-resolution-item">
                             <p class="issue-resolution-message">{{ issue.message }}</p>
@@ -2144,7 +2153,7 @@ onBeforeUnmount(() => {
                                 @input="updateManualOverride(issue, $event)"
                               >
                             </label>
-                          <label v-if="issue.can_skip" class="skip-issue-option">
+                          <label v-if="issue.can_skip && issue.severity !== 'warning'" class="skip-issue-option">
                             <input
                               type="checkbox"
                               :checked="isIssueSkipped(issue)"
@@ -2562,12 +2571,12 @@ onBeforeUnmount(() => {
                   </div>
                   <em v-if="isIssueManuallyOverridden(item.issue)">已人工补录</em>
                   <em v-else-if="isIssueResolved(item.issue)">已确认放行</em>
-                  <em v-else>待处理</em>
+                  <em v-else>{{ item.issue.severity === 'warning' ? '可选更正' : '待处理' }}</em>
                 </div>
                 <p class="blocker-resolution-item__message">{{ item.issue.message }}</p>
 
                 <label v-if="item.issue.can_edit" class="manual-override-field manual-override-field--dialog">
-                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>填写正确内容后，本项立即解除阻断并写入新排期</small></span>
+                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>{{ item.issue.severity === 'warning' ? '不填写则使用PO原值；填写后写入新排期' : '填写正确内容后，本项立即解除阻断并写入新排期' }}</small></span>
                   <input
                     :type="item.issue.edit_input_type || 'text'"
                     :step="item.issue.edit_input_type === 'number' ? 'any' : undefined"
@@ -2577,7 +2586,7 @@ onBeforeUnmount(() => {
                   >
                 </label>
 
-                <label v-if="item.issue.can_skip" class="skip-issue-option skip-issue-option--dialog">
+                <label v-if="item.issue.can_skip && item.issue.severity !== 'warning'" class="skip-issue-option skip-issue-option--dialog">
                   <input
                     type="checkbox"
                     :checked="isIssueSkipped(item.issue)"

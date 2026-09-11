@@ -7,6 +7,104 @@ const freightRoutes = [
   { route_key: 'hk20', route_name: 'HK 20 柜', capacity_key: 'cap_20' as const, freight_hkd: '7100', lifting_hkd: '900' },
 ]
 
+function mountFreightDialog() {
+  return mount(InternalQuoteBaselineDialog, {
+    attachTo: document.body,
+    props: {
+      open: true, busy: false, canEdit: true,
+      baseline: {
+        factory_id: 'huaxing', workshop_code: 'huaxing-workshop', workshop_name: '华兴',
+        revision: 5, source_type: 'custom',
+        material_prices: [{ material: 'ABS', grade: '750SW', price_hkd_lb: '8.50' }],
+        machine_prices: [{ machine_range: '4A-6A', machine: '80T', shift_price_hkd: '940' }],
+        freight_routes: freightRoutes.map((row) => ({ ...row })),
+        updated_by: 'supervisor', updated_by_name: '业务主管', updated_at: '',
+      },
+    },
+    global: { stubs: { Teleport: true } },
+  })
+}
+
+describe('freight baseline validation', () => {
+  it('requires at least one complete route after blank rows are removed', async () => {
+    const wrapper = mountFreightDialog()
+    try {
+      await wrapper.get('[data-testid="delete-freight-hk40"]').trigger('click')
+      await wrapper.get('[data-testid="delete-freight-hk20"]').trigger('click')
+      await wrapper.get('[data-testid="add-freight-route"]').trigger('click')
+      await wrapper.get('[data-testid="baseline-tab-materials"]').trigger('click')
+      await wrapper.get('[data-testid="save-pricing-baseline"]').trigger('click')
+      expect(wrapper.emitted('save')).toBeUndefined()
+      expect(wrapper.get('[role="alert"]').text()).toBe('运输方案至少保留一项')
+      expect(wrapper.get('#quote-baseline-panel-freight').isVisible()).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+
+  it('allows correcting a highlighted route without losing its entered values', async () => {
+    const wrapper = mountFreightDialog()
+    try {
+      await wrapper.get('[data-testid="lifting-cost-hk40"]').setValue('')
+      await wrapper.get('[data-testid="save-pricing-baseline"]').trigger('click')
+      expect(wrapper.emitted('save')).toBeUndefined()
+      await wrapper.get('[data-testid="lifting-cost-hk40"]').setValue('0')
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      await wrapper.get('[data-testid="save-pricing-baseline"]').trigger('click')
+      expect(wrapper.emitted('save')?.[0]?.[0]).toMatchObject({
+        freight_routes: [{ ...freightRoutes[0], lifting_hkd: '0' }, freightRoutes[1]],
+      })
+    } finally { wrapper.unmount() }
+  })
+
+  it('ignores fully blank generated rows while retaining edited routes and explicit zero costs', async () => {
+    const wrapper = mountFreightDialog()
+    try {
+      await wrapper.get('[data-testid="add-freight-route"]').trigger('click')
+      await wrapper.get('[data-testid="freight-name-2"]').setValue('   ')
+      await wrapper.get('[data-testid="freight-cost-hk40"]').setValue('4620')
+      await wrapper.get('[data-testid="lifting-cost-hk20"]').setValue('0')
+      await wrapper.get('[data-testid="save-pricing-baseline"]').trigger('click')
+      expect(wrapper.emitted('save')?.[0]?.[0]).toMatchObject({
+        revision: 5,
+        freight_routes: [
+          { ...freightRoutes[0], freight_hkd: '4620' },
+          { ...freightRoutes[1], lifting_hkd: '0' },
+        ],
+      })
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      expect(wrapper.findAll('.freight-baseline-table tbody tr')).toHaveLength(2)
+    } finally { wrapper.unmount() }
+  })
+
+  it.each([
+    ['', 'cap_40', '100', '0', '运输方案名称', 0],
+    ['新增方案', '', '100', '0', '容量类型', 1],
+    ['新增方案', 'cap_40', '', '0', '运费 HKD', 2],
+    ['新增方案', 'cap_40', '100', '', '吊柜费 HKD', 3],
+    ['新增方案', 'cap_40', '-1', '0', '运费 HKD', 2],
+    ['', '', '0', '', '运输方案名称', 0],
+  ])('retains partial/invalid route (%s, %s, %s, %s) and focuses its error', async (name, capacity, freight, lifting, label, field) => {
+    const wrapper = mountFreightDialog()
+    try {
+      // A blank row before the started row must not shift error targeting.
+      await wrapper.get('[data-testid="add-freight-route"]').trigger('click')
+      await wrapper.get('[data-testid="add-freight-route"]').trigger('click')
+      const inputs = wrapper.findAll('.freight-baseline-table tbody tr')[3].findAll('input')
+      for (const [index, value] of [name, capacity, freight, lifting].entries()) {
+        await inputs[index].setValue(value)
+      }
+      await wrapper.get('[data-testid="baseline-tab-materials"]').trigger('click')
+      await wrapper.get('[data-testid="save-pricing-baseline"]').trigger('click')
+      expect(wrapper.emitted('save')).toBeUndefined()
+      expect(wrapper.get('[role="alert"]').text()).toContain('第 3 项运输方案')
+      expect(wrapper.get('[role="alert"]').text()).toContain(label)
+      expect(wrapper.get('#quote-baseline-panel-freight').isVisible()).toBe(true)
+      const invalidInput = wrapper.findAll('.freight-baseline-table tbody tr')[2].findAll('input')[Number(field)]
+      expect(invalidInput.attributes('aria-invalid')).toBe('true')
+      expect(document.activeElement).toBe(invalidInput.element)
+    } finally { wrapper.unmount() }
+  })
+})
+
 describe('InternalQuoteBaselineDialog', () => {
   it('shows one large pricing region at a time through three clickable tabs', async () => {
     const wrapper = mount(InternalQuoteBaselineDialog, {

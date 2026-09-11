@@ -203,3 +203,34 @@ def test_route_requires_scoped_read_and_rejects_invalid_dates(db, monkeypatch):
         assert response.json()["total"] == 1
         assert client.get(url, params={"factory_id": "huadeng"}).status_code == 403
         assert client.get(url, params={"factory_id": "huaxing", "date_to": "2026-02-30"}).status_code == 422
+
+
+def test_explicit_adjustments_show_immutable_paper_targets_without_product_totals(db):
+    order_line(db, "box", order_id="explicit")
+    order_line(db, "sheet", order_id="explicit", line_no=2, packaging="滑板纸", unit="张")
+    order = db.get(Order, "explicit")
+    order.quantity_basis = "EXPLICIT"
+    order.product_order_quantity = None
+    seed(db, audit("reduce-explicit", "ORDER_REDUCED", "explicit", {
+        "quantity_basis": "EXPLICIT", "before_quantity": None, "after_quantity": None,
+        "before_required": {"box": "100", "sheet": "20"}, "after_required": {"box":"40", "sheet":"0"},
+        "line_labels": {"box": {"packaging_type":"外箱", "unit":"个"}, "sheet":{"packaging_type":"滑板纸", "unit":"张"}}}))
+    db.get(Line, "box").required_quantity = D(999)
+    db.commit()
+    event = order_timeline(db, "huaxing").events[0]
+    assert event.quantity_change is None
+    assert "外箱：100 → 40 个" in event.description
+    assert "滑板纸：20 → 0 张" in event.description
+    assert "999" not in event.description
+
+
+def test_explicit_creation_preserves_initial_paper_snapshot_without_guessing_product_quantity(db):
+    order_line(db, "box", order_id="explicit-create")
+    seed(db, audit("create-explicit", "HISTORY_ORDER_IMPORTED", "explicit-create", {
+        "quantity_basis": "EXPLICIT", "product_order_quantity": None,
+        "paper_demand": [{"packaging_type":"外箱", "paper_quality":"K3K", "specification":"30*20*15", "unit":"个", "required_quantity":"100"}]}))
+    db.get(Line, "box").required_quantity = D(999)
+    db.commit()
+    event = order_timeline(db, "huaxing").events[0]
+    assert event.quantity_change is None
+    assert event.description == "纸品需求：外箱 / K3K / 30*20*15 100 个"

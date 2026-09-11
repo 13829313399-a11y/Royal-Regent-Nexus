@@ -22,13 +22,13 @@ const cancelReason = ref('取消本次盘点')
 const serviceReady = ref(false)
 const openingSelection = ref(Boolean(props.initialPositionKeys?.length))
 let active = true
-const statusNames = { DRAFT: '待盘点', SUBMITTED: '待主管复核', POSTED: '已入账', CANCELLED: '已取消' }
-const actionNames: Record<string, string> = { STOCKTAKE_CREATED: '生成盘点单', STOCKTAKE_SAVE: '保存草稿', STOCKTAKE_SUBMIT: '提交复核', STOCKTAKE_APPROVE: '复核入账', STOCKTAKE_RETURN: '退回重盘', STOCKTAKE_CANCEL: '取消盘点' }
+const statusNames = { DRAFT: '待盘点', SUBMITTED: '待确认入账', POSTED: '已入账', CANCELLED: '已取消' }
+const actionNames: Record<string, string> = { STOCKTAKE_CREATED: '生成盘点单', STOCKTAKE_SAVE: '保存草稿', STOCKTAKE_CONFIRM: '确认提交并入账', STOCKTAKE_SUBMIT: '提交复核（旧流程）', STOCKTAKE_APPROVE: '复核入账', STOCKTAKE_RETURN: '退回重盘', STOCKTAKE_CANCEL: '取消盘点' }
 const canWrite = computed(() => ['carton', 'pmc-warehouse'].some(dept => auth.can('carton_procurement:inventory_write', props.factoryId, dept)))
 const supervisor = computed(() => canWrite.value && ['carton', 'pmc-warehouse'].some(dept => auth.can('carton_procurement:order_adjust', props.factoryId, dept)))
 const own = computed(() => doc.value?.created_by === auth.currentUser?.id)
 const editable = computed(() => doc.value?.status === 'DRAFT' && own.value && canWrite.value && !doc.value?.reconciliation_error)
-const canApprove = computed(() => supervisor.value && !own.value && doc.value?.submitted_by !== auth.currentUser?.id && !doc.value?.reconciliation_error)
+const canApprove = computed(() => canWrite.value && !doc.value?.reconciliation_error)
 const customers = computed(() => [...new Map(balances.value.map(row => [row.customer_code, row.customer_name])).entries()])
 const locations = computed(() => [...new Set(balances.value.map(row => row.latest_location))].sort())
 const filtered = computed(() => balances.value.filter(row => (!customer.value || row.customer_code === customer.value) && (!location.value || (row.latest_location || '__empty') === location.value) && [row.contract_no, row.item_no, row.packaging_type, row.paper_quality, row.specification].join(' ').toLowerCase().includes(inventoryQuery.value.trim().toLowerCase())))
@@ -105,17 +105,18 @@ function difference(id: string, book: string | null) {
 }
 async function act(action: StocktakeAction) {
   const current = doc.value
-  if (!current) return
-  if (action === 'APPROVE' && !window.confirm('确认按本单差额入账？提交后的收发货将保留，入账后不能修改盘点单。')) return
+  if (!current || busy.value) return
+  if (action === 'CONFIRM' && current.status === 'DRAFT' && !acknowledged.value) return
+  if (action === 'CONFIRM' && !window.confirm('确认实盘数量和差异原因无误并提交入账？系统将按本单差额调整库存，入账后不能修改盘点单。')) return
   await run(async () => {
     const result = await cartonStocktakeApi.act(current.id, {
       factory_id: props.factoryId, expected_revision: current.revision, action,
-      ledger_token: current.ledger_token, cutoff_acknowledged: acknowledged.value, reason: action === 'CANCEL' ? cancelReason.value : reviewReason.value,
+      posting_confirmed: action === 'CONFIRM', ledger_token: current.ledger_token, cutoff_acknowledged: acknowledged.value, reason: action === 'CANCEL' ? cancelReason.value : reviewReason.value,
       lines: current.lines.map(line => ({ id: line.id, actual_quantity: counts.value[line.id]?.actual.trim() || null, reason: counts.value[line.id]?.reason.trim() || '' })),
     })
     accept(result)
     message.value = action === 'SAVE' ? '草稿已保存。' : `盘点单${statusNames[result.status]}。`
-    if (action === 'APPROVE') emit('posted')
+    if (result.status === 'POSTED') emit('posted')
   })
 }
 async function back() { if (leave()) { doc.value = null; dirty.value = false; chosen.value = []; await load() } }
@@ -134,7 +135,7 @@ onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload
 <template>
   <section class="space-y-4 rounded-xl border border-teal-200 bg-white p-5 shadow-sm" aria-label="库存盘点工作台">
     <header class="flex flex-wrap items-center justify-between gap-3">
-      <div><h2 class="text-lg font-bold text-slate-950">库存盘点<span v-if="doc" class="ml-3 rounded-full bg-teal-50 px-3 py-1 text-xs text-teal-700">{{ statusNames[doc.status] }}</span></h2><p class="mt-1 text-xs text-slate-500">选择库存 → 填写实盘 → 主管复核 → 差额入账</p></div>
+      <div><h2 class="text-lg font-bold text-slate-950">库存盘点<span v-if="doc" class="ml-3 rounded-full bg-teal-50 px-3 py-1 text-xs text-teal-700">{{ statusNames[doc.status] }}</span></h2><p class="mt-1 text-xs text-slate-500">选择库存 → 填写实盘 → 确认提交 → 差额入账</p></div>
       <div class="flex gap-2"><button v-if="doc" :disabled="busy" class="secondary" @click="back">盘点单列表</button><button :disabled="busy" class="secondary" @click="leave() && emit('close')">返回库存台账</button></div>
     </header>
     <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}<button v-if="doc" :disabled="busy" class="ml-3 underline" @click="refresh">刷新并重新核对</button></p>
@@ -152,28 +153,28 @@ onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload
         <tr v-for="row in filtered" :key="(row.position_key || row.latest_movement_id)"><td><input v-model="chosen" type="checkbox" :value="(row.position_key || row.latest_movement_id)" :aria-label="`盘点 ${row.contract_no} ${row.item_no} ${row.packaging_type}`"></td><td>{{ row.customer_name }}</td><td>{{ row.contract_no }}</td><td>{{ row.item_no }}</td><td>{{ row.packaging_type }} · {{ row.paper_quality }} · {{ row.specification }}</td><td>{{ row.latest_location || '未设置' }}</td><td class="text-right font-semibold">{{ Number(row.balance).toLocaleString() }} {{ row.unit }}</td></tr>
         <tr v-if="!filtered.length"><td colspan="7" class="text-center text-slate-400">没有符合条件的库存</td></tr>
       </tbody></table></div>
-      <div class="border-t pt-4"><div class="mb-2 flex flex-wrap items-center justify-between gap-3"><h3 class="font-bold">盘点记录</h3><label class="block text-xs">状态 <select v-model="documentStatus" :disabled="busy" aria-label="盘点记录状态" @change="offset = 0; load()"><option value="">全部状态</option><option v-for="(label, value) in statusNames" :key="value" :value="value">{{ label }}</option></select></label></div><p class="my-2 text-xs text-slate-500">同一库存同时只能有一张进行中的盘点单，可打开草稿继续填写。</p>
-        <div class="overflow-auto rounded-lg border border-slate-200"><table class="stocktake-records min-w-[850px]"><colgroup><col><col style="width:180px"><col style="width:100px"><col style="width:180px"><col style="width:120px"></colgroup><thead><tr><th>盘点单号</th><th>创建人 / 时间</th><th>状态</th><th>复核人 / 时间</th><th class="text-right">操作</th></tr></thead><tbody><tr v-for="item in documents" :key="item.id"><td class="font-mono text-xs">{{ item.id }}</td><td>{{ item.created_by_name }}<small>{{ item.created_at.replace('T', ' ').slice(0, 19) }}</small></td><td>{{ statusNames[item.status] }}</td><td>{{ item.reviewed_by_name || '—' }}<small>{{ item.reviewed_at.replace('T', ' ').slice(0, 19) }}</small></td><td class="text-right"><button class="secondary whitespace-nowrap" :disabled="busy" @click="open(item.id)">查看 / 处理</button></td></tr><tr v-if="!documents.length"><td colspan="5" class="text-center text-slate-400">暂无盘点记录</td></tr></tbody></table></div>
+      <div class="border-t pt-4"><div class="mb-2 flex flex-wrap items-center justify-between gap-3"><div class="flex items-center gap-3"><h3 class="font-bold">盘点记录</h3><button type="button" class="secondary" :disabled="busy" @click="documentStatus = 'SUBMITTED'; offset = 0; load()">待确认入账</button></div><label class="block text-xs">状态 <select v-model="documentStatus" :disabled="busy" aria-label="盘点记录状态" @change="offset = 0; load()"><option value="">全部状态</option><option v-for="(label, value) in statusNames" :key="value" :value="value">{{ label }}</option></select></label></div><p class="my-2 text-xs text-slate-500">同一库存同时只能有一张进行中的盘点单，可打开草稿继续填写。</p>
+        <div class="overflow-auto rounded-lg border border-slate-200"><table class="stocktake-records min-w-[850px]"><colgroup><col><col style="width:180px"><col style="width:100px"><col style="width:180px"><col style="width:120px"></colgroup><thead><tr><th>盘点单号</th><th>创建人 / 时间</th><th>状态</th><th>确认人 / 时间</th><th class="text-right">操作</th></tr></thead><tbody><tr v-for="item in documents" :key="item.id"><td class="font-mono text-xs">{{ item.id }}</td><td>{{ item.created_by_name }}<small>{{ item.created_at.replace('T', ' ').slice(0, 19) }}</small></td><td>{{ statusNames[item.status] }}</td><td>{{ item.reviewed_by_name || '—' }}<small>{{ item.reviewed_at.replace('T', ' ').slice(0, 19) }}</small></td><td class="text-right"><button class="secondary whitespace-nowrap" :disabled="busy" @click="open(item.id)">{{ item.status === 'SUBMITTED' ? '查看 / 确认' : '查看 / 处理' }}</button></td></tr><tr v-if="!documents.length"><td colspan="5" class="text-center text-slate-400">暂无盘点记录</td></tr></tbody></table></div>
         <div class="mt-3 flex justify-end gap-2"><button class="secondary" :disabled="busy || offset === 0" @click="page(-1)">上一页</button><button class="secondary" :disabled="busy || documents.length < 100" @click="page(1)">下一页</button></div>
       </div>
     </template>
     <template v-else-if="doc">
-      <div class="rounded-lg bg-slate-50 p-3 text-xs leading-6 text-slate-600"><div class="font-mono">{{ doc.id }}</div><div>创建人 {{ doc.created_by_name }} · {{ doc.created_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.submitted_at">提交人 {{ doc.submitted_by_name }} · 盘点截止 {{ doc.submitted_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.reviewed_at">复核人 {{ doc.reviewed_by_name }} · {{ doc.reviewed_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.note" class="text-amber-700">退回 / 取消说明：{{ doc.note }}</div></div>
+      <div class="rounded-lg bg-slate-50 p-3 text-xs leading-6 text-slate-600"><div class="font-mono">{{ doc.id }}</div><div>创建人 {{ doc.created_by_name }} · {{ doc.created_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.submitted_at">提交人 {{ doc.submitted_by_name }} · 盘点截止 {{ doc.submitted_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.reviewed_at">确认人 {{ doc.reviewed_by_name }} · {{ doc.reviewed_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.note" class="text-amber-700">退回 / 取消说明：{{ doc.note }}</div></div>
       <div v-if="doc.status === 'DRAFT'" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">账面截止：{{ doc.cutoff_at.replace('T', ' ').slice(0, 19) }}。请以此时点核对实物；期间有收发货或调仓，先刷新并重新核对。空白表示未盘，实际没有库存请填 0。<button class="ml-2 underline" :disabled="busy" @click="refresh">刷新账面</button></div>
       <p v-if="doc.reconciliation_error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ doc.reconciliation_error }}</p>
       <p v-if="doc.status === 'DRAFT' && doc.basis_changed" role="alert" class="rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-800">上次填写后有收发货或仓位变化，原实盘数字仅供参考。请对照上次账面重新核对，不能直接沿用旧数字提交。</p>
-      <p v-if="doc.status !== 'DRAFT'" class="text-sm text-slate-600">复核按已提交差额入账，保留提交后的正常收发货。盘盈按当前平均库存成本计价；无可用成本时标记缺价，核价后才能关账。</p>
+      <p v-if="doc.status !== 'DRAFT'" class="text-sm text-slate-600">按已确认的盘点差额入账；旧待确认单保留提交后的正常收发货。盘盈按当前平均库存成本计价；无可用成本时标记缺价，核价后才能关账。</p>
       <div class="overflow-auto"><table class="min-w-[1080px]"><thead><tr><th>客户 / 合同</th><th>货号 / 纸品</th><th>纸质 / 规格</th><th>仓位</th><th>建单账面</th><th>{{ doc.status === 'DRAFT' ? '当前账面' : '盘点账面' }}</th><th>实盘数量</th><th>差异</th><th>差异原因</th></tr></thead><tbody>
         <tr v-for="line in doc.lines" :key="line.id"><td>{{ line.customer_name }}<small>{{ line.contract_no }}</small></td><td>{{ line.item_no }}<small>{{ line.packaging_type }}</small></td><td>{{ line.paper_quality }}<small>{{ line.specification }}</small></td><td>{{ line.latest_location || '未设置' }}<small v-if="line.location_changed" class="text-red-600">仓位已变化</small></td><td>{{ Number(line.initial_quantity) }} {{ line.unit }}<small v-if="doc.status === 'DRAFT' && doc.basis_changed">上次账面 {{ Number(line.count_book_quantity) }}</small></td><td>{{ doc.status === 'DRAFT' && line.current_quantity === null ? '—' : Number(doc.status === 'DRAFT' ? line.current_quantity : line.count_book_quantity) }} {{ line.unit }}</td>
           <td><input v-if="editable && counts[line.id]" v-model="counts[line.id]!.actual" :disabled="busy" inputmode="decimal" class="w-28" :aria-label="`实盘数量 ${line.id}`" placeholder="未盘点" @input="changed"><span v-else>{{ line.actual_quantity === null ? '未盘点' : Number(line.actual_quantity) }}</span></td>
-          <td class="font-semibold text-teal-700">{{ doc.status === 'DRAFT' ? difference(line.id, line.current_quantity) : Number(line.difference) }}</td><td><input v-if="editable && counts[line.id]" v-model="counts[line.id]!.reason" :disabled="busy" class="w-44" :aria-label="`差异原因 ${line.id}`" placeholder="有差异必填" maxlength="1000" @input="changed"><span v-else>{{ line.reason || '—' }}</span></td>
+          <td class="font-semibold text-teal-700">{{ doc.status === 'DRAFT' ? difference(line.id, line.current_quantity) : Number(line.difference) }}<small v-if="doc.status === 'SUBMITTED' && line.current_quantity !== null">当前 {{ Number(line.current_quantity) }} {{ line.unit }}<br>确认后 {{ Number((Number(line.current_quantity) + Number(line.difference)).toFixed(4)) }} {{ line.unit }}</small></td><td><input v-if="editable && counts[line.id]" v-model="counts[line.id]!.reason" :disabled="busy" class="w-44" :aria-label="`差异原因 ${line.id}`" placeholder="有差异必填" maxlength="1000" @input="changed"><span v-else>{{ line.reason || '—' }}</span></td>
         </tr>
       </tbody></table></div>
       <footer class="space-y-3 rounded-lg bg-slate-50 p-4">
         <label v-if="editable" class="flex items-start gap-2 text-sm"><input v-model="acknowledged" :disabled="busy" type="checkbox" class="mt-1">我已逐项核对实盘数量与上方账面截止时点一致，并核对期间收发货。</label>
-        <div class="flex flex-wrap items-center gap-2"><template v-if="editable"><button class="secondary" :disabled="busy" @click="act('SAVE')">保存草稿</button><button class="primary" :disabled="busy || !acknowledged" @click="act('SUBMIT')">提交主管复核</button></template>
-          <template v-if="doc.status === 'SUBMITTED' && canApprove"><button class="primary" :disabled="busy" @click="act('APPROVE')">复核并差额入账</button></template>
-          <p v-if="doc.status === 'SUBMITTED' && !canApprove" class="text-sm text-slate-500">等待另一位有复核权限的主管处理。</p>
+        <div class="flex flex-wrap items-center gap-2"><template v-if="editable"><button class="secondary" :disabled="busy" @click="act('SAVE')">保存草稿</button><button class="primary" :disabled="busy || !acknowledged" @click="act('CONFIRM')">确认提交并入账</button></template>
+          <template v-if="doc.status === 'SUBMITTED' && canApprove"><button class="primary" :disabled="busy" @click="act('CONFIRM')">确认差额入账</button></template>
+          <p v-if="doc.status === 'SUBMITTED' && !canApprove" class="text-sm text-slate-500">{{ !canWrite ? '当前账号没有库存操作权限，请主管或仓管员登录处理。' : '请先处理上方库存核对错误，再确认入账。' }}</p>
           <template v-if="['DRAFT', 'SUBMITTED'].includes(doc.status) && canWrite && (own || supervisor)">
             <template v-if="doc.status === 'SUBMITTED' && supervisor"><input v-model="reviewReason" :disabled="busy" aria-label="盘点退回原因" placeholder="请说明哪些项目需要重盘" class="w-64" maxlength="1000"><button class="secondary" :disabled="busy || !reviewReason.trim()" @click="act('RETURN')">退回重盘</button></template>
             <label class="ml-auto text-xs">取消原因（可修改）<input v-model="cancelReason" :disabled="busy" aria-label="盘点取消原因" class="ml-2 w-48" maxlength="1000"></label><button class="secondary" :disabled="busy || !cancelReason.trim()" @click="act('CANCEL')">取消盘点</button>

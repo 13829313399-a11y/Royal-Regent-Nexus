@@ -244,7 +244,9 @@ export type PaintingOperationCode = 'clamp' | 'pad_print' | 'uv' | 'spray' | 'ed
 export interface PaintingOperationValue { quantity: number; unit_price_hkd: number }
 export type PaintingOperations = Record<PaintingOperationCode, PaintingOperationValue>
 export interface PaintingRow extends QuotePricingMetadata {
-  cost_allocation?: 'direct'
+  cost_allocation?: 'direct' | 'split'
+  paint_cost_hkd?: number | null
+  labor_cost_hkd?: number | null
   image_reference: string
   name: string
   position: string
@@ -1335,6 +1337,21 @@ export function calculatePaintingRowAmount(row: PaintingRow) {
   return operationCodes.reduce((total, code) => total + calculatePaintingOperationAmount(row, code), 0)
 }
 
+export function calculatePaintingRowSplit(row: PaintingRow) {
+  const total = calculatePaintingRowAmount(row)
+  if (row.cost_allocation !== 'split') {
+    const paint = row.cost_allocation === 'direct' ? calculatePaintingOperationAmount(row, 'paint') : total * .3
+    return { paint, labor: total - paint, valid: true }
+  }
+  const input = (value: unknown) => value == null || value === '' ? null : Number(value)
+  let paint = input(row.paint_cost_hkd)
+  let labor = input(row.labor_cost_hkd)
+  if (paint === null && labor === null) return { paint, labor, valid: false }
+  if (paint === null) paint = total - labor!
+  if (labor === null) labor = total - paint
+  return { paint, labor, valid: Number.isFinite(paint) && Number.isFinite(labor) && paint >= 0 && labor >= 0 && Math.abs(paint + labor - total) <= .00010000001 }
+}
+
 export function calculatePaintingOperationTotals(payload: PaintingPayload) {
   return Object.fromEntries(operationCodes.map((code) => [
     code,
@@ -1596,7 +1613,11 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       name: textValue(row.name ?? row.item),
       position: textValue(row.position),
       operations: paintingOperations(row.operations),
-      ...(row.cost_allocation === 'direct' ? { cost_allocation: 'direct' as const } : {}),
+      ...(row.cost_allocation === 'direct' ? { cost_allocation: 'direct' as const } : row.cost_allocation === 'split' ? {
+        cost_allocation: 'split' as const,
+        paint_cost_hkd: row.paint_cost_hkd == null || row.paint_cost_hkd === '' ? null : Number(row.paint_cost_hkd),
+        labor_cost_hkd: row.labor_cost_hkd == null || row.labor_cost_hkd === '' ? null : Number(row.labor_cost_hkd),
+      } : {}),
       remark: textValue(row.remark ?? row.note),
       ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
     })),

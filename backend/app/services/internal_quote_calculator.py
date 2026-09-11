@@ -296,7 +296,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "blow_lines": [{"item": "text", "daily_capacity": "record only", "material": "exact text", "grade": "exact text", "estimated_weight_g": "decimal>=0", "labor_hkd": "decimal>=0", "burr_hkd": "decimal>=0", "profit_multiplier": "default 1.05", "quantity": "default 1", "output_count": "record only", "mold_price_rmb": "record only", "remark": "text"}],
         "caixing_tool_plan_rows": [{"ref_no": "unique text", "process_type": "IN|BL|CP|DC|RC", "tool_no": "text", "tooling_cost_hkd": "decimal>=0", "description": "text", "sku_no": "text", "cavities": "decimal>0", "up": "decimal>0", "net_weight_g": "decimal>0", "material_code": "decimal>0", "material": "text", "color": "text", "material_cost_hkd": "decimal>0", "machine_size": "text", "cycle_time_seconds": "decimal>0", "process_cost_hkd": "decimal>0"}],
     },
-    "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "fixed 13"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/UV/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
+    "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "fixed 13"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/UV/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "cost_allocation": "split for explicit oil/labor; direct reserved for legacy quick rows", "paint_cost_hkd": "optional decimal>=0; blank pair requires completion", "labor_cost_hkd": "optional decimal>=0; missing one equals total minus other", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
     "slush": {"lines": [{"product_code": "text", "item": "glue part name", "material": "record only", "weight_g": "record only decimal>=0", "daily_output_24h": "record only decimal>=0", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "remark": "text"}], "formula": "line total HKD = quantity * unit price HKD; total RMB = total HKD * frozen RMB/HKD rate"},
     "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0", "exchange_rate": "optional row RMB/HKD rate; defaults frozen rate", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode cost HKD = usage * RMB unit price / row exchange rate and price HKD = cost HKD * markup; old rows without a row rate use the frozen RMB/HKD rate"},
     "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
@@ -1283,6 +1283,29 @@ def _painting(payload: dict[str, Any], result: dict[str, Any]) -> None:
         total += line_total
         name = str(row.get("name") or row.get("item") or "")
         position = str(row.get("position") or "")
+        if row.get("cost_allocation") == "split":
+            from app.services.internal_quote_painting import split_painting_cost
+            has_direct_costs = True
+            try:
+                split = split_painting_cost(row, line_total)
+            except ValueError as exc:
+                raise CalculationInputError(f"喷油第 {index + 1} 行：{exc}") from exc
+            if split is None:
+                result["warnings"].append(_warning("painting_split_missing", f"喷油第 {index + 1} 行油漆、人工待填写"))
+                continue
+            material, labor = split
+            labor_total += labor
+            material_total += material
+            for kind, label, amount in (("painting_quick_labor", "喷油工", labor),
+                                       ("painting_quick_paint", "油漆", material)):
+                result["line_breakdown"].append({
+                    **_pricing_metadata(row), "kind": kind,
+                    "item": f"{position or name} · {label}", "name": name, "position": position,
+                    "image_reference": str(row.get("image_reference") or ""),
+                    "remark": str(row.get("remark") or ""), "operations": operation_breakdown,
+                    "amount_hkd": decimal_text(amount),
+                })
+            continue
         if row.get("cost_allocation") == "direct":
             # Historical quick quotes retain their actual labor/material split after recombination.
             has_direct_costs = True
