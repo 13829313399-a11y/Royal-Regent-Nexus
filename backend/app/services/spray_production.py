@@ -108,6 +108,11 @@ def execute(db, factory, actor, action, payload):
         if previous.payload_hash != digest:
             fail("同一操作标识对应不同内容，请检查重复提交", 409)
         return previous.result
+    if action == "preference-save":
+        result = ACTIONS[action](db, factory, actor, payload)
+        result["revision"] = revision(db, factory)
+        add(db,m.SprayOperation,factory,actor,operation_id=operation_id,kind=action,payload_hash=digest,result=result)
+        return result
     expected = payload.get("base_revision")
     statement = update(m.SprayFactory).where(m.SprayFactory.factory_id == factory)
     if expected is not None:
@@ -177,11 +182,14 @@ def create_order(db, factory, actor, p):
             fail("请选择明确的数量单位和币种")
         if line.price is not None and not line.price_reference.strip():
             fail("结算价须填写采用依据；未知价格请留空")
+        created_steps = []
         for index, s in enumerate(rows(v.get("steps"))):
             if s.get("capability") not in CAPABILITIES:
                 fail("工序能力必须为手喷、自动、移印或 UV")
-            add(db, m.SprayStep, factory, actor, line_id=line.id, sequence=index + 1,
-                name=text(s.get("name"), "工序名称", 128), capability=s["capability"], color=s.get("color", ""), wait_hours=number(s.get("wait_hours", 0)))
+            created_steps.append(add(db, m.SprayStep, factory, actor, line_id=line.id, sequence=index + 1,
+                name=text(s.get("name"), "工序名称", 128), capability=s["capability"], color=s.get("color", ""), wait_hours=number(s.get("wait_hours", 0))))
+        from app.services.spray_advanced import build_graph
+        build_graph(db, factory, line, v["steps"], created_steps)
     return {"id": order.id}
 
 
@@ -227,6 +235,7 @@ def set_price(db, factory, actor, p):
 
 
 def resource(db, factory, actor, p):
+    from app.services.spray_advanced import requirements
     if p.get("capability") not in CAPABILITIES:
         fail("资源能力无效")
     windows = p.get("calendar", [])
@@ -242,11 +251,13 @@ def resource(db, factory, actor, p):
     item = add(db, m.SprayResource, factory, actor, name=text(p.get("name"), "资源名称", 128), capability=p["capability"], workers=workers,
                machine_rate=number(p["machine_rate"], positive=True) if p.get("machine_rate") else None,
                person_minutes=number(p["person_minutes"], positive=True) if p.get("person_minutes") else None,
-               setup_hours=number(p.get("setup_hours", 0)), calendar=[{"start": a.isoformat(), "end": b.isoformat()} for a, b in intervals])
+               setup_hours=number(p.get("setup_hours", 0)), calendar=[{"start": a.isoformat(), "end": b.isoformat()} for a, b in intervals],
+               shared_requirements=requirements(db,factory,p.get("shared_requirements",[])))
     return {"id": item.id}
 
 
 def receive(db, factory, actor, p):
+    from app.services.spray_advanced import initial_state
     for v in rows(p.get("lines")):
         line = find(db, m.SprayOrderLine, factory, v.get("line_id"))
         order = find(db, m.SprayOrder, factory, line.order_id)
@@ -258,7 +269,7 @@ def receive(db, factory, actor, p):
             fail("来料合计必须大于零")
         batch = add(db, m.SprayBatch, factory, actor, line_id=line.id, document_no=text(p.get("document_no"), "来料单号", 128),
                     source_line=text(v.get("source_line"), "原单行号", 128), business_date=day(p.get("business_date")), received=total)
-        for target, qty in [(ready(steps(db, factory, line.id)[0]), accepted), ("receipt-held", held), ("rejected", rejected)]:
+        for target, qty in [(initial_state(db,factory,line.id), accepted), ("receipt-held", held), ("rejected", rejected)]:
             move(db, factory, actor, batch.id, batch.id, "receipt", "", target, qty)
     return {"id": batch.id}
 
@@ -270,9 +281,16 @@ def throughput(quantity, machine_rate, person_minutes, workers, setup_hours):
 
 
 def plan_changes(db, factory, changes):
+    from app.services.spray_advanced import eligible, requirements, check_shared
     normalized = []
     booked = {}
     edits = {v.get("task_id") for v in changes if v.get("task_id")}
+    if len(edits)!=sum(bool(v.get('task_id')) for v in changes):fail('同一任务不能在草案中重复改排')
+    released={}
+    for ident in edits:
+        previous=find(db,m.SprayTask,factory,ident)
+        key=(previous.batch_id,previous.input_state)
+        released[key]=released.get(key,D(0))+previous.quantity
     for v in rows(changes):
         batch = find(db, m.SprayBatch, factory, v.get("batch_id"))
         line = find(db, m.SprayOrderLine, factory, batch.line_id)
@@ -290,15 +308,16 @@ def plan_changes(db, factory, changes):
         start = instant(v.get("start_at"))
         if not line.prep_ready_at or start < instant(line.prep_ready_at):
             fail("备产尚未完成，不能预留正式生产；请登记完成依据", 409)
-        source = f"rework:{step.id}" if v.get("rework") else ready(step)
-        available = stock(db, factory, batch.id).get(source, D(0))
+        source = v.get("input_state") or (f"rework:{step.id}" if v.get("rework") else ready(step))
+        if step.id not in {x.id for x in eligible(db,factory,line.id,source)}:
+            fail("此实体状态尚未满足所选工序的全部前置关系",409)
+        available = stock(db, factory, batch.id).get(source, D(0))+released.get((batch.id,source),D(0))
         if v.get("task_id"):
             old = find(db, m.SprayTask, factory, v["task_id"])
             if old.status != "planned" or old.revision != v.get("expected_revision"):
                 fail("该任务已开始或版本变化，不能移动", 409)
             if (old.batch_id, old.step_id, old.input_state) != (batch.id, step.id, source):
                 fail("改排不能更换实体批次或工序")
-            available += old.quantity
         key = (batch.id, source)
         booked[key] = booked.get(key, D(0)) + quantity
         if booked[key] > available:
@@ -323,11 +342,16 @@ def plan_changes(db, factory, changes):
                 fail(f"{res.name} 与已有安排重叠", 409)
         if any(n["resource_id"] == res.id and start < instant(n["end_at"]) and end > instant(n["start_at"]) for n in normalized):
             fail(f"草案中 {res.name} 时段重叠", 409)
+        shared = requirements(db,factory,v.get("shared_allocations",res.shared_requirements))
+        if any(not any(x["id"] == required["id"] and x["quantity"] >= required["quantity"] for x in shared) for required in res.shared_requirements):
+            fail("安排不能省略资源必需的人员或工装",409)
+        all_occupied = [serial(t) for t in db.scalars(select(m.SprayTask).where(m.SprayTask.factory_id==factory,m.SprayTask.status.in_(["planned","running","paused"]))) if t.id not in edits]
+        check_shared(db,factory,shared,start,end,all_occupied+normalized)
         normalized.append({"task_id": v.get("task_id"), "expected_revision": v.get("expected_revision"), "batch_id": batch.id,
                            "step_id": step.id, "resource_id": res.id, "quantity": str(quantity), "workers": workers,
                            "start_at": start.isoformat(), "end_at": end.isoformat(), "input_state": source,
-                           "duration_source": basis, "manual_hours": str(hours), "duration_reason": basis,
-                           "rework": bool(v.get("rework")), "late": end.date().isoformat() > order.due_date})
+                           "duration_source": basis, "manual_hours": str(hours) if v.get("manual_hours") else None, "duration_reason": basis,
+                           "shared_allocations": shared, "rework": source.startswith("rework:"), "late": end.date().isoformat() > order.due_date})
     return normalized
 
 
@@ -350,7 +374,9 @@ def apply_plan(db, factory, actor, p):
             move(db, factory, actor, old.batch_id, item.id, "unreserve", f"reserved:{old.id}", old.input_state, old.quantity)
             old.status = "cancelled"
             old.revision += 1
-        task = add(db, m.SprayTask, factory, actor, **{k: v[k] for k in ("batch_id", "step_id", "resource_id", "workers", "start_at", "end_at", "input_state", "duration_source")}, quantity=D(v["quantity"]))
+        task = add(db, m.SprayTask, factory, actor, **{k: v[k] for k in ("batch_id", "step_id", "resource_id", "workers", "start_at", "end_at", "input_state", "duration_source", "shared_allocations")}, quantity=D(v["quantity"]))
+        for allocation in v["shared_allocations"]:
+            add(db,m.SprayTaskAllocation,factory,actor,task_id=task.id,shared_resource_id=allocation["id"],quantity=allocation["quantity"])
         move(db, factory, actor, task.batch_id, item.id, "reserve", task.input_state, f"reserved:{task.id}", task.quantity)
         ids.append(task.id)
     item.status = "applied"
@@ -360,6 +386,11 @@ def apply_plan(db, factory, actor, p):
 def task_action(db, factory, actor, p):
     task = find(db, m.SprayTask, factory, p.get("task_id"))
     action = p.get("action")
+    if action in ("start","resume") and task.shared_allocations:
+        from app.services.spray_advanced import check_shared
+        current=datetime.now(UTC);end=current+timedelta(seconds=1)
+        occupied=[{**serial(t),"start_at":current.isoformat(),"end_at":end.isoformat()} for t in db.scalars(select(m.SprayTask).where(m.SprayTask.factory_id==factory,m.SprayTask.id!=task.id,m.SprayTask.status=="running"))]
+        check_shared(db,factory,task.shared_allocations,current,end,occupied)
     if action == "start" and task.status == "planned":
         # Schedule is a forecast; actual readiness is checked again at execution time.
         line = find(db, m.SprayOrderLine, factory, find(db, m.SprayBatch, factory, task.batch_id).line_id)
@@ -418,6 +449,8 @@ def allocation(total, weights):
 
 
 def report(db, factory, actor, p):
+    from app.services.spray_advanced import progress, defect, check_payroll_open
+    check_payroll_open(db,factory,day(p.get("business_date")),p.get("shift"))
     head = add(db, m.SprayReport, factory, actor, business_date=day(p.get("business_date")), shift=text(p.get("shift"), "班次", 32), team=text(p.get("team"), "班组", 128))
     for v in rows(p.get("lines")):
         values = {k: number(v.get(k, 0)) for k in ("regular_qty", "overtime_qty", "regular_hours", "overtime_hours", "good", "held", "rework", "scrap")}
@@ -439,9 +472,13 @@ def report(db, factory, actor, p):
             fail("请填写本班人员或历史班组别名")
         for person in people:
             text(person.get("name"), "人员/班组名称", 128)
+        if len({str(person.get("employee_id") or person["name"]).strip() for person in people}) != len(people):
+            fail("同一报工行不能重复填写同一员工")
         calc, wage_status = {}, "unpriced"
         if v.get("rate_id"):
             rate = find(db, m.SprayRate, factory, v["rate_id"])
+            if rate.rule_code == "employee_shift_guarantee":
+                fail("班次保底策略只能在员工班次汇总采用，不能逐任务重复计算")
             if rate.effective_date > head.business_date:
                 fail("工价版本尚未生效")
             basis = values["good"] if rate.quantity_basis == "good" else qty
@@ -453,8 +490,8 @@ def report(db, factory, actor, p):
         if task:
             step = find(db, m.SprayStep, factory, task.step_id)
             available_at = (datetime.now(UTC) + timedelta(hours=float(step.wait_hours))).isoformat() if step.wait_hours else ""
-            for target, value in [(next_state(db, factory, step), values["good"]), (f"held:{step.id}", values["held"]), (f"rework:{step.id}", values["rework"]), ("scrap", values["scrap"])]:
-                move(db, factory, actor, task.batch_id, result.id, "report", f"running:{task.id}", target, value, available_at=available_at if target.startswith("ready:") or target == "finished" else "")
+            for target, value in [(progress(db,factory,step,task.input_state), values["good"]), (defect(step,task.input_state,"held"), values["held"]), (defect(step,task.input_state,"rework"), values["rework"]), ("scrap", values["scrap"])]:
+                move(db, factory, actor, task.batch_id, result.id, "report", f"running:{task.id}", target, value, available_at=available_at if target.startswith(("ready:","route:")) or target == "finished" else "")
             task.reported += qty
             task.revision += 1
             if task.reported == task.quantity:
@@ -463,7 +500,9 @@ def report(db, factory, actor, p):
 
 
 def correct_report(db, factory, actor, p):
+    from app.services.spray_advanced import check_payroll_open
     original = find(db, m.SprayReport, factory, p.get("report_id"))
+    check_payroll_open(db,factory,original.business_date,original.shift)
     if original.status != "confirmed":
         fail("报工已经更正", 409)
     reason = text(p.get("reason"), "更正原因", 2000)
@@ -495,6 +534,7 @@ def correct_report(db, factory, actor, p):
 
 
 def quality(db, factory, actor, p):
+    from app.services.spray_advanced import initial_state, progress
     batch = find(db, m.SprayBatch, factory, p.get("batch_id"))
     source = p.get("source_state")
     disposition = p.get("disposition")
@@ -503,7 +543,7 @@ def quality(db, factory, actor, p):
         fail("来料待检只允许放行或拒收；生产及退货待判只允许放行、返工或报废")
     available_at = ""
     if source == "receipt-held":
-        target = ready(steps(db, factory, batch.line_id)[0]) if p.get("disposition") == "release" else "rejected"
+        target = initial_state(db,factory,batch.line_id) if p.get("disposition") == "release" else "rejected"
     elif source == "return-held":
         if p.get("disposition") == "release":
             target = "finished"
@@ -511,14 +551,16 @@ def quality(db, factory, actor, p):
             step = find(db, m.SprayStep, factory, p.get("step_id"))
             if step.line_id != batch.line_id:
                 fail("返工工序不属于此部件")
-            target = f"rework:{step.id}"
+            line = find(db,m.SprayOrderLine,factory,batch.line_id)
+            suffix = ":route:" + ",".join(sorted(x.id for x in steps(db,factory,line.id) if x.id != step.id)) if line.graph_route else ""
+            target = f"rework:{step.id}" + suffix
         else:
             target = "scrap"
     elif source and source.startswith("held:"):
-        step = find(db, m.SprayStep, factory, source[5:])
+        step = find(db, m.SprayStep, factory, source.split(":")[1])
         if step.line_id != batch.line_id:
             fail("待判工序不属于此部件")
-        target = next_state(db, factory, step) if p.get("disposition") == "release" else f"rework:{step.id}" if p.get("disposition") == "rework" else "scrap"
+        target = progress(db,factory,step,source) if p.get("disposition") == "release" else source.replace("held:","rework:",1) if p.get("disposition") == "rework" else "scrap"
         if disposition == "release" and step.wait_hours:
             available_at = (datetime.now(UTC) + timedelta(hours=float(step.wait_hours))).isoformat()
     else:
@@ -533,11 +575,15 @@ def quality(db, factory, actor, p):
 def make_rate(db, factory, actor, p):
     if not isinstance(p.get("parameters"), dict):
         fail("工资策略参数必须是明确的键值字段")
-    if p.get("rule_code") not in ("legacy_piece_normalized", "piece_direct", "time_based") or p.get("quantity_basis") not in ("good", "attempt"):
+    if p.get("rule_code") not in ("legacy_piece_normalized", "piece_direct", "time_based", "employee_shift_guarantee") or p.get("quantity_basis") not in ("good", "attempt"):
         fail("请选择明确的工资策略及计量口径")
     if p.get("currency") not in ("HKD", "CNY", "USD"):
         fail("币种无效")
-    calculate_wage(p["rule_code"], p.get("parameters", {}), D(1), D(1), D(1))
+    if p["rule_code"] == "employee_shift_guarantee":
+        number(p["parameters"].get("regular_hour_rate",0))
+        number(p["parameters"].get("overtime_hour_rate",0))
+    else:
+        calculate_wage(p["rule_code"], p.get("parameters", {}), D(1), D(1), D(1))
     item = add(db, m.SprayRate, factory, actor, name=text(p.get("name"), "工价名称", 128), rule_code=p["rule_code"], currency=p["currency"],
                quantity_basis=p["quantity_basis"], parameters=p["parameters"], effective_date=day(p.get("effective_date")), evidence=text(p.get("evidence"), "工价来源", 2000))
     return {"id": item.id}
@@ -617,16 +663,22 @@ def settlement_preview(db, factory, p):
     candidates = list(db.scalars(select(m.SprayShipmentLine).join(m.SprayShipment, m.SprayShipmentLine.shipment_id == m.SprayShipment.id).where(
         m.SprayShipment.factory_id == factory, m.SprayShipment.customer == customer, m.SprayShipment.business_date.startswith(period), m.SprayShipmentLine.currency == currency,
         ~m.SprayShipmentLine.id.in_(select(m.SpraySettlementLine.shipment_line_id)))))
-    return {"customer": customer, "period": period, "currency": currency, "amount": str(sum((v.amount for v in candidates), D(0))), "lines": [serial(v) for v in candidates]}
+    used={ident for record in db.scalars(select(m.SpraySettlement).where(m.SpraySettlement.factory_id==factory)) for ident in record.adjustment_ids}
+    adjustments=list(db.scalars(select(m.SprayAdjustment).join(m.SpraySettlement,m.SprayAdjustment.settlement_id==m.SpraySettlement.id).where(
+        m.SprayAdjustment.factory_id==factory,m.SprayAdjustment.business_date.startswith(period),m.SpraySettlement.customer==customer,m.SpraySettlement.currency==currency,m.SprayAdjustment.id.not_in(used))))
+    return {"customer": customer, "period": period, "currency": currency, "amount": str(sum((v.amount for v in candidates+adjustments), D(0))), "lines": [serial(v) for v in candidates],"adjustments":[serial(v) for v in adjustments]}
 
 
 def settle(db, factory, actor, p):
     values = settlement_preview(db, factory, p)
-    if not values["lines"]:
+    if not values["lines"] and not values["adjustments"]:
         fail("此客户、月份和币种没有未结算送货明细")
-    if p.get("line_ids") != sorted(v["id"] for v in values["lines"]) or p.get("amount") != values["amount"]:
+    adjustment_ids=sorted(v["id"] for v in values["adjustments"])
+    provided_adjustments=sorted(v["id"] for v in p.get("adjustments",[]))
+    if p.get("line_ids") != sorted(v["id"] for v in values["lines"]) or p.get("amount") != values["amount"] or provided_adjustments!=adjustment_ids:
         fail("月结候选已变化，请重新预览", 409)
     item = add(db, m.SpraySettlement, factory, actor, **{k: values[k] for k in ("customer", "period", "currency", "amount")})
+    item.adjustment_ids=sorted(v["id"] for v in values["adjustments"])
     for v in values["lines"]:
         add(db, m.SpraySettlementLine, factory, actor, settlement_id=item.id, shipment_line_id=v["id"], amount=D(v["amount"]))
     return {"id": item.id}

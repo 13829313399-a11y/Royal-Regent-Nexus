@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import CheckConstraint, ForeignKey, ForeignKeyConstraint, Integer, JSON, LargeBinary, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Integer, JSON, LargeBinary, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
@@ -53,6 +53,7 @@ class SprayOrderLine(Record, Base):
     currency: Mapped[str] = mapped_column(String(8), default="HKD")
     price_reference: Mapped[str] = mapped_column(String(255), default="")
     route_version: Mapped[int] = mapped_column(Integer, default=1)
+    graph_route: Mapped[bool] = mapped_column(Boolean, default=False)
     prep_ready_at: Mapped[str] = mapped_column(String(40), default="")
     prep_reason: Mapped[str] = mapped_column(Text, default="")
 
@@ -65,6 +66,7 @@ class SprayStep(Record, Base):
     capability: Mapped[str] = mapped_column(String(24))
     color: Mapped[str] = mapped_column(String(128), default="")
     wait_hours: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=0)
+    predecessors: Mapped[list] = mapped_column(JSON, default=list)
     __table_args__ = (UniqueConstraint("line_id", "sequence"),)
 
 
@@ -77,6 +79,7 @@ class SprayResource(Record, Base):
     person_minutes: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     setup_hours: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=0)
     calendar: Mapped[list] = mapped_column(JSON, default=list)
+    shared_requirements: Mapped[list] = mapped_column(JSON, default=list)
     __table_args__ = (UniqueConstraint("factory_id", "name"),)
 
 
@@ -95,8 +98,8 @@ class SprayMovement(Record, Base):
     batch_id: Mapped[str] = mapped_column(ForeignKey("spray_batches.id"), index=True)
     event_id: Mapped[str] = mapped_column(String(64), index=True)
     kind: Mapped[str] = mapped_column(String(32))
-    from_state: Mapped[str] = mapped_column(String(128))
-    to_state: Mapped[str] = mapped_column(String(128))
+    from_state: Mapped[str] = mapped_column(Text)
+    to_state: Mapped[str] = mapped_column(Text)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     available_at: Mapped[str] = mapped_column(String(40), default="")
     reason: Mapped[str] = mapped_column(Text, default="")
@@ -114,8 +117,9 @@ class SprayTask(Record, Base):
     end_at: Mapped[str] = mapped_column(String(40))
     workers: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(24), default="planned")
-    input_state: Mapped[str] = mapped_column(String(128))
+    input_state: Mapped[str] = mapped_column(Text)
     duration_source: Mapped[str] = mapped_column(String(128))
+    shared_allocations: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class SprayScenario(Record, Base):
@@ -204,6 +208,7 @@ class SpraySettlement(Record, Base):
     currency: Mapped[str] = mapped_column(String(8))
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     status: Mapped[str] = mapped_column(String(24), default="confirmed")
+    adjustment_ids: Mapped[list] = mapped_column(JSON, default=list)
     __table_args__ = (UniqueConstraint("factory_id", "customer", "period", "currency"),)
 
 
@@ -270,6 +275,93 @@ class SprayOperation(Record, Base):
     payload_hash: Mapped[str] = mapped_column(String(64))
     result: Mapped[dict] = mapped_column(JSON)
     __table_args__ = (UniqueConstraint("factory_id", "operation_id"),)
+
+
+class SpraySharedResource(Record, Base):
+    __tablename__ = "spray_shared_resources"
+    name: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(20))
+    capacity: Mapped[int] = mapped_column(Integer)
+    calendar: Mapped[list] = mapped_column(JSON, default=list)
+    __table_args__ = (UniqueConstraint("factory_id", "kind", "name"),)
+
+
+class SprayPayroll(Record, Base):
+    __tablename__ = "spray_payrolls"
+    business_date: Mapped[str] = mapped_column(String(10), index=True)
+    shift: Mapped[str] = mapped_column(String(32))
+    currency: Mapped[str] = mapped_column(String(8))
+    policy_id: Mapped[str] = mapped_column(ForeignKey("spray_rates.id"))
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    status: Mapped[str] = mapped_column(String(24), default="confirmed")
+    __table_args__ = (UniqueConstraint("factory_id", "business_date", "shift", "currency"),)
+
+
+class SprayTaskAllocation(Record, Base):
+    __tablename__ = "spray_task_allocations"
+    task_id: Mapped[str] = mapped_column(ForeignKey("spray_tasks.id"), index=True)
+    shared_resource_id: Mapped[str] = mapped_column(ForeignKey("spray_shared_resources.id"), index=True)
+    quantity: Mapped[int] = mapped_column(Integer)
+    __table_args__ = (UniqueConstraint("task_id","shared_resource_id"), CheckConstraint("quantity > 0"))
+
+
+class SprayPayrollLine(Record, Base):
+    __tablename__ = "spray_payroll_lines"
+    payroll_id: Mapped[str] = mapped_column(ForeignKey("spray_payrolls.id"), index=True)
+    employee: Mapped[str] = mapped_column(String(128))
+    name: Mapped[str] = mapped_column(String(128))
+    regular_hours: Mapped[Decimal] = mapped_column(Numeric(12,6))
+    overtime_hours: Mapped[Decimal] = mapped_column(Numeric(12,6))
+    earned: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    guarantee: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    signed_difference: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    subsidy: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    payable: Mapped[Decimal] = mapped_column(Numeric(18,2))
+    source_lines: Mapped[list] = mapped_column(JSON)
+    __table_args__ = (UniqueConstraint("payroll_id","employee"),)
+
+
+class SprayHistoryFact(Record, Base):
+    __tablename__ = "spray_history_facts"
+    business_key: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    business_date: Mapped[str] = mapped_column(String(10), index=True)
+    document_no: Mapped[str] = mapped_column(String(128), index=True)
+    customer: Mapped[str] = mapped_column(String(128), default="")
+    product_no: Mapped[str] = mapped_column(String(128), default="")
+    part_name: Mapped[str] = mapped_column(String(128), default="")
+    values: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(24), default="active")
+    __table_args__ = (UniqueConstraint("factory_id", "business_key"),)
+
+
+class SprayHistoryLink(Record, Base):
+    __tablename__ = "spray_history_links"
+    fact_id: Mapped[str] = mapped_column(ForeignKey("spray_history_facts.id"), index=True)
+    import_row_id: Mapped[str] = mapped_column(ForeignKey("spray_import_rows.id"), index=True)
+    role: Mapped[str] = mapped_column(String(24))
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(24), default="active")
+
+
+class SprayPreference(Record, Base):
+    __tablename__ = "spray_preferences"
+    owner: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(24))
+    payload: Mapped[dict] = mapped_column(JSON)
+    __table_args__ = (UniqueConstraint("factory_id", "owner", "kind", "name"),)
+
+
+class SprayAdjustment(Record, Base):
+    __tablename__ = "spray_adjustments"
+    settlement_id: Mapped[str] = mapped_column(ForeignKey("spray_settlements.id"))
+    business_date: Mapped[str] = mapped_column(String(10))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    reason: Mapped[str] = mapped_column(Text)
+    document_no: Mapped[str] = mapped_column(String(128))
+    __table_args__ = (UniqueConstraint("factory_id", "document_no"),)
 
 
 # Composite foreign keys enforce the same factory even for direct SQL writers.

@@ -11,6 +11,8 @@ from app.services.auth import AuthContext, get_current_user, ensure_permission_i
 from app.services.spray_imports import store_source, apply_source, MAX_BYTES
 from app.services.spray_scheduling import suggest
 from app.services.spray_exports import EXPORTS, workbook_bytes
+from app.services import spray_advanced as advanced, spray_history as history
+from app.services import spray_templates as templates
 
 router = APIRouter(prefix="/api/spray-production", tags=["spray-production"])
 Db = Annotated[Session, Depends(get_db)]
@@ -23,6 +25,16 @@ s.ACTIONS["import-apply"] = apply_source
 s.ACTIONS["schedule-suggest"] = suggest
 PERMISSIONS["schedule-suggest"] = "plan"
 PERMISSIONS["price-set"] = "cost_write"
+for _action, _permission, _handler in [
+    ("shared-resources","master_write",advanced.create_shared),
+    ("resource-update","master_write",advanced.update_resource),
+    ("payroll-confirm","cost_write",advanced.close_payroll),
+    ("settlement-adjust","settlement",advanced.adjustment),
+    ("history-apply","import",history.apply), ("history-reverse","import",history.reverse),
+    ("opening","logistics",history.opening), ("preference-save","read",history.save_preference),
+]:
+    PERMISSIONS[_action]=_permission
+    s.ACTIONS[_action]=_handler
 
 
 def authorize(db, user, factory, permission="read"):
@@ -53,6 +65,13 @@ def command(action: str, db: Db, user: User, payload: Annotated[dict[str, Any], 
     factory = payload.get("factory_id")
     authorize(db, user, factory, PERMISSIONS[action])
     try:
+        if action in ("history-apply","history-reverse","opening","payroll-confirm","settlement-adjust"):
+            authorize(db,user,factory,"cost_read")
+        if action=="preference-save":
+            kind=payload.get("kind")
+            authorize(db,user,factory,{"report_draft":"report","schedule_draft":"plan","import_draft":"import","view":"read"}.get(kind,"read"))
+            if kind=="import_draft" or (kind=="report_draft" and payload.get("payload",{}).get("cost_data")):
+                authorize(db,user,factory,"cost_read")
         if action in ("reports", "report-correct") and any(v.get("rate_id") for v in s.rows(payload.get("lines"))):
             authorize(db, user, factory, "cost_write")
         if action == "orders" and any(v.get("price") not in (None, "") for v in s.rows(payload.get("lines"))):
@@ -75,8 +94,9 @@ COLLECTIONS = {"orders": m.SprayOrder, "lines": m.SprayOrderLine, "steps": m.Spr
                "batches": m.SprayBatch, "tasks": m.SprayTask, "reports": m.SprayReport, "report-lines": m.SprayReportLine,
                "shipments": m.SprayShipment, "shipment-lines": m.SprayShipmentLine, "returnables": m.SprayReturnable,
                "rates": m.SprayRate, "settlements": m.SpraySettlement, "purchases": m.SprayPurchase, "material-events": m.SprayMaterialEvent,
-               "imports": m.SprayImport}
-COST_COLLECTIONS = {"rates", "settlements", "purchases", "material-events", "imports"}
+               "imports": m.SprayImport, "shared-resources":m.SpraySharedResource,"payrolls":m.SprayPayroll,
+               "history-facts":m.SprayHistoryFact,"adjustments":m.SprayAdjustment,"payroll-lines":m.SprayPayrollLine}
+COST_COLLECTIONS = {"rates", "settlements", "purchases", "material-events", "imports", "payrolls", "payroll-lines", "history-facts", "adjustments"}
 
 
 def output(item, cost):
@@ -114,6 +134,48 @@ def summary(factory_id: str, db: Db, user: User):
     return {"factory_id": factory_id, "revision": s.revision(db, factory_id), "as_of": m.now(), "data_mode": "live",
             "coverage": "no_data" if counts["orders"] == 0 else "production_records", "counts": counts,
             "permissions": [p for p in set(PERMISSIONS.values()) | {"read", "cost_read", "export"} if has_permission_in_scope(user, "spray_production:" + p, factory_id, "production")]}
+
+
+@router.get("/preferences")
+def preferences(factory_id: str, db: Db, user: User):
+    authorize(db,user,factory_id)
+    values=db.scalars(select(m.SprayPreference).where(m.SprayPreference.factory_id==factory_id,m.SprayPreference.owner==user.id))
+    cost=cost_allowed(user,factory_id)
+    return {"items":[s.serial(v) for v in values if cost or (v.kind!="import_draft" and not v.payload.get("cost_data"))]}
+
+
+@router.post("/payroll/preview")
+def payroll_preview(db: Db, user: User, payload: Annotated[dict[str,Any],Body()]):
+    authorize(db,user,payload.get("factory_id"),"cost_read")
+    return advanced.payroll_preview(db,payload["factory_id"],payload)
+
+
+@router.post("/history/preview")
+def history_preview(db: Db, user: User, payload: Annotated[dict[str,Any],Body()]):
+    authorize(db,user,payload.get("factory_id"),"import")
+    authorize(db,user,payload.get("factory_id"),"cost_read")
+    return history.preview(db,payload["factory_id"],payload)
+
+
+@router.get("/history/reconcile")
+def history_reconcile(factory_id: str, db: Db, user: User, period: str=""):
+    authorize(db,user,factory_id,"cost_read")
+    return history.reconcile(db,factory_id,period)
+
+
+@router.get("/imports/{import_id}/mapping-suggestion")
+def mapping_suggestion(import_id:str,factory_id:str,sheet:str,db:Db,user:User):
+    authorize(db,user,factory_id,"cost_read")
+    authorize(db,user,factory_id,"import")
+    return history.suggest_mapping(db,factory_id,import_id,sheet)
+
+
+@router.get("/batches/{batch_id}/eligible")
+def eligible_steps(batch_id: str, factory_id: str, db: Db, user: User):
+    authorize(db,user,factory_id)
+    batch=s.find(db,m.SprayBatch,factory_id,batch_id)
+    return {"items":[{"state":state,"quantity":str(qty),"steps":[s.serial(v) for v in advanced.eligible(db,factory_id,batch.line_id,state)]}
+                     for state,qty in s.stock(db,factory_id,batch_id).items() if qty>0]}
 
 
 @router.get("/batches/{batch_id}/trace")
@@ -171,3 +233,20 @@ def import_rows(import_id: str, factory_id: str, db: Db, user: User, sheet: str 
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     return {"source": output(item, True), "sheets": names, "total": total,
             "rows": [s.serial(v) for v in db.scalars(query.order_by(m.SprayImportRow.sheet, m.SprayImportRow.row_number).offset((page - 1) * page_size).limit(page_size))]}
+
+
+@router.get("/imports/{import_id}/template")
+def historical_template(import_id:str,factory_id:str,db:Db,user:User):
+    authorize(db,user,factory_id,"cost_read")
+    authorize(db,user,factory_id,"export")
+    source=s.find(db,m.SprayImport,factory_id,import_id)
+    return Response(templates.patch_workbook(source,templates.history_patches(db,factory_id,source)),media_type="application/octet-stream")
+
+
+@router.post("/imports/{import_id}/render")
+def render_template(import_id:str,db:Db,user:User,payload:Annotated[dict[str,Any],Body()]):
+    factory=payload.get("factory_id")
+    authorize(db,user,factory,"cost_read")
+    authorize(db,user,factory,"export")
+    source=s.find(db,m.SprayImport,factory,import_id)
+    return Response(templates.render(db,factory,source,payload),media_type="application/octet-stream")

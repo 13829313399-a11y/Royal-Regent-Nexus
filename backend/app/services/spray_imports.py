@@ -1,6 +1,8 @@
 """Sparse, non-executing workbook inspection. Imports default to historical evidence."""
 from io import BytesIO
 from hashlib import sha256
+import re
+from decimal import Decimal
 import posixpath
 from zipfile import ZipFile, BadZipFile
 from xml.etree import ElementTree as ET
@@ -16,6 +18,16 @@ NS = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 MAX_BYTES = 20 * 1024 * 1024
 
 
+def identifier_display(value, number_format):
+    """Retain identifier zero padding without guessing accounting/date formats."""
+    if not re.fullmatch(r'0{2,}', number_format or ''):return None
+    try:
+        number=Decimal(str(value))
+        if number.is_finite() and number>=0 and number==number.to_integral_value():return str(int(number)).zfill(len(number_format))
+    except ArithmeticError:pass
+    return None
+
+
 def parse_source(content):
     if len(content) > MAX_BYTES:
         fail("单文件最大 20 MB")
@@ -23,7 +35,7 @@ def parse_source(content):
         return "PDF", [{"sheet": "原始扫描凭证", "row_number": 1, "cells": {"A1": {"raw_value": "扫描文件，须人工数字化后确认；没有自动产生业务数量"}}, "role": "document"}]
     if content.startswith(bytes.fromhex("D0CF11E0A1B11AE1")):
         import xlrd
-        workbook = xlrd.open_workbook(file_contents=content, on_demand=True)
+        workbook = xlrd.open_workbook(file_contents=content, on_demand=True, formatting_info=True)
         result = []
         for sheet in workbook.sheets():
             if sheet.nrows * max(sheet.ncols, 1) > 2000000:
@@ -38,6 +50,10 @@ def parse_source(content):
                     value = cell.value
                     cells[address] = {"raw_value": value, "cached_value": value, "formula_type": "biff_cache_only",
                                       "validation_status": "cached_error" if cell.ctype == xlrd.XL_CELL_ERROR else "unverified_formula"}
+                    xf=workbook.xf_list[sheet.cell_xf_index(ri,ci)]
+                    fmt=workbook.format_map.get(xf.format_key)
+                    display=identifier_display(value,fmt.format_str if fmt else '')
+                    if display is not None:cells[address]['display_value']=display
                     if cell.ctype == xlrd.XL_CELL_DATE:
                         cells[address]["normalized_value"] = xlrd.xldate_as_datetime(value, workbook.datemode).isoformat()
                 if cells:
@@ -57,11 +73,12 @@ def parse_source(content):
         properties = workbook.find('s:workbookPr', NS)
         date1904 = properties is not None and properties.attrib.get('date1904') in ('1', 'true')
         epoch = CALENDAR_MAC_1904 if date1904 else CALENDAR_WINDOWS_1900
-        date_styles = set()
+        date_styles = set(); style_formats={}
         if 'xl/styles.xml' in archive.namelist():
             styles = ET.fromstring(archive.read('xl/styles.xml'))
             formats = {**BUILTIN_FORMATS, **{int(v.attrib['numFmtId']): v.attrib['formatCode'] for v in styles.findall('s:numFmts/s:numFmt', NS)}}
             date_styles = {str(i) for i, v in enumerate(styles.findall('s:cellXfs/s:xf', NS)) if is_date_format(formats.get(int(v.attrib.get('numFmtId', '0')), 'General'))}
+            style_formats={str(i):formats.get(int(v.attrib.get('numFmtId','0')),'General') for i,v in enumerate(styles.findall('s:cellXfs/s:xf',NS))}
         relations = {r.attrib["Id"]: r.attrib["Target"] for r in ET.fromstring(archive.read("xl/_rels/workbook.xml.rels")) if r.attrib.get("TargetMode") != "External"}
         result = []
         for sheet in workbook.findall("s:sheets/s:sheet", NS):
@@ -87,6 +104,9 @@ def parse_source(content):
                     if value is None and formula is None:
                         continue
                     entry = {"raw_value": value, "cached_value": value, "cell_type": kind, "style_id": cell.attrib.get("s"), "validation_status": "cached_error" if kind == "e" else "review"}
+                    if kind=='n':
+                        display=identifier_display(value,style_formats.get(cell.attrib.get('s'),''))
+                        if display is not None:entry['display_value']=display
                     if kind == 'n' and cell.attrib.get('s') in date_styles and value is not None:
                         try:
                             entry['normalized_value'] = from_excel(float(value), epoch).isoformat()
