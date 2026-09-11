@@ -43,6 +43,10 @@ export interface ThreeDProduct {
 }
 
 export interface ThreeDPrinter {
+  nozzle_target?: number
+  bed_target?: number
+  layer_num?: number
+  total_layers?: number
   status_stale?: boolean
   id: string
   factory_id: 'huakang-a'
@@ -64,6 +68,7 @@ export interface ThreeDPrinter {
 }
 
 export interface ThreeDProductionRecord {
+  product_image_url?: string
   run_status?: string
   reconciliation_status?: string
   source_system: string

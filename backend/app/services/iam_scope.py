@@ -27,6 +27,8 @@ VALID_ACCESS_KINDS = {READ_ACCESS_KIND, OPERATE_ACCESS_KIND}
 READ_PERMISSION_CODES = frozenset(
     {
         "injection_scheduling:read",
+        "spray_production:read",
+        "spray_production:cost_read",
         "molding_sample:read",
         "molding_sample:cross_factory_read",
         "molding_sample:cross_factory_cost_read",

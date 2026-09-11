@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ArrowUpRight, Plus } from '@lucide/vue'
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { sprayProductionApi, type SpraySummary } from '@/api/sprayProduction'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   departmentMap,
@@ -26,6 +27,9 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const spraySummary = ref<SpraySummary | null>(null)
+const spraySummaryState = ref('进入查看本厂记录')
+let spraySummaryRequest = 0
 
 const currentDepartmentId = computed<ModuleDepartmentId>(() => {
   const department = String(route.params.department ?? '')
@@ -55,6 +59,15 @@ const visibleModules = computed(() => {
     })
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
+
+    if (module.id === 'spray-production') {
+      const live = spraySummary.value?.factory_id === appStore.activeFactoryId ? spraySummary.value : null
+      return { ...scopedModule, stats: live ? `正在执行 ${live.counts.running} · 已排待开工 ${live.counts.planned}` : spraySummaryState.value,
+        statusMetrics: live ? [
+          { label: '执行工单', value: String(live.counts.orders), tone: 'teal' as const },
+          { label: '正在执行', value: String(live.counts.running), tone: 'blue' as const },
+        ] : [] }
+    }
 
     if (currentDepartmentId.value === 'engineering' && module.id === 'molding-sample') {
       return {
@@ -92,6 +105,17 @@ const visibleModules = computed(() => {
 
 const featuredModule = computed(() => visibleModules.value[0] ?? null)
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
+
+watch(() => [currentDepartmentId.value, appStore.activeFactoryId], async () => {
+  const request = ++spraySummaryRequest
+  spraySummary.value = null
+  const factory = appStore.activeFactoryId
+  if (currentDepartmentId.value !== 'production' || !['huaxing', 'huakang-a', 'huakang-b', 'huadeng'].includes(factory)) return
+  if (!authStore.canAny(['spray_production:read'], factory, 'production')) { spraySummaryState.value = '本厂业务统计未授权'; return }
+  spraySummaryState.value = '正在读取本厂业务统计'
+  try { const result = await sprayProductionApi.summary(factory); if (request === spraySummaryRequest) spraySummary.value = result }
+  catch { if (request === spraySummaryRequest) spraySummaryState.value = '统计暂不可用，进入工作区重试' }
+}, { immediate: true })
 
 watch(currentDepartmentId, (departmentId) => {
   appStore.setActiveDepartment(departmentId)

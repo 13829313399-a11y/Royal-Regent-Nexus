@@ -318,6 +318,10 @@ def update_legacy_row(db, batch, row, demand, evidence, actor):
 
 def preview(db, factory, content, file_name, sheet, actor, mapping=None):
     parsed = parse_plan(content, sheet, mapping)
+    if parsed.get("unified") and parsed["unified"]["factory_id"] != factory:
+        raise HTTPException(
+            422, "统一模板 B3 厂区与当前系统厂区不一致，请切换到正确厂区"
+        )
     if parsed.get("exchange") and parsed["exchange"].get("factory_id") != factory:
         raise HTTPException(422, "交换表厂区与当前厂区不一致")
     existing = db.scalar(
@@ -330,6 +334,23 @@ def preview(db, factory, content, file_name, sheet, actor, mapping=None):
     )
     if existing:
         return existing
+    if parsed.get("unified"):
+        from .unified_import import preview_summary
+
+        batch = ImportBatch(
+            factory_id=factory,
+            file_name=file_name,
+            file_sha256=parsed["sha256"],
+            sheet_name=sheet,
+            parser_version=PARSER_VERSION,
+            summary=jsonable(preview_summary(db, factory, parsed)),
+            evidence=jsonable(parsed),
+            status="PREVIEW",
+        )
+        touch(batch, actor)
+        db.add(batch)
+        db.flush()
+        return batch
     old = {} if parsed.get("exchange") else candidate_index(db, factory)
     conflicts, updates, creates = [], 0, 0
     for row in parsed["demands"]:
@@ -393,6 +414,10 @@ def apply_batch(db, batch, actor, choices=None, skip_rows=()):
             "recalculate_required": False,
             "changed_runs": [],
         }
+    if batch.evidence.get("unified"):
+        from .unified_import import apply_unified
+
+        return apply_unified(db, batch, actor, skip_rows)
     if batch.evidence.get("exchange"):
         from .exchange import apply_exchange
 

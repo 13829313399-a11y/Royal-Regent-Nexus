@@ -70,7 +70,9 @@ class NetworkHealthReport(BaseModel):
 def _status(payload):
     if payload.tunnel != "ok":
         return "unreachable"
-    if payload.exposure != "ok" or any(
+    # Windows Tailscale gateways have no Linux nftables snapshot. Missing
+    # exposure evidence is not evidence of a failed route or TLS connection.
+    if payload.exposure == "unsafe" or any(
         getattr(p, "mqtt" if payload.probe_level == "mqtt" else "tls") != "ok"
         for p in payload.printers
     ):

@@ -711,12 +711,21 @@ def move(db, payload, actor, as_of=None):
     return public_result(result)
 
 
-def import_original_assignments(db, factory, assignments, actor):
+def import_original_assignments(
+    db, factory, assignments, actor, *, replace_demand_ids=(), strict=False, as_of=None
+):
     snap = snapshot(db, factory)
     machines = {m["id"]: m for m in snap["machines"]}
     demands = {d["id"]: d for d in snap["demands"]}
     queues = {m: [] for m in machines}
-    for run in snap["runs"]:
+    replacements = set(replace_demand_ids)
+    for run in sorted(snap["runs"], key=lambda r: (r["sequence"], r["id"])):
+        if replacements.intersection(run["demand_ids"]):
+            if run["status"] != "PLANNED" or not set(run["demand_ids"]) <= replacements:
+                raise HTTPException(
+                    409, "导入涉及已开工或合并了其他需求的批次，请先在系统核对"
+                )
+            continue
         queues[run["machine_id"]].append(run)
     issues = []
     for item in assignments:
@@ -733,6 +742,7 @@ def import_original_assignments(db, factory, assignments, actor):
                 if a["master_id"] == d["mold_master_id"]
                 and a["current_factory_id"] == factory
                 and a["status"] == "AVAILABLE"
+                and (not item.get("mold_asset_id") or a["id"] == item["mold_asset_id"])
             ),
             None,
         )
@@ -744,6 +754,7 @@ def import_original_assignments(db, factory, assignments, actor):
                     "demand_id": d["id"],
                     "reason_code": reason,
                     "reason_text": REASONS.get(reason, reason),
+                    "source_row": item["source_row"],
                 }
             )
             continue
@@ -759,7 +770,15 @@ def import_original_assignments(db, factory, assignments, actor):
                 "manual_oversize": True,
             }
         )
-    as_of = (
+    if strict and issues:
+        raise HTTPException(
+            422,
+            "；".join(
+                f"第 {i['source_row']} 行原排机未保存：{i['reason_text']}"
+                for i in issues
+            ),
+        )
+    as_of = as_of or (
         min(
             (
                 timestamp(a["legacy_start"])

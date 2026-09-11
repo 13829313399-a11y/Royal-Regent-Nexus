@@ -273,6 +273,10 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
                 : '已保存并重算'
       if (result.summary?.conflicts?.length)
         notice.value = `已处理无冲突内容；${result.summary.conflicts.length} 项冲突仍待处理`
+      if (result.unified_import)
+        notice.value = result.summary?.applied_count
+          ? `导入完成；已按表记录 ${result.restored_assignment_count} 条机台安排，等待实际开工`
+          : '导入完成，内容没有变化'
       dirty.value = false
       busy.value = false
       await refresh()

@@ -1,0 +1,11 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import EntryForm from '../components/EntryForm.vue'
+import { useSprayWorkspace, str, amount } from '../workspace'
+const s=useSprayWorkspace(),selected=ref(''),formKey=ref(0)
+const held=computed(()=>Object.keys(s.balances[selected.value]??{}).filter(k=>(k.startsWith('held:')||k==='receipt-held'||k==='return-held')&&Number(s.balances[selected.value]?.[k])>0).map(value=>({value,label:s.stateName(value)+' · '+amount(s.balances[selected.value]?.[value])})))
+async function disposition(v:Record<string,string>){const result=await s.command('quality',{...v,batch_id:selected.value});if(result)formKey.value++}
+</script>
+<template><div class="spray-toolbar"><div><h2>在制与质量</h2><p>每个部件在哪里，等待谁处理；返工沿用同一批次。</p></div></div><div class="spray-table-wrap"><table class="spray-table"><thead><tr><th>实体批次</th><th>状态与数量</th><th>处置</th></tr></thead><tbody><tr v-for="b in s.items('batches')" :key="b.id"><td><strong>{{ s.lineLabel(s.find('lines',b.line_id)) }}</strong>{{ b.document_no }} / {{ b.source_line }}</td><td><div class="spray-actions"><span v-for="([key,qty]) in Object.entries(s.balances[b.id]??{}).filter(([,q])=>Number(q)!==0)" :key="key" class="spray-pill" :class="{warn:key.includes('held')||key.includes('rework')}">{{ s.stateName(key) }} {{ amount(qty) }}</span></div></td><td><button class="spray-pill" @click="selected=b.id;s.selection=b.id">检查与处置</button></td></tr></tbody></table></div><p v-if="!s.items('batches').length" class="spray-empty">尚无已登记来料批次；不会推算历史期初余额。</p>
+  <section v-if="selected && s.can('quality')" class="spray-panel mt-5"><h3 class="font-semibold mb-4">质量处置 · {{ s.batchLabel(s.find('batches',selected)) }}</h3><EntryForm :key="selected+formKey" :fields="[{key:'source_state',label:'待判状态',options:held},{key:'disposition',label:'处置结果',options:[{value:'release',label:'合格放行'},{value:'rework',label:'转返工'},{value:'scrap',label:'报废'},{value:'reject',label:'拒收'}]},{key:'quantity',label:'本次处置数量',type:'decimal'},{key:'step_id',label:'退货返工工序',optional:true,options:s.items('steps').filter(t=>t.line_id===s.find('batches',selected)?.line_id).map(t=>({value:t.id,label:str(t,'name')}))},{key:'reason',label:'问题、责任与处置依据',type:'textarea'}]" :busy="s.busy" submit-label="确认本次处置" @submit="disposition" /></section>
+</template>

@@ -1,3 +1,4 @@
+import { createRandomUuid } from "@/lib/randomUuid";
 import {
   Activity,
   Archive,
@@ -44,6 +45,9 @@ import type {
 export function useWorkspace() {
   type TabId =
     | "overview"
+    | "machines"
+    | "warehouse"
+    | "reports"
     | "records"
     | "products"
     | "materials"
@@ -55,13 +59,16 @@ export function useWorkspace() {
 
   const FACTORY_ID = "huakang-a" as const;
   const allTabs: { id: TabId; label: string; icon: typeof Printer }[] = [
-    { id: "overview", label: "打印机看板", icon: Printer },
-    { id: "records", label: "生产记录", icon: Activity },
-    { id: "products", label: "产品与图片", icon: ImagePlus },
-    { id: "materials", label: "物料与仓库", icon: Boxes },
-    { id: "schedules", label: "生产计划", icon: CalendarDays },
-    { id: "maintenance", label: "维护记录", icon: Wrench },
-    { id: "audit", label: "设置与审计", icon: ShieldCheck },
+    { id: "overview", label: "仪表盘", icon: Activity },
+    { id: "machines", label: "机器状态", icon: Printer },
+    { id: "warehouse", label: "材料仓库", icon: Archive },
+    { id: "reports", label: "报表导出", icon: Download },
+    { id: "records", label: "每日记录", icon: Activity },
+    { id: "products", label: "产品库", icon: ImagePlus },
+    { id: "materials", label: "材料管理", icon: Boxes },
+    { id: "schedules", label: "排期表", icon: CalendarDays },
+    { id: "maintenance", label: "维修记录", icon: Wrench },
+    { id: "audit", label: "设置", icon: ShieldCheck },
     { id: "migration", label: "历史数据迁移", icon: History },
     { id: "operations", label: "生产协同", icon: Activity },
   ];
@@ -84,8 +91,8 @@ export function useWorkspace() {
   const dashboard = ref<ThreeDDashboard | null>(null);
   const auditEvents = ref<ThreeDAuditEvent[]>([]);
   const deletedRecords = ref<ThreeDProductionRecord[]>([]);
-  const recordRequestKey = ref(crypto.randomUUID());
-  const stockRequestKey = ref(crypto.randomUUID());
+  const recordRequestKey = ref(createRandomUuid());
+  const stockRequestKey = ref(createRandomUuid());
   const loading = ref(false);
   const saving = ref(false);
   const errorMessage = ref("");
@@ -414,7 +421,7 @@ export function useWorkspace() {
   }
 
   function resetRecordForm() {
-    recordRequestKey.value = crypto.randomUUID();
+    recordRequestKey.value = createRandomUuid();
     Object.assign(recordForm, {
       reason: "",
       allow_negative_stock: false,
@@ -443,7 +450,7 @@ export function useWorkspace() {
       allow_negative_stock: false,
       history_only_correction: false,
     });
-    recordRequestKey.value = crypto.randomUUID();
+    recordRequestKey.value = createRandomUuid();
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -479,6 +486,7 @@ export function useWorkspace() {
       "记录已保存，请核对记录中的扣料状态",
     );
     if (ok) resetRecordForm();
+    return ok;
   }
 
   async function removeRecord(record: ThreeDProductionRecord) {
@@ -650,7 +658,7 @@ export function useWorkspace() {
         }),
       "入库已登记",
     );
-    if (ok) stockRequestKey.value = crypto.randomUUID();
+    if (ok) stockRequestKey.value = createRandomUuid();
     if (ok)
       Object.assign(stockInForm, {
         business_date: todayText(),
@@ -858,7 +866,10 @@ export function useWorkspace() {
   async function exportWorkbook() {
     saving.value = true;
     try {
-      const blob = await threeDPrintingApi.exportWorkbook();
+      const blob = await threeDPrintingApi.exportWorkbook(
+        dateFrom.value,
+        dateTo.value,
+      );
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -874,6 +885,10 @@ export function useWorkspace() {
   }
 
   watch(activeTab, (tab) => {
+    if (!["records", "overview", "reports"].includes(tab)) {
+      dateFrom.value = "";
+      dateTo.value = "";
+    }
     if (tab === "audit") void loadAudit();
     if (["products", "records", "schedules", "maintenance"].includes(tab))
       void loadPage(tab);
@@ -897,11 +912,7 @@ export function useWorkspace() {
     if (disposed) return;
     live.start();
     refreshTimer = window.setInterval(() => {
-      if (
-        !saving.value &&
-        ((!live.connected.value && activeTab.value === "overview") ||
-          liveRefreshPending)
-      ) {
+      if (!saving.value && (!live.connected.value || liveRefreshPending)) {
         liveRefreshPending = false;
         void loadDashboard(true);
       }

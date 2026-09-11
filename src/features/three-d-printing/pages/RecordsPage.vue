@@ -1,116 +1,226 @@
 <script setup lang="ts">
+import { computed, onMounted, ref } from "vue";
 import ProductPicker from "../components/ProductPicker.vue";
-import { computed, ref, watch, nextTick } from "vue";
 import PageControls from "../components/PageControls.vue";
-import DataQualityBadge from "../components/DataQualityBadge.vue";
+import LegacyPrinterGrid from "../components/LegacyPrinterGrid.vue";
+import LegacyDialog from "../components/LegacyDialog.vue";
 import { useWorkspaceContext } from "../context";
+import type {
+  ThreeDDashboard,
+  ThreeDProductionRecord,
+} from "@/types/threeDPrinting";
 const {
-  listPages,
-  loadPage,
   dashboard,
   saving,
-  dateFrom,
-  dateTo,
   canOperate,
   canReadAudit,
+  canExport,
   recordForm,
+  listPages,
+  loadPage,
+  dateFrom,
+  dateTo,
   loadDashboard,
+  todayText,
   chooseRecordProduct,
   resetRecordForm,
   editRecord,
   submitRecord,
   removeRecord,
   toggleDayOff,
+  exportWorkbook,
+  money,
   Save,
 } = useWorkspaceContext();
-const runLabels: Record<string, string> = {
-  pending: "待处理",
-  running: "打印中",
-  paused: "暂停",
-  succeeded: "完成",
-  failed: "失败",
-  cancelled: "取消",
-  unknown: "待核对",
+const day = ref(todayText()),
+  showForm = ref(false);
+const stats = computed(
+  () =>
+    (dashboard.value?.summary.legacyDisplay ||
+      dashboard.value?.summary ||
+      {}) as ThreeDDashboard["summary"],
+);
+async function loadDay() {
+  dateFrom.value = day.value;
+  dateTo.value = day.value;
+  await loadDashboard();
+}
+onMounted(loadDay);
+function add() {
+  resetRecordForm();
+  recordForm.business_date = day.value;
+  showForm.value = true;
+}
+function edit(r: ThreeDProductionRecord) {
+  editRecord(r);
+  recordForm.history_only_correction = !!r.legacy_id;
+  showForm.value = true;
+}
+async function save() {
+  recordForm.reason ||= recordForm.id ? "编辑生产记录" : "新增生产记录";
+  if (await submitRecord()) showForm.value = false;
+}
+async function dayOff() {
+  recordForm.business_date = day.value;
+  await toggleDayOff();
+}
+const statusNames: Record<string, string> = {
+  running: "生产",
+  done: "完成",
+  fault: "故障",
+  idle: "空闲",
 };
-const reconciliationLabels: Record<string, string> = {
-  none: "无需对账",
-  pending: "待对账",
-  resolved: "已对账",
-};
-const scrollTop = ref(0);
-const scroller = ref<HTMLElement | null>(null);
-const rowHeight = 120;
-const start = computed(() =>
-  Math.max(0, Math.floor(scrollTop.value / rowHeight) - 3),
-);
-const windowedRecords = computed(
-  () => dashboard.value?.records.slice(start.value, start.value + 12) ?? [],
-);
-watch(
-  () => dashboard.value?.records.map((r) => r.id).join(","),
-  () => {
-    scrollTop.value = 0;
-    nextTick(() => {
-      if (scroller.value) scroller.value.scrollTop = 0;
-    });
-  },
-);
+const amount = (r: ThreeDProductionRecord, key: string) =>
+  r.frozen_totals[key] == null ? "—" : money(r.frozen_totals[key]);
+const image = (r: ThreeDProductionRecord) =>
+  r.product_image_url ||
+  dashboard.value?.products.find((p) => p.id === r.product_id)?.image_url;
+const time = (s: string) =>
+  s
+    ? new Date(s).toLocaleTimeString("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "—";
 </script>
 <template>
-  <template v-if="dashboard">
-    <section class="space-y-5">
-      <form
-        class="collection-filters flex flex-wrap gap-3 rounded-xl border bg-white p-3"
-        @submit.prevent="loadPage('records')"
+  <section v-if="dashboard" class="space-y-5">
+    <form class="legacy-toolbar" @submit.prevent="loadDay">
+      <strong>日期：</strong
+      ><input v-model="day" type="date" aria-label="生产日期" required /><button
+        class="action-button"
       >
-        <input
-          v-model="listPages.records!.q"
-          placeholder="搜索名称 / 客户 / 材料"
-          class="rounded border p-2"
-        /><input
-          v-model.number="listPages.records!.machine_no"
-          type="number"
-          min="0"
-          max="11"
-          aria-label="机号（0为全部）"
-          class="w-20 rounded border"
-        /><select v-model="listPages.records!.state">
-          <option value="">全部运行状态</option>
-          <option value="running">运行</option>
-          <option value="paused">暂停</option>
-          <option value="succeeded">完成</option>
-          <option value="failed">失败</option>
-          <option value="unknown">未知</option></select
-        ><select v-model="listPages.records!.quality">
-          <option value="">全部质量</option>
-          <option value="pending">待对账</option>
-          <option value="flags">有质量标记</option></select
-        ><input
-          v-model="listPages.records!.customer"
-          placeholder="筛选客户"
-          aria-label="筛选客户"
-        /><input
-          v-model="listPages.records!.material"
-          placeholder="筛选材料"
-          aria-label="筛选材料"
-        /><select v-model="listPages.records!.source" aria-label="筛选来源">
-          <option value="">全部来源</option>
-          <option value="legacy">旧系统</option>
-          <option value="cloud-connector">云端连接器</option>
-          <option value="nexus">云端手工</option></select
-        ><button type="submit" class="rounded border px-4">查询</button>
-      </form>
+        加载</button
+      ><button
+        v-if="canOperate"
+        type="button"
+        class="action-button green"
+        @click="add"
+      >
+        + 添加记录</button
+      ><button
+        v-if="canExport"
+        type="button"
+        class="action-button secondary"
+        @click="exportWorkbook"
+      >
+        导出 Excel</button
+      ><button
+        v-if="canOperate"
+        type="button"
+        class="action-button secondary ml-auto"
+        @click="dayOff"
+      >
+        {{
+          dashboard.day_off_dates.includes(day) ? "恢复生产日" : "标记为休息日"
+        }}
+      </button>
+    </form>
+    <LegacyPrinterGrid />
+    <div class="panel-card">
+      <div class="legacy-panel-head">
+        <h2>
+          {{ day
+          }}{{ dashboard.day_off_dates.includes(day) ? "（休息日）" : "" }}
+        </h2>
+        <span
+          >产值：{{ money(stats.revenue) }} | 支出：{{
+            money(stats.totalCost)
+          }}
+          | 结余：{{ money(stats.balance) }}</span
+        >
+      </div>
+      <div class="table-wrap">
+        <table class="legacy-record-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>机台</th>
+              <th>机型</th>
+              <th>状态</th>
+              <th>产品</th>
+              <th>图片</th>
+              <th>客户</th>
+              <th>材料</th>
+              <th>料重(g)</th>
+              <th>数量</th>
+              <th>耗时(h)</th>
+              <th>材料成本</th>
+              <th>设计费</th>
+              <th>报价</th>
+              <th>备注</th>
+              <th>入库时间</th>
+              <th v-if="canOperate">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(r, index) in dashboard.records" :key="r.id">
+              <td>{{ (listPages.records!.page - 1) * 50 + index + 1 }}</td>
+              <td>#{{ r.machine_no }}</td>
+              <td>
+                {{
+                  dashboard.printers.find((p) => p.machine_no === r.machine_no)
+                    ?.model || "Bambu"
+                }}
+              </td>
+              <td>
+                <span class="tag">{{ statusNames[r.status] || r.status }}</span>
+              </td>
+              <td class="record-product">
+                <span v-if="r.auto_record" class="tag auto">自动</span
+                >{{ r.product_name || "—" }}
+              </td>
+              <td>
+                <a
+                  v-if="image(r)"
+                  :href="image(r)"
+                  target="_blank"
+                  rel="noopener"
+                  ><img
+                    :src="image(r)"
+                    :alt="r.product_name"
+                    loading="lazy"
+                    class="record-image"
+                /></a>
+              </td>
+              <td>{{ r.customer || "—" }}</td>
+              <td>{{ r.material_name || "—" }}</td>
+              <td>{{ r.weight_g || "—" }}</td>
+              <td>{{ r.quantity }}</td>
+              <td>{{ r.duration_hours || "—" }}</td>
+              <td>{{ amount(r, "materialCost") }}</td>
+              <td>{{ money(r.design_fee) }}</td>
+              <td>{{ amount(r, "revenue") }}</td>
+              <td class="record-remark">{{ r.remark }}</td>
+              <td>{{ time(r.created_at || r.print_start_at) }}</td>
+              <td v-if="canOperate">
+                <div class="row-actions">
+                  <button @click="edit(r)">编辑</button
+                  ><button class="danger" @click="removeRecord(r)">删除</button>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!dashboard.records.length">
+              <td colspan="17" class="p-8 text-center">
+                暂无记录，点击“+ 添加记录”开始
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <PageControls
         :page="listPages.records!.page"
         :total="listPages.records!.total"
         :busy="listPages.records!.busy"
         @change="loadPage('records', $event)"
       />
-      <form
-        v-if="canOperate"
-        class="panel-card p-5"
-        @submit.prevent="submitRecord"
-      >
+    </div>
+    <LegacyDialog
+      v-if="showForm"
+      :title="recordForm.id ? '编辑生产记录' : '添加生产记录'"
+      @close="showForm = false"
+    >
+      <form v-if="canOperate" class="panel-card p-5" @submit.prevent="save">
         <div class="section-heading">
           <div>
             <h2>{{ recordForm.id ? "编辑生产记录" : "新增生产记录" }}</h2>
@@ -120,7 +230,7 @@ watch(
             v-if="recordForm.id"
             class="action-button secondary"
             type="button"
-            @click="resetRecordForm"
+            @click="showForm = false"
           >
             取消编辑
           </button>
@@ -197,9 +307,9 @@ watch(
             >备注<input v-model="recordForm.remark" maxlength="4000"
           /></label>
           <label class="md:col-span-2"
-            >修改/批准原因<input
+            >备注说明<input
               v-model="recordForm.reason"
-              :required="!!recordForm.id || recordForm.allow_negative_stock"
+              :required="recordForm.allow_negative_stock"
               maxlength="1000"
           /></label>
           <label v-if="canReadAudit"
@@ -208,18 +318,6 @@ watch(
               type="checkbox"
             />主管明确批准本次负库存</label
           >
-          <label v-if="recordForm.id && canReadAudit"
-            ><input
-              v-model="recordForm.history_only_correction"
-              type="checkbox"
-            />迁移记录仅修正历史，不重放期初库存</label
-          >
-          <p v-if="recordForm.id" class="md:col-span-2 text-sm text-amber-800">
-            原扣料按流水冲销，新耗料
-            {{
-              recordForm.weight_g * recordForm.quantity
-            }}g；缺料时不扣减。迁移历史仅纠错，不重放库存。成本纠错沿用原费率，换材料后成本待核实。
-          </p>
         </div>
         <button class="action-button mt-4" type="submit" :disabled="saving">
           <Save class="size-4" />{{ saving ? "保存中…" : "保存记录" }}</button
@@ -232,167 +330,6 @@ watch(
           设置/恢复当日休息日
         </button>
       </form>
-      <div class="panel-card p-5">
-        <div class="section-heading">
-          <div>
-            <h2>历史生产记录</h2>
-            <p>旧系统记录、自动记录与云端新增记录统一保留。</p>
-          </div>
-          <div class="flex gap-2">
-            <input v-model="dateFrom" class="compact-input" type="date" /><input
-              v-model="dateTo"
-              class="compact-input"
-              type="date"
-            /><button
-              class="action-button secondary"
-              type="button"
-              @click="loadDashboard()"
-            >
-              筛选
-            </button>
-          </div>
-        </div>
-        <div
-          ref="scroller"
-          class="table-wrap max-h-[600px]"
-          @scroll="scrollTop = ($event.target as HTMLElement).scrollTop"
-        >
-          <table>
-            <thead>
-              <tr>
-                <th>日期</th>
-                <th>机台</th>
-                <th>产品</th>
-                <th>客户</th>
-                <th>材料</th>
-                <th>数量</th>
-                <th>时间</th>
-                <th>来源</th>
-                <th v-if="canOperate">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="start" aria-hidden="true">
-                <td
-                  :colspan="9"
-                  :style="{ height: `${start * rowHeight}px`, padding: 0 }"
-                ></td>
-              </tr>
-              <tr
-                style="height: 120px"
-                v-for="record in windowedRecords"
-                :key="record.id"
-              >
-                <td>
-                  <div class="record-cell">{{ record.business_date }}</div>
-                </td>
-                <td>
-                  <div class="record-cell">{{ record.machine_no }}号</div>
-                </td>
-                <td>
-                  <div class="record-cell">
-                    <strong>{{
-                      record.product_name || record.gcode_file || "—"
-                    }}</strong
-                    ><small>{{ record.remark }}</small
-                    ><DataQualityBadge
-                      :flags="record.data_quality_flags"
-                    /><small
-                      >{{ runLabels[record.run_status || "unknown"] }} ·
-                      {{
-                        reconciliationLabels[
-                          record.reconciliation_status || "pending"
-                        ] || "待核对"
-                      }}</small
-                    >
-                  </div>
-                </td>
-                <td>
-                  <div class="record-cell">{{ record.customer || "—" }}</div>
-                </td>
-                <td>
-                  <div class="record-cell">
-                    {{ record.material_name || "—"
-                    }}<small
-                      :class="
-                        record.material_status === 'material_shortage'
-                          ? 'text-rose-700'
-                          : ''
-                      "
-                      >{{
-                        record.material_status === "material_shortage"
-                          ? "缺料 · 未扣库存"
-                          : record.inventory_consumed
-                            ? "已扣料"
-                            : "未扣料 / 历史凭证"
-                      }}</small
-                    ><small
-                      v-if="
-                        record.data_quality_flags.includes(
-                          'negative_inventory_approved',
-                        )
-                      "
-                      class="text-rose-700"
-                      >主管批准负库存 · 请补料</small
-                    >
-                  </div>
-                </td>
-                <td>
-                  <div class="record-cell">{{ record.quantity }}</div>
-                </td>
-                <td>
-                  <div class="record-cell">{{ record.duration_hours }}h</div>
-                </td>
-                <td>
-                  <div class="record-cell">
-                    <span class="tag">{{
-                      record.auto_record
-                        ? "设备自动"
-                        : record.legacy_id
-                          ? "旧系统"
-                          : "云端手工"
-                    }}</span>
-                  </div>
-                </td>
-                <td v-if="canOperate">
-                  <div class="record-cell">
-                    <div class="row-actions">
-                      <button type="button" @click="editRecord(record)">
-                        编辑</button
-                      ><button
-                        class="danger"
-                        type="button"
-                        @click="removeRecord(record)"
-                      >
-                        撤销
-                      </button>
-                    </div>
-                  </div>
-                </td>
-              </tr>
-              <tr
-                v-if="dashboard.records.length > start + 12"
-                aria-hidden="true"
-              >
-                <td
-                  :colspan="9"
-                  :style="{
-                    height: `${(dashboard.records.length - start - 12) * rowHeight}px`,
-                    padding: 0,
-                  }"
-                ></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-  </template>
+    </LegacyDialog>
+  </section>
 </template>
-
-<style scoped>
-.record-cell {
-  max-height: 96px;
-  overflow: auto;
-}
-</style>

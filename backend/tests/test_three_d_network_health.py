@@ -242,13 +242,15 @@ def test_missing_collector_report_expires_and_unknown_state_does_not_complete(cl
     assert state["records"][0]["print_end_at"] == ""
 
 
-def test_incomplete_exposure_or_probe_cannot_report_healthy(client):
+def test_windows_gateway_needs_real_probes_but_not_linux_firewall_snapshots(client):
     network_only = report(probe_level="network")
     for printer in network_only["printers"]:
         printer["mqtt"] = "skipped"
     result = publish(client, network_only)
     assert result.status_code == 200 and result.json()["status"] == "healthy"
     result = publish(client, report(exposure="unknown"))
+    assert result.status_code == 200 and result.json()["status"] == "healthy"
+    result = publish(client, report(exposure="unsafe"))
     assert result.status_code == 200 and result.json()["status"] == "degraded"
     value = report()
     value["printers"][0].update(tls="failed", mqtt="skipped")
