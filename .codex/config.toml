@@ -1,0 +1,10 @@
+# 质量优先：强主控保留全局上下文，简单子任务使用便宜角色。
+# 合并进项目现有配置，勿覆盖账户、MCP、插件或权限配置。
+model = "gpt-6-astra"
+model_reasoning_effort = "high"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
+default_subagent_model = "gpt-5.6-terra"
+default_subagent_reasoning_effort = "medium"

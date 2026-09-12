@@ -11,6 +11,7 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
+    SPRAY_PRODUCTION_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
     CARTON_PROCUREMENT_PERMISSION_CODES,
     INJECTION_SCHEDULING_PERMISSION_CODES,
@@ -20,7 +21,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v24"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v25"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -116,6 +117,7 @@ class SystemPositionDefinition:
 
 
 _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
+    *SPRAY_PRODUCTION_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
     "molding_sample:cross_factory_read",
@@ -304,6 +306,10 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
 )
 
 PAINTING_CLERK_PERMISSION_CODES = (
+    "spray_production:read",
+    "spray_production:order_write",
+    "spray_production:report",
+    "spray_production:logistics",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "internal_quote:read",
     "internal_quote:summary_read",
@@ -313,6 +319,14 @@ PAINTING_CLERK_PERMISSION_CODES = (
 
 PAINTING_SUPERVISOR_PERMISSION_CODES = (
     *PAINTING_CLERK_PERMISSION_CODES,
+    "spray_production:plan",
+    "spray_production:quality",
+    "spray_production:master_write",
+    "spray_production:cost_read",
+    "spray_production:cost_write",
+    "spray_production:settlement",
+    "spray_production:import",
+    "spray_production:export",
     "internal_quote:painting_review",
 )
 

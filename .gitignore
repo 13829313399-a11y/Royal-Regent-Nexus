@@ -96,3 +96,13 @@ deploy/three-d-printing/network/reports/
 **/three_d_printers.json
 **/three_d_vpn_private_key
 **/three-d-*.private.key
+
+# Shared Codex Plan A instructions; local credentials and runtime state stay private.
+!/.agents/skills/rrn-model-routing/SKILL.md
+!/.agents/skills/rrn-model-routing/references/*.md
+!/docs/agent-routing/*.md
+/.codex/*
+!/.codex/config.toml
+!/.codex/agents/
+/.codex/agents/*
+!/.codex/agents/rrn_*.toml

@@ -193,6 +193,9 @@ def _model(entity):
 
 
 def _target_hash(row) -> str:
+    # A legacy snapshot defines machine numbers, not the live connection or telemetry.
+    if isinstance(row, models.ThreeDPrintingPrinter):
+        return _hash({key: getattr(row, key) for key in ("id", "factory_id", "machine_no")})
     return _hash({column.name: getattr(row, column.name) for column in row.__table__.columns})
 
 
@@ -239,6 +242,7 @@ def _seed_can_be_adopted(db, item: Item, row) -> bool:
         for domain in ("materials", "products", "records", "inventory", "schedules", "maintenance"):
             if db.scalar(select(_model(domain)).where(_model(domain).factory_id == FACTORY).limit(1)):
                 return False
+        return True
     else:
         n = int(item.legacy)
         expected = {"id": f"3dprinter-{FACTORY}-{n}", "legacy_id": str(n), "name": f"{n}号机", "printer_type": "bambu",
@@ -481,6 +485,9 @@ def _import_item(db, item: Item, state: dict, batch, source_db, asset_root: Path
     if len(matches) > 1:
         raise MigrationError("ambiguous_target_identity")
     row = matches[0] if matches else None
+    if item.entity == "printers" and row is not None:
+        # Bind history to the existing machine without changing its ID, mode or state.
+        return "skipped", row.id, _target_hash(row)
     if previous:
         row = _get_target(db, model, previous.target_id)
         if row is None:
@@ -640,7 +647,9 @@ def _reconcile(db, batch, items, state, analysis, root):
             error = checkpoint.error_code if checkpoint and checkpoint.error_code else "row_not_imported"
         elif row is None or row.factory_id != FACTORY:
             error = "reconciliation_target_missing"
-        elif checkpoint.source_hash != item.source_hash or checkpoint.target_hash != _target_hash(row):
+        elif checkpoint.source_hash != item.source_hash or (
+            item.entity != "printers" and checkpoint.target_hash != _target_hash(row)
+        ):
             error = "reconciliation_target_mismatch"
         if row is not None:
             actual_rows[item.entity].append(row)
@@ -654,6 +663,8 @@ def _reconcile(db, batch, items, state, analysis, root):
             # batch lineage intentionally remain frozen across newer snapshots.
             generated = {"id", "created_at", "updated_at", "revision", "migration_batch_id", "balance_after_g",
                          "calculated_cost_snapshot_json"}
+            if item.entity == "printers":
+                generated |= set(desired) - {"factory_id", "machine_no"}
             if item.entity == "records":
                 # These capture the mapping/quality context at first migration;
                 # product renames or newly available prices cannot rewrite it.

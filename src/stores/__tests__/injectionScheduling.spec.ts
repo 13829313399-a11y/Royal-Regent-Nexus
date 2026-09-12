@@ -45,6 +45,29 @@ beforeEach(() => {
   api.query.mockResolvedValue(result())
 })
 describe('injection scheduling synchronization', () => {
+  it('reports saved template assignments separately from a no-change import', async () => {
+    const store = useInjectionStore()
+    await store.setFactory('huaxing')
+    api.post.mockResolvedValue({
+      revision: 2,
+      unified_import: true,
+      recalculate_required: false,
+      restored_assignment_count: 2,
+      summary: { applied_count: 2 },
+    })
+    await store.mutate('/imports/template/apply', {})
+    expect(store.notice).toContain('已按表记录 2 条机台安排')
+    expect(store.notice).toContain('等待实际开工')
+    api.post.mockResolvedValue({
+      revision: 3,
+      unified_import: true,
+      recalculate_required: false,
+      restored_assignment_count: 0,
+      summary: { applied_count: 0 },
+    })
+    await store.mutate('/imports/template2/apply', {})
+    expect(store.notice).toBe('导入完成，内容没有变化')
+  })
   it('uses a refreshed clear preview revision even while the board stays frozen', async () => {
     const store = useInjectionStore()
     await store.setFactory('huaxing')

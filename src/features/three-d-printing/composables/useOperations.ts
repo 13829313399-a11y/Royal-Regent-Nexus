@@ -1,3 +1,4 @@
+import { createRandomUuid } from "@/lib/randomUuid";
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { http, getApiErrorMessage } from "@/lib/http";
 import { threeDPrintingApi } from "@/api/threeDPrinting";
@@ -48,7 +49,7 @@ export function useOperations() {
     reason = ref(""),
     resourceKey = ref(""),
     revision = ref(0),
-    requestKey = ref(crypto.randomUUID());
+    requestKey = ref(createRandomUuid());
 
   const form = reactive<Record<string, unknown>>({}),
     selectedFiles = ref<string[]>([]);
@@ -249,7 +250,7 @@ export function useOperations() {
     revision.value = 0;
     reason.value = "";
     selectedFiles.value = [];
-    requestKey.value = crypto.randomUUID();
+    requestKey.value = createRandomUuid();
   }
 
   let listGeneration = 0;

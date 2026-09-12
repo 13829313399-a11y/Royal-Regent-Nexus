@@ -57,13 +57,15 @@ Use planning, tests, independent review, and completion verification for:
 
 ### Verification Requirements
 
-Before completion, run the relevant commands:
+Before completion, run checks relevant to the change using scripts that actually exist:
 
-- frontend type check
-- frontend build
-- lint
-- backend tests
-- targeted regression tests
+- frontend application type check and build: `npm run build`
+- frontend tests: `npm run test:unit -- <relevant test paths>`
+- test TypeScript check when relevant: `npm run typecheck:test`
+- backend tests and targeted regressions using the project's available Python environment
+- configuration-only changes: validate the affected configuration; do not run unrelated application builds
+
+Check the current `package.json` before choosing commands. There is currently no `lint` script.
 
 Report:
 
@@ -71,6 +73,19 @@ Report:
 2. behavior implemented
 3. verification commands run
 4. remaining risks
+
+## Quality-First Codex Collaboration (Plan A)
+
+Use the repository's `.codex/config.toml` and `.codex/agents/rrn_*.toml` defaults: Astra/high leads; Luna handles narrow factual or mechanical work; Terra handles ordinary implementation. The team requests delegation when a concrete independent subtask benefits from it; simple tasks stay with the primary agent. An explicit user instruction to work alone takes precedence.
+
+- The Astra primary owns business decisions, complex implementation and final integration. Do not run a mandatory scout -> architect -> core -> reviewer pipeline. Use Astra/xhigh architect or core only when a separate difficult work package is useful; keep design and implementation together when practical.
+- For high-impact changes listed above, request an independent `rrn_reviewer` review of the final diff, related contracts and verification evidence. Routine low-impact changes do not need an extra reviewer.
+- Usually use one or two subagents; the configured maximum is three concurrent subagents, excluding the primary. Only the primary delegates; subagents must not spawn further agents. These coordination rules do not create a hard token budget.
+- Give each subtask only its goal, relevant evidence, writable files, constraints and acceptance criteria. Do not fork the entire conversation by default. When the runtime requires minimal/no-history spawning for explicit model overrides, use it and verify the actual model/effort rather than assuming inheritance.
+- Assign one writer per file. Across team members, use separate branches/worktrees and agree on shared API/schema ownership; a subagent does not automatically receive its own worktree. Do not overwrite someone else's uncommitted work.
+- Model availability and local policy vary by account. If a requested role/model is unavailable, report the real limitation; do not silently substitute a cheaper model for critical work. Preserve each member's authentication, provider, plugins and permission settings.
+
+For nontrivial orchestration, read `.agents/skills/rrn-model-routing/SKILL.md`; for team setup and verification, see `docs/agent-routing/README.md`. Keep source files and long logs out of handoff summaries unless needed; the integration owner coordinates final checks instead of repeating the full suite in every agent.
 
 ## Git Operations
 

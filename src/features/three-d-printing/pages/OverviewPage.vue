@@ -1,189 +1,249 @@
 <script setup lang="ts">
-import PrinterDetail from "../components/PrinterDetail.vue";
+import { computed, onMounted, ref } from "vue";
 import { useWorkspaceContext } from "../context";
+import type { ThreeDDashboard } from "@/types/threeDPrinting";
 const {
-  selectedPrinter,
   dashboard,
-  canControl,
-  printerMetrics,
-  stateLabel,
-  stateClass,
+  dateFrom,
+  dateTo,
+  loadDashboard,
+  todayText,
   money,
-  sendCommand,
-  CirclePause,
-  CirclePlay,
-  Printer,
+  printerMetrics,
 } = useWorkspaceContext();
+const period = ref("month");
+const stats = computed(
+  () =>
+    (dashboard.value?.summary.legacyDisplay ||
+      dashboard.value?.summary ||
+      {}) as ThreeDDashboard["summary"],
+);
+type Day = {
+  date: string;
+  revenue: number;
+  totalCost: number;
+  balance: number;
+};
+type Machine = { machine_no: number; hours: number };
+const daily = computed(() => (stats.value.daily as Day[]) || []);
+const machines = computed(
+  () => (dashboard.value?.summary.machineHours as Machine[]) || [],
+);
+const max = computed(() =>
+  Math.max(
+    1,
+    ...daily.value.flatMap((d) => [
+      Math.abs(d.revenue),
+      Math.abs(d.totalCost),
+      Math.abs(d.balance),
+    ]),
+  ),
+);
+async function apply() {
+  const today = todayText();
+  if (period.value === "today") {
+    dateFrom.value = today;
+    dateTo.value = today;
+  } else if (period.value === "month") {
+    dateFrom.value = today.slice(0, 7) + "-01";
+    dateTo.value = today;
+  } else if (period.value === "year") {
+    dateFrom.value = today.slice(0, 4) + "-01-01";
+    dateTo.value = today;
+  } else if (period.value === "all") {
+    dateFrom.value = "";
+    dateTo.value = "";
+  }
+  await loadDashboard();
+}
+onMounted(apply);
+const costs = computed(
+  () =>
+    [
+      ["材料", stats.value.materialCost],
+      ["电费", stats.value.electricityCost],
+      ["人工", stats.value.laborCost],
+      ["维修", stats.value.maintenanceCost],
+    ] as [string, number | undefined][],
+);
 </script>
 <template>
-  <template v-if="dashboard">
-    <section class="space-y-6">
+  <section v-if="dashboard" class="space-y-5">
+    <form class="legacy-toolbar" @submit.prevent="apply">
+      <strong>查看周期：</strong
+      ><select v-model="period" @change="apply">
+        <option value="today">今天</option>
+        <option value="month">本月</option>
+        <option value="year">本年</option>
+        <option value="custom">自定义范围</option>
+        <option value="all">全部</option></select
+      ><template v-if="period === 'custom'"
+        ><input v-model="dateFrom" type="date" aria-label="开始日期" /><span
+          >至</span
+        ><input v-model="dateTo" type="date" aria-label="结束日期" /><button
+          class="action-button"
+        >
+          查看
+        </button></template
+      ><span class="text-xs text-slate-500"
+        >{{ dateFrom || "全部历史" }} {{ dateTo ? "～ " + dateTo : "" }}</span
+      >
+    </form>
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <div
-        v-if="dashboard.network_health"
-        class="rounded-xl border p-4 text-sm"
-        :class="
-          dashboard.network_health.status === 'healthy'
-            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-            : 'border-amber-200 bg-amber-50 text-amber-900'
-        "
+        v-for="(value, label) in {
+          产值: stats.revenue,
+          支出: stats.totalCost,
+          结余: stats.balance,
+          材料成本: stats.materialCost,
+        }"
+        :key="label"
+        class="metric-card"
       >
-        <strong>河源站点网络</strong>
-        <p>{{ dashboard.network_health.message }}</p>
-        <small v-if="dashboard.network_health.observed_at"
-          >最近探测：{{ dashboard.network_health.observed_at }}</small
+        <span>{{ label }}</span
+        ><strong>{{ money(value) }}</strong>
+      </div>
+    </div>
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div class="metric-card">
+        <span>生产记录</span
+        ><strong>{{ dashboard.summary.recordCount }}</strong>
+      </div>
+      <div class="metric-card">
+        <span>生产天数</span><strong>{{ stats.productionDays }}</strong>
+      </div>
+      <div class="metric-card">
+        <span>在线机器</span
+        ><strong
+          >{{ printerMetrics.connected }} / {{ printerMetrics.total }}</strong
         >
       </div>
-      <p
-        v-if="dashboard.summary.incompleteCostRecordCount"
-        class="rounded-xl bg-amber-50 p-4 text-amber-800"
-      >
-        {{ dashboard.summary.incompleteCostRecordCount }}
-        条记录缺少完整历史成本，汇总仅包含已知金额；旧系统快照费率不等于已核实实际成本。
-      </p>
-      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <div class="metric-card">
-          <span>打印机总数</span><strong>{{ printerMetrics.total }}</strong
-          ><small>华康A 已配置机台</small>
-        </div>
-        <div class="metric-card">
-          <span>在线</span
-          ><strong class="text-emerald-700">{{
-            printerMetrics.connected
-          }}</strong
-          ><small>30 秒内收到状态</small>
-        </div>
-        <div class="metric-card">
-          <span>打印中</span
-          ><strong class="text-sky-700">{{ printerMetrics.running }}</strong
-          ><small>由边缘代理实时回传</small>
-        </div>
-        <div class="metric-card">
-          <span>低库存</span
-          ><strong class="text-amber-700">{{
-            dashboard.summary.lowInventoryCount ?? 0
-          }}</strong
-          ><small>低于物料预警线</small>
-        </div>
+      <div class="metric-card">
+        <span>正在打印</span><strong>{{ printerMetrics.running }}</strong>
       </div>
-
-      <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <PrinterDetail
-          v-if="selectedPrinter"
-          :id="selectedPrinter"
-          @close="selectedPrinter = ''"
-        />
-        <article
-          v-for="printerItem in dashboard.printers"
-          :key="printerItem.id"
-          class="panel-card p-5"
-        >
-          <div class="flex items-start justify-between gap-3">
-            <div class="flex items-center gap-3">
-              <div class="rounded-xl bg-teal-50 p-3 text-teal-700">
-                <Printer class="size-5" />
-              </div>
-              <div>
-                <h2 class="font-bold text-slate-950">
-                  {{ printerItem.machine_no }}号机
-                </h2>
-                <p class="text-xs text-slate-500">
-                  {{ printerItem.model || printerItem.printer_type }}
-                </p>
-              </div>
+    </div>
+    <div class="grid gap-5 lg:grid-cols-2">
+      <article class="panel-card p-5">
+        <h2 class="font-bold">产值与支出趋势</h2>
+        <div class="legacy-chart">
+          <div
+            v-for="d in daily"
+            :key="d.date"
+            class="chart-column"
+            :title="`${d.date} 产值 ${money(d.revenue)} 支出 ${money(d.totalCost)}`"
+          >
+            <div class="chart-pair">
+              <i
+                :style="{ height: `${Math.max(1, (d.revenue / max) * 150)}px` }"
+              /><i
+                class="expense"
+                :style="{
+                  height: `${Math.max(1, (d.totalCost / max) * 150)}px`,
+                }"
+              />
             </div>
-            <span
-              class="rounded-full px-2.5 py-1 text-xs font-semibold"
-              :class="stateClass(printerItem)"
-              >{{ stateLabel(printerItem.state) }}</span
-            >
+            <small>{{ d.date.slice(5) }}</small>
           </div>
-          <p class="mt-5 min-h-10 truncate text-sm font-medium text-slate-800">
-            {{ printerItem.current_file || "暂无打印文件" }}
-          </p>
-          <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
-            <div
-              class="h-full rounded-full bg-teal-600 transition-all"
-              :style="{ width: `${printerItem.progress_percent}%` }"
+          <p v-if="!daily.length">该期间暂无生产记录</p>
+        </div>
+        <p class="text-xs text-slate-500">青绿色：产值　灰色：支出</p>
+      </article>
+      <article class="panel-card p-5">
+        <h2 class="font-bold">每日结余</h2>
+        <div class="legacy-chart">
+          <div
+            v-for="d in daily"
+            :key="d.date"
+            class="chart-column"
+            :title="`${d.date} 结余 ${money(d.balance)}`"
+          >
+            <div class="chart-pair">
+              <i
+                :class="{ expense: d.balance < 0 }"
+                :style="{
+                  height: `${Math.max(1, (Math.abs(d.balance) / max) * 150)}px`,
+                }"
+              />
+            </div>
+            <small>{{ d.date.slice(5) }}</small>
+          </div>
+          <p v-if="!daily.length">该期间暂无生产记录</p>
+        </div>
+      </article>
+      <article class="panel-card p-5">
+        <h2 class="font-bold mb-4">支出构成</h2>
+        <div v-for="[label, value] in costs" :key="label" class="mb-3">
+          <div class="flex justify-between text-sm">
+            <span>{{ label }}</span
+            ><span>{{ money(value) }}</span>
+          </div>
+          <div class="machine-progress">
+            <i
+              :style="{
+                width: `${(Number(value || 0) / Math.max(1, Number(stats.totalCost || 0))) * 100}%`,
+              }"
             />
           </div>
-          <div class="mt-2 flex justify-between text-xs text-slate-500">
-            <span>{{ printerItem.progress_percent }}%</span
-            ><span>剩余 {{ printerItem.remaining_minutes }} 分钟</span>
-          </div>
-          <div class="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
-            <div class="rounded-lg bg-slate-50 p-2">
-              <span class="block text-slate-400">喷嘴</span
-              ><strong>{{ printerItem.nozzle_temperature }}°</strong>
-            </div>
-            <div class="rounded-lg bg-slate-50 p-2">
-              <span class="block text-slate-400">热床</span
-              ><strong>{{ printerItem.bed_temperature }}°</strong>
-            </div>
-            <div class="rounded-lg bg-slate-50 p-2">
-              <span class="block text-slate-400">材料</span
-              ><strong class="truncate">{{
-                printerItem.live_material || "—"
-              }}</strong>
-            </div>
-          </div>
-          <p
-            v-if="printerItem.error_text"
-            class="mt-3 rounded-lg bg-rose-50 p-2 text-xs text-rose-700"
-          >
-            {{ printerItem.error_text }}
-          </p>
-          <div
-            v-if="canControl"
-            class="mt-4 flex gap-2 border-t border-slate-100 pt-4"
-          >
-            <button
-              v-if="printerItem.connected && printerItem.state === 'RUNNING'"
-              class="action-button warning flex-1"
-              type="button"
-              @click="sendCommand(printerItem, 'pause')"
-            >
-              <CirclePause class="size-4" />远程暂停
-            </button>
-            <button
-              v-if="printerItem.connected && printerItem.state === 'PAUSE'"
-              class="action-button flex-1"
-              type="button"
-              @click="sendCommand(printerItem, 'resume')"
-            >
-              <CirclePlay class="size-4" />恢复打印
-            </button>
-          </div>
-          <button
-            class="mt-3 text-sm text-teal-700"
-            @click="selectedPrinter = printerItem.id"
-          >
-            状态与命令时间线
-          </button>
-        </article>
-      </div>
-
-      <div class="grid gap-4 lg:grid-cols-4">
-        <div class="metric-card">
-          <span>记录数</span
-          ><strong>{{ dashboard.summary.recordCount ?? 0 }}</strong
-          ><small>{{ dashboard.summary.productionDays ?? 0 }} 个生产日</small>
         </div>
-        <div class="metric-card">
-          <span>估算收入</span
-          ><strong>{{ money(dashboard.summary.revenue) }}</strong
-          ><small>使用记录保存时的计算快照</small>
+      </article>
+      <article class="panel-card p-5">
+        <h2 class="font-bold mb-4">机器使用明细</h2>
+        <div
+          v-for="m in machines"
+          :key="m.machine_no"
+          class="flex justify-between border-b py-1 text-sm"
+        >
+          <span>#{{ m.machine_no }}</span
+          ><span>{{ m.hours }} 小时</span>
         </div>
-        <div class="metric-card">
-          <span>总成本</span
-          ><strong>{{ money(dashboard.summary.totalCost) }}</strong
-          ><small>已知快照合计，人工按记录工时分摊</small>
-        </div>
-        <div class="metric-card">
-          <span>结余</span
-          ><strong>{{ money(dashboard.summary.balance) }}</strong
-          ><small>当前筛选期间</small>
-        </div>
-      </div>
-    </section>
-  </template>
+      </article>
+    </div>
+    <details
+      v-if="dashboard.network_health?.status !== 'healthy'"
+      class="text-xs text-amber-800"
+    >
+      <summary>网络检测提示</summary>
+      <p>
+        检测状态：{{ dashboard.network_health?.status }}；未通过机号：{{
+          dashboard.network_health?.failed_machine_numbers.join("、") || "无"
+        }}。
+      </p>
+    </details>
+  </section>
 </template>
+<style scoped>
+.legacy-chart {
+  display: flex;
+  gap: 7px;
+  min-height: 210px;
+  align-items: end;
+  overflow-x: auto;
+  padding: 15px 0;
+}
+.chart-column {
+  min-width: 35px;
+  flex: 1;
+  text-align: center;
+}
+.chart-pair {
+  display: flex;
+  gap: 2px;
+  height: 155px;
+  align-items: end;
+  justify-content: center;
+}
+.chart-pair i {
+  display: block;
+  width: 12px;
+  background: var(--primary);
+  border-radius: 3px 3px 0 0;
+}
+.chart-pair .expense {
+  background: var(--muted-foreground);
+}
+.chart-column small {
+  font-size: 9px;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+}
+</style>

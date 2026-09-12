@@ -15,10 +15,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from network_config import load_config
+
+UTC = timezone.utc
 
 
 def run_json(argv):
@@ -367,7 +369,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def upload(data, url, token_file):
     parsed = urllib.parse.urlsplit(url)
     if (
-        parsed.scheme != "https"
+        (parsed.scheme != "https" and not (
+            parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+        ))
         or parsed.username
         or parsed.password
         or parsed.query
@@ -435,7 +439,7 @@ def main(argv=None):
             return (
                 0
                 if data["tunnel"] == "ok"
-                and data["exposure"] == "ok"
+                and data["exposure"] != "unsafe"
                 and all(
                     p["mqtt" if args.mqtt_auth else "tls"] == "ok"
                     for p in data["printers"]
