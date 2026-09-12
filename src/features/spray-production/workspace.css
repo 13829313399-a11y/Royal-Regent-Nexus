@@ -168,10 +168,8 @@ button.spray-pill:hover{border-color:var(--primary)}
 .spray-form-actions.sticky{position:sticky;bottom:0;background:var(--card);border-radius:0 0 10px 10px;padding-bottom:2px}
 .spray-split{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:20px;align-items:start}
 .spray-split.wide-aside{grid-template-columns:minmax(0,1fr) 300px}
-.spray-tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:20px;overflow:auto}
-.spray-tabs button{padding:10px 16px;white-space:nowrap;border-bottom:2px solid transparent;color:var(--muted-foreground)}
-.spray-tabs button:hover{color:var(--foreground)}
-.spray-tabs button.active,.spray-tabs button[aria-pressed='true']{border-color:var(--primary);color:var(--primary);font-weight:650}
+/* 页内一级分区改由 SpraySegmentedControl 承载（styles/polish.css 的
+   .spray-pill-control-bar），原有 .spray-tabs 样式已无引用并已移除。 */
 .spray-code{font-family:Consolas,monospace;font-size:12px;overflow-wrap:anywhere;white-space:normal}
 .spray-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);min-width:0}
 .spray-row:last-child{border-bottom:0}

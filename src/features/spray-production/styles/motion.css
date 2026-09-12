@@ -1,0 +1,336 @@
+/* 喷油工作区动效层（命名空间 .spray-workspace）。
+   设计口径：动效只解释状态变化与空间关系。
+   - 进场级联渐现只在页面/区块首次挂载时播放一次，轮询与虚拟滚动不重播；
+   - 形态展开使用 ::details-content 的 height 过渡，浏览器不支持时退化为淡入；
+   - 装饰性无限动画只保留实时呼吸点与加载旋转；
+   - 全部动效由 prefers-reduced-motion 与运行时隐藏页面共同关闭。 */
+
+/* 1. 进场级联渐现：父级声明一次，子项用 --spray-stagger 控制节奏。 */
+.spray-workspace .spray-stagger > * {
+  animation: spray-rise var(--spray-reveal) var(--spray-spring) both;
+}
+
+.spray-workspace .spray-stagger > :nth-child(1) { animation-delay: 20ms; }
+.spray-workspace .spray-stagger > :nth-child(2) { animation-delay: 60ms; }
+.spray-workspace .spray-stagger > :nth-child(3) { animation-delay: 100ms; }
+.spray-workspace .spray-stagger > :nth-child(4) { animation-delay: 140ms; }
+.spray-workspace .spray-stagger > :nth-child(5) { animation-delay: 180ms; }
+.spray-workspace .spray-stagger > :nth-child(6) { animation-delay: 220ms; }
+.spray-workspace .spray-stagger > :nth-child(7) { animation-delay: 260ms; }
+.spray-workspace .spray-stagger > *:nth-child(n + 8) { animation-delay: 300ms; }
+
+/* 单个表面与列表行的进场，延迟由内联 --spray-enter-delay 提供。 */
+.spray-workspace .spray-enter {
+  animation: spray-rise var(--spray-reveal) var(--spray-spring) both;
+  animation-delay: var(--spray-enter-delay, 0ms);
+}
+
+.spray-workspace .spray-enter-soft {
+  animation: spray-fade var(--spray-panel) var(--spray-ease-out) both;
+  animation-delay: var(--spray-enter-delay, 0ms);
+}
+
+/* 已进入过的区块不再重播：路由 key 变化会重新挂载，因此无需手动还原。 */
+.spray-workspace .spray-settled > * {
+  animation: none;
+}
+
+/* 2. 形态过渡平滑展开：原生折叠面板的高度过渡。
+   不支持 ::details-content 的浏览器只保留 summary 的图标旋转与内容淡入。 */
+.spray-workspace details.spray-note,
+.spray-workspace details.spray-disclosure,
+.spray-workspace details.spray-panel {
+  interpolate-size: allow-keywords;
+}
+
+.spray-workspace details::details-content {
+  block-size: 0;
+  overflow: clip;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    block-size var(--spray-panel) var(--spray-spring),
+    opacity var(--spray-fast) var(--spray-ease-out),
+    transform var(--spray-panel) var(--spray-spring),
+    content-visibility var(--spray-panel) allow-discrete;
+}
+
+.spray-workspace details[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.spray-workspace details > summary {
+  transition:
+    color var(--spray-fast) var(--spray-ease),
+    background-color var(--spray-fast) var(--spray-ease),
+    border-color var(--spray-fast) var(--spray-ease);
+}
+
+.spray-workspace details > summary:active {
+  transform: scale(0.995);
+}
+
+.spray-workspace details > summary::marker {
+  color: var(--primary);
+  transition: color var(--spray-fast) var(--spray-ease);
+}
+
+/* 不支持 ::details-content 时，展开仍给出一次内容渐现，避免突兀跳变。 */
+@supports not selector(details::details-content) {
+  .spray-workspace details[open] > *:not(summary) {
+    animation: spray-rise var(--spray-panel) var(--spray-spring) both;
+  }
+}
+
+/* 3. 状态切换交叉淡入：同一位置的内容换值时不重排布局，只做交叉淡入。 */
+.spray-workspace .spray-crossfade {
+  animation: spray-fade var(--spray-control) var(--spray-ease-out);
+}
+
+.spray-workspace .spray-metric strong,
+.spray-workspace .spray-figure,
+.spray-workspace .spray-table td strong {
+  animation: spray-value var(--spray-panel) var(--spray-ease-out);
+}
+
+/* 4. 进度与数值：宽度变化跟随弹簧曲线，避免跳变。 */
+.spray-workspace .spray-progress span,
+.spray-workspace .spray-meter > i {
+  transition: width var(--spray-reveal) var(--spray-spring);
+}
+
+.spray-workspace .spray-progress {
+  position: relative;
+  overflow: hidden;
+}
+
+.spray-workspace .spray-progress span {
+  position: relative;
+  border-radius: inherit;
+}
+
+.spray-workspace .spray-progress span::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 45%), transparent);
+  transform: translateX(-100%);
+}
+
+.spray-workspace .spray-progress:hover span::after,
+.spray-workspace .spray-task:hover .spray-progress span::after {
+  animation: spray-sheen 720ms var(--spray-ease);
+}
+
+/* 5. 实时呼吸点：只用于真实实时状态（读取中、进行中、已同步）。 */
+.spray-workspace .spray-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 45%, transparent);
+}
+
+.spray-workspace .spray-dot.pulse {
+  animation: spray-pulse 1.9s var(--spray-ease-out) infinite;
+}
+
+.spray-workspace .spray-status .spray-dot.live {
+  color: var(--spray-live);
+}
+
+.spray-workspace .spray-status.loading .spray-dot.pulse {
+  color: var(--primary);
+}
+
+/* 6. 状态自适应旋转加载：按钮、状态徽章与骨架共用同一旋转节奏。 */
+.spray-workspace .spray-spin {
+  animation: spray-spin 860ms linear infinite;
+}
+
+.spray-workspace .spray-spin-slow {
+  animation: spray-spin 1.5s linear infinite;
+}
+
+/* 7. 骨架屏：形状接近最终内容，扫描条与全站 .skeleton-shimmer 同一节奏。 */
+.spray-workspace .spray-skeleton-line,
+.spray-workspace .spray-skeleton-block {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--muted) 88%, var(--card));
+}
+
+.spray-workspace .spray-skeleton-line {
+  height: 10px;
+}
+
+.spray-workspace .spray-skeleton-block {
+  height: 100%;
+  min-height: 44px;
+}
+
+.spray-workspace .spray-skeleton-line::after,
+.spray-workspace .spray-skeleton-block::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 78%), transparent);
+  transform: translateX(-100%);
+  animation: spray-sheen 1.45s var(--spray-ease) infinite;
+}
+
+/* 8. 点击波纹扩散：由交互层在 pointerdown 时写入 data-spray-ripple。
+   纯 CSS 伪元素实现，不注入节点，不影响按钮的可访问名称与事件。 */
+.spray-workspace [data-spray-ripple] {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.spray-workspace [data-spray-ripple]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: radial-gradient(circle at 50% 50%, currentColor 0%, transparent 72%);
+  opacity: 0.3;
+  transform: scale(0.2);
+  animation: spray-ripple 560ms var(--spray-ease-out) forwards;
+}
+
+/* 9. 悬停扫光：仅主动作与工具条主按钮播放一次。 */
+.spray-workspace .spray-sheen {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.spray-workspace .spray-sheen::before {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  inset: 0;
+  background: var(--spray-sheen);
+  transform: translateX(-115%);
+}
+
+.spray-workspace .spray-sheen:hover:not(:disabled)::before,
+.spray-workspace .spray-sheen:focus-visible::before {
+  animation: spray-sweep 520ms var(--spray-ease);
+}
+
+/* 10. 虚拟列表：行只做悬停与选中反馈，不做位移与重播，避免滚动抖动。 */
+.spray-workspace .spray-virtual-item {
+  transition: background-color var(--spray-tap) var(--spray-ease);
+}
+
+.spray-workspace .spray-virtual-item:hover {
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* 11. 拖拽与排产：拖拽中的条与行不做位移动画。 */
+.spray-workspace .spray-task[draggable='true']:active,
+.spray-workspace [data-spray-dragging='true'] {
+  transition: none;
+}
+
+@keyframes spray-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes spray-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes spray-value {
+  from {
+    opacity: 0.4;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes spray-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spray-sheen {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes spray-sweep {
+  to {
+    transform: translateX(115%);
+  }
+}
+
+@keyframes spray-ripple {
+  from {
+    opacity: 0.3;
+    transform: scale(0.2);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+@keyframes spray-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 48%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, currentColor 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent);
+  }
+}
+
+/* 12. 关闭开关：reduced-motion、运行时隐藏页面与显式的 .spray-no-motion。 */
+@media (prefers-reduced-motion: reduce) {
+  .spray-workspace .spray-stagger > *,
+  .spray-workspace .spray-enter,
+  .spray-workspace .spray-enter-soft,
+  .spray-workspace .spray-crossfade,
+  .spray-workspace details[open] > *:not(summary) {
+    animation: none !important;
+  }
+
+  .spray-workspace [data-spray-ripple]::after {
+    display: none;
+  }
+}
+
+.spray-workspace.spray-quiet *,
+.spray-workspace.spray-quiet *::before,
+.spray-workspace.spray-quiet *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
