@@ -105,3 +105,13 @@ outputs/history-order-template-20260909/
 outputs/opening-inventory-template-20260909/
 !/docs/business/纸箱上线前最终验收报告.md
 !/docs/business/spray-production-acceptance.md
+
+# Shared Codex Plan A instructions; local credentials and runtime state stay private.
+!/.agents/skills/rrn-model-routing/SKILL.md
+!/.agents/skills/rrn-model-routing/references/*.md
+!/docs/agent-routing/*.md
+/.codex/*
+!/.codex/config.toml
+!/.codex/agents/
+/.codex/agents/*
+!/.codex/agents/rrn_*.toml
