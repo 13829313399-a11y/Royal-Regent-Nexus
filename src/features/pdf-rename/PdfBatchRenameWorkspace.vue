@@ -226,7 +226,7 @@ async function executeRename() {
       files.value,
       selectedRuleId.value,
       preview.value.preview_token,
-      preview.value.summary.review === 0 || ocrConfirmed.value,
+      ocrConfirmed.value,
       props.factoryId,
       controller.signal,
       manualOverrides.value,
@@ -346,7 +346,7 @@ onBeforeUnmount(() => requestController?.abort())
                     <details v-if="item.fields.length" class="mt-2 text-xs leading-5">
                       <summary class="cursor-pointer text-teal-700 focus-visible:outline-teal-600">查看识别依据</summary>
                       <div v-for="field in item.fields" :key="field.key" class="mt-2 rounded-md bg-slate-50 p-2">
-                        <p class="font-semibold text-slate-600">{{ field.label }} · {{ field.route === 'LOCAL_OCR' ? '扫描识别' : 'PDF 文字' }}</p>
+                        <p class="font-semibold text-slate-600">{{ field.label }} · {{ field.route === 'QWEN' ? '千问识别' : field.route === 'LOCAL_OCR' ? '本地扫描识别' : 'PDF 文字' }}</p>
                         <p class="whitespace-pre-wrap break-all text-slate-500">{{ field.raw_text || '未识别' }}</p>
                       </div>
                     </details>
@@ -356,7 +356,7 @@ onBeforeUnmount(() => requestController?.abort())
                     <p class="font-medium">{{ item.target_file_name || '—' }}</p>
                     <p v-if="item.manual_override" class="mt-1 text-xs font-semibold text-amber-800">人工改名 · 待最终复核</p>
                     <details v-if="item.manual_override_allowed !== false" :open="item.status === 'ERROR'" class="mt-3 text-xs leading-5">
-                      <summary class="cursor-pointer font-semibold">人工改名并放行</summary>
+                      <summary class="cursor-pointer font-semibold">{{ item.status === 'ERROR' ? '人工改名并放行' : '修改文件名（可选）' }}</summary>
                       <label class="mt-2 block text-slate-700">正确文件名
                         <input :value="manualNames[index] ?? ''" :disabled="isBusy" :aria-label="`人工文件名 ${item.source_file_name}`" class="mt-1 w-full min-w-44 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900" placeholder="请输入核对后的完整文件名.pdf" @input="editManualName(index, ($event.target as HTMLInputElement).value)">
                       </label>
@@ -381,13 +381,17 @@ onBeforeUnmount(() => requestController?.abort())
       <aside class="bg-white" aria-label="批量改名设置">
         <div class="border-b border-slate-200 px-5 py-4"><h2 class="text-sm font-semibold text-slate-950">改名规则</h2><p class="mt-1 text-xs text-slate-500">当前上下文：{{ contextLabel }}</p></div>
         <div class="space-y-5 p-5">
+          <div v-if="catalog?.recognition" class="rounded-xl border border-teal-100 bg-teal-50/70 p-3 text-xs leading-5 text-teal-900">
+            <p class="font-semibold">{{ catalog.recognition.label }}</p>
+            <p class="mt-1">{{ catalog.recognition.description }}</p>
+          </div>
           <label class="block"><span class="text-sm font-semibold text-slate-800">选择规则</span><select class="mt-2 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-100" :value="selectedRuleId" :disabled="isBusy || !activeRules.length" @change="selectRule(($event.target as HTMLSelectElement).value)"><option value="">{{ activeRules.length ? '请选择规则' : '暂无可用规则' }}</option><option v-for="rule in activeRules" :key="rule.id" :value="rule.id">{{ rule.label }} · {{ rule.version }}</option></select></label>
 
           <div v-if="selectedRule" class="rounded-xl border border-slate-200 bg-slate-50 p-4"><p class="text-sm font-semibold text-slate-900">{{ selectedRule.label }}</p><p class="mt-2 text-xs leading-5 text-slate-600">{{ selectedRule.description }}</p><div v-if="selectedRule.regions.length" class="mt-3 space-y-2"><div v-for="region in selectedRule.regions" :key="region.key" class="rounded-lg bg-white p-2.5 text-xs text-slate-600"><span class="font-semibold text-slate-800">{{ region.label }}</span><span class="ml-2">第 {{ region.page_number }} 页 · 固定区域</span></div></div></div>
 
           <div v-else-if="draftRule" class="rounded-xl border border-amber-200 bg-amber-50 p-4"><p class="text-sm font-semibold text-amber-950">{{ draftRule.label }}</p><p class="mt-2 text-xs leading-5 text-amber-900/80">{{ draftRule.description }}</p><ul class="mt-3 space-y-2 text-xs text-amber-900"><li v-for="item in draftRule.setup_checklist" :key="item" class="flex gap-2"><span aria-hidden="true">□</span><span>{{ item }}</span></li></ul></div>
 
-          <div class="rounded-xl border border-teal-100 bg-teal-50/70 p-3 text-xs leading-5 text-teal-900"><p class="flex items-center gap-2 font-semibold"><ShieldCheck class="size-4" aria-hidden="true" />处理边界</p><p class="mt-1">仅在本地服务器按规则读取固定区域，不保存文件或识别内容；执行时生成新 ZIP，不修改源文件。</p></div>
+          <div class="rounded-xl border border-teal-100 bg-teal-50/70 p-3 text-xs leading-5 text-teal-900"><p class="flex items-center gap-2 font-semibold"><ShieldCheck class="size-4" aria-hidden="true" />处理边界</p><p class="mt-1">{{ catalog?.recognition?.mode === 'qwen' ? '仅将命名所需的首页区域发送给已配置的千问；识别文本在服务器内存暂存 15 分钟供预览和下载复用。' : '在本地读取命名所需的固定区域。' }} 不长期保存文件或识别内容；下载生成新 ZIP，不修改源文件。</p></div>
 
           <label v-if="preview?.summary.review" class="flex cursor-pointer items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3"><input v-model="ocrConfirmed" type="checkbox" :disabled="isBusy || manualDirty" class="mt-1 size-4 rounded border-amber-400 text-teal-700"><span class="text-xs leading-5 text-amber-950"><strong class="block font-semibold">已对照原 PDF 逐项复核最终文件名</strong>请按所选规则确认全部字段、排列顺序及人工修改的文件名无误，再生成文件。</span></label>
         </div>

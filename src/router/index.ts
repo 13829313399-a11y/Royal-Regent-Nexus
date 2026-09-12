@@ -100,6 +100,23 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/spray-production',
+    component: () => import('@/views/SprayProductionView.vue'),
+    meta: { title: '喷油部生产管理', fullPage: true, requiresAuth: true, permissions: ['spray_production:read'], permissionDepartment: 'production', enforcePermissions: true, allowAuthenticatedReadOnly: true },
+    children: [
+      { path: '', redirect: to => ({ path: '/modules/production/spray-production/overview', query: to.query }) },
+      { path: 'overview', component: () => import('@/features/spray-production/pages/OverviewPage.vue') },
+      { path: 'orders/:id?', component: () => import('@/features/spray-production/pages/OrdersPage.vue') },
+      { path: 'schedule', component: () => import('@/features/spray-production/pages/SchedulePage.vue') },
+      { path: 'reports/:id?', component: () => import('@/features/spray-production/pages/ReportsPage.vue') },
+      { path: 'wip', component: () => import('@/features/spray-production/pages/WipPage.vue') },
+      { path: 'logistics', component: () => import('@/features/spray-production/pages/LogisticsPage.vue') },
+      { path: 'finance', component: () => import('@/features/spray-production/pages/FinancePage.vue') },
+      { path: 'master', component: () => import('@/features/spray-production/pages/MasterPage.vue') },
+      { path: 'imports/:id?', component: () => import('@/features/spray-production/pages/ImportsPage.vue') },
+    ],
+  },
+  {
     path: '/modules/production/injection-scheduling',
     name: 'injection-scheduling',
     component: () => import('@/views/InjectionSchedulingView.vue'),

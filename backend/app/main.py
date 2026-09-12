@@ -32,6 +32,7 @@ from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
+from app.api.spray_production import router as spray_production_router
 from app.core.config import settings
 from app.db import init_db
 
@@ -121,6 +122,7 @@ app.include_router(system_router)
 from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)
+app.include_router(spray_production_router)
 app.include_router(three_d_connector_router)
 
 

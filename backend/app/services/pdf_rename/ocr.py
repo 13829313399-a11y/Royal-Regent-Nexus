@@ -53,6 +53,9 @@ def recognize_fixed_region(
     """Read a fixed region; rules can bypass untrustworthy embedded OCR text."""
 
     _validate_page(pdf_bytes, region.page_number)
+    from .qwen import qwen_enabled, recognize_qwen_region
+    if qwen_enabled():
+        return recognize_qwen_region(pdf_bytes, region)
     if not region.ocr_only:
         try:
             with pdfplumber.open(BytesIO(pdf_bytes)) as document:
