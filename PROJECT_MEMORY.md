@@ -32,6 +32,7 @@ The intended Customer Order Center boundary is to own original purchase orders, 
 
 ## 2. Active Technical Baseline
 
+- Repository-owned Codex development defaults use quality-first Plan A: Astra/high primary, narrowly scoped Luna/Terra helpers, optional Astra/xhigh complex specialists and an independent Astra/high reviewer for high-impact changes. `.codex/config.toml`, `.codex/agents/` and `.agents/skills/rrn-model-routing/` are shared team configuration; `docs/agent-routing/README.md` defines onboarding and runtime verification. Project trust, account model access and explicit client selections determine local activation; these files do not configure the application's AI features or share credentials.
 - Frontend: Vue 3, TypeScript, Vite, Pinia, Vue Router, Axios, Tailwind CSS and shadcn-vue/reka components.
 - Backend: FastAPI, SQLAlchemy, Alembic and server-side session authentication.
 - Production database: PostgreSQL. Local development may use SQLite where the current configuration permits it.
