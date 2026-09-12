@@ -230,7 +230,11 @@ def preview_registered_pdf_rename_batch(
     factory_id: str,
     manual_overrides: tuple[PdfRenameManualOverride, ...] = (),
 ) -> PdfRenamePreview:
-    return build_pdf_rename_preview(get_pdf_rename_rule(rule_id, factory_id), sources, manual_overrides=manual_overrides)
+    rule = get_pdf_rename_rule(rule_id, factory_id)
+    _validate_sources(sources)
+    from .qwen import invalidate_sources
+    invalidate_sources(source.content for source in sources)
+    return build_pdf_rename_preview(rule, sources, manual_overrides=manual_overrides)
 
 
 def _deterministic_zip(files: tuple[tuple[str, bytes], ...]) -> bytes:

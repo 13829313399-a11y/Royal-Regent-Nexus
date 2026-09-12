@@ -38,6 +38,7 @@ export interface PdfRenameRuleDefinition {
 
 export interface PdfRenameRuleCatalog {
   rules: PdfRenameRuleDefinition[]
+  recognition?: { mode: 'qwen' | 'local'; label: string; description: string }
   limits: {
     max_files: number
     max_batch_bytes: number
@@ -50,7 +51,7 @@ export interface PdfRenamePreviewField {
   label: string
   raw_text: string
   normalized_text: string
-  route: 'NATIVE_TEXT' | 'LOCAL_OCR'
+  route: 'NATIVE_TEXT' | 'LOCAL_OCR' | 'QWEN'
   confidence: number | null
 }
 

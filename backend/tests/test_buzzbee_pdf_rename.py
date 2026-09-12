@@ -75,7 +75,7 @@ def plan(body, header=HEADER):
 def test_filename_contract_preserves_all_po_order_zeroes_and_repetitions(item, pos):
     result = plan(f"Item No. /Description:- {item}/PRODUCT\nDate Code:-100086B\nS/C:-{pos}\nLot Size/Total Order:1000/125")
     assert result.target_file_name == f"#{item}-{pos}.pdf"
-    assert result.status == "REVIEW"
+    assert result.status == "READY"
     fields = {field.key: field for field in result.fields}
     assert fields["item_no"].normalized_text == item
     assert fields["po_numbers"].normalized_text == pos
@@ -95,14 +95,87 @@ def test_explicit_plus_wrapping_and_fullwidth_punctuation():
     assert result.target_file_name == "#11001-52140+52141+52142.pdf"
 
 
-def test_reported_split_item_label_keeps_raw_evidence_and_requires_review():
+def test_reported_split_item_label_keeps_raw_evidence_without_extra_review():
     result = plan(WRAPPED_ITEM_SCAN)
     assert result.target_file_name == "#11011-52136+52137.pdf"
-    assert result.status == "REVIEW"
+    assert result.status == "READY"
     fields = {field.key: field for field in result.fields}
     assert fields["item_no"].normalized_text == "11011"
     assert fields["item_no"].raw_text == "Item No. /Description:\n~11011/AF T-REX SQUIRTER"
     assert fields["po_numbers"].normalized_text == "52136+52137"
+
+
+LONG_POS = "52963+52973+52989+52913+52917+52937+52922+52940+52930+52935+52919+52914+52923"
+BROKEN_LONG_SCAN = "Item No./Description:93219/ AF TOXIC CATCH.\n/C:-" + LONG_POS.replace("52914+", "529 144")
+
+
+def test_reported_long_po_uses_second_reading_and_downloads_unchanged_bytes():
+    calls = []
+    def read(data, region):
+        calls.append((region.key, region.ocr_engine))
+        body = ("Item No./Description:93219/ AF TOXIC CATCH.\nS/C:-" + LONG_POS
+                if region.ocr_engine == "rapidocr" else BROKEN_LONG_SCAN)
+        return recognizer(body)(data, region)
+    rule = BuzzBeeInspectionRule()
+    sources = (PdfRenameSource("123(1).pdf", pdf()),)
+    preview = build_pdf_rename_preview(rule, sources, recognizer=read)
+    assert preview.ready_count == 1 and preview.review_count == 0
+    assert preview.items[0].target_file_name == f"#93219-{LONG_POS}.pdf"
+    assert len(preview.items[0].fields[-1].normalized_text.split("+")) == 13
+    assert "52914+52923" in preview.items[0].fields[-1].raw_text
+    assert calls == [("report_header", "tesseract"), ("identifiers", "tesseract"), ("identifiers", "rapidocr")]
+    archive = execute_pdf_rename_batch(rule, sources, recognizer=read, expected_preview_token=preview.preview_token)
+    with ZipFile(BytesIO(archive.content)) as output:
+        assert output.read(f"#93219-{LONG_POS}.pdf") == sources[0].content
+
+
+@pytest.mark.parametrize("alternate", [
+    BROKEN_LONG_SCAN,
+    "Item No./Description:93218/PRODUCT\nS/C:-" + LONG_POS,
+    "Item No./Description:93219/PRODUCT\nS/C:-" + LONG_POS.replace("52963+", ""),
+    "Item No./Description:93219/PRODUCT\nS/C:-" + LONG_POS.replace("52973+52989", "52989+52973"),
+    None,
+])
+def test_failed_or_conflicting_retry_never_repairs_or_omits_po(alternate):
+    def read(data, region):
+        if region.ocr_engine == "rapidocr" and alternate is None:
+            raise PdfRenameServiceError("PDF_RENAME_OCR_UNAVAILABLE", "unavailable", action="install")
+        return recognizer(alternate if region.ocr_engine == "rapidocr" else BROKEN_LONG_SCAN)(data, region)
+    result = BuzzBeeInspectionRule().create_plan(PdfRenameSource("123(1).pdf", pdf()), read)
+    assert result.status == "ERROR"
+    assert not result.target_file_name
+    assert "529 14452923" in result.issues[0].message
+
+
+def test_complete_single_po_does_not_require_second_engine_or_confirmation():
+    read = Mock(side_effect=recognizer("Item No./Description:-19570/GARGOYLE 2 PACK\n/C:-53135"))
+    result = BuzzBeeInspectionRule().create_plan(PdfRenameSource("789(1).pdf", pdf()), read)
+    assert result.status == "READY"
+    assert result.target_file_name == "#19570-53135.pdf"
+    assert result.issues == ()
+    assert read.call_count == 2
+
+
+def test_second_reading_cannot_drop_complete_po_on_original_continuation():
+    def read(data, region):
+        body = "Item No./Description:93219/PRODUCT\nS/C:"
+        body += "52963" if region.ocr_engine == "rapidocr" else "5296X+\n52973+52989"
+        return recognizer(body)(data, region)
+    result = BuzzBeeInspectionRule().create_plan(PdfRenameSource("scan.pdf", pdf()), read)
+    assert result.status == "ERROR" and not result.target_file_name
+
+
+def test_second_reading_with_measured_low_confidence_cannot_auto_release():
+    from app.services.pdf_rename.contracts import RecognizedTextBox
+    def read(data, region):
+        body = "Item No./Description:93219/PRODUCT\nS/C:52963+"
+        value = recognizer(body + ("52973" if region.ocr_engine == "rapidocr" else "5297X"))(data, region)
+        if region.ocr_engine == "rapidocr":
+            return replace(value, confidence=.1, text_boxes=(RecognizedTextBox(
+                "S/C:52963+52973", ((0.,0.),(1.,0.),(1.,1.),(0.,1.)), .1),))
+        return value
+    result = BuzzBeeInspectionRule().create_plan(PdfRenameSource("scan.pdf", pdf()), read)
+    assert result.status == "ERROR" and not result.target_file_name
 
 
 @pytest.mark.parametrize("label", ["Item No./Description:", "Item No./Description:-", "[tem No. /Description：—"])
@@ -156,7 +229,7 @@ def test_other_reports_are_not_accepted():
 
 def test_catalog_enables_a_separate_versioned_ocr_rule():
     rule = get_pdf_rename_rule("buzzbee-inspection", "huaxing")
-    assert rule.definition.version == "1.0.1"
+    assert rule.definition.version == "1.0.2"
     assert all(region.ocr_only and region.page_number == 1 for region in rule.definition.regions)
     assert rule.definition.factory_ids == ("huaxing",)
     assert next(row for row in list_pdf_rename_rules("huaxing") if row["id"] == "buzzbee-inspection")["available"]
@@ -167,9 +240,8 @@ def test_collision_review_staleness_and_lossless_zip():
     source = PdfRenameSource("old.pdf", pdf())
     read = recognizer("Item No./Description:-11001/PRODUCT\nS/C:-52140+52141")
     preview = build_pdf_rename_preview(rule, (source,), recognizer=read)
-    with pytest.raises(PdfRenameServiceError) as error:
-        execute_pdf_rename_batch(rule, (source,), expected_preview_token=preview.preview_token, recognizer=read)
-    assert error.value.code == "PDF_RENAME_OCR_REVIEW_REQUIRED"
+    assert preview.ready_count == 1 and preview.review_count == 0
+    execute_pdf_rename_batch(rule, (source,), expected_preview_token=preview.preview_token, recognizer=read)
     with pytest.raises(PdfRenameServiceError) as error:
         execute_pdf_rename_batch(rule, (source,), expected_preview_token="stale", ocr_review_confirmed=True, recognizer=read)
     assert error.value.code == "PDF_RENAME_PREVIEW_STALE"
@@ -216,7 +288,7 @@ def test_default_rules_keep_the_native_text_path(monkeypatch):
     ("Item No./Description:-11001/PRODUCT\nS/C:-52140+52141", "#11001-52140+52141.pdf"),
     (WRAPPED_ITEM_SCAN, "#11011-52136+52137.pdf"),
 ])
-def test_authenticated_api_catalog_preview_review_gate_and_zip(monkeypatch, body, expected_name):
+def test_authenticated_api_catalog_preview_and_zip_without_extra_review(monkeypatch, body, expected_name):
     from app.api import pdf_rename as routes
     from app.core.config import settings
     from app.services.auth import get_current_user
@@ -234,10 +306,8 @@ def test_authenticated_api_catalog_preview_review_gate_and_zip(monkeypatch, body
         response = client.post("/api/tools/pdf-rename/preview", data=data, files=files)
         assert response.status_code == 200, response.text
         preview = response.json()
-        assert preview["summary"] == {"total": 1, "ready": 0, "review": 1, "error": 0}
+        assert preview["summary"] == {"total": 1, "ready": 1, "review": 0, "error": 0}
         data["preview_token"] = preview["preview_token"]
-        assert client.post("/api/tools/pdf-rename/execute", data=data, files=files).status_code == 409
-        data["ocr_review_confirmed"] = "true"
         response = client.post("/api/tools/pdf-rename/execute", data=data, files=files)
         assert response.status_code == 200, response.text
         with ZipFile(BytesIO(response.content)) as archive:
