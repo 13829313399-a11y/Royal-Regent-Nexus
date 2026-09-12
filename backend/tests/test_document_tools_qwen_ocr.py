@@ -27,6 +27,17 @@ def test_openai_contract_has_no_dashscope_parameters():
     assert body['messages'][0]['content'][0]['type']=='image_url'
 
 
+@pytest.mark.parametrize('protocol', ['dashscope', 'openai'])
+def test_rename_prompt_is_opt_in_and_does_not_change_conversion_prompt(protocol):
+    from app.services.document_tools.qwen_ocr import PROMPT
+    _, custom = request_contract(config(protocol), b'png', task='text', layout=True, prompt='rename-only')
+    _, original = request_contract(config(protocol), b'png')
+    messages = lambda body: body.get('input', body)['messages']
+    assert messages(custom)[0]['content'][-1]['text'] == 'rename-only'
+    assert messages(original)[0]['content'][-1]['text'] == PROMPT
+    assert custom['model'] == 'qwen3-vl-plus'
+
+
 def test_html_merges_unknown_blank_precise_region():
     tables=parse_html_tables('<table><tr><th colspan="2">A</th><th>B</th></tr><tr><td rowspan="2">00123</td><td></td><td>[无法辨认]</td></tr><tr><td>12.50</td><td>2</td></tr></table>',SourceAnchor(page_index=2,bbox_pt=[1,2,80,90],anchor_precision='region'))
     t=tables[0]

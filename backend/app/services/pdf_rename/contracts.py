@@ -144,6 +144,7 @@ class PdfRenamePlan:
         return all(issue.code in {
             "PDF_RENAME_INTERVAL_INVALID", "PDF_RENAME_INTERVAL_EMPTY",
             "PDF_RENAME_REGION_EMPTY", "PDF_RENAME_TARGET_INVALID",
+            "PDF_RENAME_REGION_UNCERTAIN",
             "PDF_RENAME_OCR_REVIEW_REQUIRED", "PDF_RENAME_TARGET_COLLISION",
             "PDF_RENAME_MANUAL_APPLIED", "PDF_RENAME_MANUAL_TARGET_INVALID",
         } for issue in self.issues)

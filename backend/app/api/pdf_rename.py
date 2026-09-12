@@ -18,6 +18,7 @@ from app.services.pdf_rename import (
 )
 from app.services.pdf_rename.registry import get_pdf_rename_rule
 from app.services.pdf_rename.service import parse_manual_overrides
+from app.services.pdf_rename.qwen import recognition_status
 
 router = APIRouter(prefix="/api/tools")
 ZIP_MEDIA_TYPE = "application/zip"
@@ -144,6 +145,7 @@ def pdf_rename_rules(
         raise _pdf_rename_error(exc) from exc
     return {
         "rules": rules,
+        "recognition": recognition_status(),
         "limits": {
             "max_files": MAX_PDF_RENAME_FILES,
             "max_batch_bytes": MAX_PDF_RENAME_BATCH_BYTES,

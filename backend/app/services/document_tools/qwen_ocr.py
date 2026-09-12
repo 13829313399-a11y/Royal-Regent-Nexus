@@ -23,7 +23,7 @@ def configured(settings) -> bool:
     return bool(getattr(settings,"document_tools_qwen_api_key",None) and getattr(settings,"document_tools_qwen_base_url",None))
 
 
-def request_contract(settings, image: bytes, task: str = "table", *, layout: bool = False):
+def request_contract(settings, image: bytes, task: str = "table", *, layout: bool = False, prompt: str = PROMPT):
     if not configured(settings):
         raise ToolError("QWEN_NOT_CONFIGURED", "千问地址或密钥未配置；可继续使用本地识别候选")
     base = settings.document_tools_qwen_base_url.rstrip("/")
@@ -41,7 +41,7 @@ def request_contract(settings, image: bytes, task: str = "table", *, layout: boo
     protocol = settings.document_tools_qwen_protocol
     if protocol == "dashscope":
         endpoint = base if base.endswith("/generation") else base + ("" if base.endswith("/api/v1") else "/api/v1") + "/services/aigc/multimodal-generation/generation"
-        content = [{"image": data_url, "enable_rotate": False}, {"text": PROMPT}]
+        content = [{"image": data_url, "enable_rotate": False}, {"text": prompt}]
         parameters: dict[str, Any] = {"max_tokens": tokens}
         if not layout:
             parameters["ocr_options"] = {"task": "table_parsing" if task == "table" else "text_recognition"}
@@ -49,14 +49,14 @@ def request_contract(settings, image: bytes, task: str = "table", *, layout: boo
     elif protocol in {"openai", "openai-compatible", "openai_compatible"}:
         endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
         payload = {"model": model, "max_tokens": tokens, "messages": [{"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": data_url}}, {"type": "text", "text": PROMPT}]}]}
+            {"type": "image_url", "image_url": {"url": data_url}}, {"type": "text", "text": prompt}]}]}
     else:
         raise ToolError("QWEN_PROTOCOL", "请选择 DashScope 或 OpenAI 兼容 Chat 协议")
     return endpoint, payload
 
 
-def recognize(settings, image: bytes, task="table", *, cancelled=lambda: False, client=None, layout=False):
-    endpoint, payload = request_contract(settings, image, task, layout=layout)
+def recognize(settings, image: bytes, task="table", *, cancelled=lambda: False, client=None, layout=False, prompt=PROMPT):
+    endpoint, payload = request_contract(settings, image, task, layout=layout, prompt=prompt)
     key = settings.document_tools_qwen_api_key.get_secret_value()
     owned = client is None
     client = client or httpx.Client(timeout=getattr(settings,"document_tools_qwen_timeout_seconds",90), follow_redirects=False)

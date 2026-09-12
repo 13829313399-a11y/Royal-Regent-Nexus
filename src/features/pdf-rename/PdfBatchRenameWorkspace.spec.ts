@@ -47,6 +47,43 @@ function button(wrapper: Awaited<ReturnType<typeof setup>>, label: string) {
 }
 
 describe('BuzzBee batch rename review workflow', () => {
+  it('downloads a validated scan without a review checkbox or required manual name', async () => {
+    const ready = structuredClone(result)
+    ready.summary = { total: 1, ready: 1, review: 0, error: 0 }
+    ready.items[0]!.status = 'READY'
+    api.previewPdfRename.mockResolvedValueOnce(ready)
+    const wrapper = await setup()
+    await button(wrapper, '生成改名预览').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('可执行 1')
+    expect(wrapper.text()).toContain('修改文件名（可选）')
+    expect(wrapper.text()).not.toContain('人工改名并放行')
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false)
+    expect(button(wrapper, '确认并下载 ZIP').attributes('disabled')).toBeUndefined()
+    await button(wrapper, '确认并下载 ZIP').trigger('click')
+    await flushPromises()
+    expect(api.executePdfRename).toHaveBeenCalledWith(expect.any(Array), 'buzzbee-inspection', 'review-1', false, 'huaxing', expect.any(AbortSignal), [])
+    expect(download).toHaveBeenCalledOnce()
+  })
+
+  it('shows the configured Qwen mode and actual per-field recognition source', async () => {
+    api.getPdfRenameRules.mockResolvedValueOnce({ rules: [rule], limits: {}, recognition: {
+      mode: 'qwen', label: '千问识别', description: '使用已配置的千问识别命名区域。',
+    } })
+    const ready = structuredClone(result)
+    ready.summary = { total: 1, ready: 1, review: 0, error: 0 }
+    ready.items[0]!.status = 'READY'
+    ready.items[0]!.fields.forEach(field => { field.route = 'QWEN'; field.confidence = null })
+    api.previewPdfRename.mockResolvedValueOnce(ready)
+    const wrapper = await setup()
+    await button(wrapper, '生成改名预览').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('千问识别')
+    expect(wrapper.text()).toContain('仅将命名所需的首页区域发送给已配置的千问')
+    expect(wrapper.text()).not.toContain('本地扫描识别')
+    expect(wrapper.text()).not.toContain('PDF 文字')
+  })
+
   it('selects Caixing independently, shows all five fields and downloads with its rule id', async () => {
     const caixing: PdfRenameRuleDefinition = { ...rule, id: 'caixing-inspection', label: '彩星行验报告',
       version: '1.0.0', description: '报告号-#货号-PO号-数量-日期.pdf；报告号取 Batch no.。' }

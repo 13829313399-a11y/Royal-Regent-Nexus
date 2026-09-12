@@ -26,13 +26,21 @@ def _geometry(box: RecognizedTextBox) -> tuple[float, float, float, float, float
     return (lx + rx) / 2, (ly + ry) / 2, height, (ry - ly) / (rx - lx), rx
 
 
-def _field(value: RecognizedRegionValue, label: str, pattern: str, right: float, display_label: str) -> tuple[str, str, float]:
+def _field(value: RecognizedRegionValue, label: str, pattern: str, right: float, display_label: str) -> tuple[str, str, float | None]:
     """Read the unique label and its same-row, same-column value, not OCR order.
 
     Label baselines account for mildly skewed photographs. Column limits prevent
     a missing value from borrowing a neighbour. Never skip an invalid first cell.
     """
     expression = re.compile(rf"^{label}\s*:?\s*(.*?)\s*$", re.I)
+    if value.route == "QWEN":
+        # Qwen transcribes each label with its corresponding cell. Keep these
+        # labelled lines as evidence; never fabricate spatial OCR boxes/scores.
+        matches = [(line, match) for line in value.raw_text.splitlines()
+                   if (match := expression.fullmatch(_text(line)))]
+        if len(matches) != 1 or not re.fullmatch(pattern, _text(matches[0][1][1]), re.I):
+            raise ValueError(f"千问未完整识别唯一的{display_label}，请核对原 PDF。")
+        return _text(matches[0][1][1]), matches[0][0], None
     labels = [(box, match) for box in value.text_boxes
               if (match := expression.fullmatch(_text(box.text)))]
     if len(labels) != 1:
@@ -98,13 +106,13 @@ def _fields(value: RecognizedRegionValue) -> tuple[RecognizedRegionValue, ...]:
 
 class CaixingInspectionRule(PdfRenameRuleBase):
     definition = PdfRenameRuleDefinition(
-        rule_id="caixing-inspection", label="彩星行验报告", version="1.0.0",
+        rule_id="caixing-inspection", label="彩星行验报告", version="1.0.1",
         factory_ids=("huaxing",),
         description=(
             "仅限华兴厂区。按首页正文生成 报告号-#货号-PO号-数量-日期.pdf。"
             "报告号取 Batch no.（保留 P），货号取 Item number 前 5 位，PO 取 P/O no.，"
             "数量取 Quantity (Pcs)，DATE 按月/日/年读取并转为 年.月.日。"
-            "不使用 Date Code、箱数或原文件名补值；扫描识别须人工复核。"
+            "不使用 Date Code、箱数或原文件名补值；千问识别完整且校验通过即可下载。"
         ),
         regions=(NormalizedRegion(
             "report_header", "彩星首页标识与命名字段", 1, .07, .05, .95, .26,
