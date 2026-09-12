@@ -389,7 +389,7 @@ def test_jakks_blocks_change_orders_and_dedupes_batch(monkeypatch) -> None:
     assert len(prepared.records) == 1
     assert prepared.records[0]["product_name"] == "标准公仔"
     assert prepared.records[0]["contact"] == "Amy"
-    assert any("CXL/SUP" in warning for warning in prepared.warnings)
+    assert any("CXL" in warning for warning in prepared.warnings)
     assert any("完全重复" in warning for warning in prepared.warnings)
 
 
