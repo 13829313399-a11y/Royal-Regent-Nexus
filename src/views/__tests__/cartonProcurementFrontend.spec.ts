@@ -307,6 +307,14 @@ describe('CartonProcurementView frontend workspace', () => {
     }))
   })
 
+  it('keeps customer PO but exposes no offline supplement action', async () => {
+    mockReceiptWorkspace([orderFixture('CT-PO-NORMAL', businessDateOffset(3))])
+    const wrapper = mountView('orders'); await flushPromises()
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-PO-NORMAL"]'), 'CT-PO-NORMAL')
+    expect(wrapper.text()).not.toContain('补单')
+    wrapper.unmount()
+  })
+
   it('switches receipt ledgers without stacking them or discarding manual entry', async () => {
     mockReceiptWorkspace([orderFixture('KEEP', businessDateOffset(3), 'PENDING_SUPPLIER')])
     const wrapper = mountView('receipts'); await flushPromises()
@@ -617,6 +625,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('[aria-label="选择客户 Dickie"]').trigger('click')
     expect(wrapper.get('input[aria-label="纸箱供应商"]').attributes('disabled')).toBeDefined()
     await wrapper.get('input[aria-label="合同号"]').setValue('SC-DEMO-001')
+    await wrapper.get('input[aria-label="客户 PO"]').setValue('PO-CUSTOMER-001')
     await wrapper.get('input[aria-label="货号"]').setValue('203399999')
     await wrapper.get('input[aria-label="产品名称"]').setValue('新产品')
     for (const label of ['纸品类型 1', '纸质 1', '规格 1']) expect(wrapper.get<HTMLInputElement>(`input[aria-label="${label}"]`).element.value).toBe('')
@@ -649,7 +658,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('共 2 项纸品')
     expect(wrapper.text()).toContain('A9A')
     await wrapper.get('button[aria-label="关闭订单明细"]').trigger('click')
-    expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONFIRMED' }))
+    expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONFIRMED', customer_po: 'PO-CUSTOMER-001' }))
     expect(wrapper.text()).toContain('已进入待下单')
     expect(wrapper.text()).toContain('含 2 条纸品明细')
     expect(wrapper.text()).toContain('确认锁定前仍可修改、追加或取消')

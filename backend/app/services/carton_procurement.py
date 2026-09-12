@@ -445,6 +445,18 @@ def _explicit_targets(order, lines, targets, *, append):
     return target
 
 
+def _validate_customer_po_identity(db, factory, customer, contract, item, customer_po, exclude_id=""):
+    # Legacy blank-PO orders remain valid. A supplied PO disambiguates otherwise identical demand.
+    if not customer_po:
+        return
+    candidates = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory,
+        CartonOrder.customer_code == customer, CartonOrder.status != "CANCELLED",
+        CartonOrder.id != exclude_id)).all()
+    key = tuple(value.strip().casefold() for value in (contract, item, customer_po))
+    if any(tuple(value.strip().casefold() for value in (o.contract_no, o.item_no, o.customer_po)) == key for o in candidates):
+        raise HTTPException(409, "同客户、合同号、货号及客户 PO 的订单已存在，请核对或在原单追加")
+
+
 def create_order(
     db: Session,
     payload: CartonOrderCreate,
@@ -456,7 +468,8 @@ def create_order(
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
-    rules = master_data.validate_order(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
+    rules = master_data.validate_order(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, customer_po=payload.customer_po, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
+    _validate_customer_po_identity(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, payload.customer_po)
     planned = derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"]) if payload.customer_due_date and payload.quantity_basis == "CALCULATED" else payload.due_date
     customer = get_active_customer(db, factory_id, payload.customer_code)
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
@@ -487,6 +500,7 @@ def create_order(
         customer_name=customer.customer_name,
         supplier_id=supplier.id,
         supplier_name_snapshot=supplier.supplier_name,
+        customer_po=payload.customer_po,
         contract_no=payload.contract_no,
         item_no=payload.item_no,
         product_name=product_name,
@@ -546,6 +560,7 @@ def create_order(
             "order_no": order.order_no,
             "line_count": len(payload.lines),
             "contract_no": payload.contract_no,
+            "customer_po": payload.customer_po,
             "customer_code": order.customer_code,
             "customer_name": order.customer_name,
             "item_no": order.item_no,
@@ -701,6 +716,7 @@ def _purchase_order_pending_change(
             "supplier_id": order.supplier_id,
             "supplier_name": order.supplier_name_snapshot,
             "contract_no": order.contract_no,
+            "customer_po": order.customer_po,
             "item_no": order.item_no,
             "product_name": order.product_name,
             "order_date": order.order_date,
@@ -1005,6 +1021,8 @@ def update_order(
             detail="订单已确认并锁定，不能再修改；收料差异请通过收料或库存流水处理",
         )
 
+    if "customer_po" not in payload.model_fields_set:
+        payload.customer_po = order.customer_po
     existing_lines = _order_lines(db, order.id)
     customer = (
         get_active_customer(db, factory_id, payload.customer_code)
@@ -1040,6 +1058,7 @@ def update_order(
             target_customer_code != order.customer_code,
             target_supplier_id != order.supplier_id,
             payload.contract_no != order.contract_no,
+            payload.customer_po != order.customer_po,
             payload.item_no != order.item_no,
             payload.product_name != order.product_name,
             payload.product_order_quantity != order.product_order_quantity,
@@ -1065,7 +1084,9 @@ def update_order(
     # Existing orders retain their snapshot: changing a date/note must not reapply
     # newly introduced master rules or invalidate a previously selected configuration.
     if structural_changed:
-        master_data.validate_order(db, factory_id, target_customer_code, payload.contract_no, payload.item_no, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
+        master_data.validate_order(db, factory_id, target_customer_code, payload.contract_no, payload.item_no, customer_po=payload.customer_po, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
+    if structural_changed:
+        _validate_customer_po_identity(db, factory_id, target_customer_code, payload.contract_no, payload.item_no, payload.customer_po, order.id)
     schedule_changed = (
         target_customer_due_date != order.customer_due_date
         or target_due_date != order.due_date
@@ -1083,6 +1104,7 @@ def update_order(
         "revision": order.revision,
         "customer_code": order.customer_code,
         "contract_no": order.contract_no,
+        "customer_po": order.customer_po,
         "item_no": order.item_no,
         "product_order_quantity": order.product_order_quantity,
         "order_date": order.order_date,
@@ -1099,6 +1121,7 @@ def update_order(
         order.customer_name = target_customer_name
         order.supplier_id = target_supplier_id
         order.supplier_name_snapshot = target_supplier_name
+        order.customer_po = payload.customer_po
         order.contract_no = payload.contract_no
         order.item_no = payload.item_no
         order.product_name = payload.product_name
@@ -1159,6 +1182,7 @@ def update_order(
                 "revision": order.revision,
                 "customer_code": order.customer_code,
                 "contract_no": order.contract_no,
+                "customer_po": order.customer_po,
                 "item_no": order.item_no,
                 "product_order_quantity": order.product_order_quantity,
                 "quantity_basis": order.quantity_basis,
@@ -1198,7 +1222,7 @@ def submit_order_to_supplier(
         raise HTTPException(status_code=409, detail="只有待下单且尚未确认锁定的订单可以确认")
     _require_order_complete(db, order)
 
-    master_data.validate_order(db, factory_id, order.customer_code, order.contract_no, order.item_no)
+    master_data.validate_order(db, factory_id, order.customer_code, order.contract_no, order.item_no, customer_po=order.customer_po)
     previous_status = order.status
     order.status = "PENDING_SUPPLIER"
     order.revision += 1
@@ -1246,7 +1270,7 @@ def bulk_submit_orders_to_supplier(
 
     timestamp = now_text()
     for order in orders:
-        master_data.validate_order(db, factory_id, order.customer_code, order.contract_no, order.item_no)
+        master_data.validate_order(db, factory_id, order.customer_code, order.contract_no, order.item_no, customer_po=order.customer_po)
         previous_status = order.status
         order.status = "PENDING_SUPPLIER"
         order.revision += 1
@@ -1911,6 +1935,7 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
         customer_name=order.customer_name,
         supplier_id=order.supplier_id,
         supplier_name=order.supplier_name_snapshot,
+        customer_po=order.customer_po,
         contract_no=order.contract_no,
         item_no=order.item_no,
         product_name=order.product_name,
@@ -3362,6 +3387,7 @@ def create_import_batch(
         raise HTTPException(status_code=413, detail="导入文件不能超过 20 MB")
     sha256 = hashlib.sha256(content).hexdigest()
     effective_profile = dict(import_profile or {})
+    effective_profile["matching_version"] = "customer-po-v1"
     if import_type == "DELIVERY_NOTE":
         effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
     profile_text = (

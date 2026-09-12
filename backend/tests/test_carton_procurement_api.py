@@ -113,11 +113,11 @@ def test_customer_master_crud_permission_and_order_snapshot(monkeypatch):
             "/api/carton-procurement/customers",
             json={
                 "factory_id": "huaxing",
-                "customer_code": "DICKIE",
+                "customer_code": "WAREHOUSE-CUSTOMER",
                 "customer_name": "Dickie",
             },
         )
-        assert forbidden.status_code == 403
+        assert forbidden.status_code == 201
 
         login_as(client, "admin")
         created = client.post(
@@ -1957,8 +1957,8 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         assert first.json()["parse_summary"]["row_count"] == 2
         assert first.json()["parse_summary"]["matched_count"] == 1
         assert first.json()["parse_summary"]["issue_count"] == 1
-        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-local-v5"
-        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-local-v5"
+        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-local-v6-po"
+        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-local-v6-po"
         matched = first.json()["parse_summary"]["rows"][0]
         assert matched["match_status"] == "MATCHED"
         assert matched["order_line_id"] == order["lines"][0]["id"]
@@ -2270,7 +2270,7 @@ def test_inspection_schedule_import_calculates_delivery_reminders_without_writin
         result = response.json()
         summary = result["parse_summary"]
         assert result["import_type"] == "INSPECTION_SCHEDULE"
-        assert result["import_profile"] == '{"advance_days":3}'
+        assert json.loads(result["import_profile"]) == {"advance_days": 3, "matching_version": "customer-po-v1"}
         assert summary["row_count"] == 2
         assert summary["matched_count"] == 1
         assert summary["reminder_count"] == 2

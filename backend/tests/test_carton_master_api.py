@@ -31,6 +31,20 @@ def payload(row, **changes):
             "expected_revision": row["revision"], "reason": "主管核实资料", **changes}
 
 
+def legacy_grant(user_id, warehouses):
+    """Seed old evidence directly: the public ACCESS editor is retired."""
+    import json
+    from app.db import SessionLocal
+    from app.models.carton_master import CartonMasterRecord
+    with SessionLocal() as db:
+        row=db.get(CartonMasterRecord, "LEGACY-ACCESS")
+        if row is None:
+            row=CartonMasterRecord(id="LEGACY-ACCESS",factory_id="huaxing",kind="ACCESS",identity="legacy-access",code=user_id)
+            db.add(row)
+        row.data_json=json.dumps({"warehouses":warehouses})
+        db.commit()
+
+
 def test_history_enrichment_privileged_edits_variants_and_concurrency(monkeypatch):
     with make_client(monkeypatch) as client:
         prepare(client)
@@ -46,8 +60,9 @@ def test_history_enrichment_privileged_edits_variants_and_concurrency(monkeypatc
         assert saved.status_code == 200, saved.text
         assert client.post(BASE + "/master-data", json=payload(saved.json(), expected_revision=0)).status_code == 409
         login_as(client, "warehouse_keeper")
-        assert client.patch(BASE + "/master-data/" + config["id"], json=payload(saved.json())).status_code == 403
-        assert client.post(BASE + "/inventory/locations", json={"factory_id": "huaxing", "warehouse": "一仓", "bin_code": "A"}).status_code == 403
+        assert read(client)["can_manage"]
+        assert client.patch(BASE + "/master-data/" + config["id"], json=payload(saved.json(), factory_id="huadeng")).status_code == 403
+        assert client.post(BASE + "/inventory/locations", json={"factory_id": "huaxing", "warehouse": "一仓", "bin_code": "A"}).status_code == 201
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda _: read(client), range(2)))
         for result in results:
@@ -128,9 +143,9 @@ def test_location_permissions_deactivation_workshop_and_reversal(monkeypatch):
         profile = client.get('/api/auth/me').json()
         login_as(client, "admin")
         grant = client.post(BASE + "/master-data", json={"factory_id": "huaxing", "kind": "ACCESS", "code": profile["id"], "data": {"warehouses": ["一仓"]}, "reason": "授权仓库负责人"})
-        assert grant.status_code == 201, grant.text
+        assert grant.status_code == 422, grant.text
         login_as(client, "warehouse_keeper")
-        assert client.patch(BASE + "/inventory/locations/" + loc["id"], json={**change, "expected_revision": 2, "warehouse": "二仓"}).status_code == 403
+        assert client.patch(BASE + "/inventory/locations/" + loc["id"], json={**change, "expected_revision": 2, "factory_id": "huadeng", "warehouse": "二仓"}).status_code == 403
         allowed = client.patch(BASE + "/inventory/locations/" + loc["id"], json={**change, "expected_revision": 2, "bin_code": "A-LAST"})
         assert allowed.status_code == 200, allowed.text
         reversed_issue = client.post(BASE + f"/inventory/movements/{issue.json()['id']}/reverse", json={"factory_id": "huaxing", "reason": "纠正领用登记"})
@@ -188,11 +203,9 @@ def test_warehouse_creation_atomic_rename_and_grants_preserve_positions(monkeypa
         rename["expected_locations"][extra["id"]] = extra["revision"]
         login_as(client, "warehouse_keeper")
         profile = client.get("/api/auth/me").json()
-        assert client.patch(BASE + "/inventory/warehouses", json=rename).status_code == 403
-        assert client.post(BASE + "/inventory/warehouses", json={**new, "warehouse": "WARE-C"}).status_code == 403
-        login_as(client, "admin")
-        grant = client.post(BASE + "/master-data", json={"factory_id": "huaxing", "kind": "ACCESS", "code": profile["id"], "data": {"warehouses": ["WARE-A"]}, "reason": "授权仓库负责人"})
-        assert grant.status_code == 201, grant.text
+        assert read(client)["can_manage"]
+        assert client.post(BASE + "/inventory/warehouses", json={**new, "warehouse": "WARE-C"}).status_code == 201
+        legacy_grant(profile["id"], ["WARE-A"])
         response = client.patch(BASE + "/inventory/warehouses", json=rename)
         assert response.status_code == 200, response.text
         assert {r["id"] for r in response.json()} == {first["id"], extra["id"]}
@@ -200,15 +213,16 @@ def test_warehouse_creation_atomic_rename_and_grants_preserve_positions(monkeypa
         assert client.patch(BASE + "/inventory/warehouses", json=rename).status_code in (404, 409)
         current = client.get(BASE + "/inventory/balances", params={"factory_id": "huaxing"}).json()
         assert [(r["position_key"], r["balance"]) for r in current] == [(r["position_key"], r["balance"]) for r in before]
-        saved_grant = next(r for r in read(client)["records"] if r["id"] == grant.json()["id"])
+        saved_grant = next(r for r in read(client)["records"] if r["id"] == "LEGACY-ACCESS")
         assert saved_grant["data"]["warehouses"] == ["WARE-B"]
-        # A name reserved by an existing grant cannot silently acquire this warehouse.
-        with_target = client.patch(BASE + "/master-data/" + saved_grant["id"], json=payload(saved_grant, data={"warehouses": ["WARE-B", "RESERVED"]}))
-        assert with_target.status_code == 200
+        # Obsolete grants no longer reserve names or block authorized maintenance.
+        legacy_grant(profile["id"], ["WARE-B", "RESERVED"])
         fresh = {r["id"]: r["revision"] for r in response.json()}
-        assert client.patch(BASE + "/inventory/warehouses", json={**rename, "warehouse": "WARE-B", "new_name": "RESERVED", "expected_locations": fresh}).status_code == 409
+        renamed = client.patch(BASE + "/inventory/warehouses", json={**rename, "warehouse": "WARE-B", "new_name": "RESERVED", "expected_locations": fresh})
+        assert renamed.status_code == 200, renamed.text
+        fresh = {r["id"]: r["revision"] for r in renamed.json()}
         assert client.post(BASE + "/inventory/warehouses", json={**new, "warehouse": "EXISTING"}).status_code == 201
-        assert client.patch(BASE + "/inventory/warehouses", json={**rename, "warehouse": "WARE-B", "new_name": "EXISTING", "expected_locations": fresh}).status_code == 409
+        assert client.patch(BASE + "/inventory/warehouses", json={**rename, "warehouse": "RESERVED", "new_name": "EXISTING", "expected_locations": fresh}).status_code == 409
         # Fully allocated receipts do not create the legacy fallback location.
         from app.db import SessionLocal
         from app.services.carton_positions import unknown_location
@@ -225,7 +239,7 @@ def test_warehouse_creation_atomic_rename_and_grants_preserve_positions(monkeypa
         assert foreign.status_code in (403, 404, 422)
         assert client.post(BASE + "/inventory/warehouses", json={**new, "warehouse": "待核仓位"}).status_code == 422
         login_as(client, "warehouse_keeper")
-        assert read(client)["warehouses"] == ["RESERVED", "WARE-B"]
+        assert read(client)["warehouses"] == []
 
 
 def test_shared_item_packaging_names_and_customer_preservation(monkeypatch):

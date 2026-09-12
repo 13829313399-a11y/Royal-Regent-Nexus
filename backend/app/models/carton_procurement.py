@@ -82,6 +82,7 @@ class CartonOrder(Base):
     customer_code: Mapped[str] = mapped_column(String(64), index=True)
     customer_name: Mapped[str] = mapped_column(String(255), index=True)
     supplier_id: Mapped[str] = mapped_column(String(96), index=True)
+    customer_po: Mapped[str] = mapped_column(String(128), default="", server_default="")
     supplier_name_snapshot: Mapped[str] = mapped_column(String(255))
     contract_no: Mapped[str] = mapped_column(String(128), index=True)
     item_no: Mapped[str] = mapped_column(String(128), index=True)

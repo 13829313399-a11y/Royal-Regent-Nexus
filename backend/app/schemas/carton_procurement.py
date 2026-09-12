@@ -191,6 +191,13 @@ class CartonOrderLineCreate(BaseModel):
 
 
 class CartonOrderCreate(BaseModel):
+    customer_po: str = Field(default="", max_length=128)
+
+    @field_validator("customer_po")
+    @classmethod
+    def validate_customer_po(cls, value: str) -> str:
+        return _validate_business_identifier(value.strip(), label="客户 PO") if value.strip() else ""
+
     master_config_id: str = Field(default="", max_length=96)
     master_config_revision: int = Field(default=0, ge=0)
     factory_id: str = Field(min_length=1, max_length=64)
@@ -255,6 +262,13 @@ class CartonOrderCreate(BaseModel):
 
 
 class CartonOrderUpdate(BaseModel):
+    customer_po: str = Field(default="", max_length=128)
+
+    @field_validator("customer_po")
+    @classmethod
+    def validate_customer_po(cls, value: str) -> str:
+        return _validate_business_identifier(value.strip(), label="客户 PO") if value.strip() else ""
+
     master_config_id: str = Field(default="", max_length=96)
     master_config_revision: int = Field(default=0, ge=0)
     factory_id: str = Field(min_length=1, max_length=64)
@@ -513,6 +527,7 @@ class CartonOrderHistorySuggestionListOut(BaseModel):
 
 
 class CartonOrderOut(BaseModel):
+    customer_po: str = ""
     usage_status: str = "NOT_RECEIVED"
     usage_status_label: str = "未入库"
     model_config = ConfigDict(from_attributes=True)

@@ -81,8 +81,8 @@ it('keeps authorization and hard-check reasons explicit while routine maintenanc
   await wrapper.get('[aria-label="合同号格式检查方式"]').setValue('BLOCK')
   expect(wrapper.get<HTMLInputElement>('[aria-label="基础资料修改原因"]').element.value).toBe('')
   await wrapper.get('[aria-label="关闭基础资料编辑"]').trigger('click')
-  await click('新增仓库维护授权')
-  expect(wrapper.get<HTMLInputElement>('[aria-label="基础资料修改原因"]').element.value).toBe('')
+  expect(wrapper.find('[aria-label="仓库维护权限设置"]').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('新增仓库维护授权')
   wrapper.unmount(); get.mockRestore()
 })
 

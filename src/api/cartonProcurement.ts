@@ -52,6 +52,7 @@ export interface CartonOrderLineResponse {
 }
 
 export interface CartonOrderResponse {
+  customer_po?: string
   usage_status?: string
   usage_status_label?: string
   id: string
@@ -115,6 +116,7 @@ export interface CartonPurchaseOrderContextResponse {
 }
 
 export interface CartonOrderCreateRequest {
+  customer_po?: string
   master_config_id?: string
   master_config_revision?: number
   factory_id: string
@@ -404,6 +406,7 @@ export interface CartonImportBatchResponse {
 }
 
 export interface CartonImportPreviewRow {
+  customer_po?: string
   source_sheet?: string
   source_row?: number
   delivery_note_no?: string
@@ -1039,7 +1042,7 @@ export interface CartonHistoryOrderPreview {
   factory_id: string; original_filename: string; source_fingerprint: string;
   row_count: number; group_count: number; line_count: number; ready_count: number; draft_count: number; skipped_count: number;
   warnings: string[]; errors: string[];
-  orders: Array<{ source_rows: string[]; order_no: string; customer_name: string; contract_no: string; item_no: string;
+  orders: Array<{ customer_po?: string; source_rows: string[]; order_no: string; customer_name: string; contract_no: string; item_no: string;
     product_name: string; product_order_quantity: string | null; order_date: string; due_date: string | null; customer_due_date: string | null;
     status: string; quantity_basis: string; duplicate: boolean; ready: boolean; warnings: string[];
     lines: Array<{ packaging_type: string; paper_quality: string; specification: string; dimension_unit: string;

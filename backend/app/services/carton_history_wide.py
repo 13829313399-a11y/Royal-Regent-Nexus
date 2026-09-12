@@ -13,6 +13,7 @@ from app.services.carton_procurement_imports import _cell, _date_text, _header_k
 
 
 ALIASES = {
+    "customer_po": {"客户po", "客户po选填", "客户采购单号", "客户订单号", "customerpo"},
     "order_no": {"历史订单号", "历史订单号选填", "历史订单编号", "原订单号"},
     "customer_name": {"客户名称", "客户", "公司", "客名"},
     "contract_no": {"合同号", "合同编号"}, "item_no": {"货号", "产品编号", "客货号"},
@@ -41,6 +42,7 @@ for prefix, label in (("inner", "内箱"), ("outer", "外箱"), ("card", "卡纸
         ALIASES[f"{prefix}_{field}"] = {label + suffix for suffix in suffixes}
 ALIASES["outer_quantity"].add("做箱数量")
 EXTRA_ALIASES = {
+    "customer_po": {"客户po", "客户po选填", "客户采购单号", "客户订单号", "customerpo"},
     "order_no": ALIASES["order_no"], "packaging_type": {"纸品类型"},
     "required_quantity": {"纸品需求数量", "需求数量"},
     **{field: ALIASES[field] for field in ("paper_quality", "specification", "dimension_unit", "unit", "unit_price", "currency")},
@@ -116,17 +118,17 @@ def parse_wide(worksheets) -> tuple[list[dict], list[str]] | None:
             if fingerprint in seen_rows:
                 fail(source, f"与{seen_rows[fingerprint]}完全重复，请删除重复行；不能重复累计需求")
             seen_rows[fingerprint] = source
-            head = {key: _text(_cell(row, mapping, key)) for key in ("order_no", "customer_name", "contract_no", "item_no", "product_name", "note")}
+            head = {key: _text(_cell(row, mapping, key)) for key in ("order_no", "customer_name", "contract_no", "item_no", "customer_po", "product_name", "note")}
             for key, label in (("customer_name", "客户名称"), ("contract_no", "合同号"), ("item_no", "货号")):
                 if not head[key]:
                     fail(source, f"{label}不能为空")
             if len(head["order_no"]) > 64:
                 fail(source, "历史订单号不能超过64个字符")
             head.update(source=source, quantity_basis="EXPLICIT", row_warnings=[])
-            identity=tuple(head[key].strip().casefold() for key in ("customer_name","contract_no","item_no"))
+            identity=tuple(head[key].strip().casefold() for key in ("customer_name","contract_no","item_no","customer_po"))
             if not head["order_no"]:
                 if identity in unnamed_identities:
-                    fail(source,"同客户、合同和货号出现多行主信息，请先核实重复；不同批次须填写不同历史订单号")
+                    fail(source,"同客户、合同、货号及客户 PO 出现多行主信息，请先核实重复；不同批次须填写不同历史订单号")
                 unnamed_identities.add(identity)
             head["product_order_quantity"] = number(_cell(row,mapping,"product_order_quantity"), source, "产品订单数量", positive=True)
             head["order_date"] = date_value(_cell(row,mapping,"order_date"),datemode,source,"下单日期",True)

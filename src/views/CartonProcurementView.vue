@@ -478,7 +478,14 @@ interface OrderFormMaterialLine extends Omit<CartonMaterialLine, 'id' | 'unitsPe
 }
 
 const historyImportFile = ref<File | null>(null)
+function customerPoForOrder(orderNo: string) {
+  return orderRecords.value.find(order => order.order_no === orderNo)?.customer_po || ''
+}
+function customerPoForLine(lineId: string) {
+  return orderRecords.value.find(order => order.lines.some(line => line.id === lineId))?.customer_po || ''
+}
 const orderForm = reactive({
+  customerPo: '',
   quantityBasis: 'CALCULATED' as 'CALCULATED' | 'EXPLICIT',
   customerCode: '',
   supplierId: '',
@@ -725,6 +732,7 @@ const visibleOrders = computed(() => localOrders.filter((row) => {
       row.id,
       row.customer,
       row.contractNo,
+      customerPoForOrder(row.id),
       rawOrder?.product_name || '',
       row.itemNo,
       row.status,
@@ -799,14 +807,18 @@ function weeklyRowForException(exception: CartonExceptionResponse, batch: Carton
 }
 
 function orderForBusinessAlert(row: CartonImportPreviewRow | null, exception: CartonExceptionResponse) {
-  return orderRecords.value.find((order) =>
+  const exact = orderRecords.value.find((order) =>
     (row?.order_id && order.id === row.order_id)
     || (row?.order_no && order.order_no === row.order_no)
-    || (
+  )
+  if (exact) return exact
+  const candidates = orderRecords.value.filter((order) => (
       businessIdentity(order.contract_no) === businessIdentity(exception.contract_no || row?.contract_no || row?.reference)
       && businessIdentity(order.item_no) === businessIdentity(exception.item_no || row?.item_no)
+      && (!row?.customer_po || order.customer_po?.trim().toLocaleLowerCase() === row.customer_po.trim().toLocaleLowerCase())
     ),
-  ) ?? null
+  )
+  return candidates.length === 1 ? candidates[0] ?? null : null
 }
 
 const businessOrderAlerts = computed<BusinessOrderAlert[]>(() => {
@@ -956,7 +968,7 @@ const manualReceiptOrders = computed(() => orderRecords.value.filter((order) =>
 ))
 const visibleManualReceiptOrders = computed(() => manualReceiptOrders.value.filter((order) => {
   const term = globalSearch.value.trim().toLowerCase()
-  const text = [order.order_no, order.customer_name, order.contract_no, order.item_no, order.product_name,
+  const text = [order.order_no, order.customer_name, order.contract_no, order.customer_po || '', order.item_no, order.product_name,
     ...order.lines.flatMap((line) => [line.packaging_type, line.paper_quality, line.specification])].join(' ').toLowerCase()
   return matchesCustomer(order.customer_name)
     && (!receiptPlannedDueFrom.value || order.due_date >= receiptPlannedDueFrom.value)
@@ -1173,6 +1185,7 @@ const receiptHistoryRows = computed(() => {
     sourceType: line.source_type,
     customer: line.customer_name,
     contractNo: line.contract_no,
+    customerPo: customerPoForLine(line.order_line_id || ''),
     itemNo: line.item_no,
     packagingType: line.packaging_type,
     paperQuality: line.paper_quality,
@@ -1193,6 +1206,7 @@ const receiptHistoryRows = computed(() => {
       row.deliveryNoteNo,
       row.customer,
       row.contractNo,
+      row.customerPo,
       row.itemNo,
       row.paper,
       row.specification,
@@ -2250,6 +2264,7 @@ async function createLocalOrder() {
       customer_name: selectedCustomer.customer_name,
       supplier_id: orderForm.supplierId || undefined,
       contract_no: orderForm.contractNo.trim(),
+      customer_po: orderForm.customerPo.trim(),
       item_no: orderForm.itemNo.trim(),
       product_name: orderForm.productName.trim(),
       quantity_basis: orderForm.quantityBasis,
@@ -3488,6 +3503,7 @@ function resetOrderForm() {
   orderChangeReason.value = ''
   orderForm.customerCode = ''
   orderForm.supplierId = ''
+  orderForm.customerPo = ''
   orderForm.contractNo = ''
   orderForm.itemNo = ''
   orderForm.productName = ''
@@ -3578,6 +3594,7 @@ function openEditOrderModal(orderNo: string) {
   orderChangeReason.value = '修正订单录入信息'
   orderForm.customerCode = order.customer_code
   orderForm.supplierId = order.supplier_id
+  orderForm.customerPo = order.customer_po || ''
   orderForm.contractNo = order.contract_no
   orderForm.itemNo = order.item_no
   orderForm.productName = order.product_name
@@ -4661,7 +4678,7 @@ function refreshDemo() {
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || issuingSelectedPurchaseOrders || !canIssuePurchaseOrders" title="首次与非首次采购单均可多选发行；包含追加或减单时会先确认" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300" @click="issueSelectedPurchaseOrders"><Send class="size-3.5" />{{ issuingSelectedPurchaseOrders ? '发行中…' : `发行供应商采购单（${selectedOrderNos.length}）` }}</button>
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || exportingSelectedOrders" :title="!apiConnected ? '后端未连接，当前演示订单不能导出' : '累计对账表不代表向供应商新增下单'" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="exportSelectedPurchaseOrders"><Download class="size-3.5" />{{ exportingSelectedOrders ? '合并生成中…' : '导出累计对账表' }}</button>
           <button type="button" :disabled="!selectedOrdersCanCancel || cancellingOrder" title="仅尚未确认锁定的待下单订单可批量取消" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="openBulkCancelOrders"><X class="size-3.5" />批量取消</button>
-          <CartonSelectionSummary :rows="selectedOrders.map(row => ({ id: row.order_no, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no}` }))" :visible-ids="orderedVisibleOrders.map(row => row.id)" unit="张" @clear="selectedOrderNos = []" @remove="selectedOrderNos = selectedOrderNos.filter(id => id !== $event)" />
+          <CartonSelectionSummary :rows="selectedOrders.map(row => ({ id: row.order_no, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no}${row.customer_po ? ' · PO ' + row.customer_po : ''}` }))" :visible-ids="orderedVisibleOrders.map(row => row.id)" unit="张" @clear="selectedOrderNos = []" @remove="selectedOrderNos = selectedOrderNos.filter(id => id !== $event)" />
           <p
             v-if="selectedOrderNos.length && (!apiConnected || combinedPurchaseOrderMessage)"
             role="status"
@@ -4736,7 +4753,7 @@ function refreshDemo() {
               </div>
               <div class="min-w-0 text-left">
                 <div class="mb-1 text-[10px] font-bold text-slate-400 lg:hidden">合同号</div>
-                <div class="truncate font-mono text-[13px] font-bold leading-tight text-slate-950" :title="row.contractNo">{{ row.contractNo }}</div>
+                <div class="truncate font-mono text-[13px] font-bold leading-tight text-slate-950" :title="row.contractNo">{{ row.contractNo }}</div><div v-if="customerPoForOrder(row.id)" class="mt-1 break-all text-[10px] text-teal-700">客户 PO {{ customerPoForOrder(row.id) }}</div>
               </div>
               <div class="min-w-0 text-left"><div class="mb-1 text-[10px] font-bold text-slate-400 lg:hidden">货号</div><div class="truncate font-mono text-[13px] font-bold text-slate-950">{{ row.itemNo }}</div></div>
               <div class="min-w-0 text-left" :aria-label="`${row.id} 纸品明细`">
@@ -4970,7 +4987,7 @@ function refreshDemo() {
               <button v-if="selectedCustomer !== '全部客户' || globalSearch || receiptPlannedDueFrom || receiptPlannedDueTo" type="button" class="h-9 px-2 text-xs font-semibold text-teal-700 hover:text-teal-900" @click="clearReceiptOrderFilters">清除筛选</button>
             </div>
             <div class="flex items-center gap-4"><span class="text-sm text-slate-600">已选 <strong class="text-teal-700">{{ selectedManualReceiptOrders.length }}</strong> 张</span><button ref="receiptDialogTrigger" type="button" :disabled="!selectedManualReceiptOrders.length || !apiConnected" class="inline-flex h-10 items-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-bold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-40" @click="openManualReceipt()"><Plus class="size-4" />登记所选订单收料</button></div>
-            <CartonSelectionSummary :rows="selectedManualReceiptOrders.map(row => ({ id: row.order_no, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no}` }))" :visible-ids="visibleManualReceiptOrders.map(row => row.order_no)" unit="张" @clear="manualReceiptOrderNos = []; populateManualReceipt([])" @remove="manualReceiptOrderNos = manualReceiptOrderNos.filter(id => id !== $event); populateManualReceipt(manualReceiptOrderNos)" />
+            <CartonSelectionSummary :rows="selectedManualReceiptOrders.map(row => ({ id: row.order_no, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no}${row.customer_po ? ' · PO ' + row.customer_po : ''}` }))" :visible-ids="visibleManualReceiptOrders.map(row => row.order_no)" unit="张" @clear="manualReceiptOrderNos = []; populateManualReceipt([])" @remove="manualReceiptOrderNos = manualReceiptOrderNos.filter(id => id !== $event); populateManualReceipt(manualReceiptOrderNos)" />
           </div>
           <div class="bg-white">
             <div class="receipt-order-ledger-grid grid min-h-11 items-center gap-x-3 border-b border-slate-100 bg-slate-50 px-4 text-[11px] font-bold tracking-wide text-slate-700" aria-label="待收订单列表表头">
@@ -4994,7 +5011,7 @@ function refreshDemo() {
               </div>
               <div class="min-w-0 text-left">
                 <div class="mb-1 text-[10px] font-bold text-slate-400 lg:hidden">合同号</div>
-                <div class="truncate font-mono text-[13px] font-bold leading-tight text-slate-950" :title="row.contractNo">{{ row.contractNo }}</div>
+                <div class="truncate font-mono text-[13px] font-bold leading-tight text-slate-950" :title="row.contractNo">{{ row.contractNo }}</div><div v-if="customerPoForOrder(row.id)" class="mt-1 break-all text-[10px] text-teal-700">客户 PO {{ customerPoForOrder(row.id) }}</div>
               </div>
               <div class="min-w-0 text-left"><div class="mb-1 text-[10px] font-bold text-slate-400 lg:hidden">货号 / 产品名称</div><div class="truncate font-mono text-[13px] font-bold text-slate-950" :title="row.itemNo">{{ row.itemNo }}</div><div v-if="row.productName" class="mt-1 truncate text-[11px] text-slate-500" :title="row.productName">{{ row.productName }}</div></div>
               <div class="min-w-0 text-left" :aria-label="`${row.id} 纸品明细`">
@@ -5212,7 +5229,7 @@ function refreshDemo() {
                 <tr v-for="row in inventoryBalances" :key="row.id" :data-inventory-balance="row.id" :title="`最近单据：${inventoryBalanceLatestDocumentNo(row) || '—'}；${row.date}`" class="hover:bg-teal-50/40" :class="selectedInventoryTargetIds.includes(row.id) ? 'bg-teal-50/50' : ''">
                   <td class="px-2 py-3"><input v-model="selectedInventoryTargetIds" class="size-5 accent-teal-600" type="checkbox" :value="row.id" :disabled="row.balance <= 0" :aria-label="`选择库存 ${row.itemNo} ${row.specification}`"></td>
                   <td class="px-2 py-3 font-semibold">{{ row.customer }}</td>
-                  <td class="px-2 py-3"><div class="truncate font-mono font-semibold" :title="row.poNumber">{{ row.poNumber || '—' }}</div></td><td class="px-2 py-3"><div class="truncate font-mono font-semibold" :title="row.itemNo">{{ row.itemNo }}</div></td>
+                  <td class="px-2 py-3"><div class="truncate font-mono font-semibold" :title="row.poNumber">{{ row.poNumber || '—' }}</div><div v-if="customerPoForLine(row.orderLineId || '')" class="mt-1 break-all text-[10px] text-teal-700">客户 PO {{ customerPoForLine(row.orderLineId || '') }}</div></td><td class="px-2 py-3"><div class="truncate font-mono font-semibold" :title="row.itemNo">{{ row.itemNo }}</div></td>
                   <td class="px-2 py-3"><div class="break-words font-semibold">{{ row.packagingType }} · {{ row.paperQuality }}</div><div class="mt-1 break-words text-slate-500">{{ row.specification }}</div></td>
                   <td class="break-words px-2 py-3">{{ row.location }}</td>
                   <td class="px-2 py-3 text-right tabular-nums text-sm whitespace-nowrap">{{ inventoryQuantity(row.money?.inbound_quantity) }} <span class="text-[10px] text-slate-400">{{ row.unit }}</span></td>
@@ -5381,7 +5398,7 @@ function refreshDemo() {
             </table>
           </div>
           <div class="grid gap-4 sm:grid-cols-3">
-            <label v-if="!inventoryBulkMode" class="min-w-0 space-y-1.5 sm:col-span-3"><span class="block text-xs font-bold text-slate-600">库存记录 *</span><select v-model="inventoryTargetId" aria-label="库存作业记录" class="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 outline-none focus:border-teal-500" @change="selectInventoryTarget(inventoryTargetId)"><option value="">请选择客户、合同、货号和纸品</option><option v-for="row in operableInventoryBalances" :key="row.id" :value="row.id">{{ row.customer }} · {{ row.poNumber || '无合同' }} · {{ row.itemNo }} · {{ row.packagingType }} {{ row.paperQuality }} · {{ row.location || '待核仓位' }} · 结存 {{ row.balance }}</option></select></label>
+            <label v-if="!inventoryBulkMode" class="min-w-0 space-y-1.5 sm:col-span-3"><span class="block text-xs font-bold text-slate-600">库存记录 *</span><select v-model="inventoryTargetId" aria-label="库存作业记录" class="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 outline-none focus:border-teal-500" @change="selectInventoryTarget(inventoryTargetId)"><option value="">请选择客户、合同、货号和纸品</option><option v-for="row in operableInventoryBalances" :key="row.id" :value="row.id">{{ row.customer }} · {{ row.poNumber || '无合同' }} · {{ customerPoForLine(row.orderLineId || '') ? '客户 PO ' + customerPoForLine(row.orderLineId || '') + ' · ' : '' }}{{ row.itemNo }} · {{ row.packagingType }} {{ row.paperQuality }} · {{ row.location || '待核仓位' }} · 结存 {{ row.balance }}</option></select></label>
             <label v-if="!inventoryBulkMode" class="min-w-0 space-y-1.5"><span class="block text-xs font-bold text-slate-600">{{ inventoryOperationType === 'OUTBOUND' ? '出库数量' : '调整数量' }} *</span><input v-model.number="inventoryOperationQuantity" aria-label="库存作业数量" type="number" step="0.0001" :min="inventoryOperationType === 'OUTBOUND' ? 0.0001 : undefined" :placeholder="inventoryOperationType === 'OUTBOUND' ? '大于 0' : '盘盈正数 / 盘亏负数'" class="h-10 w-full rounded-lg border border-slate-200 px-3 text-right font-semibold outline-none focus:border-teal-500"></label>
             <label class="min-w-0 space-y-1.5"><span class="block text-xs font-bold text-slate-600">来源单据号 *</span><input v-model="inventoryOperationDocumentNo" aria-label="库存作业单据号" placeholder="例如 OUT-260811-001" class="h-10 w-full rounded-lg border border-slate-200 px-3 font-mono outline-none focus:border-teal-500"></label>
             <label v-if="!inventoryBulkMode" class="min-w-0 space-y-1.5"><span class="block text-xs font-bold text-slate-600">仓位</span><input :value="selectedInventoryBalance?.location" aria-label="库存作业仓位" readonly class="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3"></label>
@@ -5449,6 +5466,7 @@ function refreshDemo() {
                     </div>
                     <div v-else class="space-y-1">
                       <div class="break-all font-mono text-sm font-semibold">{{ row.contractNo || '—' }}</div>
+                      <div v-if="customerPoForLine(row.orderLineId)" class="break-all text-xs text-teal-700">客户 PO {{ customerPoForLine(row.orderLineId) }}</div>
                       <div class="break-all font-mono text-xs text-slate-500">货号 {{ row.itemNo || '—' }}</div>
                     </div>
                   </td>
@@ -5545,6 +5563,7 @@ function refreshDemo() {
       <div class="max-h-[88vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white shadow-2xl" role="dialog" :aria-modal="orderDetailPinned ? 'true' : undefined" aria-labelledby="order-detail-title">
         <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
           <div>
+            <p v-if="customerPoForOrder(orderDetailRow.id)" class="text-xs text-teal-700">客户 PO {{ customerPoForOrder(orderDetailRow.id) }}</p>
             <h2 id="order-detail-title" class="text-[18px] font-bold text-slate-950">订单明细 — {{ orderDetailRow.contractNo }} / {{ orderDetailRow.itemNo }}</h2>
             <p class="mt-1 text-[11px] text-slate-500">按合同查看纸品需求、实际入库和剩余待入库数量。<span class="ml-2 font-semibold text-teal-700">{{ orderDetailPinned ? '已固定显示' : '悬停预览 · 单击明细可固定' }}</span></p>
           </div>
@@ -5616,6 +5635,7 @@ function refreshDemo() {
             <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <CartonCustomerPicker v-model="orderForm.customerCode" :customers="customerRecords" :can-create="masterLoaded && masterWorkspace.can_manage" :disabled="editingOrderStructureLocked" @create="createOrderCustomer" />
               <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">纸箱供应商</span><input value="河源东康纸品有限公司（系统固定）" aria-label="纸箱供应商" disabled class="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-slate-500"></label>
+              <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">客户 PO（选填）</span><input v-model="orderForm.customerPo" aria-label="客户 PO" maxlength="128" :disabled="editingOrderStructureLocked" placeholder="同合同同货号时，用客户 PO 区分" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50"><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode && orderForm.customerPo" :rule="orderMasterRules.customer_po_rule" :value="orderForm.customerPo" label="客户 PO" /><span v-else class="block text-[9px] text-slate-400">选填；格式规则可在基础资料按客户设置</span></label>
               <CartonMasterLookup :records="masterLoaded ? masterWorkspace.records : []" :customer="orderForm.customerCode" :query="orderForm.contractNo" field="contract" :disabled="editingOrderStructureLocked || !masterLoaded" @select="orderForm.contractNo = $event.code"><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同号 *</span><input v-model="orderForm.contractNo" aria-label="合同号" :disabled="editingOrderStructureLocked" placeholder="例如 SC700145365" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-500"></label><template #hint><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode" :rule="masterDueRules(masterWorkspace.records, orderForm.customerCode).contract_rule" :value="orderForm.contractNo" label="合同号" /><span v-else class="mt-1.5 block text-[9px] text-slate-400">支持中英文、数字及 - _ . / # ( ) + &</span></template></CartonMasterLookup>
               <div class="relative space-y-1.5">
                 <CartonMasterLookup :records="masterLoaded ? masterWorkspace.records : []" :customer="orderForm.customerCode" :query="orderForm.itemNo" field="item" :disabled="editingOrderStructureLocked || !masterLoaded" @select="applyMaster($event)"><label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">货号 *</span><input v-model="orderForm.itemNo" aria-label="货号" :disabled="editingOrderStructureLocked" autocomplete="off" placeholder="例如 203302044" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-500" @focus="showHistoryItemSuggestions = historyItemSuggestionsLoading || historyItemSuggestions.length > 0" @keydown.esc="showHistoryItemSuggestions = false"></label><template #hint><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode" :rule="masterDueRules(masterWorkspace.records, orderForm.customerCode).item_rule" :value="orderForm.itemNo" label="货号" /></template></CartonMasterLookup>
