@@ -50,6 +50,7 @@ class MasterData(BaseModel):
     lead_days: int | None = Field(default=None, ge=0, le=365)
     customer_days: int | None = Field(default=None, ge=0, le=730)
     customer_days_disabled: bool = False
+    customer_po_rule: NumberRule = Field(default_factory=NumberRule)
     contract_rule: NumberRule = Field(default_factory=NumberRule)
     item_rule: NumberRule = Field(default_factory=NumberRule)
     warehouses: list[str] = Field(default_factory=list, max_length=100)

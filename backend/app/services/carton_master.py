@@ -31,17 +31,14 @@ def inventory_allowed(user, factory):
 
 
 def warehouse_access(db, user, factory):
-    record = db.scalar(select(Record).where(Record.factory_id == factory, Record.kind == "ACCESS", Record.code == user.id, Record.status == "ACTIVE"))
-    allowed = inventory_allowed(user, factory)
-    return json.loads(record.data_json).get("warehouses", []) if record and allowed else []
+    # Legacy ACCESS records remain historical evidence, never an authorization fallback.
+    return []
 
 
 def require_manage(db, user, factory, warehouse=None):
     if can_manage(user, factory):
         return
-    if warehouse and warehouse.upper() in warehouse_access(db, user, factory):
-        return
-    raise HTTPException(403, "修改基础资料需要本厂高级维护权限；仓位维护须在授权仓库范围内")
+    raise HTTPException(403, "修改基础资料需要本厂纸箱／仓管主管或仓管岗位的资料维护权限")
 
 
 def canonical_lines(lines):
@@ -146,10 +143,10 @@ def sync_history(db, factory):
                 old["item_nos"] = sorted(set(old.get("item_nos", [])) | {order.item_no})
                 if encoded(old) != row.data_json:
                     row.data_json = encoded(old); row.revision += 1
-            signature = digest(data)
+            signature = digest([data, order.customer_po]) if order.customer_po else digest(data)
             if (row.id, order.id, signature) not in sources:
                 evidence = {"order_no": order.order_no, "order_date": order.order_date,
-                            "contract_no": order.contract_no, "item_no": order.item_no, "customer_code": order.customer_code, "configuration": data}
+                            "contract_no": order.contract_no, "customer_po": order.customer_po, "item_no": order.item_no, "customer_code": order.customer_code, "configuration": data}
                 db.add(Source(id="CMS-" + uuid4().hex, factory_id=factory, record_id=row.id, order_id=order.id,
                               signature=signature, snapshot_json=encoded(evidence), occurred_at=order.updated_at))
                 sources.add((row.id, order.id, signature))
@@ -194,6 +191,8 @@ def save_record(db, user, payload: MasterSave, identifier=""):
     factory = payload.factory_id
     _lock_receipt_factory(db, factory)
     require_manage(db, user, factory)
+    if payload.kind == "ACCESS":
+        raise HTTPException(422, "已取消单独仓库授权，请按仓管或主管岗位维护本厂资料")
     data = payload.data.model_dump(mode="json")
     if payload.kind == "CONTRACT" and not payload.customer_code:
         raise HTTPException(422, "请选择客户")
@@ -269,7 +268,7 @@ def save_record(db, user, payload: MasterSave, identifier=""):
 def due_rules(db, factory, customer):
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "RULE", Record.status == "ACTIVE",
                                                Record.customer_code.in_(["", customer]))))
-    result = {"lead_days": 3, "customer_days": None, "contract_rule": {}, "item_rule": {}, "revision": ""}
+    result = {"lead_days": 3, "customer_days": None, "contract_rule": {}, "item_rule": {}, "customer_po_rule": {}, "revision": ""}
     for row in sorted(rows, key=lambda r: bool(r.customer_code)):
         data = json.loads(row.data_json)
         for key in ("lead_days", "customer_days"):
@@ -278,15 +277,17 @@ def due_rules(db, factory, customer):
         if data.get("customer_days_disabled"):
             result["customer_days"] = None
         if row.customer_code:
-            result.update({key: data.get(key, {}) for key in ("contract_rule", "item_rule")})
+            result.update({key: data.get(key, {}) for key in ("contract_rule", "item_rule", "customer_po_rule")})
         result["revision"] += f"{row.id}:{row.revision};"
     return result
 
 
-def number_warnings(rules, contract, item):
+def number_warnings(rules, contract, item, customer_po=""):
     from app.services.carton_number_templates import matches_template
     warnings = []
-    for key, name, value in (("contract_rule", "合同号", contract), ("item_rule", "货号", item)):
+    for key, name, value in (("contract_rule", "合同号", contract), ("item_rule", "货号", item), ("customer_po_rule", "客户 PO", customer_po)):
+        if key == "customer_po_rule" and not value:
+            continue
         rule = rules.get(key, {})
         if rule.get("mode", "OFF") == "OFF":
             continue
@@ -307,13 +308,13 @@ def number_warnings(rules, contract, item):
     return warnings
 
 
-def validate_order(db, factory, customer, contract, item, *, config_id="", config_revision=0):
+def validate_order(db, factory, customer, contract, item, *, customer_po="", config_id="", config_revision=0):
     stopped_contract = db.scalar(select(Record.id).where(Record.factory_id == factory, Record.kind == "CONTRACT",
         Record.customer_code == customer, Record.code == contract, Record.status == "INACTIVE"))
     if stopped_contract:
         raise HTTPException(422, "该合同已停用，请核对合同号或联系主管")
     rules = due_rules(db, factory, customer)
-    errors = [w["message"] for w in number_warnings(rules, contract, item) if w["blocking"]]
+    errors = [w["message"] for w in number_warnings(rules, contract, item, customer_po) if w["blocking"]]
     if errors:
         raise HTTPException(422, "；".join(errors))
     if config_id:
@@ -390,8 +391,6 @@ def save_warehouse(db, user, payload, *, rename=False):
     if name != old and db.scalar(select(CartonLocation.id).where(CartonLocation.factory_id == factory, CartonLocation.warehouse == name)):
         raise HTTPException(409, "目标仓库名称已存在，不能通过更名合并仓库")
     grants = list(db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "ACCESS")))
-    if name != old and any(name in json.loads(grant.data_json).get("warehouses", []) for grant in grants):
-        raise HTTPException(409, "目标名称已有维护授权，请先核对权限或使用其他仓库名称")
     if name != old:
         for row in rows:
             before = location_out(row)

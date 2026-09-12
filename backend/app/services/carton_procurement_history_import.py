@@ -44,6 +44,7 @@ HISTORY_ORDER_SUFFIXES = {".xlsx", ".xlsm", ".xls"}
 MAX_HISTORY_ORDER_GROUPS = 1_000
 
 HISTORY_ORDER_ALIASES = {
+    "customer_po": {"客户po", "客户po选填", "客户采购单号", "客户订单号", "customerpo"},
     "order_no": {
         "历史订单号",
         "历史订单号选填",
@@ -254,6 +255,7 @@ def _parse_rows(filename: str, content: bytes) -> tuple[list[dict[str, Any]], li
                     "source": source,
                     "order_no": order_no,
                     "contract_no": contract_no,
+                    "customer_po": _text(_cell(row, mapping, "customer_po")),
                     "customer_name": customer_name,
                     "item_no": item_no,
                     "product_name": _text(_cell(row, mapping, "product_name")),
@@ -286,6 +288,7 @@ def _group_rows(rows: list[dict[str, Any]]) -> OrderedDict[tuple[str, ...], list
                 " ".join(row["customer_name"].split()).casefold(),
                 row["contract_no"].casefold(),
                 row["item_no"].casefold(),
+                row.get("customer_po", "").casefold(),
             )
         )
         groups.setdefault(key, []).append(row)
@@ -298,6 +301,8 @@ def _group_rows(rows: list[dict[str, Any]]) -> OrderedDict[tuple[str, ...], list
 
     for group in groups.values():
         first = group[0]
+        if any(row.get("customer_po", "") != first.get("customer_po", "") for row in group):
+            raise HTTPException(422, "同历史订单号的客户 PO 不一致")
         signatures = set()
         for item in group:
             signature = item["line"].model_dump_json()
@@ -384,7 +389,7 @@ def _payload(factory: str, group: list[dict], customer) -> CartonOrderCreate:
     first=group[0]
     try:
         return CartonOrderCreate(factory_id=factory,customer_code=customer.customer_code,
-            customer_name=customer.customer_name,contract_no=first["contract_no"],item_no=first["item_no"],
+            customer_name=customer.customer_name,contract_no=first["contract_no"],item_no=first["item_no"],customer_po=first.get("customer_po", ""),
             product_name=first["product_name"],quantity_basis=first.get("quantity_basis","CALCULATED"),
             product_order_quantity=first["product_order_quantity"],order_date=first["order_date"],
             due_date=first["due_date"],customer_due_date=first.get("customer_due_date"),
@@ -399,11 +404,11 @@ def _preview(db: Session, factory: str, filename: str, content: bytes):
     customers=db.scalars(select(CartonCustomer).where(CartonCustomer.factory_id==factory)).all()
     existing=db.scalars(select(CartonOrder).where(CartonOrder.factory_id==factory)).all()
     suppliers=db.scalars(select(CartonSupplier).where(CartonSupplier.factory_id==factory)).all()
-    evidence={"factory":factory,"file":hashlib.sha256(content).hexdigest(),"parser":3,
+    evidence={"factory":factory,"file":hashlib.sha256(content).hexdigest(),"parser":4,
         "masters":sorted((r.id,r.kind,r.code,r.revision,r.status,r.data_json) for r in masters),
         "customers":sorted((r.customer_code,r.customer_name,r.status) for r in customers),
         "suppliers":sorted((r.id,r.supplier_code,r.supplier_name,r.status) for r in suppliers),
-        "orders":sorted((r.id,r.order_no,r.customer_code,r.contract_no,r.item_no,r.revision) for r in existing)}
+        "orders":sorted((r.id,r.order_no,r.customer_code,r.contract_no,r.item_no,r.customer_po,r.revision) for r in existing)}
     fingerprint=hashlib.sha256(json.dumps(evidence,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     result={"factory_id":factory,"original_filename":filename,"source_fingerprint":fingerprint,
         "row_count":0,"group_count":0,"line_count":0,"ready_count":0,"draft_count":0,"incomplete_count":0,
@@ -422,19 +427,20 @@ def _preview(db: Session, factory: str, filename: str, content: bytes):
         return result,[]
     result.update(row_count=len({r["source"] for r in rows}),group_count=len(groups),line_count=len(rows),warnings=warnings)
     order_nos={o.order_no.casefold() for o in existing}
-    identities={(o.customer_code,o.contract_no.casefold(),o.item_no.casefold()) for o in existing}
+    identities={(o.customer_code,o.contract_no.casefold(),o.item_no.casefold(),o.customer_po.casefold()) for o in existing}
     prepared=[]
     for group in groups.values():
         first=group[0]
         try:
             customer=get_active_customer_by_name(db,factory,first["customer_name"])
-            identity=(customer.customer_code,first["contract_no"].casefold(),first["item_no"].casefold())
+            identity=(customer.customer_code,first["contract_no"].casefold(),first["item_no"].casefold(),first.get("customer_po", "").casefold())
             # New explicit IDs identify independent batches; legacy retry behavior is unchanged.
             explicit_batch=first.get("quantity_basis")=="EXPLICIT" and bool(first["order_no"])
             duplicate=(first["order_no"].casefold() in order_nos if explicit_batch else
                 bool(first["order_no"] and first["order_no"].casefold() in order_nos) or identity in identities)
+            duplicate = duplicate or bool(first.get("customer_po") and identity in identities)
             if not duplicate:
-                validate_master_order(db,factory,customer.customer_code,first["contract_no"],first["item_no"])
+                validate_master_order(db,factory,customer.customer_code,first["contract_no"],first["item_no"],customer_po=first.get("customer_po", ""))
             _fill_master(db,factory,group)
             payload=_payload(factory,group,customer)
             payload.supplier_id=supplier.id

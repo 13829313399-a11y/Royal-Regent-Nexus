@@ -21,7 +21,7 @@ MAX_IMPORT_ROWS = 5_000
 MAX_PREVIEW_ROWS = 500
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
-DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v5"
+DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v6-po"
 PACKAGING_TYPES = (
     "普通箱",
     "压线卡",
@@ -43,6 +43,7 @@ PACKAGING_TYPES = (
 
 
 WEEKLY_ALIASES = {
+    "customer_po": {"客户po", "客户采购单号", "客户订单号", "customerpo"},
     "contract_no": {"reference", "合同号", "合同", "sc", "参考号"},
     "po_numbers": {"pono", "po", "po号", "客户po", "订单号"},
     "customer_name": {"客名国家", "客名", "客户", "国家", "customer"},
@@ -54,6 +55,7 @@ WEEKLY_ALIASES = {
 }
 
 DELIVERY_ALIASES = {
+    "customer_po": {"客户po", "客户采购单号", "客户订单号", "customerpo"},
     "delivery_date": {"日期", "送货日期", "入库日期", "date"},
     "delivery_note_no": {"入库单号", "送货单号", "送货单", "dnno", "dn"},
     "contract_no": {"po", "合同号", "合同", "pono", "订单编号"},
@@ -644,6 +646,7 @@ def _parse_weekly(filename: str, content: bytes) -> dict[str, Any]:
                     "source_row": source_row,
                     "reference": contract_no,
                     "contract_no": contract_no,
+                    "customer_po": _text(_cell(row, mapping, "customer_po")),
                     "po_numbers": _text(_cell(row, mapping, "po_numbers")),
                     "customer_name": _text(_cell(row, mapping, "customer_name")),
                     "item_no": item_no,
@@ -686,6 +689,7 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes) -> dict[str, Any]
                     "delivery_note_no": delivery_note_no,
                     "delivery_date": _date_text(_cell(row, mapping, "delivery_date"), datemode),
                     "contract_no": contract_no,
+                    "customer_po": _text(_cell(row, mapping, "customer_po")),
                     "item_no": item_no,
                     "packaging_type": packaging_type,
                     "paper_quality": paper_quality,
@@ -799,7 +803,10 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
             )
         ).all()
     )
+    all_joined = joined
     for row in rows:
+        po_key = str(row.get("customer_po") or "").strip().casefold()
+        joined = [(line, order) for line, order in all_joined if not po_key or order.customer_po.strip().casefold() == po_key]
         contract_key = _identity(row.get("contract_no"))
         item_key = _identity(row.get("item_no"))
         exact = [
@@ -823,6 +830,12 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                 candidates = by_item
                 basis = "唯一货号"
 
+        # Missing PO must not be silently resolved by material differences across orders.
+        ambiguous_po_orders = not po_key and len({order.id for _, order in exact}) > 1 and any(order.customer_po for _, order in exact)
+        if ambiguous_po_orders:
+            row["match_status"] = "AMBIGUOUS"
+            row["suggestion"] = "同合同货号存在多个客户 PO，请填写客户 PO 或人工选择订单"
+            continue
         if import_type == "DELIVERY_NOTE" and candidates:
             packaging = _text(row.get("packaging_type"))
             paper_quality = _text(row.get("paper_quality"))
@@ -892,6 +905,7 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                     "customer_code": order.customer_code,
                     "customer_name": order.customer_name,
                     "contract_no": order.contract_no,
+                    "customer_po": order.customer_po,
                     "item_no": order.item_no,
                     "packaging_type": line.packaging_type,
                     "paper_quality": line.paper_quality,

@@ -41,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v24"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v25"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 105
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 98
+    assert len(registered_codes) == 106
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 99
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
