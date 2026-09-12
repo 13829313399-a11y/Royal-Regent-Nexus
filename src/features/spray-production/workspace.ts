@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { sprayProductionApi as api, type SprayEntity, type SpraySummary } from '@/api/sprayProduction'
 import { createRandomUuid } from '@/lib/randomUuid'
 
@@ -23,16 +23,20 @@ export const useSprayWorkspace = defineStore('spray-production', () => {
   const balances = shallowRef<Record<string, Record<string, string>>>({})
   const loading = ref(false), busy = ref(false), error = ref(''), notice = ref(''), selection = ref('')
   const truncated = ref(false)
+  const preferences = shallowRef<Entity[]>([])
   let controller: AbortController | undefined
   let generation = 0
   const pendingOperations = new Map<string, string>()
   const items = (kind: string) => data.value[kind] ?? []
-  const find = (kind: string, id: unknown) => items(kind).find(v => v.id === id)
+  const indices=computed(()=>Object.fromEntries(Object.entries(data.value).map(([kind,values])=>[kind,new Map(values.map(v=>[v.id,v]))])))
+  const find = (kind: string, id: unknown) => indices.value[kind]?.get(String(id??''))
   const can = (permission: string) => summary.value?.permissions.includes(permission) ?? false
   const lineLabel = (line: Entity | undefined) => `${str(line, 'product_no')} · ${str(line, 'part_name')}`
   const batchLabel = (batch: Entity | undefined) => `${lineLabel(find('lines', batch?.line_id))} / ${str(batch, 'document_no')} #${str(batch, 'source_line')}`
   const taskLabel = (task: Entity | undefined) => `${batchLabel(find('batches', task?.batch_id))} · ${str(find('steps', task?.step_id), 'name')}`
   const stateName = (key: string) => {
+    if(key==='route:')return '工艺起点 · 待投入'
+    if(key.startsWith('route:'))return '工序可流转 · 已完成 '+(key.slice(6).split(',').filter(Boolean).map(id=>str(find('steps',id),'name')).join('、')||'工艺起点')
     const [state, id] = key.split(':')
     const label = { ready: '待投入', reserved: '已预留', running: '执行占用', rework: '待返工', held: '待判', finished: '合格待交付', scrap: '报废', shipped: '净已送出', rejected: '拒收', 'receipt-held': '来料待检', 'return-held': '客户退回待判' }[state ?? ''] ?? state
     return `${label}${id && ['ready', 'rework', 'held'].includes(state ?? '') ? ' · ' + str(find('steps', id), 'name') : ''}`
@@ -41,19 +45,36 @@ export const useSprayWorkspace = defineStore('spray-production', () => {
     controller?.abort(); const current = ++generation; controller = new AbortController()
     const changed = factory.value !== scope
     factory.value = scope; error.value = ''; loading.value = true
-    if (changed) { data.value = {}; balances.value = {}; summary.value = null; selection.value = ''; notice.value = '' }
+    if (changed) { preferences.value = []; data.value = {}; balances.value = {}; summary.value = null; selection.value = ''; notice.value = '' }
     if (!factories.some(f => f.id === scope)) { loading.value = false; return }
     try {
       const signal = controller.signal
       const snapshot = await api.summary(scope, signal)
-      const collections = ['orders', 'lines', 'steps', 'resources', 'batches', 'tasks', 'reports', 'report-lines', 'shipments', 'shipment-lines', 'returnables']
-      if (snapshot.permissions.includes('cost_read')) collections.push('rates', 'purchases', 'material-events', 'settlements', 'imports')
-      const [pages, stock] = await Promise.all([Promise.all(collections.map(async kind => [kind, await api.collection(scope, kind, signal)] as const)), api.balances(scope, signal)])
+      const collections = ['orders', 'lines', 'steps', 'resources', 'shared-resources', 'batches', 'tasks', 'reports', 'report-lines', 'shipments', 'shipment-lines', 'returnables']
+      if (snapshot.permissions.includes('cost_read')) collections.push('rates', 'purchases', 'material-events', 'settlements', 'imports', 'payrolls', 'adjustments')
+      const pages = await Promise.all(collections.map(async kind => {
+        const first = await api.collection(scope,kind,signal)
+        for(let page=2; first.items.length<first.total;page++) {
+          const next=await api.collection(scope,kind,signal,page)
+          if(!next.items.length)break
+          first.items.push(...next.items)
+        }
+        return [kind,first] as const
+      }))
+      const batchCount=pages.find(([kind])=>kind==='batches')?.[1].total ?? 0
+      const stock=Object.assign({},...await Promise.all(Array.from({length:Math.max(1,Math.ceil(batchCount/1000))},(_,i)=>api.balances(scope,signal,i+1)))) as Record<string,Record<string,string>>
       if (current !== generation) return
       summary.value = snapshot; data.value = Object.fromEntries(pages.map(([kind, page]) => [kind, page.items])); balances.value = stock
       truncated.value = pages.some(([, page]) => page.total > page.items.length)
     } catch (e) { if (current === generation && !controller.signal.aborted) error.value = errorText(e) }
     finally { if (current === generation) loading.value = false }
+  }
+  async function loadPreferences() { const scope=factory.value;try {const result=await api.preferences(scope);if(factory.value===scope)preferences.value=result} catch(e){if(factory.value===scope)error.value=errorText(e)} }
+  async function savePreference(kind:string,name:string,payload:Record<string,unknown>) {
+    const old=preferences.value.find(v=>v.kind===kind&&v.name===name)
+    const result=await command('preference-save',{kind,name,payload,expected_revision:old?.revision??0})
+    if(result)await loadPreferences()
+    return result
   }
   async function command(action: string, payload: Record<string, unknown>) {
     if (busy.value) return null
@@ -66,11 +87,11 @@ export const useSprayWorkspace = defineStore('spray-production', () => {
       const result = await api.command(scope, action, { operation_id: operationId, ...payload })
       pendingOperations.delete(signature)
       if (factory.value !== scope) return result
-      notice.value = '记录已保存'; await load(scope)
+      notice.value = '记录已保存'; if(action!=='preference-save')await load(scope)
       return result
     } catch (e) { if (factory.value === scope) error.value = errorText(e); return null }
     finally { busy.value = false }
   }
-  function clear() { controller?.abort(); generation++; factory.value = ''; summary.value = null; data.value = {}; balances.value = {}; selection.value = ''; error.value = '' }
-  return { factory, summary, data, balances, loading, busy, error, notice, selection, truncated, items, find, can, lineLabel, batchLabel, taskLabel, stateName, load, command, clear }
+  function clear() { preferences.value=[];controller?.abort(); generation++; factory.value = ''; summary.value = null; data.value = {}; balances.value = {}; selection.value = ''; error.value = '' }
+  return { factory, summary, data, balances, loading, busy, error, notice, selection, truncated, preferences, loadPreferences, savePreference, items, find, can, lineLabel, batchLabel, taskLabel, stateName, load, command, clear }
 })

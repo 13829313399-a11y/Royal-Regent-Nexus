@@ -1007,6 +1007,46 @@ def test_pricing_baseline_is_readable_by_sales_owner_and_only_managed_by_sales_s
         assert denied_engineering.status_code == 403
 
 
+def test_pricing_baseline_freight_round_trip_zero_costs_and_invalid_rows(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_freight_round_trip", "sales_customer_supervisor", "sales-business")
+        url = "/api/internal-quotes/pricing-baseline"
+        params = {"factory_id": "huaxing", "workshop_code": "huaxing-workshop"}
+        initial = client.get(url, params=params)
+        assert initial.status_code == 200, initial.text
+        baseline = initial.json()
+        routes = [
+            {**row, "freight_hkd": "4620.5", "lifting_hkd": "0"}
+            for row in baseline["freight_routes"]
+        ]
+        routes.append({
+            "route_key": "custom_zero", "route_name": "自提", "capacity_key": "自提车容量",
+            "freight_hkd": "0", "lifting_hkd": "0",
+        })
+        payload = {
+            "revision": baseline["revision"], "workshop_name": baseline["workshop_name"],
+            "material_prices": baseline["material_prices"], "machine_prices": baseline["machine_prices"],
+            "freight_routes": routes,
+        }
+        saved = client.put(url, params=params, json=payload)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["freight_routes"] == routes
+        assert saved.json()["revision"] == baseline["revision"] + 1
+        reread = client.get(url, params=params)
+        assert reread.status_code == 200, reread.text
+        assert reread.json()["freight_routes"] == routes
+
+        payload["revision"] = saved.json()["revision"]
+        for field, value in [("freight_hkd", ""), ("lifting_hkd", ""), ("freight_hkd", "-1")]:
+            invalid_routes = [*routes[:-1], {**routes[-1], field: value}]
+            rejected = client.put(url, params=params, json={**payload, "freight_routes": invalid_routes})
+            assert rejected.status_code == 422, rejected.text
+        preserved = client.get(url, params=params)
+        assert preserved.status_code == 200, preserved.text
+        assert preserved.json()["revision"] == saved.json()["revision"]
+        assert preserved.json()["freight_routes"] == routes
+
+
 def test_create_validates_mandatory_sections_and_can_select_optional_departments(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_optional_create", "sales_customer_owner", "sales-business")

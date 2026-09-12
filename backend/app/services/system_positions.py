@@ -356,6 +356,7 @@ WAREHOUSE_PERMISSION_CODES = (
     "molding_sample:warehouse_requisition",
     "molding_sample:inventory_issue",
     "molding_sample:notification_read",
+    "carton_procurement:master_manage",
     *CARTON_OPERATION_PERMISSION_CODES,
 )
 
@@ -374,13 +375,13 @@ CARTON_WAREHOUSE_PERMISSION_CODES = (
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "carton_mark:read",
     "carton_mark:template_upload",
+    "carton_procurement:master_manage",
     *CARTON_OPERATION_PERMISSION_CODES,
 )
 CARTON_SUPERVISOR_PERMISSION_CODES = (
     *CARTON_WAREHOUSE_PERMISSION_CODES,
     CARTON_ORDER_ADJUST_PERMISSION_CODE,
     CARTON_CUSTOMER_MANAGE_PERMISSION_CODE,
-    "carton_procurement:master_manage",
     CARTON_MARK_CUSTOMER_MANAGE_PERMISSION_CODE,
     CARTON_MARK_TEMPLATE_RELEASE_PERMISSION_CODE,
     "carton_mark:photo_upload",

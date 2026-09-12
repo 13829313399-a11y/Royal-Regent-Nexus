@@ -65,7 +65,7 @@ class CartonOrder(Base):
     __table_args__ = (
         UniqueConstraint("factory_id", "order_no", name="uq_carton_order_factory_no"),
         UniqueConstraint("id", "factory_id", name="uq_carton_order_id_factory"),
-        CheckConstraint("product_order_quantity > 0", name="ck_carton_order_product_quantity"),
+        CheckConstraint("(quantity_basis = 'CALCULATED' AND product_order_quantity IS NOT NULL AND product_order_quantity > 0) OR (quantity_basis = 'EXPLICIT' AND (product_order_quantity IS NULL OR product_order_quantity > 0))", name="ck_carton_order_product_quantity"),
         CheckConstraint("revision >= 1", name="ck_carton_order_revision"),
         CheckConstraint(
             "status IN ('DRAFT', 'PENDING_SUPPLIER', 'CONFIRMED', "
@@ -82,11 +82,13 @@ class CartonOrder(Base):
     customer_code: Mapped[str] = mapped_column(String(64), index=True)
     customer_name: Mapped[str] = mapped_column(String(255), index=True)
     supplier_id: Mapped[str] = mapped_column(String(96), index=True)
+    customer_po: Mapped[str] = mapped_column(String(128), default="", server_default="")
     supplier_name_snapshot: Mapped[str] = mapped_column(String(255))
     contract_no: Mapped[str] = mapped_column(String(128), index=True)
     item_no: Mapped[str] = mapped_column(String(128), index=True)
     product_name: Mapped[str] = mapped_column(String(255), default="")
-    product_order_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    quantity_basis: Mapped[str] = mapped_column(String(16), default="CALCULATED", server_default="CALCULATED")
+    product_order_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     order_date: Mapped[str] = mapped_column(String(10), index=True)
     customer_due_date: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
     master_config_id: Mapped[str] = mapped_column(String(96), default="")
@@ -117,7 +119,7 @@ class CartonOrderLine(Base):
         ),
         CheckConstraint("line_no >= 1", name="ck_carton_order_line_no"),
         CheckConstraint("usage_quantity > 0", name="ck_carton_order_line_usage"),
-        CheckConstraint("required_quantity > 0", name="ck_carton_order_line_required"),
+        CheckConstraint("required_quantity >= 0", name="ck_carton_order_line_required"),
         CheckConstraint("unit_price >= 0", name="ck_carton_order_line_unit_price"),
         Index("ix_carton_order_line_factory_item", "factory_id", "item_no"),
         Index(
@@ -142,7 +144,7 @@ class CartonOrderLine(Base):
     specification: Mapped[str] = mapped_column(String(255), index=True)
     dimension_unit: Mapped[str] = mapped_column(String(16), default="")
     # 兼容历史数据库列名；自迁移 20260818_0079 起保存“每箱个数”。
-    usage_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 8))
+    usage_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     required_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4))
     unit: Mapped[str] = mapped_column(String(32))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=Decimal(0))
@@ -178,9 +180,9 @@ class CartonPurchaseOrderIssue(Base):
     document_type: Mapped[str] = mapped_column(String(24), index=True)
     issue_sequence: Mapped[int] = mapped_column(Integer)
     source_order_revision: Mapped[int] = mapped_column(Integer)
-    before_product_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    after_product_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
-    product_quantity_delta: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    before_product_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    after_product_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    product_quantity_delta: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     snapshot_json: Mapped[str] = mapped_column(Text)
     generated_by: Mapped[str] = mapped_column(String(64), index=True)
     generated_by_name: Mapped[str] = mapped_column(String(128), default="")
@@ -240,6 +242,7 @@ class CartonReceipt(Base):
     receipt_no: Mapped[str] = mapped_column(String(64), index=True)
     delivery_note_no: Mapped[str] = mapped_column(String(128), index=True)
     delivery_date: Mapped[str] = mapped_column(String(10), index=True)
+    acceptance_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     supplier_id: Mapped[str] = mapped_column(String(96), index=True)
     supplier_name_snapshot: Mapped[str] = mapped_column(String(255))
     import_batch_id: Mapped[str | None] = mapped_column(String(96), nullable=True, index=True)

@@ -38,10 +38,12 @@ export interface CartonOrderLineResponse {
   paper_quality: string
   specification: string
   dimension_unit: string
-  usage_quantity: string
+  usage_quantity: string | null
   required_quantity: string
   received_quantity: string
   remaining_quantity: string
+  pending_received_quantity?: string
+  maximum_reducible_quantity?: string
   unit: string
   unit_price: string
   currency: string
@@ -50,6 +52,7 @@ export interface CartonOrderLineResponse {
 }
 
 export interface CartonOrderResponse {
+  customer_po?: string
   usage_status?: string
   usage_status_label?: string
   id: string
@@ -62,7 +65,8 @@ export interface CartonOrderResponse {
   contract_no: string
   item_no: string
   product_name: string
-  product_order_quantity: string
+  quantity_basis?: 'CALCULATED' | 'EXPLICIT'
+  product_order_quantity: string | null
   order_date: string
   customer_due_date?: string | null
   safety_lead_days?: number
@@ -76,7 +80,7 @@ export interface CartonOrderResponse {
   updated_by_name: string
   created_at: string
   updated_at: string
-  maximum_reducible_quantity?: string
+  maximum_reducible_quantity?: string | null
   lines: CartonOrderLineResponse[]
 }
 
@@ -90,9 +94,9 @@ export interface CartonPurchaseOrderIssueResponse {
   document_type: CartonPurchaseOrderDocumentType
   issue_sequence: number
   source_order_revision: number
-  before_product_quantity: string
-  after_product_quantity: string
-  product_quantity_delta: string
+  before_product_quantity: string | null
+  after_product_quantity: string | null
+  product_quantity_delta: string | null
   generated_by: string
   generated_by_name: string
   generated_at: string
@@ -103,7 +107,7 @@ export interface CartonPurchaseOrderContextResponse {
   order_no: string
   order_revision: number
   pending_type: 'NONE' | 'INITIAL' | 'APPEND' | 'REDUCE' | 'ADJUSTMENT'
-  pending_product_quantity: string
+  pending_product_quantity: string | null
   pending_line_count: number
   can_generate: boolean
   latest_document_no: string
@@ -112,6 +116,7 @@ export interface CartonPurchaseOrderContextResponse {
 }
 
 export interface CartonOrderCreateRequest {
+  customer_po?: string
   master_config_id?: string
   master_config_revision?: number
   factory_id: string
@@ -121,7 +126,8 @@ export interface CartonOrderCreateRequest {
   contract_no: string
   item_no: string
   product_name?: string
-  product_order_quantity: number
+  quantity_basis?: 'CALCULATED' | 'EXPLICIT'
+  product_order_quantity: number | null
   order_date: string
   customer_due_date?: string | null
   due_date: string
@@ -132,7 +138,8 @@ export interface CartonOrderCreateRequest {
     paper_quality: string
     specification: string
     dimension_unit: string
-    usage_quantity: number
+    usage_quantity: number | null
+    required_quantity?: number
     unit: string
     unit_price?: number
     currency?: string
@@ -166,7 +173,7 @@ export interface CartonOrderHistorySuggestionResponse {
   latest_order_no: string
   latest_contract_no: string
   latest_order_date: string
-  latest_product_order_quantity: string
+  latest_product_order_quantity: string | null
   order_count: number
   match_type: 'EXACT' | 'PREFIX' | 'CONTAINS' | 'SIMILAR'
   match_score: number
@@ -176,7 +183,7 @@ export interface CartonOrderHistorySuggestionResponse {
     paper_quality: string
     specification: string
     dimension_unit: string
-    usage_quantity: string
+    usage_quantity: string | null
     unit: string
     unit_price: string
     currency: string
@@ -197,6 +204,24 @@ export interface CartonHistoryInventoryImportResponse {
   duplicate: boolean
   movement_ids: string[]
   warnings: string[]
+}
+
+export interface OpeningInventoryOptions {
+  customer_name: string
+  warehouse: string
+  snapshot_date?: string
+  dimension_unit: 'cm' | 'in'
+  currency: string
+}
+export interface OpeningInventoryPreview {
+  factory_id: string; original_filename: string; source_fingerprint: string
+  row_count: number; skipped_count: number; missing_price_count: number
+  warnings: string[]; errors: string[]
+  rows: Array<{ source: string; customer_name: string; contract_no: string; item_no: string
+    packaging_type: string; paper_quality: string; specification: string; unit: string
+    opening_quantity: string; unit_price: string | null; amount: string | null
+    currency: string; location: string; warehouse?: string; original_inbound_at?: string; occurred_at?: string; status: 'READY' | 'DUPLICATE' | 'ZERO'; warnings: string[] }>
+  totals: Array<{ unit: string; currency: string; quantity: string; amount: string | null; missing_price_count: number }>
 }
 
 export interface CartonInventoryMovementResponse {
@@ -235,6 +260,11 @@ export interface CartonInventoryMovementResponse {
 }
 
 export interface CartonInventoryBalanceResponse {
+  inbound_quantity?: string | null
+  outbound_quantity?: string | null
+  opening_quantity?: string | null
+  transfer_quantity?: string | null
+  adjustment_quantity?: string | null
   cost_status?: string
   cost_currency?: string
   cost_amount?: string | null
@@ -376,6 +406,7 @@ export interface CartonImportBatchResponse {
 }
 
 export interface CartonImportPreviewRow {
+  customer_po?: string
   source_sheet?: string
   source_row?: number
   delivery_note_no?: string
@@ -417,6 +448,7 @@ export interface CartonReceiptResponse {
   receipt_no: string
   delivery_note_no: string
   delivery_date: string
+  acceptance_date?: string | null
   supplier_id: string
   supplier_name: string
   import_batch_id: string | null
@@ -587,10 +619,11 @@ export const cartonProcurementApi = {
   async appendOrder(
     factoryId: string,
     order: CartonOrderResponse,
-    additionalQuantity: number,
+    additionalQuantity: number | null,
     reason: string,
     dueDate?: string,
     customerDueDate?: string,
+    lineQuantities?: Array<{ order_line_id: string; required_quantity: number }>,
   ) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/append`,
@@ -598,6 +631,7 @@ export const cartonProcurementApi = {
         factory_id: factoryId,
         expected_revision: order.revision,
         additional_quantity: additionalQuantity,
+        ...(lineQuantities ? { line_quantities: lineQuantities } : {}),
         reason,
         customer_due_date: customerDueDate || null,
         due_date: dueDate || null,
@@ -608,8 +642,9 @@ export const cartonProcurementApi = {
   async reduceOrder(
     factoryId: string,
     order: CartonOrderResponse,
-    reductionQuantity: number,
+    reductionQuantity: number | null,
     reason: string,
+    lineQuantities?: Array<{ order_line_id: string; required_quantity: number }>,
   ) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/reduce`,
@@ -617,6 +652,7 @@ export const cartonProcurementApi = {
         factory_id: factoryId,
         expected_revision: order.revision,
         reduction_quantity: reductionQuantity,
+        ...(lineQuantities ? { line_quantities: lineQuantities } : {}),
         reason,
       },
     )
@@ -644,9 +680,15 @@ export const cartonProcurementApi = {
     })
     return response.data
   },
-  async uploadHistoryOrders(factoryId: string, file: File) {
+  async previewHistoryOrders(factoryId: string, file: File) {
     const form = new FormData()
     form.append('file', file)
+    return (await http.post<CartonHistoryOrderPreview>('/carton-procurement/history-orders/preview', form, { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } })).data
+  },
+  async uploadHistoryOrders(factoryId: string, file: File, fingerprint?: string) {
+    const form = new FormData()
+    form.append('file', file)
+    if (fingerprint) form.append('expected_preview_fingerprint', fingerprint)
     const response = await http.post<CartonHistoryOrderImportResponse>(
       '/carton-procurement/orders/history-imports',
       form,
@@ -800,9 +842,17 @@ export const cartonProcurementApi = {
     )
     return response.data
   },
-  async uploadHistoryInventory(factoryId: string, file: File) {
+  async previewHistoryInventory(factoryId: string, file: File, options: OpeningInventoryOptions) {
     const form = new FormData()
     form.append('file', file)
+    form.append('options', JSON.stringify(options))
+    return (await http.post<OpeningInventoryPreview>('/carton-procurement/inventory/history-imports/preview', form, { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } })).data
+  },
+  async uploadHistoryInventory(factoryId: string, file: File, options?: OpeningInventoryOptions, fingerprint?: string) {
+    const form = new FormData()
+    form.append('file', file)
+    if (options) form.append('options', JSON.stringify(options))
+    if (fingerprint) form.append('expected_preview_fingerprint', fingerprint)
     const response = await http.post<CartonHistoryInventoryImportResponse>(
       '/carton-procurement/inventory/history-imports',
       form,
@@ -890,6 +940,7 @@ export const cartonProcurementApi = {
     factory_id: string
     delivery_note_no: string
     delivery_date: string
+    acceptance_date?: string
     import_batch_id: string | null
     note: string
     lines: Array<{
@@ -984,4 +1035,16 @@ export const cartonProcurementApi = {
     })
     return response.data.items
   },
+}
+
+export interface CartonHistoryOrderPreview {
+  supplier_id?: string; supplier_name?: string;
+  factory_id: string; original_filename: string; source_fingerprint: string;
+  row_count: number; group_count: number; line_count: number; ready_count: number; draft_count: number; skipped_count: number;
+  warnings: string[]; errors: string[];
+  orders: Array<{ customer_po?: string; source_rows: string[]; order_no: string; customer_name: string; contract_no: string; item_no: string;
+    product_name: string; product_order_quantity: string | null; order_date: string; due_date: string | null; customer_due_date: string | null;
+    status: string; quantity_basis: string; duplicate: boolean; ready: boolean; warnings: string[];
+    lines: Array<{ packaging_type: string; paper_quality: string; specification: string; dimension_unit: string;
+      usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; note: string }> }>
 }

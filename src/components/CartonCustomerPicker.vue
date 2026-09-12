@@ -20,14 +20,16 @@ function choose(code: string) { emit('update:modelValue', code); root.value?.que
 function leave(event: FocusEvent) { if (!root.value?.contains(event.relatedTarget as Node | null)) open.value = false }
 </script>
 <template>
-  <div ref="root" class="relative space-y-1.5" @focusout="leave" @keydown.esc.stop="open = false">
-    <label class="block"><span class="text-[11px] font-bold text-slate-600">客户 *</span><input :value="query" aria-label="订单客户" autocomplete="off" :disabled="disabled" placeholder="输入客户名称搜索，再选择" class="mt-1.5 h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50" @input="input" @focus="open = true"></label>
+  <div ref="root" class="self-start space-y-1.5" @focusout="leave" @keydown.esc.stop="open = false">
+    <div class="relative">
+    <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">客户 *</span><input :value="query" aria-label="订单客户" autocomplete="off" :disabled="disabled" placeholder="输入客户名称搜索，再选择" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50" @input="input" @focus="open = true"></label>
     <div v-if="open && !disabled" class="absolute left-0 top-full z-40 max-h-64 w-full overflow-auto rounded-lg border border-teal-200 bg-white p-1.5 shadow-lg" aria-label="客户候选">
       <button v-for="row in matches" :key="row.id" type="button" :aria-label="`选择客户 ${row.customer_name}`" class="block w-full rounded-md p-2 text-left text-xs hover:bg-teal-50 focus:bg-teal-50" @click="choose(row.customer_code)">{{ row.customer_name }}</button>
       <p v-if="!matches.length" class="p-2 text-xs text-slate-500">没有匹配的启用客户。</p>
       <p v-if="existing?.status === 'INACTIVE'" class="p-2 text-xs text-amber-700">同名客户已停用，请联系有权限的人员核对启用。</p>
       <button v-if="canCreate && query.trim() && !existing" type="button" class="mt-1 block w-full rounded-md border border-teal-200 p-2 text-left text-xs text-teal-700" @click="open = false; emit('create', query.trim())">新增客户：{{ query.trim() }}</button>
       <p v-else-if="!canCreate && !matches.length && !existing" class="p-2 text-xs text-slate-500">请联系有高级维护权限的人员新增客户。</p>
+    </div>
     </div>
     <p v-if="query && !modelValue" class="text-[10px] text-amber-700">请从候选中选择，或新增并保存客户。</p>
   </div>

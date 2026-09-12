@@ -276,6 +276,7 @@ ROLE_PERMISSIONS = {
         "molding_sample:warehouse_requisition",
         "molding_sample:inventory_issue",
         "molding_sample:notification_read",
+        "carton_procurement:master_manage",
         "carton_procurement:read",
         "carton_procurement:order_write",
         "carton_procurement:receipt_write",
@@ -287,6 +288,7 @@ ROLE_PERMISSIONS = {
     "carton_warehouse_keeper": {
         "carton_mark:read",
         "carton_mark:template_upload",
+        "carton_procurement:master_manage",
         "carton_procurement:read",
         "carton_procurement:order_write",
         "carton_procurement:receipt_write",
@@ -975,6 +977,74 @@ def seed_raw_material_write_default_grant_once(db: Session, now: str) -> int:
     db.add(
         AuthIamState(
             key=RAW_MATERIAL_WRITE_DEFAULT_GRANT_MARKER,
+            value_json=json.dumps(
+                {
+                    "completed_at": now,
+                    "created_role_permission_count": created_count,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    return created_count
+
+
+def seed_carton_master_default_grants_once(db: Session, now: str) -> int:
+    """Apply the approved carton-master default to existing role templates once."""
+    if db.get(AuthIamState, "carton_master_operator_grants_v1") is not None:
+        return 0
+
+    permission = db.scalar(select(AuthPermission).where(AuthPermission.code == "carton_procurement:master_manage"))
+    if permission is None:
+        return 0
+    created_count = 0
+    updated_role_ids: set[str] = set()
+
+    if permission is not None:
+        for role_id in ("warehouse_keeper", "carton_warehouse_keeper"):
+            if db.get(AuthRole, role_id) is None:
+                continue
+            role_permission_id = f"{role_id}:{permission.id}"
+            if db.get(AuthRolePermission, role_permission_id) is not None:
+                continue
+            db.add(
+                AuthRolePermission(
+                    id=role_permission_id,
+                    role_id=role_id,
+                    permission_id=permission.id,
+                )
+            )
+            created_count += 1
+            updated_role_ids.add(role_id)
+
+    db.flush()
+
+    if updated_role_ids:
+        for role_id in updated_role_ids:
+            metadata = db.get(AuthRoleMetadata, role_id)
+            if metadata is not None:
+                metadata.version += 1
+                metadata.updated_at = now
+
+        affected_user_ids = {
+            binding.user_id
+            for binding in db.scalars(
+                select(AuthUserRole).where(AuthUserRole.role_id.in_(updated_role_ids))
+            ).all()
+        }
+        for user_id in affected_user_ids:
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+
+    db.add(
+        AuthIamState(
+            key="carton_master_operator_grants_v1",
             value_json=json.dumps(
                 {
                     "completed_at": now,
@@ -1762,6 +1832,7 @@ def seed_auth_defaults(db: Session) -> None:
     db.flush()
     seed_iam_sidecars(db, now)
     seed_raw_material_write_default_grant_once(db, now)
+    seed_carton_master_default_grants_once(db, now)
     seed_internal_quote_default_grants_once(db, now)
     seed_internal_quote_self_review_grants_once(db, now)
     seed_internal_quote_reference_grants_once(db, now)

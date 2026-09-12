@@ -29,6 +29,10 @@ PURCHASE_ORDER_TYPE_LABELS = {
 }
 
 
+def _known_number(value):
+    return float(value) if value is not None else "待完善"
+
+
 def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> bytes:
     snapshot = json.loads(issue.snapshot_json)
     order = snapshot["order"]
@@ -78,16 +82,16 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
         "J4": document_label,
         "A5": "供应商",
         "B5": order.get("supplier_name", ""),
-        "E5": "客户 / 合同号",
-        "F5": f"{order.get('customer_name', '')} / {order.get('contract_no', '')}",
+        "E5": "客户 / 合同号 / 客户 PO",
+        "F5": f"{order.get('customer_name', '')} / {order.get('contract_no', '')} / {order.get('customer_po', '')}",
         "I5": "货号",
         "J5": order.get("item_no", ""),
         "A6": "变更前产品数量",
-        "B6": float(issue.before_product_quantity),
+        "B6": _known_number(issue.before_product_quantity),
         "E6": "本次产品变化",
-        "F6": float(issue.product_quantity_delta),
+        "F6": _known_number(issue.product_quantity_delta),
         "I6": "变更后累计数量",
-        "J6": float(issue.after_product_quantity),
+        "J6": _known_number(issue.after_product_quantity),
         "A7": "原计划交期",
         "B7": snapshot.get("before_due_date") or "—",
         "E7": "本次计划交期",
@@ -133,7 +137,7 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
             line["packaging_type"],
             line["paper_quality"],
             f"{line['specification']} {line.get('dimension_unit', '')}".strip(),
-            float(line["usage_quantity"]),
+            _known_number(line["usage_quantity"]),
             before_required,
             delta,
             after_required,
@@ -216,25 +220,25 @@ def build_purchase_order_issue_batch_workbook(
     teal_light = "E8F6F4"
     white = "FFFFFF"
     thin = Side(style="thin", color="CBD5E1")
-    sheet.merge_cells("A1:P1")
+    sheet.merge_cells("A1:Q1")
     sheet["A1"] = f"Royal Regent Nexus · {FACTORY_NAMES.get(issues[0].factory_id, issues[0].factory_id)}供应商采购单发行批次"
     sheet["A1"].font = Font(name="Microsoft YaHei", size=18, bold=True, color=white)
     sheet["A1"].fill = PatternFill("solid", fgColor=teal_dark)
     sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
     sheet.row_dimensions[1].height = 34
-    sheet.merge_cells("A2:P2")
+    sheet.merge_cells("A2:Q2")
     sheet["A2"] = "每个采购单号均为独立固定快照；供应商只执行“本次箱数变化”，累计数量仅供核对。"
     sheet["A2"].font = Font(name="Microsoft YaHei", size=10, bold=True, color=teal_dark)
     sheet["A2"].fill = PatternFill("solid", fgColor=teal_light)
     sheet["A2"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     sheet.merge_cells("A4:H4")
     sheet["A4"] = f"批次生成时间：{generated_at.strftime('%Y-%m-%d %H:%M')}"
-    sheet.merge_cells("I4:P4")
+    sheet.merge_cells("I4:Q4")
     sheet["I4"] = f"独立采购单：{len(issues)} 份"
 
     headers = [
         "序号", "采购单号", "单据类型", "原合同订单号", "客户", "合同号", "货号", "计划交期",
-        "纸品类型", "纸质", "规格", "每箱个数", "变更前箱数", "本次箱数变化", "变更后累计", "单位",
+        "纸品类型", "纸质", "规格", "每箱个数", "变更前箱数", "本次箱数变化", "变更后累计", "单位", "客户 PO",
     ]
     for column, header in enumerate(headers, start=1):
         cell = sheet.cell(row=5, column=column, value=header)
@@ -261,11 +265,12 @@ def build_purchase_order_issue_batch_workbook(
                 line["packaging_type"],
                 line["paper_quality"],
                 f"{line['specification']} {line.get('dimension_unit', '')}".strip(),
-                float(line["usage_quantity"]),
+                _known_number(line["usage_quantity"]),
                 float(line["before_required_quantity"]),
                 float(line["required_quantity_delta"]),
                 float(line["after_required_quantity"]),
                 line["unit"],
+                order.get("customer_po", ""),
             ]
             for column, value in enumerate(values, start=1):
                 cell = sheet.cell(row=current_row, column=column, value=value)
@@ -281,7 +286,7 @@ def build_purchase_order_issue_batch_workbook(
             current_row += 1
 
     notice_row = current_row + 1
-    sheet.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=16)
+    sheet.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=17)
     sheet.cell(
         row=notice_row,
         column=1,
@@ -292,11 +297,11 @@ def build_purchase_order_issue_batch_workbook(
     sheet.cell(row=notice_row, column=1).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     sheet.row_dimensions[notice_row].height = 34
 
-    widths = [8, 24, 14, 22, 18, 20, 18, 13, 14, 16, 28, 13, 14, 16, 14, 10]
+    widths = [8, 24, 14, 22, 18, 20, 18, 13, 14, 16, 28, 13, 14, 16, 14, 10, 20]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
-    sheet.auto_filter.ref = f"A5:P{current_row - 1}"
-    sheet.print_area = f"A1:P{notice_row}"
+    sheet.auto_filter.ref = f"A5:Q{current_row - 1}"
+    sheet.print_area = f"A1:Q{notice_row}"
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
@@ -353,8 +358,8 @@ def build_purchase_order_workbook(
     information_rows = [
         (4, (("A4", "采购单号"), ("B4", order.order_no), ("D4", "下单日期"), ("E4", order.order_date), ("F4", "计划交期"), ("G4", order.due_date))),
         (5, (("A5", "采购厂区"), ("B5", FACTORY_NAMES.get(order.factory_id, order.factory_id)), ("D5", "供应商"), ("E5", order.supplier_name_snapshot))),
-        (6, (("A6", "客户"), ("B6", order.customer_name), ("D6", "合同号"), ("E6", order.contract_no), ("G6", "货号"), ("H6", order.item_no))),
-        (7, (("A7", "产品名称"), ("B7", order.product_name or "—"), ("D7", "产品订单数量"), ("E7", float(order.product_order_quantity)), ("G7", "流程状态"), ("H7", "已下单"))),
+        (6, (("A6", "客户"), ("B6", order.customer_name), ("D6", "合同号"), ("E6", order.contract_no + (f" / 客户 PO {order.customer_po}" if order.customer_po else "")), ("G6", "货号"), ("H6", order.item_no))),
+        (7, (("A7", "产品名称"), ("B7", order.product_name or "—"), ("D7", "产品订单数量"), ("E7", _known_number(order.product_order_quantity)), ("G7", "流程状态"), ("H7", "已下单"))),
     ]
     for _, values in information_rows:
         for cell_ref, value in values:
@@ -376,7 +381,7 @@ def build_purchase_order_workbook(
                 cell.font = Font(name="Microsoft YaHei", size=10, color="0F172A")
                 cell.alignment = Alignment(horizontal="left", vertical="center")
     sheet["E7"].number_format = (
-        "#,##0" if order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
+        "#,##0" if order.product_order_quantity is not None and order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
     )
 
     headers = ["序号", "纸品类型", "纸质", "规格", "每箱个数", "产品订单数量", "纸箱数量", "单位"]
@@ -396,8 +401,8 @@ def build_purchase_order_workbook(
             line.packaging_type,
             line.paper_quality,
             f"{line.specification} {line.dimension_unit}".strip(),
-            float(line.usage_quantity),
-            float(order.product_order_quantity),
+            _known_number(line.usage_quantity),
+            _known_number(order.product_order_quantity),
             None,
             line.unit,
         ]
@@ -412,12 +417,12 @@ def build_purchase_order_workbook(
             cell.border = Border(left=thin, right=thin, bottom=thin)
             if index % 2 == 0:
                 cell.fill = PatternFill("solid", fgColor="F8FAFC")
-        sheet.cell(row=row, column=7, value=f"=ROUNDUP(F{row}/E{row},0)")
+        sheet.cell(row=row, column=7, value=float(line.required_quantity) if getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" else f"=ROUNDUP(F{row}/E{row},0)")
         sheet.cell(row=row, column=5).number_format = (
-            "#,##0" if line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
+            "#,##0" if line.usage_quantity is not None and line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
         )
         sheet.cell(row=row, column=6).number_format = (
-            "#,##0" if order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
+            "#,##0" if order.product_order_quantity is not None and order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
         )
         sheet.cell(row=row, column=7).number_format = "#,##0"
         sheet.row_dimensions[row].height = 24
@@ -499,16 +504,16 @@ def build_combined_purchase_order_workbook(
     factory_id = orders[0][0].factory_id
     supplier_name = orders[0][0].supplier_name_snapshot
     batch_no = f"PO-BATCH-{generated_at.strftime('%Y%m%d%H%M%S')}"
-    total_product_quantity = sum(order.product_order_quantity for order, _ in orders)
+    total_product_quantity = sum(order.product_order_quantity for order, _ in orders) if all(order.product_order_quantity is not None for order, _ in orders) else None
 
-    sheet.merge_cells("A1:O1")
+    sheet.merge_cells("A1:P1")
     sheet["A1"] = f"Royal Regent Nexus · {FACTORY_NAMES.get(factory_id, factory_id)}纸箱累计对账表"
     sheet["A1"].font = Font(name="Microsoft YaHei", size=18, bold=True, color=white)
     sheet["A1"].fill = PatternFill("solid", fgColor=teal_dark)
     sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
     sheet.row_dimensions[1].height = 34
 
-    sheet.merge_cells("A2:O2")
+    sheet.merge_cells("A2:P2")
     sheet["A2"] = "CUMULATIVE PAPER PACKAGING RECONCILIATION"
     sheet["A2"].font = Font(name="Arial", size=9, bold=True, color=teal_dark)
     sheet["A2"].fill = PatternFill("solid", fgColor=teal_light)
@@ -527,11 +532,11 @@ def build_combined_purchase_order_workbook(
         "E5": "订单数量",
         "F5": len(orders),
         "H5": "产品数量合计",
-        "I5": float(total_product_quantity),
+        "I5": _known_number(total_product_quantity),
     }
     for cell_ref, value in information.items():
         sheet[cell_ref] = value
-    for merged_range in ("B4:D4", "F4:G4", "I4:O4", "B5:D5", "F5:G5", "I5:O5"):
+    for merged_range in ("B4:D4", "F4:G4", "I4:P4", "B5:D5", "F5:G5", "I5:P5"):
         sheet.merge_cells(merged_range)
     label_cells = ("A4", "E4", "H4", "A5", "E5", "H5")
     for cell_ref in label_cells:
@@ -546,7 +551,7 @@ def build_combined_purchase_order_workbook(
                 cell.font = Font(name="Microsoft YaHei", size=10, color="0F172A")
                 cell.alignment = Alignment(horizontal="left", vertical="center")
     sheet["I5"].number_format = (
-        "#,##0" if total_product_quantity == total_product_quantity.to_integral_value() else "#,##0.######"
+        "#,##0" if total_product_quantity is not None and total_product_quantity == total_product_quantity.to_integral_value() else "#,##0.######"
     )
 
     headers = [
@@ -565,6 +570,7 @@ def build_combined_purchase_order_workbook(
         "每箱个数",
         "纸箱数量",
         "单位",
+        "客户 PO",
     ]
     for column, header in enumerate(headers, start=1):
         cell = sheet.cell(row=7, column=column, value=header)
@@ -587,13 +593,14 @@ def build_combined_purchase_order_workbook(
                 order.product_name or "—",
                 order.order_date,
                 order.due_date,
-                float(order.product_order_quantity),
+                _known_number(order.product_order_quantity),
                 line.packaging_type,
                 line.paper_quality,
                 f"{line.specification} {line.dimension_unit}".strip(),
-                float(line.usage_quantity),
+                _known_number(line.usage_quantity),
                 None,
                 line.unit,
+                order.customer_po,
             ]
             for column, value in enumerate(values, start=1):
                 cell = sheet.cell(row=current_row, column=column, value=value)
@@ -606,16 +613,16 @@ def build_combined_purchase_order_workbook(
                 cell.border = Border(left=thin, right=thin, bottom=thin)
                 if order_index % 2 == 0:
                     cell.fill = PatternFill("solid", fgColor="F8FAFC")
-            sheet.cell(row=current_row, column=14, value=f"=ROUNDUP(I{current_row}/M{current_row},0)")
+            sheet.cell(row=current_row, column=14, value=float(line.required_quantity) if getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" else f"=ROUNDUP(I{current_row}/M{current_row},0)")
             sheet.cell(row=current_row, column=9).number_format = (
-                "#,##0" if order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
+                "#,##0" if order.product_order_quantity is not None and order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
             )
             sheet.cell(row=current_row, column=13).number_format = (
-                "#,##0" if line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
+                "#,##0" if line.usage_quantity is not None and line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
             )
             sheet.cell(row=current_row, column=14).number_format = "#,##0"
             if line_index == 1:
-                for column in range(1, 16):
+                for column in range(1, 17):
                     sheet.cell(row=current_row, column=column).border = Border(
                         left=thin,
                         right=thin,
@@ -627,11 +634,11 @@ def build_combined_purchase_order_workbook(
             line_count += 1
 
     summary_row = current_row + 1
-    sheet.merge_cells(start_row=summary_row, start_column=1, end_row=summary_row, end_column=15)
+    sheet.merge_cells(start_row=summary_row, start_column=1, end_row=summary_row, end_column=16)
     sheet.cell(
         row=summary_row,
         column=1,
-        value=f"合计：{len(orders)} 张订单 · {line_count} 条纸品明细 · 产品数量 {float(total_product_quantity):,.6f}".rstrip("0").rstrip("."),
+        value=f"合计：{len(orders)} 张订单 · {line_count} 条纸品明细 · 产品数量 {_known_number(total_product_quantity)}".rstrip("0").rstrip("."),
     )
     sheet.cell(row=summary_row, column=1).font = Font(name="Microsoft YaHei", size=10, bold=True, color=teal_dark)
     sheet.cell(row=summary_row, column=1).fill = PatternFill("solid", fgColor=teal_light)
@@ -640,7 +647,7 @@ def build_combined_purchase_order_workbook(
 
     notes = [f"{order.order_no}：{order.note}" for order, _ in orders if order.note]
     notes_row = summary_row + 2
-    sheet.merge_cells(start_row=notes_row, start_column=1, end_row=notes_row, end_column=15)
+    sheet.merge_cells(start_row=notes_row, start_column=1, end_row=notes_row, end_column=16)
     sheet.cell(row=notes_row, column=1, value="订单备注：" + ("；".join(notes) if notes else "无"))
     sheet.cell(row=notes_row, column=1).font = Font(name="Microsoft YaHei", size=9, color=slate)
     sheet.cell(row=notes_row, column=1).fill = PatternFill("solid", fgColor=slate_light)
@@ -651,13 +658,13 @@ def build_combined_purchase_order_workbook(
     creators = "、".join(dict.fromkeys(order.created_by_name for order, _ in orders if order.created_by_name)) or "—"
     sheet.merge_cells(start_row=generated_row, start_column=1, end_row=generated_row, end_column=7)
     sheet.cell(row=generated_row, column=1, value=f"制单人：{creators}")
-    sheet.merge_cells(start_row=generated_row, start_column=8, end_row=generated_row, end_column=15)
+    sheet.merge_cells(start_row=generated_row, start_column=8, end_row=generated_row, end_column=16)
     sheet.cell(row=generated_row, column=8, value=f"系统生成时间：{generated_at.strftime('%Y-%m-%d %H:%M')}")
     for cell_ref in (f"A{generated_row}", f"H{generated_row}"):
         sheet[cell_ref].font = Font(name="Microsoft YaHei", size=9, color=slate)
 
     notice_row = generated_row + 2
-    sheet.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=15)
+    sheet.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=16)
     sheet.cell(
         row=notice_row,
         column=1,
@@ -668,12 +675,12 @@ def build_combined_purchase_order_workbook(
     sheet.cell(row=notice_row, column=1).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     sheet.row_dimensions[notice_row].height = 32
 
-    widths = [8, 22, 18, 22, 18, 24, 13, 13, 14, 14, 16, 28, 14, 14, 10]
+    widths = [8, 22, 18, 22, 18, 24, 13, 13, 14, 14, 16, 28, 14, 14, 10, 20]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
 
-    sheet.auto_filter.ref = f"A7:O{current_row - 1}"
-    sheet.print_area = f"A1:O{notice_row}"
+    sheet.auto_filter.ref = f"A7:P{current_row - 1}"
+    sheet.print_area = f"A1:P{notice_row}"
     sheet.print_title_rows = "1:7"
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.orientation = "landscape"

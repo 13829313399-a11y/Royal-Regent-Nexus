@@ -12,6 +12,7 @@ const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse
 const workspace = ref(emptyMaster()), busy = ref(false), error = ref(''), loading = ref(false)
 const tab = ref('SETTINGS'), search = ref(''), customer = ref(''), editing = ref(false), editingId = ref('')
 const statusFilter = ref('ALL'), preferredOnly = ref(false)
+const warehouseDeleting = ref(false)
 const warehouseEditing = ref(false), warehouseOriginal = ref(''), locationWarehouseLocked = ref(false)
 const sourceRow = ref<MasterRecord | null>(null), locationRow = ref<CartonLocation | null>(null)
 const container = ref<HTMLElement | null>(null)
@@ -50,7 +51,7 @@ const originalStatus = ref('ACTIVE'), originalLocationStatus = ref('ACTIVE')
 const originalHardCheck = ref(false)
 const ruleScopeLocked = ref(false)
 const specificReason = computed(() => form.kind === 'ACCESS' || (form.kind === 'RULE' &&
-  (originalHardCheck.value || [form.data.contract_rule.mode, form.data.item_rule.mode].includes('BLOCK'))))
+  (originalHardCheck.value || [form.data.contract_rule.mode, form.data.item_rule.mode, form.data.customer_po_rule.mode].includes('BLOCK'))))
 const suggestedReason = computed(() => specificReason.value ? '' : !editingId.value ? '新增基础资料'
   : form.status !== originalStatus.value ? (form.status === 'ACTIVE' ? '启用基础资料' : '停用不再使用资料')
   : form.kind === 'RULE' ? '调整默认交期及编号规则' : form.kind === 'WORKSHOP' ? '调整车间资料' : '修正基础资料')
@@ -58,9 +59,9 @@ watch(suggestedReason, (value, previous) => { if (!form.reason.trim() || form.re
 const suggestedLocationReason = computed(() => !locationRow.value?.id ? '新增仓库仓位'
   : locationForm.status !== originalLocationStatus.value ? (locationForm.status === 'ACTIVE' ? '启用仓库仓位' : '停用不再使用仓位') : '调整仓库仓位名称')
 watch(suggestedLocationReason, (value, previous) => { if (!locationForm.reason.trim() || locationForm.reason === previous) locationForm.reason = value })
-type FormatKey = 'contract_rule' | 'item_rule'
-const templateText = reactive({ contract_rule: '', item_rule: '' })
-const recognizedText = reactive({ contract_rule: '', item_rule: '' })
+type FormatKey = 'contract_rule' | 'item_rule' | 'customer_po_rule'
+const templateText = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
+const recognizedText = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
 function identifyNumberRule(key: FormatKey) {
   const rule = form.data[key], raw = (rule.sample_text || '').trim()
   try {
@@ -74,7 +75,7 @@ function identifyNumberRule(key: FormatKey) {
 function editNumberTemplate(key: FormatKey) { recognizedText[key] = (form.data[key].sample_text || '').trim() }
 function resetNumberRules() {
   if (form.kind !== 'RULE') return
-  for (const key of ['contract_rule', 'item_rule'] as const) {
+  for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
     form.data[key] = defaultNumberRule(); templateText[key] = ''; recognizedText[key] = ''
     if (form.customer_code) identifyNumberRule(key)
   }
@@ -114,12 +115,12 @@ function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = 
   ruleScopeLocked.value = (row?.kind || kind) === 'RULE'
   editingId.value = row?.id || ''; error.value = ''
   originalStatus.value = row?.status || 'ACTIVE'
-  originalHardCheck.value = row?.data.contract_rule?.mode === 'BLOCK' || row?.data.item_rule?.mode === 'BLOCK'
-  Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, item_rule: { ...defaultNumberRule(), ...row?.data.item_rule } } })
+  originalHardCheck.value = row?.data.contract_rule?.mode === 'BLOCK' || row?.data.item_rule?.mode === 'BLOCK' || row?.data.customer_po_rule?.mode === 'BLOCK'
+  Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, customer_po_rule: { ...defaultNumberRule(), ...row?.data.customer_po_rule }, item_rule: { ...defaultNumberRule(), ...row?.data.item_rule } } })
   for (const key of ['paper_types', 'paper_qualities', 'specifications'] as const) paperOptionText[key] = (form.data[key] || []).join('\n')
   itemText.value = (form.data.item_nos || []).join('\n'); warehouseText.value = (form.data.warehouses || []).join('\n')
   if (!['CONTRACT', 'RULE'].includes(form.kind)) form.customer_code = ''
-  for (const key of ['contract_rule', 'item_rule'] as const) {
+  for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
     const rule = form.data[key]
     if (automaticNumberRule(rule)) rule.mode = 'AUTO'
     templateText[key] = (rule.templates || []).join('\n'); recognizedText[key] = (rule.sample_text || '').trim()
@@ -133,7 +134,7 @@ async function save() {
   if (busy.value) return
   busy.value = true; error.value = ''; const factory = props.factoryId
   try {
-    if (form.kind === 'RULE' && form.customer_code) for (const key of ['contract_rule', 'item_rule'] as const) {
+    if (form.kind === 'RULE' && form.customer_code) for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
       const rule = form.data[key]
       if (rule.mode === 'OFF') continue
       if ((rule.sample_text || '').trim() !== recognizedText[key]) throw new Error('样例已修改，请点击识别格式，或手动修改下方格式后再保存')
@@ -180,6 +181,7 @@ async function saveLocation() {
 }
 function editWarehouse(name = '') {
   if (!workspace.value.can_manage) return
+  warehouseDeleting.value = false
   warehouseOriginal.value = name
   warehouseForm.name = name; warehouseForm.bin = ''; warehouseForm.reason = name ? '修改仓库名称' : '添加仓库资料'
   warehouseForm.revisions = Object.fromEntries(workspace.value.locations.filter(row => row.warehouse === name).map(row => [row.id, row.revision || 1]))
@@ -190,7 +192,8 @@ async function saveWarehouse() {
   const factory = props.factoryId, original = warehouseOriginal.value
   busy.value = true; error.value = ''
   try {
-    if (original) await cartonMasterApi.renameWarehouse(factory, original, warehouseForm.name, warehouseForm.revisions, warehouseForm.reason)
+    if (warehouseDeleting.value && original) await cartonMasterApi.deleteWarehouse(factory, original, warehouseForm.revisions, warehouseForm.reason)
+    else if (original) await cartonMasterApi.renameWarehouse(factory, original, warehouseForm.name, warehouseForm.revisions, warehouseForm.reason)
     else await cartonMasterApi.createWarehouse(factory, warehouseForm.name, warehouseForm.bin, warehouseForm.reason)
     if (factory !== props.factoryId) return
     warehouseEditing.value = false; await load(); emit('changed')
@@ -204,7 +207,7 @@ async function saveWarehouse() {
   <section ref="container" class="space-y-4" aria-label="纸箱基础资料" @keydown="dialogKeys">
     <article class="rounded-xl border border-teal-200 bg-white p-4 shadow-sm">
       <div class="flex items-center justify-between gap-3"><div><h2 class="flex items-center gap-2 text-lg font-bold"><Database class="size-5 text-teal-700" />基础资料</h2><p class="mt-1 text-xs text-slate-500">历史正式订单自动加入；落单可直接带出，不同配置保留并提醒。修改仅影响后续引用。</p></div><button type="button" :disabled="loading" class="rounded-lg border px-3 py-2 text-xs" @click="load">刷新资料</button></div>
-      <p class="mt-3 text-xs text-teal-700">{{ workspace.can_manage ? '高级维护权限：可修改资料、设置推荐及启停用，修改会留痕。' : workspace.warehouses.length ? `可维护仓库：${workspace.warehouses.join('、')}；其他基础资料可查询和引用。` : '可查询和引用资料；修改由主管或授权负责人处理。' }}</p>
+      <p class="mt-3 text-xs text-teal-700">{{ workspace.can_manage ? '可维护本厂基础资料：客户、规则、货号包装、车间及仓位；修改会留痕。' : workspace.warehouses.length ? `可维护仓库：${workspace.warehouses.join('、')}；其他基础资料可查询和引用。` : '可查询和引用资料；修改由主管或授权负责人处理。' }}</p>
     </article>
     <div class="flex gap-1 rounded-xl border border-slate-200 bg-white p-2" role="tablist" aria-label="基础资料页面">
       <button v-for="item in [{ id: 'SETTINGS', label: '基础设置' }, { id: 'CONFIG', label: '货号与包装' }]" :key="item.id" type="button" role="tab" :aria-selected="tab === item.id" class="rounded-lg px-5 py-2 text-sm font-bold" :class="tab === item.id ? 'bg-teal-700 text-white' : 'text-slate-600 hover:bg-slate-50'" @click="tab = item.id">{{ item.label }}</button>
@@ -248,18 +251,18 @@ async function saveWarehouse() {
 
             <div v-if="!paperOnly" class="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
               <div class="grid gap-3 sm:grid-cols-2">
-                <label class="font-semibold">采购安全提前量 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.lead_days" type="number" min="0" max="365" aria-label="默认采购提前天数" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 3 天' : '默认 3 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"></label>
-                <label class="font-semibold">客户交期建议 <span class="font-normal text-slate-500">（下单后自然日）</span><input v-model="form.data.customer_days" :disabled="form.data.customer_days_disabled" type="number" min="0" max="730" aria-label="客户交期建议天数" :placeholder="form.data.customer_days_disabled ? '已关闭建议' : form.customer_code ? '空白沿用本厂，未设置则不建议' : '空白不提供建议'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2 disabled:bg-slate-100 disabled:text-slate-400"></label>
+                <label class="font-semibold">采购安全提前量 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.lead_days" type="number" min="0" max="365" aria-label="默认采购提前天数" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 3 天' : '默认 3 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"><span class="mt-1 block font-normal leading-5 text-slate-500">计划交期＝客户交期－提前天数。例如客户 20 日要货，提前 3 天，计划 17 日到货。</span></label>
+                <label class="font-semibold">客户交期建议 <span class="font-normal text-slate-500">（下单后自然日）</span><input v-model="form.data.customer_days" :disabled="form.data.customer_days_disabled" type="number" min="0" max="730" aria-label="客户交期建议天数" :placeholder="form.data.customer_days_disabled ? '已关闭建议' : form.customer_code ? '空白沿用本厂，未设置则不建议' : '空白不提供建议'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2 disabled:bg-slate-100 disabled:text-slate-400"><span class="mt-1 block font-normal leading-5 text-slate-500">建议客户交期＝下单日期＋建议天数。仅供人工采纳，以客户实际要求为准。</span></label>
               </div>
               <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-slate-500"><span>仅新单采用；旧单及追加保留原提前量。</span><label class="inline-flex items-center gap-1.5"><input v-model="form.data.customer_days_disabled" type="checkbox" aria-label="关闭客户交期建议"> 不提供交期建议</label></div>
             </div>
             <div v-if="form.customer_code" class="grid items-start gap-3 md:grid-cols-2" aria-label="合同与货号格式概览">
-              <div v-for="key in (['contract_rule','item_rule'] as const)" :key="key" class="min-w-0 overflow-hidden rounded-lg border border-slate-200">
-                <div class="flex items-center justify-between gap-2 border-b bg-slate-50 px-3 py-2"><b>{{ key === 'contract_rule' ? '合同号格式' : '货号格式' }}</b>
-                  <select v-model="form.data[key].mode" :aria-label="`${key === 'contract_rule' ? '合同号' : '货号'}格式检查方式`" class="h-8 max-w-[65%] rounded border bg-white px-2"><option value="AUTO">样例识别 · 软提醒</option><option value="OFF">不检查</option><option value="WARN">手动规则 · 软提醒</option><option value="BLOCK">手动规则 · 强制检查</option></select>
+              <div v-for="key in (['contract_rule','item_rule','customer_po_rule'] as const)" :key="key" class="min-w-0 overflow-hidden rounded-lg border border-slate-200">
+                <div class="flex items-center justify-between gap-2 border-b bg-slate-50 px-3 py-2"><b>{{ key === 'customer_po_rule' ? '客户 PO 格式（选填）' : key === 'contract_rule' ? '合同号格式' : '货号格式' }}</b>
+                  <select v-model="form.data[key].mode" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式检查方式`" class="h-8 max-w-[65%] rounded border bg-white px-2"><option value="AUTO">样例识别 · 软提醒</option><option value="OFF">不检查</option><option value="WARN">手动规则 · 软提醒</option><option value="BLOCK">手动规则 · 强制检查</option></select>
                 </div>
                 <div v-if="form.data[key].mode !== 'OFF'" class="p-3">
-                  <div class="max-h-24 overflow-y-auto break-words leading-5" :aria-label="`${key === 'contract_rule' ? '合同号' : '货号'}当前格式`">
+                  <div class="max-h-24 overflow-y-auto break-words leading-5" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}当前格式`">
                     <template v-if="templateText[key]"><div v-for="(format, index) in templateText[key].split('\n').filter(Boolean)" :key="index" class="mb-1 last:mb-0"><p class="font-semibold text-teal-800">{{ describeNumberTemplate(format) }}</p><p class="font-mono text-[11px] text-slate-500">{{ format }}</p></div></template>
                     <p v-else-if="form.data[key].mode !== 'AUTO'" class="text-slate-600">前缀 {{ form.data[key].prefix || '不限' }} · {{ form.data[key].min_length }}–{{ form.data[key].max_length }} 字 · {{ form.data[key].characters === 'DIGITS' ? '纯数字' : form.data[key].characters === 'ALNUM_DASH' ? '字母数字及 -_' : '原有合法字符' }}</p>
                     <p v-else class="text-slate-500">尚未识别到格式，展开填写样例。</p>
@@ -267,9 +270,9 @@ async function saveWarehouse() {
                   <details class="mt-2 border-t border-slate-100 pt-2">
                     <summary class="cursor-pointer font-semibold text-teal-700">修改格式 / 重新识别</summary>
                     <div class="mt-3 space-y-2 text-slate-600">
-                      <label class="block">编号样例 <span class="text-slate-400">（每行一个；留空参考历史订单）</span><textarea v-model="form.data[key].sample_text" :aria-label="`${key === 'contract_rule' ? '合同号' : '货号'}识别样例`" rows="2" maxlength="12000" class="mt-1 w-full rounded border bg-white p-2" :placeholder="key === 'contract_rule' ? 'SC700149169/600\nSC700143393/1600' : '粘贴该客户的完整货号'" /></label>
-                      <div class="flex flex-wrap items-center gap-2"><button type="button" :disabled="busy" class="rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`识别${key === 'contract_rule' ? '合同号' : '货号'}格式`" @click="identifyNumberRule(key)">识别格式</button><span class="text-[11px] text-slate-500">识别参考：{{ form.data[key].source === 'MANUAL' ? '填写样例' : form.data[key].source === 'HISTORY' ? '历史订单' : '尚未识别' }} · {{ form.data[key].sample_count || 0 }} 个编号</span></div>
-                      <label class="block">格式结果（可修改，每行一种）<textarea v-model="templateText[key]" :aria-label="`${key === 'contract_rule' ? '合同号' : '货号'}固定格式`" rows="2" maxlength="5200" class="mt-1 w-full rounded border bg-white p-2 font-mono" placeholder="SC{9}/{3,4}" @input="editNumberTemplate(key)" /></label>
+                      <label class="block">编号样例 <span class="text-slate-400">（每行一个；留空参考历史订单）</span><textarea v-model="form.data[key].sample_text" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}识别样例`" rows="2" maxlength="12000" class="mt-1 w-full rounded border bg-white p-2" :placeholder="key === 'contract_rule' ? 'SC700149169/600\nSC700143393/1600' : key === 'customer_po_rule' ? '粘贴该客户的完整客户 PO' : '粘贴该客户的完整货号'" /></label>
+                      <div class="flex flex-wrap items-center gap-2"><button type="button" :disabled="busy" class="rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`识别${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式`" @click="identifyNumberRule(key)">识别格式</button><span class="text-[11px] text-slate-500">识别参考：{{ form.data[key].source === 'MANUAL' ? '填写样例' : form.data[key].source === 'HISTORY' ? '历史订单' : '尚未识别' }} · {{ form.data[key].sample_count || 0 }} 个编号</span></div>
+                      <label class="block">格式结果（可修改，每行一种）<textarea v-model="templateText[key]" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}固定格式`" rows="2" maxlength="5200" class="mt-1 w-full rounded border bg-white p-2 font-mono" placeholder="SC{9}/{3,4}" @input="editNumberTemplate(key)" /></label>
                       <p class="text-[11px] leading-5 text-slate-500">{9} = 9 位数字；{3,4} = 3 或 4 位。文字及符号按原样匹配；留空不执行分段检查。</p>
                       <details v-if="form.data[key].mode !== 'AUTO' && !templateText[key]"><summary class="cursor-pointer">原有前缀、长度规则</summary><div class="mt-2 grid grid-cols-2 gap-2"><label>前缀<input v-model="form.data[key].prefix" class="h-9 w-full rounded border px-2"></label><label>最少长度<input v-model.number="form.data[key].min_length" type="number" min="0" max="128" class="h-9 w-full rounded border px-2"></label><label>最多长度<input v-model.number="form.data[key].max_length" type="number" min="1" max="128" class="h-9 w-full rounded border px-2"></label><label>允许字符<select v-model="form.data[key].characters" class="h-9 w-full rounded border"><option value="ANY">原有合法字符</option><option value="DIGITS">纯数字</option><option value="ALNUM_DASH">字母数字及 -_</option></select></label></div></details>
                     </div>
@@ -289,7 +292,26 @@ async function saveWarehouse() {
         <div class="flex justify-end border-t p-4"><button :disabled="busy" class="rounded-lg bg-teal-700 px-5 py-2 text-sm font-bold text-white disabled:opacity-50">{{ busy ? '保存中…' : '保存基础资料' }}</button></div>
       </form>
     </div>
-    <div v-if="warehouseEditing" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4"><form role="dialog" aria-modal="true" aria-label="维护仓库" class="w-full max-w-lg space-y-4 rounded-xl bg-white p-5 text-sm" @submit.prevent="saveWarehouse"><div class="flex justify-between"><b>{{ warehouseOriginal ? '修改仓库' : '添加仓库' }}</b><button type="button" :disabled="busy" @click="warehouseEditing = false">关闭</button></div><label class="block">仓库名称<input v-model="warehouseForm.name" required maxlength="64" aria-label="仓库名称" class="mt-1 h-9 w-full rounded border px-2"></label><label v-if="!warehouseOriginal" class="block">首个仓位<input v-model="warehouseForm.bin" required maxlength="64" aria-label="首个仓位" placeholder="例如 A01" class="mt-1 h-9 w-full rounded border px-2"></label><p class="text-xs text-slate-500">{{ warehouseOriginal ? '整组仓位同步更名，保留原仓位编号、库存和历史记录；维护授权随仓库更名保留。' : '先填写一个仓位建立仓库，之后可在该仓库旁继续添加仓位。' }}</p><input v-model="warehouseForm.reason" required minlength="4" maxlength="500" aria-label="仓库维护原因" class="h-9 w-full rounded border px-2"><p v-if="error" role="alert" class="text-red-700">{{ error }}</p><button :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-white">保存仓库</button></form></div>
+    <div v-if="warehouseEditing" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4">
+      <form role="dialog" aria-modal="true" aria-label="维护仓库" class="w-full max-w-lg space-y-4 rounded-xl bg-white p-5 text-sm" @submit.prevent="saveWarehouse">
+        <div class="flex justify-between"><b>{{ warehouseDeleting ? '删除未使用仓库' : warehouseOriginal ? '修改仓库' : '添加仓库' }}</b><button type="button" :disabled="busy" @click="warehouseEditing = false">关闭</button></div>
+        <template v-if="warehouseDeleting">
+          <div class="rounded-lg border border-amber-200 bg-amber-50 p-3 leading-6"><b>确认删除仓库 {{ warehouseOriginal }}？</b><p>将删除该仓库及其全部 {{ Object.keys(warehouseForm.revisions).length }} 个仓位。</p><p>仅从未使用的空仓可以删除。有库存、收料、出入库、调仓或盘点记录的仓库会保留，请改为停用仓位。</p><p>该仓库的维护授权也会移除。</p></div>
+        </template>
+        <template v-else>
+          <label class="block">仓库名称<input v-model="warehouseForm.name" required maxlength="64" aria-label="仓库名称" class="mt-1 h-9 w-full rounded border px-2"></label>
+          <label v-if="!warehouseOriginal" class="block">首个仓位<input v-model="warehouseForm.bin" required maxlength="64" aria-label="首个仓位" placeholder="例如 A01" class="mt-1 h-9 w-full rounded border px-2"></label>
+          <p class="text-xs text-slate-500">{{ warehouseOriginal ? '整组仓位同步更名，保留原仓位编号、库存和历史记录；维护授权随仓库更名保留。' : '先填写一个仓位建立仓库，之后可在该仓库旁继续添加仓位。' }}</p>
+        </template>
+        <label class="block">{{ warehouseDeleting ? '删除原因' : '维护原因' }}<input v-model="warehouseForm.reason" required minlength="4" maxlength="500" aria-label="仓库维护原因" class="mt-1 h-9 w-full rounded border px-2"></label>
+        <p v-if="error" role="alert" class="text-red-700">{{ error }}</p>
+        <div class="flex justify-between gap-3">
+          <button v-if="warehouseOriginal && !warehouseDeleting" type="button" :disabled="busy" class="rounded-lg border border-red-200 px-4 py-2 text-red-700" @click="warehouseDeleting = true; warehouseForm.reason = '删除未使用空仓'; error = ''">删除仓库</button>
+          <button v-if="warehouseDeleting" type="button" :disabled="busy" class="rounded-lg border px-4 py-2" @click="warehouseDeleting = false; warehouseForm.reason = '修改仓库名称'; error = ''">返回修改</button>
+          <button :disabled="busy" class="ml-auto rounded-lg px-4 py-2 text-white" :class="warehouseDeleting ? 'bg-red-700' : 'bg-teal-700'">{{ warehouseDeleting ? '确认删除仓库' : '保存仓库' }}</button>
+        </div>
+      </form>
+    </div>
     <div v-if="locationRow" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4"><form role="dialog" aria-modal="true" aria-label="维护仓位" class="w-full max-w-lg space-y-4 rounded-xl bg-white p-5 text-sm" @submit.prevent="saveLocation"><div class="flex justify-between"><b>仓库／仓位维护</b><button type="button" :disabled="busy" @click="locationRow = null">关闭</button></div><label class="block">仓库<input v-model="locationForm.warehouse" :readonly="locationWarehouseLocked" required maxlength="64" aria-label="维护仓库名称" class="mt-1 h-9 w-full rounded border px-2"></label><label class="block">仓位<input v-model="locationForm.bin_code" :required="!!locationRow.bin_code || !locationRow.id" maxlength="64" aria-label="维护仓位编号" class="mt-1 h-9 w-full rounded border px-2"></label><label v-if="locationRow.id" class="block">状态<select v-model="locationForm.status" aria-label="仓位状态" class="ml-2 h-9 rounded border"><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select></label><p class="text-xs text-slate-500">更名不移动库存；停用后禁止新增入库，可继续清退及受控纠错。有库存请先核对是否需要调仓。</p><input v-model="locationForm.reason" required minlength="4" placeholder="维护原因，至少 4 个字" aria-label="仓位维护原因" class="h-9 w-full rounded border px-2"><p v-if="error" role="alert" class="text-red-700">{{ error }}</p><button :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-white">保存仓位</button></form></div>
     <div v-if="sourceRow" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" @click.self="sourceRow = null"><div role="dialog" aria-modal="true" aria-label="基础资料历史来源" class="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-xl bg-white p-5"><div class="flex justify-between"><b>{{ sourceRow.code }} · 历史来源</b><button type="button" @click="sourceRow = null">关闭</button></div><div v-for="(source, i) in sourceRow.sources" :key="i" class="border-b py-3 text-xs"><b>{{ source.order_date }} · {{ source.contract_no }} · {{ source.item_no }}</b><div class="mt-1 text-slate-500">{{ source.order_no }}</div><div v-for="(line, j) in source.configuration.lines" :key="j" class="mt-1">{{ line.packaging_type }} {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件</div></div></div></div>
   </section>

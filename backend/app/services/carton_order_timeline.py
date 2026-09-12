@@ -119,7 +119,21 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
             event = Event(**base, **identity(order), event_label=ORDER_LABELS[audit.event_type])
             before, after = None, None
             if audit.event_type in {"ORDER_APPENDED", "ORDER_REDUCED"}:
-                before, after = _number(detail.get("before_quantity")), _number(detail.get("after_quantity"))
+                if detail.get("quantity_basis") == "EXPLICIT":
+                    changes = []
+                    old, new = detail.get("before_required", {}), detail.get("after_required", {})
+                    labels = detail.get("line_labels", {})
+                    for line_id in dict.fromkeys([*old, *new]):
+                        old_value, new_value = _number(old.get(line_id)), _number(new.get(line_id))
+                        if old_value == new_value:
+                            continue
+                        label = labels.get(line_id, {})
+                        paper = " / ".join(str(label.get(field) or "") for field in ("packaging_type", "paper_quality", "specification")).strip(" / ")
+                        unit = str(label.get("unit") or "")
+                        changes.append(f"{paper or line_id}：{old_value or '0'} → {new_value or '0'} {unit}".strip())
+                    event.description = "；".join(changes) or "纸品需求调整，详见原始操作记录。"
+                else:
+                    before, after = _number(detail.get("before_quantity")), _number(detail.get("after_quantity"))
             elif audit.event_type == "ORDER_UPDATED":
                 old, new = detail.get("before") or {}, detail.get("after") or {}
                 before = _number(old.get("product_order_quantity"))
@@ -130,15 +144,19 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
                                      ("customer_due_date", "客户交期"), ("due_date", "计划交期")):
                     if field in old and field in new and old[field] != new[field]:
                         changes.append(f"{label}：{old[field] or '未填写'} → {new[field] or '未填写'}")
-                if "lines" in old and "lines" in new and old["lines"] != new["lines"]:
-                    changes.append("纸品明细已修改")
+                if ("lines" in old and "lines" in new and old["lines"] != new["lines"]) or ("required_quantities" in old and old.get("required_quantities") != new.get("required_quantities")):
+                    changes.append("纸品明细或需求数量已修改")
                 if "note" in old and "note" in new and old["note"] != new["note"]:
                     changes.append(f"备注：{old['note'] or '未填写'} → {new['note'] or '未填写'}")
                 event.description = "；".join(changes)
             elif audit.event_type in {"ORDER_CREATED", "HISTORY_ORDER_IMPORTED"}:
                 after = _number(detail.get("product_order_quantity"))
                 before = "0" if after is not None else None
-                if after is None:
+                if detail.get("quantity_basis") == "EXPLICIT" and detail.get("paper_demand"):
+                    event.description = "纸品需求：" + "；".join(
+                        f"{' / '.join(str(row.get(field) or '') for field in ('packaging_type', 'paper_quality', 'specification')).strip(' / ')} {_number(row.get('required_quantity')) or '未知'} {row.get('unit') or ''}".strip()
+                        for row in detail["paper_demand"])
+                elif after is None:
                     event.description = "历史落单记录未保存当时产品数量，未以当前数量回填。"
                 for field in ("customer_code", "customer_name", "contract_no", "item_no", "product_name"):
                     if field in detail:

@@ -54,6 +54,64 @@ def change(db, qty):
         reference_movement_id="a", movement_type="ADJUSTMENT", quantity=qty, document_no="CHANGE", reason="盘点期间正常交易"), CREATOR)
 
 
+@pytest.mark.parametrize("actual", ["98", "100", "105", "0"])
+def test_confirm_directly_posts_creator_count_once(stockdb, actual):
+    doc = create(stockdb)
+    posted = action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True)
+    assert posted["status"] == "POSTED"
+    assert posted["submitted_by"] == posted["reviewed_by"] == CREATOR.id
+    assert inventory_balances(stockdb, "huaxing")[0].balance == D(actual)
+    assert load_valuation(stockdb, "huaxing").balances.popitem()[1].amount == D(actual)*2
+    event = next(e for e in posted["events"] if e["action"] == "STOCKTAKE_CONFIRM")
+    assert event["detail"]["posting_confirmed"] is True
+    assert D(event["detail"]["lines"][0]["actual_quantity"]) == D(actual)
+    with pytest.raises(HTTPException): action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True)
+    stockdb.rollback()
+    assert len(list(stockdb.scalars(select(Movement).where(Movement.source_type == "STOCKTAKE")))) == (0 if actual == "100" else 1)
+
+
+@pytest.mark.parametrize("override", [{"posting_confirmed": False}, {"cutoff_acknowledged": False},
+    {"actual": None}, {"lines": []}, {"ledger_token": "stale"}, {"expected_revision": 99}])
+def test_direct_confirmation_requires_explicit_valid_current_count(stockdb, override):
+    doc = create(stockdb)
+    with pytest.raises(HTTPException):
+        action(stockdb, doc, "CONFIRM", **{"posting_confirmed": True, **override})
+    stockdb.rollback()
+    assert stocktake_detail(stockdb, "huaxing", doc["id"])["status"] == "DRAFT"
+    assert inventory_balances(stockdb, "huaxing")[0].balance == 100
+
+
+def test_old_pending_count_creator_confirms_fixed_difference_after_refresh(stockdb):
+    doc = action(stockdb, create(stockdb), "SUBMIT")
+    change(stockdb, "-10")
+    with pytest.raises(HTTPException): action(stockdb, doc, "CONFIRM", posting_confirmed=True)
+    stockdb.rollback()
+    fresh = stocktake_detail(stockdb, "huaxing", doc["id"])
+    posted = action(stockdb, fresh, "CONFIRM", posting_confirmed=True, actual="999")
+    assert posted["status"] == "POSTED" and posted["submitted_at"] == doc["submitted_at"]
+    assert posted["lines"][0]["actual_quantity"] == 98
+    assert posted["lines"][0]["current_quantity"] == 88
+
+
+@pytest.mark.parametrize("actual", ["0", "100"])
+def test_direct_confirmation_period_failure_rolls_back_all_lines(stockdb, monkeypatch, actual):
+    seed(stockdb, [movement("b", "100", "3", item_no="OTHER", at="2026-09-02T09:00:00+08:00")])
+    doc = create(stockdb, ["a", "b"])
+    checked=[]
+    def guard(*args):
+        checked.append(args)
+        if len(checked) == 2: raise HTTPException(409, "月份已锁账")
+    monkeypatch.setattr("app.services.carton_procurement._ensure_period_open", guard)
+    with pytest.raises(HTTPException):
+        action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True)
+    stockdb.rollback()
+    assert len(checked) == 2
+    fresh = stocktake_detail(stockdb, "huaxing", doc["id"])
+    assert fresh["status"] == "DRAFT" and not fresh["submitted_at"]
+    assert all(line["actual_quantity"] is None for line in fresh["lines"])
+    assert not list(stockdb.scalars(select(Movement).where(Movement.source_type == "STOCKTAKE")))
+
+
 @pytest.mark.parametrize("intervening,expected", [("-10", "88"), ("20", "118")])
 def test_fixed_difference_preserves_post_submission_movements(stockdb, intervening, expected):
     doc = action(stockdb, create(stockdb), "SUBMIT")
