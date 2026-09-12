@@ -33,6 +33,29 @@ beforeEach(() => {
 })
 
 describe('spray workspace shell', () => {
+  it('delegates pointer feedback to actual controls and stops it when the page is hidden', async () => {
+    const router = await routerAt('/modules/production/spray-production/overview?factory=huaxing')
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const wrapper = mount(SprayProductionView, { global: { plugins: [router] } })
+    try {
+      await flushPromises()
+      const link = wrapper.get('.spray-nav a')
+      await link.trigger('pointerdown')
+      expect(link.attributes('data-spray-ripple')).toBe('')
+      hidden.mockReturnValue(true)
+      document.dispatchEvent(new Event('visibilitychange'))
+      const other = wrapper.findAll('.spray-nav a')[1]!
+      await other.trigger('pointerdown')
+      expect(other.attributes('data-spray-ripple')).toBeUndefined()
+      expect(wrapper.classes()).toContain('spray-quiet')
+      wrapper.unmount()
+      expect(link.element.hasAttribute('data-spray-ripple')).toBe(false)
+    } finally {
+      if (wrapper.exists()) wrapper.unmount()
+      hidden.mockRestore()
+    }
+  })
+
   it('keeps all nine business entries reachable and grouped by workflow stage', async () => {
     setActivePinia(createPinia())
     const router = await routerAt('/modules/production/spray-production/overview?factory=huaxing')

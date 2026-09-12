@@ -29,7 +29,7 @@ import '@/features/spray-production/workspace.css'
 const route = useRoute(), router = useRouter(), app = useAppStore(), store = useSprayWorkspace()
 const { motionAllowed } = useSprayMotionPreference()
 /* 被动效偏好影响的不只是本组件：子组件按钮的扫光也据此关闭。 */
-provide('sprayQuiet', motionAllowed)
+provide('sprayQuiet', computed(() => !motionAllowed.value))
 const navRoot = ref<HTMLElement | null>(null)
 const scope = computed(() => String(route.query.factory ?? app.activeFactoryId))
 const root = '/modules/production/spray-production'

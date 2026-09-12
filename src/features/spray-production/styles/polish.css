@@ -425,7 +425,8 @@
 .spray-workspace .spray-pill-indicator {
   position: absolute;
   left: 0;
-  top: 0;
+  top: 4px;
+  bottom: 4px;
   z-index: 0;
   pointer-events: none;
   border-radius: 9999px;
@@ -506,6 +507,8 @@
 }
 
 .spray-workspace .spray-pill-control-bar .spray-pill-indicator {
+  top: auto;
+  bottom: 0;
   border-radius: 999px;
   background: var(--primary);
   box-shadow: none;

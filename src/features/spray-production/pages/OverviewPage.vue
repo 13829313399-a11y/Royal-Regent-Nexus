@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { Activity, CalendarClock, ClipboardList, Gauge, HardHat, Route } from '@lucide/vue'
-import { useSprayWorkspace, capabilities, str, amount, type Entity } from '../workspace'
+import { useSprayWorkspace, capabilities, localDate, str, amount, type Entity } from '../workspace'
 import SprayStatusPill from '../components/ui/SprayStatusPill.vue'
 const s = useSprayWorkspace()
 /* 泳道顺序固定为手喷、自动、移印、UV，进场级联既有意义也稳定，不随数据顺序抖动。 */
@@ -11,7 +11,6 @@ const route = (page: string) => ({ path: '/modules/production/spray-production/'
 const tasks = (capability: string) => s.items('tasks').filter(t => !['cancelled', 'completed'].includes(str(t, 'status')) && s.find('steps', t.step_id)?.capability === capability)
 const due = computed(() => [...s.items('orders')].filter(o => o.status === 'active').sort((a, b) => str(a, 'due_date').localeCompare(str(b, 'due_date'))).slice(0, 8))
 const counts = computed(() => s.summary?.counts)
-const today = new Date().toISOString().slice(0, 10)
 /* 每个数字同时给出业务口径与图标，避免只看数字不知道范围。 */
 const metrics = computed(() => [
   { key: 'orders', value: counts.value?.orders, label: '执行工单', hint: '工单交付 · 待跟踪', to: 'orders', icon: ClipboardList },
@@ -27,7 +26,7 @@ function progress(task: Record<string, unknown>) {
 function dueTone(order: Entity) {
   const date = str(order, 'due_date')
   if (!date) return 'neutral' as const
-  return date < today ? 'warn' as const : 'info' as const
+  return date < localDate() ? 'warn' as const : 'info' as const
 }
 </script>
 <template>
@@ -45,7 +44,7 @@ function dueTone(order: Entity) {
     <section v-for="(lane, laneIndex) in lanes" :key="lane.value" class="spray-lane spray-enter" :style="{ '--spray-enter-delay': laneIndex * 70 + 'ms' }">
       <div class="spray-lane-head"><h3>{{ lane.label }}</h3><p class="spray-muted"><b class="spray-num">{{ s.items('resources').filter(r => r.capability === lane.value).length }}</b> 个资源</p></div>
       <div class="spray-lane-body">
-        <button v-for="(task, taskIndex) in tasks(lane.value)" :key="task.id" class="spray-task spray-enter" :class="{ selected: s.selection === task.batch_id }" :style="{ '--spray-enter-delay': laneIndex * 70 + taskIndex * 40 + 'ms' }" @click="s.selection = str(task, 'batch_id')"><h4>{{ s.lineLabel(s.find('lines', s.find('batches', task.batch_id)?.line_id)) }}</h4><p><Route :size="12" aria-hidden="true" />{{ str(s.find('steps', task.step_id), 'name') }} · {{ str(s.find('resources', task.resource_id), 'name') }}</p><footer><span class="spray-num">{{ amount(task.reported) }} / {{ amount(task.quantity) }} 次</span><SprayStatusPill :status="task.status" :spinning="str(task, 'status') === 'running'" /></footer><div class="spray-progress" role="progressbar" :aria-valuenow="Math.round(progress(task))" aria-valuemin="0" aria-valuemax="100" :aria-label="'已完成 ' + Math.round(progress(task)) + '%'"><span :style="{ width: progress(task) + '%' }" /></div></button>
+        <button v-for="(task, taskIndex) in tasks(lane.value)" :key="task.id" class="spray-task spray-enter" :class="{ selected: s.selection === task.batch_id }" :style="{ '--spray-enter-delay': Math.min(300, laneIndex * 70 + taskIndex * 40) + 'ms' }" @click="s.selection = str(task, 'batch_id')"><h4>{{ s.lineLabel(s.find('lines', s.find('batches', task.batch_id)?.line_id)) }}</h4><p><Route :size="12" aria-hidden="true" />{{ str(s.find('steps', task.step_id), 'name') }} · {{ str(s.find('resources', task.resource_id), 'name') }}</p><footer><span class="spray-num">{{ amount(task.reported) }} / {{ amount(task.quantity) }} 次</span><SprayStatusPill :status="task.status" :spinning="str(task, 'status') === 'running'" /></footer><div class="spray-progress" role="progressbar" :aria-valuenow="Math.round(progress(task))" aria-valuemin="0" aria-valuemax="100" :aria-label="'已完成 ' + Math.round(progress(task)) + '%'"><span :style="{ width: progress(task) + '%' }" /></div></button>
         <div v-if="!tasks(lane.value).length" class="spray-muted self-center">暂无执行任务 · <RouterLink :to="route('schedule')">查看可接批次</RouterLink></div>
       </div>
     </section>

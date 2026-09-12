@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, ref } from 'vue'
+import { inject, ref, type Ref } from 'vue'
 import { LoaderCircle } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 
@@ -17,7 +17,7 @@ const props = withDefaults(defineProps<{
 }>(), { variant: 'default', size: 'default', busy: false, sheen: false, disabled: false })
 
 /* 桌面工作区与浏览器标签页隐藏时关闭扫光等装饰动效，与样式层 .spray-quiet 同一口径。 */
-const quiet = inject<boolean>('sprayQuiet', false)
+const quiet = inject<Ref<boolean>>('sprayQuiet', ref(false))
 void props
 </script>
 
