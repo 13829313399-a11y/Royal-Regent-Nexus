@@ -80,6 +80,17 @@ class HistorySource:
         result = []
         for code, fields in ROW_FIELDS.items():
             payload = self.payloads.get(code, {})
+            if code == "electronic" and "quote_groups" in payload:
+                from app.services.internal_quote_electronic import electronic_quote_groups
+                for group in electronic_quote_groups(payload):
+                    normalized = _normalized_rows(code, group, Decimal("1"))
+                    has_rows = bool(_select_tree(normalized.get("components"), self, component_id))
+                    has_expenses = component_id == str(self.components[0]["id"]) and any(
+                        _decimal(group.get(stem + suffix)) > 0 for stem in ("bonding", "smt", "labor", "testing", "packaging") for suffix in ("_rmb", "_hkd"))
+                    if has_rows or has_expenses:
+                        result.append(code)
+                        break
+                continue
             if payload.get("quote_mode") == "quick" and code in {"painting", "electronic", "sewing"}:
                 candidates = [payload.get("quick_quote", {})] if code == "painting" else _rows(payload.get("quick_quotes"))
             else:
@@ -148,7 +159,7 @@ def prepare_history_sources(db, payload, user):
 def _clean(value):
     if isinstance(value, dict):
         return {key: _clean(item) for key, item in value.items()
-                if key not in {"import_batch_id", "import_source_batch_id", "history_sources", "markup_override"}}
+                if key not in {"import_batch_id", "import_source_batch_id", "source_sha256", "history_sources", "markup_override"}}
     if isinstance(value, list):
         return [_clean(item) for item in value]
     return deepcopy(value)
@@ -260,6 +271,33 @@ def _rebind(value, component_id):
     return value
 
 
+def _select_electronic_groups(original, source, source_component, target_component, fx, prefix):
+    """Keep margins and shared expense allocation local to each source quote."""
+    from app.services.internal_quote_electronic import electronic_quote_groups
+    selected = []
+    def raw_cost(rows):
+        return sum((_decimal(row.get("quantity", 1)) * (_decimal(row["unit_price_rmb"]) if "unit_price_rmb" in row
+                   else _decimal(row.get("unit_price_hkd")) * fx) + raw_cost(_rows(row.get("children"))) for row in _rows(rows)), Decimal(0))
+    for index, group in enumerate(electronic_quote_groups(original)):
+        normalized = _normalized_rows("electronic", group, fx)
+        rows = _select_tree(normalized.get("components"), source, source_component)
+        all_cost, picked_cost = raw_cost(normalized.get("components")), raw_cost(rows)
+        share = picked_cost / all_cost if all_cost else Decimal(int(source_component == str(source.components[0]["id"])))
+        picked = _rebind(_clean(normalized), target_component)
+        picked.update(id="history-" + content_hash({"source": prefix, "group": group["id"]})[:32], components=[{**_rebind(_clean(row), target_component), "pricing_component_id": target_component} for row in rows])
+        picked.pop("quick_quotes", None)
+        has_expenses = False
+        for stem in ("bonding", "smt", "labor", "testing", "packaging", "tax_credit_difference"):
+            for suffix in ("_rmb", "_hkd"):
+                key = stem + suffix
+                if key in picked:
+                    picked[key] = str(_decimal(picked[key]) * share)
+                    has_expenses |= bool(_decimal(picked[key]))
+        if rows or has_expenses:
+            selected.append(picked)
+    return selected
+
+
 def seed_history_product(db, quote, product, sources, initial_payloads, snapshot, user):
     """Return payloads and source evidence; attachments are copied in the caller's transaction."""
     if not product.history_source and not any(product.component_sources or []):
@@ -290,6 +328,8 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
                                if not a.department.startswith("component-image:") and
                                (a.department != "product-image" or not _justplay(quote)))
     if _justplay(quote):
+        grouped_electronic = any("quote_groups" in sources[ref.quote_id].payloads.get("electronic", {})
+                                 for ref in (product.component_sources or []) if ref)
         # Shared packaging belongs only to the complete-product source, never to each accessory.
         for code, fields in ROW_FIELDS.items():
             base = payloads.setdefault(code, {})
@@ -300,6 +340,10 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
             if code in {"electronic", "painting", "sewing"}:
                 base["quote_mode"] = "detail"
         electronic = payloads["electronic"]
+        electronic.pop("quote_groups", None)
+        if grouped_electronic:
+            electronic.clear()
+            electronic["quote_groups"] = []
         for field in list(electronic):
             if field.endswith(("_rmb", "_hkd")):
                 electronic.pop(field)
@@ -316,6 +360,23 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
             old_keys = {i: key for i, key in enumerate(_source_keys(source_molds))}
             for code, fields in ROW_FIELDS.items():
                 original = source.payloads.get(code, {})
+                if code == "electronic" and grouped_electronic:
+                    groups = _select_electronic_groups(original, source, ref.component_id, target_component, fx, source.quote.id)
+                    for group in groups:
+                        existing = next((item for item in electronic["quote_groups"] if item["id"] == group["id"]), None)
+                        if existing is None:
+                            electronic["quote_groups"].append(deepcopy(group))
+                        else:
+                            existing["components"].extend(group["components"])
+                            for stem in ("bonding", "smt", "labor", "testing", "packaging", "tax_credit_difference"):
+                                for suffix in ("_rmb", "_hkd"):
+                                    key = stem + suffix
+                                    if key in group:
+                                        existing[key] = str(_decimal(existing.get(key)) + _decimal(group[key]))
+                    selected_payloads[code] = {"quote_groups": groups}
+                    if groups:
+                        required.add(code)
+                    continue
                 normalized = _normalized_rows(code, original, fx)
                 selected_payloads[code] = {}
                 for field in fields:
@@ -379,6 +440,8 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
         sales["freight_calc"] = {"enabled": False, "freight_enabled": False, "lifting_enabled": False}
     for field in ("profit_rate_percent",):
         payloads.get("electronic", {}).pop(field, None)
+        for group in payloads.get("electronic", {}).get("quote_groups", []):
+            group.pop(field, None)
     for code, field in (("molding", "injection_loss_rate_percent"), ("assembly", "labor_base_hkd")):
         payloads.get(code, {}).pop(field, None)
 

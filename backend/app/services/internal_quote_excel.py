@@ -139,6 +139,9 @@ def _list_of_dicts(value: object) -> list[dict[str, Any]]:
 
 def _section_payload(section: InternalQuoteSection | None) -> dict[str, Any]:
     payload = _json_object(section.payload_json) if section is not None else {}
+    if section is not None and section.department == "electronic":
+        from app.services.internal_quote_electronic import electronic_detail_payload
+        payload = electronic_detail_payload(payload)
     if section is not None and section.department == "sales" and payload.get("pricing_mode") == "component":
         payload = {**payload, "cartons": resolve_sales_cartons(payload)}
     return payload
@@ -655,6 +658,7 @@ def _purchase_pricing_entries(entries, sections) -> list[dict[str, Any]]:
         match = next((line for line in remaining
                       if line.get("section") == entry.get("section")
                       and line.get("kind") == entry.get("kind")
+                      and (not entry.get("electronic_quote_id") or line.get("electronic_quote_id") == entry.get("electronic_quote_id"))
                       and (_plain_text(line.get("label")) or {"electronic": "电子", "engineering": "工程采购", "sales": "包装材料"}.get(line.get("section")))
                       == _plain_text(entry.get("label"))), None)
         if match is not None:
@@ -4952,15 +4956,30 @@ def _build_electronic_sheet(
     workbook: Workbook,
     section: InternalQuoteSection | None,
     reference_snapshot: dict[str, Any],
+    *,
+    sheet_name: str = "电子明细",
+    quote_name: str = "电子报价明细",
 ) -> None:
-    sheet = workbook.create_sheet("电子明细")
-    _style_title(sheet, "电子报价明细", 10)
+    payload = _json_object(section.payload_json) if section else {}
+    if "quote_groups" in payload:
+        from types import SimpleNamespace
+        from app.services.internal_quote_electronic import electronic_quote_groups
+        calculations = {item["id"]: item for item in _section_calculation(section).get("quote_groups", [])}
+        for index, group in enumerate(electronic_quote_groups(payload), 1):
+            if group["id"] not in calculations:
+                raise ValueError("电子报价计算快照不完整，请重新保存并审核后导出")
+            individual = SimpleNamespace(payload_json=json.dumps(group, ensure_ascii=False), calculation_json=json.dumps(calculations[group["id"]], ensure_ascii=False))
+            _build_electronic_sheet(workbook, individual, reference_snapshot, sheet_name=f"电子明细{index}", quote_name=group["name"])
+        return
+    sheet = workbook.create_sheet(sheet_name)
+    _style_title(sheet, quote_name, 10)
     _header_row(sheet, 3, ("父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源"))
     row_index = 4
     payload = _json_object(section.payload_json) if section else {}
     fx_value = _number(reference_snapshot.get("fx", {}).get("rmb_hkd"))
     fx = fx_value if isinstance(fx_value, float) and fx_value > 0 else 0.85
-    components = payload.get("components", [])
+    components = ([{**row, "quantity": 1, "children": []} for row in payload.get("quick_quotes", [])]
+                  if payload.get("quote_mode") == "quick" else payload.get("components", []))
     for parent, row in _walk_components(components if isinstance(components, list) else []):
         quantity = _number(row.get("quantity"))
         unit_price_rmb = _number(row.get("unit_price_rmb"))
@@ -5538,6 +5557,10 @@ def build_internal_quote_workbook(
     _build_approval_sheet(workbook, quote, sections, manifest)
     for technical_sheet in workbook.worksheets[1:]:
         technical_sheet.sheet_state = "veryHidden"
+    electronic_payload = _json_object(by_code["electronic"].payload_json) if by_code.get("electronic") else {}
+    if "quote_groups" in electronic_payload:
+        for index in range(1, len(electronic_payload["quote_groups"]) + 1):
+            workbook[f"电子明细{index}"].sheet_state = "visible"
     _append_spreadsheet_attachment_sheets(workbook, attachments or [])
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True

@@ -911,6 +911,38 @@ def _electronic_calculation_rows(payload: dict[str, Any]) -> Any:
 
 
 def _electronic(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
+    if "quote_groups" in payload:
+        from app.services.internal_quote_electronic import electronic_quote_groups
+        try:
+            groups = electronic_quote_groups(payload)
+        except ValueError as error:
+            raise CalculationInputError(str(error)) from error
+        result["quote_groups"] = []
+        totals: dict[str, Decimal] = {}
+        currencies: dict[str, Decimal] = {}
+        for group in groups:
+            calculated = {"line_breakdown": [], "currency_totals": {"HKD": "0", "RMB": "0", "USD": "0"}, "totals": {}}
+            _electronic(group, snapshot, calculated)
+            result["quote_groups"].append({"id": group["id"], "name": group["name"], **calculated})
+            target = Decimal(calculated["totals"].get("total_hkd", "0"))
+            source_total = sum((Decimal(line.get("amount_hkd", line.get("line_hkd", "0"))) for line in calculated["line_breakdown"]), ZERO)
+            # Allocate each quote's own expenses/profit to its own parts. A global
+            # factor would transfer expenses between quotes with different margins.
+            for line in calculated["line_breakdown"]:
+                raw = Decimal(line.get("amount_hkd", line.get("line_hkd", "0")))
+                result["line_breakdown"].append({**line, "electronic_quote_id": group["id"], "electronic_quote_name": group["name"],
+                    "quote_pricing_hkd": str(raw * target / source_total if source_total else ZERO)})
+            if not source_total and target:
+                result["line_breakdown"].append({"kind": "electronic_quote_expenses", "item": group["name"],
+                    "electronic_quote_id": group["id"], "electronic_quote_name": group["name"], "quote_pricing_hkd": str(target)})
+            for key, value in calculated["totals"].items():
+                totals[key] = totals.get(key, ZERO) + Decimal(value)
+            for key, value in calculated["currency_totals"].items():
+                currencies[key] = currencies.get(key, ZERO) + Decimal(value)
+        result["totals"] = {key: decimal_text(value) for key, value in totals.items()}
+        result["totals"].setdefault("total_hkd", "0.0000")
+        result["currency_totals"] = {key: decimal_text(value) for key, value in currencies.items()}
+        return
     calculation_rows = _electronic_calculation_rows(payload)
     uses_rmb_contract = str(payload.get("quote_mode", "detail")) == "quick" or payload.get("pricing_currency") == "RMB" or any(
         field in payload
@@ -2409,6 +2441,7 @@ def calculate_section(
     meaningful_fields = {
         "engineering": ("materials", "molds", "cartons"),
         "electronic": (
+            "quote_groups",
             "components",
             "bonding_rmb",
             "smt_rmb",

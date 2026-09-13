@@ -10,7 +10,7 @@ import type {
   SewingPayload,
   SlushPayload,
 } from '@/lib/internalQuoteSectionPayload'
-import { calculatePaintingRowSplit, calculateJustPlayCartonsPerPallet, customerSuppliedMaterialValid, justPlayCartonState, justPlayPackagingInputsValid, resolveSalesCartons, salesFreightCalculationModes } from '@/lib/internalQuoteSectionPayload'
+import { calculatePaintingRowSplit, calculateJustPlayCartonsPerPallet, customerSuppliedMaterialValid, electronicQuoteGroups, isElectronicQuoteGroupsPayload, justPlayCartonState, justPlayPackagingInputsValid, resolveSalesCartons, salesFreightCalculationModes } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 export type InternalQuoteBlockStatus = 'missing' | 'partial' | 'complete' | 'optional' | 'automatic'
@@ -228,7 +228,14 @@ export function getInternalQuoteFormBlocks(
   salesFreightCapacityKeys?: string[],
 ): InternalQuoteFormBlock[] {
   if (code === 'engineering') return engineeringBlocks(payload as unknown as EngineeringPayload)
-  if (code === 'electronic') return electronicBlocks(payload as unknown as ElectronicPayload)
+  if (code === 'electronic') {
+    if (!isElectronicQuoteGroupsPayload(payload)) return electronicBlocks(payload as unknown as ElectronicPayload)
+    return electronicQuoteGroups(payload).flatMap((group) => electronicBlocks(group).map((entry) => ({
+      ...entry,
+      id: `${group.id}:${entry.id}`,
+      title: `${group.name} · ${entry.title}`,
+    })))
+  }
   if (code === 'molding') return moldingBlocks(payload as unknown as MoldingPayload)
   if (code === 'painting') return paintingBlocks(payload as unknown as PaintingPayload)
   if (code === 'slush') return slushBlocks(payload as unknown as SlushPayload)

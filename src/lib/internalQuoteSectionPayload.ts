@@ -170,6 +170,15 @@ export interface ElectronicPayload {
   packaging_hkd?: number
   tax_credit_difference_hkd?: number
 }
+export interface ElectronicQuoteGroup extends ElectronicPayload, Record<string, unknown> {
+  id: string
+  name: string
+  import_batch_id?: string
+  source_sha256?: string
+}
+export interface ElectronicQuoteGroupsPayload extends Record<string, unknown> {
+  quote_groups: ElectronicQuoteGroup[]
+}
 export interface ElectronicSummary {
   componentCostRmb: number
   deductibleInputTaxRmb: number
@@ -1169,6 +1178,35 @@ export function calculateElectronicSummary(payload: ElectronicPayload, rmbHkdRat
   }
 }
 
+export function isElectronicQuoteGroupsPayload(value: Record<string, unknown>): value is ElectronicQuoteGroupsPayload {
+  return Array.isArray(value.quote_groups)
+}
+
+export function electronicQuoteGroups(value: Record<string, unknown>): ElectronicQuoteGroup[] {
+  return isElectronicQuoteGroupsPayload(value) ? value.quote_groups : []
+}
+
+export function calculateElectronicSectionSummary(payload: Record<string, unknown>, rmbHkdRate: unknown): ElectronicSummary {
+  const groups = electronicQuoteGroups(payload)
+  if (!isElectronicQuoteGroupsPayload(payload)) return calculateElectronicSummary(payload as unknown as ElectronicPayload, rmbHkdRate)
+  return groups.reduce<ElectronicSummary>((total, group) => {
+    const summary = calculateElectronicSummary(group, rmbHkdRate)
+    return {
+      componentCostRmb: total.componentCostRmb + summary.componentCostRmb,
+      deductibleInputTaxRmb: total.deductibleInputTaxRmb + summary.deductibleInputTaxRmb,
+      preTaxCostRmb: total.preTaxCostRmb + summary.preTaxCostRmb,
+      withProfitRmb: total.withProfitRmb + summary.withProfitRmb,
+      taxDifferenceRmb: total.taxDifferenceRmb + summary.taxDifferenceRmb,
+      taxPayableRmb: total.taxPayableRmb + summary.taxPayableRmb,
+      quoteRmb: total.quoteRmb + summary.quoteRmb,
+      quoteHkd: total.quoteHkd + summary.quoteHkd,
+    }
+  }, {
+    componentCostRmb: 0, deductibleInputTaxRmb: 0, preTaxCostRmb: 0, withProfitRmb: 0,
+    taxDifferenceRmb: 0, taxPayableRmb: 0, quoteRmb: 0, quoteHkd: 0,
+  })
+}
+
 function textValue(value: unknown) {
   return value == null ? '' : String(value)
 }
@@ -1317,6 +1355,49 @@ function electronicRows(value: unknown): ElectronicComponentRow[] {
     ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
     children: electronicRows(row.children),
   }))
+}
+
+function normalizeElectronicPayload(source: Record<string, unknown>): ElectronicPayload {
+  const usesRmbContract = source.quote_mode === 'quick'
+    || source.pricing_currency === 'RMB'
+    || ['bonding_rmb', 'smt_rmb', 'labor_rmb', 'testing_rmb', 'packaging_rmb'].some((key) => Object.prototype.hasOwnProperty.call(source, key))
+    || rows(source.components).some((row) => Object.prototype.hasOwnProperty.call(row, 'unit_price_rmb'))
+    || !Object.keys(source).length
+  return {
+    quote_mode: source.quote_mode === 'quick' ? 'quick' : 'detail',
+    quick_quotes: rows(source.quick_quotes).map((row) => ({
+      ...importBatchMetadata(row),
+      ...pricingMetadata(row),
+      item: textValue(row.item ?? row.name),
+      unit_price_rmb: numberValue(row.unit_price_rmb ?? row.price_rmb),
+      tax_rate_percent: numberValue(row.tax_rate_percent, 13),
+      remark: textValue(row.remark ?? row.note),
+    })),
+    components: electronicRows(source.components),
+    ...(usesRmbContract
+      ? {
+          pricing_currency: 'RMB',
+          bonding_rmb: numberValue(source.bonding_rmb), smt_rmb: numberValue(source.smt_rmb), labor_rmb: numberValue(source.labor_rmb),
+          testing_rmb: numberValue(source.testing_rmb), packaging_rmb: numberValue(source.packaging_rmb),
+        }
+      : {
+          bonding_hkd: numberValue(source.bonding_hkd), smt_hkd: numberValue(source.smt_hkd), labor_hkd: numberValue(source.labor_hkd),
+          testing_hkd: numberValue(source.testing_hkd), packaging_hkd: numberValue(source.packaging_hkd),
+          tax_credit_difference_hkd: numberValue(source.tax_credit_difference_hkd),
+        }),
+    profit_rate_percent: numberValue(source.profit_rate_percent, 10),
+  }
+}
+
+function normalizeElectronicQuoteGroup(row: Record<string, unknown>, index: number): ElectronicQuoteGroup {
+  const id = textValue(row.id).trim() || `electronic-${index + 1}`
+  return {
+    id,
+    name: textValue(row.name).trim() || `电子报价${index + 1}`,
+    ...importBatchMetadata(row),
+    ...(textValue(row.source_sha256).trim() ? { source_sha256: textValue(row.source_sha256).trim() } : {}),
+    ...normalizeElectronicPayload(row),
+  }
 }
 
 function paintingOperations(value: unknown): PaintingOperations {
@@ -1537,34 +1618,10 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     }
   }
   if (code === 'electronic') {
-    const usesRmbContract = source.quote_mode === 'quick'
-      || source.pricing_currency === 'RMB'
-      || ['bonding_rmb', 'smt_rmb', 'labor_rmb', 'testing_rmb', 'packaging_rmb'].some((key) => Object.prototype.hasOwnProperty.call(source, key))
-      || rows(source.components).some((row) => Object.prototype.hasOwnProperty.call(row, 'unit_price_rmb'))
-      || !Object.keys(source).length
-    return {
-      quote_mode: source.quote_mode === 'quick' ? 'quick' : 'detail',
-      quick_quotes: rows(source.quick_quotes).map((row) => ({
-        ...pricingMetadata(row),
-        item: textValue(row.item ?? row.name),
-        unit_price_rmb: numberValue(row.unit_price_rmb ?? row.price_rmb),
-        tax_rate_percent: numberValue(row.tax_rate_percent, 13),
-        remark: textValue(row.remark ?? row.note),
-      })),
-      components: electronicRows(source.components),
-      ...(usesRmbContract
-        ? {
-            pricing_currency: 'RMB',
-            bonding_rmb: numberValue(source.bonding_rmb), smt_rmb: numberValue(source.smt_rmb), labor_rmb: numberValue(source.labor_rmb),
-            testing_rmb: numberValue(source.testing_rmb), packaging_rmb: numberValue(source.packaging_rmb),
-          }
-        : {
-            bonding_hkd: numberValue(source.bonding_hkd), smt_hkd: numberValue(source.smt_hkd), labor_hkd: numberValue(source.labor_hkd),
-            testing_hkd: numberValue(source.testing_hkd), packaging_hkd: numberValue(source.packaging_hkd),
-            tax_credit_difference_hkd: numberValue(source.tax_credit_difference_hkd),
-          }),
-      profit_rate_percent: numberValue(source.profit_rate_percent, 10),
+    if (Array.isArray(source.quote_groups)) {
+      return { quote_groups: rows(source.quote_groups).map(normalizeElectronicQuoteGroup) }
     }
+    return normalizeElectronicPayload(source) as unknown as Record<string, unknown>
   }
   if (code === 'molding') {
     const injectionLossRate = numberValue(source.injection_loss_rate_percent, 3)
