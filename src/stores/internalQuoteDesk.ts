@@ -1546,8 +1546,14 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         this.fileBusy = false
       }
     },
-    confirmImport(quoteId: string, batchId: string, revision: number, componentAssignments?: Record<string, string>) {
-      return this.executeMutation(quoteId, () => internalQuoteApi.confirmImport(quoteId, batchId, revision, componentAssignments))
+    confirmImport(
+      quoteId: string,
+      batchId: string,
+      revision: number,
+      componentAssignments?: Record<string, string>,
+      electronicQuoteTarget?: string,
+    ) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.confirmImport(quoteId, batchId, revision, componentAssignments, electronicQuoteTarget))
     },
     uploadAttachment(quoteId: string, sectionCode: InternalQuoteSectionCode, file: File) {
       return this.executeMutation(quoteId, () => internalQuoteApi.uploadAttachment(quoteId, sectionCode, file))

@@ -875,6 +875,7 @@ class InternalQuoteReferenceSetOut(BaseModel):
 
 
 class InternalQuoteImportConfirmRequest(BaseModel):
+    electronic_quote_target: str | None = Field(default=None, min_length=1, max_length=80)
     component_assignments: dict[str, str] = Field(default_factory=dict, max_length=5000)
     revision: int = Field(ge=1)
     # Kept for backward compatibility with older clients. Internal quote
