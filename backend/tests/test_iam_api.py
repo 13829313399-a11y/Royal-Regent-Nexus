@@ -784,14 +784,14 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert all(item["is_editable"] is False for item in positions)
         assert all(item["source"] == "code" for item in positions)
         assert all(item["scope_mode_locked"] is True for item in positions)
-        assert all(item["definition_version"] == "fixed-v24" for item in positions)
+        assert all(item["definition_version"] == "fixed-v27" for item in positions)
         assert all(len(item["definition_hash"]) == 64 for item in positions)
 
         general_manager = next(
             item for item in positions if item["id"] == "position_general_manager"
         )
         assert general_manager["scope_mode"] == "cross_factory_operate"
-        assert general_manager["permission_count"] == 80
+        assert general_manager["permission_count"] == 111
 
         detail = client.get(
             "/api/iam/roles/position_general_manager/access"
@@ -801,7 +801,7 @@ def test_system_position_get_contract_is_code_locked(monkeypatch):
         assert detail.json()["source"] == "code"
         assert detail.json()["scope_mode_locked"] is True
         assert detail.json()["definition_hash"] == general_manager["definition_hash"]
-        assert len(detail.json()["permission_codes"]) == 80
+        assert len(detail.json()["permission_codes"]) == 111
         assert not any(
             code.startswith("system:") for code in detail.json()["permission_codes"]
         )

@@ -11,6 +11,7 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
+    UV_PRINTING_PERMISSION_CODES,
     SPRAY_PRODUCTION_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
     CARTON_PROCUREMENT_PERMISSION_CODES,
@@ -21,7 +22,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v26"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v27"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -117,6 +118,7 @@ class SystemPositionDefinition:
 
 
 _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
+    *UV_PRINTING_PERMISSION_CODES,
     *SPRAY_PRODUCTION_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
@@ -286,6 +288,7 @@ SALES_BUSINESS_PERMISSION_CODES = (
 PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
+    *UV_PRINTING_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
     "molding_sample:export",
@@ -309,6 +312,7 @@ PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
 PRODUCTION_CLERK_PERMISSION_CODES = (
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
+    "uv_printing:read", "uv_printing:report",
     *INJECTION_SCHEDULING_PERMISSION_CODES[:3],
     "molding_sample:read",
     "molding_sample:export",
