@@ -86,6 +86,7 @@ export const PAYROLL_STATE: Record<UvPayrollState, StatusView> = {
   unpriced: { label: '未定价', tone: 'amber' },
   provisional: { label: '暂算待核', tone: 'amber' },
   confirmed: { label: '已确认', tone: 'green' },
+  adjusted: { label: '已调整', tone: 'blue' },
 }
 
 export const PRICING_STATE: Record<UvPricingState, StatusView> = {

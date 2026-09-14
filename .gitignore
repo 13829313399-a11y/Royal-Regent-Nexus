@@ -108,6 +108,7 @@ outputs/opening-inventory-template-20260909/
 # UV printing shared spec, decisions, handoff and browser evidence are deliverables.
 !/docs/uv-printing/
 !/docs/uv-printing/**
+!/connectors/uv-printing/README.md
 
 # Shared Codex Plan A instructions; local credentials and runtime state stay private.
 !/.agents/skills/rrn-model-routing/SKILL.md

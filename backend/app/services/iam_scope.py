@@ -28,6 +28,9 @@ READ_PERMISSION_CODES = frozenset(
     {
         "injection_scheduling:read",
         "spray_production:read",
+        "uv_printing:read",
+        "uv_printing:cost_read",
+        "uv_printing:payroll_read",
         "spray_production:cost_read",
         "molding_sample:read",
         "molding_sample:cross_factory_read",

@@ -262,7 +262,7 @@ export interface UvHandoverRecord extends UvEntity {
 export type UvReportStatus = 'draft' | 'confirmed' | 'corrected' | 'voided'
 export type UvSourceKind = 'manual' | 'device' | 'import' | 'mixed'
 export type UvPricingState = 'priced' | 'unpriced'
-export type UvPayrollState = 'unpriced' | 'provisional' | 'confirmed'
+export type UvPayrollState = 'unpriced' | 'provisional' | 'confirmed' | 'adjusted'
 
 /** 无相应权限时，服务端完全省略对应字段。 */
 export interface UvReportCommercial {
@@ -291,6 +291,9 @@ export interface UvReportWorkerShare {
 }
 
 export interface UvReport extends UvEntity, UvQuality {
+  /** 服务端返回当前来源证据；更正不能静默丢弃原分配。 */
+  source_allocations?: UvSourceAllocationInput[]
+  evidence_job_ids?: Id[]
   business_date: BusinessDate
   shift: ShiftCode
   shift_template_version_id: Id
@@ -651,6 +654,8 @@ export type UvDrillKind =
 export interface UvDailyProjection {
   business_date: BusinessDate
   good_qty: number
+  /** 已判不良，用于良率分母；待判与半成品不混入良率。 */
+  defective_qty: number
   reported_qty: number
   yield_rate: DecimalString | null
   output_value: Money | null
@@ -669,6 +674,7 @@ export interface UvMonthlyProjection {
   months: Array<{
     month: string
     good_qty: number
+    defective_qty: number
     reported_qty: number
     /** 月分子合计 / 月分母合计，不平均每天百分比。 */
     yield_rate: DecimalString | null
@@ -700,6 +706,8 @@ export interface UvReportExport {
   row_count: number
   /** 导出必须与网页使用同一过滤条件。 */
   scope_label: string
+  /** 正式导出由二次鉴权下载；样例 transport 不提供此地址。 */
+  download_url?: string
 }
 
 /* ------------------------------------------------------------------ *
@@ -919,7 +927,8 @@ export interface UvPricingQuoteInput extends UvCommandMeta {
 
 export interface UvPricingAdoptInput extends UvCommandMeta {
   quote_id: Id
-  rate_kind: UvRateKind
+  /** 定价测算只能显式采用为商业执行价，工资与面积价另行维护。 */
+  rate_kind: 'commercial'
   effective_from: BusinessDate
 }
 

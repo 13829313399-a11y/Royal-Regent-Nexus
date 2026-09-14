@@ -184,7 +184,7 @@ function qualityPendingStore(): UvMemoryStore {
     report({
       id: 'DEMO-R-QUALITY',
       worker_ids: ['DEMO-W-002'],
-      status: 'draft',
+      status: 'confirmed',
       quality_status: 'pending',
       reported_qty: 10,
       pending_qty: 10,

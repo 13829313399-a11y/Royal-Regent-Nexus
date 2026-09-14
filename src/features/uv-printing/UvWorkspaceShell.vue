@@ -9,7 +9,7 @@ import type { UvSummary, UvWorkspaceTransport } from './contracts'
 import { realUvTransport } from './transport/provider'
 import { SAMPLE_ROLE_IDS, SAMPLE_ROLE_LABELS, type UvSampleRole } from './preview/roles'
 import type { UvMemoryStore } from './preview/memoryStore'
-import { shanghaiDateTimeString } from './domain/businessTime'
+import { workspaceFreshnessLabel } from './domain/workspaceFreshness'
 import { UV_CONTEXT_KEY, UV_TRANSPORT_KEY, type UvPageContext } from './composables/uvPageContext'
 import './styles/workspace.css'
 
@@ -43,26 +43,41 @@ const contextViolation = workspace.violation
  * 两者走同一 transport 与同一份内存事实，不各自维护常量。
  */
 const summary = shallowRef<UvSummary | null>(null)
+const liveAsOf = ref<string | null>(null)
 let summaryGeneration = 0
+let summaryController: AbortController | null = null
 
 watch(
-  () => [transport.value, businessDate.value, shift.value, revision.value, contextViolation.value, loadingPreview.value] as const,
+  () => [transport.value, businessDate.value, shift.value, revision.value, contextViolation.value, loadingPreview.value, sampleStore.value] as const,
   async () => {
-    if (contextViolation.value || loadingPreview.value) {
+    const generation = ++summaryGeneration
+    summaryController?.abort()
+    summaryController = null
+    if (contextViolation.value || loadingPreview.value || (isPreview.value && !sampleStore.value)) {
       summary.value = null
+      if (!isPreview.value) liveAsOf.value = null
       return
     }
-    const generation = ++summaryGeneration
+    const controller = new AbortController()
+    summaryController = controller
     try {
       const response = await transport.value.summary({
         factory_id: 'huakang-a',
         business_date: businessDate.value,
         shift: shift.value === 'all' ? undefined : shift.value,
-      })
-      if (generation === summaryGeneration) summary.value = response.data
+      }, controller.signal)
+      if (generation === summaryGeneration) {
+        summary.value = response.data
+        if (!isPreview.value) liveAsOf.value = response.meta.as_of
+      }
     } catch {
       // 壳层不把摘要失败当成全局错误：页面自己展示失败与重试。
-      if (generation === summaryGeneration) summary.value = null
+      if (generation === summaryGeneration) {
+        summary.value = null
+        if (!isPreview.value) liveAsOf.value = null
+      }
+    } finally {
+      if (generation === summaryGeneration) summaryController = null
     }
   },
   { immediate: true },
@@ -70,7 +85,7 @@ watch(
 
 const activeKey = computed(() => String(route.path.split('/').filter(Boolean).pop() ?? 'overview'))
 const basePath = computed(() => route.path.split('/').slice(0, 4).join('/') || '/modules/production/uv-printing')
-const asOfLabel = computed(() => shanghaiDateTimeString(workspace.sampleAsOf.value))
+const asOfLabel = computed(() => workspaceFreshnessLabel(isPreview.value, workspace.sampleAsOf.value, liveAsOf.value))
 
 async function ensureTransport() {
   if (isPreview.value) {

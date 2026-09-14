@@ -11,7 +11,6 @@ import type {
   UvPricingStep,
   UvProcessVersion,
   UvProduct,
-  UvRateKind,
   UvRateVersion,
   UvResponse,
 } from '../contracts'
@@ -79,7 +78,7 @@ if (!transportRef || !context) {
   throw new Error('定价测算台必须在 UV 工作区壳内使用。')
 }
 
-const baseInput = defaultPricingInput('HKD')
+const baseInput = defaultPricingInput()
 const input = reactive<UvPricingInput>({ ...baseInput })
 
 const quoteLabel = ref('')
@@ -87,7 +86,7 @@ const quoteNote = ref('')
 const savedQuote = ref<UvPricingQuote | null>(null)
 const sensitivityRate = ref('0.4')
 const adoptOpen = ref(false)
-const adoptKind = ref<UvRateKind>('commercial')
+const adoptKind = 'commercial' as const
 const adoptEffectiveFrom = ref(props.businessDate)
 const adoptError = ref('')
 
@@ -184,7 +183,8 @@ const lossRateError = computed(() => {
 
 /** 输入未填齐时整条链不渲染任何数字：缺失不等于 0。 */
 const chainReady = computed(() =>
-  blankFields.value.length === 0
+  input.currency.trim().length > 0
+  && blankFields.value.length === 0
   && malformedFields.value.length === 0
   && lossRateError.value === '',
 )
@@ -252,7 +252,7 @@ const activeQuotePrice = computed(() => {
   const price = activeQuote.value?.result.markup_price
   return price === null || price === undefined
     ? null
-    : money(activeQuote.value?.result.currency ?? 'HKD', price)
+    : money(activeQuote.value!.result.currency, price)
 })
 
 /* ---------------- 敏感性（只做参考） ---------------- */
@@ -313,13 +313,8 @@ async function saveQuote() {
 
 /* ---------------- 采用为执行价（独立授权动作） ---------------- */
 
-const adoptKindAllowed = computed(() => adoptKind.value !== 'piece_wage' || props.canPayrollWrite)
-
 const adoptBlockedReason = computed(() => {
   if (!props.canWriteCost) return '采用为执行价需要「成本维护权限」，当前账号没有该权限；是否允许写入最终由服务端判定。'
-  if (adoptKind.value === 'piece_wage' && !props.canPayrollWrite) {
-    return '把测算采用为计件工价会影响工资口径，需要「计件工资维护权限」；当前账号没有该权限。'
-  }
   if (!activeQuote.value) return '请先保存本次测算：采用为执行价只针对已保存、有编号的测算记录，不会自动采用当前预览。'
   if (!adoptEffectiveFrom.value) return '必须显式填写生效起始日，不允许由系统猜测。'
   if (activeQuotePrice.value === null) return '该测算结果不可计算，不能采用为执行价。'
@@ -333,7 +328,7 @@ const adoptImpacts = computed(() => {
   const impacts: string[] = []
   if (!quote) return impacts
   impacts.push(
-    `为「${props.product?.product_no ?? '未关联产品'} ${props.product?.name ?? ''}」新增一条${RATE_KIND_LABELS[adoptKind.value]}，单价 ${formatDecimal(quote.result.markup_price, 6)} ${quote.result.currency}。`,
+    `为「${props.product?.product_no ?? '未关联产品'} ${props.product?.name ?? ''}」新增一条${RATE_KIND_LABELS[adoptKind]}，单价 ${formatDecimal(quote.result.markup_price, 6)} ${quote.result.currency}。`,
   )
   impacts.push(`生效起始日 ${adoptEffectiveFrom.value}；生效区间左闭右闭，之后的报工按新价规计算。`)
   impacts.push('历史报工与已确认工资不追溯改写；需要更正历史必须走更正流程。')
@@ -357,7 +352,7 @@ async function confirmAdopt() {
     operation_id: '',
     expected_version: quote.version,
     quote_id: quote.id,
-    rate_kind: adoptKind.value,
+    rate_kind: adoptKind,
     effective_from: adoptEffectiveFrom.value,
   }
   const fingerprint = JSON.stringify(payload)
@@ -477,7 +472,7 @@ async function confirmAdopt() {
               </template>
             </UvFormField>
 
-            <UvFormField label="币种" required field-id="uv-pricing-currency" help="币种只标注本次测算结果的币种，系统不做汇率折算。">
+            <UvFormField label="币种" required field-id="uv-pricing-currency" help="必须由用户明确选择；系统不做汇率折算，也不猜默认币种。">
               <template #default="{ describedBy }">
                 <select
                   id="uv-pricing-currency"
@@ -486,9 +481,13 @@ async function confirmAdopt() {
                   :aria-describedby="describedBy"
                   @change="input.currency = ($event.target as HTMLSelectElement).value"
                 >
+                  <option value="">请选择币种</option>
                   <option value="HKD">HKD 港币</option>
                   <option value="CNY">CNY 人民币</option>
                   <option value="USD">USD 美元</option>
+                  <option value="JPY">JPY 日元</option>
+                  <option value="EUR">EUR 欧元</option>
+                  <option value="GBP">GBP 英镑</option>
                 </select>
               </template>
             </UvFormField>
@@ -764,18 +763,16 @@ async function confirmAdopt() {
               <UvFormField
                 label="采用为"
                 field-id="uv-pricing-adopt-kind"
-                help="采用为计件工价会影响工资口径，需要额外的计件工资维护权限。"
+                help="本操作只采用为商业执行价；计件工价须在独立工资维护流程中配置，二者互不替代。"
               >
                 <template #default="{ describedBy }">
                   <select
                     id="uv-pricing-adopt-kind"
-                    v-model="adoptKind"
+                    :value="adoptKind"
                     class="uv-input uv-select"
                     :aria-describedby="describedBy"
                   >
                     <option value="commercial">{{ RATE_KIND_LABELS.commercial }}</option>
-                    <option value="piece_wage">{{ RATE_KIND_LABELS.piece_wage }}</option>
-                    <option value="area">{{ RATE_KIND_LABELS.area }}</option>
                   </select>
                 </template>
               </UvFormField>

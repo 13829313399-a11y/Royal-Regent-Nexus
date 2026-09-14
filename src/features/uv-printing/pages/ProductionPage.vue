@@ -29,6 +29,7 @@ import { HANDOVER_STATE, QUALITY_STATUS, RAW_UNIT, RECONCILIATION, REPORT_STATUS
 import { QUALITY_BUCKET_LABELS, QUALITY_BUCKETS, qualityDifference, validateQuality } from '../domain/quality'
 import { shanghaiDateTimeString } from '../domain/businessTime'
 import { formatDecimal, formatMoney } from '../domain/decimal'
+import { readAllPages } from '../transport/pagination'
 
 /**
  * 生产记录：待核作业 / 有效报工 / 入库核数三个视角，主表与证据抽屉联动。
@@ -66,27 +67,27 @@ const quickOpen = ref(false)
 const detailReport = ref<UvReport | null>(null)
 
 const jobRequest = useUvRequest<{ items: UvPrintJob[]; total: number }>(
-  (signal) => transport.value.jobs({ ...scope.value, status: jobStatus.value || undefined, q: query.value || undefined, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.jobs(nextScope, nextSignal), { ...scope.value, status: jobStatus.value || undefined, q: query.value || undefined }, signal),
   { watchSource: () => [scope.value.business_date, scope.value.shift, jobStatus.value, query.value, ctx.revision.value] },
 )
 
 const reportRequest = useUvRequest<{ items: UvReport[]; total: number }>(
-  (signal) => transport.value.reports({ ...scope.value, status: reportStatus.value || undefined, q: query.value || undefined, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.reports(nextScope, nextSignal), { ...scope.value, status: reportStatus.value || undefined, q: query.value || undefined }, signal),
   { watchSource: () => [scope.value.business_date, scope.value.shift, reportStatus.value, query.value, ctx.revision.value] },
 )
 
 const handoverRequest = useUvRequest<{ items: UvHandoverRecord[]; total: number }>(
-  (signal) => transport.value.handovers({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.handovers(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [scope.value.business_date, ctx.revision.value] },
 )
 
 const machineRequest = useUvRequest<{ items: UvMachine[] }>(
-  (signal) => transport.value.machines({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.machines(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [ctx.revision.value] },
 )
 
 const productRequest = useUvRequest<{ items: UvProduct[] }>(
-  (signal) => transport.value.products({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.products(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [ctx.revision.value] },
 )
 
@@ -371,8 +372,8 @@ async function submitCorrection() {
         semi_finished_qty: Number(correctionSemi.value || '0'),
         worker_ids: report.worker_ids,
         notes: report.notes,
-        source_allocations: [],
-        evidence_job_ids: [],
+        source_allocations: report.source_allocations ?? [],
+        evidence_job_ids: report.evidence_job_ids ?? [],
       },
     })
     return response.data
@@ -895,7 +896,7 @@ watch(() => route.query.status, (next) => {
             />
             <UvField
               label="工资状态"
-              :value="detailReport.payroll ? (detailReport.payroll.state === 'confirmed' ? '已确认' : detailReport.payroll.state === 'provisional' ? '暂算待核' : '未定价') : null"
+              :value="detailReport.payroll ? (detailReport.payroll.state === 'confirmed' ? '已确认' : detailReport.payroll.state === 'adjusted' ? '已调整' : detailReport.payroll.state === 'provisional' ? '暂算待核' : '未定价') : null"
               missing-label="不适用"
             />
           </dl>

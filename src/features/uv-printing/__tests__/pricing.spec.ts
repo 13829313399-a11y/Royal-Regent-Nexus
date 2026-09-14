@@ -189,6 +189,11 @@ describe('UV 定价公式：滑杆只做敏感性参考', () => {
       expect(String(value)).toMatch(/^-?\d+(\.\d+)?$/)
     }
   })
+
+  it('新测算不猜 HKD：必须由用户或现有价规明确选择币种', () => {
+    expect(defaultPricingInput().currency).toBe('')
+    expect(computePricing(defaultPricingInput()).currency).toBe('')
+  })
 })
 
 describe('UV 定价数据层：显式零价与缺价必须可区分', () => {
@@ -324,8 +329,9 @@ function mountStudio(productIndex: number) {
 }
 
 describe('定价测算台：可解释计算链', () => {
-  it('把每一步标签、公式与数值渲染出来，并区分加成与毛利率', () => {
+  it('把每一步标签、公式与数值渲染出来，并区分加成与毛利率', async () => {
     const wrapper = mountStudio(0)
+    await wrapper.get('#uv-pricing-currency').setValue('HKD')
     const text = wrapper.text()
 
     for (const label of [
@@ -350,8 +356,9 @@ describe('定价测算台：可解释计算链', () => {
     wrapper.unmount()
   })
 
-  it('工艺未确认每板件数时不猜 1，也不渲染任何价格数字', () => {
+  it('工艺未确认每板件数时不猜 1，也不渲染任何价格数字', async () => {
     const wrapper = mountStudio(4)
+    await wrapper.get('#uv-pricing-currency').setValue('HKD')
     const text = wrapper.text()
 
     expect(text).toContain('未确认')

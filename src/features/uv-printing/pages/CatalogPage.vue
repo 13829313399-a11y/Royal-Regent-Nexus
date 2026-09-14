@@ -19,6 +19,7 @@ import { useUvRequest } from '../composables/useUvRequest'
 import { useUvToast } from '../composables/useUvToast'
 import { decimalCompare, decimalIsZero, formatDecimal, money } from '../domain/decimal'
 import { PRICING_STATE, RATE_KIND_LABELS } from '../domain/status'
+import { readAllPages } from '../transport/pagination'
 import '../styles/workspace.css'
 import PricingStudio from '../components/PricingStudio.vue'
 import ProductVersionPanel from '../components/ProductVersionPanel.vue'
@@ -77,10 +78,7 @@ const selectedVersionId = ref<Id>('')
 const productsRequest = useUvRequest(
   async (signal: AbortSignal) => {
     if (forbidden.value) return null
-    return transportRef.value.products(
-      workspace.scopeFor({ q: q.value.trim() || undefined, page_size: 200 }),
-      signal,
-    )
+    return readAllPages((nextScope, nextSignal) => transportRef.value.products(nextScope, nextSignal), workspace.scopeFor({ q: q.value.trim() || undefined }), signal)
   },
   { watchSource: () => [context.revision.value, businessDate.value, q.value, forbidden.value], immediate: true },
 )
@@ -88,7 +86,7 @@ const productsRequest = useUvRequest(
 const machinesRequest = useUvRequest(
   async (signal: AbortSignal) => {
     if (forbidden.value) return null
-    return transportRef.value.machines(workspace.scopeFor({ page_size: 200 }), signal)
+    return readAllPages((nextScope, nextSignal) => transportRef.value.machines(nextScope, nextSignal), workspace.scopeFor(), signal)
   },
   { watchSource: () => [context.revision.value, businessDate.value, forbidden.value], immediate: true },
 )
@@ -97,7 +95,7 @@ const machinesRequest = useUvRequest(
 const ratesRequest = useUvRequest(
   async (signal: AbortSignal) => {
     if (forbidden.value || !canReadCost.value) return null
-    return transportRef.value.rateVersions(workspace.scopeFor({ page_size: 200 }), signal)
+    return readAllPages((nextScope, nextSignal) => transportRef.value.rateVersions(nextScope, nextSignal), workspace.scopeFor(), signal)
   },
   { watchSource: () => [context.revision.value, businessDate.value, canReadCost.value, forbidden.value], immediate: true },
 )
@@ -114,10 +112,7 @@ const detailRequest = useUvRequest(
 const quotesRequest = useUvRequest(
   async (signal: AbortSignal) => {
     if (!selectedProductId.value || !canReadCost.value) return null
-    return transportRef.value.pricingQuotes(
-      workspace.scopeFor({ product_id: selectedProductId.value, page_size: 50 }),
-      signal,
-    )
+    return readAllPages((nextScope, nextSignal) => transportRef.value.pricingQuotes(nextScope, nextSignal), workspace.scopeFor({ product_id: selectedProductId.value }), signal)
   },
   { watchSource: () => [selectedProductId.value, context.revision.value, canReadCost.value], immediate: true },
 )

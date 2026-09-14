@@ -163,12 +163,20 @@ describe('厂区一致性守卫', () => {
   }
 
   beforeEach(() => {
+    vi.stubEnv('VITE_UV_ENABLED', 'true')
     setActivePinia(createPinia())
   })
 
   it('query 指定其他厂区时改道生产部，不查询 UV 数据', () => {
     useAuthStore().isAuthenticated = false
     expect(guard({ query: { factory: 'huaxing' } })).toEqual(redirectToProduction)
+  })
+
+  it('正式开关关闭时即使华康A已登录也不进入 UV 路由', () => {
+    vi.stubEnv('VITE_UV_ENABLED', 'false')
+    useAuthStore().isAuthenticated = true
+    useAppStore().setActiveFactory('huakang-a')
+    expect(guard({ query: { factory: 'huakang-a' } })).toEqual(redirectToProduction)
   })
 
   it('已登录但有效厂区不是华康A 时同样改道，不静默切厂', () => {

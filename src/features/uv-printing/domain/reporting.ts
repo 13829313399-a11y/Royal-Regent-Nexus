@@ -171,13 +171,14 @@ export function moneyRatioOfSums(
   return decimalDivide(numerator, denominator, 6)
 }
 
-export function monthlyYield(goodQty: number, reportedQty: number): string | null {
-  return ratioOfSums(goodQty, reportedQty)
+export function monthlyYield(goodQty: number, defectiveQty: number): string | null {
+  return ratioOfSums(goodQty, goodQty + defectiveQty)
 }
 
 export interface MonthAggregate {
   month: string
   good_qty: number
+  defective_qty: number
   reported_qty: number
   yield_rate: string | null
   output_value: Money | null
@@ -196,14 +197,15 @@ export function aggregateDailyRows(
   if (!rows.length) return null
   const month = rows[0]!.business_date.slice(0, 7)
   const goodQty = rows.reduce((total, row) => total + row.good_qty, 0)
+  const defectiveQty = rows.reduce((total, row) => total + row.defective_qty, 0)
   const reportedQty = rows.reduce((total, row) => total + row.reported_qty, 0)
 
   const outputValues = rows.map((row) => row.output_value)
   const payrollValues = rows.map((row) => row.payroll_amount)
   const resultValues = rows.map((row) => row.operating_result)
-  const outputComplete = outputValues.every((value) => value !== null)
-  const payrollComplete = payrollValues.every((value) => value !== null)
-  const resultComplete = resultValues.every((value) => value !== null)
+  const outputComplete = outputValues.every((value) => value !== null && value.currency === currency)
+  const payrollComplete = payrollValues.every((value) => value !== null && value.currency === currency)
+  const resultComplete = resultValues.every((value) => value !== null && value.currency === currency)
 
   const outputTotal = outputComplete
     ? money(currency, decimalSum(outputValues.map((value) => value!.amount)))
@@ -218,8 +220,9 @@ export function aggregateDailyRows(
   return {
     month,
     good_qty: goodQty,
+    defective_qty: defectiveQty,
     reported_qty: reportedQty,
-    yield_rate: monthlyYield(goodQty, reportedQty),
+    yield_rate: monthlyYield(goodQty, defectiveQty),
     output_value: outputTotal,
     payroll_amount: payrollTotal,
     payroll_ratio: moneyRatioOfSums(payrollTotal?.amount ?? null, outputTotal?.amount ?? null),
@@ -230,13 +233,7 @@ export function aggregateDailyRows(
 }
 
 export function dailyYieldOf(row: UvDailyProjection): string | null {
-  return yieldRate({
-    reported_qty: row.reported_qty,
-    good_qty: row.good_qty,
-    defective_qty: Math.max(0, row.reported_qty - row.good_qty),
-    pending_qty: 0,
-    semi_finished_qty: 0,
-  })
+  return yieldRate({ reported_qty: row.reported_qty, good_qty: row.good_qty, defective_qty: row.defective_qty, pending_qty: 0, semi_finished_qty: 0 })
 }
 
 export interface ProrationDay {

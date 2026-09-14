@@ -56,10 +56,29 @@ function normalizeError(error: unknown): UvRequestError {
     }
   }
   const detail = payload?.detail
+  if (Array.isArray(detail)) {
+    detail.forEach((item, index) => {
+      if (!item || typeof item !== 'object') return
+      const entry = item as { loc?: unknown; msg?: unknown; type?: unknown }
+      const key = Array.isArray(entry.loc) ? entry.loc.map(String).join('.') : `validation.${index}`
+      fields[key] = typeof entry.msg === 'string' ? entry.msg : String(entry.type ?? '字段校验失败')
+    })
+  } else if (detail && typeof detail === 'object') {
+    const entry = detail as { message?: unknown; msg?: unknown; code?: unknown; fields?: unknown }
+    if (entry.fields && typeof entry.fields === 'object') {
+      for (const [key, value] of Object.entries(entry.fields as Record<string, unknown>)) fields[key] = String(value)
+    }
+  }
   const message = typeof payload?.message === 'string'
     ? payload.message
     : typeof detail === 'string'
       ? detail
+      : detail && typeof detail === 'object' && !Array.isArray(detail)
+        ? String((detail as { message?: unknown; msg?: unknown; code?: unknown }).message
+          ?? (detail as { msg?: unknown }).msg
+          ?? '请求字段校验失败')
+        : Array.isArray(detail)
+          ? '请求字段校验失败，请检查标记字段。'
       : typeof candidate?.message === 'string'
         ? candidate.message
         : getApiErrorMessage(error)
@@ -234,4 +253,17 @@ export function newOperationId(): string {
     return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
   }
   return `uv-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+/**
+ * Keep an idempotency key while a command body is unchanged.  A timeout has
+ * unknown server state, so retrying it must reuse the same key; any actual
+ * form change gets a distinct key.
+ */
+export function operationForPayload(
+  pending: { fingerprint: string; id: string } | null,
+  fingerprint: string,
+  create = newOperationId,
+): { fingerprint: string; id: string } {
+  return pending?.fingerprint === fingerprint ? pending : { fingerprint, id: create() }
 }

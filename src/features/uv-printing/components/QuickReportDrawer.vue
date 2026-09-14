@@ -2,16 +2,18 @@
 import { computed, inject, nextTick, ref, watch } from 'vue'
 import { Keyboard, Save, ScanLine } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
+import { useAuthStore } from '@/stores/auth'
 import type {
   CreateUvReport,
   UvMachine,
   UvPrintJob,
   UvProduct,
   UvQuality,
+  UvShiftTemplate,
   UvWorkerRef,
 } from '../contracts'
 import { UV_CONTEXT_KEY, UV_TRANSPORT_KEY } from '../composables/uvPageContext'
-import { newOperationId, useUvCommand, useUvRequest } from '../composables/useUvRequest'
+import { operationForPayload, useUvCommand, useUvRequest } from '../composables/useUvRequest'
 import { useUvToast } from '../composables/useUvToast'
 import UvDrawer from './UvDrawer.vue'
 import UvFormField from './UvFormField.vue'
@@ -20,6 +22,8 @@ import UvNumber from './UvNumber.vue'
 import { QUALITY_BUCKET_LABELS, QUALITY_BUCKETS } from '../domain/quality'
 import { RAW_UNIT, RECONCILIATION } from '../domain/status'
 import { formatDuration } from '../domain/businessTime'
+import { effectiveShiftTemplateFor } from '../domain/shiftTemplates'
+import { readAllPages } from '../transport/pagination'
 
 /**
  * 现场快速报工。
@@ -41,41 +45,47 @@ const transport = inject(UV_TRANSPORT_KEY)!
 const toast = useUvToast()
 const workspace = ctx.workspace
 
-const DRAFT_KEY = `uv:report-draft:${workspace.isPreview.value ? 'preview' : 'live'}:huakang-a`
+const authStore = useAuthStore()
+const draftKey = computed(() => `uv:report-draft:${workspace.isPreview.value ? 'preview' : 'live'}:huakang-a:${authStore.currentUser?.id ?? 'anonymous'}`)
 
 const machineRequest = useUvRequest<{ items: UvMachine[] }>(
-  (signal) => transport.value.machines({ ...workspace.scope.value, page_size: 100 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.machines(nextScope, nextSignal), workspace.scope.value, signal),
   { watchSource: () => [ctx.revision.value] },
 )
 const productRequest = useUvRequest<{ items: UvProduct[] }>(
-  (signal) => transport.value.products({ ...workspace.scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.products(nextScope, nextSignal), workspace.scope.value, signal),
   { watchSource: () => [ctx.revision.value] },
 )
 const workerRequest = useUvRequest<{ items: UvWorkerRef[] }>(
-  (signal) => transport.value.workers({ ...workspace.scope.value, status: 'active', page_size: 100 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.workers(nextScope, nextSignal), { ...workspace.scope.value, status: 'active' }, signal),
   { watchSource: () => [ctx.revision.value] },
 )
 const jobRequest = useUvRequest<{ items: UvPrintJob[] }>(
-  (signal) => transport.value.jobs({
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.jobs(nextScope, nextSignal), {
     ...workspace.scope.value,
     date_from: workspace.scope.value.business_date,
     date_to: workspace.scope.value.business_date,
-    page_size: 100,
   }, signal),
   { watchSource: () => [workspace.scope.value.business_date, ctx.revision.value] },
+)
+const shiftTemplateRequest = useUvRequest<{ items: UvShiftTemplate[] }>(
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.shiftTemplates(nextScope, nextSignal), workspace.scope.value, signal),
+  { watchSource: () => [workspace.business_date.value, ctx.revision.value] },
 )
 
 const machines = computed(() => machineRequest.data.value?.items ?? [])
 const products = computed(() => productRequest.data.value?.items ?? [])
 const workers = computed(() => workerRequest.data.value?.items ?? [])
 const jobs = computed(() => jobRequest.data.value?.items ?? [])
-
 /** 本页最近选择，仅页面级记忆，不跨账号持久化。 */
 const lastMachineId = ref<string>('')
 const lastShift = ref<'day' | 'night'>('day')
 
 const machineId = ref('')
 const shift = ref<'day' | 'night'>('day')
+const effectiveShiftTemplate = computed(() => effectiveShiftTemplateFor(
+  shiftTemplateRequest.data.value?.items ?? [], shift.value, workspace.business_date.value,
+))
 const productQuery = ref('')
 const productId = ref('')
 const reportedQty = ref<string>('')
@@ -88,6 +98,7 @@ const composing = ref(false)
 const productInput = ref<HTMLInputElement | null>(null)
 
 const command = useUvCommand<unknown>()
+const pendingOperation = ref<{ fingerprint: string; id: string } | null>(null)
 
 const matchedProducts = computed(() => {
   const needle = productQuery.value.trim().toLowerCase()
@@ -207,14 +218,14 @@ function toggleWorker(workerId: string) {
     : [...workerIds.value, workerId]
 }
 
-function buildInput(): CreateUvReport {
+function buildInput(operationId: string): CreateUvReport {
   return {
     factory_id: 'huakang-a',
-    operation_id: newOperationId(),
+    operation_id: operationId,
     expected_version: 0,
     business_date: workspace.business_date.value,
     shift: shift.value,
-    shift_template_version_id: `shift-template-v1-${shift.value}`,
+    shift_template_version_id: effectiveShiftTemplate.value?.id ?? '',
     machine_id: machineId.value,
     product_id: productId.value,
     process_version_id: processVersion.value?.id ?? '',
@@ -238,9 +249,9 @@ function buildInput(): CreateUvReport {
 
 function saveDraftLocally(input: CreateUvReport, reason: string) {
   try {
-    const drafts = JSON.parse(window.localStorage.getItem(DRAFT_KEY) ?? '[]') as unknown[]
+    const drafts = JSON.parse(window.localStorage.getItem(draftKey.value) ?? '[]') as unknown[]
     drafts.push({ input, reason, saved_at: new Date().toISOString() })
-    window.localStorage.setItem(DRAFT_KEY, JSON.stringify(drafts.slice(-10)))
+    window.localStorage.setItem(draftKey.value, JSON.stringify(drafts.slice(-10)))
     toast.push({
       message: '已存本地草稿，未提交',
       detail: '草稿不计入正式汇总；恢复网络并重新确认身份/厂区后可再次提交。',
@@ -254,7 +265,14 @@ function saveDraftLocally(input: CreateUvReport, reason: string) {
 
 async function submit(keepGoing: boolean) {
   if (!canSubmit.value) return
-  const input = buildInput()
+  if (!effectiveShiftTemplate.value) {
+    toast.push({ message: '该业务日没有有效班次模板', detail: '请先刷新模板或由主管配置班次版本。', tone: 'red', retryable: true })
+    return
+  }
+  const draft = buildInput('')
+  const fingerprint = JSON.stringify(draft)
+  pendingOperation.value = operationForPayload(pendingOperation.value, fingerprint)
+  const input = buildInput(pendingOperation.value.id)
   const result = await command.execute(input.operation_id, async () => {
     const response = await transport.value.createReport(input)
     return response.data
@@ -280,6 +298,7 @@ async function submit(keepGoing: boolean) {
   })
 
   if (keepGoing) {
+    pendingOperation.value = null
     productId.value = ''
     productQuery.value = ''
     reportedQty.value = ''
@@ -291,6 +310,7 @@ async function submit(keepGoing: boolean) {
     productInput.value?.focus()
     return
   }
+  pendingOperation.value = null
   emit('saved')
 }
 

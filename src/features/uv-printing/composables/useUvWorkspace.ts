@@ -5,6 +5,8 @@ import { useAuthStore } from '@/stores/auth'
 import type { BusinessDate, ShiftScope, UvFactoryId, UvScope } from '../contracts'
 import { UV_PREVIEW_PATH, UV_WORKSPACE_PATH, isUvPreviewEnabled } from '../transport/provider'
 import { SAMPLE_AS_OF, SAMPLE_BUSINESS_DATE } from '../preview/constants'
+import { shiftMembership } from '../domain/businessTime'
+import { isUvModuleEnabled } from '../transport/provider'
 
 /**
  * 工作区上下文：厂区、业务日期、班次、现场模式与权限。
@@ -20,7 +22,7 @@ export type UvPageMode = 'workspace' | 'preview'
 export const UV_FACTORY: UvFactoryId = 'huakang-a'
 
 export interface UvContextViolation {
-  code: 'factory-mismatch' | 'factory-invalid' | 'preview-disabled'
+  code: 'factory-mismatch' | 'factory-invalid' | 'preview-disabled' | 'module-disabled'
   message: string
   hint: string
 }
@@ -52,7 +54,7 @@ export function useUvWorkspace() {
   const businessDate = computed<BusinessDate>(() =>
     isPreview.value
       ? (firstQueryValue(route.query.date) ?? sampleDate.value)
-      : (firstQueryValue(route.query.date) ?? new Date().toISOString().slice(0, 10)),
+      : (firstQueryValue(route.query.date) ?? shiftMembership(new Date()).business_date),
   )
 
   const shift = computed<ShiftScope>(() => {
@@ -70,6 +72,13 @@ export function useUvWorkspace() {
         }
       }
       return null
+    }
+    if (!isUvModuleEnabled()) {
+      return {
+        code: 'module-disabled',
+        message: 'UV打印管理尚未启用。',
+        hint: '生产开关 VITE_UV_ENABLED 未开启，已停止所有真实 UV 请求。',
+      }
     }
     if (queryFactory.value && queryFactory.value !== UV_FACTORY) {
       return {

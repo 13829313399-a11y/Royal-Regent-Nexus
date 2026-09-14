@@ -57,6 +57,9 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
         assert me_response.status_code == 200
         me = me_response.json()
         assert me["username"] == "admin"
+        if not importlib.import_module("app.core.config").settings.uv_printing_enabled:
+            from sqlalchemy import inspect
+            assert not any(name.startswith("uv_") for name in inspect(importlib.import_module("app.db").engine).get_table_names())
         assert me["display_name"] == "系统管理员"
         assert "系统管理员" in me["roles"]
         assert "system:user_manage" in me["permissions"]
@@ -89,6 +92,8 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_order:audit_read",
                         "customer_order:read",
                         "injection_scheduling:read",
+                        "spray_production:read",
+                        "spray_production:cost_read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",
@@ -103,6 +108,9 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "qc_inspection:read",
                         "system:audit_read",
                         "system:permission_catalog_read",
+                        "uv_printing:read",
+                        "uv_printing:cost_read",
+                        "uv_printing:payroll_read",
                     }
                 ],
                 "unrestricted_department": False,

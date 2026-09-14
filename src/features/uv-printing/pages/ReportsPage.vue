@@ -61,6 +61,7 @@ import OperatingWaterfall from '../components/OperatingWaterfall.vue'
 import MonthlyPolicyPanel from '../components/MonthlyPolicyPanel.vue'
 import DrillDownDrawer from '../components/DrillDownDrawer.vue'
 import ExpenseEntryDrawer from '../components/ExpenseEntryDrawer.vue'
+import { readAllPages } from '../transport/pagination'
 
 /**
  * 经营报表：先给结论，再给可核对的总表与下钻。
@@ -93,6 +94,11 @@ const canExport = computed(() => workspace.can('uv_printing:export'))
 
 type ViewMode = 'daily' | 'monthly'
 const viewMode = ref<ViewMode>(route.query.view === 'monthly' ? 'monthly' : 'daily')
+const displayCurrency = ref('')
+const CURRENCY_OPTIONS = [
+  ['CNY', 'CNY 人民币'], ['HKD', 'HKD 港币'], ['USD', 'USD 美元'],
+  ['JPY', 'JPY 日元'], ['EUR', 'EUR 欧元'], ['GBP', 'GBP 英镑'],
+] as const
 
 /** 月份：URL 参数优先；未指定时按当前业务日期所属自然月，不做「26 天/21 天」等制度假设。 */
 const month = computed(() => {
@@ -133,10 +139,7 @@ const monthScope = computed<UvScope>(() => ({
 
 const dailyProjectionRequest = useUvRequest<Loaded<UvDailyProjection[]>>(
   async (signal) => {
-    const response = await transport.value.dailyProjection(
-      { ...monthScope.value, page_size: 200 },
-      signal,
-    )
+    const response = await readAllPages((nextScope, nextSignal) => transport.value.dailyProjection(nextScope, nextSignal), monthScope.value, signal)
     return { payload: response.data.items, meta: response.meta }
   },
   { watchSource: () => [scope.value.shift, month.value, revision.value] },
@@ -163,7 +166,7 @@ const monthlyProjectionRequest = useUvRequest<Loaded<UvMonthlyProjection>>(
 
 const expenseRequest = useUvRequest<Loaded<UvExpense[]>>(
   async (signal) => {
-    const response = await transport.value.expenses({ ...monthScope.value, page_size: 200 }, signal)
+    const response = await readAllPages((nextScope, nextSignal) => transport.value.expenses(nextScope, nextSignal), monthScope.value, signal)
     return { payload: response.data.items, meta: response.meta }
   },
   { watchSource: () => [month.value, revision.value] },
@@ -171,7 +174,7 @@ const expenseRequest = useUvRequest<Loaded<UvExpense[]>>(
 
 const reportRequest = useUvRequest<Loaded<UvReport[]>>(
   async (signal) => {
-    const response = await transport.value.reports({ ...monthScope.value, page_size: 200 }, signal)
+    const response = await readAllPages((nextScope, nextSignal) => transport.value.reports(nextScope, nextSignal), monthScope.value, signal)
     return { payload: response.data.items, meta: response.meta }
   },
   { watchSource: () => [scope.value.shift, month.value, revision.value] },
@@ -179,7 +182,7 @@ const reportRequest = useUvRequest<Loaded<UvReport[]>>(
 
 const machineRequest = useUvRequest<Loaded<UvMachine[]>>(
   async (signal) => {
-    const response = await transport.value.machines({ ...scope.value, page_size: 200 }, signal)
+    const response = await readAllPages((nextScope, nextSignal) => transport.value.machines(nextScope, nextSignal), scope.value, signal)
     return { payload: response.data.items, meta: response.meta }
   },
   { watchSource: () => [revision.value] },
@@ -238,15 +241,7 @@ const todayProjection = computed<UvDailyProjection | null>(() =>
   dailyProjection.value.find((row) => row.business_date === scope.value.business_date) ?? null,
 )
 
-/** 币种以接口下发为准；多币种费用不会被折成一个金额。 */
-const displayCurrency = computed(() => {
-  const monthlyCurrency = monthlyProjection.value?.months[0]?.output_value?.currency
-    ?? monthlyProjection.value?.months[0]?.payroll_amount?.currency
-  if (monthlyCurrency) return monthlyCurrency
-  const projectionCurrency = dailyProjection.value.find((row) => row.output_value)?.output_value?.currency
-  if (projectionCurrency) return projectionCurrency
-  return expenses.value[0]?.amount.currency ?? ''
-})
+/** 用户选择经营展示/录入币种；历史金额各自带币种，绝不把它们折算或猜成某一种。 */
 
 /* ---------------- 经营结余输入（唯一权威聚合来自 operatingResult） ---------------- */
 
@@ -434,7 +429,7 @@ const scaleItems = computed(() => {
     {
       label: '月合格率',
       value: formatPercent(aggregate?.yield_rate ?? null, 2),
-      formula: `公式：月合格件合计 ${aggregate?.good_qty ?? 0} ÷ 月报工件合计 ${aggregate?.reported_qty ?? 0}（月分子合计 ÷ 月分母合计，不平均每天百分比）`,
+      formula: `公式：月合格件合计 ${aggregate?.good_qty ?? 0} ÷（合格 ${aggregate?.good_qty ?? 0} + 不良 ${aggregate?.defective_qty ?? 0}）（月分子合计 ÷ 月分母合计，不平均每天百分比）`,
       state: qualityPendingCount.value ? 'provisional' : aggregate?.yield_rate ? 'normal' : 'missing',
     },
   ]
@@ -471,7 +466,7 @@ const headcountMetric = computed(() => {
   const workerIds = new Set<string>()
   const workerDays = new Set<string>()
   for (const report of monthReports.value) {
-    if (report.status !== 'confirmed') continue
+    if (report.status !== 'confirmed' && report.status !== 'corrected') continue
     for (const workerId of report.worker_ids) {
       workerIds.add(workerId)
       workerDays.add(`${report.business_date}:${workerId}`)
@@ -662,6 +657,13 @@ const monthlyEmpty = computed(() =>
         </p>
       </div>
       <div class="uv-page-head__actions">
+        <label class="uv-filter">
+          <span class="uv-filter__label">经营币种</span>
+          <select v-model="displayCurrency" class="uv-input uv-select" aria-label="经营报表币种">
+            <option value="">请选择币种</option>
+            <option v-for="[code, label] in CURRENCY_OPTIONS" :key="code" :value="code">{{ label }}</option>
+          </select>
+        </label>
         <div class="uv-view-switch" role="group" aria-label="日/月视图切换">
           <button
             type="button"

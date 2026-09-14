@@ -189,6 +189,7 @@ import { newOperationId, useUvCommand, useUvRequest, type UvRequestError } from 
 import { useUvToast } from '../composables/useUvToast'
 import { INK_MATERIAL_LABELS, INK_MOVEMENT_LABELS } from '../domain/status'
 import { formatDecimal, formatMoney } from '../domain/decimal'
+import { readAllPages } from '../transport/pagination'
 import UvConfirmDialog from '../components/UvConfirmDialog.vue'
 import UvStateBlock from '../components/UvStateBlock.vue'
 import InkIssueDrawer, { type InkIssueSubmission } from '../components/InkIssueDrawer.vue'
@@ -259,23 +260,23 @@ const activeFilterCount = computed(() => activeInkFilterCount(filters))
 /* ---------------- 读取 ---------------- */
 
 const skuRequest = useUvRequest<UvPage<UvInkSku>>(
-  (signal) => transport.value.inkSkus({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.inkSkus(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [scope.value.business_date, scope.value.shift, revision.value] },
 )
 
 const balanceRequest = useUvRequest<UvPage<UvInkBalance>>(
-  (signal) => transport.value.inkBalances({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.inkBalances(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [scope.value.business_date, scope.value.shift, revision.value] },
 )
 
 const movementRequest = useUvRequest<UvPage<UvInkMovement>>(
-  (signal) => transport.value.inkMovements({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.inkMovements(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [scope.value.business_date, scope.value.shift, revision.value] },
 )
 
 /** 机台列表只在要显示机台的地方读取（流水视图或写抽屉），避免只读浏览多发请求。 */
 const machineRequest = useUvRequest<UvPage<UvMachine>>(
-  (signal) => transport.value.machines({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.machines(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [revision.value], immediate: false },
 )
 

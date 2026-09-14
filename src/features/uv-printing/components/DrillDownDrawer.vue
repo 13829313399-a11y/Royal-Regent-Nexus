@@ -25,6 +25,7 @@ import {
 } from '../domain/status'
 import { formatDecimal, formatMoney, trimTrailingZeros } from '../domain/decimal'
 import { SHIFT_LABELS, shanghaiDateTimeString } from '../domain/businessTime'
+import { readAllPages } from '../transport/pagination'
 import UvDrawer from './UvDrawer.vue'
 import UvNumber from './UvNumber.vue'
 import UvStateBlock from './UvStateBlock.vue'
@@ -64,7 +65,7 @@ const kind = computed<UvDrillKind>(() => props.kind ?? 'reports')
 const kindLabel = computed(() => DRILL_KIND_LABELS[kind.value])
 
 const drillScope = computed<UvScope>(() => {
-  const base = { ...props.scope, page_size: 200 }
+  const base = { ...props.scope }
   if (kind.value === 'expenses' && props.drillRef) return { ...base, status: props.drillRef }
   if (kind.value === 'ink_movements') return { ...base, status: 'issue_out' }
   return base
@@ -88,11 +89,11 @@ async function loadDrill(signal: AbortSignal): Promise<DrillData> {
   }
   switch (kind.value) {
     case 'reports': {
-      const response = await transport.value.reports(scope, signal)
+      const response = await readAllPages((nextScope, nextSignal) => transport.value.reports(nextScope, nextSignal), scope, signal)
       return { ...empty, reports: response.data.items }
     }
     case 'unpriced_reports': {
-      const response = await transport.value.reports({ ...scope, page_size: 200 }, signal)
+      const response = await readAllPages((nextScope, nextSignal) => transport.value.reports(nextScope, nextSignal), scope, signal)
       return {
         ...empty,
         unpricedReports: response.data.items.filter(
@@ -101,15 +102,15 @@ async function loadDrill(signal: AbortSignal): Promise<DrillData> {
       }
     }
     case 'jobs': {
-      const response = await transport.value.jobs(scope, signal)
+      const response = await readAllPages((nextScope, nextSignal) => transport.value.jobs(nextScope, nextSignal), scope, signal)
       return { ...empty, jobs: response.data.items }
     }
     case 'ink_movements': {
-      const response = await transport.value.inkMovements(scope, signal)
+      const response = await readAllPages((nextScope, nextSignal) => transport.value.inkMovements(nextScope, nextSignal), scope, signal)
       return { ...empty, inkMovements: response.data.items }
     }
     case 'expenses': {
-      const response = await transport.value.expenses(scope, signal)
+      const response = await readAllPages((nextScope, nextSignal) => transport.value.expenses(nextScope, nextSignal), scope, signal)
       return { ...empty, expenses: response.data.items }
     }
     case 'payroll': {
@@ -129,7 +130,7 @@ async function loadDrill(signal: AbortSignal): Promise<DrillData> {
       }
     }
     case 'handovers': {
-      const response = await transport.value.handovers(scope, signal)
+      const response = await readAllPages((nextScope, nextSignal) => transport.value.handovers(nextScope, nextSignal), scope, signal)
       return { ...empty, handovers: response.data.items }
     }
     default: {

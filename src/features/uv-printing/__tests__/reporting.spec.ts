@@ -37,6 +37,7 @@ function projection(
   return {
     business_date: businessDate,
     good_qty: 0,
+    defective_qty: 0,
     reported_qty: 0,
     yield_rate: null,
     output_value: null,
@@ -114,22 +115,23 @@ describe('T33 月度固定费用分摊', () => {
   })
 })
 
-describe('T34 月合格率按分子合计 / 分母合计', () => {
-  it('90/100 与 1/10 的月良率是 91/110 ≈ 0.827273，不是 (90% + 10%) / 2', () => {
+describe('T34 月合格率按合格与不良的分子合计 / 分母合计', () => {
+  it('90/100 与 1/10 的月良率是 91/(91+19) ≈ 0.827273，不混入待判件', () => {
     const rows = [
-      projection('2026-09-01', { good_qty: 90, reported_qty: 100 }),
-      projection('2026-09-02', { good_qty: 1, reported_qty: 10 }),
+      projection('2026-09-01', { good_qty: 90, defective_qty: 10, reported_qty: 100 }),
+      projection('2026-09-02', { good_qty: 1, defective_qty: 9, reported_qty: 10 }),
     ]
 
     // 口径值：91 / 110 = 0.8272727...，与逐日百分比平均 0.5 有本质区别。
-    expect(Number(monthlyYield(91, 110))).toBeCloseTo(91 / 110, 5)
+    expect(Number(monthlyYield(91, 19))).toBeCloseTo(91 / 110, 5)
     // 六位小数按四舍五入：0.827273（不是截断的 0.827272）。
-    expect(monthlyYield(91, 110)).toBe('0.827273')
-    expect(formatPercent(monthlyYield(91, 110), 2)).toBe('82.73%')
+    expect(monthlyYield(91, 19)).toBe('0.827273')
+    expect(formatPercent(monthlyYield(91, 19), 2)).toBe('82.73%')
 
     const aggregate = aggregateDailyRows(CURRENCY, rows, 'complete')
     expect(aggregate).not.toBeNull()
     expect(aggregate?.good_qty).toBe(91)
+    expect(aggregate?.defective_qty).toBe(19)
     expect(aggregate?.reported_qty).toBe(110)
     expect(aggregate?.yield_rate).toBe('0.827273')
     expect(Number(aggregate?.yield_rate)).toBeCloseTo(91 / 110, 5)
@@ -269,6 +271,27 @@ describe('经营结余公式（旧管理口径）', () => {
 })
 
 describe('币种与缺成本', () => {
+  it('日报聚合遇到混合币种不贴成选中币种金额', () => {
+    const aggregate = aggregateDailyRows(CURRENCY, [
+      projection('2026-09-01', {
+        good_qty: 10, defective_qty: 1, reported_qty: 11,
+        output_value: { currency: CURRENCY, amount: '100.00' },
+        payroll_amount: { currency: CURRENCY, amount: '20.00' },
+        operating_result: { currency: CURRENCY, amount: '30.00' },
+      }),
+      projection('2026-09-02', {
+        good_qty: 20, defective_qty: 2, reported_qty: 22,
+        output_value: { currency: 'USD', amount: '50.00' },
+        payroll_amount: { currency: 'USD', amount: '10.00' },
+        operating_result: { currency: 'USD', amount: '15.00' },
+      }),
+    ], 'partial')
+
+    expect(aggregate?.output_value).toBeNull()
+    expect(aggregate?.payroll_amount).toBeNull()
+    expect(aggregate?.operating_result).toBeNull()
+  })
+
   it('费用构成按币种分行，不同币种不相加', () => {
     const expenses = [
       expenseRecord('T-EX-1', 'rent', CURRENCY, '3900.00'),

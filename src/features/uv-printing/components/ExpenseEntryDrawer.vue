@@ -9,6 +9,7 @@ import { useUvToast } from '../composables/useUvToast'
 import { monthOf } from '../domain/businessTime'
 import { currencyMinorUnits, decimalRound } from '../domain/decimal'
 import { EXPENSE_CATEGORY_LABELS } from '../domain/status'
+import { readAllPages } from '../transport/pagination'
 import UvDrawer from './UvDrawer.vue'
 import UvFormField from './UvFormField.vue'
 
@@ -39,7 +40,7 @@ const toast = useUvToast()
 const command = useUvCommand<UvMutationResult<UvExpense>>()
 
 const machineRequest = useUvRequest<{ items: UvMachine[] }>(
-  (signal) => transport.value.machines({ ...props.scope, page_size: 200 }, signal).then((response) => response.data),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.machines(nextScope, nextSignal), props.scope, signal).then((response) => response.data),
   { watchSource: () => [props.open, ctx.revision.value] },
 )
 
@@ -231,14 +232,20 @@ const busy = computed(() => command.pending.value)
 
       <UvFormField field-id="uv-expense-currency" label="币种" required :error="errors.currency">
         <template #default="{ describedBy }">
-          <input
+          <select
             id="uv-expense-currency"
             v-model="currency"
             class="uv-input"
-            type="text"
-            maxlength="8"
             :aria-describedby="describedBy"
           >
+            <option value="">请选择币种</option>
+            <option value="CNY">CNY 人民币</option>
+            <option value="HKD">HKD 港币</option>
+            <option value="USD">USD 美元</option>
+            <option value="JPY">JPY 日元</option>
+            <option value="EUR">EUR 欧元</option>
+            <option value="GBP">GBP 英镑</option>
+          </select>
         </template>
       </UvFormField>
 

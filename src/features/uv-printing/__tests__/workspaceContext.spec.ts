@@ -51,6 +51,8 @@ async function visit(router: Router, path: string, query: Record<string, string>
 
 describe('useUvWorkspace', () => {
   beforeEach(() => {
+    vi.stubEnv('VITE_UV_ENABLED', 'true')
+    vi.stubEnv('VITE_UV_PREVIEW', 'true')
     setActivePinia(createPinia())
     captured = null
   })
@@ -114,6 +116,20 @@ describe('useUvWorkspace', () => {
     wrapper.unmount()
   })
 
+  it('正式开关关闭时停止真实上下文，不因有效厂区正确而继续请求', async () => {
+    vi.stubEnv('VITE_UV_ENABLED', 'false')
+    const router = makeRouter()
+    useAuthStore().isAuthenticated = true
+    useAppStore().setActiveFactory('huakang-a')
+    const wrapper = await mountContext(router)
+    await visit(router, WORKSPACE_PATH, { factory: 'huakang-a' })
+    await wrapper.vm.$nextTick()
+
+    expect(captured!.violation.value?.code).toBe('module-disabled')
+    expect(captured!.contextReady.value).toBe(false)
+    wrapper.unmount()
+  })
+
   it('URL 指定别的厂区时也判定违规，不悄悄改用华康A', async () => {
     const router = makeRouter()
     useAuthStore().isAuthenticated = true
@@ -125,6 +141,20 @@ describe('useUvWorkspace', () => {
     expect(captured!.violation.value?.code).toBe('factory-mismatch')
     expect(captured!.violation.value?.message).toContain('停止读取')
     wrapper.unmount()
+  })
+
+  it('未指定日期时按上海 07:40 班次边界生成默认业务日', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-13T23:39:59.000Z'))
+    const router = makeRouter()
+    useAppStore().setActiveFactory('huakang-a')
+    const wrapper = await mountContext(router)
+    await visit(router, WORKSPACE_PATH, { factory: 'huakang-a' })
+    await wrapper.vm.$nextTick()
+
+    expect(captured!.business_date.value).toBe('2026-09-13')
+    wrapper.unmount()
+    vi.useRealTimers()
   })
 
   it('作用域始终显式带 factory_id=huakang-a，全天时省略 shift', async () => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
@@ -50,6 +50,8 @@ function focusables(): HTMLElement[] {
 
 function onKeydown(event: KeyboardEvent) {
   if (!props.open) return
+  const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]')
+  if (dialogs[dialogs.length - 1] !== panel.value) return
   if (event.key === 'Escape') {
     event.stopPropagation()
     emit('close')
@@ -69,6 +71,14 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
+function releaseDrawer() {
+  document.removeEventListener('keydown', onKeydown, true)
+  releaseScrollLock?.()
+  releaseScrollLock = null
+  lastActive?.focus?.()
+  lastActive = null
+}
+
 watch(() => props.open, async (open) => {
   if (open) {
     lastActive = document.activeElement as HTMLElement | null
@@ -77,13 +87,10 @@ watch(() => props.open, async (open) => {
     await nextTick()
     panel.value?.focus()
   } else {
-    document.removeEventListener('keydown', onKeydown, true)
-    releaseScrollLock?.()
-    releaseScrollLock = null
-    lastActive?.focus?.()
-    lastActive = null
+    releaseDrawer()
   }
-})
+}, { immediate: true })
+onBeforeUnmount(releaseDrawer)
 </script>
 
 <template>

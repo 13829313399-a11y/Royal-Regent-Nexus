@@ -58,6 +58,7 @@ import type {
   UvScope,
   UvShiftTemplate,
   UvSourceAllocation,
+  UvSourceAllocationInput,
   UvSummary,
   UvVoidInput,
   UvWarning,
@@ -177,6 +178,12 @@ export interface UvMemoryStoreApi extends UvWorkspaceTransport {
   asOf: string
 }
 
+/** Core reports expose these links; keep them locally until the shared contract is copied in. */
+type LinkedReport = UvReport & {
+  source_allocations?: UvSourceAllocationInput[]
+  evidence_job_ids?: Id[]
+}
+
 export class UvMemoryStore implements UvMemoryStoreApi {
   private _machines: UvMachine[] = []
   private _products: UvProduct[] = []
@@ -195,6 +202,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
   private _pricingQuotes: UvPricingQuote[] = []
   private _operations = new Map<string, UvOperationRecord>()
   private _operationBodies = new Map<string, string>()
+  private _operationResults = new Map<string, unknown>()
   private _sequence = 9000
 
   role: UvSampleRole = 'manager'
@@ -225,6 +233,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
     this._pricingQuotes = clone(samplePricingQuotes)
     this._operations = new Map()
     this._operationBodies = new Map()
+    this._operationResults = new Map()
     this._sequence = 9000
     this.asOf = SAMPLE_AS_OF
     this.recomputeDerived()
@@ -247,6 +256,92 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       throw new UvError(UV_ERROR_CODES.notFound, '报工不存在或已被合并到其他修订。', { status: 404 })
     }
     return report
+  }
+
+  private sourceAllocationsFor(report: UvReport): UvSourceAllocationInput[] {
+    const linked = report as LinkedReport
+    const stored = linked.source_allocations
+    if (stored?.length) {
+      // A draft retains the version it was prepared against.  Confirmation must
+      // reject it if another report claimed the source in the meantime.
+      if (report.status === 'draft') return stored.map((allocation) => ({ ...allocation }))
+      return stored.map((allocation) => ({
+        ...allocation,
+        job_version: this._jobs.find((job) => job.id === allocation.job_id)?.version ?? allocation.job_version,
+      }))
+    }
+    return this._allocations
+      .filter((allocation) => allocation.report_id === report.id && !allocation.reversed)
+      .map((allocation) => ({
+        job_id: allocation.job_id,
+        piece_qty: allocation.piece_qty,
+        job_version: this._jobs.find((job) => job.id === allocation.job_id)?.version ?? 0,
+      }))
+  }
+
+  private evidenceJobIdsFor(report: UvReport): Id[] {
+    return [...((report as LinkedReport).evidence_job_ids ?? [])]
+  }
+
+  private setSourceLinks(report: UvReport, sourceAllocations: UvSourceAllocationInput[], evidenceJobIds: Id[]) {
+    const linked = report as LinkedReport
+    linked.source_allocations = sourceAllocations.map((allocation) => ({ ...allocation }))
+    linked.evidence_job_ids = [...evidenceJobIds]
+  }
+
+  private validateSourceAllocations(
+    sourceAllocations: UvSourceAllocationInput[],
+    reportedQty: number,
+    checkAvailability: boolean,
+  ) {
+    const requestedByJob = new Map<Id, number>()
+    for (const allocation of sourceAllocations) {
+      const job = this._jobs.find((candidate) => candidate.id === allocation.job_id)
+      if (!job) throw new UvError(UV_ERROR_CODES.notFound, `采集作业 ${allocation.job_id} 不存在。`, { status: 404 })
+      assertVersion(allocation.job_version, job.version)
+      requestedByJob.set(allocation.job_id, (requestedByJob.get(allocation.job_id) ?? 0) + allocation.piece_qty)
+    }
+    const allocatedTotal = [...requestedByJob.values()].reduce((total, quantity) => total + quantity, 0)
+    if (allocatedTotal > reportedQty) {
+      throw new UvError(UV_ERROR_CODES.allocationOverflow, '来源分配总数超过报工数量；减少报工前必须重新核对来源分配。', {
+        status: 422, fields: { source_allocations: `已分配 ${allocatedTotal} 件，报工 ${reportedQty} 件` },
+      })
+    }
+    if (checkAvailability) {
+      for (const [jobId, requested] of requestedByJob) {
+        const job = this._jobs.find((candidate) => candidate.id === jobId)!
+        if (job.available_piece_qty === null) {
+          throw new UvError(UV_ERROR_CODES.invalidField, `作业 ${job.source_job_id} 的原始单位尚未确认，不能伪造可分配件数。`, {
+            status: 422, fields: { source_allocations: '单位待确认' },
+          })
+        }
+        if (requested > job.available_piece_qty) {
+          throw new UvError(UV_ERROR_CODES.allocationOverflow, `作业 ${job.source_job_id} 只剩 ${job.available_piece_qty} 件可分配，本次申请 ${requested} 件。`, {
+            status: 422, fields: { source_allocations: `剩余 ${job.available_piece_qty}` },
+          })
+        }
+      }
+    }
+  }
+
+  private claimSources(report: UvReport, sourceAllocations: UvSourceAllocationInput[], evidenceJobIds: Id[], timestamp: string) {
+    this.validateSourceAllocations(sourceAllocations, report.reported_qty, true)
+    for (const allocation of sourceAllocations) {
+      const job = this._jobs.find((candidate) => candidate.id === allocation.job_id)!
+      job.version += 1
+      this._allocations.push({
+        id: this.nextId('SA'), factory_id: SAMPLE_FACTORY_ID, version: 1, created_at: timestamp, updated_at: timestamp,
+        job_id: allocation.job_id, report_id: report.id, piece_qty: allocation.piece_qty, reversed: false,
+      })
+    }
+    this.setSourceLinks(report, sourceAllocations.map((allocation) => ({
+      ...allocation,
+      job_version: this._jobs.find((job) => job.id === allocation.job_id)?.version ?? allocation.job_version,
+    })), evidenceJobIds)
+    for (const jobId of evidenceJobIds) {
+      const job = this._jobs.find((candidate) => candidate.id === jobId)
+      if (job) job.reconcile_note = `${job.reconcile_note} 已作为证据附在 ${report.id}，未声明已核实件数。`.trim()
+    }
   }
 
   private requirePermission(permission: string): void {
@@ -303,8 +398,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
           { status: 409 },
         )
       }
-      const replay = produce()
-      return { ...replay, operation_id: operationId, replayed: true }
+      return { ...(this._operationResults.get(operationId) as UvMutationResult<T>), operation_id: operationId, replayed: true }
     }
     const result = produce()
     this._operations.set(operationId, {
@@ -318,6 +412,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       summary: '样例操作已接受',
     })
     this._operationBodies.set(operationId, fingerprint)
+    this._operationResults.set(operationId, result)
     return { ...result, operation_id: operationId, replayed: false }
   }
 
@@ -347,6 +442,8 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       report.commercial = this.commercialFor(report)
       report.payroll = this.payrollFor(report)
       report.worker_shares = this.workerSharesFor(report)
+      // Expose current job versions with the report so corrections can retain links safely.
+      this.setSourceLinks(report, this.sourceAllocationsFor(report), this.evidenceJobIdsFor(report))
     }
   }
 
@@ -394,7 +491,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       }
     }
     const amount = decimalRound(decimalMultiply(String(report.good_qty), rate.unit_price), 6)
-    const state = report.status === 'confirmed' && report.quality_status === 'complete' ? 'confirmed' : 'provisional'
+    const state = (report.status === 'confirmed' || report.status === 'corrected') && report.quality_status === 'complete' ? 'confirmed' : 'provisional'
     return {
       amount: money(rate.currency, amount),
       state,
@@ -460,7 +557,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
   }
 
   private effectiveReports(scope: UvScope): UvReport[] {
-    return this.reportsForScope(scope).filter((report) => report.status === 'confirmed')
+    return this.reportsForScope(scope).filter((report) => report.status === 'confirmed' || report.status === 'corrected')
   }
 
   /* ---------------- 查询 ---------------- */
@@ -780,7 +877,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
     const reports = this._reports.filter((report) =>
       report.business_date >= dateFrom
       && report.business_date <= dateTo
-      && report.status !== 'voided'
+      && (report.status === 'confirmed' || report.status === 'corrected')
       && (!scope.shift || report.shift === scope.shift),
     )
 
@@ -948,10 +1045,11 @@ export class UvMemoryStore implements UvMemoryStoreApi {
   private projectDate(date: BusinessDate, shift: ShiftScope | undefined, policy: UvMonthlyPolicy | undefined): UvDailyProjection {
     const reports = this._reports.filter((report) =>
       report.business_date === date
-      && report.status === 'confirmed'
+      && (report.status === 'confirmed' || report.status === 'corrected')
       && (!shift || report.shift === shift),
     )
     const goodQty = reports.reduce((total, report) => total + report.good_qty, 0)
+    const defectiveQty = reports.reduce((total, report) => total + report.defective_qty, 0)
     const reportedQty = reports.reduce((total, report) => total + report.reported_qty, 0)
     const pricedReports = reports.filter((report) => report.commercial?.pricing_state === 'priced')
     const outputValue = pricedReports.length === reports.length && reports.length > 0
@@ -1001,6 +1099,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
     return {
       business_date: date,
       good_qty: goodQty,
+      defective_qty: defectiveQty,
       reported_qty: reportedQty,
       yield_rate: denominator > 0 ? decimalDivide(String(goodQty), String(denominator), 6) : null,
       output_value: outputValue,
@@ -1068,6 +1167,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       ? [{
           month,
           good_qty: aggregate.good_qty,
+          defective_qty: aggregate.defective_qty,
           reported_qty: aggregate.reported_qty,
           yield_rate: aggregate.yield_rate,
           output_value: aggregate.output_value,
@@ -1154,18 +1254,24 @@ export class UvMemoryStore implements UvMemoryStoreApi {
     assertScopeFactory(input)
     this.requirePermission('uv_printing:report')
     return this.wrap(this.idempotent(input.operation_id, input, () => {
-      const result = this.buildReport(input)
+      const result = this.buildReport(input, { status: 'draft', claimSources: false })
       this.recomputeDerived()
       return { entity: result, operation_id: input.operation_id, replayed: false }
     }))
   }
 
-  private buildReport(input: CreateUvReport, options: { replaces?: Id | null; status?: UvReport['status']; correctionReason?: string } = {}): UvReport {
+  private buildReport(input: CreateUvReport, options: {
+    replaces?: Id | null
+    status?: UvReport['status']
+    correctionReason?: string
+    claimSources?: boolean
+  } = {}): UvReport {
     const machine = this._machines.find((candidate) => candidate.id === input.machine_id)
     const product = this._products.find((candidate) => candidate.id === input.product_id)
     const processVersion = product?.process_versions.find((candidate) => candidate.id === input.process_version_id)
     validateDraft(input, Boolean(machine), Boolean(processVersion))
     validateQualityTotals(input)
+    this.validateSourceAllocations(input.source_allocations, input.reported_qty, false)
 
     const timestamp = nowIso()
     const report: UvReport = {
@@ -1188,7 +1294,7 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       pending_qty: input.pending_qty,
       semi_finished_qty: input.semi_finished_qty,
       source_kind: input.source_allocations.length || input.evidence_job_ids.length ? 'mixed' : 'manual',
-      status: options.status ?? (input.source_allocations.length ? 'confirmed' : 'confirmed'),
+      status: options.status ?? 'draft',
       quality_status: input.pending_qty === input.reported_qty && input.reported_qty > 0
         ? 'pending'
         : input.pending_qty > 0 || input.semi_finished_qty > 0
@@ -1201,51 +1307,10 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       correction_reason: options.correctionReason ?? '',
       allocation_total: 0,
     }
-
-    const allocations = input.source_allocations.map((allocation) => {
-      const job = this._jobs.find((candidate) => candidate.id === allocation.job_id)
-      if (!job) {
-        throw new UvError(UV_ERROR_CODES.notFound, `采集作业 ${allocation.job_id} 不存在。`, { status: 404 })
-      }
-      assertVersion(allocation.job_version, job.version)
-      const available = job.available_piece_qty
-      if (available === null) {
-        throw new UvError(
-          UV_ERROR_CODES.invalidField,
-          `作业 ${job.source_job_id} 的原始单位尚未确认，不能伪造可分配件数。`,
-          { status: 422, fields: { source_allocations: '单位待确认' } },
-        )
-      }
-      if (allocation.piece_qty > available) {
-        throw new UvError(
-          UV_ERROR_CODES.allocationOverflow,
-          `作业 ${job.source_job_id} 只剩 ${available} 件可分配，本次申请 ${allocation.piece_qty} 件。`,
-          { status: 422, fields: { source_allocations: `剩余 ${available}` } },
-        )
-      }
-      return allocation
-    })
-
+    this.setSourceLinks(report, input.source_allocations, input.evidence_job_ids)
+    if (options.claimSources) this.validateSourceAllocations(input.source_allocations, input.reported_qty, true)
     this._reports.push(report)
-    for (const allocation of allocations) {
-      const job = this._jobs.find((candidate) => candidate.id === allocation.job_id)!
-      job.version += 1
-      this._allocations.push({
-        id: this.nextId('SA'),
-        factory_id: SAMPLE_FACTORY_ID,
-        version: 1,
-        created_at: timestamp,
-        updated_at: timestamp,
-        job_id: allocation.job_id,
-        report_id: report.id,
-        piece_qty: allocation.piece_qty,
-        reversed: false,
-      })
-    }
-    for (const jobId of input.evidence_job_ids) {
-      const job = this._jobs.find((candidate) => candidate.id === jobId)
-      if (job) job.reconcile_note = `${job.reconcile_note} 已作为证据附在 ${report.id}，未声明已核实件数。`.trim()
-    }
+    if (options.claimSources) this.claimSources(report, input.source_allocations, input.evidence_job_ids, timestamp)
 
     return report
   }
@@ -1261,9 +1326,13 @@ export class UvMemoryStore implements UvMemoryStoreApi {
         throw new UvError(UV_ERROR_CODES.invalidField, '只有草稿可以确认。', { status: 422 })
       }
       validateQualityTotals(report)
+      const sourceAllocations = this.sourceAllocationsFor(report)
+      const evidenceJobIds = this.evidenceJobIdsFor(report)
+      this.validateSourceAllocations(sourceAllocations, report.reported_qty, true)
       report.status = 'confirmed'
       report.version += 1
       report.updated_at = nowIso()
+      this.claimSources(report, sourceAllocations, evidenceJobIds, report.updated_at)
       this.recomputeDerived()
       return { entity: report, operation_id: input.operation_id, replayed: false }
     }))
@@ -1287,17 +1356,42 @@ export class UvMemoryStore implements UvMemoryStoreApi {
         semi_finished_qty: input.quality.semi_finished_qty,
       }
       validateQualityTotals(next)
-      Object.assign(report, next)
-      report.quality_status = next.pending_qty === next.reported_qty && next.reported_qty > 0
+      const sourceAllocations = this.sourceAllocationsFor(report)
+      const evidenceJobIds = this.evidenceJobIdsFor(report)
+      const revision = this.buildReport({
+        factory_id: report.factory_id,
+        operation_id: input.operation_id,
+        expected_version: report.version,
+        business_date: report.business_date,
+        shift: report.shift,
+        shift_template_version_id: report.shift_template_version_id,
+        machine_id: report.machine_id,
+        product_id: report.product_id,
+        process_version_id: report.process_version_id,
+        ...next,
+        worker_ids: report.worker_ids,
+        notes: input.reason ? `${report.notes} 质量补录：${input.reason}`.trim() : report.notes,
+        source_allocations: sourceAllocations,
+        evidence_job_ids: evidenceJobIds,
+      }, { replaces: report.id, status: 'corrected', correctionReason: input.reason, claimSources: false })
+      report.status = 'voided'
+      report.version += 1
+      report.updated_at = nowIso()
+      report.notes = `${report.notes} 质量修订已创建：${input.reason}`.trim()
+      // 质量修订不改变来源事实：把未冲销的原分配归到当前有效修订，避免
+      // 同一采集作业在修订后被再次领用或丢失核对链。
+      for (const allocation of this._allocations.filter((candidate) => candidate.report_id === report.id && !candidate.reversed)) {
+        allocation.report_id = revision.id
+        allocation.version += 1
+      }
+      this.setSourceLinks(revision, this.sourceAllocationsFor(revision), evidenceJobIds)
+      revision.quality_status = next.pending_qty === next.reported_qty && next.reported_qty > 0
         ? 'pending'
         : next.pending_qty > 0 || next.semi_finished_qty > 0
           ? 'partial'
           : 'complete'
-      report.notes = input.reason ? `${report.notes} 质量补录：${input.reason}`.trim() : report.notes
-      report.version += 1
-      report.updated_at = nowIso()
       this.recomputeDerived()
-      return { entity: report, operation_id: input.operation_id, replayed: false }
+      return { entity: revision, operation_id: input.operation_id, replayed: false }
     }))
   }
 
@@ -1314,6 +1408,18 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       if (original.status === 'voided') {
         throw new UvError(UV_ERROR_CODES.invalidField, '已作废报工不能再更正。', { status: 422 })
       }
+      const originalSources = this.sourceAllocationsFor(original)
+      const originalEvidence = this.evidenceJobIdsFor(original)
+      const correctionSources = input.correction.source_allocations.length ? input.correction.source_allocations : originalSources
+      const correctionEvidence = input.correction.evidence_job_ids.length ? input.correction.evidence_job_ids : originalEvidence
+      const correction = {
+        ...input.correction,
+        source_allocations: correctionSources,
+        evidence_job_ids: correctionEvidence,
+        operation_id: input.operation_id,
+      }
+      // Do this before releasing the original links so a smaller correction cannot silently free source output.
+      this.validateSourceAllocations(correctionSources, correction.reported_qty, false)
       // 原记录不放任覆盖：作废并保留原值，新修订引用原单。
       original.status = 'voided'
       original.version += 1
@@ -1323,10 +1429,11 @@ export class UvMemoryStore implements UvMemoryStoreApi {
         allocation.reversed = true
         allocation.version += 1
       }
-      const replacement = this.buildReport({ ...input.correction, operation_id: input.operation_id }, {
+      const replacement = this.buildReport(correction, {
         replaces: original.id,
         status: 'corrected',
         correctionReason: input.reason,
+        claimSources: true,
       })
       this.recomputeDerived()
       return { entity: replacement, operation_id: input.operation_id, replayed: false }
@@ -1685,6 +1792,9 @@ export class UvMemoryStore implements UvMemoryStoreApi {
       if (!quote) throw new UvError(UV_ERROR_CODES.notFound, '测算记录不存在。', { status: 404 })
       if (!input.effective_from) {
         throw new UvError(UV_ERROR_CODES.invalidField, '采用为执行价必须指定生效日期。', { status: 422 })
+      }
+      if (input.rate_kind !== 'commercial') {
+        throw new UvError(UV_ERROR_CODES.invalidField, '定价测算只能采用为商业执行价；计件工资与面积价必须独立维护。', { status: 422, fields: { rate_kind: '只允许 commercial' } })
       }
       const price = quote.result.markup_price
       if (price === null) {

@@ -20,7 +20,7 @@ export const UV_PRICING_FORMULA_VERSION = 'uv-pricing-v1'
 /** 计价金额默认保留 6 位小数，与契约的 DecimalString 一致。 */
 const PRICE_SCALE = 6
 
-export function defaultPricingInput(currency = 'HKD'): UvPricingInput {
+export function defaultPricingInput(currency = ''): UvPricingInput {
   return {
     currency,
     daily_hours: '10',
@@ -37,7 +37,7 @@ export function defaultPricingInput(currency = 'HKD'): UvPricingInput {
 export function computePricing(input: UvPricingInput): UvPricingResult {
   const warnings: UvWarning[] = []
   const steps: UvPricingStep[] = []
-  const currency = input.currency || 'HKD'
+  const currency = input.currency
 
   const dailyHours = input.daily_hours
   const boardHours = input.board_hours

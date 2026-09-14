@@ -1,5 +1,7 @@
 # UV打印模块开发文档包
 
+> 最新 Codex 集成与 T01–T45 验证状态见 [CODEX_BACKEND_HANDOFF.md](CODEX_BACKEND_HANDOFF.md)。DSH 交接保留为前端阶段历史证据；后端与权限注册的当前情况以 Codex 交接为准。
+
 > **本文件在仓库内的文件名是 `PACK_README.md`**（避免与根目录 `README.md` 混淆）。
 > 开发包 → 本目录的文件名映射：
 >

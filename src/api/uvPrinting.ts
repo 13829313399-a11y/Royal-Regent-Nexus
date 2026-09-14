@@ -65,6 +65,15 @@ import type {
 
 const BASE = '/uv-printing'
 
+function assertLiveResponse<T>(response: UvResponse<T>): UvResponse<T> {
+  if (response.meta.data_mode !== 'live' || response.meta.factory_id !== 'huakang-a') {
+    throw Object.assign(new Error('UV 正式接口返回了非本厂 live 数据，已停止使用该响应。'), {
+      code: 'uv_factory_mismatch', status: 502,
+    })
+  }
+  return response
+}
+
 function scopeParams(scope: UvScope): Record<string, string | number> {
   const params: Record<string, string | number> = { factory_id: scope.factory_id }
   if (scope.business_date) params.business_date = scope.business_date
@@ -81,11 +90,31 @@ function scopeParams(scope: UvScope): Record<string, string | number> {
 }
 
 async function get<T>(path: string, scope: UvScope, signal?: AbortSignal): Promise<UvResponse<T>> {
-  return (await http.get<UvResponse<T>>(`${BASE}${path}`, { params: scopeParams(scope), signal })).data
+  return assertLiveResponse((await http.get<UvResponse<T>>(`${BASE}${path}`, { params: scopeParams(scope), signal })).data)
 }
 
 async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<UvResponse<T>> {
-  return (await http.post<UvResponse<T>>(`${BASE}${path}`, body, { signal })).data
+  return assertLiveResponse((await http.post<UvResponse<T>>(`${BASE}${path}`, body, { signal })).data)
+}
+
+async function downloadExport(file: UvReportExport, kind: UvExportInput['kind']): Promise<void> {
+  if (!file.download_url) throw new Error('正式导出未返回下载地址，未生成文件。')
+  const downloadUrl = new URL(file.download_url, window.location.origin)
+  const expectedPath = `/api/uv-printing/exports/${kind}`
+  if (downloadUrl.origin !== window.location.origin || downloadUrl.pathname !== expectedPath) {
+    throw new Error('正式导出返回了无效下载地址，已停止下载。')
+  }
+  // `http` 的 baseURL 是 `/api`，下载地址已是完整的同源 API 路径，不能再交给 Axios 拼接。
+  const response = await fetch(`${downloadUrl.pathname}${downloadUrl.search}`, { credentials: 'include' })
+  if (!response.ok) throw Object.assign(new Error(`导出下载失败（${response.status}）。`), { status: response.status })
+  const url = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = file.file_name
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
 }
 
 export const uvPrintingApi: UvWorkspaceTransport = {
@@ -96,12 +125,12 @@ export const uvPrintingApi: UvWorkspaceTransport = {
   createReport: (input: CreateUvReport) => post<UvMutationResult<UvReport>>('/production-reports', input),
 
   products: (scope, signal) => get<UvPage<UvProduct>>('/products', scope, signal),
-  productDetail: async (productId: Id, signal) => (
+  productDetail: async (productId: Id, signal) => assertLiveResponse((
     await http.get<UvResponse<UvProduct>>(`${BASE}/products/${productId}`, {
       params: { factory_id: 'huakang-a' },
       signal,
     })
-  ).data,
+  ).data),
   saveProduct: (input: UvProductSaveInput) => input.id
     ? post<UvMutationResult<UvProduct>>(`/products/${input.id}`, input)
     : post<UvMutationResult<UvProduct>>('/products', input),
@@ -114,12 +143,12 @@ export const uvPrintingApi: UvWorkspaceTransport = {
     ? post<UvMutationResult<UvRateVersion>>(`/rate-versions/${input.id}`, input)
     : post<UvMutationResult<UvRateVersion>>('/rate-versions', input),
 
-  machineDetail: async (machineId, scope, signal) => (
+  machineDetail: async (machineId, scope, signal) => assertLiveResponse((
     await http.get<UvResponse<UvMachineDetail>>(`${BASE}/machines/${machineId}`, {
       params: scopeParams(scope),
       signal,
     })
-  ).data,
+  ).data),
   saveMachine: (input: UvMachineSaveInput) => post<UvMutationResult<UvMachine>>(`/machines/${input.id}`, input),
 
   reconcileJob: (input: UvJobReconcileInput) => post<UvMutationResult<UvPrintJob>>(`/jobs/${input.job_id}/reconcile`, input),
@@ -169,18 +198,18 @@ export const uvPrintingApi: UvWorkspaceTransport = {
 
   expenses: (scope, signal) => get<UvPage<UvExpense>>('/expenses', scope, signal),
   createExpense: (input: UvExpenseInput) => post<UvMutationResult<UvExpense>>('/expenses', input),
-  monthlyPolicy: async (month, scope, signal) => (
+  monthlyPolicy: async (month, scope, signal) => assertLiveResponse((
     await http.get<UvResponse<UvMonthlyPolicy | null>>(`${BASE}/monthly-policies/${month}`, {
       params: { factory_id: scope.factory_id },
       signal,
     })
-  ).data,
+  ).data),
   saveMonthlyPolicy: (input: UvMonthlyPolicyInput) => post<UvMutationResult<UvMonthlyPolicy>>(
     `/monthly-policies/${input.month}`,
     input,
   ),
 
-  pricingPreview: (input: UvPricingInput) => post<UvPricingResult>('/pricing/preview', input),
+  pricingPreview: (input: UvPricingInput) => post<UvPricingResult>('/pricing/preview', { ...input, factory_id: 'huakang-a' }),
   pricingQuotes: (scope, signal) => get<UvPage<UvPricingQuote>>('/pricing-quotes', scope, signal),
   savePricingQuote: (input: UvPricingQuoteInput) => post<UvMutationResult<UvPricingQuote>>('/pricing-quotes', input),
   adoptPricingQuote: (input: UvPricingAdoptInput) => post<UvMutationResult<UvRateVersion>>(
@@ -189,12 +218,16 @@ export const uvPrintingApi: UvWorkspaceTransport = {
   ),
 
   dailyReport: (scope, signal) => get<UvDailyReport>('/reports/daily', scope, signal),
-  dailyProjection: (scope, signal) => get<UvPage<UvDailyProjection>>('/reports/daily', scope, signal),
+  dailyProjection: (scope, signal) => get<UvPage<UvDailyProjection>>('/reports/daily-projection', scope, signal),
   monthlyProjection: (scope, signal) => get<UvMonthlyProjection>('/reports/monthly', scope, signal),
-  exportReport: (input: UvExportInput) => post<UvReportExport>(`/exports/${input.kind}`, input),
-  operationResult: async (operationId, scope) => (
+  exportReport: async (input: UvExportInput) => {
+    const result = await post<UvReportExport>(`/exports/${input.kind}`, input)
+    await downloadExport(result.data, input.kind)
+    return result
+  },
+  operationResult: async (operationId, scope) => assertLiveResponse((
     await http.get<UvResponse<UvOperationRecord | null>>(`${BASE}/operations/${operationId}`, {
       params: { factory_id: scope.factory_id },
     })
-  ).data,
+  ).data),
 }

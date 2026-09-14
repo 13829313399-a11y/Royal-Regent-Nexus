@@ -26,6 +26,7 @@ import UvDrawer from '../components/UvDrawer.vue'
 import { ADMIN_STATUS, CAPABILITY_LABELS, FRESHNESS, INK_MATERIAL_LABELS, JOB_STATE, QUALITY_STATUS, RAW_UNIT, RECONCILIATION, REPORT_STATUS, TIME_EVIDENCE_LABEL } from '../domain/status'
 import { formatDuration, shanghaiDateTimeString, shanghaiTimeString } from '../domain/businessTime'
 import { formatMoney } from '../domain/decimal'
+import { readAllPages } from '../transport/pagination'
 
 /**
  * 机台工作区：卡片/列表可切换；机台详情包含任务时序、班次人员、维护费用与采集能力清单。
@@ -48,12 +49,12 @@ const view = ref<'cards' | 'list'>('cards')
 const search = ref('')
 
 const machineRequest = useUvRequest<{ items: UvMachine[] }>(
-  (signal) => transport.value.machines({ ...scope.value, q: search.value || undefined, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.machines(nextScope, nextSignal), { ...scope.value, q: search.value || undefined }, signal),
   { watchSource: () => [scope.value.business_date, search.value, ctx.revision.value] },
 )
 
 const productRequest = useUvRequest<{ items: UvProduct[] }>(
-  (signal) => transport.value.products({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.products(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [ctx.revision.value] },
 )
 
@@ -76,13 +77,13 @@ const editNote = ref('')
 const saveCommand = useUvCommand<unknown>()
 
 const reportRequest = useUvRequest<{ items: UvReport[] }>(
-  (signal) => transport.value.reports({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.reports(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [scope.value.business_date, ctx.revision.value] },
 )
 
 function goodQtyFor(machineId: string): number | null {
   const reports = (reportRequest.data.value?.items ?? []).filter((report) =>
-    report.machine_id === machineId && report.status === 'confirmed',
+    report.machine_id === machineId && (report.status === 'confirmed' || report.status === 'corrected'),
   )
   if (!reports.length) return null
   return reports.reduce((total, report) => total + report.good_qty, 0)

@@ -157,6 +157,7 @@ const perDayTotals = computed(() => {
 
 function validate(): boolean {
   const errors: Record<string, string> = {}
+  if (!props.currency) errors.currency = '请先在经营报表顶部选择币种，系统不会猜测默认币种'
   if (!workingDays.value.length) errors.working_days = '工作日集合不能为空，否则分摊合计无法等于配置额'
   for (const preview of previews.value) {
     if (!preview.matches) {
@@ -293,6 +294,7 @@ function confirmSettledRevision(reason: string) {
     </div>
 
     <div class="uv-panel__body">
+      <p v-if="fieldErrors.currency" class="uv-field__error">{{ fieldErrors.currency }}</p>
       <div v-if="!canReadCost" class="uv-state uv-state--warning" role="alert">
         <div class="uv-state__icon uv-state__icon--warning" aria-hidden="true">
           <Ban class="size-5" />

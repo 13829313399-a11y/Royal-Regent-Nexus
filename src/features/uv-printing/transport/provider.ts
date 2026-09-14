@@ -33,7 +33,7 @@ let previewModulePromise: Promise<PreviewModule> | null = null
  * 样例 transport 通过动态 import 加载，生产构建不会静态引入样例数据。
  */
 export async function loadSampleTransport() {
-  if (!isUvPreviewEnabled()) {
+  if (!import.meta.env.DEV || import.meta.env.VITE_UV_PREVIEW !== 'true') {
     throw new Error('UV 样例预览未开启：需要 DEV 且 VITE_UV_PREVIEW=true。')
   }
   previewModulePromise ??= import('../preview/memoryStore')

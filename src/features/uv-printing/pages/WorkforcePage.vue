@@ -29,6 +29,7 @@ import {
   splitRemainder,
 } from '../domain/decimal'
 import { PAYROLL_STATE } from '../domain/status'
+import { readAllPages } from '../transport/pagination'
 import UvStateBlock, { type UvSurfaceState } from '../components/UvStateBlock.vue'
 import UvStatusPill from '../components/UvStatusPill.vue'
 import UvNumber from '../components/UvNumber.vue'
@@ -86,27 +87,25 @@ function canReadPayroll(): boolean {
 
 const workersRequest = useUvRequest(
   (signal) =>
-    transport.value.workers(baseScope(), signal).then((response) => {
+    readAllPages((nextScope, nextSignal) => transport.value.workers(nextScope, nextSignal), baseScope(), signal).then((response) => {
       asOf.value = response.meta.as_of
       return response.data.items
     }),
   { immediate: false },
 )
 const templatesRequest = useUvRequest(
-  (signal) => transport.value.shiftTemplates(baseScope(), signal).then((response) => response.data.items),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.shiftTemplates(nextScope, nextSignal), baseScope(), signal).then((response) => response.data.items),
   { immediate: false },
 )
 const assignmentsRequest = useUvRequest(
   (signal) =>
-    transport.value
-      .assignments({ ...baseScope(), business_date: businessDate.value }, signal)
+    readAllPages((nextScope, nextSignal) => transport.value.assignments(nextScope, nextSignal), { ...baseScope(), business_date: businessDate.value }, signal)
       .then((response) => response.data.items),
   { immediate: false },
 )
 const reportsRequest = useUvRequest(
   (signal) =>
-    transport.value
-      .reports({ ...baseScope(), date_from: payrollWindowFrom.value, date_to: businessDate.value, page_size: 200 }, signal)
+    readAllPages((nextScope, nextSignal) => transport.value.reports(nextScope, nextSignal), { ...baseScope(), date_from: payrollWindowFrom.value, date_to: businessDate.value }, signal)
       .then((response) => response.data.items),
   { immediate: false },
 )
@@ -123,7 +122,7 @@ const payrollRequest = useUvRequest(
 
 const machinesRequest = useUvRequest(
   (signal) =>
-    transport.value.machines(baseScope(), signal).then((response) => {
+    readAllPages((nextScope, nextSignal) => transport.value.machines(nextScope, nextSignal), baseScope(), signal).then((response) => {
       asOf.value = response.meta.as_of
       return response.data.items
     }),
@@ -320,7 +319,7 @@ async function copyPreviousShift() {
   copyLoading.value = true
   copyError.value = ''
   try {
-    const response = await transport.value.assignments(
+    const response = await readAllPages((nextScope, nextSignal) => transport.value.assignments(nextScope, nextSignal),
       { ...baseScope(), business_date: source.businessDate, shift: source.shift },
       new AbortController().signal,
     )
@@ -407,15 +406,16 @@ const payrollPending = computed<WorkerPayrollPendingItem[]>(() => {
 const payrollProvisional = computed(() => {
   const snapshot = payroll.value
   if (!snapshot) return true
-  return snapshot.coverage !== 'complete' || snapshot.lines.some((line) => line.state !== 'confirmed')
+  return snapshot.coverage !== 'complete' || snapshot.lines.some((line) => line.state !== 'confirmed' && line.state !== 'adjusted')
 })
 
 /** 未定价优先级最高：任何一条未定价报工都会把整体口径标成未定价，而不是暂算。 */
 const payrollState = computed(() => {
   const unpriced = (payroll.value?.lines ?? []).some((line) => line.state === 'unpriced')
   if (unpriced || payrollPending.value.some((item) => item.key === 'unpriced')) return 'unpriced'
-  const confirmed = (payroll.value?.lines ?? []).every((line) => line.state === 'confirmed')
-  return confirmed && (payroll.value?.lines?.length ?? 0) > 0 ? 'confirmed' : 'provisional'
+  const settled = (payroll.value?.lines ?? []).every((line) => line.state === 'confirmed' || line.state === 'adjusted')
+  if (!settled || !(payroll.value?.lines.length ?? 0)) return 'provisional'
+  return (payroll.value?.lines ?? []).some((line) => line.state === 'adjusted') ? 'adjusted' : 'confirmed'
 })
 const payrollStateView = computed(() => PAYROLL_STATE[payrollState.value])
 const payrollPanelState = computed<UvSurfaceState>(() => {

@@ -1002,3 +1002,16 @@ npm run typecheck:test
 ### 20.2 真正完成意味着
 
 华康A生产人员能在宿主内完成报工和质量核对，主管能追查任务证据与工资构成，仓管能做正确SKU库存收发，经营页能从同一套真实事实生成可下钻报表；其他厂区不受影响，授权与敏感字段边界可靠；自动采集的可靠程度被如实标注。DSH的视觉成果与Codex的业务逻辑在同一套契约下通过验收，而不是各自“能跑”但无法对接。
+
+## 21. Codex 集成契约补充（2026-09-14）
+
+本节记录已实施接口与此前设计表之间的明确差异，原规格和来源审计保持可追溯；验收状态见 `CODEX_BACKEND_HANDOFF.md`。
+
+1. `GET /reports/daily` 是经营指标行；新增 `GET /reports/daily-projection` 返回分页的逐日投影，包含 `defective_qty`，月投影继续使用 `GET /reports/monthly`。列表响应分页；汇总使用全部筛选结果。`meta` 固定 live，并按未定价、质量、来源、成本等未决事实标注 coverage。
+2. `POST /production-reports` 返回 draft。确认、质量修订、更正、作废按对象路径 POST。`UvReport.source_allocations` 与 `evidence_job_ids` 用于携带原来源；返回当前 job_version。更正省略/空来源时保留原分配，缩小数量不能低于原分配。草稿不占额度，确认重查额度。
+3. `UvPayrollState` 增加 `adjusted`。已确认工资来源冻结；调整进入后续开放日期，预览、日/月投影和导出计一次，新工资批次不重复冻结调整。修订追溯为 `GET /production-reports/{id}/trace`。
+4. 月分摊用 `GET /monthly-policies/{month}` 与 POST/PUT 保存版本；必须明确币种和工作日。`planned_day_off` 来源于已配置工作日，不据未经确认的默认制度删除周日产量。
+5. 报价预览含明确 `factory_id`；保存及采用返回服务端快照。只能采用为 commercial，工价独立维护。CNY/HKD/USD/JPY/EUR/GBP 各自按最小币种单位舍入，缺币种或汇率不能推测。
+6. 导出 POST `/exports/{kind}` 返回受权下载地址，随后 GET 同路径返回 UTF-8 BOM CSV；同源下载、相同筛选与权限裁剪，转义表格公式并保护前导零。当前 kinds 为 daily/monthly/reports/ink_movements/payroll/expenses。
+7. 导入 POST `/imports` 为 multipart，显式 factory_id/kind/file；映射、预演、整批应用和费用/墨水批次反向均独立。JSON 数组列包含 worker_ids/source_allocations/evidence_job_ids。只支持 CSV，不声称接收原生旧 Excel 或历史汇总快照。
+8. `GET/POST /handovers` 与 POST `/handovers/{id}` 支持版本化交接核数；来源修订后显示待核，绝不联动 PMC 库存。B1 接收和只读参考队列见 `connectors/uv-printing/README.md`，不构成实机验收。

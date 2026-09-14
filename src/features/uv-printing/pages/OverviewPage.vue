@@ -25,6 +25,7 @@ import QuickReportDrawer from '../components/QuickReportDrawer.vue'
 import { COVERAGE, HANDOVER_STATE, RECONCILIATION, REPORT_STATUS, SOURCE_KIND } from '../domain/status'
 import { formatDuration, shanghaiDateTimeString, shanghaiTimeString } from '../domain/businessTime'
 import { decimalSum, formatMoney } from '../domain/decimal'
+import { readAllPages } from '../transport/pagination'
 
 /**
  * 生产驾驶舱：首屏回答「现在要处理什么、哪些机器需要关注」。
@@ -58,37 +59,37 @@ const summaryRequest = useUvRequest<UvSummary>(
 )
 
 const machineRequest = useUvRequest<{ items: UvMachine[] }>(
-  (signal) => transport.value.machines({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.machines(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [revision.value] },
 )
 
 const jobRequest = useUvRequest<{ items: UvPrintJob[] }>(
-  (signal) => transport.value.jobs({ ...scope.value, date_from: scope.value.business_date, date_to: scope.value.business_date, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.jobs(nextScope, nextSignal), { ...scope.value, date_from: scope.value.business_date, date_to: scope.value.business_date }, signal),
   { watchSource: () => [scope.value.business_date, revision.value] },
 )
 
 const reportRequest = useUvRequest<{ items: UvReport[] }>(
-  (signal) => transport.value.reports({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.reports(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [scope.value.business_date, scope.value.shift, revision.value] },
 )
 
 const handoverRequest = useUvRequest<{ items: UvHandoverRecord[] }>(
-  (signal) => transport.value.handovers({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.handovers(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [scope.value.business_date, revision.value] },
 )
 
 const skuRequest = useUvRequest<{ items: UvInkSku[] }>(
-  (signal) => transport.value.inkSkus({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.inkSkus(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [revision.value] },
 )
 
 const balanceRequest = useUvRequest<{ items: UvInkBalance[] }>(
-  (signal) => transport.value.inkBalances({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.inkBalances(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [revision.value] },
 )
 
 const productRequest = useUvRequest<{ items: UvProduct[] }>(
-  (signal) => transport.value.products({ ...scope.value, page_size: 200 }, signal),
+  (signal) => readAllPages((nextScope, nextSignal) => transport.value.products(nextScope, nextSignal), scope.value, signal),
   { watchSource: () => [revision.value] },
 )
 
@@ -111,7 +112,7 @@ const primaryError = computed(() =>
 
 const coverage = computed(() => COVERAGE[summaryRequest.coverage.value])
 
-const confirmedReports = computed(() => reports.value.filter((report) => report.status === 'confirmed'))
+const confirmedReports = computed(() => reports.value.filter((report) => report.status === 'confirmed' || report.status === 'corrected'))
 const activeReports = computed(() => reports.value.filter((report) => report.status !== 'voided'))
 
 const unmatchedJobs = computed(() => jobs.value.filter((job) => job.reconciliation === 'unmatched'))

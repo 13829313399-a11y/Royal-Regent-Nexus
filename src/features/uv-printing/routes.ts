@@ -4,6 +4,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import type { UvFactoryId } from './contracts'
 import { UV_PERMISSIONS } from './contracts'
+import { isUvModuleEnabled } from './transport/provider'
 
 /**
  * UV 打印管理子路由。
@@ -72,6 +73,9 @@ export const uvPrintingRoutes: RouteRecordRaw[] = [
      * 已经进入页面后切换厂区的情况。
      */
     beforeEnter: (to) => {
+      if (!isUvModuleEnabled()) {
+        return { path: '/modules/production', query: { factory: UV_FACTORY }, replace: true }
+      }
       const requested = Array.isArray(to.query.factory) ? to.query.factory[0] : to.query.factory
       if (typeof requested === 'string' && requested !== UV_FACTORY) {
         return { path: '/modules/production', query: { factory: UV_FACTORY }, replace: true }
