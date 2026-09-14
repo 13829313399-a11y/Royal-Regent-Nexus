@@ -41,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v25"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v26"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 118
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 111
+    assert len(registered_codes) == 123
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 116
     assert len(permission_codes.SPRAY_PRODUCTION_PERMISSION_CODES) == 12
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
@@ -198,6 +198,8 @@ def test_fixed_system_position_definition_contract():
     molding_supervisor = positions.get_system_position("position_molding_supervisor")
     molding_manager = positions.get_system_position("position_molding_manager")
     expected_task_permissions = {
+        "customer_order:inbox_read",
+        "customer_order:inbox_receive",
         "injection_scheduling:read",
         "injection_scheduling:plan",
         "injection_scheduling:report",

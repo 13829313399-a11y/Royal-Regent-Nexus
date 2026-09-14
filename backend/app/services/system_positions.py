@@ -21,7 +21,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v25"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v26"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -154,6 +154,11 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "customer_order:export",
     "customer_order:duplicate_confirm",
     "customer_order:audit_read",
+    "customer_order:write",
+    "customer_order:dispatch",
+    "customer_order:shipment_confirm",
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     "internal_quote:read",
     "internal_quote:create",
     "internal_quote:clone",
@@ -223,6 +228,9 @@ ENGINEERING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_SUPERVISOR_PERMISSION_CODES = (
+    "customer_order:write",
+    "customer_order:dispatch",
+    "customer_order:shipment_confirm",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "customer_price:read",
     "customer_price:import_internal_quote",
@@ -252,6 +260,9 @@ SALES_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_BUSINESS_PERMISSION_CODES = (
+    "customer_order:write",
+    "customer_order:dispatch",
+    "customer_order:shipment_confirm",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "customer_price:read",
     "customer_price:import_internal_quote",
@@ -273,6 +284,8 @@ SALES_BUSINESS_PERMISSION_CODES = (
 )
 
 PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
     "molding_sample:export",
@@ -294,6 +307,8 @@ PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
 )
 
 PRODUCTION_CLERK_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     *INJECTION_SCHEDULING_PERMISSION_CODES[:3],
     "molding_sample:read",
     "molding_sample:export",
@@ -334,6 +349,8 @@ PAINTING_SUPERVISOR_PERMISSION_CODES = (
 # 啤办生产任务和注塑排产。范围模式负责区分文员的“跨厂查看 / 本厂操作”
 # 和主管、经理的“跨厂操作”，且不授予工程开单、编辑、审核、删除或导出。
 MOLDING_CLERK_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     *INJECTION_SCHEDULING_PERMISSION_CODES[:3],
     "molding_sample:read",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
@@ -349,6 +366,8 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 WAREHOUSE_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     "molding_sample:read",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:export",
@@ -372,6 +391,8 @@ QA_CLERK_PERMISSION_CODES = (
     "carton_mark:photo_upload",
 )
 CARTON_WAREHOUSE_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "carton_mark:read",
     "carton_mark:template_upload",

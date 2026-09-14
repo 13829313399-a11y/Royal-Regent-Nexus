@@ -32,6 +32,9 @@ import {
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { customerOrderApi } from '@/api/customerOrder'
 import type { MappedCustomerCode } from '@/api/customerOrder'
+import { customerOrderLedgerApi } from '@/api/customerOrderLedger'
+import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
+import CustomerOrderLedger from './CustomerOrderLedger.vue'
 import { getApiErrorMessage } from '@/lib/http'
 import type {
   CustomerOrderImportPreview,
@@ -533,6 +536,14 @@ const generatedPasswordRequired = ref(false)
 const skippedIssueKeys = ref<string[]>([])
 const manualOverrideValues = ref<Record<string, string>>({})
 const confirmationReason = ref('')
+const sourceKind = ref<'formal' | 'supplementary'>('formal')
+const savingOrder = ref(false)
+const reconciliation = ref({ enabled: false, lineId: '', expectedRevision: 0, reason: '' })
+const reconciliationCandidates = ref<CustomerOrderLedgerLine[]>([])
+const reconciliationLoading = ref(false)
+const reconciliationQuery = ref('')
+const reconciliationPage = ref(1)
+const reconciliationTotal = ref(0)
 const testDuplicateIssueCodes = new Set([
   'duplicate_reference',
   'existing_order_line',
@@ -610,6 +621,8 @@ const notice = ref('')
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
 let parseRequestSequence = 0
 let exportRequestSequence = 0
+let saveRequestSequence = 0
+let reconciliationRequestSequence = 0
 
 const availableCustomers = computed(
   () => CUSTOMER_PROFILES_BY_FACTORY[props.factoryId] ?? [],
@@ -630,84 +643,7 @@ const preflightConfirmationText = computed(
     : '重复订单是否允许确认以当前环境策略和预览结果为准',
 )
 
-const orderRows = ref<OrderRow[]>([
-  {
-    id: 'row-001',
-    factoryId: 'huaxing',
-    status: 'valid',
-    statusLabel: '有效',
-    issue: 'WMC 首页内嵌格式已匹配；数量、装箱数、箱数和当前目标排期一致。',
-    receivedDate: '2026-07-24',
-    poNo: '0009382481',
-    contractNo: '53138',
-    customerCountry: 'BuzzBee / WMC',
-    productNo: '67771',
-    productNameZh: '双管枪',
-    productNameEn: 'AF DOUBLE FIRE',
-    quantity: '3,000',
-    unitsPerCarton: '5',
-    cartonCount: '600',
-    standard: '加拿大标准',
-    unitPriceHkd: '23.960000',
-    amountHkd: '71,880.0000',
-    packaging: '67771-05-26-WMC',
-    lineQ: '2026-09-17',
-    customerQ: '2026-09-17 验货',
-    requestedShipDate: '2026-09-17',
-    source: 'Sheet1!P4 / N4 / F12 / F16 / F22 / A48',
-    sourcePoFileName: 'WM-67771-53138-WMC.xlsx',
-    inputTemplate: 'BUZZBEE_WALMART_WMC_INLINE_V1',
-    targetTemplate: 'BUZZBEE_PRODUCTION_SCHEDULE_V1',
-    itemSheetName: '子弹枪ITEM表',
-    poSource: 'Sheet1 · PO / BON DE COMMANDE',
-    contractSource: 'Sheet1 · N4',
-    productSource: 'Sheet1 · F12',
-    shipDateSource: 'Sheet1 · F8',
-    productionStatus: '生产中',
-    productionProgress: 68,
-    productionDepartment: '装配部',
-    productionIssue: '包装物料未齐（静态反馈示例）',
-    feedbackAt: '2026-07-27 10:15',
-  },
-  {
-    id: 'row-002',
-    factoryId: 'huaxing',
-    status: 'blocked',
-    statusLabel: '阻断',
-    issue: 'PO装船日期为2026-02-02，旧排期为2026-01-28；LCL是否提前5天尚未确认。',
-    receivedDate: '2026-01-07',
-    poNo: '0092504153',
-    contractNo: '52335',
-    customerCountry: 'BuzzBee / AAFES（美国）',
-    productNo: '11580',
-    productNameZh: '鱼缸水枪',
-    productNameEn: 'OCEAN OUTLAW',
-    quantity: '180',
-    unitsPerCarton: '6',
-    cartonCount: '30',
-    standard: '美国标准',
-    unitPriceHkd: '8.810000',
-    amountHkd: '1,585.8000',
-    packaging: '11580-10-25-EN',
-    lineQ: '待确认',
-    customerQ: 'To be Advised',
-    requestedShipDate: '2026-02-02',
-    source: 'SHEET!V3 / O8 / F11 / F16 / F22 / B33',
-    sourcePoFileName: 'AAFES-52335-11580.xls',
-    inputTemplate: 'BUZZBEE_STANDARD_CONTRACT_V1',
-    targetTemplate: 'BUZZBEE_PRODUCTION_SCHEDULE_V1',
-    itemSheetName: '水枪ITEM表',
-    poSource: 'SHEET · PO NUMBER / O8',
-    contractSource: 'SHEET · V3',
-    productSource: 'SHEET · F11',
-    shipDateSource: 'SHEET · F7',
-    productionStatus: '未下发',
-    productionProgress: 0,
-    productionDepartment: '—',
-    productionIssue: '交付日期待确认，尚未形成下游任务（静态示例）',
-    feedbackAt: '2026-07-27 09:40',
-  },
-])
+const orderRows = ref<OrderRow[]>([])
 
 const factoryOrderRows = computed(() => (
   orderRows.value.filter((row) => row.factoryId === props.factoryId)
@@ -787,6 +723,16 @@ const skippedIssueCount = computed(() => resolvedIssueKeys.value.length)
 const confirmationReasonMissing = computed(() => (
   skippedIssueCount.value > 0 && confirmationReason.value.trim().length < 4
 ))
+const canReconcilePreview = computed(() => Boolean(
+  previewBatch.value
+  && previewBatch.value.rows.length === 1
+  && sourceKind.value === 'formal',
+))
+const reconciliationProductNo = computed(() => previewBatch.value?.rows[0]?.product_no ?? '')
+const reconciliationPageCount = computed(() => Math.max(1, Math.ceil(reconciliationTotal.value / 50)))
+const selectedReconciliationLine = computed(() => reconciliationCandidates.value.find(
+  (line) => line.id === reconciliation.value.lineId,
+) ?? null)
 const selectedPoFile = computed(() => {
   if (poFiles.value.length === 0) return '尚未选择 PO 文件'
   if (poFiles.value.length === 1) return poFiles.value[0]!.name
@@ -997,63 +943,9 @@ const customerMonthlySummary = computed(() => scheduleCustomers.value
   })
   .filter((summary): summary is NonNullable<typeof summary> => summary !== null))
 
-const scheduleExceptions = computed<ScheduleException[]>(() => factoryScheduleRows.value
-  .map((row): ScheduleException | null => {
-    if (row.status === 'blocked') {
-      return {
-        id: `data-${row.id}`,
-        row,
-        severity: 'critical',
-        severityLabel: '紧急',
-        category: '订单数据',
-        title: '交付日期待确认，订单不可供下游调用',
-        detail: `${row.issue} 当前客要求走货期为 ${row.requestedShipDate}。`,
-        suggestedAction: '返回预览确认客户原值和内部提前节点',
-        actionSection: 'preview',
-      }
-    }
-    if (row.deliveryStatus === 'overdue') {
-      return {
-        id: `overdue-${row.id}`,
-        row,
-        severity: 'critical',
-        severityLabel: '紧急',
-        category: '交付风险',
-        title: row.deliveryStatusLabel,
-        detail: `订单尚未关闭，生产状态为“${row.productionStatus}”。`,
-        suggestedAction: '跟客确认走货状态并核对下游完成情况',
-        actionSection: 'schedule',
-      }
-    }
-    if (row.deliveryStatus === 'due-soon') {
-      return {
-        id: `due-${row.id}`,
-        row,
-        severity: row.productionProgress < 100 ? 'critical' : 'warning',
-        severityLabel: row.productionProgress < 100 ? '紧急' : '警告',
-        category: '交付风险',
-        title: `${row.deliveryStatusLabel}${row.productionProgress < 100 ? '，生产尚未完成' : ''}`,
-        detail: `${row.productionDepartment} · ${row.productionIssue}`,
-        suggestedAction: '核对预计完成日期并跟进走货准备',
-        actionSection: 'schedule',
-      }
-    }
-    if (row.productionProgress < 100) {
-      return {
-        id: `production-${row.id}`,
-        row,
-        severity: 'attention',
-        severityLabel: '关注',
-        category: '生产反馈',
-        title: `生产状态：${row.productionStatus}，完成进度 ${row.productionProgress}%`,
-        detail: `${row.productionDepartment} · ${row.productionIssue}`,
-        suggestedAction: '持续关注生产反馈；临近阈值后自动升级',
-        actionSection: 'schedule',
-      }
-    }
-    return null
-  })
-  .filter((exception): exception is ScheduleException => exception !== null))
+// Risk and production feedback require authoritative downstream data.  They are
+// intentionally not inferred from a transient PO preview or shown as mock facts.
+const scheduleExceptions = computed<ScheduleException[]>(() => [])
 
 const filteredScheduleExceptions = computed(() => {
   const query = exceptionSearch.value.trim().toLowerCase()
@@ -1079,7 +971,7 @@ const exceptionSummary = computed(() => ({
     (row) => row.deliveryStatus === 'overdue' || row.deliveryStatus === 'due-soon',
   ).length,
   dataBlocked: factoryScheduleRows.value.filter((row) => row.status === 'blocked').length,
-  production: factoryScheduleRows.value.filter((row) => row.productionProgress < 100).length,
+  production: 0,
   versionLag: scheduleExceptions.value.filter((exception) => exception.category === '版本状态').length,
 }))
 
@@ -1204,6 +1096,7 @@ function getCustomerScheduleLabel(row: OrderRow) {
 function clearPreviewState() {
   parseRequestSequence += 1
   exportRequestSequence += 1
+  saveRequestSequence += 1
   parsingFiles.value = false
   exportingSchedule.value = false
   previewBatch.value = null
@@ -1216,6 +1109,14 @@ function clearPreviewState() {
   skippedIssueKeys.value = []
   manualOverrideValues.value = {}
   confirmationReason.value = ''
+  savingOrder.value = false
+  reconciliationRequestSequence += 1
+  reconciliation.value = { enabled: false, lineId: '', expectedRevision: 0, reason: '' }
+  reconciliationCandidates.value = []
+  reconciliationLoading.value = false
+  reconciliationQuery.value = ''
+  reconciliationPage.value = 1
+  reconciliationTotal.value = 0
   orderRows.value = []
   traceRow.value = null
   blockingResolutionOpen.value = false
@@ -1634,6 +1535,132 @@ async function confirmAndGenerateSchedule() {
   }
 }
 
+async function toggleReconciliation() {
+  if (!reconciliation.value.enabled) {
+    reconciliation.value = { enabled: false, lineId: '', expectedRevision: 0, reason: '' }
+    reconciliationCandidates.value = []
+    reconciliationQuery.value = ''
+    reconciliationPage.value = 1
+    reconciliationTotal.value = 0
+    return
+  }
+  if (!previewBatch.value || !canReconcilePreview.value) return
+  reconciliationQuery.value = ''
+  reconciliationPage.value = 1
+  reconciliationTotal.value = 0
+  await loadReconciliationCandidates()
+}
+
+async function loadReconciliationCandidates() {
+  if (!previewBatch.value || !canReconcilePreview.value) return
+  const requestId = ++reconciliationRequestSequence
+  const requestedFactoryId = props.factoryId
+  const requestedCustomerCode = previewBatch.value.customer_code
+  const requestedProductNo = reconciliationProductNo.value
+  const requestedPage = reconciliationPage.value
+  const requestedQuery = reconciliationQuery.value.trim()
+  reconciliationLoading.value = true
+  try {
+    const result = await customerOrderLedgerApi.list(requestedFactoryId, {
+      customerCode: requestedCustomerCode,
+      view: 'all',
+      q: requestedQuery,
+      page: requestedPage,
+      pageSize: 50,
+    })
+    if (requestId !== reconciliationRequestSequence || requestedFactoryId !== props.factoryId) return
+    reconciliationTotal.value = result.total
+    reconciliationCandidates.value = result.items.filter((line) => (
+      line.factory_id === requestedFactoryId
+      && line.customer_code === requestedCustomerCode
+      && line.status === 'active'
+      && line.product_no === requestedProductNo
+    ))
+    if (!reconciliationCandidates.value.some((line) => line.id === reconciliation.value.lineId)) {
+      reconciliation.value = { ...reconciliation.value, lineId: '', expectedRevision: 0 }
+    }
+  } catch (error) {
+    if (requestId !== reconciliationRequestSequence || requestedFactoryId !== props.factoryId) return
+    reconciliation.value = { enabled: false, lineId: '', expectedRevision: 0, reason: '' }
+    reconciliationCandidates.value = []
+    reconciliationTotal.value = 0
+    notify(`无法读取可关联订单：${getApiErrorMessage(error)}`)
+  } finally {
+    if (requestId === reconciliationRequestSequence) reconciliationLoading.value = false
+  }
+}
+
+function searchReconciliationCandidates() {
+  reconciliationPage.value = 1
+  void loadReconciliationCandidates()
+}
+
+function goToReconciliationPage(nextPage: number) {
+  if (nextPage < 1 || nextPage > reconciliationPageCount.value || nextPage === reconciliationPage.value) return
+  reconciliationPage.value = nextPage
+  void loadReconciliationCandidates()
+}
+
+function selectReconciliationLine() {
+  const line = selectedReconciliationLine.value
+  reconciliation.value = {
+    ...reconciliation.value,
+    expectedRevision: line?.revision ?? 0,
+  }
+}
+
+async function confirmAndSaveOrder() {
+  if (unconfirmedDuplicateIssueCount.value > 0 || orderSummary.value.blocked > 0) {
+    notify('请先完成所有重复订单确认和阻断项处理。')
+    return
+  }
+  if (!previewBatch.value || poFiles.value.length === 0 || !scheduleFile.value) {
+    notify('请先从“PO 与客户排期导入”完成真实解析。')
+    return
+  }
+  if (confirmationReasonMissing.value) {
+    notify('本批存在人工确认或跳过项，请填写至少 4 个字的确认原因。')
+    return
+  }
+  if (reconciliation.value.enabled && (!reconciliation.value.lineId || reconciliation.value.expectedRevision < 1 || reconciliation.value.reason.trim().length < 4)) {
+    notify('关联已有订单时，请选择订单并填写至少 4 个字的核对原因。')
+    return
+  }
+  const requestId = ++saveRequestSequence
+  const requestedPreview = previewBatch.value
+  const requestedFactoryId = props.factoryId
+  const payload = new FormData()
+  payload.append('factory_id', requestedFactoryId)
+  payload.append('received_date', receivedDate.value)
+  poFiles.value.forEach((file) => payload.append('po_files', file))
+  payload.append('schedule_file', scheduleFile.value)
+  payload.append('confirmed', 'true')
+  payload.append('skipped_issue_keys', JSON.stringify(resolvedIssueKeys.value))
+  payload.append('manual_overrides', JSON.stringify(manualOverrides.value))
+  payload.append('preview_fingerprint', requestedPreview.preview_fingerprint)
+  payload.append('confirmation_reason', confirmationReason.value.trim())
+  payload.append('source_kind', sourceKind.value)
+  if (reconciliation.value.enabled) {
+    payload.append('reconcile_line_id', reconciliation.value.lineId)
+    payload.append('expected_revision', String(reconciliation.value.expectedRevision))
+    payload.append('reconciliation_reason', reconciliation.value.reason.trim())
+  }
+  savingOrder.value = true
+  try {
+    const result = await customerOrderLedgerApi.importConfirmed(requestedPreview.customer_code, payload)
+    if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
+    notify(result.reconciled_count > 0
+      ? '订单已关联并更新原订单，原走货与版本记录已保留。'
+      : `订单已确认并保存：新增 ${result.created_count} 条，已存在 ${result.existing_count} 条。`)
+    navigate('ledger')
+  } catch (error) {
+    if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
+    notify(`保存订单失败：${getApiErrorMessage(error)}`)
+  } finally {
+    if (requestId === saveRequestSequence) savingOrder.value = false
+  }
+}
+
 function downloadGeneratedSchedule() {
   if (!generatedScheduleBlob.value) {
     notify('尚未生成可下载的客户排期。')
@@ -1663,6 +1690,8 @@ function handleExceptionAction(exception: ScheduleException) {
 watch(
   () => props.factoryId,
   () => {
+    if (noticeTimer) window.clearTimeout(noticeTimer)
+    notice.value = ''
     selectedCustomerCode.value = ''
     resetImportBatch()
     searchQuery.value = ''
@@ -1680,6 +1709,17 @@ watch(
     acknowledgedExceptionIds.value = []
   },
 )
+
+watch(sourceKind, (kind) => {
+  if (kind === 'formal' || !reconciliation.value.enabled) return
+  reconciliationRequestSequence += 1
+  reconciliation.value = { enabled: false, lineId: '', expectedRevision: 0, reason: '' }
+  reconciliationCandidates.value = []
+  reconciliationLoading.value = false
+  reconciliationQuery.value = ''
+  reconciliationPage.value = 1
+  reconciliationTotal.value = 0
+})
 
 watch(receivedDate, (currentDate, previousDate) => {
   if (currentDate === previousDate) return
@@ -1700,9 +1740,9 @@ onBeforeUnmount(() => {
       <section v-if="activeSection === 'dashboard'" key="dashboard" class="order-view" data-testid="order-dashboard">
         <header class="view-heading">
           <div>
-            <span class="eyebrow"><Sparkles aria-hidden="true" /> 当前阶段 · PO 入排期已接通</span>
+            <span class="eyebrow"><Sparkles aria-hidden="true" /> 预览辅助工作区</span>
             <h2>客户订单中心</h2>
-            <p>统一沉淀客户PO，并按厂区、客户和走货月份形成交付总排期数据，供生产部门读取并回传完成情况。</p>
+            <p>这里仅辅助导入和预览。已确认订单、发送记录与走货数量以“订单数据台账”为准；不维护生产、物料、库存或排产数据。</p>
           </div>
           <div class="view-heading__actions">
             <button type="button" class="button button--ghost" @click="navigate('ledger')">
@@ -1722,10 +1762,6 @@ onBeforeUnmount(() => {
           <article class="metric-card">
             <span class="metric-card__icon metric-card__icon--amber"><ClipboardCheck aria-hidden="true" /></span>
             <div><p>待确认数据</p><strong>{{ dashboardSummary.confirmationCount }}</strong><small>仅统计当前厂区订单</small></div>
-          </article>
-          <article class="metric-card">
-            <span class="metric-card__icon metric-card__icon--green"><Layers3 aria-hidden="true" /></span>
-            <div><p>生产未完成</p><strong>{{ dashboardSummary.productionIncomplete }}</strong><small>当前厂区 · 只读</small></div>
           </article>
           <article class="metric-card metric-card--error">
             <span class="metric-card__icon metric-card__icon--red"><AlertTriangle aria-hidden="true" /></span>
@@ -1766,15 +1802,15 @@ onBeforeUnmount(() => {
               <div class="flow-card__title">
                 <span class="flow-card__icon flow-card__icon--green"><GitBranch aria-hidden="true" /></span>
                 <div>
-                  <h3>厂区总排期数据看板</h3>
-                  <p>按17个基础字段汇总各客户月度走货PO，识别临期、逾期和生产未完成订单。</p>
+                  <h3>已保存订单与走货台账</h3>
+                  <p>按客户、订单状态和走货状态查看本厂已保存订单；厂区总排期只显示这些公共字段。</p>
                 </div>
               </div>
               <ol class="flow-steps">
-                <li><b>1</b><span>汇总确认订单</span></li>
-                <li><b>2</b><span>按走货月份归集</span></li>
-                <li><b>3</b><span>识别临期与逾期</span></li>
-                <li><b>4</b><span>查看生产反馈</span></li>
+                <li><b>1</b><span>保存确认订单</span></li>
+                <li><b>2</b><span>按客户筛选</span></li>
+                <li><b>3</b><span>查看发送状态</span></li>
+                <li><b>4</b><span>确认分批走货</span></li>
               </ol>
               <button type="button" class="flow-enter" @click="navigate('schedule')">
                 查看厂区总排期 <ArrowRight aria-hidden="true" />
@@ -1807,7 +1843,7 @@ onBeforeUnmount(() => {
 
         <article class="panel-card activity-card">
           <header class="panel-card__head">
-            <div><h3>最近处理记录</h3><p>两条业务流程的静态样例</p></div>
+            <div><h3>当前预览记录</h3><p>只显示本次未保存的 PO 预览，不是订单台账。</p></div>
             <button type="button" class="text-button"><RefreshCw aria-hidden="true" /> 刷新</button>
           </header>
           <div class="table-scroll">
@@ -1922,6 +1958,10 @@ onBeforeUnmount(() => {
                   <b>来单日期</b>
                   <input v-model="receivedDate" type="date" aria-label="来单日期">
                 </label>
+                <label class="received-date-field">
+                  <b>资料类型</b>
+                  <select v-model="sourceKind" aria-label="订单资料类型"><option value="formal">正式 PO</option><option value="supplementary">补充资料</option></select>
+                </label>
               </div>
               <button type="button" class="button button--primary" :disabled="!canParseFiles" @click="parseSelectedFiles">
                 {{ parsingFiles ? '正在解析…' : '解析并进入预览' }} <ArrowRight aria-hidden="true" />
@@ -2013,6 +2053,7 @@ onBeforeUnmount(() => {
             <button v-if="blockingResolutionItems.length" type="button" class="button button--ghost" data-testid="open-field-resolution" @click="resolveBlockedRow">
               {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : blockingResolutionItems.some(({ issue }) => issue.severity === 'warning' && issue.can_edit) ? '更正日期/补录字段' : '查看已处理阻断项' }}
             </button>
+            <button type="button" class="button button--secondary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || savingOrder" @click="confirmAndSaveOrder">{{ savingOrder ? '正在保存…' : '确认并保存订单' }}</button>
             <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
           </div>
         </header>
@@ -2056,6 +2097,35 @@ onBeforeUnmount(() => {
           </label>
         </article>
 
+        <article v-if="previewBatch" class="reconciliation-card" data-testid="order-reconciliation-card">
+          <label class="reconciliation-card__toggle">
+            <input v-model="reconciliation.enabled" type="checkbox" :disabled="!canReconcilePreview" @change="toggleReconciliation">
+            <span><b>关联已有订单（正式 PO 补齐/修订）</b><small v-if="canReconcilePreview">保留原订单、走货与版本记录，并以本次正式 PO 形成修订。</small><small v-else>仅单条正式 PO 的预览批次可关联已有订单；补充资料和批量保存保持独立新建。</small></span>
+          </label>
+          <div v-if="reconciliation.enabled" class="reconciliation-card__body">
+            <div class="reconciliation-card__search">
+              <label>搜索已有订单
+                <input v-model="reconciliationQuery" type="search" placeholder="参考号、P/O 或产品编号" @keyup.enter="searchReconciliationCandidates">
+              </label>
+              <button type="button" class="button button--ghost" :disabled="reconciliationLoading" @click="searchReconciliationCandidates">搜索已有订单</button>
+            </div>
+            <p class="reconciliation-card__scope">只显示当前客户、货号 {{ reconciliationProductNo }} 且未取消的订单。第 {{ reconciliationPage }} / {{ reconciliationPageCount }} 页（查询共 {{ reconciliationTotal }} 条）。</p>
+            <label>选择当前客户的已有订单
+              <select v-model="reconciliation.lineId" :disabled="reconciliationLoading" @change="selectReconciliationLine">
+                <option value="">{{ reconciliationLoading ? '正在读取已有订单…' : '请选择已有订单' }}</option>
+                <option v-for="line in reconciliationCandidates" :key="line.id" :value="line.id">{{ line.reference_no }} · {{ line.product_no }} · 数量 {{ line.quantity }}</option>
+              </select>
+            </label>
+            <p v-if="!reconciliationLoading && reconciliationCandidates.length === 0" class="reconciliation-card__scope">当前页没有可关联订单；可搜索参考号、P/O 或产品编号，或翻页继续查找。</p>
+            <div class="reconciliation-card__pager">
+              <button type="button" class="button button--ghost" :disabled="reconciliationLoading || reconciliationPage <= 1" @click="goToReconciliationPage(reconciliationPage - 1)">上一页</button>
+              <button type="button" class="button button--ghost" :disabled="reconciliationLoading || reconciliationPage >= reconciliationPageCount" @click="goToReconciliationPage(reconciliationPage + 1)">下一页</button>
+            </div>
+            <p v-if="selectedReconciliationLine" class="reconciliation-card__selected">将关联：{{ selectedReconciliationLine.reference_no }} / {{ selectedReconciliationLine.product_no }} / 数量 {{ selectedReconciliationLine.quantity }} / 当前修订 {{ selectedReconciliationLine.revision }}</p>
+            <label>正式 PO 核对原因（4–500 字）<textarea v-model="reconciliation.reason" maxlength="500" rows="2" placeholder="例如：正式 PO 补齐合同号，已核对货号、数量和交期" /></label>
+          </div>
+        </article>
+
         <ol class="wizard-steps wizard-steps--preview">
           <li class="done"><b>✓</b><span>选择客户</span></li>
           <li class="done"><b>✓</b><span>选择文件</span></li>
@@ -2083,6 +2153,12 @@ onBeforeUnmount(() => {
             <Download aria-hidden="true" />
             {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : '生成并下载客户排期' }}
           </button>
+          <button
+            type="button"
+            class="button button--secondary"
+            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || savingOrder"
+            @click="confirmAndSaveOrder"
+          >{{ savingOrder ? '正在保存…' : '确认并保存订单' }}</button>
         </article>
 
         <div class="summary-strip">
@@ -2209,46 +2285,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'ledger'" key="ledger" class="order-view" data-testid="order-ledger">
-        <header class="view-heading">
-          <div>
-            <span class="eyebrow"><Database aria-hidden="true" /> 订单主表</span>
-            <h2>订单数据台账</h2>
-            <p>按17个统一字段查看已确认数据；当前阶段只记录客户订单和客户排期输出，不展示下游执行状态。</p>
-          </div>
-          <button type="button" class="button button--primary" @click="navigate('import')"><Plus aria-hidden="true" /> 新建导入</button>
-        </header>
-
-        <div class="ledger-kpis">
-          <article><span><FileCheck2 aria-hidden="true" /></span><div><p>已确认订单明细</p><strong>{{ orderSummary.valid }}</strong><small>{{ factoryName }}当前数据</small></div></article>
-          <article><span class="amber"><CalendarClock aria-hidden="true" /></span><div><p>待确认/阻断</p><strong>{{ dashboardSummary.confirmationCount }}</strong><small>{{ factoryName }}当前数据</small></div></article>
-          <article><span class="green"><GitBranch aria-hidden="true" /></span><div><p>厂区排期PO</p><strong>{{ dashboardSummary.poCount }}</strong><small>{{ factoryName }}当前数据</small></div></article>
-        </div>
-
-        <article class="ledger-card">
-          <div class="ledger-toolbar">
-            <label class="ledger-search"><Search aria-hidden="true" /><input v-model="searchQuery" type="search" placeholder="筛选 P/O#、合同、产品或客户"></label>
-            <select v-model="selectedLedgerStatus" aria-label="筛选订单状态"><option value="all">全部状态</option><option value="valid">已确认</option><option value="warning">警告/待确认</option><option value="blocked">阻断</option></select>
-            <select v-model="selectedLedgerCustomer" aria-label="筛选客户"><option value="all">全部客户</option><option v-for="customer in ledgerCustomers" :key="customer" :value="customer">{{ customer }}</option></select>
-            <button type="button" class="icon-square" aria-label="刷新"><RefreshCw aria-hidden="true" /></button>
-            <span class="ledger-count">共 {{ filteredLedgerRows.length }} 条当前厂区记录</span>
-          </div>
-          <div class="table-scroll table-scroll--ledger">
-            <table class="ledger-table">
-              <thead><tr><th>P/O#</th><th>Contract No.</th><th>客名/国家</th><th>产品编号</th><th>中文名称</th><th>数量</th><th>装箱数</th><th>箱数</th><th>单价HK</th><th>金额HK</th><th>客要求走货期</th><th>订单状态</th><th>客户排期输出</th><th>版本</th><th>操作</th></tr></thead>
-              <tbody>
-                <tr v-for="row in filteredLedgerRows" :key="`ledger-${row.id}`">
-                  <td class="mono strong">{{ row.poNo }}</td><td class="mono">{{ row.contractNo }}</td><td>{{ row.customerCountry }}</td><td class="mono">{{ row.productNo }}</td><td>{{ row.productNameZh }}</td>
-                  <td class="number">{{ row.quantity }}</td><td class="number">{{ row.unitsPerCarton }}</td><td class="number">{{ row.cartonCount }}</td><td class="number">{{ row.unitPriceHkd }}</td><td class="number">{{ row.amountHkd }}</td><td>{{ row.requestedShipDate || '待补充' }}</td>
-                  <td><span :class="['status-chip', `status-chip--${row.status}`]">{{ row.status === 'valid' ? '已确认' : row.statusLabel }}</span></td>
-                  <td>{{ row.status === 'valid' ? getCustomerScheduleLabel(row) : '尚未生成' }}</td><td><button type="button" class="version-button"><History aria-hidden="true" /> V1</button></td>
-                  <td><button type="button" class="trace-button" @click="traceRow = row">查看</button></td>
-                </tr>
-                <tr v-if="filteredLedgerRows.length === 0"><td colspan="15">当前厂区暂无订单记录</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <footer class="table-footer"><span>显示 {{ filteredLedgerRows.length }} 条记录</span><div><button type="button"><ChevronLeft aria-hidden="true" /></button><b>1</b><button type="button"><ChevronRight aria-hidden="true" /></button></div></footer>
-        </article>
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" />
       </section>
 
       <section v-else-if="activeSection === 'exceptions'" key="exceptions" class="order-view" data-testid="order-exceptions">
@@ -2256,25 +2293,22 @@ onBeforeUnmount(() => {
           <div>
             <span class="eyebrow"><AlertTriangle aria-hidden="true" /> 交付风险工作区</span>
             <h2>异常与提醒中心</h2>
-            <p>集中查看订单数据阻断、临期/逾期、生产未完成和版本异常；提醒只帮助跟进，不直接修改订单或生产状态。</p>
+            <p>此页暂不从订单台账推导风险或生产状态；请在预览中处理本次文件校验，并在台账中维护已保存订单。</p>
           </div>
-          <span class="prototype-badge">静态规则 · 30天/7天阈值待确认</span>
+          <span class="prototype-badge">预览辅助页 · 非订单台账</span>
         </header>
 
         <div class="exception-kpis">
           <article><span>全部待关注</span><strong>{{ exceptionSummary.total }}</strong><small>当前活动订单</small></article>
           <article class="critical"><span>紧急</span><strong>{{ exceptionSummary.critical }}</strong><small>需要优先处理</small></article>
-          <article class="delivery"><span>交付临期/逾期</span><strong>{{ exceptionSummary.dueRisk }}</strong><small>按客要求走货期</small></article>
-          <article class="data"><span>订单数据阻断</span><strong>{{ exceptionSummary.dataBlocked }}</strong><small>不可供下游调用</small></article>
-          <article class="production"><span>生产跟踪</span><strong>{{ exceptionSummary.production }}</strong><small>只读反馈</small></article>
-          <article><span>版本落后</span><strong>{{ exceptionSummary.versionLag }}</strong><small>当前样例暂无</small></article>
+          <article class="data"><span>预览阻断</span><strong>{{ exceptionSummary.dataBlocked }}</strong><small>只在当前未保存预览中计算</small></article>
         </div>
 
         <div class="exception-toolbar">
           <label class="exception-search"><Search aria-hidden="true" /><input v-model="exceptionSearch" type="search" placeholder="搜索PO、合同、客户或产品"></label>
           <label><span>优先级</span><select v-model="selectedExceptionSeverity"><option value="all">全部优先级</option><option value="critical">紧急</option><option value="warning">警告</option><option value="attention">关注</option></select></label>
-          <label><span>异常分类</span><select v-model="selectedExceptionCategory"><option value="all">全部分类</option><option value="订单数据">订单数据</option><option value="交付风险">交付风险</option><option value="生产反馈">生产反馈</option><option value="版本状态">版本状态</option></select></label>
-          <button type="button" class="button button--ghost" @click="notify('静态演示：提醒规则已重新计算。')"><RefreshCw aria-hidden="true" /> 重新计算</button>
+          <label><span>异常分类</span><select v-model="selectedExceptionCategory"><option value="all">全部分类</option><option value="订单数据">订单数据</option></select></label>
+          <button type="button" class="button button--ghost" @click="notify('当前没有可独立计算的台账风险；请查看订单台账。')"><Database aria-hidden="true" /> 查看台账规则</button>
         </div>
 
         <div class="exception-layout">
@@ -2303,8 +2337,6 @@ onBeforeUnmount(() => {
                     <div><dt>Contract No.</dt><dd>{{ exception.row.contractNo }}</dd></div>
                     <div><dt>产品</dt><dd>{{ exception.row.productNo }} · {{ exception.row.productNameZh }}</dd></div>
                     <div><dt>走货期</dt><dd>{{ exception.row.requestedShipDate || '待补充' }}</dd></div>
-                    <div><dt>生产</dt><dd>{{ exception.row.productionStatus }} · {{ exception.row.productionProgress }}%</dd></div>
-                    <div><dt>需求版本</dt><dd>V1</dd></div>
                   </dl>
                   <div class="exception-item__recommendation"><Sparkles aria-hidden="true" /><span><b>建议动作</b>{{ exception.suggestedAction }}</span></div>
                 </div>
@@ -2318,8 +2350,8 @@ onBeforeUnmount(() => {
               </article>
               <div v-if="filteredScheduleExceptions.length === 0" class="empty-exception">
                 <CheckCircle2 aria-hidden="true" />
-                <b>当前筛选条件下没有待关注事项</b>
-                <span>提醒只会在规则命中时出现。</span>
+                <b>当前没有独立风险数据</b>
+                <span>订单台账不包含生产、物料、库存或排产数据；预览校验请回到“预览与确认”。</span>
               </div>
             </div>
           </article>
@@ -2328,11 +2360,8 @@ onBeforeUnmount(() => {
             <article class="panel-card exception-rule-card">
               <header class="panel-card__head"><div><h3>当前提醒规则</h3><p>公司级草案，不属于客户模板</p></div></header>
               <ol>
-                <li><b>30天</b><span>进入“即将到期”观察范围</span></li>
-                <li><b>7天</b><span>升级为“临期”</span></li>
-                <li><b>0天后</b><span>未关闭订单标记“逾期”</span></li>
-                <li><b>生产未完成</b><span>结合剩余天数决定优先级</span></li>
-                <li><b>订单阻断</b><span>可见但不可供下游调用</span></li>
+                <li><b>预览</b><span>文件校验问题在“预览与确认”处理</span></li>
+                <li><b>台账</b><span>已保存订单、发送及走货在台账维护</span></li>
               </ol>
             </article>
 
@@ -2340,16 +2369,19 @@ onBeforeUnmount(() => {
               <header class="panel-card__head"><div><h3>处理边界</h3><p>提醒中心不成为第二套业务台账</p></div></header>
               <ul>
                 <li><ShieldCheck aria-hidden="true" /><span>订单字段回到“预览与确认”处理</span></li>
-                <li><ShieldCheck aria-hidden="true" /><span>生产问题回到对应生产模块处理</span></li>
-                <li><ShieldCheck aria-hidden="true" /><span>“标记已关注”不等于异常已解决</span></li>
-                <li><ShieldCheck aria-hidden="true" /><span>异常解除由权威数据变化自动判断</span></li>
+                <li><ShieldCheck aria-hidden="true" /><span>已保存订单回到“订单数据台账”处理</span></li>
+                <li><ShieldCheck aria-hidden="true" /><span>生产、物料、库存和排产不在本订单中心维护</span></li>
               </ul>
             </article>
           </aside>
         </div>
       </section>
 
-      <section v-else key="schedule" class="order-view" data-testid="order-schedule">
+      <section v-else-if="activeSection === 'schedule'" key="schedule-live" class="order-view" data-testid="order-schedule">
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" />
+      </section>
+
+      <section v-else-if="false" key="schedule" class="order-view" data-testid="order-schedule-static">
         <header class="view-heading">
           <div>
             <span class="eyebrow"><CalendarClock aria-hidden="true" /> 订单交付数据视图</span>
@@ -3793,6 +3825,82 @@ tbody tr:hover td {
 .received-date-field input:focus {
   border-color: #006c47;
   box-shadow: 0 0 0 3px rgb(0 108 71 / 10%);
+}
+
+.reconciliation-card {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  border: 1px solid #b2c5ff;
+  border-radius: 8px;
+  background: #f6f8ff;
+  padding: 14px;
+}
+
+.reconciliation-card__toggle,
+.reconciliation-card__body,
+.reconciliation-card__body label {
+  display: grid;
+  gap: 7px;
+}
+
+.reconciliation-card__toggle {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  color: #1d315a;
+  font-size: 12px;
+}
+
+.reconciliation-card__toggle b,
+.reconciliation-card__toggle small {
+  display: block;
+}
+
+.reconciliation-card__toggle small,
+.reconciliation-card__selected {
+  margin-top: 3px;
+  color: #596070;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.reconciliation-card__body {
+  padding-left: 23px;
+}
+
+.reconciliation-card__search,
+.reconciliation-card__pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.reconciliation-card__search label {
+  flex: 1 1 240px;
+}
+
+.reconciliation-card__scope {
+  margin: 0;
+  color: #596070;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.reconciliation-card__body label {
+  color: #434654;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reconciliation-card__body select,
+.reconciliation-card__body textarea {
+  border: 1px solid #b2c5ff;
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px;
+  color: #191b23;
+  font: inherit;
 }
 
 .import-queue-table {

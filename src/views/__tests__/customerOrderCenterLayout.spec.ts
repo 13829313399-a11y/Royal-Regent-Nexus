@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue'
 
 const customerOrderApiMock = vi.hoisted(() => ({
@@ -16,9 +16,24 @@ const customerOrderApiMock = vi.hoisted(() => ({
   previewMappedBatch: vi.fn(),
   exportMappedBatch: vi.fn(),
 }))
+const customerOrderLedgerApiMock = vi.hoisted(() => ({
+  capabilities: vi.fn(),
+  list: vi.fn(),
+  detail: vi.fn(),
+  amend: vi.fn(),
+  cancel: vi.fn(),
+  dispatch: vi.fn(),
+  confirmShipment: vi.fn(),
+  reverseShipment: vi.fn(),
+  importConfirmed: vi.fn(),
+}))
 
 vi.mock('@/api/customerOrder', () => ({
   customerOrderApi: customerOrderApiMock,
+}))
+vi.mock('@/api/customerOrderLedger', () => ({
+  customerOrderLedgerApi: customerOrderLedgerApiMock,
+  customerOrderLedgerSourceUrl: vi.fn(),
 }))
 
 const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
@@ -28,6 +43,15 @@ const viewSource = read('src/views/CustomerOrderCenterView.vue')
 const workspaceSource = read('src/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue')
 
 describe('customer order center static frontend', () => {
+  const resetLedgerApi = () => {
+    customerOrderLedgerApiMock.capabilities.mockResolvedValue({ read: true, write: true, dispatch: true, shipment_confirm: true, inbox_read: false, inbox_receive: false })
+    customerOrderLedgerApiMock.list.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, customers: [] })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetLedgerApi()
+  })
   it('registers the dedicated full-page route before the generic module route', () => {
     const orderRouteIndex = routerSource.indexOf("path: '/modules/sales-business/po-schedule-intake'")
     const genericRouteIndex = routerSource.indexOf("path: '/modules/:department/:module'")
@@ -46,13 +70,13 @@ describe('customer order center static frontend', () => {
     expect(enterpriseSource).toContain("label: 'PO 入客户排期'")
     expect(enterpriseSource).toContain("label: '厂区总排期'")
     expect(enterpriseSource).toContain("label: '异常与提醒'")
-    expect(viewSource).toContain('PO 入客户排期并输出')
-    expect(viewSource).toContain('厂区月度走货与生产反馈')
+    expect(viewSource).toContain("ref<CustomerOrderCenterSection>('ledger')")
+    expect(viewSource).toContain('订单中心不维护生产、物料、库存或排产数据。')
     expect(viewSource).toContain("label: '异常与提醒'")
-    expect(viewSource).toContain('交付异常与生产提醒')
+    expect(viewSource).toContain('发送订单与凭出货单确认走货')
     expect(workspaceSource).toContain('仍不提交PMC、不计算库存，也不进入啤机、喷油或装配排产')
-    expect(workspaceSource).toContain('这张总排期是系统数据，不是第三张Excel')
-    expect(workspaceSource).toContain('客户订单中心不能修改生产任务或完成数量')
+    expect(workspaceSource).toContain('厂区总排期只显示这些公共字段。')
+    expect(workspaceSource).toContain('不维护生产、物料、库存或排产数据')
     expect(workspaceSource).not.toContain('生成更新后的总排期')
     expect(workspaceSource).not.toContain('确认并发布至PMC')
   })
@@ -286,11 +310,13 @@ describe('customer order center static frontend', () => {
     if (scenario === 'mismatched-response') expect(wrapper.text()).toContain('已拒绝展示')
     expect(wrapper.emitted('navigate')).toBeUndefined()
     await wrapper.setProps({ activeSection: 'schedule' })
-    expect(wrapper.findAll('.factory-schedule-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0', '0', '0'])
+    await flushPromises()
+    expect(wrapper.get('[data-testid="customer-order-ledger"]').text()).toContain('当前筛选范围没有订单记录。')
+    expect(customerOrderLedgerApiMock.list).toHaveBeenLastCalledWith(scenario === 'factory-switch' ? 'huaxing' : 'huakang-d', expect.objectContaining({ view: 'all' }))
     wrapper.unmount()
   })
 
-  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech']])('routes %s / %s into only its factory schedule and clears it on factory change', async (factoryId, customerCode) => {
+  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
     const targetTemplate = customerCode === 'ubtech' ? 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_UBTECH_V1' : factoryId === 'huakang-d'
       ? 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_DISNEY_V1' : 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
     const preview = {
@@ -352,12 +378,14 @@ describe('customer order center static frontend', () => {
       [], `${factoryId}-fingerprint`, '', [],
     )
     await wrapper.setProps({ activeSection: 'schedule' })
-    expect(wrapper.get('.factory-schedule-table tbody').text()).toContain('DISNEY-FACTORY-PO')
-    expect(wrapper.findAll('.factory-schedule-table tbody tr')).toHaveLength(1)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="customer-order-ledger"]').text()).toContain('当前筛选范围没有订单记录。')
+    expect(wrapper.text()).not.toContain('DISNEY-FACTORY-PO')
+    expect(customerOrderLedgerApiMock.list).toHaveBeenLastCalledWith(factoryId, expect.objectContaining({ view: 'all' }))
     const otherFactory = factoryId === 'huaxing' ? 'huakang-d' : 'huaxing'
     await wrapper.setProps({ factoryId: otherFactory })
-    expect(wrapper.get('.factory-schedule-table tbody').text()).not.toContain('DISNEY-FACTORY-PO')
-    expect(wrapper.findAll('.factory-schedule-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0', '0', '0'])
+    await flushPromises()
+    expect(customerOrderLedgerApiMock.list).toHaveBeenLastCalledWith(otherFactory, expect.objectContaining({ view: 'all' }))
     wrapper.unmount()
   })
 
@@ -449,7 +477,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.get('[data-testid="order-dashboard"]').text()).toContain('客户订单中心')
     expect(wrapper.text()).toContain('流程 01')
     expect(wrapper.text()).toContain('流程 02')
-    expect(wrapper.text()).toContain('厂区总排期数据看板')
+    expect(wrapper.text()).toContain('已保存订单与走货台账')
 
     const importButton = wrapper.findAll('button').find((button) => button.text().includes('进入PO导入'))
     expect(importButton).toBeDefined()
@@ -523,21 +551,13 @@ describe('customer order center static frontend', () => {
     expect(wrapper.text()).toContain('显示 0 / 0 条')
 
     await wrapper.setProps({ activeSection: 'schedule' })
+    await flushPromises()
     const scheduleView = wrapper.get('[data-testid="order-schedule"]')
     expect(scheduleView.text()).toContain('华兴厂总排期')
-    expect(scheduleView.text()).toContain('不输出总排期Excel')
-    expect(scheduleView.text()).toContain('按月走货概览')
-    expect(scheduleView.text()).toContain('客户月度PO汇总')
-    expect(scheduleView.text()).toContain('客户PO交付排期')
-    expect(scheduleView.text()).toContain('临期 / 逾期')
-    expect(scheduleView.text()).toContain('生产未完成')
-    expect(scheduleView.text()).toContain('供生产部门调用')
-    expect(scheduleView.text()).toContain('可供生产调用')
-    expect(scheduleView.text()).toContain('需求版本')
-    expect(scheduleView.text()).toContain('下游权威、中心只读')
-    expect(scheduleView.text()).toContain('0009382481')
-    expect(scheduleView.text()).toContain('包装物料未齐（静态反馈示例）')
-    expect(scheduleView.text()).not.toContain('生成更新后的总排期')
+    expect(scheduleView.text()).toContain('仅展示本厂各客户订单的公共字段、发送状态和走货数量。')
+    expect(scheduleView.text()).toContain('当前筛选范围没有订单记录。')
+    expect(scheduleView.text()).not.toContain('0009382481')
+    expect(scheduleView.text()).not.toContain('生产未完成')
   })
 
   it('uses the unified xlsx schedule for Caixing', async () => {
@@ -562,6 +582,67 @@ describe('customer order center static frontend', () => {
     await scheduleInput.trigger('change')
 
     expect(wrapper.text()).toContain('河源业务统一排期.xlsx')
+  })
+
+  it('offers a single-preview formal-PO reconciliation picker and submits its revision controls', async () => {
+    customerOrderApiMock.previewBuzzbeeBatch.mockResolvedValueOnce({
+      customer_code: 'buzzbee', factory_id: 'huaxing', preview_fingerprint: 'formal-preview',
+      po_file_count: 1, po_file_names: ['PO.xlsx'], po_file_name: 'PO.xlsx', schedule_file_name: 'schedule.xlsx',
+      output_file_name: 'schedule.xlsx', input_template: 'BUZZBEE_WALMART_WMC_INLINE_V1', target_template: 'BUZZBEE_PRODUCTION_SCHEDULE_V1',
+      summary: { total: 1, valid: 1, warning: 0, blocked: 0 }, warnings: [],
+      rows: [{ id: 'preview-line', status: 'valid', status_label: '有效', issues: [], lineage: {}, received_date: '2026-09-14', po_no: 'FORMAL-001', contract_no: '', customer_country: 'BuzzBee', customer_name: 'BuzzBee', product_no: '000123', product_name_zh: '产品', product_name_en: 'Product', quantity: '0100', units_per_carton: '', carton_count: '', standard: '', unit_price_hkd: '', amount_hkd: '', packaging: '', line_q: '', customer_q: '', requested_ship_date: '2026-10-01', input_template: 'BUZZBEE_WALMART_WMC_INLINE_V1', target_template: 'BUZZBEE_PRODUCTION_SCHEDULE_V1', item_sheet_name: '', source_po_file_name: 'PO.xlsx' }],
+    })
+    customerOrderLedgerApiMock.list
+      .mockResolvedValueOnce({
+        items: [
+          { id: 'existing-1', factory_id: 'huaxing', customer_code: 'buzzbee', customer_name: 'BuzzBee', reference_no: 'SUP-001', product_no: '000123', quantity: '0100', shipped_quantity: '0000', remaining_quantity: '0100', status: 'active', version: 1, revision: 7, dispatch_status: 'sent', data: {}, created_at: '', updated_at: '' },
+          { id: 'cancelled-1', factory_id: 'huaxing', customer_code: 'buzzbee', customer_name: 'BuzzBee', reference_no: 'CANCEL-001', product_no: '000123', quantity: '0100', shipped_quantity: '0000', remaining_quantity: '0100', status: 'cancelled', version: 1, revision: 1, dispatch_status: 'unsent', data: {}, created_at: '', updated_at: '' },
+          { id: 'wrong-product', factory_id: 'huaxing', customer_code: 'buzzbee', customer_name: 'BuzzBee', reference_no: 'OTHER-001', product_no: '000124', quantity: '0100', shipped_quantity: '0000', remaining_quantity: '0100', status: 'active', version: 1, revision: 1, dispatch_status: 'unsent', data: {}, created_at: '', updated_at: '' },
+        ], total: 101, page: 1, page_size: 50, customers: [],
+      })
+      .mockResolvedValueOnce({
+        items: [{ id: 'existing-search', factory_id: 'huaxing', customer_code: 'buzzbee', customer_name: 'BuzzBee', reference_no: 'SUP-SEARCH', product_no: '000123', quantity: '0100', shipped_quantity: '0000', remaining_quantity: '0100', status: 'active', version: 1, revision: 8, dispatch_status: 'sent', data: {}, created_at: '', updated_at: '' }], total: 101, page: 1, page_size: 50, customers: [],
+      })
+      .mockResolvedValueOnce({
+        items: [{ id: 'existing-next', factory_id: 'huaxing', customer_code: 'buzzbee', customer_name: 'BuzzBee', reference_no: 'SUP-NEXT', product_no: '000123', quantity: '0100', shipped_quantity: '0000', remaining_quantity: '0100', status: 'active', version: 1, revision: 9, dispatch_status: 'sent', data: {}, created_at: '', updated_at: '' }], total: 101, page: 2, page_size: 50, customers: [],
+      })
+    customerOrderLedgerApiMock.importConfirmed.mockResolvedValueOnce({ items: [], created_count: 0, existing_count: 0, reconciled_count: 1 })
+    const wrapper = mount(CustomerOrderCenterWorkspace, { props: { activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴厂' } })
+    await wrapper.get('[data-testid="customer-choice-buzzbee"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    Object.defineProperty(inputs[0]!.element, 'files', { configurable: true, value: [new File(['po'], 'PO.xlsx')] })
+    Object.defineProperty(inputs[1]!.element, 'files', { configurable: true, value: [new File(['schedule'], 'schedule.xlsx')] })
+    await inputs[0]!.trigger('change')
+    await inputs[1]!.trigger('change')
+    await wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ activeSection: 'preview' })
+    const card = wrapper.get('[data-testid="order-reconciliation-card"]')
+    expect(card.text()).toContain('关联已有订单')
+    await card.get('input[type="checkbox"]').setValue(true)
+    await flushPromises()
+    const select = card.get('select')
+    expect(select.text()).toContain('SUP-001 · 000123 · 数量 0100')
+    expect(select.text()).not.toContain('CANCEL-001')
+    expect(select.text()).not.toContain('OTHER-001')
+    await card.get('input[type="search"]').setValue('SUP')
+    await card.findAll('button').find((button) => button.text() === '搜索已有订单')!.trigger('click')
+    await flushPromises()
+    expect(customerOrderLedgerApiMock.list).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ q: 'SUP', page: 1 }))
+    expect(select.text()).toContain('SUP-SEARCH · 000123 · 数量 0100')
+    await card.findAll('button').find((button) => button.text() === '下一页')!.trigger('click')
+    await flushPromises()
+    expect(customerOrderLedgerApiMock.list).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ q: 'SUP', page: 2 }))
+    expect(select.text()).toContain('SUP-NEXT · 000123 · 数量 0100')
+    await select.setValue('existing-next')
+    await card.get('textarea').setValue('正式 PO 已核对数量与交期')
+    await wrapper.findAll('button').find((button) => button.text().includes('确认并保存订单'))!.trigger('click')
+    await flushPromises()
+    const payload = customerOrderLedgerApiMock.importConfirmed.mock.calls[0]![1] as FormData
+    expect(payload.get('reconcile_line_id')).toBe('existing-next')
+    expect(payload.get('expected_revision')).toBe('9')
+    expect(payload.get('reconciliation_reason')).toBe('正式 PO 已核对数量与交期')
+    expect(wrapper.text()).toContain('订单已关联并更新原订单')
   })
 
   it('writes a manual value for a missing field and clears the blocker', async () => {
@@ -699,7 +780,7 @@ describe('customer order center static frontend', () => {
     )
   })
 
-  it('keeps unconfirmed demand visible but unavailable to production consumers', async () => {
+  it('does not treat an unconfirmed preview as a persisted factory schedule', async () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: {
         activeSection: 'schedule',
@@ -708,22 +789,12 @@ describe('customer order center static frontend', () => {
       },
     })
 
-    expect(wrapper.findAll('.customer-summary-grid > article')).toHaveLength(2)
-    expect(wrapper.findAll('.downstream-chip').map((chip) => chip.text())).toEqual(['可调用', '不可调用'])
-    expect(wrapper.text()).toContain('当前有效确认版本')
-
-    const monthSelect = wrapper.findAll('.schedule-toolbar-card select')[0]
-    expect(monthSelect).toBeDefined()
-    await monthSelect!.setValue('2026-09')
-
-    const scheduleRows = wrapper.findAll('.factory-schedule-table tbody tr')
-    expect(scheduleRows).toHaveLength(1)
-    expect(scheduleRows[0]!.text()).toContain('0009382481')
-    expect(scheduleRows[0]!.text()).toContain('V1')
-    expect(wrapper.findAll('.customer-summary-grid > article')).toHaveLength(1)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="customer-order-ledger"]').text()).toContain('当前筛选范围没有订单记录。')
+    expect(wrapper.text()).not.toContain('生产未完成')
   })
 
-  it('keeps factory schedule rows and summaries isolated to the active factory', () => {
+  it('keeps real ledger requests isolated to the active factory and never shows demo orders', async () => {
     const huakangA = mount(CustomerOrderCenterWorkspace, {
       props: {
         activeSection: 'schedule',
@@ -732,13 +803,9 @@ describe('customer order center static frontend', () => {
       },
     })
 
-    expect(huakangA.findAll('.customer-summary-grid > article')).toHaveLength(0)
-    expect(huakangA.findAll('.month-card-grid > button')).toHaveLength(0)
-    expect(huakangA.findAll('.factory-schedule-table tbody tr')).toHaveLength(1)
-    expect(huakangA.get('.factory-schedule-table tbody').text()).toContain('当前筛选条件下暂无走货PO')
-    expect(huakangA.findAll('.factory-schedule-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0', '0', '0'])
+    await flushPromises()
+    expect(huakangA.get('[data-testid="customer-order-ledger"]').text()).toContain('当前筛选范围没有订单记录。')
     expect(huakangA.text()).not.toContain('BuzzBee / WMC')
-    expect(huakangA.text()).not.toContain('BuzzBee / AAFES（美国）')
 
     const huaxing = mount(CustomerOrderCenterWorkspace, {
       props: {
@@ -748,10 +815,9 @@ describe('customer order center static frontend', () => {
       },
     })
 
-    expect(huaxing.findAll('.customer-summary-grid > article')).toHaveLength(2)
-    expect(huaxing.findAll('.factory-schedule-table tbody tr')).toHaveLength(2)
-    expect(huaxing.text()).toContain('BuzzBee / WMC')
-    expect(huaxing.text()).toContain('BuzzBee / AAFES（美国）')
+    await flushPromises()
+    expect(huaxing.get('[data-testid="customer-order-ledger"]').text()).toContain('当前筛选范围没有订单记录。')
+    expect(huaxing.text()).not.toContain('BuzzBee / WMC')
 
     const huakangDashboard = mount(CustomerOrderCenterWorkspace, {
       props: {
@@ -774,10 +840,8 @@ describe('customer order center static frontend', () => {
       },
     })
 
-    expect(huakangLedger.get('.ledger-kpis').text()).toContain('已确认订单明细0')
-    expect(huakangLedger.get('.ledger-kpis').text()).toContain('待确认/阻断0')
-    expect(huakangLedger.get('.ledger-kpis').text()).toContain('厂区排期PO0')
-    expect(huakangLedger.get('.ledger-table tbody').text()).toContain('当前厂区暂无订单记录')
+    await flushPromises()
+    expect(huakangLedger.get('[data-testid="customer-order-ledger"]').text()).toContain('当前筛选范围没有订单记录。')
     expect(huakangLedger.get('select[aria-label="筛选客户"]').findAll('option')).toHaveLength(1)
     expect(huakangLedger.text()).not.toContain('BuzzBee')
 
@@ -789,8 +853,8 @@ describe('customer order center static frontend', () => {
       },
     })
 
-    expect(huakangExceptions.findAll('.exception-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0', '0', '0', '0'])
-    expect(huakangExceptions.get('.empty-exception').text()).toContain('当前筛选条件下没有待关注事项')
+    expect(huakangExceptions.findAll('.exception-kpis strong').map((item) => item.text())).toEqual(['0', '0', '0'])
+    expect(huakangExceptions.get('.empty-exception').text()).toContain('当前没有独立风险数据')
     expect(huakangExceptions.text()).not.toContain('BuzzBee')
   })
 
@@ -1208,7 +1272,7 @@ describe('customer order center static frontend', () => {
     )
   })
 
-  it('centralizes primary delivery and production exceptions without mutating authority data', async () => {
+  it('labels exceptions as a non-persistent preview aid and omits production mock data', async () => {
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: {
         activeSection: 'exceptions',
@@ -1219,28 +1283,10 @@ describe('customer order center static frontend', () => {
 
     const exceptionView = wrapper.get('[data-testid="order-exceptions"]')
     expect(exceptionView.text()).toContain('异常与提醒中心')
-    expect(exceptionView.text()).toContain('30天/7天阈值待确认')
-    expect(exceptionView.text()).toContain('交付日期待确认，订单不可供下游调用')
-    expect(exceptionView.text()).toContain('生产状态：生产中，完成进度 68%')
-    expect(wrapper.findAll('.exception-item')).toHaveLength(2)
-    expect(wrapper.findAll('.exception-severity').map((chip) => chip.text())).toEqual(['关注', '紧急'])
-    expect(exceptionView.text()).toContain('“标记已关注”不等于异常已解决')
-
-    const prioritySelect = wrapper.findAll('.exception-toolbar select')[0]
-    expect(prioritySelect).toBeDefined()
-    await prioritySelect!.setValue('attention')
-    expect(wrapper.findAll('.exception-item')).toHaveLength(1)
-    expect(wrapper.get('.exception-item').text()).toContain('0009382481')
-
-    const acknowledgeButton = wrapper.get('.exception-acknowledge')
-    await acknowledgeButton.trigger('click')
-    expect(wrapper.get('.exception-item').classes()).toContain('acknowledged')
-    expect(acknowledgeButton.text()).toContain('取消关注标记')
-
-    await wrapper.get('.exception-item .trace-button').trigger('click')
-    expect(wrapper.get('[data-testid="trace-drawer"]').text()).toContain('字段级追溯')
-
-    await wrapper.get('.exception-action').trigger('click')
-    expect(wrapper.emitted('navigate')).toContainEqual(['schedule'])
+    expect(exceptionView.text()).toContain('预览辅助页 · 非订单台账')
+    expect(exceptionView.text()).toContain('订单台账不包含生产、物料、库存或排产数据')
+    expect(wrapper.findAll('.exception-item')).toHaveLength(0)
+    expect(exceptionView.text()).not.toContain('生产状态：')
+    expect(exceptionView.text()).not.toContain('包装物料未齐')
   })
 })
