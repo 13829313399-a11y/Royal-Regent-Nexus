@@ -993,7 +993,11 @@ def _rr2_cost_summary(
 
     def payload(code: str) -> dict[str, object]:
         section = by_code.get(code)
-        return _json_object(section.payload_json) if section is not None else {}
+        value = _json_object(section.payload_json) if section is not None else {}
+        if code == "electronic":
+            from app.services.internal_quote_electronic import electronic_detail_payload
+            return electronic_detail_payload(value)
+        return value
 
     def calculation(code: str) -> dict[str, object]:
         section = by_code.get(code)
@@ -1276,6 +1280,7 @@ def _rr2_cost_summary(
         "material": "amount_hkd",
         "carton": "per_piece_hkd",
         "electronic_component": "amount_hkd",
+        "electronic_quote_expenses": "quote_pricing_hkd",
         "injection": "amount_hkd",
         "blow": "amount_hkd",
         "painting": "amount_hkd",
@@ -1331,7 +1336,7 @@ def _rr2_cost_summary(
         for line in pricing_lines(section_code):
             if not pricing_line_allowed(section_code, line):
                 continue
-            amount = _summary_decimal(line.get(amount_fields[str(line.get("kind"))]))
+            amount = _summary_decimal(line.get("quote_pricing_hkd") if section_code == "electronic" and "quote_pricing_hkd" in line else line.get(amount_fields[str(line.get("kind"))]))
             if amount > 0:
                 candidates.append((line, amount))
         candidate_total = sum((amount for _line, amount in candidates), Decimal("0"))
@@ -1353,12 +1358,17 @@ def _rr2_cost_summary(
             entry: dict[str, object] = {
                 "section": section_code,
                 "label": label or section_labels[section_code],
+                **({"electronic_quote_id": line["electronic_quote_id"], "electronic_quote_name": line.get("electronic_quote_name", "")} if "electronic_quote_id" in line else {}),
                 "kind": str(line.get("kind") or ""),
                 "category": str(line.get("category") or ""),
                 "auxiliary_category": str(line.get("auxiliary_category") or ""),
                 "amount_hkd": amount * allocation_factor,
                 "pricing_component_id": str(line.get("pricing_component_id") or "").strip(),
-                "formula_allocation_factor": decimal_text(allocation_factor),
+                "formula_allocation_factor": (
+                    str(allocation_factor * amount / _summary_decimal(line.get("amount_hkd", line.get("line_hkd"))))
+                    if "quote_pricing_hkd" in line and _summary_decimal(line.get("amount_hkd", line.get("line_hkd"))) > 0
+                    else decimal_text(allocation_factor)
+                ),
                 "markup_override": (
                     _summary_decimal(line.get("markup_override"))
                     if line.get("markup_override") not in (None, "")
@@ -3825,6 +3835,8 @@ def _save_section_in_transaction(
     user: AuthContext,
     request: Request | None,
 ) -> InternalQuoteSection:
+    if section.department == "electronic" and "quote_groups" in _json_object(section.payload_json) and "quote_groups" not in next_payload:
+        raise HTTPException(status_code=409, detail="电子部包含多份独立报价，请刷新页面后逐份编辑，不能用旧版单份数据覆盖")
     next_payload_json = canonical_json(next_payload)
     current_payload_json = canonical_json(_json_object(section.payload_json))
     payload_unchanged = next_payload_json == current_payload_json

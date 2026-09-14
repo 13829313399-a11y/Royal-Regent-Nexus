@@ -114,6 +114,7 @@ describe('internal quote API adapter', () => {
     await api.previewImport('quote-1', 'mold', file)
     await api.downloadImportTemplate('quote-1', 'mold')
     await api.confirmImport('quote-1', 'batch-1', 9)
+    await api.confirmImport('quote-1', 'batch-electronic', 10, undefined, 'new')
     await api.uploadAttachment('quote-1', 'engineering', file)
     await api.previewAttachment('quote-1', 'attachment-1')
     await api.previewAttachmentContent('quote-1', 'attachment-1')
@@ -140,6 +141,7 @@ describe('internal quote API adapter', () => {
       timeout: 60_000,
     })
     expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/batch-1/confirm', { revision: 9 })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/quote-1/imports/batch-electronic/confirm', { revision: 10, electronic_quote_target: 'new' })
     expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/attachments/attachment-1/preview', { responseType: 'blob' })
     expect(http.get).toHaveBeenCalledWith('/internal-quotes/quote-1/attachments/attachment-1/content-preview')
     expect(http.delete).toHaveBeenCalledWith('/internal-quotes/quote-1/attachments/attachment-1', {

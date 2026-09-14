@@ -70,7 +70,7 @@ HUADENG_CUSTOMER_MAPPINGS: dict[str, HuadengCustomerMappingSpec] = {
     "goliath": HuadengCustomerMappingSpec(
         "goliath", "Goliath", (".pdf",), (".xlsx",),
         "HUADENG_GOLIATH_FORMAL_PO_V1", "HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3",
-        "正式 PO 按列提取完整合同号、客户 PO、货号、数量和 CRD；只输出最新统一排期，外箱和中文品名仅从该排期唯一历史值继承。",
+        "Far East / BV 欧洲版正式 PO 按列提取订单与金额；欧洲版取产品表交期和装箱量，备注日期不同提示复核；缺失外箱和中文品名仅从最新排期唯一历史值继承。",
     ),
     "casdon": HuadengCustomerMappingSpec(
         "casdon", "Casdon", (".pdf", ".xlsx", ".xlsm"), (".xlsx",),
@@ -82,7 +82,7 @@ HUADENG_CUSTOMER_MAPPINGS: dict[str, HuadengCustomerMappingSpec] = {
     "jakks": HuadengCustomerMappingSpec(
         "jakks", "Jakks", (".pdf", ".xlsx", ".xlsm"), (".xls", ".xlsx"),
         "HUADENG_JAKKS_CONTRACT_V1", "HUADENG_JAKKS_SCHEDULE_APPEND_V2",
-        "拦截文件名含 CXL/SUP 的修改、补充或取消单；同合同、客户 PO、货号明细去重并继承唯一产品名称。",
+        "支持正式 PO 和 SUPPLEMENTARY CONTRACT 补充合同（箱唛资料）；缺失价格留空，取消单拦截，同订单货号查重并继承唯一产品名称。",
     ),
     "simba": HuadengCustomerMappingSpec(
         "simba", "Simba", (".pdf", ".xlsx", ".xlsm"), (".xlsx", ".xlsm"),
@@ -592,10 +592,10 @@ def _prepare_jakks(
         parsed_orders: list[dict[str, Any]] = []
         warnings: list[str] = []
         for index, (file_name, content) in enumerate(po_files):
-            if re.search(r"(?:^|[-_])(CXL|SUP)(?:[-_]|$)", Path(file_name).stem, re.I):
-                warnings.append(f"{file_name}：文件名含 CXL/SUP，按规则作为修改、补充或取消单拦截。")
+            if re.search(r"(?:^|[-_])CXL(?:[-_]|$)", Path(file_name).stem, re.I):
+                warnings.append(f"{file_name}：文件名含 CXL，按取消单拦截。")
                 continue
-            po_path = Path(temp_dir) / f"po-{index}{Path(file_name).suffix.lower()}"
+            po_path = Path(temp_dir) / f"po-{index}_{Path(file_name).name}"
             po_path.write_bytes(content)
             try:
                 order = jakks_po_parser.parse_po(po_path)

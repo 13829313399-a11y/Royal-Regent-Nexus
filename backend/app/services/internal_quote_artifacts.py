@@ -265,6 +265,9 @@ def create_import_preview(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     existing_payload = _json_object(section.payload_json)
+    if import_type == "electronic":
+        from app.services.internal_quote_electronic import electronic_detail_payload
+        existing_payload = electronic_detail_payload(existing_payload)
     if import_type == "molding":
         injection_rows = existing_payload.get("injection_lines", [])
         blow_rows = existing_payload.get("blow_lines", [])
@@ -518,6 +521,35 @@ def _merge_import_payload(
     return merged
 
 
+def _merge_electronic_quote(current, fragment, target, batch, rmb_hkd_rate):
+    from app.services.internal_quote_electronic import electronic_quote_groups, electronic_has_content
+    if target is None:
+        if "quote_groups" in current:
+            raise HTTPException(status_code=400, detail="请选择新增电子报价，或指定要替换的电子报价")
+        return _merge_import_payload("electronic", current, fragment, "replace", rmb_hkd_rate)
+    try:
+        groups = json.loads(json.dumps(electronic_quote_groups(current), ensure_ascii=False))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if "quote_groups" not in current and not electronic_has_content(current):
+        groups = []
+    if target == "new":
+        if len(groups) >= 20:
+            raise HTTPException(status_code=400, detail="最多保留20份电子报价")
+        if any(group.get("source_sha256") == batch.source_sha256 for group in groups):
+            raise HTTPException(status_code=409, detail="这份文件已在电子报价中，请选择对应报价进行替换，避免重复计价")
+        group = {"id": f"EQ-{uuid4().hex}", "name": batch.source_file_name[:200]}
+        groups.append(group)
+    else:
+        group = next((item for item in groups if item["id"] == target), None)
+        if group is None:
+            raise HTTPException(status_code=409, detail="要替换的电子报价已不存在，请刷新后重新选择")
+    replacement = _merge_import_payload("electronic", {}, fragment, "replace", rmb_hkd_rate)
+    replacement.update(id=group["id"], name=group["name"], quote_mode="detail", import_batch_id=batch.id, source_sha256=batch.source_sha256)
+    groups[groups.index(group)] = replacement
+    return {"quote_groups": groups}
+
+
 def _tag_import_fragment(
     import_type: str,
     fragment: dict[str, Any],
@@ -579,6 +611,26 @@ def _clear_import_generated_payload(
     *,
     all_batches: list[InternalQuoteImportBatch] | None = None,
 ) -> tuple[dict[str, Any], set[str]]:
+    if "quote_groups" in current:
+        from app.services.internal_quote_electronic import electronic_quote_groups
+        groups = []
+        removed_ids: set[str] = set()
+        for group in electronic_quote_groups(current):
+            # Ownership of scalar costs is local to this quotation. Historical
+            # imports into a different quotation must never clear its costs.
+            group_id = group["id"]
+            def belongs(item):
+                preview = _json_object(item.preview_json)
+                return preview.get("electronic_quote_id", "legacy") == group_id
+            selected = [item for item in batches if belongs(item)]
+            history = [item for item in (all_batches or batches) if belongs(item)]
+            cleared_group, images = _clear_import_generated_payload(group, selected, all_batches=history)
+            removed_ids.update(images)
+            if group.get("import_batch_id") in {item.id for item in selected}:
+                cleared_group.pop("import_batch_id", None)
+                cleared_group.pop("source_sha256", None)
+            groups.append(cleared_group)
+        return {"quote_groups": groups}, removed_ids
     cleared = json.loads(json.dumps(current, ensure_ascii=False))
     removed_attachment_ids: set[str] = set()
     batches_by_type: dict[str, list[InternalQuoteImportBatch]] = {}
@@ -791,6 +843,16 @@ def confirm_import_batch(
         raise HTTPException(status_code=400, detail="当前导入不支持分项分配")
     fragment = _tag_import_fragment(batch.import_type, fragment, batch.id)
     preview["payload_fragment"] = fragment
+    if payload.electronic_quote_target is not None and batch.import_type != "electronic":
+        raise HTTPException(status_code=400, detail="只有电子报价支持选择独立报价")
+    if batch.import_type == "electronic":
+        merged_payload = _merge_electronic_quote(_json_object(section.payload_json), fragment, payload.electronic_quote_target, batch, preview.get("rmb_hkd_rate", "0.85"))
+        if payload.electronic_quote_target is not None:
+            imported_group = next(group for group in merged_payload["quote_groups"] if group.get("import_batch_id") == batch.id)
+            preview["electronic_quote_id"] = imported_group["id"]
+            effective_mode = "new_quote" if payload.electronic_quote_target == "new" else "replace_quote"
+    else:
+        merged_payload = _merge_import_payload(batch.import_type, _json_object(section.payload_json), fragment, effective_mode, preview.get("rmb_hkd_rate", "0.85"))
     source_workbook_attachment_id = _materialize_imported_source_workbook(
         db,
         quote,
@@ -819,15 +881,7 @@ def confirm_import_batch(
         section.department,
     )
     old_revision = section.revision
-    section.payload_json = canonical_json(
-        _merge_import_payload(
-            batch.import_type,
-            _json_object(section.payload_json),
-            fragment,
-            effective_mode,
-            preview.get("rmb_hkd_rate", "0.85"),
-        )
-    )
+    section.payload_json = canonical_json(merged_payload)
     section.status = "draft"
     section.revision += 1
     section.filled_by = user.display_name

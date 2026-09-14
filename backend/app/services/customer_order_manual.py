@@ -93,6 +93,8 @@ def decorate_manual_resolution_policy(preview: dict[str, Any]) -> dict[str, Any]
     """Expose a controlled manual-resolution path for non-duplicate blockers."""
     for row in preview.get("rows", []):
         for issue in row.get("issues", []):
+            # Warning-only issues also cross the typed preview API boundary.
+            issue.setdefault("skip_label", "")
             if not issue.get("skip_key"):
                 issue["skip_key"] = "|".join((
                     str(row.get("id") or "row"),

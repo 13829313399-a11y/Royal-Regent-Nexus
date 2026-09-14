@@ -160,6 +160,9 @@ def _validate_lines(lines: list[dict[str, Any]]) -> list[str]:
                 f"{line['item_no']}：数量按合同重量 {line['quantity']} {line['unit']} 写入，"
                 "不换算为PCS；单位保留在“识别明细”，不自动写入“特别备注”。"
             )
+        if line.get("unit_price_usd") is None or line.get("total_usd") is None:
+            warnings.append(f"{line['item_no']}：补充合同未提供单价/金额，保持空白，可先按数量和交期排产。")
+            continue
         expected = round(line["quantity"] * line["unit_price_usd"], 2)
         if abs(expected - line["total_usd"]) > max(0.05, abs(line["total_usd"]) * 0.001):
             warnings.append(
@@ -212,14 +215,18 @@ def _parse_standard_contract_pdf_fields(text: str) -> dict[str, Any]:
     return fields
 
 
-def _parse_standard_contract_pdf_rows(text: str) -> list[dict[str, Any]]:
+def _parse_standard_contract_pdf_rows(text: str, *, supplementary: bool = False) -> list[dict[str, Any]]:
     """Parse native JAKKS CONTRACT rows whose currency marker follows the amount."""
     row_pattern = re.compile(
         r"(?m)^\s*([A-Z0-9]{5,}(?:-[A-Z0-9]+){0,6})\s+(.+?)\s+"
         r"([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+USD\s*$",
         re.I,
     )
-    matches = list(row_pattern.finditer(text))
+    unpriced_pattern = re.compile(
+        r"(?m)^\s*([A-Z0-9]{5,}(?:-[A-Z0-9]+){0,6})\s+(.+?)\s+"
+        r"([\d,.]+)\s+USD\s*$", re.I,
+    )
+    matches = list((unpriced_pattern if supplementary else row_pattern).finditer(text))
     lines: list[dict[str, Any]] = []
     for index, match in enumerate(matches):
         block_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
@@ -232,6 +239,30 @@ def _parse_standard_contract_pdf_rows(text: str) -> list[dict[str, Any]]:
             re.I,
         )
         outer_pack_match = re.search(r"Outer\s*Pack\s*:\s*([\d,.]+)", block, re.I)
+        packed_quantity = (
+            _number(cartons_match.group(1)) * _number(outer_pack_match.group(1))
+            if cartons_match and outer_pack_match else None
+        )
+        # In supplementary contracts the two monetary cells are normally empty.
+        # Numeric words at the end of a description are not prices. If both row
+        # shapes match, use the labelled case/pack evidence to disambiguate.
+        priced_match = row_pattern.fullmatch(match.group(0)) if supplementary else match
+        if supplementary and priced_match:
+            unpriced_quantity = _number(match.group(3))
+            priced_quantity = _number(priced_match.group(3))
+            if packed_quantity == unpriced_quantity and packed_quantity != priced_quantity:
+                priced_match = None
+            elif packed_quantity == priced_quantity and packed_quantity != unpriced_quantity:
+                match = priced_match
+            else:
+                raise ValueError(f"{match.group(1)}：补充合同数量/价格列存在歧义，请核对原文件。")
+        if supplementary:
+            if _number(match.group(3)) <= 0:
+                raise ValueError(f"{match.group(1)}：补充合同数量必须大于零，请核对原文件。")
+            if packed_quantity is not None and abs(packed_quantity - _number(match.group(3))) > 0.001:
+                raise ValueError(f"{match.group(1)}：补充合同数量与箱数×装箱量不一致，可能有价格列错位，请核对原文件。")
+            if packed_quantity is None and re.search(r"\s[\d,.]+$", match.group(2)):
+                raise ValueError(f"{match.group(1)}：补充合同数量/价格列存在歧义且缺少装箱信息，请核对原文件。")
         request_date_match = re.search(
             r"Request\s*Date\s*:\s*([^\r\n]+)",
             block,
@@ -252,8 +283,8 @@ def _parse_standard_contract_pdf_rows(text: str) -> list[dict[str, Any]]:
             "inner_pack": "",
             "outer_pack": _number(outer_pack_match.group(1)) if outer_pack_match else "",
             "cartons": _number(cartons_match.group(1)) if cartons_match else (_number(continuation.group(2)) if continuation else ""),
-            "unit_price_usd": _number(match.group(4)),
-            "total_usd": _number(match.group(5)),
+            "unit_price_usd": _number(priced_match.group(4)) if priced_match else None,
+            "total_usd": _number(priced_match.group(5)) if priced_match else None,
             "ship_date": (
                 _english_date(request_date_match.group(1))
                 if request_date_match
@@ -262,11 +293,15 @@ def _parse_standard_contract_pdf_rows(text: str) -> list[dict[str, Any]]:
             "special_note": _clean(notes_match.group(1)) if notes_match else "",
             "product_packaging": _clean(notes_match.group(1)) if notes_match else "",
         })
+        if supplementary:
+            lines[-1]["document_type"] = "补充合同"
+            lines[-1]["document_kind"] = "supplementary_contract"
     return lines
 
 
 def _parse_pdf_po(path: Path) -> dict[str, Any]:
     text, used_ocr = extract_text(path)
+    supplementary = bool(re.search(r"(?mi)^\s*SUPPLEMENTARY\s+CONTRACT\s*$", text))
     is_standard_contract = bool(
         re.search(r"JAKKS\s+PACIFIC", text, re.I)
         and re.search(r"\bCONTRACT\b", text, re.I)
@@ -277,7 +312,8 @@ def _parse_pdf_po(path: Path) -> dict[str, Any]:
         if is_standard_contract
         else _parse_text_fields(text)
     )
-    lines = _parse_standard_contract_pdf_rows(text) if is_standard_contract else []
+    supplementary = supplementary and is_standard_contract
+    lines = _parse_standard_contract_pdf_rows(text, supplementary=supplementary) if is_standard_contract else []
     row_pattern = re.compile(
         r"(?m)^\s*([A-Z0-9]+(?:-[A-Z0-9]+){1,6})\s+(.+?)\s+"
         r"([\d,.]+)\s+(KGM|KG|PCE|PCS)\s+US?[$S]\s*([\d,.]+)\s+US?[$S]\s*([\d,.]+)\s*$",
@@ -317,7 +353,9 @@ def _parse_pdf_po(path: Path) -> dict[str, Any]:
                 "special_note": "",
             })
     warnings = []
-    if is_standard_contract and lines:
+    if supplementary and lines:
+        warnings.append("已识别 Jakks 补充合同（箱唛资料），可在正式 PO 放出前排产；正式 PO 到齐后按确认号和货号核对，避免重复排单。")
+    elif is_standard_contract and lines:
         warnings.append(
             "已识别 Jakks 标准 CONTRACT PDF；关键字段已按标签与产品块定位并执行数量×单价复核。"
         )
@@ -333,6 +371,7 @@ def _parse_pdf_po(path: Path) -> dict[str, Any]:
         "warnings": list(dict.fromkeys(warnings)),
         "used_ocr": used_ocr,
         "source_format": "pdf",
+        "document_kind": "supplementary_contract" if supplementary else "contract",
     }
 
 
@@ -699,14 +738,18 @@ def _parse_xlsx_po(path: Path) -> dict[str, Any]:
 
 def parse_po(path: str | Path) -> dict[str, Any]:
     po_path = Path(path)
-    if re.search(r"(?:^|[-_])(CXL|SUP)(?:[-_]|$)", po_path.stem, re.I):
+    if re.search(r"(?:^|[-_])CXL(?:[-_]|$)", po_path.stem, re.I):
         raise ValueError(
-            "识别为取消/补充/修改单（文件名含 CXL/SUP）；按业务规则只处理新单，"
+            "识别为取消单（文件名含 CXL）；"
             "本文件已拦截，不会生成 Excel 或写入数据库。"
         )
     suffix = po_path.suffix.lower()
     if suffix == ".pdf":
-        return _parse_pdf_po(po_path)
-    if suffix in {".xlsx", ".xlsm"}:
-        return _parse_xlsx_po(po_path)
-    raise ValueError("Jakks PO 仅支持 PDF、WPS转换后的 XLSX 或 XLSM。")
+        order = _parse_pdf_po(po_path)
+    elif suffix in {".xlsx", ".xlsm"}:
+        order = _parse_xlsx_po(po_path)
+    else:
+        raise ValueError("Jakks PO 仅支持 PDF、WPS转换后的 XLSX 或 XLSM。")
+    if re.search(r"(?:^|[-_])SUP(?:[-_]|$)", po_path.stem, re.I) and order.get("document_kind") != "supplementary_contract":
+        raise ValueError("文件名含 SUP，但正文未识别为 Jakks SUPPLEMENTARY CONTRACT 补充合同，请核对文件。")
+    return order

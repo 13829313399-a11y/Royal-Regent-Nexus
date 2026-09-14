@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
 import type { MoldingPayload } from '@/lib/internalQuoteSectionPayload'
 import { calculateJustPlayCartonsPerPallet, justPlayPackagingInputsValid, normalizeJustPlayPackagingInputs } from '@/lib/internalQuoteSectionPayload'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSectionSummary, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type ElectronicQuoteGroup, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   const defaultPallet = { pallet_length_mm: 1000, pallet_width_mm: 1150, pallet_height_mm: 1300 }
@@ -658,6 +658,26 @@ describe('internal quote section payload normalization', () => {
     expect(summary.deductibleInputTaxRmb).toBeCloseTo(10 / 1.13 * .13)
     expect(summary.quoteRmb).toBeCloseTo(17.5940133)
     expect(summary.quoteHkd).toBeCloseTo(20.6988392)
+  })
+
+  it('preserves independent electronic quote groups, source lineage and their combined total', () => {
+    const payload = normalizeInternalQuotePayload('electronic', {
+      quote_groups: [
+        { id: 'legacy', name: '电子报价1', import_batch_id: 'batch-a', source_sha256: 'sha-a', components: [{ item: '主板', quantity: 1, unit_price_rmb: 10, tax_rate_percent: 13, import_batch_id: 'batch-a', children: [{ item: '电阻', quantity: 2, unit_price_rmb: 1, tax_rate_percent: 13, import_batch_id: 'batch-a' }] }], profit_rate_percent: 10 },
+        { id: 'quote-b', name: '遥控器', quote_mode: 'quick', quick_quotes: [{ item: '遥控器', unit_price_rmb: 5, tax_rate_percent: 0, import_batch_id: 'batch-b' }], bonding_rmb: 1, profit_rate_percent: 20 },
+      ],
+    }) as { quote_groups: ElectronicQuoteGroup[] }
+    expect(payload).toMatchObject({
+      quote_groups: [
+        { id: 'legacy', name: '电子报价1', import_batch_id: 'batch-a', source_sha256: 'sha-a', components: [{ import_batch_id: 'batch-a', children: [{ import_batch_id: 'batch-a' }] }] },
+        { id: 'quote-b', name: '遥控器', quick_quotes: [{ import_batch_id: 'batch-b' }], bonding_rmb: 1, profit_rate_percent: 20 },
+      ],
+    })
+    expect(payload.quote_groups[0]).not.toHaveProperty('quote_groups')
+    expect(calculateElectronicSectionSummary(payload as Record<string, unknown>, .85).quoteRmb).toBeCloseTo(
+      calculateElectronicSummary(payload.quote_groups[0] as ElectronicPayload, .85).quoteRmb
+      + calculateElectronicSummary(payload.quote_groups[1] as ElectronicPayload, .85).quoteRmb,
+    )
   })
 
   it('normalizes the complete mold sheet and production allocation contract', () => {

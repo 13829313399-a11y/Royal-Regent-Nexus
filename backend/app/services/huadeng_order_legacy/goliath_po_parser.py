@@ -9,6 +9,7 @@ import pdfplumber
 
 def _date(text):
     text=re.sub(r'[-/]', ' ', text.strip())
+    text=re.sub(r'\bSEPT\b', 'SEP', text, flags=re.I)
     for fmt in ('%d %B %Y','%d %b %Y'):
         try:return datetime.strptime(text,fmt).date().isoformat()
         except ValueError:pass
@@ -25,8 +26,8 @@ def parse_po(content: bytes, filename: str):
     with pdfplumber.open(BytesIO(content)) as pdf:
         texts=[p.extract_text(x_tolerance=2,y_tolerance=3) or '' for p in pdf.pages]
         text='\n'.join(texts)
-        if not re.search(r'Goliath\s+Far\s+East',text,re.I) or 'Purchase Order' not in text:
-            raise ValueError('不是可识别的 Goliath Far East 正式 PO（需 PDF 文字层）')
+        if not re.search(r'Goliath\s+(?:Far\s+East|B\.?V\.?)\b',text,re.I) or not re.search(r'Purchase\s+Order',text,re.I):
+            raise ValueError('不是可识别的 Goliath Far East / BV 正式 PO（需 PDF 文字层）')
         orders=set(re.findall(r'Order\s*#\s*(T_\d+\s*-\s*P[A-Z]{2}\d+_\d+)',text,re.I))
         orders={re.sub(r'\s+','',v) for v in orders}
         if len(orders)!=1:raise ValueError('Goliath PO 订单号缺失或存在多个不同订单号')
@@ -58,24 +59,34 @@ def parse_po(content: bytes, filename: str):
                 customer=' '.join(w['text'] for w in sorted(right,key=lambda w:w['x0']) if abs(w['top']-y)<3)
         for page_number,page in enumerate(pdf.pages,1):
             words=page.extract_words(x_tolerance=2,y_tolerance=3)
-            header=next((w for w in words if w['text']=='ITF14'),None)
+            header=next((w for w in words if w['text'] in {'ITF14','Casepack','Casepacks'}),None)
             if header is None:
                 if re.search(r'(?m)^\s*\d{5,}\.[A-Z0-9]{3,}\s',texts[page_number-1]):
                     raise ValueError('Goliath 续页存在未识别商品表格，未生成不完整订单')
                 continue  # legal-terms page is not an order line
             headers=[w for w in words if abs(w['top']-header['top'])<3]
             by_name={w['text']:w for w in headers}
-            if not {'Description','Barcode','No.','Qty','price','Amount'} <= by_name.keys():
+            page_items=[w for w in words if w['top']>header['top']+8 and w['x0']<by_name.get('Description',{'x0':100})['x0']-5 and re.fullmatch(r'\d{5,}\.[A-Z0-9]{3,}',w['text'])]
+            if not page_items:
+                if re.search(r'(?m)^\s*\d{5,}\.[A-Z0-9]{3,}\s',texts[page_number-1]):
+                    raise ValueError('Goliath 续页存在未识别商品表格，未生成不完整订单')
+                continue  # Repeated empty table headers on the final page.
+            european=header['text'] in {'Casepack','Casepacks'}
+            required={'Description','delivery','date','Casepack','Qty','price','Amount'} if european else {'Description','Barcode','No.','Qty','price','Amount'}
+            if not required <= by_name.keys():
                 raise ValueError('Goliath 明细列布局不匹配，未导入未知格式')
-            edges=[0,by_name['Description']['x0']-5,header['x0']-16,
+            edges=([0,by_name['Description']['x0']-5,by_name['delivery']['x0']-5,
+                   by_name['Casepack']['x0']-5,by_name['Casepack']['x1']+4,
+                   by_name['Qty']['x1']+4,by_name['price']['x1']+5,page.width] if european else
+                   [0,by_name['Description']['x0']-5,header['x0']-16,
                    by_name['Barcode']['x1']+6,by_name['No.']['x1']+4,
-                   by_name['Qty']['x1']+4,by_name['price']['x1']+5,page.width]
+                   by_name['Qty']['x1']+4,by_name['price']['x1']+5,page.width])
             items=[w for w in words if w['top']>header['top']+8 and w['x0']<edges[1] and re.fullmatch(r'\d{5,}\.[A-Z0-9]{3,}',w['text'])]
             for i,item in enumerate(items):
                 top=item['top']-1
                 end=items[i+1]['top']-1 if i+1<len(items) else page.height
                 stops=[w['top']-1 for w in words if w['top']>top+3 and (
-                    (w['x0']<edges[1] and re.match(r'(?:US|UK|EU)DOMPO',w['text'])) or
+                    (w['x0']<edges[1] and re.match(r'(?:(?:US|UK|EU)DOMPO|EXPORTPO|POAMEND)',w['text'])) or
                     (edges[1]<=w['x0']<edges[2] and w['text']=='CARGO') or
                     (w['text']=='Total' and w['x0']>edges[3]))]
                 end=min([end,*stops])
@@ -85,7 +96,17 @@ def parse_po(content: bytes, filename: str):
                 price=_decimal(column(5),'USD 单价')
                 amount=_decimal(column(6),'USD 金额')
                 flags=[]
-                if ship_date_derived:
+                line_ship_date=ship_date
+                delivery_date=_date(column(2)) if european and column(2) else ''
+                outer_pack=str(_decimal(column(3),'装箱量')) if european and column(3) else ''
+                if european and delivery_date:
+                    # The EU product table owns the requested delivery field;
+                    # document-level shipping notes may be stale after revision.
+                    line_ship_date=delivery_date
+                    if ship_date and not ship_date_derived and ship_date!=delivery_date:
+                        flags.append({'level':'warning','code':'goliath_delivery_date_conflict','field':'requested_ship_date',
+                            'text':f'Goliath 产品表 Requested delivery date 为 {delivery_date}，备注走货期为 {ship_date}；按产品表交期录入，备注日期不一致请复核。'})
+                if ship_date_derived and not delivery_date:
                     flags.append({'level':'warning','code':'ship_holiday_review','field':'requested_ship_date','text':'走货期按验货期后3天并避开周末推算，节假日待复核。'})
                 if qty<=0 or qty!=qty.to_integral_value():
                     flags.append({'level':'high','code':'invalid_quantity','field':'quantity','text':'Goliath 数量须为正整数件数'})
@@ -95,8 +116,9 @@ def parse_po(content: bytes, filename: str):
                     'customer':customer,
                     'item_no':item['text'],'english_name':' '.join(column(1).split()),
                     'quantity':str(qty),'unit_price_usd':str(price),'amount_usd':str(amount),
-                    'barcode':re.sub(r'\s+','',column(2)),
-                    'ship_date':ship_date,'inspection_date':inspection_date,'customer_inspection_date':_date(bv[1]) if bv else '',
+                    'barcode':'' if european else re.sub(r'\s+','',column(2)),
+                    'outer_pack':outer_pack,'requested_delivery_date':delivery_date,
+                    'ship_date':line_ship_date,'inspection_date':inspection_date,'customer_inspection_date':_date(bv[1]) if bv else '',
                     'remarks':'SAFETY NETTING IS REQUIRED FOR ALL CONTAINERS.' if re.search(r'SAFETY NETTING IS REQUIRED FOR\s+ALL\s+CONTAINERS',text,re.I) else '',
                     'customer_label':'LABEL REQUIRED' if re.search(r'REMARKS\s*[.:]+\s*LABEL REQUIRED',text,re.I) else '',
                     'po_order_date':_date(order_date[1]) if order_date else '',

@@ -825,8 +825,18 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       )
       return response.data
     },
-    async confirmImport(quoteId: string, batchId: string, revision: number, componentAssignments?: Record<string, string>) {
-      const response = await client.post<ApiInternalQuoteImportConfirm>(`/internal-quotes/${quoteId}/imports/${batchId}/confirm`, { revision, ...(componentAssignments ? { component_assignments: componentAssignments } : {}) })
+    async confirmImport(
+      quoteId: string,
+      batchId: string,
+      revision: number,
+      componentAssignments?: Record<string, string>,
+      electronicQuoteTarget?: string,
+    ) {
+      const response = await client.post<ApiInternalQuoteImportConfirm>(`/internal-quotes/${quoteId}/imports/${batchId}/confirm`, {
+        revision,
+        ...(componentAssignments ? { component_assignments: componentAssignments } : {}),
+        ...(electronicQuoteTarget ? { electronic_quote_target: electronicQuoteTarget } : {}),
+      })
       return response.data
     },
     async uploadAttachment(quoteId: string, department: string, file: File) {

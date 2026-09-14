@@ -70,7 +70,7 @@ def records_from_order(
             "inspection_date": "",
             "ship_date": line.get("ship_date") or order.get("ship_date"),
             "unit_price_hkd": round(usd * exchange_rate, 6) if usd else "",
-            "unit_price_usd": usd,
+            "unit_price_usd": usd if line.get("unit_price_usd") not in (None, "") else "",
             "total_hkd": round(quantity * usd * exchange_rate, 2) if usd else "",
             "total_usd": line.get("total_usd"),
             "brand": "",
