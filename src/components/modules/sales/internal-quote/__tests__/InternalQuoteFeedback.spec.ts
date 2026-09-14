@@ -214,8 +214,13 @@ describe('internal quote feedback regressions', () => {
     await wrapper.get('[aria-label="配件拆分预览"]').findAll('button').find((button) => button.text() === '确认拆分并保留数据')!.trigger('click')
     const names = wrapper.findAll('input[aria-label="模具子配件名称"]').map((input) => (input.element as HTMLInputElement).value)
     expect(names).toEqual(['粉色蝴蝶结前', '粉色蝴蝶结后', '手工附件'])
-    const prices = wrapper.findAll('input[aria-label="模具子配件加工总单价 HKD"]').map((input) => (input.element as HTMLInputElement).value)
-    expect(prices).toEqual(['2', '3', '4'])
+    expect(wrapper.find('input[aria-label="模具子配件加工内容"]').exists()).toBe(false)
+    expect(wrapper.find('input[aria-label="模具子配件加工总单价 HKD"]').exists()).toBe(false)
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ molds: [{ parts: [
+      { process_unit_price_hkd: 2 },
+      { process_unit_price_hkd: 3 },
+      { process_unit_price_hkd: 4 },
+    ] }] })
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
     wrapper.unmount()
   })
