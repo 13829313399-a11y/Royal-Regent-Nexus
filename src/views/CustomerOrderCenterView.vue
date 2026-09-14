@@ -23,7 +23,7 @@ export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'l
 const appStore = useAppStore()
 appStore.setActiveDepartment('sales-business')
 
-const activeSection = ref<CustomerOrderCenterSection>('dashboard')
+const activeSection = ref<CustomerOrderCenterSection>('ledger')
 const activeFactory = computed(() => appStore.activeProductionFactory)
 const departmentRoute = computed(() => getFactoryScopedRoute('/modules/sales-business', activeFactory.value.id))
 
@@ -75,7 +75,7 @@ function navigate(section: CustomerOrderCenterSection) {
         <span class="order-sidebar__mark"><CalendarRange aria-hidden="true" /></span>
         <div>
           <h1>客户订单中心</h1>
-          <p>基础功能试用版</p>
+          <p>订单台账 V0.2</p>
         </div>
       </div>
 
@@ -104,11 +104,11 @@ function navigate(section: CustomerOrderCenterSection) {
           当前阶段
         </div>
         <ol>
-          <li><b>01</b><span>PO 入客户排期并输出</span></li>
-          <li><b>02</b><span>厂区月度走货与生产反馈</span></li>
-          <li><b>03</b><span>交付异常与生产提醒</span></li>
+          <li><b>01</b><span>导入并核对客户 PO</span></li>
+          <li><b>02</b><span>确认后保存订单台账</span></li>
+          <li><b>03</b><span>发送订单与凭出货单确认走货</span></li>
         </ol>
-        <p>生产模块后续读取订单需求并回传只读进度。</p>
+        <p>订单中心不维护生产、物料、库存或排产数据。</p>
       </div>
     </aside>
 
@@ -127,6 +127,7 @@ function navigate(section: CustomerOrderCenterSection) {
       </nav>
 
       <CustomerOrderCenterWorkspace
+        :key="activeFactory.id"
         :active-section="activeSection"
         :factory-id="activeFactory.id"
         :factory-name="activeFactory.shortName"

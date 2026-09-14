@@ -67,6 +67,11 @@ CUSTOMER_ORDER_PERMISSION_CODES = (
     "customer_order:export",
     "customer_order:duplicate_confirm",
     "customer_order:audit_read",
+    "customer_order:write",
+    "customer_order:dispatch",
+    "customer_order:shipment_confirm",
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
 )
 
 CARTON_PROCUREMENT_PERMISSION_CODES = (

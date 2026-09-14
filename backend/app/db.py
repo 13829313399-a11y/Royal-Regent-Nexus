@@ -704,6 +704,7 @@ def init_db() -> None:
         carton_master,  # noqa: F401
         carton_supplier_settlement,  # noqa: F401
         customer_order,  # noqa: F401
+        customer_order_ledger,  # noqa: F401
         internal_quote,  # noqa: F401
         injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
@@ -735,6 +736,13 @@ def init_db() -> None:
     ensure_carton_explicit_quantity_schema_ready()
     ensure_carton_customer_po_schema_ready()
     ensure_document_tools_schema_ready()
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" in names:
+            missing = [name for name in Base.metadata.tables if name.startswith("order_ledger_") and name not in names]
+            if missing:
+                raise RuntimeError("客户订单台账需要迁移至 20260914_0112；请先备份并迁移。缺少：" + ", ".join(missing))
     with engine.connect() as connection:
         inspector = inspect(connection)
         names = set(inspector.get_table_names())
