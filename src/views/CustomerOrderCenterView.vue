@@ -18,7 +18,7 @@ import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-or
 import { getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
-export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'exceptions' | 'schedule'
+export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule'
 
 const appStore = useAppStore()
 appStore.setActiveDepartment('sales-business')
@@ -32,6 +32,7 @@ const navigationItems = [
   { id: 'import' as const, label: 'PO 与排期导入', icon: FileInput },
   { id: 'preview' as const, label: '预览与确认', icon: ClipboardList },
   { id: 'ledger' as const, label: '订单数据台账', icon: Table2 },
+  { id: 'customer-schedule' as const, label: '各客排期', icon: CalendarRange },
   { id: 'exceptions' as const, label: '异常与提醒', icon: CircleAlert },
   { id: 'schedule' as const, label: '厂区总排期', icon: CalendarRange },
 ]

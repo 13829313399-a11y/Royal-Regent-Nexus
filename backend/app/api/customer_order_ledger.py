@@ -17,6 +17,7 @@ from app.services.auth import AuthContext, get_current_user, now_text
 from app.services.business_authz import ensure_permission_for_departments, has_permission_for_departments
 from app.services import customer_order_ledger as ledger
 from app.services import customer_order_history as history
+from app.services import customer_order_schedule as schedule
 
 router = APIRouter(prefix="/api/customer-order-ledger", tags=["customer-order-ledger"])
 FACTORIES = {"huaxing", "huadeng", "huakang-a", "huakang-b", "huakang-c", "huakang-d"}
@@ -109,6 +110,37 @@ def correct_history_opening(line_id: str, factory_id: str, body: HistoryOpeningI
     if db.scalar(select(Dispatch.id).where(Dispatch.line_id == line_id, Dispatch.factory_id == factory_id).limit(1)):
         authorize(db, current_user, factory_id, "dispatch")
     return mutate(db, current_user, factory_id, line_id, history.correct_opening, body, "shipment_confirm")
+
+
+def schedule_customer_options(db, factory_id):
+    options = {code: mapping.CUSTOMER_NAMES[code] for code, factories in mapping.CUSTOMER_FACTORY_OPTIONS.items()
+               if factory_id in factories}
+    for code, name in db.execute(select(Line.customer_code, Line.customer_name).where(Line.factory_id == factory_id).distinct()):
+        options.setdefault(code, name or code)
+    return [{"code": code, "name": options[code]} for code in sorted(options)]
+
+
+@router.get("/schedule/customers")
+def schedule_customers(factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    authorize(db, current_user, factory_id)
+    return {"factory_id": factory_id, "items": schedule_customer_options(db, factory_id)}
+
+
+@router.get("/schedule")
+def customer_schedule(factory_id: str, customer_code: str = Query(..., min_length=1, max_length=64),
+                      q: str = Query("", max_length=255), date_from: date | None = None, date_to: date | None = None,
+                      unshipped_page: int = Query(1, ge=1), shipped_page: int = Query(1, ge=1),
+                      cancelled_page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
+                      db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    authorize(db, current_user, factory_id)
+    names = {item["code"]: item["name"] for item in schedule_customer_options(db, factory_id)}
+    if customer_code not in names:
+        raise HTTPException(400, "请选择本厂区的客户")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(400, "交期开始日期不能晚于结束日期")
+    return schedule.read_schedule(db, factory=factory_id, customer=customer_code, customer_name=names[customer_code],
+        q=q, date_from=date_from, date_to=date_to,
+        pages={"unshipped": unshipped_page, "shipped": shipped_page, "cancelled": cancelled_page}, page_size=page_size)
 
 
 @router.get("/lines")

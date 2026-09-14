@@ -22,6 +22,51 @@ function mountLedger() {
 }
 
 describe('CustomerOrderLedger', () => {
+  it('opens only the focused order and notifies its schedule after saving', async () => {
+    const wrapper = mountLedger()
+    await flushPromises()
+    api.list.mockClear()
+    await wrapper.setProps({ detailOnly: true, focusLineId: 'line-1' })
+    await flushPromises()
+    expect(api.list).not.toHaveBeenCalled()
+    expect(api.detail).toHaveBeenLastCalledWith('line-1', 'huaxing')
+    let finishShipment: (() => void) | undefined
+    api.confirmShipment.mockImplementationOnce(() => new Promise<void>((resolve) => { finishShipment = resolve }))
+    await wrapper.findAll('.ledger__form input')[4]!.setValue('DN-FOCUSED-1')
+    await wrapper.findAll('button').find((button) => button.text() === '确认走货')!.trigger('click')
+    expect(wrapper.get<HTMLButtonElement>('[aria-label="关闭详情"]').element.disabled).toBe(true)
+    finishShipment?.()
+    await flushPromises()
+    expect(wrapper.emitted('changed')).toHaveLength(1)
+    expect(api.list).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps a closed focused detail closed while permissions are still loading', async () => {
+    let resolveCapabilities: ((value: Record<string, boolean>) => void) | undefined
+    api.capabilities.mockImplementationOnce(() => new Promise((resolve) => { resolveCapabilities = resolve }))
+    api.detail.mockClear()
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂', detailOnly: true, focusLineId: 'line-1' } })
+    await wrapper.get('[aria-label="关闭详情"]').trigger('click')
+    resolveCapabilities?.({ read: true })
+    await flushPromises()
+    expect(api.detail).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.emitted('close-detail')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('rejects a detail that does not match the selected order', async () => {
+    api.capabilities.mockResolvedValue({ read: true })
+    api.detail.mockResolvedValue({ line: { ...line, id: 'wrong-line' }, versions: [], dispatches: [], shipments: [], sources: [] })
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂', detailOnly: true, focusLineId: 'line-1' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('返回的订单与当前选择不一致')
+    expect(wrapper.text()).not.toContain('0009382481')
+    wrapper.unmount()
+  })
+
   it('loads only the active factory and opens persisted line detail', async () => {
     const wrapper = mountLedger()
     await flushPromises()

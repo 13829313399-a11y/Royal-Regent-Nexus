@@ -91,8 +91,8 @@ def lock_line(db: Session, line: Line, expected: int) -> None:
     db.refresh(line)
 
 
-def line_out(db: Session, line: Line) -> dict:
-    versions = db.scalars(select(Dispatch.version).where(Dispatch.line_id == line.id)).all()
+def line_out(db: Session, line: Line, *, dispatch_versions=None) -> dict:
+    versions = dispatch_versions if dispatch_versions is not None else db.scalars(select(Dispatch.version).where(Dispatch.line_id == line.id)).all()
     remaining = None if line.quantity is None else line.quantity - line.shipped_quantity
     return {
         "id": line.id, "factory_id": line.factory_id, "customer_code": line.customer_code,
