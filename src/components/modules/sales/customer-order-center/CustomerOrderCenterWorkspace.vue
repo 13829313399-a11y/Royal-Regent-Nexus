@@ -35,6 +35,7 @@ import type { MappedCustomerCode } from '@/api/customerOrder'
 import { customerOrderLedgerApi } from '@/api/customerOrderLedger'
 import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
+import CustomerOrderSchedule from './CustomerOrderSchedule.vue'
 import { getApiErrorMessage } from '@/lib/http'
 import type {
   CustomerOrderImportPreview,
@@ -2375,6 +2376,10 @@ onBeforeUnmount(() => {
             </article>
           </aside>
         </div>
+      </section>
+
+      <section v-else-if="activeSection === 'customer-schedule'" key="customer-schedule" class="order-view" data-testid="order-customer-schedule">
+        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" />
       </section>
 
       <section v-else-if="activeSection === 'schedule'" key="schedule-live" class="order-view" data-testid="order-schedule">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   customerOrderLedgerApi,
   customerOrderLedgerSourceUrl,
@@ -17,9 +17,11 @@ const props = withDefaults(defineProps<{
   factoryName: string
   initialView?: CustomerOrderLedgerView
   displayMode?: 'ledger' | 'schedule'
+  detailOnly?: boolean
+  focusLineId?: string
 }>(), { initialView: 'all', displayMode: 'ledger' })
 
-const emit = defineEmits<{ import: [] }>()
+const emit = defineEmits<{ import: []; changed: []; 'close-detail': [] }>()
 const emptyCapabilities: CustomerOrderLedgerCapabilities = {
   read: false, write: false, dispatch: false, shipment_confirm: false, inbox_read: false, inbox_receive: false,
 }
@@ -134,20 +136,24 @@ function goToPage(nextPage: number) {
 }
 
 function clearDetail() {
+  if (actionBusy.value) return
+  if (props.detailOnly) listRequestSequence += 1
   detailRequestSequence += 1
   selected.value = null
   detailLoading.value = false
   actionError.value = ''
+  emit('close-detail')
 }
 
-async function openDetail(line: CustomerOrderLedgerLine) {
+async function openDetail(line: Pick<CustomerOrderLedgerLine, 'id'>) {
   const token = ++detailRequestSequence
   const factoryId = props.factoryId
   detailLoading.value = true
   actionError.value = ''
   try {
     const detail = await customerOrderLedgerApi.detail(line.id, factoryId)
-    if (token !== detailRequestSequence || factoryId !== props.factoryId || detail.line.factory_id !== factoryId) return
+    if (token !== detailRequestSequence || factoryId !== props.factoryId) return
+    if (detail.line.factory_id !== factoryId || detail.line.id !== line.id) throw new Error('返回的订单与当前选择不一致，请重新打开详情。')
     applyDetail(detail)
   } catch (error) {
     if (token !== detailRequestSequence || factoryId !== props.factoryId) return
@@ -274,11 +280,12 @@ function applyDetail(detail: CustomerOrderLedgerDetail) {
 }
 
 async function refreshAfterWrite(id: string, factoryId: string, actionToken: number) {
-  await loadList()
+  if (!props.detailOnly) await loadList()
   if (actionToken !== actionSequence || factoryId !== props.factoryId) return
   const detailToken = ++detailRequestSequence
   const detail = await customerOrderLedgerApi.detail(id, factoryId)
-  if (actionToken !== actionSequence || detailToken !== detailRequestSequence || factoryId !== props.factoryId || detail.line.factory_id !== factoryId) return
+  if (actionToken !== actionSequence || detailToken !== detailRequestSequence || factoryId !== props.factoryId) return
+  if (detail.line.factory_id !== factoryId || detail.line.id !== id) throw new Error('返回的订单与当前选择不一致，请重新打开详情。')
   applyDetail(detail)
 }
 
@@ -293,6 +300,7 @@ async function runAction(action: () => Promise<unknown>) {
   try {
     await action()
     if (actionToken !== actionSequence || factoryId !== props.factoryId) return
+    emit('changed')
     await refreshAfterWrite(lineId, factoryId, actionToken)
   } catch (error) {
     if (actionToken !== actionSequence || factoryId !== props.factoryId) return
@@ -377,12 +385,41 @@ function submitHistoryOpeningCorrection() {
   }))
 }
 
-watch(() => props.factoryId, () => { resetForFactory(); void loadList() }, { immediate: true })
+async function loadFocusedDetail() {
+  const factoryId = props.factoryId
+  const id = props.focusLineId
+  if (!id) return
+  const token = ++listRequestSequence
+  detailLoading.value = true
+  try {
+    const nextCapabilities = await customerOrderLedgerApi.capabilities(factoryId)
+    if (token !== listRequestSequence || factoryId !== props.factoryId || id !== props.focusLineId) return
+    capabilities.value = nextCapabilities
+    await openDetail({ id })
+  } catch (error) {
+    if (token !== listRequestSequence) return
+    detailLoading.value = false
+    actionError.value = `无法读取订单详情：${getApiErrorMessage(error)}`
+  }
+}
+
+watch(() => [props.factoryId, props.detailOnly, props.focusLineId], () => {
+  resetForFactory()
+  capabilities.value = emptyCapabilities
+  if (props.detailOnly) void loadFocusedDetail()
+  else void loadList()
+}, { immediate: true })
 watch(() => props.initialView, (next) => { view.value = next; applyFilters() })
+onBeforeUnmount(() => {
+  listRequestSequence += 1
+  detailRequestSequence += 1
+  actionSequence += 1
+})
 </script>
 
 <template>
   <section class="ledger" data-testid="customer-order-ledger">
+    <template v-if="!detailOnly">
     <header class="ledger__header">
       <div>
         <p class="ledger__eyebrow">订单事实台账</p>
@@ -414,11 +451,13 @@ watch(() => props.initialView, (next) => { view.value = next; applyFilters() })
       <button class="ledger__button" type="button" :disabled="loading || page <= 1" @click="goToPage(page - 1)">上一页</button>
       <button class="ledger__button" type="button" :disabled="loading || page >= pageCount" @click="goToPage(page + 1)">下一页</button>
     </footer>
+    </template>
 
-    <div v-if="selected || detailLoading" class="ledger__backdrop" @click.self="clearDetail">
+    <div v-if="selected || detailLoading || (detailOnly && actionError)" class="ledger__backdrop" @click.self="clearDetail">
       <aside class="ledger__detail" role="dialog" aria-modal="true">
-        <button class="ledger__close" type="button" aria-label="关闭详情" @click="clearDetail">×</button>
+        <button class="ledger__close" type="button" aria-label="关闭详情" :disabled="actionBusy" @click="clearDetail">×</button>
         <p v-if="detailLoading">正在读取详情…</p>
+        <p v-else-if="!selected && actionError" class="ledger__message">{{ actionError }}</p>
         <template v-else-if="selected">
           <h3>{{ selected.line.customer_name || selected.line.customer_code }} · {{ selected.line.product_no }}</h3>
           <p class="ledger__muted">参考号 {{ selected.line.reference_no }} · V{{ selected.line.version }} · 修订 {{ selected.line.revision }}</p>
