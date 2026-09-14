@@ -25,11 +25,13 @@
 ```powershell
 npm run build
 npm run test:unit
+npm run typecheck:app
 npm run typecheck:test
 ```
 
 build 实际为 vue-tsc -b && vite build，包含前端类型检查。
 test:unit 实际为 vitest run；可按当前 Vitest 配置选择确实存在的相关测试。
+typecheck:app 为 vue-tsc --noEmit -p tsconfig.app.json，仅检查应用类型，不替代完整构建。
 typecheck:test 检查测试 TypeScript 项目，不替代应用构建。
 该基线 package.json 没有 lint、test 或通用 typecheck 脚本；不要直接调用 npm run lint / npm test / npm run typecheck。
 以后依赖或脚本发生变化，以本地 package.json 为准。
