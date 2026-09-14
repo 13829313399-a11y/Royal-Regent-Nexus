@@ -2,8 +2,11 @@
   "extends": "./tsconfig.app.json",
   "include": [
     "src/vite-env.d.ts",
+    "src/env.d.ts",
     "src/types/**/*.d.ts",
-    "src/features/ai-assistant/__tests__/*.spec.ts"
+    "src/features/ai-assistant/__tests__/*.spec.ts",
+    "src/features/uv-printing/__tests__/*.spec.ts",
+    "src/api/uvPrinting.spec.ts"
   ],
   "exclude": [],
   "compilerOptions": {
