@@ -132,6 +132,19 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/customer-order-inbox',
+    name: 'customer-order-inbox-production',
+    component: () => import('@/views/CustomerOrderInboxView.vue'),
+    meta: {
+      title: '啤机部订单收件箱',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['customer_order:inbox_read'],
+      permissionDepartment: 'production',
+      enforcePermissions: true,
+    },
+  },
+  {
     path: '/modules/production/molding-sample-tasks',
     name: 'molding-sample-production-tasks',
     component: () => import('@/views/MoldingSampleProductionTaskView.vue'),
@@ -278,6 +291,19 @@ const routes: RouteRecordRaw[] = [
       permissions: ['carton_procurement:read'],
       enforcePermissions: true,
       strictPermissions: true,
+    },
+  },
+  {
+    path: '/modules/pmc-warehouse/customer-order-inbox',
+    name: 'customer-order-inbox-pmc',
+    component: () => import('@/views/CustomerOrderInboxView.vue'),
+    meta: {
+      title: 'PMC / 仓库订单收件箱',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['customer_order:inbox_read'],
+      permissionDepartment: 'pmc-warehouse',
+      enforcePermissions: true,
     },
   },
   {
