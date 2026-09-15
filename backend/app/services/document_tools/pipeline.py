@@ -151,7 +151,11 @@ def run_one(session_factory, claimed=None):
                     options["password"] = storage.decrypt_password(source.credential_ciphertext)
                 if settings.document_tools_ai_mode == "off":
                     options["ai_mode"] = "off"
-                if source.detected_type == "pdf":
+                if job.operation.endswith("_translate"):
+                    from app.services.document_tools.translation_engine import convert_translation
+                    options["output_name"] = options.get("output_name") or source.original_name
+                    result = convert_translation(path, job.operation, options, work, progress, cancelled)
+                elif source.detected_type == "pdf":
                     from app.services.document_tools.pdf_engine import inspect_pdf, convert_pdf
                     result = inspect_pdf(path, options, work, progress, cancelled) if job.kind == "inspect" else convert_pdf(path, job.operation, options, work, progress, cancelled, ir=ir)
                 else:

@@ -9,6 +9,9 @@ export type Operation =
   | 'pdf_to_excel'
   | 'excel_to_pdf'
   | 'pdf_split'
+  | 'word_translate'
+  | 'excel_translate'
+  | 'pdf_translate'
 export interface Anchor {
   method?: string
   page_index?: number | null
@@ -69,6 +72,7 @@ export interface Block {
   id: string
   kind: string
   text: string
+  original_text?: string
   source: Anchor
 }
 export interface Result {
@@ -118,6 +122,7 @@ export interface Source {
   artifacts: Artifact[]
 }
 export interface Capabilities {
+  translation?: { offline_available: boolean; online_available: boolean; online_model: string }
   engines?: Record<
     string,
     { configured: boolean; tested: boolean; status?: string; model?: string }
@@ -255,6 +260,9 @@ export const operationLabels: Record<Operation, string> = {
   pdf_to_excel: 'PDF → Excel',
   excel_to_pdf: 'Excel → PDF',
   pdf_split: 'PDF 精确分页',
+  word_translate: 'Word 翻译',
+  pdf_translate: 'PDF 翻译',
+  excel_translate: 'Excel 翻译',
 }
 export const statusLabels: Record<string, string> = {
   queued: '等待处理',
@@ -271,6 +279,7 @@ export const statusLabels: Record<string, string> = {
   inspect: '检查文档',
   extract: '提取结构',
   recognize: '识别内容',
+  translate: '翻译文档',
   rebuild: '生成文档',
   validate: '核对内容',
   package: '打包文件',

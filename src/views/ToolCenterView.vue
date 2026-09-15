@@ -14,6 +14,7 @@ import {
   X,
   Scissors,
   AlertCircle,
+  Languages,
 } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -35,6 +36,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import PdfCanvas from '@/features/document-tools/PdfCanvas.vue'
 import ToolOptions from '@/features/document-tools/ToolOptions.vue'
+import TranslationOptions from '@/features/document-tools/TranslationOptions.vue'
 import ResultReview from '@/features/document-tools/ResultReview.vue'
 import TaskActions from '@/features/document-tools/TaskActions.vue'
 import {
@@ -149,6 +151,9 @@ const extent = computed(() =>
 const capability = computed(() =>
   capabilities.value?.operations.find((item) => item.id === operation.value),
 )
+const translating = computed(() => operation.value.endsWith('_translate'))
+const translationUnavailable = computed(() => translating.value && !(options.value.translation_engine === 'online'
+  ? capabilities.value?.translation?.online_available : capabilities.value?.translation?.offline_available))
 const snapPoints = computed(() => [
   ...suggestions.value,
   ...protectedRegions.value.flatMap((region) =>
@@ -160,7 +165,7 @@ const snapPoints = computed(() => [
 const pdfOutput = computed(
   () =>
     !!currentJob.value &&
-    ['word_to_pdf', 'excel_to_pdf', 'pdf_split'].includes(
+    ['word_to_pdf', 'excel_to_pdf', 'pdf_split', 'pdf_translate'].includes(
       currentJob.value.operation,
     ),
 )
@@ -174,7 +179,7 @@ const sourceReady = computed(
 const compatible = computed(() => {
   const type = currentSource.value?.detected_type?.toLowerCase() ?? ''
   if (!type) return true
-  if (currentSource.value?.manifest.supported_operations?.length)
+  if (!translating.value && currentSource.value?.manifest.supported_operations?.length)
     return currentSource.value.manifest.supported_operations.includes(
       operation.value,
     )
@@ -216,6 +221,7 @@ const hasResult = computed(
 const canRecognizeRegion = computed(
   () =>
     currentSource.value?.detected_type === 'pdf' &&
+    !currentJob.value?.operation.endsWith('_translate') &&
     hasResult.value &&
     !!sourcePreview.value,
 )
@@ -232,6 +238,14 @@ const sheetDefaults = () =>
     .filter((item) => typeof item === 'string' || !item.hidden)
     .map((item) => (typeof item === 'string' ? item : item.name))
 function defaults() {
+  if (translating.value) {
+    options.value = { translation_direction: 'zh_to_en',
+      translation_engine: capabilities.value?.translation?.offline_available ? 'offline'
+        : capabilities.value?.translation?.online_available ? 'online' : 'offline',
+      ...(operation.value === 'pdf_translate' ? { page_selection: 'all' } : {}),
+      ...(operation.value === 'excel_translate' ? { sheets: sheetDefaults() } : {}) }
+    return
+  }
   options.value = {
     page_selection: 'all',
     ...(operation.value !== 'pdf_split' ? { ai_mode: 'auto' } : {}),
@@ -338,7 +352,8 @@ async function selectSource(sourceId: string, jobId?: string) {
       operation.value = job.operation as Operation
       await nextTick()
       options.value = { ...job.options }
-    } else if (operation.value.startsWith('excel_')) defaults()
+    } else if (operation.value === 'excel_translate') options.value.sheets = sheetDefaults()
+    else if (operation.value.startsWith('excel_')) defaults()
     if (job?.execution_status === 'succeeded' && job.operation !== 'inspect') {
       view.value = canCompare.value ? 'compare' : 'result'
       await loadIssues()
@@ -487,7 +502,8 @@ async function refresh(forceCapabilities = false) {
           if (updated.operation !== 'inspect') {
             view.value = canCompare.value ? 'compare' : 'result'
             await loadIssues()
-          } else if (operation.value.startsWith('excel_')) defaults()
+          } else if (operation.value === 'excel_translate') options.value.sheets = sheetDefaults()
+          else if (operation.value.startsWith('excel_')) defaults()
         }
       }
     }
@@ -528,6 +544,10 @@ function visibility() {
 }
 async function start() {
   if (!currentSource.value || busy.value) return
+  if (translationUnavailable.value) {
+    error.value = '所选翻译服务尚未就绪，请更换翻译方式或联系管理员配置。'
+    return
+  }
   busy.value = true
   submitting.value = true
   error.value = ''
@@ -858,7 +878,7 @@ onBeforeUnmount(() => {
     class="app-page dt-workbench"
     :class="{ 'dt-narrow': narrow, 'dt-phone': phone, 'dt-focus': focused }"
   >
-    <PageHeader title="公共工具栏" :description="isHuaxing ? '文档转换、精确分页与批量改名 · 华兴厂区' : '文档转换与精确分页'"
+    <PageHeader title="公共工具栏" :description="isHuaxing ? '文档翻译、转换、精确分页与批量改名 · 华兴厂区' : '文档翻译、转换与精确分页'"
       ><template #actions
         ><Button v-if="isHuaxing" variant="outline" size="sm" :aria-pressed="renameActive" @click="selectRename(!renameActive)"
           ><Files :size="15" aria-hidden="true" />{{ renameActive ? '返回文档转换' : '批量改名' }}</Button
@@ -931,13 +951,13 @@ onBeforeUnmount(() => {
       @drop.prevent="drop"
     >
       <aside v-if="!focused" class="dt-rail" aria-label="文档工具与本批文件">
-        <h2>文档转换</h2>
+        <h2>文档工具</h2>
         <nav class="dt-tools" aria-label="选择文档工具">
           <button
             v-for="tool in toolIds"
             :key="tool"
             type="button"
-            :class="{ active: operation === tool }"
+            :class="{ active: operation === tool, 'dt-tool-divider': tool === 'word_translate' || tool === 'pdf_split' }"
             :aria-pressed="operation === tool"
             @click="operation = tool"
           >
@@ -945,7 +965,7 @@ onBeforeUnmount(() => {
               v-if="tool === 'pdf_split'"
               :size="16"
               aria-hidden="true"
-            /><FileText v-else :size="16" aria-hidden="true" /><span>{{
+            /><Languages v-else-if="tool.endsWith('_translate')" :size="16" aria-hidden="true" /><FileText v-else :size="16" aria-hidden="true" /><span>{{
               operationLabels[tool]
             }}</span>
           </button>
@@ -1031,13 +1051,18 @@ onBeforeUnmount(() => {
             ><PanelRight :size="15" aria-hidden="true" />设置</Button
           >
         </div>
+        <section v-if="translating" class="dt-translation-intro" aria-label="文档翻译设置">
+          <strong><Languages :size="18" aria-hidden="true" />{{ operationLabels[operation] }} · 中英互译</strong>
+          <TranslationOptions v-model="options" :availability="capabilities?.translation" compact />
+          <p>保留原件，生成独立译文。{{ operation === 'pdf_translate' ? 'PDF 译文重新排版，同时提供可编辑 Word。' : '保留文档格式；图片中的文字不翻译。' }}</p>
+        </section>
         <div v-if="!currentSource && !currentJob" class="dt-empty">
           <div class="dt-drop">
             <div class="dt-upload-icon">
               <Upload :size="27" :stroke-width="1.5" aria-hidden="true" />
             </div>
-            <h2>拖入文档，选择你需要的结果</h2>
-            <p>Word、Excel 或 PDF，保留原文件，生成独立结果。</p>
+            <h2>{{ translating ? '上传文档，生成中英译文' : '拖入文档，选择你需要的结果' }}</h2>
+            <p>{{ translating ? '选择翻译方向与方式，上传后即可开始。' : 'Word、Excel 或 PDF，保留原文件，生成独立结果。' }}</p>
             <Button @click="picker?.click()"
               >选择文件 <ArrowRight :size="15" aria-hidden="true" /></Button
             ><small
@@ -1118,9 +1143,7 @@ onBeforeUnmount(() => {
               v-if="
                 resultPreview &&
                 hasResult &&
-                !['word_to_pdf', 'excel_to_pdf', 'pdf_split'].includes(
-                  currentJob!.operation,
-                )
+                !pdfOutput
               "
               variant="ghost"
               size="sm"
@@ -1200,6 +1223,7 @@ onBeforeUnmount(() => {
                 v-if="!pdfOutput"
                 v-show="!resultLayout"
                 :job="currentJob"
+                :readonly="currentJob.operation.endsWith('_translate')"
                 :selected-target="selectedTarget"
                 @locate="locate"
                 @revised="followJob"
@@ -1264,6 +1288,7 @@ onBeforeUnmount(() => {
         <ToolOptions
           v-model="options"
           :operation="operation"
+          :translation-availability="capabilities?.translation"
           :source="currentSource"
           :cuts="cuts"
           :axis="axis"
@@ -1285,7 +1310,7 @@ onBeforeUnmount(() => {
           </p>
           <Button
             :disabled="
-              busy || !sourceReady || !compatible || !capability?.available
+              busy || !sourceReady || !compatible || !capability?.available || translationUnavailable
             "
             @click="start"
             >{{
@@ -1295,7 +1320,7 @@ onBeforeUnmount(() => {
                   ? '正在提交…'
                   : operation === 'pdf_split'
                     ? '生成分页文件'
-                    : '生成文档'
+                    : translating ? '开始翻译' : '生成文档'
             }}<ArrowRight :size="15" aria-hidden="true" /></Button
           ><small v-if="!currentSource">上传文件后可生成结果</small>
         </div>
@@ -1365,6 +1390,7 @@ onBeforeUnmount(() => {
         <ToolOptions
           v-model="options"
           :operation="operation"
+          :translation-availability="capabilities?.translation"
           :source="currentSource"
           :cuts="cuts"
           :axis="axis"
@@ -1383,10 +1409,10 @@ onBeforeUnmount(() => {
         <Button
           class="dt-dialog-generate"
           :disabled="
-            busy || !sourceReady || !compatible || !capability?.available
+            busy || !sourceReady || !compatible || !capability?.available || translationUnavailable
           "
           @click="generateFromDialog"
-          >生成文档</Button
+          >{{ translating ? '开始翻译' : '生成文档' }}</Button
         >
       </div>
     </dialog>

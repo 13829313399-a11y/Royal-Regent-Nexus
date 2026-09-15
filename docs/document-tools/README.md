@@ -1,8 +1,18 @@
 # 公共文档工具
 
-`/tools?factory=<id>` 为所有正常登录用户提供七种文档处理方向。文件、任务、密码、结果与修订只属于上传账号；厂区仅作为上下文保存，不扩大文件访问权限。旧同步转换接口不再使用。
+`/tools?factory=<id>` 为所有正常登录用户提供十种文档处理方向（七种转换/分页及三种文档翻译）。文件、任务、密码、结果与修订只属于上传账号；厂区仅作为上下文保存，不扩大文件访问权限。旧同步转换接口不再使用。
 
 ## 运行方式
+
+### Word / PDF / Excel 翻译
+
+`word_translate`、`pdf_translate`、`excel_translate` 复用上传、独立 worker、个人任务、撤回与结果下载。支持 `translation_direction=zh_to_en|en_to_zh` 和 `translation_engine=offline|online`。Word 输出 DOCX；旧 DOC/XLS 先经 LibreOffice 转为 DOCX/XLSX。Excel 按所选 `sheets` 翻译文字并保留公式、数字、合并格和原始包结构；空选择表示包含隐藏表在内的全部工作表。Word 翻译正文、表格、页眉页脚等文字，Office 图片中的文字不翻译。Word/Excel 不支持按预览页选取翻译范围。
+
+PDF 支持 `page_selection`，先原生提取/扫描识别，再生成重新排版的 PDF 和可编辑 DOCX；必须有 Office 渲染引擎。译文不承诺原页数/布局不变，图片中的原文及扫描识别需核验。翻译结果提供原文对照、校样及下载；网页中的译文为只读，需要修改时下载编辑或重新发起翻译。
+
+离线模式使用现有 `DOCUMENT_TRANSLATION_MODEL_DIR` 和 `DOCUMENT_TRANSLATION_DEVICE`，PDF OCR 强制本地，不外发内容。在线模式需要 `DOCUMENT_TOOLS_AI_MODE=auto`，复用服务器 `DOCUMENT_TOOLS_QWEN_API_KEY`、`DOCUMENT_TOOLS_QWEN_BASE_URL`、`DOCUMENT_TOOLS_QWEN_PROTOCOL` 和超时设置，新增 `DOCUMENT_TOOLS_TRANSLATION_MODEL`（默认 `qwen3-vl-plus`）。DashScope 使用多模态 generation 地址和支持纯文字输入的 VL 模型；兼容 Chat 协议使用配置的 `/chat/completions` 地址。协议参考：[千问文本生成官方文档](https://www.alibabacloud.com/help/en/model-studio/text-generation)。API 与 worker 必须同时获得这些配置并重启。
+
+在线模式仅将需要翻译的文字和用户填写的 `glossary` 术语发送至已配置服务；PDF 扫描识别还可能发送图像区域。密钥只在服务器配置，不写入前端、任务或日志。在线服务不自动切回离线；错误响应、截断、空译文、段落数量不符及检测到数字/型号变化会明确失败。每批最多 30 段/6000 字符，总量最多 50 万字符。能力接口的配置就绪状态不代表真实翻译精度已验证，上线应以合成样本对目标服务实测。
 
 ### 华兴批量改名
 

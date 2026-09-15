@@ -111,6 +111,13 @@ def create_job(payload: CreateJob, user: User, db: DB):
     if source.detected_type not in service.OPERATIONS[payload.operation][1]:
         service.fail("TYPE_MISMATCH", "所选转换方向与源文件类型不符", 422)
     options = payload.options.model_dump(include=OPTION_KEYS[payload.operation])
+    if payload.operation.endswith("_translate"):
+        from app.services.document_tools.translation_engine import validate_translation_options
+        from app.services.document_tools.document_ir import ToolError
+        try:
+            validate_translation_options(options, payload.operation)
+        except ToolError as exc:
+            service.fail(exc.code, exc.message, 422)
     job = service.enqueue(db, user.id, source.id, payload.operation, options, payload.client_request_id, payload.batch_id)
     db.commit()
     return {"job_id": job.id}
@@ -223,6 +230,8 @@ def retry(job_id: str, user: User, db: DB):
 @router.post("/jobs/{job_id}/revise", status_code=202)
 def revise(job_id: str, payload: ReviseJob, user: User, db: DB):
     parent = service.owned(db, Job, job_id, user.id)
+    if parent.operation.endswith("_translate"):
+        service.fail("TRANSLATION_REVISION_UNSUPPORTED", "请下载译文修改，或调整翻译设置后重新生成", 422)
     if parent.execution_status != "succeeded" or parent.operation not in service.OPERATIONS:
         service.fail("RESULT_NOT_READY", "请先选择已生成的转换结果", 409)
     if payload.base_revision != parent.artifact_revision:
