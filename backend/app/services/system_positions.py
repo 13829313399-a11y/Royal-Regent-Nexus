@@ -22,7 +22,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v27"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v28"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -606,7 +606,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="pmc-warehouse",
         department_name="仓库",
         sort_order=500,
-        description="仓库领料、发料与库存管理",
+        description="跨厂操作 PMC 仓库领料、发料、原料与纸箱库存及下游订单收件箱",
+        scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=WAREHOUSE_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -903,7 +904,17 @@ def validate_system_position_definitions() -> None:
         "molding_sample:raw_material_write" in definition.permission_codes
         for definition in warehouse_positions
     ):
-        raise RuntimeError("仓库内置职位必须可维护本厂原料资料")
+        raise RuntimeError("仓库内置职位必须可维护原料资料")
+    if not all(
+        definition.permission_codes == WAREHOUSE_PERMISSION_CODES
+        and definition.scope_mode == (
+            CROSS_FACTORY_OPERATE_SCOPE
+            if definition.role_id == "position_warehouse_manager"
+            else OWN_FACTORY_SCOPE
+        )
+        for definition in warehouse_positions
+    ):
+        raise RuntimeError("仓库经理必须跨厂操作，主管和仓管保留本厂仓库权限")
 
     qc_inspector = definitions_by_id["position_qc_inspector"]
     qc_supervisor = definitions_by_id["position_qc_supervisor"]

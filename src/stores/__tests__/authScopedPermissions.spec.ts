@@ -30,6 +30,48 @@ function session(overrides: Partial<AuthMeResponse> = {}): AuthMeResponse {
 describe('authStore scoped permission decisions', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
+  it.each(['manager', 'supervisor', 'keeper'] as const)(
+    'keeps warehouse %s factory scope and the manager PMC inbox boundary', (position) => {
+      const store = useAuthStore()
+      const permissions = ['molding_sample:inventory_issue', 'molding_sample:production_read', 'customer_order:inbox_read', 'customer_order:inbox_receive']
+      store.applySession(session({
+        authz_mode: 'enforce', permissions,
+        grants: [{
+          role_id: `position_warehouse_${position}`, role_name: position,
+          factory_id: 'huaxing', department: 'pmc-warehouse', permissions,
+          scope_mode: position === 'manager' ? 'cross_factory_operate' : 'own_factory',
+          read_permission_codes: ['molding_sample:production_read'],
+          unrestricted_department: true, data_scope: position === 'manager' ? 'all' : 'factory',
+        }],
+        effective_access: permissions.map((permission_code) => ({
+          permission_code, factory_id: 'huaxing', department: 'pmc-warehouse',
+          effect: 'allow', allowed: true, source_type: 'role_binding', source_ids: ['warehouse-binding'],
+        })),
+      }))
+      for (const factory of ['huaxing', 'huakang-a', 'huakang-b', 'huakang-c', 'huakang-d', 'huadeng']) {
+        for (const permission of permissions) {
+          expect(store.can(permission, factory, 'pmc-warehouse')).toBe(
+            position === 'manager' || factory === 'huaxing' || permission === 'molding_sample:production_read',
+          )
+        }
+        expect(store.can('system:user_manage', factory, 'system')).toBe(false)
+        if (position === 'manager') {
+          for (const permission of ['customer_order:inbox_read', 'customer_order:inbox_receive']) {
+            expect(store.can(permission, factory, 'warehouse')).toBe(true)
+            expect(store.can(permission, factory, 'production')).toBe(false)
+            expect(store.can(permission, factory, 'molding')).toBe(false)
+          }
+        }
+      }
+      store.effectiveAccess.push({
+        permission_code: 'molding_sample:inventory_issue', factory_id: 'huadeng', department: '*',
+        effect: 'deny', allowed: false, source_type: 'user_override', source_ids: ['deny-huadeng'],
+      })
+      expect(store.can('molding_sample:inventory_issue', 'huadeng', 'pmc-warehouse')).toBe(false)
+      expect(store.can('molding_sample:inventory_issue', 'huaxing', 'pmc-warehouse')).toBe(true)
+    },
+  )
+
   it('keeps the legacy flat permission plus factory-scope behavior', () => {
     const store = useAuthStore()
     store.applySession(session())
