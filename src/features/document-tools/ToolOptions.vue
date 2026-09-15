@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Button } from '@/components/ui/button'
-import type { Operation, Source } from '@/api/documentTools'
+import type { Capabilities, Operation, Source } from '@/api/documentTools'
+import TranslationOptions from './TranslationOptions.vue'
 import { mmToPt, normalizeCuts, parseGroups, ptToMm } from './coordinates'
 const props = defineProps<{
   operation: Operation
+  translationAvailability?: Capabilities['translation']
   source?: Source
   cuts: number[]
   axis: 'x' | 'y'
@@ -43,6 +45,7 @@ const duplicates = computed(() => {
   return flat.length !== new Set(flat).size
 })
 const excelInput = computed(() => props.operation.startsWith('excel_'))
+const translating = computed(() => props.operation.endsWith('_translate'))
 function updateCut(index: number, raw: string) {
   const cuts = [...props.cuts]
   cuts[index] = units.value === 'mm' ? mmToPt(Number(raw)) : Number(raw)
@@ -67,7 +70,11 @@ watch(
 <template>
   <div class="dt-options">
     <h3>输出设置</h3>
-    <label v-if="operation !== 'pdf_split'"
+    <TranslationOptions v-if="translating" v-model="options" :availability="translationAvailability" />
+    <p v-if="operation === 'word_translate'">翻译正文、表格及页眉页脚，输出 Word；图片内文字保留原样。</p>
+    <p v-if="operation === 'excel_translate'">只翻译所选工作表的文字，保留公式、数字和格式；未选表示全部工作表（含隐藏表）。</p>
+    <p v-if="operation === 'pdf_translate'">输出重新排版的译文 PDF 与 Word，扫描件需核对识别结果。</p>
+    <label v-if="operation !== 'pdf_split' && (!translating || operation === 'pdf_translate')"
       >页面范围<input
         v-model="options.page_selection"
         placeholder="all 或 1-3,5"
@@ -158,6 +165,7 @@ watch(
           }}</label
         ><small v-if="!sheets.length">读取文件后显示工作表。</small>
       </fieldset>
+      <template v-if="!translating">
       <label
         >范围或命名区域<input
           v-model="options.range"
@@ -195,6 +203,7 @@ watch(
           </select></label
         >
       </div>
+      </template>
     </template>
     <template v-if="operation === 'pdf_split'">
       <label
@@ -345,7 +354,7 @@ watch(
         >输出文件名<input
           v-model="options.output_name"
           placeholder="留空使用原文件名" /></label
-      ><label v-if="operation !== 'pdf_split'"
+      ><label v-if="operation !== 'pdf_split' && !translating"
         >疑难区域 AI 增强<select v-model="options.ai_mode">
           <option value="auto">自动（仅不可靠区域）</option>
           <option value="off">关闭</option>

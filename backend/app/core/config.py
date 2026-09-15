@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     document_tools_qwen_protocol: Literal["dashscope", "openai"] = "dashscope"
     document_tools_qwen_ocr_model: str = "qwen3.5-ocr"
     document_tools_qwen_layout_model: str = "qwen3-vl-plus"
+    document_tools_translation_model: str = "qwen3-vl-plus"
     document_tools_qwen_timeout_seconds: int = Field(default=90, ge=5, le=300)
     @property
     def effective_session_cookie_secure(self) -> bool:

@@ -13,6 +13,9 @@ from app.models.document_tools import DocumentToolArtifact as Artifact, Document
 from app.services.document_tools import storage
 
 OPERATIONS = {
+    "word_translate": ("Word 翻译", {"doc", "docx"}),
+    "excel_translate": ("Excel 翻译", {"xls", "xlsx"}),
+    "pdf_translate": ("PDF 翻译", {"pdf"}),
     "word_to_pdf": ("Word → PDF", {"doc", "docx"}),
     "pdf_to_word": ("PDF → Word", {"pdf"}),
     "word_to_excel": ("Word → Excel", {"doc", "docx"}),
@@ -160,7 +163,7 @@ def renew(session_factory, job_id, token):
 
 def mark_progress(session_factory, job_id, token, stage, completed, total):
     from app.services.document_tools.document_ir import Cancelled
-    if stage not in {"inspect", "extract", "recognize", "rebuild", "validate", "package"}:
+    if stage not in {"inspect", "extract", "recognize", "translate", "rebuild", "validate", "package"}:
         raise ValueError("Unknown processing stage")
     with session_factory() as db:
         count = db.execute(update(Job).where(lease_filter(job_id, token), Job.cancel_requested.is_(False)).values(stage=stage, completed_units=completed, total_units=total)).rowcount
