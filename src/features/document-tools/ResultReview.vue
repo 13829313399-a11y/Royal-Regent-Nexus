@@ -10,7 +10,7 @@ import {
   type Table,
 } from '@/api/documentTools'
 import { getApiErrorMessage } from '@/lib/http'
-const props = defineProps<{ job: Job; selectedTarget?: string }>()
+const props = defineProps<{ job: Job; selectedTarget?: string; readonly?: boolean }>()
 const emit = defineEmits<{
   locate: [anchor: Anchor, target: string]
   revised: [jobId: string]
@@ -248,6 +248,7 @@ onBeforeUnmount(() => {
             <td class="dt-original">{{ cell.raw_text || '（空白）' }}</td>
             <td>
               <input
+                :readonly="readonly"
                 :aria-label="`行 ${cell.row + 1} 列 ${cell.column + 1} 结果`"
                 :value="drafts[cell.id] ?? cell.display_text"
                 @focus="emit('locate', cell.source, cell.id)"
@@ -321,7 +322,8 @@ onBeforeUnmount(() => {
               : '原文区块'
           }}
           · 查看来源</button
-        ><textarea
+        ><p v-if="block.original_text" class="dt-original">原文：{{ block.original_text }}</p><textarea
+          :readonly="readonly"
           :aria-label="`区块 ${block.id} 结果`"
           :value="drafts[block.id] ?? block.text"
           rows="3"
