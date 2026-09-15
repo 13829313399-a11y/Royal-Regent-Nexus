@@ -1,79 +1,61 @@
-# 团队 Codex 配置：质量优先方案 A
+# Royal-Regent-Nexus Codex 配置 V2
 
-本仓库共享开发代理的配置与协作规则。主代理使用 GPT-6 Astra/high，优先保证业务正确性；只将明确、独立的工作交给合适的子代理。它不改变应用运行时，不共享账户或额度，也不会部署业务系统。
+日常默认 Terra/medium，规划档位 medium，普通明确任务主线程直做。复杂工作使用 Astra/high，由同一负责人完成必要设计、实现和关键回归，高影响最终差异保留独立审查。完整路由只在 [task-routing.md](../../.agents/skills/rrn-model-routing/references/task-routing.md) 维护。
 
-## 团队成员如何启用
+## 启用与配置边界
 
-1. 从团队使用的 GitHub 仓库拉取包含此配置的分支。在自己的功能分支或 worktree 中开发；已有改动时先正常保存和合并，不使用强制重置。
-2. 在支持项目级配置及独立自定义代理文件的 Codex App/CLI 中打开**仓库根目录**。使用自己的账户登录，信任这个项目，重新开启一个任务。
-3. 核对任务实际选中的模型为 `gpt-6-astra`、推理档位为 `high`。旧任务或明确的客户端模型选择可能覆盖默认值。项目配置不会将已运行的任务自动换成另一个模型。
-4. 按下面的静态检查和只读调用验收确认本机能力。需要 Astra、Terra、Luna 的账户访问权限；目标不可用时如实报告，不静默降级关键业务任务。
+在支持项目配置和自定义角色的 App 中打开 **Royal-Regent-Nexus 仓库根目录**，按本机既有信任规则新建任务并核对实际模型/effort。打开父目录不会自动证明子目录配置已加载；在旧任务中改 TOML 也不代表当前模型已切换。用户级设置、项目加载与显式客户端覆盖要分别核对。
 
-无需复制任何成员的用户级 `.codex/config.toml`、认证文件、API key、MCP、插件配置或电脑绝对路径。项目配置仅规定共享开发默认值；个人授权、工具和权限由各自客户端管理。未信任项目时，Codex 会跳过项目级 `.codex` 配置。
-
-## 分工
-
-| 执行者 | 模型 / 档位 | 责任 |
+| 角色 | 配置目标 | 使用边界 |
 | --- | --- | --- |
-| 主代理 | `gpt-6-astra` / `high` | 业务判断、复杂实现、集成与最终交付 |
-| `rrn_scout` | `gpt-5.6-luna` / `medium` | 只读定位入口、符号和事实 |
-| `rrn_easy` | `gpt-5.6-luna` / `low` | 已明确的低影响机械改动 |
-| `rrn_worker` | `gpt-5.6-terra` / `medium` | 明确契约下的普通实现与验证 |
-| `rrn_architect` | `gpt-6-astra` / `xhigh` | 按需分析独立的复杂设计问题，只读 |
-| `rrn_core` | `gpt-6-astra` / `xhigh` | 按需实现独立的复杂业务工作包 |
-| `rrn_reviewer` | `gpt-6-astra` / `high` | 高影响变更的独立只读审查 |
+| 日常主线程 | Terra/medium | 直接完成普通工作，默认零子代理 |
+| rrn_scout | Luna/medium | 具有检索隔离收益的窄范围只读事实提取 |
+| rrn_easy | Luna/low | 足够成批且完全确定的机械工作 |
+| rrn_worker | Terra/medium | 有独立收益的普通工作包 |
+| rrn_core | Astra/high | 单一负责人设计、实现、关键回归和修复 |
+| rrn_architect | Astra/high | 独立设计交付，只读，非默认前置 |
+| rrn_reviewer | Astra/high | 高影响最终差异的独立只读审查 |
 
-通常只需要零至两个子代理，同时开启上限为三个（不含主代理）。六种角色不是六个常驻进程，也不是每次必须执行的六个步骤。主代理已经掌握上下文时直接完成设计和实现；工资、库存、厂区隔离、状态机、迁移及排产规则等关键语义由 Astra 承担。
+默认最多 1 个同时打开的子线程，不含主线程；实现与审查顺序进行。六个文件不是六个常驻代理。三个只读角色保留 sandbox 声明，所有子角色声明 agents.enabled=false 并禁止继续派生；实际沙箱和工具屏蔽仍需运行时核实。
 
-小任务直接做；有独立工作时再派发；高影响变更按 AGENTS.md 进行独立审查。每个子任务仅携带目标、必要证据、文件范围、业务约束和验收条件，避免默认复制整段历史。全量历史继承若锁定父模型，应使用当前工具支持的最小上下文方式显式指定目标模型与档位。不能将模型自称当作运行时证据。
+xhigh 只对确有需要的难题在受支持的任务设置中显式提升，并核实元数据；自然语言不能证明覆盖成功。规划 effort 单独核对。不在项目层配置 profiles，不虚构预算/路由键，不写 service_tier="standard"。Fast 只从实际支持入口及元数据核对，未见证据时写 unknown；节省模式不默认启用 Fast。
 
-## 多人开发约定
+保留各成员认证、provider、MCP、插件与权限配置。不用改变这些设置掩盖模型不可用。角色字段被客户端拒绝时记录原始错误和版本，保留禁止派生指令；静态策略检查不得伪装为兼容性通过。目标 Astra 不可用时关键工作报告未完成，不能用轻模型冒名完成。
 
-- 每位开发者使用自己的分支/worktree。子代理默认可能共用父代理工作目录，不能假定它们各有隔离工作区。
-- 派发前明确可写文件；同一文件只给一个写入者。共享路由、全局样式、公共接口、模型、依赖锁文件和数据库迁移链指定负责人。
-- 接口契约未确定、存在前置依赖时顺序推进。并行前后端工作先确定契约，集成后验证真实闭环。
-- 配置只管理单次代理会话，不能锁住其他开发者的编辑；跨人的协作仍通过分支、沟通和 PR 完成。
-- 主代理统一安排集成检查。子代理不得自行执行 Git 发布操作，避免在共享工作区提交他人的文件。
-- 只提交项目共享配置。个人状态、认证及临时日志不得加入 Git；团队默认值的修改通过正常代码评审同步。
+## 本地确定性校验
 
-## 验证
-
-在仓库根使用 Python 3.11 或更高版本运行：
-
-```text
-python scripts/validate-codex-config.py
-```
-
-Windows 也可以使用现有后端虚拟环境：
+已有 Python 3.11+（或满足版本的后端虚拟环境）：
 
 ```powershell
-backend\.venv\Scripts\python.exe scripts/validate-codex-config.py
+python scripts/validate-codex-config.py
+python -m unittest discover -s scripts/tests -p "test_codex_config.py"
+git diff --check
 ```
 
-此命令仅检查 TOML、角色字段、策略一致性、引用路径和 Git 忽略规则，不调用模型。支持 `--strict-config` 的 CLI 可额外运行 `codex --strict-config doctor --summary`；它检查客户端配置和环境，仍不等于模型调用成功，CLI 版本也不能替代 App 内置运行时版本。
+校验器仅用标准库，分开报告 STATIC_SYNTAX、POLICY_CONSISTENCY 和 RUNTIME_UNVERIFIED。不调用模型、不加载认证、不修改配置；额外未知字段只提醒需核实，不冒充完整官方 schema。文档大小以字节提示，不等于 token 数。
 
-新任务中进行一次最小只读验收：
+## 一次最小运行验收
+
+先完成静态验证，且确认新测试任务实际采用新项目默认。只有当前工具支持按名选择角色时执行以下一次只读验收，不能用通用 Luna 调用冒充角色配置加载：
 
 ```text
-这是团队方案 A 的配置验收。不要修改文件，不运行构建或业务测试，不执行 Git 操作。
-读取项目配置，依次调用 rrn_scout、rrn_worker、rrn_core 三个已配置角色。
-每个角色只读取 package.json 的 scripts，并返回一条脚本事实，不再派生子代理。
-明确使用角色指定的模型和推理档位，使用必要的最小上下文。
-从可取得的子线程详情或日志核对角色、实际模型、effort 和完成状态。
-分别报告：配置读取、调用成功、实际模型/档位验证。字段不可见就写未验证；不可用就报告实际错误，不替换角色或模型。
+这是 Royal-Regent-Nexus V2 的一次性运行验收。
+不修改文件、不构建应用、不跑业务测试、不执行 Git 写操作。
+只调用 rrn_scout 一次，读取 package.json 的 scripts，返回一条真实脚本事实。
+使用工具支持的最小必要上下文，不再派生。
+记录主线程、子线程的实际模型/effort、子线程角色及完成状态，证据来自运行元数据。
+核对该子角色的多代理工具是否不可用；看不到就写未验证。
+不以模型自称作证，不再调用 Astra 验证探针。
 ```
 
-预期为 scout=Luna/medium、worker=Terra/medium、core=Astra/xhigh。探针会产生少量账户用量；不需要每次业务任务重跑。其他角色共用格式，但这些探针并不证明所有角色和其他成员账户都已验证。
+当前接口不能选角色、不能确认新默认或不能取得调用元数据时，交付静态结果和明确限制。core/reviewer 留到首次真实高影响任务顺序验证，不为配置验收逐个调用。证据状态见 [validation.md](validation.md)，检索入口见 [context-index.md](context-index.md)。
 
-如果客户端不识别角色、拒绝字段或忽略项目配置，应先核对项目根、信任状态、显式模型选择和客户端兼容性；不要通过修改认证、模型提供商或权限来掩盖失败。共享文件已拉取、配置被加载、模型确实调用成功是三个不同状态。
+## 维护、用量与回退
 
-## 文件与维护
+仅长期事实变化时原地维护 PROJECT_MEMORY.md，探针日志留在已忽略的 `.tmp/agent-routing/`。不保存凭据、全量对话或无关个人信息，不把本地日志放进共享文档。静态通过、配置加载、目标调用核实、节省效果观测是四个不同状态。
 
-- `.codex/config.toml`：主模型、默认子模型和并发数量。
-- `.codex/agents/rrn_*.toml`：六个角色的模型、档位和边界。
-- `AGENTS.md`：短协作规则；`.agents/skills/rrn-model-routing/`：按需加载的细则。
-- `PROJECT_MEMORY.md`：仅保存长期的配置事实，不追加每次任务或探针记录。
+优先复用现有 App 的可比真实任务数据，未知字段保持 null。套餐剩余量、credits、token/调用次数不能互相直接换算；未确认累计/增量及父子汇总口径就不相加。没有同等验收标准与真实用量对照，不承诺任何节省百分比，不自动重跑业务任务凑样本。
 
-本方案不能保证固定节省比例，也不是费用硬上限。减少重复上下文和无效派发，同时保留必要测试与独立审查。恢复时按正常 Git 变更撤销本配置的对应文件/段落，保留其他人的改动，不使用 `reset --hard`。
+改造前在 `.tmp/agent-routing/` 保存本次文件快照、已有差异和哈希。回退仅恢复本次管理文件/段落，并同步回退配置、角色、规则和校验器；已有及后续用户改动必须保留。新建文件只在确认无后续修改时移除。不使用 reset --hard、全仓 checkout 或覆盖全局配置。
 
-配置能力依据（2026-09-12 核对）：[子代理](https://learn.chatgpt.com/docs/agent-configuration/subagents)、[配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)、[配置优先级与项目信任](https://learn.chatgpt.com/docs/config-file/config-basic)。实际生效情况以各成员的客户端验收为准。
+字段依据：[官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)、[官方子代理文档](https://learn.chatgpt.com/docs/agent-configuration/subagents)。官方字段说明不等于当前 App 的一次实际调用证据。
