@@ -633,6 +633,12 @@ def system_position_grant_department_matches(
     department: str | None,
 ) -> bool:
     """Keep department-owned actions and feeds inside the bound position department."""
+    # The warehouse manager's cross-factory scope covers the PMC inbox, not
+    # the injection inbox that shares these permission codes.
+    if grant.role_id == "position_warehouse_manager" and permission in {
+        "customer_order:inbox_read", "customer_order:inbox_receive"
+    } and department not in {None, "*"}:
+        return department in {"pmc-warehouse", "warehouse"}
     if permission not in POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES or department in {None, "*"}:
         return True
     if grant.role_id == "position_general_manager" or grant.department == "*":

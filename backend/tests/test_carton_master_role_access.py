@@ -25,7 +25,7 @@ def test_warehouse_roles_maintain_own_factory_without_individual_grants(monkeypa
                 db.commit()
                 context = build_auth_context(db, db.get(AuthUser, profile['id']))
                 assert can_manage(context, 'huaxing'), role
-                assert not can_manage(context, 'huadeng'), role
+                assert can_manage(context, 'huadeng') is (role == 'position_warehouse_manager'), role
                 assert not has_permission_in_scope(context, 'system:access_manage', 'huaxing', department)
             workspace = client.get(BASE+'/master-data', params={'factory_id':'huaxing'})
             assert workspace.status_code == 200 and workspace.json()['can_manage'], (role, workspace.text)
@@ -33,7 +33,9 @@ def test_warehouse_roles_maintain_own_factory_without_individual_grants(monkeypa
                 'code':f'TEST-ROLE-{index}','data':{},'reason':'测试岗位资料维护'})
             assert result.status_code == 201, (role,result.text)
             assert client.post(BASE+'/master-data',json={'factory_id':'huadeng','kind':'WORKSHOP',
-                'code':'FOREIGN','data':{},'reason':'验证厂区边界'}).status_code == 403
+                'code':f'FOREIGN-{index}','data':{},'reason':'验证厂区边界'}).status_code == (
+                    201 if role == 'position_warehouse_manager' else 403
+                )
             assert client.post(BASE+'/master-data',json={'factory_id':'huaxing','kind':'ACCESS',
                 'code':profile['id'],'data':{'warehouses':['A']},'reason':'旧授权入口已撤回'}).status_code == 422
         # A retained legacy grant must not bypass an explicit master-data deny.
