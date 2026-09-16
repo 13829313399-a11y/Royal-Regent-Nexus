@@ -1,7 +1,8 @@
 import importlib
 import json
+import pytest
 
-from test_internal_quote_api import create_payload, ensure_user, login, logout, make_client
+from test_internal_quote_api import create_payload, ensure_user, grant_user_permission, login, logout, make_client
 
 
 def mark_whole_quote_ready(quote_id: str) -> None:
@@ -45,6 +46,56 @@ def whole_review_payload(suffix: str, reviewer_id: str, reviewer_name: str) -> d
         }
     )
     return payload
+
+
+@pytest.mark.parametrize('decision', ['approve', 'reject'])
+@pytest.mark.parametrize('count', [1, 2])
+@pytest.mark.parametrize('creator', ['engineer', 'reviewer'])
+def test_selected_reviewer_can_review_own_whole_submission(monkeypatch, decision, count, creator):
+    monkeypatch.setenv('AUTHZ_MODE', 'enforce')
+    monkeypatch.setenv('AUTHZ_WRITES_ENABLED', 'true')
+    with make_client(monkeypatch) as client:
+        ensure_user('reviewer', 'sales_customer_owner', 'sales-business')
+        grant_user_permission('reviewer', 'internal_quote:sales_review', 'sales-business')
+        if creator == 'engineer':
+            login(client, creator, 'engineer', 'engineering')
+        else:
+            login(client, creator, 'sales_customer_owner', 'sales-business')
+        payload = whole_review_payload('SAME-SUBMITTER', 'user-reviewer', 'reviewer')
+        payload['initiator_department'] = 'engineering' if creator == 'engineer' else 'sales-business'
+        if count == 2:
+            payload.update(quote_type='series', products=[
+                {'product_name': '第一款', 'qty': 5000}, {'product_name': '第二款', 'qty': 5000},
+            ])
+        created = client.post('/api/internal-quotes', json=payload)
+        assert created.status_code == 201, created.text
+        root = created.json()
+        products = client.get(f"/api/internal-quotes/{root['id']}/batch-products").json()
+        ids = [item['quote_id'] for item in products]
+        assert len(ids) == count
+        for quote_id in ids:
+            mark_whole_quote_ready(quote_id)
+        logout(client)
+        profile = login(client, 'reviewer', 'sales_customer_owner', 'sales-business')
+        assert 'internal_quote:self_review' not in profile['permissions']
+        submitted = client.post(f"/api/internal-quotes/{ids[0]}/final-submit", json={'revision': 1})
+        assert submitted.status_code == 200, submitted.text
+        assert submitted.json()['quote']['final_submitted_by'] == 'user-reviewer'
+        reviewed = client.post(f"/api/internal-quotes/{ids[-1]}/final-review", json={
+            'revision': 2, 'decision': decision, 'reason': '指定审核人自行提交后复核',
+        })
+        assert reviewed.status_code == 200, reviewed.text
+        for quote_id in ids:
+            result = client.get(f'/api/internal-quotes/{quote_id}').json()
+            assert result['status'] == ('fully_approved' if decision == 'approve' else 'rejected')
+            assert result['final_submitted_by'] == result['final_reviewed_by'] == 'user-reviewer'
+            history = client.get(f'/api/internal-quotes/{quote_id}/final-reviews').json()
+            assert len(history) == 1 and history[0]['actor_id'] == 'user-reviewer'
+            assert history[0]['decision'] == decision
+        duplicate = client.post(f"/api/internal-quotes/{ids[0]}/final-review", json={
+            'revision': 2, 'decision': decision, 'reason': '重复操作',
+        })
+        assert duplicate.status_code == 409
 
 
 def test_whole_quote_review_submits_once_and_only_selected_reviewer_can_approve(monkeypatch):

@@ -62,6 +62,16 @@ export function canReviewInternalQuoteSections(
   )
 }
 
+export function canReviewWholeInternalQuote(
+  authStore: InternalQuoteAccessChecker,
+  quote: { moduleVersion: string; factoryId: string; businessOwnerId: string; createdById: string },
+) {
+  // Whole review follows the selected reviewer's access, including when they submitted it.
+  return quote.moduleVersion === 'v3' && canReviewInternalQuoteSections(
+    authStore, quote.factoryId, quote.businessOwnerId, quote.createdById,
+  )
+}
+
 export function canWithdrawInternalQuote(
   authStore: InternalQuoteAccessChecker,
   quote: { moduleVersion: string; status: string; createdById: string; factoryId: string },
