@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v29"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v30"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -631,6 +631,9 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
                  "amount_hkd": line.get("amount_hkd", line.get("line_hkd", 0))}
         if paired:
             source = sources[index]
+            entry.update(specification=source.get("specification", source.get("spec", line.get("specification", ""))),
+                         quantity=1 if quick else source.get("quantity", line.get("quantity")),
+                         unit=source.get("unit", line.get("unit", "")))
             if code == "electronic" or line.get("category") == "hardware":
                 currency = "RMB" if "unit_price_rmb" in source or line.get("category") == "hardware" else "HKD"
             else:
@@ -671,6 +674,20 @@ def _purchase_pricing_entries(entries, sections) -> list[dict[str, Any]]:
         else:
             result.append(entry)
     return result
+
+
+def _purchase_detail_label(entry: dict[str, Any], fallback: str = "") -> str:
+    name = _plain_text(entry.get("label") or entry.get("item")) or fallback
+    if entry.get("kind") not in {"material", "packaging_material", "electronic_component"}:
+        return _safe_text(name)
+    specification = _plain_text(entry.get("specification") or entry.get("spec"))
+    if specification and specification not in name:
+        name = f"{specification} {name}".strip()
+    quantity = entry.get("quantity")
+    if quantity not in (None, ""):
+        unit = _plain_text(entry.get("unit")) or "pcs"
+        name += f"（{_compact_number_label(_float_value(quantity))}{unit}）"
+    return _safe_text(name)
 
 
 def _pricing_entry_amount(entry: dict[str, Any]) -> object:
@@ -1975,6 +1992,49 @@ def _carton_detail_label(index: int, count: int) -> str:
     return "外纸箱" if index == 0 else "内纸箱" if index == 1 else f"内纸箱{index}"
 
 
+def _write_transport_inputs(sheet, start_row, routes, sales_section, cuft_ref, quantity_ref,
+                            *, freight_enabled, lifting_enabled):
+    """Expose frozen route inputs and link per-piece fees to visible carton cells.
+
+    Legacy summaries without matching source routes keep their saved prices;
+    never infer whole-container fees from rounded per-piece amounts.
+    """
+    options = _list_of_dicts(_dict_value(_section_calculation(sales_section).get("totals", {})).get("freight_options", []))
+    if not routes or len(options) != len(routes) or not cuft_ref or not quantity_ref or any(
+        _plain_text(option.get("item")) != _plain_text(route.get("name") or route.get("item"))
+        or option.get("has_lifting_fee") is not True
+        or _float_value(option.get("capacity_cuft")) <= 0
+        or (freight_enabled and option.get("freight_cost_hkd") in (None, ""))
+        or (lifting_enabled and option.get("lifting_cost_hkd") in (None, ""))
+        for option, route in zip(options, routes)
+    ):
+        return start_row, [{"freight_hkd": _number(route.get("freight_hkd", "")),
+                            "lift_hkd": _number(route.get("lift_hkd", ""))} for route in routes]
+    labels = ["柜/车容量（CUFT）", "装柜箱数"]
+    if freight_enabled:
+        labels.append("整柜/车运费（HKD）")
+    if lifting_enabled:
+        labels.append("整柜/车吊柜费（HKD）")
+    for offset, label in enumerate(labels):
+        _template_cell(sheet, start_row + offset, 3, label, horizontal="left", wrap_text=False, border=None)
+        sheet.row_dimensions[start_row + offset].height = 15
+    results = []
+    for column, option in enumerate(options, start=5):
+        letter = get_column_letter(column)
+        _template_cell(sheet, start_row, column, _number(option["capacity_cuft"]), number_format="0.####" if _float_value(option["capacity_cuft"]) % 1 else "0", border=None)
+        _template_cell(sheet, start_row + 1, column, f"=MAX(1,ROUND({letter}{start_row}/{cuft_ref},0))", number_format="0", border=None)
+        values = {"freight_hkd": 0, "lift_hkd": 0}
+        fee_row = start_row + 2
+        for enabled, source_key, key in [(freight_enabled, "freight_cost_hkd", "freight_hkd"),
+                                         (lifting_enabled, "lifting_cost_hkd", "lift_hkd")]:
+            if enabled:
+                _template_cell(sheet, fee_row, column, _number(option.get(source_key, 0)), number_format="0.00", border=None)
+                values[key] = f"=ROUND({letter}{fee_row}/{letter}{start_row + 1}/({quantity_ref}),4)"
+                fee_row += 1
+        results.append(values)
+    return start_row + len(labels), results
+
+
 def _carton_price_label(index: int, count: int) -> str:
     if count == 1:
         return "箱价："
@@ -2332,7 +2392,7 @@ def _build_summary_sheet(
             add_detail(tax_tag, category, category, amount)
             return
         for line in matches:
-            detail_rows.append((tax_tag, category, _safe_text(line.get("label")) or category,
+            detail_rows.append((tax_tag, category, _purchase_detail_label(line, category),
                                 _pricing_entry_amount(line)))
         # Electronic department totals include supplier overhead/profit/tax.
         # Preserve those costs separately instead of disguising them as unit prices.
@@ -2547,6 +2607,8 @@ def _build_summary_sheet(
 
     cuft_offset = len(packaging_rows)
     packaging_rows.append(["CUFT:", "", "", ""])
+    cbm_offset = len(packaging_rows)
+    packaging_rows.append(["CBM:", f"={dimension_letters[0]}{packaging_start_row + cuft_offset}*0.028316846592", "", ""])
     paperboard_offset = len(packaging_rows)
     packaging_rows.append(["纸板价", "", "", ""])
     carton_price_offsets: list[int] = []
@@ -2650,6 +2712,7 @@ def _build_summary_sheet(
                 size=(8 if justplay_basis and column == side_start_column and offset in dimension_row_offsets
                       else 11 if column in dimension_columns and offset in dimension_row_offsets else 10),
                 number_format=(
+                    "0.000000" if column == side_start_column + 1 and offset == cbm_offset else
                     "0.000_ "
                     if column == side_start_column + 1
                     and offset in {cuft_offset, paperboard_offset, *carton_price_offsets, total_offset}
@@ -2862,7 +2925,11 @@ def _build_summary_sheet(
                 border=None,
             )
         route_fee_rows: list[tuple[int, str, str]] = []
-        next_route_fee_row = route_header_row + 1
+        next_route_fee_row, route_formulas = _write_transport_inputs(
+            sheet, route_header_row + 1, route_rows, sales_section,
+            f"${dimension_letters[0]}${packaging_start_row + cuft_offset}", quantity_references[0],
+            freight_enabled=freight_output_enabled, lifting_enabled=lifting_output_enabled,
+        )
         if freight_output_enabled:
             freight_row = next_route_fee_row
             route_fee_rows.append((freight_row, "运费", "freight_hkd"))
@@ -2896,7 +2963,7 @@ def _build_summary_sheet(
                     sheet,
                     row_index,
                     route_start_column + offset,
-                    _number(route.get(value_key, "")),
+                    route_formulas[offset][value_key],
                     wrap_text=False,
                     number_format="0.00",
                     border=None,
@@ -3003,7 +3070,7 @@ def _build_summary_sheet(
             for entry_offset, entry in enumerate(entries):
                 detail_row = detail_row_start + entry_offset
                 category = ordinary_purchase_category(entry) if standard_detail_split else _pricing_entry_summary_category(entry)
-                description = _safe_text(entry.get("label")) or category
+                description = _purchase_detail_label(entry, category)
                 entry_carton_index = next((
                     index for index, row in enumerate(cartons)
                     if str(entry.get("kind") or "") == "carton" and _safe_text(row.get("item")) == description
@@ -3709,6 +3776,8 @@ def _justplay_electronic_source_parts(section: InternalQuoteSection | None) -> l
             "category": _justplay_electronic_category(name, specification),
             "name": _plain_text(name),
             "specification": _plain_text(specification),
+            "quantity": line.get("quantity"),
+            "unit": line.get("unit", ""),
             "amount_hkd": _float_value(line.get("amount_hkd", line.get("line_hkd"))),
             "pricing_component_id": line.get("pricing_component_id") or source.get("pricing_component_id", ""),
         })
@@ -3925,10 +3994,7 @@ def _replace_with_component_summary_sheet(
                 category = "电池" if key == "电池" else "电子"
                 selected = [part for part in parts if part["category"] == key and part["amount_hkd"] > 0]
                 for part in selected:
-                    description = part["name"] or part["specification"] or key
-                    if part["specification"] and part["specification"] != description:
-                        description += f"（{part['specification']}）"
-                    label = description if description == key else f"{key}（{description}）"
+                    label = _purchase_detail_label({**part, "kind": "electronic_component", "label": part["name"]}, key)
                     detail_values.append(("¥13%", category, label, part.get("source_amount", part["amount_hkd"])))
                 if key == "PCB":
                     pcb_offset = len(detail_values)
@@ -3936,7 +4002,7 @@ def _replace_with_component_summary_sheet(
                     detail_values.append(("¥13%", category, label, f"=H{start_row}-SUM(D{row}:D{row + pcb_offset - 1})"))
                 if key == "电池":
                     for entry in battery_entries:
-                        detail_values.append(("¥13%", category, _safe_text(entry.get("label")) or key,
+                        detail_values.append(("¥13%", category, _purchase_detail_label(entry, key),
                                               _pricing_entry_amount(entry)))
                 if not selected and key != "PCB" and not (key == "电池" and battery_entries):
                     detail_values.append(("¥13%", category, key, 0))
@@ -3949,7 +4015,7 @@ def _replace_with_component_summary_sheet(
             _template_cell(target, start_row, 8, total_formula, number_format="0.000")
         else:
             detail_values = [(_pricing_entry_tax_tag(entry), _pricing_entry_summary_category(entry),
-                              _safe_text(entry.get("label")) or department_name, _pricing_entry_amount(entry))
+                              _purchase_detail_label(entry, department_name), _pricing_entry_amount(entry))
                              for entry in entries]
         for values in detail_values:
             for column, value in enumerate(values, 1):
@@ -3992,7 +4058,7 @@ def _replace_with_component_summary_sheet(
         for entry in entries:
             unit_price = format(_float_value(entry.get("unit_price_hkd")), ".12g")
             fee_rate = format(_float_value(entry.get("fee_rate_percent")) / 100, ".12g")
-            for col, value in ((2, "其他外购"), (3, _safe_text(entry.get("label"))),
+            for col, value in ((2, "其他外购"), (3, _purchase_detail_label(entry)),
                                (4, f"=ROUND({unit_price}*{fee_rate},4)")):
                 _template_cell(target, row, col, value, horizontal="left" if col in {2, 3} else "center",
                                number_format="0.0000" if col == 4 else None)
@@ -4166,7 +4232,7 @@ def _replace_with_component_summary_sheet(
                 (
                     _pricing_entry_tax_tag(entry),
                     category,
-                    _safe_text(entry.get("label")) or category,
+                    _purchase_detail_label(entry, category),
                     _pricing_entry_amount(entry),
                 )
             )
@@ -4353,7 +4419,7 @@ def _replace_with_component_summary_sheet(
         is_carton = category == "纸箱" or str(entry.get("kind") or "") == "carton"
         if is_carton and carton_rendered and not entry.get("carton_price_label"):
             continue
-        description = _safe_text(entry.get("label")) or category
+        description = _purchase_detail_label(entry, category)
         if (
             str(entry.get("section") or "") == "assembly"
             and str(entry.get("category") or "") == "packaging"
@@ -4448,7 +4514,17 @@ def _replace_with_component_summary_sheet(
 
     packaging_cost_end_row = packaging_detail_row - 1
     visible_detail_ranges.append((packaging_title_row + 1, packaging_cost_end_row))
-    packaging_freight_row = packaging_detail_row
+    source_cuft_row = next((row for row in range(source_packaging_start, source_summary_start)
+                            if source.cell(row, side_start_column).value == "CUFT:"), None)
+    cuft_ref = (f"${get_column_letter(side_start_column + 1)}${packaging_title_row + source_cuft_row - source_packaging_start}"
+                if source_cuft_row is not None else None)
+    quantity_ref = (_carton_quantity_reference(f"{get_column_letter(side_start_column + 1)}{target_packing_qty_row}", 0, len(cartons))
+                    if target_packing_qty_row is not None else None)
+    packaging_freight_row, route_formulas = _write_transport_inputs(
+        target, packaging_detail_row, route_rows, by_code.get("sales"), cuft_ref, quantity_ref,
+        freight_enabled=shipping.get("freight_enabled", shipping.get("enabled", True)) is not False,
+        lifting_enabled=shipping.get("lifting_enabled", shipping.get("enabled", True)) is not False,
+    )
     _template_cell(
         target,
         packaging_freight_row,
@@ -4463,7 +4539,7 @@ def _replace_with_component_summary_sheet(
             target,
             packaging_freight_row,
             column,
-            _float_value(route.get("freight_hkd")),
+            route_formulas[column - 5]["freight_hkd"],
             number_format="0.000",
             border=None,
         )
@@ -4612,7 +4688,7 @@ def _replace_with_component_summary_sheet(
             target,
             lift_cost_row,
             column,
-            _float_value(route.get("lift_hkd")),
+            route_formulas[column - 5]["lift_hkd"],
             number_format="0.000",
             border=None,
         )
@@ -4814,6 +4890,10 @@ def _replace_with_component_summary_sheet(
         target.cell(second_value_row, 12).value = _float_value(
             selected_route.get("lift_hkd")
         )
+        if route_formulas:
+            for column, key, fee_row in [(11, "freight_hkd", packaging_freight_row), (12, "lift_hkd", lift_cost_row)]:
+                if isinstance(route_formulas[-1][key], str) and route_formulas[-1][key].startswith("="):
+                    target.cell(second_value_row, column).value = f"={selected_summary_letter}{fee_row}"
         custody_cost_formula = "+".join(f"$D${row}" for row in customer_supplied_cost_rows)
         target.cell(second_value_row, 13).value = (
             f"=(D{first_value_row}-({custody_cost_formula}))*$Q$6"
