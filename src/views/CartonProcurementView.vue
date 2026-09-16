@@ -179,6 +179,17 @@ const loadingPurchaseOrderContext = ref(false)
 const issuingPurchaseOrder = ref(false)
 const downloadingPurchaseOrderIssueId = ref('')
 const selectedOrderNos = ref<string[]>([])
+const selectedExceptionNos = ref<string[]>([])
+const bulkExceptionNote = ref('')
+const deleteHistoryTarget = ref<CartonOrderResponse | null>(null)
+const deleteHistoryReason = ref('历史订单导入有误')
+const deletingHistory = ref(false)
+const replenishTarget = ref<CartonOrderResponse | null>(null)
+const replenishResponsibility = ref<'' | 'OWN' | 'SUPPLIER'>('')
+const replenishReason = ref('')
+const replenishQuantities = ref<Record<string, number | string>>({})
+const replenishing = ref(false)
+const replenishError = ref('')
 const orderDetailNo = ref('')
 const orderDetailPinned = ref(false)
 const openOrderMoreMenu = ref('')
@@ -377,6 +388,7 @@ const localOrders = reactive<CartonOrderRow[]>(cartonOrders.map((row) => ({
   materials: row.materials.map((material) => ({ ...material })),
 })))
 type InventoryMovementViewRow = InventoryMovementRow & {
+  sourceType?: string
   money?: InventoryMoney
   rawMovementType?: CartonInventoryMovementResponse['movement_type']
   reversalOfMovementId?: string | null
@@ -435,6 +447,9 @@ const orderRecords = ref<CartonOrderResponse[]>([])
 const inventoryOrderLines = computed(() => new Map(orderRecords.value.flatMap(order => order.lines.map(line => [line.id, line] as const))))
 
 interface ReceiptReviewLine extends ReceiptLineSeed {
+  replenishmentIssueId?: string
+  replacementResponsibility?: string
+  replacementDocumentNo?: string
   allocations?: LocationAllocation[]
   sourceType: 'FORMAL_ORDER' | 'AD_HOC'
   orderLineId: string
@@ -950,6 +965,14 @@ const visibleExceptions = computed(() => localExceptions.filter((row) =>
   && includesSearch([row.id, row.customer, row.type, row.title, row.detail, row.status]),
 ))
 
+const selectedExceptions = computed(() => localExceptions.filter(row => selectedExceptionNos.value.includes(row.id)))
+const allVisibleExceptionsSelected = computed(() => visibleExceptions.value.length > 0 && visibleExceptions.value.every(row => selectedExceptionNos.value.includes(row.id)))
+const someVisibleExceptionsSelected = computed(() => visibleExceptions.value.some(row => selectedExceptionNos.value.includes(row.id)))
+function selectVisibleExceptions(selected: boolean) {
+  const ids = visibleExceptions.value.map(row => row.id)
+  selectedExceptionNos.value = selected ? [...new Set([...selectedExceptionNos.value, ...ids])] : selectedExceptionNos.value.filter(id => !ids.includes(id))
+}
+
 const visibleReceiptLines = computed(() => {
   if (showReceiptDialog.value) return receiptLines
   const term = globalSearch.value.trim().toLowerCase()
@@ -1278,6 +1301,11 @@ watch(selectedFactoryId, (factoryId, previousFactory) => {
   receiptDeliveryDate.value = businessTodayIso()
   receiptAcceptanceDate.value = businessTodayIso()
   selectedOrderNos.value = []
+  selectedExceptionNos.value = []
+  bulkExceptionNote.value = ''
+  deleteHistoryTarget.value = null
+  replenishTarget.value = null
+  replenishQuantities.value = {}
   historyItemSuggestions.value = []
   showHistoryItemSuggestions.value = false
   selectedHistoryItemSource.value = null
@@ -1423,6 +1451,13 @@ function populateManualReceipt(orderNos: string[]) {
         sourceLabel: '人工录入',
         remainingQuantity: Number(line.remaining_quantity),
       }))))
+  for (const row of receiptLines) {
+    const options = receiptReplacementOptions(row)
+    if (options.length === 1 && Number(options[0]!.remaining_quantity) >= row.remainingQuantity) {
+      row.replenishmentIssueId = options[0]!.replenishment_issue_id
+    }
+    if (options.length) changeReceiptReplacement(row)
+  }
   receiptDeliveryNoteNo.value = ''
   receiptDeliveryDate.value = businessTodayIso()
   receiptAcceptanceDate.value = businessTodayIso()
@@ -1761,6 +1796,69 @@ function canEditConfirmedOrder(orderNo: string) {
   return rawOrderStatus(orderNo) === 'CONFIRMED'
 }
 
+const replenishPositions = computed(() => {
+  const ids = new Set(replenishTarget.value?.lines.map(line => line.id) || [])
+  return localInventoryBalances.filter(row => row.orderLineId && ids.has(row.orderLineId) && row.balance > 0 && row.locationId)
+})
+function canReplenishOrder(orderNo: string) {
+  return canIssuePurchaseOrders.value && authStore.can('carton_procurement:inventory_write', selectedFactoryId.value)
+    && ['PARTIALLY_RECEIVED', 'COMPLETED'].includes(rawOrderStatus(orderNo))
+}
+function openReplenishOrder(orderNo: string) {
+  if (!canReplenishOrder(orderNo)) return
+  replenishTarget.value = orderRecords.value.find(row => row.order_no === orderNo) || null
+  replenishResponsibility.value = ''; replenishReason.value = ''; replenishQuantities.value = {}; replenishError.value = ''
+}
+async function submitReplenishment() {
+  const order = replenishTarget.value
+  if (!order || replenishing.value || !apiConnected.value) return
+  if (!replenishResponsibility.value) { replenishError.value = '请选择责任方：我方问题或供应商问题。'; return }
+  const positions = replenishPositions.value.filter(row => Number(replenishQuantities.value[row.id]) > 0)
+  if (!positions.length || replenishPositions.value.some(row => {
+    const value = Number(replenishQuantities.value[row.id] || 0)
+    return !Number.isFinite(value) || value < 0 || value > row.balance
+  })) { replenishError.value = '请填写至少一项补单数量，且不能超过对应仓位库存。'; return }
+  const factoryId = selectedFactoryId.value
+  replenishing.value = true; replenishError.value = ''
+  try {
+    const result = await cartonProcurementApi.replenishOrder(factoryId, order, replenishResponsibility.value, replenishReason.value.trim(), positions.map(row => ({
+      order_line_id: row.orderLineId!, location_id: row.locationId!, quantity: Number(replenishQuantities.value[row.id]),
+    })))
+    if (selectedFactoryId.value !== factoryId) return
+    replenishTarget.value = null
+    await loadBackendData()
+    if (selectedFactoryId.value === factoryId) actionMessage.value = apiConnected.value
+      ? `补单 ${result.issue.document_no} 已生成并自动出库；原订单数量不变，补货到仓后在收料入库登记。采购单中可下载补单。`
+      : `补单 ${result.issue.document_no} 已提交，列表刷新失败，请点击刷新；不要重复下单。`
+  } catch (error) {
+    if (selectedFactoryId.value === factoryId) {
+      if (replenishTarget.value) replenishError.value = getApiErrorMessage(error)
+      else actionMessage.value = '补单已提交，列表刷新失败，请点击刷新；不要重复下单。'
+    }
+  } finally { replenishing.value = false }
+}
+
+function canDeleteHistoryOrder(orderNo: string) {
+  return canIssuePurchaseOrders.value && Boolean(orderRecords.value.find(order => order.order_no === orderNo)?.can_delete_history)
+}
+
+async function deleteHistoryOrder() {
+  const order = deleteHistoryTarget.value
+  if (!order || deletingHistory.value || deleteHistoryReason.value.trim().length < 4) return
+  const factoryId = selectedFactoryId.value
+  deletingHistory.value = true
+  try {
+    await cartonProcurementApi.deleteHistoryOrder(factoryId, order, deleteHistoryReason.value.trim())
+    if (selectedFactoryId.value !== factoryId) return
+    deleteHistoryTarget.value = null
+    selectedOrderNos.value = selectedOrderNos.value.filter(id => id !== order.order_no)
+    actionMessage.value = `历史订单 ${order.order_no} 已删除，删除前明细已保留在操作日志。`
+    await loadBackendData()
+  } catch (error) {
+    if (selectedFactoryId.value === factoryId) actionMessage.value = `历史订单未删除：${getApiErrorMessage(error)}`
+  } finally { deletingHistory.value = false }
+}
+
 function canAppendOrder(orderNo: string) {
   const status = rawOrderStatus(orderNo)
   return status === 'CONFIRMED'
@@ -1880,6 +1978,7 @@ function mapMovement(row: CartonInventoryMovementResponse) {
         : [row.reason, row.workshop_name ? `领用车间：${row.workshop_name}` : ''].filter(Boolean).join('；'),
     money: row,
     rawMovementType: row.movement_type,
+    sourceType: row.source_type,
     reversalOfMovementId: row.reversal_of_movement_id,
   }
 }
@@ -2449,12 +2548,16 @@ function auditEventLabel(eventType: string) {
     HISTORY_ORDER_MATERIAL_COMPLETED: '收料补齐历史纸品资料',
     ORDER_UPDATED: '订单修改',
     ORDER_APPENDED: '追加订单',
+    ORDER_REPLENISHED: '补单并出库',
+    HISTORY_ORDER_DELETED: '删除历史订单',
     ORDER_REDUCED: '订单减单 / 退单',
     ORDER_CANCELLED: '订单取消',
     ORDER_RETURNED: '订单退单',
     RECEIPT_CREATED: '收料单创建',
     RECEIPT_DRAFT_CREATED: '收料草稿创建',
     RECEIPT_CONFIRMED: '收料确认入库',
+    RECEIPT_REPLENISHMENT_LINKED: '补货关联补单及计费责任',
+    RECEIPT_ORDINARY_CLASSIFIED: '收料确认为普通采购',
     RECEIPT_REVERSED: '收料作废 / 冲销',
     INVENTORY_MOVEMENT_CREATED: '库存流水登记',
     INVENTORY_PRICE_CONFIRMED: '入库单价核实',
@@ -2603,7 +2706,33 @@ function clearInventoryBalanceFilters() {
   inventoryBalanceDateRange.value = { start: undefined, end: undefined }
 }
 
+function receiptReplacementOptions(row: ReceiptReviewLine) {
+  return orderRecords.value.flatMap(order => order.lines).find(line => line.id === row.orderLineId)?.replenishment_options ?? []
+}
+function receiptReplacementNeedsReview(row: ReceiptReviewLine) {
+  return orderRecords.value.flatMap(order => order.lines).find(line => line.id === row.orderLineId)?.replenishment_review_required
+}
+function receiptReplacement(row: ReceiptReviewLine) {
+  return receiptReplacementOptions(row).find(option => option.replenishment_issue_id === row.replenishmentIssueId)
+}
+function freeReplacement(row: ReceiptReviewLine) {
+  return (receiptReplacement(row)?.responsibility ?? row.replacementResponsibility) === 'SUPPLIER'
+}
+function changeReceiptReplacement(row: ReceiptReviewLine) {
+  const option = receiptReplacement(row)
+  row.replacementResponsibility = option?.responsibility
+  row.replacementDocumentNo = option?.document_no
+  const original = orderRecords.value.flatMap(order => order.lines).find(line => line.id === row.orderLineId)
+  const ordinary = Math.max(0, Number(original?.remaining_quantity ?? row.remainingQuantity) - Number(original?.pending_received_quantity ?? 0)
+    - receiptReplacementOptions(row).reduce((sum, item) => sum + Number(item.remaining_quantity), 0))
+  row.remainingQuantity = option ? Number(option.remaining_quantity) : ordinary
+  row.deliveryQuantity = Math.min(row.deliveryQuantity, row.remainingQuantity)
+  row.receivedQuantity = Math.min(row.receivedQuantity, row.deliveryQuantity)
+  row.damagedQuantity = 0; row.rejectedQuantity = 0; row.unusableQuantity = 0; row.allocations = []
+  row.unitPrice = freeReplacement(row) ? 0 : Number(original?.unit_price ?? 0)
+}
 function paperProtectedQuantity(line: CartonOrderResponse['lines'][number]) {
+  if (line.maximum_reducible_quantity != null) return Math.max(0, Number(line.required_quantity) - Number(line.maximum_reducible_quantity))
   return Number(line.received_quantity) + Number(line.pending_received_quantity ?? pendingReceiptQuantity(line.id))
 }
 function validatePaperTargets(order: CartonOrderResponse, targets: Record<string, number | ''>, increasing: boolean) {
@@ -2806,7 +2935,7 @@ async function downloadPurchaseOrderIssue(issue: CartonPurchaseOrderIssueRespons
       purchaseOrderDialogNo.value,
       issue.id,
     )
-    downloadWorkbook(blob, `${issue.document_no}_${purchaseOrderTypeLabel(issue.document_type)}.xlsx`)
+    downloadWorkbook(blob, `${issue.document_no}_${(issue.is_replenishment ? '补单采购单' : purchaseOrderTypeLabel(issue.document_type))}.xlsx`)
     actionMessage.value = `${issue.document_no} 已按原生成版本重新下载。`
   } catch (error) {
     actionMessage.value = `采购单历史下载失败：${await getApiErrorMessageAsync(error)}`
@@ -3184,6 +3313,7 @@ function bulkOutboundRemaining(row: InventoryBalanceRow) {
 
 function movementCanReverse(row: InventoryMovementViewRow) {
   return apiConnected.value
+    && row.sourceType !== 'ORDER_REPLENISHMENT'
     && ['OUTBOUND', 'ADJUSTMENT'].includes(row.rawMovementType ?? '')
     && !localMovements.some((candidate) => candidate.reversalOfMovementId === row.id)
 }
@@ -3276,7 +3406,9 @@ function openReceiptHistoryDocument(receipt: CartonReceiptResponse, reenter = fa
     orderLineId: line.order_line_id || '', customerCode: line.customer_code, contractNo: line.contract_no,
     itemNo: line.item_no, description: `${line.packaging_type} ${line.paper_quality}`, packagingType: line.packaging_type,
     paperQuality: line.paper_quality, specification: line.specification, unit: line.unit, currency: line.currency,
-    unitPrice: Number(line.unit_price), deliveryQuantity: Number(line.delivered_quantity),
+    replenishmentIssueId: line.replenishment_issue_id ?? undefined, replacementResponsibility: line.responsibility ?? undefined,
+    replacementDocumentNo: line.document_no ?? undefined,
+    unitPrice: Number(line.settlement_unit_price ?? line.unit_price), deliveryQuantity: Number(line.delivered_quantity),
     receivedQuantity: Number(line.received_quantity), damagedQuantity: Number(line.damaged_quantity),
     rejectedQuantity: Number(line.rejected_quantity), unusableQuantity: Number(line.unusable_quantity), location: line.location, allocations: line.location_allocations?.map(part => ({ ...part })),
     sourceLabel: reenter ? '更正重录' : '历史记录',
@@ -3998,11 +4130,16 @@ async function saveReceiptFeedback() {
     return
   }
   const linesToSubmit = receiptLines.filter((row) => Number(row.deliveryQuantity) > 0 || Number(row.receivedQuantity) > 0)
+  if (linesToSubmit.some(receiptReplacementNeedsReview)) {
+    setReceiptFeedback('历史补单收料尚未关联，请核对原收料后通过冲销重录关联补单，再继续入库。')
+    return
+  }
   if (!linesToSubmit.length) {
     setReceiptFeedback('入库未完成：请至少填写一条大于 0 的送货或实收数量。')
     return
   }
   const invalidPriceLine = linesToSubmit.find((row) => {
+    if (freeReplacement(row)) return false
     const price = String(row.unitPrice ?? '').trim()
     return (receiptLineEffectiveQuantity(row) > 0 && (!price || Number(price) <= 0)) || (price !== '' && !/^\d{1,12}(\.\d{1,6})?$/.test(price))
   })
@@ -4033,6 +4170,7 @@ async function saveReceiptFeedback() {
         : `来源文件：${selectedReceiptFileName.value}；已逐行人工复核；非正式/打板明细 ${adHocReceiptLineCount.value} 行`),
       lines: linesToSubmit.map((row) => ({
         source_type: row.sourceType,
+        replenishment_issue_id: row.replenishmentIssueId || undefined,
         order_line_id: row.orderLineId || null,
         customer_code: row.customerCode,
         contract_no: row.contractNo,
@@ -4047,7 +4185,7 @@ async function saveReceiptFeedback() {
         damaged_quantity: Number(row.damagedQuantity),
         rejected_quantity: Number(row.rejectedQuantity),
         unusable_quantity: Number(row.unusableQuantity),
-        unit_price: Number(row.unitPrice),
+        unit_price: freeReplacement(row) ? undefined : Number(row.unitPrice),
         location: row.location,
         location_allocations: receiptLineEffectiveQuantity(row) > 0 ? row.allocations : [],
         feedback_note: row.sourceType === 'AD_HOC'
@@ -4081,7 +4219,7 @@ async function saveReceiptFeedback() {
 
 async function confirmCurrentReceipt() {
   if (!currentReceipt.value || confirmingReceipt.value || currentReceipt.value.status !== 'PENDING_CONFIRMATION') return
-  if (currentReceipt.value.lines.some(line => Number(line.effective_quantity) > 0 && !(Number(line.unit_price) > 0))) {
+  if (currentReceipt.value.lines.some(line => line.responsibility !== 'SUPPLIER' && Number(line.effective_quantity) > 0 && !(Number(line.unit_price) > 0))) {
     setReceiptFeedback('确认入库未完成：有效入库明细必须填写大于 0 的单价；这张待确认收料单缺价，请先作废后重新登记并补齐单价。')
     return
   }
@@ -4285,6 +4423,33 @@ async function advanceClosing(rowId: string) {
   }
 }
 
+function canBulkAdvanceExceptions(status: CartonExceptionResponse['status']) {
+  return apiConnected.value && !exceptionBusyId.value && selectedExceptionNos.value.length > 0
+    && selectedExceptionNos.value.length <= 500 && authStore.can('carton_procurement:exception_manage', selectedFactoryId.value)
+    && selectedExceptionNos.value.every(id => exceptionRecord(id)?.status === status)
+}
+
+async function bulkAdvanceExceptions(status: CartonExceptionResponse['status']) {
+  if (!canBulkAdvanceExceptions(status)) return
+  const nextStatus = nextExceptionStatus(status)
+  const note = bulkExceptionNote.value.trim()
+  const factoryId = selectedFactoryId.value
+  const records = selectedExceptionNos.value.map(id => exceptionRecord(id)!)
+  exceptionBusyId.value = '__BULK__'
+  try {
+    const updated = await cartonProcurementApi.bulkUpdateExceptions(factoryId, records, nextStatus, note)
+    if (factoryId !== selectedFactoryId.value) return
+    const byId = new Map(updated.map(row => [row.id, row]))
+    exceptionRecords.value = exceptionRecords.value.map(row => byId.get(row.id) || row)
+    localExceptions.splice(0, localExceptions.length, ...exceptionRecords.value.map(mapException))
+    selectedExceptionNos.value = selectedExceptionNos.value.filter(id => !records.some(row => row.exception_no === id))
+    bulkExceptionNote.value = ''
+    actionMessage.value = `已批量更新 ${updated.length} 条异常。`
+  } catch (error) {
+    if (factoryId === selectedFactoryId.value) actionMessage.value = `批量处理未生效：${getApiErrorMessage(error)}`
+  } finally { exceptionBusyId.value = '' }
+}
+
 function nextExceptionStatus(status: CartonExceptionResponse['status']) {
   return ({ OPEN: 'IN_PROGRESS', IN_PROGRESS: 'RESOLVED', RESOLVED: 'CLOSED', CLOSED: 'OPEN' } as const)[status]
 }
@@ -4316,10 +4481,6 @@ async function advanceException(displayId: string) {
   if (!exception) return
   const nextStatus = nextExceptionStatus(exception.status)
   const note = resolutionNotes[exception.id]?.trim() || exception.resolution_note
-  if ((nextStatus === 'RESOLVED' || nextStatus === 'CLOSED') && note.length < 4) {
-    actionMessage.value = '标记解决或关闭异常前，请填写至少 4 个字符的处理说明。'
-    return
-  }
   exceptionBusyId.value = exception.id
   try {
     const updated = await cartonProcurementApi.updateException(selectedFactoryId.value, exception, nextStatus, note)
@@ -4799,12 +4960,14 @@ function refreshDemo() {
                   <button v-if="canEditConfirmedOrder(row.id)" type="button" :disabled="!apiConnected || submittingSupplierOrder" class="inline-flex h-8 w-full items-center justify-center gap-1 whitespace-nowrap rounded-md bg-teal-700 px-2 text-[10px] font-bold text-white transition hover:bg-teal-800 disabled:opacity-40" :aria-label="`确认订单 ${row.id} 并锁定`" @click="openSubmitSupplierOrder(row.id)"><ShieldCheck class="size-3.5" />确认订单并锁定</button>
                   <button v-else-if="canReceiveOrder(row.id)" type="button" :disabled="!apiConnected" class="inline-flex h-8 w-full items-center justify-center gap-1 whitespace-nowrap rounded-md bg-teal-700 px-2 text-[10px] font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300" :aria-label="`登记 ${row.id} 收料`" @click="openManualReceipt(row.id)"><Truck class="size-3.5" />登记收料</button>
                   <button v-else type="button" :disabled="!apiConnected" class="inline-flex h-8 w-full items-center justify-center gap-1 whitespace-nowrap rounded-md bg-teal-700 px-2 text-[10px] font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300" :aria-label="`管理 ${row.id} 采购单`" @click="openPurchaseOrderDialog(row.id)"><Download class="size-3.5" />采购单</button>
-                  <div v-if="canEditConfirmedOrder(row.id) || canReceiveOrder(row.id) || canAppendOrder(row.id) || canReduceSubmittedOrder(row.id)" class="relative col-start-2 row-start-1 w-full">
+                  <div v-if="canEditConfirmedOrder(row.id) || canReceiveOrder(row.id) || canAppendOrder(row.id) || canReduceSubmittedOrder(row.id) || canDeleteHistoryOrder(row.id) || canReplenishOrder(row.id)" class="relative col-start-2 row-start-1 w-full">
                     <button type="button" class="inline-flex h-8 w-full items-center justify-center gap-1 whitespace-nowrap rounded-md border border-slate-200 bg-white px-1 text-[10px] font-bold text-slate-600 transition hover:border-slate-300 hover:bg-slate-100" :aria-label="`更多 ${row.id} 订单操作`" aria-haspopup="menu" :aria-expanded="openOrderMoreMenu === row.id" @click.stop="openOrderMoreMenu = openOrderMoreMenu === row.id ? '' : row.id">更多 <span class="text-[8px]">▾</span></button>
                     <button v-if="openOrderMoreMenu === row.id" type="button" class="fixed inset-0 z-20 cursor-default" :aria-label="`关闭 ${row.id} 更多操作`" @click="openOrderMoreMenu = ''"></button>
                     <div v-if="openOrderMoreMenu === row.id" role="menu" class="absolute right-0 top-full z-30 mt-1 w-44 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
                       <button v-if="canEditConfirmedOrder(row.id)" type="button" role="menuitem" :disabled="!apiConnected" class="flex w-full items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40" :aria-label="`修改 ${row.id} 订单`" @click="openOrderMoreMenu = ''; openEditOrderModal(row.id)"><Pencil class="size-3.5" />修改订单</button>
                       <button v-if="canEditConfirmedOrder(row.id) || canReceiveOrder(row.id)" type="button" role="menuitem" :disabled="!apiConnected" class="flex w-full items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-40" :aria-label="`管理 ${row.id} 采购单`" @click="openOrderMoreMenu = ''; openPurchaseOrderDialog(row.id)"><Download class="size-3.5" />采购单</button>
+                      <button v-if="canReplenishOrder(row.id)" type="button" role="menuitem" :disabled="!apiConnected || replenishing" class="flex w-full items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-40" :aria-label="`补单 ${row.id}`" @click="openOrderMoreMenu = ''; openReplenishOrder(row.id)"><Plus class="size-3.5" />补单（原数量不变）</button>
+                      <button v-if="canDeleteHistoryOrder(row.id)" type="button" role="menuitem" :disabled="!apiConnected || deletingHistory" class="flex w-full items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40" :aria-label="`删除历史订单 ${row.id}`" @click="openOrderMoreMenu = ''; deleteHistoryReason = '历史订单导入有误'; deleteHistoryTarget = orderRecords.find(order => order.order_no === row.id) || null"><Trash2 class="size-3.5" />删除历史订单</button>
                       <button v-if="canAppendOrder(row.id)" type="button" role="menuitem" :disabled="!apiConnected" :title="rawOrderStatus(row.id) === 'COMPLETED' ? '追加后恢复为部分到货，新增数量可继续入库' : '追加订单数量'" class="flex w-full items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold text-amber-700 hover:bg-amber-50 disabled:opacity-40" :aria-label="`追加 ${row.id} 订单`" @click="openOrderMoreMenu = ''; openAppendOrder(row.id)"><Plus class="size-3.5" />追加订单</button>
                       <button v-if="canReduceSubmittedOrder(row.id)" type="button" role="menuitem" :disabled="!apiConnected || reducingOrder" class="flex w-full items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40" :aria-label="`减单 ${row.id}`" @click="openOrderMoreMenu = ''; openReduceOrder(row.id)"><Minus class="size-3.5" />{{ rawOrderStatus(row.id) === 'PARTIALLY_RECEIVED' ? '减少未入库量' : '减单 / 退单' }}</button>
                       <button v-if="canEditConfirmedOrder(row.id)" type="button" role="menuitem" :disabled="!apiConnected || cancellingOrder" class="flex w-full items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40" :aria-label="`取消 ${row.id}`" @click="openOrderMoreMenu = ''; openCancelOrder(row.id)"><X class="size-3.5" />取消订单</button>
@@ -5326,9 +5489,18 @@ function refreshDemo() {
         <div class="flex flex-wrap items-center gap-3 rounded-xl border bg-white p-3 text-xs"><select v-model="exceptionStatusFilter" aria-label="异常状态筛选" class="h-9 rounded-lg border px-3"><option value="OPEN">待处理 / 处理中</option><option value="ALL">全部状态</option><option>待处理</option><option>处理中</option><option>已解决</option><option>已关闭</option></select><select v-model="exceptionTypeFilter" aria-label="异常类型筛选" class="h-9 rounded-lg border px-3"><option value="ALL">全部类型</option><option v-for="type in exceptionTypeOptions" :key="type">{{ type }}</option></select><button type="button" class="h-9 rounded-lg border px-3" @click="exceptionStatusFilter = 'ALL'; exceptionTypeFilter = 'ALL'; selectedCustomer = '全部客户'; globalSearch = ''">清空筛选</button></div>
         <div class="rounded-xl border border-blue-200 bg-blue-50 p-4 text-[11px] leading-5 text-blue-800"><div class="font-bold text-blue-950">导入异常会在这里形成正式待办</div><p class="mt-1">排期疑似漏单、送货单未匹配、数量差异和匹配不唯一均需人工处理；排期导入本身不会创建订单，送货单导入本身不会增加库存。</p></div>
         <div class="grid gap-3 md:grid-cols-3"><article class="rounded-xl border border-red-200 bg-red-50 p-4"><div class="text-[11px] font-bold text-red-800">高优先级</div><div class="mt-2 text-2xl font-bold text-red-900">{{ visibleExceptions.filter((row) => row.tone === 'red' && row.status !== '已关闭').length }}</div></article><article class="rounded-xl border border-amber-200 bg-amber-50 p-4"><div class="text-[11px] font-bold text-amber-800">待处理 / 处理中</div><div class="mt-2 text-2xl font-bold text-amber-900">{{ visibleExceptions.filter((row) => row.status === '待处理' || row.status === '处理中').length }}</div></article><article class="rounded-xl border border-slate-200 bg-white p-4"><div class="text-[11px] font-bold text-slate-600">已解决 / 已关闭</div><div class="mt-2 text-2xl font-bold text-slate-900">{{ visibleExceptions.filter((row) => row.status === '已解决' || row.status === '已关闭').length }}</div></article></div>
+        <div class="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+          <label class="flex items-center gap-2 text-xs font-semibold"><input type="checkbox" aria-label="全选当前筛选异常" :checked="allVisibleExceptionsSelected" :indeterminate="someVisibleExceptionsSelected && !allVisibleExceptionsSelected" :disabled="!visibleExceptions.length" class="size-4 accent-teal-600" @change="selectVisibleExceptions(($event.target as HTMLInputElement).checked)">全选当前筛选异常（{{ visibleExceptions.length }} 条）</label>
+          <div class="flex flex-wrap items-center gap-2">
+            <input v-model="bulkExceptionNote" aria-label="批量异常处理说明" placeholder="批量处理说明（选填）" maxlength="4000" class="h-9 min-w-60 flex-1 rounded-lg border px-3 text-xs" :disabled="Boolean(exceptionBusyId)">
+            <button v-for="status in (['OPEN', 'IN_PROGRESS', 'RESOLVED'] as const)" :key="status" type="button" :disabled="!canBulkAdvanceExceptions(status)" class="h-9 rounded-lg border border-teal-200 px-3 text-xs font-semibold text-teal-700 disabled:opacity-40" @click="bulkAdvanceExceptions(status)">批量{{ exceptionActionLabel(status) }}</button>
+          </div>
+          <p v-if="selectedExceptionNos.length > 500" class="text-xs text-amber-700">单次最多处理 500 条，请在“查看已选”中减少选择。</p>
+          <CartonSelectionSummary :rows="selectedExceptions.map(row => ({ id: row.id, label: `${row.customer} · ${row.id} · ${row.title}` }))" :visible-ids="visibleExceptions.map(row => row.id)" @clear="selectedExceptionNos = []" @remove="selectedExceptionNos = selectedExceptionNos.filter(id => id !== $event)" />
+        </div>
         <div class="grid gap-3 xl:grid-cols-2">
-          <article v-for="row in visibleExceptions" :key="row.id" class="rounded-xl border p-4 shadow-sm" :class="toneClass(row.tone, 'surface')">
-            <div class="flex items-start gap-3"><span class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-white/80"><AlertTriangle class="size-4" /></span><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><span class="text-[10px] font-bold">{{ row.id }}</span><span class="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.type }}</span><span class="ml-auto rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.status }}</span></div><h2 class="mt-2 text-[14px] font-bold">{{ row.title }}</h2><p class="mt-1 text-[11px] opacity-80">{{ row.detail }}</p><div class="mt-3 flex flex-wrap gap-4 text-[10px] font-semibold"><span>客户：{{ row.customer }}</span><span>责任部门：{{ row.owner }}</span><span>{{ row.deadline }}</span></div><div v-if="exceptionRecord(row.id)" class="mt-3 flex flex-col gap-2 border-t border-current/10 pt-3 sm:flex-row"><input v-model="resolutionNotes[exceptionRecordId(row.id)]" :aria-label="`${row.id} 处理说明`" :placeholder="exceptionRecord(row.id)?.status === 'IN_PROGRESS' ? '填写核对结果（解决前必填）' : '可填写处理说明'" class="h-9 min-w-0 flex-1 rounded-lg border border-white/80 bg-white/80 px-3 text-[11px] text-slate-800 outline-none focus:border-teal-500"><button type="button" :disabled="exceptionButtonDisabled(row.id)" class="h-9 rounded-lg bg-white px-3 text-[11px] font-bold text-teal-700 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400" @click="advanceException(row.id)">{{ exceptionBusyId === exceptionRecord(row.id)?.id ? '处理中…' : exceptionButtonLabel(row.id) }}</button></div></div></div>
+          <article v-for="row in visibleExceptions" :key="row.id" class="rounded-xl border p-4 shadow-sm" :class="[toneClass(row.tone, 'surface'), selectedExceptionNos.includes(row.id) ? 'ring-2 ring-teal-500' : '']">
+            <div class="flex items-start gap-3"><input v-model="selectedExceptionNos" type="checkbox" :value="row.id" :aria-label="`选择异常 ${row.id}`" class="mt-2 size-4 shrink-0 accent-teal-600"><span class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-white/80"><AlertTriangle class="size-4" /></span><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><span class="text-[10px] font-bold">{{ row.id }}</span><span class="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.type }}</span><span class="ml-auto rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.status }}</span></div><h2 class="mt-2 text-[14px] font-bold">{{ row.title }}</h2><p class="mt-1 text-[11px] opacity-80">{{ row.detail }}</p><div class="mt-3 flex flex-wrap gap-4 text-[10px] font-semibold"><span>客户：{{ row.customer }}</span><span>责任部门：{{ row.owner }}</span><span>{{ row.deadline }}</span></div><div v-if="exceptionRecord(row.id)" class="mt-3 flex flex-col gap-2 border-t border-current/10 pt-3 sm:flex-row"><input v-model="resolutionNotes[exceptionRecordId(row.id)]" :aria-label="`${row.id} 处理说明`" placeholder="处理说明（选填）" class="h-9 min-w-0 flex-1 rounded-lg border border-white/80 bg-white/80 px-3 text-[11px] text-slate-800 outline-none focus:border-teal-500"><button type="button" :disabled="exceptionButtonDisabled(row.id)" class="h-9 rounded-lg bg-white px-3 text-[11px] font-bold text-teal-700 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400" @click="advanceException(row.id)">{{ exceptionBusyId === exceptionRecord(row.id)?.id ? '处理中…' : exceptionButtonLabel(row.id) }}</button></div></div></div>
           </article>
           <div v-if="visibleExceptions.length === 0" class="col-span-full rounded-xl border border-slate-200 bg-white py-16 text-center text-slate-400">没有符合当前筛选条件的异常</div>
         </div>
@@ -5348,6 +5520,34 @@ function refreshDemo() {
         <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><div class="overflow-x-auto"><table class="min-w-[1120px] w-full text-left"><thead class="bg-slate-50 text-[10px] font-bold text-slate-500"><tr><th class="px-4 py-3">时间</th><th class="px-4 py-3">操作人</th><th class="px-4 py-3">操作</th><th class="px-4 py-3">业务对象</th><th class="px-4 py-3">变更内容</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in visibleAuditRecords" :key="row.id" class="hover:bg-slate-50/80"><td class="px-4 py-3"><div class="font-semibold">{{ row.created_at.replace('T', ' ').slice(0, 16) }}</div><div class="mt-0.5 font-mono text-[9px] text-slate-400">#{{ row.sequence }}</div></td><td class="px-4 py-3"><div class="font-semibold">{{ row.actor_name || row.actor_user_id }}</div><div class="mt-0.5 font-mono text-[9px] text-slate-400">{{ row.actor_user_id }}</div></td><td class="px-4 py-3"><span class="rounded-full bg-violet-50 px-2 py-1 text-[10px] font-bold text-violet-700 ring-1 ring-inset ring-violet-200">{{ auditEventLabel(row.event_type) }}</span></td><td class="px-4 py-3"><div class="font-semibold">{{ auditEntityLabel(row) }}</div><div class="text-[9px] text-slate-400">{{ row.entity_type }} · {{ row.entity_id }}</div></td><td class="max-w-[480px] px-4 py-3 text-[11px] leading-5 text-slate-600">{{ auditDetailSummary(row.detail) }}</td></tr><tr v-if="!visibleAuditRecords.length"><td colspan="5" class="px-4 py-12 text-center text-slate-400">没有符合当前筛选条件的操作日志</td></tr></tbody></table></div></div>
       </section>
     </div>
+
+    <DialogRoot :open="Boolean(replenishTarget)" @update:open="open => { if (!open && !replenishing) replenishTarget = null }">
+      <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/40" />
+      <DialogContent class="fixed left-1/2 top-1/2 z-[71] max-h-[90vh] w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-2xl bg-white p-6 shadow-xl" @interact-outside.prevent @escape-key-down="event => { if (replenishing) event.preventDefault() }">
+        <DialogTitle class="text-lg font-bold">补单 {{ replenishTarget?.order_no }}</DialogTitle>
+        <DialogDescription class="mt-2 text-sm text-slate-600">原订单数量保持不变。提交时按下面的仓位自动出库，生成独立补单；供应商补货到仓后，再通过收料入库补回。</DialogDescription>
+        <form class="mt-5 space-y-4" @submit.prevent="submitReplenishment">
+          <label class="block text-sm font-semibold">责任方 *<select v-model="replenishResponsibility" aria-label="补单责任方" required :disabled="replenishing" class="mt-2 h-10 w-full rounded-lg border bg-white px-3"><option value="" disabled>请选择责任方</option><option value="OWN">我方问题</option><option value="SUPPLIER">供应商问题</option></select></label>
+          <p v-if="replenishResponsibility" class="text-sm text-teal-700">{{ replenishResponsibility === 'SUPPLIER' ? '供应商责任：补货免费，不新增月结应付；入库自动沿用本次出库成本，无需填写收费单价。' : '我方责任：补货按实际验收入库数量和单价计入月结一次；本次出库不重复收费。' }}</p>
+          <div class="overflow-auto rounded-lg border"><table class="w-full text-left text-xs"><thead class="bg-slate-50"><tr><th class="p-3">纸品</th><th class="p-3">出库仓位</th><th class="p-3 text-right">可用库存</th><th class="p-3">本次补单 / 自动出库</th></tr></thead><tbody><tr v-for="row in replenishPositions" :key="row.id" class="border-t"><td class="p-3">{{ row.packagingType }} · {{ row.paperQuality }}<div class="mt-1 text-slate-500">{{ row.specification }}</div></td><td class="p-3">{{ row.location }}</td><td class="p-3 text-right">{{ formatNumber(row.balance) }} {{ row.unit }}</td><td class="p-3"><input v-model="replenishQuantities[row.id]" type="number" min="0" :max="row.balance" step="0.0001" :disabled="replenishing" :aria-label="`补单数量 ${row.id}`" placeholder="0" class="h-9 w-28 rounded-lg border px-2"> {{ row.unit }}</td></tr><tr v-if="!replenishPositions.length"><td colspan="4" class="p-5 text-center text-slate-500">该订单没有可用仓位库存，暂不能补单出库。</td></tr></tbody></table></div>
+          <label class="block text-sm">补单说明（选填）<textarea v-model="replenishReason" aria-label="补单说明" maxlength="500" :disabled="replenishing" class="mt-2 w-full rounded-lg border p-3" /></label>
+          <p v-if="replenishError" role="alert" class="text-sm text-red-600">{{ replenishError }}</p>
+          <div class="flex justify-end gap-2"><DialogClose :disabled="replenishing" class="rounded-lg border px-4 py-2">返回</DialogClose><button type="submit" :disabled="replenishing || !replenishPositions.length || !apiConnected" class="rounded-lg bg-teal-700 px-4 py-2 font-semibold text-white disabled:opacity-40">{{ replenishing ? '正在提交…' : '确认补单并出库' }}</button></div>
+        </form>
+      </DialogContent>
+    </DialogRoot>
+
+    <DialogRoot :open="Boolean(deleteHistoryTarget)" @update:open="open => { if (!open && !deletingHistory) deleteHistoryTarget = null }">
+      <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/40" />
+      <DialogContent class="fixed left-1/2 top-1/2 z-[71] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-xl" @interact-outside.prevent @escape-key-down="event => { if (deletingHistory) event.preventDefault() }">
+        <DialogTitle class="text-lg font-bold">删除历史订单 {{ deleteHistoryTarget?.order_no }}</DialogTitle>
+        <DialogDescription class="mt-2 text-sm text-slate-600">仅无收料或库存记录的历史订单可删除。删除后从订单台账移除，操作日志保留原始明细；已有入库记录的订单不能删除。</DialogDescription>
+        <form class="mt-4 space-y-4" @submit.prevent="deleteHistoryOrder">
+          <label class="block text-sm">删除原因 *<textarea v-model="deleteHistoryReason" aria-label="历史订单删除原因" required minlength="4" maxlength="500" class="mt-2 w-full rounded-lg border p-3" /></label>
+          <div class="flex justify-end gap-2"><DialogClose :disabled="deletingHistory" class="rounded-lg border px-4 py-2">返回</DialogClose><button type="submit" :disabled="deletingHistory || deleteHistoryReason.trim().length < 4" class="rounded-lg bg-red-600 px-4 py-2 text-white disabled:opacity-40">{{ deletingHistory ? '删除中…' : '确认删除历史订单' }}</button></div>
+        </form>
+      </DialogContent>
+    </DialogRoot>
 
     <DialogRoot :open="showInventoryRelocation" @update:open="(open) => { if (!relocationBusy) showInventoryRelocation = open }">
       <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/40 backdrop-blur-sm" />
@@ -5487,13 +5687,13 @@ function refreshDemo() {
                   <td class="px-4 py-2 text-right"><input v-if="receiptEntryMode === 'MANUAL' || row.sourceType === 'AD_HOC'" v-model.number="row.deliveryQuantity" :aria-label="`${row.id} 送货数量`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0" :max="row.sourceType === 'FORMAL_ORDER' && receiptEntryMode === 'MANUAL' ? row.remainingQuantity : undefined" class="ml-auto block h-8 w-24 rounded-md border border-slate-200 px-2 text-right font-semibold outline-none focus:border-blue-500 disabled:bg-slate-50"><div v-else class="font-semibold tabular-nums">{{ row.deliveryQuantity }}</div><div v-if="receiptEntryMode === 'MANUAL' && row.sourceType === 'FORMAL_ORDER'" class="mt-0.5 text-[9px] text-slate-400">待收 {{ formatNumber(row.remainingQuantity) }}</div></td>
                   <td class="px-4 py-2">
                     <div class="mx-auto w-28 text-center">
-                      <input v-model.number="row.unitPrice" :aria-label="`${row.id} 单价`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0.000001" step="0.000001" :aria-required="receiptLineEffectiveQuantity(row) > 0" :aria-invalid="receiptLineEffectiveQuantity(row) > 0 && !(Number(row.unitPrice) > 0)" placeholder="必填：送货单单价" class="block h-8 w-full rounded-md border border-slate-200 px-2 text-right text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <div v-if="freeReplacement(row)" class="text-xs font-semibold text-teal-700">供应商责任 · 免费补货<br>应付 0，不计月结<span class="mt-1 block font-normal text-slate-500">库存成本沿用原补单出库成本</span></div><input v-else v-model.number="row.unitPrice" :aria-label="`${row.id} 单价`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0.000001" step="0.000001" :aria-required="receiptLineEffectiveQuantity(row) > 0" :aria-invalid="receiptLineEffectiveQuantity(row) > 0 && !(Number(row.unitPrice) > 0)" placeholder="必填：送货单单价" class="block h-8 w-full rounded-md border border-slate-200 px-2 text-right text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                       <div v-if="row.sourceType === 'AD_HOC'" class="mt-1 flex justify-center gap-1">
                         <select v-model="row.currency" :aria-label="`${row.id} 币种`" :disabled="Boolean(currentReceipt) || savingReceipt" class="h-7 w-16 rounded border border-slate-200 bg-white px-1 text-[9px] disabled:bg-slate-50"><option value="CNY">CNY</option><option value="HKD">HKD</option><option value="USD">USD</option></select>
                         <input v-model="row.unit" :aria-label="`${row.id} 单位`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="单位" class="h-7 w-12 rounded border border-slate-200 px-1 text-[9px] disabled:bg-slate-50">
                       </div>
                       <div v-else class="mt-1 text-xs text-slate-500">{{ row.currency }} / {{ row.unit }}</div>
-                      <div v-if="receiptLineEffectiveQuantity(row) > 0 && !(Number(row.unitPrice) > 0)" class="mt-1 text-xs text-red-600">{{ currentReceipt?.status === 'POSTED' ? '历史入库待核价' : '请填写大于 0 的单价' }}</div>
+                      <div v-if="!freeReplacement(row) && receiptLineEffectiveQuantity(row) > 0 && !(Number(row.unitPrice) > 0)" class="mt-1 text-xs text-red-600">{{ currentReceipt?.status === 'POSTED' ? '历史入库待核价' : '请填写大于 0 的单价' }}</div>
                     </div>
                   </td>
                   <td class="px-3 py-2"><input v-model.number="row.receivedQuantity" :aria-label="`${row.id} 实收`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right font-semibold outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
@@ -5502,7 +5702,7 @@ function refreshDemo() {
                   <td class="px-3 py-2"><input v-model.number="row.unusableQuantity" :aria-label="`${row.id} 其他不可用`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
                   <td class="px-4 py-3 text-right text-[14px] font-bold text-teal-700 tabular-nums">{{ receiptLineEffectiveQuantity(row) }}</td>
                   <td class="px-4 py-2"><CartonReceiptAllocations v-model="row.allocations" :effective="receiptLineEffectiveQuantity(row)" :locations="inventoryLocations" :factory-id="selectedFactoryId" :disabled="Boolean(currentReceipt) || savingReceipt" @created="refreshLocations" /></td>
-                  <td class="px-4 py-3"><span class="inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ring-1 ring-inset" :class="row.sourceType === 'AD_HOC' ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-violet-50 text-violet-700 ring-violet-200'">{{ row.sourceLabel }}</span><button v-if="row.sourceType === 'AD_HOC' && !currentReceipt" type="button" class="mt-2 block text-[9px] font-bold text-red-600" @click="removeAdHocReceiptLine(row.id)">移除此行</button></td>
+                  <td class="px-4 py-3"><p v-if="receiptReplacementNeedsReview(row)" class="mb-2 text-xs text-red-600">历史补单收料未关联，请核对并冲销重录。</p><div v-if="receiptReplacementOptions(row).length && !currentReceipt" class="mb-2 min-w-40"><select v-model="row.replenishmentIssueId" :aria-label="`${row.id} 收料来源`" :disabled="savingReceipt" class="h-8 w-full rounded border px-1 text-xs" @change="changeReceiptReplacement(row)"><option :value="undefined">普通采购收料</option><option v-for="option in receiptReplacementOptions(row)" :key="option.replenishment_issue_id" :value="option.replenishment_issue_id">{{ option.document_no }} · {{ option.responsibility === 'SUPPLIER' ? '供应商责任／免费' : '我方责任／计费' }} · 待补 {{ option.remaining_quantity }}</option></select><p class="mt-1 text-xs text-slate-500">普通货与不同补单请分开登记。</p></div><p v-if="row.replacementDocumentNo" class="mb-1 text-xs text-teal-700">{{ row.replacementDocumentNo }} · {{ freeReplacement(row) ? '免费补货' : '我方责任／计入月结' }}</p><span class="inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ring-1 ring-inset" :class="row.sourceType === 'AD_HOC' ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-violet-50 text-violet-700 ring-violet-200'">{{ row.sourceLabel }}</span><button v-if="row.sourceType === 'AD_HOC' && !currentReceipt" type="button" class="mt-2 block text-[9px] font-bold text-red-600" @click="removeAdHocReceiptLine(row.id)">移除此行</button></td>
                 </tr>
                 <tr v-if="visibleReceiptLines.length === 0"><td colspan="11" class="px-4 py-12 text-center text-slate-400">没有找到匹配的送货明细</td></tr>
               </tbody>
@@ -5751,7 +5951,7 @@ function refreshDemo() {
             <div class="flex items-center justify-between bg-slate-50 px-4 py-3"><div><h3 class="text-[12px] font-bold text-slate-900">不可变采购单历史</h3><p class="mt-0.5 text-[10px] text-slate-500">重新下载始终使用当时快照，不会套用订单后续数量。</p></div><span class="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-slate-600">{{ purchaseOrderContextRecord.issues.length }} 份</span></div>
             <div v-if="purchaseOrderContextRecord.issues.length" class="divide-y divide-slate-100">
               <div v-for="issue in purchaseOrderContextRecord.issues" :key="issue.id" class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                <div><div class="flex items-center gap-2"><b class="font-mono text-[12px] text-slate-900">{{ issue.document_no }}</b><span class="rounded-full bg-teal-50 px-2 py-0.5 text-[9px] font-bold text-teal-700">{{ purchaseOrderTypeLabel(issue.document_type) }}</span></div><p class="mt-1 text-[10px] text-slate-500">产品变化 {{ signedQuantity(issue.product_quantity_delta) }} · {{ issue.generated_by_name || '—' }} · {{ issue.generated_at.slice(0, 16).replace('T', ' ') }}</p></div>
+                <div><div class="flex items-center gap-2"><b class="font-mono text-[12px] text-slate-900">{{ issue.document_no }}</b><span class="rounded-full bg-teal-50 px-2 py-0.5 text-[9px] font-bold text-teal-700">{{ (issue.is_replenishment ? '补单采购单' : purchaseOrderTypeLabel(issue.document_type)) }}</span></div><p class="mt-1 text-[10px] text-slate-500">产品变化 {{ signedQuantity(issue.product_quantity_delta) }} · {{ issue.generated_by_name || '—' }} · {{ issue.generated_at.slice(0, 16).replace('T', ' ') }}</p></div>
                 <button type="button" :disabled="Boolean(downloadingPurchaseOrderIssueId)" class="h-8 rounded-lg border border-teal-200 bg-white px-3 text-[10px] font-bold text-teal-700 disabled:opacity-40" @click="downloadPurchaseOrderIssue(issue)">{{ downloadingPurchaseOrderIssueId === issue.id ? '下载中…' : '重新下载原版本' }}</button>
               </div>
             </div>

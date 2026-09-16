@@ -1,5 +1,6 @@
 from __future__ import annotations
 from app.services import carton_master as master_data
+from app.services.carton_replenishment import fulfilled_by_line, replenished_by_line, protected_by_line
 
 import hashlib
 import json
@@ -613,6 +614,7 @@ def get_order_lines(db: Session, order_id: str) -> list[CartonOrderLine]:
 
 def _purchase_order_issue_out(issue: CartonPurchaseOrderIssue) -> CartonPurchaseOrderIssueOut:
     return CartonPurchaseOrderIssueOut(
+        is_replenishment=bool(_purchase_order_snapshot(issue).get("replenishment")),
         id=issue.id,
         factory_id=issue.factory_id,
         order_no=issue.order_no,
@@ -806,6 +808,7 @@ def create_purchase_order_issue(
     *,
     commit: bool = True,
 ) -> CartonPurchaseOrderIssue:
+    _lock_receipt_factory(db, order.factory_id)
     if order.revision != expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
@@ -821,7 +824,7 @@ def create_purchase_order_issue(
         raise HTTPException(status_code=409, detail="当前订单没有尚未生成采购单的数量或交期变化")
 
     next_issue_sequence = (latest_issue.issue_sequence if latest_issue else 0) + 1
-    type_sequence = 1 + sum(issue.document_type == pending_type for issue in issues)
+    type_sequence = 1 + sum(issue.document_type == pending_type and not _purchase_order_snapshot(issue).get("replenishment") for issue in issues)
     if pending_type == "INITIAL":
         document_no = f"{order.order_no}-P00"
     else:
@@ -983,6 +986,37 @@ def _order_has_business_activity(db: Session, order: CartonOrder) -> bool:
         )
     ) or 0
     return bool(movement_count)
+
+
+def can_delete_history_order(db: Session, order: CartonOrder) -> bool:
+    imported = db.scalar(select(CartonAuditEvent.id).where(
+        CartonAuditEvent.factory_id == order.factory_id,
+        CartonAuditEvent.entity_id == order.id,
+        CartonAuditEvent.event_type == "HISTORY_ORDER_IMPORTED",
+    ).limit(1))
+    return bool(imported) and not _order_has_business_activity(db, order)
+
+
+def delete_history_order(db: Session, order_no: str, payload: CartonOrderCancelRequest, user: AuthContext) -> None:
+    factory_id = require_carton_factory(payload.factory_id)
+    _lock_receipt_factory(db, factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    if order.revision != payload.expected_revision:
+        raise HTTPException(409, "订单已更新，请刷新后重试")
+    if not can_delete_history_order(db, order):
+        raise HTTPException(409, "仅无收料或库存记录的历史导入订单可以删除；入库后即使冲销也不能删除")
+    snapshot = order_out(db, order).model_dump(mode="json")
+    issues = _purchase_order_issues(db, order.id)
+    _audit(db, user, factory_id, "HISTORY_ORDER_DELETED", "carton_order", order.id,
+           {"order_no": order.order_no, "reason": payload.reason, "order": snapshot,
+            "purchase_issues": [{"document_no": issue.document_no, "snapshot": json.loads(issue.snapshot_json)} for issue in issues]})
+    for issue in issues:
+        db.delete(issue)
+    for line in _order_lines(db, order.id):
+        db.delete(line)
+    db.flush()
+    db.delete(order)
+    db.commit()
 
 
 def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
@@ -1403,7 +1437,7 @@ def append_order(
             line.required_quantity = required_carton_quantity(after_quantity, line.usage_quantity)
     order.product_order_quantity = after_quantity
     if previous_status == "COMPLETED":
-        received = _posted_received_by_line(db, [line.id for line in lines])
+        received = fulfilled_by_line(db, [line.id for line in lines])
         order.status = "COMPLETED" if all(
             received.get(line.id, Decimal(0)) >= line.required_quantity for line in lines
         ) else "PARTIALLY_RECEIVED"
@@ -1508,8 +1542,11 @@ def reduce_order(
         after_quantity = quantity(before_quantity - reduction_quantity)
     lines = _order_lines(db, order.id)
     line_ids = [line.id for line in lines]
-    posted_received = _posted_received_by_line(db, line_ids)
+    posted_received = protected_by_line(db, line_ids)
+    fulfilled = fulfilled_by_line(db, line_ids)
     pending_received = _pending_received_by_line(db, line_ids)
+    # Pending replacements restore the protected baseline; they do not add original demand.
+    pending_received = {key: max(Decimal(0), value - (posted_received.get(key, Decimal(0)) - fulfilled.get(key, Decimal(0)))) for key, value in pending_received.items()}
     protected_quantity = {
         line.id: quantity(
             posted_received.get(line.id, Decimal(0))
@@ -1569,7 +1606,7 @@ def reduce_order(
     else:
         order.product_order_quantity = after_quantity
         complete = bool(lines) and all(
-            posted_received.get(line.id, Decimal(0)) >= after_required[line.id]
+            fulfilled.get(line.id, Decimal(0)) >= after_required[line.id]
             for line in lines
         )
         order.status = "COMPLETED" if complete else (
@@ -1912,14 +1949,19 @@ def _protected_product_quantity(
 def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
     lines = _order_lines(db, order.id)
     line_ids = [line.id for line in lines]
-    received = _posted_received_by_line(db, line_ids)
+    from app.services.carton_replenishment_receipts import options_by_line, legacy_review_lines
+    replenishment_options = options_by_line(db, order.factory_id, line_ids)
+    replenishment_review = legacy_review_lines(db, order.factory_id, line_ids)
+    posted_received = protected_by_line(db, line_ids)
+    received = fulfilled_by_line(db, line_ids)
+    replenished = replenished_by_line(db, line_ids)
     pending_received = _pending_received_by_line(db, line_ids)
     protected_product_quantity = _protected_product_quantity(
         db,
         order,
         lines,
-        received,
-        pending_received,
+        posted_received,
+        {key: max(Decimal(0), value - (posted_received.get(key, Decimal(0)) - received.get(key, Decimal(0)))) for key, value in pending_received.items()},
     )
     from app.services.carton_usage import usage_by_key, aggregate_status, LABELS
     if usage is None:
@@ -1927,6 +1969,7 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
     usage_status = aggregate_status((usage.get(line.id, {}).get("status", "NOT_RECEIVED") for line in lines),
         sum((usage.get(line.id, {}).get("usage", Decimal(0)) for line in lines), Decimal(0)))
     return CartonOrderOut(
+        can_delete_history=can_delete_history_order(db, order),
         usage_status=usage_status, usage_status_label=LABELS[usage_status],
         id=order.id,
         factory_id=order.factory_id,
@@ -1967,8 +2010,11 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
                 usage_quantity=line.usage_quantity,
                 required_quantity=line.required_quantity,
                 pending_received_quantity=pending_received.get(line.id, Decimal(0)),
-                maximum_reducible_quantity=max(Decimal(0), line.required_quantity - received.get(line.id, Decimal(0)) - pending_received.get(line.id, Decimal(0))),
+                maximum_reducible_quantity=max(Decimal(0), line.required_quantity - max(posted_received.get(line.id, Decimal(0)), received.get(line.id, Decimal(0)) + pending_received.get(line.id, Decimal(0)))),
                 received_quantity=received.get(line.id, Decimal(0)),
+                replenished_quantity=replenished.get(line.id, Decimal(0)),
+                replenishment_options=replenishment_options.get(line.id, []),
+                replenishment_review_required=line.id in replenishment_review,
                 remaining_quantity=max(
                     Decimal(0), quantity(line.required_quantity - received.get(line.id, Decimal(0)))
                 ),
@@ -2172,7 +2218,7 @@ def _ensure_receipt_capacity(
     # Call only under the factory lock. Pending documents reserve effective quantities;
     # at confirmation the current document is already included in pending, not added twice.
     line_ids = list(order_lines)
-    posted = _posted_received_by_line(db, line_ids)
+    posted = fulfilled_by_line(db, line_ids)
     pending = _pending_received_by_line(db, line_ids)
     for line_id, line in order_lines.items():
         received = posted.get(line_id, Decimal(0))
@@ -2316,6 +2362,7 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
     )
     db.add(receipt)
     for index, input_line in enumerate(payload.lines, start=1):
+        replacement_link = None
         effective = quantity(
             input_line.received_quantity
             - input_line.damaged_quantity
@@ -2327,6 +2374,8 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
                 raise HTTPException(status_code=422, detail="正式订单收料必须关联订单明细")
             order_line = by_id[input_line.order_line_id]
             order = orders[order_line.order_id]
+            from app.services.carton_replenishment_receipts import select_link
+            replacement_link = select_link(db, factory_id, order_line, effective, input_line.replenishment_issue_id)
             snapshot = {
                 "order_line_id": order_line.id,
                 "customer_code": order.customer_code,
@@ -2359,9 +2408,16 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
                 "unit_price": input_line.unit_price or Decimal(0),
                 "currency": normalize_currency(input_line.currency),
             }
+        if replacement_link:
+            if replacement_link["responsibility"] == "SUPPLIER":
+                snapshot["unit_price"] = Decimal(replacement_link["inventory_unit_price"])
+            else:
+                replacement_link["settlement_unit_price"] = str(snapshot["unit_price"])
+            replacement_link["inventory_unit_price"] = str(snapshot["unit_price"])
+        receipt_line_id = f"CRL-{uuid4().hex}"
         db.add(
             CartonReceiptLine(
-                id=f"CRL-{uuid4().hex}",
+                id=receipt_line_id,
                 factory_id=factory_id,
                 receipt_id=receipt_id,
                 line_no=index,
@@ -2389,6 +2445,14 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
                 feedback_note=input_line.feedback_note,
             )
         )
+        if replacement_link:
+            from app.services.carton_replenishment_receipts import EVENT
+            _audit(db, user, factory_id, EVENT, "carton_receipt_line", receipt_line_id,
+                   {**replacement_link, "receipt_id": receipt_id, "order_line_id": input_line.order_line_id})
+        elif input_line.source_type == "FORMAL_ORDER":
+            from app.services.carton_replenishment_receipts import NORMAL_EVENT
+            _audit(db, user, factory_id, NORMAL_EVENT, "carton_receipt_line", receipt_line_id,
+                   {"receipt_id": receipt_id, "order_line_id": input_line.order_line_id, "quantity": str(effective)})
     _audit(
         db,
         user,
@@ -2424,6 +2488,8 @@ def _receipt_lines(db: Session, receipt_id: str) -> list[CartonReceiptLine]:
 
 
 def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
+    from app.services.carton_replenishment_receipts import receipt_links, public_link
+    links = receipt_links(db, receipt.factory_id)
     return CartonReceiptOut(
         id=receipt.id,
         factory_id=receipt.factory_id,
@@ -2444,7 +2510,7 @@ def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
         created_at=receipt.created_at,
         updated_at=receipt.updated_at,
         confirmed_at=receipt.confirmed_at,
-        lines=[CartonReceiptLineOut.model_validate(line).model_copy(update={"location_allocations": [CartonLocationAllocation.model_validate(a) for a in json.loads(line.location_allocations_json or "[]")]}) for line in _receipt_lines(db, receipt.id)],
+        lines=[CartonReceiptLineOut.model_validate(line).model_copy(update={**public_link(links.get(line.id)), "location_allocations": [CartonLocationAllocation.model_validate(a) for a in json.loads(line.location_allocations_json or "[]")]}) for line in _receipt_lines(db, receipt.id)],
     )
 
 
@@ -2524,7 +2590,7 @@ def _refresh_order_statuses(db: Session, order_ids: set[str], user: AuthContext)
         if order is None or order.status == "CANCELLED":
             continue
         lines = _order_lines(db, order.id)
-        received = _posted_received_by_line(db, [line.id for line in lines])
+        received = fulfilled_by_line(db, [line.id for line in lines])
         total_received = sum(received.values(), Decimal(0))
         complete = bool(lines) and all(received.get(line.id, Decimal(0)) >= line.required_quantity for line in lines)
         new_status = "COMPLETED" if complete else "PARTIALLY_RECEIVED" if total_received > 0 else order.status
@@ -2561,10 +2627,12 @@ def confirm_receipt(
     lines = _receipt_lines(db, receipt.id)
     if not lines:
         raise HTTPException(status_code=409, detail="收料单没有可确认的明细")
+    from app.services.carton_replenishment_receipts import receipt_links, select_link, EVENT
+    replacement_links = receipt_links(db, factory_id)
     # Validate the whole receipt before posting any line, including legacy drafts.
     missing_prices = [line for line in lines if line.effective_quantity > 0 and (
         line.unit_price is None or line.unit_price <= 0
-    )]
+    ) and replacement_links.get(line.id, {}).get("responsibility") != "SUPPLIER"]
     if missing_prices:
         labels = "、".join(
             f"{line.contract_no} / {line.item_no} · {line.packaging_type}"
@@ -2608,6 +2676,13 @@ def confirm_receipt(
     for order_line in order_lines.values():
         _require_receipt_material(order_line)
     _ensure_receipt_capacity(db, order_lines, {})
+    for line in formal_lines:
+        existing = replacement_links.get(line.id)
+        checked = select_link(db, factory_id, order_lines[line.order_line_id], line.effective_quantity,
+                              existing["replenishment_issue_id"] if existing else None, exclude_receipt=receipt.id)
+        if checked and not existing:
+            # Legacy unlinked drafts must be reviewed again; never silently change their payable basis.
+            raise HTTPException(409, "收料草稿未关联补单，请作废后按具体补单重新登记")
     order_ids: set[str] = set()
     for line in lines:
         _ensure_period_open(db, factory_id, line.customer_code, timestamp)
@@ -2648,6 +2723,9 @@ def confirm_receipt(
                 occurred_at=timestamp,
             )
         positions.post(db, movement, allocations=json.loads(line.location_allocations_json or "[]"), legacy_location=line.location)
+        if line.unit_price == 0 and replacement_links.get(line.id, {}).get("responsibility") == "SUPPLIER":
+            _audit(db, user, factory_id, "INVENTORY_PRICE_CONFIRMED", "carton_inventory_movement", movement.id,
+                   {"unit_price": "0", "reason": "供应商责任免费换补，原出库库存成本为零", "zero_price_confirmed": True})
     receipt.status = "POSTED"
     receipt.revision += 1
     receipt.confirmed_by = user.id
@@ -3182,7 +3260,7 @@ def reverse_receipt(
             if order and order.status in {"COMPLETED", "PARTIALLY_RECEIVED", "PENDING_SUPPLIER"}:
                 before_revision = order.revision
                 order_lines = _order_lines(db, order.id)
-                received = _posted_received_by_line(db, [line.id for line in order_lines])
+                received = fulfilled_by_line(db, [line.id for line in order_lines])
                 if not any(received.values()):
                     order.status = "PENDING_SUPPLIER"
                 else:
@@ -3219,6 +3297,8 @@ def reverse_inventory_movement(
     original = db.get(CartonInventoryMovement, movement_id)
     if original is None or original.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="库存流水不存在")
+    if original.source_type == "ORDER_REPLENISHMENT":
+        raise HTTPException(409, "补单出库已关联供应商补单，不能通过普通库存冲销取消")
     from app.services.carton_supplier_settlement import movement_guard
     movement_guard(db, original)
     if original.movement_type in {"INBOUND", "REVERSAL"}:
@@ -3619,8 +3699,10 @@ def update_exception(
     exception_id: str,
     payload: CartonExceptionUpdate,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonException:
     factory_id = require_carton_factory(payload.factory_id)
+    _lock_receipt_factory(db, factory_id)
     exception = db.get(CartonException, exception_id)
     if exception is None or exception.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="异常记录不存在")
@@ -3654,8 +3736,10 @@ def update_exception(
         exception.id,
         {"status": payload.status, "resolution_note": payload.resolution_note},
     )
-    db.commit()
-    db.refresh(exception)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(exception)
     return exception
 
 
