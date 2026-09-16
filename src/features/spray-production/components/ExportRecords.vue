@@ -15,4 +15,4 @@ async function download() {
   } catch(e) { s.error = errorText(e) } finally { busy.value = false }
 }
 </script>
-<template><div v-if="s.can('export')" class="spray-actions"><select v-model="kind" aria-label="导出账册"><option v-for="r in [...reports,...(s.can('cost_read')?costs:[])]" :key="r.value" :value="r.value">{{ r.label }}</option></select><Button variant="outline" size="sm" :disabled="busy" @click="download">导出明细</Button></div></template>
+<template><div v-if="s.can('export')" class="spray-actions"><label class="spray-field-label"><span>导出账册</span><select v-model="kind" aria-label="导出账册"><option v-for="r in [...reports,...(s.can('cost_read')?costs:[])]" :key="r.value" :value="r.value">{{ r.label }}</option></select></label><Button variant="outline" size="sm" :disabled="busy" @click="download">{{ busy ? '正在导出…' : '导出明细' }}</Button></div></template>

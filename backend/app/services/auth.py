@@ -59,6 +59,7 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
+    UV_PRINTING_PERMISSION_CODES,
     INTERNAL_QUOTE_PERMISSION_CODES,
     INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     INTERNAL_QUOTE_SECTION_CODES,
@@ -611,6 +612,7 @@ POSITION_DEPARTMENT_ALIAS_GROUPS = (
 )
 POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
+        *UV_PRINTING_PERMISSION_CODES,
         "molding_sample:dispatch",
         "molding_sample:notification_read",
         "internal_quote:create",
@@ -631,6 +633,12 @@ def system_position_grant_department_matches(
     department: str | None,
 ) -> bool:
     """Keep department-owned actions and feeds inside the bound position department."""
+    # The warehouse manager's cross-factory scope covers the PMC inbox, not
+    # the injection inbox that shares these permission codes.
+    if grant.role_id == "position_warehouse_manager" and permission in {
+        "customer_order:inbox_read", "customer_order:inbox_receive"
+    } and department not in {None, "*"}:
+        return department in {"pmc-warehouse", "warehouse"}
     if permission not in POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES or department in {None, "*"}:
         return True
     if grant.role_id == "position_general_manager" or grant.department == "*":

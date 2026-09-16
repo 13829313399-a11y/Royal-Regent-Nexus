@@ -59,6 +59,15 @@ function grantDepartmentMatches(grant: AuthGrant, permission: string, department
   if (!grant.unrestricted_department) {
     return scopeValueMatches(grant.department, department)
   }
+  // These codes are shared with the injection inbox; the warehouse manager
+  // only receives the PMC/warehouse inbox across factories.
+  if (
+    grant.role_id === 'position_warehouse_manager'
+    && ['customer_order:inbox_read', 'customer_order:inbox_receive'].includes(permission)
+    && department && department !== '*'
+  ) {
+    return department === 'pmc-warehouse' || department === 'warehouse'
+  }
   if (!positionDepartmentSensitivePermissions.has(permission) || !department || department === '*') {
     return true
   }

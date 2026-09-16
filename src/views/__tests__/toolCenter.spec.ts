@@ -94,6 +94,7 @@ beforeEach(() => {
       available: true,
     })),
     worker: { online: true },
+    translation: { offline_available: true, online_available: true, online_model: 'test-model' },
     limits: { max_file_bytes: 20 * 1024 * 1024, max_pages: 500 },
   })
   vi.spyOn(documentTools, 'jobs').mockResolvedValue({
@@ -386,7 +387,7 @@ describe('public tool center', () => {
     )
   })
 
-  it('keeps the authenticated route and exposes seven real tools without invented history', async () => {
+  it('keeps the authenticated route and exposes ten real tools without invented history', async () => {
     const routerSource = readFileSync(
       join(process.cwd(), 'src/router/index.ts'),
       'utf8',
@@ -399,13 +400,29 @@ describe('public tool center', () => {
     const wrapper = render()
     await flushPromises()
     expect(wrapper.get('h1').text()).toBe('公共工具栏')
-    expect(wrapper.text()).toContain('文档转换与精确分页')
+    expect(wrapper.text()).toContain('文档翻译、转换与精确分页')
     expect(
       wrapper.find('input[type="file"]').attributes('multiple'),
     ).toBeDefined()
-    expect(wrapper.findAll('.dt-tools button')).toHaveLength(7)
+    expect(wrapper.findAll('.dt-tools button')).toHaveLength(10)
     expect(wrapper.text()).toContain('还没有任务')
     expect(wrapper.findAll('.dt-task')).toHaveLength(0)
+  })
+
+  it('preserves Excel translation preferences across upload and sends only translation options', async () => {
+    vi.mocked(documentTools.source).mockResolvedValue({ ...source, detected_type: 'xlsx', original_name: 'book.xlsx', manifest: { sheets: ['Sheet1'] } })
+    const create = vi.spyOn(documentTools, 'create').mockResolvedValue({ job_id: 'translation-1' })
+    const wrapper = render()
+    await flushPromises()
+    await wrapper.get('.dt-tools button:nth-child(10)').trigger('click')
+    await wrapper.get('.dt-translation-intro [aria-label="翻译方向"]').setValue('en_to_zh')
+    await wrapper.get('.dt-translation-intro [aria-label="翻译方式"]').setValue('online')
+    await upload(wrapper, [new File(['xlsx'], 'book.xlsx')])
+    expect(wrapper.get('.dt-translation-intro [aria-label="翻译方向"]').element).toHaveProperty('value', 'en_to_zh')
+    expect(wrapper.get('.dt-translation-intro [aria-label="翻译方式"]').element).toHaveProperty('value', 'online')
+    await wrapper.get('.dt-generate button').trigger('click')
+    await flushPromises()
+    expect(create).toHaveBeenCalledWith(source.id, 'excel_translate', { translation_direction: 'en_to_zh', translation_engine: 'online', sheets: ['Sheet1'] }, expect.any(String))
   })
 
   it('keeps a failed file independent while uploading the next file', async () => {

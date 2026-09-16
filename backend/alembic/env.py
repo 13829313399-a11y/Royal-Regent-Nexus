@@ -19,6 +19,10 @@ from app.core.config import settings
 from app.db import Base
 from app.models import (
     spray_production,  # noqa: F401
+    uv_printing,  # noqa: F401
+    uv_finance,  # noqa: F401
+    uv_ingest,  # noqa: F401
+    uv_handover,  # noqa: F401
     document_tools,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
@@ -28,6 +32,7 @@ from app.models import (
     carton_master,  # noqa: F401
     carton_supplier_settlement,  # noqa: F401
     customer_order,  # noqa: F401
+    customer_order_ledger,  # noqa: F401
     internal_quote,  # noqa: F401
     injection_scheduling,  # noqa: F401
     molding_sample,  # noqa: F401

@@ -62,6 +62,13 @@ def map_huadeng(row, record, customer_code):
         row['po_no'] = _text(record.get('contract_no'))
         row['reference_no'] = _text(record.get('contract_no'))
     elif customer_code == 'jakks':
+        if record.get('document_kind') == 'supplementary_contract':
+            row['_jakks_supplementary'] = True
+            row.setdefault('issues', []).append({
+                'severity': 'warning', 'code': 'supplementary_contract', 'field': 'order_type',
+                'message': '补充合同（箱唛资料）先行排产；未提供的价格保持空白，正式 PO 到齐后核对，避免重复排单。',
+                'can_skip': False,
+            })
         row['packaging'] = _text(record.get('product_packaging'))
         for field, label in (('standard', 'PRODUCT MEETS'), ('packaging', 'NOTES')):
             if row.get(field):

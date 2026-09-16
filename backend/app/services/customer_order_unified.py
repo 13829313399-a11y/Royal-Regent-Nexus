@@ -388,7 +388,7 @@ def _enrich_row(
         "unit_price_hkd": "unit_price_hkd",
     }
     for target, source in inherited.items():
-        if row.get('_regional_customer') == 'ubtech' and target == 'unit_price_hkd':
+        if (row.get('_regional_customer') == 'ubtech' or row.get('_jakks_supplementary')) and target == 'unit_price_hkd':
             continue
         if not _text(row.get(target)):
             value = _unique_history_value(history, product_no, source, row["customer_name"])
@@ -879,10 +879,10 @@ def _parse_huadeng_rows(
         with TemporaryDirectory(prefix="huadeng-unified-jakks-") as temp_dir:
             root = Path(temp_dir)
             for number, (file_name, content) in enumerate(po_files, start=1):
-                if re.search(r"(?:^|[-_])(CXL|SUP)(?:[-_]|$)", Path(file_name).stem, re.I):
-                    warnings.append(f"{file_name}：文件名含 CXL/SUP，按修改、补充或取消单拦截。")
+                if re.search(r"(?:^|[-_])CXL(?:[-_]|$)", Path(file_name).stem, re.I):
+                    warnings.append(f"{file_name}：文件名含 CXL，按取消单拦截。")
                     continue
-                po_path = root / f"{number:03d}{Path(file_name).suffix.lower()}"
+                po_path = root / f"{number:03d}_{Path(file_name).name}"
                 po_path.write_bytes(content)
                 try:
                     order = jakks_po_parser.parse_po(po_path)

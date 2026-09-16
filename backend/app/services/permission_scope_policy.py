@@ -154,6 +154,8 @@ INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         ("sales-business",),
         guidance="仅在业务部范围查看客户订单与排期数据",
     ),
+    **{f"customer_order:{action}": ScopePolicy(("sales-business",)) for action in ("write", "dispatch", "shipment_confirm")},
+    **{f"customer_order:{action}": ScopePolicy(("pmc-warehouse", "warehouse", "production", "molding")) for action in ("inbox_read", "inbox_receive")},
     "customer_order:export": ScopePolicy(
         ("sales-business",),
         guidance="仅在业务部范围确认订单并导出客户排期",

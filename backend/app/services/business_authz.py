@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from dataclasses import replace
 import logging
 
 from fastapi import HTTPException
@@ -11,6 +12,7 @@ from app.services.auth import (
     authorization_decision,
     can,
     legacy_has_permission_in_scope,
+    system_position_grant_department_matches,
     system_position_grant_scope_source,
 )
 
@@ -116,7 +118,19 @@ def has_permission_for_departments(
     # Existing business endpoints historically checked only the factory. Keep
     # that behavior in legacy/shadow so a safe rollout does not silently remove
     # access before department mappings have been compared and approved.
-    legacy_result = legacy_has_permission_in_scope(user, permission, factory_id, None)
+    # The warehouse manager's newly expanded scope must retain its PMC inbox
+    # and notification boundaries even before enforcement is enabled. Filter
+    # only that position; other independent grants keep legacy behavior.
+    legacy_user = replace(user, grants=tuple(
+        grant for grant in user.grants
+        if grant.role_id != "position_warehouse_manager"
+        or not grant.unrestricted_department
+        or any(
+            system_position_grant_department_matches(grant, permission, department)
+            for department in normalized_departments
+        )
+    ))
+    legacy_result = legacy_has_permission_in_scope(legacy_user, permission, factory_id, None)
     if settings.authz_mode == "shadow" and legacy_result != canonical_result:
         logger.warning(
             "authz shadow mismatch user=%s permission=%s scope=%s/%s legacy=%s canonical=%s",

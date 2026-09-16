@@ -11,6 +11,7 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
+    UV_PRINTING_PERMISSION_CODES,
     SPRAY_PRODUCTION_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
     CARTON_PROCUREMENT_PERMISSION_CODES,
@@ -21,7 +22,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v25"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v28"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -117,6 +118,7 @@ class SystemPositionDefinition:
 
 
 _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
+    *UV_PRINTING_PERMISSION_CODES,
     *SPRAY_PRODUCTION_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
@@ -154,6 +156,11 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "customer_order:export",
     "customer_order:duplicate_confirm",
     "customer_order:audit_read",
+    "customer_order:write",
+    "customer_order:dispatch",
+    "customer_order:shipment_confirm",
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     "internal_quote:read",
     "internal_quote:create",
     "internal_quote:clone",
@@ -223,6 +230,9 @@ ENGINEERING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_SUPERVISOR_PERMISSION_CODES = (
+    "customer_order:write",
+    "customer_order:dispatch",
+    "customer_order:shipment_confirm",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "customer_price:read",
     "customer_price:import_internal_quote",
@@ -252,6 +262,9 @@ SALES_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_BUSINESS_PERMISSION_CODES = (
+    "customer_order:write",
+    "customer_order:dispatch",
+    "customer_order:shipment_confirm",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "customer_price:read",
     "customer_price:import_internal_quote",
@@ -273,6 +286,9 @@ SALES_BUSINESS_PERMISSION_CODES = (
 )
 
 PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
+    *UV_PRINTING_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
     "molding_sample:export",
@@ -294,6 +310,9 @@ PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
 )
 
 PRODUCTION_CLERK_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
+    "uv_printing:read", "uv_printing:report",
     *INJECTION_SCHEDULING_PERMISSION_CODES[:3],
     "molding_sample:read",
     "molding_sample:export",
@@ -334,6 +353,8 @@ PAINTING_SUPERVISOR_PERMISSION_CODES = (
 # 啤办生产任务和注塑排产。范围模式负责区分文员的“跨厂查看 / 本厂操作”
 # 和主管、经理的“跨厂操作”，且不授予工程开单、编辑、审核、删除或导出。
 MOLDING_CLERK_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     *INJECTION_SCHEDULING_PERMISSION_CODES[:3],
     "molding_sample:read",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
@@ -349,6 +370,8 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 WAREHOUSE_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     "molding_sample:read",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "molding_sample:export",
@@ -372,6 +395,8 @@ QA_CLERK_PERMISSION_CODES = (
     "carton_mark:photo_upload",
 )
 CARTON_WAREHOUSE_PERMISSION_CODES = (
+    "customer_order:inbox_read",
+    "customer_order:inbox_receive",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "carton_mark:read",
     "carton_mark:template_upload",
@@ -581,7 +606,8 @@ SYSTEM_POSITION_DEFINITIONS: tuple[SystemPositionDefinition, ...] = (
         department="pmc-warehouse",
         department_name="仓库",
         sort_order=500,
-        description="仓库领料、发料与库存管理",
+        description="跨厂操作 PMC 仓库领料、发料、原料与纸箱库存及下游订单收件箱",
+        scope_mode=CROSS_FACTORY_OPERATE_SCOPE,
         permission_codes=WAREHOUSE_PERMISSION_CODES,
     ),
     SystemPositionDefinition(
@@ -878,7 +904,17 @@ def validate_system_position_definitions() -> None:
         "molding_sample:raw_material_write" in definition.permission_codes
         for definition in warehouse_positions
     ):
-        raise RuntimeError("仓库内置职位必须可维护本厂原料资料")
+        raise RuntimeError("仓库内置职位必须可维护原料资料")
+    if not all(
+        definition.permission_codes == WAREHOUSE_PERMISSION_CODES
+        and definition.scope_mode == (
+            CROSS_FACTORY_OPERATE_SCOPE
+            if definition.role_id == "position_warehouse_manager"
+            else OWN_FACTORY_SCOPE
+        )
+        for definition in warehouse_positions
+    ):
+        raise RuntimeError("仓库经理必须跨厂操作，主管和仓管保留本厂仓库权限")
 
     qc_inspector = definitions_by_id["position_qc_inspector"]
     qc_supervisor = definitions_by_id["position_qc_supervisor"]

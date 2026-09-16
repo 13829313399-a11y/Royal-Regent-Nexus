@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     three_d_asset_dir: str = str(BACKEND_DIR / "data" / "three-d-printing-assets")
     three_d_edge_agent_token: str = ""
     three_d_network_health_token: str = ""
+    uv_printing_enabled: bool = False
     three_d_connector_enabled: bool = False
     three_d_connector_token: str = ""
     three_d_connector_control_enabled: bool = False
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
     document_tools_qwen_protocol: Literal["dashscope", "openai"] = "dashscope"
     document_tools_qwen_ocr_model: str = "qwen3.5-ocr"
     document_tools_qwen_layout_model: str = "qwen3-vl-plus"
+    document_tools_translation_model: str = "qwen3-vl-plus"
     document_tools_qwen_timeout_seconds: int = Field(default=90, ge=5, le=300)
     @property
     def effective_session_cookie_secure(self) -> bool:

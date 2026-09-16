@@ -1,0 +1,101 @@
+/* 喷油工作区局部设计 token（命名空间 .spray-workspace）。
+   本文件只服务喷油业务全页：新增的曲线、时长、层级、金属微渐变与压印高光都在
+   工作区根节点内声明，不覆盖 :root，也不影响其他模块。颜色继续沿用全局语义
+   token；这里只补充全局尚未提供的动效、阴影与字体族变量。 */
+
+/* 等宽数字字体：与注塑排产共用同一份自托管字体文件，避免新增网络请求与字体资产。
+   业务表格正文仍使用全局中文字体，仅数字、编号与时间使用本字体族。 */
+@font-face {
+  font-family: 'Spray Numerals';
+  src: url('/fonts/injection/JetBrainsMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+.spray-workspace {
+  /* —— 物理弹簧曲线：进场与形态过渡统一使用（0.16, 1, 0.3, 1），
+        控件级微交互使用较紧的次级曲线，避免所有动效同一节奏。 —— */
+  --spray-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --spray-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --spray-ease-out: cubic-bezier(0.33, 1, 0.68, 1);
+
+  /* —— 时长分级：按压 120ms、悬停 160ms、控件 180ms、形态展开 260ms、进场 360ms —— */
+  --spray-tap: 120ms;
+  --spray-fast: 160ms;
+  --spray-control: 180ms;
+  --spray-panel: 260ms;
+  --spray-reveal: 360ms;
+
+  /* —— 层级：普通面板一层细影，可点击表面悬停抬升，浮层单独加深 —— */
+  --spray-shadow-flat: 0 1px 2px rgb(15 23 42 / 4%);
+  --spray-shadow-card: 0 1px 2px rgb(15 23 42 / 5%), 0 12px 28px -24px rgb(15 42 60 / 30%);
+  --spray-shadow-lift: 0 2px 4px rgb(15 23 42 / 6%), 0 20px 38px -26px rgb(20 80 88 / 38%);
+  --spray-shadow-float: 0 12px 34px -14px rgb(15 42 60 / 26%), 0 2px 6px rgb(15 23 42 / 8%);
+
+  /* —— 金属微渐变与压印高光：按钮与徽章共用，保证同一层级同一质感 —— */
+  --spray-metal: linear-gradient(180deg, rgb(255 255 255 / 16%) 0%, rgb(255 255 255 / 4%) 42%, rgb(0 0 0 / 8%) 100%);
+  --spray-metal-card: linear-gradient(180deg, rgb(255 255 255 / 92%) 0%, rgb(255 255 255 / 60%) 38%, rgb(15 42 60 / 3%) 100%);
+  --spray-inset-top: inset 0 1px 0 rgb(255 255 255 / 30%);
+  --spray-inset-top-soft: inset 0 1px 0 rgb(255 255 255 / 72%);
+  --spray-inset-bottom: inset 0 -1px 0 rgb(15 42 60 / 6%);
+  --spray-focus: 0 0 0 3px color-mix(in srgb, var(--ring) 26%, transparent);
+
+  /* —— 扫光与呼吸：仅用于主动作与实时状态，不做大面积持续动画 —— */
+  --spray-sheen: linear-gradient(105deg, transparent 22%, rgb(255 255 255 / 38%) 48%, transparent 74%);
+  --spray-live: oklch(0.62 0.15 158);
+
+  /* —— 数值排版：等宽数字 + 表格数字，业务编号与时间不做字距抖动 —— */
+  --spray-font-mono: 'Spray Numerals', 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+}
+
+/* 数字、编号、时间与统计值统一使用等宽字体；中文业务文本不切换字体族。 */
+.spray-workspace .spray-num,
+.spray-workspace .spray-num b,
+.spray-workspace .spray-metric strong,
+.spray-workspace .spray-metric-head b,
+.spray-workspace .spray-figure,
+.spray-workspace .spray-code,
+.spray-workspace .spray-table .num,
+.spray-workspace .spray-table td strong {
+  font-family: var(--spray-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: -0.01em;
+}
+
+/* 工作区内滚动条：与全站细滚动条一致，仅收窄并提高对比度。 */
+.spray-workspace .spray-main,
+.spray-workspace .spray-nav,
+.spray-workspace .spray-inspector,
+.spray-workspace .spray-table-wrap,
+.spray-workspace .spray-backlog,
+.spray-workspace .spray-schedule-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--primary) 28%, transparent) transparent;
+}
+
+.spray-workspace .spray-main::-webkit-scrollbar,
+.spray-workspace .spray-nav::-webkit-scrollbar,
+.spray-workspace .spray-inspector::-webkit-scrollbar,
+.spray-workspace .spray-table-wrap::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.spray-workspace .spray-main::-webkit-scrollbar-thumb,
+.spray-workspace .spray-nav::-webkit-scrollbar-thumb,
+.spray-workspace .spray-inspector::-webkit-scrollbar-thumb,
+.spray-workspace .spray-table-wrap::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  background-color: color-mix(in srgb, var(--primary) 26%, transparent);
+}
+
+.spray-workspace .spray-main::-webkit-scrollbar-thumb:hover,
+.spray-workspace .spray-nav::-webkit-scrollbar-thumb:hover,
+.spray-workspace .spray-inspector::-webkit-scrollbar-thumb:hover,
+.spray-workspace .spray-table-wrap::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--primary) 46%, transparent);
+}

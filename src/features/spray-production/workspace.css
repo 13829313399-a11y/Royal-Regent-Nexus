@@ -1,8 +1,243 @@
-.spray-workspace{height:100dvh;display:flex;flex-direction:column;background:var(--background);color:var(--foreground);font-size:14px;line-height:1.5;overflow:hidden}
-.spray-workspace *{box-sizing:border-box}.spray-workspace button,.spray-workspace input,.spray-workspace select,.spray-workspace textarea{font:inherit}
+/* 喷油工作区局部样式（命名空间 .spray-workspace）。
+   本文件只服务喷油业务全页；颜色、圆角、字体沿用全局 token，不覆盖 :root。
+   局部语义表面只在本命名空间内生效，用于区分信息/提醒/错误/完成四类真实状态。
+   行高约束：虚拟列表的行高由 Vue 组件的 row-height 参数决定，本文件只允许调整
+   行内 padding 与排版，不得改写 .spray-virtual-item 的 height。 */
+.spray-workspace{
+  --spray-surface-info:var(--accent);--spray-border-info:color-mix(in srgb,var(--primary) 24%,var(--border));--spray-text-info:var(--accent-foreground);
+  --spray-surface-success:oklch(0.958 0.032 158);--spray-border-success:oklch(0.86 0.058 158);--spray-text-success:oklch(0.34 0.072 158);
+  --spray-surface-warn:oklch(0.972 0.042 84);--spray-border-warn:oklch(0.87 0.078 84);--spray-text-warn:oklch(0.37 0.088 72);
+  --spray-surface-error:oklch(0.966 0.024 22);--spray-border-error:oklch(0.87 0.062 22);--spray-text-error:oklch(0.42 0.152 25);
+  --spray-gap-page:24px;
+  height:100dvh;display:flex;flex-direction:column;background:var(--background);color:var(--foreground);font-size:14px;line-height:1.5;overflow:hidden}
+.spray-workspace *{box-sizing:border-box}
+.spray-workspace button,.spray-workspace input,.spray-workspace select,.spray-workspace textarea{font:inherit}
 .spray-workspace input,.spray-workspace select,.spray-workspace textarea{border:1px solid var(--input);border-radius:8px;padding:8px 10px;background:var(--card);color:var(--foreground);min-width:0;max-width:100%}
-.spray-workspace :focus-visible{outline:2px solid var(--ring);outline-offset:2px}.spray-topbar{min-height:60px;background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:20px;padding:10px 20px;flex-wrap:wrap}.spray-topbar h1{font-size:21px;font-weight:650;margin-right:auto}.spray-topbar label{display:flex;align-items:center;gap:8px}.spray-back{display:flex;align-items:center;gap:6px;color:var(--primary)}.spray-updated,.spray-muted{color:var(--muted-foreground);font-size:12px}.spray-body{display:flex;flex:1;min-height:0;min-width:0}.spray-nav{width:184px;flex-shrink:0;padding:20px 12px;background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;gap:5px;overflow-y:auto}.spray-nav a{padding:11px 16px;border-radius:8px;color:var(--muted-foreground);font-weight:550;white-space:nowrap}.spray-nav a.router-link-active{background:var(--accent);color:var(--primary);box-shadow:inset 3px 0 var(--primary)}.spray-nav p{font-size:12px;color:var(--muted-foreground);padding:28px 16px;margin-top:auto}.spray-main{min-width:0;flex:1;overflow:auto;padding:24px}.spray-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}.spray-toolbar h2{font-size:25px;font-weight:650;letter-spacing:-.5px}.spray-toolbar p{color:var(--muted-foreground);margin-top:4px}.spray-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.spray-section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.spray-section-title h2,.spray-section-title h3{font-size:16px;font-weight:650}.spray-panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px;min-width:0}.spray-metrics{display:flex;border-block:1px solid var(--border);margin-bottom:24px;padding:16px 0;gap:32px;flex-wrap:wrap}.spray-metrics a,.spray-metrics>div{flex:1;min-width:100px}.spray-metrics strong{font-size:26px;font-weight:600;display:block;font-variant-numeric:tabular-nums}.spray-metrics span{color:var(--muted-foreground);font-size:12px}.spray-lane{display:grid;grid-template-columns:96px minmax(0,1fr);border-top:1px solid var(--border);padding:22px 0;gap:20px;min-height:145px}.spray-lane-head h3{font-size:18px;font-weight:600}.spray-lane-body{display:flex;gap:12px;overflow-x:auto;align-items:stretch;padding:2px}.spray-task{min-width:250px;width:280px;flex-shrink:0;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:8px;padding:14px;text-align:left;background:var(--card)}.spray-task.selected{outline:2px solid var(--primary)}.spray-task h4{font-weight:650;margin-bottom:4px}.spray-task p{color:var(--muted-foreground);font-size:12px}.spray-task footer{display:flex;justify-content:space-between;margin-top:12px;gap:8px}.spray-pill{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--primary);background:var(--accent);padding:3px 8px;border-radius:6px;white-space:nowrap}.spray-pill.warn{background:#fff1d5;color:#785100}.spray-empty{padding:44px 24px;text-align:center;color:var(--muted-foreground)}.spray-empty h2,.spray-empty h3{color:var(--foreground);font-size:20px;margin-bottom:8px}.spray-help{font-size:12px;color:var(--muted-foreground);padding:12px 0}.spray-message{border:1px solid var(--border);background:var(--accent);padding:10px 14px;border-radius:8px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:12px}.spray-error{color:#9f2323;background:#fff1f1;border-color:#eab8b8}.spray-table-wrap{overflow:auto;max-width:100%;border:1px solid var(--border);border-radius:10px;background:var(--card)}.spray-table{border-collapse:collapse;width:100%;text-align:left;white-space:nowrap}.spray-table th{background:var(--secondary);font-size:12px;color:var(--muted-foreground);font-weight:550;position:sticky;top:0;z-index:1}.spray-table th,.spray-table td{padding:12px 14px;border-bottom:1px solid var(--border)}.spray-table tbody tr:hover{background:var(--accent)}.spray-table .num{text-align:right;font-variant-numeric:tabular-nums}.spray-table td input{width:90px;padding:8px}.spray-table td:first-child strong{display:block}.spray-inspector{width:340px;flex-shrink:0;background:var(--card);border-left:1px solid var(--border);padding:20px;overflow:auto}.spray-inspector h3{font-weight:650;margin:12px 0}.spray-balance{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}.spray-timeline{margin-left:8px;border-left:2px solid var(--border);padding-left:16px}.spray-timeline li{padding:10px 0;font-size:12px}.spray-timeline strong,.spray-timeline small,.spray-timeline span{display:block}.spray-timeline small{color:var(--muted-foreground)}.spray-entry{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.spray-field{display:flex;flex-direction:column;gap:6px}.spray-field>span{font-size:13px;font-weight:550}.spray-field small{font-size:12px;color:var(--muted-foreground)}.spray-form-actions{grid-column:1/-1;display:flex;gap:10px;justify-content:flex-end;padding-top:8px}.spray-split{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:20px;align-items:start}.spray-tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:20px;overflow:auto}.spray-tabs button{padding:10px 16px;white-space:nowrap;border-bottom:2px solid transparent}.spray-tabs button.active{border-color:var(--primary);color:var(--primary);font-weight:650}.spray-code{font-family:Consolas,monospace;font-size:12px;overflow-wrap:anywhere;white-space:normal}.spray-stack{display:flex;flex-direction:column;gap:12px}.spray-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)}.spray-progress{height:5px;background:var(--secondary);border-radius:4px;overflow:hidden;margin-top:8px}.spray-progress span{display:block;height:100%;background:var(--primary)}
-@media(max-width:1279px){.spray-nav{width:142px;padding:12px 6px}.spray-nav a{padding:10px 12px}.spray-main{padding:18px}.spray-inspector{width:285px}.spray-split{grid-template-columns:1fr}.spray-updated{display:none}}
-@media(max-width:1024px){.spray-body{flex-wrap:wrap}.spray-nav{width:100%;flex-direction:row;overflow:auto;max-height:60px;border-bottom:1px solid var(--border);padding:6px;order:0}.spray-nav p{display:none}.spray-main{height:calc(100% - 56px);padding:16px}.spray-inspector{height:calc(100% - 56px)}.spray-topbar{gap:10px;padding:8px 12px}.spray-topbar h1{font-size:18px}.spray-lane{grid-template-columns:70px minmax(0,1fr)}}
-@media(max-width:700px){.spray-body{display:block;overflow:auto}.spray-main{height:auto;overflow:visible}.spray-inspector{width:100%;height:auto;border-top:1px solid var(--border)}.spray-topbar h1{font-size:17px}.spray-topbar label{margin-left:auto}.spray-updated{display:none}.spray-entry{grid-template-columns:1fr}.spray-toolbar h2{font-size:22px}.spray-toolbar{gap:12px}.spray-metrics{gap:16px}.spray-metrics strong{font-size:23px}.spray-lane{grid-template-columns:1fr;gap:10px}.spray-lane-head{display:flex;justify-content:space-between}.spray-task{min-width:235px}.spray-panel{padding:16px}.spray-workspace input,.spray-workspace select{min-height:44px}.spray-back{font-size:12px}}
+.spray-workspace input[type='checkbox'],.spray-workspace input[type='radio']{width:16px;height:16px;min-height:0;padding:0;border-radius:4px;accent-color:var(--primary);flex:none}
+.spray-workspace label{min-width:0}
+.spray-check-list{display:flex;flex-direction:column;gap:8px}
+.spray-check-list label{display:flex;align-items:flex-start;gap:8px;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.spray-check-list label:hover{border-color:var(--primary)}
+.spray-workspace :focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+
+/* 工作区头部：身份与当前厂区常驻，业务操作与内部说明不在此争抢视线。 */
+.spray-topbar{flex:none;min-height:64px;background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px 16px;padding:10px 20px;flex-wrap:wrap}
+.spray-topbar-main{display:flex;align-items:center;gap:12px;min-width:0;flex:1 1 auto}
+.spray-topbar h1{font-size:19px;font-weight:650;letter-spacing:-.3px;min-width:0;overflow-wrap:anywhere}
+.spray-back{display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:550;white-space:nowrap;padding:6px 8px;border-radius:8px;flex:none}
+.spray-back:hover{background:var(--accent)}
+.spray-topbar-scope{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.spray-topbar label{display:flex;align-items:center;gap:8px}
+.spray-updated,.spray-muted{color:var(--muted-foreground);font-size:12px}
+.spray-scope-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);background:var(--secondary);border-radius:9999px;padding:4px 12px;font-size:12px;font-weight:550;color:var(--secondary-foreground);white-space:nowrap}
+.spray-scope-chip.pending{background:var(--spray-surface-warn);border-color:var(--spray-border-warn);color:var(--spray-text-warn)}
+.spray-workspace-bar{flex:none;display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:8px 20px;background:var(--card);border-bottom:1px solid var(--border)}
+.spray-status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground);white-space:nowrap}
+.spray-status.loading{color:var(--primary)}
+
+.spray-body{display:flex;flex:1;min-height:0;min-width:0}
+
+/* 左侧九个业务入口按工作流分组；当前状态用背景、左侧色条和字重共同表达。 */
+.spray-nav{width:200px;flex:none;padding:14px 10px 18px;background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+.spray-nav-group{display:flex;flex-direction:column;gap:2px;min-width:0}
+.spray-nav-group + .spray-nav-group{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.spray-nav-label{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--muted-foreground);padding:2px 12px 6px;margin:0}
+.spray-nav a{position:relative;display:block;padding:9px 12px;border-radius:8px;color:var(--muted-foreground);font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spray-nav a:hover{background:var(--secondary);color:var(--foreground)}
+.spray-nav a.router-link-active{background:var(--accent);color:var(--primary);font-weight:650;box-shadow:inset 3px 0 var(--primary)}
+.spray-inspector{max-height:calc(100dvh - 106px)}
+.spray-nav-current{margin-top:auto;padding:14px 12px 0;border-top:1px solid var(--border);min-width:0}
+.spray-nav-current strong{display:block;font-size:13px;font-weight:650}
+.spray-nav-current span{display:block;font-size:12px;color:var(--muted-foreground);margin-top:4px}
+.spray-nav-current small{display:block;font-size:11px;color:var(--muted-foreground);margin-top:8px;line-height:1.5}
+
+.spray-main{min-width:0;flex:1;overflow:auto;padding:var(--spray-gap-page);scrollbar-gutter:stable}
+
+/* 页头工具条：左侧业务标题，右侧本页操作，主要操作排在最后。 */
+.spray-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 16px;flex-wrap:wrap;margin-bottom:18px}
+.spray-toolbar>div{min-width:0}
+.spray-toolbar h2{font-size:22px;font-weight:650;letter-spacing:-.4px;overflow-wrap:anywhere}
+.spray-toolbar p{color:var(--muted-foreground);margin-top:4px;max-width:76ch}
+.spray-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.spray-toolbar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;min-width:0}
+.spray-field-label{display:flex;flex-direction:column;gap:6px;min-width:0}
+.spray-field-label>span{font-size:12px;font-weight:550;color:var(--muted-foreground)}
+.spray-section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.spray-section-title h2,.spray-section-title h3{font-size:16px;font-weight:650;min-width:0}
+.spray-section-title .spray-muted,.spray-section-title .spray-help{padding:0}
+
+.spray-panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:var(--spray-gap-page);min-width:0}
+.spray-panel>*:last-child{margin-bottom:0}
+.spray-panel.stack{display:flex;flex-direction:column;gap:14px}
+.spray-panel.stack>*{margin-bottom:0}
+.spray-help{font-size:12px;color:var(--muted-foreground);padding:6px 0;line-height:1.6}
+.spray-note{margin:0 0 var(--spray-gap-page);padding:12px 14px;border-radius:10px;background:var(--secondary);border:1px solid var(--border)}
+.spray-note .spray-help{padding:0}
+details.spray-note{margin-bottom:16px}
+details.spray-note summary{cursor:pointer;font-weight:550;color:var(--secondary-foreground);font-size:13px}
+details.spray-note[open] summary{margin-bottom:8px}
+details.spray-disclosure{margin-bottom:16px}
+details.spray-disclosure>summary{cursor:pointer;font-weight:550;color:var(--primary);font-size:13px;padding:6px 0}
+details.spray-disclosure[open]>summary{margin-bottom:10px}
+details.spray-panel>summary{cursor:pointer;font-weight:550;font-size:14px}
+details.spray-panel[open]>summary{margin-bottom:14px}
+
+.spray-metrics-group{display:flex;border-block:1px solid var(--border);margin-bottom:var(--spray-gap-page);padding:14px 0;gap:24px 32px;flex-wrap:wrap}
+.spray-metrics-group a,.spray-metrics-group>div{flex:1;min-width:118px}
+.spray-metric{display:flex;flex-direction:column;gap:2px;border-radius:10px;padding:8px 10px;margin:-8px -10px;min-width:118px}
+.spray-metric:hover{background:var(--secondary)}
+.spray-metric strong{font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.spray-metric span{color:var(--foreground);font-size:13px;font-weight:550}
+.spray-metric small{color:var(--muted-foreground);font-size:12px}
+.spray-metric small:before{content:'';display:inline-block;width:6px;height:6px;border-radius:9999px;background:var(--primary);margin-right:6px;vertical-align:1px}
+
+.spray-lane{display:grid;grid-template-columns:104px minmax(0,1fr);border-top:1px solid var(--border);padding:20px 0;gap:18px;min-height:145px}
+.spray-lane-head h3{font-size:17px;font-weight:600}
+.spray-lane-head p{margin-top:2px}
+.spray-lane-body{display:flex;gap:12px;overflow-x:auto;align-items:stretch;padding:2px}
+.spray-task{min-width:250px;width:280px;flex:none;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:8px;padding:14px;text-align:left;background:var(--card)}
+.spray-task:hover{border-color:var(--primary)}
+.spray-task.selected{outline:2px solid var(--primary);outline-offset:-2px}
+.spray-task h4{font-weight:650;margin-bottom:4px}
+.spray-task p{color:var(--muted-foreground);font-size:12px}
+.spray-task footer{display:flex;justify-content:space-between;margin-top:12px;gap:8px}
+.spray-pill{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--primary);background:var(--accent);padding:4px 10px;border-radius:6px;white-space:nowrap}
+.spray-pill.warn{background:var(--spray-surface-warn);border:1px solid var(--spray-border-warn);color:var(--spray-text-warn)}
+.spray-badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:550;padding:3px 9px;border-radius:9999px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);white-space:nowrap}
+.spray-badge.done{background:var(--spray-surface-success);border-color:var(--spray-border-success);color:var(--spray-text-success)}
+.spray-badge.info{background:var(--spray-surface-info);border-color:var(--spray-border-info);color:var(--spray-text-info)}
+/* 文件选择等原生控件视觉隐藏但保留键盘焦点与可访问名称。 */
+.spray-visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+label.spray-file-trigger{cursor:pointer}
+label.spray-file-trigger:hover{border-color:var(--primary)}
+label.spray-file-trigger:focus-within{outline:2px solid var(--ring);outline-offset:2px}
+label.spray-file-trigger.busy{cursor:progress;opacity:.75}
+
+.spray-empty{padding:40px 22px;text-align:center;color:var(--muted-foreground)}
+.spray-empty h2,.spray-empty h3{color:var(--foreground);font-size:19px;margin-bottom:8px}
+.spray-empty p{max-width:60ch;margin:0 auto}
+.spray-empty .spray-pill,.spray-empty .spray-actions{margin-top:14px;justify-content:center}
+
+.spray-message{border:1px solid var(--spray-border-info);background:var(--spray-surface-info);color:var(--spray-text-info);padding:10px 14px;border-radius:8px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.spray-message a{color:var(--primary);font-weight:550}
+.spray-warn{color:var(--spray-text-warn);background:var(--spray-surface-warn);border-color:var(--spray-border-warn)}
+.spray-error{color:var(--spray-text-error);background:var(--spray-surface-error);border-color:var(--spray-border-error)}
+.spray-success{color:var(--spray-text-success);background:var(--spray-surface-success);border-color:var(--spray-border-success)}
+
+/* 表格与数据网格：容器自身横向滚动，表头保持可读，数字列右对齐。 */
+.spray-table-wrap{overflow:auto;max-width:100%;border:1px solid var(--border);border-radius:10px;background:var(--card)}
+.spray-table-wrap:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.spray-table{border-collapse:collapse;width:100%;text-align:left;white-space:nowrap}
+.spray-table th{background:var(--secondary);font-size:12px;font-weight:600;color:var(--secondary-foreground);position:sticky;top:0;z-index:1}
+.spray-table th,.spray-table td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+.spray-table tbody tr:last-child td{border-bottom:0}
+.spray-table tbody tr:hover{background:var(--accent)}
+.spray-table tbody tr.selected{background:var(--accent);box-shadow:inset 3px 0 var(--primary)}
+button.spray-pill{cursor:pointer;border:1px solid transparent}
+button.spray-pill:hover{border-color:var(--primary)}
+.spray-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.spray-table td input,.spray-table td select{padding:6px 8px}
+.spray-table td input{width:90px}
+.spray-table td:first-child strong{display:block}
+.spray-table caption,.spray-table-caption{text-align:left;padding:10px 12px;font-size:12px;color:var(--muted-foreground);border-bottom:1px solid var(--border);margin:0}
+.spray-table-hint{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted-foreground);padding:10px 2px 6px}
+
+.spray-inspector{width:340px;flex:none;background:var(--card);border-left:1px solid var(--border);padding:20px;overflow:auto}
+/* 来源文件 / 工作表选择：当前项用背景、边框和字重共同表达。 */
+.spray-source{display:block;width:100%;text-align:left;padding:10px 12px;border-radius:8px;border:1px solid transparent;overflow-wrap:anywhere;background:transparent;color:inherit}
+.spray-source:hover{background:var(--secondary)}
+.spray-source.active{background:var(--accent);border-color:var(--spray-border-info);color:var(--primary)}
+.spray-source strong,.spray-source small{display:block}
+.spray-source small{color:var(--muted-foreground);margin-top:4px;font-size:12px}
+.spray-source.active small{color:var(--spray-text-info)}
+.spray-import-layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:20px;align-items:start}
+@media(max-width:1000px){.spray-import-layout{grid-template-columns:1fr}}
+.spray-inspector h3{font-weight:650;margin:12px 0}
+.spray-balance{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
+.spray-timeline{margin-left:8px;border-left:2px solid var(--border);padding-left:16px}
+.spray-timeline li{padding:10px 0;font-size:12px}
+.spray-timeline strong,.spray-timeline small,.spray-timeline span{display:block}
+.spray-timeline small{color:var(--muted-foreground)}
+
+/* 表单：字段间距 12–16px，窄屏单列，操作行常驻底部。 */
+.spray-entry{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px}
+.spray-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.spray-field>span{font-size:13px;font-weight:550}
+.spray-field small{font-size:12px;color:var(--muted-foreground)}
+.spray-form-actions{grid-column:1/-1;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;padding-top:10px;margin-top:2px;border-top:1px solid var(--border)}
+.spray-form-actions.sticky{position:sticky;bottom:0;background:var(--card);border-radius:0 0 10px 10px;padding-bottom:2px}
+.spray-split{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:20px;align-items:start}
+.spray-split.wide-aside{grid-template-columns:minmax(0,1fr) 300px}
+/* 页内一级分区改由 SpraySegmentedControl 承载（styles/polish.css 的
+   .spray-pill-control-bar），原有 .spray-tabs 样式已无引用并已移除。 */
+.spray-code{font-family:Consolas,monospace;font-size:12px;overflow-wrap:anywhere;white-space:normal}
+.spray-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);min-width:0}
+.spray-row:last-child{border-bottom:0}
+.spray-figure{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.spray-progress{height:5px;background:var(--secondary);border-radius:4px;overflow:hidden;margin-top:8px}
+.spray-progress span{display:block;height:100%;background:var(--primary)}
+
+/* 窄屏：先保证业务操作与数据的可读、可点，再逐步收起内部说明。 */
+@media(max-width:1279px){
+  .spray-nav{width:150px;padding:12px 8px 16px}
+  .spray-inspector{width:300px}
+  .spray-split{grid-template-columns:1fr}
+  .spray-updated{display:none}
+}
+@media(min-width:1025px) and (max-width:1279px){
+  .spray-nav-current small{display:none}
+}
+@media(max-width:1024px){
+  .spray-body{flex-direction:column}
+  .spray-nav{position:sticky;top:0;z-index:3;width:100%;flex-direction:row;align-items:center;gap:8px;overflow-x:auto;overflow-y:hidden;padding:8px 10px;border-right:0;border-bottom:1px solid var(--border);scrollbar-width:thin}
+  .spray-nav-group{flex:none;flex-direction:row;align-items:center;gap:4px;margin:0;padding:0;border-top:0}
+  .spray-nav-group + .spray-nav-group{margin:0 0 0 8px;padding:0 0 0 12px;border-top:0;border-left:1px solid var(--border)}
+  .spray-nav-label{padding:0 4px 0 0;letter-spacing:.04em;white-space:nowrap;align-self:center}
+  .spray-nav a{flex:none;padding:10px 12px;min-height:44px;display:flex;align-items:center}
+  .spray-nav a.router-link-active{box-shadow:inset 0 -3px var(--primary)}
+  .spray-nav-current{display:none}
+  .spray-main{height:auto;padding:18px}
+  .spray-inspector{height:calc(100% - 56px)}
+  .spray-topbar{gap:8px 10px;padding:8px 14px}
+  .spray-topbar h1{font-size:18px}
+  .spray-workspace-bar{padding:6px 14px}
+  .spray-lane{grid-template-columns:84px minmax(0,1fr)}
+}
+@media(max-width:700px){
+  .spray-body{display:block;overflow:auto}
+  .spray-nav{position:static}
+  .spray-main{height:auto;overflow:visible;padding:14px}
+  .spray-inspector{width:100%;height:auto;border-top:1px solid var(--border);border-left:0}
+  .spray-topbar{padding:8px 12px}
+  .spray-topbar h1{font-size:17px}
+  .spray-topbar-main{gap:8px}
+  .spray-back{padding:6px}
+  .spray-back-label{display:none}
+  .spray-workspace-bar{padding:6px 12px}
+  .spray-scope-chip{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .spray-updated{display:none}
+  .spray-toolbar{gap:10px;margin-bottom:16px}
+  .spray-toolbar h2{font-size:20px}
+  .spray-toolbar-actions{width:100%;justify-content:flex-start}
+  .spray-toolbar-actions>*{flex:0 1 auto}
+  .spray-metrics-group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px}
+  .spray-metric strong{font-size:24px}
+  .spray-metrics-group .spray-metric{min-width:0;margin:0;padding:8px 0}
+  .spray-lane{grid-template-columns:1fr;gap:10px}
+  .spray-lane-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .spray-task{min-width:235px}
+  .spray-panel{padding:16px;border-radius:10px}
+  .spray-entry{grid-template-columns:1fr;gap:12px}
+  .spray-form-actions{justify-content:stretch}
+  .spray-form-actions>*{flex:1 1 auto}
+  .spray-workspace input,.spray-workspace select{min-height:44px}
+  .spray-split{gap:14px}
+  .spray-table th,.spray-table td{padding:8px 10px}
+  .spray-row{flex-wrap:wrap}
+  details.spray-note{margin-bottom:12px}
+}
+@media(max-width:400px){
+  .spray-topbar h1{font-size:16px}
+  .spray-nav-label{display:none}
+}
 @media(prefers-reduced-motion:reduce){.spray-workspace *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

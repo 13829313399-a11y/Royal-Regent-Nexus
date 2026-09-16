@@ -32,12 +32,72 @@ function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>)
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = '' })
 
 describe('internal quote feedback regressions', () => {
+  it('adds an electronic quote on HTTP browsers without crypto.randomUUID', async () => {
+    const cryptoSource = globalThis.crypto
+    vi.stubGlobal('crypto', { getRandomValues: cryptoSource.getRandomValues.bind(cryptoSource) })
+    const { wrapper } = setup('electronic', {})
+    try {
+      await wrapper.findAll('button').find((button) => button.text().includes('新增电子报价'))!.trigger('click')
+      const groups = wrapper.vm.getWholeQuoteDraft().payload.quote_groups as Array<{ id: string }>
+      expect(groups).toHaveLength(1)
+      expect(groups[0]!.id).toMatch(/^electronic-[0-9a-f-]{36}$/)
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('does not report automatic molding reference canonicalization as unsaved user input', async () => {
     const { wrapper } = setup('molding', { injection_lines: [{ item: '壳', material: 'ABS', grade: '750SW', machine_code: '18' }] })
     await flushPromises()
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
     expect(wrapper.find('.dirty').exists()).toBe(false)
     expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{ machine_code: '18A', machine_name: '180T' }] })
+    wrapper.unmount()
+  })
+
+  it('edits the selected electronic quote without changing the other quote', async () => {
+    const { wrapper } = setup('electronic', {
+      quote_groups: [
+        { id: 'first', name: '主板', components: [{ item: '第一组零件', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 13, children: [] }], profit_rate_percent: 10 },
+        { id: 'second', name: '遥控器', components: [{ item: '第二组零件', quantity: 1, unit_price_rmb: 2, tax_rate_percent: 13, children: [] }], bonding_rmb: 3, profit_rate_percent: 20 },
+      ],
+    })
+    await flushPromises()
+    await wrapper.get('.electronic-quote-group-controls select').setValue('second')
+    await wrapper.get('input[aria-label="电子零件名称"]').setValue('已修改的第二组')
+    const payload = wrapper.vm.getWholeQuoteDraft().payload as { quote_groups: Array<Record<string, unknown>> }
+    expect(payload.quote_groups[0]).toMatchObject({ id: 'first', components: [{ item: '第一组零件' }], profit_rate_percent: 10 })
+    expect(payload.quote_groups[1]).toMatchObject({ id: 'second', components: [{ item: '已修改的第二组' }], bonding_rmb: 3, profit_rate_percent: 20 })
+    wrapper.unmount()
+  })
+
+  it('keeps an empty group wrapper after deleting the final electronic quote and recovers through import or a new quote', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { wrapper, store } = setup('electronic', {
+      quote_groups: [{ id: 'only', name: '唯一报价', components: [{ item: '零件', quantity: 1, unit_price_rmb: 1, tax_rate_percent: 13, children: [] }], profit_rate_percent: 10 }],
+    })
+    await flushPromises()
+    await wrapper.get('.remove-electronic-group').trigger('click')
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toEqual({ quote_groups: [] })
+    expect(wrapper.text()).toContain('暂无电子报价')
+    const emptyPayload = wrapper.vm.getWholeQuoteDraft().payload
+    wrapper.vm.acceptSavedPayload(emptyPayload, emptyPayload, 5)
+
+    vi.spyOn(store, 'previewImport').mockResolvedValue({
+      batch_id: 'electronic-batch', quote_id: 'feedback-quote', import_type: 'electronic', target_department: 'electronic',
+      source_file_name: '电子报价单.xlsx', source_sha256: 'sha', source_size_bytes: 1, preview_schema_version: 'v1', target_revision: 5,
+      sheet_name: '报价', header_row: 1, row_count: 2, payload_fragment: {}, diff_summary: { imported_rows: 2 }, warnings: [],
+      status: 'previewed', created_by_name: '', created_at: '', confirm_mode: 'replace', confirmed_revision: 0, confirmed_by_name: '', confirmed_at: '',
+    })
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { value: [new File(['xlsx'], '电子报价单.xlsx')] })
+    await input.trigger('change')
+    await flushPromises()
+    expect((wrapper.get('.electronic-import-target select').element as HTMLSelectElement).value).toBe('new')
+    await wrapper.get('[aria-label="关闭导入预览"]').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('新增电子报价'))!.trigger('click')
+    expect((wrapper.vm.getWholeQuoteDraft().payload as { quote_groups: unknown[] }).quote_groups).toHaveLength(1)
     wrapper.unmount()
   })
 
@@ -154,8 +214,13 @@ describe('internal quote feedback regressions', () => {
     await wrapper.get('[aria-label="配件拆分预览"]').findAll('button').find((button) => button.text() === '确认拆分并保留数据')!.trigger('click')
     const names = wrapper.findAll('input[aria-label="模具子配件名称"]').map((input) => (input.element as HTMLInputElement).value)
     expect(names).toEqual(['粉色蝴蝶结前', '粉色蝴蝶结后', '手工附件'])
-    const prices = wrapper.findAll('input[aria-label="模具子配件加工总单价 HKD"]').map((input) => (input.element as HTMLInputElement).value)
-    expect(prices).toEqual(['2', '3', '4'])
+    expect(wrapper.find('input[aria-label="模具子配件加工内容"]').exists()).toBe(false)
+    expect(wrapper.find('input[aria-label="模具子配件加工总单价 HKD"]').exists()).toBe(false)
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ molds: [{ parts: [
+      { process_unit_price_hkd: 2 },
+      { process_unit_price_hkd: 3 },
+      { process_unit_price_hkd: 4 },
+    ] }] })
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
     wrapper.unmount()
   })

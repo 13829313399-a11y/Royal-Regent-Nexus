@@ -7,9 +7,10 @@ import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
 import InternalQuoteImportAssignment from './InternalQuoteImportAssignment.vue'
 import InternalQuoteMappedAssignment from './InternalQuoteMappedAssignment.vue'
-import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
-import { cloneInternalQuotePayload, normalizeInternalQuotePayload, salesPackagingPricingGroupId, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
+import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
+import { calculateElectronicSectionSummary, cloneInternalQuotePayload, electronicQuoteGroups, isElectronicQuoteGroupsPayload, normalizeInternalQuotePayload, salesPackagingPricingGroupId, salesSettlementDivisorForMiscRatio, type ElectronicPayload, type ElectronicQuoteGroup, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
 import { useAuthStore } from '@/stores/auth'
+import { createRandomUuid } from '@/lib/randomUuid'
 import { normalizeInternalQuoteDraft } from '@/lib/internalQuoteMoldingReferences'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
@@ -45,7 +46,12 @@ const baselinePayload = ref('')
 const draftRevision = ref(props.section.revision)
 const importPreview = ref<ApiInternalQuoteImportPreview>()
 const importAssignments = ref<Record<string, string>>({})
-watch(() => importPreview.value?.batch_id, () => { importAssignments.value = {} })
+const electronicImportTarget = ref<string>()
+const activeElectronicGroupId = ref('legacy')
+watch(() => importPreview.value?.batch_id, () => {
+  importAssignments.value = {}
+  electronicImportTarget.value = props.section.code === 'electronic' ? 'new' : undefined
+})
 const assignmentComplete = computed(() => (importPreview.value?.assignment_rows ?? []).every(row => Boolean(importAssignments.value[row.key])))
 const previewAttachmentTarget = ref<InternalQuoteAttachmentRecord>()
 const deleteAttachmentTarget = ref<InternalQuoteAttachmentRecord>()
@@ -78,7 +84,81 @@ const mainMarkup = computed(() => {
   return Number(props.quote.rr2CostSummary.shippingPricing.markup) || 1.2
 })
 const supportsQuickQuote = computed(() => ['electronic', 'painting', 'sewing'].includes(props.section.code))
-const isQuickQuoteMode = computed(() => draftPayload.value.quote_mode === 'quick')
+const electronicGroups = computed<ElectronicQuoteGroup[]>(() => (
+  props.section.code === 'electronic' && isElectronicQuoteGroupsPayload(draftPayload.value)
+    ? electronicQuoteGroups(draftPayload.value)
+    : []
+))
+function electronicPayloadHasContent(payload: Record<string, unknown>) {
+  const quickRows = Array.isArray(payload.quick_quotes) ? payload.quick_quotes : []
+  const components = Array.isArray(payload.components) ? payload.components : []
+  return quickRows.length > 0 || components.length > 0 || [
+    'bonding_rmb', 'smt_rmb', 'labor_rmb', 'testing_rmb', 'packaging_rmb',
+    'bonding_hkd', 'smt_hkd', 'labor_hkd', 'testing_hkd', 'packaging_hkd',
+  ].some((key) => Number(payload[key]) > 0)
+}
+const electronicHasExistingData = computed(() => {
+  if (props.section.code !== 'electronic') return false
+  return electronicGroups.value.length > 0 || electronicPayloadHasContent(draftPayload.value)
+})
+const electronicGroupOptions = computed<ElectronicQuoteGroup[]>(() => {
+  if (props.section.code !== 'electronic') return []
+  if (electronicGroups.value.length) return electronicGroups.value
+  return electronicPayloadHasContent(draftPayload.value)
+    ? [{ id: 'legacy', name: '电子报价1', ...(draftPayload.value as unknown as ElectronicPayload) }]
+    : []
+})
+const activeElectronicGroup = computed(() => electronicGroupOptions.value.find((group) => group.id === activeElectronicGroupId.value) ?? electronicGroupOptions.value[0])
+const electronicFormPayload = computed<Record<string, unknown>>({
+  get() {
+    if (props.section.code !== 'electronic' || !electronicGroups.value.length) return draftPayload.value
+    return activeElectronicGroup.value ?? normalizeInternalQuotePayload('electronic', {})
+  },
+  set(value) {
+    const normalized = normalizeInternalQuotePayload('electronic', value)
+    if (!electronicGroups.value.length) {
+      draftPayload.value = normalized
+      return
+    }
+    const activeId = activeElectronicGroup.value?.id
+    draftPayload.value = normalizeInternalQuotePayload('electronic', {
+      quote_groups: electronicGroups.value.map((group) => group.id === activeId ? {
+        id: group.id,
+        name: group.name,
+        ...(group.import_batch_id ? { import_batch_id: group.import_batch_id } : {}),
+        ...(group.source_sha256 ? { source_sha256: group.source_sha256 } : {}),
+        ...normalized,
+      } : group),
+    })
+  },
+})
+const formPayload = computed<Record<string, unknown>>({
+  get: () => props.section.code === 'electronic' ? electronicFormPayload.value : draftPayload.value,
+  set: (value) => {
+    if (props.section.code === 'electronic') electronicFormPayload.value = value
+    else draftPayload.value = value
+  },
+})
+const isQuickQuoteMode = computed(() => (props.section.code === 'electronic' ? electronicFormPayload.value : draftPayload.value).quote_mode === 'quick')
+const electronicSectionSummary = computed(() => calculateElectronicSectionSummary(draftPayload.value, props.quote.fxRmbHkd))
+const electronicImportTargets = computed(() => electronicGroupOptions.value.map((group) => ({ id: group.id, name: group.name })))
+const selectedElectronicImportTarget = computed(() => electronicImportTargets.value.find((target) => target.id === electronicImportTarget.value))
+const selectedElectronicImportRows = computed(() => {
+  const group = electronicGroupOptions.value.find((entry) => entry.id === selectedElectronicImportTarget.value?.id)
+  return Array.isArray(group?.components) ? group.components.length : 0
+})
+const electronicImportExistingLabel = computed(() => electronicImportTarget.value === 'new'
+  ? `当前已有 ${electronicGroupOptions.value.length} 份报价；新报价 0 行`
+  : `当前目标报价 ${selectedElectronicImportRows.value} 行`)
+const electronicImportResultRows = computed(() => Number(importPreview.value?.diff_summary.imported_rows ?? importPreview.value?.row_count ?? 0))
+const showElectronicForm = computed(() => props.section.code !== 'electronic'
+  || !isElectronicQuoteGroupsPayload(draftPayload.value)
+  || electronicGroupOptions.value.length > 0)
+watch(electronicGroupOptions, (groups) => {
+  if (props.section.code === 'electronic' && groups.length && !groups.some((group) => group.id === activeElectronicGroupId.value)) {
+    activeElectronicGroupId.value = groups[0]!.id
+  }
+}, { immediate: true })
 const quickQuoteButtonLabel = computed(() => {
   if (!isQuickQuoteMode.value) return '快捷报价'
   return editable.value ? '返回明细报价' : '快捷报价中'
@@ -87,7 +167,8 @@ const quickQuoteButtonLabel = computed(() => {
 function toggleQuickQuoteMode() {
   if (!editable.value || !supportsQuickQuote.value) return
   const nextMode = isQuickQuoteMode.value ? 'detail' : 'quick'
-  const next: Record<string, unknown> = { ...draftPayload.value, quote_mode: nextMode }
+  const base = props.section.code === 'electronic' ? electronicFormPayload.value : draftPayload.value
+  const next: Record<string, unknown> = { ...base, quote_mode: nextMode }
   if (props.section.code === 'electronic' && nextMode === 'quick') {
     const quickRows = Array.isArray(next.quick_quotes) ? next.quick_quotes : []
     if (!quickRows.length) next.quick_quotes = [{ item: '', unit_price_rmb: 0, tax_rate_percent: 13, remark: '', ...(pricingMode.value === 'component' && props.activePricingComponentId ? { pricing_component_id: props.activePricingComponentId } : {}) }]
@@ -104,10 +185,72 @@ function toggleQuickQuoteMode() {
       next.quick_quote = { ...quickQuote, pricing_component_id: props.activePricingComponentId }
     }
   }
-  draftPayload.value = normalizeInternalQuotePayload(props.section.code, next)
+  if (props.section.code === 'electronic') electronicFormPayload.value = next
+  else draftPayload.value = normalizeInternalQuotePayload(props.section.code, next)
   localMessage.value = nextMode === 'quick'
     ? `${props.section.label}已切换为快捷报价；保存后可按快捷金额提交审核。`
     : `${props.section.label}已切回明细报价；快捷数据会保留但不重复计入金额。`
+}
+
+function addElectronicQuoteGroup() {
+  if (!editable.value || props.section.code !== 'electronic') return
+  const existing = electronicGroups.value.length
+    ? electronicGroups.value
+    : electronicPayloadHasContent(draftPayload.value)
+      ? [{ id: 'legacy', name: '电子报价1', ...(draftPayload.value as unknown as ElectronicPayload) }]
+      : []
+  if (existing.length >= 20) {
+    localError.value = '每张内部报价最多保留 20 份独立电子报价。'
+    return
+  }
+  const id = `electronic-${createRandomUuid()}`
+  draftPayload.value = normalizeInternalQuotePayload('electronic', {
+    quote_groups: [...existing, { id, name: `电子报价${existing.length + 1}` }],
+  })
+  activeElectronicGroupId.value = id
+  localMessage.value = '已新增一份独立电子报价；每份明细、费用和利润单独保存，金额会合计到电子部总价。'
+}
+
+function renameActiveElectronicGroup(name: string) {
+  if (!editable.value || !activeElectronicGroup.value) return
+  const trimmed = name.trim()
+  if (!electronicGroups.value.length) {
+    draftPayload.value = normalizeInternalQuotePayload('electronic', {
+      quote_groups: [{ ...activeElectronicGroup.value, name: trimmed || activeElectronicGroup.value.name }],
+    })
+    return
+  }
+  draftPayload.value = normalizeInternalQuotePayload('electronic', {
+    quote_groups: electronicGroups.value.map((group) => group.id === activeElectronicGroup.value!.id
+      ? { ...group, name: trimmed || group.name }
+      : group),
+  })
+}
+
+function renameActiveElectronicGroupFromEvent(event: Event) {
+  renameActiveElectronicGroup((event.target as HTMLInputElement | null)?.value ?? '')
+}
+
+function removeActiveElectronicGroup() {
+  const group = activeElectronicGroup.value
+  if (!editable.value || props.section.code !== 'electronic' || !group) return
+  if (!window.confirm(`删除“${group.name}”会移除该份电子明细、费用和利润，确定继续吗？`)) return
+  if (!electronicGroups.value.length) {
+    draftPayload.value = normalizeInternalQuotePayload('electronic', {})
+    return
+  }
+  const remaining = electronicGroups.value.filter((entry) => entry.id !== group.id)
+  draftPayload.value = normalizeInternalQuotePayload('electronic', { quote_groups: remaining })
+  activeElectronicGroupId.value = remaining[0]?.id ?? 'legacy'
+  localMessage.value = `已删除“${group.name}”；电子部总价已按剩余报价更新。`
+}
+
+function handleBlockProgress(blocks: InternalQuoteFormBlock[]) {
+  if (props.section.code === 'electronic') {
+    emit('block-progress', props.section.code, getInternalQuoteFormBlocks('electronic', draftPayload.value))
+    return
+  }
+  emit('block-progress', props.section.code, blocks)
 }
 const uploadInput = ref<HTMLInputElement>()
 const templateMenuOpen = ref(false)
@@ -268,7 +411,12 @@ watch([
   removePromptOpen.value = false
   templateMenuOpen.value = false
 }, { immediate: true })
-watch(draftPayload, scheduleLivePreview, { deep: true })
+watch(draftPayload, () => {
+  scheduleLivePreview()
+  if (props.section.code === 'electronic') {
+    emit('block-progress', props.section.code, getInternalQuoteFormBlocks('electronic', draftPayload.value))
+  }
+}, { deep: true })
 watch([editable, isDirty], scheduleLivePreview)
 onBeforeUnmount(() => {
   cancelLivePreviewTimer()
@@ -555,12 +703,17 @@ async function confirmImport() {
   resetFeedback()
   try {
     if (!assignmentComplete.value) { localError.value = '请为每条映射明细选择应用分项，或选择不采用。'; return }
-    if (importPreview.value.assignment_rows?.length) {
-      await quoteStore.confirmImport(props.quote.id, importPreview.value.batch_id, importPreview.value.target_revision, importAssignments.value)
-    } else {
-      await quoteStore.confirmImport(props.quote.id, importPreview.value.batch_id, importPreview.value.target_revision)
-    }
-    localMessage.value = '报价单已导入并按模板负责区域更新，分段已重新计算。'
+    const target = props.section.code === 'electronic' ? electronicImportTarget.value : undefined
+    await quoteStore.confirmImport(
+      props.quote.id,
+      importPreview.value.batch_id,
+      importPreview.value.target_revision,
+      importPreview.value.assignment_rows?.length ? importAssignments.value : undefined,
+      target,
+    )
+    localMessage.value = props.section.code === 'electronic' && target === 'new'
+      ? '电子报价已作为独立报价导入；每份报价金额都会合计到电子部总价。'
+      : '报价单已导入并按模板负责区域更新，分段已重新计算。'
     importPreview.value = undefined
   } catch (error) { localError.value = errorText(error) }
 }
@@ -660,14 +813,21 @@ function confirmRemoveParticipation() {
 
     <section v-if="importPreview && editable" class="quote-import-preview">
       <header><div><FileSpreadsheet /><span><strong>{{ importOption(importPreview.import_type)?.label }} · {{ importPreview.source_file_name }}</strong><small>{{ importPreview.sheet_name }} · 表头第 {{ importPreview.header_row }} 行 · 识别 {{ importPreview.row_count }} 行 · 预览不会修改正式数据</small></span></div><button type="button" aria-label="关闭导入预览" @click="importPreview = undefined"><XCircle /></button></header>
-      <div class="preview-metrics"><span>当前 {{ Number(importPreview.diff_summary.existing_rows ?? 0) }} 行</span><span>本次识别 {{ Number(importPreview.diff_summary.imported_rows ?? 0) }} 行</span><span>导入后 {{ Number(importPreview.diff_summary.replace_result_rows ?? 0) }} 行</span></div>
+      <div class="preview-metrics"><span>{{ section.code === 'electronic' ? electronicImportExistingLabel : `当前 ${Number(importPreview.diff_summary.existing_rows ?? 0)} 行` }}</span><span>本次识别 {{ Number(importPreview.diff_summary.imported_rows ?? 0) }} 行</span><span>{{ section.code === 'electronic' ? `导入后该报价 ${electronicImportResultRows} 行` : `导入后 ${Number(importPreview.diff_summary.replace_result_rows ?? 0)} 行` }}</span></div>
+      <label v-if="section.code === 'electronic'" class="electronic-import-target"><span>导入方式</span><select v-model="electronicImportTarget" :disabled="quoteStore.submitting"><option value="new">新增独立电子报价（全部金额会合计）</option><option v-for="target in electronicImportTargets" :key="target.id" :value="target.id">替换“{{ target.name }}”</option></select><small>新增会保留现有各份报价；替换只更新所选报价。若同一源文件已导入，请选择该报价替换。</small></label>
       <div v-if="importPreview.warnings.length" class="preview-warnings"><p v-for="warning in importPreview.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
       <InternalQuoteImportAssignment v-if="importPreview.assignment_rows?.length" :key="importPreview.batch_id" v-model="importAssignments" :rows="importPreview.assignment_rows" :components="importPreview.assignment_components ?? []" :disabled="quoteStore.submitting" />
-      <footer><strong class="replace-only-note">确认后按模板负责的数据区域更新；重复导入不会累计金额</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable || !assignmentComplete" @click="confirmImport">确认导入</button></footer>
+      <footer><strong class="replace-only-note">{{ section.code === 'electronic' ? '确认后仅更新目标报价；各份电子报价金额均计入电子部总价' : '确认后按模板负责的数据区域更新；重复导入不会累计金额' }}</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable || !assignmentComplete" @click="confirmImport">确认导入</button></footer>
     </section>
 
     <InternalQuoteMappedAssignment v-if="pricingMode === 'component' && ['engineering', 'painting'].includes(section.code)" v-model="draftPayload" :code="section.code" :components="pricingComponents" :disabled="!editable" />
-    <InternalQuoteSectionForm v-model="draftPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="emit('block-progress', section.code, $event)" @preview-attachment="previewAttachment" />
+    <section v-if="section.code === 'electronic'" class="electronic-quote-groups" aria-label="电子报价管理">
+      <header><div><strong>独立电子报价</strong><span>每份报价分别保存明细、费用和利润；下方电子部合计包含全部报价。</span></div><button type="button" class="secondary" :disabled="!editable || quoteStore.submitting || electronicGroupOptions.length >= 20" @click="addElectronicQuoteGroup"><FileSpreadsheet />新增电子报价</button></header>
+      <div v-if="electronicGroupOptions.length" class="electronic-quote-group-controls"><label><span>当前报价</span><select v-model="activeElectronicGroupId"><option v-for="group in electronicGroupOptions" :key="group.id" :value="group.id">{{ group.name }}</option></select></label><label v-if="activeElectronicGroup"><span>报价名称</span><input :value="activeElectronicGroup.name" :disabled="!editable" maxlength="80" @change="renameActiveElectronicGroupFromEvent"></label><button class="remove-electronic-group" type="button" :disabled="!editable || quoteStore.submitting || !activeElectronicGroup" @click="removeActiveElectronicGroup"><Trash2 />删除当前报价</button></div>
+      <div class="electronic-quote-total"><strong>电子部全部报价预览</strong><span>RMB {{ detailAmount(electronicSectionSummary.quoteRmb) }}</span><span>HKD {{ detailAmount(electronicSectionSummary.quoteHkd) }}</span><em>{{ electronicGroupOptions.length }} 份报价金额合计；正式金额以保存后的服务端计算为准。</em></div>
+    </section>
+    <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
+    <InternalQuoteSectionForm v-if="showElectronicForm" v-model="formPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"
@@ -740,6 +900,8 @@ function confirmRemoveParticipation() {
 .quote-section-editor.baseline-different{border-color:#fdba74;box-shadow:0 12px 28px rgb(194 65 12/.1)}.baseline-difference{display:inline-flex;align-items:center;gap:4px;border-radius:999px;background:#ffedd5;padding:4px 7px;color:#c2410c;font-size:10px;font-weight:950}.baseline-difference svg{width:12px;height:12px}.baseline-difference-details{position:absolute;z-index:18;top:52px;left:16px;display:grid;width:min(440px,calc(100% - 32px));max-height:280px;overflow:auto;border:1px solid #fdba74;border-radius:10px;background:#fff7ed;padding:10px 12px;box-shadow:0 14px 32px rgb(124 45 18/.2);opacity:0;visibility:hidden;transform:translateY(-5px);transition:opacity .16s ease,transform .16s ease,visibility .16s}.quote-section-editor.baseline-different:hover>.baseline-difference-details,.quote-section-editor.baseline-different:focus-within>.baseline-difference-details{opacity:1;visibility:visible;transform:translateY(0)}.baseline-difference-details strong{color:#9a3412;font-size:11px}.baseline-difference-details>span{margin-top:2px;color:#c2410c;font-size:9px}.baseline-difference-details ul{display:grid;gap:4px;margin:8px 0 0;padding-left:18px;color:#7c2d12;font-size:10px}.baseline-difference-details em{margin-top:7px;color:#c2410c;font-size:9px;font-style:normal;font-weight:800}
 .template-download-control{position:relative}.quote-editor-tools button.template-download{border-color:#5eead4;background:#f0fdfa;color:#0f766e}.quote-editor-tools button.template-download:hover:not(:disabled){border-color:#14b8a6;background:#ccfbf1;transform:translateY(-1px)}.template-download-menu{position:absolute;z-index:12;top:calc(100% + 6px);right:0;display:grid;min-width:190px;gap:4px;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:6px;box-shadow:0 14px 32px rgb(15 23 42/.16)}.quote-editor-tools .template-download-menu button{width:100%;justify-content:flex-start;border-color:transparent;background:#fff;white-space:nowrap}.quote-editor-tools .template-download-menu button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}
 .quote-import-preview{margin:12px;border:1px solid #bfdbfe;border-radius:10px;background:#eff6ff}.quote-import-preview>header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px}.quote-import-preview>header>div{display:flex;gap:8px}.quote-import-preview>header svg{width:18px;color:#2563eb}.quote-import-preview>header span{display:grid}.quote-import-preview>header strong{color:#1e3a8a;font-size:12px}.quote-import-preview>header small{margin-top:2px;color:#64748b;font-size:11px}.quote-import-preview>header button{border:0;background:transparent;color:#64748b}.preview-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;border-top:1px solid #dbeafe;padding:10px 12px;background:#fff}.preview-metrics span{border-radius:7px;background:#eff6ff;padding:8px;color:#1d4ed8;font-size:11px;text-align:center}.preview-warnings{display:grid;gap:5px;border-top:1px solid #fed7aa;background:#fff7ed;padding:9px 12px}.quote-import-preview>footer{display:flex;align-items:center;gap:10px;border-top:1px solid #dbeafe;padding:9px 12px}.quote-import-preview>footer span{flex:1}.quote-import-preview>footer button{height:31px;border-radius:7px;padding:0 10px;font-size:12px;font-weight:900}.quote-import-preview .replace-only-note{color:#1d4ed8;font-size:12px}.quote-import-preview .secondary{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-import-preview .primary{border:1px solid #2563eb;background:#2563eb;color:#fff}
+.electronic-import-target{display:grid;gap:5px;border-top:1px solid #dbeafe;background:#f8fbff;padding:10px 12px}.electronic-import-target>span{color:#1e3a8a;font-size:12px;font-weight:900}.electronic-import-target select{max-width:420px;border:1px solid #93c5fd;border-radius:7px;background:#fff;padding:7px 9px;color:#1e3a8a;font-size:12px}.electronic-import-target small{color:#64748b;font-size:11px;line-height:1.5}.electronic-quote-groups{margin:12px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa}.electronic-quote-groups>header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px}.electronic-quote-groups>header>div{display:grid;gap:3px}.electronic-quote-groups strong{color:#115e59;font-size:13px}.electronic-quote-groups header span,.electronic-quote-groups em{color:#64748b;font-size:11px;font-style:normal}.electronic-quote-groups button{display:inline-flex;align-items:center;justify-content:center;gap:5px;height:31px;border-radius:7px;padding:0 10px;font-size:12px;font-weight:900}.electronic-quote-groups button.secondary{border:1px solid #5eead4;background:#fff;color:#0f766e}.electronic-quote-groups button svg{width:13px}.electronic-quote-group-controls{display:flex;flex-wrap:wrap;align-items:end;gap:8px;border-top:1px solid #ccfbf1;background:#fff;padding:9px 12px}.electronic-quote-group-controls label{display:grid;gap:4px;min-width:170px;color:#475569;font-size:11px;font-weight:800}.electronic-quote-group-controls input,.electronic-quote-group-controls select{height:32px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:0 8px;color:#334155;font-size:12px}.electronic-quote-group-controls .remove-electronic-group{border:1px solid #fecaca;background:#fff;color:#b91c1c}.electronic-quote-total{display:flex;flex-wrap:wrap;align-items:center;gap:10px;border-top:1px solid #ccfbf1;padding:9px 12px}.electronic-quote-total span{border-radius:999px;background:#fff;padding:4px 8px;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:900}.electronic-quote-total em{margin-left:auto}
+.electronic-empty-state{display:flex;align-items:center;gap:8px;margin:12px;border:1px dashed #5eead4;border-radius:10px;background:#f0fdfa;padding:15px 13px;color:#0f766e}.electronic-empty-state svg{width:18px}.electronic-empty-state strong{font-size:13px}.electronic-empty-state span{color:#64748b;font-size:11px}
 .calculation-snapshot{border-top:1px solid #dbe5ea}.calculation-snapshot>header,.quote-attachments header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;padding:11px 13px;background:#f8fafc}.calculation-snapshot header strong,.quote-attachments strong{color:#334155;font-size:12px}.calculation-snapshot header span,.quote-attachments header span{color:#64748b;font-size:11px}.snapshot-table-scroll{overflow:auto}.calculation-snapshot table{width:100%;min-width:520px;border-collapse:collapse}.calculation-snapshot th{background:#eef2f6;padding:8px;color:#64748b;font-size:11px;text-align:left}.calculation-snapshot td{border-top:1px solid #eef2f6;padding:8px;color:#475569;font-size:12px}.calculation-snapshot td:last-child,.calculation-snapshot tfoot td{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:900}.calculation-snapshot .calculated-amount-cell{background:#ecfdf5;color:#0f766e;font-variant-numeric:tabular-nums;font-weight:900}.calculation-snapshot tfoot td{color:#0f766e;text-align:right}.empty{padding:22px!important;color:#94a3b8!important;text-align:center}.quote-attachments{border-top:1px solid #e2e8f0}.quote-attachments>div{display:flex;flex-wrap:wrap;gap:7px;padding:11px 13px}.attachment-pill{display:inline-flex;overflow:hidden;border:1px solid #dbe5ea;border-radius:999px;background:#fff}.quote-attachments>div .attachment-pill button{display:inline-flex;align-items:center;gap:5px;border:0;background:#fff;padding:6px 9px;color:#475569;font-size:11px}.quote-attachments>div .attachment-pill button:hover:not(:disabled){background:#f0fdfa;color:#0f766e}.quote-attachments>div .attachment-pill .attachment-preview{border-left:1px solid #ccfbf1;color:#0f766e}.quote-attachments>div .attachment-pill .attachment-delete{border-left:1px solid #fecaca;border-radius:0;color:#dc2626}.quote-attachments>div .attachment-pill .attachment-delete:hover:not(:disabled){background:#fef2f2;color:#b91c1c}.quote-attachments>div .attachment-pill button:disabled{cursor:not-allowed;opacity:.4}.quote-attachments svg{width:12px}.quote-attachments em{color:#94a3b8;font-size:11px;font-style:normal}.quote-local-message,.quote-local-error{display:flex;align-items:center;gap:6px;margin:0;border-top:1px solid;padding:10px 13px;font-size:11px}.quote-local-message{border-color:#a7f3d0;background:#ecfdf5;color:#047857}.quote-local-error{border-color:#fecaca;background:#fef2f2;color:#b91c1c}.quote-local-message svg,.quote-local-error svg{width:14px}
 .quote-reason-panel{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,2fr) auto auto;align-items:center;gap:8px;border-top:1px solid #fed7aa;background:#fff7ed;padding:10px 13px}.quote-reason-panel>div{display:grid}.quote-reason-panel strong{color:#9a3412;font-size:12px}.quote-reason-panel span{margin-top:2px;color:#c2410c;font-size:11px}.quote-reason-panel textarea{min-width:0;border:1px solid #fdba74;border-radius:7px;padding:7px 9px;font-size:13px;resize:none}.quote-reason-panel button{height:32px;border-radius:7px;padding:0 10px;font-size:12px;font-weight:900}.quote-reason-panel button.secondary{border:1px solid #fdba74;background:#fff;color:#9a3412}.quote-reason-panel button.primary{border:1px solid #c2410c;background:#c2410c;color:#fff}.quote-editor-actions{position:sticky;bottom:0;z-index:4;display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #cbd5e1;background:rgb(248 250 252/.96);padding:11px 13px;backdrop-filter:blur(8px)}.quote-editor-actions>div:first-child{display:grid}.quote-editor-actions>div:first-child span{color:#64748b;font-size:11px}.quote-editor-actions>div:first-child b{margin-top:3px;color:#94a3b8;font-size:10px;font-weight:500}.quote-editor-actions>div:last-child{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}.quote-editor-actions button{display:inline-flex;height:34px;align-items:center;gap:5px;border-radius:8px;padding:0 10px;font-size:12px;font-weight:900}.quote-editor-actions button svg{width:13px}.quote-editor-actions button.secondary{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-editor-actions button.primary{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-editor-actions button.withdraw{border:1px solid #f59e0b;background:#fffbeb;color:#b45309}.quote-editor-actions button.danger{border:1px solid #fecaca;background:#fff;color:#dc2626}.quote-editor-actions button.remove-section{border:1px solid #fca5a5;background:#fff1f2;color:#be123c}.quote-editor-actions button.remove-section:hover:not(:disabled){border-color:#fb7185;background:#ffe4e6}.quote-editor-actions button:disabled{opacity:.45}
 .unsaved-draft-backdrop{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;background:rgb(15 23 42/.46);padding:20px;backdrop-filter:blur(4px)}.unsaved-draft-dialog{width:min(480px,100%);overflow:hidden;border:1px solid #cbd5e1;border-radius:16px;background:#fff;box-shadow:0 28px 70px rgb(15 23 42/.3)}.unsaved-draft-dialog>header{display:flex;align-items:flex-start;gap:12px;padding:20px 20px 14px}.unsaved-draft-dialog>header>span{display:grid;width:40px;height:40px;flex:0 0 auto;place-items:center;border-radius:11px;background:#ccfbf1;color:#0f766e}.unsaved-draft-dialog>header svg{width:20px;height:20px}.unsaved-draft-dialog h3{margin:0;color:#0f172a;font-size:18px;font-weight:950}.unsaved-draft-dialog p{margin:5px 0 0;color:#64748b;font-size:13px;line-height:1.6}.unsaved-draft-note{display:flex;align-items:flex-start;gap:7px;margin:0 20px 18px;border:1px solid #bae6fd;border-radius:9px;background:#f0f9ff;padding:9px 10px;color:#0369a1;font-size:11px;line-height:1.55}.unsaved-draft-note svg{width:14px;height:14px;flex:0 0 auto;margin-top:1px}.unsaved-draft-dialog>footer{display:flex;justify-content:flex-end;gap:8px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:13px 20px}.unsaved-draft-dialog button{display:inline-flex;height:36px;align-items:center;justify-content:center;gap:5px;border-radius:8px;padding:0 12px;font-size:12px;font-weight:900}.unsaved-draft-dialog button:disabled{cursor:wait;opacity:.5}.unsaved-draft-dialog button.discard{margin-right:auto;border:1px solid #fecaca;background:#fff;color:#dc2626}.unsaved-draft-dialog button.cancel{border:1px solid #cbd5e1;background:#fff;color:#475569}.unsaved-draft-dialog button.save{border:1px solid #0f766e;background:#0f766e;color:#fff}.unsaved-draft-dialog button.save svg{width:14px;height:14px}.unsaved-draft-dialog button:not(:disabled):hover{transform:translateY(-1px);filter:brightness(.98)}.remove-department-dialog>header>span{background:#ffe4e6;color:#be123c}.remove-department-dialog .remove-note{border-color:#fecdd3;background:#fff1f2;color:#9f1239}.unsaved-draft-dialog button.remove-confirm{border:1px solid #be123c;background:#be123c;color:#fff}.unsaved-draft-dialog button.remove-confirm svg{width:14px;height:14px}

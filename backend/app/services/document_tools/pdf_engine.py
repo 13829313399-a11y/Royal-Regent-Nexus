@@ -286,7 +286,7 @@ def _extract(path,options,work_dir,progress,cancelled,ocr=False):
             ir.blocks[first:first+len(blocks)]=header+left+right+footer
             _issue(ir,"PDF_COLUMN_ORDER","按可见栏间空白恢复双栏阅读顺序，请查看对照校样",_anchor(page.page_index,[0,0,page.width_pt,page.height_pt],precision="page"))
     return EngineResult(ir,[result_file(normalized,"preview")],{"pages":[p.model_dump() for p in ir.pages],"page_count":len(metadata),
-        "tables":len(ir.tables),"supported_operations":["pdf_to_word","pdf_to_excel","pdf_split"]})
+        "tables":len(ir.tables),"supported_operations":["pdf_to_word","pdf_to_excel","pdf_split","pdf_translate"]})
 
 
 def convert_pdf(path,operation,options,work_dir,progress,cancelled,ir=None):

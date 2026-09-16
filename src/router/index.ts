@@ -5,6 +5,8 @@ import {
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
 import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
+import { uvPreviewRoutes, uvPrintingRoutes } from '@/features/uv-printing/routes'
+import { isUvPreviewEnabled } from '@/features/uv-printing/transport/provider'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
@@ -130,6 +132,19 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/production/customer-order-inbox',
+    name: 'customer-order-inbox-production',
+    component: () => import('@/views/CustomerOrderInboxView.vue'),
+    meta: {
+      title: '啤机部订单收件箱',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['customer_order:inbox_read'],
+      permissionDepartment: 'production',
+      enforcePermissions: true,
+    },
+  },
+  {
     path: '/modules/production/molding-sample-tasks',
     name: 'molding-sample-production-tasks',
     component: () => import('@/views/MoldingSampleProductionTaskView.vue'),
@@ -166,6 +181,10 @@ const routes: RouteRecordRaw[] = [
       permissionDepartment: 'three-d-printing',
     },
   },
+  // 华康A · UV打印管理：正式路由在通用动态模块路由之前明确定义，懒加载工作区与子页。
+  ...uvPrintingRoutes,
+  // DEV 专属样例预览：仅 `VITE_UV_PREVIEW=true` 时注册，生产构建不可达。
+  ...uvPreviewRoutes(isUvPreviewEnabled()),
   {
     path: '/modules/pmc-warehouse/raw-material-management',
     name: 'raw-material-management',
@@ -272,6 +291,19 @@ const routes: RouteRecordRaw[] = [
       permissions: ['carton_procurement:read'],
       enforcePermissions: true,
       strictPermissions: true,
+    },
+  },
+  {
+    path: '/modules/pmc-warehouse/customer-order-inbox',
+    name: 'customer-order-inbox-pmc',
+    component: () => import('@/views/CustomerOrderInboxView.vue'),
+    meta: {
+      title: 'PMC / 仓库订单收件箱',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['customer_order:inbox_read'],
+      permissionDepartment: 'pmc-warehouse',
+      enforcePermissions: true,
     },
   },
   {

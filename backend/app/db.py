@@ -691,6 +691,10 @@ def ensure_document_tools_schema_ready() -> None:
 def init_db() -> None:
     from app.models import (
         spray_production,
+        uv_printing,
+        uv_finance,
+        uv_ingest,
+        uv_handover,
         document_tools,  # noqa: F401
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
@@ -700,6 +704,7 @@ def init_db() -> None:
         carton_master,  # noqa: F401
         carton_supplier_settlement,  # noqa: F401
         customer_order,  # noqa: F401
+        customer_order_ledger,  # noqa: F401
         internal_quote,  # noqa: F401
         injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
@@ -735,13 +740,36 @@ def init_db() -> None:
         inspector = inspect(connection)
         names = set(inspector.get_table_names())
         if "alembic_version" in names:
+            missing = [name for name in Base.metadata.tables if name.startswith("order_ledger_") and name not in names]
+            if missing:
+                raise RuntimeError("客户订单台账需要迁移至 20260914_0112；请先备份并迁移。缺少：" + ", ".join(missing))
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" in names:
             missing = [name for name in Base.metadata.tables if name.startswith("spray_") and name not in names]
             for table, column in [("spray_order_lines", "graph_route"),("spray_steps","predecessors"),("spray_tasks","shared_allocations"),("spray_resources","shared_requirements")]:
                 if table in names and column not in {c["name"] for c in inspector.get_columns(table)}:
                     missing.append(table + "." + column)
             if missing:
                 raise RuntimeError("喷油模块需要迁移至 20260911_0110；请先备份并迁移。缺少：" + ", ".join(missing))
-    Base.metadata.create_all(bind=engine)
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if settings.uv_printing_enabled and ("alembic_version" in names or any(name.startswith("uv_") for name in names)):
+            missing = []
+            for name, table in Base.metadata.tables.items():
+                if not name.startswith("uv_"):
+                    continue
+                if name not in names:
+                    missing.append(name)
+                else:
+                    columns = {c["name"] for c in inspector.get_columns(name)}
+                    missing.extend(name + "." + c.name for c in table.columns if c.name not in columns)
+            if missing:
+                raise RuntimeError("UV模块需要迁移至 20260914_0115；请先备份并迁移。缺少：" + ", ".join(missing))
+    Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
+                            if settings.uv_printing_enabled or not name.startswith("uv_")])
     ensure_sqlite_legacy_columns()
 
     with SessionLocal() as db:
