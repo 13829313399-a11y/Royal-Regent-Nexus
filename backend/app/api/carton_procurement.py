@@ -4,7 +4,7 @@ from fastapi.encoders import jsonable_encoder
 from io import BytesIO
 from urllib.parse import quote as url_quote
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -30,6 +30,9 @@ from app.schemas.carton_procurement import (
     CartonExceptionListOut,
     CartonExceptionOut,
     CartonExceptionUpdate,
+    CartonExceptionBulkUpdate,
+    CartonReplenishmentCreate,
+    CartonReplenishmentOut,
     CartonImportBatchOut,
     CartonImportBatchListOut,
     CartonHistoryOrderImportOut,
@@ -330,6 +333,19 @@ def post_order_append(
     return order_out(db, append_order(db, order_no, payload, current_user))
 
 
+@router.post("/orders/{order_no}/replenish", response_model=CartonReplenishmentOut, status_code=201)
+def post_order_replenish(
+    order_no: str,
+    payload: CartonReplenishmentCreate,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_replenishment import replenish_order
+    for permission in ("order_write", "inventory_write"):
+        _ensure_permission(db, current_user, f"carton_procurement:{permission}", payload.factory_id)
+    return replenish_order(db, order_no, payload, current_user)
+
+
 @router.post("/orders/{order_no}/reduce", response_model=CartonOrderOut)
 def post_order_reduce(
     order_no: str,
@@ -339,6 +355,18 @@ def post_order_reduce(
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
     return order_out(db, reduce_order(db, order_no, payload, current_user))
+
+
+@router.post("/orders/{order_no}/delete-history", status_code=204)
+def post_order_delete_history(
+    order_no: str,
+    payload: CartonOrderCancelRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_procurement import delete_history_order
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    delete_history_order(db, order_no, payload, current_user)
 
 
 @router.post("/orders/{order_no}/cancel", response_model=CartonOrderOut)
@@ -732,6 +760,25 @@ def get_exceptions(
         offset=offset,
         items=[CartonExceptionOut.model_validate(item) for item in items],
     )
+
+
+@router.post("/exceptions/bulk-update", response_model=list[CartonExceptionOut])
+def post_exceptions_bulk_update(
+    payload: "CartonExceptionBulkUpdate",
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_procurement import _lock_receipt_factory
+    _ensure_permission(db, current_user, "carton_procurement:exception_manage", payload.factory_id)
+    _lock_receipt_factory(db, require_carton_factory(payload.factory_id))
+    if len({item.id for item in payload.items}) != len(payload.items):
+        raise HTTPException(422, "异常选择不能重复")
+    rows = [update_exception(db, item.id, CartonExceptionUpdate(
+        factory_id=payload.factory_id, expected_revision=item.expected_revision,
+        status=payload.status, resolution_note=payload.resolution_note,
+    ), current_user, commit=False) for item in payload.items]
+    db.commit()
+    return rows
 
 
 @router.patch("/exceptions/{exception_id}", response_model=CartonExceptionOut)

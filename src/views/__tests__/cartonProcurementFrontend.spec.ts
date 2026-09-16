@@ -36,7 +36,10 @@ const cartonApiMock = vi.hoisted(() => ({
   submitOrderToSupplier: vi.fn(),
   bulkSubmitOrdersToSupplier: vi.fn(),
   cancelOrder: vi.fn(),
+  deleteHistoryOrder: vi.fn(),
+  bulkUpdateExceptions: vi.fn(),
   appendOrder: vi.fn(),
+  replenishOrder: vi.fn(),
   reduceOrder: vi.fn(),
   returnOrder: vi.fn(),
   bulkCancelOrders: vi.fn(),
@@ -213,6 +216,131 @@ function mockReceiptWorkspace(orders: ReturnType<typeof orderFixture>[]) {
 }
 
 describe('CartonProcurementView frontend workspace', () => {
+  it('receives supplier-responsible replacements without asking for a payable price', async () => {
+    const seed = orderFixture('CT-FREE-REPLACE', businessDateOffset(5), 'PARTIALLY_RECEIVED')
+    const row = { ...seed, lines: [{ ...seed.lines[0]!, received_quantity: '90', remaining_quantity: '10',
+      replenishment_options: [{ replenishment_issue_id: 'ISSUE-B01', document_no: 'CT-FREE-REPLACE-B01', responsibility: 'SUPPLIER', remaining_quantity: '10' }] }] }
+    mockReceiptWorkspace([row])
+    cartonApiMock.createReceipt.mockRejectedValueOnce(new Error('测试停止提交'))
+    const wrapper = mountView('receipts'); await flushPromises()
+    await wrapper.get('button[aria-label="登记 CT-FREE-REPLACE 收料"]').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('供应商责任 · 免费补货')
+    expect(wrapper.find(`input[aria-label="MANUAL-${row.lines[0]!.id} 单价"]`).exists()).toBe(false)
+    expect(wrapper.get<HTMLSelectElement>(`select[aria-label="MANUAL-${row.lines[0]!.id} 收料来源"]`).element.value).toBe('ISSUE-B01')
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('FREE-DN')
+    await wrapper.get('input[aria-label="仓库及仓位"]').setValue('A-01')
+    await findButton(wrapper, '确认入库').trigger('click'); await flushPromises()
+    expect(cartonApiMock.createReceipt).toHaveBeenCalledWith(expect.objectContaining({ lines: [expect.objectContaining({
+      replenishment_issue_id: 'ISSUE-B01', received_quantity: 10, unit_price: undefined,
+    })] }))
+    wrapper.unmount()
+  })
+
+  it('requires a choice when normal stock and replacement stock are both outstanding', async () => {
+    const seed = orderFixture('CT-MIX-REPLACE', businessDateOffset(5), 'PARTIALLY_RECEIVED')
+    const row = { ...seed, lines: [{ ...seed.lines[0]!, received_quantity: '70', remaining_quantity: '30',
+      replenishment_options: [{ replenishment_issue_id: 'ISSUE-B01', document_no: 'CT-MIX-REPLACE-B01', responsibility: 'SUPPLIER', remaining_quantity: '10' }] }] }
+    mockReceiptWorkspace([row])
+    const wrapper = mountView('receipts'); await flushPromises()
+    await wrapper.get('button[aria-label="登记 CT-MIX-REPLACE 收料"]').trigger('click'); await flushPromises()
+    expect(wrapper.find(`input[aria-label="MANUAL-${row.lines[0]!.id} 单价"]`).exists()).toBe(true)
+    await wrapper.get(`select[aria-label="MANUAL-${row.lines[0]!.id} 收料来源"]`).setValue('ISSUE-B01')
+    expect(wrapper.get<HTMLInputElement>(`input[aria-label="MANUAL-${row.lines[0]!.id} 实收"]`).element.value).toBe('10')
+    expect(wrapper.text()).toContain('应付 0，不计月结')
+    wrapper.unmount()
+  })
+
+  it('requires responsibility and posts replacement quantities against the selected physical stock', async () => {
+    const row = orderFixture('CT-REPLACE', businessDateOffset(3), 'COMPLETED')
+    mockReceiptWorkspace([row])
+    cartonApiMock.listInventoryBalances.mockResolvedValue([{
+      factory_id: 'huaxing', customer_code: 'DICKIE', customer_name: 'Dickie', contract_no: row.contract_no,
+      item_no: row.item_no, order_line_id: row.lines[0]!.id, position_key: 'POS-REPLACE', location_id: 'LOC-A',
+      packaging_type: '外箱', paper_quality: 'A33', specification: '12*11*5', unit: '个', balance: '100',
+      latest_location: '默认仓／A-01', latest_movement_id: 'MV-1', latest_movement_at: '2026-09-16T10:00:00',
+    }])
+    cartonApiMock.replenishOrder.mockResolvedValue({ order: row, issue: { document_no: 'CT-REPLACE-B01' } })
+    const wrapper = mountView('orders'); await flushPromises()
+    await wrapper.get('[aria-label="更多 CT-REPLACE 订单操作"]').trigger('click')
+    await wrapper.get('[aria-label="补单 CT-REPLACE"]').trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="补单数量 POS-REPLACE"]').setValue('10')
+    await wrapper.get('[aria-label="补单责任方"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(cartonApiMock.replenishOrder).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请选择责任方')
+    await wrapper.get('[aria-label="补单责任方"]').setValue('SUPPLIER')
+    await wrapper.get('[aria-label="补单责任方"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(cartonApiMock.replenishOrder).toHaveBeenCalledWith('huaxing', expect.objectContaining({ order_no: 'CT-REPLACE', product_order_quantity: '100' }), 'SUPPLIER', '', [{ order_line_id: row.lines[0]!.id, location_id: 'LOC-A', quantity: 10 }])
+    expect(wrapper.text()).toContain('CT-REPLACE-B01')
+    expect(wrapper.find('[aria-label="补单责任方"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('resolves a single exception without a mandatory note', async () => {
+    mockReceiptWorkspace([])
+    const row = { id: 'EX-ID', exception_no: 'EX-NOTE', factory_id: 'huaxing', source_type: 'WEEKLY_SCHEDULE', source_id: 'S', category: 'MISSING_ORDER', severity: 'MEDIUM', customer_name: 'Dickie', customer_code: 'DICKIE', contract_no: 'SC', item_no: 'ITEM', title: '待核对', description: '', owner_department: '纸箱仓', status: 'IN_PROGRESS', resolution_note: '', revision: 1, created_at: '2026-09-16T10:00:00', updated_at: '2026-09-16T10:00:00' }
+    cartonApiMock.listExceptions.mockResolvedValue([row]); cartonApiMock.updateException.mockResolvedValue({ ...row, status: 'RESOLVED', revision: 2 })
+    const wrapper = mountView('exceptions'); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '标记已解决')!.trigger('click'); await flushPromises()
+    expect(cartonApiMock.updateException).toHaveBeenCalledWith('huaxing', expect.objectContaining({ id: row.id }), 'RESOLVED', '')
+    wrapper.unmount()
+  })
+
+  it('selects filtered exceptions while preserving hidden selections and submits all selected records', async () => {
+    mockReceiptWorkspace([])
+    const records = ['A', 'B'].map((id, index) => ({
+      id, exception_no: `EX-${id}`, factory_id: 'huaxing', source_type: 'WEEKLY_SCHEDULE', source_id: id,
+      category: index ? 'QUANTITY_MISMATCH' : 'MISSING_ORDER', severity: 'MEDIUM',
+      customer_code: 'DICKIE', customer_name: 'Dickie', contract_no: id, item_no: id,
+      title: `异常 ${id}`, description: '', owner_department: '纸箱仓', status: 'OPEN',
+      resolution_note: '', revision: 1, created_at: '2026-09-10T10:00:00', updated_at: '2026-09-10T10:00:00',
+    }))
+    cartonApiMock.listExceptions.mockResolvedValue(records)
+    cartonApiMock.bulkUpdateExceptions.mockResolvedValue(records.map(row => ({ ...row, status: 'IN_PROGRESS', revision: 2 })))
+    const wrapper = mountView('exceptions'); await flushPromises()
+    await wrapper.get('[aria-label="选择异常 EX-A"]').setValue(true)
+    expect((wrapper.get('[aria-label="全选当前筛选异常"]').element as HTMLInputElement).indeterminate).toBe(true)
+    await wrapper.get('[aria-label="异常类型筛选"]').setValue('数量差异')
+    expect(wrapper.text()).toContain('其中 1 条不在当前筛选内')
+    await wrapper.get('[aria-label="全选当前筛选异常"]').setValue(true)
+    expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 2 条')
+    await wrapper.findAll('button').find(b => b.text() === '批量开始处理')!.trigger('click')
+    await flushPromises()
+    expect(cartonApiMock.bulkUpdateExceptions).toHaveBeenCalledWith('huaxing', records, 'IN_PROGRESS', '')
+    expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 0 条')
+    wrapper.unmount()
+  })
+
+  it('requires explicit history deletion confirmation and hides it for received history', async () => {
+    const row = { ...orderFixture('CT-HISTORY', businessDateOffset(3), 'PENDING_SUPPLIER'), can_delete_history: true }
+    mockReceiptWorkspace([row])
+    cartonApiMock.deleteHistoryOrder.mockResolvedValue(undefined)
+    const wrapper = mountView('orders'); await flushPromises()
+    await wrapper.get('[aria-label="更多 CT-HISTORY 订单操作"]').trigger('click')
+    await wrapper.get('[aria-label="删除历史订单 CT-HISTORY"]').trigger('click')
+    await flushPromises()
+    expect(cartonApiMock.deleteHistoryOrder).not.toHaveBeenCalled()
+    const reason = document.querySelector('[aria-label="历史订单删除原因"]') as HTMLTextAreaElement | null
+    // Reka renders a controlled dialog in the mounted wrapper.
+    const input = wrapper.find('[aria-label="历史订单删除原因"]')
+    expect(input.exists() || Boolean(reason)).toBe(true)
+    cartonApiMock.listOrders.mockResolvedValue([{ ...row, can_delete_history: false }])
+    if (input.exists()) {
+      await input.setValue('重复导入需重新整理')
+      await input.element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    } else {
+      reason!.value = '重复导入需重新整理'
+      reason!.dispatchEvent(new Event('input', { bubbles: true }))
+      reason!.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    }
+    await flushPromises()
+    expect(cartonApiMock.deleteHistoryOrder).toHaveBeenCalledWith('huaxing', expect.objectContaining({ order_no: row.order_no }), '重复导入需重新整理')
+    await wrapper.get('[aria-label="更多 CT-HISTORY 订单操作"]').trigger('click')
+    expect(wrapper.find('[aria-label="删除历史订单 CT-HISTORY"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     vi.resetAllMocks()
     positionsMock.locations.mockResolvedValue([{ id: 'LOC-A', factory_id: 'huaxing', warehouse: '默认仓', bin_code: 'A-01', label: 'A-01' }, { id: 'LOC-B', factory_id: 'huaxing', warehouse: '默认仓', bin_code: 'B-02', label: 'B-02' }])
@@ -1247,6 +1375,22 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('[data-testid="reduce-order-form"]').trigger('submit'); await flushPromises()
     expect(cartonApiMock.reduceOrder).toHaveBeenCalledWith('huaxing', expect.anything(), null, '客人退单',
       [{ order_line_id: order.lines[0]!.id, required_quantity: 30 }])
+  })
+
+  it('uses the server reduction floor while replacement goods are still outstanding', async () => {
+    const seed = orderFixture('CT-REPLACE-FLOOR', businessDateOffset(5), 'PARTIALLY_RECEIVED')
+    const order = { ...seed, quantity_basis: 'EXPLICIT', product_order_quantity: null,
+      lines: [{ ...seed.lines[0], usage_quantity: null, required_quantity: '100', received_quantity: '70', pending_received_quantity: '0', remaining_quantity: '30', maximum_reducible_quantity: '20' }] }
+    mockReceiptWorkspace([order as ReturnType<typeof orderFixture>])
+    const wrapper = mountView('orders'); await flushPromises()
+    await openOrderMoreActions(wrapper.get('[data-order-no="CT-REPLACE-FLOOR"]'), 'CT-REPLACE-FLOOR')
+    await wrapper.get('button[aria-label="减单 CT-REPLACE-FLOOR"]').trigger('click')
+    const input = wrapper.get(`input[aria-label="减少后纸品需求 ${order.lines[0]!.id}"]`)
+    expect(input.attributes('min')).toBe('80')
+    await input.setValue(70)
+    await wrapper.get('[data-testid="reduce-order-form"]').trigger('submit'); await flushPromises()
+    expect(cartonApiMock.reduceOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('allows a supervisor to append, reduce, and fully return a submitted order', async () => {

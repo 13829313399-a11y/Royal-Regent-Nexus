@@ -297,3 +297,43 @@ it('does not expose whole-warehouse deletion to a warehouse-only maintainer or r
   expect(wrapper.find('form[aria-label="维护仓库"]').exists()).toBe(false)
   wrapper.unmount(); vi.restoreAllMocks()
 })
+
+
+it('recognizes item and customer PO from contract provenance without a complete packaging CONFIG', () => {
+  const contract: MasterRecord = { ...record('CONTRACT'), kind: 'CONTRACT', sources: [{
+    order_no: 'HISTORY', order_date: '', contract_no: 'SC000000001/001', item_no: '000012345',
+    customer_po: 'PO-000012', customer_code: '360', configuration: {},
+  }] }
+  const foreign = { ...contract, id: 'FOREIGN', customer_code: 'OTHER', sources: [{ ...contract.sources[0]!, customer_code: 'OTHER', item_no: 'WRONG', customer_po: 'WRONG' }] }
+  expect(historicalNumberSamples([contract, contract, foreign], '360', 'item_rule')).toEqual(['000012345'])
+  expect(historicalNumberSamples([contract, foreign], '360', 'customer_po_rule')).toEqual(['PO-000012'])
+  expect(historicalNumberSamples([{ ...contract, sources: [{ ...contract.sources[0]!, customer_po: '' }] }], '360', 'customer_po_rule')).toEqual([])
+})
+
+it('keeps recognition errors on their own field and persists an explicit format reset', async () => {
+  const contract: MasterRecord = { ...record('CONTRACT'), kind: 'CONTRACT', sources: [{
+    order_no: 'HISTORY', order_date: '', contract_no: 'SC000000001/001', item_no: 'BAD ITEM',
+    customer_po: 'PO-000012', customer_code: '360', configuration: {},
+  }] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [contract] })
+  const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue({ ...record('RULE'), kind: 'RULE' })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [{ id: 'C', customer_code: '360', customer_name: '360' } as any] } })
+  await flushPromises()
+  await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
+  expect(wrapper.text()).toContain('货号识别失败')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="客户 PO（选填）固定格式"]').element.value).toBe('PO-{6}')
+  await wrapper.get('[aria-label="重置货号格式"]').trigger('click')
+  expect(wrapper.text()).not.toContain('货号识别失败')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="货号固定格式"]').element.value).toBe('')
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  const saved = save.mock.calls[0]![1].data
+  expect(saved.item_rule.reset).toBe(true)
+  expect(saved.item_rule.templates).toEqual([])
+  expect(saved.customer_po_rule.templates).toEqual(['PO-{6}'])
+  get.mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [contract, { ...record('RULE'), kind: 'RULE', data: saved }] })
+  await wrapper.findAll('button').find(button => button.text() === '刷新资料')!.trigger('click'); await flushPromises()
+  await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="货号固定格式"]').element.value).toBe('')
+  expect(wrapper.text()).not.toContain('货号识别失败')
+  wrapper.unmount(); get.mockRestore(); save.mockRestore()
+})

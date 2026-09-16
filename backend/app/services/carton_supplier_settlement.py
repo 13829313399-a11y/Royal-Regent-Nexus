@@ -89,6 +89,8 @@ def return_supplier(db, movement):
 
 
 def sources(db, factory, supplier, period, currency):
+    from app.services.carton_replenishment_receipts import receipt_links, legacy_review_lines
+    replacements = receipt_links(db, factory)
     receipts = list(db.scalars(select(CartonReceipt).where(
         CartonReceipt.factory_id == factory, CartonReceipt.supplier_id == supplier,
         CartonReceipt.status.in_(["POSTED", "REVERSED"]))))
@@ -100,23 +102,29 @@ def sources(db, factory, supplier, period, currency):
     for event in db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
                                                          CartonAuditEvent.event_type == "INVENTORY_PRICE_CONFIRMED")):
         prices[event.entity_id] = Decimal(str(json.loads(event.detail_json)["unit_price"]))
+    lines = list(db.scalars(select(CartonReceiptLine).where(CartonReceiptLine.factory_id == factory,
+                    CartonReceiptLine.receipt_id.in_(list(receipt_by_id))))) if receipt_by_id else []
+    legacy_replacements = legacy_review_lines(db, factory, [line.order_line_id for line in lines if line.order_line_id])
     result, undated, issues = [], [], []
     for receipt in receipts:
         if receipt.status != "POSTED":
             continue  # Whole-receipt reversal corrects the original, it is not a supplier return.
-        if not receipt.acceptance_date:
+        if not receipt.acceptance_date and any(line.receipt_id == receipt.id and line.effective_quantity > 0
+                and replacements.get(line.id, {}).get("responsibility") != "SUPPLIER" for line in lines):
             undated.append({"receipt_id": receipt.id, "revision": receipt.revision,
                             "document_no": receipt.delivery_note_no, "confirmed_at": receipt.confirmed_at,
                             "acceptance_date": None})
-    lines = list(db.scalars(select(CartonReceiptLine).where(CartonReceiptLine.factory_id == factory,
-                    CartonReceiptLine.receipt_id.in_(list(receipt_by_id))))) if receipt_by_id else []
     for line in lines:
+        if replacements.get(line.id, {}).get("responsibility") == "SUPPLIER":
+            continue  # Free replacement restores inventory cost but creates no supplier payable.
         receipt = receipt_by_id[line.receipt_id]
         day = receipt.acceptance_date or (_posting_date(receipt.confirmed_at) if receipt.confirmed_at else "")
         if receipt.status != "POSTED" or day[:7] != period or core.normalize_currency(line.currency) != currency or line.effective_quantity <= 0:
             continue
         movement = incoming.get(line.id)
         row_issues = []
+        if line.order_line_id in legacy_replacements:
+            row_issues.append("该纸品有未关联补单的历史收料，请先核对责任及计费来源")
         if line.order_line_id:
             order_line = db.get(CartonOrderLine, line.order_line_id)
             order = db.get(CartonOrder, order_line.order_id) if order_line and order_line.factory_id == factory else None
