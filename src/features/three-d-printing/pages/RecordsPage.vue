@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import QuoteEditor from "../components/QuoteEditor.vue";
 import { computed, onMounted, ref } from "vue";
 import ProductPicker from "../components/ProductPicker.vue";
 import PageControls from "../components/PageControls.vue";
@@ -16,7 +17,9 @@ const {
   canReadAudit,
   canExport,
   recordForm,
+  recordCostSnapshot,
   listPages,
+  recordSearchAllDates,
   loadPage,
   dateFrom,
   dateTo,
@@ -34,6 +37,11 @@ const {
 } = useWorkspaceContext();
 const day = ref(todayText()),
   showForm = ref(false);
+const keyword = ref(listPages.records!.q);
+const searchAllDates = ref(true);
+const searching = computed(
+  () => recordSearchAllDates.value || !!listPages.records!.q,
+);
 const stats = computed(
   () =>
     (dashboard.value?.summary.legacyDisplay ||
@@ -41,11 +49,24 @@ const stats = computed(
       {}) as ThreeDDashboard["summary"],
 );
 async function loadDay() {
+  recordSearchAllDates.value = false;
+  listPages.records!.q = "";
+  listPages.records!.page = 1;
+  keyword.value = "";
   dateFrom.value = day.value;
   dateTo.value = day.value;
   await loadDashboard();
 }
-onMounted(loadDay);
+async function searchRecords() {
+  listPages.records!.q = keyword.value.trim();
+  recordSearchAllDates.value = searchAllDates.value;
+  dateFrom.value = day.value;
+  dateTo.value = day.value;
+  await loadPage("records", 1);
+}
+onMounted(() =>
+  recordSearchAllDates.value ? loadPage("records", 1) : loadDay(),
+);
 function add() {
   resetRecordForm();
   recordForm.business_date = day.value;
@@ -104,7 +125,7 @@ const time = (s: string) =>
         class="action-button secondary"
         @click="exportWorkbook"
       >
-        导出 Excel</button
+        {{ searching ? "导出所选日期 Excel" : "导出 Excel" }}</button
       ><button
         v-if="canOperate"
         type="button"
@@ -116,25 +137,76 @@ const time = (s: string) =>
         }}
       </button>
     </form>
-    <LegacyPrinterGrid />
+    <form
+      class="legacy-toolbar"
+      aria-label="打印记录搜索"
+      @submit.prevent="searchRecords"
+    >
+      <input
+        v-model="keyword"
+        type="search"
+        aria-label="打印记录产品关键词"
+        placeholder="输入产品关键词，查找打印记录"
+        maxlength="200"
+        class="min-w-0 flex-1"
+      />
+      <label class="flex items-center gap-2"
+        ><input v-model="searchAllDates" type="checkbox" />搜索全部历史</label
+      >
+      <button class="action-button" :disabled="listPages.records!.busy">
+        搜索记录
+      </button>
+      <button
+        v-if="searching"
+        type="button"
+        class="action-button secondary"
+        @click="loadDay"
+      >
+        返回当日记录
+      </button>
+      <span class="basis-full text-sm text-muted-foreground"
+        >支持产品名称、打印文件名关键词；取消“搜索全部历史”可限定上方所选日期。</span
+      >
+    </form>
+    <LegacyPrinterGrid v-if="!searching" />
     <div class="panel-card">
       <div class="legacy-panel-head">
         <h2>
-          {{ day
-          }}{{ dashboard.day_off_dates.includes(day) ? "（休息日）" : "" }}
+          <template v-if="searching"
+            >{{ recordSearchAllDates ? "全部历史" : day }} · 打印记录<span
+              v-if="listPages.records!.q"
+            >
+              · {{ listPages.records!.q }}</span
+            ></template
+          >
+          <template v-else
+            >{{ day
+            }}{{
+              dashboard.day_off_dates.includes(day) ? "（休息日）" : ""
+            }}</template
+          >
         </h2>
-        <span
+        <span v-if="!searching"
           >产值：{{ money(stats.revenue) }} | 支出：{{
             money(stats.totalCost)
           }}
           | 结余：{{ money(stats.balance) }}</span
         >
+        <span v-else>找到 {{ listPages.records!.total }} 条记录</span>
       </div>
+      <PageControls
+        v-if="listPages.records!.total > 50"
+        :page="listPages.records!.page"
+        :total="listPages.records!.total"
+        :busy="listPages.records!.busy"
+        @change="loadPage('records', $event)"
+      />
       <div class="table-wrap">
         <table class="legacy-record-table">
           <thead>
             <tr>
               <th>#</th>
+              <th>生产日期</th>
               <th>机台</th>
               <th>机型</th>
               <th>状态</th>
@@ -156,6 +228,7 @@ const time = (s: string) =>
           <tbody>
             <tr v-for="(r, index) in dashboard.records" :key="r.id">
               <td>{{ (listPages.records!.page - 1) * 50 + index + 1 }}</td>
+              <td class="whitespace-nowrap">{{ r.business_date }}</td>
               <td>#{{ r.machine_no }}</td>
               <td>
                 {{
@@ -201,8 +274,12 @@ const time = (s: string) =>
               </td>
             </tr>
             <tr v-if="!dashboard.records.length">
-              <td colspan="17" class="p-8 text-center">
-                暂无记录，点击“+ 添加记录”开始
+              <td colspan="18" class="p-8 text-center">
+                {{
+                  searching
+                    ? "没有找到匹配记录，请更换关键词或搜索全部历史。"
+                    : "暂无记录，点击“+ 添加记录”开始"
+                }}
               </td>
             </tr>
           </tbody>
@@ -294,15 +371,22 @@ const time = (s: string) =>
               type="number"
           /></label>
           <label
-            >报价<input
-              v-model.number="recordForm.quoted_price"
-              min="0"
-              step="0.01"
-              type="number"
-          /></label>
-          <label
             >客户<input v-model="recordForm.customer" maxlength="255"
           /></label>
+          <QuoteEditor
+            v-model="recordForm.quoted_price"
+            :existing="!!recordForm.id"
+            :settings="dashboard?.settings"
+            :materials="dashboard?.materials || []"
+            :snapshot="recordCostSnapshot"
+            :input="{
+              material: recordForm.material_name,
+              weight: recordForm.weight_g,
+              hours: recordForm.duration_hours,
+              quantity: recordForm.quantity,
+              designFee: recordForm.design_fee,
+            }"
+          />
           <label class="md:col-span-2 xl:col-span-4"
             >备注<input v-model="recordForm.remark" maxlength="4000"
           /></label>

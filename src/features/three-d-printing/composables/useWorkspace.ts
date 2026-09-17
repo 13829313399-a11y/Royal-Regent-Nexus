@@ -104,8 +104,13 @@ export function useWorkspace() {
   let liveRunVersion = "";
   let liveRefreshPending = false;
   let disposed = false;
+  let liveSnapshotVersion = 0;
+  let dashboardRequestVersion = 0;
+  let dashboardInFlight = 0;
+  let foregroundRequests = 0;
   const live = useThreeDLive((snapshot) => {
     if (disposed || !dashboard.value) return;
+    liveSnapshotVersion++;
     dashboard.value.printers = snapshot.printers;
     dashboard.value.network_health = snapshot.network_health;
     if (snapshot.run_version !== liveRunVersion) liveRefreshPending = true;
@@ -148,6 +153,7 @@ export function useWorkspace() {
     return `${year}-${month}-${day}`;
   }
 
+  const recordCostSnapshot = ref<Record<string, unknown> | undefined>();
   const recordForm = reactive({
     reason: "",
     allow_negative_stock: false,
@@ -269,11 +275,19 @@ export function useWorkspace() {
     ),
   );
   const selectedPrinter = ref("");
+  const recordSearchAllDates = ref(false);
+  function showProductRecords(name: string) {
+    listPages.records!.q = name;
+    listPages.records!.page = 1;
+    recordSearchAllDates.value = true;
+    activeTab.value = "records";
+  }
   const queryVersions: Record<string, number> = {};
   async function loadPage(kind: string, page = 1) {
     const state = listPages[kind]!;
     const version = (queryVersions[kind] = (queryVersions[kind] ?? 0) + 1);
     state.busy = true;
+    errorMessage.value = "";
     try {
       const result = await threeDPrintingApi.collection(kind, {
         page,
@@ -285,8 +299,8 @@ export function useWorkspace() {
         source: state.source,
         customer: state.customer,
         material: state.material,
-        date_from: dateFrom.value,
-        date_to: dateTo.value,
+        date_from: kind === "records" && recordSearchAllDates.value ? "" : dateFrom.value,
+        date_to: kind === "records" && recordSearchAllDates.value ? "" : dateTo.value,
       });
       if (version !== queryVersions[kind] || !dashboard.value) return;
       if (page > 1 && result.items.length === 0) {
@@ -299,7 +313,7 @@ export function useWorkspace() {
         [kind === "movements" ? "inventory_movements" : kind]: result.items,
       });
     } catch (error) {
-      errorMessage.value = getApiErrorMessage(error);
+      if (version === queryVersions[kind]) errorMessage.value = getApiErrorMessage(error);
     } finally {
       if (version === queryVersions[kind]) state.busy = false;
     }
@@ -361,12 +375,22 @@ export function useWorkspace() {
   }
 
   async function loadDashboard(background = false) {
-    if (!background) loading.value = true;
+    const requestVersion = ++dashboardRequestVersion;
+    const snapshotVersion = liveSnapshotVersion;
+    dashboardInFlight++;
+    if (!background) { foregroundRequests++; loading.value = true; }
     try {
-      dashboard.value = await threeDPrintingApi.dashboard(
+      const next = await threeDPrintingApi.dashboard(
         dateFrom.value,
         dateTo.value,
       );
+      if (disposed || requestVersion !== dashboardRequestVersion) return;
+      // The HTTP query may have begun before a newer live snapshot arrived.
+      if (dashboard.value && snapshotVersion !== liveSnapshotVersion) {
+        next.printers = dashboard.value.printers;
+        next.network_health = dashboard.value.network_health;
+      }
+      dashboard.value = next;
       Object.assign(settingsForm, dashboard.value.settings);
       listPages.products!.total = Number(
         dashboard.value.summary.productCount || dashboard.value.products.length,
@@ -384,7 +408,8 @@ export function useWorkspace() {
     } catch (error) {
       if (!background) errorMessage.value = getApiErrorMessage(error);
     } finally {
-      if (!background) loading.value = false;
+      dashboardInFlight--;
+      if (!background) { foregroundRequests--; loading.value = foregroundRequests > 0; }
     }
   }
 
@@ -421,6 +446,7 @@ export function useWorkspace() {
   }
 
   function resetRecordForm() {
+    recordCostSnapshot.value = undefined;
     recordRequestKey.value = createRandomUuid();
     Object.assign(recordForm, {
       reason: "",
@@ -445,6 +471,7 @@ export function useWorkspace() {
   }
 
   function editRecord(record: ThreeDProductionRecord) {
+    recordCostSnapshot.value = record.calculated_cost_snapshot || {};
     Object.assign(recordForm, record, {
       reason: "",
       allow_negative_stock: false,
@@ -912,7 +939,7 @@ export function useWorkspace() {
     if (disposed) return;
     live.start();
     refreshTimer = window.setInterval(() => {
-      if (!saving.value && (!live.connected.value || liveRefreshPending)) {
+      if (!saving.value && !dashboardInFlight && (!live.connected.value || liveRefreshPending)) {
         liveRefreshPending = false;
         void loadDashboard(true);
       }
@@ -926,6 +953,8 @@ export function useWorkspace() {
   });
 
   return {
+    recordSearchAllDates,
+    showProductRecords,
     editSchedule,
     scheduleEditId,
     listPages,
@@ -960,6 +989,7 @@ export function useWorkspace() {
     canControl,
     canReadAudit,
     recordForm,
+    recordCostSnapshot,
     productForm,
     pendingProductImage,
     imageInputKey,

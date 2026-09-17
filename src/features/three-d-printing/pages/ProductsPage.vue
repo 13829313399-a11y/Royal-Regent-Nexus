@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import QuoteEditor from "../components/QuoteEditor.vue";
+import { computed, ref, watch } from "vue";
 import LegacyDialog from "../components/LegacyDialog.vue";
 import { reactive } from "vue";
 const brokenImages = reactive(new Set<string>());
@@ -8,22 +9,75 @@ import { useWorkspaceContext } from "../context";
 const {
   listPages,
   loadPage,
+  showProductRecords,
   dashboard,
   saving,
   errorMessage,
   canOperate,
   canUploadImage,
   productForm,
+  pendingProductImage,
   imageInputKey,
   money,
   resetProductForm,
   editProduct,
-  selectProductImage,
   submitProduct,
   archiveProduct,
   Save,
 } = useWorkspaceContext();
 const showForm = ref(false);
+const imageError = ref("");
+const imagePreview = ref("");
+const existingImage = computed(
+  () =>
+    dashboard.value?.products.find((p) => p.id === productForm.id)?.image_url ||
+    "",
+);
+watch(pendingProductImage, (file, _previous, onCleanup) => {
+  imagePreview.value = file ? URL.createObjectURL(file) : "";
+  const url = imagePreview.value;
+  onCleanup(() => {
+    if (url) URL.revokeObjectURL(url);
+  });
+});
+watch(showForm, (open) => {
+  imageError.value = "";
+  if (!open) pendingProductImage.value = null;
+});
+watch(imageInputKey, () => {
+  imageError.value = "";
+});
+function chooseImage(file: File | null) {
+  if (!file || !canUploadImage.value || saving.value) return;
+  imageError.value = "";
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    imageError.value = "请选择 JPEG、PNG 或 WebP 图片。";
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    imageError.value = "图片超过 5MB，请缩小后再粘贴或上传。";
+    return;
+  }
+  pendingProductImage.value = file;
+  imageInputKey.value += 1;
+}
+function pasteImage(event: ClipboardEvent) {
+  if (!canUploadImage.value || saving.value) return;
+  const file = Array.from(event.clipboardData?.items ?? [])
+    .find((item) => item.kind === "file" && item.type.startsWith("image/"))
+    ?.getAsFile();
+  if (!file) return;
+  event.preventDefault();
+  chooseImage(file);
+}
+function selectImage(event: Event) {
+  chooseImage((event.target as HTMLInputElement).files?.[0] ?? null);
+}
+function clearImage() {
+  pendingProductImage.value = null;
+  imageError.value = "";
+  imageInputKey.value += 1;
+}
 function openAdd() {
   resetProductForm();
   showForm.value = true;
@@ -68,7 +122,12 @@ async function saveForm() {
         :busy="listPages.products!.busy"
         @change="loadPage('products', $event)"
       />
-      <LegacyDialog v-if="showForm" title="产品" @close="showForm = false">
+      <LegacyDialog
+        v-if="showForm"
+        title="产品"
+        @close="showForm = false"
+        @paste="pasteImage"
+      >
         <form
           v-if="canOperate"
           class="panel-card p-5"
@@ -77,9 +136,7 @@ async function saveForm() {
           <div class="section-heading">
             <div>
               <h2>{{ productForm.id ? "编辑产品" : "新增产品" }}</h2>
-              <p>
-                产品资料先保存到数据库；选中的图片上传成功后才会结束本次保存。
-              </p>
+              <p>填写产品资料；复制图片后可直接在此窗口按 Ctrl+V 粘贴。</p>
             </div>
             <button
               v-if="productForm.id"
@@ -132,23 +189,60 @@ async function saveForm() {
                 min="1"
                 type="number"
             /></label>
-            <label
-              >报价<input
-                v-model.number="productForm.quoted_price"
-                min="0"
-                step="0.01"
-                type="number"
-            /></label>
-            <label v-if="canUploadImage"
-              >产品图片<input
-                :key="imageInputKey"
-                accept="image/jpeg,image/png,image/webp"
-                type="file"
-                @change="selectProductImage"
-              /><small
-                >JPEG / PNG / WebP，最大 5MB；云端会压缩为安全尺寸。</small
-              ></label
+            <QuoteEditor
+              v-model="productForm.quoted_price"
+              :existing="!!productForm.id"
+              :settings="dashboard?.settings"
+              :materials="dashboard?.materials || []"
+              :input="{
+                material: productForm.material_name,
+                weight: productForm.weight_g,
+                hours: productForm.duration_hours,
+                quantity: productForm.default_quantity,
+                designFee: 0,
+              }"
+            />
+            <div
+              v-if="canUploadImage"
+              class="product-image-editor md:col-span-2"
+              tabindex="0"
+              role="group"
+              aria-label="产品图片粘贴区"
             >
+              <strong>产品图片</strong>
+              <p>复制截图或图片，在此按 Ctrl+V 粘贴，也可以选择本地图片。</p>
+              <img
+                v-if="imagePreview || existingImage"
+                :src="imagePreview || existingImage"
+                alt="产品图片预览"
+                class="product-image-preview"
+              />
+              <p v-if="pendingProductImage" role="status">
+                图片已选择，保存产品后上传。
+              </p>
+              <p v-else-if="existingImage">当前产品图片；粘贴新图片可替换。</p>
+              <label
+                >选择本地图片<input
+                  :key="imageInputKey"
+                  accept="image/jpeg,image/png,image/webp"
+                  type="file"
+                  :disabled="saving"
+                  @change="selectImage"
+              /></label>
+              <small>JPEG / PNG / WebP，最大 5MB；每个产品一张图片。</small>
+              <p v-if="imageError" role="alert" class="image-error">
+                {{ imageError }}
+              </p>
+              <button
+                v-if="pendingProductImage"
+                type="button"
+                class="action-button secondary"
+                :disabled="saving"
+                @click="clearImage"
+              >
+                取消本次图片
+              </button>
+            </div>
           </div>
           <button class="action-button mt-4" type="submit" :disabled="saving">
             <Save class="size-4" />{{
@@ -175,7 +269,7 @@ async function saveForm() {
                 <th>默认耗时(h)</th>
                 <th>数量</th>
                 <th>默认报价</th>
-                <th v-if="canOperate">操作</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -202,16 +296,24 @@ async function saveForm() {
                 <td>{{ product.duration_hours || "—" }}</td>
                 <td>{{ product.default_quantity }}</td>
                 <td>{{ money(product.quoted_price) }}</td>
-                <td v-if="canOperate">
+                <td>
                   <div class="row-actions">
+                    <button @click="showProductRecords(product.name)">
+                      打印记录
+                    </button>
                     <button
+                      v-if="canOperate"
                       @click="
                         showForm = true;
                         editProduct(product);
                       "
                     >
                       编辑</button
-                    ><button class="danger" @click="archiveProduct(product)">
+                    ><button
+                      v-if="canOperate"
+                      class="danger"
+                      @click="archiveProduct(product)"
+                    >
                       删除
                     </button>
                   </div>
@@ -227,3 +329,36 @@ async function saveForm() {
     </section>
   </template>
 </template>
+<style scoped>
+.product-image-editor {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--muted);
+}
+.product-image-editor:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.product-image-editor p,
+.product-image-editor small {
+  margin: 0;
+  color: var(--muted-foreground);
+}
+.product-image-preview {
+  width: 100%;
+  max-width: 320px;
+  height: 180px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: var(--card);
+}
+.product-image-editor .image-error {
+  color: var(--destructive);
+}
+.product-image-editor button {
+  justify-self: start;
+}
+</style>

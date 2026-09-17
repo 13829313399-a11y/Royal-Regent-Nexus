@@ -258,6 +258,9 @@ def test_paginated_workspace_totals_filters_and_timeline_redaction(environment):
         f"/api/three-d-printing/printers/{env[5][0]}/timeline?factory_id=huakang-a"
     )
     assert timeline.status_code == 200, timeline.text
+    latest = timeline.json()["events"][0]
+    assert {"current_file", "error_text", "connection_session_id"} <= latest.keys()
+    assert latest["connection_session_id"] == ref["connection_session_id"]
     assert (
         "credential_ref" not in timeline.text
         and "lan_host" not in timeline.text

@@ -117,11 +117,38 @@ describe("3D operations workspace", () => {
     wrapper = mount(PageControls, {
       props: { page: 2, total: 51, busy: false },
     });
-    expect(wrapper.findAll("button")[1]!.attributes("disabled")).toBeDefined();
-    await wrapper.findAll("button")[0]!.trigger("click");
+    const button = (name: string) => wrapper.findAll("button").find(b => b.text() === name)!;
+    expect(button("下一页").attributes("disabled")).toBeDefined();
+    expect(button("末页").attributes("disabled")).toBeDefined();
+    await button("首页").trigger("click");
     expect(wrapper.emitted("change")?.[0]).toEqual([1]);
     await wrapper.setProps({ busy: true });
-    expect(wrapper.findAll("button")[0]!.attributes("disabled")).toBeDefined();
+    expect(button("首页").attributes("disabled")).toBeDefined();
+  });
+
+  it("jumps directly to the last or typed page and bounds invalid page numbers", async () => {
+    wrapper = mount(PageControls, { props: { page: 1, total: 1365 } });
+    const button = (name: string) => wrapper.findAll("button").find(b => b.text() === name)!;
+    await button("末页").trigger("click");
+    expect(wrapper.emitted("change")?.at(-1)).toEqual([28]);
+    await wrapper.setProps({ page: 28 });
+    const input = wrapper.get('input[aria-label="跳转页码"]');
+    await input.setValue(17);
+    await input.trigger("keydown.enter");
+    expect(wrapper.emitted("change")?.at(-1)).toEqual([17]);
+    await wrapper.setProps({ page: 17 });
+    await input.setValue(999);
+    await button("跳转").trigger("click");
+    expect(wrapper.emitted("change")?.at(-1)).toEqual([28]);
+    await input.setValue(0);
+    await button("跳转").trigger("click");
+    expect(wrapper.emitted("change")?.at(-1)).toEqual([1]);
+    const count = wrapper.emitted("change")!.length;
+    await input.setValue("");
+    await button("跳转").trigger("click");
+    expect(wrapper.emitted("change")).toHaveLength(count);
+    await wrapper.setProps({ busy: true });
+    expect(button("跳转").attributes("disabled")).toBeDefined();
   });
 
   it("applies a named machine recommendation using the reviewed schedule revision", async () => {

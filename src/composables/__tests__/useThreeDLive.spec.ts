@@ -32,11 +32,39 @@ it('replaces snapshots, degrades on error or silent stall, and closes on unmount
   expect(receive).toHaveBeenCalledTimes(2)
   vi.advanceTimersByTime(20000)
   expect(live.connected.value).toBe(false)
+  expect(stream.closed).toBe(true)
   stream.emit('ping', {})
+  expect(live.connected.value).toBe(false)
+  Stream.latest.emit('reset', { printers: [], run_version: 'recovered' })
   expect(live.connected.value).toBe(true)
   live.stop()
   expect(stream.closed).toBe(true)
   expect(vi.getTimerCount()).toBe(0)
+})
+
+it('reopens on network recovery and focus, and ignores old stream events', () => {
+  vi.stubGlobal('EventSource', Stream)
+  const receive = vi.fn()
+  const live = useThreeDLive(receive)
+  live.start()
+  const old = Stream.latest
+  old.onerror?.()
+  window.dispatchEvent(new Event('online'))
+  expect(old.closed).toBe(true)
+  const recovered = Stream.latest
+  recovered.emit('ping', {})
+  expect(live.connected.value).toBe(false)
+  old.emit('reset', { printers: [], run_version: 'obsolete' })
+  expect(receive).not.toHaveBeenCalled()
+  recovered.emit('reset', { printers: [], run_version: 'current' })
+  expect(live.connected.value).toBe(true)
+  recovered.onerror?.()
+  window.dispatchEvent(new Event('focus'))
+  expect(recovered.closed).toBe(true)
+  live.stop()
+  const last = Stream.latest
+  window.dispatchEvent(new Event('online'))
+  expect(Stream.latest).toBe(last)
 })
 
 it('revoked access closes the authenticated stream', () => {

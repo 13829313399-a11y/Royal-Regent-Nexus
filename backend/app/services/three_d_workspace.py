@@ -178,6 +178,9 @@ def printer_detail(db, printer_id):
                 "id": e.id,
                 "state": e.state,
                 "progress": e.progress,
+                "current_file": e.current_file,
+                "error_text": e.error_text,
+                "connection_session_id": e.connection_session_id,
                 "observed_at": e.observed_at,
                 "received_at": e.received_at,
             }
