@@ -70,7 +70,7 @@ for (const requiredImplementation of [
   'isolation: isolate',
   '@media \\(hover: hover\\) and \\(pointer: fine\\)',
   'translateY\\(-1px\\)',
-  '/brand/huadeng_group_dynamic_logo.svg',
+  '/brand/huadeng_group_dynamic_logo_topbar.svg',
   'size-20 shrink-0',
 ]) {
   assert.match(source, new RegExp(requiredImplementation))

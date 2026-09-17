@@ -246,7 +246,7 @@ def heartbeat(db, payload):
         printer = db.get(m.ThreeDPrintingPrinter, row.printer_id)
         seen = parse_business_timestamp(printer.last_seen_at)
         if (
-            stale_network
+            (stale_network and row.connection_owner != OBSERVER)
             or not alive(row.leader_leased_until, now)
             or not seen
             or (now - seen).total_seconds() > 30
@@ -279,7 +279,10 @@ def list_printers(db, payload):
 def acquire(db, payload):
     instance = get_instance(db, payload.instance_id)
     row, printer = connection(db, payload.printer_id)
-    require_network(db)
+    # Observation proves connectivity per printer through pinned MQTT. A failed
+    # probe for another printer must not prevent this one from reconnecting.
+    if row.connection_owner != OBSERVER:
+        require_network(db)
     now = database_now(db)
     if alive(row.leader_leased_until, now):
         # Retry returns the same grant; acquisition is not renewal.
@@ -370,7 +373,8 @@ def mark_unavailable(db, printer, actor, now):
 @write
 def start_session(db, payload):
     instance, row, printer, now = require_leader(db, payload)
-    require_network(db)
+    if row.connection_owner != OBSERVER:
+        require_network(db)
     meta = metadata(printer)
     current_generation = (
         meta.get("generation", 0)
@@ -485,7 +489,10 @@ def store_event(db, payload):
         raw_payload_json=encoded,
     )
     db.add(event)
-    connected = payload.connected and network_health_snapshot(db)["status"] == "healthy"
+    observation_only = row.connection_owner == OBSERVER
+    connected = payload.connected and (
+        observation_only or network_health_snapshot(db)["status"] == "healthy"
+    )
     effective_state = payload.state if connected else "STALE"
     if effective_state != printer.state or payload.device_job_key != meta.get(
         "device_job_key", ""
@@ -505,6 +512,7 @@ def store_event(db, payload):
     if payload.observed_at:
         printer.last_seen_at = stamp(payload.observed_at)
     meta.update(
+        observation_only=observation_only,
         nozzle_target=payload.nozzle_target,
         bed_target=payload.bed_target,
         layer_num=payload.layer_num,
@@ -689,13 +697,13 @@ def intent_current(evidence, meta, session_id):
 @write
 def claim_command(db, payload):
     instance, row, printer, now, meta = require_session(db, payload)
-    require_network(db)
     if (
         row.connection_owner != OWNER
         or not settings.three_d_connector_control_enabled
         or printer.machine_no not in settings.three_d_connector_verified_machines
     ):
         return {"commands": []}
+    require_network(db)
     rows = list(db.scalars(claim_statement(printer.id)))
     # Expire old intentions before selecting any candidate, including timestamp ties.
     # The epoch prevents RUNNING -> PAUSE -> RUNNING from reviving an old pause.

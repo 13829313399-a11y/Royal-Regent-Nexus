@@ -81,6 +81,14 @@ export const threeDPrintingApi = {
     const response = await http.post<ThreeDProductionRecord>(`${base}/records`, payload)
     return response.data
   },
+  async uploadRecordImage(id: string, revision: number, file: File, key: string) {
+    const form = new FormData()
+    form.append('file', file)
+    return (await http.post<ThreeDProductionRecord>(`${base}/records/${id}/image`, form, {
+      params: { factory_id: factoryId, revision, idempotency_key: key },
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 30_000,
+    })).data
+  },
   async updateRecord(id: string, payload: ThreeDRecordPayload & { revision: number }) {
     const response = await http.put<ThreeDProductionRecord>(`${base}/records/${id}`, payload)
     return response.data

@@ -72,7 +72,9 @@ const filename = (name: string) =>
   </div>
   <PrinterDetail
     v-if="selectedPrinter"
+    :key="selectedPrinter"
     :id="selectedPrinter"
+    :printer="dashboard?.printers.find(p => p.id === selectedPrinter)"
     @close="selectedPrinter = ''"
   />
 </template>

@@ -308,6 +308,41 @@ def test_observer_preserves_existing_run_and_cannot_dispatch_old_command(environ
         assert db.get(env[2].ThreeDPrintingPrinter, ref["printer_id"]).state == "STALE"
 
 
+@pytest.mark.parametrize("network_status", ["degraded", "stale", "unreachable", "unconfigured"])
+def test_observer_recovers_independently_of_site_probe(environment, monkeypatch, network_status):
+    env = environment
+    network = importlib.import_module("app.services.three_d_network_health")
+    with env[1].SessionLocal() as db:
+        db.get(env[2].ThreeDPrintingPrinterConnection, env[5][0]).connection_owner = env[3].OBSERVER
+        db.commit()
+    unhealthy = lambda _db: {
+        "configured": network_status != "unconfigured", "status": network_status,
+        "observed_at": env[4][0].isoformat(), "failed_machine_numbers": [6],
+        "message": "6号机探测失败",
+    }
+    monkeypatch.setattr(env[3], "network_health_snapshot", unhealthy)
+    monkeypatch.setattr(network, "network_health_snapshot", unhealthy)
+    # Recovery must work even when diagnostics never return to all-healthy.
+    ref = session(env)
+    post(env, "/events", event(env, ref))
+    post(env, "/heartbeat", {"instance_id": ref["instance_id"], "version": "test"})
+    assert post(env, "/commands/claim", ref)["commands"] == []
+    request_command(env, expected=409)
+    # The same outage still blocks a printer configured for hardware control.
+    post(env, "/leases/acquire", {"instance_id": ref["instance_id"], "printer_id": env[5][1]}, 409)
+    response = env[0].get(PUBLIC + "/dashboard?factory_id=huakang-a")
+    assert response.status_code == 200, response.text
+    printer = next(p for p in response.json()["printers"] if p["id"] == ref["printer_id"])
+    assert printer["connected"] and printer["state"] == "RUNNING"
+    with env[1].SessionLocal() as db:
+        assert db.scalar(select(func_count(env[2].ThreeDPrintingProductionRecord))) == 0
+    # Actual loss of device evidence remains offline; the fix is not a longer TTL.
+    env[4][0] += timedelta(seconds=31)
+    post(env, "/heartbeat", {"instance_id": ref["instance_id"], "version": "test"})
+    with env[1].SessionLocal() as db:
+        assert not db.get(env[2].ThreeDPrintingPrinter, ref["printer_id"]).connected
+
+
 def test_command_claim_dispatch_evidence_and_immutable_idempotent_result(environment):
     env = environment
     ref = session(env)
