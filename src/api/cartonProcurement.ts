@@ -31,7 +31,11 @@ export interface CartonCustomerSaveRequest {
   status: 'ACTIVE' | 'INACTIVE'
 }
 
+export interface CartonReplenishmentOption { replenishment_issue_id: string; document_no: string; responsibility: 'OWN' | 'SUPPLIER'; remaining_quantity: string }
 export interface CartonOrderLineResponse {
+  replenishment_review_required?: boolean
+  replenishment_options?: CartonReplenishmentOption[]
+  replenished_quantity?: string
   id: string
   line_no: number
   packaging_type: string
@@ -52,6 +56,7 @@ export interface CartonOrderLineResponse {
 }
 
 export interface CartonOrderResponse {
+  can_delete_history?: boolean
   customer_po?: string
   usage_status?: string
   usage_status_label?: string
@@ -87,6 +92,7 @@ export interface CartonOrderResponse {
 export type CartonPurchaseOrderDocumentType = 'LEGACY_BASELINE' | 'INITIAL' | 'APPEND' | 'REDUCE' | 'ADJUSTMENT'
 
 export interface CartonPurchaseOrderIssueResponse {
+  is_replenishment?: boolean
   id: string
   factory_id: string
   order_no: string
@@ -466,6 +472,10 @@ export interface CartonReceiptResponse {
     id: string
     line_no: number
     source_type: 'FORMAL_ORDER' | 'AD_HOC'
+    replenishment_issue_id?: string | null
+    document_no?: string | null
+    responsibility?: 'OWN' | 'SUPPLIER' | null
+    settlement_unit_price?: string | null
     order_line_id: string | null
     customer_code: string
     customer_name: string
@@ -604,6 +614,17 @@ export const cartonProcurementApi = {
       },
     )
     return response.data
+  },
+  async replenishOrder(factoryId: string, order: CartonOrderResponse, responsibility: 'OWN' | 'SUPPLIER', reason: string, lines: { order_line_id: string; location_id: string; quantity: number }[]) {
+    return postCartonInventoryRequest<{ order: CartonOrderResponse; issue: CartonPurchaseOrderIssueResponse }>(
+      `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/replenish`,
+      { factory_id: factoryId, expected_revision: order.revision, responsibility, reason, lines },
+    )
+  },
+  async deleteHistoryOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
+    await http.post(`/carton-procurement/orders/${encodeURIComponent(order.order_no)}/delete-history`, {
+      factory_id: factoryId, expected_revision: order.revision, reason,
+    })
   },
   async cancelOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
     const response = await http.post<CartonOrderResponse>(
@@ -945,6 +966,7 @@ export const cartonProcurementApi = {
     note: string
     lines: Array<{
       source_type: 'FORMAL_ORDER' | 'AD_HOC'
+      replenishment_issue_id?: string | null
       order_line_id: string | null
       customer_code: string
       contract_no: string
@@ -959,7 +981,7 @@ export const cartonProcurementApi = {
       damaged_quantity: number
       rejected_quantity: number
       unusable_quantity: number
-      unit_price: number
+      unit_price?: number
       location: string
       location_allocations?: Array<{ location_id: string; quantity: string | number; label?: string }>
   feedback_note: string
@@ -1000,10 +1022,21 @@ export const cartonProcurementApi = {
     return response.data
   },
   async listExceptions(factoryId: string) {
-    const response = await http.get<{ items: CartonExceptionResponse[] }>('/carton-procurement/exceptions', {
-      params: { factory_id: factoryId, limit: 500 },
+    const items: CartonExceptionResponse[] = []
+    while (true) {
+      const response = await http.get<{ items: CartonExceptionResponse[]; total: number }>('/carton-procurement/exceptions', {
+        params: { factory_id: factoryId, limit: 500, offset: items.length },
+      })
+      items.push(...response.data.items)
+      if (!response.data.items.length || items.length >= response.data.total || response.data.items.length < 500) return items
+    }
+  },
+  async bulkUpdateExceptions(factoryId: string, exceptions: CartonExceptionResponse[], status: CartonExceptionResponse['status'], resolutionNote: string) {
+    const response = await http.post<CartonExceptionResponse[]>('/carton-procurement/exceptions/bulk-update', {
+      factory_id: factoryId, items: exceptions.map(row => ({ id: row.id, expected_revision: row.revision })),
+      status, resolution_note: resolutionNote,
     })
-    return response.data.items
+    return response.data
   },
   async updateException(factoryId: string, exception: CartonExceptionResponse, status: CartonExceptionResponse['status'], resolutionNote = '') {
     const response = await http.patch<CartonExceptionResponse>(`/carton-procurement/exceptions/${exception.id}`, {
