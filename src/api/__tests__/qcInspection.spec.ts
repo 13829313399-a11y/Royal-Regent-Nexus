@@ -152,44 +152,12 @@ describe('QC inspection API', () => {
     ])
   })
 
-  it('binds rename uploads to stable file ids and explicit JPG sequence metadata', async () => {
-    const post = vi.fn().mockResolvedValue({
-      data: { id: 'rename-1', factory_id: 'huaxing', revision: 1, groups: [] },
-    })
-    const api = createQcInspectionApi({ get: vi.fn(), post, patch: vi.fn() })
-    const pdf = new File(['pdf'], 'report.pdf', { type: 'application/pdf' })
-    const jpg = new File(['jpg'], 'photo.jpg', { type: 'image/jpeg' })
-
-    await api.previewRenameBatch(
-      [{ fileId: 'group-1-pdf', file: pdf }, { fileId: 'group-1-jpg-1', file: jpg }],
-      [{
-        group_id: 'group-1',
-        is_caixing: false,
-        export_country: 'US',
-        item_number: 'ITEM-1',
-        customer_po_no: '00123',
-        actual_inspection_date: '2026-08-18',
-        files: [
-          { file_id: 'group-1-pdf', source_file_name: 'report.pdf' },
-          { file_id: 'group-1-jpg-1', source_file_name: 'photo.jpg', sequence: 1 },
-        ],
-      }],
-      'huaxing',
-    )
-
-    const payload = post.mock.calls[0]![1] as FormData
-    expect(payload.getAll('files')).toEqual([pdf, jpg])
-    expect(payload.getAll('file_ids')).toEqual(['group-1-pdf', 'group-1-jpg-1'])
-    expect(JSON.parse(String(payload.get('metadata_json')))).toEqual(expect.objectContaining({
-      factory_id: 'huaxing',
-      groups: [expect.objectContaining({
-        group_id: 'group-1',
-        files: [
-          { file_id: 'group-1-pdf', source_file_name: 'report.pdf' },
-          { file_id: 'group-1-jpg-1', source_file_name: 'photo.jpg', sequence: 1 },
-        ],
-      })],
-      request_id: expect.any(String),
-    }))
+  it('resumes a pending import within its factory scope', async () => {
+    const get = vi.fn().mockResolvedValue({ data: { id: 'batch-1', revision: 2, rows: [] } })
+    const api = createQcInspectionApi({ get, post: vi.fn(), patch: vi.fn() })
+    expect(await api.getScheduleImport('batch-1', 'huaxing')).toMatchObject({ revision: 2 })
+    expect(get).toHaveBeenCalledWith('/qc-inspections/schedule-imports/batch-1', { params: { factory_id: 'huaxing' } })
+    expect(api).not.toHaveProperty('previewRenameBatch')
+    expect(api).not.toHaveProperty('executeRenameBatch')
   })
 })

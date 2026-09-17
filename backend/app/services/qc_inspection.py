@@ -99,17 +99,19 @@ RESULT_PROBLEM_TRIGGERS = {"FAIL", "REJECTED", "CONDITIONAL_PASS", "CANCELLED"}
 
 
 HEADER_ALIASES = {
-    "customer_name": {"客户", "客户名称", "customer", "customername"},
+    "customer_name": {"客户", "客户名称", "客名", "customer", "customername"},
     "sales_contract_no": {
         "合同号",
         "销售合同号",
         "contractno",
+        "contractno.",
         "salescontractno",
         "contract",
     },
     "customer_item_no": {
         "货号",
         "客户货号",
+        "产品编号",
         "item",
         "itemno",
         "customeritemno",
@@ -124,8 +126,8 @@ HEADER_ALIASES = {
         "采购订单号",
         "customerpo",
     },
-    "product_name": {"产品名称", "产品", "品名", "product", "productname"},
-    "quantity": {"数量", "订单数量", "qty", "quantity"},
+    "product_name": {"产品名称", "产品中文名称", "产品", "品名", "product", "productname"},
+    "quantity": {"数量", "數量", "订单数量", "qty", "quantity"},
     "packing": {"装箱", "装箱资料", "packing"},
     "carton_count": {"箱数", "总箱数", "cartoncount", "cartons"},
     "report_status": {"报告", "报告状态", "report", "reportstatus"},
@@ -142,6 +144,7 @@ HEADER_ALIASES = {
         "走货日期",
         "出货期",
         "出货日期",
+        "客要求走货期",
         "shipmentdate",
         "shipdate",
     },
@@ -727,6 +730,17 @@ EVENT_MUTATION_FIELDS = {
 }
 
 
+def _check_pending_order_revision(order: QcInspectionOrder, expected: int | None) -> None:
+    if expected is None:
+        return
+    if order.revision != expected:
+        raise HTTPException(status_code=409, detail="验货主单已更新，请刷新排期后重新选择")
+    if (order.source_type != "SCHEDULE_IMPORT"
+            or order.status in {"COMPLETED", "CANCELLED"}
+            or order.inspection_result != "PENDING"):
+        raise HTTPException(status_code=409, detail="此订单已不属于导入待验排期，请刷新后核对")
+
+
 def create_inspection_event(
     db: Session, payload: QcInspectionEventCreate, user: AuthContext
 ) -> dict[str, object]:
@@ -738,6 +752,7 @@ def create_inspection_event(
     if replay is not None:
         return replay
     order = _get_order(db, factory_id, payload.inspection_order_id)
+    _check_pending_order_revision(order, payload.expected_pending_order_revision)
     attempt_no = (
         db.scalar(
             select(func.max(QcInspectionEvent.attempt_no)).where(
@@ -797,6 +812,8 @@ def update_inspection_event(
         raise HTTPException(status_code=422, detail="验货记录不能改挂到其他主单")
     if event.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="验货记录已被其他人更新，请刷新后重试")
+    order = _get_order(db, factory_id, event.inspection_order_id)
+    _check_pending_order_revision(order, payload.expected_pending_order_revision)
     before = event_to_out(db, event)
     for field in EVENT_MUTATION_FIELDS:
         setattr(event, field, getattr(payload, field))
@@ -867,6 +884,18 @@ def _new_order(
     )
 
 
+def _effective_inspection_date(order: QcInspectionOrder) -> str:
+    return order.planned_inspection_date or order.shipment_date or ""
+
+
+def _effective_inspection_date_expression():
+    return func.coalesce(
+        func.nullif(QcInspectionOrder.planned_inspection_date, ""),
+        QcInspectionOrder.shipment_date,
+        "",
+    )
+
+
 def list_orders(
     db: Session,
     factory_id: str,
@@ -892,7 +921,8 @@ def list_orders(
     orders = list(
         db.scalars(
             statement.order_by(
-                QcInspectionOrder.planned_inspection_date,
+                _effective_inspection_date_expression() == "",
+                _effective_inspection_date_expression(),
                 QcInspectionOrder.inspection_no,
             )
         ).all()
@@ -1376,6 +1406,12 @@ NORMALIZED_HEADER_ALIASES = {
     for field, aliases in HEADER_ALIASES.items()
 }
 
+QC_REVIEW_SHEET = "正单评审表"
+QC_REVIEW_PROFILE = "qc-review-unshipped-v1"
+QC_REQUIRED_HEADERS = {
+    "customer_name", "sales_contract_no", "customer_item_no", "customer_po_no", "quantity",
+}
+
 
 def _cell_text(cell: object) -> str:
     value = getattr(cell, "value", cell)
@@ -1439,15 +1475,9 @@ def _find_header(sheet: object) -> tuple[int, dict[str, int]]:
             for field, aliases in NORMALIZED_HEADER_ALIASES.items():
                 if normalized in aliases and field not in mapping:
                     mapping[field] = column_no
-        if best is None or len(mapping) > len(best[1]):
+        if QC_REQUIRED_HEADERS <= mapping.keys() and (best is None or len(mapping) > len(best[1])):
             best = (row_no, mapping)
-    if best is None or not {
-        "customer_name",
-        "sales_contract_no",
-        "customer_item_no",
-        "customer_po_no",
-        "quantity",
-    } <= set(best[1]):
+    if best is None:
         raise HTTPException(
             status_code=422,
             detail="排期表未找到客户、合同号、货号、PO、数量等必需表头",
@@ -1460,9 +1490,63 @@ def _parse_quantity(text_value: str) -> Decimal | None:
     if not normalized:
         return None
     try:
-        return Decimal(normalized)
+        value = Decimal(normalized)
+        return value if value.is_finite() else None
     except InvalidOperation:
         return None
+
+
+def _read_schedule_sheet(workbook, sheet, header):
+    header_row, mapping = header
+    header_cells = next(sheet.iter_rows(min_row=header_row, max_row=header_row))
+    headers = {_normalize_header(cell.value): index for index, cell in enumerate(header_cells)}
+    if "订单类型" not in headers:
+        raise HTTPException(422, "正单评审表缺少订单类型，无法识别正单")
+    order_type_column = headers["订单类型"]
+    found_cancelled_section = False
+    for source_row_no, cells in enumerate(
+        sheet.iter_rows(min_row=header_row + 1, max_col=max(max(mapping.values()), order_type_column + 1)),
+        start=header_row + 1,
+    ):
+        row_labels = [_normalize_header(cell.value) for cell in cells if _cell_text(cell)]
+        if row_labels and set(row_labels) == {"取消单"}:
+            found_cancelled_section = True
+            break
+        if row_labels and set(row_labels) == {"已走货订单"}:
+            raise HTTPException(422, "正单评审表在取消单分界前出现已走货订单，请核对分区")
+        order_type = _normalize_header(cells[order_type_column].value)
+        if order_type not in {"正单", "正式po"}:
+            continue
+        values: dict[str, object] = {}
+        source_cells = {}
+        for field, column_no in mapping.items():
+            cell = cells[column_no - 1]
+            raw_text = _cell_text(cell)
+            source_cells[field] = {
+                "cell": f"{get_column_letter(column_no)}{source_row_no}",
+                "value": raw_text,
+            }
+            if field in {"shipment_date", "planned_inspection_date"}:
+                values[field] = _date_text(cell, workbook.epoch)
+            elif field == "quantity":
+                values[field] = _parse_quantity(raw_text)
+            else:
+                values[field] = raw_text
+        values["source_order_type"] = _cell_text(cells[order_type_column])
+        for field in (
+            "product_name", "packing", "carton_count", "report_status", "production_department",
+            "export_country_code", "shipment_date", "planned_inspection_date", "inspection_agency",
+            "account_manager",
+        ):
+            values.setdefault(field, "")
+        values["export_country_code"] = str(values["export_country_code"]).upper()
+        values["source_row_no"] = source_row_no
+        values["source_sheet_name"] = sheet.title
+        values["source_cells"] = source_cells
+        values["source_profile"] = QC_REVIEW_PROFILE
+        yield values
+    if not found_cancelled_section:
+        raise HTTPException(422, "正单评审表未找到独立的取消单分界行，无法确定未走货订单范围")
 
 
 def _parse_schedule_rows(content: bytes) -> list[dict[str, object]]:
@@ -1477,55 +1561,17 @@ def _parse_schedule_rows(content: bytes) -> list[dict[str, object]]:
     except Exception as exc:
         raise HTTPException(status_code=422, detail="无法读取排期 Excel 文件") from exc
     try:
-        best_sheet = None
-        best_header = None
-        for sheet in workbook.worksheets:
-            try:
-                header = _find_header(sheet)
-            except HTTPException:
-                continue
-            if best_header is None or len(header[1]) > len(best_header[1]):
-                best_sheet = sheet
-                best_header = header
-        if best_sheet is None or best_header is None:
-            raise HTTPException(
-                status_code=422,
-                detail="所有 Sheet 均未找到完整的 QC 排期表头",
-            )
-        header_row, mapping = best_header
+        if QC_REVIEW_SHEET not in workbook.sheetnames:
+            raise HTTPException(422, "未找到正单评审表；请上传含正单评审表和取消单分界的生产排期文件")
+        sheet = workbook[QC_REVIEW_SHEET]
+        header = _find_header(sheet)
         rows: list[dict[str, object]] = []
-        for source_row_no, cells in enumerate(
-            best_sheet.iter_rows(min_row=header_row + 1),
-            start=header_row + 1,
-        ):
-            if not any(_cell_text(cell) for cell in cells):
-                continue
-            values: dict[str, object] = {}
-            for field, column_no in mapping.items():
-                cell = cells[column_no - 1] if column_no <= len(cells) else None
-                if field in {"shipment_date", "planned_inspection_date"}:
-                    values[field] = _date_text(cell, workbook.epoch) if cell is not None else ""
-                elif field == "quantity":
-                    values[field] = _parse_quantity(_cell_text(cell)) if cell is not None else None
-                else:
-                    values[field] = _cell_text(cell) if cell is not None else ""
-            values.setdefault("product_name", "")
-            values.setdefault("packing", "")
-            values.setdefault("carton_count", "")
-            values.setdefault("report_status", "")
-            values.setdefault("production_department", "")
-            values.setdefault("export_country_code", "")
-            values.setdefault("shipment_date", "")
-            values.setdefault("planned_inspection_date", "")
-            values.setdefault("inspection_agency", "")
-            values.setdefault("account_manager", "")
-            values["export_country_code"] = str(values["export_country_code"]).upper()
-            values["source_row_no"] = source_row_no
+        for values in _read_schedule_sheet(workbook, sheet, header):
             rows.append(values)
+            if len(rows) > 5000:
+                raise HTTPException(422, "单次排期导入不能超过 5000 行")
         if not rows:
-            raise HTTPException(status_code=422, detail="排期表没有可导入的数据行")
-        if len(rows) > 5000:
-            raise HTTPException(status_code=422, detail="单次排期导入不能超过 5000 行")
+            raise HTTPException(status_code=422, detail="正单评审表取消单以上没有可导入的正单")
         return rows
     finally:
         workbook.close()
@@ -1537,7 +1583,8 @@ def _schedule_row_to_out(row: QcScheduleImportRow) -> dict[str, object]:
         "id": row.id,
         "factory_id": row.factory_id,
         "batch_id": row.batch_id,
-        "source_row_no": row.source_row_no,
+        "source_row_no": int(raw.get("source_row_no", row.source_row_no)),
+        "source_sheet_name": str(raw.get("source_sheet_name", "")),
         "customer_name": row.customer_name,
         "sales_contract_no": row.sales_contract_no,
         "customer_item_no": row.customer_item_no,
@@ -1643,7 +1690,7 @@ def preview_schedule_import(
         source_file_name=Path(file_name).name,
         source_file_sha256=source_hash,
         source_size_bytes=len(content),
-        parser_version="qc-schedule-v1",
+        parser_version=str(parsed_rows[0]["source_profile"]),
         status="PREVIEW",
         row_count=len(parsed_rows),
         blocking_count=0,
@@ -2717,7 +2764,7 @@ def _build_v3_report_workbook(
 
     if report_type == "WEEKLY_INSPECTION_SCHEDULE":
         rows = [
-            [item.planned_inspection_date, item.customer_name, item.sales_contract_no, item.customer_po_no, item.customer_item_no, item.product_name, float(item.quantity), item.inspection_agency, item.production_department, RESULT_LABELS[item.inspection_result], item.status]
+            [_effective_inspection_date(item), item.customer_name, item.sales_contract_no, item.customer_po_no, item.customer_item_no, item.product_name, float(item.quantity), item.inspection_agency, item.production_department, RESULT_LABELS[item.inspection_result], item.status]
             for item in orders
         ]
         _write_tabular_sheet(workbook, sheet_name="验货排期", title=f"验货排期表（{period_key}）", headers=["计划验货日期", "客户", "合同号", "PO", "货号", "产品", "数量", "验货机构", "生产部门", "当前结果", "状态"], rows=rows)
@@ -2896,13 +2943,13 @@ def generate_report(
         event_order_ids = {item.inspection_order_id for item in events}
         schedule_statement = select(QcInspectionOrder).where(
             QcInspectionOrder.factory_id == factory_id,
-            QcInspectionOrder.planned_inspection_date >= start_date,
-            QcInspectionOrder.planned_inspection_date <= end_date,
+            _effective_inspection_date_expression() >= start_date,
+            _effective_inspection_date_expression() <= end_date,
         )
         scheduled_orders = list(
             db.scalars(
                 schedule_statement.order_by(
-                    QcInspectionOrder.planned_inspection_date,
+                    _effective_inspection_date_expression(),
                     QcInspectionOrder.customer_name,
                 )
             ).all()

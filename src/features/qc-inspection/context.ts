@@ -16,8 +16,6 @@ export interface QcInspectionWorkspaceContext {
   canResultWrite: ComputedRef<boolean>
   canProblemWrite: ComputedRef<boolean>
   canReportExport: ComputedRef<boolean>
-  canRenamePreview: ComputedRef<boolean>
-  canRenameExecute: ComputedRef<boolean>
   canGroupSummary: ComputedRef<boolean>
   canFactorySummary: ComputedRef<boolean>
   refresh: () => Promise<void>

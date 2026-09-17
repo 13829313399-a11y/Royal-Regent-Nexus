@@ -124,6 +124,7 @@ def _event_payload(order_id: str, request_id: str = "event-1") -> dict[str, obje
 def _schedule_bytes(rows: list[list[object]]) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
+    sheet.title = "正单评审表"
     sheet.append(
         [
             "客户",
@@ -135,10 +136,12 @@ def _schedule_bytes(rows: list[list[object]]) -> bytes:
             "出口国",
             "走货日期",
             "计划验货日期",
+            "订单类型",
         ]
     )
     for row in rows:
-        sheet.append(row)
+        sheet.append([*row, "正式PO"])
+    sheet.append(["取消单"])
     output = BytesIO()
     workbook.save(output)
     workbook.close()
