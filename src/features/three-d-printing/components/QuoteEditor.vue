@@ -13,9 +13,19 @@ const props = defineProps<{
 const emit = defineEmits<{ "update:modelValue": [value: number] }>();
 const manual = ref(false);
 const preserved = ref(!!props.existing);
-const quote = computed(() =>
+const storedQuote = computed(() =>
   calculateQuote(props.input, props.settings, props.materials, props.snapshot),
 );
+const currentQuote = computed(() => calculateQuote(props.input, props.settings, props.materials));
+const usingCurrentRates = computed(() => props.snapshot !== undefined && !storedQuote.value);
+const quote = computed(() => storedQuote.value || currentQuote.value);
+const materialPrice = computed(() => props.materials.find(item => item.name === props.input.material)?.price_per_kg);
+const unavailableReason = computed(() => {
+  if (!props.input.material) return "请填写或选择材料。";
+  if (materialPrice.value == null) return `材料管理中未找到“${props.input.material}”的单价，请选择已登记材料或补充材料价格。`;
+  if (!props.settings) return "计费设置尚未加载，请稍后重试。";
+  return "请检查单件重量、时间、数量和计费设置；数量至少为 1。";
+});
 const money = (n: number) => `¥${n.toFixed(2)}`;
 function apply() {
   if (!quote.value) return;
@@ -49,7 +59,9 @@ function enter(event: Event) {
         <strong>报价计算</strong>
         <p>
           {{
-            preserved
+            !quote
+              ? "已保留原单价，补齐下方计价信息后可重新计算。"
+              : preserved
               ? "已保留原单价，修改计价数据后自动更新。"
               : manual
                 ? "当前为手填单价，可随时重新使用公式。"
@@ -63,9 +75,13 @@ function enter(event: Event) {
         :disabled="!quote"
         @click="apply"
       >
-        按公式重新计算
+        {{ usingCurrentRates ? "按当前价格重新报价" : "按公式重新计算" }}
       </button>
     </div>
+    <p v-if="usingCurrentRates && quote" class="quote-source" role="status">
+      原记录未保存此材料的完整费率，当前参考价按“{{ input.material }}”
+      {{ Number(materialPrice).toFixed(2) }} 元/kg 和当前计费设置计算。保存时更新本条报价，历史成本保留。
+    </p>
     <div class="quote-values">
       <label
         >单件报价（元，不含设计费）<input
@@ -104,11 +120,7 @@ function enter(event: Event) {
       </p>
     </template>
     <p v-else class="quote-note" role="status">
-      {{
-        snapshot !== undefined
-          ? "这条历史记录缺少对应材料的保存费率，暂不能自动计算。原报价保留，可手动填写。"
-          : "请选择已登记价格的材料，并填写有效的重量、时间和数量。"
-      }}
+      {{ unavailableReason }} 原报价保留，也可手动填写。
     </p>
   </section>
 </template>
@@ -173,6 +185,7 @@ small {
 .quote-note {
   margin: 12px 0 0;
 }
+.quote-source { padding:10px 12px; margin:12px 0 0; border-radius:8px; background:var(--accent); color:var(--accent-foreground); font-size:12px; line-height:1.7; }
 @media (max-width: 600px) {
   .quote-heading,
   .quote-values {

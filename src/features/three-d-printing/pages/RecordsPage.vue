@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import RecordImagePicker from "../components/RecordImagePicker.vue";
 import QuoteEditor from "../components/QuoteEditor.vue";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import ProductPicker from "../components/ProductPicker.vue";
 import PageControls from "../components/PageControls.vue";
 import LegacyPrinterGrid from "../components/LegacyPrinterGrid.vue";
@@ -14,6 +15,12 @@ const {
   dashboard,
   saving,
   canOperate,
+  canUploadImage,
+  errorMessage,
+  pendingRecordImage,
+  recordImageUrl,
+  recordProductImageUrl,
+  recordImageRetry,
   canReadAudit,
   canExport,
   recordForm,
@@ -37,6 +44,10 @@ const {
 } = useWorkspaceContext();
 const day = ref(todayText()),
   showForm = ref(false);
+const imagePicker = ref<InstanceType<typeof RecordImagePicker>>();
+function closeForm() { if (!saving.value) showForm.value = false; }
+watch(showForm, (open) => { if (!open) pendingRecordImage.value = null; });
+const displayedRecordImage = computed(() => recordImageUrl.value || (recordForm.product_id ? recordProductImageUrl.value || dashboard.value?.products.find(p => p.id === recordForm.product_id)?.image_url || "" : ""));
 const keyword = ref(listPages.records!.q);
 const searchAllDates = ref(true);
 const searching = computed(
@@ -94,6 +105,7 @@ const statusNames: Record<string, string> = {
 const amount = (r: ThreeDProductionRecord, key: string) =>
   r.frozen_totals[key] == null ? "—" : money(r.frozen_totals[key]);
 const image = (r: ThreeDProductionRecord) =>
+  r.record_image_url ||
   r.product_image_url ||
   dashboard.value?.products.find((p) => p.id === r.product_id)?.image_url;
 const time = (s: string) =>
@@ -293,127 +305,111 @@ const time = (s: string) =>
       />
     </div>
     <LegacyDialog
-      v-if="showForm"
+      v-if="showForm" class="record-editor-dialog"
       :title="recordForm.id ? '编辑生产记录' : '添加生产记录'"
-      @close="showForm = false"
+      @close="closeForm" @paste="imagePicker?.pasteImage($event)"
     >
-      <form v-if="canOperate" class="panel-card p-5" @submit.prevent="save">
-        <div class="section-heading">
-          <div>
-            <h2>{{ recordForm.id ? "编辑生产记录" : "新增生产记录" }}</h2>
-            <p>选择产品后自动带出材料、重量、时间与报价，可继续调整。</p>
-          </div>
-          <button
-            v-if="recordForm.id"
-            class="action-button secondary"
-            type="button"
-            @click="showForm = false"
-          >
-            取消编辑
-          </button>
+      <form v-if="canOperate" class="record-editor" @submit.prevent="save">
+        <div class="record-editor-content">
+          <p class="editor-intro">填写生产信息，粘贴现场图片，报价自动计算。</p>
+          <p v-if="errorMessage" class="editor-error" role="alert">{{ errorMessage }}</p>
+          <fieldset :disabled="saving" class="record-editor-fields">
+            <div class="record-top-grid">
+              <div class="record-main-fields">
+                <section class="record-form-section" aria-label="生产信息">
+                  <h3>生产信息</h3>
+                  <div class="record-fields three-columns">
+                    <label>日期<input v-model="recordForm.business_date" required type="date" /></label>
+                    <label>机号<input v-model.number="recordForm.machine_no" required min="1" max="100" type="number" /></label>
+                    <label>状态<select v-model="recordForm.status"><option value="running">生产</option><option value="done">已完成</option><option value="idle">空闲</option><option value="fault">故障</option></select></label>
+                  </div>
+                </section>
+                <section class="record-form-section" aria-label="产品与用料">
+                  <h3>产品与用料</h3>
+                  <div class="record-fields">
+                    <div class="full-width product-picker-field"><span>关联产品</span><ProductPicker v-model="recordForm.product_id" @selected="chooseRecordProduct" /></div>
+                    <label>产品名称<input v-model="recordForm.product_name" maxlength="255" placeholder="输入本次打印的产品" /></label>
+                    <label>客户<input v-model="recordForm.customer" maxlength="255" placeholder="选填" /></label>
+                    <label class="full-width">材料<input v-model="recordForm.material_name" list="record-material-options" maxlength="255" placeholder="选择已登记材料或输入名称" /></label>
+                    <datalist id="record-material-options"><option v-for="material in dashboard?.materials || []" :key="material.id" :value="material.name">{{ material.price_per_kg }} 元/kg</option></datalist>
+                  </div>
+                  <div class="record-fields three-columns measures">
+                    <label>单件重量(g)<input v-model.number="recordForm.weight_g" min="0" step="0.01" type="number" /></label>
+                    <label>单件时间(h)<input v-model.number="recordForm.duration_hours" min="0" step="0.01" type="number" /></label>
+                    <label>数量<input v-model.number="recordForm.quantity" min="0" type="number" /></label>
+                  </div>
+                </section>
+              </div>
+              <RecordImagePicker ref="imagePicker" v-model="pendingRecordImage" :existing-url="displayedRecordImage"
+                :inherited="!recordImageUrl" :allowed="canUploadImage" :disabled="saving || !!recordImageRetry" />
+            </div>
+            <section class="record-form-section record-pricing" aria-label="费用与报价">
+              <div class="pricing-header"><h3>费用与报价</h3><label>设计费（元）<input v-model.number="recordForm.design_fee" min="0" step="0.01" type="number" /></label></div>
+              <QuoteEditor v-model="recordForm.quoted_price" :existing="!!recordForm.id" :settings="dashboard?.settings" :materials="dashboard?.materials || []" :snapshot="recordCostSnapshot"
+                :input="{ material: recordForm.material_name, weight: recordForm.weight_g, hours: recordForm.duration_hours, quantity: recordForm.quantity, designFee: recordForm.design_fee }" />
+            </section>
+            <section class="record-form-section" aria-label="补充信息">
+              <h3>补充信息</h3>
+              <label>备注<textarea v-model="recordForm.remark" maxlength="4000" rows="2" placeholder="记录工艺要求、异常情况或交接事项（选填）" /></label>
+              <details class="record-additional"><summary>修改说明与库存选项</summary>
+                <label>备注说明<input v-model="recordForm.reason" :required="recordForm.allow_negative_stock" maxlength="1000" /></label>
+                <label v-if="canReadAudit" class="stock-option"><input v-model="recordForm.allow_negative_stock" type="checkbox" />主管明确批准本次负库存</label>
+              </details>
+            </section>
+          </fieldset>
         </div>
-        <div class="form-grid">
-          <label
-            >日期<input v-model="recordForm.business_date" required type="date"
-          /></label>
-          <label
-            >机号<input
-              v-model.number="recordForm.machine_no"
-              required
-              min="1"
-              max="100"
-              type="number"
-          /></label>
-          <label
-            >状态<select v-model="recordForm.status">
-              <option value="running">生产</option>
-              <option value="done">已完成</option>
-              <option value="idle">空闲</option>
-              <option value="fault">故障</option>
-            </select></label
-          >
-          <label
-            >产品<ProductPicker
-              v-model="recordForm.product_id"
-              @selected="chooseRecordProduct"
-          /></label>
-          <label
-            >产品名称<input v-model="recordForm.product_name" maxlength="255"
-          /></label>
-          <label
-            >材料<input v-model="recordForm.material_name" maxlength="255"
-          /></label>
-          <label
-            >单件重量(g)<input
-              v-model.number="recordForm.weight_g"
-              min="0"
-              step="0.01"
-              type="number"
-          /></label>
-          <label
-            >数量<input
-              v-model.number="recordForm.quantity"
-              min="0"
-              type="number"
-          /></label>
-          <label
-            >单件时间(h)<input
-              v-model.number="recordForm.duration_hours"
-              min="0"
-              step="0.01"
-              type="number"
-          /></label>
-          <label
-            >设计费<input
-              v-model.number="recordForm.design_fee"
-              min="0"
-              step="0.01"
-              type="number"
-          /></label>
-          <label
-            >客户<input v-model="recordForm.customer" maxlength="255"
-          /></label>
-          <QuoteEditor
-            v-model="recordForm.quoted_price"
-            :existing="!!recordForm.id"
-            :settings="dashboard?.settings"
-            :materials="dashboard?.materials || []"
-            :snapshot="recordCostSnapshot"
-            :input="{
-              material: recordForm.material_name,
-              weight: recordForm.weight_g,
-              hours: recordForm.duration_hours,
-              quantity: recordForm.quantity,
-              designFee: recordForm.design_fee,
-            }"
-          />
-          <label class="md:col-span-2 xl:col-span-4"
-            >备注<input v-model="recordForm.remark" maxlength="4000"
-          /></label>
-          <label class="md:col-span-2"
-            >备注说明<input
-              v-model="recordForm.reason"
-              :required="recordForm.allow_negative_stock"
-              maxlength="1000"
-          /></label>
-          <label v-if="canReadAudit"
-            ><input
-              v-model="recordForm.allow_negative_stock"
-              type="checkbox"
-            />主管明确批准本次负库存</label
-          >
-        </div>
-        <button class="action-button mt-4" type="submit" :disabled="saving">
-          <Save class="size-4" />{{ saving ? "保存中…" : "保存记录" }}</button
-        ><button
-          class="action-button secondary mt-4 ml-2"
-          type="button"
-          :disabled="saving"
-          @click="toggleDayOff"
-        >
-          设置/恢复当日休息日
-        </button>
+        <footer class="record-editor-footer">
+          <span>{{ pendingRecordImage ? '1 张图片待上传，保存后生效' : '确认信息后保存本条生产记录' }}</span>
+          <button class="action-button secondary" type="button" :disabled="saving" @click="closeForm">取消</button>
+          <button class="action-button" type="submit" :disabled="saving"><Save class="size-4" />{{ saving ? '保存中…' : '保存记录' }}</button>
+        </footer>
       </form>
     </LegacyDialog>
   </section>
 </template>
+<style>
+.record-editor-dialog.legacy-dialog { width:min(1040px,96vw); max-height:92dvh; overflow:hidden; }
+.record-editor-dialog.legacy-dialog[open] { display:flex; flex-direction:column; }
+.record-editor-dialog > header { flex-shrink:0; padding:18px 24px; background:var(--card); }
+.record-editor-dialog .legacy-dialog-body { display:flex; flex-direction:column; min-height:0; padding:0; overflow:hidden; }
+.record-editor { display:flex; flex-direction:column; min-height:0; }
+.record-editor-content { padding:22px 24px 24px; overflow-y:auto; min-height:0; }
+.record-editor .editor-intro { color:var(--muted-foreground); font-size:13px; margin:0 0 20px; }
+.record-editor .editor-error { color:var(--destructive); background:color-mix(in oklch,var(--destructive) 7%,var(--card)); border-radius:8px; padding:12px; margin-bottom:16px; font-size:13px; }
+.record-editor-fields { min-width:0; border:0; padding:0; margin:0; }
+.record-top-grid { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(250px,1fr); gap:24px; align-items:start; }
+.record-form-section h3 { font-size:14px; font-weight:650; color:var(--foreground); margin:0 0 14px; }
+.record-form-section + .record-form-section { margin-top:22px; }
+.record-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.record-fields.three-columns { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.record-fields .full-width { grid-column:1/-1; }
+.record-fields .product-picker-field { font-size:12px; font-weight:600; color:var(--muted-foreground); }
+.record-fields .product-picker { margin-top:6px; }
+.record-fields label { min-width:0; }
+.record-editor input, .record-editor select { min-width:0; height:40px; }
+.record-fields.measures { margin-top:14px; }
+.record-pricing { border-top:1px solid var(--border); margin-top:24px; padding-top:20px; }
+.pricing-header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:12px; }
+.pricing-header h3 { margin:0; }
+.pricing-header label { display:flex; align-items:center; gap:10px; }
+.pricing-header input { width:112px; margin:0; }
+.record-editor textarea { display:block; width:100%; margin-top:6px; padding:10px 12px; border:1px solid var(--input); background:var(--card); border-radius:8px; color:var(--foreground); font-family:inherit; font-size:13px; font-weight:400; line-height:1.6; resize:vertical; }
+.record-editor textarea:focus { outline:2px solid var(--ring); outline-offset:1px; }
+.record-additional { margin-top:14px; font-size:12px; color:var(--muted-foreground); }
+.record-additional summary { cursor:pointer; margin-bottom:10px; }
+.record-editor .stock-option { display:flex; align-items:center; gap:8px; margin-top:10px; }
+.record-editor input[type=checkbox] { height:16px; width:16px; margin:0; }
+.record-editor-footer { display:flex; flex-shrink:0; align-items:center; justify-content:flex-end; gap:10px; border-top:1px solid var(--border); padding:14px 24px; background:var(--card); }
+.record-editor-footer > span { margin-right:auto; font-size:12px; color:var(--muted-foreground); }
+@media(max-width:700px) {
+  .record-editor-dialog.legacy-dialog { width:calc(100vw - 16px); max-height:96dvh; }
+  .record-editor-content { padding:16px; }
+  .record-top-grid { grid-template-columns:minmax(0,1fr); gap:18px; }
+  .record-main-fields > .record-form-section:first-child .three-columns { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .record-main-fields > .record-form-section:first-child .three-columns > label:first-child { grid-column:1/-1; }
+  .record-top-grid .photo-zone { min-height:150px; aspect-ratio:2; }
+  .record-editor-footer { padding:12px 16px; flex-wrap:wrap; }
+  .record-editor-footer > span { flex-basis:100%; }
+  .record-fields.three-columns { gap:10px; }
+}
+</style>

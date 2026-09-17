@@ -496,6 +496,68 @@ def product_image_path(image: ThreeDPrintingProductImage) -> Path:
     return path
 
 
+def _encode_uploaded_image(content: bytes, mime_type: str) -> tuple[bytes, int, int]:
+    if not content:
+        raise HTTPException(400, "图片内容为空")
+    if len(content) > MAX_PRODUCT_IMAGE_BYTES:
+        raise HTTPException(413, "单张图片不可超过5MB")
+    if mime_type not in IMAGE_MIME_TYPES:
+        raise HTTPException(415, "仅支持 JPEG、PNG 或 WebP 图片")
+    try:
+        source = Image.open(BytesIO(content))
+        source.load()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise HTTPException(422, "图片内容损坏或格式不受支持") from exc
+    image = source.convert("RGB")
+    image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION))
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=85, optimize=True)
+    return output.getvalue(), image.width, image.height
+
+
+@atomic_write
+def save_record_image(db: Session, *, record_id: str, factory_id: str,
+                      revision: int, content: bytes, mime_type: str,
+                      user: AuthContext, idempotency_key: str = "", request_id: str = "") -> ThreeDPrintingProductionRecord:
+    factory_id = require_three_d_factory(factory_id)
+    record = db.scalar(select(ThreeDPrintingProductionRecord).where(
+        ThreeDPrintingProductionRecord.id == record_id,
+        ThreeDPrintingProductionRecord.factory_id == factory_id,
+    ).with_for_update())
+    if record is None or record.deleted_at:
+        raise HTTPException(404, "生产记录不存在")
+    if record.revision != revision:
+        raise HTTPException(409, "生产记录已被其他用户更新，请重新打开记录")
+    encoded, width, height = _encode_uploaded_image(content, mime_type)
+    digest = sha256(encoded).hexdigest()
+    storage_key = f"{factory_id}/record-images/{record.id}/{digest}.jpg"
+    target = _asset_root() / storage_key
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        temp = target.parent / f".{uuid4().hex[:8]}.tmp"
+        temp.write_bytes(encoded)
+        os.replace(temp, target)
+    snapshot = _load_json(record.product_snapshot_json, {})
+    snapshot["record_image"] = {"storage_key": storage_key, "sha256": digest,
+        "size_bytes": len(encoded), "width": width, "height": height}
+    record.product_snapshot_json = _json(snapshot)
+    record.revision += 1
+    record.updated_at = _now()
+    add_audit(db, factory_id=factory_id, entity_type="production_record", entity_id=record.id,
+              action="upload_image", actor_id=user.id, actor_name=_actor_name(user),
+              detail={"sha256": digest, "sizeBytes": len(encoded)}, request_id=request_id)
+    return record
+
+
+def record_image_path(record: ThreeDPrintingProductionRecord) -> Path:
+    metadata = _load_json(record.product_snapshot_json, {}).get("record_image", {})
+    root = _asset_root()
+    path = (root / metadata.get("storage_key", "")).resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(404, "记录图片不存在")
+    return path
+
+
 def save_product_image(
     db: Session,
     *,
@@ -511,22 +573,7 @@ def save_product_image(
     product = db.get(ThreeDPrintingProduct, product_id)
     if product is None or product.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="产品不存在")
-    if not content:
-        raise HTTPException(status_code=400, detail="图片内容为空")
-    if len(content) > MAX_PRODUCT_IMAGE_BYTES:
-        raise HTTPException(status_code=413, detail="单张图片不可超过5MB")
-    if mime_type not in IMAGE_MIME_TYPES:
-        raise HTTPException(status_code=415, detail="仅支持 JPEG、PNG 或 WebP 图片")
-    try:
-        source = Image.open(BytesIO(content))
-        source.load()
-    except (UnidentifiedImageError, OSError) as exc:
-        raise HTTPException(status_code=422, detail="图片内容损坏或格式不受支持") from exc
-    image = source.convert("RGB")
-    image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION))
-    output = BytesIO()
-    image.save(output, format="JPEG", quality=85, optimize=True)
-    encoded = output.getvalue()
+    encoded, width, height = _encode_uploaded_image(content, mime_type)
     digest = sha256(encoded).hexdigest()
     storage_key = f"{factory_id}/{product_id}/{digest}.jpg"
     target = (_asset_root() / storage_key).resolve()
@@ -552,8 +599,8 @@ def save_product_image(
             sha256=digest,
             mime_type="image/jpeg",
             size_bytes=len(encoded),
-            width=image.width,
-            height=image.height,
+            width=width,
+            height=height,
             original_file_name=file_name[:255],
             is_current=True,
             uploaded_by=user.id,
@@ -566,8 +613,8 @@ def save_product_image(
         record.sha256 = digest
         record.mime_type = "image/jpeg"
         record.size_bytes = len(encoded)
-        record.width = image.width
-        record.height = image.height
+        record.width = width
+        record.height = height
         record.original_file_name = file_name[:255]
         record.uploaded_by = user.id
         record.uploaded_by_name = _actor_name(user)
@@ -1002,7 +1049,7 @@ def update_production_record(
     cost_fields = ("weight", "time", "qty", "price", "designFee", "material")
     if previous_inputs["material"] != record.material_name or any(Decimal(str(previous_inputs[k])) != Decimal(str(record_inputs(record)[k])) for k in cost_fields if k != "material"):
         freeze_cost(record, ensure_settings(db, factory_id), None, reason=payload.reason)
-    record.product_snapshot_json = _json(record_inputs(record))
+    record.product_snapshot_json = _json({**_load_json(record.product_snapshot_json, {}), **record_inputs(record)})
     add_audit(
         db,
         factory_id=factory_id,
@@ -1857,7 +1904,9 @@ def product_out(
 
 
 def production_record_out(record: ThreeDPrintingProductionRecord) -> dict[str, Any]:
+    image = _load_json(record.product_snapshot_json, {}).get("record_image", {})
     return {
+        "record_image_url": f"/api/three-d-printing/records/{record.id}/image?factory_id={record.factory_id}&v={image['sha256']}" if image.get("sha256") else "",
         "run_status": record.run_status,
         "reconciliation_status": record.reconciliation_status,
         "source_system": record.source_system,
