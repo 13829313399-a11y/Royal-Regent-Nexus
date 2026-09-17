@@ -469,6 +469,9 @@ class CartonOrderSelectionRequest(BaseModel):
 
 
 class CartonOrderLineOut(BaseModel):
+    replenishment_review_required: bool = False
+    replenishment_options: list[dict] = Field(default_factory=list)
+    replenished_quantity: Decimal = Decimal(0)
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -527,6 +530,7 @@ class CartonOrderHistorySuggestionListOut(BaseModel):
 
 
 class CartonOrderOut(BaseModel):
+    can_delete_history: bool = False
     customer_po: str = ""
     usage_status: str = "NOT_RECEIVED"
     usage_status_label: str = "未入库"
@@ -585,6 +589,7 @@ class CartonPurchaseOrderIssueCreate(BaseModel):
 
 
 class CartonPurchaseOrderIssueOut(BaseModel):
+    is_replenishment: bool = False
     id: str
     factory_id: str
     order_no: str
@@ -613,6 +618,27 @@ class CartonPurchaseOrderContextOut(BaseModel):
     issues: list[CartonPurchaseOrderIssueOut] = Field(default_factory=list)
 
 
+class CartonReplenishmentLine(BaseModel):
+    order_line_id: str = Field(min_length=1, max_length=96)
+    location_id: str = Field(min_length=1, max_length=96)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+
+
+class CartonReplenishmentCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
+    responsibility: Literal["OWN", "SUPPLIER"]
+    reason: str = Field(default="", max_length=500)
+    lines: list[CartonReplenishmentLine] = Field(min_length=1, max_length=100)
+
+
+class CartonReplenishmentOut(BaseModel):
+    order: CartonOrderOut
+    issue: CartonPurchaseOrderIssueOut
+
+
 class CartonHistoryOrderImportOut(BaseModel):
     factory_id: str
     original_filename: str
@@ -633,6 +659,7 @@ class CartonLocationAllocation(BaseModel):
 
 
 class CartonReceiptLineCreate(BaseModel):
+    replenishment_issue_id: str | None = Field(default=None, min_length=1, max_length=96)
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     source_type: CartonReceiptLineSourceType = "FORMAL_ORDER"
     order_line_id: str | None = Field(default=None, min_length=1, max_length=96)
@@ -688,6 +715,8 @@ class CartonReceiptLineCreate(BaseModel):
             return self
         if self.order_line_id:
             raise ValueError("非正式收料不能伪造正式订单明细关联")
+        if self.replenishment_issue_id:
+            raise ValueError("非正式收料不能关联补单")
         missing = [
             label
             for label, value in (
@@ -742,6 +771,10 @@ class CartonReceiptCreate(BaseModel):
 
 
 class CartonReceiptLineOut(BaseModel):
+    replenishment_issue_id: str | None = None
+    document_no: str | None = None
+    responsibility: str | None = None
+    settlement_unit_price: Decimal | None = None
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
@@ -1170,11 +1203,14 @@ class CartonExceptionUpdate(BaseModel):
     def strip_text(cls, value: str) -> str:
         return _strip(value)
 
-    @model_validator(mode="after")
-    def validate_resolution(self):
-        if self.status in {"RESOLVED", "CLOSED"} and len(self.resolution_note) < 4:
-            raise ValueError("解决或关闭异常时必须填写至少 4 个字符的处理说明")
-        return self
+class CartonExceptionBulkItem(BaseModel):
+    id: str = Field(min_length=1, max_length=96)
+    expected_revision: int = Field(ge=1)
+
+
+class CartonExceptionBulkUpdate(CartonExceptionUpdate):
+    expected_revision: int = 1
+    items: list[CartonExceptionBulkItem] = Field(min_length=1, max_length=500)
 
 
 class CartonExceptionOut(BaseModel):

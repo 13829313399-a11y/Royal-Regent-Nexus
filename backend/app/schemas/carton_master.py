@@ -22,6 +22,7 @@ class NumberRule(BaseModel):
     characters: Literal["ANY", "DIGITS", "ALNUM_DASH"] = "ANY"
     templates: list[str] = Field(default_factory=list, max_length=20)
     frozen: bool = False
+    reset: bool = False
     sample_text: str = Field(default="", max_length=12000)
     source: Literal["NONE", "MANUAL", "HISTORY"] = "NONE"
     sample_count: int = Field(default=0, ge=0)

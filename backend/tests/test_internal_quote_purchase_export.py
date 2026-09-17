@@ -67,15 +67,15 @@ def test_original_purchase_prices_quantities_losses_and_detached_groups(componen
     _build_summary_sheet(workbook, SimpleNamespace(product_name='采购换算验证', quote_no='PURCHASE', customer='JustPlay' if component else '普通客', region_code='mainland', remark=''),
                          sections, snapshot, summary, context, [])
     sheet = workbook['报价明细']
-    expected = {'弹簧': '=0.52/$L$4*2', '螺丝': '=0.13/$L$4', '镜片': '=0.8*2*1.02',
-                '内垫': '=0.123456/$L$4*1.03', '胶袋': '=0.17/$L$4*3*1.02', '说明书': .2}
+    expected = {'弹簧（2pcs）': '=0.52/$L$4*2', '螺丝（1pcs）': '=0.13/$L$4', '镜片（2pcs）': '=0.8*2*1.02',
+                '内垫（1pcs）': '=0.123456/$L$4*1.03', '胶袋（3pcs）': '=0.17/$L$4*3*1.02', '说明书（1pcs）': .2}
     for name, formula in expected.items():
         values = [sheet.cell(row, 4).value for row in range(1, sheet.max_row + 1) if sheet.cell(row, 3).value == name]
         assert formula in values or (component and isinstance(formula, str) and any(
             isinstance(value, str) and value.startswith(formula + '*') for value in values)), (name, values)
     if not component:
         # The detached mirror cost is removed once from the main cost range.
-        mirror_rows = [row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 3).value == '镜片']
+        mirror_rows = [row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 3).value == '镜片（2pcs）']
         assert len(mirror_rows) == 2
         assert arithmetic_value(sheet, f'D{mirror_rows[0]}') == 0
         assert arithmetic_value(sheet, f'D{mirror_rows[1]}') == pytest.approx(1.632)
@@ -113,9 +113,9 @@ def test_detached_electronic_purchase_moves_allocated_overhead_without_negative_
     _build_summary_sheet(workbook, SimpleNamespace(product_name='电子倍率验证', quote_no='DETACHED', customer='普通客', region_code='mainland', remark=''),
                          sections, snapshot, summary, context, [])
     sheet = workbook['报价明细']
-    rows = [row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 3).value == 'IC']
+    rows = [row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 3).value == 'IC（2pcs）']
     assert len(rows) == 2
     assert arithmetic_value(sheet, f'D{rows[0]}') == 0
     assert sheet.cell(rows[1], 4).value.startswith('=0.52/$L$4*2*')
-    assert arithmetic_value(sheet, f'D{rows[1]}') + arithmetic_value(sheet, f'D{_find_row(sheet, 3, "LED")}') == pytest.approx(float(total), abs=.0005)
+    assert arithmetic_value(sheet, f'D{rows[1]}') + arithmetic_value(sheet, f'D{_find_row(sheet, 3, "LED（3pcs）")}') == pytest.approx(float(total), abs=.0005)
     workbook.close()

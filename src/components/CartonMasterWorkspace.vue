@@ -62,17 +62,26 @@ watch(suggestedLocationReason, (value, previous) => { if (!locationForm.reason.t
 type FormatKey = 'contract_rule' | 'item_rule' | 'customer_po_rule'
 const templateText = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
 const recognizedText = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
+const recognitionErrors = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
+const recognitionHints = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
+function resetNumberRule(key: FormatKey) {
+  form.data[key] = { ...defaultNumberRule(), reset: true }
+  templateText[key] = ''; recognizedText[key] = ''; recognitionErrors[key] = ''
+  recognitionHints[key] = '格式已清空，保存后生效；需要时可重新识别。'
+}
 function identifyNumberRule(key: FormatKey) {
   const rule = form.data[key], raw = (rule.sample_text || '').trim()
+  recognitionErrors[key] = ''; recognitionHints[key] = ''
   try {
-    const values = raw ? raw.split(/[\s,，;；]+/).filter(Boolean) : historicalNumberSamples(workspace.value.records, form.customer_code, key)
+    const values = raw ? raw.split(/[\n\r,，;；]+/).map(value => value.trim()).filter(Boolean) : historicalNumberSamples(workspace.value.records, form.customer_code, key)
     const result = recognizeNumberTemplates(values)
     templateText[key] = result.templates.join('\n')
-    Object.assign(rule, { templates: result.templates, frozen: result.templates.length > 0, source: raw ? 'MANUAL' : 'HISTORY', sample_count: result.sampleCount })
-    recognizedText[key] = raw; error.value = ''
-  } catch (e) { error.value = e instanceof Error ? e.message : '无法识别样例' }
+    Object.assign(rule, { templates: result.templates, frozen: result.templates.length > 0, reset: false, source: raw ? 'MANUAL' : values.length ? 'HISTORY' : 'NONE', sample_count: result.sampleCount })
+    recognizedText[key] = raw
+    if (!values.length) recognitionHints[key] = key === 'customer_po_rule' ? '该客户的正式历史订单未填写客户 PO，请粘贴客户 PO 样例；不会用合同号代替。' : '该客户暂无可识别的正式历史编号，请填写完整样例。'
+  } catch (e) { recognitionErrors[key] = e instanceof Error ? e.message : '无法识别样例' }
 }
-function editNumberTemplate(key: FormatKey) { recognizedText[key] = (form.data[key].sample_text || '').trim() }
+function editNumberTemplate(key: FormatKey) { recognizedText[key] = (form.data[key].sample_text || '').trim(); recognitionErrors[key] = ''; recognitionHints[key] = ''; form.data[key].reset = false }
 function resetNumberRules() {
   if (form.kind !== 'RULE') return
   for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
@@ -122,9 +131,10 @@ function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = 
   if (!['CONTRACT', 'RULE'].includes(form.kind)) form.customer_code = ''
   for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
     const rule = form.data[key]
+    recognitionErrors[key] = ''; recognitionHints[key] = ''
     if (automaticNumberRule(rule)) rule.mode = 'AUTO'
     templateText[key] = (rule.templates || []).join('\n'); recognizedText[key] = (rule.sample_text || '').trim()
-    if (form.kind === 'RULE' && form.customer_code && rule.mode === 'AUTO' && !rule.frozen) identifyNumberRule(key)
+    if (form.kind === 'RULE' && form.customer_code && rule.mode === 'AUTO' && !rule.frozen && !rule.reset) identifyNumberRule(key)
   }
   form.reason = suggestedReason.value
   editing.value = true
@@ -137,6 +147,7 @@ async function save() {
     if (form.kind === 'RULE' && form.customer_code) for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
       const rule = form.data[key]
       if (rule.mode === 'OFF') continue
+      if (recognitionErrors[key]) throw new Error('请先处理各编号下的识别提示，或重置对应格式')
       if ((rule.sample_text || '').trim() !== recognizedText[key]) throw new Error('样例已修改，请点击识别格式，或手动修改下方格式后再保存')
       const templates = [...new Set(templateText[key].split('\n').map(t => t.trim()).filter(Boolean))]
       if (templates.length > 20) throw new Error('每项最多保存 20 种格式')
@@ -261,6 +272,9 @@ async function saveWarehouse() {
                 <div class="flex items-center justify-between gap-2 border-b bg-slate-50 px-3 py-2"><b>{{ key === 'customer_po_rule' ? '客户 PO 格式（选填）' : key === 'contract_rule' ? '合同号格式' : '货号格式' }}</b>
                   <select v-model="form.data[key].mode" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式检查方式`" class="h-8 max-w-[65%] rounded border bg-white px-2"><option value="AUTO">样例识别 · 软提醒</option><option value="OFF">不检查</option><option value="WARN">手动规则 · 软提醒</option><option value="BLOCK">手动规则 · 强制检查</option></select>
                 </div>
+                <div class="px-3 pt-2"><button type="button" :disabled="busy" :aria-label="`重置${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式`" class="text-xs font-semibold text-red-600 disabled:opacity-40" @click="resetNumberRule(key)">重置格式</button></div>
+                <p v-if="recognitionErrors[key]" role="alert" class="px-3 pt-2 text-xs text-red-600">{{ key === 'customer_po_rule' ? '客户 PO' : key === 'contract_rule' ? '合同号' : '货号' }}识别失败：{{ recognitionErrors[key] }}</p>
+                <p v-if="recognitionHints[key]" class="px-3 pt-2 text-xs text-amber-700">{{ recognitionHints[key] }}</p>
                 <div v-if="form.data[key].mode !== 'OFF'" class="p-3">
                   <div class="max-h-24 overflow-y-auto break-words leading-5" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}当前格式`">
                     <template v-if="templateText[key]"><div v-for="(format, index) in templateText[key].split('\n').filter(Boolean)" :key="index" class="mb-1 last:mb-0"><p class="font-semibold text-teal-800">{{ describeNumberTemplate(format) }}</p><p class="font-mono text-[11px] text-slate-500">{{ format }}</p></div></template>
