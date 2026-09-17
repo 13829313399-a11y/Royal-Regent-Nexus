@@ -342,7 +342,7 @@ export const departments: Department[] = [
     id: 'qc',
     name: 'QC 部',
     shortName: 'QC',
-    focus: '验货排期、执行、问题闭环、汇总报表与报告文件治理',
+    focus: '验货总排期、临时加单、验货执行、问题处理与汇总报表',
   },
   {
     id: 'sales-business',
@@ -569,28 +569,29 @@ export const moduleHealth: ModuleHealth[] = [
  */
 export const qcInspectionOperationsModule: EnterpriseModule = {
   id: 'inspection-operations',
-  title: 'QC 验货运营中心',
+  title: 'QC 验货工作台',
   owner: 'QC 部 / 业务部协同',
-  summary: '从生产排期导入、验货执行到问题闭环、报表和报告文件治理的一站式工作台',
+  summary: '按客户管理总排期，批量导入未走货订单，跟进验货与问题处理',
   status: '待部署',
   statusTone: 'amber',
   stats: '正式数据以 QC 接口为准',
   icon: CalendarCheck2,
   route: '/modules/qc/inspection-operations',
   statusMetrics: [
-    { label: '入口', value: '5 类', tone: 'teal' },
+    { label: '入口', value: '4 类', tone: 'teal' },
     { label: '范围', value: '本厂', tone: 'blue' },
-    { label: '文件', value: 'PDF/JPG', tone: 'slate' },
+    { label: '导入', value: '批量勾选', tone: 'slate' },
   ],
   todos: [
-    '导入本周生产排期并逐项确认变化',
+    '导入未走货订单并批量勾选确认',
     '完成验货结果和问题单点录入闭环',
-    '预览并生成改名后的报告 ZIP',
+    '按客户筛选排期并生成验货报表',
   ],
   children: [
-    { label: '排期与订单', route: '/modules/qc/inspection-operations' },
+    { label: '验货总排期', route: '/modules/qc/inspection-operations' },
+    { label: '排期明细', route: '/modules/qc/inspection-operations/schedule-details' },
     { label: '问题闭环', route: '/modules/qc/inspection-operations/problems' },
-    { label: '报表与文件', route: '/modules/qc/inspection-operations/reports' },
+    { label: '报表中心', route: '/modules/qc/inspection-operations/reports' },
   ],
 }
 
@@ -1163,7 +1164,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
   qc: {
     departmentId: 'qc',
     heroTitle: 'QC 验货运营中心',
-    heroSubtitle: '把排期确认、验货执行、问题闭环、汇总报表和报告文件治理集中在同一条业务链路',
+    heroSubtitle: '按客户安排总排期，批量导入未走货订单，跟进验货结果、问题处理与汇总报表',
     panelTitle: 'QC 部模块',
     panelSubtitle: '独立于 QA 来料与成品检验，所有正式数据按厂区和 QC 权限读取',
     modules: [qcInspectionOperationsModule, qcCartonMarkVerificationModule],
