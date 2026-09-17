@@ -109,6 +109,7 @@ class ThreeDProductionRecordUpdate(ThreeDProductionRecordInput):
 
 
 class ThreeDProductionRecordOut(BaseModel):
+    record_image_url: str = ""
     run_status: str = "unknown"
     reconciliation_status: str = "none"
     source_system: str

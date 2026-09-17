@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const { api, auth } = vi.hoisted(() => ({
   api: {
     collection: vi.fn(), dashboard: vi.fn(), audit: vi.fn(), deletedRecords: vi.fn(), restoreRecord: vi.fn(),
-    createRecord: vi.fn(), updateRecord: vi.fn(), deleteRecord: vi.fn(), setDayOff: vi.fn(),
+    createRecord: vi.fn(), updateRecord: vi.fn(), uploadRecordImage: vi.fn(), deleteRecord: vi.fn(), setDayOff: vi.fn(),
     createProduct: vi.fn(), updateProduct: vi.fn(), uploadProductImage: vi.fn(),
   },
   auth: { can: vi.fn(() => true) },
@@ -59,6 +59,139 @@ afterEach(() => {
 })
 
 describe('3D history and ledger operations', () => {
+  it('keeps the record editor and draft after cancelling the native file picker', async () => {
+    wrapper = mount(View)
+    await flushPromises()
+    await button('每日记录').trigger('click')
+    await flushPromises()
+    await button('编辑').trigger('click')
+    const name = wrapper.get('input[placeholder="输入本次打印的产品"]')
+    await name.setValue('尚未保存的现场说明')
+    await wrapper.get('input[type="file"]').trigger('cancel', { bubbles: true })
+    expect(wrapper.find('dialog').exists()).toBe(true)
+    expect((name.element as HTMLInputElement).value).toBe('尚未保存的现场说明')
+    expect(api.updateRecord).not.toHaveBeenCalled()
+    // Escape on the dialog itself must still close it normally.
+    await wrapper.get('dialog').trigger('cancel')
+    expect(wrapper.find('dialog').exists()).toBe(false)
+  })
+
+  it('opens and zooms the photo without choosing a file or closing the record underneath', async () => {
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = vi.fn(() => 'blob:large-preview')
+      static revokeObjectURL = vi.fn()
+    })
+    wrapper = mount(View, { attachTo: document.body })
+    await flushPromises()
+    await button('每日记录').trigger('click')
+    await flushPromises()
+    await button('编辑').trigger('click')
+    const file = new File(['photo'], 'detail.png', { type: 'image/png' })
+    await wrapper.get('dialog').trigger('paste', { clipboardData: { items: [{ kind: 'file', type: file.type, getAsFile: () => file }] } })
+    const chooseFile = vi.spyOn(wrapper.get('input[type="file"]').element as HTMLInputElement, 'click')
+    await wrapper.get('[aria-label="放大查看记录图片"]').trigger('click')
+    const viewer = document.querySelector('.record-image-viewer')!
+    expect(viewer.querySelector('img')?.getAttribute('src')).toBe('blob:large-preview')
+    expect(chooseFile).not.toHaveBeenCalled()
+    const controls = Array.from(viewer.querySelectorAll('button'))
+    controls.find(item => item.textContent === '放大')!.click()
+    await flushPromises()
+    expect(viewer.querySelector('output')?.textContent).toBe('150%')
+    expect((viewer.querySelector('.image-viewer-size') as HTMLElement).style.width).toBe('150%')
+    controls.find(item => item.textContent === '适应窗口')!.click()
+    await flushPromises()
+    expect(viewer.querySelector('output')?.textContent).toBe('100%')
+    viewer.dispatchEvent(new Event('cancel', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(document.querySelector('.record-image-viewer')).toBeNull()
+    expect(wrapper.find('dialog').exists()).toBe(true)
+    expect(wrapper.get('img[alt="记录图片预览"]').attributes('src')).toBe('blob:large-preview')
+    await button('更换图片').trigger('click')
+    expect(chooseFile).toHaveBeenCalledTimes(1)
+    expect(api.uploadRecordImage).not.toHaveBeenCalled()
+  })
+
+  it('pastes a record photo and retries a failed upload without creating a duplicate record', async () => {
+    const revoke = vi.fn()
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = vi.fn(() => 'blob:record-preview')
+      static revokeObjectURL = revoke
+    })
+    api.createRecord.mockResolvedValue({ ...record, id: 'new-record', revision: 1 })
+    api.updateRecord.mockResolvedValue({ ...record, id: 'new-record', revision: 3 })
+    api.uploadRecordImage.mockRejectedValueOnce(new Error('图片网络中断')).mockResolvedValue({ ...record, id: 'new-record', revision: 2, record_image_url: '/photo.jpg' })
+    wrapper = mount(View)
+    await flushPromises()
+    await button('每日记录').trigger('click')
+    await flushPromises()
+    await button('+ 添加记录').trigger('click')
+    const file = new File(['photo'], '现场.png', { type: 'image/png' })
+    await wrapper.get('dialog').trigger('paste', { clipboardData: { items: [{ kind: 'file', type: file.type, getAsFile: () => file }] } })
+    expect(wrapper.get('img[alt="记录图片预览"]').attributes('src')).toBe('blob:record-preview')
+    expect(api.uploadRecordImage).not.toHaveBeenCalled()
+    await wrapper.get('form.record-editor').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('记录已保存，图片上传失败')
+    expect(wrapper.find('dialog').exists()).toBe(true)
+    await wrapper.get('form.record-editor').trigger('submit')
+    await flushPromises()
+    expect(api.createRecord).toHaveBeenCalledTimes(1)
+    expect(api.updateRecord).toHaveBeenCalledWith('new-record', expect.objectContaining({ revision: 2 }))
+    expect(api.uploadRecordImage).toHaveBeenLastCalledWith('new-record', 1, file, expect.any(String))
+    expect(api.uploadRecordImage.mock.calls[0]).toEqual(api.uploadRecordImage.mock.calls[1])
+    expect(api.uploadRecordImage.mock.invocationCallOrder[1]).toBeLessThan(api.updateRecord.mock.invocationCallOrder[0]!)
+    expect(wrapper.find('dialog').exists()).toBe(false)
+    expect(revoke).toHaveBeenCalledWith('blob:record-preview')
+  })
+
+  it('does not overwrite another editor after replaying an uncertain image upload', async () => {
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = vi.fn(() => 'blob:retry-conflict')
+      static revokeObjectURL = vi.fn()
+    })
+    api.createRecord.mockResolvedValue({ ...record, id: 'new-record', revision: 1 })
+    api.uploadRecordImage.mockRejectedValueOnce(new Error('response lost')).mockResolvedValue({ ...record, id: 'new-record', revision: 3 })
+    wrapper = mount(View)
+    await flushPromises()
+    await button('每日记录').trigger('click')
+    await flushPromises()
+    await button('+ 添加记录').trigger('click')
+    const file = new File(['photo'], 'x.png', { type: 'image/png' })
+    await wrapper.get('dialog').trigger('paste', { clipboardData: { items: [{ kind: 'file', type: file.type, getAsFile: () => file }] } })
+    await wrapper.get('form.record-editor').trigger('submit')
+    await flushPromises()
+    await wrapper.get('form.record-editor').trigger('submit')
+    await flushPromises()
+    expect(api.updateRecord).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('记录已被其他人修改')
+    expect(wrapper.find('dialog').exists()).toBe(true)
+  })
+
+  it('cancels a pasted record photo and preserves ordinary text paste', async () => {
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = vi.fn(() => 'blob:record-cancel')
+      static revokeObjectURL = vi.fn()
+    })
+    wrapper = mount(View)
+    await flushPromises()
+    await button('每日记录').trigger('click')
+    await flushPromises()
+    await button('编辑').trigger('click')
+    const zone = wrapper.get('[aria-label="记录图片粘贴区"]')
+    const event = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', { value: { items: [{ kind: 'string', type: 'text/plain' }] } })
+    zone.element.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    const file = new File(['photo'], 'x.png', { type: 'image/png' })
+    await zone.trigger('paste', { clipboardData: { items: [{ kind: 'file', type: file.type, getAsFile: () => file }] } })
+    await button('取消本次图片').trigger('click')
+    expect(wrapper.find('img[alt="记录图片预览"]').exists()).toBe(false)
+    await button('取消').trigger('click')
+    await button('编辑').trigger('click')
+    expect(wrapper.find('img[alt="记录图片预览"]').exists()).toBe(false)
+    expect(api.uploadRecordImage).not.toHaveBeenCalled()
+  })
+
   it('pastes a product image, previews it and uploads the same file when saving', async () => {
     const revoke = vi.fn()
     vi.stubGlobal('URL', class extends URL {
@@ -269,13 +402,13 @@ describe('3D history and ledger operations', () => {
     vi.stubGlobal('crypto', {
       getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto),
     })
-    api.createRecord.mockRejectedValueOnce(new Error('网络中断')).mockResolvedValue({})
+    api.createRecord.mockRejectedValueOnce(new Error('网络中断')).mockResolvedValue({ ...record })
     wrapper = mount(View)
     await flushPromises()
     await button('每日记录').trigger('click')
     await flushPromises()
     await button('+ 添加记录').trigger('click')
-    const form = wrapper.get('form.panel-card')
+    const form = wrapper.get('form.record-editor')
     await form.trigger('submit')
     await flushPromises()
     expect(wrapper.text()).toContain('网络中断')
@@ -285,7 +418,7 @@ describe('3D history and ledger operations', () => {
     expect(firstKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(api.createRecord.mock.calls[1]![0].idempotency_key).toBe(firstKey)
     await button('+ 添加记录').trigger('click')
-    await wrapper.get('form.panel-card').trigger('submit')
+    await wrapper.get('form.record-editor').trigger('submit')
     await flushPromises()
     expect(api.createRecord.mock.calls[2]![0].idempotency_key).not.toBe(firstKey)
   })

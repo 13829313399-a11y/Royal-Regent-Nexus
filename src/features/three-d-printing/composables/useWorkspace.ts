@@ -154,6 +154,10 @@ export function useWorkspace() {
   }
 
   const recordCostSnapshot = ref<Record<string, unknown> | undefined>();
+  const pendingRecordImage = ref<File | null>(null);
+  const recordImageUrl = ref("");
+  const recordProductImageUrl = ref("");
+  const recordImageRetry = ref<{ id: string; revision: number; file: File; key: string } | null>(null);
   const recordForm = reactive({
     reason: "",
     allow_negative_stock: false,
@@ -435,7 +439,11 @@ export function useWorkspace() {
       dashboard.value?.products.find(
         (item) => item.id === recordForm.product_id,
       );
-    if (!product) return;
+    if (!product) {
+      recordProductImageUrl.value = "";
+      return;
+    }
+    recordProductImageUrl.value = product.image_url || "";
     recordForm.product_name = product.name;
     recordForm.material_name = product.material_name;
     recordForm.weight_g = product.weight_g;
@@ -446,6 +454,10 @@ export function useWorkspace() {
   }
 
   function resetRecordForm() {
+    recordImageRetry.value = null;
+    pendingRecordImage.value = null;
+    recordImageUrl.value = "";
+    recordProductImageUrl.value = "";
     recordCostSnapshot.value = undefined;
     recordRequestKey.value = createRandomUuid();
     Object.assign(recordForm, {
@@ -471,6 +483,10 @@ export function useWorkspace() {
   }
 
   function editRecord(record: ThreeDProductionRecord) {
+    recordImageRetry.value = null;
+    pendingRecordImage.value = null;
+    recordImageUrl.value = record.record_image_url || "";
+    recordProductImageUrl.value = record.product_image_url || "";
     recordCostSnapshot.value = record.calculated_cost_snapshot || {};
     Object.assign(recordForm, record, {
       reason: "",
@@ -482,6 +498,9 @@ export function useWorkspace() {
   }
 
   async function submitRecord() {
+    if (saving.value) return false;
+    saving.value = true;
+    errorMessage.value = "";
     const payload = {
       factory_id: FACTORY_ID,
       idempotency_key: recordRequestKey.value,
@@ -502,18 +521,52 @@ export function useWorkspace() {
       customer: recordForm.customer,
       remark: recordForm.remark,
     };
-    const ok = await mutate(
-      () =>
-        recordForm.id
+    let recordSaved = false;
+    try {
+      // Resolve an uncertain image response with its original key before another record edit.
+      if (recordImageRetry.value) {
+        recordSaved = true;
+        await uploadPendingRecordImage();
+        recordSaved = false;
+      }
+      const record = await (recordForm.id
           ? threeDPrintingApi.updateRecord(recordForm.id, {
               ...payload,
               revision: recordForm.revision,
             })
-          : threeDPrintingApi.createRecord(payload),
-      "记录已保存，请核对记录中的扣料状态",
-    );
-    if (ok) resetRecordForm();
-    return ok;
+          : threeDPrintingApi.createRecord(payload));
+      recordSaved = true;
+      // Persist the returned identity before uploading so retry cannot create another record.
+      recordForm.id = record.id;
+      recordForm.revision = record.revision;
+      recordCostSnapshot.value = record.calculated_cost_snapshot;
+      recordRequestKey.value = createRandomUuid();
+      if (pendingRecordImage.value) {
+        recordImageRetry.value = { id: record.id, revision: record.revision, file: pendingRecordImage.value, key: createRandomUuid() };
+        await uploadPendingRecordImage();
+      }
+      await loadDashboard(true);
+      showSuccess("记录已保存，请核对记录中的扣料状态");
+      resetRecordForm();
+      return true;
+    } catch (error) {
+      errorMessage.value = (recordSaved ? "记录已保存，" + (pendingRecordImage.value ? "图片上传失败，可重新保存重试：" : "列表刷新失败：") : "") + getApiErrorMessage(error);
+      return false;
+    } finally {
+      saving.value = false;
+    }
+  }
+
+  async function uploadPendingRecordImage() {
+    const request = recordImageRetry.value!;
+    const updated = await threeDPrintingApi.uploadRecordImage(request.id, request.revision, request.file, request.key);
+    if (updated.revision !== request.revision + 1) {
+      throw new Error("记录已被其他人修改，请关闭窗口并重新打开，避免覆盖他人的修改。");
+    }
+    recordForm.revision = updated.revision;
+    recordImageUrl.value = updated.record_image_url || "";
+    pendingRecordImage.value = null;
+    recordImageRetry.value = null;
   }
 
   async function removeRecord(record: ThreeDProductionRecord) {
@@ -990,6 +1043,10 @@ export function useWorkspace() {
     canReadAudit,
     recordForm,
     recordCostSnapshot,
+    pendingRecordImage,
+    recordImageUrl,
+    recordProductImageUrl,
+    recordImageRetry,
     productForm,
     pendingProductImage,
     imageInputKey,

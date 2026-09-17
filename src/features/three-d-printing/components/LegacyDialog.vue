@@ -10,7 +10,7 @@ onBeforeUnmount(() => dialog.value?.close());
   <dialog
     ref="dialog"
     class="legacy-dialog three-d-workspace"
-    @cancel.prevent="emit('close')"
+    @cancel.self.prevent.stop="emit('close')"
     @click="$event.target === dialog && emit('close')"
   >
     <header>

@@ -68,6 +68,7 @@ export interface ThreeDPrinter {
 }
 
 export interface ThreeDProductionRecord {
+  record_image_url?: string
   product_image_url?: string
   run_status?: string
   reconciliation_status?: string

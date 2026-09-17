@@ -111,6 +111,45 @@ describe("Legacy quote contract", () => {
     expect(w.emitted("update:modelValue")?.at(-1)).toEqual([9.26]);
     w.unmount();
   });
+  it("can re-quote the reported 6g / 0.24h record using current prices without inventing historical rates", async () => {
+    const historical = { ...snapshot, material_price_kg: null, inputs: { material: "" } };
+    const before = JSON.stringify(historical);
+    const values = { ...input, weight: 6, hours: 0.24 };
+    const w = mount(QuoteEditor, { props: { modelValue: 0, existing: true, input: values, settings, materials, snapshot: historical } });
+    expect(w.text()).toContain("21.00 元/kg");
+    expect(w.text()).toContain("¥0.81");
+    expect(w.get("button").text()).toBe("按当前价格重新报价");
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+    await w.setProps({ input: { ...values } });
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+    await w.get("button").trigger("click");
+    expect(w.emitted("update:modelValue")?.at(-1)).toEqual([0.81]);
+    await w.setProps({ input: { ...values, weight: 12 } });
+    expect(w.emitted("update:modelValue")?.at(-1)).toEqual([1.03]);
+    expect(JSON.stringify(historical)).toBe(before);
+    expect(calculateQuote(values, settings, materials, historical)).toBeNull();
+    w.unmount();
+  });
+  it("quotes a changed material using its registered price and keeps manual overrides", async () => {
+    const currentMaterials = [...materials, { name: "PLA", price_per_kg: 30 } as ThreeDMaterial];
+    const w = mount(QuoteEditor, { props: { modelValue: 5.38, existing: true, input, settings, materials: currentMaterials, snapshot } });
+    await w.setProps({ input: { ...input, material: "PLA" } });
+    expect(w.text()).toContain("30.00 元/kg");
+    expect(w.emitted("update:modelValue")?.at(-1)).toEqual([6.21]);
+    await w.get("input").setValue("9");
+    const count = w.emitted("update:modelValue")!.length;
+    await w.setProps({ input: { ...input, material: "PLA", weight: 100 } });
+    expect(w.emitted("update:modelValue")).toHaveLength(count);
+    w.unmount();
+  });
+  it("identifies an unregistered material instead of substituting a zero rate", async () => {
+    const w = mount(QuoteEditor, { props: { modelValue: 8, existing: true, input, settings, materials: [], snapshot: {} } });
+    expect(w.text()).toContain("材料管理中未找到“PETG 灰色”的单价");
+    expect(w.get("button").attributes("disabled")).toBeDefined();
+    await w.setProps({ input: { ...input, weight: 6 } });
+    expect(w.emitted("update:modelValue")).toBeUndefined();
+    w.unmount();
+  });
 });
 
 describe("Readable printer observations", () => {
