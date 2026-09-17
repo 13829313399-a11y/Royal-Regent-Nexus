@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     three_d_connector_verified_machines: list[int] = []
     three_d_command_ttl_seconds: int = 120
     three_d_command_poll_interval_seconds: int = 3
+    three_d_reconciliation_sweep_seconds: int = 60
+    three_d_reconciliation_terminal_grace_seconds: int = 120
+    three_d_reconciliation_stale_open_seconds: int = 12 * 3600
+    three_d_reconciliation_same_file_window_seconds: int = 600
     customer_order_test_duplicate_confirmation_enabled: bool | None = None
     document_translation_model_dir: str = str(
         BACKEND_DIR / "models" / "document-translation"

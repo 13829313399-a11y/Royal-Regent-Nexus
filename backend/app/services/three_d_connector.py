@@ -413,6 +413,7 @@ def start_session(db, payload):
             "sequence": 0,
             "device_job_key": "",
             "observed_at": None,
+            "state_since": None,
         },
     )
     printer.connected, printer.state = False, "STALE"
@@ -498,6 +499,9 @@ def store_event(db, payload):
         "device_job_key", ""
     ):
         meta["control_epoch"] = meta.get("control_epoch", 0) + 1
+        # When this state or job began, so a later sweep can require a quiet
+        # window before it concludes that an open run really ended.
+        meta["state_since"] = stamp(payload.observed_at) if payload.observed_at else ""
     printer.connected, printer.state = connected, effective_state
     for key in (
         "current_file",
@@ -526,10 +530,14 @@ def store_event(db, payload):
     save_metadata(printer, meta)
     printer.revision += 1
     printer.updated_at = stamp(now)
-    from app.services.three_d_run_reconciliation import reconcile_event
+    from app.services.three_d_run_reconciliation import (
+        apply_telemetry_backfill,
+        reconcile_event,
+    )
 
     if row.connection_owner != OBSERVER:
         reconcile_event(db, printer, payload, instance.id, now, connected=connected)
+        apply_telemetry_backfill(db, printer, payload, instance.id, now)
     notify(db, "printer_state", event.id)
     return {"event_id": event.id, "accepted": True, "duplicate": False}
 
