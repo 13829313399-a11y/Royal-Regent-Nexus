@@ -428,6 +428,7 @@ ALLOWED_DEPARTMENTS = {
     "sewing",
     "hair",
     "slush",
+    "three-d-printing",
 }
 
 

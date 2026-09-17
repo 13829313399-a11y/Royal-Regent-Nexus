@@ -1973,7 +1973,9 @@ def printer_out(record: ThreeDPrintingPrinter, *, network_stale: bool = False) -
     telemetry = json.loads(record.status_payload_json or "{}").get("connector", {})
     last_seen = parse_business_timestamp(record.last_seen_at)
     age = (business_now() - last_seen).total_seconds() if last_seen else None
-    stale = network_stale or age is None or age > 30 or age < -5
+    # Site diagnostics still gate control, but cannot invalidate fresh,
+    # authenticated read-only telemetry from an individual printer.
+    stale = (network_stale and not telemetry.get("observation_only")) or age is None or age > 30 or age < -5
     return {
         "id": record.id,
         "factory_id": record.factory_id,
