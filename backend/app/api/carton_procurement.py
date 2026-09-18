@@ -34,6 +34,8 @@ from app.schemas.carton_procurement import (
     CartonReplenishmentCreate,
     CartonReplenishmentOut,
     CartonImportBatchOut,
+    CartonImportBatchUndoRequest,
+    CartonHistoryOrderBulkDeleteRequest,
     CartonImportBatchListOut,
     CartonHistoryOrderImportOut,
     CartonHistoryInventoryImportOut,
@@ -162,6 +164,18 @@ def _ensure_permission(
         return factory_id
     ensure_permission_in_scope(db, user, permission, factory_id, CARTON_DEPARTMENTS[0])
     return factory_id
+
+
+def _ensure_order_adjustment_permission(db: Session, user: AuthContext, factory_id: str) -> None:
+    factory_id = require_carton_factory(factory_id)
+    if any(
+        has_permission_in_scope(user, "carton_procurement:order_adjust", factory_id, department)
+        for department in CARTON_DEPARTMENTS
+    ):
+        return
+    # Warehouse order adjustments do not grant supervisor-only stocktake/closing rights.
+    for permission in ("order_write", "inventory_write"):
+        _ensure_permission(db, user, f"carton_procurement:{permission}", factory_id)
 
 
 @router.get("/customers", response_model=CartonCustomerListOut)
@@ -329,7 +343,7 @@ def post_order_append(
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
     order = get_order_by_no(db, require_carton_factory(payload.factory_id), order_no)
     if order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
-        _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
+        _ensure_order_adjustment_permission(db, current_user, payload.factory_id)
     return order_out(db, append_order(db, order_no, payload, current_user))
 
 
@@ -353,8 +367,19 @@ def post_order_reduce(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
+    _ensure_order_adjustment_permission(db, current_user, payload.factory_id)
     return order_out(db, reduce_order(db, order_no, payload, current_user))
+
+
+@router.post("/orders/bulk-delete-history", status_code=204)
+def post_orders_bulk_delete_history(
+    payload: CartonHistoryOrderBulkDeleteRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_procurement import bulk_delete_history_orders
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    bulk_delete_history_orders(db, payload, current_user)
 
 
 @router.post("/orders/{order_no}/delete-history", status_code=204)
@@ -721,6 +746,18 @@ def get_imports(
         offset=offset,
         items=items,
     )
+
+
+@router.post("/imports/{batch_id}/undo", response_model=CartonImportBatchOut)
+def post_import_undo(
+    batch_id: str,
+    payload: CartonImportBatchUndoRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_procurement import undo_schedule_import
+    _ensure_permission(db, current_user, "carton_procurement:import", payload.factory_id)
+    return undo_schedule_import(db, batch_id, payload, current_user)
 
 
 @router.get("/imports/{batch_id}", response_model=CartonImportBatchOut)
@@ -1145,7 +1182,32 @@ def post_carton_transfer(payload: PositionTransfer, db: Session = Depends(get_db
 
 
 from app.services import carton_master as master_service
-from app.schemas.carton_master import MasterSave, LocationUpdate, WarehouseCreate, WarehouseRename, WarehouseDelete
+from app.schemas.carton_master import MasterSave, MasterImportResult, LocationUpdate, WarehouseCreate, WarehouseRename, WarehouseDelete
+from app.services import carton_master_import as master_import_service
+
+
+@router.get("/master-data/import/{kind}/template")
+def get_master_import_template(kind: Literal["paper-options", "configurations", "locations"], factory_id: str,
+                               db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    master_service.require_manage(db, current_user, factory_id)
+    filename = {"paper-options": "纸品选项导入模板.xlsx", "configurations": "货号与包装导入模板.xlsx", "locations": "仓库仓位导入模板.xlsx"}[kind]
+    return StreamingResponse(BytesIO(master_import_service.template(kind)),
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f"attachment; filename=master-template.xlsx; filename*=UTF-8''{url_quote(filename)}"})
+
+
+@router.post("/master-data/import/{kind}/{action}", response_model=MasterImportResult)
+async def post_master_import(kind: Literal["paper-options", "configurations", "locations"], action: Literal["preview", "apply"],
+                             factory_id: str = Form(...), file: UploadFile = File(...), preview_token: str = Form(""),
+                             db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    master_service.require_manage(db, current_user, factory_id)
+    content = await file.read(master_import_service.MAX_BYTES + 1)
+    if action == "apply" and not preview_token:
+        raise HTTPException(422, "请先预览并确认导入")
+    return master_import_service.run(db, current_user, factory_id, kind, content, file.filename or "",
+                                     expected=preview_token if action == "apply" else None)
 
 @router.get("/master-data")
 def get_master_data(factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):

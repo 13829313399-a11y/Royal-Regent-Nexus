@@ -4,6 +4,7 @@ from test_carton_transaction_guards_api import BASE
 
 
 def test_paper_options_are_privileged_revisioned_and_preserve_existing_orders(monkeypatch):
+    monkeypatch.setenv('AUTHZ_MODE', 'enforce')
     with make_client(monkeypatch) as client:
         prepare(client)
         old = create(client)
@@ -19,7 +20,19 @@ def test_paper_options_are_privileged_revisioned_and_preserve_existing_orders(mo
         saved = response.json()
         assert saved['data']['paper_types'] == ['底卡']
         assert saved['data']['lead_days'] == 7
-        login_as(client, 'warehouse_keeper')
+        profile = login_as(client, 'warehouse_keeper')
+        # Warehouse roles now own master maintenance; an explicit scoped deny
+        # supplies the read-only case without weakening the current role contract.
+        assert read(client)['can_manage']
+        from app.db import SessionLocal
+        from app.models.auth import AuthPermission, AuthUserPermissionOverride
+        from sqlalchemy import select
+        with SessionLocal() as db:
+            permission = db.scalar(select(AuthPermission).where(AuthPermission.code == 'carton_procurement:master_manage'))
+            db.add(AuthUserPermissionOverride(id='paper-options-master-deny', user_id=profile['id'],
+                permission_id=permission.id, effect='deny', factory_id='huaxing', department='*'))
+            db.commit()
+        assert not read(client)['can_manage']
         assert client.patch(BASE + '/master-data/' + saved['id'], json=payload(saved)).status_code == 403
         assert client.get(BASE + '/master-data', params={'factory_id': 'huadeng'}).status_code == 403
         login_as(client, 'admin')

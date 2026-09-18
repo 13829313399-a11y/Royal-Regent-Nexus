@@ -50,6 +50,8 @@ from app.schemas.carton_procurement import (
     CartonExceptionOut,
     CartonExceptionUpdate,
     CartonImportBatchOut,
+    CartonImportBatchUndoRequest,
+    CartonHistoryOrderBulkDeleteRequest,
     CartonInventoryBalanceOut,
     CartonInventoryBulkCreate,
     CartonInventoryFlowSummaryOut,
@@ -998,24 +1000,59 @@ def can_delete_history_order(db: Session, order: CartonOrder) -> bool:
 
 
 def delete_history_order(db: Session, order_no: str, payload: CartonOrderCancelRequest, user: AuthContext) -> None:
-    factory_id = require_carton_factory(payload.factory_id)
-    _lock_receipt_factory(db, factory_id)
-    order = get_order_by_no(db, factory_id, order_no)
-    if order.revision != payload.expected_revision:
-        raise HTTPException(409, "订单已更新，请刷新后重试")
-    if not can_delete_history_order(db, order):
-        raise HTTPException(409, "仅无收料或库存记录的历史导入订单可以删除；入库后即使冲销也不能删除")
+    if len(payload.reason.strip()) < 4:
+        raise HTTPException(422, "删除原因至少需要四个字符")
+    bulk_delete_history_orders(db, CartonHistoryOrderBulkDeleteRequest(
+        factory_id=payload.factory_id, reason=payload.reason,
+        items=[{"order_no": order_no, "expected_revision": payload.expected_revision}],
+    ), user)
+
+
+def _delete_history_order(db: Session, order: CartonOrder, reason: str, user: AuthContext, operation_id: str) -> None:
     snapshot = order_out(db, order).model_dump(mode="json")
+    lines = _order_lines(db, order.id)
+    # Preserve stored lineage fields too (master configuration, factory and parent IDs).
+    snapshot.update({column.name: getattr(order, column.name) for column in order.__table__.columns})
+    public_lines = {line["id"]: line for line in snapshot["lines"]}
+    snapshot["lines"] = [{**public_lines[line.id], **{
+        column.name: getattr(line, column.name) for column in line.__table__.columns
+    }} for line in lines]
     issues = _purchase_order_issues(db, order.id)
-    _audit(db, user, factory_id, "HISTORY_ORDER_DELETED", "carton_order", order.id,
-           {"order_no": order.order_no, "reason": payload.reason, "order": snapshot,
-            "purchase_issues": [{"document_no": issue.document_no, "snapshot": json.loads(issue.snapshot_json)} for issue in issues]})
+    exceptions = list(db.scalars(select(CartonException).where(
+        CartonException.factory_id == order.factory_id,
+        CartonException.source_type == "ORDER",
+        CartonException.source_id == order.id,
+    )).all())
+    _audit(db, user, order.factory_id, "HISTORY_ORDER_DELETED", "carton_order", order.id,
+           {"order_no": order.order_no, "reason": reason, "order": snapshot, "operation_id": operation_id,
+            "exceptions": [CartonExceptionOut.model_validate(item).model_dump(mode="json") for item in exceptions],
+            "purchase_issues": [{**{column.name: getattr(issue, column.name) for column in issue.__table__.columns},
+                                 "snapshot": json.loads(issue.snapshot_json)} for issue in issues]})
+    for exception in exceptions:
+        db.delete(exception)
     for issue in issues:
         db.delete(issue)
-    for line in _order_lines(db, order.id):
+    for line in lines:
         db.delete(line)
     db.flush()
     db.delete(order)
+
+
+def bulk_delete_history_orders(db: Session, payload: CartonHistoryOrderBulkDeleteRequest, user: AuthContext) -> None:
+    factory_id = require_carton_factory(payload.factory_id)
+    _lock_receipt_factory(db, factory_id)
+    orders = []
+    # Validate the entire selection before writing any deletion or audit.
+    for item in payload.items:
+        order = get_order_by_no(db, factory_id, item.order_no)
+        if order.revision != item.expected_revision:
+            raise HTTPException(409, f"订单 {item.order_no} 已更新，请刷新后重试")
+        if not can_delete_history_order(db, order):
+            raise HTTPException(409, f"订单 {item.order_no} 不可删除：仅无收料或库存记录的历史导入订单可以删除；入库后即使冲销也不能删除")
+        orders.append(order)
+    operation_id = f"HDEL-{uuid4().hex}"
+    for order in orders:
+        _delete_history_order(db, order, payload.reason, user, operation_id)
     db.commit()
 
 
@@ -3465,6 +3502,8 @@ def create_import_batch(
         raise HTTPException(status_code=422, detail="导入文件不能为空")
     if len(content) > MAX_IMPORT_BYTES:
         raise HTTPException(status_code=413, detail="导入文件不能超过 20 MB")
+    if import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
+        _lock_receipt_factory(db, factory_id)
     sha256 = hashlib.sha256(content).hexdigest()
     effective_profile = dict(import_profile or {})
     effective_profile["matching_version"] = "customer-po-v1"
@@ -3484,6 +3523,8 @@ def create_import_batch(
         )
     )
     if existing is not None:
+        if existing.status == "REJECTED" and import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
+            raise HTTPException(409, "该文件的导入批次已整批撤销，不能恢复；请更正文件后重新导入")
         return import_batch_out(existing, duplicate=True)
     parse_options = dict(effective_profile)
     parse_options["reference_date"] = business_now().date().isoformat()
@@ -3542,6 +3583,53 @@ def get_import_batch(
     if batch is None or batch.factory_id != require_carton_factory(factory_id):
         raise HTTPException(status_code=404, detail="导入批次不存在")
     return import_batch_out(batch)
+
+
+def undo_schedule_import(db: Session, batch_id: str, payload: CartonImportBatchUndoRequest, user: AuthContext) -> CartonImportBatchOut:
+    factory_id = require_carton_factory(payload.factory_id)
+    _lock_receipt_factory(db, factory_id)
+    batch = db.get(CartonImportBatch, batch_id)
+    if batch is None or batch.factory_id != factory_id:
+        raise HTTPException(404, "导入批次不存在")
+    if batch.import_type not in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
+        raise HTTPException(409, "仅周排期核对和查货提醒可以整批撤销")
+    if batch.status == "REJECTED":
+        raise HTTPException(409, "该导入批次已撤销，不能重复撤销")
+    exceptions = list(db.scalars(select(CartonException).where(
+        CartonException.factory_id == factory_id,
+        CartonException.source_type == batch.import_type,
+        CartonException.source_id == batch.id,
+    )).all())
+    summary = import_batch_out(batch).parse_summary
+    _audit(db, user, factory_id, "SCHEDULE_IMPORT_UNDONE", "carton_import_batch", batch.id, {
+        "batch_id": batch.id, "filename": batch.original_filename, "sha256": batch.source_sha256,
+        "import_type": batch.import_type, "row_count": summary.get("row_count", len(summary.get("rows", []))),
+        "exception_count": len(exceptions), "reason": payload.reason,
+        "batch": import_batch_out(batch).model_dump(mode="json"),
+        "exceptions": [CartonExceptionOut.model_validate(item).model_dump(mode="json") for item in exceptions],
+    })
+    timestamp = now_text()
+    batch.status = "REJECTED"
+    for item in exceptions:
+        item.status = "CLOSED"
+        item.revision += 1
+        item.updated_by = item.resolved_by = user.id
+        item.updated_by_name = item.resolved_by_name = user.display_name
+        item.updated_at = item.resolved_at = timestamp
+        item.resolution_note = f"整批撤销：{payload.reason}"
+    db.commit()
+    db.refresh(batch)
+    return import_batch_out(batch)
+
+
+def _active_import_exception():
+    return ~select(CartonImportBatch.id).where(
+        CartonImportBatch.id == CartonException.source_id,
+        CartonImportBatch.factory_id == CartonException.factory_id,
+        CartonImportBatch.import_type == CartonException.source_type,
+        CartonImportBatch.import_type.in_(("WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE")),
+        CartonImportBatch.status == "REJECTED",
+    ).exists()
 
 
 def delete_unmatched_delivery_import(
@@ -3670,7 +3758,7 @@ def list_exceptions(
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[int, list[CartonException]]:
-    query = select(CartonException).where(CartonException.factory_id == factory_id)
+    query = select(CartonException).where(CartonException.factory_id == factory_id, _active_import_exception())
     if status_filter:
         query = query.where(CartonException.status == status_filter)
     if search:
@@ -3706,6 +3794,10 @@ def update_exception(
     exception = db.get(CartonException, exception_id)
     if exception is None or exception.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="异常记录不存在")
+    if exception.source_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
+        batch = db.get(CartonImportBatch, exception.source_id)
+        if batch is not None and batch.factory_id == factory_id and batch.status == "REJECTED":
+            raise HTTPException(409, "来源导入批次已整批撤销，异常不能继续处理或重新打开")
     if exception.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="异常记录已更新，请刷新后重试")
     if exception.status == "CLOSED" and payload.status != "OPEN":

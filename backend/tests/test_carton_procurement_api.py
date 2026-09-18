@@ -484,7 +484,7 @@ def test_supplier_submission_transition_is_audited_and_required_before_receipt(m
         assert duplicate_submit.status_code == 409
         assert "已经确认并锁定" in duplicate_submit.json()["detail"]
 
-        blocked_append = client.post(
+        allowed_append = client.post(
             f"/api/carton-procurement/orders/{order['order_no']}/append",
             json={
                 "factory_id": "huaxing",
@@ -493,7 +493,8 @@ def test_supplier_submission_transition_is_audited_and_required_before_receipt(m
                 "reason": "提交后尝试追加订单数量",
             },
         )
-        assert blocked_append.status_code == 403
+        assert allowed_append.status_code == 200, allowed_append.text
+        submitted = allowed_append.json()
         blocked_cancel = client.post(
             f"/api/carton-procurement/orders/{order['order_no']}/cancel",
             json={
@@ -638,13 +639,14 @@ def test_supervisor_adjusts_submitted_order_and_protects_pending_receipt_quantit
         _freeze_carton_time(monkeypatch)
         submitted = _create_order(client)
 
+        login_as(client, "qc_inspector")
         denied_append = client.post(
             f"/api/carton-procurement/orders/{submitted['order_no']}/append",
             json={
                 "factory_id": "huaxing",
                 "expected_revision": submitted["revision"],
                 "additional_quantity": "600",
-                "reason": "普通仓管尝试调整已提交订单",
+                "reason": "无订单权限用户尝试调整已提交订单",
             },
         )
         assert denied_append.status_code == 403, denied_append.text
@@ -654,7 +656,7 @@ def test_supervisor_adjusts_submitted_order_and_protects_pending_receipt_quantit
                 "factory_id": "huaxing",
                 "expected_revision": submitted["revision"],
                 "reduction_quantity": "600",
-                "reason": "普通仓管尝试减少已提交订单",
+                "reason": "无订单权限用户尝试减少已提交订单",
             },
         )
         assert denied_reduce.status_code == 403, denied_reduce.text
@@ -774,13 +776,14 @@ def test_supervisor_can_append_and_reduce_unreceived_balance_after_partial_recei
         ).json()["items"][0]
         assert partially_received["status"] == "PARTIALLY_RECEIVED"
 
+        login_as(client, "qc_inspector")
         denied_append = client.post(
             f"/api/carton-procurement/orders/{order['order_no']}/append",
             json={
                 "factory_id": "huaxing",
                 "expected_revision": partially_received["revision"],
                 "additional_quantity": "600",
-                "reason": "普通仓管尝试在入库后追加",
+                "reason": "无订单权限用户尝试在入库后追加",
             },
         )
         assert denied_append.status_code == 403, denied_append.text

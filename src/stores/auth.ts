@@ -314,18 +314,11 @@ export const useAuthStore = defineStore('auth', {
       }
 
       if (this.authzMode !== 'enforce') {
-        const scopedPositionGrants = this.grants.filter((grant) =>
-          grantUsesScopedPositionContract(grant)
-          && grant.permissions.includes(permission),
+        const permissionGrants = this.grants.filter((grant) =>
+          grant.permissions.includes(permission),
         )
-        if (scopedPositionGrants.length) {
-          const regularScopedGrants = this.grants.filter((grant) =>
-            !grantUsesScopedPositionContract(grant)
-            && grant.permissions.includes(permission),
-          )
-          return scopedPositionGrants.some((grant) =>
-            grantAllowsPermission(grant, permission, factoryId, department),
-          ) || regularScopedGrants.some((grant) =>
+        if (permissionGrants.length) {
+          return permissionGrants.some((grant) =>
             grantAllowsPermission(grant, permission, factoryId, department),
           )
         }

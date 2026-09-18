@@ -8,6 +8,8 @@ import { describeNumberTemplate } from '@/lib/cartonNumberPatterns'
 const props = defineProps<{ workspace: MasterWorkspace; customers: CartonCustomerResponse[] }>()
 const emit = defineEmits<{
   paper: [];
+  paperTemplate: []; paperImport: [];
+  locationTemplate: []; locationImport: [];
   rule: [code: string]; edit: [row: MasterRecord]; create: [kind: MasterRecord['kind'], code?: string]
   location: [row?: CartonLocation, warehouse?: string]; warehouse: [name?: string]; customer: [row?: CartonCustomerResponse]; source: [row: MasterRecord]
 }>()
@@ -57,7 +59,7 @@ const modeText = (rule: NumberRule) => rule.mode === 'OFF' ? '' : rule.mode === 
     </article>
 
     <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="纸品选项设置">
-      <div class="flex items-center justify-between gap-3"><div><h3 class="font-bold">纸品选项</h3><p class="mt-1 text-xs text-slate-500">落单时可选或输入相似内容；保存订单后自动积累；可在此添加、修改选项。</p></div><button v-if="workspace.can_manage" type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-xs text-teal-700" @click="emit('paper')">添加 / 修改纸品选项</button></div>
+      <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-bold">纸品选项</h3><p class="mt-1 text-xs text-slate-500">落单时可选或输入相似内容；保存订单后自动积累；可在此添加、修改选项。</p></div><div v-if="workspace.can_manage" class="flex flex-wrap gap-2"><button type="button" class="rounded-lg border px-3 py-2 text-xs" @click="emit('paperTemplate')">下载纸品选项模板</button><button type="button" class="rounded-lg border px-3 py-2 text-xs" @click="emit('paperImport')">导入纸品选项</button><button type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-xs text-teal-700" @click="emit('paper')">添加 / 修改纸品选项</button></div></div>
       <div class="mt-3 grid gap-3 sm:grid-cols-3"><div v-for="field in (['packaging_type', 'paper_quality', 'specification'] as const)" :key="field" class="rounded-lg bg-slate-50 p-3 text-xs"><b>{{ { packaging_type: '纸品类型', paper_quality: '纸质', specification: '规格' }[field] }}</b><p class="mt-2 max-h-24 overflow-auto break-words leading-6 text-slate-600">{{ masterPaperOptions(workspace.records, field, workspace.paper_history).join('、') || '暂无选项，可添加或保存订单后自动积累。' }}</p></div></div>
     </article>
 
@@ -65,7 +67,7 @@ const modeText = (rule: NumberRule) => rule.mode === 'OFF' ? '' : rule.mode === 
       <div class="border-b p-4"><h3 class="font-bold">车间与仓位</h3><p class="mt-1 text-xs text-slate-500">车间用于领用去向；仓位用于存放库存，按所属仓库分别维护。</p></div>
       <div class="space-y-4 p-4 text-xs">
         <div><div class="mb-2 flex items-center justify-between"><b>车间</b><button v-if="workspace.can_manage" type="button" class="rounded-lg border border-teal-200 px-3 py-1.5 text-teal-700" @click="emit('create', 'WORKSHOP')">新增车间</button></div><div class="flex flex-wrap gap-2"><button v-for="r in workshops" :key="r.id" type="button" :disabled="!workspace.can_manage" :aria-label="`修改车间 ${r.code}`" class="rounded-lg border px-3 py-2 disabled:cursor-default" :class="r.status === 'ACTIVE' ? 'border-teal-100 bg-teal-50/50 text-teal-800' : 'border-slate-200 bg-slate-50 text-slate-400'" @click="emit('edit', r)">{{ r.code }}<span class="ml-2 text-[10px]">{{ r.status === 'INACTIVE' ? '已停用' : workspace.can_manage ? '修改' : '' }}</span></button><span v-if="!workshops.length" class="py-2 text-slate-400">尚未设置车间</span></div></div>
-        <div class="border-t pt-4"><div class="mb-3 flex flex-wrap items-center justify-between gap-2"><b>仓库与仓位</b><div class="flex gap-2"><input v-model="placeQuery" aria-label="查找仓库仓位" placeholder="查找仓库 / 仓位" class="h-8 w-44 rounded-lg border px-2"><button v-if="workspace.can_manage" type="button" class="whitespace-nowrap rounded-lg border border-teal-200 px-3 py-1.5 text-teal-700" @click="emit('warehouse')">添加仓库</button></div></div>
+        <div class="border-t pt-4"><div class="mb-3 flex flex-wrap items-center justify-between gap-2"><b>仓库与仓位</b><div class="flex flex-wrap gap-2"><input v-model="placeQuery" aria-label="查找仓库仓位" placeholder="查找仓库 / 仓位" class="h-8 w-44 rounded-lg border px-2"><template v-if="workspace.can_manage"><button type="button" class="whitespace-nowrap rounded-lg border px-3 py-1.5" @click="emit('locationTemplate')">下载仓位模板</button><button type="button" class="whitespace-nowrap rounded-lg border px-3 py-1.5" @click="emit('locationImport')">导入仓库仓位</button><button type="button" class="whitespace-nowrap rounded-lg border border-teal-200 px-3 py-1.5 text-teal-700" @click="emit('warehouse')">添加仓库</button></template></div></div>
           <div v-for="g in warehouseGroups" :key="g.warehouse" class="mb-3 flex flex-wrap items-start gap-3">
             <b class="w-24 shrink-0 break-words py-2">{{ g.warehouse }}</b>
             <div class="flex min-w-0 flex-1 flex-wrap gap-2">

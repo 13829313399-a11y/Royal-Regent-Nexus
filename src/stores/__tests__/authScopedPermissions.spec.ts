@@ -74,16 +74,16 @@ describe('authStore scoped permission decisions', () => {
 
   it('keeps the legacy flat permission plus factory-scope behavior', () => {
     const store = useAuthStore()
-    store.applySession(session())
+    store.applySession(session({ grants: [] }))
 
     expect(store.can('maintenance:update', 'huaxing', 'engineering')).toBe(true)
     expect(store.can('maintenance:update', 'huaxing', 'qa')).toBe(true)
     expect(store.can('maintenance:update', 'huadeng', 'engineering')).toBe(false)
-    expect(store.matchingGrants('maintenance:update', 'huaxing', 'engineering')).toHaveLength(1)
+    expect(store.matchingGrants('maintenance:update', 'huaxing', 'engineering')).toHaveLength(0)
   })
 
   it.each(['legacy', 'shadow'] as const)(
-    'does not mistake an ordinary role with default scope metadata for a system position in %s mode',
+    'keeps ordinary grants within their factory and department in %s mode',
     (authzMode) => {
       const store = useAuthStore()
       store.applySession(session({
@@ -102,8 +102,56 @@ describe('authStore scoped permission decisions', () => {
         }],
       }))
 
-      expect(store.can('maintenance:update', 'huaxing', 'qa')).toBe(true)
+      expect(store.can('maintenance:update', 'huaxing', 'engineering')).toBe(true)
+      expect(store.can('maintenance:update', 'huaxing', 'qa')).toBe(false)
       expect(store.can('maintenance:update', 'huadeng', 'engineering')).toBe(false)
+    },
+  )
+
+  it.each(['legacy', 'shadow'] as const)(
+    'does not expose carton warehouse operations from regular QC grants in %s mode',
+    (authzMode) => {
+      const store = useAuthStore()
+      const permissions = ['carton_procurement:order_write', 'carton_procurement:inventory_write']
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions,
+        grants: [{
+          role_id: 'qc-order-helper',
+          role_code: 'qc-order-helper',
+          role_name: 'QC 订单协助',
+          factory_id: 'huaxing',
+          department: 'qc',
+          permissions,
+          unrestricted_department: false,
+          data_scope: 'department',
+        }],
+      }))
+
+      for (const permission of permissions) {
+        expect(store.can(permission, 'huaxing', 'qc')).toBe(true)
+        expect(store.can(permission, 'huaxing', 'carton')).toBe(false)
+        expect(store.can(permission, 'huaxing', 'pmc-warehouse')).toBe(false)
+      }
+
+      store.applySession(session({
+        authz_mode: authzMode,
+        permissions,
+        grants: [{
+          role_id: 'warehouse-order-helper',
+          role_code: 'warehouse-order-helper',
+          role_name: '仓库订单协助',
+          factory_id: 'huaxing',
+          department: 'pmc-warehouse',
+          permissions,
+          unrestricted_department: false,
+          data_scope: 'department',
+        }],
+      }))
+      for (const permission of permissions) {
+        expect(store.can(permission, 'huaxing', 'pmc-warehouse')).toBe(true)
+        expect(store.can(permission, 'huaxing', 'qc')).toBe(false)
+      }
     },
   )
 
@@ -681,6 +729,7 @@ describe('authStore scoped permission decisions', () => {
     const store = useAuthStore()
     store.applySession(session({
       authz_mode: authzMode,
+      grants: [],
       effective_access: [{
         permission_code: 'maintenance:update',
         factory_id: 'huaxing',
