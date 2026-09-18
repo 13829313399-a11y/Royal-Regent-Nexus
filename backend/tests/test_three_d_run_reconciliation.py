@@ -455,6 +455,101 @@ def test_device_live_material_fills_a_run_whose_product_has_no_material(environm
     assert "material_source_device" in json.loads(filled.data_quality_flags_json)
 
 
+def test_plate_marker_file_name_matches_its_product(environment):
+    """A Bambu plate marker must not stop an otherwise exact product match."""
+    env = environment
+    # Product names never carry the plate marker, matching the real library.
+    seed_product(env, name="2026.09.18 24962 狗笼 测试件")
+    ref = session(env)
+    post(env, "/events", event(env, ref, current_file="2026.09.18 24962 狗笼_plate_2"))
+    record = runs(env)[0]
+    assert record.product_id == "product-0"
+    assert record.product_name == "2026.09.18 24962 狗笼 测试件"
+    assert "product_match_required" not in json.loads(record.data_quality_flags_json)
+    # Material and weight come from the resolved product instead of staying empty.
+    assert record.material_name == "PLA"
+    assert float(record.weight_g) == 10
+
+
+def test_unique_fuzzy_match_is_accepted_while_ambiguity_needs_a_human(environment):
+    env = environment
+    seed_product(env, name="2026.09.18 24962 狗笼 测试件")
+    ref = session(env)
+    # The file name carries a suffix the product name does not have.
+    post(env, "/events", event(env, ref, current_file="2026.09.18 24962 狗笼 测试件 加强版.3mf"))
+    resolved = runs(env)[0]
+    assert resolved.product_id == "product-0"
+    assert "product_match_required" not in json.loads(resolved.data_quality_flags_json)
+    # Two products whose names are both contained in the file name are ambiguous,
+    # because the file alone cannot say which one was printed.
+    with env[1].SessionLocal() as db:
+        db.add(
+            env[2].ThreeDPrintingProduct(
+                id="product-9",
+                factory_id="huakang-a",
+                name="狗笼 测试件",
+                material_name="PLA",
+                weight_g=10,
+                default_quantity=1,
+                is_active=True,
+                created_at="2026-09-04",
+                updated_at="2026-09-04",
+            )
+        )
+        db.commit()
+    other = {"instance_id": ref["instance_id"], "printer_id": env[5][1]}
+    grant = post(env, "/leases/acquire", other)
+    other.update(leader_lease_id=grant["leader_lease_id"], connection_session_id="session-amb")
+    post(env, "/sessions/start", {**other, "generation": 1})
+    post(env, "/events", event(env, other, current_file="2026.09.18 24962 狗笼 测试件 加强版.3mf"))
+    ambiguous = [r for r in runs(env) if r.machine_no == 2][0]
+    assert not ambiguous.product_id
+    assert "product_match_required" in json.loads(ambiguous.data_quality_flags_json)
+
+
+def test_observed_run_links_to_a_hand_entered_record_instead_of_duplicating(environment):
+    """An operator's record for the same machine, day and product is the same run."""
+    env = environment
+    seed_product(env, name="2026.09.18 24962 狗笼 测试件")
+    with env[1].SessionLocal() as db:
+        db.add(
+            env[2].ThreeDPrintingProductionRecord(
+                id="3drec-manual-1",
+                factory_id="huakang-a",
+                business_date=env[4][0].date().isoformat(),
+                machine_no=1,
+                status="running",
+                product_id="product-0",
+                product_name="2026.09.18 24962 狗笼 测试件",
+                material_name="PLA",
+                weight_g=10,
+                quantity=1,
+                duration_hours=0,
+                auto_record=False,
+                source_system="nexus",
+                print_start_at="",
+                print_end_at="",
+                gcode_file="",
+                revision=1,
+                created_at="2026-09-04",
+                updated_at="2026-09-04",
+            )
+        )
+        db.commit()
+    ref = session(env)
+    post(env, "/events", event(env, ref, current_file="2026.09.18 24962 狗笼_plate_2"))
+    records = runs(env)
+    # The observation attaches to the hand-entered record instead of adding an empty one.
+    assert len(records) == 1 and records[0].id == "3drec-manual-1"
+    assert records[0].reconciliation_status == "pending"
+    assert "observed_run_linked_to_existing_record" in json.loads(
+        records[0].data_quality_flags_json
+    )
+    # The manual record keeps its own inventory state; nothing is consumed twice.
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 100
+
+
 def test_live_snapshot_scope_redaction_cursor_and_revoke(environment):
     import asyncio
 

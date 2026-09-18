@@ -162,6 +162,25 @@ def reconcile_event(db, printer, event, actor, now, *, connected):
             else []
         )
         product = candidates[0] if len(candidates) == 1 else None
+        # The legacy server fell back to a contains match after the exact one. Keep that
+        # fallback but only accept a unique candidate, so two similarly named products
+        # still require a human instead of being guessed. This also covers a name that
+        # resolved to nothing before normalization (a plate marker plus a suffix).
+        if product is None and normalized:
+            relaxed = [
+                item
+                for item in db.scalars(
+                    select(m.ThreeDPrintingProduct).where(
+                        m.ThreeDPrintingProduct.factory_id == FACTORY,
+                        m.ThreeDPrintingProduct.is_active.is_(True),
+                    )
+                )
+                if len(item.name or "") >= 3
+                and (normalized in item.name or item.name in normalized)
+            ]
+            if len(relaxed) == 1:
+                product = relaxed[0]
+                candidates = relaxed
         file_version = None
         alias = db.scalar(select(m.ThreeDPrintingOperationsItem).where(
             m.ThreeDPrintingOperationsItem.factory_id == FACTORY,
@@ -229,6 +248,34 @@ def reconcile_event(db, printer, event, actor, now, *, connected):
         )
         db.add(record)
         db.flush()
+        manual = _already_recorded_same_product(db, printer, event, product, observed, record)
+        if manual is not None:
+            # The run is already covered by a hand-entered record for the same machine,
+            # business day and product, so this observation only attaches that identity.
+            flags = _record_flags(manual)
+            flags.add("observed_run_linked_to_existing_record")
+            manual.reconciliation_status = "pending"
+            manual.data_quality_flags_json = encode(sorted(flags))
+            manual.updated_at = stamp(now)
+            manual.revision += 1
+            db.delete(record)
+            audit(
+                db,
+                "production_record",
+                manual.id,
+                "link_observed_run_to_existing_record",
+                {
+                    "event_id": event.event_id,
+                    "device_job_key": key,
+                    "current_file": event.current_file,
+                    "product_id": product.id,
+                    "business_date": manual.business_date,
+                },
+                actor,
+                now,
+            )
+            notify(db, "print_run", manual.id)
+            return
         resumed = _resumable_same_file_record(db, printer, event, now, exclude=record)
         if resumed is not None:
             # Ported from the legacy server's reprint window: the same file on the same
@@ -360,6 +407,62 @@ def _resumable_same_file_record(db, printer, event, now, exclude=None):
             return candidate
         ended = parse_business_timestamp(candidate.print_end_at)
         if ended is not None and (now - ended).total_seconds() <= window:
+            return candidate
+    return None
+
+
+def _same_product(name_a, name_b):
+    """Whether a device file name and a product name denote the same part.
+
+    Both sides lose their plate marker first. A device name is often a truncation of the
+    hand-entered product name, so containment counts as long as the shorter side is still
+    distinctive; short fragments would merge unrelated parts, so they never qualify.
+    """
+    from app.services import three_d_printing as business
+
+    left = business._normalize_gcode_name(name_a or "").casefold()
+    right = business._normalize_gcode_name(name_b or "").casefold()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    return len(shorter) >= 8 and shorter in longer
+
+
+def _already_recorded_same_product(db, printer, event, product, observed, exclude):
+    """A record already covering this machine, business day and product.
+
+    Operators record many prints by hand while observation is not recording. When such
+    a record already exists for the same machine, business day and product, the run is
+    that record rather than a second empty one; only an exact normalized product name
+    qualifies, so a genuinely different part is never merged away.
+    """
+    if product is None or not product.name:
+        return None
+    from app.services.three_d_connector import FACTORY
+
+    business_date = parse_business_timestamp(observed).date().isoformat()
+    candidates = list(
+        db.scalars(
+            select(m.ThreeDPrintingProductionRecord)
+            .where(
+                m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
+                m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                m.ThreeDPrintingProductionRecord.business_date == business_date,
+                m.ThreeDPrintingProductionRecord.print_end_at == "",
+                m.ThreeDPrintingProductionRecord.deleted_at == "",
+                m.ThreeDPrintingProductionRecord.product_id == product.id,
+            )
+            .order_by(m.ThreeDPrintingProductionRecord.created_at.desc())
+        )
+    )
+    for candidate in candidates:
+        if exclude is not None and candidate.id == exclude.id:
+            continue
+        if candidate.device_job_key is None and _same_product(
+            event.current_file, product.name
+        ):
             return candidate
     return None
 

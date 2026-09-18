@@ -1462,6 +1462,13 @@ def _normalize_gcode_name(value: str) -> str:
     name = re.sub(r"^.*[/\\\\]", "", value or "")
     name = re.sub(r"\.gcode\.3mf$", "", name, flags=re.IGNORECASE)
     name = re.sub(r"\.(3mf|gcode)$", "", name, flags=re.IGNORECASE)
+    # Bambu appends its plate marker to the exported file name. Product names in the
+    # library are the bare name (no library row carries one), so the marker is removed
+    # before matching instead of preventing a match that a legacy exact-name flow made.
+    name = re.sub(r"_plate_\d+$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"_plate$", "", name, flags=re.IGNORECASE)
+    # A doubled marker leaves one separator behind (name__plate_2 -> name_).
+    name = re.sub(r"[_\-\s]+$", "", name)
     return re.sub(r"_\d+$", "", name).strip()
 
 
