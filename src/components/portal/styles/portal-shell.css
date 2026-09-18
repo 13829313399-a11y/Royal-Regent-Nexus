@@ -1,0 +1,137 @@
+/**
+ * 门户导航外观 — Jade Atlas（jade-v3）
+ *
+ * 只在普通应用壳路由（驾驶舱 / 部门首页 / 工作台 / 成员目录 / 公共工具栏）内生效：
+ * `AppShell` 会按白名单给 `.app-shell` 加上 `data-portal-shell="jade-v3"`。
+ *
+ * 导航主题只命中 TopBar / SidebarNav 里明确的挂点：
+ *   .topbar-surface           顶栏承载面
+ *   .topbar-search-slot       搜索占位
+ *   .topbar-factory-slot      厂区切换容器
+ *   .topbar-factory-button    单个厂区按钮
+ *   .sidebar-surface          侧栏承载面
+ *   .sidebar-group-label      分组标题
+ *   .sidebar-nav-link         导航项
+ *   .sidebar-nav-icon         导航项图标底座
+ *   .sidebar-health           底部系统健康区
+ *
+ * 不使用「顶栏内所有 button」这类宽泛选择器，也不修改 src/style.css 的全局类。
+ */
+
+.app-shell[data-portal-shell='jade-v3'] {
+  --shell-canvas: #edf3f1;
+  --shell-sidebar: #eaf1ee;
+  --shell-border: #d7e4de;
+  --shell-ink: #183b35;
+  --shell-text: #3f5b54;
+  --shell-text-muted: #566f67;
+  --shell-active: #0e5c51;
+}
+
+/* ── 顶栏：仍然是清亮冷白面，只做边界与承载面的衔接 ───────────────── */
+
+.app-shell[data-portal-shell='jade-v3'] .topbar-surface {
+  border-bottom-color: var(--shell-border);
+  background-color: rgb(252 254 253 / 94%);
+  box-shadow: 0 1px 2px rgb(16 55 44 / 5%);
+}
+
+.app-shell[data-portal-shell='jade-v3'] .topbar-search-slot {
+  border-color: #dde8e2;
+  background-color: #eef4f1;
+  box-shadow: inset 0 1px 2px rgb(16 55 44 / 5%);
+}
+
+.app-shell[data-portal-shell='jade-v3'] .topbar-search-slot:hover {
+  border-color: var(--shell-border);
+  background-color: #f6faf8;
+}
+
+.app-shell[data-portal-shell='jade-v3'] .topbar-factory-button {
+  border-color: var(--shell-border);
+  background-color: rgb(255 255 255 / 88%);
+  color: var(--shell-text);
+}
+
+.app-shell[data-portal-shell='jade-v3'] .topbar-factory-button:hover {
+  border-color: var(--shell-border);
+  background-color: #e4efeb;
+  color: var(--shell-ink);
+}
+
+/* 当前厂区：深青绿实体按钮。 */
+.app-shell[data-portal-shell='jade-v3'] .topbar-factory-button[aria-pressed='true'] {
+  border-color: #0b5147;
+  background-color: var(--shell-active);
+  color: #f4fffb;
+  box-shadow: 0 6px 16px -10px rgb(4 54 43 / 80%);
+}
+
+/* ── 侧栏：浅矿物绿底 + 深翡翠当前项 ───────────────────────────────── */
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-surface {
+  border-right-color: var(--shell-border);
+  background-color: var(--shell-sidebar);
+}
+
+@media (min-width: 1024px) {
+  .app-shell[data-portal-shell='jade-v3'] .sidebar-surface {
+    box-shadow: none;
+  }
+}
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-group-label {
+  color: #6d8880;
+}
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-nav-link {
+  color: var(--shell-text);
+}
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-nav-link:hover {
+  background-color: rgb(255 255 255 / 72%);
+  color: var(--shell-ink);
+}
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-nav-link[aria-current='page'] {
+  background-image: none;
+  background-color: var(--shell-active);
+  color: #f4fffb;
+  box-shadow: 0 6px 16px -12px rgb(4 54 43 / 80%);
+}
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-nav-icon {
+  color: #78938b;
+}
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-nav-link:hover .sidebar-nav-icon {
+  background-color: rgb(255 255 255 / 85%);
+  color: var(--shell-ink);
+}
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-nav-link[aria-current='page'] .sidebar-nav-icon {
+  background-color: rgb(255 255 255 / 16%);
+  color: #eafff8;
+  box-shadow: none;
+}
+
+/* 当前项左侧的深色指示条在白底上会失去对比，改用亮色细条。 */
+.app-shell[data-portal-shell='jade-v3'] .sidebar-nav-link[aria-current='page'] > span:first-child {
+  background-color: #7fd8c3;
+}
+
+.app-shell[data-portal-shell='jade-v3'] .sidebar-health {
+  border: 1px solid #dde8e2;
+  background-image: none;
+  background-color: rgb(255 255 255 / 72%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 80%);
+}
+
+/* ── 减少动态效果：只关闭过渡，不改变任何定位或选中状态 ───────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-portal-shell='jade-v3'] .topbar-factory-button,
+  .app-shell[data-portal-shell='jade-v3'] .sidebar-nav-link {
+    transition: none;
+  }
+}

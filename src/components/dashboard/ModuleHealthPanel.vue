@@ -6,13 +6,21 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 
 <template>
   <SectionPanel
+    class="dashboard-section dashboard-section--modules"
     title="模块健康度"
     subtitle="用于判断哪些部门模块优先建设、优先优化"
   >
-    <div class="grid gap-x-10 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
-      <div v-for="module in moduleHealth" :key="module.name" class="grid grid-cols-[76px_1fr] items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-slate-50/80">
-        <span class="text-sm font-medium text-slate-700">{{ module.name }}</span>
+    <div class="dashboard-module-grid grid gap-x-10 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
+      <div
+        v-for="module in moduleHealth"
+        :key="module.name"
+        class="dashboard-module-row"
+        role="group"
+        :aria-label="`${module.name} 示例健康度 ${module.value}%`"
+      >
+        <span class="dashboard-module-row__name">{{ module.name }}</span>
         <ProgressMeter :value="module.value" :tone="module.tone" />
+        <span class="dashboard-module-row__value">{{ module.value }}</span>
       </div>
     </div>
   </SectionPanel>

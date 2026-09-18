@@ -149,14 +149,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-page space-y-6">
+  <div class="rrn-portal app-page space-y-6" data-portal-ui="jade-v3" data-portal-region="people">
     <PageHeader
+      class="people-hero"
       eyebrow="企业成员目录"
       title="成员目录"
       description="按姓名、职位、厂区、部门和近期连接状态查找企业中台成员。"
     />
 
-    <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="成员状态概览">
+    <section class="people-stats grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="成员状态概览">
       <button
         v-for="stat in ([
           { key: 'all', label: '全部成员', value: allCount, tone: 'slate' },
@@ -166,16 +167,21 @@ onBeforeUnmount(() => {
         ] as const)"
         :key="stat.key"
         type="button"
-        class="enterprise-panel interactive-surface rounded-xl px-4 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+        class="people-stat enterprise-panel interactive-surface rounded-xl px-4 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+        :data-stat-tone="stat.tone"
         :aria-pressed="presence === stat.key"
         @click="setPresence(stat.key)"
       >
-        <span class="text-xs font-semibold text-slate-500">{{ stat.label }}</span>
-        <span class="mt-1 block text-2xl font-semibold text-slate-950">{{ stat.value }}</span>
+        <span class="people-stat__label text-xs font-semibold text-slate-500">{{ stat.label }}</span>
+        <span class="people-stat__value mt-1 block text-2xl font-semibold text-slate-950">{{ stat.value }}</span>
       </button>
     </section>
 
-    <SectionPanel title="组织成员" subtitle="目录仅展示在职且已启用的企业账号；每页最多显示 36 人。">
+    <SectionPanel
+      class="portal-section people-members"
+      title="组织成员"
+      subtitle="目录仅展示在职且已启用的企业账号；每页最多显示 36 人。"
+    >
       <div class="grid gap-3 lg:grid-cols-[minmax(240px,1.4fr)_180px_180px]">
         <label class="relative block">
           <span class="sr-only">搜索成员</span>
@@ -291,3 +297,10 @@ onBeforeUnmount(() => {
     <AvatarPreviewDialog :member="previewMember" @close="previewMember = null" />
   </div>
 </template>
+
+<style scoped>
+/* 容器查询只能匹配后代元素，容器声明在门户根节点上。 */
+.rrn-portal {
+  container: portal-page / inline-size;
+}
+</style>

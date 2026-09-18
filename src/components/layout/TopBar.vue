@@ -70,7 +70,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
 </script>
 
 <template>
-  <header class="sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
+  <header class="topbar-surface sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
     <div class="flex min-h-16 items-center gap-2.5 px-3 sm:min-h-[72px] sm:gap-3 sm:px-4 2xl:gap-5 2xl:px-6">
       <button
         ref="navigationTriggerRef"
@@ -98,7 +98,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         </span>
       </RouterLink>
 
-      <div class="hidden h-9 min-w-[180px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200/90 bg-slate-50/75 px-3 shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition-colors hover:border-slate-300 hover:bg-white lg:flex xl:min-w-[220px]">
+      <div class="topbar-search-slot hidden h-9 min-w-[180px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200/90 bg-slate-50/75 px-3 shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition-colors hover:border-slate-300 hover:bg-white lg:flex xl:min-w-[220px]">
         <Search class="size-4 shrink-0 text-slate-400" aria-hidden="true" />
         <span class="truncate text-sm text-slate-500">{{ searchPlaceholder }}</span>
       </div>
@@ -110,13 +110,13 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         />
       </div>
 
-      <div data-testid="topbar-factory-switcher" class="hidden min-w-0 max-w-[40vw] items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden xl:flex">
+      <div data-testid="topbar-factory-switcher" class="topbar-factory-slot hidden min-w-0 max-w-[40vw] items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden xl:flex">
         <div class="flex min-w-max items-center gap-1.5 pr-1">
           <button
             v-for="factory in topBarFactoryContexts"
             :key="factory.id"
             type="button"
-            class="h-9 shrink-0 rounded-lg border px-3 text-xs font-semibold transition-[color,background-color,border-color,box-shadow,transform] duration-150 active:translate-y-px 2xl:px-4 2xl:text-sm"
+            class="topbar-factory-button h-9 shrink-0 rounded-lg border px-3 text-xs font-semibold transition-[color,background-color,border-color,box-shadow,transform] duration-150 active:translate-y-px 2xl:px-4 2xl:text-sm"
             :class="factory.id === appStore.activeFactoryId
               ? 'border-teal-700 bg-teal-700 text-white shadow-[0_5px_14px_-9px_rgba(13,148,136,0.9)]'
               : 'border-slate-200 bg-white/85 text-slate-600 hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800'"
