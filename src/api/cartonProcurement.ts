@@ -626,6 +626,18 @@ export const cartonProcurementApi = {
       factory_id: factoryId, expected_revision: order.revision, reason,
     })
   },
+  async bulkDeleteHistoryOrders(factoryId: string, orders: CartonOrderResponse[], reason: string) {
+    await http.post('/carton-procurement/orders/bulk-delete-history', {
+      factory_id: factoryId, reason,
+      items: orders.map(order => ({ order_no: order.order_no, expected_revision: order.revision })),
+    })
+  },
+  async undoScheduleImport(factoryId: string, batchId: string, reason: string) {
+    const response = await http.post<CartonImportBatchResponse>(`/carton-procurement/imports/${encodeURIComponent(batchId)}/undo`, {
+      factory_id: factoryId, reason,
+    })
+    return response.data
+  },
   async cancelOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/cancel`,

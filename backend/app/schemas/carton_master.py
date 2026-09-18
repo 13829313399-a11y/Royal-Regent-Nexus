@@ -86,6 +86,18 @@ class MasterSave(BaseModel):
     reason: str = Field(min_length=4, max_length=500)
 
 
+class MasterImportResult(BaseModel):
+    factory_id: str
+    kind: Literal["paper-options", "configurations", "locations"]
+    fingerprint: str
+    master_revision: str
+    preview_token: str
+    added: int
+    skipped: int
+    errors: list[str]
+    details: list[str]
+
+
 class LocationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     factory_id: str = Field(min_length=1, max_length=64)

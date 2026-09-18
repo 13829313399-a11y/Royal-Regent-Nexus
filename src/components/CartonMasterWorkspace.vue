@@ -2,11 +2,11 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { Database, X } from '@lucide/vue'
 import CartonMasterSettings from './CartonMasterSettings.vue'
-import { cartonMasterApi, masterPaperOptions, defaultMasterData, defaultNumberRule, emptyMaster, automaticNumberRule, historicalNumberSamples, type MasterRecord, type MasterData } from '@/api/cartonMaster'
+import { cartonMasterApi, masterPaperOptions, defaultMasterData, defaultNumberRule, emptyMaster, automaticNumberRule, historicalNumberSamples, type MasterRecord, type MasterData, type MasterImportKind, type MasterImportResult } from '@/api/cartonMaster'
 import { recognizeNumberTemplates, parseNumberTemplate, describeNumberTemplate } from '@/lib/cartonNumberPatterns'
 import { cartonPositionsApi, type CartonLocation } from '@/api/cartonPositions'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
-import { getApiErrorMessage } from '@/lib/http'
+import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 const props = defineProps<{ factoryId: string; customers: CartonCustomerResponse[]; initialTab?: string }>()
 const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse]; use: [MasterRecord] }>()
 const workspace = ref(emptyMaster()), busy = ref(false), error = ref(''), loading = ref(false)
@@ -16,9 +16,52 @@ const warehouseDeleting = ref(false)
 const warehouseEditing = ref(false), warehouseOriginal = ref(''), locationWarehouseLocked = ref(false)
 const sourceRow = ref<MasterRecord | null>(null), locationRow = ref<CartonLocation | null>(null)
 const container = ref<HTMLElement | null>(null)
+const importKind = ref<MasterImportKind | null>(null), importFile = ref<File | null>(null)
+const importPreview = ref<MasterImportResult | null>(null), importError = ref(''), importBusy = ref(false), importDone = ref(false)
+const importLabels: Record<MasterImportKind, string> = { 'paper-options': '纸品选项', configurations: '货号与包装', locations: '仓库仓位' }
+let importGeneration = 0
+function openImport(kind: MasterImportKind) {
+  importGeneration++; importKind.value = kind; importFile.value = null; importPreview.value = null
+  importError.value = ''; importDone.value = false; importBusy.value = false
+}
+function closeImport() { if (!importBusy.value) { importGeneration++; importKind.value = null } }
+function chooseImportFile(event: Event) {
+  importGeneration++; importPreview.value = null; importError.value = ''; importDone.value = false
+  importFile.value = (event.target as HTMLInputElement).files?.[0] || null
+}
+async function downloadTemplate(kind: MasterImportKind) {
+  const factory = props.factoryId
+  try {
+    const blob = await cartonMasterApi.template(factory, kind)
+    if (factory !== props.factoryId) return
+    const url = URL.createObjectURL(blob), anchor = document.createElement('a')
+    anchor.href = url; anchor.download = `${importLabels[kind]}导入模板.xlsx`
+    anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (e) {
+    const message = await getApiErrorMessageAsync(e)
+    if (factory === props.factoryId) error.value = message
+  }
+}
+async function processImport(apply = false) {
+  if (importBusy.value || !importKind.value || !importFile.value) return
+  const factory = props.factoryId, kind = importKind.value, file = importFile.value, version = ++importGeneration
+  const preview = importPreview.value
+  if (apply && (!preview || preview.errors.length || importDone.value)) return
+  importBusy.value = true; importError.value = ''
+  try {
+    if (!/\.(xlsx|xlsm)$/i.test(file.name) || file.size > 5 * 1024 * 1024) throw new Error('请选择不超过 5 MB 的 .xlsx 或 .xlsm 文件')
+    const result = apply ? await cartonMasterApi.importApply(factory, kind, file, preview!.preview_token)
+      : await cartonMasterApi.importPreview(factory, kind, file)
+    if (factory !== props.factoryId || version !== importGeneration) return
+    importPreview.value = result
+    if (apply) { importDone.value = true; await load(); if (factory === props.factoryId) emit('changed') }
+  } catch (e) {
+    if (factory === props.factoryId && version === importGeneration) { importError.value = getApiErrorMessage(e); importPreview.value = null }
+  } finally { if (version === importGeneration) importBusy.value = false }
+}
 let returnFocus: HTMLElement | null = null
 watch(() => props.initialTab, value => { tab.value = value === 'CONFIG' ? 'CONFIG' : 'SETTINGS' }, { immediate: true })
-watch(() => editing.value || !!locationRow.value || !!sourceRow.value || warehouseEditing.value, async open => {
+watch(() => editing.value || !!locationRow.value || !!sourceRow.value || warehouseEditing.value || !!importKind.value, async open => {
   if (open) {
     returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     await nextTick()
@@ -30,7 +73,7 @@ function dialogKeys(event: KeyboardEvent) {
   if (!dialog) return
   if (event.key === 'Escape') {
     event.stopPropagation(); event.preventDefault()
-    if (!busy.value) { editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false }
+    if (!busy.value && !importBusy.value) { editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; closeImport() }
   }
   if (event.key === 'Tab') {
     const nodes = [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
@@ -118,7 +161,7 @@ async function load() {
   catch (e) { if (version === generation) error.value = getApiErrorMessage(e) }
   finally { if (version === generation) loading.value = false }
 }
-watch(() => props.factoryId, () => { workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; customer.value = ''; void load() }, { immediate: true })
+watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; customer.value = ''; void load() }, { immediate: true })
 function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = customer.value) {
   paperOnly.value = false
   ruleScopeLocked.value = (row?.kind || kind) === 'RULE'
@@ -225,18 +268,38 @@ async function saveWarehouse() {
     </div>
     <p v-if="error && !editing && !locationRow" role="alert" class="text-sm text-red-700">{{ error }}</p>
     <div v-if="loading" class="p-10 text-center text-slate-500">正在整理历史与基础资料…</div>
-    <CartonMasterSettings v-else-if="tab === 'SETTINGS'" :key="factoryId" :workspace="workspace" :customers="customers" @rule="editRule" @paper="editPaperOptions" @edit="edit($event)" @create="createRecord" @location="editLocation" @warehouse="editWarehouse" @customer="emit('customers', $event)" @source="sourceRow = $event" />
+    <CartonMasterSettings v-else-if="tab === 'SETTINGS'" :key="factoryId" :workspace="workspace" :customers="customers" @rule="editRule" @paper="editPaperOptions" @paper-template="downloadTemplate('paper-options')" @paper-import="openImport('paper-options')" @location-template="downloadTemplate('locations')" @location-import="openImport('locations')" @edit="edit($event)" @create="createRecord" @location="editLocation" @warehouse="editWarehouse" @customer="emit('customers', $event)" @source="sourceRow = $event" />
     <article v-else class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="货号与包装资料">
       <div class="flex flex-wrap items-center gap-3 border-b bg-slate-50 p-3">
         <span class="text-xs text-slate-500">本厂货号共用，不绑定客户</span>
         <input v-model="search" aria-label="基础资料搜索" placeholder="查找货号、产品名称、纸品或规格" class="h-9 min-w-56 flex-1 rounded-lg border bg-white px-3 text-xs">
         <select v-model="statusFilter" aria-label="货号资料状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ALL">全部状态</option><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select><label class="text-xs"><input v-model="preferredOnly" type="checkbox"> 仅推荐</label><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="customer = ''; search = ''; statusFilter = 'ALL'; preferredOnly = false">清空筛选</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white" @click="edit()">新增货号与包装</button>
+        <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg border px-3 text-xs" @click="downloadTemplate('configurations')">下载货号包装模板</button>
+        <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg border px-3 text-xs" @click="openImport('configurations')">导入货号与包装</button>
       </div>
+      <p class="border-b border-teal-100 bg-teal-50/60 px-3 py-2 text-xs leading-5 text-teal-800">一个货号可以有多个纸品：手工新增时点击“添加纸品”；模板导入时每个纸品写一行，同一套纸品使用相同的“货号 + 配置组”，并在每行重复填写相同的产品名称、推荐、状态和备注。</p>
       <div class="overflow-x-auto"><table class="w-full min-w-[960px] text-left text-xs"><thead class="bg-slate-50 text-slate-500"><tr><th class="p-3">包装方式</th><th class="p-3">货号 / 产品名称</th><th class="p-3">纸品类型 / 纸质 / 规格 / 单位 / 装箱数</th><th class="p-3">来源 / 状态</th><th class="p-3 text-right">操作</th></tr></thead>
         <tbody class="divide-y divide-slate-100"><tr v-for="row in rows" :key="row.id" class="hover:bg-slate-50/60"><td class="p-3 font-semibold">{{ row.data.packing_name || '其他包装' }}</td><td class="p-3"><b class="font-mono">{{ row.code }}</b><div class="mt-1 text-slate-500">{{ row.data.product_name }}</div></td><td class="p-3"><div v-for="(line, i) in row.data.lines" :key="i" class="mb-1">{{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件</div><span v-if="workspace.records.filter(r => r.kind === 'CONFIG' && r.code === row.code).length > 1" class="text-amber-700">存在不同配置，落单时请核对</span><p class="mt-1 text-slate-500">{{ row.data.note }}</p></td><td class="p-3"><div>{{ row.maintained ? '高级权限维护' : '历史自动加入' }}</div><div class="mt-1" :class="row.status === 'ACTIVE' ? 'text-teal-700' : 'text-slate-400'">{{ row.status === 'ACTIVE' ? '启用' : '停用' }}{{ row.preferred ? ' · 推荐' : '' }}</div><button v-if="row.sources.length" type="button" class="mt-1 text-teal-700 underline" @click="sourceRow = row">{{ row.sources.length }} 条历史来源</button></td><td class="p-3"><div class="flex justify-end gap-2 whitespace-nowrap"><button v-if="workspace.can_manage" type="button" class="rounded-lg border px-3 py-2" :aria-label="`修改基础资料 ${row.code}`" @click="edit(row)">修改</button><button v-if="row.status === 'ACTIVE'" type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700" @click="emit('use', row)">用于落单</button></div></td></tr><tr v-if="!rows.length"><td colspan="5" class="p-12 text-center text-slate-400">暂无对应资料；正式历史订单中的货号与纸品配置会自动加入。</td></tr></tbody>
       </table></div>
     </article>
+    <div v-if="importKind" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" data-testid="master-import-backdrop">
+      <div role="dialog" aria-modal="true" aria-label="基础资料模板导入" class="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-5 shadow-xl">
+        <div class="flex items-center justify-between"><h3 class="font-bold">导入{{ importLabels[importKind] }}</h3><button type="button" :disabled="importBusy" aria-label="关闭导入" @click="closeImport"><X class="size-5" /></button></div>
+        <p class="my-3 text-xs leading-6 text-slate-500">下载的是空白模板，请先在“导入数据”页填写至少一行，再选择文件、预览核对并确认导入。说明与示例不会导入。支持 .xlsx / .xlsm，最多 5 MB、1000 行。<template v-if="importKind === 'locations'">仓库与仓位均填真实文本；范围可填 A1-A25、B01-B03，补零宽度须一致。展开后合计最多 1000 个仓位。</template><template v-else-if="importKind === 'configurations'">一个货号多个纸品时，每个纸品写一行；相同“货号 + 配置组”组成一套配置，同组产品名称、推荐、状态和备注须重复填写且保持一致。</template><template v-else>纸品类型、纸质每格单一项，规格分别填写长、宽、高。</template></p>
+        <input type="file" accept=".xlsx,.xlsm" aria-label="选择基础资料模板文件" :disabled="importBusy" @change="chooseImportFile">
+        <p v-if="importFile" class="mt-2 text-xs">文件：{{ importFile.name }}</p>
+        <p v-if="importError" role="alert" class="mt-3 text-sm text-red-700">{{ importError }}</p>
+        <div v-if="importPreview" class="mt-4 rounded-lg border p-3 text-sm" aria-live="polite">
+          <p>{{ importDone ? '导入完成' : '预览结果' }}：{{ importDone ? '已新增' : '待新增' }} {{ importPreview.added }} · 跳过 {{ importPreview.skipped }} · 错误 {{ importPreview.errors.length }}</p>
+          <p v-if="importKind === 'paper-options'" class="mt-1 text-xs text-slate-500">按选项数统计；恢复曾隐藏的选项计入新增。</p>
+          <p v-if="importKind === 'locations'" class="mt-1 text-xs text-slate-500">按展开后的仓位数统计；已有启用或停用仓位只跳过，不修改状态、库存或历史。</p>
+          <ul v-if="importPreview.errors.length" role="alert" class="mt-2 max-h-48 overflow-auto text-red-700"><li v-for="(message, i) in importPreview.errors" :key="i">{{ message }}</li></ul>
+          <ul class="mt-2 max-h-48 overflow-auto text-xs text-slate-600"><li v-for="(message, i) in importPreview.details" :key="i">{{ message }}</li></ul>
+        </div>
+        <div class="mt-4 flex justify-end gap-2"><button type="button" class="rounded-lg border px-4 py-2 text-sm" :disabled="importBusy" @click="closeImport">关闭</button><button v-if="!importDone" type="button" class="rounded-lg border px-4 py-2 text-sm" :disabled="importBusy || !importFile" @click="processImport()">{{ importBusy ? '处理中…' : '预览导入' }}</button><button v-if="!importDone" type="button" class="rounded-lg bg-teal-700 px-4 py-2 text-sm text-white disabled:opacity-40" :disabled="importBusy || !importPreview || !!importPreview.errors.length" @click="processImport(true)">确认导入</button></div>
+      </div>
+    </div>
     <div v-if="editing" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4">
       <form role="dialog" aria-modal="true" aria-label="维护基础资料" class="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl" @submit.prevent="save">
         <div class="flex items-center justify-between border-b p-4"><h3 class="font-bold">{{ paperOnly ? '添加 / 修改纸品选项' : (editingId ? '修改' : '新增') + tabs.find(t => t.id === form.kind)?.label }}</h3><button type="button" :disabled="busy" aria-label="关闭基础资料编辑" @click="editing = false"><X class="size-5" /></button></div>

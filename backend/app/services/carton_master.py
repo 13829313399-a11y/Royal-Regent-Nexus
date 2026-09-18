@@ -186,7 +186,7 @@ def workspace(db, factory, user):
             "users": users}
 
 
-def save_record(db, user, payload: MasterSave, identifier=""):
+def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     from app.services.carton_procurement import _lock_receipt_factory, _audit, now_text
     factory = payload.factory_id
     _lock_receipt_factory(db, factory)
@@ -261,7 +261,8 @@ def save_record(db, user, payload: MasterSave, identifier=""):
     db.flush()
     _audit(db, user, factory, "MASTER_DATA_SAVED", "carton_master", row.id,
            {"reason": payload.reason, "before": before, "after": record_out(row)})
-    db.commit()
+    if commit:
+        db.commit()
     return record_out(row)
 
 

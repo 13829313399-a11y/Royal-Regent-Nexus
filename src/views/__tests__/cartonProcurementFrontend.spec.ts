@@ -37,6 +37,8 @@ const cartonApiMock = vi.hoisted(() => ({
   bulkSubmitOrdersToSupplier: vi.fn(),
   cancelOrder: vi.fn(),
   deleteHistoryOrder: vi.fn(),
+  bulkDeleteHistoryOrders: vi.fn(),
+  undoScheduleImport: vi.fn(),
   bulkUpdateExceptions: vi.fn(),
   appendOrder: vi.fn(),
   replenishOrder: vi.fn(),
@@ -339,6 +341,165 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('[aria-label="更多 CT-HISTORY 订单操作"]').trigger('click')
     expect(wrapper.find('[aria-label="删除历史订单 CT-HISTORY"]').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('deletes all selected eligible history only after confirmation and rejects a mixed UI selection', async () => {
+    const rows = ['H-A', 'H-B'].map(id => ({ ...orderFixture(id, businessDateOffset(3), 'PENDING_SUPPLIER'), can_delete_history: true }))
+    const ordinary = orderFixture('NORMAL', businessDateOffset(3))
+    mockReceiptWorkspace([...rows, ordinary])
+    const wrapper = mountView('orders'); await flushPromises()
+    await wrapper.get('[aria-label="选择订单 H-A"]').setValue(true)
+    await wrapper.get('[aria-label="选择订单 NORMAL"]').setValue(true)
+    expect(findButton(wrapper, '批量删除历史订单').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('普通订单、已有收料记录')
+    await wrapper.get('[aria-label="选择订单 NORMAL"]').setValue(false)
+    await wrapper.get('[aria-label="选择订单 H-B"]').setValue(true)
+    await findButton(wrapper, '批量删除历史订单').trigger('click'); await flushPromises()
+    expect(cartonApiMock.bulkDeleteHistoryOrders).not.toHaveBeenCalled()
+    const reason = wrapper.get('[aria-label="历史订单删除原因"]')
+    await reason.setValue('历史导入整批重复')
+    cartonApiMock.bulkDeleteHistoryOrders.mockImplementation(async () => {
+      cartonApiMock.listOrders.mockResolvedValue([ordinary])
+    })
+    await reason.element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(cartonApiMock.bulkDeleteHistoryOrders).toHaveBeenCalledExactlyOnceWith('huaxing', rows, '历史导入整批重复')
+    expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 0 张')
+    expect(wrapper.find('[aria-label="选择订单 H-A"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it.each(['single', 'bulk'])('supersedes an in-flight refresh after %s history deletion and ignores its late response', async (mode) => {
+    const row = { ...orderFixture('H-STALE', businessDateOffset(3), 'PENDING_SUPPLIER'), can_delete_history: true }
+    mockReceiptWorkspace([row])
+    const wrapper = mountView('orders'); await flushPromises()
+    let releaseOld!: (rows: typeof row[]) => void
+    const oldResponse = new Promise<typeof row[]>(resolve => { releaseOld = resolve })
+    cartonApiMock.listOrders.mockReturnValueOnce(oldResponse)
+    await findButton(wrapper, '刷新').trigger('click'); await flushPromises()
+    await findButton(wrapper, '刷新').trigger('click'); await flushPromises()
+    expect(cartonApiMock.listOrders).toHaveBeenCalledTimes(2) // Ordinary refreshes still coalesce.
+    if (mode === 'single') {
+      await wrapper.get('[aria-label="更多 H-STALE 订单操作"]').trigger('click')
+      await wrapper.get('[aria-label="删除历史订单 H-STALE"]').trigger('click')
+    } else {
+      await wrapper.get('[aria-label="选择订单 H-STALE"]').setValue(true)
+      await findButton(wrapper, '批量删除历史订单').trigger('click')
+    }
+    await flushPromises()
+    const deleted = async () => { cartonApiMock.listOrders.mockResolvedValue([]) }
+    cartonApiMock.deleteHistoryOrder.mockImplementation(deleted)
+    cartonApiMock.bulkDeleteHistoryOrders.mockImplementation(deleted)
+    await wrapper.get('[aria-label="历史订单删除原因"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(cartonApiMock.listOrders).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).toContain('1 张历史订单已删除')
+    expect(wrapper.find('[aria-label="选择订单 H-STALE"]').exists()).toBe(false)
+    releaseOld([row]); await flushPromises()
+    expect(wrapper.find('[aria-label="选择订单 H-STALE"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('1 张历史订单已删除')
+    expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 0 张')
+    wrapper.unmount()
+  })
+
+  it.each(['WEEKLY_SCHEDULE', 'INSPECTION_SCHEDULE'])('supersedes an in-flight refresh after %s undo without reviving results or exceptions', async (kind) => {
+    mockReceiptWorkspace([])
+    const batch = { id: 'B-STALE', import_type: kind, status: 'REQUIRES_REVIEW', original_filename: '旧响应排期.xlsx',
+      created_at: '2026-09-17T10:00:00', imported_by_name: '业务员', parse_summary: { row_count: 1, rows: [{
+        source_sheet: '排期', source_row: 2, reference: 'SC-STALE-RESULT', contract_no: 'SC-STALE-RESULT',
+        customer_name: 'Dickie', item_no: 'ITEM-STALE', product_name: '旧排期产品', quantity: 120,
+        match_status: 'MISSING_ORDER', reminder_status: 'MISSING_ORDER', suggestion: '请复核旧结果',
+      }] } }
+    const exception = { id: 'EX-ID-STALE', exception_no: 'EX-STALE', factory_id: 'huaxing', source_type: kind,
+      source_id: batch.id, category: 'MISSING_ORDER', severity: 'MEDIUM', customer_name: 'Dickie', customer_code: 'DICKIE',
+      contract_no: 'SC-STALE-RESULT', item_no: 'ITEM-STALE', title: '旧排期待办', description: '', owner_department: '纸箱仓',
+      status: 'OPEN', resolution_note: '', revision: 1, created_at: batch.created_at, updated_at: batch.created_at }
+    cartonApiMock.listExceptions.mockResolvedValue([exception])
+    cartonApiMock.listImports.mockImplementation(async (_factory: string, type: string) => type === kind ? [batch] : [])
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    if (kind === 'INSPECTION_SCHEDULE') {
+      await findButton(wrapper, '下周查货提醒').trigger('click'); await flushPromises()
+    }
+    expect(wrapper.text()).toContain('SC-STALE-RESULT')
+    let releaseOld!: (rows: never[]) => void
+    const oldResponse = new Promise<never[]>(resolve => { releaseOld = resolve })
+    cartonApiMock.listOrders.mockReturnValueOnce(oldResponse)
+    await findButton(wrapper, '刷新').trigger('click'); await flushPromises()
+    expect(cartonApiMock.listOrders).toHaveBeenCalledTimes(2)
+    await wrapper.get('[aria-label="撤销本次导入 旧响应排期.xlsx"]').trigger('click'); await flushPromises()
+    cartonApiMock.undoScheduleImport.mockImplementation(async () => {
+      const updated = { ...batch, status: 'REJECTED' }
+      cartonApiMock.listExceptions.mockResolvedValue([])
+      cartonApiMock.listImports.mockImplementation(async (_factory: string, type: string) => type === kind ? [updated] : [])
+      return updated
+    })
+    await wrapper.get('[aria-label="导入批次撤销原因"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(cartonApiMock.listOrders).toHaveBeenCalledTimes(3)
+    releaseOld([]); await flushPromises()
+    expect(wrapper.text()).toContain('已整批撤销 旧响应排期.xlsx 的核对结果和异常工作项')
+    expect(wrapper.text()).not.toContain('SC-STALE-RESULT')
+    expect(wrapper.find('[aria-label="撤销本次导入 旧响应排期.xlsx"]').exists()).toBe(false)
+    expect(wrapper.findAll('button').some(button => button.text() === '查看结果')).toBe(false)
+    await findButton(wrapper, '异常处理').trigger('click'); await flushPromises()
+    expect(wrapper.text()).not.toContain('旧排期待办')
+    expect(wrapper.find('[aria-label="选择异常 EX-STALE"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('retains selection after the server blocks an atomic history deletion', async () => {
+    const row = { ...orderFixture('H-BLOCKED', businessDateOffset(3), 'PENDING_SUPPLIER'), can_delete_history: true }
+    mockReceiptWorkspace([row])
+    cartonApiMock.bulkDeleteHistoryOrders.mockRejectedValue(new Error('已有收料记录'))
+    const wrapper = mountView('orders'); await flushPromises()
+    await wrapper.get('[aria-label="选择订单 H-BLOCKED"]').setValue(true)
+    await findButton(wrapper, '批量删除历史订单').trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="历史订单删除原因"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(wrapper.text()).toContain('历史订单未删除')
+    expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 1 张')
+    expect(wrapper.find('[aria-label="历史订单删除原因"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it.each(['WEEKLY_SCHEDULE', 'INSPECTION_SCHEDULE'])('confirms whole %s undo once and shows the retained inactive batch', async (kind) => {
+    mockReceiptWorkspace([])
+    const batch = { id: 'B-UNDO', import_type: kind, status: 'REQUIRES_REVIEW', original_filename: '待撤销排期.xlsx',
+      created_at: '2026-09-17T10:00:00', imported_by_name: '业务员', parse_summary: { row_count: 2, rows: [] } }
+    cartonApiMock.listImports.mockImplementation(async (_factory: string, type: string) => type === kind ? [batch] : [])
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    if (kind === 'INSPECTION_SCHEDULE') {
+      await findButton(wrapper, '下周查货提醒').trigger('click'); await flushPromises()
+    }
+    await wrapper.get('[aria-label="撤销本次导入 待撤销排期.xlsx"]').trigger('click'); await flushPromises()
+    expect(cartonApiMock.undoScheduleImport).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('不支持单条删除')
+    const reason = wrapper.get('[aria-label="导入批次撤销原因"]')
+    await reason.setValue('本次文件上传错误')
+    cartonApiMock.undoScheduleImport.mockImplementation(async () => {
+      const updated = { ...batch, status: 'REJECTED' }
+      cartonApiMock.listImports.mockImplementation(async (_factory: string, type: string) => type === kind ? [updated] : [])
+      return updated
+    })
+    await reason.element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(cartonApiMock.undoScheduleImport).toHaveBeenCalledExactlyOnceWith('huaxing', batch.id, '本次文件上传错误')
+    expect(wrapper.text()).toContain('已整批撤销')
+    expect(wrapper.find('[aria-label="撤销本次导入 待撤销排期.xlsx"]').exists()).toBe(false)
+    expect(wrapper.findAll('button').some(button => button.text() === '查看结果')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('hides deletion and undo controls without their scoped permissions', async () => {
+    mockReceiptWorkspace([{ ...orderFixture('H-NO-PERM', businessDateOffset(3)), can_delete_history: true }])
+    authStoreMock.can.mockImplementation(((permission: string) => !['carton_procurement:order_write', 'carton_procurement:import'].includes(permission)) as () => boolean)
+    cartonApiMock.listImports.mockResolvedValue([{ id: 'B', status: 'REQUIRES_REVIEW', import_type: 'WEEKLY_SCHEDULE', original_filename: 'read-only.xlsx', created_at: '', parse_summary: { rows: [] } }])
+    const orders = mountView('orders'); await flushPromises()
+    expect(orders.text()).not.toContain('批量删除历史订单')
+    orders.unmount()
+    const weekly = mountView('weekly-check'); await flushPromises()
+    expect(weekly.find('[aria-label="撤销本次导入 read-only.xlsx"]').exists()).toBe(false)
+    weekly.unmount()
   })
 
   beforeEach(() => {
@@ -1610,9 +1771,30 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(completedCard.find('button[aria-label="减单 CT-PARTIAL-REDUCE"]').exists()).toBe(false)
   })
 
-  it('hides submitted-order adjustments without supervisor permission', async () => {
-    const submitted = orderFixture('CT-NO-ADJUST', businessDateOffset(5), 'PENDING_SUPPLIER')
-    authStoreMock.can.mockImplementation((permission: string) => permission !== 'carton_procurement:order_adjust')
+  it.each(['carton', 'pmc-warehouse'])('shows warehouse order operations with scoped permissions in %s', async (department) => {
+    authStoreMock.can.mockImplementation((permission: string, factory?: string, scope?: string) =>
+      factory === 'huaxing' && scope === department
+      && ['carton_procurement:order_write', 'carton_procurement:inventory_write'].includes(permission))
+    const rows = ['CONFIRMED', 'PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED']
+      .map(status => orderFixture(`CT-${status}`, businessDateOffset(5), status))
+    mockReceiptWorkspace(rows)
+    const wrapper = mountView('orders'); await flushPromises()
+    for (const row of rows) {
+      const card = wrapper.get(`[data-order-no="${row.order_no}"]`)
+      await openOrderMoreActions(card, row.order_no)
+      expect(card.find(`[aria-label="追加 ${row.order_no} 订单"]`).exists()).toBe(true)
+      expect(card.find(`[aria-label="减单 ${row.order_no}"]`).exists())
+        .toBe(['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(row.status))
+      expect(card.find(`[aria-label="补单 ${row.order_no}"]`).exists())
+        .toBe(['PARTIALLY_RECEIVED', 'COMPLETED'].includes(row.status))
+    }
+    wrapper.unmount()
+  })
+
+  it('hides submitted-order adjustments and replenishment without inventory or supervisor permission', async () => {
+    const submitted = orderFixture('CT-NO-ADJUST', businessDateOffset(5), 'PARTIALLY_RECEIVED')
+    authStoreMock.can.mockImplementation((permission: string) =>
+      !['carton_procurement:order_adjust', 'carton_procurement:inventory_write'].includes(permission))
     cartonApiMock.listCustomers.mockResolvedValue([])
     cartonApiMock.listOrders.mockResolvedValue([submitted])
     cartonApiMock.listMovements.mockResolvedValue([])
@@ -1627,6 +1809,27 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(card.find('button[aria-label="管理 CT-NO-ADJUST 采购单"]').exists()).toBe(true)
     expect(card.find('button[aria-label="追加 CT-NO-ADJUST 订单"]').exists()).toBe(false)
     expect(card.find('button[aria-label="减单 CT-NO-ADJUST"]').exists()).toBe(false)
+    expect(card.find('button[aria-label="补单 CT-NO-ADJUST"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it.each(['foreign-factory', 'other-department', 'read-only'])('hides order operations for %s access', async (access) => {
+    authStoreMock.can.mockImplementation((permission: string, factory?: string, department?: string) => {
+      if (permission === 'carton_procurement:read') return true
+      return access !== 'read-only' && factory === (access === 'foreign-factory' ? 'huadeng' : 'huaxing')
+        && department === (access === 'other-department' ? 'qc' : 'pmc-warehouse')
+    })
+    mockReceiptWorkspace(['CONFIRMED', 'PARTIALLY_RECEIVED'].map(status => orderFixture(`CT-${status}`, businessDateOffset(5), status)))
+    const wrapper = mountView('orders'); await flushPromises()
+    for (const status of ['CONFIRMED', 'PARTIALLY_RECEIVED']) {
+      const card = wrapper.get(`[data-order-no="CT-${status}"]`)
+      const more = card.find(`[aria-label="更多 CT-${status} 订单操作"]`)
+      if (more.exists()) await more.trigger('click')
+      expect(card.find(`[aria-label="追加 CT-${status} 订单"]`).exists()).toBe(false)
+      expect(card.find(`[aria-label="减单 CT-${status}"]`).exists()).toBe(false)
+      expect(card.find(`[aria-label="补单 CT-${status}"]`).exists()).toBe(false)
+    }
+    wrapper.unmount()
   })
 
   it('bulk submits only pending orders and keeps skipped selections', async () => {
@@ -3103,6 +3306,11 @@ describe('CartonProcurementView frontend workspace', () => {
 
     const wrapper = mountView('weekly-check')
     await flushPromises()
+    const template = wrapper.get('a[download="纸箱每周排期核对导入模板.xlsx"]')
+    expect(template.attributes('href')).toBe('/templates/carton-weekly-schedule-template.xlsx')
+    expect(template.text()).toContain('下载排期模板')
+    expect(wrapper.text()).toContain('Reference + 货号')
+    expect(wrapper.text()).toContain('不按装箱数换算')
     expect(wrapper.text()).toContain('核对历史')
     expect(wrapper.text()).toContain('每周排期-第32周.xlsx')
     expect(wrapper.text()).toContain('疑似漏单')
