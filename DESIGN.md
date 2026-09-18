@@ -92,7 +92,7 @@ Royal Regent Nexus 的界面应呈现：可靠、精确、冷静、现代、可�
 
 ### 4.2 标志
 
-- 主应用顶栏使用 `/brand/huadeng_group_dynamic_logo.svg`；
+- 主应用顶栏与登录页（桌面及移动端）统一使用 `/brand/huadeng_group_dynamic_logo_topbar.svg`；
 - 标志必须保持原始比例，使用 `object-contain`；
 - 不拉伸、不重绘、不用文字或临时图形替代正式标志；
 - 标志与名称应作为一个可点击的首页入口；

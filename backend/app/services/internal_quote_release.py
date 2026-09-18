@@ -41,7 +41,6 @@ from app.services.internal_quote import (
     _add_audit,
     _add_notification,
     _add_revision,
-    _can_self_review_own_quote,
     _check_revision,
     _cost_context,
     _ensure_active,
@@ -407,8 +406,8 @@ def _review_whole_quote(
     if len(reviewer_ids) != 1:
         raise HTTPException(status_code=409, detail="同批产品的整单审核人不一致，请先统一审核人")
     ensure_quote_business_reviewer(db, user, root_quote)
-    if any(item.final_submitted_by == user.id for item in batch_quotes) and not _can_self_review_own_quote(user, root_quote):
-        raise HTTPException(status_code=403, detail="整单提交人不能审核自己的报价")
+    # A selected, authorized whole-quote reviewer may also be its submitter.
+    # Legacy section self-review remains governed by its separate permission.
     _ensure_active(selected_quote)
     _check_revision(selected_quote.header_revision, payload.revision, "报价头")
     prepared: list[tuple[InternalQuote, list[InternalQuoteSection], dict[str, Any]]] = []

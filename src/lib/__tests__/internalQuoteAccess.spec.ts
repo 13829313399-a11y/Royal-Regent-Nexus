@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   canEditAllInternalQuoteSections,
   canReviewInternalQuoteSections,
+  canReviewWholeInternalQuote,
   canWithdrawInternalQuote,
   isForeignFactory,
   isInternalQuoteReadOnly,
@@ -98,6 +99,26 @@ describe('internal quote selected reviewer boundary', () => {
       'huaxing',
       'selected-reviewer',
     )).toBe(false)
+  })
+
+  it.each(['engineer', 'selected-reviewer'])('allows the selected whole reviewer who submitted a quote created by %s', (creator) => {
+    const quote = { moduleVersion: 'v3', factoryId: 'huaxing', businessOwnerId: 'selected-reviewer',
+      createdById: creator, finalSubmittedById: 'selected-reviewer' }
+    const checker = reviewerChecker('selected-reviewer', true, false)
+    expect(canReviewWholeInternalQuote(checker, quote)).toBe(true)
+    expect(canReviewWholeInternalQuote(reviewerChecker('other-reviewer', true), quote)).toBe(false)
+    expect(canReviewWholeInternalQuote(reviewerChecker('selected-reviewer', false), quote)).toBe(false)
+    expect(canReviewWholeInternalQuote(checker, { ...quote, factoryId: 'huadeng' })).toBe(false)
+    expect(canReviewWholeInternalQuote(checker, { ...quote, moduleVersion: 'v2' })).toBe(false)
+    checker.currentUser.profile.primary_department = 'engineering'
+    expect(canReviewWholeInternalQuote(checker, quote)).toBe(false)
+  })
+
+  it('keeps whole-review self-only access limited to personally created quotes', () => {
+    const checker = reviewerChecker('selected-reviewer', false, true)
+    const quote = { moduleVersion: 'v3', factoryId: 'huaxing', businessOwnerId: 'selected-reviewer', createdById: 'engineer' }
+    expect(canReviewWholeInternalQuote(checker, quote)).toBe(false)
+    expect(canReviewWholeInternalQuote(checker, { ...quote, createdById: 'selected-reviewer' })).toBe(true)
   })
 
   it('allows a personally authorized owner only on quotes created by that same user', () => {

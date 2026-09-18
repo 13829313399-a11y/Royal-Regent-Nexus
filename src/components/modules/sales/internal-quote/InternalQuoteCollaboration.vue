@@ -13,7 +13,7 @@ import InternalQuoteSectionEditor from './InternalQuoteSectionEditor.vue'
 import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
-import { canEditAllInternalQuoteSections, canReviewInternalQuoteSections, canWithdrawInternalQuote, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
+import { canEditAllInternalQuoteSections, canReviewInternalQuoteSections, canReviewWholeInternalQuote, canWithdrawInternalQuote, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import type { InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { consumeInternalQuoteProductScroll, rememberInternalQuoteProductScroll } from '@/lib/internalQuoteProductScroll'
 import { cloneInternalQuotePayload, salesPackagingPricingGroupId, salesSettlementDivisorForMiscRatio, type SalesMarkupTier, type SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
@@ -165,16 +165,7 @@ const canReviewActive = computed(() => canReviewInternalQuoteSections(
 const canSubmitWholeReview = computed(() => isWholeQuoteReview.value
   && authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
 const canWithdrawWhole = computed(() => canWithdrawInternalQuote(authStore, quote.value))
-const canReviewWholeBase = computed(() => isWholeQuoteReview.value && canReviewInternalQuoteSections(
-  authStore,
-  quote.value.factoryId,
-  quote.value.businessOwnerId,
-  quote.value.createdById,
-))
-const canSelfReviewWhole = computed(() => quote.value.createdById === authStore.currentUser?.id
-  && authStore.can('internal_quote:self_review', quote.value.factoryId, 'sales-business'))
-const canReviewWhole = computed(() => canReviewWholeBase.value
-  && (quote.value.finalSubmittedById !== authStore.currentUser?.id || canSelfReviewWhole.value))
+const canReviewWhole = computed(() => canReviewWholeInternalQuote(authStore, quote.value))
 const canSyncReference = computed(() => ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
 const formulaStale = computed(() => Boolean(
   quote.value.currentFormulaVersion

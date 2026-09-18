@@ -208,7 +208,7 @@ def freeze_cost(record, setting, material, *, reason="", initial=False):
         flags.discard("cost_snapshot_requires_review")
     record.data_quality_flags_json = encode(sorted(flags))
     record.calculated_cost_snapshot_json = encode(cost)
-    record.product_snapshot_json = encode(inputs)
+    record.product_snapshot_json = encode({**json.loads(record.product_snapshot_json or "{}"), **inputs})
 
 
 def frozen_totals(record):

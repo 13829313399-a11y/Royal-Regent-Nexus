@@ -76,6 +76,7 @@ export interface QcScheduleChange {
   factory_id: string
   batch_id: string
   source_row_no: number
+  source_sheet_name?: string
   sales_contract_no: string
   customer_po_no: string
   customer_item_no: string
@@ -229,7 +230,7 @@ export interface QcInspectionEvent extends QcEntityBase {
 export type QcInspectionEventPayload = Omit<
   QcInspectionEvent,
   'id' | 'revision' | 'created_at' | 'updated_at' | 'attempt_no' | 'created_by' | 'created_by_name' | 'updated_by' | 'updated_by_name'
->
+> & { expected_pending_order_revision?: number }
 
 export interface QcGeneratedReport {
   id: string
@@ -278,7 +279,7 @@ export interface QcOrderCreatePayload {
   customer_po_no: string
   customer_item_no: string
   product_name: string
-  quantity: number
+  quantity: number | string
   packing?: string
   carton_count?: string
   production_department?: string
@@ -288,6 +289,7 @@ export interface QcOrderCreatePayload {
   week_key: string
   inspection_agency?: string
   account_manager?: string
+  note?: string
   request_id: string
 }
 
@@ -341,57 +343,6 @@ export interface QcListResponse<T> {
   items: T[]
 }
 
-export interface QcRenameGroupInput {
-  group_id: string
-  is_caixing: boolean
-  export_country?: string
-  report_number?: string
-  item_number: string
-  customer_po_no: string
-  quantity?: string
-  actual_inspection_date: string
-  files: Array<{
-    file_id: string
-    source_file_name: string
-    sequence?: number
-  }>
-}
-
-export interface QcRenamePreviewFile {
-  source_file_name: string
-  target_file_name: string
-  source_sha256: string
-  size_bytes: number
-}
-
-export interface QcRenamePreviewGroup {
-  group_id: string
-  success: boolean
-  base_name: string | null
-  files: QcRenamePreviewFile[]
-  issues: Array<{ code: string; message: string; source_file_name?: string | null }>
-}
-
-export interface QcRenameBatch {
-  id: string
-  factory_id: string
-  status: string
-  rule_version: string
-  fingerprint: string
-  group_count: number
-  source_file_count: number
-  source_size_bytes: number
-  successful_group_count: number
-  failed_group_count: number
-  revision: number
-  archive_file_name: string
-  archive_sha256: string
-  archive_size_bytes: number
-  created_at: string
-  executed_at: string
-  groups: QcRenamePreviewGroup[]
-}
-
 export interface QcDownloadResult {
   blob: Blob
   fileName: string
@@ -420,6 +371,12 @@ export function createQcRequestId() {
 
 export function createQcInspectionApi(client: QcInspectionHttpClient = http) {
   return {
+    async getScheduleImport(batchId: string, factoryId: string) {
+      const response = await client.get<QcScheduleImport>(`/qc-inspections/schedule-imports/${encodeURIComponent(batchId)}`, {
+        params: { factory_id: factoryId },
+      })
+      return response.data
+    },
     async getWorkspace(factoryId: string, week: string) {
       const response = await client.get<QcWorkspace>('/qc-inspections/workspace', {
         params: { factory_id: factoryId, week },
@@ -471,10 +428,10 @@ export function createQcInspectionApi(client: QcInspectionHttpClient = http) {
       return response.data.items
     },
 
-    async createOrder(payload: Omit<QcOrderCreatePayload, 'request_id'>) {
+    async createOrder(payload: Omit<QcOrderCreatePayload, 'request_id'>, requestId = createQcRequestId()) {
       const response = await client.post<QcInspectionOrder>('/qc-inspections/orders', {
         ...payload,
-        request_id: createQcRequestId(),
+        request_id: requestId,
       })
       return response.data
     },
@@ -503,10 +460,10 @@ export function createQcInspectionApi(client: QcInspectionHttpClient = http) {
       return response.data.items
     },
 
-    async createInspectionEvent(orderId: string, payload: QcInspectionEventPayload) {
+    async createInspectionEvent(orderId: string, payload: QcInspectionEventPayload, requestId = createQcRequestId()) {
       const response = await client.post<QcInspectionEvent>(
         `/qc-inspections/orders/${encodeURIComponent(orderId)}/events`,
-        { ...payload, request_id: createQcRequestId() },
+        { ...payload, request_id: requestId },
       )
       return response.data
     },
@@ -515,10 +472,11 @@ export function createQcInspectionApi(client: QcInspectionHttpClient = http) {
       orderId: string,
       eventId: string,
       payload: QcInspectionEventPayload & { expected_revision: number; reason: string },
+      requestId = createQcRequestId(),
     ) {
       const response = await client.patch<QcInspectionEvent>(
         `/qc-inspections/orders/${encodeURIComponent(orderId)}/events/${encodeURIComponent(eventId)}`,
-        { ...payload, request_id: createQcRequestId() },
+        { ...payload, request_id: requestId },
       )
       return response.data
     },
@@ -572,36 +530,7 @@ export function createQcInspectionApi(client: QcInspectionHttpClient = http) {
       }
     },
 
-    async previewRenameBatch(files: Array<{ fileId: string; file: File }>, groups: QcRenameGroupInput[], factoryId: string) {
-      const payload = new FormData()
-      files.forEach(({ fileId, file }) => {
-        payload.append('files', file)
-        payload.append('file_ids', fileId)
-      })
-      payload.append('metadata_json', JSON.stringify({
-        factory_id: factoryId,
-        groups,
-        request_id: createQcRequestId(),
-      }))
-      const response = await client.post<QcRenameBatch>(
-        '/qc-inspections/rename-batches/preview',
-        payload,
-        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180_000 },
-      )
-      return response.data
-    },
 
-    async executeRenameBatch(batchId: string, factoryId: string, expectedRevision: number) {
-      const response = await client.post<Blob>(
-        `/qc-inspections/rename-batches/${encodeURIComponent(batchId)}/execute`,
-        { factory_id: factoryId, expected_revision: expectedRevision, request_id: createQcRequestId() },
-        { responseType: 'blob', timeout: 180_000 },
-      )
-      return {
-        blob: response.data,
-        fileName: responseFileName(response.headers, `qc-report-renamed-${batchId}.zip`),
-      }
-    },
   }
 }
 

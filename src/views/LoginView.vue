@@ -71,7 +71,7 @@ let passwordResetPollTimer: ReturnType<typeof window.setTimeout> | undefined
 const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g
 const passwordChineseMessage = '密码不能包含中文，请使用英文、数字或符号'
-const brandLogoUrl = '/brand/huadeng_group_dynamic_logo.svg'
+const brandLogoUrl = '/brand/huadeng_group_dynamic_logo_topbar.svg'
 
 const recentAccountTitle = computed(() => {
   if (!recentAccount.value) {

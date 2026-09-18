@@ -104,8 +104,13 @@ export function useWorkspace() {
   let liveRunVersion = "";
   let liveRefreshPending = false;
   let disposed = false;
+  let liveSnapshotVersion = 0;
+  let dashboardRequestVersion = 0;
+  let dashboardInFlight = 0;
+  let foregroundRequests = 0;
   const live = useThreeDLive((snapshot) => {
     if (disposed || !dashboard.value) return;
+    liveSnapshotVersion++;
     dashboard.value.printers = snapshot.printers;
     dashboard.value.network_health = snapshot.network_health;
     if (snapshot.run_version !== liveRunVersion) liveRefreshPending = true;
@@ -148,6 +153,11 @@ export function useWorkspace() {
     return `${year}-${month}-${day}`;
   }
 
+  const recordCostSnapshot = ref<Record<string, unknown> | undefined>();
+  const pendingRecordImage = ref<File | null>(null);
+  const recordImageUrl = ref("");
+  const recordProductImageUrl = ref("");
+  const recordImageRetry = ref<{ id: string; revision: number; file: File; key: string } | null>(null);
   const recordForm = reactive({
     reason: "",
     allow_negative_stock: false,
@@ -269,11 +279,19 @@ export function useWorkspace() {
     ),
   );
   const selectedPrinter = ref("");
+  const recordSearchAllDates = ref(false);
+  function showProductRecords(name: string) {
+    listPages.records!.q = name;
+    listPages.records!.page = 1;
+    recordSearchAllDates.value = true;
+    activeTab.value = "records";
+  }
   const queryVersions: Record<string, number> = {};
   async function loadPage(kind: string, page = 1) {
     const state = listPages[kind]!;
     const version = (queryVersions[kind] = (queryVersions[kind] ?? 0) + 1);
     state.busy = true;
+    errorMessage.value = "";
     try {
       const result = await threeDPrintingApi.collection(kind, {
         page,
@@ -285,8 +303,8 @@ export function useWorkspace() {
         source: state.source,
         customer: state.customer,
         material: state.material,
-        date_from: dateFrom.value,
-        date_to: dateTo.value,
+        date_from: kind === "records" && recordSearchAllDates.value ? "" : dateFrom.value,
+        date_to: kind === "records" && recordSearchAllDates.value ? "" : dateTo.value,
       });
       if (version !== queryVersions[kind] || !dashboard.value) return;
       if (page > 1 && result.items.length === 0) {
@@ -299,7 +317,7 @@ export function useWorkspace() {
         [kind === "movements" ? "inventory_movements" : kind]: result.items,
       });
     } catch (error) {
-      errorMessage.value = getApiErrorMessage(error);
+      if (version === queryVersions[kind]) errorMessage.value = getApiErrorMessage(error);
     } finally {
       if (version === queryVersions[kind]) state.busy = false;
     }
@@ -361,12 +379,22 @@ export function useWorkspace() {
   }
 
   async function loadDashboard(background = false) {
-    if (!background) loading.value = true;
+    const requestVersion = ++dashboardRequestVersion;
+    const snapshotVersion = liveSnapshotVersion;
+    dashboardInFlight++;
+    if (!background) { foregroundRequests++; loading.value = true; }
     try {
-      dashboard.value = await threeDPrintingApi.dashboard(
+      const next = await threeDPrintingApi.dashboard(
         dateFrom.value,
         dateTo.value,
       );
+      if (disposed || requestVersion !== dashboardRequestVersion) return;
+      // The HTTP query may have begun before a newer live snapshot arrived.
+      if (dashboard.value && snapshotVersion !== liveSnapshotVersion) {
+        next.printers = dashboard.value.printers;
+        next.network_health = dashboard.value.network_health;
+      }
+      dashboard.value = next;
       Object.assign(settingsForm, dashboard.value.settings);
       listPages.products!.total = Number(
         dashboard.value.summary.productCount || dashboard.value.products.length,
@@ -384,7 +412,8 @@ export function useWorkspace() {
     } catch (error) {
       if (!background) errorMessage.value = getApiErrorMessage(error);
     } finally {
-      if (!background) loading.value = false;
+      dashboardInFlight--;
+      if (!background) { foregroundRequests--; loading.value = foregroundRequests > 0; }
     }
   }
 
@@ -410,7 +439,11 @@ export function useWorkspace() {
       dashboard.value?.products.find(
         (item) => item.id === recordForm.product_id,
       );
-    if (!product) return;
+    if (!product) {
+      recordProductImageUrl.value = "";
+      return;
+    }
+    recordProductImageUrl.value = product.image_url || "";
     recordForm.product_name = product.name;
     recordForm.material_name = product.material_name;
     recordForm.weight_g = product.weight_g;
@@ -421,6 +454,11 @@ export function useWorkspace() {
   }
 
   function resetRecordForm() {
+    recordImageRetry.value = null;
+    pendingRecordImage.value = null;
+    recordImageUrl.value = "";
+    recordProductImageUrl.value = "";
+    recordCostSnapshot.value = undefined;
     recordRequestKey.value = createRandomUuid();
     Object.assign(recordForm, {
       reason: "",
@@ -445,6 +483,11 @@ export function useWorkspace() {
   }
 
   function editRecord(record: ThreeDProductionRecord) {
+    recordImageRetry.value = null;
+    pendingRecordImage.value = null;
+    recordImageUrl.value = record.record_image_url || "";
+    recordProductImageUrl.value = record.product_image_url || "";
+    recordCostSnapshot.value = record.calculated_cost_snapshot || {};
     Object.assign(recordForm, record, {
       reason: "",
       allow_negative_stock: false,
@@ -455,6 +498,9 @@ export function useWorkspace() {
   }
 
   async function submitRecord() {
+    if (saving.value) return false;
+    saving.value = true;
+    errorMessage.value = "";
     const payload = {
       factory_id: FACTORY_ID,
       idempotency_key: recordRequestKey.value,
@@ -475,18 +521,52 @@ export function useWorkspace() {
       customer: recordForm.customer,
       remark: recordForm.remark,
     };
-    const ok = await mutate(
-      () =>
-        recordForm.id
+    let recordSaved = false;
+    try {
+      // Resolve an uncertain image response with its original key before another record edit.
+      if (recordImageRetry.value) {
+        recordSaved = true;
+        await uploadPendingRecordImage();
+        recordSaved = false;
+      }
+      const record = await (recordForm.id
           ? threeDPrintingApi.updateRecord(recordForm.id, {
               ...payload,
               revision: recordForm.revision,
             })
-          : threeDPrintingApi.createRecord(payload),
-      "记录已保存，请核对记录中的扣料状态",
-    );
-    if (ok) resetRecordForm();
-    return ok;
+          : threeDPrintingApi.createRecord(payload));
+      recordSaved = true;
+      // Persist the returned identity before uploading so retry cannot create another record.
+      recordForm.id = record.id;
+      recordForm.revision = record.revision;
+      recordCostSnapshot.value = record.calculated_cost_snapshot;
+      recordRequestKey.value = createRandomUuid();
+      if (pendingRecordImage.value) {
+        recordImageRetry.value = { id: record.id, revision: record.revision, file: pendingRecordImage.value, key: createRandomUuid() };
+        await uploadPendingRecordImage();
+      }
+      await loadDashboard(true);
+      showSuccess("记录已保存，请核对记录中的扣料状态");
+      resetRecordForm();
+      return true;
+    } catch (error) {
+      errorMessage.value = (recordSaved ? "记录已保存，" + (pendingRecordImage.value ? "图片上传失败，可重新保存重试：" : "列表刷新失败：") : "") + getApiErrorMessage(error);
+      return false;
+    } finally {
+      saving.value = false;
+    }
+  }
+
+  async function uploadPendingRecordImage() {
+    const request = recordImageRetry.value!;
+    const updated = await threeDPrintingApi.uploadRecordImage(request.id, request.revision, request.file, request.key);
+    if (updated.revision !== request.revision + 1) {
+      throw new Error("记录已被其他人修改，请关闭窗口并重新打开，避免覆盖他人的修改。");
+    }
+    recordForm.revision = updated.revision;
+    recordImageUrl.value = updated.record_image_url || "";
+    pendingRecordImage.value = null;
+    recordImageRetry.value = null;
   }
 
   async function removeRecord(record: ThreeDProductionRecord) {
@@ -912,7 +992,7 @@ export function useWorkspace() {
     if (disposed) return;
     live.start();
     refreshTimer = window.setInterval(() => {
-      if (!saving.value && (!live.connected.value || liveRefreshPending)) {
+      if (!saving.value && !dashboardInFlight && (!live.connected.value || liveRefreshPending)) {
         liveRefreshPending = false;
         void loadDashboard(true);
       }
@@ -926,6 +1006,8 @@ export function useWorkspace() {
   });
 
   return {
+    recordSearchAllDates,
+    showProductRecords,
     editSchedule,
     scheduleEditId,
     listPages,
@@ -960,6 +1042,11 @@ export function useWorkspace() {
     canControl,
     canReadAudit,
     recordForm,
+    recordCostSnapshot,
+    pendingRecordImage,
+    recordImageUrl,
+    recordProductImageUrl,
+    recordImageRetry,
     productForm,
     pendingProductImage,
     imageInputKey,

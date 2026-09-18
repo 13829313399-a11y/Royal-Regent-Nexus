@@ -82,6 +82,8 @@ from app.services.three_d_network_health import (
     store_network_health,
 )
 from app.services.three_d_printing import (
+    save_record_image,
+    record_image_path,
     MAX_PRODUCT_IMAGE_BYTES,
     THREE_D_DEPARTMENTS,
     acknowledge_printer_command,
@@ -469,6 +471,36 @@ def post_record(
     return production_record_out(
         create_production_record(db, payload, current_user, _request_id(request))
     )
+
+
+@router.post("/records/{record_id}/image", response_model=ThreeDProductionRecordOut)
+async def post_record_image(
+    record_id: str, request: Request, factory_id: str = Query(...),
+    revision: int = Query(..., ge=1), idempotency_key: str = Query(..., min_length=8, max_length=160), file: UploadFile = File(...),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "three_d_printing:operate", factory_id)
+    _ensure_permission(db, current_user, "three_d_printing:image_upload", factory_id)
+    try:
+        content = await file.read(MAX_PRODUCT_IMAGE_BYTES + 1)
+    finally:
+        await file.close()
+    record = save_record_image(db, record_id=record_id, factory_id=factory_id,
+        revision=revision, content=content, mime_type=(file.content_type or "").lower(),
+        user=current_user, idempotency_key=idempotency_key, request_id=_request_id(request))
+    return production_record_out(record)
+
+
+@router.get("/records/{record_id}/image")
+def get_record_image(record_id: str, factory_id: str,
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "three_d_printing:read", factory_id)
+    record = db.get(ThreeDPrintingProductionRecord, record_id)
+    if record is None or record.factory_id != factory_id or record.deleted_at:
+        raise HTTPException(404, "生产记录不存在")
+    return FileResponse(record_image_path(record), media_type="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=3600"})
 
 
 @router.put("/records/{record_id}", response_model=ThreeDProductionRecordOut)

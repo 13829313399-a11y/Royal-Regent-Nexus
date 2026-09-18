@@ -285,7 +285,12 @@ def test_frozen_costs_and_product_rename_do_not_rewrite_history(client):
     assert response.status_code == 200, response.text
     unchanged = next(x for x in dashboard(client)["records"] if x["id"] == row["id"])
     assert unchanged == row
-    assert dashboard(client)["summary"] == before
+    after = dashboard(client)["summary"]
+    # Frozen ledger totals are independent of the live legacy operating view.
+    assert {k: v for k, v in after.items() if k != "legacyDisplay"} == {
+        k: v for k, v in before.items() if k != "legacyDisplay"
+    }
+    assert after["legacyDisplay"]["laborCost"] == 999
     changed = edit(client, row, remark="只改备注")
     assert changed["calculated_cost_snapshot"] == row["calculated_cost_snapshot"]
     changed = edit(client, changed, weight_g=200)
@@ -461,7 +466,11 @@ def test_legacy_cost_snapshots_and_missing_evidence_never_use_current_rates(clie
     settings = before["settings"]
     response = client.put(BASE + "/settings", json={**settings, "labor_per_day": 5000})
     assert response.status_code == 200, response.text
-    assert dashboard(client)["summary"] == before["summary"]
+    after = dashboard(client)["summary"]
+    assert {k: v for k, v in after.items() if k != "legacyDisplay"} == {
+        k: v for k, v in before["summary"].items() if k != "legacyDisplay"
+    }
+    assert after["legacyDisplay"]["laborCost"] == 5000
     row = edit(client, row, remark="Historical note correction")
     assert (
         row["calculated_cost_snapshot"]

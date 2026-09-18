@@ -12,7 +12,7 @@ import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
-const qcInspectionOperationsView = () => import('@/views/QcInspectionOperationsView.vue')
+const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
 const qcInspectionFullPageMeta = {
   fullPage: true,
   requiresAuth: true,
@@ -340,13 +340,25 @@ const routes: RouteRecordRaw[] = [
     component: qcInspectionOperationsView,
     meta: {
       ...qcInspectionFullPageMeta,
-      title: 'QC 验货排期',
+      title: 'QC 验货总排期',
     },
+  },
+  {
+    path: '/modules/qc/inspection-operations/schedule-details',
+    name: 'qc-inspection-schedule-details',
+    component: qcInspectionOperationsView,
+    meta: { ...qcInspectionFullPageMeta, title: 'QC 排期明细' },
+  },
+  {
+    path: '/modules/qc/inspection-operations/order-records',
+    name: 'qc-inspection-order-records',
+    component: qcInspectionOperationsView,
+    meta: { ...qcInspectionFullPageMeta, title: 'QC 全部验货记录' },
   },
   {
     path: '/modules/qc/inspection-operations/orders/new',
     name: 'qc-inspection-order-new',
-    component: qcInspectionOperationsView,
+    redirect: (to) => ({ name: 'qc-inspection-schedule', query: { ...to.query, add: '1' } }),
     meta: {
       ...qcInspectionFullPageMeta,
       title: 'QC 临时订单录入',
@@ -382,10 +394,10 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/modules/qc/inspection-operations/report-renaming',
     name: 'qc-inspection-report-renaming',
-    component: qcInspectionOperationsView,
+    redirect: (to) => ({ name: 'qc-inspection-reports', query: to.query }),
     meta: {
       ...qcInspectionFullPageMeta,
-      title: 'QC 验货报告批量改名',
+      title: 'QC 报表中心',
     },
   },
   {

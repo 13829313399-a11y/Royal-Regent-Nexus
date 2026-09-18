@@ -410,6 +410,7 @@ class QcInspectionDispositionOut(QcInspectionDispositionInput):
 
 
 class QcInspectionEventCreate(QcMutationRequest):
+    expected_pending_order_revision: int | None = Field(default=None, ge=1)
     factory_id: str = Field(min_length=1, max_length=64)
     inspection_order_id: str = Field(min_length=1, max_length=96)
     event_type: QcInspectionEventType = "CUSTOMER"
@@ -642,6 +643,7 @@ class QcScheduleRowOut(BaseModel):
     factory_id: str
     batch_id: str
     source_row_no: int
+    source_sheet_name: str = ""
     customer_name: str
     sales_contract_no: str
     customer_item_no: str

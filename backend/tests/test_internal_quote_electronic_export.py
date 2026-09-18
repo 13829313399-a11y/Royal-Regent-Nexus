@@ -80,14 +80,14 @@ def test_imported_parts_split_by_component_without_allocating_overhead_to_ic_led
     sheet = workbook["报价明细"]
     blocks = []
     for component_id, name, raw_costs, battery_label, markup in [
-        ("a", "电话", [2.5, .3, .3], "AG13电池×3", 1.16),
-        ("b", "镜子", [1, .2, .5], "LR44电池×2", 1.25),
+        ("a", "电话", [2.5, .3, .3], "AG13电池×3（3pcs）", 1.16),
+        ("b", "镜子", [1, .2, .5], "LR44电池×2（2pcs）", 1.25),
     ]:
         start = _find_row(sheet, 3, f"{name} · 电子")
         cost = next(row for row in range(start + 1, sheet.max_row + 1) if sheet.cell(row, 3).value == "成本金额：")
         labels = [str(sheet.cell(row, 3).value) for row in range(start + 1, cost)]
         for category, expected in zip(("IC", "LED", "喇叭"), raw_costs):
-            rows = [row for row in range(start + 1, cost) if str(sheet.cell(row, 3).value).split("（")[0] == category]
+            rows = [row for row in range(start + 1, cost) if _justplay_electronic_category(str(sheet.cell(row, 3).value)) == category]
             assert sum(arithmetic_value(sheet, f"D{row}") for row in rows) == pytest.approx(expected)
             assert all("/$L$4" in sheet.cell(row, 4).value for row in rows)
         if component_id == "a":
@@ -112,7 +112,7 @@ def test_imported_parts_split_by_component_without_allocating_overhead_to_ic_led
         assert not any(sheet.cell(row, 3).value == "分配调整" for row in range(primary, start))
         blocks.append((start, cost, electronic_total))
     assert sum(total + .6 for _, _, total in blocks) + .1 == pytest.approx(float(context["factory_price_hkd"]), abs=.0005)
-    assert sheet.cell(_find_row(sheet, 3, "电池片"), 2).value == "五金"
+    assert sheet.cell(_find_row(sheet, 3, "电池片（1pcs）"), 2).value == "五金"
     usd_refs = [f"$D${cost+5}" for _, cost, _ in blocks]
     combined = [cell.value for row in sheet for cell in row if cell.data_type == "f" and all(ref in cell.value for ref in usd_refs)]
     assert combined and all(combined[0].count(ref) == 1 for ref in usd_refs)
@@ -151,8 +151,8 @@ def test_ordinary_customer_expands_electronic_and_battery_purchase_details():
     workbook, _, _, _ = _electronic_export_fixture(component_mode=False)
     sheet = workbook["报价明细"]
     assert not any(" · 电子" in str(cell.value) for row in sheet for cell in row)
-    assert sheet.cell(_find_row(sheet, 3, "IC"), 4).value.startswith("=0.85/$L$4*2")
-    assert sheet.cell(_find_row(sheet, 3, "AG13电池×3"), 4).value == "=0.17/$L$4*3"
+    assert sheet.cell(_find_row(sheet, 3, "A1 IC（2pcs）"), 4).value.startswith("=0.85/$L$4*2")
+    assert sheet.cell(_find_row(sheet, 3, "AG13电池×3（3pcs）"), 4).value == "=0.17/$L$4*3"
     workbook.close()
 
 
