@@ -528,7 +528,10 @@ onMounted(() => {
 <template>
   <main class="permission-approval-page">
     <div class="wrap">
-      <header class="topbar">
+      <header
+        class="topbar"
+        data-portal-region="users-header"
+      >
         <div class="topbar-left">
           <RouterLink class="home-exit-link" to="/">
             <ArrowLeft class="size-4" aria-hidden="true" />
@@ -584,7 +587,7 @@ onMounted(() => {
         </div>
       </section>
 
-      <div v-if="canManageUsers" class="stats">
+      <div v-if="canManageUsers" class="stats rrn-portal-region" data-portal-region="users-stats">
         <article class="stat stat-pending">
           <div class="row">
             <span class="ic amber"><Clock3 class="size-5" aria-hidden="true" /></span>

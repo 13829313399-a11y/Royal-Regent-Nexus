@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import { ArrowUpRight, ChevronRight } from '@lucide/vue'
+import { computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import type { EnterpriseModule, Tone } from '@/data/enterpriseMock'
+import type { EnterpriseModule } from '@/data/enterpriseMock'
 import StatusPill from '@/components/common/StatusPill.vue'
 
-defineProps<{
+const props = withDefaults(defineProps<{
   module: EnterpriseModule
   active?: boolean
-}>()
+  /** 门户首屏级联入场的次序，仅用于动画先后。 */
+  index?: number
+}>(), {
+  active: false,
+  index: 0,
+})
 
 const router = useRouter()
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
+
+/** 卡片自身是否是一个导航目标。没有目标的展示卡不呈现手型、焦点或键盘激活。 */
+const isNavigable = computed(() => Boolean(props.module.route))
 
 function openModule(module: EnterpriseModule) {
   if (!module.route) {
@@ -20,19 +29,29 @@ function openModule(module: EnterpriseModule) {
   void router.push(module.route)
 }
 
-const iconClasses: Record<Tone, string> = {
-  teal: 'bg-teal-50 text-teal-700',
-  blue: 'bg-blue-50 text-blue-700',
-  amber: 'bg-amber-50 text-amber-700',
-  red: 'bg-red-50 text-red-700',
-  slate: 'bg-slate-100 text-slate-700',
-  green: 'bg-emerald-50 text-emerald-700',
+/**
+ * 只有焦点落在卡片本身时才处理 Enter / Space。
+ * 内部链接获得焦点后按键会冒泡到这里，若不区分就会多跳一次路由。
+ */
+function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
+  if (event.target !== event.currentTarget) {
+    return
+  }
+  if (event.key !== 'Enter' && event.key !== ' ') {
+    return
+  }
+  event.preventDefault()
+  openModule(module)
 }
 </script>
 
 <template>
   <article
-    class="interactive-surface group relative overflow-hidden rounded-xl border p-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
+    class="portal-module-card interactive-surface group relative overflow-hidden rounded-xl border p-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
+    :data-featured="active ? 'true' : 'false'"
+    :data-navigable="isNavigable ? 'true' : 'false'"
+    :data-portal-tone="module.statusTone"
+    :style="{ '--portal-card-index': index }"
     :class="[
       active
         ? 'border-teal-300 bg-gradient-to-br from-white via-white to-teal-50/35 shadow-[0_12px_32px_-22px_rgba(13,148,136,0.5)]'
@@ -43,8 +62,7 @@ const iconClasses: Record<Tone, string> = {
     :tabindex="module.route ? 0 : undefined"
     :aria-label="module.route ? `打开${module.title}` : undefined"
     @click="openModule(module)"
-    @keydown.enter.prevent="openModule(module)"
-    @keydown.space.prevent="openModule(module)"
+    @keydown="handleKeydown($event, module)"
   >
     <span
       v-if="active"
@@ -53,81 +71,75 @@ const iconClasses: Record<Tone, string> = {
     />
     <div class="mb-5 flex items-start gap-4">
       <span
-        class="flex size-10 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ring-white/70 transition-transform duration-200 group-hover:scale-105"
-        :class="iconClasses[module.statusTone]"
+        class="portal-module-card__icon flex size-10 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ring-white/70 transition-transform duration-200 group-hover:scale-105"
       >
         <component :is="module.icon" class="size-5" aria-hidden="true" />
       </span>
       <div class="min-w-0">
-        <h3 class="truncate font-semibold text-slate-950">{{ module.title }}</h3>
-        <p class="mt-1 text-xs text-slate-500">{{ module.owner }}</p>
+        <h3 class="portal-module-card__title font-semibold text-slate-950">{{ module.title }}</h3>
+        <p class="portal-module-card__owner mt-1 text-xs text-slate-500">{{ module.owner }}</p>
       </div>
     </div>
-    <p class="min-h-10 text-sm leading-6 text-slate-700">{{ module.summary }}</p>
-    <div class="mt-4 grid gap-3 sm:grid-cols-3">
+    <p class="portal-module-card__summary text-sm leading-6 text-slate-700">{{ module.summary }}</p>
+    <div
+      v-if="module.statusMetrics.length"
+      class="portal-module-card__metrics mt-4 grid gap-3 sm:grid-cols-3"
+    >
       <div
         v-for="metric in module.statusMetrics"
         :key="`${module.id}-${metric.label}`"
-        class="rounded-lg border border-slate-200/80 bg-slate-50/70 px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]"
+        class="portal-module-card__metric rounded-lg border border-slate-200/80 bg-slate-50/70 px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]"
+        :data-tone="metric.tone"
       >
-        <p class="text-[11px] uppercase tracking-wide text-slate-500">{{ metric.label }}</p>
-        <p
-          class="mt-1 text-sm font-semibold"
-          :class="{
-            'text-teal-700': metric.tone === 'teal',
-            'text-blue-700': metric.tone === 'blue',
-            'text-amber-700': metric.tone === 'amber',
-            'text-red-700': metric.tone === 'red',
-            'text-slate-700': metric.tone === 'slate',
-            'text-emerald-700': metric.tone === 'green',
-          }"
-        >
-          {{ metric.value }}
-        </p>
+        <p class="portal-module-card__metric-label text-[11px] uppercase tracking-wide text-slate-500">{{ metric.label }}</p>
+        <p class="portal-module-card__metric-value mt-1 text-sm font-semibold">{{ metric.value }}</p>
       </div>
     </div>
-    <div class="mt-4 flex flex-wrap gap-2">
+    <div v-if="module.children.length" class="portal-module-card__children mt-4 flex flex-wrap gap-2">
       <span
         v-for="child in module.children.slice(0, 3)"
         :key="`${module.id}-${child.label}`"
-        class="rounded-full bg-slate-100/90 px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-200/70"
+        class="portal-module-card__child rounded-full bg-slate-100/90 px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-200/70"
       >
         {{ child.label }}
       </span>
     </div>
-    <div class="mt-4 flex items-center justify-between gap-3">
+    <div class="portal-module-card__footer mt-4 flex items-center justify-between gap-3">
       <StatusPill :label="module.status" :tone="module.statusTone" compact />
-      <span class="text-xs text-slate-500">{{ module.stats }}</span>
+      <span class="portal-module-card__stats text-xs text-slate-500">{{ module.stats }}</span>
     </div>
-    <div class="mt-5 flex flex-wrap items-center gap-3">
+    <div
+      v-if="module.route || module.href"
+      class="portal-module-card__actions mt-5 flex flex-wrap items-center gap-3"
+    >
       <RouterLink
         v-if="module.route"
         :to="module.route"
-        class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+        class="portal-action portal-action--primary inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
         @click.stop
       >
         查看模块
-        <ChevronRight class="size-4" aria-hidden="true" />
+        <ChevronRight class="portal-action__arrow size-4" aria-hidden="true" />
       </RouterLink>
       <RouterLink
         v-if="module.href && !isExternalLink(module.href)"
         :to="module.href"
-        class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/25"
+        class="portal-action portal-action--secondary inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/25"
         @click.stop
       >
         打开系统
-        <ArrowUpRight class="size-4" aria-hidden="true" />
+        <ArrowUpRight class="portal-action__arrow size-4" aria-hidden="true" />
       </RouterLink>
       <a
         v-else-if="module.href"
         :href="module.href"
         target="_blank"
         rel="noreferrer"
-        class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/25"
+        class="portal-action portal-action--secondary inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/25"
         @click.stop
       >
         打开系统
-        <ArrowUpRight class="size-4" aria-hidden="true" />
+        <ArrowUpRight class="portal-action__arrow size-4" aria-hidden="true" />
       </a>
     </div>
   </article>

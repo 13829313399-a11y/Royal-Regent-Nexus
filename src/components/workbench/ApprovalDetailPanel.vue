@@ -26,14 +26,14 @@ const riskTone: Tone = 'amber'
 </script>
 
 <template>
-  <SectionPanel title="审批详情" class="xl:sticky xl:top-[99px] xl:self-start">
+  <SectionPanel class="wb-detail xl:sticky xl:top-[99px] xl:self-start" title="审批详情">
     <template #action>
       <StatusPill :label="approval.status" :tone="approval.statusTone" compact />
     </template>
 
     <p class="mb-5 text-sm text-slate-500">{{ approval.id }}</p>
 
-    <div class="surface-subtle rounded-xl p-5">
+    <div class="wb-detail__card surface-subtle rounded-xl p-5">
       <h3 class="font-semibold text-slate-950">{{ approval.customer }} · 报价变更</h3>
       <div class="mt-4 grid grid-cols-2 gap-3 text-sm text-slate-700">
         <span>厂区：{{ approval.factory }}</span>
@@ -45,7 +45,7 @@ const riskTone: Tone = 'amber'
     </div>
 
     <div class="mt-7">
-      <h3 class="mb-5 font-semibold text-slate-950">流程进度</h3>
+      <h3 class="wb-detail__steps-title mb-5 font-semibold text-slate-950">流程进度</h3>
       <div class="space-y-7">
         <div v-for="(step, index) in approvalSteps" :key="step.label" class="relative grid grid-cols-[24px_1fr_auto] gap-3">
           <span

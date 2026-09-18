@@ -1,52 +1,56 @@
 <script setup lang="ts">
-import { Circle, Square, Triangle } from '@lucide/vue'
+import { Boxes, ClipboardCheck, FileStack, Package, TriangleAlert } from '@lucide/vue'
+import type { Component } from 'vue'
 import type { Metric, Tone } from '@/data/enterpriseMock'
 
-defineProps<{
+withDefaults(defineProps<{
   metric: Metric
-}>()
+  /** 仅用于级联入场的先后次序，不参与业务语义。 */
+  index?: number
+}>(), {
+  index: 0,
+})
 
-const toneClasses: Record<Tone, { iconBg: string; iconText: string }> = {
-  teal: { iconBg: 'bg-teal-50', iconText: 'text-teal-700' },
-  blue: { iconBg: 'bg-blue-50', iconText: 'text-blue-600' },
-  amber: { iconBg: 'bg-amber-50', iconText: 'text-amber-700' },
-  red: { iconBg: 'bg-red-50', iconText: 'text-red-700' },
-  slate: { iconBg: 'bg-slate-100', iconText: 'text-slate-700' },
-  green: { iconBg: 'bg-emerald-50', iconText: 'text-emerald-700' },
+/**
+ * 业务图标按标签映射；未覆盖的标签统一回退到中性的单据图标，
+ * 不建立额外的图标配置系统，也不改动共享 Metric 类型与示例数据。
+ */
+const labelIcons: Record<string, Component> = {
+  待处理审批: ClipboardCheck,
+  今日生产单: FileStack,
+  'QA 异常': TriangleAlert,
+  库存预警: Boxes,
+}
+
+const toneIcons: Record<Tone, Component> = {
+  teal: ClipboardCheck,
+  blue: FileStack,
+  amber: TriangleAlert,
+  red: Boxes,
+  slate: Package,
+  green: Package,
+}
+
+function resolveIcon(metric: Metric): Component {
+  const byLabel = labelIcons[metric.label] ?? labelIcons[metric.label.replace(/\s+/g, '')]
+  return byLabel ?? toneIcons[metric.tone] ?? Package
 }
 </script>
 
 <template>
-  <article class="enterprise-panel interactive-surface group relative overflow-hidden rounded-xl p-5 sm:p-6">
-    <span class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-teal-500/55 to-transparent" aria-hidden="true" />
-    <div class="flex items-start justify-between gap-4">
-      <div>
-        <p class="text-sm font-medium text-slate-600">{{ metric.label }}</p>
-        <p class="mt-3 text-3xl font-semibold tabular-nums tracking-[-0.035em] text-slate-950">{{ metric.value }}</p>
-        <p class="mt-2 text-xs leading-5 text-slate-500">{{ metric.detail }}</p>
+  <article
+    class="dashboard-metric enterprise-panel"
+    :data-tone="metric.tone"
+    :style="{ '--metric-index': index }"
+  >
+    <div class="relative z-[1] flex items-start justify-between gap-4">
+      <div class="min-w-0">
+        <p class="dashboard-metric__label">{{ metric.label }}</p>
+        <p class="dashboard-metric__value">{{ metric.value }}</p>
+        <p class="dashboard-metric__detail">{{ metric.detail }}</p>
       </div>
-      <span
-        class="flex size-10 items-center justify-center rounded-xl ring-1 ring-inset ring-white/75 transition-transform duration-200 group-hover:scale-105"
-        :class="toneClasses[metric.tone].iconBg"
-      >
-        <Circle
-          v-if="metric.tone === 'teal' || metric.tone === 'red' || metric.tone === 'green'"
-          class="size-4 fill-current"
-          :class="toneClasses[metric.tone].iconText"
-          aria-hidden="true"
-        />
-        <Square
-          v-else-if="metric.tone === 'blue'"
-          class="size-4 fill-current"
-          :class="toneClasses[metric.tone].iconText"
-          aria-hidden="true"
-        />
-        <Triangle
-          v-else
-          class="size-5 fill-current"
-          :class="toneClasses[metric.tone].iconText"
-          aria-hidden="true"
-        />
+      <span class="dashboard-metric__icon" data-metric-icon aria-hidden="true">
+        <component :is="resolveIcon(metric)" class="size-[19px]" :stroke-width="1.9" />
       </span>
     </div>
   </article>

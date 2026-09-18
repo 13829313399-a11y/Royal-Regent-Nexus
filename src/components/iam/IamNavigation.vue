@@ -8,8 +8,14 @@ withDefaults(defineProps<{
   title: string
   subtitle?: string
   compact?: boolean
+  /**
+   * 外观变体。默认 `default` 保持原有样式；
+   * `/system/iam/roles` 传入 `portal`，用户权限职位调整页保持默认。
+   */
+  appearance?: 'default' | 'portal'
 }>(), {
   compact: false,
+  appearance: 'default',
 })
 
 const authStore = useAuthStore()
@@ -23,7 +29,11 @@ const items = computed(() => [
 </script>
 
 <template>
-  <header class="border-b border-slate-200 bg-white">
+  <header
+    class="border-b border-slate-200 bg-white"
+    :class="appearance === 'portal' ? 'rrn-portal-region' : ''"
+    :data-portal-region="appearance === 'portal' ? 'roles-header' : undefined"
+  >
     <div
       class="mx-auto flex max-w-[1600px] flex-col px-5 xl:px-6"
       :class="compact ? 'gap-1 py-2' : 'gap-4 py-5'"

@@ -1,0 +1,1243 @@
+/**
+ * 门户内容样式 — 翡翠门户 · Jade Atlas（jade-v3）
+ *
+ * 由 ModuleCenterView 引入。所有普通选择器都以
+ * `.rrn-portal[data-portal-ui='jade-v3']` 为命名空间，token 只定义在门户根节点，
+ * 不写入 `:root` / `body` / `.app-shell`，因此离开门户页面后不会影响其他路由。
+ */
+
+/* ── 0. 门户变量与画布 ─────────────────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] {
+  --portal-canvas: #edf3f1;
+  --portal-surface: #fbfdfc;
+  --portal-surface-inner: #f0f6f3;
+  --portal-surface-active: #e2efeb;
+  --portal-surface-heading: #f1f7f4;
+  --portal-hero-start: #073f38;
+  --portal-hero-end: #0e5c51;
+  --portal-hero-ink: #f6fffa;
+  --portal-hero-muted: #c7dbd4;
+  --portal-ink: #183b35;
+  --portal-text-secondary: #536b65;
+  --portal-text-muted: #566f67;
+  --portal-border: #d5e2dc;
+  --portal-border-strong: #a7c5b8;
+  --portal-champagne: #c5ac7b;
+  --portal-radius-panel: 14px;
+  --portal-radius-inner: 10px;
+  --portal-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --portal-shadow-panel:
+    0 1px 2px rgb(16 55 44 / 4%),
+    0 12px 28px -24px rgb(12 57 44 / 24%);
+  --portal-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 76%);
+  /* 部门展示配置会覆盖这两个值，默认给品牌青绿。 */
+  --portal-accent: #2d6470;
+  --portal-accent-soft: #ebf3f5;
+
+  position: relative;
+  isolation: isolate;
+  border-radius: 18px;
+  background-color: var(--portal-canvas);
+  background-image:
+    radial-gradient(1100px 320px at 8% -60px, rgb(255 255 255 / 60%), transparent 72%),
+    radial-gradient(760px 280px at 97% 2%, rgb(14 92 81 / 5%), transparent 70%);
+}
+
+@container portal-page (min-width: 62rem) {
+  .rrn-portal[data-portal-ui='jade-v3'] {
+    margin-inline: -10px;
+    padding-block: 22px;
+    padding-inline: 26px;
+    border-radius: 20px;
+  }
+}
+
+/* ── 1. 部门身份区 ─────────────────────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 16px;
+  padding: 18px 22px;
+  background-image:
+    radial-gradient(120% 150% at 100% 0%, rgb(255 255 255 / 13%), transparent 58%),
+    linear-gradient(118deg, var(--portal-hero-start) 0%, var(--portal-hero-end) 100%);
+  box-shadow: 0 10px 28px -20px rgb(4 54 43 / 35%);
+  color: var(--portal-hero-ink);
+}
+
+/* 纹样只占右侧约四分之一到三分之一，低对比，不进入标题与按钮阅读区。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__motif {
+  position: absolute;
+  top: 50%;
+  right: -3%;
+  width: min(34%, 420px);
+  height: 150%;
+  color: rgb(246 255 250 / 9%);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__motif::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--portal-hero-start) 0%, rgb(7 63 56 / 0%) 46%);
+  content: '';
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header {
+  position: relative;
+  z-index: 1;
+}
+
+/* 页头内文字：标题近白，说明为柔和浅绿灰。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header :is(h1, h2) {
+  color: var(--portal-hero-ink);
+  font-size: 2rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  line-height: 1.16;
+  text-wrap: balance;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header > div > p {
+  color: var(--portal-hero-muted);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+/* 唯一的香槟装饰：分类前一小段细线。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header > div > div:first-child > span:first-child {
+  width: 24px;
+  height: 1px;
+  background: var(--portal-champagne);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header > div > div:first-child > span:last-child {
+  color: var(--portal-hero-muted);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-end: auto;
+  padding: 2px 8px;
+  border: 1px solid rgb(197 172 123 / 32%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 7%);
+  color: #d8e7e1;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__pending::before {
+  flex: none;
+  width: 13px;
+  height: 1px;
+  background: var(--portal-champagne);
+  content: '';
+}
+
+/* 未接入的页头动作：保留位置与文案，真实禁用但文字仍清晰可辨。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__actions [data-slot='button'] {
+  border-color: rgb(255 255 255 / 20%);
+  background-color: rgb(255 255 255 / 9%);
+  color: #dcebe5;
+  box-shadow: none;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__actions [data-slot='button']:disabled {
+  cursor: not-allowed;
+  opacity: 1;
+  border-color: rgb(255 255 255 / 16%);
+  background-color: rgb(255 255 255 / 7%);
+  color: #d4e4de;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__actions [data-slot='button'] svg {
+  color: #b6cdc5;
+}
+
+@container portal-page (max-width: 68rem) {
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-hero {
+    padding: 16px 18px;
+  }
+
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header :is(h1, h2) {
+    font-size: 1.75rem;
+  }
+
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-hero__pending {
+    white-space: normal;
+  }
+}
+
+@container portal-page (max-width: 40rem) {
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-hero {
+    border-radius: 14px;
+    padding: 14px 15px;
+  }
+
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header :is(h1, h2) {
+    font-size: 1.5rem;
+  }
+
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-hero__motif {
+    width: 46%;
+    color: rgb(246 255 250 / 7%);
+  }
+}
+
+/* ── 2. 部门切换轨道 ───────────────────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-tabs {
+  position: relative;
+  display: flex;
+  max-width: 100%;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 5px;
+  border: 1px solid var(--portal-border);
+  border-radius: var(--portal-radius-panel);
+  background-color: #e6eeea;
+  box-shadow: inset 0 1px 2px rgb(16 55 44 / 5%);
+  scrollbar-width: none;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-tabs__indicator {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  z-index: 0;
+  border-radius: 8px;
+  background-image: linear-gradient(135deg, #0a5348 0%, #0e5c51 100%);
+  box-shadow:
+    0 1px 2px rgb(4 54 43 / 26%),
+    0 8px 18px -12px rgb(4 54 43 / 55%);
+  pointer-events: none;
+  transition:
+    transform 240ms var(--portal-ease-out),
+    width 240ms var(--portal-ease-out),
+    height 200ms var(--portal-ease-out),
+    opacity 160ms var(--portal-ease-out);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-tabs__indicator[data-ready='false'] {
+  opacity: 0;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-tabs [data-slot='button'] {
+  position: relative;
+  z-index: 1;
+  min-width: 6rem;
+  border-color: transparent;
+  background-color: transparent;
+  color: #3f5b54;
+  box-shadow: none;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-tabs [data-slot='button']:hover {
+  background-color: rgb(255 255 255 / 62%);
+  color: var(--portal-ink);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-tabs [data-slot='button'][data-portal-current='true'] {
+  background-color: transparent;
+  color: var(--portal-hero-ink);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-tabs [data-slot='button'][data-portal-current='true']:hover {
+  background-color: transparent;
+  color: var(--portal-hero-ink);
+}
+
+/* ── 3. 外层面板 ───────────────────────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-section {
+  overflow: hidden;
+  border: 1px solid var(--portal-border);
+  border-radius: var(--portal-radius-panel);
+  background-image: none;
+  background-color: var(--portal-surface);
+  box-shadow: var(--portal-inner-highlight), var(--portal-shadow-panel);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-section > div:first-child {
+  border-bottom: 1px solid #e3ece8;
+  background-color: var(--portal-surface-heading);
+  padding: 14px 20px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-section > div:first-child h2 {
+  color: var(--portal-ink);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-section > div:first-child p {
+  color: var(--portal-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-section > div:last-child {
+  padding: 18px 20px 20px;
+}
+
+/* ── 4. 模块入口卡 ─────────────────────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-grid {
+  gap: 18px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card {
+  position: relative;
+  overflow: hidden;
+  padding: 18px;
+  border: 1px solid var(--portal-border);
+  border-radius: var(--portal-radius-panel);
+  background-image: none;
+  background-color: var(--portal-surface);
+  box-shadow: var(--portal-inner-highlight), 0 1px 2px rgb(16 55 44 / 4%);
+  transition:
+    transform 160ms var(--portal-ease-out),
+    border-color 160ms var(--portal-ease-out),
+    box-shadow 160ms var(--portal-ease-out);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card[data-featured='true'] {
+  border-color: #bcd6c9;
+  background-color: var(--portal-surface-active);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card[data-featured='true']::before {
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background-image: linear-gradient(180deg, #0e5c51 0%, rgb(14 92 81 / 22%) 100%);
+  content: '';
+}
+
+/* 只有确实有导航目标时才轻抬与强化边界。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card[data-navigable='true']:hover {
+  transform: translateY(-2px);
+  border-color: var(--portal-border-strong);
+  box-shadow:
+    var(--portal-inner-highlight),
+    0 2px 4px rgb(16 55 44 / 6%),
+    0 16px 30px -22px rgb(12 57 44 / 30%);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--portal-radius-inner);
+  background-color: var(--portal-accent-soft);
+  color: var(--portal-accent);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 72%);
+  transition: transform 180ms var(--portal-ease-out);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card[data-navigable='true']:hover .portal-module-card__icon {
+  transform: translateY(-1px);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__title {
+  color: var(--portal-ink);
+  font-size: 0.9688rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.35;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__owner {
+  margin-top: 4px;
+  color: var(--portal-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__summary {
+  margin-top: 12px;
+  color: var(--portal-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+/* 指标：一条连续承载带 + 分隔线，而不是三个嵌套白盒。
+   用分隔线而不是带背景的网格，指标少于三个时不会留下空的深色格。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metrics {
+  display: flex;
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid #dfeae4;
+  border-radius: var(--portal-radius-inner);
+  background-color: var(--portal-surface-inner);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 8px 11px;
+  background-color: transparent;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric + .portal-module-card__metric {
+  border-left: 1px solid #dfeae4;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric-label {
+  color: var(--portal-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric-value {
+  margin-top: 2px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric[data-tone='teal'] .portal-module-card__metric-value {
+  color: #0d5f52;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric[data-tone='blue'] .portal-module-card__metric-value {
+  color: #245f7b;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric[data-tone='amber'] .portal-module-card__metric-value {
+  color: #8c5705;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric[data-tone='red'] .portal-module-card__metric-value {
+  color: #a6383b;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric[data-tone='green'] .portal-module-card__metric-value {
+  color: #1f6b4f;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__metric[data-tone='slate'] .portal-module-card__metric-value {
+  color: #445a54;
+}
+
+/* 子项：薄型标签，不改成可点击入口。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__children {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__child {
+  padding: 1px 9px;
+  border: 1px solid #dbe7e1;
+  border-radius: 999px;
+  background-color: #f4f9f6;
+  color: var(--portal-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e6efea;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__stats {
+  color: var(--portal-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  text-align: right;
+  text-wrap: pretty;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* 操作落点：重点卡实心青绿，普通卡浅底青绿，次操作保持次级。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding-inline: 14px;
+  border: 1px solid transparent;
+  border-radius: var(--portal-radius-inner);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background-color 150ms var(--portal-ease-out),
+    border-color 150ms var(--portal-ease-out),
+    color 150ms var(--portal-ease-out),
+    transform 140ms var(--portal-ease-out);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-action--primary {
+  background-color: #0e5c51;
+  color: #f4fffb;
+  box-shadow: 0 1px 2px rgb(4 54 43 / 18%);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-action--primary:hover {
+  background-color: #0a4c43;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-action--primary:active {
+  transform: translateY(1px);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card:not([data-featured='true']) .portal-action--primary {
+  border-color: #c6ded3;
+  background-color: #e6f2ec;
+  color: #0b5147;
+  box-shadow: none;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card:not([data-featured='true']) .portal-action--primary:hover {
+  background-color: #d9ece3;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-action--secondary {
+  border-color: var(--portal-border);
+  background-color: var(--portal-surface);
+  color: var(--portal-text-secondary);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-action--secondary:hover {
+  border-color: var(--portal-border-strong);
+  background-color: #f1f7f4;
+  color: var(--portal-ink);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-action__arrow {
+  transition: transform 160ms var(--portal-ease-out);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-action:hover .portal-action__arrow {
+  transform: translateX(2px);
+}
+
+/* ── 5. 推荐下一批模块：规划备忘条 ─────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-candidates {
+  position: relative;
+  margin-top: 20px;
+  padding: 16px 18px 17px;
+  border: 1px solid #dfeae4;
+  border-radius: var(--portal-radius-inner);
+  background-color: #f2f8f5;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-candidates::before {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 0;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background-color: rgb(14 92 81 / 28%);
+  content: '';
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-candidates__title {
+  color: var(--portal-ink);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-candidates__list {
+  margin-top: 8px;
+  color: var(--portal-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-candidates__meter {
+  margin-top: 14px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-candidates__meter [role='progressbar'] {
+  background-color: #dfeae4;
+  box-shadow: none;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-candidates__note {
+  margin-top: 10px;
+  color: var(--portal-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+/* ── 6. 右栏：模块聚焦 ─────────────────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__title {
+  color: var(--portal-ink);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.35;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__owner {
+  margin-top: 4px;
+  color: var(--portal-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__summary {
+  color: var(--portal-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__metrics {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid #dfeae4;
+  border-radius: var(--portal-radius-inner);
+  background-color: var(--portal-surface-inner);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__metric {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 8px 11px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__metric + .portal-focus__metric {
+  border-left: 1px solid #dfeae4;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__metric-label {
+  color: var(--portal-text-muted);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__metric-value {
+  margin-top: 2px;
+  color: var(--portal-ink);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__label {
+  color: var(--portal-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__todos {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__todo {
+  padding: 8px 11px;
+  border-left: 2px solid #cde0d7;
+  border-radius: 0 var(--portal-radius-inner) var(--portal-radius-inner) 0;
+  background-color: #f3f8f6;
+  color: var(--portal-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-focus__empty {
+  padding: 22px 18px;
+  border: 1px dashed var(--portal-border-strong);
+  border-radius: var(--portal-radius-inner);
+  background-color: #f6faf8;
+  color: var(--portal-text-muted);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  text-align: center;
+}
+
+/* ── 7. 权限矩阵：像矩阵，不像勾选表单 ─────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-matrix {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 52px);
+  align-items: center;
+  font-size: 0.875rem;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-matrix__head {
+  padding-bottom: 8px;
+  color: var(--portal-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-matrix__role {
+  padding-block: 9px;
+  border-top: 1px solid #e6efea;
+  color: #33544c;
+  font-weight: 500;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-matrix__cell {
+  display: flex;
+  justify-content: center;
+  padding-block: 9px;
+  border-top: 1px solid #e6efea;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-matrix__mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-matrix__mark[data-granted='true'] {
+  background-color: #0e5c51;
+  color: #f4fffb;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-matrix__mark[data-granted='false'] {
+  background-color: #eef3f1;
+  color: #9fb4ac;
+  box-shadow: inset 0 0 0 1px #dde8e2;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-matrix__note {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed #dfeae4;
+  color: var(--portal-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+/* ── 8. 部门待办 ───────────────────────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-todo {
+  display: flex;
+  gap: 11px;
+  padding: 11px 12px;
+  border: 1px solid #e4eee8;
+  border-radius: var(--portal-radius-inner);
+  background-color: var(--portal-surface-inner);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-todo + .portal-todo {
+  margin-top: 8px;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-todo__index {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background-color: #e2efeb;
+  color: #0b5147;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-todo__title {
+  color: var(--portal-ink);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-todo__meta {
+  margin-top: 3px;
+  color: var(--portal-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-todo__empty {
+  padding: 18px 14px;
+  border: 1px dashed var(--portal-border-strong);
+  border-radius: var(--portal-radius-inner);
+  background-color: #f6faf8;
+  color: var(--portal-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* ── 9. 跨厂区工作台：筛选面、列表、详情 ───────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-filters {
+  border: 1px solid var(--portal-border);
+  background-image: none;
+  background-color: #f4f9f7;
+  box-shadow: var(--portal-inner-highlight), 0 1px 2px rgb(16 55 44 / 4%);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-filters > div > div:first-child {
+  border-color: #dbe7e1;
+  background-color: #eef4f1;
+  color: var(--portal-text-muted);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list {
+  overflow: hidden;
+  border: 1px solid var(--portal-border);
+  border-radius: var(--portal-radius-panel);
+  background-image: none;
+  background-color: var(--portal-surface);
+  box-shadow: var(--portal-inner-highlight), var(--portal-shadow-panel);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list > div:first-child {
+  border-bottom: 1px solid #e3ece8;
+  background-color: var(--portal-surface-heading);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list > div:first-child h2 {
+  color: var(--portal-ink);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list > div:first-child p {
+  color: var(--portal-text-muted);
+}
+
+/* 硬编码的“共 128 条”属于示例语境，在门户里补一处标签，不包装成真实查询总数。 */
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list__count {
+  border: 1px solid #dbe7e1;
+  background-color: #eef4f1;
+  color: var(--portal-text-secondary);
+  box-shadow: none;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list__count::after {
+  color: var(--portal-text-muted);
+  content: ' · 示例';
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list__head {
+  border-color: #dbe7e1;
+  background-color: #eef4f1;
+  color: var(--portal-text-muted);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list__row {
+  border-color: var(--portal-border);
+  background-color: var(--portal-surface);
+  box-shadow: none;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list__row:hover {
+  border-color: var(--portal-border-strong);
+  background-color: #f6faf8;
+}
+
+/* 当前选中行：清晰的内侧青绿线 + 浅底，不使用整行巨大阴影。 */
+.rrn-portal[data-portal-ui='jade-v3'] .wb-list__row[data-selected='true'] {
+  border-color: #a7c5b8;
+  background-image: none;
+  background-color: #e9f4ef;
+  box-shadow: inset 3px 0 0 #0e5c51;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-detail {
+  overflow: hidden;
+  border: 1px solid var(--portal-border);
+  border-radius: var(--portal-radius-panel);
+  background-image: none;
+  background-color: var(--portal-surface);
+  box-shadow: var(--portal-inner-highlight), var(--portal-shadow-panel);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-detail > div:first-child {
+  border-bottom: 1px solid #e3ece8;
+  background-color: var(--portal-surface-active);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-detail > div:first-child h2 {
+  color: var(--portal-ink);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-detail__card {
+  border: 1px solid #dde9e3;
+  background-image: none;
+  background-color: var(--portal-surface-inner);
+  box-shadow: var(--portal-inner-highlight);
+}
+
+.rrn-portal[data-portal-ui='jade-v3'] .wb-detail__steps-title {
+  color: var(--portal-ink);
+  font-size: 0.9375rem;
+}
+
+/* 页头纹样与装饰不参与阅读，文字保持足够对比。 */
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header > div > div:first-child > span:last-child,
+.rrn-portal[data-portal-ui='jade-v3'] .portal-hero__header :is(h1, h2) {
+  text-shadow: 0 1px 2px rgb(4 54 43 / 22%);
+}
+
+/* ── 10. 成员目录：更轻的页头 + 四张状态卡 + 成员卡 ─────────────────── */
+
+/* 目录页页头比部门身份区更轻：浅翡翠承载面，不套用大块深色构图。 */
+.rrn-portal[data-portal-region='people'] .people-hero {
+  border: 1px solid var(--portal-border);
+  border-radius: var(--portal-radius-panel);
+  padding: 16px 20px;
+  background-color: #f2f8f5;
+  background-image: linear-gradient(160deg, #eef6f2 0%, #f7fbf9 100%);
+  box-shadow: var(--portal-inner-highlight), 0 1px 2px rgb(16 55 44 / 4%);
+}
+
+.rrn-portal[data-portal-region='people'] .people-hero :is(h1, h2) {
+  color: var(--portal-ink);
+  font-size: 1.625rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.rrn-portal[data-portal-region='people'] .people-hero > div > div:first-child > span:first-child {
+  width: 22px;
+  background: var(--portal-champagne);
+}
+
+.rrn-portal[data-portal-region='people'] .people-hero > div > div:first-child > span:last-child {
+  color: #2f6b5d;
+}
+
+.rrn-portal[data-portal-region='people'] .people-hero > div > p {
+  color: var(--portal-text-muted);
+}
+
+.rrn-portal[data-portal-region='people'] .people-stat {
+  border: 1px solid var(--portal-border);
+  background-image: none;
+  background-color: var(--portal-surface);
+  box-shadow: var(--portal-inner-highlight), 0 1px 2px rgb(16 55 44 / 4%);
+  padding: 14px 16px;
+}
+
+.rrn-portal[data-portal-region='people'] .people-stat:hover {
+  border-color: var(--portal-border-strong);
+}
+
+.rrn-portal[data-portal-region='people'] .people-stat__label {
+  color: var(--portal-text-muted);
+}
+
+.rrn-portal[data-portal-region='people'] .people-stat__value {
+  color: var(--portal-ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* 选中的状态卡用深青绿实体面，其余只做语义点缀。 */
+.rrn-portal[data-portal-region='people'] .people-stat[aria-pressed='true'] {
+  border-color: #0b5147;
+  background-color: var(--shell-active, #0e5c51);
+  box-shadow: 0 10px 24px -20px rgb(4 54 43 / 65%);
+}
+
+.rrn-portal[data-portal-region='people'] .people-stat[aria-pressed='true'] .people-stat__label {
+  color: #c9e3da;
+}
+
+.rrn-portal[data-portal-region='people'] .people-stat[aria-pressed='true'] .people-stat__value {
+  color: #f6fffa;
+}
+
+.rrn-portal[data-portal-region='people'] .people-stat[data-stat-tone='teal']:not([aria-pressed='true']) {
+  border-color: #c6ded3;
+  background-color: #f2f9f5;
+}
+
+.rrn-portal[data-portal-region='people'] .people-stat[data-stat-tone='amber']:not([aria-pressed='true']) {
+  border-color: #ecdcc0;
+  background-color: #fdf8ef;
+}
+
+/* 成员卡：只在目录页生效，成员抽屉的 variant="drawer" 不受影响。 */
+.rrn-portal[data-portal-region='people'] [data-directory-member][data-directory-variant='default'] {
+  border-color: var(--portal-border);
+  background-color: var(--portal-surface);
+  box-shadow: var(--portal-inner-highlight), 0 1px 2px rgb(16 55 44 / 4%);
+  transition:
+    border-color 160ms var(--portal-ease-out),
+    box-shadow 160ms var(--portal-ease-out);
+}
+
+.rrn-portal[data-portal-region='people'] [data-directory-member][data-directory-variant='default']:hover {
+  border-color: var(--portal-border-strong);
+  box-shadow:
+    var(--portal-inner-highlight),
+    0 2px 4px rgb(16 55 44 / 6%),
+    0 14px 26px -22px rgb(12 57 44 / 28%);
+}
+
+.rrn-portal[data-portal-region='people'] .portal-member-name {
+  color: var(--portal-ink);
+  font-size: 0.9375rem;
+  letter-spacing: -0.01em;
+}
+
+.rrn-portal[data-portal-region='people'] .portal-member-position {
+  color: var(--portal-text-secondary);
+}
+
+.rrn-portal[data-portal-region='people'] .portal-member-org {
+  color: var(--portal-text-muted);
+}
+
+.rrn-portal[data-portal-region='people'] .people-members > div:last-child > p:last-child {
+  border-top-color: #e6efea;
+  color: var(--portal-text-muted);
+}
+
+/* ── 11. 局部入口：公共工具栏 / 账号入口 / 职位导航 ─────────────────── */
+/*
+ * 这三个入口是独立完整页面，不套 `.rrn-portal` 内容根：只让被允许的页头、
+ * 视图切换和概览卡取得同一组展示变量，不把样式传给后方工作区。
+ */
+
+.rrn-portal-region,
+[data-portal-region] {
+  --portal-ink: #183b35;
+  --portal-text-secondary: #536b65;
+  --portal-text-muted: #566f67;
+  --portal-border: #d5e2dc;
+  --portal-border-strong: #a7c5b8;
+  --portal-champagne: #c5ac7b;
+  --portal-surface: #fbfdfc;
+  --portal-surface-inner: #f0f6f3;
+  --portal-radius-panel: 14px;
+  --portal-radius-inner: 10px;
+  --portal-shadow-panel:
+    0 1px 2px rgb(16 55 44 / 4%),
+    0 12px 28px -24px rgb(12 57 44 / 24%);
+  --portal-inner-highlight: inset 0 1px 0 rgb(255 255 255 / 76%);
+}
+
+/* 公共工具栏：只处理现有页头与其操作按钮，不进入 .dt-desk 工作区。 */
+.rrn-portal-region[data-portal-region='tools-header'] {
+  border-bottom: 1px solid var(--portal-border);
+  padding-bottom: 14px;
+}
+
+.rrn-portal-region[data-portal-region='tools-header'] > div > div:first-child > span:first-child {
+  width: 22px;
+  background: var(--portal-champagne);
+}
+
+.rrn-portal-region[data-portal-region='tools-header'] > div > div:first-child > span:last-child {
+  color: #2f6b5d;
+}
+
+.rrn-portal-region[data-portal-region='tools-header'] :is(h1, h2) {
+  color: var(--portal-ink);
+  letter-spacing: -0.03em;
+}
+
+.rrn-portal-region[data-portal-region='tools-header'] > div > p {
+  color: var(--portal-text-muted);
+}
+
+.rrn-portal-region[data-portal-region='tools-header'] [data-slot='button'] {
+  border-color: var(--portal-border);
+  background-color: var(--portal-surface);
+  color: #33544c;
+  box-shadow: var(--portal-inner-highlight);
+}
+
+.rrn-portal-region[data-portal-region='tools-header'] [data-slot='button']:hover {
+  border-color: var(--portal-border-strong);
+  background-color: #eef6f2;
+  color: var(--portal-ink);
+}
+
+.rrn-portal-region[data-portal-region='tools-header'] [data-slot='button'][aria-pressed='true'] {
+  border-color: #0b5147;
+  background-color: #0e5c51;
+  color: #f4fffb;
+  box-shadow: none;
+}
+
+/* 账号入口页头：保留原高度策略与位置，只做细分隔与青绿强调。 */
+.permission-approval-page [data-portal-region='users-header'] {
+  --portal-ink: #183b35;
+  --portal-border: #d5e2dc;
+  --portal-border-strong: #a7c5b8;
+  border-bottom-color: var(--portal-border);
+}
+
+.permission-approval-page [data-portal-region='users-header'] .brand .logo {
+  background-color: #e2efeb;
+  color: #0b5147;
+}
+
+.permission-approval-page [data-portal-region='users-header'] .brand h1 {
+  color: var(--portal-ink);
+}
+
+.permission-approval-page [data-portal-region='users-header'] .brand p {
+  color: #566f67;
+}
+
+.permission-approval-page [data-portal-region='users-header'] .home-exit-link {
+  border-color: var(--portal-border);
+  color: #3f5b54;
+}
+
+.permission-approval-page [data-portal-region='users-header'] .home-exit-link:hover {
+  border-color: var(--portal-border-strong);
+  background-color: #eef6f2;
+  color: var(--portal-ink);
+}
+
+.permission-approval-page [data-portal-region='users-header'] .view-tabs > button.active {
+  background-color: #0e5c51;
+  color: #f4fffb;
+  box-shadow: 0 6px 16px -12px rgb(4 54 43 / 70%);
+}
+
+/* 四张概览卡：真实数量为中心，减少重复白面。 */
+.permission-approval-page [data-portal-region='users-stats'] {
+  --portal-ink: #183b35;
+  --portal-border: #d5e2dc;
+}
+
+.permission-approval-page [data-portal-region='users-stats'] > :is(article, div, section) {
+  border-color: var(--portal-border);
+  background-image: none;
+  background-color: #fbfdfc;
+  box-shadow: var(--portal-inner-highlight), 0 1px 2px rgb(16 55 44 / 4%);
+}
+
+.permission-approval-page [data-portal-region='users-stats'] > :is(article, div, section):first-child {
+  background-image: linear-gradient(162deg, #e2efeb 0%, #fbfdfc 68%);
+}
+
+/* 职位导航页头：紧凑高度、sticky 位置与结构不变。 */
+[data-portal-region='roles-header'] {
+  --portal-ink: #183b35;
+  --portal-border: #d5e2dc;
+  --portal-border-strong: #a7c5b8;
+  background-color: rgb(251 253 252 / 96%);
+}
+
+[data-portal-region='roles-header'] > div > div:first-child > div:first-child {
+  color: #2f6b5d;
+}
+
+[data-portal-region='roles-header'] :is(h1, h2) {
+  color: var(--portal-ink);
+}
+
+[data-portal-region='roles-header'] > div > div:first-child > p {
+  color: #566f67;
+}
+
+[data-portal-region='roles-header'] nav [aria-current='page'] {
+  background-color: #0e5c51;
+  color: #f4fffb;
+}
+
+[data-portal-region='roles-header'] nav a:hover {
+  background-color: #eef6f2;
+}
+
+/* ── 12. 首屏模块卡揭示 ────────────────────────────────────────────── */
+
+.rrn-portal[data-portal-ui='jade-v3'] .portal-module-card {
+  animation: rrn-portal-card-in 250ms var(--portal-ease-out) both;
+  animation-delay: calc(var(--portal-card-index, 0) * 32ms);
+}
+
+@keyframes rrn-portal-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── 13. 减少动态效果 ──────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-module-card {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-module-card[data-navigable='true']:hover {
+    transform: none;
+  }
+
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-module-card__icon,
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-action,
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-action__arrow {
+    transform: none !important;
+  }
+
+  /* 只关闭过渡，指示器的定位 transform 必须保留，否则当前部门会显示在错误位置。 */
+  .rrn-portal[data-portal-ui='jade-v3'] .portal-tabs__indicator {
+    transition: none !important;
+  }
+}

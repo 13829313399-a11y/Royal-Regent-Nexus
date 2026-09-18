@@ -23,6 +23,8 @@ const emit = defineEmits<{
     class="flex min-w-0 items-center gap-3 rounded-xl border border-slate-200/80 bg-white px-3 py-3 shadow-sm"
     :class="props.variant === 'drawer' ? 'directory-member-card' : ''"
     :data-presence="member.presence_state"
+    data-directory-member
+    :data-directory-variant="props.variant"
     :style="props.variant === 'drawer' ? { '--member-delay': `${Math.min(props.index, 10) * 42}ms` } : undefined"
   >
     <button
@@ -40,11 +42,11 @@ const emit = defineEmits<{
     </button>
     <div class="min-w-0 flex-1">
       <div class="flex min-w-0 items-center justify-between gap-2">
-        <h3 class="truncate text-sm font-semibold text-slate-950">{{ member.display_name }}</h3>
+        <h3 class="portal-member-name truncate text-sm font-semibold text-slate-950">{{ member.display_name }}</h3>
         <PresenceBadge :state="member.presence_state" />
       </div>
-      <p class="mt-1 truncate text-xs text-slate-600">{{ member.position }}</p>
-      <p v-if="props.variant !== 'drawer'" class="mt-1 truncate text-[11px] text-slate-500">
+      <p class="portal-member-position mt-1 truncate text-xs text-slate-600">{{ member.position }}</p>
+      <p v-if="props.variant !== 'drawer'" class="portal-member-org mt-1 truncate text-[11px] text-slate-500">
         {{ directoryFactoryLabel(member.primary_factory_id) }} · {{ directoryDepartmentLabel(member.primary_department) }}
       </p>
     </div>

@@ -353,6 +353,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleWindowKeydown)
     <IamNavigation
       data-testid="role-templates-sticky-navigation"
       compact
+      appearance="portal"
       class="iam-navigation sticky top-0 z-30 shrink-0 shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
       title="内置职位权限"
       subtitle="查看系统内置职位的权限范围与定义状态。"
