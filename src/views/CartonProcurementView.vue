@@ -182,8 +182,14 @@ const selectedOrderNos = ref<string[]>([])
 const selectedExceptionNos = ref<string[]>([])
 const bulkExceptionNote = ref('')
 const deleteHistoryTarget = ref<CartonOrderResponse | null>(null)
+const deleteHistoryTargets = ref<CartonOrderResponse[]>([])
 const deleteHistoryReason = ref('历史订单导入有误')
 const deletingHistory = ref(false)
+const undoImportTarget = ref<CartonImportBatchResponse | null>(null)
+const undoImportReason = ref('本次导入文件有误')
+const undoingImport = ref(false)
+const selectedWeeklyBatchId = ref('')
+const selectedInspectionBatchId = ref('')
 const replenishTarget = ref<CartonOrderResponse | null>(null)
 const replenishResponsibility = ref<'' | 'OWN' | 'SUPPLIER'>('')
 const replenishReason = ref('')
@@ -576,13 +582,18 @@ const activeFactory = computed(() =>
   factoryContexts.find((factory) => factory.id === selectedFactoryId.value)
   ?? factoryContexts.find((factory) => factory.id === 'huaxing')!,
 )
-const canAdjustSubmittedOrders = computed(() =>
-  authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'carton')
-  || authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'pmc-warehouse'),
-)
 const canIssuePurchaseOrders = computed(() =>
   authStore.can('carton_procurement:order_write', selectedFactoryId.value, 'carton')
   || authStore.can('carton_procurement:order_write', selectedFactoryId.value, 'pmc-warehouse'),
+)
+const canWriteCartonInventory = computed(() =>
+  authStore.can('carton_procurement:inventory_write', selectedFactoryId.value, 'carton')
+  || authStore.can('carton_procurement:inventory_write', selectedFactoryId.value, 'pmc-warehouse'),
+)
+const canAdjustSubmittedOrders = computed(() =>
+  authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'carton')
+  || authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'pmc-warehouse')
+  || (canIssuePurchaseOrders.value && canWriteCartonInventory.value),
 )
 const canManageClosingPrices = computed(() =>
   authStore.can('carton_procurement:closing_manage', selectedFactoryId.value, 'carton')
@@ -768,6 +779,11 @@ const selectedOrdersCanCancel = computed(() =>
   selectedOrders.value.length > 0
   && selectedOrders.value.every((order) => order.status === 'CONFIRMED'),
 )
+const selectedOrdersCanDeleteHistory = computed(() => apiConnected.value && canIssuePurchaseOrders.value
+  && selectedOrders.value.length > 0 && selectedOrders.value.length <= 100
+  && selectedOrders.value.every(order => order.can_delete_history))
+const canUndoScheduleImport = computed(() => authStore.can('carton_procurement:import', selectedFactoryId.value, 'pmc-warehouse')
+  || authStore.can('carton_procurement:import', selectedFactoryId.value, 'carton'))
 
 const visibleWeeklyChecks = computed(() => localWeeklyChecks.filter((row) =>
   (!weeklyOnlyAttention.value || row.result !== '已匹配') && matchesCustomer(row.customer)
@@ -1304,6 +1320,10 @@ watch(selectedFactoryId, (factoryId, previousFactory) => {
   selectedExceptionNos.value = []
   bulkExceptionNote.value = ''
   deleteHistoryTarget.value = null
+  deleteHistoryTargets.value = []
+  undoImportTarget.value = null
+  selectedWeeklyBatchId.value = ''
+  selectedInspectionBatchId.value = ''
   replenishTarget.value = null
   replenishQuantities.value = {}
   historyItemSuggestions.value = []
@@ -1801,7 +1821,7 @@ const replenishPositions = computed(() => {
   return localInventoryBalances.filter(row => row.orderLineId && ids.has(row.orderLineId) && row.balance > 0 && row.locationId)
 })
 function canReplenishOrder(orderNo: string) {
-  return canIssuePurchaseOrders.value && authStore.can('carton_procurement:inventory_write', selectedFactoryId.value)
+  return canIssuePurchaseOrders.value && canWriteCartonInventory.value
     && ['PARTIALLY_RECEIVED', 'COMPLETED'].includes(rawOrderStatus(orderNo))
 }
 function openReplenishOrder(orderNo: string) {
@@ -1843,17 +1863,24 @@ function canDeleteHistoryOrder(orderNo: string) {
 }
 
 async function deleteHistoryOrder() {
-  const order = deleteHistoryTarget.value
-  if (!order || deletingHistory.value || deleteHistoryReason.value.trim().length < 4) return
+  const orders = deleteHistoryTarget.value ? [deleteHistoryTarget.value] : deleteHistoryTargets.value
+  if (!orders.length || deletingHistory.value || deleteHistoryReason.value.trim().length < 4) return
   const factoryId = selectedFactoryId.value
   deletingHistory.value = true
   try {
-    await cartonProcurementApi.deleteHistoryOrder(factoryId, order, deleteHistoryReason.value.trim())
+    if (deleteHistoryTarget.value) await cartonProcurementApi.deleteHistoryOrder(factoryId, orders[0]!, deleteHistoryReason.value.trim())
+    else await cartonProcurementApi.bulkDeleteHistoryOrders(factoryId, orders, deleteHistoryReason.value.trim())
     if (selectedFactoryId.value !== factoryId) return
     deleteHistoryTarget.value = null
-    selectedOrderNos.value = selectedOrderNos.value.filter(id => id !== order.order_no)
-    actionMessage.value = `历史订单 ${order.order_no} 已删除，删除前明细已保留在操作日志。`
-    await loadBackendData()
+    deleteHistoryTargets.value = []
+    selectedOrderNos.value = selectedOrderNos.value.filter(id => !orders.some(order => order.order_no === id))
+    orderRecords.value = orderRecords.value.filter(order => !orders.some(deleted => deleted.id === order.id))
+    localOrders.splice(0, localOrders.length, ...orderRecords.value.map(mapOrder))
+    await loadBackendData(factoryId, { supersede: true })
+    if (selectedFactoryId.value !== factoryId) return
+    actionMessage.value = apiConnected.value
+      ? `${orders.length} 张历史订单已删除，删除前明细已保留在操作日志。`
+      : `${orders.length} 张历史订单已删除，但台账刷新失败，请刷新页面；不要重复删除。`
   } catch (error) {
     if (selectedFactoryId.value === factoryId) actionMessage.value = `历史订单未删除：${getApiErrorMessage(error)}`
   } finally { deletingHistory.value = false }
@@ -1861,8 +1888,8 @@ async function deleteHistoryOrder() {
 
 function canAppendOrder(orderNo: string) {
   const status = rawOrderStatus(orderNo)
-  return status === 'CONFIRMED'
-    || (['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(status) && canAdjustSubmittedOrders.value)
+  return canIssuePurchaseOrders.value && (status === 'CONFIRMED'
+    || (['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(status) && canAdjustSubmittedOrders.value))
 }
 
 function pendingReceiptQuantity(orderLineId: string) {
@@ -2201,8 +2228,9 @@ function removeAdHocReceiptLine(lineId: string) {
   receiptFeedbackMessage.value = ''
 }
 
-async function loadBackendData(factoryId = selectedFactoryId.value) {
-  if (backendLoading.value && backendLoadFactory === factoryId) return
+async function loadBackendData(factoryId = selectedFactoryId.value, options: { supersede?: boolean } = {}) {
+  // Successful destructive writes must invalidate any pre-write read already in flight.
+  if (!options.supersede && backendLoading.value && backendLoadFactory === factoryId) return
   const generation = ++backendLoadGeneration
   backendLoadFactory = factoryId
   backendLoading.value = true
@@ -2250,12 +2278,20 @@ async function loadBackendData(factoryId = selectedFactoryId.value) {
     inspectionImportHistory.value = inspectionImports
     inventoryReportRefreshKey.value += 1
     auditRecords.value = audits
+    if (weeklyImports.find(batch => batch.id === selectedWeeklyBatchId.value)?.status === 'REJECTED') {
+      selectedWeeklyFileName.value = ''; selectedWeeklyBatchId.value = ''; localWeeklyChecks.splice(0)
+    }
+    if (inspectionImports.find(batch => batch.id === selectedInspectionBatchId.value)?.status === 'REJECTED') {
+      selectedInspectionFileName.value = ''; selectedInspectionBatchId.value = ''; localInspectionChecks.splice(0)
+    }
     if (!selectedWeeklyFileName.value) {
-      if (weeklyImports[0]) restoreWeeklyImport(weeklyImports[0])
+      const active = weeklyImports.find(batch => batch.status !== 'REJECTED')
+      if (active) restoreWeeklyImport(active)
       else localWeeklyChecks.splice(0)
     }
     if (!selectedInspectionFileName.value) {
-      if (inspectionImports[0]) restoreInspectionImport(inspectionImports[0])
+      const active = inspectionImports.find(batch => batch.status !== 'REJECTED')
+      if (active) restoreInspectionImport(active)
       else localInspectionChecks.splice(0)
     }
     if (receiptEntryMode.value === 'MANUAL' && !manualReceiptOrderNos.value.length && !currentReceipt.value) {
@@ -2479,7 +2515,7 @@ async function confirmSubmitSupplierOrder() {
     replaceOrderState(saved)
     closeSubmitSupplierDialog()
     auditRecords.value = await cartonProcurementApi.listAuditEvents(selectedFactoryId.value)
-    actionMessage.value = `订单 ${saved.order_no} 已确认并锁定普通编辑；尚未收料时仅主管可追加或减单。`
+    actionMessage.value = `订单 ${saved.order_no} 已确认并锁定普通编辑；有权限的仓管或主管可追加或减单。`
   } catch (error) {
     actionMessage.value = `确认锁定失败：${getApiErrorMessage(error)}`
   } finally {
@@ -2573,6 +2609,7 @@ function auditEventLabel(eventType: string) {
     INVENTORY_MOVEMENT_REVERSED: '库存流水冲销',
     HISTORY_INVENTORY_IMPORTED: '历史库存导入',
     IMPORT_BATCH_CREATED: '导入批次创建',
+    SCHEDULE_IMPORT_UNDONE: '整批撤销排期导入',
     UNMATCHED_DELIVERY_IMPORT_DELETED: '未匹配送货导入删除',
     EXCEPTION_STATUS_UPDATED: '异常状态更新',
     CLOSING_GENERATED: '月结草稿生成',
@@ -2752,7 +2789,7 @@ function openAppendOrder(orderNo: string) {
   const order = orderRecords.value.find((item) => item.order_no === orderNo)
   if (!order || !canAppendOrder(orderNo)) {
     actionMessage.value = ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(order?.status ?? '')
-      ? '确认锁定后的订单只有主管可以追加。'
+      ? '你没有当前厂区已锁定订单的追加权限。'
       : '该订单当前不能追加。'
     return
   }
@@ -2805,7 +2842,7 @@ function openReduceOrder(orderNo: string) {
   const order = orderRecords.value.find((item) => item.order_no === orderNo)
   if (!order || !canReduceSubmittedOrder(orderNo)) {
     actionMessage.value = ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(order?.status ?? '')
-      ? '只有主管可以减少未入库数量，且不能低于已入库及待确认收料数量。'
+      ? '减单需要当前厂区的订单调整权限或订单与库存操作权限，且不能低于已入库及待确认收料数量。'
       : '当前订单状态不能减单。'
     return
   }
@@ -3871,7 +3908,7 @@ function openBusinessAlertOrder(alert: BusinessOrderAlert) {
     setActiveTab('orders')
     void nextTick(() => {
       actionMessage.value = alert.orderStatus === 'PENDING_SUPPLIER'
-        ? `订单 ${alert.orderNo} 已确认锁定；主管可按订单状态追加，或减少受保护数量之外的未入库量。`
+        ? `订单 ${alert.orderNo} 已确认锁定；有权限的仓管或主管可按订单状态追加，或减少受保护数量之外的未入库量。`
         : `已定位提醒 ${alert.alertNo} 关联的订单 ${alert.orderNo}。`
     })
     return
@@ -3981,6 +4018,8 @@ function rememberImportBatch(history: CartonImportBatchResponse[], batch: Carton
 }
 
 function restoreWeeklyImport(batch: CartonImportBatchResponse) {
+  if (batch.status === 'REJECTED') return
+  selectedWeeklyBatchId.value = batch.id
   const rows = batch.parse_summary.rows ?? []
   selectedWeeklyFileName.value = batch.original_filename
   localWeeklyChecks.splice(0, localWeeklyChecks.length, ...rows.map(mapWeeklyPreview))
@@ -3988,11 +4027,42 @@ function restoreWeeklyImport(batch: CartonImportBatchResponse) {
 }
 
 function restoreInspectionImport(batch: CartonImportBatchResponse) {
+  if (batch.status === 'REJECTED') return
+  selectedInspectionBatchId.value = batch.id
   const rows = batch.parse_summary.rows ?? []
   selectedInspectionFileName.value = batch.original_filename
   inspectionAdvanceDays.value = batch.parse_summary.advance_days ?? inspectionAdvanceDays.value
   localInspectionChecks.splice(0, localInspectionChecks.length, ...rows.map(mapInspectionPreview))
   actionMessage.value = `已查看 ${batch.original_filename} 的历史交期提醒：${batch.parse_summary.reminder_count ?? rows.length} 条。`
+}
+
+async function undoScheduleImport() {
+  const batch = undoImportTarget.value
+  if (!batch || undoingImport.value || undoImportReason.value.trim().length < 4 || !canUndoScheduleImport.value) return
+  const factoryId = selectedFactoryId.value
+  undoingImport.value = true
+  try {
+    const updated = await cartonProcurementApi.undoScheduleImport(factoryId, batch.id, undoImportReason.value.trim())
+    if (selectedFactoryId.value !== factoryId) return
+    rememberImportBatch(batch.import_type === 'WEEKLY_SCHEDULE' ? weeklyImportHistory.value : inspectionImportHistory.value, updated)
+    exceptionRecords.value = exceptionRecords.value.filter(item => item.source_id !== batch.id)
+    localExceptions.splice(0, localExceptions.length, ...exceptionRecords.value.map(mapException))
+    selectedExceptionNos.value = selectedExceptionNos.value.filter(id => exceptionRecords.value.some(item => item.exception_no === id))
+    if (selectedWeeklyBatchId.value === batch.id) {
+      selectedWeeklyFileName.value = ''; selectedWeeklyBatchId.value = ''; localWeeklyChecks.splice(0)
+    }
+    if (selectedInspectionBatchId.value === batch.id) {
+      selectedInspectionFileName.value = ''; selectedInspectionBatchId.value = ''; localInspectionChecks.splice(0)
+    }
+    undoImportTarget.value = null
+    await loadBackendData(factoryId, { supersede: true })
+    if (selectedFactoryId.value !== factoryId) return
+    actionMessage.value = apiConnected.value
+      ? `已整批撤销 ${batch.original_filename} 的核对结果和异常工作项，原始记录保留在操作日志。`
+      : `已整批撤销 ${batch.original_filename}，但台账刷新失败，请刷新页面；不要重复撤销。`
+  } catch (error) {
+    if (selectedFactoryId.value === factoryId) actionMessage.value = `撤销未完成：${getApiErrorMessage(error)}`
+  } finally { undoingImport.value = false }
 }
 
 async function handleWeeklyFile(event: Event) {
@@ -4786,7 +4856,7 @@ function refreshDemo() {
         <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div>
             <h2 class="font-bold text-slate-950">纸箱合同订单台账</h2>
-            <p class="mt-1 text-[11px] text-slate-500">待下单订单确认后整单锁定；再另行发行供应商采购单。主管可继续追加，也可减少尚未入库部分；全部到货后追加会恢复为“部分到货”。</p>
+            <p class="mt-1 text-[11px] text-slate-500">待下单订单确认后整单锁定；再另行发行供应商采购单。有权限的仓管或主管可继续追加，也可减少尚未入库部分；全部到货后追加会恢复为“部分到货”。</p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <a href="/templates/carton-history-order-import-template.xlsx" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
@@ -4839,6 +4909,8 @@ function refreshDemo() {
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || issuingSelectedPurchaseOrders || !canIssuePurchaseOrders" title="首次与非首次采购单均可多选发行；包含追加或减单时会先确认" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300" @click="issueSelectedPurchaseOrders"><Send class="size-3.5" />{{ issuingSelectedPurchaseOrders ? '发行中…' : `发行供应商采购单（${selectedOrderNos.length}）` }}</button>
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || exportingSelectedOrders" :title="!apiConnected ? '后端未连接，当前演示订单不能导出' : '累计对账表不代表向供应商新增下单'" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="exportSelectedPurchaseOrders"><Download class="size-3.5" />{{ exportingSelectedOrders ? '合并生成中…' : '导出累计对账表' }}</button>
           <button type="button" :disabled="!selectedOrdersCanCancel || cancellingOrder" title="仅尚未确认锁定的待下单订单可批量取消" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="openBulkCancelOrders"><X class="size-3.5" />批量取消</button>
+          <button v-if="canIssuePurchaseOrders" type="button" :disabled="!selectedOrdersCanDeleteHistory || deletingHistory" title="仅可删除无任何收料或库存记录的历史导入订单；最多选择 100 张，全部校验通过后一次删除" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="deleteHistoryTarget = null; deleteHistoryTargets = [...selectedOrders]; deleteHistoryReason = '历史订单导入有误'"><Trash2 class="size-3.5" />批量删除历史订单</button>
+          <p v-if="canIssuePurchaseOrders && selectedOrders.length && !selectedOrdersCanDeleteHistory" class="basis-full text-[11px] text-red-700">批量删除仅限无任何收料或库存记录的历史导入订单；普通订单、已有收料记录（含待确认或已冲销）的订单不可删除，每次最多 100 张。</p>
           <CartonSelectionSummary :rows="selectedOrders.map(row => ({ id: row.order_no, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no}${row.customer_po ? ' · PO ' + row.customer_po : ''}` }))" :visible-ids="orderedVisibleOrders.map(row => row.id)" unit="张" @clear="selectedOrderNos = []" @remove="selectedOrderNos = selectedOrderNos.filter(id => id !== $event)" />
           <p
             v-if="selectedOrderNos.length && (!apiConnected || combinedPurchaseOrderMessage)"
@@ -5017,6 +5089,13 @@ function refreshDemo() {
               </div>
               <input ref="weeklyFileInput" type="file" accept=".xlsx,.xls" class="hidden" aria-label="选择每周排期文件" @change="handleWeeklyFile">
               <div class="flex flex-wrap items-center gap-2">
+                <a
+                  href="/templates/carton-weekly-schedule-template.xlsx"
+                  download="纸箱每周排期核对导入模板.xlsx"
+                  class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
+                >
+                  <Download class="size-4" />下载排期模板
+                </a>
                 <button
                   type="button"
                   :disabled="importingWeekly"
@@ -5055,7 +5134,11 @@ function refreshDemo() {
           </article>
           <article class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 shadow-sm">
             <div class="flex gap-2 font-bold"><ShieldCheck class="size-4 shrink-0" />{{ weeklyCheckMode === 'ORDER_GAP' ? '防误建规则' : '提醒计算规则' }}</div>
-            <p v-if="weeklyCheckMode === 'ORDER_GAP'" class="mt-2 text-[11px] leading-5">导入排期只生成防漏核对结果和待办，<strong>不会自动创建正式纸箱订单</strong>。</p>
+            <div v-if="weeklyCheckMode === 'ORDER_GAP'" class="mt-2 space-y-1.5 text-[11px] leading-5">
+              <p>先按客户采购单号缩小范围，再优先用 <strong>Reference + 货号</strong> 匹配；只有合同号或货号能唯一确定订单时才回退匹配。</p>
+              <p>唯一匹配后，将模板“数量”与正式订单的<strong>产品订单数量</strong>直接比较，不按装箱数换算。</p>
+              <p>结果分为已匹配、数量差异、疑似漏单或多个候选；导入只生成核对结果和待办，<strong>不会自动创建正式纸箱订单</strong>。</p>
+            </div>
             <p v-else class="mt-2 text-[11px] leading-5">最迟交货日＝验货开始日－提前天数；只生成纸箱部提醒，<strong>不会修改订单或库存</strong>。</p>
           </article>
         </div>
@@ -5074,7 +5157,13 @@ function refreshDemo() {
                 <div class="truncate text-[12px] font-semibold text-slate-900">{{ batch.original_filename }}</div>
                 <div class="mt-0.5 text-[10px] text-slate-500">{{ (batch.created_at || '').replace('T', ' ').slice(0, 16) || '历史时间待补充' }} · {{ batch.imported_by_name || '历史操作人' }} · {{ batch.parse_summary.row_count ?? 0 }} 行</div>
               </div>
-              <button type="button" class="h-8 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-bold text-slate-700 hover:border-teal-300 hover:text-teal-700" @click="batch.import_type === 'WEEKLY_SCHEDULE' ? restoreWeeklyImport(batch) : restoreInspectionImport(batch)">查看结果</button>
+              <div class="flex items-center gap-2">
+                <span v-if="batch.status === 'REJECTED'" class="text-xs font-semibold text-slate-500">已整批撤销</span>
+                <template v-else>
+                  <button type="button" class="h-8 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-bold text-slate-700 hover:border-teal-300 hover:text-teal-700" @click="batch.import_type === 'WEEKLY_SCHEDULE' ? restoreWeeklyImport(batch) : restoreInspectionImport(batch)">查看结果</button>
+                  <button v-if="canUndoScheduleImport" type="button" :disabled="undoingImport || !apiConnected" :aria-label="`撤销本次导入 ${batch.original_filename}`" class="h-8 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="undoImportTarget = batch; undoImportReason = '本次导入文件有误'">撤销本次导入</button>
+                </template>
+              </div>
             </div>
           </div>
           <div v-else class="px-4 py-8 text-center text-[11px] text-slate-400">尚无当前类型的核对历史</div>
@@ -5537,14 +5626,27 @@ function refreshDemo() {
       </DialogContent>
     </DialogRoot>
 
-    <DialogRoot :open="Boolean(deleteHistoryTarget)" @update:open="open => { if (!open && !deletingHistory) deleteHistoryTarget = null }">
+    <DialogRoot :open="Boolean(deleteHistoryTarget) || deleteHistoryTargets.length > 0" @update:open="open => { if (!open && !deletingHistory) { deleteHistoryTarget = null; deleteHistoryTargets = [] } }">
       <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/40" />
       <DialogContent class="fixed left-1/2 top-1/2 z-[71] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-xl" @interact-outside.prevent @escape-key-down="event => { if (deletingHistory) event.preventDefault() }">
-        <DialogTitle class="text-lg font-bold">删除历史订单 {{ deleteHistoryTarget?.order_no }}</DialogTitle>
-        <DialogDescription class="mt-2 text-sm text-slate-600">仅无收料或库存记录的历史订单可删除。删除后从订单台账移除，操作日志保留原始明细；已有入库记录的订单不能删除。</DialogDescription>
+        <DialogTitle class="text-lg font-bold">{{ deleteHistoryTarget ? `删除历史订单 ${deleteHistoryTarget.order_no}` : `批量删除 ${deleteHistoryTargets.length} 张历史订单` }}</DialogTitle>
+        <DialogDescription class="mt-2 text-sm text-slate-600">仅无收料或库存记录的历史导入订单可删除，全部校验通过后一次生效。删除后从订单台账移除，操作日志保留原始明细；已有收料记录（含待确认或已冲销）的订单不能删除。</DialogDescription>
+        <p v-if="deleteHistoryTargets.length" class="mt-2 max-h-28 overflow-auto text-xs text-slate-600">{{ deleteHistoryTargets.map(order => order.order_no).join('、') }}</p>
         <form class="mt-4 space-y-4" @submit.prevent="deleteHistoryOrder">
           <label class="block text-sm">删除原因 *<textarea v-model="deleteHistoryReason" aria-label="历史订单删除原因" required minlength="4" maxlength="500" class="mt-2 w-full rounded-lg border p-3" /></label>
           <div class="flex justify-end gap-2"><DialogClose :disabled="deletingHistory" class="rounded-lg border px-4 py-2">返回</DialogClose><button type="submit" :disabled="deletingHistory || deleteHistoryReason.trim().length < 4" class="rounded-lg bg-red-600 px-4 py-2 text-white disabled:opacity-40">{{ deletingHistory ? '删除中…' : '确认删除历史订单' }}</button></div>
+        </form>
+      </DialogContent>
+    </DialogRoot>
+
+    <DialogRoot :open="Boolean(undoImportTarget)" @update:open="open => { if (!open && !undoingImport) undoImportTarget = null }">
+      <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/40" />
+      <DialogContent class="fixed left-1/2 top-1/2 z-[71] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-xl" @interact-outside.prevent @escape-key-down="event => { if (undoingImport) event.preventDefault() }">
+        <DialogTitle class="text-lg font-bold">撤销本次导入</DialogTitle>
+        <DialogDescription class="mt-2 text-sm text-slate-600">将一次性撤销 {{ undoImportTarget?.original_filename }} 的全部 {{ undoImportTarget?.parse_summary.row_count ?? 0 }} 行核对结果及关联异常工作项，不支持单条删除。正式订单和库存不受影响，原始记录与撤销原因保留在操作日志。撤销后不能再次操作此批次。</DialogDescription>
+        <form class="mt-4 space-y-4" @submit.prevent="undoScheduleImport">
+          <label class="block text-sm">撤销原因 *<textarea v-model="undoImportReason" aria-label="导入批次撤销原因" required minlength="4" maxlength="500" class="mt-2 w-full rounded-lg border p-3" /></label>
+          <div class="flex justify-end gap-2"><DialogClose :disabled="undoingImport" class="rounded-lg border px-4 py-2">返回</DialogClose><button type="submit" :disabled="undoingImport || undoImportReason.trim().length < 4" class="rounded-lg bg-red-600 px-4 py-2 text-white disabled:opacity-40">{{ undoingImport ? '撤销中…' : '确认整批撤销' }}</button></div>
         </form>
       </DialogContent>
     </DialogRoot>
@@ -5908,7 +6010,7 @@ function refreshDemo() {
           <div><h2 id="submit-supplier-title" class="text-[16px] font-bold text-slate-950">{{ bulkSubmitSupplierOrderNos.length ? `批量确认并锁定 ${selectedSubmittableOrderCount} 张待下单订单` : `确认订单 ${submitSupplierOrderNo} 并锁定` }}</h2><p class="mt-1 text-[11px] text-slate-500">确认后订单进入“已确认锁定”状态并开放收料；这一步不会发送文件，之后需要另行发行供应商采购单。</p></div>
           <button type="button" aria-label="关闭确认订单并锁定" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="closeSubmitSupplierDialog"><X class="size-4" /></button>
         </div>
-        <div class="p-5"><div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-[12px] font-semibold leading-6 text-amber-900">此操作会锁定普通编辑：确认锁定后客户、合同、货号和纸品资料不可直接修改；主管可继续追加，也可减少尚未入库且未进入待确认收料单的数量。</div></div>
+        <div class="p-5"><div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-[12px] font-semibold leading-6 text-amber-900">此操作会锁定普通编辑：确认锁定后客户、合同、货号和纸品资料不可直接修改；有权限的仓管或主管可继续追加，也可减少尚未入库且未进入待确认收料单的数量。</div></div>
         <div class="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="closeSubmitSupplierDialog">返回检查</button><button type="button" aria-label="执行确认订单并锁定" :disabled="submittingSupplierOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60" @click="confirmSubmitSupplierOrder">{{ submittingSupplierOrder ? '正在确认…' : '确认订单并锁定' }}</button></div>
       </div>
     </div>

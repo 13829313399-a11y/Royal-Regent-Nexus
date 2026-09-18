@@ -8,6 +8,8 @@ export type PaperHistory = Partial<Record<'packaging_type' | 'paper_quality' | '
 export interface MasterData { hidden_paper_types?: string[]; hidden_paper_qualities?: string[]; hidden_specifications?: string[]; paper_types?: string[]; paper_qualities?: string[]; specifications?: string[]; product_name: string; packing_name: string; lines: MasterPaper[]; item_nos: string[]; note: string; lead_days: number | null; customer_days: number | null; customer_days_disabled: boolean; customer_po_rule: NumberRule; contract_rule: NumberRule; item_rule: NumberRule; warehouses: string[] }
 export interface MasterRecord { id: string; kind: 'CONFIG' | 'CONTRACT' | 'RULE' | 'WORKSHOP' | 'ACCESS'; customer_code: string; code: string; data: Partial<MasterData>; status: 'ACTIVE' | 'INACTIVE'; preferred: boolean; revision: number; maintained: boolean; updated_at: string; sources: { order_no: string; order_date: string; customer_po?: string; contract_no: string; item_no: string; customer_code?: string; configuration: Partial<MasterData> }[] }
 export interface MasterWorkspace { paper_history?: PaperHistory; can_manage: boolean; warehouses: string[]; records: MasterRecord[]; locations: CartonLocation[]; users: { id: string; name: string }[] }
+export type MasterImportKind = 'paper-options' | 'configurations' | 'locations'
+export interface MasterImportResult { factory_id: string; kind: MasterImportKind; fingerprint: string; master_revision: string; preview_token: string; added: number; skipped: number; errors: string[]; details: string[] }
 export const emptyMaster = (): MasterWorkspace => ({ can_manage: false, warehouses: [], records: [], locations: [], users: [] })
 export const defaultNumberRule = (): NumberRule => ({ mode: 'AUTO', prefix: '', min_length: 0, max_length: 128, characters: 'ANY', templates: [], frozen: false, sample_text: '', source: 'NONE', sample_count: 0 })
 export const automaticNumberRule = (rule: NumberRule) => rule.mode === 'AUTO' ||
@@ -42,6 +44,17 @@ export function numberWarning(rule: NumberRule, value: string) {
     (rule.characters === 'DIGITS' && !/^\d+$/.test(value)) || (rule.characters === 'ALNUM_DASH' && !/^[A-Za-z0-9_-]+$/.test(value))
 }
 export const cartonMasterApi = {
+  async template(factory_id: string, kind: MasterImportKind) {
+    return (await http.get<Blob>(`/carton-procurement/master-data/import/${kind}/template`, { params: { factory_id }, responseType: 'blob' })).data
+  },
+  async importPreview(factory_id: string, kind: MasterImportKind, file: File) {
+    const form = new FormData(); form.append('factory_id', factory_id); form.append('file', file)
+    return (await http.post<MasterImportResult>(`/carton-procurement/master-data/import/${kind}/preview`, form, { headers: { 'Content-Type': 'multipart/form-data' } })).data
+  },
+  async importApply(factory_id: string, kind: MasterImportKind, file: File, preview_token: string) {
+    const form = new FormData(); form.append('factory_id', factory_id); form.append('file', file); form.append('preview_token', preview_token)
+    return (await http.post<MasterImportResult>(`/carton-procurement/master-data/import/${kind}/apply`, form, { headers: { 'Content-Type': 'multipart/form-data' } })).data
+  },
   async deleteWarehouse(factory_id: string, warehouse: string, expected_locations: Record<string, number>, reason: string) {
     return (await http.post<{ deleted: boolean }>('/carton-procurement/inventory/warehouses/delete', { factory_id, warehouse, expected_locations, reason })).data
   },

@@ -448,6 +448,21 @@ class CartonOrderBulkCancelRequest(BaseModel):
         return self
 
 
+class CartonHistoryOrderBulkDeleteRequest(CartonOrderBulkCancelRequest):
+    @field_validator("reason")
+    @classmethod
+    def validate_delete_reason(cls, value: str) -> str:
+        if len(value.strip()) < 4:
+            raise ValueError("删除原因至少需要四个字符")
+        return value.strip()
+
+
+class CartonImportBatchUndoRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    factory_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=4, max_length=500)
+
+
 class CartonOrderSelectionRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     order_nos: list[str] = Field(min_length=1, max_length=100)

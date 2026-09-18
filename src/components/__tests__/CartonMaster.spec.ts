@@ -4,9 +4,10 @@ import Assist from '../CartonMasterOrderAssist.vue'
 import Lookup from '../CartonMasterLookup.vue'
 import Workspace from '../CartonMasterWorkspace.vue'
 import Settings from '../CartonMasterSettings.vue'
+import { http } from '@/lib/http'
 import { cartonMasterApi, defaultMasterData, emptyMaster, masterDueRules, historicalNumberSamples, numberWarning, type MasterRecord } from '@/api/cartonMaster'
 
-vi.mock('@/lib/http', () => ({ http: { get: vi.fn(), post: vi.fn(), patch: vi.fn() }, getApiErrorMessage: () => '请求失败' }))
+vi.mock('@/lib/http', async importOriginal => ({ ...await importOriginal<typeof import('@/lib/http')>(), http: { get: vi.fn(), post: vi.fn(), patch: vi.fn() }, getApiErrorMessage: () => '请求失败' }))
 const record = (id: string, customer = '360', count = '120'): MasterRecord => ({
   id, kind: 'CONFIG', customer_code: customer, code: '00123', status: 'ACTIVE', revision: 1,
   preferred: false, maintained: false, updated_at: '', sources: [],
@@ -14,6 +15,131 @@ const record = (id: string, customer = '360', count = '120'): MasterRecord => ({
     { packaging_type: '外箱', paper_quality: 'A33', specification: '30*20*15', dimension_unit: 'cm', unit: '个', usage_quantity: count },
     { packaging_type: '滑板纸', paper_quality: 'A33', specification: '30*20', dimension_unit: 'cm', unit: '张', usage_quantity: count },
   ] },
+})
+
+it('sends master import files as multipart and includes the confirmed preview token', async () => {
+  vi.mocked(http.post).mockResolvedValue({ data: { added: 1 } })
+  const file = new File(['xlsx'], '资料.xlsx')
+  await cartonMasterApi.importPreview('huaxing', 'paper-options', file)
+  await cartonMasterApi.importApply('huaxing', 'configurations', file, 'confirmed-token')
+  const calls = vi.mocked(http.post).mock.calls.slice(-2)
+  expect(calls[0]![0]).toContain('/paper-options/preview')
+  expect(calls[1]![0]).toContain('/configurations/apply')
+  for (const call of calls) {
+    expect(call[1]).toBeInstanceOf(FormData)
+    expect((call[1] as FormData).get('file')).toBe(file)
+    expect((call[1] as FormData).get('factory_id')).toBe('huaxing')
+    expect(call[2]).toEqual({ headers: { 'Content-Type': 'multipart/form-data' } })
+  }
+  expect((calls[1]![1] as FormData).get('preview_token')).toBe('confirmed-token')
+})
+
+it.each(['下载纸品选项模板', '下载仓位模板'])('shows backend JSON Blob detail when %s downloading fails', async label => {
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+  const body = new Blob([JSON.stringify({ detail: '当前厂区无模板下载权限' })], { type: 'application/json' })
+  const download = vi.spyOn(cartonMasterApi, 'template').mockRejectedValue({ isAxiosError: true, message: 'Request failed with status code 403', response: { data: body } })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
+  await flushPromises()
+  await wrapper.findAll('button').find(button => button.text() === label)!.trigger('click')
+  await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toBe('当前厂区无模板下载权限')
+  expect(download).toHaveBeenCalledWith('huaxing', label === '下载仓位模板' ? 'locations' : 'paper-options')
+  wrapper.unmount(); download.mockRestore(); get.mockRestore()
+})
+
+it('discards template download errors when factory changes during Blob parsing', async () => {
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+  let finishParsing!: (value: string) => void
+  const body = new Blob([], { type: 'application/json' })
+  const parse = vi.fn(() => new Promise<string>(resolve => { finishParsing = resolve }))
+  Object.defineProperty(body, 'text', { value: parse })
+  const download = vi.spyOn(cartonMasterApi, 'template').mockRejectedValue({ isAxiosError: true, message: 'Request failed', response: { data: body } })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
+  await flushPromises()
+  await wrapper.findAll('button').find(button => button.text() === '下载纸品选项模板')!.trigger('click')
+  await flushPromises()
+  expect(parse).toHaveBeenCalledOnce()
+  await wrapper.setProps({ factoryId: 'huadeng' }); await flushPromises()
+  finishParsing(JSON.stringify({ detail: '旧厂区下载错误' })); await flushPromises()
+  expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('旧厂区下载错误')
+  wrapper.unmount(); download.mockRestore(); get.mockRestore()
+})
+
+it.each(['paper-options', 'configurations', 'locations'] as const)('previews and confirms %s imports, retaining dialog until explicit close', async kind => {
+  const result = { factory_id: 'huaxing', kind, fingerprint: 'file', master_revision: 'revision', preview_token: 'token', added: 2, skipped: 1, errors: [] as string[], details: ['待新增配置'] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+  const preview = vi.spyOn(cartonMasterApi, 'importPreview').mockResolvedValue(result)
+  const apply = vi.spyOn(cartonMasterApi, 'importApply').mockResolvedValue(result)
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: kind === 'configurations' ? 'CONFIG' : 'SETTINGS' } })
+  await flushPromises()
+  const click = async (label: string) => { await wrapper.findAll('button').find(b => b.text() === label)!.trigger('click'); await flushPromises() }
+  const labels = { 'paper-options': ['下载纸品选项模板', '导入纸品选项'], configurations: ['下载货号包装模板', '导入货号与包装'], locations: ['下载仓位模板', '导入仓库仓位'] }
+  expect(wrapper.text()).toContain(labels[kind][0])
+  await click(labels[kind][1]!)
+  expect(wrapper.get('[role="dialog"]').text()).toContain('至少一行')
+  if (kind === 'locations') {
+    expect(wrapper.get('[role="dialog"]').text()).toContain('A1-A25、B01-B03')
+    expect(wrapper.get('[role="dialog"]').text()).not.toContain('规格分别填写长')
+  }
+  if (kind === 'configurations') {
+    expect(wrapper.text()).toContain('一个货号可以有多个纸品')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('每个纸品写一行')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('货号 + 配置组')
+  }
+  expect(wrapper.findAll('button').find(b => b.text() === '确认导入')!.attributes('disabled')).toBeDefined()
+  const input = wrapper.get<HTMLInputElement>('[aria-label="选择基础资料模板文件"]')
+  const file = new File(['xlsx'], '资料.xlsx')
+  Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+  await input.trigger('change')
+  await click('预览导入')
+  expect(preview).toHaveBeenCalledWith('huaxing', kind, file)
+  expect(wrapper.text()).toContain('资料.xlsx')
+  expect(wrapper.text()).toContain('待新增 2 · 跳过 1 · 错误 0')
+  if (kind === 'locations') expect(wrapper.text()).toContain('按展开后的仓位数统计')
+  expect(apply).not.toHaveBeenCalled()
+  await wrapper.get('[data-testid="master-import-backdrop"]').trigger('click')
+  expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+  await click('确认导入')
+  expect(apply).toHaveBeenCalledWith('huaxing', kind, file, 'token')
+  expect(get).toHaveBeenCalledTimes(2)
+  expect(wrapper.emitted('changed')).toHaveLength(1)
+  expect(wrapper.text()).toContain('导入完成')
+  expect(wrapper.findAll('button').some(b => b.text() === '确认导入')).toBe(false)
+  wrapper.unmount(); get.mockRestore(); preview.mockRestore(); apply.mockRestore()
+})
+
+it('shows import row errors, invalidates previews on file change and closes on factory switch', async () => {
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+  const preview = vi.spyOn(cartonMasterApi, 'importPreview').mockResolvedValue({ factory_id: 'huaxing', kind: 'paper-options', fingerprint: '', master_revision: '', preview_token: 'token', added: 1, skipped: 0, errors: ['第 3 行：长、宽、高必须全部填写'], details: [] })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
+  await flushPromises()
+  await wrapper.findAll('button').find(b => b.text() === '导入纸品选项')!.trigger('click')
+  const input = wrapper.get<HTMLInputElement>('[aria-label="选择基础资料模板文件"]')
+  Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['xlsx'], '资料.xlsx')] })
+  await input.trigger('change')
+  await wrapper.findAll('button').find(b => b.text() === '预览导入')!.trigger('click'); await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toContain('第 3 行')
+  expect(wrapper.findAll('button').find(b => b.text() === '确认导入')!.attributes('disabled')).toBeDefined()
+  await input.trigger('change')
+  expect(wrapper.text()).not.toContain('预览结果')
+  await wrapper.setProps({ factoryId: 'huadeng' }); await flushPromises()
+  expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  wrapper.unmount(); get.mockRestore(); preview.mockRestore()
+})
+
+it('hides both template and import actions without master permission', async () => {
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue(emptyMaster())
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
+  await flushPromises()
+  expect(wrapper.text()).not.toContain('下载纸品选项模板')
+  expect(wrapper.text()).not.toContain('导入纸品选项')
+  expect(wrapper.text()).not.toContain('下载仓位模板')
+  expect(wrapper.text()).not.toContain('导入仓库仓位')
+  await wrapper.setProps({ initialTab: 'CONFIG' })
+  expect(wrapper.text()).not.toContain('下载货号包装模板')
+  expect(wrapper.text()).not.toContain('导入货号与包装')
+  wrapper.unmount(); get.mockRestore()
 })
 
 describe('纸箱基础资料', () => {

@@ -627,6 +627,9 @@ def _parse_weekly(filename: str, content: bytes) -> dict[str, Any]:
     for sheet_name, rows, _ in _sheet_rows(filename, content):
         header = _header_mapping(rows, WEEKLY_ALIASES)
         if header is None or not {"contract_no", "quantity"}.issubset(header[1]):
+            sheet_key = _header_key(sheet_name)
+            if any(marker in sheet_key for marker in ("说明", "示例", "instruction", "example")):
+                continue
             if any(any(_text(cell) for cell in row) for row in rows[:20]):
                 warnings.append(f"工作表“{sheet_name}”未找到可识别的排期表头")
             continue
