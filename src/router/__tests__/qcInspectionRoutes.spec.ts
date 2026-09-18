@@ -7,6 +7,8 @@ import { router } from '@/router'
 
 const qcRoutes = [
   ['/modules/qc/inspection-operations', 'qc-inspection-schedule'],
+  ['/modules/qc/inspection-operations/schedule-details', 'qc-inspection-schedule-details'],
+  ['/modules/qc/inspection-operations/order-records', 'qc-inspection-order-records'],
   ['/modules/qc/inspection-operations/orders/new', 'qc-inspection-order-new'],
   ['/modules/qc/inspection-operations/orders/order-123', 'qc-inspection-order-detail'],
   ['/modules/qc/inspection-operations/problems', 'qc-inspection-problems'],
@@ -47,15 +49,26 @@ describe('QC inspection full-page routes', () => {
 
   it('keeps the shared workspace provider without rendering a nested RouterView', () => {
     const source = readFileSync(
-      join(process.cwd(), 'src/views/QcInspectionOperationsView.vue'),
+      join(process.cwd(), 'src/views/QcOperationsCenterView.vue'),
       'utf8',
     )
 
     expect(source).toContain('provide(qcInspectionWorkspaceKey')
-    expect(source).toContain('<component :is="activeSectionComponent" v-else />')
+    expect(source).toContain('<component :is="activeSectionComponent" v-else')
     expect(source).not.toContain('RouterView')
     expect(source).toContain('返回 QC 模块中心')
     expect(source).toContain("path: '/modules/qc'")
     expect(source).toContain('query: { factory: factoryId }')
+  })
+
+  it('retires standalone add and renaming pages with safe redirects', () => {
+    const add = router.resolve('/modules/qc/inspection-operations/orders/new?factory=huaxing&week=2026-W38')
+    const redirect = add.matched[0]?.redirect
+    expect(typeof redirect).toBe('function')
+    if (typeof redirect === 'function') expect(redirect(add)).toEqual({ name: 'qc-inspection-schedule', query: { factory: 'huaxing', week: '2026-W38', add: '1' } })
+    const renamed = router.resolve('/modules/qc/inspection-operations/report-renaming?factory=huaxing')
+    const retired = renamed.matched[0]?.redirect
+    expect(typeof retired).toBe('function')
+    if (typeof retired === 'function') expect(retired(renamed)).toEqual({ name: 'qc-inspection-reports', query: { factory: 'huaxing' } })
   })
 })

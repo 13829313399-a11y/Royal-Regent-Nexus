@@ -17,6 +17,7 @@ const groupReports = ref<QcGeneratedReport[]>([])
 const periodMode = ref<QcReportPeriodMode>('WEEK')
 const periodKey = ref(context.weekKey.value)
 const batchGenerating = ref(false)
+const showAdditionalReports = ref(false)
 
 const reportDefinitions: Array<{
   type: QcReportType
@@ -179,7 +180,7 @@ watch(periodMode, (mode) => {
   <div class="space-y-6">
     <SectionPanel title="QC 报表中心" subtitle="从同一套验货主单、验货记录、问题、处置和报告包数据，一键输出业务所需 XLSX。">
       <div class="rounded-xl border border-teal-200 bg-teal-50 p-4 text-sm leading-6 text-teal-900">
-        保留原有五份 Excel，并新增排期、验货台账、问题、退货、合格率、年度、产品质量及文件索引。退货统计只认明确的 RETURN 处置。
+        客户汇总、每周统计、华兴明细、华兴汇总和集团汇总为主要报表。退货统计以明确登记的退货处置为准。周界、分母等新口径待业务确认，当前输出沿用已配置规则。
       </div>
       <div class="mt-4 flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <label class="space-y-1"><span class="block text-xs font-semibold text-slate-600">统计周期</span><select v-model="periodMode" class="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="WEEK">周</option><option value="MONTH">月</option><option value="YEAR">年</option></select></label>
@@ -189,8 +190,9 @@ watch(periodMode, (mode) => {
       <p v-if="actionError" role="alert" class="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{{ actionError }}</p>
       <p v-if="actionMessage" class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{{ actionMessage }}</p>
 
+      <label class="mt-5 flex items-center gap-2 text-sm text-slate-600"><input v-model="showAdditionalReports" type="checkbox">显示其他业务报表</label>
       <div class="mt-5 grid gap-4 lg:grid-cols-2">
-        <article v-for="definition in reportDefinitions" :key="definition.type" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <article v-for="definition in (showAdditionalReports ? reportDefinitions : reportDefinitions.slice(0, 5))" :key="definition.type" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <div class="flex items-start justify-between gap-3">
             <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-teal-700"><FileBarChart2 class="size-5" aria-hidden="true" /></span>
             <StatusPill :label="definition.scope" :tone="definition.scope === '集团授权' ? 'amber' : 'teal'" compact />

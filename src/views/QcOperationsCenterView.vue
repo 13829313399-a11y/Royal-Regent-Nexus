@@ -5,10 +5,8 @@ import {
   ArrowLeft,
   CalendarDays,
   ClipboardCheck,
-  FileArchive,
   FileBarChart,
   ListChecks,
-  Plus,
   RefreshCw,
 } from '@lucide/vue'
 import { computed, defineAsyncComponent, provide, ref, watch } from 'vue'
@@ -27,6 +25,7 @@ import { qcInspectionPermissions } from '@/features/qc-inspection/permissions'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import '@/features/qc-inspection/workspace.css'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,12 +33,12 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 
 const sectionComponents = {
-  'qc-inspection-schedule': defineAsyncComponent(() => import('@/features/qc-inspection/QcScheduleView.vue')),
-  'qc-inspection-order-new': defineAsyncComponent(() => import('@/features/qc-inspection/QcManualOrderView.vue')),
+  'qc-inspection-schedule': defineAsyncComponent(() => import('@/features/qc-inspection/QcScheduleWorkspace.vue')),
+  'qc-inspection-schedule-details': defineAsyncComponent(() => import('@/features/qc-inspection/QcScheduleDetailsView.vue')),
+  'qc-inspection-order-records': defineAsyncComponent(() => import('@/features/qc-inspection/QcScheduleDetailsView.vue')),
   'qc-inspection-order-detail': defineAsyncComponent(() => import('@/features/qc-inspection/QcInspectionOrderDetailView.vue')),
   'qc-inspection-problems': defineAsyncComponent(() => import('@/features/qc-inspection/QcProblemStatisticsView.vue')),
   'qc-inspection-reports': defineAsyncComponent(() => import('@/features/qc-inspection/QcReportCenterView.vue')),
-  'qc-inspection-report-renaming': defineAsyncComponent(() => import('@/features/qc-inspection/QcReportRenamingView.vue')),
 } as const
 
 const activeSectionComponent = computed(() => {
@@ -84,8 +83,6 @@ const canOrderWrite = can(qcInspectionPermissions.orderWrite)
 const canResultWrite = can(qcInspectionPermissions.resultWrite)
 const canProblemWrite = can(qcInspectionPermissions.problemWrite)
 const canReportExport = can(qcInspectionPermissions.reportExport)
-const canRenamePreview = can(qcInspectionPermissions.renamePreview)
-const canRenameExecute = can(qcInspectionPermissions.renameExecute)
 const canGroupSummary = can(qcInspectionPermissions.groupSummary)
 const canFactorySummary = can(qcInspectionPermissions.factorySummary)
 const hasAnyWriteAccess = computed(() => [
@@ -94,17 +91,20 @@ const hasAnyWriteAccess = computed(() => [
   canResultWrite.value,
   canProblemWrite.value,
   canReportExport.value,
-  canRenamePreview.value,
-  canRenameExecute.value,
 ].some(Boolean))
 
+let requestSequence = 0
 async function refresh() {
-  state.value = 'loading'
+  const sequence = ++requestSequence
+  if (!workspace.value) state.value = 'loading'
   errorMessage.value = ''
   try {
-    workspace.value = await qcInspectionApi.getWorkspace(factoryId.value, weekKey.value)
+    const result = await qcInspectionApi.getWorkspace(factoryId.value, weekKey.value)
+    if (sequence !== requestSequence) return
+    workspace.value = result
     state.value = 'ready'
   } catch (error) {
+    if (sequence !== requestSequence) return
     workspace.value = null
     state.value = axios.isAxiosError(error) && error.response?.status === 403 ? 'forbidden' : 'error'
     errorMessage.value = getApiErrorMessage(error)
@@ -130,8 +130,6 @@ provide(qcInspectionWorkspaceKey, {
   canResultWrite,
   canProblemWrite,
   canReportExport,
-  canRenamePreview,
-  canRenameExecute,
   canGroupSummary,
   canFactorySummary,
   refresh,
@@ -139,11 +137,10 @@ provide(qcInspectionWorkspaceKey, {
 })
 
 const navigation = [
-  { name: 'qc-inspection-schedule', label: '验货排期', icon: CalendarDays },
-  { name: 'qc-inspection-order-new', label: '临时订单', icon: Plus },
-  { name: 'qc-inspection-problems', label: '问题统计', icon: ListChecks },
+  { name: 'qc-inspection-schedule', label: '验货总排期', icon: CalendarDays },
+  { name: 'qc-inspection-schedule-details', label: '排期明细', icon: ClipboardCheck },
+  { name: 'qc-inspection-problems', label: '问题处理', icon: ListChecks },
   { name: 'qc-inspection-reports', label: '报表中心', icon: FileBarChart },
-  { name: 'qc-inspection-report-renaming', label: '报告改名', icon: FileArchive },
 ] as const
 
 function navigationTarget(name: string) {
@@ -154,6 +151,7 @@ function navigationTarget(name: string) {
 }
 
 watch([factoryId, weekKey], () => {
+  workspace.value = null
   void refresh()
 }, { immediate: true })
 </script>
@@ -163,8 +161,8 @@ watch([factoryId, weekKey], () => {
     <main class="mx-auto w-full max-w-[1920px] space-y-6">
       <PageHeader
         eyebrow="QC Inspection Operations"
-        :title="`${factoryName} · QC 验货运营中心`"
-        description="生产排期、逐单验货与复验、问题处置、多维报表和报告文件治理使用同一条厂区隔离业务链。"
+        :title="`${factoryName} · QC 验货工作台`"
+        description="从总排期安排验货，记录检验与复验结果，跟进问题并输出报表。"
       >
         <template #actions>
           <Button as-child variant="outline">
@@ -208,7 +206,7 @@ watch([factoryId, weekKey], () => {
         class="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800"
       >
         <ClipboardCheck class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-        <span><b>只读访问。</b> 可以查看当前厂区正式数据，但不能导入排期、维护订单、填写结果、修改问题、生成报表或执行改名。</span>
+        <span><b>只读访问。</b> 可以查看当前厂区正式数据，但不能导入排期、维护订单、填写结果、修改问题、生成报表。</span>
       </div>
 
       <SectionPanel v-if="state === 'loading'" title="正在读取正式数据" subtitle="正在按厂区和业务周加载验货主单、问题、导入批次和报表。">
@@ -232,7 +230,7 @@ watch([factoryId, weekKey], () => {
         </div>
       </SectionPanel>
 
-      <component :is="activeSectionComponent" v-else />
+      <component :is="activeSectionComponent" v-else :key="`${factoryId}:${weekKey}:${String(route.name)}`" />
 
       <footer class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-xs text-slate-500">
         <span>当前范围：{{ factoryName }} · {{ weekKey }}</span>

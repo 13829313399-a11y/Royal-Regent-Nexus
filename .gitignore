@@ -104,6 +104,7 @@ backend/data/
 outputs/history-order-template-20260909/
 outputs/opening-inventory-template-20260909/
 !/docs/business/纸箱上线前最终验收报告.md
+!/docs/business/QC验货运营中心业务需求.md
 !/docs/business/spray-production-acceptance.md
 # UV printing shared spec, decisions, handoff and browser evidence are deliverables.
 !/docs/uv-printing/
