@@ -1,7 +1,9 @@
 import importlib
 import json
+from datetime import timedelta
 
 from sqlalchemy import select
+from test_three_d_connector import PUBLIC
 from test_three_d_connector import environment as environment_fixture
 from test_three_d_connector import event, post, session
 
@@ -195,6 +197,93 @@ def test_state_sweep_closes_run_when_device_moved_to_another_job(environment, mo
         assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 80
 
 
+def test_recording_is_gated_by_its_own_switch_not_by_connection_owner(environment, monkeypatch):
+    env = environment
+    seed_product(env)
+    ref = session(env)
+    monkeypatch.setattr(env[3].settings, "three_d_reconciliation_terminal_grace_seconds", 0)
+    sweep = importlib.import_module("app.services.three_d_run_reconciliation")
+
+    def set_connection(**values):
+        with env[1].SessionLocal() as db:
+            row = db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"])
+            for key, value in values.items():
+                setattr(row, key, value)
+            db.commit()
+
+    # A switch off never records and never settles, and explicit reconcile refuses.
+    set_connection(record_reconcile_enabled=False, connection_owner=env[3].OBSERVER)
+    post(env, "/events", event(env, ref, current_file="part.3mf"))
+    assert runs(env) == []
+    assert post(env, "/reconcile", ref) == {"reconciled": False, "reason": "observation_only"}
+    with env[1].SessionLocal() as db:
+        blocked = sweep.sweep_open_runs(db, factory_id="huakang-a", now=env[4][0])
+        db.commit()
+    assert blocked.eligible == 0 and blocked.settled == []
+
+    # Switched on for an observation-only connection: records work, control still does not.
+    set_connection(record_reconcile_enabled=True, connection_owner=env[3].OBSERVER)
+    post(env, "/events", event(env, ref, 2, current_file="part.3mf"))
+    record = runs(env)[0]
+    assert record.print_end_at == ""
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 80
+    response = env[0].post(
+        PUBLIC + "/printers/" + ref["printer_id"] + "/commands",
+        json={
+            "factory_id": "huakang-a",
+            "idempotency_key": "observer-control-1",
+            "action": "pause",
+            "reason": "isolated test",
+        },
+    )
+    assert response.status_code == 409 and "只读接入" in response.text
+    # The same observation-only connection settles a finished run from device state.
+    post(env, "/events", event(env, ref, 3, "IDLE"))
+    with env[1].SessionLocal() as db:
+        settled = sweep.sweep_open_runs(db, factory_id="huakang-a", now=env[4][0])
+        db.commit()
+    assert settled.settled == [record.id]
+    assert runs(env)[0].print_end_at
+
+
+def test_record_reconcile_since_blocks_retroactive_record_creation(environment, monkeypatch):
+    """A rollout guard keeps history observed before the switch from being recorded."""
+    env = environment
+    seed_product(env)
+    ref = session(env)
+    service = env[3]
+    with env[1].SessionLocal() as db:
+        row = db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"])
+        row.connection_owner = service.OBSERVER
+        db.commit()
+    observed_now = env[4][0].isoformat()
+    old = (env[4][0] - timedelta(days=1)).isoformat()
+    monkeypatch.setattr(service.settings, "three_d_record_reconcile_since", observed_now)
+    with env[1].SessionLocal() as db:
+        row = db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"])
+        assert service.record_reconcile_allowed(row, env[4][0]) is True
+        assert service.record_reconcile_allowed(row, env[4][0] - timedelta(days=1)) is False
+        # An unset guard is the default and records normally.
+        monkeypatch.setattr(service.settings, "three_d_record_reconcile_since", "")
+        assert service.record_reconcile_allowed(row, env[4][0] - timedelta(days=1)) is True
+    # The same guard is what the sweep and the event path consult.
+    monkeypatch.setattr(service.settings, "three_d_record_reconcile_since", observed_now)
+    post(env, "/events", event(env, ref, current_file="part.3mf", observed_at=observed_now))
+    assert len(runs(env)) == 1 and runs(env)[0].print_start_at
+    assert old < observed_now
+
+    # A guard must never stop the sweep from completing a run it already created.
+    sweep = importlib.import_module("app.services.three_d_run_reconciliation")
+    monkeypatch.setattr(service.settings, "three_d_reconciliation_terminal_grace_seconds", 0)
+    post(env, "/events", event(env, ref, 2, "IDLE", observed_at=observed_now))
+    with env[1].SessionLocal() as db:
+        settled = sweep.sweep_open_runs(db, factory_id="huakang-a", now=env[4][0])
+        db.commit()
+    assert settled.settled == [runs(env)[0].id]
+    assert runs(env)[0].print_end_at
+
+
 def test_state_sweep_never_touches_readonly_observation_or_live_runs(environment, monkeypatch):
     env = environment
     seed_product(env)
@@ -203,11 +292,10 @@ def test_state_sweep_never_touches_readonly_observation_or_live_runs(environment
     record = runs(env)[0]
     monkeypatch.setattr(env[3].settings, "three_d_reconciliation_terminal_grace_seconds", 0)
     sweep = importlib.import_module("app.services.three_d_run_reconciliation")
-    # Observation-only ownership may never settle a run.
+    # A switch turned off cannot settle anything, even while events keep arriving.
     with env[1].SessionLocal() as db:
-        db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"]).connection_owner = (
-            env[3].OBSERVER
-        )
+        row = db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"])
+        row.record_reconcile_enabled = False
         db.commit()
     post(env, "/events", event(env, ref, 2, "IDLE"))
     with env[1].SessionLocal() as db:
@@ -215,9 +303,7 @@ def test_state_sweep_never_touches_readonly_observation_or_live_runs(environment
         db.commit()
     assert observed.settled == [] and observed.eligible == 0
     with env[1].SessionLocal() as db:
-        db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"]).connection_owner = (
-            env[3].OWNER
-        )
+        db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"]).record_reconcile_enabled = True
         db.commit()
     # A device that is still printing is never settled.
     post(env, "/events", event(env, ref, 3, "RUNNING"))

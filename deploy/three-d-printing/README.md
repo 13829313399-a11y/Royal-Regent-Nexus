@@ -6,7 +6,22 @@
 
 `prepare_connections.py --printers <CSV>` 幂等补齐禁用的设备连接，保留已有配置；`--network-config <JSON>` 用现场报告配置更新禁用设备的地址与证书，不转移设备所有权。`rr-three-d-network.timer` 每 30 秒进行不登录 MQTT 的网络检测并回传 API。Tailscale 探测超时为 10 秒以适应 DERP 中继，systemd 服务总超时为 75 秒；主机 Python 3.10 使用 `timezone.utc`。
 
-`enable_observer.py --machine 2` 使用后端环境将单台已有连接启用为只读模式，重复执行不会重置会话。该模式保存状态与温度，但跳过自动生产记录及库存处理；显式对账、控制命令创建/领取/下发也不会在该模式执行。旧 Edge 上报不会覆盖云端观测值。断线只使状态过期，不改变已有生产任务。只读接入不要求停止旧程序或修改现场防火墙；旧版单机断开工具不用于此流程。下方单机切换步骤用于真正移交生产控制权。
+`enable_observer.py --machine 2` 使用后端环境将单台已有连接启用为只读模式，重复执行不会重置会话。该模式保存状态与温度，不写生产记录也不处理库存，并把该连接的记录开关置为关闭；显式对账、控制命令创建/领取/下发也不会在该模式执行。旧 Edge 上报不会覆盖云端观测值。断线只使状态过期，不改变已有生产任务。只读接入不要求停止旧程序或修改现场防火墙；旧版单机断开工具不用于此流程。下方单机切换步骤用于真正移交生产控制权。
+
+## 记录开关与设备控制相互独立
+
+自动生产记录不再要求 `cloud-connector` 归属。连接上的 `record_reconcile_enabled` 单独决定该机台能否建记录与结算完成状态，而暂停/恢复等硬件控制仍然只允许 `cloud-connector`。迁移 `20260917_0117` 把已有连接置为开启，因此旧写入端已停止的现场无需再做一次移交就能恢复自动记录；`enable_observer.py` 切换观察模式时会把该开关显式关闭，需要记录时再单独开启。
+
+```powershell
+# 计划（默认只读，不改动任何数据）
+backend/.venv/Scripts/python.exe deploy/three-d-printing/record_switch.py on
+# 只开某一台
+backend/.venv/Scripts/python.exe deploy/three-d-printing/record_switch.py on --machine 3 --execute
+# 单台回退为不记录
+backend/.venv/Scripts/python.exe deploy/three-d-printing/record_switch.py off --machine 3 --execute
+```
+
+`THREE_D_RECONCILE_SINCE` 是可选的上线护栏：设置后，只有该时刻之后观测到的运行才会建记录，避免开启开关时把此前只观测、未记录的历史一次性补进台账。默认不设（即不限制），应由开启方显式给出取值。记录结算需要的扫描间隔与静默窗口由 `THREE_D_RECONCILIATION_SWEEP_SECONDS`、`THREE_D_RECONCILIATION_TERMINAL_GRACE_SECONDS`、`THREE_D_RECONCILIATION_STALE_OPEN_SECONDS` 控制。
 
 ## 工具和默认行为
 

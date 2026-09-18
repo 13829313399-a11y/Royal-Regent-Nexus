@@ -248,7 +248,7 @@ INTERNAL_QUOTE_BASELINE_FREIGHT_REVISION = "20260723_0030"
 INTERNAL_QUOTE_BASELINE_FREIGHT_PREVIOUS_REVISION = "20260721_0029"
 INTERNAL_QUOTE_BASELINE_TABLE = "internal_quote_pricing_baselines"
 INTERNAL_QUOTE_BASELINE_FREIGHT_COLUMN = "freight_routes_json"
-THREE_D_PRINTING_REVISION = "20260904_0099"
+THREE_D_PRINTING_REVISION = "20260917_0117"
 THREE_D_PRINTING_PREVIOUS_REVISIONS = frozenset({"20260728_0039", "20260729_0040"})
 THREE_D_PRINTING_V2_TABLES = {
     "three_d_printing_operations_items",
@@ -275,7 +275,7 @@ THREE_D_PRINTING_V2_COLUMNS = {
     'three_d_printing_sites': {'timezone', 'name', 'updated_at', 'id', 'site_code', 'created_at', 'enabled', 'factory_id'},
     'three_d_printing_network_gateways': {'tunnel_address', 'packet_loss_percent', 'factory_id', 'advertised_cidr', 'status', 'site_id', 'last_error', 'config_revision', 'id', 'latency_ms', 'last_handshake_at', 'gateway_key', 'vpn_type'},
     'three_d_printing_connector_instances': {'capabilities_json', 'status', 'instance_id', 'site_id', 'last_error', 'id', 'started_at', 'last_seen_at', 'connector_key', 'leader_printer_count', 'version', 'factory_id'},
-    'three_d_printing_printer_connections': {'last_disconnect_at', 'lan_host', 'printer_id', 'connection_revision', 'site_id', 'mqtt_port', 'leader_instance_id', 'leader_lease_id', 'leader_leased_until', 'connection_owner', 'credential_ref', 'certificate_fingerprint', 'connection_enabled', 'last_connect_at', 'factory_id'},
+    'three_d_printing_printer_connections': {'last_disconnect_at', 'lan_host', 'printer_id', 'connection_revision', 'site_id', 'mqtt_port', 'leader_instance_id', 'leader_lease_id', 'leader_leased_until', 'connection_owner', 'credential_ref', 'certificate_fingerprint', 'connection_enabled', 'last_connect_at', 'factory_id', 'record_reconcile_enabled'},
     'three_d_printing_printer_state_events': {'connection_session_id', 'error_text', 'printer_id', 'machine_no', 'current_file', 'payload_version', 'raw_payload_json', 'observed_at', 'progress', 'id', 'temperatures_json', 'remaining_minutes', 'state', 'connector_instance_id', 'received_at', 'error_code', 'sequence', 'factory_id'},
     'three_d_printing_material_aliases': {'source', 'approved_by', 'raw_name', 'id', 'canonical_material_id', 'approved_at', 'normalized_name', 'factory_id'},
     'three_d_printing_migration_batches': {'image_count', 'checkpoint_json', 'started_at', 'source_updated_at_ms', 'source_sha256', 'summary_json', 'reconciliation_json', 'status', 'source_size_bytes', 'leased_until', 'id', 'error_code', 'factory_id', 'code_revision', 'migration_version', 'completed_at', 'site_id', 'image_bytes', 'source_system', 'lease_id', 'expected_counts_json'},

@@ -502,23 +502,32 @@ def _settle_open_record(
 
 
 def sweep_open_runs(
-    db, *, factory_id, now, actor="system:state-sweep", ignore_state_since=False
+    db,
+    *,
+    factory_id,
+    now,
+    actor="system:state-sweep",
+    ignore_state_since=False,
+    apply_start_guard=False,
 ):
     """Close runs whose printer already finished without an explicit terminal event.
 
     A push-only Connector can miss the FINISH frame during an outage, a crash or a
     reconnect, which used to leave the daily record open forever. The legacy
     standalone server closed those runs from observed state; this is the same
-    conclusion restricted to device-owned printers that are stale-free.
+    conclusion restricted to record-enabled printers that are stale-free.
 
     `ignore_state_since` is the boot/reconnect settlement variant: the persisted
     printer row already carries a fresh full status pushed on connect, so an open run
-    is settled from that state without additionally waiting for a quiet window.
+    is settled from that state without additionally waiting for a quiet window. The
+    rollout start guard is not applied here by default: the sweep only closes records
+    that already exist and were created under the guard, so re-checking it would stop
+    the sweep from ever completing the very runs it opened.
     """
     from app.services.three_d_connector import (
         FACTORY,
-        OBSERVER,
         metadata,
+        record_reconcile_allowed,
         stamp,
     )
     from app.services.three_d_network_health import network_blocks_control
@@ -537,13 +546,14 @@ def sweep_open_runs(
             m.ThreeDPrintingPrinter.factory_id == FACTORY
         )
     ):
-        owner = None
         connection = db.get(m.ThreeDPrintingPrinterConnection, printer.id)
-        if connection is not None:
-            owner = connection.connection_owner
-        if owner is None or owner == OBSERVER or not connection.connection_enabled:
-            # Read-only observation may never settle anything, and an unmarked or
-            # disabled connection has no owner evidence to trust.
+        # Recording is gated by the connection's own record flag, never by ownership:
+        # an observation-only connection may settle runs while control stays refused.
+        # The sweep closes records that already exist, so the rollout start guard is
+        # only re-checked when the caller explicitly asks for it.
+        if connection is None or not record_reconcile_allowed(
+            connection, None, start_guard=apply_start_guard
+        ):
             continue
         info = metadata(printer)
         observed_raw = info.get("observed_at") or ""

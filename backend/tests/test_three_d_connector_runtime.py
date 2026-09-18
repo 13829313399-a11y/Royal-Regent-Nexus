@@ -58,6 +58,8 @@ def test_two_real_workers_eleven_tls_printers_api_reconcile_and_sse(
                         credential_ref=f"printer-{index:02d}",
                         connection_enabled=True,
                         connection_owner=env[3].OWNER,
+                        # The migration enables existing connections for recording.
+                        record_reconcile_enabled=True,
                     )
                     db.add(row)
                 row.certificate_fingerprint = body["fingerprint"]
