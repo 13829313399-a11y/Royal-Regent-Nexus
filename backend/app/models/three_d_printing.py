@@ -578,6 +578,9 @@ class ThreeDPrintingPrinterConnection(Base):
     connection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     connection_revision: Mapped[int] = mapped_column(Integer, default=1)
     connection_owner: Mapped[str] = mapped_column(String(24), default="edge-legacy")
+    # Recording a finished print is deliberately independent of connection ownership:
+    # an observer connection may settle runs while hardware control stays refused.
+    record_reconcile_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     leader_instance_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
     leader_lease_id: Mapped[str] = mapped_column(String(96), default="")
     leader_leased_until: Mapped[str] = mapped_column(String(32), default="")

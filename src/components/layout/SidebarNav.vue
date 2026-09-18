@@ -119,7 +119,7 @@ watch(() => props.mobileOpen, (isOpen) => {
   <aside
     ref="sidebarRef"
     id="global-navigation"
-    class="sidebar-scrollbar fixed inset-y-0 left-0 z-50 flex h-dvh w-[calc(100vw-2rem)] max-w-[300px] shrink-0 flex-col overflow-y-auto border-r border-slate-200/80 bg-white/98 shadow-2xl shadow-slate-950/15 transition-transform duration-200 ease-out lg:sticky lg:top-[75px] lg:z-20 lg:h-[calc(100vh-75px)] lg:w-[88px] lg:max-w-[88px] lg:self-start lg:translate-x-0 lg:shadow-none 2xl:w-[260px] 2xl:max-w-none"
+    class="sidebar-surface sidebar-scrollbar fixed inset-y-0 left-0 z-50 flex h-dvh w-[calc(100vw-2rem)] max-w-[300px] shrink-0 flex-col overflow-y-auto border-r border-slate-200/80 bg-white/98 shadow-2xl shadow-slate-950/15 transition-transform duration-200 ease-out lg:sticky lg:top-[75px] lg:z-20 lg:h-[calc(100vh-75px)] lg:w-[88px] lg:max-w-[88px] lg:self-start lg:translate-x-0 lg:shadow-none 2xl:w-[260px] 2xl:max-w-none"
     :class="mobileOpen ? 'visible translate-x-0' : 'invisible -translate-x-full lg:visible'"
     aria-label="全局导航"
     @keydown="trapMobileFocus"
@@ -143,7 +143,7 @@ watch(() => props.mobileOpen, (isOpen) => {
 
     <div class="flex-1 space-y-7 px-4 py-5 lg:px-3 lg:py-7 2xl:px-4">
       <div v-for="group in visibleNavigationGroups" :key="group.label" class="space-y-2">
-        <p class="px-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 lg:sr-only 2xl:not-sr-only">
+        <p class="sidebar-group-label px-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 lg:sr-only 2xl:not-sr-only">
           {{ group.label }}
         </p>
         <nav class="space-y-1">
@@ -151,11 +151,12 @@ watch(() => props.mobileOpen, (isOpen) => {
             v-for="item in group.items"
             :key="`${group.label}-${item.label}`"
             :to="getNavigationTarget(item)"
-            class="group relative flex h-10 items-center gap-3 overflow-hidden rounded-lg px-3 text-sm transition-[color,background-color,box-shadow] duration-150 lg:justify-center lg:px-0 2xl:justify-start 2xl:px-3"
+            class="sidebar-nav-link group relative flex h-10 items-center gap-3 overflow-hidden rounded-lg px-3 text-sm transition-[color,background-color,box-shadow] duration-150 lg:justify-center lg:px-0 2xl:justify-start 2xl:px-3"
             :class="isActive(item)
               ? 'bg-gradient-to-r from-teal-50 to-teal-50/45 font-semibold text-teal-800 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.08)]'
               : 'text-slate-600 hover:bg-slate-50/90 hover:text-slate-950'"
             :aria-label="item.label"
+            :aria-current="isActive(item) ? 'page' : undefined"
             :title="item.label"
             @click="handleSelect(item)"
           >
@@ -165,7 +166,7 @@ watch(() => props.mobileOpen, (isOpen) => {
               aria-hidden="true"
             />
             <span
-              class="flex size-7 shrink-0 items-center justify-center rounded-md transition-colors"
+              class="sidebar-nav-icon flex size-7 shrink-0 items-center justify-center rounded-md transition-colors"
               :class="isActive(item) ? 'bg-white/85 text-teal-700 shadow-sm' : 'text-slate-400 group-hover:bg-white group-hover:text-slate-700'"
             >
               <component :is="item.icon" class="size-4" aria-hidden="true" />
@@ -177,7 +178,7 @@ watch(() => props.mobileOpen, (isOpen) => {
     </div>
 
     <div class="p-4 lg:hidden 2xl:block">
-      <div class="surface-subtle rounded-xl p-4">
+      <div class="sidebar-health surface-subtle rounded-xl p-4">
         <div class="mb-2 flex items-center justify-between">
           <p class="font-semibold text-slate-950">系统健康</p>
           <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-700">
@@ -185,7 +186,7 @@ watch(() => props.mobileOpen, (isOpen) => {
             在线
           </span>
         </div>
-        <p class="text-sm text-slate-600">在线服务 23 / 24</p>
+        <p class="text-sm text-slate-600">在线服务 23 / 24 <span class="text-xs text-slate-500">· 示例</span></p>
         <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200/80">
           <div class="h-full w-[88%] rounded-full bg-gradient-to-r from-teal-700 to-teal-500" />
         </div>

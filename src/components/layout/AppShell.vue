@@ -5,6 +5,9 @@ import SidebarNav from '@/components/layout/SidebarNav.vue'
 import TopBar from '@/components/layout/TopBar.vue'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 import { usePresenceHeartbeat } from '@/composables/usePresenceHeartbeat'
+import { getPortalScope, resolvePortalShellAttribute } from '@/lib/portalRouteScope'
+import '@/components/portal/styles/portal.css'
+import '@/components/portal/styles/portal-shell.css'
 
 const route = useRoute()
 usePresenceHeartbeat()
@@ -13,6 +16,12 @@ let releaseNavigationScrollLock: BodyScrollLockRelease | null = null
 let desktopMediaQuery: MediaQueryList | null = null
 
 const isFullPage = computed(() => Boolean(route.meta.fullPage))
+
+/**
+ * 导航表面换肤只作用于白名单门户路由；其他模块路由即使已经加载过门户 CSS，
+ * 也不会继续命中 `.app-shell[data-portal-shell]` 规则。
+ */
+const portalShellAttribute = computed(() => resolvePortalShellAttribute(getPortalScope(route)))
 
 watch(() => route.path, () => {
   isMobileNavigationOpen.value = false
@@ -56,7 +65,7 @@ onBeforeUnmount(() => {
 <template>
   <RouterView v-if="isFullPage" />
 
-  <div v-else class="app-shell">
+  <div v-else class="app-shell" :data-portal-shell="portalShellAttribute">
     <a
       href="#app-content"
       class="fixed left-4 top-3 z-[80] -translate-y-16 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-xl transition-transform focus:translate-y-0"

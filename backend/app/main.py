@@ -42,16 +42,72 @@ from app.core.config import settings
 from app.db import init_db
 
 request_timing_logger = logging.getLogger("uvicorn.error")
+sweep_logger = logging.getLogger("app.three_d_sweep")
+
+
+def sweep_three_d_open_runs(*, boot=False) -> None:
+    """Settle auto runs whose printer already finished without a terminal event.
+
+    `boot=True` is the start-up/reconnect settlement: a run left open by a crash or a
+    long outage is closed from the full status the Connector pushes on connect.
+    """
+    from app.core.time import business_now
+    from app.db import SessionLocal
+    from app.services.three_d_connector import FACTORY
+    from app.services.three_d_run_reconciliation import sweep_open_runs
+
+    with SessionLocal() as db:
+        try:
+            result = sweep_open_runs(
+                db,
+                factory_id=FACTORY,
+                now=business_now(),
+                actor="system:boot-sweep" if boot else "system:state-sweep",
+                ignore_state_since=boot,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    if result.settled or result.settled_for_other_job or result.stale_open:
+        sweep_logger.info("three_d_state_sweep %s", result.as_dict())
+
+
+async def three_d_sweep_loop() -> None:
+    import asyncio
+
+    # One immediate settlement pass at start-up, then the periodic sweep.
+    try:
+        await asyncio.to_thread(sweep_three_d_open_runs, boot=True)
+    except Exception:
+        sweep_logger.warning("three_d_boot_sweep_failed", exc_info=True)
+    interval = max(15, settings.three_d_reconciliation_sweep_seconds)
+    while True:
+        try:
+            await asyncio.to_thread(sweep_three_d_open_runs)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            sweep_logger.warning("three_d_state_sweep_failed", exc_info=True)
+        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+
     init_db()
     from app.services.three_d_live import hub
     hub.start()
+    sweep_task = asyncio.create_task(three_d_sweep_loop())
     try:
         yield
     finally:
+        sweep_task.cancel()
+        try:
+            await sweep_task
+        except asyncio.CancelledError:
+            pass
         await hub.stop()
 
 

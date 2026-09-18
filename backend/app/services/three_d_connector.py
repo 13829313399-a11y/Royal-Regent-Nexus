@@ -413,6 +413,7 @@ def start_session(db, payload):
             "sequence": 0,
             "device_job_key": "",
             "observed_at": None,
+            "state_since": None,
         },
     )
     printer.connected, printer.state = False, "STALE"
@@ -498,6 +499,9 @@ def store_event(db, payload):
         "device_job_key", ""
     ):
         meta["control_epoch"] = meta.get("control_epoch", 0) + 1
+        # When this state or job began, so a later sweep can require a quiet
+        # window before it concludes that an open run really ended.
+        meta["state_since"] = stamp(payload.observed_at) if payload.observed_at else ""
     printer.connected, printer.state = connected, effective_state
     for key in (
         "current_file",
@@ -526,12 +530,41 @@ def store_event(db, payload):
     save_metadata(printer, meta)
     printer.revision += 1
     printer.updated_at = stamp(now)
-    from app.services.three_d_run_reconciliation import reconcile_event
+    from app.services.three_d_run_reconciliation import (
+        apply_telemetry_backfill,
+        reconcile_event,
+    )
 
-    if row.connection_owner != OBSERVER:
+    if record_reconcile_allowed(row, payload.observed_at):
         reconcile_event(db, printer, payload, instance.id, now, connected=connected)
+        apply_telemetry_backfill(db, printer, payload, instance.id, now)
     notify(db, "printer_state", event.id)
     return {"event_id": event.id, "accepted": True, "duplicate": False}
+
+
+def record_reconcile_allowed(row, observed_at, *, start_guard=True) -> bool:
+    """Whether this connection may create or settle production records.
+
+    Hardware control stays bound to OWNER; recording is a separate switch so an
+    observation-only connection can complete daily records without gaining the ability
+    to command a printer. `THREE_D_RECONCILE_SINCE` is an optional rollout guard: when
+    set, only runs observed at or after that instant may create records, which keeps a
+    deployment from retroactively recording runs observed before the switch was on. It
+    is deliberately unset by default, so an explicit value is a deliberate choice.
+    Callers that only close records which already exist pass `start_guard=False`.
+    """
+    if row is None or not row.connection_enabled or not row.record_reconcile_enabled:
+        return False
+    if row.connection_owner not in CONNECTED_OWNERS:
+        return False
+    since_raw = settings.three_d_record_reconcile_since.strip()
+    since = parse_business_timestamp(since_raw) if since_raw else None
+    if since is None or not start_guard:
+        return True
+    if observed_at is None:
+        # Nothing to place on the timeline; the guard only trusts a stated instant.
+        return row.connection_owner == OWNER
+    return observed_at >= since
 
 
 def command_live(db, printer, meta, now, action):
@@ -563,7 +596,7 @@ def reconcile(db, payload):
     from app.services.three_d_run_reconciliation import reconcile_event
 
     instance, row, printer, now, meta = require_session(db, payload)
-    if row.connection_owner == OBSERVER:
+    if row.connection_owner == OBSERVER and not row.record_reconcile_enabled:
         return {"reconciled": False, "reason": "observation_only"}
     event = db.scalar(
         select(m.ThreeDPrintingPrinterStateEvent).where(

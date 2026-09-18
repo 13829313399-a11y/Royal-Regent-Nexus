@@ -1,12 +1,48 @@
 """Device evidence updates runs exactly once; ambiguity never implies completion."""
 
 import json
+from dataclasses import dataclass, field
 from hashlib import sha256
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.time import parse_business_timestamp
 from app.models import three_d_printing as m
+
+# Ported from the legacy standalone server's transition guard. The old process
+# observed every printer itself; here the same conclusion is drawn from the
+# printer row, which only the owner-marked Connector session may advance.
+SETTLEABLE_DEVICE_STATES = {"FINISH", "FAILED", "ERROR", "IDLE", "STOPPED", "CANCELLED"}
+
+
+def _load_json(value, fallback):
+    try:
+        return json.loads(value or "")
+    except (TypeError, ValueError):
+        return fallback
+
+
+@dataclass
+class SweepResult:
+    """Evidence for settling open runs that received no terminal event."""
+
+    checked: int = 0
+    eligible: int = 0
+    settled: list = field(default_factory=list)
+    settled_for_other_job: list = field(default_factory=list)
+    awaiting_evidence: list = field(default_factory=list)
+    stale_open: list = field(default_factory=list)
+
+    def as_dict(self):
+        return {
+            "checked": self.checked,
+            "eligible": self.eligible,
+            "settled": self.settled,
+            "settled_for_other_job": self.settled_for_other_job,
+            "awaiting_evidence": self.awaiting_evidence,
+            "stale_open": self.stale_open,
+        }
 
 
 def job_key(printer_id, device_key):
@@ -193,6 +229,34 @@ def reconcile_event(db, printer, event, actor, now, *, connected):
         )
         db.add(record)
         db.flush()
+        resumed = _resumable_same_file_record(db, printer, event, now, exclude=record)
+        if resumed is not None:
+            # Ported from the legacy server's reprint window: the same file on the same
+            # machine within the window is one physical run even if the device job id
+            # changed (reprint after a finish, or a Connector restart that lost the id).
+            flags = _record_flags(resumed)
+            flags.add("device_job_changed_same_file")
+            resumed.reconciliation_status = "pending"
+            resumed.data_quality_flags_json = encode(sorted(flags))
+            resumed.updated_at = stamp(now)
+            resumed.revision += 1
+            db.delete(record)
+            audit(
+                db,
+                "production_record",
+                resumed.id,
+                "resume_same_file_run",
+                {
+                    "event_id": event.event_id,
+                    "device_job_key": key,
+                    "current_file": event.current_file,
+                    "flags": sorted(flags),
+                },
+                actor,
+                now,
+            )
+            notify(db, "print_run", resumed.id)
+            return
         business._consume_record(
             db, record, actor, "云端打印机连接器", "云端任务首次运行扣料"
         )
@@ -257,3 +321,319 @@ def reconcile_event(db, printer, event, actor, now, *, connected):
         now,
     )
     notify(db, "print_run", record.id)
+
+
+def _record_flags(record):
+    return set(_load_json(record.data_quality_flags_json, []))
+
+
+def _resumable_same_file_record(db, printer, event, now, exclude=None):
+    """A run already recorded for this machine and file inside the reprint window.
+
+    Only a record whose file matches and whose end is missing or recent qualifies: an
+    identical file printed again after the window is a real second run. `exclude` drops
+    the row this call is about to insert, which the flush has already made visible.
+    """
+    gcode = (event.current_file or "").strip()
+    if not gcode:
+        return None
+    from app.services.three_d_connector import FACTORY
+
+    window = settings.three_d_reconciliation_same_file_window_seconds
+    existing = list(
+        db.scalars(
+            select(m.ThreeDPrintingProductionRecord)
+            .where(
+                m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
+                m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                m.ThreeDPrintingProductionRecord.gcode_file == gcode,
+                m.ThreeDPrintingProductionRecord.auto_record.is_(True),
+                m.ThreeDPrintingProductionRecord.deleted_at == "",
+            )
+            .order_by(m.ThreeDPrintingProductionRecord.created_at.desc())
+        )
+    )
+    for candidate in existing:
+        if exclude is not None and candidate.id == exclude.id:
+            continue
+        if not candidate.print_end_at:
+            return candidate
+        ended = parse_business_timestamp(candidate.print_end_at)
+        if ended is not None and (now - ended).total_seconds() <= window:
+            return candidate
+    return None
+
+
+def apply_telemetry_backfill(db, printer, event, actor, now):
+    """Fill product identity and material for records created before telemetry arrived.
+
+    The legacy server retried the gcode match on later status frames; the same retry
+    keeps a run from staying at "待匹配产品" just because the first frame was thin.
+    """
+    from app.services.three_d_connector import FACTORY, audit, encode, notify, stamp
+    from app.services import three_d_printing as business
+
+    touched = []
+    records = list(
+        db.scalars(
+            select(m.ThreeDPrintingProductionRecord).where(
+                m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
+                m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                m.ThreeDPrintingProductionRecord.auto_record.is_(True),
+                m.ThreeDPrintingProductionRecord.deleted_at == "",
+                m.ThreeDPrintingProductionRecord.print_end_at == "",
+            )
+        )
+    )
+    if not records:
+        return touched
+    gcode = (event.current_file or "").strip()
+    for record in records:
+        flags = _record_flags(record)
+        changed = False
+        if not record.gcode_file and gcode:
+            record.gcode_file = gcode
+            changed = True
+        matched = None
+        uncertain_name = (
+            not (record.product_name or "").strip()
+            or record.product_name == "待匹配产品"
+            or record.product_name == business._normalize_gcode_name(gcode)
+        )
+        if not record.product_id and gcode and uncertain_name:
+            # Only resolve a name that was never pinned to a product. An ambiguous
+            # product name must stay unresolved until an operator confirms it.
+            normalized = business._normalize_gcode_name(gcode)
+            named = (
+                list(
+                    db.scalars(
+                        select(m.ThreeDPrintingProduct).where(
+                            m.ThreeDPrintingProduct.factory_id == FACTORY,
+                            m.ThreeDPrintingProduct.is_active.is_(True),
+                            m.ThreeDPrintingProduct.name == normalized,
+                        )
+                    )
+                )
+                if normalized
+                else []
+            )
+            matched = named[0] if len(named) == 1 else None
+            if matched is not None:
+                record.product_id = matched.id
+                record.product_name = matched.name
+                record.weight_g = matched.weight_g
+                record.quantity = matched.default_quantity
+                record.duration_hours = matched.duration_hours
+                record.quoted_price = matched.quoted_price
+                record.design_fee = 0
+                record.customer = matched.customer
+                # The product is authoritative for its own material, including an empty
+                # value that lets the device report the loaded filament instead.
+                record.material_name = matched.material_name or ""
+                flags.discard("product_match_required")
+                changed = True
+        material = (record.material_name or "").strip()
+        if not material and event.live_material:
+            record.material_name = event.live_material.strip()
+            flags.add("material_source_device")
+            changed = bool(record.material_name)
+        if not changed:
+            continue
+        record.data_quality_flags_json = encode(sorted(flags))
+        record.updated_at = stamp(now)
+        record.revision += 1
+        touched.append(record.id)
+        audit(
+            db,
+            "production_record",
+            record.id,
+            "telemetry_backfill",
+            {
+                "event_id": event.event_id,
+                "product_matched": bool(matched),
+                "material": record.material_name,
+            },
+            actor,
+            now,
+        )
+        notify(db, "print_run", record.id)
+    return touched
+
+
+def _settle_open_record(
+    db,
+    record,
+    *,
+    state,
+    evidence,
+    actor,
+    observed_at,
+    now,
+):
+    from app.services.three_d_connector import audit, encode, notify, stamp
+
+    flags = _record_flags(record)
+    flags.discard("pending_device_reconciliation")
+    flags.discard("completion_evidence_missing")
+    if state == "FINISH":
+        record.run_status = "succeeded"
+        flags.add("closed_by_state_sweep")
+    elif state in {"FAILED", "ERROR"}:
+        record.run_status = "failed"
+    else:
+        flags.add("completion_evidence_missing")
+    record.reconciliation_status = "pending" if flags else "resolved"
+    record.data_quality_flags_json = encode(sorted(flags))
+    if record.run_status == "failed" and "打印失败" not in record.remark:
+        record.remark = (record.remark + " 打印失败").strip()
+    record.print_end_at = observed_at
+    record.updated_at = stamp(now)
+    record.revision += 1
+    audit(
+        db,
+        "production_record",
+        record.id,
+        "auto_settle_from_state",
+        {"state": state, "evidence": evidence},
+        actor,
+        now,
+    )
+    notify(db, "print_run", record.id)
+
+
+def sweep_open_runs(
+    db,
+    *,
+    factory_id,
+    now,
+    actor="system:state-sweep",
+    ignore_state_since=False,
+    apply_start_guard=False,
+):
+    """Close runs whose printer already finished without an explicit terminal event.
+
+    A push-only Connector can miss the FINISH frame during an outage, a crash or a
+    reconnect, which used to leave the daily record open forever. The legacy
+    standalone server closed those runs from observed state; this is the same
+    conclusion restricted to record-enabled printers that are stale-free.
+
+    `ignore_state_since` is the boot/reconnect settlement variant: the persisted
+    printer row already carries a fresh full status pushed on connect, so an open run
+    is settled from that state without additionally waiting for a quiet window. The
+    rollout start guard is not applied here by default: the sweep only closes records
+    that already exist and were created under the guard, so re-checking it would stop
+    the sweep from ever completing the very runs it opened.
+    """
+    from app.services.three_d_connector import (
+        FACTORY,
+        metadata,
+        record_reconcile_allowed,
+        stamp,
+    )
+    from app.services.three_d_network_health import network_blocks_control
+
+    result = SweepResult()
+    if factory_id != FACTORY or network_blocks_control(db):
+        return result
+    grace = (
+        0
+        if ignore_state_since
+        else settings.three_d_reconciliation_terminal_grace_seconds
+    )
+    stale_after = settings.three_d_reconciliation_stale_open_seconds
+    for printer in db.scalars(
+        select(m.ThreeDPrintingPrinter).where(
+            m.ThreeDPrintingPrinter.factory_id == FACTORY
+        )
+    ):
+        connection = db.get(m.ThreeDPrintingPrinterConnection, printer.id)
+        # Recording is gated by the connection's own record flag, never by ownership:
+        # an observation-only connection may settle runs while control stays refused.
+        # The sweep closes records that already exist, so the rollout start guard is
+        # only re-checked when the caller explicitly asks for it.
+        if connection is None or not record_reconcile_allowed(
+            connection, None, start_guard=apply_start_guard
+        ):
+            continue
+        info = metadata(printer)
+        observed_raw = info.get("observed_at") or ""
+        observed_at = parse_business_timestamp(observed_raw) if observed_raw else None
+        if observed_at is None or (now - observed_at).total_seconds() > 30:
+            continue
+        result.checked += 1
+        if printer.state not in SETTLEABLE_DEVICE_STATES:
+            continue
+        if since_raw := (info.get("state_since") or ""):
+            since = parse_business_timestamp(since_raw)
+        else:
+            since = None
+        if since is None or (now - since).total_seconds() < grace:
+            # No proof the printer has been quiet long enough yet.
+            continue
+        result.eligible += 1
+        # Never close a run younger than the printer's own quiet window.
+        close_at = max(observed_at, since)
+        key = job_key(printer.id, info.get("device_job_key", ""))
+        open_records = list(
+            db.scalars(
+                select(m.ThreeDPrintingProductionRecord)
+                .where(
+                    m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
+                    m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                    m.ThreeDPrintingProductionRecord.auto_record.is_(True),
+                    m.ThreeDPrintingProductionRecord.print_end_at == "",
+                    m.ThreeDPrintingProductionRecord.deleted_at == "",
+                )
+                .order_by(m.ThreeDPrintingProductionRecord.created_at.desc())
+                .with_for_update()
+            )
+        )
+        if not open_records:
+            continue
+        same_job = next(
+            (item for item in open_records if key and item.device_job_key == key), None
+        )
+        others = [item for item in open_records if item is not same_job]
+        if (
+            same_job is not None
+            and parse_business_timestamp(same_job.print_start_at) is not None
+            and (close_at - parse_business_timestamp(same_job.print_start_at)).total_seconds()
+            < grace
+        ):
+            result.awaiting_evidence.append(same_job.id)
+            continue
+        if same_job is not None:
+            _settle_open_record(
+                db,
+                same_job,
+                state=printer.state,
+                evidence="device_state_terminal",
+                actor=actor,
+                observed_at=stamp(close_at),
+                now=now,
+            )
+            result.settled.append(same_job.id)
+        for item in others:
+            started = parse_business_timestamp(item.print_start_at)
+            if started is not None and (close_at - started).total_seconds() < grace:
+                result.awaiting_evidence.append(item.id)
+                continue
+            known = _record_flags(item) | {"device_job_changed_without_end"}
+            item.data_quality_flags_json = json.dumps(sorted(known), ensure_ascii=False)
+            _settle_open_record(
+                db,
+                item,
+                state=printer.state,
+                evidence="device_job_changed",
+                actor=actor,
+                observed_at=stamp(close_at),
+                now=now,
+            )
+            result.settled_for_other_job.append(item.id)
+        for item in open_records:
+            if item.print_end_at:
+                continue
+            started = parse_business_timestamp(item.print_start_at)
+            if started is not None and (now - started).total_seconds() >= stale_after:
+                result.stale_open.append(item.id)
+    return result

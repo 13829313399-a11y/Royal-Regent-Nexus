@@ -32,6 +32,9 @@ def enable(db, machine_no):
     if row.connection_owner != connector.OBSERVER or not row.connection_enabled:
         row.connection_owner = connector.OBSERVER
         row.connection_enabled = True
+        # Observation never writes production records unless an operator turns the
+        # record switch on separately; the old writer remains the record source here.
+        row.record_reconcile_enabled = False
         row.connection_revision += 1
         row.leader_instance_id = None
         row.leader_lease_id = ""
@@ -39,7 +42,8 @@ def enable(db, machine_no):
         printer.connected, printer.state = False, "STALE"
         connector.audit(db, "printer_connection", printer.id, "observation_enabled",
             {"machine_no": machine_no, "mode": connector.OBSERVER,
-             "legacy_writer_stopped": False, "control_transferred": False},
+             "legacy_writer_stopped": False, "control_transferred": False,
+             "record_reconcile_enabled": False},
             "onsite-user", connector.database_now(db), actor_type="operator",
             actor_name="现场只读接入")
     return {"machine_no": machine_no, "printer_id": printer.id,

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 </script>
 
 <template>
-  <section class="enterprise-panel rounded-xl p-4 sm:p-5" aria-label="审批筛选条件">
+  <section class="wb-filters enterprise-panel rounded-xl p-4 sm:p-5" aria-label="审批筛选条件">
     <div class="flex flex-wrap items-center gap-2.5">
       <div class="flex h-10 min-w-[240px] flex-1 items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/80 px-3.5 text-sm text-slate-500 shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)]">
         <Search class="size-4 shrink-0 text-slate-400" aria-hidden="true" />

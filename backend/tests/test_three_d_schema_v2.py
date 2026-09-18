@@ -163,14 +163,19 @@ def test_postgresql_offline_ddl_compiles_and_migration_history_has_single_head(m
 def test_readiness_guard_rejects_old_and_partial_new_schema(db, migration, monkeypatch):
     from app import db as app_db
     monkeypatch.setattr(app_db, "engine", db.engine)
-    with pytest.raises(RuntimeError, match="0099"):
+    with pytest.raises(RuntimeError, match="0117"):
         app_db.ensure_three_d_printing_schema_ready()
     apply(db, migration)
-    with pytest.raises(RuntimeError, match="0099"):
+    with pytest.raises(RuntimeError, match="0117"):
         app_db.ensure_three_d_printing_schema_ready()
     apply(db, load_migration("20260904_0099_*.py"))
+    # The guard also requires the later record-switch column, so a deployment that
+    # skipped 0117 is rejected instead of silently recording nothing.
+    with pytest.raises(RuntimeError, match="0117"):
+        app_db.ensure_three_d_printing_schema_ready()
+    apply(db, load_migration("20260917_0117_*.py"))
     app_db.ensure_three_d_printing_schema_ready()
     db.exec_driver_sql("ALTER TABLE three_d_printing_migration_batches DROP COLUMN checkpoint_json")
     db.commit()
-    with pytest.raises(RuntimeError, match="0099"):
+    with pytest.raises(RuntimeError, match="0117"):
         app_db.ensure_three_d_printing_schema_ready()

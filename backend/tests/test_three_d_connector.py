@@ -62,6 +62,7 @@ def environment(monkeypatch):
                         certificate_fingerprint="a" * 64,
                         connection_enabled=True,
                         connection_owner=service.OWNER,
+                        record_reconcile_enabled=True,
                     )
                 )
             ids = [printer.id for printer in printers]
@@ -293,7 +294,10 @@ def test_observer_preserves_existing_run_and_cannot_dispatch_old_command(environ
     with env[1].SessionLocal() as db:
         record = db.scalar(select(env[2].ThreeDPrintingProductionRecord))
         before = {c.name: getattr(record, c.name) for c in record.__table__.columns}
-        db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"]).connection_owner = env[3].OBSERVER
+        row = db.get(env[2].ThreeDPrintingPrinterConnection, ref["printer_id"])
+        row.connection_owner = env[3].OBSERVER
+        # Observation mode does not record unless an operator turns its switch on.
+        row.record_reconcile_enabled = False
         db.commit()
     post(env, "/commands/dispatch", {
         **ref, "command_id": command["command_id"], "command_lease_id": command["command_lease_id"]
@@ -313,7 +317,9 @@ def test_observer_recovers_independently_of_site_probe(environment, monkeypatch,
     env = environment
     network = importlib.import_module("app.services.three_d_network_health")
     with env[1].SessionLocal() as db:
-        db.get(env[2].ThreeDPrintingPrinterConnection, env[5][0]).connection_owner = env[3].OBSERVER
+        row = db.get(env[2].ThreeDPrintingPrinterConnection, env[5][0])
+        row.connection_owner = env[3].OBSERVER
+        row.record_reconcile_enabled = False
         db.commit()
     unhealthy = lambda _db: {
         "configured": network_status != "unconfigured", "status": network_status,

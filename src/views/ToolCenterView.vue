@@ -878,7 +878,11 @@ onBeforeUnmount(() => {
     class="app-page dt-workbench"
     :class="{ 'dt-narrow': narrow, 'dt-phone': phone, 'dt-focus': focused }"
   >
-    <PageHeader title="公共工具栏" :description="isHuaxing ? '文档翻译、转换、精确分页与批量改名 · 华兴厂区' : '文档翻译、转换与精确分页'"
+    <PageHeader
+      class="tools-hero rrn-portal-region"
+      data-portal-region="tools-header"
+      title="公共工具栏"
+      :description="isHuaxing ? '文档翻译、转换、精确分页与批量改名 · 华兴厂区' : '文档翻译、转换与精确分页'"
       ><template #actions
         ><Button v-if="isHuaxing" variant="outline" size="sm" :aria-pressed="renameActive" @click="selectRename(!renameActive)"
           ><Files :size="15" aria-hidden="true" />{{ renameActive ? '返回文档转换' : '批量改名' }}</Button
