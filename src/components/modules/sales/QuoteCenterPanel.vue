@@ -41,7 +41,9 @@ import {
   type ThreeSixtyConversionResult,
 } from '@/lib/customerPriceConverters/threeSixty'
 import YinhuiQuoteReview from '@/components/modules/sales/YinhuiQuoteReview.vue'
-import { buildYinhuiCustomerQuoteFileName, convertYinhuiInternalQuote, isYinhuiCustomer, validateYinhuiExport, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
+import YinhuiDraftReview from '@/components/modules/sales/YinhuiDraftReview.vue'
+import { createYinhuiDraft, loadYinhuiDraft, saveYinhuiDraft, type YinhuiDraft } from '@/lib/customerPriceConverters/yinhuiDraft'
+import { buildYinhuiCustomerQuoteFileName, isYinhuiCustomer, validateYinhuiExport, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
 import { yinhuiTemplateUrl } from '@/lib/customerPriceConverters/yinhuiProfiles'
 import { createYinhuiCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/yinhuiTemplate'
 import { useAppStore } from '@/stores/app'
@@ -206,6 +208,20 @@ const caixingConversionResult = ref<CaixingConversionResult | null>(null)
 const threeSixtyConversionResult = ref<ThreeSixtyConversionResult | null>(null)
 const yinhuiConversionResult = ref<YinhuiConversionResult | null>(null)
 const yinhuiConfirmed = ref(false)
+const yinhuiDraft = ref<YinhuiDraft | null>(null)
+watch(yinhuiConversionResult, result => { if (yinhuiDraft.value?.result !== result) yinhuiDraft.value = null })
+function updateYinhuiDraft(draft: YinhuiDraft) {
+  yinhuiConfirmed.value = false
+  yinhuiDraft.value = draft
+  yinhuiConversionResult.value = draft.result
+  importedWorkbookSheets.value = draft.result.sheets
+  if (importedFileSize.value) importedFileSize.value = `${importedFileSize.value.split(' · ')[0]} · 银辉导入草稿 · ${draft.result.quoteData.importIssues?.length || 0} 项原表问题待补正`
+  exportErrorMessage.value = ''
+}
+function downloadYinhuiDraft() {
+  if (!yinhuiDraft.value || !canExportSelectedCustomer.value || isExportingCustomerQuote.value) return
+  downloadGeneratedFile(saveYinhuiDraft(yinhuiDraft.value), `银辉-${yinhuiDraft.value.result.quoteData.model}-内部核对草稿.json`, 'application/json;charset=utf-8')
+}
 const isImportDragActive = ref(false)
 let importDragDepth = 0
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -572,7 +588,7 @@ const canExportCustomerQuote = computed(() => {
     return hasActiveThreeSixtyConversion.value
   }
   if (selectedCustomer.value.id === 'yinhui') {
-    if (!selectedImportMatchesCurrentChoice.value || !yinhuiConversionResult.value || !yinhuiConfirmed.value) return false
+    if (isImportingInternalQuote.value || !selectedImportMatchesCurrentChoice.value || !yinhuiConversionResult.value || !yinhuiConfirmed.value) return false
     try { validateYinhuiExport(yinhuiConversionResult.value.quoteData); return true } catch { return false }
   }
 
@@ -964,6 +980,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
   importErrorMessage.value = ''
   isImportingInternalQuote.value = true
+  if (customer.id === 'yinhui') yinhuiConfirmed.value = false
 
   try {
     if (customer.id === 'buzzbee') {
@@ -1043,11 +1060,12 @@ async function importInternalQuoteFile(file: File | undefined) {
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
     } else if (customer.id === 'yinhui') {
-      if (!file.name.toLowerCase().endsWith('.xlsx')) throw new Error('银辉仅支持 .xlsx 原内部报价或 P4 最终放行文件；旧 .xls 请先另存为 .xlsx')
+      if (!/\.(xlsx|json)$/i.test(file.name)) throw new Error('银辉支持 .xlsx 原内部报价、P4 最终放行文件或已保存的 .json 内部核对草稿')
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const result = convertYinhuiInternalQuote(buffer, file.name)
-      yinhuiConversionResult.value = result
+      const draft = file.name.toLowerCase().endsWith('.json') ? loadYinhuiDraft(new TextDecoder().decode(buffer)) : createYinhuiDraft(buffer, file.name)
+      updateYinhuiDraft(draft)
+      const result = draft.result
       yinhuiConfirmed.value = false
       buzzBeeConversionResult.value = null
       disneyConversionResult.value = null
@@ -1055,7 +1073,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
       importedWorkbookSheets.value = result.sheets
-      importedFileSize.value = `${formatFileSize(file.size)} · 银辉临时映射 · 输出 6 Sheet`
+      importedFileSize.value = `${formatFileSize(file.size)} · 银辉导入草稿 · ${result.quoteData.importIssues?.length || 0} 项原表问题待补正`
     } else if (customer.id === 'three-sixty') {
       if (!file.name.toLowerCase().endsWith('.xlsx')) {
         throw new Error('360 当前支持 .xlsx P4 最终放行文件或原专用多 Sheet 工作簿，旧 .xls 请先另存为 .xlsx')
@@ -1245,7 +1263,7 @@ async function exportCustomerQuoteExcel() {
     } else if (selectedCustomer.value.id === 'yinhui' && yinhuiConversionResult.value) {
       const conversion = yinhuiConversionResult.value
       const templateBuffer = await fetchTemplateBuffer(yinhuiTemplateUrl(conversion.quoteData.templateId), '银辉报客')
-      if (!isCurrentExportRequest() || selectedCustomer.value.id !== 'yinhui' || conversion !== yinhuiConversionResult.value || !yinhuiConfirmed.value) return
+      if (!isCurrentExportRequest() || isImportingInternalQuote.value || selectedCustomer.value.id !== 'yinhui' || conversion !== yinhuiConversionResult.value || !yinhuiConfirmed.value) return
       const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value })
       fileName = buildYinhuiCustomerQuoteFileName(conversion)
       downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
@@ -1425,7 +1443,8 @@ async function exportCustomerQuoteExcel() {
         </div>
       </div>
 
-      <YinhuiQuoteReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiConversionResult" v-model:confirmed="yinhuiConfirmed" :result="yinhuiConversionResult" :factory-id="activeFactoryId" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote" />
+      <YinhuiDraftReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiDraft" :draft="yinhuiDraft" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote || isImportingInternalQuote" @update:draft="updateYinhuiDraft" @invalidate="yinhuiConfirmed = false" @save="downloadYinhuiDraft" />
+      <YinhuiQuoteReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiConversionResult" v-model:confirmed="yinhuiConfirmed" :result="yinhuiConversionResult" :factory-id="activeFactoryId" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote || isImportingInternalQuote" />
 
       <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <label
@@ -1492,7 +1511,7 @@ async function exportCustomerQuoteExcel() {
               data-testid="quote-import-input"
               class="sr-only"
               type="file"
-              accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              :accept="selectedCustomer.id === 'yinhui' ? '.xlsx,.json' : '.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
               :disabled="!canImportSelectedCustomer || isImportingInternalQuote"
               @change="handleInternalQuoteImport"
             >

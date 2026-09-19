@@ -1,4 +1,6 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
+import { draftSource } from '@/lib/__tests__/fixtures/yinhuiDraftSource'
+import { createYinhuiDraft, saveYinhuiDraft } from '@/lib/customerPriceConverters/yinhuiDraft'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
@@ -12,6 +14,7 @@ vi.mock('@/api/customerPriceArtifact', () => ({
     download: vi.fn(),
   },
 }))
+vi.mock('@/api/quoteTranslation', () => ({ translateQuoteDescriptions: vi.fn(async () => { throw new Error('Test translation unavailable') }) }))
 
 const customerPricePermissions = [
   'customer_price:read',
@@ -188,6 +191,37 @@ describe('QuoteCenterPanel customer visibility', () => {
     expect(wrapper.get('[data-testid="quote-import-error"]').text()).toBe(
       '导入失败：360 当前支持 .xlsx P4 最终放行文件或原专用多 Sheet 工作簿，旧 .xls 请先另存为 .xlsx',
     )
+  })
+  it('opens a saved Silverlit draft, revokes confirmation immediately on replacement and clears it across factories', async () => {
+    const wrapper = mountPanel('ordinary-sales-user')
+    await wrapper.get('[data-testid="customer-tab-yinhui"]').trigger('click')
+    const draft = createYinhuiDraft(draftSource(false), '银辉81209.xlsx')
+    draft.result.quoteData.productName = 'Round Light'
+    const saved = new TextEncoder().encode(saveYinhuiDraft(draft))
+    const file = new File([saved], '银辉-内部核对草稿.json')
+    Object.defineProperty(file, 'arrayBuffer', { value: async () => saved.buffer })
+    const input = wrapper.get('[data-testid="quote-import-input"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+    await input.trigger('change')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="yinhui-draft"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').element).toHaveProperty('checked', false)
+    await wrapper.get('[data-testid="yinhui-confirm"]').setValue(true)
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').element).toHaveProperty('checked', true)
+    let resolve!: (value: ArrayBuffer) => void
+    const replacement = new File([], '银辉-替换.xlsx')
+    Object.defineProperty(replacement, 'arrayBuffer', { value: () => new Promise<ArrayBuffer>(r => { resolve = r }) })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [replacement] })
+    await input.trigger('change')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').element).toHaveProperty('checked', false)
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
+    useAppStore().setActiveFactory('huadeng')
+    await flushPromises()
+    resolve(draftSource(false))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="yinhui-draft"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('当前厂区尚未配置报客映射')
+    wrapper.unmount()
   })
 
   it.each(['huakang-b', 'huakang-c', 'huakang-d', 'huadeng'] as const)(
