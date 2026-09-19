@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { validateYinhuiExport, yinhuiTotals, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
+import { yinhuiExportIssues, yinhuiTotals, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
+import { setYinhuiDraftMoq } from '@/lib/customerPriceConverters/yinhuiDraft'
 import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG } from '@/lib/customerPriceConverters/yinhuiProfiles'
 import { translateQuoteDescriptions } from '@/api/quoteTranslation'
 import { getApiErrorMessage } from '@/lib/http'
@@ -56,7 +57,7 @@ const fields = [
 ] as const
 function setField(key: typeof fields[number]['key'], event: Event) {
   const value = (event.target as HTMLInputElement).value
-  if (key === 'moq') props.result.quoteData.moq = Number(value)
+  if (key === 'moq') setYinhuiDraftMoq(props.result, value)
   else if (key === 'freightLclHkd' || key === 'freightFclHkd') props.result.quoteData[key] = value === '' ? null : Number(value)
   else props.result.quoteData[key] = value
 }
@@ -68,10 +69,8 @@ const groups = computed(() => [
   { name: '包装', rows: props.result.quoteData.packagingRows },
   { name: '报关 / 文件费（总表 H32）', rows: props.result.quoteData.documentFees || [] },
 ])
-const error = computed(() => {
-  try { validateYinhuiExport(props.result.quoteData); return '' }
-  catch (e) { return e instanceof Error ? e.message : '请完善核对资料' }
-})
+const errors = computed(() => yinhuiExportIssues(props.result.quoteData))
+const error = computed(() => errors.value.length > 0)
 const total = computed(() => yinhuiTotals(props.result.quoteData))
 const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId || 'standard'])
 </script>
@@ -93,7 +92,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
     <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
       <label v-for="field in fields" :key="field.key" class="grid gap-1 text-xs font-medium text-slate-700">
         {{ field.label }}
-        <input :data-testid="`yinhui-${field.key}`" :type="field.type" :step="field.type === 'number' ? 'any' : undefined" :value="result.quoteData[field.key]" class="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm" @input="setField(field.key, $event)">
+        <input :data-testid="`yinhui-${field.key}`" :type="field.key === 'moq' ? 'text' : field.type" :step="field.type === 'number' ? 'any' : undefined" :value="field.key === 'moq' && !result.quoteData.moq ? '' : result.quoteData[field.key]" class="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm" @input="setField(field.key, $event)">
       </label>
       <label class="grid gap-1 text-xs font-medium text-slate-700">Adaptor
         <select v-model="result.quoteData.adaptor" class="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm"><option value="">待填写</option><option>included</option><option>not included</option></select>
@@ -123,6 +122,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
         <label v-for="(line, index) in result.quoteData.tools" :key="index" class="mb-2 grid gap-1 text-xs">
           {{ index + 1 }} · {{ line.moldNo || '未填模号' }}
           <input v-model="line.description" :aria-label="`Tool Plan 第 ${index + 1} 行英文描述`" class="rounded border border-slate-300 px-2 py-1" :class="hasChineseQuoteText(line.description) ? 'border-amber-500' : ''">
+          <span class="grid gap-2 sm:grid-cols-2"><input v-model="line.moldNo" :aria-label="`Tool Plan 第 ${index + 1} 行模号`" placeholder="客户模号（无依据可留空）" class="rounded border border-slate-300 px-2 py-1"><input v-model="line.partNo" :aria-label="`Tool Plan 第 ${index + 1} 行零件号`" placeholder="零件号（无依据可留空）" class="rounded border border-slate-300 px-2 py-1"></span>
           <span v-if="line.originalDescription" class="text-slate-500">原文：{{ line.originalDescription }}</span>
         </label>
       </div>
@@ -134,8 +134,8 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
     <p v-if="total.missingMaterialPrices.length" class="mt-3 rounded-md border border-amber-300 bg-amber-100 p-3 text-sm text-amber-950" role="alert" data-testid="yinhui-missing-prices">
       报客料价待补：{{ total.missingMaterialPrices.join('、') }}。对应 Tool Plan 单价留空，合计暂未包含这些料价；仍可确认后导出。文件名标注“待补料价”，客表 STAGE 标注 PRICE PENDING，请补齐后再发送客户。
     </p>
-    <p class="mt-3 text-sm font-semibold text-slate-800">{{ total.missingMaterialPrices.length ? '已知成本小计（待补料价）' : 'EX-FACTORY' }} HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / 7.8).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
-    <p v-if="error" class="mt-2 text-sm text-red-700" role="alert">{{ error }}</p>
+    <p class="mt-3 text-sm font-semibold text-slate-800">{{ result.quoteData.importIssues?.length ? '已识别成本小计（草稿待补正）' : total.missingMaterialPrices.length ? '已知成本小计（待补料价）' : 'EX-FACTORY' }} HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / 7.8).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
+    <div v-if="error" class="mt-2 text-sm text-red-700" role="alert" data-testid="yinhui-export-issues"><p>输出前还需处理 {{ errors.length }} 项：</p><ul class="mt-1 list-disc pl-5"><li v-for="item in errors" :key="item">{{ item }}</li></ul></div>
     <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || translating || disabled" class="mt-1"><span>已核对型号、MOQ、英文描述、图片、料型、模具费及运费；确认按上述临时映射生成。<strong v-if="result.manualReviewReasons?.length">我已人工核对 Tool Plan 提醒及其金额影响，同意放行。</strong><strong v-if="total.missingMaterialPrices.length">我已知悉缺失料价将留空、当前合计不完整，同意先导出并补齐料价。</strong></span></label>
   </fieldset>
 </template>

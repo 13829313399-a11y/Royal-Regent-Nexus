@@ -5,11 +5,31 @@ from app.db import get_db
 from app.schemas.pricing import PricingContext, PricingQuoteCreate, PricingQuoteOut, QuoteDescriptionTranslationRequest
 from app.core.config import settings
 from app.services.quote_translation import translate_quote_descriptions
+from app.schemas.quote_recognition import QuoteRecognitionRequest
+from app.services.quote_recognition import QuoteRecognitionError, recognition_status, recognize_quote_fields
+from typing import Literal
 from app.services.auth import AuthContext, ensure_permission_in_scope, get_current_user
 from app.services.pricing import create_quote, get_pricing_context, list_quotes
 
 
 router = APIRouter(prefix="/api/pricing")
+
+
+@router.get("/yinhui-recognition/status")
+def yinhui_recognition_status(response: Response, factory_id: Literal["huaxing"] = "huaxing", db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    ensure_permission_in_scope(db, current_user, "customer_price:import_internal_quote", factory_id, "sales-business")
+    response.headers["Cache-Control"] = "no-store"
+    return recognition_status()
+
+
+@router.post("/yinhui-recognition")
+def yinhui_recognition(payload: QuoteRecognitionRequest, response: Response, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    ensure_permission_in_scope(db, current_user, "customer_price:import_internal_quote", payload.factory_id, "sales-business")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return recognize_quote_fields(payload)
+    except QuoteRecognitionError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error), headers={"Cache-Control": "no-store"}) from None
 
 
 @router.post("/translate-descriptions")
