@@ -13,7 +13,7 @@ function fixture(): YinhuiConversionResult {
 describe('Silverlit export review', () => {
   beforeEach(()=>{ vi.mocked(translateQuoteDescriptions).mockReset() })
   it('automatically translates newly imported Chinese and disables confirmation while running', async () => {
-    const result=fixture();result.quoteData.mechanical[0]!.description='配重塊 4.0mm'
+    const result=fixture();result.quoteData.productName='配重塊 4.0mm'
     let resolve!: (value: Awaited<ReturnType<typeof translateQuoteDescriptions>>) => void
     vi.mocked(translateQuoteDescriptions).mockImplementation(()=>new Promise(r=>{resolve=r}))
     const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:true}})
@@ -21,24 +21,24 @@ describe('Silverlit export review', () => {
     expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
     resolve({engine:'local',warning:'',items:[{source:'配重塊 4.0mm',translation:'Counterweight 4.0mm',needs_review:false}]})
     await flushPromises()
-    expect(result.quoteData.mechanical[0]).toMatchObject({description:'Counterweight 4.0mm',originalDescription:'配重塊 4.0mm',amountHkd:1,quantity:2})
+    expect(result.quoteData.productName).toBe('Counterweight 4.0mm')
     expect(wrapper.text()).toContain('已自动翻译 1 项')
     expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([false])
   })
   it('preserves names on failure and allows retry', async () => {
-    const result=fixture();result.quoteData.mechanical[0]!.description='配重塊'
+    const result=fixture();result.quoteData.productName='配重塊'
     vi.mocked(translateQuoteDescriptions).mockRejectedValueOnce(new Error('服务未就绪')).mockResolvedValueOnce({engine:'local',warning:'',items:[{source:'配重塊',translation:'Counterweight',needs_review:false}]})
     const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false}})
     await flushPromises()
     expect(wrapper.text()).toContain('服务未就绪')
-    expect(result.quoteData.mechanical[0]!.description).toBe('配重塊')
+    expect(result.quoteData.productName).toBe('配重塊')
     await wrapper.get('[data-testid="yinhui-translate"]').trigger('click')
     await flushPromises()
-    expect(result.quoteData.mechanical[0]!.description).toBe('Counterweight')
+    expect(result.quoteData.productName).toBe('Counterweight')
   })
   it('cancels stale work when the import is replaced or the component unmounts', async () => {
-    const result=fixture();result.quoteData.mechanical[0]!.description='配重塊'
+    const result=fixture();result.quoteData.productName='配重塊'
     let resolve!: (value: Awaited<ReturnType<typeof translateQuoteDescriptions>>) => void
     vi.mocked(translateQuoteDescriptions).mockImplementation(()=>new Promise(r=>{resolve=r}))
     const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false}})
@@ -47,11 +47,11 @@ describe('Silverlit export review', () => {
     expect(signal.aborted).toBe(true)
     resolve({engine:'local',warning:'',items:[{source:'配重塊',translation:'Counterweight',needs_review:false}]})
     await flushPromises()
-    expect(result.quoteData.mechanical[0]!.description).toBe('配重塊')
+    expect(result.quoteData.productName).toBe('配重塊')
     wrapper.unmount()
   })
   it('does not run translation in a disabled or different-factory review', async () => {
-    const result=fixture();result.quoteData.mechanical[0]!.description='配重塊'
+    const result=fixture();result.quoteData.productName='配重塊'
     const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false,disabled:true}})
     expect(translateQuoteDescriptions).not.toHaveBeenCalled()
     await wrapper.setProps({disabled:false,factoryId:'huadeng'})
@@ -73,15 +73,19 @@ describe('Silverlit export review', () => {
     expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([false])
     expect(wrapper.text()).toContain('型号冲突')
   })
-  it('blocks confirmation for missing freight or untranslated names', async () => {
+  it('blocks confirmation for missing freight or invalid BOM names but accepts Chinese', async () => {
     const result=fixture(); result.quoteData.freightLclHkd=null
     const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false}})
     expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
     await wrapper.get('[data-testid="yinhui-freightLclHkd"]').setValue('0')
     expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
-    await wrapper.get('input[aria-label="五金 / 外购第 1 行英文描述"]').setValue('待翻译')
+    await wrapper.get('input[aria-label="五金 / 外购第 1 行物料名称"]').setValue('螺丝 Φ2.0x6PB 黑色（2PCS）')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
+    expect(translateQuoteDescriptions).not.toHaveBeenCalled()
+    expect(wrapper.get('input[aria-label="五金 / 外购第 1 行物料名称"]').classes()).not.toContain('border-amber-500')
+    await wrapper.get('input[aria-label="五金 / 外购第 1 行物料名称"]').setValue('#VALUE!')
     expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[role="alert"]').text()).toContain('英文')
+    expect(wrapper.get('[role="alert"]').text()).toContain('BOM 物料名称')
   })
   it('locks the review controls when export permission is absent or export is in progress', () => {
     const wrapper=mount(YinhuiQuoteReview,{props:{result:fixture(),confirmed:false,disabled:true}})
