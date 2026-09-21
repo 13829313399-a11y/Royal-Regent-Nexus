@@ -123,10 +123,12 @@ export function prepareP4CustomerConversion(
   }
   if (customerId === 'dicky') {
     try {
+      const result = convertDickyP4InternalQuote(artifact, sourceFileName)
+      if (result.v2Data) result.v2Data.products[0]!.image = extractYinhuiProductImage(buffer, '报价明细')
       return {
         customerId,
         artifact,
-        result: convertDickyP4InternalQuote(artifact, sourceFileName),
+        result,
       }
     } catch (error) {
       if (error instanceof P4CustomerMappingError) throw error

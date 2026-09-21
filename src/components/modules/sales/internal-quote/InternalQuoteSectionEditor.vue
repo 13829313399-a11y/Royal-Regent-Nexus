@@ -827,7 +827,7 @@ function confirmRemoveParticipation() {
       <div class="electronic-quote-total"><strong>电子部全部报价预览</strong><span>RMB {{ detailAmount(electronicSectionSummary.quoteRmb) }}</span><span>HKD {{ detailAmount(electronicSectionSummary.quoteHkd) }}</span><em>{{ electronicGroupOptions.length }} 份报价金额合计；正式金额以保存后的服务端计算为准。</em></div>
     </section>
     <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
-    <InternalQuoteSectionForm v-if="showElectronicForm" v-model="formPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" />
+    <InternalQuoteSectionForm v-if="showElectronicForm" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"

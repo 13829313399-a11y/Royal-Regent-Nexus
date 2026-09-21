@@ -1,6 +1,8 @@
 import { parseXlsxWorkbook, type XlsxCellValue } from './xlsxLite'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
-import type { P4InternalQuoteArtifact } from './p4Artifact'
+import { parseP4InternalQuoteArtifact, type P4InternalQuoteArtifact } from './p4Artifact'
+import { convertDickieV2, createDickieV2Workbook, type DickieV2QuoteData } from './dickieV2'
+import { extractYinhuiProductImage } from './yinhuiTemplate'
 
 type DetailCompareStatus = '上调' | '下调' | '持平'
 
@@ -79,6 +81,7 @@ export interface DickyConversionResult {
   quoteDate: Date
   sheets: DickyConvertedSheet[]
   p4QuoteData?: DickyP4QuoteData
+  v2Data?: DickieV2QuoteData
 }
 
 export const DICKY_CUSTOMER_QUOTE_TEMPLATE_URL = '/templates/dicky-customer-quote-template.bin'
@@ -433,6 +436,11 @@ function buildDetailRows(rows: XlsxCellValue[][], sheetId: string, sheetName: st
 
 export function convertDickyInternalQuote(buffer: ArrayBuffer, sourceFileName: string): DickyConversionResult {
   const workbook = parseXlsxWorkbook(buffer)
+  if (workbook.sheets.some(s => s.name === '审批与版本' || s.name === '结构化数据')) {
+    const result = convertDickyP4InternalQuote(parseP4InternalQuoteArtifact(buffer), sourceFileName)
+    if (result.v2Data) result.v2Data.products[0]!.image = extractYinhuiProductImage(buffer, '报价明细')
+    return result
+  }
   const summarySheet = findSummarySheet(workbook)
   const sheetId = 'dicky-summary'
   const details = buildDetailRows(summarySheet.rows, sheetId, 'Quotation')
@@ -494,6 +502,7 @@ export function convertDickyP4InternalQuote(
 ): DickyConversionResult {
   const customerFields = p4Object(artifact.sections.sales.payload.customer_quote_fields)
   const dickie = p4Object(customerFields.dickie)
+  if (p4Object(dickie.mapping).version === 'dickie-v2') return convertDickieV2(artifact, sourceFileName)
   const clientName = p4RequiredText(dickie.client_name, '缺少 Client')
   const quoteDateText = p4RequiredText(dickie.quote_date, '缺少 Quote Date')
   const quoteDate = new Date(`${quoteDateText}T00:00:00`)
@@ -1431,6 +1440,7 @@ export function createDickyCustomerQuoteWorkbook(
   result: DickyConversionResult,
   templateBuffer?: ArrayBuffer | Uint8Array,
 ) {
+  if (result.v2Data) return createDickieV2Workbook(result.v2Data)
   if (result.p4QuoteData) {
     if (!templateBuffer) throw new Error('Dickie P4 直转缺少报客模板')
     return createDickyCustomerQuoteFromSource(
@@ -1443,7 +1453,7 @@ export function createDickyCustomerQuoteWorkbook(
 }
 
 export function buildDickyCustomerQuoteFileName(result: DickyConversionResult) {
-  if (result.p4QuoteData) {
+  if (result.p4QuoteData || result.v2Data) {
     const baseName = result.sourceFileName
       .trim()
       .replace(/\.xlsx$/i, '')

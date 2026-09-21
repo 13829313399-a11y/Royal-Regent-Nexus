@@ -1,4 +1,5 @@
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
+import { normalizeDickieMapping, normalizeDickieMold, type DickieMapping, type DickieMoldSupplement } from './dickieQuote'
 
 export type DisneyPurchasedSection = 'product' | 'package'
 export type EngineeringMaterialCategory = 'hardware' | 'auxiliary' | 'packaging'
@@ -48,6 +49,7 @@ export interface EngineeringMoldPartRow {
   quantity: number
 }
 export interface EngineeringMoldRow extends QuotePricingMetadata {
+  dickie_export?: DickieMoldSupplement
   item: string
   mold_no: string
   chinese_name: string
@@ -456,7 +458,7 @@ export interface DisneyCustomerQuoteFields { item_number: string; quote_date: st
 export interface DickieProductQuoteRow { line_no: number; item_text_en: string; units_per_carton: string; carton_cbm: number; color_box_size_cm: string; carton_size_cm: string; production_moq: string; price_40h_hkd: number; price_20h_hkd: number; price_lcl_hkd: number }
 export interface DickieRemarkLine { line_no: number; text_en: string }
 export interface DickieMaterialPrice { material: string; price_hkd_lb: number }
-export interface DickieCustomerQuoteFields { client_name: string; quote_date: string; attention: string; revision: string; from_name: string; project_name_en: string; first_shot_time: string; finish_time: string; product_rows: DickieProductQuoteRow[]; remark_lines: DickieRemarkLine[]; material_prices_hkd: DickieMaterialPrice[] }
+export interface DickieCustomerQuoteFields { mapping?: DickieMapping; client_name: string; quote_date: string; attention: string; revision: string; from_name: string; project_name_en: string; first_shot_time: string; finish_time: string; product_rows: DickieProductQuoteRow[]; remark_lines: DickieRemarkLine[]; material_prices_hkd: DickieMaterialPrice[] }
 export interface CaixingCustomerQuoteFields {
   product_type: 'plastic' | 'plush'
   item_number: string
@@ -1567,6 +1569,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       quantity: numberValue(row.quantity ?? row.sets, 1), net_weight_g: numberValue(row.net_weight_g ?? row.weight_g),
       cycle_time_seconds: numberValue(row.cycle_time_seconds ?? row.cycle_sec), mold_size: textValue(row.mold_size), mold_specification: textValue(row.mold_specification),
       image_reference: textValue(row.image_reference), image_attachment_ids: Array.isArray(row.image_attachment_ids) ? row.image_attachment_ids.map(textValue).filter(Boolean) : [], cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb), remark: textValue(row.remark ?? row.note),
+      ...(row.dickie_export ? { dickie_export: normalizeDickieMold(row.dickie_export) } : {}),
       machine_code: textValue(row.machine_code), target_output: numberValue(row.target_output), parts: engineeringMoldParts(row), source_row: numberValue(row.source_row),
       disney_mold_no: textValue(row.disney_mold_no), disney_parts: textValue(row.disney_parts), disney_material: textValue(row.disney_material), disney_cavities: numberValue(row.disney_cavities), disney_parts_per_shot: numberValue(row.disney_parts_per_shot), disney_tool_cost_usd: numberValue(row.disney_tool_cost_usd),
       dickie_project_name_en: textValue(row.dickie_project_name_en), dickie_mold_no: textValue(row.dickie_mold_no), dickie_parts_en: textValue(row.dickie_parts_en), dickie_resin: textValue(row.dickie_resin), dickie_mold_size: textValue(row.dickie_mold_size), dickie_mold_material: textValue(row.dickie_mold_material), dickie_cavities: numberValue(row.dickie_cavities), dickie_parts_per_shot: numberValue(row.dickie_parts_per_shot), dickie_mold_cost_hkd: numberValue(row.dickie_mold_cost_hkd), dickie_remark_en: textValue(row.dickie_remark_en),
@@ -1909,6 +1912,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         setup_charge_usd: numberValue(objectValue(objectValue(source.customer_quote_fields).disney).setup_charge_usd),
       },
       dickie: {
+        mapping: normalizeDickieMapping(objectValue(objectValue(source.customer_quote_fields).dickie).mapping),
         client_name: textValue(objectValue(objectValue(source.customer_quote_fields).dickie).client_name),
         quote_date: textValue(objectValue(objectValue(source.customer_quote_fields).dickie).quote_date),
         attention: textValue(objectValue(objectValue(source.customer_quote_fields).dickie).attention),
