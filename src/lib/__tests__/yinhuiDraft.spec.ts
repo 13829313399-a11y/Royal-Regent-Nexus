@@ -7,6 +7,24 @@ import { draftSource } from './fixtures/yinhuiDraftSource'
 import { createXlsxWorkbook, parseXlsxWorkbook } from '../customerPriceConverters/xlsxLite'
 
 describe('Silverlit draft import', () => {
+  it('reopens older translated drafts with source Chinese and preserves new reviewed names', () => {
+    const parsed = parseXlsxWorkbook(draftSource(false))
+    parsed.sheets[0]!.rows[17]![2] = '螺丝 Φ2.0x6PB 黑色（2PCS）'
+    const bytes = createXlsxWorkbook(parsed.sheets)
+    const draft = createYinhuiDraft(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), '银辉81209.xlsx')
+    const totals = yinhuiTotals(draft.result.quoteData)
+    const saved = JSON.parse(saveYinhuiDraft(draft))
+    delete saved.bomLanguage
+    saved.review.names.mechanical[0].description = 'Screw Φ2.0x6PB Black (2PCS)'
+    const restored = loadYinhuiDraft(JSON.stringify(saved))
+    expect(restored.result.quoteData.mechanical[0]?.description).toBe('螺丝 Φ2.0x6PB 黑色（2PCS）')
+    expect(yinhuiTotals(restored.result.quoteData)).toEqual(totals)
+    restored.result.quoteData.mechanical[0]!.description = '螺丝 Φ2.0x6PB 黑色（2PCS）已核对'
+    const reopened = loadYinhuiDraft(saveYinhuiDraft(restored))
+    expect(reopened.result.quoteData.mechanical[0]?.description).toBe(restored.result.quoteData.mechanical[0]?.description)
+    expect(yinhuiTotals(reopened.result.quoteData)).toEqual(totals)
+    expect(new Uint8Array(reopened.buffer)).toEqual(bytes)
+  })
   it.each([['5K', 5000], ['5 k pcs', 5000], ['5,000', 5000], ['２万件', 20000], ['2.5千', 2500], [5000, 5000]])('reads MOQ %s', (input, expected) => expect(parseYinhuiMoq(input)).toBe(expected))
   it.each(['', '5-10K', '5,00', '-5K', '0', '1.2', 'NaN', '#VALUE!', true])('does not guess ambiguous MOQ %s', value => expect(() => parseYinhuiMoq(value)).toThrow())
   it('collects independent errors, keeps known data and blocks direct export even with acknowledgement', () => {

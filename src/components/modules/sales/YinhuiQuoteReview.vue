@@ -22,7 +22,7 @@ async function translateNames() {
   const isCurrent = () => !controller.signal.aborted && props.result === result && translationRequest === controller
   confirmed.value = false
   translating.value = true
-  translationMessage.value = '正在使用项目离线模型自动翻译中文名称，规格、数量和金额保持不变…'
+  translationMessage.value = '正在翻译产品、包装及 Tool Plan 名称；BOM 明细保留原文…'
   try {
     const report = await translateYinhuiDescriptions(result.quoteData, texts => translateQuoteDescriptions(texts, props.factoryId, controller.signal), isCurrent)
     if (isCurrent()) translationMessage.value = report.warning || (report.remaining ? `已翻译 ${report.translated} 项，剩余 ${report.remaining} 项可重试或手工核对。` : `已自动翻译 ${report.translated} 项名称，请核对专业术语后确认导出。`)
@@ -105,13 +105,13 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
       <p v-else class="text-sm text-amber-800">未提取到主产品图，请在生成文件中补充。</p>
     </div>
     <details class="mt-4 rounded-lg border border-slate-200 bg-white p-3">
-      <summary class="cursor-pointer text-sm font-semibold text-slate-800">核对自动翻译的英文物料名称（金额不在此修改）</summary>
+      <summary class="cursor-pointer text-sm font-semibold text-slate-800">核对 BOM 原文与 Tool Plan 名称（金额不在此修改）</summary>
       <div class="mt-3 max-h-96 overflow-auto">
         <table class="w-full text-left text-xs">
-          <thead><tr class="border-b border-slate-200 text-slate-500"><th class="p-2">类别</th><th class="p-2">英文描述</th><th class="p-2">用量</th><th class="p-2">HKD 合计</th><th class="p-2">来源</th></tr></thead>
+          <thead><tr class="border-b border-slate-200 text-slate-500"><th class="p-2">类别</th><th class="p-2">物料名称（保留原文）</th><th class="p-2">用量</th><th class="p-2">HKD 合计</th><th class="p-2">来源</th></tr></thead>
           <tbody v-for="group in groups" :key="group.name">
             <tr v-for="(line, index) in group.rows" :key="index" class="border-b border-slate-100">
-              <td class="p-2">{{ group.name }}</td><td class="min-w-72 p-2"><input v-model="line.description" :aria-label="`${group.name}第 ${index + 1} 行英文描述`" class="w-full rounded border border-slate-300 px-2 py-1" :class="hasChineseQuoteText(line.description) ? 'border-amber-500' : ''"><p v-if="line.originalDescription" class="mt-1 text-slate-500">原文：{{ line.originalDescription }}</p></td>
+              <td class="p-2">{{ group.name }}</td><td class="min-w-72 p-2"><input v-model="line.description" :aria-label="`${group.name}第 ${index + 1} 行物料名称`" class="w-full rounded border border-slate-300 px-2 py-1"><p v-if="line.originalDescription && line.originalDescription !== line.description" class="mt-1 text-slate-500">原文：{{ line.originalDescription }}</p></td>
               <td class="p-2">{{ line.quantity }}</td><td class="p-2">{{ line.amountHkd.toFixed(6) }}</td><td class="p-2">{{ line.source }}</td>
             </tr>
           </tbody>
@@ -128,7 +128,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
       </div>
     </details>
     <div class="mt-3 flex flex-wrap items-center gap-3 text-sm" aria-live="polite">
-      <p data-testid="yinhui-translation-status" class="text-slate-700">{{ translationMessage || '导入后自动翻译中文名称，使用项目已有离线模型，不发送报价文件或金额到外部服务。' }}</p>
+      <p data-testid="yinhui-translation-status" class="text-slate-700">{{ translationMessage || 'BOM 明细保留原表中文；仅产品、包装及 Tool Plan 名称使用项目离线模型翻译。' }}</p>
       <button v-if="pendingNames" type="button" data-testid="yinhui-translate" class="rounded border border-teal-500 bg-white px-3 py-1 text-teal-800" :disabled="translating || disabled" @click="translateNames">{{ translating ? '正在自动翻译…' : `重试自动翻译（${pendingNames} 项）` }}</button>
     </div>
     <p v-if="total.missingMaterialPrices.length" class="mt-3 rounded-md border border-amber-300 bg-amber-100 p-3 text-sm text-amber-950" role="alert" data-testid="yinhui-missing-prices">
@@ -136,6 +136,6 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
     </p>
     <p class="mt-3 text-sm font-semibold text-slate-800">{{ result.quoteData.importIssues?.length ? '已识别成本小计（草稿待补正）' : total.missingMaterialPrices.length ? '已知成本小计（待补料价）' : 'EX-FACTORY' }} HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / 7.8).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
     <div v-if="error" class="mt-2 text-sm text-red-700" role="alert" data-testid="yinhui-export-issues"><p>输出前还需处理 {{ errors.length }} 项：</p><ul class="mt-1 list-disc pl-5"><li v-for="item in errors" :key="item">{{ item }}</li></ul></div>
-    <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || translating || disabled" class="mt-1"><span>已核对型号、MOQ、英文描述、图片、料型、模具费及运费；确认按上述临时映射生成。<strong v-if="result.manualReviewReasons?.length">我已人工核对 Tool Plan 提醒及其金额影响，同意放行。</strong><strong v-if="total.missingMaterialPrices.length">我已知悉缺失料价将留空、当前合计不完整，同意先导出并补齐料价。</strong></span></label>
+    <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || translating || disabled" class="mt-1"><span>已核对型号、MOQ、产品及物料名称、图片、料型、模具费及运费；确认按上述临时映射生成。<strong v-if="result.manualReviewReasons?.length">我已人工核对 Tool Plan 提醒及其金额影响，同意放行。</strong><strong v-if="total.missingMaterialPrices.length">我已知悉缺失料价将留空、当前合计不完整，同意先导出并补齐料价。</strong></span></label>
   </fieldset>
 </template>

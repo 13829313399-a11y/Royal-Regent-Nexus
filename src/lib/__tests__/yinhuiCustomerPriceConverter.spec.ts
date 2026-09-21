@@ -52,7 +52,7 @@ function changedLegacy(change: (sheets: ReturnType<typeof parseXlsxWorkbook>['sh
   return buffer(createXlsxWorkbook(parsed.sheets))
 }
 function p4(): P4InternalQuoteArtifact {
-  const sections = Object.fromEntries(P4_SECTION_CODES.map(code => [code, {code,name:code,status:'approved',revision:1,calculationStatus:'valid',dependencyStatus:'current',calculationHash:'hash',isRequired:true,payload:{},calculation:{line_breakdown:[],totals:{total_hkd:0}}}])) as P4InternalQuoteArtifact['sections']
+  const sections = Object.fromEntries<P4InternalQuoteArtifact['sections']['engineering']>(P4_SECTION_CODES.map(code => [code, {code,name:code,status:'approved',revision:1,calculationStatus:'valid',dependencyStatus:'current',calculationHash:'hash',isRequired:true,payload:{},calculation:{line_breakdown:[],totals:{total_hkd:0}}}])) as P4InternalQuoteArtifact['sections']
   sections.sales.payload = { shipping: { markup_x:1.1,misc_ratio:0 }, cartons:[{length_in:10,width_in:10,height_in:10,qty_per_carton:4}],color_box_size_cm:{length:10,width:10,height:10} }
   sections.sales.calculation = {line_breakdown:[{kind:'carton',per_piece_hkd:2},{kind:'packaging_material',item:'Color Box',quantity:1,amount_hkd:1},{kind:'tax',amount_hkd:12}],totals:{freight_options:[{route_key:'yt40',per_piece_hkd:1},{route_key:'yt_lcl',per_piece_hkd:2}]}}
   sections.molding.calculation = {line_breakdown:[{kind:'injection',item:'Body',mold_no:'M01',material:'ABS',quantity:1,cavity:1,net_weight_g:100,molding_cost_hkd:2,amount_hkd:3}],totals:{total_hkd:3}}
@@ -62,13 +62,24 @@ function p4(): P4InternalQuoteArtifact {
 }
 
 describe('Silverlit temporary independent mapping', () => {
+  it('preserves Chinese BOM descriptions from approved P4 data through export', () => {
+    const artifact = p4()
+    artifact.productName = '#00012 Sample Robot'
+    const lines = artifact.sections.engineering.calculation.line_breakdown as Array<Record<string, unknown>>
+    lines[0]!.item = '螺丝 Φ2.0x6PB 黑色（2PCS）'
+    const result = convertYinhuiP4InternalQuote(artifact, '银辉00012.xlsx')
+    expect(result.quoteData.mechanical[0]).toMatchObject({ description: '螺丝 Φ2.0x6PB 黑色（2PCS）', quantity: 2, amountHkd: 1.2 })
+    const output = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    expect(output.sheets[2]!.rows.flat()).toContain('螺丝 Φ2.0x6PB 黑色（2PCS）')
+    expect(output.sheets[0]!.rows[31]![9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory, 6)
+  }, 15000)
   it('maps source amounts and quantities, uses Silverlit resin prices, and routes packing separately', () => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx'); const d = result.quoteData
     expect(d.model).toBe('00012'); expect(d.moq).toBe(5000)
-    expect(d.mechanical[0]).toMatchObject({quantity:2,amountHkd:1.1,description:'Screw M2(2PCS)'})
+    expect(d.mechanical[0]).toMatchObject({quantity:2,amountHkd:1.1,description:'螺丝M2(2PCS)'})
     expect(d.electronic[0]?.amountHkd).toBe(5.25)
     expect(d.assemblyHkd).toBeCloseTo(3.3,8); expect(d.packagingLaborHkd).toBe(1.1)
-    expect(d.packagingRows[0]?.description).toBe('Color Box')
+    expect(d.packagingRows[0]?.description).toBe('彩盒')
     expect(yinhuiTotals(d).plastic).toBe(1.565)
     expect(d.freightFclHkd).toBe(1.2); expect(d.freightLclHkd).toBe(2.3)
     expect(yinhuiTotals(d).exFactory).toBeCloseTo(20.965, 6)
@@ -80,6 +91,8 @@ describe('Silverlit temporary independent mapping', () => {
     expect(unzipSync(new Uint8Array(out))['xl/styles.xml']).toEqual(unzipSync(new Uint8Array(template))['xl/styles.xml'])
     const read = parseXlsxWorkbook(out)
     expect(read.sheets.map(s => s.name)).toEqual(YINHUI_SHEET_NAMES)
+    expect(read.sheets[2]!.rows.flat()).toContain('螺丝M2(2PCS)')
+    expect(read.sheets[1]!.rows[32]!.slice(1, 5)).toEqual(['彩盒', 10, 20, 30])
     expect(read.sheets[0]?.rows[11]?.[0]).toBe(1)
     expect(read.sheets[0]?.rows[43]?.[16]).toBe('in')
     expect(read.sheets[0]?.rows[37]?.[3]).toBe('30 days')
@@ -96,7 +109,7 @@ describe('Silverlit temporary independent mapping', () => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
     const out = unzipSync(createYinhuiCustomerQuoteWorkbook(result, template))
     expect(Object.keys(out).join(' ')).not.toMatch(/comments|externalLink|sharedStrings|vmlDrawing|calcChain/)
-    const content = Object.values(out).map(strFromU8).join('\n')
+    const content = Object.values(out).map(bytes => strFromU8(bytes)).join('\n')
     expect(content).not.toMatch(/PRIVATE SUPPLIER|contact@example|Robo Rapidfire|88538|88528|采购利润/)
     expect(sanitizeYinhuiTemplate(template)).toBeTruthy()
   })
@@ -153,11 +166,13 @@ describe('Silverlit temporary independent mapping', () => {
     expect(output.sheets[4]?.rows[9]?.[14]).toBe('')
     expect(result.warnings.filter(w => w.startsWith('缺少银辉报客料价：'))).toHaveLength(1)
   })
-  it('requires English names and explicit freight but accepts zero freight', () => {
+  it('accepts Chinese BOM names and zero freight while requiring valid names and explicit freight', () => {
     const d = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx').quoteData
     d.freightLclHkd = null; expect(() => validateYinhuiExport(d)).toThrow(/运费/)
     d.freightLclHkd = 0; expect(() => validateYinhuiExport(d)).not.toThrow()
-    d.mechanical[0]!.description = '未翻译物料'; expect(() => validateYinhuiExport(d)).toThrow(/英文/)
+    d.mechanical[0]!.description = '螺丝（2PCS）'; expect(() => validateYinhuiExport(d)).not.toThrow()
+    d.mechanical[0]!.description = '#VALUE!'; expect(() => validateYinhuiExport(d)).toThrow(/BOM 物料名称/)
+    d.mechanical[0]!.description = ''; expect(() => validateYinhuiExport(d)).toThrow(/BOM 物料名称/)
   })
   it('uses main-sheet molding groups without inventing part IDs and applies the selected resin table', () => {
     const input = changedLegacy(sheets => {
@@ -285,12 +300,12 @@ describe('Silverlit temporary independent mapping', () => {
     })
     const d = convertYinhuiInternalQuote(input, '银辉00012.xlsx').quoteData
     expect(d.carton.amountHkd).toBe(2.515)
-    expect(d.fabric).toMatchObject([{description:'Fabric Assembly',quantity:1,amountHkd:2.1}])
-    expect(d.electronic).toMatchObject([{description:'PCBA',quantity:1,amountHkd:5.25}])
+    expect(d.fabric).toMatchObject([{description:'车缝（89275）',quantity:1,amountHkd:2.1}])
+    expect(d.electronic).toMatchObject([{description:'电子（89275）',quantity:1,amountHkd:5.25}])
     expect(d.mechanical[0]?.quantity).toBe(4)
-    expect(d.mechanical.filter(r => /Battery .*Contact/.test(r.description))).toMatchObject([
-      {description:'AA Battery Positive Contact(1PCS)',quantity:1,amountHkd:.11,source:'明细!D32'},
-      {description:'AA Battery Negative Contact(1PCS)',quantity:1,amountHkd:.22,source:'明细!D33'},
+    expect(d.mechanical.filter(r => /AA电池[正负]片/.test(r.description))).toMatchObject([
+      {description:'AA电池正片(1PCS)',quantity:1,amountHkd:.11,source:'明细!D32'},
+      {description:'AA电池负片(1PCS)',quantity:1,amountHkd:.22,source:'明细!D33'},
     ])
   })
   it('routes PC and PVC sheet parts to mechanical without changing their source amounts', () => {
@@ -301,8 +316,8 @@ describe('Silverlit temporary independent mapping', () => {
     })
     const d = convertYinhuiInternalQuote(input, '银辉00012.xlsx').quoteData
     expect(d.mechanical).toMatchObject([
-      {description:'Frosted PC Sheet  0.5*14*25 (1PCS)',quantity:1,amountHkd:.165},
-      {description:'Printed PVC Sheet  0.3*57.8*115MM (1PCS)',quantity:1,amountHkd:.473},
+      {description:'磨砂PC片 0.5*14*25 (1PCS)',quantity:1,amountHkd:.165},
+      {description:'印花PVC片 0.3*57.8*115MM (1PCS)',quantity:1,amountHkd:.473},
     ])
     expect(d.plastic).toEqual([])
   })
@@ -364,7 +379,7 @@ describe('Silverlit temporary independent mapping', () => {
       sheets[0]!.rows[31] = [null,'电子','TX盒子（88753）',5,5.5]
     })
     expect(convertYinhuiInternalQuote(input, '银辉00012.xlsx').quoteData.electronic).toMatchObject([
-      {description:'TX盒子(88753)',quantity:1,amountHkd:5.5},
+      {description:'TX盒子（88753）',quantity:1,amountHkd:5.5},
       {description:'Battery (2PCS)',quantity:2,amountHkd:5.25},
     ])
   })
@@ -404,7 +419,7 @@ describe('Silverlit temporary independent mapping', () => {
   it.each(['88636','89115','89275'] as const)('retains the %s variant formulas and layout while recalculating changed costs', (profile) => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
     result.quoteData.templateId = profile
-    result.quoteData.fabric = [{description:'Fabric Assembly',source:'test',quantity:1,amountHkd:2,internalHkd:1}]
+    result.quoteData.fabric = [{description:'车缝（89275）',source:'test',quantity:1,amountHkd:2,internalHkd:1}]
     const variant = buffer(readFileSync(`public/templates/${YINHUI_PROFILES[profile].file}`))
     const out = buffer(createYinhuiCustomerQuoteWorkbook(result, variant))
     expect(formulaAndStyle(out)).toEqual(formulaAndStyle(variant))

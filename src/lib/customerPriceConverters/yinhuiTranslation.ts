@@ -4,7 +4,8 @@ import type { QuoteTranslationResponse } from '@/api/quoteTranslation'
 export const hasChineseQuoteText = (text: string) => /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(text)
 
 export function yinhuiDescriptionRows(data: YinhuiQuoteData) {
-  return [...data.plastic, ...data.mechanical, ...data.electronic, ...(data.fabric || []), ...data.packagingRows, ...(data.documentFees || []), ...data.tools, data.carton]
+  // BOM descriptions retain source Chinese; only Tool Plan names need translation.
+  return data.tools
 }
 export function pendingYinhuiDescriptions(data: YinhuiQuoteData) {
   return [data.productName, data.packaging, ...yinhuiDescriptionRows(data).map(row => row.description)].filter(hasChineseQuoteText).length

@@ -28,15 +28,19 @@ it.skipIf(!directory)('imports the two September source workbooks into review wi
       expect(task.choices.length).toBeLessThanOrEqual(80)
       expect(task.choices.every(c => c.evidence.length)).toBe(true)
     }
-    // Supply test-only English labels to exercise export independently of the offline translation service.
+    // Supply English Tool Plan labels; export original Chinese BOM descriptions.
     const exportResult = structuredClone(result)
     exportResult.quoteData.productName = 'Test Product'
-    for (const group of ['tools', 'plastic', 'mechanical', 'electronic', 'fabric', 'packagingRows', 'documentFees'] as const) {
+    for (const group of ['tools'] as const) {
       exportResult.quoteData[group]?.forEach((line, i) => { if (/[\u3400-\u9fff]/.test(line.description)) line.description = `Test Item ${i + 1}` })
     }
     const template = readFileSync('public/templates/yinhui-customer-quote-template.bin')
     const generated = createYinhuiCustomerQuoteWorkbook(exportResult, template.buffer.slice(template.byteOffset, template.byteOffset + template.byteLength), { missingMaterialPricesConfirmed: true })
     const output = parseXlsxWorkbook(generated.buffer.slice(generated.byteOffset, generated.byteOffset + generated.byteLength))
+    const cells = output.sheets.flatMap(sheet => sheet.rows.flat())
+    for (const group of ['plastic', 'mechanical', 'electronic', 'fabric', 'packagingRows'] as const) {
+      for (const line of result.quoteData[group] || []) expect(cells).toContain(line.description)
+    }
     expect(output.sheets[0]!.rows[31]![9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory, 6)
     if (name.includes('81209')) expect(output.sheets[0]!.rows.flat().join(' ')).toContain('PRICE PENDING')
     expect(readFileSync(join(directory!, name))).toEqual(original)
