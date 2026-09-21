@@ -111,12 +111,7 @@ outputs/opening-inventory-template-20260909/
 !/docs/uv-printing/**
 !/connectors/uv-printing/README.md
 
-# Shared Codex Plan A instructions; local credentials and runtime state stay private.
-!/.agents/skills/rrn-model-routing/SKILL.md
-!/.agents/skills/rrn-model-routing/references/*.md
+# Shared Codex configuration/docs; local credentials and runtime state stay private.
 !/docs/agent-routing/*.md
 /.codex/*
 !/.codex/config.toml
-!/.codex/agents/
-/.codex/agents/*
-!/.codex/agents/rrn_*.toml

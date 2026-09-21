@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useWorkspaceContext } from "../context";
 import PrinterDetail from "./PrinterDetail.vue";
+import { isPrinterPreparing, printerPreparationText } from "../printerPresentation";
 const { dashboard, selectedPrinter, stateLabel } = useWorkspaceContext();
 const remaining = (n: number) =>
   n >= 60 ? `${Math.floor(n / 60)}h${n % 60}m` : `${n}m`;
@@ -41,10 +42,13 @@ const filename = (name: string) =>
       }}</span>
       <div class="machine-file" :title="p.current_file">
         {{
-          p.connected && ["RUNNING", "FINISH"].includes(p.state)
+          p.connected && (["RUNNING", "FINISH"].includes(p.state) || isPrinterPreparing(p.state))
             ? filename(p.current_file) || "—"
             : "—"
         }}
+      </div>
+      <div v-if="p.connected && isPrinterPreparing(p.state)" class="machine-detail">
+        {{ printerPreparationText }}
       </div>
       <template v-if="p.connected && p.state === 'RUNNING'">
         <div class="machine-progress">

@@ -7,10 +7,10 @@ export function cleanText(value, limit = 512) {
 }
 
 export function normalizeState(value) {
-  const aliases = { PRINTING: 'RUNNING', PREPARE: 'RUNNING', PREPARING: 'RUNNING',
+  const aliases = { PRINTING: 'RUNNING', PREPARING: 'PREPARE', DOWNLOADING: 'PREPARE', SLICING: 'PREPARE',
     PAUSED: 'PAUSE', COMPLETE: 'FINISH', COMPLETED: 'FINISH', READY: 'IDLE' };
   const state = typeof value === 'string' ? value.toUpperCase() : 'UNKNOWN';
-  return aliases[state] || (['RUNNING', 'PAUSE', 'FINISH', 'IDLE', 'FAILED', 'ERROR'].includes(state) ? state : 'UNKNOWN');
+  return aliases[state] || (['PREPARE', 'RUNNING', 'PAUSE', 'FINISH', 'IDLE', 'FAILED', 'ERROR'].includes(state) ? state : 'UNKNOWN');
 }
 
 export function initialStatus() {

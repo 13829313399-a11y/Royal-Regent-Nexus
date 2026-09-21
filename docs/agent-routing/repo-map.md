@@ -40,4 +40,4 @@ typecheck:test 检查测试 TypeScript 项目，不替代应用构建。
 
 backend/requirements.txt 声明 pytest。先定位已有测试目录、pytest 配置和可用 Python 虚拟环境，再运行相关测试。
 Windows 项目 README 使用 backend\.venv\Scripts\python.exe，但不能据此认定本机必然已有该环境。
-仅修改代理配置时，验证配置与角色发现即可，不必无理由跑全项目后端测试。
+仅修改 Codex 配置时，验证配置和引用即可，不必无理由跑全项目后端测试。

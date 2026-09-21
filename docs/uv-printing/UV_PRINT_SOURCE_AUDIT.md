@@ -212,7 +212,7 @@ README明说先建立.NET 8 + PostgreSQL/MQTT/Redis旁路，不替换现有PB和
 | `AGENTS.md` | 先读记忆、限定改动、实际验证、高影响独立审查；无明确授权不得commit/push；一文件一写入者 |
 | `PROJECT_MEMORY.md` L1–120 | PostgreSQL与服务端会话、Asia/Shanghai、统一权限目录、禁止厂区默认混写、原AI工作台已移除 |
 | `DESIGN.md` L1–150 | 企业青绿+Slate设计、CSS-first Tailwind、样式权威顺序、真实/样例状态与公共组件要求 |
-| `.agents/skills/rrn-model-routing/references/repo-map.md` | 技术/目录与验证命令索引；最终仍以源码为准 |
+| `docs/agent-routing/repo-map.md` | 技术/目录与验证命令索引；最终仍以源码为准 |
 
 没有完整读取全仓所有业务模型、完整权限角色模板、全部后端测试、所有DESIGN章节或部署状态。文档中新的 `schemas/uv_printing.py`、连接器目录、API、权限码、功能开关均是建议落点，需要Codex按实际当前目录完成注册与验证。
 
