@@ -16,6 +16,8 @@ import {
   freshestPrinter,
   groupPrinterEvents,
   printerStateText,
+  isPrinterPreparing,
+  printerPreparationText,
   type PrinterEvent,
 } from "../printerPresentation";
 const props = defineProps<{ id: string; printer?: ThreeDPrinter }>();
@@ -55,6 +57,8 @@ const duration = (n: number) =>
 const guidance = computed(() =>
   !online.value
     ? "暂未收到最新状态，请检查现场电脑、网络及打印机是否在线。"
+    : isPrinterPreparing(state.value)
+      ? printerPreparationText
     : {
         RUNNING: "任务进行中，可在这里查看进度和预计剩余时间。",
         FINISH: "设备报告打印完成，请到机台确认成品并取件。",
@@ -165,7 +169,7 @@ onBeforeUnmount(() => {
         <section v-if="printer" class="task-panel">
           <h3>
             {{
-              online && ["RUNNING", "PAUSE", "PREPARE"].includes(state)
+              online && (["RUNNING", "PAUSE"].includes(state) || isPrinterPreparing(state))
                 ? "当前打印任务"
                 : "最近一次任务"
             }}

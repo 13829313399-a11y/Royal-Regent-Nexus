@@ -307,6 +307,41 @@ describe('3D history and ledger operations', () => {
     expect(wrapper.text()).toContain('全部历史 · 打印记录')
   })
 
+  it('shows preparation in daily and machine cards, then follows live printing and offline states', async () => {
+    class Stream extends EventTarget {
+      static latest: Stream
+      constructor() { super(); Stream.latest = this }
+      close() {}
+    }
+    vi.stubGlobal('EventSource', Stream)
+    wrapper = mount(View)
+    await flushPromises()
+    await button('每日记录').trigger('click')
+    const update = async (state: string, connected = true) => {
+      Stream.latest.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({
+        printers: [{ id: 'p1', machine_no: 1, connected, state,
+          current_file: '正在下载的产品.3mf', progress_percent: 100, remaining_minutes: 0,
+          nozzle_temperature: 40, bed_temperature: 30 }],
+        run_version: `preparation-${state}`,
+      }) }))
+      await flushPromises()
+    }
+    await update('PREPARE')
+    expect(wrapper.get('.machine-state').text()).toBe('准备中')
+    expect(wrapper.get('.machine-file').text()).toBe('正在下载的产品')
+    expect(wrapper.find('.machine-progress').exists()).toBe(false)
+    await button('机器状态').trigger('click')
+    expect(wrapper.get('.machine-state').text()).toBe('准备中')
+    await update('RUNNING')
+    expect(wrapper.get('.machine-state').text()).toBe('打印中')
+    expect(wrapper.find('.machine-progress').exists()).toBe(true)
+    await update('FAILED')
+    expect(wrapper.get('.machine-state').text()).toBe('失败')
+    await update('STALE', false)
+    expect(wrapper.get('.machine-state').text()).toBe('离线')
+    expect(wrapper.find('.machine-progress').exists()).toBe(false)
+  })
+
   it('does not overwrite a live printer snapshot with a slower dashboard response', async () => {
     class Stream extends EventTarget {
       static latest: Stream
