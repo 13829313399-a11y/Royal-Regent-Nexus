@@ -1,4 +1,4 @@
-import { parseXlsxWorkbook, type XlsxCellValue } from './xlsxLite'
+import { parseXlsxWorkbook, type XlsxCellValue, type XlsxParsedSheet } from './xlsxLite'
 import { parseP4InternalQuoteArtifact, type P4InternalQuoteArtifact, type P4SectionCode } from './p4Artifact'
 import { extractYinhuiProductImage, type YinhuiProductImage } from './yinhuiTemplate'
 import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG, yinhuiProfileForModel, type YinhuiProfileId } from './yinhuiProfiles'
@@ -30,6 +30,8 @@ export interface YinhuiToolRow {
   toolingHkd: number
 }
 export interface YinhuiQuoteData {
+  /** Unresolved source errors are retained on the data so every exporter checks them. */
+  importIssues?: YinhuiImportIssue[]
   templateId?: YinhuiProfileId
   model: string
   productName: string
@@ -59,6 +61,10 @@ export interface YinhuiQuoteData {
   internalTotalHkd: number
   image?: YinhuiProductImage
 }
+export interface YinhuiSourceCell { sheet: string; cell: string; value: XlsxCellValue; label: string }
+export interface YinhuiImportIssue { source: string; message: string; cells: YinhuiSourceCell[] }
+export interface YinhuiSourceOverride { sheet: string; cell: string; value: string | number }
+export interface YinhuiImportOptions { draft?: boolean; overrides?: YinhuiSourceOverride[] }
 export interface YinhuiConversionResult {
   sourceFileName: string
   warnings: string[]
@@ -91,6 +97,13 @@ function positive(v: unknown, label: string) {
   if (result <= 0) throw new Error(`银辉：${label}必须大于 0`)
   return result
 }
+export function parseYinhuiMoq(value: unknown): number {
+  const input = text(value).normalize('NFKC').trim()
+  const match = input.match(/^((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(K|千|万)?\s*(?:PCS?|件|个)?$/i)
+  const result = match ? Number(match[1]!.replace(/,/g, '')) * (/k|千/i.test(match[2] || '') ? 1000 : match[2] === '万' ? 10000 : 1) : NaN
+  if (!Number.isSafeInteger(result) || result <= 0) throw new Error(`银辉 MOQ“${input || '空白'}”无法确定，请填写正整数（支持 5K、5,000、2万）`)
+  return result
+}
 export function isYinhuiCustomer(value: string) {
   return ['银辉', '銀輝', '银辉客', '銀輝客', 'yinhui', 'silverlit'].includes(value.trim().toLowerCase().replace(/[\s_-]/g, ''))
 }
@@ -112,49 +125,6 @@ const simplified = (value: string) => value.replace(/[殼電門輪轂膠遙蓋�
   const to =   '壳电门轮毂胶遥盖红机钮弹夹轴输齿转动马头银后侧发线润贴说螺丝装饰单双连链拨锁钉压员摆开关栏层'
   return to[from.indexOf(c)] || c
 }).replace(/[\s（）()、，,]/g, '').toLowerCase()
-const translations: Array<[RegExp, string]> = [
-  [/圆球弹簧/g, 'Ball Spring '], [/扭簧/g, 'Torsion Spring '], [/L形弹簧/gi, 'L-shaped Spring '],
-  [/双安全压簧/g, 'Double Safety Compression Spring '], [/密绕拉簧/g, 'Close-wound Extension Spring '],
-  [/胶钉带/g, 'Plastic Fastener Tie '], [/透明胶圈/g, 'Clear Elastic Band '],
-  [/介子头螺丝/g, 'Washer Head Screw '], [/直花钉轴/g, 'Knurled Pin '], [/钉轴/g, 'Pin '],
-  [/单面强力背胶/g, 'Strong Single-sided Adhesive'], [/厚度/g, 'Thickness '], [/硬度/g, 'Hardness '], [/(?<=\d)\s*度/g, ' deg'],
-  [/电子[（(]\d+[）)]/g, 'PCBA'], [/车[缝縫][（(]\d+[）)]/g, 'Fabric Assembly'],
-  [/螺絲/g, 'Screw '], [/丝母/g, 'Nut '], [/机牙/g, 'Machine Screw '],
-  [/(AA[ A]*)电池(?:负正片|正负片)/g, '$1 Battery Positive-Negative Contact'],
-  [/(AA[ A]*)电池正片/g, '$1 Battery Positive Contact'],
-  [/(AA[ A]*)电池负片/g, '$1 Battery Negative Contact'],
-  [/回中弹簧/g, 'Return Spring '], [/密绕弹簧/g, 'Close-wound Spring '], [/压力弹簧|压簧/g, 'Compression Spring '], [/接触弹簧/g, 'Contact Spring '], [/弹簧/g, 'Spring '],
-  [/双花D轴/g, 'Double Knurled D Shaft '], [/双花轴/g, 'Double Knurled Shaft '], [/[單单]花[軸轴]/g, 'Single Knurled Shaft '], [/光[軸轴]/g, 'Smooth Shaft '], [/軸|轴/g, 'Shaft '],
-  [/直花钉轴|钉轴/g, 'Knurled Pin '], [/釘/g, 'Pin '], [/T钉/g, 'T-Pin '],
-  [/介子螺丝/g, 'Washer Head Screw '], [/介子/g, 'Washer '], [/平垫/g, 'Flat Washer '], [/垫片/g, 'Pad '],
-  [/單頭蝸桿齒/g, 'Single-start Worm Gear '], [/右旋/g, 'Right Hand'],
-  [/单面背胶|單面背膠/g, 'Single-sided Adhesive '], [/黑色/g, 'Black '], [/白色/g, 'White '], [/矽膠/g, 'Silicone '],
-  [/磁[鐵铁]/g, 'Magnet '], [/釹鐵錋/g, 'NdFeB '], [/電鎳/g, 'Nickel Plated'],
-  [/软管|拉管/g, 'Tube '], [/泡棉/g, 'Foam '], [/胶袋/g, 'Poly Bag '],
-  [/磨砂PC片/g, 'Frosted PC Sheet '], [/印花PVC片/g, 'Printed PVC Sheet '], [/PC片/g, 'PC Sheet '], [/PVC片/g, 'PVC Sheet '],
-  [/马达齿轮/g, 'Motor Gear '], [/蜗杆齿轮/g, 'Worm Gear '], [/充电线(?!装配)/g, 'Charging Cable '], [/充电电池/g, 'Rechargeable Battery'], [/^马达/g, 'Motor '], [/车身贴纸/g, 'Product Sticker'],
-  [/O型圈/g, 'O-Ring'], [/彩盒\+外箱/g, 'Color Box / Outer Carton'], [/利宝$/g, 'Label'],
-  [/报关费用\/文件费\/操作费用[：:]?/g, 'Documents / Customs Fee'],
-  [/驱动马达\s*金属刷130/gi, 'Drive Motor 130 with Metal Brush'],
-  [/打炮马达\s*金属刷130/gi, 'Shooting Motor 130 with Metal Brush'],
-  [/电子[（(]发射机器人[）)]/g, 'Electronics (Launching Robot)'],
-  [/电子[（(]遥控器[）)]/g, 'Electronics (Remote Controller)'],
-  [/电子[（(]充电模组[）)]/g, 'Electronics (Charging Module)'],
-  [/电子[（(]弹夹[）)]/g, 'Electronics (Magazine)'],
-  [/橡[膠胶]圈/g, 'Rubber Ring '], [/透明[膠胶]橡根/g, 'Clear Rubber'], [/聚氨脂/g, 'Polyurethane'], [/要求透/g, 'Clear'],
-  [/介子头螺丝/g, 'Washer Head Screw '], [/回中彈簧/g, 'Return Spring '], [/压簧/g, 'Compression Spring '],
-  [/螺丝/g, 'Screw '], [/螺母/g, 'Nut '], [/半牙/g, 'Partial Thread'], [/光轴/g, 'Smooth Shaft '],
-  [/单面背胶黑色EVA/g, 'Black Single-sided Adhesive EVA '], [/子弹/g, 'Dart '],
-  [/充电线装配和塑胶/g, 'Charging Cable'], [/脸4C的PC印刷片/g, '4C Printed PC Face Lens'],
-  [/錫線|锡线/g, 'Solder Wire'], [/润滑油/g, 'Lubricant'], [/吸塑/g, 'Blister'],
-  [/扎带/g, 'Cable Tie '], [/封箱胶纸\/[膠胶]水/g, 'Packing Tape / Adhesive Glue'],
-  [/说明书/g, 'Instruction Manual'], [/利宝[貼贴]纸/g, 'Libo Sticker'], [/彩盒\+内卡|彩盒\/内咭/g, 'Color Box / Inner Card'], [/彩盒/g, 'Color Box'], [/内卡/g, 'Inner Card'],
-  [/充电模组/g, 'Charging Module'], [/守门员/g, 'Goalkeeper'],
-  [/带插头线/g, 'Battery with Plug Wire'], [/电池/g, 'Battery'], [/透明/g, 'Clear'],
-]
-function translate(value: string) {
-  return translations.reduce((s, [pattern, replacement]) => s.replace(pattern, replacement), value).replace(/（/g, '(').replace(/）/g, ')').trim()
-}
 function quantityFromDescription(value: string) {
   // These parentheses identify the product model, not the number of PCBAs/fabric sets.
   if (/^(?:电子|電子|车缝|車縫)[（(]\d+[)）]$/.test(value.trim())) return 1
@@ -167,17 +137,17 @@ function emptyData(): YinhuiQuoteData {
   return { model: '', productName: '', quoteDate: today(), packaging: 'Window Box', moq: 0, stage: '', adaptor: '', tryMe: '',
     freightLclHkd: null, freightFclHkd: null, colorBoxCm: [], cartonCm: [], cartonPack: 0,
     tools: [], plastic: [], mechanical: [], electronic: [], fabric: [], packagingRows: [], documentFees: [],
-    carton: { description: 'Outer Carton', source: '', quantity: 1, amountHkd: 0, internalHkd: 0 },
+    carton: { description: '外箱', source: '', quantity: 1, amountHkd: 0, internalHkd: 0 },
     assemblyHkd: 0, sprayingHkd: 0, packagingLaborHkd: 0, battery: '', internalTotalHkd: 0 }
 }
 function addCost(data: YinhuiQuoteData, category: string, description: string, quantity: number, amountHkd: number, internalHkd: number, source: string) {
-  const line: YinhuiCostRow = { description: translate(description), originalDescription: description, quantity, amountHkd: round(amountHkd), internalHkd, source }
-  if (/报关|報關|文件[费費]|\bcustoms?\b|\bdocuments?\s*(?:fee|cost)s?\b/i.test(`${category} ${description}`)) (data.documentFees ||= []).push({ ...line, description: 'Documents / Customs Fee' })
+  const line: YinhuiCostRow = { description, originalDescription: description, quantity, amountHkd: round(amountHkd), internalHkd, source }
+  if (/报关|報關|文件[费費]|\bcustoms?\b|\bdocuments?\s*(?:fee|cost)s?\b/i.test(`${category} ${description}`)) (data.documentFees ||= []).push(line)
   else if (/装配工|assembly/i.test(category)) {
     if (/包装|包裝|packing/i.test(description)) data.packagingLaborHkd += amountHkd
     else data.assemblyHkd += amountHkd
   } else if (/油漆|喷油|噴油|painting/i.test(category)) data.sprayingHkd += amountHkd
-  else if (/纸箱|紙箱|carton/i.test(category)) data.carton = { ...line, description: 'Outer Carton', quantity: 1, amountHkd: round(data.carton.amountHkd + amountHkd), internalHkd: data.carton.internalHkd + internalHkd }
+  else if (/纸箱|紙箱|carton/i.test(category)) data.carton = { ...line, quantity: 1, amountHkd: round(data.carton.amountHkd + amountHkd), internalHkd: data.carton.internalHkd + internalHkd }
   else if (/车衣|車衣|车缝|車縫|sewing|fabric/i.test(category)) (data.fabric ||= []).push(line)
   else if (/电子|電子|电池|電池|electronic/i.test(category)) {
     data.electronic.push(line)
@@ -210,15 +180,19 @@ export function yinhuiTotals(data: YinhuiQuoteData) {
 }
 function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[], manualReviewReasons: string[] = []): YinhuiConversionResult {
   // Only the first packaging detail row has the customer's three dimension input cells.
-  const colorBox = data.packagingRows.findIndex((r) => /color box/i.test(r.description))
+  const colorBox = data.packagingRows.findIndex((r) => /彩盒|color box/i.test(r.description))
   if (colorBox > 0) data.packagingRows.unshift(data.packagingRows.splice(colorBox, 1)[0]!)
   const extended = data.templateId === '88753'
   const limits: Array<[string, number, number]> = [['Tool Plan', data.tools.length, 53], ['塑料外购', data.plastic.length, 8], ['五金', data.mechanical.length, extended ? 37 : 27], ['电子', data.electronic.length, extended ? 18 : 10], ['包装材料', data.packagingRows.length, 12]]
-  for (const [name, count, max] of limits) if (count > max) throw new Error(`银辉${name}有 ${count} 行，超过当前模板 ${max} 行容量，请先扩展映射，不能截断明细`)
+  for (const [name, count, max] of limits) if (count > max) {
+    const message = `银辉${name}有 ${count} 行，超过当前模板 ${max} 行容量，请先扩展映射，不能截断明细`
+    if (!data.importIssues) throw new Error(message)
+    data.importIssues.push({ source: name, message, cells: [] })
+  }
   const total = yinhuiTotals(data)
   if (total.missingMaterialPrices.length) warnings.push(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。对应单价将留空，当前合计暂未包含这些料价；确认后可导出，发送客户前请补齐。`)
   const sheetId = 'yinhui-summary'
-  const summaryName = total.missingMaterialPrices.length ? 'SUM(總計) · 待补料价' : 'SUM(總計)'
+  const summaryName = data.importIssues?.length ? '草稿 · 已识别成本小计（待补正）' : total.missingMaterialPrices.length ? 'SUM(總計) · 待补料价' : 'SUM(總計)'
   const groups: Array<[string, number]> = [[total.missingMaterialPrices.length ? 'Plastic (price pending)' : 'Plastic', total.plastic], ['Mechanical', total.mechanical], ['Electronic', total.electronic], ['Fabric', total.fabric], ['Labour', total.labour], ['Packaging material', total.packaging], ['Packaging labour', data.packagingLaborHkd]]
   if (data.documentFees?.length) groups.push(['Documents / Customs Fee', total.documentFees])
   const details = groups.map(([description, price], i) => ({ id: `${sheetId}-${i}`, sheetId, sheetName: summaryName, itemNo: String(i + 1), description,
@@ -227,18 +201,35 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
     rowCount: details.length, totalInternalHkd: round(data.internalTotalHkd), totalCustomerHkd: round(total.exFactory), details }] }
 }
 
-function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook = readYinhuiSource(buffer)): YinhuiConversionResult {
-  workbook.sheets.forEach((sheet) => { sheet.rows = Array.from(sheet.rows, (row) => row || []) })
-  const variants = workbook.sheets.filter(s => /^明细\s*[(（]/.test(s.name))
+export const YINHUI_MAIN_SHEET_NAMES = ['明细', '內部明細', '内部明细', ...['开窗盒', '密封盒'].flatMap(box => [`明细（${box}）`, `明细(${box})`, `明细 (${box})`, `明细 （${box}）`])]
+export function selectYinhuiMainSheet(sheets: XlsxParsedSheet[]) {
+  const variants = sheets.filter(s => /^明细\s*[(（]/.test(s.name))
   const windowBox = variants.filter(s => s.name.replace(/\s/g, '').replace(/（/g, '(').replace(/）/g, ')') === '明细(开窗盒)')
-  if (variants.length && (windowBox.length !== 1 || !windowBox[0]!.rows.slice(0, 12).some(r => /^#\s*89127\b/.test(text(r[0]))))) throw new Error('银辉存在包装版本明细，但无法唯一确认 89127 开窗盒页；请明确包装版本，不能默认取第一页')
-  const main = windowBox[0] || workbook.sheets.find((s) => ['明细', '內部明細', '内部明细'].includes(s.name))
+  if (variants.length && (windowBox.length !== 1 || !windowBox[0]!.rows.slice(0, 12).some(r => /^#\s*89127\b/.test(text(r?.[0]))))) throw new Error('银辉存在包装版本明细，但无法唯一确认 89127 开窗盒页；请明确包装版本，不能默认取第一页')
+  return windowBox[0] || sheets.find((s) => ['明细', '內部明細', '内部明细'].includes(s.name))
+}
+
+function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook = readYinhuiSource(buffer), options: YinhuiImportOptions = {}, originalSheets = workbook.sheets): YinhuiConversionResult {
+  workbook.sheets.forEach((sheet) => { sheet.rows = Array.from(sheet.rows, (row) => row || []) })
+  const main = selectYinhuiMainSheet(workbook.sheets)
   const plan = workbook.sheets.find((s) => s.name.replace(/\s/g, '').toLowerCase() === 'toolplan')
   if (!main || !/银辉|銀輝|silverlit|yinhui/i.test(sourceFileName + workbook.sheets.flatMap((s) => s.rows.slice(0, 10).flat()).join(' '))) throw new Error('银辉原表需要“明细”页及银辉客户标识，请勿导入其他客户报价或报客成品表')
   const data = emptyData()
+  if (options.draft) data.importIssues = []
+  const attempt = (source: string, action: () => void, refs: Array<[string, string]> = [], sourceSheet = main) => {
+    try { action() } catch (error) {
+      if (!options.draft) throw error
+      data.importIssues!.push({ source, message: error instanceof Error ? error.message : String(error), cells: refs.map(([cell, label]) => {
+        const match = cell.match(/^([A-Z]+)(\d+)$/)!
+        const column = [...match[1]!].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1
+        return { sheet: sourceSheet.name, cell, label, value: sourceSheet.rows[Number(match[2]) - 1]?.[column] ?? null }
+      }) })
+    }
+  }
   const warnings = ['临时映射按单 BOM 汇入第一组；第二组保留空表，不推断 RX/TX 拆分。', '采用当前内部报价金额，不复制示例客表的手填金额、四舍五入金额或旧 MOQ。']
   const manualReviewReasons: string[] = []
   const rows = main.rows
+  const originalRows = originalSheets.find(s => s.name === main.name)!.rows
   const header = rows.findIndex((r) => text(r[2]) === '名称' && /料型/.test(text(r[3])) && /料重/.test(text(r[4])))
   if (header < 1) throw new Error('银辉内部明细未找到名称/料型/料重表头')
   const title = text(rows[header - 1]?.[0])
@@ -251,13 +242,20 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   if (filenameModel && filenameModel !== data.model) warnings.push(`型号冲突：文件名 ${filenameModel}，内部明细 ${data.model}。请核对并修改型号。`)
   if (data.templateId !== 'standard') warnings.push(`使用 ${profile.label} 原客表版式；包装、英文产品名称来自对应参考客表，请复核。`)
   warnings.push('料价全型号统一：ABS 15.65、TPR 18.8、PP 12.6、POM 34.07、C-ABS 24（客户提供）；PVC 17.16、TPE 15.9（多表核对），单位 HKD/kg。不沿用个别客表错填料型或不同单价。')
-  if (windowBox.length) warnings.push(`已选择“${main.name}”；密封盒属于另一包装方案，不参与本次计算。`)
+  if (/^明细\s*[(（]/.test(main.name)) warnings.push(`已选择“${main.name}”；密封盒属于另一包装方案，不参与本次计算。`)
   if (['81283', '89127'].includes(data.templateId)) warnings.push(`${data.templateId} 原客表部分料重公式含固定数值；对应内部料重改变时会阻止导出，需先核对模板公式。`)
   let activeBoxColumn: number | undefined
   const readLabel = (pattern: RegExp) => {
     for (const r of rows) for (let c = 10; c < Math.min(r.length, 20); c++) if ((activeBoxColumn === undefined || c === activeBoxColumn) && pattern.test(text(r[c]))) return r.slice(c + 1, c + 4)
     return []
   }
+  const labelRefs = (pattern: RegExp, labels: string[]): Array<[string, string]> => {
+    for (let r = 0; r < rows.length; r++) for (let c = 10; c < Math.min(rows[r]!.length, 20); c++) {
+      if ((activeBoxColumn === undefined || c === activeBoxColumn) && pattern.test(text(rows[r]![c]))) return labels.map((label, i) => [`${String.fromCharCode(66 + c + i)}${r + 1}`, label])
+    }
+    return []
+  }
+  attempt(`${main.name} · 外箱尺寸/方案`, () => {
   let cartons = rows.flatMap((r, row) => r.flatMap((v, c) => c >= 10 && c < 20 && /^(?:裝箱尺碼|装箱尺码)/.test(text(v))
     ? [{ label: text(v), column: c, row: row + 1, size: r.slice(c + 1, c + 4).map(n => positive(n, '外箱尺寸')) }] : []))
   if (new Set(cartons.map(c => c.column)).size > 1) {
@@ -290,10 +288,13 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     data.cartonCm = cmCandidates[0]!.size
     warnings.push('外箱尺寸出现多处记录，已按 1 英寸 = 2.54 厘米交叉核对，避免重复换算。')
   }
+  }, labelRefs(/^(?:裝箱尺碼|装箱尺码)/, ['外箱长（原表单位）', '外箱宽（原表单位）', '外箱高（原表单位）']))
+  attempt(`${main.name} · 彩盒尺寸`, () => {
   const colorCm = readLabel(/彩盒.*CM/i)
   data.colorBoxCm = colorCm.length ? colorCm.map((v) => positive(v, '彩盒厘米尺寸')) : readLabel(/^彩盒尺寸[：:]/).map((v) => positive(v, '彩盒英寸尺寸') * 2.54)
-  data.cartonPack = positive(readLabel(/^装箱[：:]|^裝箱[：:]/)[0], '装箱数量')
-  data.moq = positive(readLabel(/^MOQ[：:]/i)[0], 'MOQ')
+  }, labelRefs(/彩盒.*CM|^彩盒尺寸[：:]/i, ['彩盒长（原表单位）', '彩盒宽（原表单位）', '彩盒高（原表单位）']))
+  attempt(`${main.name} · 装箱数量`, () => { data.cartonPack = positive(readLabel(/^装箱[：:]|^裝箱[：:]/)[0], '装箱数量') }, labelRefs(/^装箱[：:]|^裝箱[：:]/, ['装箱数量']))
+  attempt(`${main.name} · MOQ`, () => { data.moq = parseYinhuiMoq(readLabel(/^MOQ\s*[：:]/i)[0]) }, labelRefs(/^MOQ\s*[：:]/i, ['MOQ']))
   if (data.templateId !== 'standard' && data.moq !== 5000) warnings.push(`当前内部 MOQ 为 ${data.moq}，参考客表为 5000；本次使用内部 MOQ，请核对。`)
   const costStart = rows.findIndex((r) => text(r[3]) === '出厂价') + 1
   const management = rows.findIndex((r, i) => i > costStart && text(r[3]) === '货价')
@@ -302,33 +303,52 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   const blocks: Array<{ start: number; end: number; factor: number; hinted: boolean }> = []
   let blockStart = costStart
   const isCost = (r: XlsxCellValue[]) => hasValue(r[1]) && hasValue(r[2]) && !['料价', '啤工', '运费', '吊柜费'].includes(text(r[1]))
+  // Source row identities survive corrections: blanking/reclassifying a broken row cannot make it disappear.
+  const costRow = (i: number) => isCost(originalRows[i] || []) || isCost(rows[i] || [])
   for (let i = costStart; i < end; i++) {
     if (!/^[×x*]$/.test(text(rows[i]?.[2]))) continue
+    attempt(`${main.name}!D${i + 1}:D${i + 2}`, () => {
     if (!/^[÷/]$/.test(text(rows[i + 1]?.[2]))) throw new Error('银辉倍率下方缺少结算除数')
     const factor = positive(rows[i]?.[3], '明细倍率') / positive(rows[i + 1]?.[3], '结算除数')
-    const detail = rows.slice(blockStart, i).filter(isCost)
     const hintCol = blocks.length === 0 ? 4 : 6
     // Complete quoted-price columns cross-check the cost × multiplier rule; they do not override it.
-    const hintCount = detail.filter(r => typeof r[hintCol] === 'number' && Math.abs(Number(r[hintCol]) - Number(r[3])) > 1e-8).length
-    blocks.push({ start: blockStart, end: i, factor, hinted: detail.length > 0 && hintCount / detail.length >= .6 })
+    const hasHints = (source: XlsxCellValue[][]) => {
+      const detail = Array.from({ length: i - blockStart }, (_, offset) => blockStart + offset).filter(costRow).map(index => source[index] || [])
+      const count = detail.filter(r => typeof r[hintCol] === 'number' && (!hasValue(r[3]) || !Number.isFinite(Number(r[3])) || Math.abs(Number(r[hintCol]) - Number(r[3])) > 1e-8)).length
+      return detail.length > 0 && count / detail.length >= .6
+    }
+    blocks.push({ start: blockStart, end: i, factor, hinted: hasHints(rows) || hasHints(originalRows) })
+    }, [[`D${i + 1}`, '倍率'], [`D${i + 2}`, '结算除数']])
     blockStart = i + 2
   }
-  if (!blocks.length) throw new Error('银辉未找到有效倍率区间')
-  const mainFactor = blocks[0]!.factor
+  if (!blocks.length) attempt(`${main.name} · 倍率`, () => { throw new Error('银辉未找到有效倍率区间') })
+  const mainFactor = blocks.find(block => block.start === costStart)?.factor
   const injections: Array<{ row: number; description: string; material: Material; weight: number; labor: number; cavity: number }> = []
   let rowIndex = header + 1
-  while (hasValue(rows[rowIndex]?.[2]) && hasValue(rows[rowIndex]?.[3])) {
+  let injectionEnd = rowIndex
+  while (hasValue(originalRows[injectionEnd]?.[2]) && (hasValue(originalRows[injectionEnd]?.[3]) || hasValue(originalRows[injectionEnd]?.[4]) || hasValue(originalRows[injectionEnd]?.[9]))) injectionEnd++
+  while (rowIndex < injectionEnd) {
     const row = rows[rowIndex]!
-    const rawLabor = numeric(row[9], `第${rowIndex + 1}行啤工`, blocks[0]!.hinted)
+    attempt(`${main.name}!C${rowIndex + 1}:L${rowIndex + 1}`, () => {
+    if (mainFactor === undefined) throw new Error('注塑缺少有效的主倍率，补正倍率后重新核对')
+    const original = originalRows[rowIndex] || []
+    const rawLabor = numeric(row[9], `第${rowIndex + 1}行啤工`, blocks[0]!.hinted && !hasValue(original[9]))
     const hintedLabor = blocks[0]!.hinted && typeof row[11] === 'number' && (rawLabor === 0 || Number(row[11]) <= rawLabor * 5)
-    if (hintedLabor && hasValue(row[9]) && Math.abs(Number(row[11]) - rawLabor * mainFactor) > .005) throw new Error(`银辉第 ${rowIndex + 1} 行报客啤工与内部啤工×倍率不一致，请核对，不能自动选一边`)
+    if (!hasValue(row[9]) && !hintedLabor) throw new Error('内部啤工为空时必须提供有效的报客啤工，不能按零成本处理')
+    const originallyHinted = blocks[0]!.hinted && typeof original[11] === 'number' && (!hasValue(original[9]) || Number(original[11]) <= Number(original[9]) * 5)
+    if ((hintedLabor || originallyHinted) && hasValue(row[9]) && Math.abs(numeric(row[11], '报客啤工校验值') - rawLabor * mainFactor) > .005) throw new Error(`银辉第 ${rowIndex + 1} 行报客啤工与内部啤工×倍率不一致，请核对，不能自动选一边`)
     injections.push({ row: rowIndex + 1, description: text(row[2]), material: material(row[3]), weight: positive(row[4], `第${rowIndex + 1}行料重`), labor: !hasValue(row[9]) && hintedLabor ? numeric(row[11], '报客啤工') : rawLabor * mainFactor, cavity: numeric(row[7], '注塑出模套数', true) || 1 })
+    }, [[`D${rowIndex + 1}`, '料型'], [`E${rowIndex + 1}`, '总料重(g)'], [`H${rowIndex + 1}`, '每啤成品套数'], [`J${rowIndex + 1}`, '内部啤工'], [`L${rowIndex + 1}`, '报客啤工/原备注']])
     rowIndex++
   }
-  if (!injections.length) throw new Error('银辉没有可转换的注塑明细')
+  if (!injections.length) attempt(`${main.name} · 注塑明细`, () => { throw new Error('银辉没有可转换的注塑明细') })
   if (plan) {
     type PlanColumns = { mold: number; description: number; partNo: number; material: number; cavity: number; usage: number; weight: number; usageIsMoldOutput: boolean }
     const headerText = (value: XlsxCellValue) => text(value).normalize('NFKC').replace(/\s/g, '').replace(/[（）]/g, (v) => v === '（' ? '(' : ')').toLowerCase()
+      .replace(/^模[号號](?=moldno)/, '').replace(/^零件名[称稱](?=description)/, '')
+      .replace(/^物料[编編][号號](?=partno)/, '').replace(/^[胶膠]料(?=material)/, '')
+      .replace(/^出模[數数](?=cavity)/, '').replace(/^(?:产品用量|產品用量)(?=qty\/toy)/, '')
+      .replace(/^單件重量(?=net)|^单件重量(?=net)/, '')
     const headerRows = plan.rows.slice(0, 8)
     const headerColumn = (pattern: RegExp) => {
       const columns = new Set<number>()
@@ -351,7 +371,9 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     type Group = { mold: string; rows: PlanRow[] }
     type Segment = { group: Group; resin: string; rows: PlanRow[] }
     const groups: Group[] = []; let group: Group | undefined
-    for (const [planRowIndex, row] of plan.rows.entries()) {
+    const recognized = Object.values(detected).every(value => value !== undefined) || plan.rows.some(row => hasValue(row?.[1]) && hasValue(row?.[3]) && Number(row?.[5]) > 0 && hasValue(row?.[6]) && hasValue(row?.[12]))
+    if (!recognized) manualReviewReasons.push('Tool Plan 未识别到完整的零件号、用量及单重列；已保留主明细计价，可从原表候选记录选择模号及零件号后核对。')
+    for (const [planRowIndex, row] of (recognized ? plan.rows : []).entries()) {
       const description = text(row[columns.description])
       const mold = text(row[columns.mold])
       const headerLike = /^(?:description|chinesename|中文名[称稱])$/.test(headerText(row[columns.description]))
@@ -448,16 +470,19 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   const consumed = new Set<number>()
   blocks.forEach((block, index) => {
     for (let k = block.start; k < block.end; k++) {
-      const row = rows[k] || []; if (!isCost(row)) continue
+      const row = rows[k] || []; if (!costRow(k)) continue
+      consumed.add(k)
+      attempt(`${main.name}!D${k + 1}`, () => {
+      if (!isCost(row)) throw new Error(`银辉明细第 ${k + 1} 行原有成本，不能清空名称、类别或改为汇总项来忽略该行`)
       const internal = numeric(row[3], `明细 ${k + 1} 行金额`)
       const hint = row[index === 0 ? 4 : 6]
       const amount = internal * block.factor
-      if (block.hinted && typeof hint === 'number' && Math.abs(hint - amount) > .005) throw new Error(`银辉明细第 ${k + 1} 行报客金额与内部金额×所在区间倍率不一致，请核对，不能自动选一边`)
+      if (block.hinted && (typeof hint === 'number' || typeof originalRows[k]?.[index === 0 ? 4 : 6] === 'number') && Math.abs(numeric(hint, '报客金额校验值') - amount) > .005) throw new Error(`银辉明细第 ${k + 1} 行报客金额与内部金额×所在区间倍率不一致，请核对，不能自动选一边`)
       addCost(data, text(row[1]), text(row[2]), quantityFromDescription(text(row[2])), amount, internal, `${main.name}!D${k + 1}`)
-      consumed.add(k)
+      }, [[`B${k + 1}`, '成本类别'], [`C${k + 1}`, '名称/用量'], [`D${k + 1}`, '内部金额'], [`${index === 0 ? 'E' : 'G'}${k + 1}`, '报客金额/原备注']])
     }
   })
-  for (let k = costStart; k < end; k++) if (isCost(rows[k] || []) && !consumed.has(k)) throw new Error(`银辉明细第 ${k + 1} 行没有归属倍率区间`)
+  for (let k = costStart; k < end; k++) if (costRow(k) && !consumed.has(k)) attempt(`${main.name}!D${k + 1}`, () => { throw new Error(`银辉明细第 ${k + 1} 行没有归属倍率区间`) })
   const finalIndex = rows.findIndex((r, i) => i >= costStart && text(r[2]) === '出厂价')
   const feeIndex = rows.findIndex((r, i) => i >= costStart && /报关费用.*文件费/.test(text(r[2])) && !consumed.has(i))
   let extraFee = 0
@@ -466,15 +491,20 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   // before the final price; inferring that subtotal as a fee corrupts freight.
   const extraIndex = feeIndex
   if (extraIndex >= 0) {
+    attempt(`${main.name}!D${extraIndex + 1}`, () => {
     extraFee = numeric(rows[extraIndex]?.[3], '出厂价附加费用')
-    data.documentFees!.push({ description: 'Documents / Customs Fee', source: `${main.name}!D${extraIndex + 1}`, quantity: 1, amountHkd: extraFee, internalHkd: extraFee })
+    data.documentFees!.push({ description: text(rows[extraIndex]?.[2]), originalDescription: text(rows[extraIndex]?.[2]), source: `${main.name}!D${extraIndex + 1}`, quantity: 1, amountHkd: extraFee, internalHkd: extraFee })
+    }, [[`D${extraIndex + 1}`, '文件费']])
   }
   const freightRow = rows.find((r, i) => i >= costStart && i < end && text(r[1]) === '运费')
   const costHeader = rows[costStart - 1]!
   if (freightRow) {
     for (const [key, pattern] of [['freightFclHkd', /盐田柜|鹽田柜/], ['freightLclHkd', /盐田散|鹽田散/]] as const) {
       const col = costHeader.findIndex(v => pattern.test(text(v)))
-      if (col >= 0 && hasValue(freightRow[col])) data[key] = numeric(numeric(freightRow[col], '盐田运费') * mainFactor - extraFee, '盐田运费扣除另列文件费后的金额')
+      if (col >= 0 && hasValue(freightRow[col])) attempt(`${main.name} · ${key === 'freightFclHkd' ? '40FT' : 'LCL'}运费`, () => {
+        if (mainFactor === undefined) throw new Error('运费缺少有效的主倍率')
+        data[key] = numeric(numeric(freightRow[col], '盐田运费') * mainFactor - extraFee, '盐田运费扣除另列文件费后的金额')
+      }, [[`${String.fromCharCode(65 + col)}${rows.indexOf(freightRow) + 1}`, '原运费']])
     }
   }
   // Earlier source version has explicit per-piece FCL/LCL prices next to the document fee.
@@ -485,15 +515,23 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     ? rows.findIndex((r, i) => i > feeIndex && i <= feeIndex + 2 && text(r[4]) === 'FCL' && text(r[5]) === 'LCL')
     : -1
   if (explicit >= 0 && !hasValue(rows[explicit + 1]?.[3]) && typeof rows[explicit + 1]?.[4] === 'number' && typeof rows[explicit + 1]?.[5] === 'number') {
-    data.freightFclHkd = numeric(rows[explicit + 1]?.[4], 'FCL 运费'); data.freightLclHkd = numeric(rows[explicit + 1]?.[5], 'LCL 运费')
+    attempt(`${main.name} · FCL/LCL运费`, () => { data.freightFclHkd = numeric(rows[explicit + 1]?.[4], 'FCL 运费'); data.freightLclHkd = numeric(rows[explicit + 1]?.[5], 'LCL 运费') }, [[`E${explicit + 2}`, 'FCL运费'], [`F${explicit + 2}`, 'LCL运费']])
   }
+  attempt(`${main.name} · 内部出厂报价`, () => {
   data.internalTotalHkd = finalIndex >= 0 ? numeric(rows[finalIndex]?.[3], '内部出厂报价') : numeric(rows[management + 1]?.[3], '内部出厂报价')
+  }, [[`D${finalIndex >= 0 ? finalIndex + 1 : management + 2}`, '内部出厂报价']])
   const tooling = workbook.sheets.find((s) => s.name === '模具报价')
   if (tooling) {
     const compatible = tooling.rows.slice(0, 12).flat().map(text).join(' ').includes(data.model)
-    const moldPrices = tooling.rows.filter(r => /^\w[\w-]*$/.test(text(r[1])) && typeof r[9] === 'number' && text(r[2]))
+    const originalTooling = originalSheets.find(s => s.name === tooling.name)!
+    const moldPriceRow = (r: XlsxCellValue[]) => /^\w[\w-]*$/.test(text(r[1])) && !/^(?:mold|moldno|no)$/i.test(text(r[1])) && Boolean(text(r[2]))
+    const moldPrices = tooling.rows.filter((r, i) => moldPriceRow(r) || moldPriceRow(originalTooling.rows[i] || []))
     const firstPart = (name: string) => simplified(name.split(/[*/;]/)[0] || '')
     for (const row of moldPrices) {
+      const sourceRow = tooling.rows.indexOf(row) + 1
+      attempt(`模具报价!J${sourceRow}`, () => {
+      if (!text(row[1]) || !text(row[2])) throw new Error('原模具费用行的模号及描述不能清空')
+      numeric(row[9], '模具港币价')
       let target = data.tools.find(t => t.moldNo === text(row[1]))
       if (!target && compatible) {
         const candidates = data.tools.filter(t => t.weightG > 0 && firstPart(t.description) === firstPart(text(row[2])))
@@ -521,11 +559,13 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
             warnings.push('有完整模具资料的模组：出模量取逐件模穴数，用量=逐件模穴数÷每啤成品数；已核对模穴合计，不把“1出几套”直接当作单件模穴。总料重及啤工仍取内部报价，避免重复乘用量。')
           }
         }
-        continue
+        return
       }
       const purchaseMatch = !plan && compatible && rows.slice(costStart, end).some(r => firstPart(text(r[2])) === firstPart(text(row[2])))
       if (purchaseMatch) data.tools.push({ moldNo: text(row[1]), partNo: '', description: text(row[2]), usage: 1, cavity: 1, weightG: 0, material: material(row[6]), laborHkd: 0, toolingHkd: numeric(row[9], '外购件模具港币价') })
+      else if (options.draft) attempt('模具报价', () => { throw new Error('模具报价页存在型号/模号无法匹配的费用，未计入小计；请修正原表后重新导入，不能遗漏费用输出。') })
       else warnings.push('模具报价页存在型号/模号无法匹配的费用，本次未计入，请核对后再报客。')
+      }, [[`B${sourceRow}`, '模号'], [`C${sourceRow}`, '模具零件名称'], [`J${sourceRow}`, '模具港币价']], tooling)
     }
   }
   data.image = extractYinhuiProductImage(buffer, main.name)
@@ -538,7 +578,7 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   if (!isYinhuiCustomer(artifact.customer)) throw new Error('受控文件客户与银辉映射不一致')
   if (!/huaxing|华兴|華興/i.test(artifact.factoryAndWorkshop)) throw new Error('银辉映射仅适用于华兴受控报价')
   const data = emptyData()
-  const warnings = ['银辉临时映射按单 BOM 输出；请核对英文名称、型号、运费和产品资料。']
+  const warnings = ['银辉临时映射按单 BOM 输出；请核对 BOM 原文、产品及 Tool Plan 英文名称、型号和运费。']
   data.productName = artifact.productName
   data.model = artifact.productName.match(/#\s*([\w-]+)/)?.[1] || ''
   data.templateId = yinhuiProfileForModel(data.model)
@@ -612,7 +652,7 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
       addCost(data, 'packaging', text(line.item), positive(line.quantity ?? 1, '包装用量'), quoted(line, amount), amount, `业务/${text(line.item)}`)
     } else if (line.kind === 'carton') {
       const amount = numeric(line.per_piece_hkd, '纸箱每件价'); internalQuotedTotal += quoted(line, amount)
-      data.carton = { description: 'Outer Carton', source: '业务/主纸箱', quantity: 1, internalHkd: amount, amountHkd: quoted(line, amount) }
+      data.carton = { description: text(line.item) || '外箱', originalDescription: text(line.item) || '外箱', source: '业务/主纸箱', quantity: 1, internalHkd: amount, amountHkd: quoted(line, amount) }
     } else if (hasValue(line.amount_hkd) && numeric(line.amount_hkd, '业务成本') > 0) throw new Error(`银辉尚未映射业务成本 ${text(line.kind)}`)
   }
   if (!data.carton.source) throw new Error('银辉 P4 缺少主纸箱服务端计算')
@@ -629,32 +669,52 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
 }
 
 function readYinhuiSource(buffer: ArrayBuffer) {
-  const variants = ['开窗盒', '密封盒'].flatMap(box => [`明细（${box}）`, `明细(${box})`, `明细 (${box})`, `明细 （${box}）`])
-  return parseXlsxWorkbook(buffer, { sheetNames: ['明细', ...variants, '內部明細', '内部明细', 'Tool PLan', 'Tool Plan', 'Tool plan', 'TOOL PLAN', '模具报价', 'BOM', '结构化数据', '审批与版本'], valuesOnly: true, includeFormulas: true })
+  return parseXlsxWorkbook(buffer, { sheetNames: [...YINHUI_MAIN_SHEET_NAMES, 'Tool PLan', 'Tool Plan', 'Tool plan', 'TOOL PLAN', '模具报价', 'BOM', '结构化数据', '审批与版本'], valuesOnly: true, includeFormulas: true })
 }
-export function convertYinhuiInternalQuote(buffer: ArrayBuffer, sourceFileName: string): YinhuiConversionResult {
+export function convertYinhuiInternalQuote(buffer: ArrayBuffer, sourceFileName: string, options: YinhuiImportOptions = {}): YinhuiConversionResult {
   const workbook = readYinhuiSource(buffer)
   const sheets = workbook.sheets
   if (sheets.some((s) => ['结构化数据', '审批与版本'].includes(s.name))) {
+    if (options.overrides?.length) throw new Error('P4 最终放行文件不允许修改原始审批数据，请回内部报价修正')
     const result = convertYinhuiP4InternalQuote(parseP4InternalQuoteArtifact(buffer), sourceFileName)
     result.quoteData.image = extractYinhuiProductImage(buffer, '报价明细')
     return result
   }
-  return legacyConversion(buffer, sourceFileName, workbook)
+  const originalSheets = sheets.map(sheet => ({ ...sheet, rows: sheet.rows.map(row => row?.slice() || []) }))
+  for (const override of options.overrides || []) {
+    const sheet = sheets.find(s => s.name === override.sheet)
+    const match = override.cell.match(/^([A-Z]{1,2})([1-9]\d{0,3})$/)
+    if (!sheet || !match || !['string', 'number'].includes(typeof override.value) || (typeof override.value === 'number' && !Number.isFinite(override.value))) throw new Error('银辉草稿补正数据无效')
+    const col = [...match[1]!].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1
+    const row = Number(match[2]) - 1
+    sheet.rows[row] ||= []
+    sheet.rows[row]![col] = override.value
+  }
+  return legacyConversion(buffer, sourceFileName, workbook, options, originalSheets)
 }
 export function validateYinhuiExport(data: YinhuiQuoteData) {
-  if (!data.model.trim() || !data.productName.trim()) throw new Error('请核对并填写银辉型号及英文产品名称')
-  positive(data.moq, 'MOQ')
-  if (!Number.isInteger(data.moq)) throw new Error('银辉 MOQ 必须为整数')
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(data.quoteDate) || !Number.isFinite(Date.parse(data.quoteDate))) throw new Error('请填写有效报价日期')
-  if (!data.packaging.trim()) throw new Error('请填写银辉包装方式')
-  numeric(data.freightFclHkd, '40FT 每件运费'); numeric(data.freightLclHkd, 'LCL 每件运费')
+  const issues = yinhuiExportIssues(data)
+  if (issues.length) throw new Error(issues.join('；'))
+}
+export function yinhuiExportIssues(data: YinhuiQuoteData): string[] {
+  const issues = (data.importIssues || []).map(i => `${i.source}：${i.message}`)
+  const check = (fn: () => void) => { try { fn() } catch (e) { issues.push(e instanceof Error ? e.message : String(e)) } }
+  if (!data.model.trim() || !data.productName.trim()) issues.push('请核对并填写银辉型号及英文产品名称')
+  check(() => { positive(data.moq, 'MOQ'); if (!Number.isSafeInteger(data.moq)) throw new Error('银辉 MOQ 必须为整数') })
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data.quoteDate) || !Number.isFinite(Date.parse(data.quoteDate))) issues.push('请填写有效报价日期')
+  if (!data.packaging.trim()) issues.push('请填写银辉包装方式')
+  check(() => { numeric(data.freightFclHkd, '40FT 每件运费') })
+  check(() => { numeric(data.freightLclHkd, 'LCL 每件运费') })
   for (const line of [...data.plastic, ...data.mechanical, ...data.electronic, ...(data.fabric || []), ...data.packagingRows, ...(data.documentFees || [])]) {
-    positive(line.quantity, 'BOM 用量'); numeric(line.amountHkd, 'BOM 金额')
-    if (!line.description.trim() || /[\u3400-\u9fff]/.test(line.description)) throw new Error(`请在核对区补全英文物料名称：${line.description || line.source}`)
+    check(() => { positive(line.quantity, 'BOM 用量'); numeric(line.amountHkd, 'BOM 金额') })
+    if (!line.description.trim() || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/i.test(line.description.trim())) issues.push(`请在核对区补全有效的 BOM 物料名称：${line.description || line.source}`)
   }
-  for (const line of data.tools) if (!line.description.trim() || /[\u3400-\u9fff]/.test(line.description) || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/i.test(line.description.trim())) throw new Error(`请在核对区补全英文物料名称：${line.description || line.moldNo || 'Tool Plan'}`)
-  if (/[\u3400-\u9fff]/.test(data.productName)) throw new Error('请在核对区填写英文产品名称')
+  for (const line of data.tools) {
+    if (!line.description.trim() || /[\u3400-\u9fff]/.test(line.description) || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/i.test(line.description.trim())) issues.push(`请在核对区补全英文物料名称：${line.description || line.moldNo || 'Tool Plan'}`)
+    check(() => { material(line.material); numeric(line.weightG, '料重'); numeric(line.laborHkd, '啤工'); numeric(line.toolingHkd, '模具费'); numeric(line.usage, 'Tool Plan 用量'); numeric(line.cavity, 'Tool Plan 出模数') })
+  }
+  if (/[\u3400-\u9fff]/.test(data.productName)) issues.push('请在核对区填写英文产品名称')
+  return [...new Set(issues)]
 }
 export function buildYinhuiCustomerQuoteFileName(result: YinhuiConversionResult) {
   const pending = yinhuiMissingMaterialPrices(result.quoteData).length ? '-待补料价' : ''

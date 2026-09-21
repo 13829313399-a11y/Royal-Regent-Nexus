@@ -434,7 +434,7 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
   p('D31', d.packaging); p('D32', d.cartonPack); p('D10', d.cartonPack)
   const packReserved = elements(packaging.doc, 'mergeCell').some(m => m.getAttribute('ref') === 'I33:I34') ? [34] : []
   rowCosts(p, [], 11, 12); rowCosts(p, d.packagingRows, 33, 12, packReserved)
-  const colorIndex = d.packagingRows.findIndex(r => /color box/i.test(r.description))
+  const colorIndex = d.packagingRows.findIndex(r => /彩盒|color box/i.test(r.description))
   if (colorIndex >= 0) d.colorBoxCm.forEach((v, i) => p(`${['C', 'D', 'E'][i]}${33 + colorIndex}`, v))
   d.cartonCm.forEach((v, i) => p(`${['C', 'D', 'E'][i]}47`, v))
   p('H47', 1); p('I47', d.carton.amountHkd); p('G47', 'pc'); p('J47', d.carton.amountHkd)
