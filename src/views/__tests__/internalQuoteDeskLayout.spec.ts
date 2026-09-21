@@ -246,9 +246,9 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionFormSource).toContain("const isDisney = computed(() => ['disney', '迪士尼'].includes(normalizedCustomer.value))")
     expect(sectionFormSource).toContain("const isCaixing = computed(() => ['caixing', '彩星'].includes(normalizedCustomer.value))")
     expect(sectionFormSource).toContain("const isThreeSixty = computed(() => ['360', 'threesixty'].includes(normalizedCustomer.value))")
-    for (const customerFlag of ['isDickie']) {
-      expect(sectionFormSource).toContain(`const ${customerFlag} = computed(() => false)`)
-    }
+    expect(sectionFormSource).toContain("props.factoryId === 'huaxing' && ['dickie', 'dicky'].includes(normalizedCustomer.value)")
+    expect(sectionFormSource).toContain('<InternalQuoteDickieSales v-if="isDickie"')
+    expect(sectionFormSource).toContain('<InternalQuoteDickieMolds v-if="isDickie"')
     for (const text of ['迪士尼采购件客户字段部分', '迪士尼模具客户字段部分', '迪士尼注塑客户参数部分', '迪士尼包装件客户字段部分', 'row.disney_unit_price_usd', 'carton.disney_unit_price_usd']) expect(sectionFormSource).toContain(text)
     for (const text of ['协作评论', '业务操作时间线', '浏览记录', '短时间刷新会去重', '客人目标价', 'quote.targetCustomerPrice']) expect(activitySource).toContain(text)
     for (const text of ['调整汇率', '保存汇率', '保存会生成新 revision', 'updateFx']) expect(activitySource).toContain(text)

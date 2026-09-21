@@ -42,6 +42,7 @@ export interface P4InternalQuoteArtifact {
   formulaVersion: string
   referenceSnapshotId: string
   referenceSnapshot: Record<string, unknown>
+  customerMapping?: Record<string, unknown>
   sections: Record<P4SectionCode, P4InternalQuoteSection>
 }
 
@@ -259,6 +260,20 @@ export function parseP4InternalQuoteArtifact(
   }
   const chunkRows = parseStructuredRows(structured.rows)
   const referenceSnapshot = reconstructJson(chunkRows, 'reference_snapshot', 'quote')
+  const customerMapping = chunkRows.some(row => row.recordType === 'customer_mapping')
+    ? reconstructJson(chunkRows, 'customer_mapping', 'quote') : undefined
+  if (customerMapping) {
+    if (customerMapping.formula_version !== formulaVersion || customerMapping.reference_snapshot_id !== referenceSnapshotId) {
+      throw new P4ArtifactValidationError('客户映射价格与审批版本不一致，请重新最终放行')
+    }
+    for (const [key, supplied] of Object.entries({ quote_no: handoffMetadata.quoteNo, version_label: handoffMetadata.versionLabel, customer: handoffMetadata.customer })) {
+      if (supplied && text(customerMapping[key] as XlsxCellValue) !== text(supplied)) throw new P4ArtifactValidationError('客户映射身份与交接清单不一致')
+    }
+    for (const key of ['quote_no', 'version_label', 'customer', 'factory_id']) {
+      const expected = approvalManifest.get(key)
+      if (expected && text(customerMapping[key] as XlsxCellValue) !== expected) throw new P4ArtifactValidationError('客户映射身份与审批清单不一致')
+    }
+  }
   const sections = {} as Record<P4SectionCode, P4InternalQuoteSection>
 
   P4_SECTION_CODES.forEach((code) => {
@@ -335,15 +350,16 @@ export function parseP4InternalQuoteArtifact(
   return {
     templateVersion,
     structuredDataSchemaVersion,
-    quoteNo: text(handoffMetadata.quoteNo) || (isLegacySummaryLayout ? text(summary.rows[1]?.[1]) : ''),
-    versionLabel: text(handoffMetadata.versionLabel) || (isLegacySummaryLayout ? text(summary.rows[1]?.[3]) : ''),
-    customer: text(handoffMetadata.customer) || (isLegacySummaryLayout ? text(summary.rows[1]?.[5]) : ''),
+    quoteNo: text(handoffMetadata.quoteNo) || text(customerMapping?.quote_no as XlsxCellValue) || (isLegacySummaryLayout ? text(summary.rows[1]?.[1]) : ''),
+    versionLabel: text(handoffMetadata.versionLabel) || text(customerMapping?.version_label as XlsxCellValue) || (isLegacySummaryLayout ? text(summary.rows[1]?.[3]) : ''),
+    customer: text(handoffMetadata.customer) || text(customerMapping?.customer as XlsxCellValue) || (isLegacySummaryLayout ? text(summary.rows[1]?.[5]) : ''),
     quantity: numberValue(handoffMetadata.quantity ?? (isLegacySummaryLayout ? summary.rows[1]?.[7] : 0)),
     productName: text(handoffMetadata.productName) || (isLegacySummaryLayout ? text(summary.rows[2]?.[1]) : visibleProductName(summary.rows)),
     factoryAndWorkshop: text(handoffMetadata.factoryAndWorkshop) || (isLegacySummaryLayout ? text(summary.rows[2]?.[3]) : ''),
     formulaVersion,
     referenceSnapshotId,
     referenceSnapshot,
+    customerMapping,
     sections,
   }
 }

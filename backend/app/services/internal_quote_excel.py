@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v30"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v31"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -5282,6 +5282,7 @@ def _build_structured_data_sheet(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
     reference_snapshot: dict[str, Any],
+    customer_mapping: dict[str, Any] | None = None,
 ) -> None:
     sheet = workbook.create_sheet("结构化数据")
     _style_title(sheet, "P4 客价转换结构化数据", 12)
@@ -5336,6 +5337,14 @@ def _build_structured_data_sheet(
             text_columns={11},
         )
         row_index += 1
+    if customer_mapping is not None:
+        chunks = _json_chunks(customer_mapping)
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            _body_row(sheet, row_index, (
+                "customer_mapping", "quote", "客户映射", "approved", quote.header_revision,
+                "valid", "current", quote.reference_snapshot_id, chunk_index, len(chunks), chunk, "是",
+            ), text_columns={11})
+            row_index += 1
     by_code = {section.department: section for section in sections}
     for code in SECTION_ORDER:
         section = by_code.get(code)
@@ -5633,7 +5642,9 @@ def build_internal_quote_workbook(
     _build_hair_sheet(workbook, by_code.get("hair"))
     _build_assembly_sheet(workbook, by_code.get("assembly"))
     if manifest.get("release_stage") == "p4_final_approved":
-        _build_structured_data_sheet(workbook, quote, sections, reference_snapshot or {})
+        from app.services.internal_quote_dickie import build_dickie_handoff
+        customer_mapping = build_dickie_handoff(quote, sections, reference_snapshot or {}, cost_context or {})
+        _build_structured_data_sheet(workbook, quote, sections, reference_snapshot or {}, customer_mapping)
     _build_approval_sheet(workbook, quote, sections, manifest)
     for technical_sheet in workbook.worksheets[1:]:
         technical_sheet.sheet_state = "veryHidden"

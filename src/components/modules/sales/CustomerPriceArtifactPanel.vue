@@ -106,7 +106,7 @@ function normalizeCustomerName(value: string) {
 
 function matchConfiguredCustomer(artifact: CustomerPriceInternalQuoteArtifact) {
   const target = normalizeCustomerName(artifact.customer)
-  return props.customers.find((customer) => normalizeCustomerName(customer.name) === target || (customer.id === 'yinhui' && isYinhuiCustomer(artifact.customer)))
+  return props.customers.find((customer) => normalizeCustomerName(customer.name) === target || (customer.id === 'yinhui' && isYinhuiCustomer(artifact.customer)) || (customer.id === 'dicky' && ['dickie', 'dicky'].includes(target)))
 }
 
 async function loadArtifacts() {
