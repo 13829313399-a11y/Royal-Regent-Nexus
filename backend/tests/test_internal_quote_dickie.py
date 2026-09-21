@@ -40,6 +40,41 @@ def test_handoff_uses_all_enabled_moq_tiers_without_mutating_sales():
     ]
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("fx, expected3000, expected5000, exact5000", [
+    ("7.8", "31.9", "20.7", "20.68"),
+    ("7.5", "31.2", "20.4", "20.35"),
+])
+def test_handoff_matches_testing_inclusive_prices_per_moq(enabled, fx, expected3000, expected5000, exact5000):
+    quote, sales = fixture()
+    payload = json.loads(sales.payload_json)
+    payload["testing_fee_enabled"] = enabled
+    # Stale retained inputs must not add a charge when testing is disabled.
+    payload["testing_fee_total_usd"] = "9999"
+    sales.payload_json = json.dumps(payload)
+    calculation = json.loads(sales.calculation_json)
+    calculation["totals"]["testing_fee_tiers"] = [
+        {"moq": "3000.0000", "unit_price_usd": "2.0000"},
+        {"moq": "5000.0000", "unit_price_usd": "1.0000"},
+    ]
+    sales.calculation_json = json.dumps(calculation)
+    result = build_dickie_handoff(quote, [sales], {"fx": {"hkd_usd": fx}}, {"factory_price_hkd": Decimal("10")})
+    first_route = {p["moq"]: p for p in result["prices"] if p["route_key"] == "hk40"}
+    # Route subtotal plus approved USD fee * that tier's markup * frozen FX.
+    assert first_route["3000.0000"]["price_hkd"] == (expected3000 if enabled else "13.2")
+    assert first_route["5000.0000"]["price_hkd"] == (expected5000 if enabled else "12.1")
+    assert Decimal(first_route["5000.0000"]["unrounded_hkd"]) == (Decimal(exact5000) if enabled else Decimal("12.1"))
+
+
+def test_testing_fee_does_not_spread_to_a_different_moq():
+    quote, sales = fixture()
+    calculation = json.loads(sales.calculation_json)
+    calculation["totals"]["testing_fee_tiers"] = [{"moq": "10000", "unit_price_usd": "1"}]
+    sales.calculation_json = json.dumps(calculation)
+    result = build_dickie_handoff(quote, [sales], {}, {"factory_price_hkd": Decimal("10")})
+    assert result["prices"][0]["price_hkd"] == "13.2"
+
+
 @pytest.mark.parametrize("factory,customer", [("huakang_a", "Dickie"), ("huaxing", "银辉"), ("huaxing", "Disney")])
 def test_handoff_does_not_change_other_customers(factory, customer):
     quote, sales = fixture()
