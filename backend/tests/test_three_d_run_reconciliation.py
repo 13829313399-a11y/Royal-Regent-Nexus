@@ -44,6 +44,45 @@ def seed_product(env, *, duplicate=False, name="part", material="PLA"):
         db.commit()
 
 
+def test_preparation_is_visible_but_only_running_creates_and_consumes(environment, monkeypatch):
+    env = environment
+    seed_product(env)
+    ref = session(env)
+    post(env, "/events", event(env, ref, state="PREPARE", current_file="part.3mf"))
+    post(env, "/events", event(env, ref, 2, "PREPARE", current_file="part.3mf"))
+    assert runs(env) == []
+    with env[1].SessionLocal() as db:
+        assert db.get(env[2].ThreeDPrintingPrinter, ref["printer_id"]).state == "PREPARE"
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 100
+        assert list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement))) == []
+    post(env, "/events", event(env, ref, 3, "RUNNING", current_file="part.3mf"))
+    assert len(runs(env)) == 1 and runs(env)[0].run_status == "running"
+    post(env, "/events", event(env, ref, 4, "PREPARE", current_file="part.3mf"))
+    monkeypatch.setattr(env[3].settings, "three_d_reconciliation_terminal_grace_seconds", 0)
+    sweep = importlib.import_module("app.services.three_d_run_reconciliation")
+    with env[1].SessionLocal() as db:
+        assert sweep.sweep_open_runs(db, factory_id="huakang-a", now=env[4][0]).settled == []
+        db.commit()
+    assert runs(env)[0].print_end_at == ""
+    post(env, "/events", event(env, ref, 5, "RUNNING", current_file="part.3mf"))
+    post(env, "/events", event(env, ref, 6, "FINISH", current_file="part.3mf"))
+    assert len(runs(env)) == 1 and runs(env)[0].run_status == "succeeded"
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 80
+        assert len(list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))) == 1
+
+
+def test_cancelled_preparation_does_not_create_a_production_record(environment):
+    env = environment
+    seed_product(env)
+    ref = session(env)
+    for sequence, state in enumerate(["PREPARE", "FAILED", "IDLE", "PREPARE", "STALE"], 1):
+        post(env, "/events", event(env, ref, sequence, state, current_file="part.3mf"))
+    assert runs(env) == []
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 100
+
+
 def test_reconnect_reconcile_does_not_reconsume_and_terminal_is_immutable(environment):
     env = environment
     seed_product(env)
