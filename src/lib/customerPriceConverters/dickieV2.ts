@@ -223,18 +223,21 @@ function customerSheet(data: DickieV2QuoteData, lang: 'en' | 'zh', styles: Retur
     return text.length > layout.cols[col]! * 1.1 && parts.length === 3
       ? `${parts[0]}*${parts[1]}*\n${parts[2]}${unit}` : text
   }
-  const heading = () => {
-    let r = add(1, { A: header.company === 'asia' ? '华登制品 (亞洲) 有限公司' : '华登制品 (香港) 有限公司' }); merge(r, 'A', 'K')
-    r = add(2, { A: header.company === 'asia' ? 'ROYAL REGENT PRODUCTS (ASIA) LIMITED' : 'ROYAL REGENT PRODUCTS (H.K.) LIMITED' }); merge(r, 'A', 'K')
-    add(3, { A: 'Address: Unit07-08,12/F,Greenfield Tower,Concordia Plaza,', J: 'Tel: 852- 2425 0720 Fax: 852- 2424 3407' })
-    add(4, { A: 'No.1 Science Museum Road,Tsim Sha Tsui, Kowloon,Hong Kong.', J: 'E-mail:' })
-    add(5)
-    r = add(6, { A: header.quotation_kind === 'estimate' ? 'ESTIMATE QUOTATION (估價)' : 'QUOTATION (報價)' }); merge(r, 'A', 'K')
-    r = add(7, { A: 'Client(客  戶):', C: header.client_name, J: 'Date(日期):', K: dateSerial })
+  const heading = (mold = false) => {
+    // The source mold block has its own taller letterhead and spacing.
+    const addHeader = (prototype: number, values: Record<string, string | number> = {}) =>
+      add(prototype + (mold ? (en ? 29 : 28) : 0), values)
+    let r = addHeader(1, { A: header.company === 'asia' ? '华登制品 (亞洲) 有限公司' : '华登制品 (香港) 有限公司' }); merge(r, 'A', 'K')
+    r = addHeader(2, { A: header.company === 'asia' ? 'ROYAL REGENT PRODUCTS (ASIA) LIMITED' : 'ROYAL REGENT PRODUCTS (H.K.) LIMITED' }); merge(r, 'A', 'K')
+    addHeader(3, { A: 'Address: Unit07-08,12/F,Greenfield Tower,Concordia Plaza,', J: 'Tel: 852- 2425 0720 Fax: 852- 2424 3407' })
+    addHeader(4, { A: 'No.1 Science Museum Road,Tsim Sha Tsui, Kowloon,Hong Kong.', J: 'E-mail:' })
+    addHeader(5)
+    r = addHeader(6, { A: header.quotation_kind === 'estimate' ? 'ESTIMATE QUOTATION (估價)' : 'QUOTATION (報價)' }); merge(r, 'A', 'K')
+    r = addHeader(7, { A: 'Client(客  戶):', C: header.client_name, J: 'Date(日期):', K: dateSerial })
     at(r, 10).style = styles.derive(at(r, 10).style, 'yyyy/m/d')
-    r = add(8, { A: 'Attn:', C: header.attention, J: 'Rev.:', K: header.revision })
+    r = addHeader(8, { A: 'Attn:', C: header.attention, J: 'Rev.:', K: header.revision })
     at(r, 10).style = styles.derive(at(r, 10).style, undefined, true)
-    add(9, { A: 'From:', C: header.from_name }); add(10)
+    addHeader(9, { A: 'From:', C: header.from_name }); addHeader(10)
   }
   heading()
   const dimensionKinds = new Set(data.products.map(p => `${p.mapping.dimension_source}:${p.mapping.dimension_unit}`))
@@ -292,7 +295,7 @@ function customerSheet(data: DickieV2QuoteData, lang: 'en' | 'zh', styles: Retur
   data.products.filter(p => p.molds.length).forEach(p => {
     add(en ? 29 : 28)
     pageBreaks.push(rows.length)
-    heading()
+    heading(true)
     const offset = en ? 1 : 0
     let r = add(39 + offset, { A: 'Project Name (產品名稱):', C: `${p.mapping.item_number} ${p.mapping.item_name[lang]}` }, 28)
     merge(r, 'C', 'K'); at(r, 2).style = styles.derive(at(r, 2).style, undefined, true)
