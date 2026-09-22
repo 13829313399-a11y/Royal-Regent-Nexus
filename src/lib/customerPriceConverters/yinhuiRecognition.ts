@@ -1,6 +1,6 @@
 import { applyYinhuiHeaderMapping, correctYinhuiDraft, selectYinhuiToolCandidate, type YinhuiDraft } from './yinhuiDraft'
-import { parseXlsxWorkbook, type XlsxParsedSheet } from './xlsxLite'
-import { selectYinhuiMainSheet, YINHUI_MAIN_SHEET_NAMES } from './yinhui'
+import type { XlsxParsedSheet } from './xlsxLite'
+import { selectYinhuiMainSheet, readYinhuiSource, isYinhuiToolPlanSheet, yinhuiToolIdentityColumns } from './yinhuiSource'
 
 export interface RecognitionEvidence { sheet: string; cell: string; text: string }
 export interface RecognitionChoice { id: string; label: string; evidence: RecognitionEvidence[] }
@@ -19,7 +19,7 @@ const sourceCache = new WeakMap<ArrayBuffer, XlsxParsedSheet[]>()
 export function buildYinhuiRecognitionTasks(draft: YinhuiDraft): { tasks: RecognitionTask[]; notice: string } {
   let sheets = sourceCache.get(draft.buffer)
   if (!sheets) {
-    sheets = parseXlsxWorkbook(draft.buffer, { sheetNames: [...YINHUI_MAIN_SHEET_NAMES, 'Tool PLan', 'Tool Plan', 'Tool plan', 'TOOL PLAN'], valuesOnly: true }).sheets
+    sheets = readYinhuiSource(draft.buffer).sheets
     sourceCache.set(draft.buffer, sheets)
   }
   const tasks: RecognitionTask[] = []
@@ -29,14 +29,14 @@ export function buildYinhuiRecognitionTasks(draft: YinhuiDraft): { tasks: Recogn
     if (!task.choices.length || task.choices.length > 80 || evidence.some(e => !e.text || e.text.length > 400) || task.choices.some(c => c.label.length > 500) || tasks.length >= 40 || JSON.stringify([...tasks, task]).length > 95000) { skipped++; return }
     tasks.push(task)
   }
-  for (const sheet of sheets.filter(s => /tool plan/i.test(s.name))) {
+  for (const sheet of sheets.filter(isYinhuiToolPlanSheet)) {
     for (const [i, row] of sheet.rows.entries()) {
       if (!row || draft.headerMappings?.some(m => m.sheet === sheet.name && m.row === i + 1)) continue
       // Locate potential header rows; the model decides roles only within those original cells.
       const labels = row.flatMap((v, c) => typeof v === 'string' && /模|名稱|名称|品名|零件|部件|图片|圖片|材料|出模|mould|mold|tool|part|description|material|cavity/i.test(v) && v.length <= 100 ? [{ sheet: sheet.name, cell: `${col(c)}${i + 1}`, text: str(v) }] : [])
       if (labels.length < 3 || labels.length > 8) continue
-      const normalized = labels.map(e => e.text.replace(/\s/g, '').toLowerCase())
-      if (normalized.some(v => /模[号號]|模具[编編][号號]|moldno/.test(v)) && normalized.some(v => /^(?:名称|名稱)$|零件名[称稱]|部件名[称稱]|description/.test(v))) continue
+      const identity = yinhuiToolIdentityColumns(row)
+      if (identity.mold >= 0 && identity.description >= 0) continue
       const choices = labels.flatMap(mold => labels.filter(name => name !== mold).map(name => ({ id: `${mold.cell}|${name.cell}`, label: `模号列：${mold.text}；名称列：${name.text}`, evidence: [mold, name] })))
       add({ id: `header:${sheet.name}:${i + 1}`, kind: 'header', target: '模号列与部件名称列', source: labels[0]!, context: labels.slice(1), choices })
     }
