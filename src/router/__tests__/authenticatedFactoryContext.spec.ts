@@ -53,6 +53,15 @@ describe('authenticated factory context with real navigation guards', () => {
     } finally { remove() }
   })
 
+  it('redirects an old placeholder URL even when reusing the module-detail route', async () => {
+    await router.replace('/modules/production/production-plan?factory=huakang-a')
+    expect(router.currentRoute.value.name).toBe('module-detail')
+    await router.push('/modules/production/uv-printing?factory=huakang-a')
+    expect(router.currentRoute.value.fullPath).toBe('/modules/production?factory=huakang-a')
+    await router.replace('/modules/production/uv-printing?factory=huakang-a')
+    expect(router.currentRoute.value.fullPath).toBe('/modules/production?factory=huakang-a')
+  })
+
   it('lets the explicit deep link win over the registered factory', async () => {
     await router.replace('/modules/pmc-warehouse?factory=huadeng')
     expect(useAppStore().activeFactoryId).toBe('huadeng')

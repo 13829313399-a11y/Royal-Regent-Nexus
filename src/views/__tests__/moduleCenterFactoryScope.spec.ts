@@ -135,6 +135,39 @@ describe('module center factory scope', () => {
     expect(module?.owner).toBe('华康A · 3D部门')
   })
 
+  it('keeps the UV placeholder inert and visible only in Huakang A', async () => {
+    routeState.path = '/modules/production'
+    routeState.params.department = 'production'
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useAppStore()
+    store.setActiveFactory('huakang-a')
+    const wrapper = mount(ModuleCenterView, { global: { plugins: [pinia] } })
+    const findCard = () => wrapper.findAllComponents(ModuleCard).find(
+      (item) => item.props('module').id === 'uv-printing',
+    )
+    const card = findCard()!
+    expect(card.text()).toContain('待重建')
+    expect(card.props('module').detailPage).toBe(false)
+    expect(card.find('a').exists()).toBe(false)
+    expect(card.find('.portal-module-card__children').exists()).toBe(false)
+    expect(card.attributes('role')).toBeUndefined()
+    expect(card.attributes('tabindex')).toBeUndefined()
+    await card.trigger('click')
+    await card.trigger('keydown', { key: 'Enter' })
+    await card.trigger('keydown', { key: ' ' })
+    expect(routerPushMock).not.toHaveBeenCalled()
+    for (const factory of ['group', 'huaxing', 'huakang-b', 'huakang-c', 'huakang-d', 'huadeng'] as const) {
+      store.setActiveFactory(factory)
+      await nextTick()
+      expect(findCard()).toBeUndefined()
+    }
+    store.setActiveFactory('huakang-a')
+    await nextTick()
+    expect(findCard()?.text()).toContain('待重建')
+    wrapper.unmount()
+  })
+
   it.each(['huaxing', 'huakang-a', 'huakang-b', 'huadeng'] as const)(
     'keeps only an inert production placeholder in %s',
     async (factoryId) => {

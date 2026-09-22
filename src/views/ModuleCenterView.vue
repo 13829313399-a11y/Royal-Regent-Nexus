@@ -23,7 +23,6 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
-import { isUvModuleEnabled } from '@/features/uv-printing/transport/provider'
 import { SPRAY_BASE, isSprayFactory, sprayEnabled } from '@/features/spray-production/contracts'
 
 const route = useRoute()
@@ -57,9 +56,8 @@ const visibleModules = computed(() => {
 
   return departmentEntry.value.modules
     .filter((module) => {
-      // UV 专属卡片额外核验真正的 activeFactoryId，避免 activeProductionFactory
-      // 的集团兜底把华康A的 UV 模块显示在别的厂区/集团目录里。
-      if (module.id === 'uv-printing' && (appStore.activeFactoryId !== 'huakang-a' || !isUvModuleEnabled())) return false
+      // 占位卡仅属于华康A，不随集团的生产厂区兜底显示。
+      if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
       if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
       if (

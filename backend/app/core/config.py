@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     three_d_asset_dir: str = str(BACKEND_DIR / "data" / "three-d-printing-assets")
     three_d_edge_agent_token: str = ""
     three_d_network_health_token: str = ""
-    uv_printing_enabled: bool = False
     spray_ops_enabled: bool = False
     three_d_connector_enabled: bool = False
     three_d_connector_token: str = ""

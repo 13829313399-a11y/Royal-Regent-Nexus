@@ -59,7 +59,6 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
-    UV_PRINTING_PERMISSION_CODES,
     INTERNAL_QUOTE_PERMISSION_CODES,
     INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     INTERNAL_QUOTE_SECTION_CODES,
@@ -624,7 +623,6 @@ POSITION_DEPARTMENT_ALIAS_GROUPS = (
 )
 POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
-        *UV_PRINTING_PERMISSION_CODES,
         "molding_sample:dispatch",
         "molding_sample:notification_read",
         "internal_quote:create",
