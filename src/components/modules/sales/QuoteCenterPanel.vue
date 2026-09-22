@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import CustomerPricingSettingsPanel from './CustomerPricingSettingsPanel.vue'
+import { customerPricingSettingsApi } from '@/api/customerPricingSettings'
+import { stampPricingReference } from '@/lib/customerPriceConverters/pricingSettings'
+import { buzzBeeTemplateUrl, createBuzzBeeTemplateWorkbook } from '@/lib/customerPriceConverters/buzzbeeTemplate'
 import { CheckCircle2, Download, Eye, Search, UploadCloud, Users } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -7,7 +11,6 @@ import type { CustomerPriceInternalQuoteArtifact } from '@/api/customerPriceArti
 import {
   buildBuzzBeeCustomerQuoteFileName,
   convertBuzzBeeInternalQuote,
-  createBuzzBeeCustomerQuoteWorkbook,
   type BuzzBeeConversionResult,
 } from '@/lib/customerPriceConverters/buzzbee'
 import {
@@ -107,6 +110,7 @@ interface ImportedWorkbookSheet {
 }
 
 interface ExportedQuoteVersion {
+  pricingSnapshotId?: string
   id: string
   fileName: string
   customerId: string
@@ -443,8 +447,10 @@ const canImportSelectedCustomer = computed(() => {
     'customer_price:import_internal_quote',
     selectedCustomer.value.factoryId,
     selectedCustomer.value.department,
-  )
+  ) && authStore.can('customer_price:settings_read', selectedCustomer.value.factoryId, 'sales-business')
 })
+
+watch(() => authStore.can('customer_price:settings_read', activeFactoryId.value, 'sales-business'), allowed => { if (!allowed) resetFactoryTransientState() })
 
 const canExportSelectedCustomer = computed(() => {
   if (!selectedCustomer.value.id) return false
@@ -452,7 +458,7 @@ const canExportSelectedCustomer = computed(() => {
     'customer_price:export_customer_quote',
     selectedCustomer.value.factoryId,
     selectedCustomer.value.department,
-  )
+  ) && authStore.can('customer_price:settings_read', selectedCustomer.value.factoryId, 'sales-business')
 })
 
 const selectedCustomerOperationSummary = computed(() => {
@@ -821,6 +827,7 @@ async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, bl
   if (!customerId) {
     throw new Error(`尚未配置“${handoff.customer}”的 P4 客户转换规则`)
   }
+  const pricing = await customerPricingSettingsApi.snapshot(requestedFactoryId, customerId)
   const workbook = await blob.arrayBuffer()
   if (!isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
     throw new Error('厂区已切换，请在当前厂区重新接收交接文件')
@@ -838,6 +845,7 @@ async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, bl
       formulaVersion: handoffManifestText(handoff, 'formula_version'),
       referenceSnapshotId: handoffManifestText(handoff, 'reference_snapshot_id'),
     },
+    pricing,
   )
   preparedP4Conversions.set(handoff.id, {
     handoff,
@@ -1042,6 +1050,8 @@ async function importInternalQuoteFile(file: File | undefined) {
   const isCurrentImportRequest = () => (
     requestId === importRequestSequence
     && isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)
+    && selectedCustomerId.value === customer.id
+    && canImportSelectedCustomer.value
   )
 
   importErrorMessage.value = ''
@@ -1049,6 +1059,8 @@ async function importInternalQuoteFile(file: File | undefined) {
   if (customer.id === 'yinhui') yinhuiConfirmed.value = false
 
   try {
+    const pricing = await customerPricingSettingsApi.snapshot(requestedFactoryId, customer.id)
+    if (!isCurrentImportRequest()) return
     if (customer.id === 'buzzbee') {
       if (!file.name.toLowerCase().endsWith('.xlsx')) {
         throw new Error('BuzzBee 当前先支持 .xlsx 内部报价，旧 .xls 请先另存为 .xlsx')
@@ -1056,7 +1068,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertBuzzBeeInternalQuote(buffer, file.name)
+      const conversionResult = convertBuzzBeeInternalQuote(buffer, file.name, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = conversionResult
@@ -1075,7 +1087,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertDisneyInternalQuote(buffer, file.name)
+      const conversionResult = convertDisneyInternalQuote(buffer, file.name, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = null
@@ -1094,7 +1106,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertDickyInternalQuote(buffer, file.name)
+      const conversionResult = convertDickyInternalQuote(buffer, file.name, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = null
@@ -1113,7 +1125,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertCaixingInternalQuote(buffer, file.name, selectedCaixingProductType.value)
+      const conversionResult = convertCaixingInternalQuote(buffer, file.name, selectedCaixingProductType.value, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = null
@@ -1129,7 +1141,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       if (!/\.(xlsx|json)$/i.test(file.name)) throw new Error('银辉支持 .xlsx 原内部报价、P4 最终放行文件或已保存的 .json 内部核对草稿')
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const draft = file.name.toLowerCase().endsWith('.json') ? loadYinhuiDraft(new TextDecoder().decode(buffer)) : createYinhuiDraft(buffer, file.name)
+      const draft = file.name.toLowerCase().endsWith('.json') ? loadYinhuiDraft(new TextDecoder().decode(buffer), pricing) : createYinhuiDraft(buffer, file.name, [], [], pricing)
       updateYinhuiDraft(draft)
       const result = draft.result
       yinhuiConfirmed.value = false
@@ -1146,7 +1158,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       }
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertThreeSixtyInternalQuote(buffer, file.name)
+      const conversionResult = convertThreeSixtyInternalQuote(buffer, file.name, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = null
@@ -1282,11 +1294,14 @@ async function exportCustomerQuoteExcel() {
   if (!selectedCustomer.value || !canExportSelectedCustomer.value || !canExportCustomerQuote.value || isExportingCustomerQuote.value) {
     return
   }
+  const exportCustomerId = selectedCustomerId.value
   const requestId = ++exportRequestSequence
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryGeneration = factoryGeneration
   const isCurrentExportRequest = () => (
     requestId === exportRequestSequence
+    && selectedCustomerId.value === exportCustomerId
+    && canExportSelectedCustomer.value
     && isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)
   )
 
@@ -1294,27 +1309,32 @@ async function exportCustomerQuoteExcel() {
   isExportingCustomerQuote.value = true
 
   try {
+    const conversionResult = ({ buzzbee: buzzBeeConversionResult.value, disney: disneyConversionResult.value, dicky: dickyConversionResult.value, caixing: caixingConversionResult.value, 'three-sixty': threeSixtyConversionResult.value, yinhui: yinhuiConversionResult.value } as const)[exportCustomerId as 'buzzbee' | 'disney' | 'dicky' | 'caixing' | 'three-sixty' | 'yinhui']
+    const pricing = conversionResult?.pricing
+    if (!pricing?.snapshot_id) throw new Error('请重新接收或导入报价，以记录本次使用的客户参数版本')
     const detailRows = activeWorkbookDetailRows.value
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     const versionNumber = activeExportedVersions.value.length + 1
     let fileName = `${selectedCustomer.value.name}-报客价-V${versionNumber}-${date}.xls`
 
     if (selectedCustomer.value.id === 'buzzbee' && buzzBeeConversionResult.value) {
-      const workbook = createBuzzBeeCustomerQuoteWorkbook(buzzBeeConversionResult.value)
+      const template = await fetchTemplateBuffer(buzzBeeTemplateUrl(buzzBeeConversionResult.value.sheets[0]?.quoteData.templateProfile), 'BuzzBee 原版报客')
+      if (!isCurrentExportRequest()) return
+      const workbook = createBuzzBeeTemplateWorkbook(buzzBeeConversionResult.value, template)
       fileName = buildBuzzBeeCustomerQuoteFileName(buzzBeeConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'disney' && disneyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(DISNEY_CUSTOMER_QUOTE_TEMPLATE_URL, '迪士尼报客')
       if (!isCurrentExportRequest()) return
       const workbook = createDisneyCustomerQuoteWorkbook(disneyConversionResult.value, templateBuffer)
       fileName = buildDisneyCustomerQuoteFileName(disneyConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'dicky' && dickyConversionResult.value) {
       const templateBuffer = dickyConversionResult.value.v2Data ? undefined : await fetchTemplateBuffer(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL, 'Dickie 报客')
       if (!isCurrentExportRequest()) return
       const workbook = createDickyCustomerQuoteWorkbook(dickyConversionResult.value, templateBuffer)
       fileName = buildDickyCustomerQuoteFileName(dickyConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'caixing' && caixingConversionResult.value) {
       const productType = caixingConversionResult.value.productType
       const templateUrl = productType === 'plush'
@@ -1325,20 +1345,20 @@ async function exportCustomerQuoteExcel() {
       if (!isCurrentExportRequest()) return
       const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
       fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'yinhui' && yinhuiConversionResult.value) {
       const conversion = yinhuiConversionResult.value
       const templateBuffer = await fetchTemplateBuffer(yinhuiTemplateUrl(conversion.quoteData.templateId), '银辉报客')
       if (!isCurrentExportRequest() || isImportingInternalQuote.value || selectedCustomer.value.id !== 'yinhui' || conversion !== yinhuiConversionResult.value || !yinhuiConfirmed.value) return
       const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value })
       fileName = buildYinhuiCustomerQuoteFileName(conversion)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'three-sixty' && threeSixtyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(THREE_SIXTY_CUSTOMER_QUOTE_TEMPLATE_URL, '360 报客')
       if (!isCurrentExportRequest()) return
       const workbook = createThreeSixtyCustomerQuoteWorkbook(threeSixtyConversionResult.value, templateBuffer)
       fileName = buildThreeSixtyCustomerQuoteFileName(threeSixtyConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else {
       const tableRows = detailRows.length > 0
         ? detailRows.map((row) => `
@@ -1412,6 +1432,7 @@ async function exportCustomerQuoteExcel() {
       : Number(visibleConversionRows.value.reduce((sum, row) => sum + row.customerPriceHkd, 0).toFixed(2))
     const previousVersion = activeExportedVersions.value[0]
     const exportedVersion: ExportedQuoteVersion = {
+      pricingSnapshotId: pricing.snapshot_id,
       id: `EXP-${selectedCustomer.value.id}-${Date.now()}`,
       fileName,
       customerId: selectedCustomer.value.id,
@@ -1439,6 +1460,7 @@ async function exportCustomerQuoteExcel() {
 
 <template>
   <div class="space-y-5">
+    <CustomerPricingSettingsPanel v-if="selectedCustomer.id" :factory-id="activeFactoryId" :customer-id="selectedCustomer.id" :customer-name="selectedCustomer.name" />
     <CustomerPriceArtifactPanel
       :customers="artifactCustomerOptions"
       :selected-customer-id="selectedCustomerId"

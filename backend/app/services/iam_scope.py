@@ -41,6 +41,7 @@ READ_PERMISSION_CODES = frozenset(
         "carton_mark:read",
         "carton_procurement:read",
         "customer_price:read",
+        "customer_price:settings_read",
         "customer_price:compare",
         "customer_order:read",
         "customer_order:audit_read",
@@ -56,10 +57,10 @@ READ_PERMISSION_CODES = frozenset(
 )
 
 # Notification access is read-only, but a cross-factory-read position must not
-# inherit another factory's bell feed. Roles that intentionally receive
-# cross-factory notifications use ``cross_factory_operate`` instead.
+# inherit another factory's bell feed or confidential customer pricing inputs.
+# Explicit cross-factory operating scope remains a separate authority.
 CROSS_FACTORY_READ_LOCAL_ONLY_PERMISSION_CODES = frozenset(
-    {"molding_sample:notification_read"}
+    {"molding_sample:notification_read", "customer_price:settings_read"}
 )
 
 # Every built-in position may inspect the production-task queue at any factory,

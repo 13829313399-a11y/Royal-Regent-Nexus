@@ -22,7 +22,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v28"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v29"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -198,6 +198,8 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
 GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LIST)
 GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
     (
+        "customer_price:settings_read",
+        "customer_price:settings_manage",
         *THREE_D_PRINTING_PERMISSION_CODES,
         *QC_INSPECTION_PERMISSION_CODES,
     )
@@ -230,6 +232,8 @@ ENGINEERING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_SUPERVISOR_PERMISSION_CODES = (
+    "customer_price:settings_read",
+    "customer_price:settings_manage",
     "customer_order:write",
     "customer_order:dispatch",
     "customer_order:shipment_confirm",
@@ -262,6 +266,7 @@ SALES_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_BUSINESS_PERMISSION_CODES = (
+    "customer_price:settings_read",
     "customer_order:write",
     "customer_order:dispatch",
     "customer_order:shipment_confirm",

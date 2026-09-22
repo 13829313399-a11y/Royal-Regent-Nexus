@@ -147,6 +147,8 @@ INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         guidance="仅允许获授权业务人员审核本人创建且由本人负责的内部报价",
     ),
     "customer_price:read": ScopePolicy(("sales-business",)),
+    "customer_price:settings_read": ScopePolicy(("sales-business",)),
+    "customer_price:settings_manage": ScopePolicy(("sales-business",)),
     "customer_price:import_internal_quote": ScopePolicy(("sales-business",)),
     "customer_price:export_customer_quote": ScopePolicy(("sales-business",)),
     "customer_price:compare": ScopePolicy(("sales-business",)),

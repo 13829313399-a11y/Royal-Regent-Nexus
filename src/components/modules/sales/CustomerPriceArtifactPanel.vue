@@ -57,7 +57,7 @@ const canImportArtifact = computed(() => authStore.can(
   'customer_price:import_internal_quote',
   activeFactoryId.value,
   'sales-business',
-) && hasConfiguredCustomers.value)
+) && authStore.can('customer_price:settings_read', activeFactoryId.value, 'sales-business') && hasConfiguredCustomers.value)
 
 function isCurrentFactory(factoryId: string, generation: number) {
   return factoryId === activeFactoryId.value && generation === factoryGeneration
@@ -334,7 +334,7 @@ onBeforeUnmount(() => {
 
     <div v-else-if="!canImportArtifact" class="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
       <CircleAlert class="mt-0.5 size-5 shrink-0" aria-hidden="true" />
-      <div><strong class="block">当前账号不可接收内部报价</strong><span class="mt-1 block">需要当前厂区的 `customer_price:import_internal_quote` 权限。</span></div>
+      <div><strong class="block">当前账号不可接收内部报价</strong><span class="mt-1 block">需要当前厂区的业务报价接收和客户基础信息查看权限。</span></div>
     </div>
 
     <template v-else>

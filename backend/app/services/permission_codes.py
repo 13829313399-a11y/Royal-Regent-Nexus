@@ -56,6 +56,8 @@ CARTON_MARK_PERMISSION_CODES = (
 )
 
 CUSTOMER_PRICE_PERMISSION_CODES = (
+    "customer_price:settings_read",
+    "customer_price:settings_manage",
     "customer_price:read",
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",

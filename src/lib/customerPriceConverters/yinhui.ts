@@ -1,3 +1,4 @@
+import { pricingRate, pricingMaterial, assertPricingCustomer, type CustomerPricingSettings } from './pricingSettings'
 import type { XlsxCellValue } from './xlsxLite'
 import { readYinhuiSource, selectYinhuiMainSheet, selectYinhuiToolPlan, yinhuiMainHeader, yinhuiSheetKey, yinhuiToolIdentityColumns } from './yinhuiSource'
 export { selectYinhuiMainSheet } from './yinhuiSource'
@@ -32,6 +33,7 @@ export interface YinhuiToolRow {
   toolingHkd: number
 }
 export interface YinhuiQuoteData {
+  pricing?: CustomerPricingSettings
   /** Unresolved source errors are retained on the data so every exporter checks them. */
   importIssues?: YinhuiImportIssue[]
   templateId?: YinhuiProfileId
@@ -66,8 +68,9 @@ export interface YinhuiQuoteData {
 export interface YinhuiSourceCell { sheet: string; cell: string; value: XlsxCellValue; label: string }
 export interface YinhuiImportIssue { source: string; message: string; cells: YinhuiSourceCell[] }
 export interface YinhuiSourceOverride { sheet: string; cell: string; value: string | number }
-export interface YinhuiImportOptions { draft?: boolean; overrides?: YinhuiSourceOverride[] }
+export interface YinhuiImportOptions { pricing?: CustomerPricingSettings; draft?: boolean; overrides?: YinhuiSourceOverride[] }
 export interface YinhuiConversionResult {
+  pricing?: CustomerPricingSettings
   sourceFileName: string
   warnings: string[]
   manualReviewReasons?: string[]
@@ -114,10 +117,10 @@ function material(v: unknown): Material {
   if (!key || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/.test(key)) throw new Error('银辉内部料型缺失或为公式错误，请先核对料型')
   return key
 }
-export function yinhuiMaterialPrice(_data: YinhuiQuoteData, resin: Material): number | null {
+export function yinhuiMaterialPrice(data: YinhuiQuoteData, resin: Material): number | null {
   const key = material(resin)
-  if (!Object.hasOwn(YINHUI_MATERIAL_PRICES_HKD_KG, key)) return null
-  return positive(YINHUI_MATERIAL_PRICES_HKD_KG[key as keyof typeof YINHUI_MATERIAL_PRICES_HKD_KG], `客表 ${key} 港币公斤价`)
+  const price = pricingMaterial(data.pricing, key, 'HKD', 'kg', YINHUI_MATERIAL_PRICES_HKD_KG[key as keyof typeof YINHUI_MATERIAL_PRICES_HKD_KG] ?? null)
+  return price === null ? null : numeric(price, `客表 ${key} 港币公斤价`) * pricingRate(data.pricing, 'material_multiplier', 1)
 }
 export function yinhuiMissingMaterialPrices(data: YinhuiQuoteData) {
   return [...new Set(data.tools.filter(row => yinhuiMaterialPrice(data, row.material) === null).map(row => material(row.material)))]
@@ -180,7 +183,15 @@ export function yinhuiTotals(data: YinhuiQuoteData) {
     lcl: data.freightLclHkd === null ? null : exFactory + data.freightLclHkd,
     tooling: sum(data.tools.map((r) => r.toolingHkd)) }
 }
-function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[], manualReviewReasons: string[] = []): YinhuiConversionResult {
+function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[], manualReviewReasons: string[] = [], pricing?: CustomerPricingSettings): YinhuiConversionResult {
+  assertPricingCustomer(pricing, 'yinhui')
+  data.pricing = pricing
+  const detail = pricingRate(pricing, 'detail_multiplier', 1)
+  for (const group of [data.plastic, data.mechanical, data.electronic, data.fabric || [], data.packagingRows, data.documentFees || [], [data.carton]]) {
+    group.forEach(row => { row.amountHkd = round(row.amountHkd * detail) })
+  }
+  data.assemblyHkd *= detail; data.sprayingHkd *= detail; data.packagingLaborHkd *= detail
+  data.tools.forEach(row => { row.laborHkd *= pricingRate(pricing, 'injection_multiplier', 1) })
   // Only the first packaging detail row has the customer's three dimension input cells.
   const colorBox = data.packagingRows.findIndex((r) => /彩盒|color box/i.test(r.description))
   if (colorBox > 0) data.packagingRows.unshift(data.packagingRows.splice(colorBox, 1)[0]!)
@@ -199,7 +210,7 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
   if (data.documentFees?.length) groups.push(['Documents / Customs Fee', total.documentFees])
   const details = groups.map(([description, price], i) => ({ id: `${sheetId}-${i}`, sheetId, sheetName: summaryName, itemNo: String(i + 1), description,
     internalPriceHkd: 0, customerPriceHkd: round(price), previousCustomerPriceHkd: round(price), differenceHkd: 0, marginBand: '独立客表口径', compareStatus: '持平' as const }))
-  return { sourceFileName, quoteData: data, warnings: [...new Set(warnings)], manualReviewReasons: [...new Set(manualReviewReasons)], sheets: [{ id: sheetId, name: summaryName, sourceFileName,
+  return { pricing, sourceFileName, quoteData: data, warnings: [...new Set(warnings)], manualReviewReasons: [...new Set(manualReviewReasons)], sheets: [{ id: sheetId, name: summaryName, sourceFileName,
     rowCount: details.length, totalInternalHkd: round(data.internalTotalHkd), totalCustomerHkd: round(total.exFactory), details }] }
 }
 
@@ -574,10 +585,10 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   data.image = extractYinhuiProductImage(buffer, main.name)
   if (!data.image) warnings.push('未读取到主产品图，请在报客前补充确认。')
   if (manualReviewReasons.length) warnings.push('Tool Plan 版式或对应关系存在不确定项，已允许进入人工核对；金额可能受影响，确认放行前必须逐项核对。')
-  return finish(data, sourceFileName, warnings, manualReviewReasons)
+  return finish(data, sourceFileName, warnings, manualReviewReasons, options.pricing)
 }
 
-export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, sourceFileName: string): YinhuiConversionResult {
+export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, sourceFileName: string, pricing?: CustomerPricingSettings): YinhuiConversionResult {
   if (!isYinhuiCustomer(artifact.customer)) throw new Error('受控文件客户与银辉映射不一致')
   if (!/huaxing|华兴|華興/i.test(artifact.factoryAndWorkshop)) throw new Error('银辉映射仅适用于华兴受控报价')
   const data = emptyData()
@@ -668,7 +679,7 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   if (numeric(totals('engineering').mold_total_rmb, '模具总计', true) > 0) throw new Error('银辉 P4 有新开模费用，但尚无已确认的逐模港币价映射，请使用含匹配模具报价页的银辉原表')
   data.internalTotalHkd = internalQuotedTotal
   warnings.push('P4 主产品图未随结构化资料传入时，需在输出前核对图片；未填写的适配器、Try me 和阶段保持空白。')
-  return finish(data, sourceFileName, warnings)
+  return finish(data, sourceFileName, warnings, [], pricing)
 }
 
 export function convertYinhuiInternalQuote(buffer: ArrayBuffer, sourceFileName: string, options: YinhuiImportOptions = {}): YinhuiConversionResult {
@@ -676,7 +687,7 @@ export function convertYinhuiInternalQuote(buffer: ArrayBuffer, sourceFileName: 
   const sheets = workbook.sheets
   if (sheets.some((s) => ['结构化数据', '审批与版本'].includes(s.name))) {
     if (options.overrides?.length) throw new Error('P4 最终放行文件不允许修改原始审批数据，请回内部报价修正')
-    const result = convertYinhuiP4InternalQuote(parseP4InternalQuoteArtifact(buffer), sourceFileName)
+    const result = convertYinhuiP4InternalQuote(parseP4InternalQuoteArtifact(buffer), sourceFileName, options.pricing)
     result.quoteData.image = extractYinhuiProductImage(buffer, '报价明细')
     return result
   }
