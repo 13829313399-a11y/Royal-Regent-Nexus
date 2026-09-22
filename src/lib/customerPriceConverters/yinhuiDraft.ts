@@ -1,5 +1,5 @@
 import { convertYinhuiInternalQuote, parseYinhuiMoq, type YinhuiConversionResult, type YinhuiSourceOverride } from './yinhui'
-import { parseXlsxWorkbook } from './xlsxLite'
+import { readYinhuiSource, isYinhuiToolPlanSheet, yinhuiToolIdentityColumns } from './yinhuiSource'
 
 export interface YinhuiToolCandidate { source: string; moldNo: string; partNo: string; description: string }
 export interface YinhuiHeaderMapping { sheet: string; row: number; moldCell: string; descriptionCell: string }
@@ -19,7 +19,7 @@ const MAX_SOURCE_BYTES = 40 * 1024 * 1024
 
 /** Candidates are identifiers only. Selecting one must not replace weights, usage or prices. */
 function toolCandidates(buffer: ArrayBuffer, mappings: YinhuiHeaderMapping[] = []): YinhuiToolCandidate[] {
-  const sheets = parseXlsxWorkbook(buffer, { sheetNames: ['Tool PLan', 'Tool Plan', 'Tool plan', 'TOOL PLAN'], valuesOnly: true }).sheets
+  const sheets = readYinhuiSource(buffer).sheets.filter(isYinhuiToolPlanSheet)
   const candidates: YinhuiToolCandidate[] = []
   if (mappings.length > 12) throw new Error('模具表头映射过多')
   const column = (cell: string) => cell.replace(/\d/g, '').split('').reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1
@@ -32,12 +32,12 @@ function toolCandidates(buffer: ArrayBuffer, mappings: YinhuiHeaderMapping[] = [
     let moldNo = ''
     for (const [index, row] of sheet.rows.entries()) {
       if (!row) continue
-      const normalized = row.map(v => text(v).normalize('NFKC').replace(/\s/g, '').toLowerCase())
+      const identity = yinhuiToolIdentityColumns(row)
       const mapping = mappings.find(m => m.sheet === sheet.name && m.row === index + 1)
-      const mold = mapping ? column(mapping.moldCell) : normalized.findIndex(v => /模[号號]|模具[编編][号號]|moldno/.test(v))
-      const description = mapping ? column(mapping.descriptionCell) : normalized.findIndex(v => /^(?:名称|名稱)$|零件名[称稱]|部件名[称稱]|description/.test(v))
+      const mold = mapping ? column(mapping.moldCell) : identity.mold
+      const description = mapping ? column(mapping.descriptionCell) : identity.description
       if (mold >= 0 && description >= 0 && mold !== description) {
-        columns = { mold, description, part: normalized.findIndex(v => /partno|物料[编編][号號]|零件[编編][号號]/.test(v)) }
+        columns = { mold, description, part: identity.part }
         moldNo = ''
         continue
       }

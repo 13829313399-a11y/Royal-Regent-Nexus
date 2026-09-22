@@ -1,4 +1,6 @@
-import { parseXlsxWorkbook, type XlsxCellValue, type XlsxParsedSheet } from './xlsxLite'
+import type { XlsxCellValue } from './xlsxLite'
+import { readYinhuiSource, selectYinhuiMainSheet, selectYinhuiToolPlan, yinhuiMainHeader, yinhuiSheetKey, yinhuiToolIdentityColumns } from './yinhuiSource'
+export { selectYinhuiMainSheet } from './yinhuiSource'
 import { parseP4InternalQuoteArtifact, type P4InternalQuoteArtifact, type P4SectionCode } from './p4Artifact'
 import { extractYinhuiProductImage, type YinhuiProductImage } from './yinhuiTemplate'
 import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG, yinhuiProfileForModel, type YinhuiProfileId } from './yinhuiProfiles'
@@ -202,18 +204,13 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
 }
 
 export const YINHUI_MAIN_SHEET_NAMES = ['明细', '內部明細', '内部明细', ...['开窗盒', '密封盒'].flatMap(box => [`明细（${box}）`, `明细(${box})`, `明细 (${box})`, `明细 （${box}）`])]
-export function selectYinhuiMainSheet(sheets: XlsxParsedSheet[]) {
-  const variants = sheets.filter(s => /^明细\s*[(（]/.test(s.name))
-  const windowBox = variants.filter(s => s.name.replace(/\s/g, '').replace(/（/g, '(').replace(/）/g, ')') === '明细(开窗盒)')
-  if (variants.length && (windowBox.length !== 1 || !windowBox[0]!.rows.slice(0, 12).some(r => /^#\s*89127\b/.test(text(r?.[0]))))) throw new Error('银辉存在包装版本明细，但无法唯一确认 89127 开窗盒页；请明确包装版本，不能默认取第一页')
-  return windowBox[0] || sheets.find((s) => ['明细', '內部明細', '内部明细'].includes(s.name))
-}
 
 function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook = readYinhuiSource(buffer), options: YinhuiImportOptions = {}, originalSheets = workbook.sheets): YinhuiConversionResult {
   workbook.sheets.forEach((sheet) => { sheet.rows = Array.from(sheet.rows, (row) => row || []) })
   const main = selectYinhuiMainSheet(workbook.sheets)
-  const plan = workbook.sheets.find((s) => s.name.replace(/\s/g, '').toLowerCase() === 'toolplan')
-  if (!main || !/银辉|銀輝|silverlit|yinhui/i.test(sourceFileName + workbook.sheets.flatMap((s) => s.rows.slice(0, 10).flat()).join(' '))) throw new Error('银辉原表需要“明细”页及银辉客户标识，请勿导入其他客户报价或报客成品表')
+  const plan = selectYinhuiToolPlan(workbook.sheets)
+  if (!main) throw new Error('银辉未找到内部明细：需要名称、料型、料重表头及内部出厂价区域；请核对文件内容，无需固定工作表名称')
+  if (!/银辉|銀輝|silverlit|yinhui/i.test(sourceFileName + main.rows.slice(0, 12).flat().join(' '))) throw new Error('未找到银辉客户标识，请核对文件名或内部明细中的客户信息')
   const data = emptyData()
   if (options.draft) data.importIssues = []
   const attempt = (source: string, action: () => void, refs: Array<[string, string]> = [], sourceSheet = main) => {
@@ -228,9 +225,11 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   }
   const warnings = ['临时映射按单 BOM 汇入第一组；第二组保留空表，不推断 RX/TX 拆分。', '采用当前内部报价金额，不复制示例客表的手填金额、四舍五入金额或旧 MOQ。']
   const manualReviewReasons: string[] = []
+  if (!['明细', '內部明細', '内部明细'].includes(main.name)) warnings.push(`已按页名及表头识别内部明细“${main.name}”，保留原工作表名称作为来源。`)
+  if (plan) warnings.push(`已识别模具表“${plan.name}”；按表头读取列，匹配不明确的零件仍须人工核对。`)
   const rows = main.rows
   const originalRows = originalSheets.find(s => s.name === main.name)!.rows
-  const header = rows.findIndex((r) => text(r[2]) === '名称' && /料型/.test(text(r[3])) && /料重/.test(text(r[4])))
+  const header = yinhuiMainHeader(rows)
   if (header < 1) throw new Error('银辉内部明细未找到名称/料型/料重表头')
   const title = text(rows[header - 1]?.[0])
   data.model = title.match(/#\s*([\w-]+)/)?.[1] || ''
@@ -346,23 +345,25 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     type PlanColumns = { mold: number; description: number; partNo: number; material: number; cavity: number; usage: number; weight: number; usageIsMoldOutput: boolean }
     const headerText = (value: XlsxCellValue) => text(value).normalize('NFKC').replace(/\s/g, '').replace(/[（）]/g, (v) => v === '（' ? '(' : ')').toLowerCase()
       .replace(/^模[号號](?=moldno)/, '').replace(/^零件名[称稱](?=description)/, '')
-      .replace(/^物料[编編][号號](?=partno)/, '').replace(/^[胶膠]料(?=material)/, '')
+      .replace(/^(?:物料|零件)[编編][号號](?=partno)/, '').replace(/^[胶膠]料(?=material)/, '')
       .replace(/^出模[數数](?=cavity)/, '').replace(/^(?:产品用量|產品用量)(?=qty\/toy)/, '')
       .replace(/^單件重量(?=net)|^单件重量(?=net)/, '')
-    const headerRows = plan.rows.slice(0, 8)
+    const headerRows = plan.rows.slice(0, 80)
     const headerColumn = (pattern: RegExp) => {
       const columns = new Set<number>()
       headerRows.forEach(row => row.forEach((value, column) => { if (pattern.test(headerText(value))) columns.add(column) }))
       return columns.size === 1 ? [...columns][0] : undefined
     }
+    const identities = headerRows.map(yinhuiToolIdentityColumns).filter(c => c.mold >= 0 && c.description >= 0)
+    const identity = identities.find(c => c.part >= 0) || identities[0]
     const detected = {
-      mold: headerColumn(/^(?:moldno\.?|模[号號])$/),
-      description: headerColumn(/^(?:description|chinesename|中文名[称稱])$/),
-      partNo: headerColumn(/^(?:partno\.?|[编編][号號])$/),
+      mold: identity?.mold ?? headerColumn(/^(?:moldno\.?|模[号號])$/),
+      description: identity?.description ?? headerColumn(/^(?:description|chinesename|中文名[称稱])$/),
+      partNo: identity && identity.part >= 0 ? identity.part : headerColumn(/^(?:partno\.?|[编編][号號])$/),
       material: headerColumn(/^(?:material|[胶膠]料|物料material)$/),
       cavity: headerColumn(/^(?:cavity|出模[量數数]|模穴[數数])$/),
       usage: headerColumn(/^(?:qty\/toy|产品用量|產品用量|\/up)$/),
-      weight: headerColumn(/^(?:net\(?g\)?|plasticwt\(?g\)?|[单單]个[胶膠]件重量\(?g\)?)$/),
+      weight: headerColumn(/^net\(?g\)?$/) ?? headerColumn(/^(?:plasticwt\(?g\)?|[单單]个[胶膠]件重量\(?g\)?)$/),
     }
     const columns: PlanColumns = Object.values(detected).every(value => value !== undefined)
       ? { ...(detected as Omit<PlanColumns, 'usageIsMoldOutput'>), usageIsMoldOutput: headerRows.some(row => headerText(row[detected.usage!]) === '/up') }
@@ -520,7 +521,9 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   attempt(`${main.name} · 内部出厂报价`, () => {
   data.internalTotalHkd = finalIndex >= 0 ? numeric(rows[finalIndex]?.[3], '内部出厂报价') : numeric(rows[management + 1]?.[3], '内部出厂报价')
   }, [[`D${finalIndex >= 0 ? finalIndex + 1 : management + 2}`, '内部出厂报价']])
-  const tooling = workbook.sheets.find((s) => s.name === '模具报价')
+  const toolingSheets = workbook.sheets.filter((s) => yinhuiSheetKey(s.name) === '模具报价')
+  if (toolingSheets.length > 1) throw new Error(`银辉找到多张模具报价页：${toolingSheets.map(s => `“${s.name}”`).join('、')}；请明确本次费用来源，不能自动选取或合并`)
+  const tooling = toolingSheets[0]
   if (tooling) {
     const compatible = tooling.rows.slice(0, 12).flat().map(text).join(' ').includes(data.model)
     const originalTooling = originalSheets.find(s => s.name === tooling.name)!
@@ -529,7 +532,7 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     const firstPart = (name: string) => simplified(name.split(/[*/;]/)[0] || '')
     for (const row of moldPrices) {
       const sourceRow = tooling.rows.indexOf(row) + 1
-      attempt(`模具报价!J${sourceRow}`, () => {
+      attempt(`${tooling.name}!J${sourceRow}`, () => {
       if (!text(row[1]) || !text(row[2])) throw new Error('原模具费用行的模号及描述不能清空')
       numeric(row[9], '模具港币价')
       let target = data.tools.find(t => t.moldNo === text(row[1]))
@@ -668,9 +671,6 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   return finish(data, sourceFileName, warnings)
 }
 
-function readYinhuiSource(buffer: ArrayBuffer) {
-  return parseXlsxWorkbook(buffer, { sheetNames: [...YINHUI_MAIN_SHEET_NAMES, 'Tool PLan', 'Tool Plan', 'Tool plan', 'TOOL PLAN', '模具报价', 'BOM', '结构化数据', '审批与版本'], valuesOnly: true, includeFormulas: true })
-}
 export function convertYinhuiInternalQuote(buffer: ArrayBuffer, sourceFileName: string, options: YinhuiImportOptions = {}): YinhuiConversionResult {
   const workbook = readYinhuiSource(buffer)
   const sheets = workbook.sheets
