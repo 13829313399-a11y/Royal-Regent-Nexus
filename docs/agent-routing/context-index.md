@@ -9,7 +9,7 @@
 | 排产 | `### Injection-Scheduling Center` | `backend/app/services` | `backend/tests` |
 | 订单与导入 | `### Customer Order Center` | `backend/app/api` | `backend/tests` |
 | UV 当前模块 | `### Huakang A UV Printing Management` | `src/features/uv-printing/contracts.ts` | `src/features/uv-printing` |
-| 喷油当前模块 | `### Spray Production Management` | `src/features/spray-production` | `src/features/spray-production` |
+| 喷油占位卡片 | `### Spray Production Management` | `src/data/enterpriseMock.ts` | 仅保留待重构卡片，无业务入口 |
 
 开发规则入口：[AGENTS.md](../../AGENTS.md)。源码和验证命令入口：[仓库地图](repo-map.md)。
 
