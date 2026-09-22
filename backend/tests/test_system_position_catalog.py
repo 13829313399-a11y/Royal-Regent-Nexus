@@ -48,10 +48,11 @@ def test_fixed_system_position_definition_contract():
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 138
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 131
+    assert len(registered_codes) == 140
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 133
+    assert len(permission_codes.SPRAY_OPS_PERMISSION_CODES) == 14
+    assert all(not (set(definition.permission_codes) & set(permission_codes.SPRAY_OPS_PERMISSION_CODES)) for definition in definitions)
     assert len(permission_codes.UV_PRINTING_PERMISSION_CODES) == 13
-    assert len(permission_codes.SPRAY_PRODUCTION_PERMISSION_CODES) == 12
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -99,6 +100,7 @@ def test_fixed_system_position_definition_contract():
             "customer_price:settings_manage",
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
+            *permission_codes.SPRAY_OPS_PERMISSION_CODES,
         )
     )
     assert not any(
@@ -192,10 +194,6 @@ def test_fixed_system_position_definition_contract():
     assert "internal_quote:painting_review" not in painting_clerk.permission_codes
     assert "internal_quote:painting_review" in painting_supervisor.permission_codes
     assert painting_manager.permission_codes == painting_supervisor.permission_codes
-    assert 'spray_production:report' in painting_clerk.permission_codes
-    assert 'spray_production:cost_read' not in painting_clerk.permission_codes
-    assert 'spray_production:cost_write' not in painting_clerk.permission_codes
-    assert set(permission_codes.SPRAY_PRODUCTION_PERMISSION_CODES) <= set(painting_manager.permission_codes)
 
     molding_clerk = positions.get_system_position("position_molding_clerk")
     molding_supervisor = positions.get_system_position("position_molding_supervisor")

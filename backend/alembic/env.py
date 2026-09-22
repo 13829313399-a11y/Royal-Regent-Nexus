@@ -18,8 +18,8 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
-    spray_production,  # noqa: F401
     uv_printing,  # noqa: F401
+    spray_ops,  # noqa: F401
     uv_finance,  # noqa: F401
     uv_ingest,  # noqa: F401
     uv_handover,  # noqa: F401

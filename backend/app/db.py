@@ -690,7 +690,7 @@ def ensure_document_tools_schema_ready() -> None:
 
 def init_db() -> None:
     from app.models import (
-        spray_production,
+        spray_ops,  # noqa: F401
         uv_printing,
         uv_finance,
         uv_ingest,
@@ -747,16 +747,6 @@ def init_db() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
         names = set(inspector.get_table_names())
-        if "alembic_version" in names:
-            missing = [name for name in Base.metadata.tables if name.startswith("spray_") and name not in names]
-            for table, column in [("spray_order_lines", "graph_route"),("spray_steps","predecessors"),("spray_tasks","shared_allocations"),("spray_resources","shared_requirements")]:
-                if table in names and column not in {c["name"] for c in inspector.get_columns(table)}:
-                    missing.append(table + "." + column)
-            if missing:
-                raise RuntimeError("喷油模块需要迁移至 20260911_0110；请先备份并迁移。缺少：" + ", ".join(missing))
-    with engine.connect() as connection:
-        inspector = inspect(connection)
-        names = set(inspector.get_table_names())
         if settings.uv_printing_enabled and ("alembic_version" in names or any(name.startswith("uv_") for name in names)):
             missing = []
             for name, table in Base.metadata.tables.items():
@@ -769,15 +759,31 @@ def init_db() -> None:
                     missing.extend(name + "." + c.name for c in table.columns if c.name not in columns)
             if missing:
                 raise RuntimeError("UV模块需要迁移至 20260914_0115；请先备份并迁移。缺少：" + ", ".join(missing))
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if settings.spray_ops_enabled and names:
+            missing = []
+            for name, table in Base.metadata.tables.items():
+                if not name.startswith("spray_ops_"):
+                    continue
+                if name not in names:
+                    missing.append(name)
+                else:
+                    columns = {column["name"] for column in inspector.get_columns(name)}
+                    missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
+            if missing:
+                raise RuntimeError("喷油模块需要显式迁移至 20260922_0119；禁止自动修改已有业务库。缺少：" + ", ".join(missing))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            if settings.uv_printing_enabled or not name.startswith("uv_")])
+                            if (settings.uv_printing_enabled or not name.startswith("uv_"))
+                            and (settings.spray_ops_enabled or not name.startswith("spray_ops_"))])
     ensure_sqlite_legacy_columns()
 
     with SessionLocal() as db:
-        for factory_id in ("huaxing", "huakang-a", "huakang-b", "huadeng"):
-            if db.get(spray_production.SprayFactory, factory_id) is None:
-                db.add(spray_production.SprayFactory(factory_id=factory_id, revision=0))
-        db.commit()
+        if settings.spray_ops_enabled:
+            from app.services.spray_ops.common import seed_factories
+            seed_factories(db)
+            db.commit()
         from app.services.injection_scheduling.common import seed_settings
         seed_settings(db)
         seed_auth_defaults(db)

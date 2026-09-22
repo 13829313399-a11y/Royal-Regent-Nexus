@@ -34,6 +34,21 @@ def make_client(monkeypatch, **env_overrides):
     return TestClient(main.app)
 
 
+def test_removed_production_workspace_is_not_registered(monkeypatch):
+    from sqlalchemy import inspect
+
+    with make_client(monkeypatch) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/api/spray-production/summary?factory_id=huakang-a").status_code == 404
+        paths = client.get("/openapi.json").json()["paths"]
+        assert not any(path.startswith("/api/spray-production") for path in paths)
+        assert any(path.startswith("/api/internal-quotes") for path in paths)
+        database = importlib.import_module("app.db")
+        assert not any(name.startswith("spray_") for name in inspect(database.engine).get_table_names())
+        catalog = importlib.import_module("app.services.permission_codes")
+        assert not any(code.startswith("spray_production:") for code in catalog.APPLICATION_PERMISSION_CODES)
+
+
 def make_avatar_png() -> bytes:
     image = Image.new("RGB", (480, 320), color=(13, 148, 136))
     output = BytesIO()
@@ -93,8 +108,6 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_order:audit_read",
                         "customer_order:read",
                         "injection_scheduling:read",
-                        "spray_production:read",
-                        "spray_production:cost_read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",

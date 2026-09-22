@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ArrowUpRight, Plus } from '@lucide/vue'
-import { computed, ref, watch } from 'vue'
-import { sprayProductionApi, type SpraySummary } from '@/api/sprayProduction'
+import { computed, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   departmentMap,
@@ -25,13 +24,11 @@ import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { isUvModuleEnabled } from '@/features/uv-printing/transport/provider'
+import { SPRAY_BASE, isSprayFactory, sprayEnabled } from '@/features/spray-production/contracts'
 
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
-const spraySummary = ref<SpraySummary | null>(null)
-const spraySummaryState = ref('进入查看本厂记录')
-let spraySummaryRequest = 0
 
 const currentDepartmentId = computed<ModuleDepartmentId>(() => {
   const department = String(route.params.department ?? '')
@@ -63,6 +60,7 @@ const visibleModules = computed(() => {
       // UV 专属卡片额外核验真正的 activeFactoryId，避免 activeProductionFactory
       // 的集团兜底把华康A的 UV 模块显示在别的厂区/集团目录里。
       if (module.id === 'uv-printing' && (appStore.activeFactoryId !== 'huakang-a' || !isUvModuleEnabled())) return false
+      if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
       if (
         module.strictAccess
@@ -74,13 +72,12 @@ const visibleModules = computed(() => {
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
 
-    if (module.id === 'spray-production') {
-      const live = spraySummary.value?.factory_id === appStore.activeFactoryId ? spraySummary.value : null
-      return { ...scopedModule, stats: live ? `正在执行 ${live.counts.running} · 已排待开工 ${live.counts.planned}` : spraySummaryState.value,
-        statusMetrics: live ? [
-          { label: '执行工单', value: String(live.counts.orders), tone: 'teal' as const },
-          { label: '正在执行', value: String(live.counts.running), tone: 'blue' as const },
-        ] : [] }
+    if (module.id === 'spray-production' && sprayEnabled()) {
+      const authorized = authStore.can('spray_ops:read', factory.id, 'production')
+      return { ...scopedModule, summary: '分批来料、工序排产、实绩质量、用料与交收月结',
+        status: authorized ? '工作区' : '权限待开通', statusTone: 'teal' as const,
+        stats: authorized ? '进入当前工厂工作区' : '需要当前工厂授权',
+        detailPage: authorized, route: authorized ? getFactoryScopedRoute(`${SPRAY_BASE}/overview`, factory.id) : undefined }
     }
 
     if (currentDepartmentId.value === 'engineering' && module.id === 'molding-sample') {
@@ -119,17 +116,6 @@ const visibleModules = computed(() => {
 
 const featuredModule = computed(() => visibleModules.value[0] ?? null)
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
-
-watch(() => [currentDepartmentId.value, appStore.activeFactoryId], async () => {
-  const request = ++spraySummaryRequest
-  spraySummary.value = null
-  const factory = appStore.activeFactoryId
-  if (currentDepartmentId.value !== 'production' || !['huaxing', 'huakang-a', 'huakang-b', 'huadeng'].includes(factory)) return
-  if (!authStore.canAny(['spray_production:read'], factory, 'production')) { spraySummaryState.value = '本厂业务统计未授权'; return }
-  spraySummaryState.value = '正在读取本厂业务统计'
-  try { const result = await sprayProductionApi.summary(factory); if (request === spraySummaryRequest) spraySummary.value = result }
-  catch { if (request === spraySummaryRequest) spraySummaryState.value = '统计暂不可用，进入工作区重试' }
-}, { immediate: true })
 
 watch(currentDepartmentId, (departmentId) => {
   appStore.setActiveDepartment(departmentId)

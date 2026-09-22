@@ -9,12 +9,10 @@ UV_PRINTING_PERMISSION_CODES = tuple("uv_printing:" + action for action in (
     "cost_read", "cost_write", "payroll_read", "payroll_write", "import", "export", "close",
 ))
 
-SPRAY_PRODUCTION_PERMISSION_CODES = tuple(
-    "spray_production:" + action for action in (
-        "read", "order_write", "plan", "report", "quality", "logistics", "cost_read",
-        "cost_write", "settlement", "master_write", "import", "export",
-    )
-)
+SPRAY_OPS_PERMISSION_CODES = tuple("spray_ops:" + action for action in (
+    "read", "plan", "report", "quality", "stock_write", "procure", "master_write",
+    "cost_read", "cost_write", "payroll_read", "payroll_write", "settle", "import", "export",
+))
 
 INJECTION_SCHEDULING_PERMISSION_CODES = (
     "injection_scheduling:read",
@@ -164,8 +162,8 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
+    *SPRAY_OPS_PERMISSION_CODES,
     *UV_PRINTING_PERMISSION_CODES,
-    *SPRAY_PRODUCTION_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,

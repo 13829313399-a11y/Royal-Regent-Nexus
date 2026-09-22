@@ -6,6 +6,8 @@ import {
 } from '@/config/pageAccessPolicy'
 import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { uvPreviewRoutes, uvPrintingRoutes } from '@/features/uv-printing/routes'
+import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
+import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { isUvPreviewEnabled } from '@/features/uv-printing/transport/provider'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
@@ -102,23 +104,6 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/modules/production/spray-production',
-    component: () => import('@/views/SprayProductionView.vue'),
-    meta: { title: '喷油部生产管理', fullPage: true, requiresAuth: true, permissions: ['spray_production:read'], permissionDepartment: 'production', enforcePermissions: true, allowAuthenticatedReadOnly: true },
-    children: [
-      { path: '', redirect: to => ({ path: '/modules/production/spray-production/overview', query: to.query }) },
-      { path: 'overview', component: () => import('@/features/spray-production/pages/OverviewPage.vue') },
-      { path: 'orders/:id?', component: () => import('@/features/spray-production/pages/OrdersPage.vue') },
-      { path: 'schedule', component: () => import('@/features/spray-production/pages/SchedulePage.vue') },
-      { path: 'reports/:id?', component: () => import('@/features/spray-production/pages/ReportsPage.vue') },
-      { path: 'wip', component: () => import('@/features/spray-production/pages/WipPage.vue') },
-      { path: 'logistics', component: () => import('@/features/spray-production/pages/LogisticsPage.vue') },
-      { path: 'finance', component: () => import('@/features/spray-production/pages/FinancePage.vue') },
-      { path: 'master', component: () => import('@/features/spray-production/pages/MasterPage.vue') },
-      { path: 'imports/:id?', component: () => import('@/features/spray-production/pages/ImportsPage.vue') },
-    ],
-  },
-  {
     path: '/modules/production/injection-scheduling',
     name: 'injection-scheduling',
     component: () => import('@/views/InjectionSchedulingView.vue'),
@@ -183,6 +168,7 @@ const routes: RouteRecordRaw[] = [
   },
   // 华康A · UV打印管理：正式路由在通用动态模块路由之前明确定义，懒加载工作区与子页。
   ...uvPrintingRoutes,
+  ...sprayProductionRoutes,
   // DEV 专属样例预览：仅 `VITE_UV_PREVIEW=true` 时注册，生产构建不可达。
   ...uvPreviewRoutes(isUvPreviewEnabled()),
   {
@@ -661,7 +647,8 @@ const finishRouteLoading = () => {
   }, remainingTime)
 }
 
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
+  if (!await guardSprayNavigation(to, from)) return false
   const navigationVersion = ++latestNavigationVersion
   if (routeLoadingTimer) {
     window.clearTimeout(routeLoadingTimer)
