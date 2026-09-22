@@ -18,6 +18,9 @@ export interface PrinterEvent {
   error_text?: string;
   connection_session_id?: string;
 }
+export const isPrinterPreparing = (state: string) =>
+  ["PREPARE", "PREPARING", "DOWNLOADING", "SLICING"].includes(state);
+export const printerPreparationText = "正在下载文件或进行打印前准备，请稍候。";
 export const printerStateText = (state: string) =>
   ({
     RUNNING: "正在打印",
@@ -28,8 +31,10 @@ export const printerStateText = (state: string) =>
     ERROR: "设备异常",
     OFFLINE: "设备离线",
     STALE: "等待状态更新",
-    PREPARE: "准备打印",
-    SLICING: "准备打印",
+    PREPARE: "准备中",
+    PREPARING: "准备中",
+    DOWNLOADING: "准备中",
+    SLICING: "准备中",
     UNKNOWN: "等待设备状态",
   })[state] || "待确认状态";
 export function chinaTime(value: string) {

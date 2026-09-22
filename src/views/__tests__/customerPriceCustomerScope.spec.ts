@@ -6,6 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import * as dickieConverter from '@/lib/customerPriceConverters/dicky'
+import { combineDickieV2 } from '@/lib/customerPriceConverters/dickieV2'
+import { createDickieMapping } from '@/lib/dickieQuote'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { customerPriceArtifactApi } from '@/api/customerPriceArtifact'
 
 vi.mock('@/api/customerPriceArtifact', () => ({
   customerPriceArtifactApi: {
@@ -108,6 +114,38 @@ describe('QuoteCenterPanel customer visibility', () => {
     window.history.replaceState({}, '', '/')
   })
   afterEach(() => window.history.replaceState({}, '', '/'))
+
+  it.skipIf(!process.env.DICKIE_V2_SAMPLE_DIR)('receives the actual released Dickie quote directly without an upload', async () => {
+    const directory = process.env.DICKIE_V2_SAMPLE_DIR!
+    const handoff = JSON.parse(readFileSync(join(directory, 'sample-handoff.json'), 'utf8'))
+    const bytes = readFileSync(join(directory, 'Dickie-演示内部报价.xlsx'))
+    const source = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    const blob = new Blob([source])
+    Object.defineProperty(blob, 'arrayBuffer', { value: async () => source })
+    vi.mocked(customerPriceArtifactApi.list).mockResolvedValueOnce([handoff])
+    vi.mocked(customerPriceArtifactApi.download).mockResolvedValueOnce({ blob, sha256: handoff.sha256, releaseStage: 'p4_final_approved' })
+    vi.mocked(customerPriceArtifactApi.consume).mockResolvedValueOnce({ ...handoff, status: 'consumed' })
+    const upload = vi.spyOn(dickieConverter, 'convertDickyInternalQuote')
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    Object.defineProperty(window.URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:received-quote') })
+    Object.defineProperty(window.URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+    const wrapper = mountPanel('direct-receive-sales')
+    try {
+      await flushPromises()
+      await wrapper.get(`[data-testid="consume-artifact-${handoff.id}"]`).trigger('click')
+      await flushPromises()
+      await vi.waitFor(() => expect(customerPriceArtifactApi.consume, wrapper.text().match(/接收或转换预检失败：[^。]+/)?.[0]).toHaveBeenCalledWith(handoff.id, `customer-price-ui:${handoff.id}`))
+      await flushPromises()
+      expect(upload).not.toHaveBeenCalled()
+      expect(wrapper.get('[data-testid="dickie-direct-handoff"]').text()).toContain(`已接收内部报价：${handoff.quote_no}`)
+      expect(wrapper.get('[data-testid="dickie-offer-preview"]').text()).toContain('8.5')
+      const output = wrapper.findAll('button').find(button => button.text() === '输出报客价 Excel')!
+      await output.trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('Quotation')
+      expect(click).toHaveBeenCalledTimes(2)
+    } finally { wrapper.unmount(); upload.mockRestore(); click.mockRestore() }
+  })
 
   it('lets an ordinary sales account see and switch every customer', async () => {
     const wrapper = mountPanel('ordinary-sales-user')
@@ -222,6 +260,47 @@ describe('QuoteCenterPanel customer visibility', () => {
     expect(wrapper.find('[data-testid="yinhui-draft"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('当前厂区尚未配置报客映射')
     wrapper.unmount()
+  })
+  it('recovers a Dickie batch after failed import and invalidates removed products before export', async () => {
+    const wrapper = mountPanel('ordinary-sales-user')
+    await wrapper.get('[data-testid="customer-tab-dicky"]').trigger('click')
+    expect(wrapper.get('[data-testid="dickie-direct-handoff"]').text()).toContain('上方交接池接收并转换')
+    const source = (id: string) => {
+      const mapping = createDickieMapping()
+      mapping.item_number = id; mapping.item_name = { zh: id, en: id }; mapping.quote_date = '2026-09-21'
+      return combineDickieV2([{ sourceFileName: `${id}.xlsx`, sourceBuffer: new ArrayBuffer(0), summarySheetName: '总表', clientName: 'Dickie', quoteDate: new Date(), sheets: [], v2Data: { products: [{ identity: id, mapping, outerPack: 12, dimensions: '1 × 2 × 3', cartonDimensions: '10 × 20 × 30', cartonCbm: .006, offers: [{ label: { zh: '正常', en: 'Normal' }, remark: { zh: '', en: '' }, moq: '5000 pcs', prices: [10, 11, 12] }], molds: [] }] } }])
+    }
+    const spy = vi.spyOn(dickieConverter, 'convertDickyInternalQuote')
+    const button = (name: string) => wrapper.findAll('button').find(b => b.text() === name)!
+    const upload = async (name: string) => {
+      const file = new File([], `${name}.xlsx`)
+      Object.defineProperty(file, 'arrayBuffer', { value: async () => new ArrayBuffer(0) })
+      const input = wrapper.get('[data-testid="quote-import-input"]')
+      Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+      await input.trigger('change'); await flushPromises()
+    }
+    try {
+      for (const id of ['DEMO-A', 'DEMO-B']) {
+        spy.mockReturnValueOnce(source(id))
+        await upload(id)
+        await button('加入 Dickie 合并清单').trigger('click')
+      }
+      spy.mockImplementationOnce(() => { throw new Error('无效文件') })
+      await upload('invalid')
+      expect(button('预览合并报价').attributes('disabled')).toBeUndefined()
+      await button('预览合并报价').trigger('click')
+      expect(button('输出报客价 Excel')).toBeDefined()
+      expect(wrapper.get('[data-testid="dickie-offer-preview"]').text()).toContain('20 柜 HKD')
+      expect(wrapper.text()).not.toContain('内部价合计')
+      await button('移除').trigger('click')
+      expect(button('输出报客价 Excel')).toBeUndefined()
+      await button('预览合并报价').trigger('click')
+      expect(wrapper.text()).not.toContain('DEMO-A')
+      expect(button('输出报客价 Excel')).toBeDefined()
+      await button('清空清单').trigger('click')
+      expect(button('输出报客价 Excel')).toBeUndefined()
+      expect(wrapper.text()).not.toContain('DEMO-B')
+    } finally { spy.mockRestore(); wrapper.unmount() }
   })
 
   it.each(['huakang-b', 'huakang-c', 'huakang-d', 'huadeng'] as const)(

@@ -37,7 +37,7 @@ const metrics = computed(() => {
 <template>
   <SalesModuleWorkbench
     title="客价转换台"
-    description="选择客户、导入内部报价 Excel，并按客户模板输出报客价文件与版本差异。"
+    description="接收内部报价台已放行的报价，按客户映射核对并输出报客价。"
     badge="客户报价转换"
     search-placeholder="搜索客户、文件或导出版本"
     :metrics="metrics"
