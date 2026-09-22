@@ -2,7 +2,7 @@
 
 ## 边界
 
-独立前缀 `/api/spray-operations`；实现入口 `backend/app/api/spray_operations.py`，请求模型 `services/spray_ops/schemas.py`。应用 OpenAPI 为字段级合同。52 张 `spray_ops_*` 表由迁移 `20260922_0118` 创建，旧 `spray_*` 表不读写、不重命名、不自动导入。
+独立前缀 `/api/spray-operations`；实现入口 `backend/app/api/spray_operations.py`，请求模型 `services/spray_ops/schemas.py`。应用 OpenAPI 为字段级合同。52 张 `spray_ops_*` 表由迁移 `20260922_0119` 创建，旧 `spray_*` 表不读写、不重命名、不自动导入。
 
 每次请求验证登录身份、当前授权和明确执行工厂。工厂只接受 `huaxing / huadeng / huakang-a / huakang-b`，其他值返回 422，不回退。所有授权模式均执行真实授权；前端隐藏按钮不是授权机制。
 

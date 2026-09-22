@@ -7,8 +7,8 @@ can exist; operational rollback is SPRAY_OPS_ENABLED=false.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20260922_0118"
-down_revision = "20260917_0117"
+revision = "20260922_0119"
+down_revision = "20260922_0118"
 branch_labels = None
 depends_on = None
 

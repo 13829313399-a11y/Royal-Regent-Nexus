@@ -3,6 +3,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { parseP4InternalQuoteArtifact, type P4InternalQuoteArtifact } from './p4Artifact'
 import { convertDickieV2, createDickieV2Workbook, type DickieV2QuoteData } from './dickieV2'
 import { extractYinhuiProductImage } from './yinhuiTemplate'
+import { assertPricingCustomer, pricingMaterial, type CustomerPricingSettings } from './pricingSettings'
 
 type DetailCompareStatus = '上调' | '下调' | '持平'
 
@@ -74,6 +75,7 @@ export interface DickyP4MoldRow { projectNameEn: string; moldNo: string; partsEn
 export interface DickyP4QuoteData { clientName: string; quoteDate: string; attention: string; revision: string; fromName: string; projectNameEn: string; firstShotTime: string; finishTime: string; productRows: DickyP4ProductQuoteRow[]; remarkLines: DickyP4RemarkLine[]; materialPricesHkd: DickyP4MaterialPrice[]; moldRows: DickyP4MoldRow[] }
 
 export interface DickyConversionResult {
+  pricing?: CustomerPricingSettings
   sourceFileName: string
   sourceBuffer: ArrayBuffer
   summarySheetName: string
@@ -434,10 +436,11 @@ function buildDetailRows(rows: XlsxCellValue[][], sheetId: string, sheetName: st
   return details
 }
 
-export function convertDickyInternalQuote(buffer: ArrayBuffer, sourceFileName: string): DickyConversionResult {
+export function convertDickyInternalQuote(buffer: ArrayBuffer, sourceFileName: string, pricing?: CustomerPricingSettings): DickyConversionResult {
+  assertPricingCustomer(pricing, 'dicky')
   const workbook = parseXlsxWorkbook(buffer)
   if (workbook.sheets.some(s => s.name === '审批与版本' || s.name === '结构化数据')) {
-    const result = convertDickyP4InternalQuote(parseP4InternalQuoteArtifact(buffer), sourceFileName)
+    const result = convertDickyP4InternalQuote(parseP4InternalQuoteArtifact(buffer), sourceFileName, pricing)
     if (result.v2Data) result.v2Data.products[0]!.image = extractYinhuiProductImage(buffer, '报价明细')
     return result
   }
@@ -451,6 +454,7 @@ export function convertDickyInternalQuote(buffer: ArrayBuffer, sourceFileName: s
   return {
     sourceFileName,
     sourceBuffer: buffer.slice(0),
+    pricing,
     summarySheetName: summarySheet.name,
     clientName,
     quoteDate,
@@ -499,10 +503,12 @@ function p4RequiredText(value: unknown, message: string, englishOnly = false) {
 export function convertDickyP4InternalQuote(
   artifact: P4InternalQuoteArtifact,
   sourceFileName: string,
+  pricing?: CustomerPricingSettings,
 ): DickyConversionResult {
+  assertPricingCustomer(pricing, 'dicky')
   const customerFields = p4Object(artifact.sections.sales.payload.customer_quote_fields)
   const dickie = p4Object(customerFields.dickie)
-  if (p4Object(dickie.mapping).version === 'dickie-v2') return convertDickieV2(artifact, sourceFileName)
+  if (p4Object(dickie.mapping).version === 'dickie-v2') return convertDickieV2(artifact, sourceFileName, pricing)
   const clientName = p4RequiredText(dickie.client_name, '缺少 Client')
   const quoteDateText = p4RequiredText(dickie.quote_date, '缺少 Quote Date')
   const quoteDate = new Date(`${quoteDateText}T00:00:00`)
@@ -544,7 +550,7 @@ export function convertDickyP4InternalQuote(
   if (rawMaterialPrices.length !== 4) throw new Error('Dickie 直转被阻断：Plastic Quotation 必须完整填写 4 项材料价')
   const materialPricesHkd = rawMaterialPrices.map<DickyP4MaterialPrice>((row, index) => ({
     material: p4RequiredText(row.material, `材料价第 ${index + 1} 行缺少 Type`),
-    priceHkdLb: p4Positive(row.price_hkd_lb, `材料价第 ${index + 1} 行 Cost 必须大于 0`),
+    priceHkdLb: configuredDickieMaterial(pricing, p4Text(row.material), p4Positive(row.price_hkd_lb, `材料价第 ${index + 1} 行 Cost 必须大于 0`)),
   }))
 
   const rawMolds = p4Rows(artifact.sections.engineering.payload.molds)
@@ -599,6 +605,7 @@ export function convertDickyP4InternalQuote(
       details,
     }],
     p4QuoteData,
+    pricing,
   }
 }
 
@@ -1384,6 +1391,7 @@ function buildDickyP4SourceWorkbook(data: DickyP4QuoteData, templateBuffer: Arra
 function createDickyCustomerQuoteFromSource(
   sourceBuffer: ArrayBuffer | Uint8Array,
   fastP4 = false,
+  pricing?: CustomerPricingSettings,
 ) {
   const zip = unzipSync(new Uint8Array(sourceBuffer))
   const sheets = resolveWorksheetRefs(zip)
@@ -1414,6 +1422,27 @@ function createDickyCustomerQuoteFromSource(
     quotationXml,
     buildQuotationPatches(summaryXml, quotationXml, sharedStrings, workbookCells),
   )))
+
+  if (pricing) {
+    // Only update the explicitly labelled resin-price block on customer sheets.
+    for (const sheet of [summarySheet, quotationSheet]) {
+      const xml = getZipText(zip, sheet.path)
+      const cells = createCellMap(xml)
+      const patches: DickyCellPatch[] = []
+      for (const cell of cells.values()) {
+        const header = resolveCellText(cell, sharedStrings, workbookCells)
+        if (!/^(?:Type|料型)$/i.test(header.trim())) continue
+        const { columnName, rowNumber } = parseCellRef(cell.ref)
+        if (columnName !== 'B' && columnName !== 'E') continue
+        const priceColumn = columnName === 'B' ? 'C' : 'F'
+        for (let row = rowNumber + 1; row <= rowNumber + 2; row++) {
+          const material = resolveCellText(cells.get(`${columnName}${row}`), sharedStrings, workbookCells).trim()
+          if (material) patches.push({ ref: `${priceColumn}${row}`, value: configuredDickieMaterial(pricing, material, 0) })
+        }
+      }
+      zip[sheet.path] = strToU8(applyCellPatches(xml, patches))
+    }
+  }
 
   if (zip['xl/workbook.xml']) {
     zip['xl/workbook.xml'] = strToU8(forceWorkbookRecalculation(getZipText(zip, 'xl/workbook.xml')))
@@ -1446,10 +1475,17 @@ export function createDickyCustomerQuoteWorkbook(
     return createDickyCustomerQuoteFromSource(
       buildDickyP4SourceWorkbook(result.p4QuoteData, templateBuffer),
       true,
+      result.pricing,
     )
   }
 
-  return createDickyCustomerQuoteFromSource(result.sourceBuffer)
+  return createDickyCustomerQuoteFromSource(result.sourceBuffer, false, result.pricing)
+}
+
+function configuredDickieMaterial(pricing: CustomerPricingSettings | undefined, material: string, legacy: number) {
+  const price = pricingMaterial(pricing, material, 'HKD', 'lb', legacy)
+  if (price === null) throw new Error(`Dickie 客户料价未配置：${material}`)
+  return price
 }
 
 export function buildDickyCustomerQuoteFileName(result: DickyConversionResult) {

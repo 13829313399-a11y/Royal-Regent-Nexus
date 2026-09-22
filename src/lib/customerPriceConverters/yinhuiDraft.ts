@@ -1,3 +1,4 @@
+import type { CustomerPricingSettings } from './pricingSettings'
 import { convertYinhuiInternalQuote, parseYinhuiMoq, type YinhuiConversionResult, type YinhuiSourceOverride } from './yinhui'
 import { readYinhuiSource, isYinhuiToolPlanSheet, yinhuiToolIdentityColumns } from './yinhuiSource'
 
@@ -52,9 +53,9 @@ function toolCandidates(buffer: ArrayBuffer, mappings: YinhuiHeaderMapping[] = [
   return candidates
 }
 
-export function createYinhuiDraft(buffer: ArrayBuffer, sourceFileName: string, overrides: YinhuiSourceOverride[] = [], headerMappings: YinhuiHeaderMapping[] = []): YinhuiDraft {
+export function createYinhuiDraft(buffer: ArrayBuffer, sourceFileName: string, overrides: YinhuiSourceOverride[] = [], headerMappings: YinhuiHeaderMapping[] = [], pricing?: CustomerPricingSettings): YinhuiDraft {
   if (buffer.byteLength > MAX_SOURCE_BYTES) throw new Error('银辉草稿原文件不能超过 40 MB')
-  const result = convertYinhuiInternalQuote(buffer, sourceFileName, { draft: true, overrides })
+  const result = convertYinhuiInternalQuote(buffer, sourceFileName, { draft: true, overrides, pricing })
   return { buffer, sourceFileName, overrides, result, candidates: toolCandidates(buffer, headerMappings), headerMappings }
 }
 
@@ -71,7 +72,7 @@ export function correctYinhuiDraft(draft: YinhuiDraft, changes: YinhuiSourceOver
     if (!allowed.has(key)) throw new Error('只能补正当前问题清单列出的原表字段')
     overrides.set(key, change)
   }
-  return createYinhuiDraft(draft.buffer, draft.sourceFileName, [...overrides.values()], draft.headerMappings)
+  return createYinhuiDraft(draft.buffer, draft.sourceFileName, [...overrides.values()], draft.headerMappings, draft.result.pricing)
 }
 
 export function setYinhuiDraftMoq(result: YinhuiConversionResult, value: unknown) {
@@ -111,7 +112,7 @@ export function saveYinhuiDraft(draft: YinhuiDraft): string {
     source: encode(draft.buffer), overrides: draft.overrides, headerMappings: draft.headerMappings || [], bomLanguage: 'source', review: reviewValues(draft.result) })
 }
 
-export function loadYinhuiDraft(content: string): YinhuiDraft {
+export function loadYinhuiDraft(content: string, pricing?: CustomerPricingSettings): YinhuiDraft {
   if (content.length > MAX_SOURCE_BYTES * 1.5) throw new Error('银辉草稿文件过大')
   const saved = record(JSON.parse(content))
   if (saved.kind !== 'yinhui-import-draft' || saved.version !== 1 || saved.factory !== 'huaxing' || saved.customer !== 'yinhui'
@@ -120,7 +121,7 @@ export function loadYinhuiDraft(content: string): YinhuiDraft {
   if (binary.length > MAX_SOURCE_BYTES) throw new Error('银辉草稿原文件不能超过 40 MB')
   const buffer = Uint8Array.from(binary, c => c.charCodeAt(0)).buffer
   // Reparse the source and replay only current, identified corrections; never trust saved costs or issues.
-  let draft = createYinhuiDraft(buffer, saved.sourceFileName)
+  let draft = createYinhuiDraft(buffer, saved.sourceFileName, [], [], pricing)
   if (saved.headerMappings !== undefined) {
     if (!Array.isArray(saved.headerMappings) || saved.headerMappings.length > 12) throw new Error('模具表头映射无效')
     for (const value of saved.headerMappings) {

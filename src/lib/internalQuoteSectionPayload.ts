@@ -193,6 +193,7 @@ export interface ElectronicSummary {
 }
 
 export interface InjectionRow extends Omit<QuotePricingMetadata, 'markup_override'> {
+  buzzbee_material?: string
   engineering_source_key?: string
   engineering_synced_fields?: string[]
   engineering_sync_disabled?: boolean
@@ -473,7 +474,7 @@ export interface ThreeSixtyCustomerQuoteFields {
   first_etd: string
   freight_route_key: string
 }
-export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[] }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields; three_sixty: ThreeSixtyCustomerQuoteFields }
+export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[]; template_profile?: string; notes?: string }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields; three_sixty: ThreeSixtyCustomerQuoteFields }
 export interface SalesMarkupTier {
   moq: number
   markup_x: number
@@ -1631,6 +1632,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     return {
       injection_loss_rate_percent: injectionLossRate,
       injection_lines: rows(source.injection_lines).map((row) => ({
+        buzzbee_material: textValue(row.buzzbee_material),
         ...importBatchMetadata(row),
         ...pricingMetadata(row, false),
         engineering_source_key: textValue(row.engineering_source_key),
@@ -1893,6 +1895,8 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     } : {}),
     customer_quote_fields: {
       buzzbee: {
+        template_profile: textValue(objectValue(objectValue(source.customer_quote_fields).buzzbee).template_profile) || 'standard',
+        notes: textValue(objectValue(objectValue(source.customer_quote_fields).buzzbee).notes),
         color_box_tiers: rows(objectValue(objectValue(source.customer_quote_fields).buzzbee).color_box_tiers)
           .slice(0, 2)
           .map((row) => ({ quote_price_hkd: numberValue(row.quote_price_hkd), fsc_price_hkd: numberValue(row.fsc_price_hkd), moq: textValue(row.moq) })),

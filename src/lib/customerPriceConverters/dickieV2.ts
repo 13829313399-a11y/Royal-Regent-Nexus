@@ -1,3 +1,4 @@
+import { assertPricingCustomer, type CustomerPricingSettings } from './pricingSettings'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { DICKIE_FIXED_MATERIALS, DICKIE_FIXED_REMARKS, normalizeDickieMapping, normalizeDickieMold, type DickieBilingual, type DickieMapping } from '../dickieQuote'
 import { createXlsxWorkbook, type XlsxCellInput, type XlsxOutputSheet } from './xlsxLite'
@@ -15,7 +16,7 @@ export interface DickieMappedProduct {
   identity: string; mapping: DickieMapping; outerPack: number; dimensions: string; cartonDimensions: string
   cartonCbm: number; offers: DickieMappedOffer[]; molds: DickieMappedMold[]; image?: DickieProductImage
 }
-export interface DickieV2QuoteData { products: DickieMappedProduct[] }
+export interface DickieV2QuoteData { products: DickieMappedProduct[]; pricing?: CustomerPricingSettings }
 const obj = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
 const list = (v: unknown) => Array.isArray(v) ? v.map(obj) : []
 const txt = (v: unknown) => String(v ?? '').trim()
@@ -61,7 +62,8 @@ function imageExtent(image: DickieProductImage, maxWidth: number, maxHeight: num
   return { cx: Math.round(width * scale), cy: Math.round(height * scale) }
 }
 
-export function convertDickieV2(artifact: P4InternalQuoteArtifact, sourceFileName: string): DickyConversionResult {
+export function convertDickieV2(artifact: P4InternalQuoteArtifact, sourceFileName: string, pricing?: CustomerPricingSettings): DickyConversionResult {
+  assertPricingCustomer(pricing, 'dicky')
   const sales = artifact.sections.sales.payload
   const mapping = normalizeDickieMapping(obj(obj(sales.customer_quote_fields).dickie).mapping)
   if (!mapping) fail('请在内部报价台启用 Dickie 报客资料')
@@ -146,20 +148,27 @@ export function convertDickieV2(artifact: P4InternalQuoteArtifact, sourceFileNam
     if (!molds.length) fail('已启用模具报价，但未勾选模具')
   }
   const product: DickieMappedProduct = { identity: `${txt(handoff.quote_id)}:${artifact.versionLabel}`, mapping, outerPack, dimensions, cartonDimensions: dimText(cartonDims), cartonCbm: Number((cartonDims.reduce((a, b) => a * b, 1) / 1e6).toFixed(4)), offers, molds }
-  return resultFromData({ products: [product] }, sourceFileName)
+  return resultFromData({ products: [product], pricing }, sourceFileName)
 }
 
 function resultFromData(data: DickieV2QuoteData, sourceFileName: string): DickyConversionResult {
   const details = data.products.flatMap((p, i) => p.offers.map((o, j) => ({ id: `${i}:${j}`, sheetId: 'dickie-v2', sheetName: 'Quotation', itemNo: p.mapping.item_number,
     description: `${p.mapping.item_name.zh} / ${o.label.zh} / MOQ ${o.moq} / 40柜 ${o.prices[0].toFixed(1)} · 20柜 ${o.prices[1].toFixed(1)} · 散货 ${o.prices[2].toFixed(1)}`,
     internalPriceHkd: 0, customerPriceHkd: o.prices[0], previousCustomerPriceHkd: o.prices[0], differenceHkd: 0, marginBand: '—', compareStatus: '持平' as const })))
-  return { sourceFileName, sourceBuffer: new ArrayBuffer(0), summarySheetName: '总表', clientName: data.products[0]!.mapping.client_name,
+  return { sourceFileName, pricing: data.pricing, sourceBuffer: new ArrayBuffer(0), summarySheetName: '总表', clientName: data.products[0]!.mapping.client_name,
     quoteDate: new Date(`${data.products[0]!.mapping.quote_date}T00:00:00`), v2Data: data,
     sheets: [{ id: 'dickie-v2', name: 'Quotation / 总表', sourceFileName, rowCount: details.length, totalInternalHkd: 0, totalCustomerHkd: details.reduce((n, d) => n + d.customerPriceHkd, 0), details }] }
 }
 
 export function combineDickieV2(results: DickyConversionResult[]): DickyConversionResult {
   if (!results.length || results.some(r => !r.v2Data)) fail('合并只接受新版 Dickie 放行报价')
+  const pricing = results[0]!.pricing
+  const pricingIdentity = (value: CustomerPricingSettings | undefined) => value ? JSON.stringify({
+    factory: value.factory_id, customer: value.customer_id, revision: value.revision,
+    materials: [...value.materials].sort((a, b) => a.material.localeCompare(b.material)),
+    rates: Object.entries(value.rates).sort(), texts: Object.entries(value.texts).sort(),
+  }) : ''
+  if (results.some(r => pricingIdentity(r.pricing) !== pricingIdentity(pricing))) fail('合并报价必须使用相同的客户基础信息快照')
   const products = results.flatMap(r => r.v2Data!.products)
   const header = products[0]!.mapping
   const keys = ['company', 'client_name', 'attention', 'from_name', 'quote_date', 'revision', 'quotation_kind'] as const
@@ -169,7 +178,14 @@ export function combineDickieV2(results: DickyConversionResult[]): DickyConversi
     if (ids.has(p.identity)) fail('同一报价版本不能重复合并')
     ids.add(p.identity)
   }
-  return resultFromData({ products }, 'Dickie-Combined-Quotation.xlsx')
+  const combinedPricing = pricing ? {
+    ...pricing,
+    snapshot_ids: [...new Set(results.flatMap(result => [
+      ...(result.pricing?.snapshot_id ? [result.pricing.snapshot_id] : []),
+      ...(result.pricing?.snapshot_ids ?? []),
+    ]))],
+  } : undefined
+  return resultFromData({ products, pricing: combinedPricing }, 'Dickie-Combined-Quotation.xlsx')
 }
 
 /** Original Revell customer template styles, isolated from all source quotation data. */
@@ -285,9 +301,10 @@ function customerSheet(data: DickieV2QuoteData, lang: 'en' | 'zh', styles: Retur
   note(DICKIE_FIXED_REMARKS[2]![lang], 20)
   note(en ? 'Plastic Quotation(HK$/LB):' : '按现如下料价报价(HK$/LB)：', 21)
   add(22, { B: en ? 'Type' : '料型', C: en ? 'Cost' : '料价', E: en ? 'Type' : '料型', F: en ? 'Cost' : '料价' })
-  for (let i = 0; i < 2; i++) {
-    const left = DICKIE_FIXED_MATERIALS[i * 2]!, right = DICKIE_FIXED_MATERIALS[i * 2 + 1]!
-    add(23 + i, { B: left.material, C: left.price, E: right.material, F: right.price })
+  const materials = data.pricing ? data.pricing.materials.filter(row => row.currency === 'HKD' && row.unit === 'lb') : DICKIE_FIXED_MATERIALS
+  for (let i = 0; i < Math.ceil(materials.length / 2); i++) {
+    const left = materials[i * 2]!, right = materials[i * 2 + 1]
+    add(23 + i % 2, { B: left.material, C: left.price, E: right?.material ?? '', F: right?.price ?? '' })
   }
   note(DICKIE_FIXED_REMARKS[3]![lang], 25, false)
   note(DICKIE_FIXED_REMARKS[4]![lang], 26)

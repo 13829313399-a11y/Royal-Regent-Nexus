@@ -31,6 +31,7 @@ export interface P4InternalQuoteSection {
 }
 
 export interface P4InternalQuoteArtifact {
+  quoteDate?: string
   templateVersion: string
   structuredDataSchemaVersion: string
   quoteNo: string
@@ -47,6 +48,7 @@ export interface P4InternalQuoteArtifact {
 }
 
 export interface P4ArtifactMetadata {
+  quoteDate?: string
   quoteNo?: string
   versionLabel?: string
   customer?: string
@@ -350,6 +352,7 @@ export function parseP4InternalQuoteArtifact(
   return {
     templateVersion,
     structuredDataSchemaVersion,
+    quoteDate: text(handoffMetadata.quoteDate) || text(customerMapping?.quote_date as XlsxCellValue),
     quoteNo: text(handoffMetadata.quoteNo) || text(customerMapping?.quote_no as XlsxCellValue) || (isLegacySummaryLayout ? text(summary.rows[1]?.[1]) : ''),
     versionLabel: text(handoffMetadata.versionLabel) || text(customerMapping?.version_label as XlsxCellValue) || (isLegacySummaryLayout ? text(summary.rows[1]?.[3]) : ''),
     customer: text(handoffMetadata.customer) || text(customerMapping?.customer as XlsxCellValue) || (isLegacySummaryLayout ? text(summary.rows[1]?.[5]) : ''),

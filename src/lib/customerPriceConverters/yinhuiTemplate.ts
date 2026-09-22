@@ -1,5 +1,6 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { createXlsxWorkbook, excelDateSerial, parseXlsxWorkbook } from './xlsxLite'
+import { pricingRate } from './pricingSettings'
 import { validateYinhuiExport, yinhuiTotals, yinhuiMaterialPrice, YINHUI_HKD_USD, type YinhuiConversionResult, type YinhuiCostRow } from './yinhui'
 
 export interface YinhuiProductImage { bytes: Uint8Array; extension: 'png' | 'jpg' }
@@ -391,7 +392,7 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
   const date = excelDateSerial(new Date(`${d.quoteDate}T12:00:00Z`))
   const summary = writer(zip, 0); const s = summary.set
   s('C3', 'Royal Regent Products International Ltd'); s('H3', date)
-  s('C4', d.productName); s('C5', d.model); s('C6', pricePending ? [d.stage, 'PRICE PENDING'].filter(Boolean).join(' / ') : d.stage); s('H5', d.packaging); s('H6', d.moq); s('K11', YINHUI_HKD_USD)
+  s('C4', d.productName); s('C5', d.model); s('C6', pricePending ? [d.stage, 'PRICE PENDING'].filter(Boolean).join(' / ') : d.stage); s('H5', d.packaging); s('H6', d.moq); s('K11', pricingRate(d.pricing, 'hkd_usd', YINHUI_HKD_USD))
   ;[total.plastic, total.mechanical, total.electronic, total.fabric, total.labour, 0].forEach((v, i) => s(`H${13 + i}`, v))
   for (let r = 20; r <= 25; r++) s(`H${r}`, 0)
   s('H27', total.packaging); s('H28', d.packagingLaborHkd); s('H29', 0)

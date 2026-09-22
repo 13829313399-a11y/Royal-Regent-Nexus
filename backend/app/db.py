@@ -706,6 +706,7 @@ def init_db() -> None:
         customer_order,  # noqa: F401
         customer_order_ledger,  # noqa: F401
         internal_quote,  # noqa: F401
+        customer_price_settings,  # noqa: F401
         injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
@@ -772,7 +773,7 @@ def init_db() -> None:
                     columns = {column["name"] for column in inspector.get_columns(name)}
                     missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
             if missing:
-                raise RuntimeError("喷油模块需要显式迁移至 20260922_0118；禁止自动修改已有业务库。缺少：" + ", ".join(missing))
+                raise RuntimeError("喷油模块需要显式迁移至 20260922_0119；禁止自动修改已有业务库。缺少：" + ", ".join(missing))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             if (settings.uv_printing_enabled or not name.startswith("uv_"))
                             and (settings.spray_ops_enabled or not name.startswith("spray_ops_"))])

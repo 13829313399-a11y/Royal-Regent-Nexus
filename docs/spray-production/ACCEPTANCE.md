@@ -1,12 +1,12 @@
 # 本地实现与验收证据
 
-核验日期：2026-09-22。当前交付为工作树中的核心重建实现；**整份开发资料尚未全部验收，未生产启用**。原始资料只读，实际业务数据库、5173/8000服务、历史喷油迁移和表均未因本轮开发更改。
+核验日期：2026-09-22。当前交付为核心重建实现；**整份开发资料尚未全部验收，未生产启用**。原始资料只读，实际业务数据库、5173/8000服务、历史喷油迁移和表均未因本轮开发更改。
 
 ## 实现位置
 
 - `src/features/spray-production/`：独立壳、七工作区、订单追踪、排期、报工/工时、材料、月结、人工导入及上下文隔离。
 - `backend/app/api/spray_operations.py`、`backend/app/services/spray_ops/`：类型化命令、权限、生产/排期/交收/材料/工资/月结、来源解析和冻结导出。
-- `backend/app/models/spray_ops.py`、`backend/alembic/versions/20260922_0118_spray_ops.py`：52张规范化新表、组合工厂外键、数量约束、迁移及启用检查。
+- `backend/app/models/spray_ops.py`、`backend/alembic/versions/20260922_0119_spray_ops.py`：52张规范化新表、组合工厂外键、数量约束、迁移及启用检查。
 - 现有文件仅接入路由、入口卡片、功能开关、ORM/迁移注册和权限目录；固定岗位不自动扩大授权。
 
 ## 自动验证
@@ -37,6 +37,14 @@ npm run test:unit -- src/views/__tests__/productionModuleEntry.spec.ts src/views
 - 失败为既有销售报价文案断言，期望 `优先从上方 P4 v2 交接池直接转换`。`productionModuleEntry.spec.ts` 和 `QuoteCenterPanel.vue` 均经 `git diff --exit-code HEAD -- ...` 验证未改变；本轮未修改无关销售模块以迎合该断言。
 
 迁移测试从前一head升级完整Alembic图，插入并保留旧喷油探针，核对旧表DDL/行数、52张新表、四厂协调行、重复升级、SQLite integrity/foreign_key结果。此测试不等于真实库迁移。
+
+### 合并主线后的补充验证
+
+合并客户报价主线后，喷油迁移调整为 `20260922_0119`，依赖保持原样的客户报价迁移 `20260922_0118`。迁移演练同时核对前一head全部既有表的DDL/行数，并确认客户报价探针仍保留；Alembic仅有一个head。权限目录为140个应用权限、133个业务权限，新喷油14权限仍不自动授予固定岗位。
+
+上述后端命令额外加入 `tests/test_auth_api.py tests/test_customer_price_settings.py tests/test_internal_quote_buzzbee_handoff.py`：**142 passed / 756.48秒**。另运行 `tests/test_iam_api.py -k system_position_get_contract_is_code_locked`：**1 passed / 21 deselected**。
+
+合并后构建通过（6.17秒），测试类型检查通过。前端另加入客户报价设置、来源面板、BuzzBee价格和其他报价转换器/客户范围测试：**65 passed / 1 skipped / 1 failed**；唯一失败仍为上文已有销售文案断言，相关测试和报价面板源码与主线一致。该既有失败没有作为喷油功能通过证据。
 
 ## 合成规模测试
 
@@ -83,6 +91,6 @@ $env:SPRAY_OPS_RUN_PERFORMANCE='1'
 - 多容量资源并发任务没有独立时间轴子泳道；全部错误/角色状态、200%真实浏览器缩放、屏幕阅读器、触屏及完整键盘等价流程未验收。
 - 工资、工序价、交收价、汇率、SKU换算、班次产能、费用、期初和权限仍需业务确认；跨币种统一利润未实现，覆盖度不证明现场无漏报。
 - 一项无关销售报价旧文案测试仍失败，详见上述命令结果。
-- 未执行真实业务库迁移、生产授权、生产启用、Git提交/推送或部署。本轮代码保持工作树状态。
+- 未执行真实业务库迁移、生产授权、生产启用或部署。Git交付不等于生产启用。
 
 启用和停用步骤见RUNBOOK；默认双开关关闭。上述限制解除前，不能把当前实现称为整包开发完成或正式财务验收通过。
