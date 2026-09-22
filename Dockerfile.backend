@@ -37,6 +37,7 @@ ENV DOCUMENT_TRANSLATION_MODEL_DIR=/app/backend/models/document-translation \
 
 COPY backend/ ./
 COPY src/ /app/src/
+COPY shared/ /app/shared/
 
 # Validate the packaged application syntax without requiring a live database.
 RUN python -m compileall -q app

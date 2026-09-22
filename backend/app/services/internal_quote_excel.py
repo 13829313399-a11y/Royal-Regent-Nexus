@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v31"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v32"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -5644,6 +5644,15 @@ def build_internal_quote_workbook(
     if manifest.get("release_stage") == "p4_final_approved":
         from app.services.internal_quote_dickie import build_dickie_handoff
         customer_mapping = build_dickie_handoff(quote, sections, reference_snapshot or {}, cost_context or {})
+        if quote.factory_id == "huaxing" and quote.customer.strip().lower() == "buzzbee":
+            customer_mapping = {
+                "version": "buzzbee-v2", "factory_id": quote.factory_id,
+                "quote_no": quote.quote_no, "version_label": quote.version_label,
+                "customer": quote.customer, "product_name": quote.product_name,
+                "quote_date": str(quote.created_at)[:10],
+                "formula_version": quote.formula_version,
+                "reference_snapshot_id": quote.reference_snapshot_id,
+            }
         _build_structured_data_sheet(workbook, quote, sections, reference_snapshot or {}, customer_mapping)
     _build_approval_sheet(workbook, quote, sections, manifest)
     for technical_sheet in workbook.worksheets[1:]:

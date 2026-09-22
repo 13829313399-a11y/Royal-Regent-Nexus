@@ -20,10 +20,17 @@ vi.mock('@/api/customerPriceArtifact', () => ({
     download: vi.fn(),
   },
 }))
+vi.mock('@/api/customerPricingSettings', () => ({ customerPricingSettingsApi: {
+  snapshot: vi.fn(async (factory_id: string, customer_id: string) => {
+    const definitions = JSON.parse(readFileSync('shared/customerPriceDefaults.json', 'utf8'))[customer_id]
+    return { factory_id, customer_id, revision: 0, snapshot_id: 'test-pricing', materials: definitions.materials, rates: Object.fromEntries(Object.entries(definitions.rates).map(([key, row]) => [key, (row as { value: number }).value])), texts: {}, updated_at: '', updated_by_name: '' }
+  }), get: vi.fn(), save: vi.fn(),
+} }))
 vi.mock('@/api/quoteTranslation', () => ({ translateQuoteDescriptions: vi.fn(async () => { throw new Error('Test translation unavailable') }) }))
 
 const customerPricePermissions = [
   'customer_price:read',
+  'customer_price:settings_read',
   'customer_price:import_internal_quote',
   'customer_price:export_customer_quote',
   'customer_price:compare',
@@ -225,6 +232,7 @@ describe('QuoteCenterPanel customer visibility', () => {
     Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
 
     await input.trigger('change')
+    await flushPromises()
 
     expect(wrapper.get('[data-testid="quote-import-error"]').text()).toBe(
       '导入失败：360 当前支持 .xlsx P4 最终放行文件或原专用多 Sheet 工作簿，旧 .xls 请先另存为 .xlsx',

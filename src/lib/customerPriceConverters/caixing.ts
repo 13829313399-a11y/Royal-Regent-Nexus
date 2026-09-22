@@ -1,3 +1,4 @@
+import { pricingRate, assertPricingCustomer, type CustomerPricingSettings } from './pricingSettings'
 import {
   XLSX_STYLE,
   createXlsxWorkbook,
@@ -104,6 +105,7 @@ interface CaixingSummary {
 }
 
 interface CaixingQuoteData {
+  pricing?: CustomerPricingSettings
   metadata: CaixingQuoteMetadata
   injectionRows: CaixingInjectionRow[]
   costRows: CaixingCostRow[]
@@ -137,6 +139,7 @@ export interface CaixingConvertedSheet {
 }
 
 export interface CaixingConversionResult {
+  pricing?: CustomerPricingSettings
   sourceFileName: string
   productType: CaixingProductType
   sheets: CaixingConvertedSheet[]
@@ -541,6 +544,7 @@ function buildSummary(
   costRows: CaixingCostRow[],
   carton: CaixingCartonProfile,
   sprayingDetailTotal?: number | null,
+  pricing?: CustomerPricingSettings,
 ): CaixingSummary {
   const injectionMaterial = injectionTotal?.materialCostHkd || sumBy(injectionRows, (row) => row.materialCostHkd)
   const hasExplicitToolProcesses = injectionRows.some((row) => row.processType)
@@ -559,7 +563,7 @@ function buildSummary(
     (row) => row.costHkd,
   )
   const electronicMaterial = sumCustomerGroup(costRows, 'electronic')
-  const packingMultiplier = productType === 'plastic' ? 1 + CAIXING_PLASTIC_SCRAP_RATE : 1
+  const packingMultiplier = productType === 'plastic' ? 1 + pricingRate(pricing, 'plastic_scrap_rate', CAIXING_PLASTIC_SCRAP_RATE) : 1
   const packagingMaterial = roundMoney(
     sumCustomerGroup(costRows, 'packing') * packingMultiplier
     + (carton.cartonPrice && carton.pcsPerCarton
@@ -569,7 +573,7 @@ function buildSummary(
   const fabric = sumCustomerGroup(costRows, 'fabric')
   const purchasePartBase = sumCustomerGroup(costRows, 'purchase')
   const purchasePart = productType === 'plastic'
-    ? roundMoney(purchasePartBase * (1 + CAIXING_PLASTIC_SCRAP_RATE))
+    ? roundMoney(purchasePartBase * (1 + pricingRate(pricing, 'plastic_scrap_rate', CAIXING_PLASTIC_SCRAP_RATE)))
     : purchasePartBase
   const specialMaterial = sumCustomerGroup(costRows, 'special') + (productType === 'plush'
     ? sumBy(
@@ -587,7 +591,7 @@ function buildSummary(
   const rootingHair = sumCustomerGroup(costRows, 'rooting')
   const sewingHandfinish = sumCustomerGroup(costRows, 'sewing')
   const specialOffer = sumCustomerGroup(costRows, 'special_offer')
-  const markupRate = productType === 'plush' ? 0.17 : 0.16
+  const markupRate = productType === 'plush' ? pricingRate(pricing, 'plush_markup_rate', 0.17) : pricingRate(pricing, 'plastic_markup_rate', 0.16)
   const materialTotal = roundMoney(injectionMaterial + specialMaterial + electronicMaterial + purchasePart + packagingMaterial + fabric)
   const processTotal = roundMoney(moldingCasting + spraying + tampo + assemblyLabor + packoutLabor + rootingHair + sewingHandfinish + specialOffer)
   const exFactoryHkd = round(materialTotal * (1 + markupRate) + processTotal * (1 + markupRate), 2)
@@ -615,9 +619,9 @@ function buildSummary(
       total: processTotal,
     },
     exFactoryHkd,
-    exFactoryUsd: round(exFactoryHkd / 7.8, 3),
-    domesticTransportationHkd: roundMoney((carton.cube || 0) * 2.11 / Math.max(carton.pcsPerCarton || 1, 1)),
-    fobTransportationHkd: roundMoney((carton.cube || 0) * 5.93 / Math.max(carton.pcsPerCarton || 1, 1)),
+    exFactoryUsd: round(exFactoryHkd / pricingRate(pricing, 'hkd_usd', 7.8), 3),
+    domesticTransportationHkd: roundMoney((carton.cube || 0) * pricingRate(pricing, 'domestic_freight_rate', 2.11) / Math.max(carton.pcsPerCarton || 1, 1)),
+    fobTransportationHkd: roundMoney((carton.cube || 0) * pricingRate(pricing, 'fob_freight_rate', 5.93) / Math.max(carton.pcsPerCarton || 1, 1)),
   }
 }
 
@@ -749,6 +753,7 @@ function parseCaixingSheet(
   sourceFileName: string,
   productType: CaixingProductType,
   sprayingDetailTotal?: number | null,
+  pricing?: CustomerPricingSettings,
 ) {
   const headerRow = findHeaderRow(rows)
   if (headerRow < 0) {
@@ -758,9 +763,10 @@ function parseCaixingSheet(
   const metadata = parseMetadata(rows, sheetName, sourceFileName, productType)
   const { injectionRows, total } = parseInjectionRows(rows, headerRow)
   const costRows = parseCostRows(rows, (total?.rowIndex ?? headerRow) + 1)
-  const summary = buildSummary(productType, injectionRows, total, costRows, metadata.carton, sprayingDetailTotal)
+  const summary = buildSummary(productType, injectionRows, total, costRows, metadata.carton, sprayingDetailTotal, pricing)
 
   return {
+    pricing,
     metadata,
     injectionRows,
     costRows,
@@ -1423,7 +1429,7 @@ function getTemplateMaterialCode(material: string, productType: CaixingProductTy
   return codes[normalizeMaterialName(material)] ?? 1
 }
 
-function buildPlasticTemplatePatches(data: CaixingQuoteData) {
+function buildPlasticTemplatePatches(data: CaixingQuoteData, pricing?: CustomerPricingSettings) {
   const patchesBySheet: Record<string, CaixingTemplateCellPatch[]> = {
     [CAIXING_PLASTIC_TEMPLATE_SHEETS.deco]: [],
     [CAIXING_PLASTIC_TEMPLATE_SHEETS.summary]: [],
@@ -1462,7 +1468,9 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
   formula(summarySheet, 'B6', metadata.carton.cube, 'IF(Packing!J25=0,"",Packing!G25*Packing!H25*Packing!I25/1728)')
   formula(summarySheet, 'B7', metadata.carton.pcsPerCarton, 'IF(Packing!J25=0,"",1/Packing!J25)')
   patch(summarySheet, 'G5', quoteDateSerial)
-  patch(summarySheet, 'H56', 7.8)
+  patch(summarySheet, 'H56', pricingRate(pricing, 'hkd_usd', 7.8))
+  patch(summarySheet, 'F32', pricingRate(pricing, 'domestic_freight_rate', 2.11))
+  patch(summarySheet, 'F34', pricingRate(pricing, 'fob_freight_rate', 5.93))
 
   ;[
     ['E11', summary.material.plasticParts, "'Tool Plan'!N69"],
@@ -1648,7 +1656,7 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
 
   patchPurchasedSection(electSheet, 8, 18, 'I19', 'SUM(I8:I18)', specialRows)
   patchPurchasedSection(electSheet, 21, 88, 'I89', 'SUM(I21:I88)', electronicRows)
-  patchPurchasedSection(purchaseSheet, 8, 25, 'I26', 'SUM(I8:I25)', purchaseRows, CAIXING_PLASTIC_SCRAP_RATE)
+  patchPurchasedSection(purchaseSheet, 8, 25, 'I26', 'SUM(I8:I25)', purchaseRows, pricingRate(pricing, 'plastic_scrap_rate', CAIXING_PLASTIC_SCRAP_RATE))
   patchPurchasedSection(fabricSheet, 8, 30, 'I31', 'SUM(I8:I30)', fabricRows)
 
   const nonCartonPackingRows = packingRows.filter((row) => !isCartonCostRow(row))
@@ -1657,7 +1665,7 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
   packingDataRows.forEach((rowNumber) => {
     clear(packingSheet, rowNumber, [2, 3, 4, 5, 6, 7, 8, 9, 11, 12])
     patch(packingSheet, `K${rowNumber}`, 'Pc')
-    patch(packingSheet, `M${rowNumber}`, CAIXING_PLASTIC_SCRAP_RATE)
+    patch(packingSheet, `M${rowNumber}`, pricingRate(pricing, 'plastic_scrap_rate', CAIXING_PLASTIC_SCRAP_RATE))
     formula(packingSheet, `N${rowNumber}`, 0, `L${rowNumber}*J${rowNumber}*(1+M${rowNumber})`)
   })
 
@@ -1667,8 +1675,8 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
     patch(packingSheet, `J${rowNumber}`, 1)
     patch(packingSheet, `K${rowNumber}`, 'Pc')
     patch(packingSheet, `L${rowNumber}`, cost)
-    patch(packingSheet, `M${rowNumber}`, CAIXING_PLASTIC_SCRAP_RATE)
-    formula(packingSheet, `N${rowNumber}`, roundMoney(cost * (1 + CAIXING_PLASTIC_SCRAP_RATE)), `L${rowNumber}*J${rowNumber}*(1+M${rowNumber})`)
+    patch(packingSheet, `M${rowNumber}`, pricingRate(pricing, 'plastic_scrap_rate', CAIXING_PLASTIC_SCRAP_RATE))
+    formula(packingSheet, `N${rowNumber}`, roundMoney(cost * (1 + pricingRate(pricing, 'plastic_scrap_rate', CAIXING_PLASTIC_SCRAP_RATE))), `L${rowNumber}*J${rowNumber}*(1+M${rowNumber})`)
   })
 
   patch(packingSheet, 'C25', null)
@@ -1678,11 +1686,11 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
   patch(packingSheet, 'J25', metadata.carton.pcsPerCarton ? 1 / metadata.carton.pcsPerCarton : null)
   patch(packingSheet, 'K25', 'Pc')
   patch(packingSheet, 'L25', metadata.carton.cartonPrice || null)
-  patch(packingSheet, 'M25', CAIXING_PLASTIC_SCRAP_RATE)
+  patch(packingSheet, 'M25', pricingRate(pricing, 'plastic_scrap_rate', CAIXING_PLASTIC_SCRAP_RATE))
   formula(
     packingSheet,
     'N25',
-    metadata.carton.pcsPerCarton ? roundMoney(metadata.carton.cartonPrice / metadata.carton.pcsPerCarton * (1 + CAIXING_PLASTIC_SCRAP_RATE)) : 0,
+    metadata.carton.pcsPerCarton ? roundMoney(metadata.carton.cartonPrice / metadata.carton.pcsPerCarton * (1 + pricingRate(pricing, 'plastic_scrap_rate', CAIXING_PLASTIC_SCRAP_RATE))) : 0,
     'L25*J25*(1+M25)',
   )
   formula(packingSheet, 'N53', summary.material.packagingMaterial, 'SUM(N7:N52)')
@@ -1690,7 +1698,7 @@ function buildPlasticTemplatePatches(data: CaixingQuoteData) {
   return patchesBySheet
 }
 
-function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: number[]) {
+function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: number[], pricing?: CustomerPricingSettings) {
   const patchesBySheet: Record<string, CaixingTemplateCellPatch[]> = {
     [CAIXING_PLUSH_TEMPLATE_SHEETS.deco]: [],
     [CAIXING_PLUSH_TEMPLATE_SHEETS.summary]: [],
@@ -1729,7 +1737,9 @@ function buildPlushTemplatePatches(data: CaixingQuoteData, decoNumberStyles?: nu
   formula(summarySheet, 'B6', metadata.carton.cube, 'IF(Packing!J24=0,"",Packing!G24*Packing!H24*Packing!I24/1728)')
   formula(summarySheet, 'B7', metadata.carton.pcsPerCarton, 'IF(Packing!J24=0,"",1/Packing!J24)')
   patch(summarySheet, 'G5', quoteDateSerial)
-  patch(summarySheet, 'H60', 7.8)
+  patch(summarySheet, 'H60', pricingRate(pricing, 'hkd_usd', 7.8))
+  patch(summarySheet, 'F36', pricingRate(pricing, 'domestic_freight_rate', 2.11))
+  patch(summarySheet, 'F38', pricingRate(pricing, 'fob_freight_rate', 5.93))
 
   ;[
     ['E11', summary.material.plasticParts, "'Tool Plan'!N67"],
@@ -1982,7 +1992,7 @@ function setSummaryLine(rows: XlsxCellInput[][], rowNumber: number, line: Summar
   setNumber(rows, rowNumber, 7, finalTotal ? finalCost / finalTotal : 0)
 }
 
-function buildSummarySheet(data: CaixingQuoteData): XlsxOutputSheet {
+function buildSummarySheet(data: CaixingQuoteData, pricing?: CustomerPricingSettings): XlsxOutputSheet {
   const rows: XlsxCellInput[][] = []
   const { metadata, summary } = data
   const materialLines: SummaryLine[] = [
@@ -2064,10 +2074,10 @@ function buildSummarySheet(data: CaixingQuoteData): XlsxOutputSheet {
 
   setCell(rows, exFactoryRow + 3, 0, 'FOR PLAYMATES TOYS REFERENCE ONLY :', XLSX_STYLE.bold)
   setCell(rows, exFactoryRow + 4, 4, 'Domestic Transportation Cost to Port @ Rate (HK$/Cu.Ft.) :')
-  setNumber(rows, exFactoryRow + 4, 5, 2.11)
+  setNumber(rows, exFactoryRow + 4, 5, pricingRate(pricing, 'domestic_freight_rate', 2.11))
   setNumber(rows, exFactoryRow + 4, 6, summary.domesticTransportationHkd)
   setCell(rows, exFactoryRow + 5, 4, 'FOB Transportation Cost to Port @ Rate (HK$/Cu.Ft.) :')
-  setNumber(rows, exFactoryRow + 5, 5, 5.93)
+  setNumber(rows, exFactoryRow + 5, 5, pricingRate(pricing, 'fob_freight_rate', 5.93))
   setNumber(rows, exFactoryRow + 5, 6, summary.fobTransportationHkd)
 
   return {
@@ -2440,7 +2450,9 @@ function p4DerivedCostRows(artifact: P4InternalQuoteArtifact, productType: Caixi
 export function convertCaixingP4InternalQuote(
   artifact: P4InternalQuoteArtifact,
   sourceFileName: string,
+  pricing?: CustomerPricingSettings,
 ): CaixingConversionResult {
+  assertPricingCustomer(pricing, 'caixing')
   const customerFields = p4Object(artifact.sections.sales.payload.customer_quote_fields)
   const caixing = p4Object(customerFields.caixing)
   const productTypeText = p4RequiredText(caixing.product_type, '缺少塑胶/毛绒产品类型')
@@ -2530,12 +2542,14 @@ export function convertCaixingP4InternalQuote(
     carton,
   }
   const quoteData: CaixingQuoteData = {
+    pricing,
     metadata,
     injectionRows,
     costRows,
-    summary: buildSummary(productType, injectionRows, null, costRows, carton),
+    summary: buildSummary(productType, injectionRows, null, costRows, carton, undefined, pricing),
   }
   return {
+    pricing,
     sourceFileName,
     productType,
     sheets: [convertSheet(quoteData, sourceFileName, 0)],
@@ -2546,7 +2560,9 @@ export function convertCaixingInternalQuote(
   buffer: ArrayBuffer,
   sourceFileName: string,
   productType: CaixingProductType,
+  pricing?: CustomerPricingSettings,
 ): CaixingConversionResult {
+  assertPricingCustomer(pricing, 'caixing')
   const workbook = parseXlsxWorkbook(buffer)
   const sheet = findConvertibleSheet(workbook)
   const quoteData = parseCaixingSheet(
@@ -2555,9 +2571,11 @@ export function convertCaixingInternalQuote(
     sourceFileName,
     productType,
     findSprayingDetailTotal(workbook),
+    pricing,
   )
 
   return {
+    pricing,
     sourceFileName,
     productType,
     sheets: [convertSheet(quoteData, sourceFileName, 0)],
@@ -2579,6 +2597,8 @@ export function createCaixingCustomerQuoteWorkbookFromTemplate(
   result: CaixingConversionResult,
   templateBuffer: ArrayBuffer | Uint8Array,
 ): Uint8Array {
+  const pricing = result.pricing
+
   const firstSheet = result.sheets[0]
   if (!firstSheet) {
     throw new Error('没有可输出的彩星报客数据')
@@ -2599,8 +2619,8 @@ export function createCaixingCustomerQuoteWorkbookFromTemplate(
     plushDecoNumberStyles = appended.indexes
   }
   const patchesBySheet = result.productType === 'plush'
-    ? buildPlushTemplatePatches(firstSheet.quoteData, plushDecoNumberStyles)
-    : buildPlasticTemplatePatches(firstSheet.quoteData)
+    ? buildPlushTemplatePatches(firstSheet.quoteData, plushDecoNumberStyles, pricing)
+    : buildPlasticTemplatePatches(firstSheet.quoteData, pricing)
   const templateSheets = result.productType === 'plush'
     ? CAIXING_PLUSH_TEMPLATE_SHEETS
     : CAIXING_PLASTIC_TEMPLATE_SHEETS
@@ -2627,6 +2647,8 @@ export function createCaixingCustomerQuoteWorkbookFromTemplate(
 }
 
 export function createCaixingCustomerQuoteWorkbook(result: CaixingConversionResult, templateBuffer?: ArrayBuffer | Uint8Array): Uint8Array {
+  const pricing = result.pricing
+
   const firstSheet = result.sheets[0]
   if (!firstSheet) {
     throw new Error('没有可输出的彩星报客数据')
@@ -2647,7 +2669,7 @@ export function createCaixingCustomerQuoteWorkbook(result: CaixingConversionResu
   const electRows = [...specialRows, ...electronicRows]
 
   const sheets: XlsxOutputSheet[] = [
-    buildSummarySheet(data),
+    buildSummarySheet(data, pricing),
     buildToolPlanSheet(data),
   ]
 

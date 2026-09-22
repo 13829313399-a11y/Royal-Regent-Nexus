@@ -1,3 +1,4 @@
+import { pricingRate, assertPricingCustomer, type CustomerPricingSettings } from './pricingSettings'
 import {
   XLSX_STYLE,
   createXlsxWorkbook,
@@ -78,6 +79,7 @@ interface DisneyDecoRow {
 }
 
 interface DisneyQuoteData {
+  pricing?: CustomerPricingSettings
   metadata: DisneyMetadata
   plastics: DisneyPlasticRow[]
   purchasedProductParts: DisneyPurchasedPartRow[]
@@ -136,6 +138,7 @@ export interface DisneyConvertedSheet {
 }
 
 export interface DisneyConversionResult {
+  pricing?: CustomerPricingSettings
   sourceFileName: string
   sheets: DisneyConvertedSheet[]
 }
@@ -462,6 +465,7 @@ function parsePlasticRows(
   rows: XlsxCellValue[][],
   molds: DisneyMoldRow[],
   metadata: DisneyMetadata,
+  pricing?: CustomerPricingSettings,
 ): DisneyPlasticRow[] {
   const headerRow = findInjectionHeaderRow(rows)
   if (headerRow < 0) {
@@ -519,7 +523,7 @@ function parsePlasticRows(
     const cavities = mold?.cavities || setsPerShot
     const up = mold?.up || setsPerShot
     const partsIncluded = safeDivide(cavities, up) || 1
-    const resinCostUsdKg = round(materialCosts.get(material) ?? toNumber(row[5]) * 1000 / 0.98 / 7.8, 2)
+    const resinCostUsdKg = round(materialCosts.get(material) ?? toNumber(row[5]) * 1000 / pricingRate(pricing, 'legacy_cost_divisor', 0.98) / pricingRate(pricing, 'hkd_usd', 7.8), 2)
     const machine = toText(row[6])
     const machineTons = Number(machine.match(/(\d+(?:\.\d+)?)\s*A/i)?.[1] ?? '')
     const matchedMachineRate = findMachineRate(machineRates, machine)
@@ -534,8 +538,8 @@ function parsePlasticRows(
     const moldingLaborCostUsd = safeDivide(laborRateUsdHr * cycleTimeSeconds, 3600 * up)
     const partSubtotalUsd = safeDivide(materialCostUsd + moldingLaborCostUsd, partsIncluded)
     const totalCostUsd = partSubtotalUsd * partsIncluded
-    const weeklyCapacity = safeDivide(up * 60 * 60 * 24 * 7 * 0.9, cycleTimeSeconds)
-    const internalCostUsd = roundUnit(toNumber(row[13]) + safeDivide(toNumber(row[9]), 0.98 * 7.8))
+    const weeklyCapacity = safeDivide(up * 60 * 60 * 24 * 7 * pricingRate(pricing, 'capacity_factor', 0.9), cycleTimeSeconds)
+    const internalCostUsd = roundUnit(toNumber(row[13]) + safeDivide(toNumber(row[9]), pricingRate(pricing, 'legacy_cost_divisor', 0.98) * pricingRate(pricing, 'hkd_usd', 7.8)))
 
     plasticRows.push({
       lineNo: plasticRows.length + 1,
@@ -665,16 +669,16 @@ function parsePurchasedParts(rows: XlsxCellValue[][]) {
   }
 }
 
-function parseLaborRows(rows: XlsxCellValue[][]): DisneyLaborRow[] {
+function parseLaborRows(rows: XlsxCellValue[][], pricing?: CustomerPricingSettings): DisneyLaborRow[] {
   const assemblyRows = parseCostRows(rows).filter((row) => row.category.includes('装配工'))
   if (assemblyRows.length === 0) {
     return []
   }
 
   const defaults: Array<[string, number, number]> = [
-    ['Assembly vehicle', 6.5, 4],
-    ['Assembly figure', 6.4, 4],
-    ['Packaging', 6, 4],
+    ['Assembly vehicle', pricingRate(pricing, 'labor_vehicle', 6.5), pricingRate(pricing, 'labor_minutes', 4)],
+    ['Assembly figure', pricingRate(pricing, 'labor_figure', 6.4), pricingRate(pricing, 'labor_minutes', 4)],
+    ['Packaging', pricingRate(pricing, 'labor_packaging', 6), pricingRate(pricing, 'labor_minutes', 4)],
   ]
 
   return assemblyRows.slice(0, defaults.length).map((row, index) => {
@@ -690,7 +694,7 @@ function parseLaborRows(rows: XlsxCellValue[][]): DisneyLaborRow[] {
   })
 }
 
-function parseDecoRows(rows: XlsxCellValue[][]): DisneyDecoRow[] {
+function parseDecoRows(rows: XlsxCellValue[][], pricing?: CustomerPricingSettings): DisneyDecoRow[] {
   const summary = rows.find((row) => toNumber(row?.[8]) > 0 && toNumber(row?.[10]) > 0 && toNumber(row?.[10]) < 1)
   if (!summary) {
     return []
@@ -698,7 +702,7 @@ function parseDecoRows(rows: XlsxCellValue[][]): DisneyDecoRow[] {
 
   // The source detail is a calculated USD cost. Disney's rate card uses the
   // corresponding standard 0.0001 USD operation rate before extending it.
-  const ratePerOpUsd = round(toNumber(summary[10]) * 1.015, 4)
+  const ratePerOpUsd = round(toNumber(summary[10]) * pricingRate(pricing, 'legacy_deco_multiplier', 1.015), 4)
   const operations = toNumber(summary[8])
   const subtotalUsd = ratePerOpUsd * operations
 
@@ -818,7 +822,7 @@ function sumBy<T>(rows: T[], getter: (row: T) => number) {
   return rows.reduce((sum, row) => sum + getter(row), 0)
 }
 
-function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuoteData {
+function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string, pricing?: CustomerPricingSettings): DisneyQuoteData {
   const workbook = parseXlsxWorkbook(buffer)
   const detailSheet = findSheet(workbook, '明细')
   const detailRows = detailSheet?.rows ?? []
@@ -828,10 +832,10 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
 
   const metadata = parseMetadata(detailRows, sourceFileName)
   const moldRows = parseMoldRows(findSheetRows(workbook, '模具报价'))
-  const plastics = parsePlasticRows(detailRows, moldRows, metadata)
+  const plastics = parsePlasticRows(detailRows, moldRows, metadata, pricing)
   const { productRows, packageRows } = parsePurchasedParts(detailRows)
-  const laborRows = parseLaborRows(detailRows)
-  const decoRows = parseDecoRows(findSheetRows(workbook, '喷油报价'))
+  const laborRows = parseLaborRows(detailRows, pricing)
+  const decoRows = parseDecoRows(findSheetRows(workbook, '喷油报价'), pricing)
   const { modelCostUsd, setupChargeUsd } = parseModelAndSetupUsd(findSheetRows(workbook, '手办报价'))
   const transportationUsd = parseTransportationUsd(detailRows)
   const moq3000Usd = parseMoqUsd(detailRows, '3K报价', detailSheet?.cellFillIds)
@@ -856,9 +860,10 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
     + decoUsd
     + miscUsd
   )
-  const productQuoteUsd = subtotalUsd * (1 + DEFAULT_VENDOR_PO_RATE)
+  const productQuoteUsd = subtotalUsd * (1 + pricingRate(pricing, 'po_rate', DEFAULT_VENDOR_PO_RATE))
 
   return {
+    pricing,
     metadata,
     plastics,
     purchasedProductParts: productRows,
@@ -884,7 +889,7 @@ function buildQuoteData(buffer: ArrayBuffer, sourceFileName: string): DisneyQuot
       decoUsd,
       miscUsd,
       subtotalUsd,
-      vendorPoRate: DEFAULT_VENDOR_PO_RATE,
+      vendorPoRate: pricingRate(pricing, 'po_rate', DEFAULT_VENDOR_PO_RATE),
       productQuoteUsd,
       toolingAndModelUsd: roundMoney(sumBy(plastics, (row) => row.toolCostUsd) + modelCostUsd + setupChargeUsd),
     },
@@ -935,7 +940,8 @@ function p4Total(artifact: P4InternalQuoteArtifact, sectionCode: keyof P4Interna
   return p4Number(p4Object(artifact.sections[sectionCode].calculation.totals)[key])
 }
 
-function p4HkdPerUsd(artifact: P4InternalQuoteArtifact) {
+function p4HkdPerUsd(artifact: P4InternalQuoteArtifact, pricing?: CustomerPricingSettings) {
+  if (pricing) return pricingRate(pricing, 'hkd_usd', UI_HKD_PER_USD)
   return p4Positive(p4Object(artifact.referenceSnapshot.fx).hkd_usd, '参考快照缺少 HKD/USD 汇率')
 }
 
@@ -966,7 +972,7 @@ function p4DisneyMetadata(artifact: P4InternalQuoteArtifact) {
   }
 }
 
-function p4DisneyPlastics(artifact: P4InternalQuoteArtifact, metadata: DisneyMetadata) {
+function p4DisneyPlastics(artifact: P4InternalQuoteArtifact, metadata: DisneyMetadata, pricing?: CustomerPricingSettings) {
   const injectionRows = p4Rows(artifact.sections.molding.payload.injection_lines)
   if (injectionRows.length === 0) throw new Error('迪士尼直转被阻断：啤机分段至少需要一条注塑明细')
   const injectionCalculations = p4Rows(artifact.sections.molding.calculation.line_breakdown)
@@ -984,7 +990,7 @@ function p4DisneyPlastics(artifact: P4InternalQuoteArtifact, metadata: DisneyMet
     moldQueues.set(moldNo, queue)
   })
 
-  const hkdPerUsd = p4HkdPerUsd(artifact)
+  const hkdPerUsd = p4HkdPerUsd(artifact, pricing)
   let paidToolIndex = 0
   return injectionRows.map((row, index): DisneyPlasticRow => {
     const moldNo = p4Text(row.disney_mold_no)
@@ -1026,19 +1032,19 @@ function p4DisneyPlastics(artifact: P4InternalQuoteArtifact, metadata: DisneyMet
       moldingLaborCostUsd,
       partSubtotalUsd,
       totalCostUsd,
-      weeklyCapacity: safeDivide(up * 60 * 60 * 24 * 7 * 0.9, cycleTimeSeconds),
+      weeklyCapacity: safeDivide(up * 60 * 60 * 24 * 7 * pricingRate(pricing, 'capacity_factor', 0.9), cycleTimeSeconds),
       internalCostUsd: roundUnit(p4Number(calculation.amount_hkd) / hkdPerUsd),
     }
   })
 }
 
-function p4DisneyPurchasedParts(artifact: P4InternalQuoteArtifact) {
+function p4DisneyPurchasedParts(artifact: P4InternalQuoteArtifact, pricing?: CustomerPricingSettings) {
   const materials = p4Rows(artifact.sections.engineering.payload.materials)
   const materialCalculations = p4Rows(artifact.sections.engineering.calculation.line_breakdown)
     .filter((row) => row.kind === 'material')
   const productRows: DisneyPurchasedPartRow[] = []
   const packageRows: DisneyPurchasedPartRow[] = []
-  const hkdPerUsd = p4HkdPerUsd(artifact)
+  const hkdPerUsd = p4HkdPerUsd(artifact, pricing)
 
   materials.forEach((row, index) => {
     const quantity = p4Number(row.quantity)
@@ -1120,15 +1126,15 @@ function p4DisneyPurchasedParts(artifact: P4InternalQuoteArtifact) {
   return { productRows: productRows.slice(0, 22), packageRows: packageRows.slice(0, 10) }
 }
 
-function p4DisneyLaborRows(artifact: P4InternalQuoteArtifact): DisneyLaborRow[] {
+function p4DisneyLaborRows(artifact: P4InternalQuoteArtifact, pricing?: CustomerPricingSettings): DisneyLaborRow[] {
   const processes = p4Rows(artifact.sections.assembly.payload.groups)
     .flatMap((group) => p4Rows(group.processes).map((process) => ({ group, process })))
   if (p4Total(artifact, 'assembly') > 0 && processes.length === 0) {
     throw new Error('迪士尼直转被阻断：装配存在内部成本但缺少工序明细')
   }
-  const defaults: Array<[number, number]> = [[6.5, 4], [6.4, 4], [6, 4]]
+  const defaults: Array<[number, number]> = [[pricingRate(pricing, 'labor_vehicle', 6.5), pricingRate(pricing, 'labor_minutes', 4)], [pricingRate(pricing, 'labor_figure', 6.4), pricingRate(pricing, 'labor_minutes', 4)], [pricingRate(pricing, 'labor_packaging', 6), pricingRate(pricing, 'labor_minutes', 4)]]
   return processes.slice(0, 10).map(({ group, process }, index) => {
-    const [hourlyRateUsd, timeUsageMinutes] = defaults[index] ?? [6, 4]
+    const [hourlyRateUsd, timeUsageMinutes] = defaults[index] ?? [pricingRate(pricing, 'labor_packaging', 6), pricingRate(pricing, 'labor_minutes', 4)]
     const subtotalUsd = hourlyRateUsd * timeUsageMinutes / 60
     return {
       description: translateDescription(p4Text(process.name) || p4Text(group.name) || `Labor ${index + 1}`),
@@ -1155,11 +1161,11 @@ function p4DisneyDecoRows(artifact: P4InternalQuoteArtifact): DisneyDecoRow[] {
   })
 }
 
-function buildDisneyP4QuoteData(artifact: P4InternalQuoteArtifact): DisneyQuoteData {
+function buildDisneyP4QuoteData(artifact: P4InternalQuoteArtifact, pricing?: CustomerPricingSettings): DisneyQuoteData {
   const customer = p4DisneyMetadata(artifact)
-  const plastics = p4DisneyPlastics(artifact, customer.metadata)
-  const { productRows, packageRows } = p4DisneyPurchasedParts(artifact)
-  const laborRows = p4DisneyLaborRows(artifact)
+  const plastics = p4DisneyPlastics(artifact, customer.metadata, pricing)
+  const { productRows, packageRows } = p4DisneyPurchasedParts(artifact, pricing)
+  const laborRows = p4DisneyLaborRows(artifact, pricing)
   const decoRows = p4DisneyDecoRows(artifact)
   const productPackagingUsd = sumBy(packageRows.slice(0, 2), (row) => row.totalCostUsd)
   const shipmentPackagingUsd = sumBy(packageRows.slice(2), (row) => row.totalCostUsd)
@@ -1173,6 +1179,7 @@ function buildDisneyP4QuoteData(artifact: P4InternalQuoteArtifact): DisneyQuoteD
   const plasticToolingUsd = roundMoney(sumBy(plastics, (row) => row.toolCostUsd))
 
   return {
+    pricing,
     metadata: customer.metadata,
     plastics,
     purchasedProductParts: productRows,
@@ -1198,8 +1205,8 @@ function buildDisneyP4QuoteData(artifact: P4InternalQuoteArtifact): DisneyQuoteD
       decoUsd,
       miscUsd: customer.transportationUsd,
       subtotalUsd,
-      vendorPoRate: DEFAULT_VENDOR_PO_RATE,
-      productQuoteUsd: subtotalUsd * (1 + DEFAULT_VENDOR_PO_RATE),
+      vendorPoRate: pricingRate(pricing, 'po_rate', DEFAULT_VENDOR_PO_RATE),
+      productQuoteUsd: subtotalUsd * (1 + pricingRate(pricing, 'po_rate', DEFAULT_VENDOR_PO_RATE)),
       toolingAndModelUsd: roundMoney(plasticToolingUsd + customer.modelCostUsd + customer.setupChargeUsd),
     },
   }
@@ -1226,10 +1233,11 @@ function detailRow(
   description: string,
   internalPriceUsd: number,
   customerPriceUsd: number,
+  pricing?: CustomerPricingSettings,
 ): DisneyQuoteDetailRow {
   const differenceHkd = 0
-  const internalPriceHkd = round(internalPriceUsd * UI_HKD_PER_USD, 3)
-  const customerPriceHkd = round(customerPriceUsd * UI_HKD_PER_USD, 3)
+  const internalPriceHkd = round(internalPriceUsd * pricingRate(pricing, 'hkd_usd', UI_HKD_PER_USD), 3)
+  const customerPriceHkd = round(customerPriceUsd * pricingRate(pricing, 'hkd_usd', UI_HKD_PER_USD), 3)
 
   return {
     id: `${sheetId}-${itemNo}`,
@@ -1246,7 +1254,7 @@ function detailRow(
   }
 }
 
-function buildDetailRows(sheetId: string, sheetName: string, data: DisneyQuoteData) {
+function buildDetailRows(sheetId: string, sheetName: string, data: DisneyQuoteData, pricing?: CustomerPricingSettings) {
   const rows: DisneyQuoteDetailRow[] = []
 
   data.plastics.forEach((row, index) => {
@@ -1257,47 +1265,48 @@ function buildDetailRows(sheetId: string, sheetName: string, data: DisneyQuoteDa
       `${row.partDescription} / ${row.material}`,
       row.internalCostUsd,
       row.totalCostUsd,
+    pricing,
     ))
   })
 
   data.purchasedProductParts.forEach((row, index) => {
-    rows.push(detailRow(sheetId, sheetName, `PUR-${String(index + 1).padStart(3, '0')}`, row.description, row.internalCostUsd, row.totalCostUsd))
+    rows.push(detailRow(sheetId, sheetName, `PUR-${String(index + 1).padStart(3, '0')}`, row.description, row.internalCostUsd, row.totalCostUsd, pricing))
   })
 
   data.purchasedPackageParts.forEach((row, index) => {
-    rows.push(detailRow(sheetId, sheetName, `PKG-${String(index + 1).padStart(3, '0')}`, row.description, row.internalCostUsd, row.totalCostUsd))
+    rows.push(detailRow(sheetId, sheetName, `PKG-${String(index + 1).padStart(3, '0')}`, row.description, row.internalCostUsd, row.totalCostUsd, pricing))
   })
 
   data.laborRows.forEach((row, index) => {
-    rows.push(detailRow(sheetId, sheetName, `LAB-${String(index + 1).padStart(3, '0')}`, row.description, row.subtotalUsd, row.totalCostUsd))
+    rows.push(detailRow(sheetId, sheetName, `LAB-${String(index + 1).padStart(3, '0')}`, row.description, row.subtotalUsd, row.totalCostUsd, pricing))
   })
 
   data.decoRows.forEach((row, index) => {
-    rows.push(detailRow(sheetId, sheetName, `DEC-${String(index + 1).padStart(3, '0')}`, row.applicationType, row.subtotalUsd, row.totalCostUsd))
+    rows.push(detailRow(sheetId, sheetName, `DEC-${String(index + 1).padStart(3, '0')}`, row.applicationType, row.subtotalUsd, row.totalCostUsd, pricing))
   })
 
   if (data.transportationUsd > 0) {
-    rows.push(detailRow(sheetId, sheetName, 'MIS-001', 'Transportation', data.transportationUsd, data.transportationUsd))
+    rows.push(detailRow(sheetId, sheetName, 'MIS-001', 'Transportation', data.transportationUsd, data.transportationUsd, pricing))
   }
 
   const vendorPoUsd = data.totals.productQuoteUsd - data.totals.subtotalUsd
-  rows.push(detailRow(sheetId, sheetName, 'PO-001', 'Vendor P&O 20%', 0, vendorPoUsd))
-  rows.push(detailRow(sheetId, sheetName, 'TOOL-001', 'TOTAL TOOLING', 0, data.totals.plasticToolingUsd))
+  rows.push(detailRow(sheetId, sheetName, 'PO-001', `Vendor P&O ${data.totals.vendorPoRate * 100}%`, 0, vendorPoUsd, pricing))
+  rows.push(detailRow(sheetId, sheetName, 'TOOL-001', 'TOTAL TOOLING', 0, data.totals.plasticToolingUsd, pricing))
 
   if (data.modelCostUsd > 0) {
-    rows.push(detailRow(sheetId, sheetName, 'MODEL-001', 'MODEL', 0, data.modelCostUsd))
+    rows.push(detailRow(sheetId, sheetName, 'MODEL-001', 'MODEL', 0, data.modelCostUsd, pricing))
   }
 
   if (data.setupChargeUsd > 0) {
-    rows.push(detailRow(sheetId, sheetName, 'SETUP-001', 'SET UP CHARGE', 0, data.setupChargeUsd))
+    rows.push(detailRow(sheetId, sheetName, 'SETUP-001', 'SET UP CHARGE', 0, data.setupChargeUsd, pricing))
   }
 
   return rows
 }
 
-function convertSheet(data: DisneyQuoteData, sourceFileName: string): DisneyConvertedSheet {
+function convertSheet(data: DisneyQuoteData, sourceFileName: string, pricing?: CustomerPricingSettings): DisneyConvertedSheet {
   const sheetId = `disney-${data.metadata.itemNumber}`
-  const details = buildDetailRows(sheetId, data.metadata.itemName, data)
+  const details = buildDetailRows(sheetId, data.metadata.itemName, data, pricing)
   const totalInternalHkd = round(details.reduce((sum, row) => sum + row.internalPriceHkd, 0), 3)
   const totalCustomerHkd = round(details.reduce((sum, row) => sum + row.customerPriceHkd, 0), 3)
 
@@ -1351,7 +1360,7 @@ function setHeaderRow(rows: XlsxCellInput[][], rowNumber: number, labels: string
   labels.forEach((label, index) => setCell(rows, rowNumber, index, label, index === 0 ? XLSX_STYLE.border : XLSX_STYLE.centerBorder))
 }
 
-function buildPlasticsSection(rows: XlsxCellInput[][], data: DisneyQuoteData) {
+function buildPlasticsSection(rows: XlsxCellInput[][], data: DisneyQuoteData, pricing?: CustomerPricingSettings) {
   setCell(rows, 17, 0, 'Plastics', XLSX_STYLE.bold)
   setHeaderRow(rows, 18, [
     'Line #',
@@ -1403,7 +1412,7 @@ function buildPlasticsSection(rows: XlsxCellInput[][], data: DisneyQuoteData) {
     setFormulaNumber(rows, rowNumber, 20, item.partSubtotalUsd, `(L${rowNumber}+T${rowNumber})/K${rowNumber}`)
     setNumber(rows, rowNumber, 21, 0, XLSX_STYLE.number0)
     setFormulaNumber(rows, rowNumber, 22, item.totalCostUsd, `U${rowNumber}*K${rowNumber}*(1+V${rowNumber})`)
-    setFormulaNumber(rows, rowNumber, 23, item.weeklyCapacity, `N${rowNumber}*60*60*24*7*0.9/R${rowNumber}`, XLSX_STYLE.number0)
+    setFormulaNumber(rows, rowNumber, 23, item.weeklyCapacity, `N${rowNumber}*60*60*24*7*${pricingRate(pricing, 'capacity_factor', 0.9)}/R${rowNumber}`, XLSX_STYLE.number0)
   })
 
   setFormulaNumber(rows, 42, 2, data.totals.plasticToolingUsd, 'SUM(C19:C41)', XLSX_STYLE.number0)
@@ -1597,7 +1606,7 @@ function buildSummarySection(rows: XlsxCellInput[][], data: DisneyQuoteData) {
   setCell(rows, 251, 0, '- Cost is not included prototype and Tooling model')
 }
 
-function buildDisneyOutputSheet(data: DisneyQuoteData): XlsxOutputSheet {
+function buildDisneyOutputSheet(data: DisneyQuoteData, pricing?: CustomerPricingSettings): XlsxOutputSheet {
   const rows: XlsxCellInput[][] = Array.from({ length: 252 }, () => [])
 
   setCell(rows, 8, 1, 'Item Name: ', XLSX_STYLE.boldBorder)
@@ -1617,7 +1626,7 @@ function buildDisneyOutputSheet(data: DisneyQuoteData): XlsxOutputSheet {
   setCell(rows, 15, 1, 'Fty Location: ', XLSX_STYLE.boldBorder)
   setCell(rows, 15, 2, data.metadata.factoryLocation)
 
-  buildPlasticsSection(rows, data)
+  buildPlasticsSection(rows, data, pricing)
   buildPurchasedPartsSection(rows, 60, 61, 62, 84, 85, 'Purchased Parts - Product', data.purchasedProductParts)
   buildPurchasedPartsSection(rows, 117, 118, 119, 129, 130, 'Purchased Parts - Package', data.purchasedPackageParts)
   buildLaborSection(rows, data)
@@ -1922,7 +1931,7 @@ function applyTemplateCellPatches(sheetXml: string, patches: DisneyTemplateCellP
   return missingPatches.reduce((xml, patch) => insertTemplateCell(xml, patch), updatedXml)
 }
 
-function buildDisneyTemplatePatches(data: DisneyQuoteData) {
+function buildDisneyTemplatePatches(data: DisneyQuoteData, pricing?: CustomerPricingSettings) {
   const patches: DisneyTemplateCellPatch[] = []
   const patch = (ref: string, value: XlsxCellValue, style?: number, replaceFormula = false) => patches.push({ ref, value, style, replaceFormula })
   const formula = (ref: string, value: XlsxCellValue, formulaText: string, style?: number, dataType?: 'e' | 'str', replaceFormula = false) => {
@@ -2001,7 +2010,7 @@ function buildDisneyTemplatePatches(data: DisneyQuoteData) {
       formula(`V${rowNumber}`, 0, 'V19', 27)
     }
     formula(`W${rowNumber}`, item.totalCostUsd, `U${rowNumber}*K${rowNumber}*(1+V${rowNumber})`, 28)
-    formula(`X${rowNumber}`, item.weeklyCapacity, `N${rowNumber}*60*60*24*7*0.9/R${rowNumber}`, 22)
+    formula(`X${rowNumber}`, item.weeklyCapacity, `N${rowNumber}*60*60*24*7*${pricingRate(pricing, 'capacity_factor', 0.9)}/R${rowNumber}`, 22, undefined, Boolean(pricing))
   })
 
   formula('C42', data.totals.plasticToolingUsd, 'SUM(C19:C41)', 18)
@@ -2202,23 +2211,28 @@ function toTemplateUint8Array(templateBuffer: ArrayBuffer | Uint8Array) {
   return templateBuffer instanceof Uint8Array ? templateBuffer : new Uint8Array(templateBuffer)
 }
 
-export function convertDisneyInternalQuote(buffer: ArrayBuffer, sourceFileName: string): DisneyConversionResult {
-  const quoteData = buildQuoteData(buffer, sourceFileName)
+export function convertDisneyInternalQuote(buffer: ArrayBuffer, sourceFileName: string, pricing?: CustomerPricingSettings): DisneyConversionResult {
+  assertPricingCustomer(pricing, 'disney')
+  const quoteData = buildQuoteData(buffer, sourceFileName, pricing)
 
   return {
+    pricing,
     sourceFileName,
-    sheets: [convertSheet(quoteData, sourceFileName)],
+    sheets: [convertSheet(quoteData, sourceFileName, pricing)],
   }
 }
 
 export function convertDisneyP4InternalQuote(
   artifact: P4InternalQuoteArtifact,
   sourceFileName: string,
+  pricing?: CustomerPricingSettings,
 ): DisneyConversionResult {
-  const quoteData = buildDisneyP4QuoteData(artifact)
+  assertPricingCustomer(pricing, 'disney')
+  const quoteData = buildDisneyP4QuoteData(artifact, pricing)
   return {
+    pricing,
     sourceFileName,
-    sheets: [convertSheet(quoteData, sourceFileName)],
+    sheets: [convertSheet(quoteData, sourceFileName, pricing)],
   }
 }
 
@@ -2239,6 +2253,8 @@ export function createDisneyCustomerQuoteWorkbookFromTemplate(
   result: DisneyConversionResult,
   templateBuffer: ArrayBuffer | Uint8Array,
 ) {
+  const pricing = result.pricing
+
   const firstSheet = result.sheets[0]
   if (!firstSheet) {
     throw new Error('没有可输出的迪士尼报客数据')
@@ -2252,7 +2268,7 @@ export function createDisneyCustomerQuoteWorkbookFromTemplate(
 
   zip[DISNEY_TEMPLATE_SHEET_PATH] = strToU8(applyTemplateCellPatches(
     sheetXml,
-    buildDisneyTemplatePatches(firstSheet.quoteData),
+    buildDisneyTemplatePatches(firstSheet.quoteData, pricing),
   ))
 
   if (zip['xl/workbook.xml']) {
@@ -2263,12 +2279,14 @@ export function createDisneyCustomerQuoteWorkbookFromTemplate(
 }
 
 export function createDisneyCustomerQuoteWorkbook(result: DisneyConversionResult, templateBuffer?: ArrayBuffer | Uint8Array) {
+  const pricing = result.pricing
+
   if (templateBuffer) {
     return createDisneyCustomerQuoteWorkbookFromTemplate(result, templateBuffer)
   }
 
   return createXlsxWorkbook([
-    ...result.sheets.map((sheet) => buildDisneyOutputSheet(sheet.quoteData)),
+    ...result.sheets.map((sheet) => buildDisneyOutputSheet(sheet.quoteData, pricing)),
     buildBlankPlmUploadSheet(),
     buildConstantTablesSheet(),
   ])

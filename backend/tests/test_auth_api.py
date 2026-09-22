@@ -89,6 +89,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "carton_procurement:read",
                         "customer_price:compare",
                         "customer_price:read",
+                        "customer_price:settings_read",
                         "customer_order:audit_read",
                         "customer_order:read",
                         "injection_scheduling:read",
@@ -428,6 +429,8 @@ def test_sales_customer_supervisor_role_is_seeded_with_customer_price_permission
             ).all()
             assert {permission.code for permission in permissions} == {
                 "customer_price:read",
+                "customer_price:settings_read",
+                "customer_price:settings_manage",
                 "customer_price:import_internal_quote",
                 "customer_price:export_customer_quote",
                 "customer_price:compare",
@@ -568,6 +571,120 @@ def test_seed_upgrades_existing_business_roles_with_internal_quote_p4_release_pe
             assert db.query(auth_models.AuthRolePermission).filter(
                 auth_models.AuthRolePermission.id.in_(expected_mappings)
             ).count() == len(expected_mappings)
+
+
+@pytest.mark.parametrize("existing_owner_grant", [False, True])
+def test_seed_upgrades_legacy_sales_pricing_access_without_overriding_scope_or_denials(monkeypatch, existing_owner_grant):
+    with make_client(monkeypatch, AUTHZ_MODE="enforce"):
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        auth = importlib.import_module("app.services.auth")
+        pricing = importlib.import_module("app.services.customer_price_settings")
+        with db_module.SessionLocal() as db:
+            marker = db.get(models.AuthIamState, auth.CUSTOMER_PRICE_SETTINGS_GRANT_MARKER)
+            assert marker is not None
+            db.delete(marker)
+            permissions = {
+                row.code: row for row in db.query(models.AuthPermission).filter(
+                    models.AuthPermission.code.in_([
+                        "customer_price:settings_read", "customer_price:settings_manage",
+                    ])
+                ).all()
+            }
+            sales_roles = ("sales_customer_owner", "sales_customer_supervisor")
+            db.query(models.AuthRolePermission).filter(
+                models.AuthRolePermission.role_id.in_(sales_roles),
+                models.AuthRolePermission.permission_id.in_([row.id for row in permissions.values()]),
+            ).delete(synchronize_session=False)
+            # A partially upgraded role can already have a grant with a noncanonical ID.
+            if existing_owner_grant:
+                db.add(models.AuthRolePermission(
+                    id="existing-pricing-read", role_id="sales_customer_owner",
+                    permission_id=permissions["customer_price:settings_read"].id,
+                ))
+            roles_by_user = {
+                "pricing-owner": "sales_customer_owner",
+                "pricing-supervisor": "sales_customer_supervisor",
+                "pricing-denied": "sales_customer_supervisor",
+                "pricing-engineer": "engineer",
+            }
+            for user_id, role_id in roles_by_user.items():
+                department = "engineering" if role_id == "engineer" else "sales-business"
+                db.add(models.AuthUser(
+                    id=user_id, username=user_id, display_name=user_id,
+                    password_salt="unused", password_hash="unused",
+                ))
+                db.flush()
+                db.add(models.AuthUserRole(
+                    id=f"{user_id}-binding", user_id=user_id, role_id=role_id,
+                    factory_id="huaxing", department=department,
+                ))
+                db.add(models.EmployeeProfile(
+                    user_id=user_id, primary_factory_id="huaxing", primary_department=department,
+                ))
+            db.add(models.AuthUserPermissionOverride(
+                id="pricing-explicit-deny", user_id="pricing-denied",
+                permission_id=permissions["customer_price:settings_read"].id,
+                effect="deny", factory_id="huaxing", department="sales-business",
+            ))
+            db.flush()
+            auth.seed_iam_sidecars(db, auth.now_text())
+            db.commit()
+            role_versions = {
+                role: db.get(models.AuthRoleMetadata, role).version for role in sales_roles
+            }
+            user_revisions = {
+                uid: db.get(models.AuthUserAuthorizationRevision, uid).revision for uid in roles_by_user
+            }
+            other_grants = {
+                (row.id, row.role_id, row.permission_id) for row in db.query(models.AuthRolePermission)
+                if row.role_id not in sales_roles
+            }
+
+            auth.seed_auth_defaults(db)
+
+            def context(uid):
+                return auth.build_auth_context(db, db.get(models.AuthUser, uid))
+
+            for uid in ("pricing-owner", "pricing-supervisor"):
+                assert pricing.get_settings(db, "huaxing", "buzzbee", context(uid)).revision == 0
+                assert auth.can(context(uid), "customer_price:import_internal_quote", "huaxing", "sales-business")
+                assert auth.can(context(uid), "customer_price:export_customer_quote", "huaxing", "sales-business")
+                assert not auth.can(context(uid), "customer_price:settings_read", "huakang-a", "sales-business")
+            assert not auth.can(context("pricing-owner"), "customer_price:settings_manage", "huaxing", "sales-business")
+            assert auth.can(context("pricing-supervisor"), "customer_price:settings_manage", "huaxing", "sales-business")
+            for uid in ("pricing-denied", "pricing-engineer"):
+                with pytest.raises(pricing.HTTPException) as denied:
+                    pricing.get_settings(db, "huaxing", "buzzbee", context(uid))
+                assert denied.value.status_code == 403
+            assert db.get(models.AuthUserPermissionOverride, "pricing-explicit-deny").effect == "deny"
+            assert db.get(models.AuthRoleMetadata, "sales_customer_owner").version == role_versions["sales_customer_owner"] + int(not existing_owner_grant)
+            assert db.get(models.AuthRoleMetadata, "sales_customer_supervisor").version == role_versions["sales_customer_supervisor"] + 1
+            for uid, role in roles_by_user.items():
+                expected_increment = int(role == "sales_customer_supervisor" or (role == "sales_customer_owner" and not existing_owner_grant))
+                assert db.get(models.AuthUserAuthorizationRevision, uid).revision == user_revisions[uid] + expected_increment
+                binding = db.get(models.AuthUserRole, f"{uid}-binding")
+                assert binding.factory_id == "huaxing" and binding.role_id == role
+            assert other_grants == {
+                (row.id, row.role_id, row.permission_id) for row in db.query(models.AuthRolePermission)
+                if row.role_id not in sales_roles
+            }
+            assert db.query(models.AuthRolePermission).filter_by(
+                role_id="sales_customer_owner", permission_id=permissions["customer_price:settings_read"].id,
+            ).count() == 1
+            upgraded_version = db.get(models.AuthRoleMetadata, "sales_customer_supervisor").version
+            upgraded_revision = db.get(models.AuthUserAuthorizationRevision, "pricing-supervisor").revision
+            auth.seed_auth_defaults(db)
+            assert db.get(models.AuthRoleMetadata, "sales_customer_supervisor").version == upgraded_version
+            assert db.get(models.AuthUserAuthorizationRevision, "pricing-supervisor").revision == upgraded_revision
+
+            # After the one-time upgrade, a deliberate role-level revocation stays revoked.
+            db.query(models.AuthRolePermission).filter_by(
+                role_id="sales_customer_supervisor", permission_id=permissions["customer_price:settings_read"].id,
+            ).delete(synchronize_session=False)
+            db.commit()
+            auth.seed_auth_defaults(db)
+            assert not auth.can(context("pricing-supervisor"), "customer_price:settings_read", "huaxing", "sales-business")
 
 
 def test_seed_upgrades_existing_business_supervisor_with_self_review_once(monkeypatch):

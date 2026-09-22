@@ -20,6 +20,7 @@ function grantUsesScopedPositionContract(grant: AuthGrant) {
 
 const crossFactoryReadLocalOnlyPermissions = new Set([
   'molding_sample:notification_read',
+  'customer_price:settings_read',
 ])
 
 const systemPositionCrossFactoryReadPermissions = new Set([
@@ -309,6 +310,17 @@ export const useAuthStore = defineStore('auth', {
         && grant.factory_id === '*'
         && ['*', 'system'].includes(grant.department),
       )
+      if (permission === 'customer_price:settings_read' || permission === 'customer_price:settings_manage') {
+        // Private commercial parameters always use evaluated IAM, including legacy/shadow sessions.
+        const primaryDepartment = this.currentUser?.profile?.primary_department?.trim()
+        const sales = primaryDepartment ? primaryDepartment === 'sales-business' : this.grants.some(g => g.department === 'sales-business')
+        if ((!sales && !hasWildcardAdmin) || !this.hasEffectiveAccessSnapshot) return false
+        const matching = this.matchingEffectiveAccess(permission, factoryId, department)
+        if (matching.some(a => (a.effect === 'deny' || a.allowed === false) && ['override', 'user_override', 'inactive_permission', 'inactive_account'].includes(a.source_type))) return false
+        if (matching.some(a => a.effect === 'allow' && a.allowed !== false)) return true
+        const evaluated = this.effectiveAccess.some(a => a.permission_code === permission)
+        return evaluated && this.grants.some(g => grantUsesScopedPositionContract(g) && grantAllowsPermission(g, permission, factoryId, department))
+      }
       if (hasWildcardAdmin) {
         return true
       }

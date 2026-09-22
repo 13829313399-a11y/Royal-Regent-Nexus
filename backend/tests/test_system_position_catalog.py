@@ -41,15 +41,15 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v28"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v29"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 136
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 129
+    assert len(registered_codes) == 138
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 131
     assert len(permission_codes.UV_PRINTING_PERMISSION_CODES) == 13
     assert len(permission_codes.SPRAY_PRODUCTION_PERMISSION_CODES) == 12
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
@@ -95,6 +95,8 @@ def test_fixed_system_position_definition_contract():
     assert set(general_manager.permission_codes) == positions.GENERAL_MANAGER_PERMISSION_CODES
     assert positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES == frozenset(
         (
+            "customer_price:settings_read",
+            "customer_price:settings_manage",
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
         )

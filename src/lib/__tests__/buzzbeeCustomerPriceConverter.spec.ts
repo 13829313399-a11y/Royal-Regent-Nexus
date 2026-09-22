@@ -213,7 +213,7 @@ describe('BuzzBee customer price converter', () => {
     expect(sheet.rows[6][0]).toBe('下---大身面壳+底壳')
     expect(sheet.rows[6][1]).toBe('ABS')
     expect(sheet.rows[6][3]).toBe(16.5)
-    expect(sheet.rows[6][6]).toBe(0.7763)
+    expect(sheet.rows[6][6]).toBe(0.675)
     expect(sheet.rows[54][5]).toBe(1.73)
     expect(sheet.rows[54][6]).toBe(1.7819)
     expect(sheet.rows[55][5]).toBe(1.24)
