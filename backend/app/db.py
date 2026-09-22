@@ -690,6 +690,7 @@ def ensure_document_tools_schema_ready() -> None:
 
 def init_db() -> None:
     from app.models import (
+        spray_ops,  # noqa: F401
         uv_printing,
         uv_finance,
         uv_ingest,
@@ -757,11 +758,31 @@ def init_db() -> None:
                     missing.extend(name + "." + c.name for c in table.columns if c.name not in columns)
             if missing:
                 raise RuntimeError("UV模块需要迁移至 20260914_0115；请先备份并迁移。缺少：" + ", ".join(missing))
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if settings.spray_ops_enabled and names:
+            missing = []
+            for name, table in Base.metadata.tables.items():
+                if not name.startswith("spray_ops_"):
+                    continue
+                if name not in names:
+                    missing.append(name)
+                else:
+                    columns = {column["name"] for column in inspector.get_columns(name)}
+                    missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
+            if missing:
+                raise RuntimeError("喷油模块需要显式迁移至 20260922_0118；禁止自动修改已有业务库。缺少：" + ", ".join(missing))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            if settings.uv_printing_enabled or not name.startswith("uv_")])
+                            if (settings.uv_printing_enabled or not name.startswith("uv_"))
+                            and (settings.spray_ops_enabled or not name.startswith("spray_ops_"))])
     ensure_sqlite_legacy_columns()
 
     with SessionLocal() as db:
+        if settings.spray_ops_enabled:
+            from app.services.spray_ops.common import seed_factories
+            seed_factories(db)
+            db.commit()
         from app.services.injection_scheduling.common import seed_settings
         seed_settings(db)
         seed_auth_defaults(db)

@@ -34,6 +34,7 @@ from app.api.system import router as system_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.api.uv_printing import router as uv_printing_router
+from app.api.spray_operations import router as spray_operations_router
 from app.api.uv_finance import router as uv_finance_router
 from app.api.uv_ingest import router as uv_ingest_router
 from app.api.uv_handover import router as uv_handover_router
@@ -184,6 +185,7 @@ from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)
 app.include_router(uv_printing_router)
+app.include_router(spray_operations_router)
 app.include_router(uv_finance_router)
 app.include_router(uv_ingest_router, prefix="/api")
 app.include_router(uv_handover_router)
