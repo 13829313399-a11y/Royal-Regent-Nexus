@@ -67,6 +67,8 @@ backend/models/document-translation/
 !/docs/business/纸箱月结与供应商对账方案.md
 !/docs/business/纸箱全流程核查报告.md
 !/edge/three-d-printing-agent/README.md
+!/edge/uv-printing-agent/README.md
+!/docs/uv-operations/*.md
 !/deploy/three-d-printing/network/README.md
 !/services/three-d-printer-connector/README.md
 

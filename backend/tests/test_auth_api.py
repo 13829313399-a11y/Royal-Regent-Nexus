@@ -114,6 +114,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                     code
                     for code in sorted(me["permissions"])
                     if code in {
+                        "uv_ops:read", "uv_ops:cost_read", "uv_ops:payroll_read", "uv_ops:audit_read",
                         "carton_mark:read",
                         "carton_procurement:read",
                         "customer_price:compare",

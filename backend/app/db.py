@@ -690,6 +690,7 @@ def ensure_document_tools_schema_ready() -> None:
 
 def init_db() -> None:
     from app.models import (
+        uv_operations,  # noqa: F401
         spray_ops,  # noqa: F401
         document_tools,  # noqa: F401
         auth,  # noqa: F401
@@ -756,7 +757,8 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("喷油模块需要显式迁移至 20260922_0119；禁止自动修改已有业务库。缺少：" + ", ".join(missing))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            if settings.spray_ops_enabled or not name.startswith("spray_ops_")])
+                            if not name.startswith("uv_ops_")
+                            and (settings.spray_ops_enabled or not name.startswith("spray_ops_"))])
     ensure_sqlite_legacy_columns()
 
     with SessionLocal() as db:

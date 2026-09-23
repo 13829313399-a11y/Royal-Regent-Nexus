@@ -56,7 +56,7 @@ const visibleModules = computed(() => {
 
   return departmentEntry.value.modules
     .filter((module) => {
-      // 占位卡仅属于华康A，不随集团的生产厂区兜底显示。
+      // 新 UV 工作区仅属于华康 A，不采用集团厂区兜底。
       if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
       if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
@@ -69,6 +69,14 @@ const visibleModules = computed(() => {
     })
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
+
+    if (module.id === 'uv-printing') {
+      const authorized = authStore.can('uv_ops:read', factory.id, 'production')
+      return {...scopedModule, summary:'机台现场、任务排程、班次核数、品质交接与材料核算',
+        status:authorized ? '工作区' : '权限待开通', statusTone:'teal' as const,
+        stats:authorized ? '进入华康 A 工作区' : '需要华康 A 生产部授权', detailPage:authorized,
+        route:authorized ? getFactoryScopedRoute('/modules/production/uv-printing/live', factory.id) : undefined}
+    }
 
     if (module.id === 'spray-production' && sprayEnabled()) {
       const authorized = authStore.can('spray_ops:read', factory.id, 'production')

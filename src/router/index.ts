@@ -7,6 +7,8 @@ import {
 import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
+import { uvOperationsRoutes } from '@/features/uv-operations/routes'
+import { UV_BASE, UV_FACTORY } from '@/features/uv-operations/contracts'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
@@ -165,6 +167,7 @@ const routes: RouteRecordRaw[] = [
     },
   },
   ...sprayProductionRoutes,
+  ...uvOperationsRoutes,
   {
     path: '/modules/pmc-warehouse/raw-material-management',
     name: 'raw-material-management',
@@ -628,6 +631,9 @@ const finishRouteLoading = () => {
 }
 
 router.beforeEach(async (to, from) => {
+  if (to.path.startsWith(UV_BASE) && to.query.factory !== UV_FACTORY) {
+    return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
+  }
   if (!await guardSprayNavigation(to, from)) return false
   const navigationVersion = ++latestNavigationVersion
   if (routeLoadingTimer) {

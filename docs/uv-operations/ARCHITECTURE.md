@@ -1,0 +1,12 @@
+# Architecture decisions
+
+1. `uv_ops_*` is a new normalized domain restricted by database CHECK and API authorization to `huakang-a / production`. Historic `uv_*` data stays unrelated and protected from autogenerate drops. New permissions receive no fixed-position grants.
+2. `Run` is raw observation evidence; only explicit confirmed production changes physical batch balances. Rework consumes the rework bucket of the same lineage; processing attempts and final yield are distinct. Subsequent passes consume a pending operation bucket, never create duplicate physical goods.
+3. Master versions and commercial/wage snapshots are frozen on tasks. Decimal rates and quantities travel as strings. Final money is rounded to minor units with deterministic largest-remainder allocation.
+4. Commands authorize before reading receipts, hash action + target + canonical request, and claim a unique actor/operation receipt inside the same transaction as the domain writes. Row locks/version CAS protect the affected resource, batch, inventory balance and period. No factory-wide business mutex. PostgreSQL period row shared locks admit concurrent writers; close takes an exclusive lock. SQLite uses its database write transaction as the isolated local equivalent.
+5. Agent state and business state have separate revisions and lock scopes. Agents authenticate with revocable scoped credentials, outbound only. Event identity and source cursor persist atomically in a local SQLite outbox. Only explicit persisted/duplicate acknowledgments delete queued evidence. Unsupported hardware capabilities remain unknown/false.
+6. SSE uses database snapshots and controlled five-second polling as the documented fallback; no broker dependency. Each tick revalidates session authorization and filters cost/payroll fields. Reconnect always sends a complete reset. Browser requests are fenced by identity/factory generation and revision.
+7. Structured JSON is limited to immutable snapshots, capability evidence, receipts and external observations. Tasks, allocations, physical buckets, stock and finance remain relational and constrained.
+8. Exact source protocol fixtures are synthetic and versioned. No vendor adapter, native printing command or production data is inferred from the reference project. Dispatch stays disabled.
+
+Migration is generated as a frozen schema revision after the verified head `20260922_0120`; application startup never creates `uv_ops_*` tables. An unmigrated/disabled module returns an explicit unavailable state.

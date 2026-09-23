@@ -4,6 +4,13 @@ This module intentionally has no database or authorization-service imports so
 the fixed system-position catalog can depend on it without creating a cycle.
 """
 
+UV_OPS_PERMISSION_CODES = tuple("uv_ops:" + action for action in (
+    "read", "master_write", "plan_write", "production_write", "quality_write",
+    "shift_write", "handover_write", "inventory_write", "cost_read", "cost_write",
+    "payroll_read", "payroll_write", "agent_manage", "dispatch", "close_period",
+    "import", "export", "audit_read",
+))
+
 SPRAY_OPS_PERMISSION_CODES = tuple("spray_ops:" + action for action in (
     "read", "plan", "report", "quality", "stock_write", "procure", "master_write",
     "cost_read", "cost_write", "payroll_read", "payroll_write", "settle", "import", "export",
@@ -157,6 +164,7 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
+    *UV_OPS_PERMISSION_CODES,
     *SPRAY_OPS_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     *MOLDING_SAMPLE_PERMISSION_CODES,
