@@ -135,6 +135,33 @@ describe('module center factory scope', () => {
     expect(module?.owner).toBe('华康A · 3D部门')
   })
 
+  it.each(['huaxing', 'huakang-a', 'huakang-b', 'huadeng'] as const)(
+    'keeps only an inert production placeholder in %s',
+    async (factoryId) => {
+      routeState.path = '/modules/production'
+      routeState.params.department = 'production'
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      useAppStore().setActiveFactory(factoryId)
+      const wrapper = mount(ModuleCenterView, { global: { plugins: [pinia] } })
+      const card = wrapper.findAllComponents(ModuleCard).find(
+        (item) => item.props('module').id === 'spray-production',
+      )!
+
+      expect(card.text()).toContain('待重构')
+      expect(card.props('module').detailPage).toBe(false)
+      expect(card.find('a').exists()).toBe(false)
+      expect(card.find('.portal-module-card__metrics').exists()).toBe(false)
+      expect(card.find('.portal-module-card__children').exists()).toBe(false)
+      expect(card.attributes('role')).toBeUndefined()
+      expect(card.attributes('tabindex')).toBeUndefined()
+      await card.trigger('click')
+      await card.trigger('keydown', { key: 'Enter' })
+      expect(routerPushMock).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
   it.each(moduleDepartmentIds)(
     'shares the %s module structure while keeping Huakang C and D routes isolated',
     async (departmentId: ModuleDepartmentId) => {
