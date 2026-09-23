@@ -5,8 +5,16 @@ import type { CustomerPricingSettings } from '@/lib/customerPriceConverters/pric
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 
-const props = defineProps<{ factoryId: string; customerId: string; customerName: string }>()
-const emit = defineEmits<{ saved: [settings: CustomerPricingSettings] }>()
+const props = defineProps<{
+  factoryId: string
+  customerId: string
+  customerName: string
+  customers: Array<{ id: string; name: string }>
+}>()
+const emit = defineEmits<{
+  saved: [settings: CustomerPricingSettings]
+  'update:customerId': [customerId: string]
+}>()
 const auth = useAuthStore()
 const canRead = computed(() => auth.can('customer_price:settings_read', props.factoryId, 'sales-business'))
 const canManage = computed(() => canRead.value && auth.can('customer_price:settings_manage', props.factoryId, 'sales-business'))
@@ -17,6 +25,11 @@ const saving = ref(false)
 const error = ref('')
 const message = ref('')
 let generation = 0
+
+function selectCustomer(event: Event) {
+  const id = (event.target as HTMLSelectElement).value
+  if (!saving.value && props.customers.some(customer => customer.id === id)) emit('update:customerId', id)
+}
 
 async function load() {
   const request = ++generation
@@ -48,7 +61,7 @@ async function save() {
     const result = await customerPricingSettingsApi.save(payload)
     if (request !== generation || !canRead.value) return
     if (result.factory_id !== props.factoryId || result.customer_id !== props.customerId) throw new Error('返回的客户基础信息范围不一致')
-    draft.value = result; message.value = '已保存，下一次转换使用新参数；已生成的报价保留原参数。'
+    draft.value = result; message.value = '已保存，下一次转换使用新参数。当前报价请先恢复转换预览或重新导入，再输出；历史文件保留原参数。'
     emit('saved', result)
   } catch (e) { if (request === generation) error.value = getApiErrorMessage(e) }
   finally { saving.value = false }
@@ -57,11 +70,25 @@ async function save() {
 
 <template>
   <section v-if="canRead" data-testid="customer-pricing-settings" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-    <button type="button" class="flex w-full items-center justify-between text-left" :aria-expanded="expanded" @click="expanded = !expanded">
-      <span><strong class="text-sm text-slate-900">{{ customerName }} · 客户基础信息</strong><span class="mt-1 block text-xs text-slate-500">维护报客料价、分类倍率及客户费率</span></span>
-      <span class="text-sm text-teal-700">{{ expanded ? '收起' : '展开维护' }}</span>
-    </button>
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h2 class="text-base font-semibold text-slate-900">客户基础信息</h2>
+        <p class="mt-1 text-xs leading-5 text-slate-500">维护各客户的报客料价、分类倍率及费率。切换维护客户不影响当前报价。</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-3">
+        <label class="flex items-center gap-2 text-sm text-slate-600">
+          <span class="whitespace-nowrap">维护客户</span>
+          <select :value="customerId" aria-label="基础信息维护客户" data-testid="pricing-settings-customer" :disabled="saving" class="h-10 min-w-32 rounded-lg border border-slate-200 bg-white px-3 text-slate-900 disabled:opacity-50" @change="selectCustomer">
+            <option v-for="customer in customers" :key="customer.id" :value="customer.id">{{ customer.name }}</option>
+          </select>
+        </label>
+        <button type="button" class="h-10 whitespace-nowrap rounded-lg border border-teal-200 px-3 text-sm font-medium text-teal-700 hover:bg-teal-50" :aria-expanded="expanded" @click="expanded = !expanded">
+          {{ expanded ? '收起' : '展开维护' }}
+        </button>
+      </div>
+    </div>
     <div v-if="expanded" class="mt-5 space-y-5">
+      <h3 class="text-sm font-semibold text-slate-900">{{ customerName }} · 料价与倍率</h3>
       <p v-if="loading" class="text-sm text-slate-500">正在读取…</p>
       <p v-if="error" role="alert" class="text-sm text-rose-700">{{ error }}</p>
       <p v-if="message" role="status" class="text-sm text-teal-700">{{ message }}</p>

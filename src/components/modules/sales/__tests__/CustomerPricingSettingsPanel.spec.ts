@@ -14,7 +14,7 @@ function session(department = 'sales-business', permissions = [read], mode: Auth
 function settings(customer_id = 'buzzbee'): CustomerPricingSettings {
   return { factory_id: 'huaxing', customer_id, revision: 1, materials: [{ material: 'Private resin', price: 16.7, currency: 'HKD', unit: 'kg' }], rates: { detail_multiplier: 1.05 }, texts: {}, rate_definitions: { detail_multiplier: { label: '明细倍率', kind: 'multiplier' } }, updated_at: '', updated_by_name: '' }
 }
-function panel() { return mount(CustomerPricingSettingsPanel, { props: { factoryId: 'huaxing', customerId: 'buzzbee', customerName: 'BuzzBee' } }) }
+function panel() { return mount(CustomerPricingSettingsPanel, { props: { factoryId: 'huaxing', customerId: 'buzzbee', customerName: 'BuzzBee', customers: [{ id: 'buzzbee', name: 'BuzzBee' }, { id: 'yinhui', name: '银辉' }] } }) }
 describe('private customer pricing maintenance', () => {
   beforeEach(() => { setActivePinia(createPinia()); vi.resetAllMocks(); vi.mocked(customerPricingSettingsApi.get).mockResolvedValue(settings()) })
   it.each(['legacy','shadow','enforce'] as const)('hides nonbusiness and explicitly denied users in %s mode', async mode => {
