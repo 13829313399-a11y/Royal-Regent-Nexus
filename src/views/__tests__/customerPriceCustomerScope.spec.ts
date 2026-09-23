@@ -12,6 +12,11 @@ import { createDickieMapping } from '@/lib/dickieQuote'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { customerPriceArtifactApi } from '@/api/customerPriceArtifact'
+import { customerPricingSettingsApi } from '@/api/customerPricingSettings'
+import * as buzzbeeConverter from '@/lib/customerPriceConverters/buzzbee'
+import * as buzzbeeTemplate from '@/lib/customerPriceConverters/buzzbeeTemplate'
+import { createXlsxWorkbook, parseXlsxWorkbook, type XlsxCellInput } from '@/lib/customerPriceConverters/xlsxLite'
+import type { CustomerPricingSettings } from '@/lib/customerPriceConverters/pricingSettings'
 
 vi.mock('@/api/customerPriceArtifact', () => ({
   customerPriceArtifactApi: {
@@ -122,6 +127,78 @@ describe('QuoteCenterPanel customer visibility', () => {
   })
   afterEach(() => window.history.replaceState({}, '', '/'))
 
+  it('keeps maintenance customer switching separate from an imported quote and applies its multiplier only once on repeated export', async () => {
+    const definitions = JSON.parse(readFileSync('shared/customerPriceDefaults.json', 'utf8')).buzzbee
+    const pricing: CustomerPricingSettings = {
+      factory_id: 'huaxing', customer_id: 'buzzbee', revision: 1, snapshot_id: 'buzzbee-frozen',
+      materials: definitions.materials,
+      rates: { ...Object.fromEntries(Object.entries(definitions.rates).map(([key, row]) => [key, (row as { value: number }).value])), injection_multiplier: 1.2 },
+      texts: {}, updated_at: '', updated_by_name: '',
+    }
+    vi.mocked(customerPricingSettingsApi.snapshot).mockClear().mockResolvedValueOnce(pricing)
+    vi.mocked(customerPricingSettingsApi.get).mockImplementation(async (factory_id, customer_id) => ({
+      ...pricing, factory_id, customer_id, rates: { injection_multiplier: 3 },
+      rate_definitions: { injection_multiplier: { label: '注塑倍率', kind: 'multiplier' } },
+    }))
+    const rows: XlsxCellInput[][] = Array.from({ length: 15 }, () => [])
+    rows[6] = ['倍率切换测试套装报价']
+    rows[7] = ['', '', '名称', '料型', '料重(G)', '', '机型', '1出几套', '目标数', '啤工', '料金额']
+    rows[8] = ['', '', '测试外壳', 'ABS料', 100, '', 18, 1, 2800, 2, 1.5]
+    rows[9] = ['', '', '', '', 100]
+    rows[11] = ['', '料价', '料价', 1.5]
+    rows[12] = ['', '啤工', '啤工', 2]
+    rows[13] = ['', '装配工', '装工', 1]
+    const source = Uint8Array.from(createXlsxWorkbook([{ name: '明细', rows }])).buffer
+    const file = new File([source], '倍率切换测试.xlsx')
+    Object.defineProperty(file, 'arrayBuffer', { value: async () => source })
+    const template = Uint8Array.from(readFileSync('public/templates/buzzbee-standard-template.bin')).buffer
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, arrayBuffer: async () => template })))
+    Object.defineProperty(window.URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:pricing-test') })
+    Object.defineProperty(window.URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+    const download = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    const convert = vi.spyOn(buzzbeeConverter, 'convertBuzzBeeInternalQuote')
+    const exportWorkbook = vi.spyOn(buzzbeeTemplate, 'createBuzzBeeTemplateWorkbook')
+    const wrapper = mountPanel('pricing-switch-sales')
+    const output = () => wrapper.findAll('button').find(button => button.text() === '输出报客价 Excel')!
+    try {
+      const input = wrapper.get('[data-testid="quote-import-input"]')
+      Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+      await input.trigger('change'); await flushPromises()
+      expect(convert).toHaveBeenCalledTimes(1)
+      const result = convert.mock.results[0]!.value as buzzbeeConverter.BuzzBeeConversionResult
+      expect(result.sheets[0]!.quoteData.injectionBeer).toBe(2.4)
+      await output().trigger('click'); await flushPromises()
+      const selector = wrapper.get('[data-testid="pricing-settings-customer"]')
+      expect(selector.findAll('option').map(option => option.text())).toEqual(['BuzzBee', '迪士尼', 'Dickie', '彩星', '银辉'])
+      await wrapper.get('[data-testid="customer-pricing-settings"] button').trigger('click'); await flushPromises()
+      for (const customer of ['yinhui', 'disney', 'dicky', 'caixing', 'buzzbee']) {
+        await selector.setValue(customer); await flushPromises()
+        expect(customerPricingSettingsApi.get).toHaveBeenLastCalledWith('huaxing', customer)
+        expect(wrapper.get('[data-testid="customer-tab-buzzbee"]').attributes('aria-pressed')).toBe('true')
+        expect(wrapper.text()).toContain('倍率切换测试.xlsx')
+      }
+      await wrapper.get('[data-testid="customer-tab-yinhui"]').trigger('click')
+      expect(selector.element).toHaveProperty('value', 'buzzbee')
+      await wrapper.get('[data-testid="customer-tab-buzzbee"]').trigger('click')
+      await output().trigger('click'); await flushPromises()
+      expect(convert).toHaveBeenCalledTimes(1)
+      expect(customerPricingSettingsApi.snapshot).toHaveBeenCalledTimes(1)
+      expect(customerPricingSettingsApi.save).not.toHaveBeenCalled()
+      expect(exportWorkbook).toHaveBeenCalledTimes(2)
+      for (const call of exportWorkbook.mock.results) {
+        const workbook = parseXlsxWorkbook(Uint8Array.from(call.value as Uint8Array).buffer)
+        expect(workbook.sheets[0]!.rows[6]![6]).toBe(2.4)
+      }
+      expect(wrapper.text()).not.toMatch(/李业务|啤机车间 A|Ben \/ Dickie|陈善杰|郑大能/)
+      useAppStore().setActiveFactory('huakang-a'); await flushPromises()
+      expect(wrapper.find('[data-testid="pricing-settings-customer"]').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('倍率切换测试.xlsx')
+    } finally {
+      wrapper.unmount(); convert.mockRestore(); exportWorkbook.mockRestore(); download.mockRestore()
+      vi.mocked(customerPricingSettingsApi.get).mockReset(); vi.unstubAllGlobals()
+    }
+  })
+
   it.skipIf(!process.env.DICKIE_V2_SAMPLE_DIR)('receives the actual released Dickie quote directly without an upload', async () => {
     const directory = process.env.DICKIE_V2_SAMPLE_DIR!
     const handoff = JSON.parse(readFileSync(join(directory, 'sample-handoff.json'), 'utf8'))
@@ -159,11 +236,11 @@ describe('QuoteCenterPanel customer visibility', () => {
     const customerButtons = wrapper.findAll('button[aria-pressed]')
 
     expect(customerButtons.map((button) => button.text())).toEqual([
-      'BuzzBee 1 单',
-      '迪士尼 1 单',
-      'Dickie 1 单',
-      '彩星 2 单',
-      '银辉 0 单',
+      'BuzzBee',
+      '迪士尼',
+      'Dickie',
+      '彩星',
+      '银辉',
     ])
 
     for (const [selectedIndex, customerButton] of customerButtons.entries()) {
@@ -219,7 +296,8 @@ describe('QuoteCenterPanel customer visibility', () => {
     const wrapper = mountPanel('ordinary-sales-huakang-a', [], 'huakang-a')
     const customerButtons = wrapper.findAll('button[aria-pressed]')
 
-    expect(customerButtons.map((button) => button.text())).toEqual(['360 1 单'])
+    expect(customerButtons.map((button) => button.text())).toEqual(['360'])
+    expect(wrapper.get('[data-testid="pricing-settings-customer"]').findAll('option').map(option => option.text())).toEqual(['360'])
     expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).toContain('支持 .xlsx P4 / 原内部多 Sheet（无需 Breakdown）')
     expect(wrapper.text()).not.toMatch(/BuzzBee|迪士尼|Dickie|彩星/)
