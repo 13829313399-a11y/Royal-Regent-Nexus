@@ -80,9 +80,6 @@ interface CustomerOption {
   name: string
   factoryId: string
   department: string
-  workshop: string
-  owner: string
-  activeQuoteCount: number
 }
 
 interface QuoteSheetDetailRow {
@@ -133,60 +130,44 @@ const customerOptions: CustomerOption[] = [
     name: 'BuzzBee',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '啤机车间 A',
-    owner: '李业务',
-    activeQuoteCount: 1,
   },
   {
     id: 'disney',
     name: '迪士尼',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '啤机车间 A',
-    owner: '李业务',
-    activeQuoteCount: 1,
   },
   {
     id: 'dicky',
     name: 'Dickie',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '啤机车间 A',
-    owner: 'Ben / Dickie',
-    activeQuoteCount: 1,
   },
   {
     id: 'caixing',
     name: '彩星',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '啤机车间 A',
-    owner: '陈善杰',
-    activeQuoteCount: 2,
   },
   {
     id: 'yinhui',
     name: '银辉',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '华兴',
-    owner: '临时独立映射',
-    activeQuoteCount: 0,
   },
   {
     id: 'three-sixty',
     name: '360',
     factoryId: 'huakang-a',
     department: 'sales-business',
-    workshop: '华康 A',
-    owner: '郑大能',
-    activeQuoteCount: 1,
   },
 ]
 
 const selectedCustomerId = ref(
   customerOptions.find((customer) => customer.factoryId === activeFactoryId.value)?.id ?? '',
 )
+// Maintenance selection never feeds the conversion or its frozen pricing snapshot.
+const settingsCustomerId = ref(selectedCustomerId.value)
 const caixingProductTypeOptions = [
   { id: 'plastic', label: '塑胶', detail: '塑胶 / 注塑类报客价' },
   { id: 'plush', label: '毛绒', detail: '毛绒 / 车衣车发类报客价' },
@@ -385,6 +366,7 @@ function isCurrentFactoryTask(factoryId: string, generation: number) {
 
 function resetFactoryTransientState() {
   selectedCustomerId.value = customerOptions.find((customer) => customer.factoryId === activeFactoryId.value)?.id ?? ''
+  settingsCustomerId.value = selectedCustomerId.value
   selectedCaixingProductType.value = 'plastic'
   importedCaixingProductType.value = ''
   detailSearchQuery.value = ''
@@ -435,11 +417,11 @@ const selectedCustomer = computed<CustomerOption>(() => {
       name: '未配置客户',
       factoryId: activeFactoryId.value,
       department: 'sales-business',
-      workshop: '',
-      owner: '',
-      activeQuoteCount: 0,
     }
 })
+
+const settingsCustomer = computed(() => visibleCustomers.value.find(customer => customer.id === settingsCustomerId.value)
+  ?? visibleCustomers.value[0])
 
 const canImportSelectedCustomer = computed(() => {
   if (!selectedCustomer.value.id) return false
@@ -667,7 +649,7 @@ const canExportCustomerQuote = computed(() => {
 const hasSelectedCustomerImport = computed(() => Boolean(selectedImportFileName.value))
 
 const importOverviewMetrics = computed(() => [
-  { label: '当前客户', value: selectedCustomer.value.name, detail: selectedCustomer.value.id === 'caixing' ? `${selectedCaixingProductTypeOption.value.label} · ${selectedCustomer.value.owner}` : `${selectedCustomer.value.workshop} · ${selectedCustomer.value.owner}` },
+  { label: '当前客户', value: selectedCustomer.value.name, detail: selectedCustomer.value.id === 'caixing' ? selectedCaixingProductTypeOption.value.label : '' },
   { label: '内部报价', value: selectedImportFileName.value ? (receivedQuoteNo.value ? '已接收' : '已导入') : '待接收', detail: selectedImportFileName.value || '等待内部报价台放行' },
   {
     label: '操作权限',
@@ -1460,7 +1442,14 @@ async function exportCustomerQuoteExcel() {
 
 <template>
   <div class="space-y-5">
-    <CustomerPricingSettingsPanel v-if="selectedCustomer.id" :factory-id="activeFactoryId" :customer-id="selectedCustomer.id" :customer-name="selectedCustomer.name" />
+    <CustomerPricingSettingsPanel
+      v-if="settingsCustomer"
+      :factory-id="activeFactoryId"
+      :customer-id="settingsCustomer.id"
+      :customer-name="settingsCustomer.name"
+      :customers="artifactCustomerOptions"
+      @update:customer-id="settingsCustomerId = $event"
+    />
     <CustomerPriceArtifactPanel
       :customers="artifactCustomerOptions"
       :selected-customer-id="selectedCustomerId"
@@ -1489,9 +1478,6 @@ async function exportCustomerQuoteExcel() {
           >
             <Users class="size-4" aria-hidden="true" />
             {{ customer.name }}
-            <span class="rounded-full bg-white px-2 py-0.5 text-[11px] text-slate-500 ring-1 ring-slate-200">
-              {{ customer.activeQuoteCount }} 单
-            </span>
           </button>
 
           <button
@@ -1648,7 +1634,7 @@ async function exportCustomerQuoteExcel() {
           >
             <p class="text-xs font-medium text-slate-500">{{ metric.label }}</p>
             <p class="mt-2 text-lg font-semibold text-slate-950">{{ metric.value }}</p>
-            <p class="mt-1 truncate text-xs text-slate-500">{{ metric.detail }}</p>
+            <p v-if="metric.detail" class="mt-1 truncate text-xs text-slate-500">{{ metric.detail }}</p>
           </article>
         </aside>
 

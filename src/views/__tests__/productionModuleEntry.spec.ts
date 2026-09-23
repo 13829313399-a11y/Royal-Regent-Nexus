@@ -191,14 +191,13 @@ describe('production module entry', () => {
     expect(customerPriceConversionViewSource).toContain("['huaxing', 'huakang-a'].includes(appStore.activeProductionFactory.id)")
     expect(customerPriceConversionViewSource).toContain('data-testid="customer-price-mapping-empty"')
     expect(customerPriceConversionViewSource).toContain('BuzzBee、迪士尼、Dickie、彩星和银辉仅适用于华兴，360 仅适用于华康 A')
-    expect(customerPriceConversionViewSource).toContain("{ label: '待转换', value: '0'")
-    expect(customerPriceConversionViewSource).toContain("{ label: '客户范围', value: '待配置'")
+    expect(customerPriceConversionViewSource).not.toMatch(/label: '待转换'|label: '待复核'/)
     expect(customerPriceConversionViewSource).not.toMatch(/InternalPricingPanel/)
     expect(customerPriceConversionViewSource).not.toMatch(/quoteDeskTabs/)
 
     for (const requiredCopy of [
       '导入内部报价',
-      '优先从上方 P4 v2 交接池直接转换',
+      '在上方交接池接收内部报价台已放行的报价',
       '当前客户：',
       '导入后会锁定客户并生成下方明细对比',
       '输出报客价 Excel',

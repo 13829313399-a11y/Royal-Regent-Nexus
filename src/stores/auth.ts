@@ -305,6 +305,13 @@ export const useAuthStore = defineStore('auth', {
       )
     },
     can(permission: string, factoryId?: string, department?: string) {
+      if (permission.startsWith('uv_ops:')) {
+        if (factoryId !== 'huakang-a' || department !== 'production' || !this.hasEffectiveAccessSnapshot) return false
+        const matching = this.matchingEffectiveAccess(permission, factoryId, department)
+        if (matching.some(access => (access.effect === 'deny' || access.allowed === false)
+          && ['override','user_override','inactive_permission','inactive_account'].includes(access.source_type))) return false
+        return matching.some(access => access.effect === 'allow' && access.allowed !== false)
+      }
       const hasWildcardAdmin = this.grants.some((grant) =>
         (grant.role_code === 'admin' || grant.role_id === 'admin')
         && grant.factory_id === '*'

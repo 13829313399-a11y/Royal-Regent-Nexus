@@ -1,0 +1,20 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.14.6",
+  "sqlite_version": "3.53.4",
+  "mode": "accelerated_capacity_model_not_wall_clock_soak",
+  "machines": 20,
+  "hours": 72,
+  "jobs_per_machine_minute": 1,
+  "key_events_per_job": 3,
+  "event_count": 259200,
+  "database_bytes": 243666944,
+  "enqueue_seconds": 37.386,
+  "enqueue_batch_p50_ms": 168.224,
+  "enqueue_batch_p95_ms": 211.966,
+  "local_ack_events_per_second": 6794.49,
+  "restored_after_restart": true,
+  "remaining": 0,
+  "failure_rate": 0,
+  "network": "none; local disk ACK benchmark, not server recovery throughput"
+}

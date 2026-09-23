@@ -67,6 +67,8 @@ backend/models/document-translation/
 !/docs/business/纸箱月结与供应商对账方案.md
 !/docs/business/纸箱全流程核查报告.md
 !/edge/three-d-printing-agent/README.md
+!/edge/uv-printing-agent/README.md
+!/docs/uv-operations/*.md
 !/deploy/three-d-printing/network/README.md
 !/services/three-d-printer-connector/README.md
 
@@ -105,10 +107,6 @@ outputs/history-order-template-20260909/
 outputs/opening-inventory-template-20260909/
 !/docs/business/纸箱上线前最终验收报告.md
 !/docs/business/QC验货运营中心业务需求.md
-# UV printing shared spec, decisions, handoff and browser evidence are deliverables.
-!/docs/uv-printing/
-!/docs/uv-printing/**
-!/connectors/uv-printing/README.md
 
 # Shared Codex configuration/docs; local credentials and runtime state stay private.
 !/docs/agent-routing/*.md
