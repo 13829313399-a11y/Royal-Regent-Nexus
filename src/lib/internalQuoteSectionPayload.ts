@@ -232,9 +232,11 @@ export interface CaixingToolPlanRow {
   material: string
   color: string
   material_cost_hkd: number
+  material_price_hkd_lb: number | null
   machine_size: string
   cycle_time_seconds: number
   process_cost_hkd: number
+  machine_daily_hkd: number | null
 }
 export interface BlowRow extends Omit<QuotePricingMetadata, 'markup_override'> {
   item: string
@@ -465,6 +467,7 @@ export interface CaixingCustomerQuoteFields {
   item_number: string
   item_name: string
   quote_date: string
+  markup_rate_override: number | null
 }
 export interface ThreeSixtyCustomerQuoteFields {
   ms_brand: string
@@ -1656,7 +1659,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         output_count: textValue(row.output_count ?? row.cavity_note), mold_price_rmb: numberValue(row.mold_price_rmb ?? row.mold_price_note), remark: textValue(row.remark ?? row.note),
       })),
       caixing_tool_plan_rows: rows(source.caixing_tool_plan_rows).map((row) => ({
-        ref_no: textValue(row.ref_no), process_type: ['BL', 'CP', 'DC', 'RC'].includes(textValue(row.process_type)) ? textValue(row.process_type) : 'IN', tool_no: textValue(row.tool_no), tooling_cost_hkd: numberValue(row.tooling_cost_hkd), description: textValue(row.description), sku_no: textValue(row.sku_no), cavities: numberValue(row.cavities), up: numberValue(row.up), net_weight_g: numberValue(row.net_weight_g), material_code: numberValue(row.material_code), material: textValue(row.material), color: textValue(row.color), material_cost_hkd: numberValue(row.material_cost_hkd), machine_size: textValue(row.machine_size), cycle_time_seconds: numberValue(row.cycle_time_seconds), process_cost_hkd: numberValue(row.process_cost_hkd),
+        ref_no: textValue(row.ref_no), process_type: ['BL', 'CP', 'DC', 'RC'].includes(textValue(row.process_type)) ? textValue(row.process_type) : 'IN', tool_no: textValue(row.tool_no), tooling_cost_hkd: numberValue(row.tooling_cost_hkd), description: textValue(row.description), sku_no: textValue(row.sku_no), cavities: numberValue(row.cavities), up: numberValue(row.up), net_weight_g: numberValue(row.net_weight_g), material_code: numberValue(row.material_code), material: textValue(row.material), color: textValue(row.color), material_cost_hkd: numberValue(row.material_cost_hkd), material_price_hkd_lb: row.material_price_hkd_lb == null || row.material_price_hkd_lb === '' ? null : numberValue(row.material_price_hkd_lb), machine_size: textValue(row.machine_size), cycle_time_seconds: numberValue(row.cycle_time_seconds), process_cost_hkd: numberValue(row.process_cost_hkd), machine_daily_hkd: row.machine_daily_hkd == null || row.machine_daily_hkd === '' ? null : numberValue(row.machine_daily_hkd),
       })),
     }
   }
@@ -1940,6 +1943,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         item_number: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).item_number),
         item_name: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).item_name),
         quote_date: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).quote_date),
+        markup_rate_override: (() => { const value = objectValue(objectValue(source.customer_quote_fields).caixing).markup_rate_override; return value == null || value === '' ? null : numberValue(value) })(),
       },
       three_sixty: {
         ms_brand: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).ms_brand),

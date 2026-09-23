@@ -149,10 +149,12 @@ export function prepareP4CustomerConversion(
     }
   }
   try {
+    const result = convertCaixingP4InternalQuote(artifact, sourceFileName, pricing)
+    result.sheets[0]!.quoteData.image = extractYinhuiProductImage(buffer, '报价明细')
     return {
       customerId: 'caixing',
       artifact,
-      result: convertCaixingP4InternalQuote(artifact, sourceFileName, pricing),
+      result,
     }
   } catch (error) {
     if (error instanceof P4CustomerMappingError) throw error

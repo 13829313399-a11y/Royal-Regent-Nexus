@@ -484,7 +484,7 @@ describe('customer pricing settings in the other customer converters', () => {
     expect(quote.injectionRows).toEqual(before.injectionRows)
     expect(quote.summary.material.packagingMaterial).toBeCloseTo(before.summary.material.packagingMaterial / 1.02 * 1.1, 4)
     expect(quote.summary.markupRate).toBe(.25)
-    expect(quote.summary.exFactoryUsd).toBe(Number((quote.summary.exFactoryHkd / 8).toFixed(3)))
+    expect(quote.summary.exFactoryUsd).toBe(Math.round(quote.summary.exFactoryHkd / 8 * 1000) / 1000)
     expect(quote.summary.domesticTransportationHkd).toBe(.786)
     const output = createCaixingCustomerQuoteWorkbook(result, readFileSync('public/templates/caixing-plastic-customer-quote-template.bin'))
     const summary = parseXlsxWorkbook(asArrayBuffer(output)).sheets.find(s => s.name === 'Summary')!

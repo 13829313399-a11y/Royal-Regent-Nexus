@@ -59,9 +59,18 @@ def _default(factory_id, customer_id):
     )
 
 
-def _out(row):
-    # Stored complete responses retain their own definitions and default values.
-    return CustomerPriceSettingsOut.model_validate_json(row.settings_json)
+def _out(row, *, merge_current_defaults=False):
+    result = CustomerPriceSettingsOut.model_validate_json(row.settings_json)
+    if not merge_current_defaults:
+        # A frozen snapshot must never acquire parameters introduced after creation.
+        return result
+    defaults = _default(result.factory_id, result.customer_id)
+    return result.model_copy(update={
+        "rates": {**defaults.rates, **result.rates},
+        "texts": {**defaults.texts, **result.texts},
+        "rate_definitions": {**defaults.rate_definitions, **(result.rate_definitions or {})},
+        "text_definitions": {**defaults.text_definitions, **(result.text_definitions or {})},
+    })
 
 
 def _validate(payload, definition):
@@ -75,6 +84,13 @@ def _validate(payload, definition):
                 or (kind == "rate" and not 0 <= value <= 1)
                 or (kind == "price" and value < 0)):
             raise HTTPException(422, f"报价参数数值无效：{key}")
+    if definition.get("name") == "彩星":
+        if payload.rates["minimum_order_qty"] <= 0 or not payload.rates["minimum_order_qty"].is_integer():
+            raise HTTPException(422, "彩星最低订量必须为正整数")
+        if payload.rates["machine_hours_per_day"] <= 0:
+            raise HTTPException(422, "彩星啤机每日计价小时必须大于 0")
+        if payload.rates["machine_utilization_factor"] <= 0:
+            raise HTTPException(422, "彩星啤机有效工时系数必须大于 0")
     if any(len(value) > 10000 for value in payload.texts.values()):
         raise HTTPException(422, "报价文字不能超过10000字")
 
@@ -100,7 +116,7 @@ def get_settings(db: Session, factory_id: str, customer_id: str, user: AuthConte
     _authorize(db, user, factory_id)
     _definition(factory_id, customer_id)
     row = db.get(CustomerPriceSettings, (factory_id, customer_id))
-    return _out(row) if row else _default(factory_id, customer_id)
+    return _out(row, merge_current_defaults=True) if row else _default(factory_id, customer_id)
 
 
 def update_settings(db: Session, factory_id: str, customer_id: str,
@@ -158,7 +174,7 @@ def create_snapshot(db: Session, factory_id: str, customer_id: str, revision: in
             ))
             db.flush()
         db.expire_all()
-        current = _out(db.get(CustomerPriceSettings, (factory_id, customer_id)))
+        current = _out(db.get(CustomerPriceSettings, (factory_id, customer_id)), merge_current_defaults=True)
         snapshot_id = str(uuid4())
         db.add(CustomerPriceSettingsSnapshot(
             id=snapshot_id, factory_id=factory_id, customer_id=customer_id, revision=revision,

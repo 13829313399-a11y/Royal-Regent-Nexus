@@ -31,6 +31,7 @@ describe('InternalQuoteSectionForm Caixing fields', () => {
     expect(wrapper.find('input[aria-label="彩星 Item Number"]').exists()).toBe(true)
     expect(wrapper.find('input[aria-label="彩星 Item Description"]').exists()).toBe(true)
     expect(wrapper.find('input[aria-label="彩星 Quote Date"]').exists()).toBe(true)
+    expect(wrapper.find('input[aria-label="彩星本单加价比例"]').exists()).toBe(true)
     expect(wrapper.find('input[aria-label="彩星 Carton Length"]').exists()).toBe(false)
     expect(wrapper.find('input[aria-label="彩星 Carton CUFT"]').exists()).toBe(false)
     expect(wrapper.find('input[aria-label="彩星 Pcs Per Shipper"]').exists()).toBe(false)
@@ -42,6 +43,7 @@ describe('InternalQuoteSectionForm Caixing fields', () => {
       item_number: '68963',
       item_name: 'Transforming Power Sword',
       quote_date: '2026-06-27',
+      markup_rate_override: null,
     })
   })
 })
