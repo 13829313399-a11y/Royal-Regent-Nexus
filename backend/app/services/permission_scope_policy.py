@@ -277,6 +277,8 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code.startswith("uv_ops:"):
+        return ScopePolicy(("production",), guidance="仅华康 A 生产部；新 UV 权限需单独授权，不沿用退役模块权限")
     if permission_code in INJECTION_SCHEDULING_PERMISSION_CODES:
         return ScopePolicy(
             (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),

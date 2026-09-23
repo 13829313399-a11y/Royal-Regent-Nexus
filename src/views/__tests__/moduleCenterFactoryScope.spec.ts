@@ -15,6 +15,7 @@ import {
   type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import ModuleCenterView from '@/views/ModuleCenterView.vue'
 
 const routeState = vi.hoisted(() => ({
@@ -133,6 +134,62 @@ describe('module center factory scope', () => {
 
     expect(module?.factoryIds).toEqual(['huakang-a'])
     expect(module?.owner).toBe('华康A · 3D部门')
+  })
+
+  it('opens the UV card only for current Huakang A permission and reacts to revocation', async () => {
+    routeState.path = '/modules/production'
+    routeState.params.department = 'production'
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useAppStore()
+    store.setActiveFactory('huakang-a')
+    const wrapper = mount(ModuleCenterView, { global: { plugins: [pinia] } })
+    const findCard = () => wrapper.findAllComponents(ModuleCard).find(
+      (item) => item.props('module').id === 'uv-printing',
+    )
+    const card = findCard()!
+    expect(card.text()).toContain('权限待开通')
+    expect(card.props('module').detailPage).toBe(false)
+    expect(card.find('a').exists()).toBe(false)
+    expect(card.find('.portal-module-card__children').exists()).toBe(false)
+    expect(card.attributes('role')).toBeUndefined()
+    expect(card.attributes('tabindex')).toBeUndefined()
+    await card.trigger('click')
+    await card.trigger('keydown', { key: 'Enter' })
+    await card.trigger('keydown', { key: ' ' })
+    expect(routerPushMock).not.toHaveBeenCalled()
+    const auth = useAuthStore()
+    auth.applySession({
+      id: 'uv-user', username: 'uv-user', display_name: 'UV user', roles: [],
+      permissions: ['uv_ops:read'], grants: [], factory_scopes: ['huakang-a'],
+      department_scopes: ['production'], force_password_change: false,
+      profile: {
+        primary_factory_id: 'huakang-a', primary_department: 'production',
+        position: '', confirmation_status: 'confirmed',
+      },
+      effective_access: [{
+        permission_code: 'uv_ops:read', factory_id: 'huakang-a', department: 'production',
+        effect: 'allow', allowed: true, source_type: 'role_binding', source_ids: ['uv'],
+      }],
+    })
+    await nextTick()
+    expect(findCard()!.props('module').detailPage).toBe(true)
+    expect(findCard()!.find('a').exists()).toBe(true)
+    await findCard()!.trigger('click')
+    expect(routerPushMock).toHaveBeenCalledWith('/modules/production/uv-printing/live?factory=huakang-a')
+    for (const factory of ['group', 'huaxing', 'huakang-b', 'huakang-c', 'huakang-d', 'huadeng'] as const) {
+      store.setActiveFactory(factory)
+      await nextTick()
+      expect(findCard()).toBeUndefined()
+    }
+    store.setActiveFactory('huakang-a')
+    await nextTick()
+    expect(findCard()?.text()).toContain('工作区')
+    auth.applySession({ ...auth.currentUser!, permissions: [], effective_access: [] })
+    await nextTick()
+    expect(findCard()?.text()).toContain('权限待开通')
+    expect(findCard()!.find('a').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it.each(['huaxing', 'huakang-a', 'huakang-b', 'huadeng'] as const)(

@@ -1,0 +1,12 @@
+{
+  "legacy_tables": 30,
+  "legacy_rows": 0,
+  "legacy_content_unchanged": true,
+  "new_tables": 42,
+  "old_permissions": 0,
+  "new_grants": 0,
+  "sqlite_empty_full_chain": "passed",
+  "historical_full_chain": "blocked_by_existing_customer_price_settings_at_revision_0118",
+  "historical_uv_revision_only": "passed",
+  "original_business_schema": "20260917_0117"
+}

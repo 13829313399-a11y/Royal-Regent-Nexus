@@ -1,0 +1,25 @@
+{
+  "executable_sha256": "6371c7e53a0d376fa8ee8879fed5dd1a4e8321ce40bf6f0710a094e6aa76b93a",
+  "enrollment": "DPAPI enrollment library passed; interactive CLI not automated",
+  "first_diagnostics": {
+    "agent_version": "1.0.0",
+    "sqlite_version": "3.53.4",
+    "queue_count": 0,
+    "oldest_age_seconds": 0,
+    "free_disk_bytes": 99363131392,
+    "quarantine_count": 0
+  },
+  "after_restart_diagnostics": {
+    "agent_version": "1.0.0",
+    "sqlite_version": "3.53.4",
+    "queue_count": 0,
+    "oldest_age_seconds": 0,
+    "free_disk_bytes": 99363315712,
+    "quarantine_count": 0
+  },
+  "run_count": 4,
+  "production_before": 2,
+  "production_after": 2,
+  "service_install_tested": false,
+  "data_mode": "synthetic"
+}

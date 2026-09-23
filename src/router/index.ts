@@ -5,10 +5,10 @@ import {
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
 import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
-import { uvPreviewRoutes, uvPrintingRoutes } from '@/features/uv-printing/routes'
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
-import { isUvPreviewEnabled } from '@/features/uv-printing/transport/provider'
+import { uvOperationsRoutes } from '@/features/uv-operations/routes'
+import { UV_BASE, UV_FACTORY } from '@/features/uv-operations/contracts'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
@@ -166,11 +166,8 @@ const routes: RouteRecordRaw[] = [
       permissionDepartment: 'three-d-printing',
     },
   },
-  // 华康A · UV打印管理：正式路由在通用动态模块路由之前明确定义，懒加载工作区与子页。
-  ...uvPrintingRoutes,
   ...sprayProductionRoutes,
-  // DEV 专属样例预览：仅 `VITE_UV_PREVIEW=true` 时注册，生产构建不可达。
-  ...uvPreviewRoutes(isUvPreviewEnabled()),
+  ...uvOperationsRoutes,
   {
     path: '/modules/pmc-warehouse/raw-material-management',
     name: 'raw-material-management',
@@ -404,21 +401,7 @@ const routes: RouteRecordRaw[] = [
       title: '模块详情',
       requiresAuth: true,
     },
-    beforeEnter: (to) => {
-      const department = String(to.params.department ?? '')
-      const moduleId = String(to.params.module ?? '')
 
-      if (!isModuleDepartmentId(department)) {
-        return { path: '/modules/engineering', replace: true }
-      }
-
-      const module = getDepartmentModule(department, moduleId)
-      if (!module || module.detailPage === false) {
-        return { path: `/modules/${department}`, replace: true }
-      }
-
-      return true
-    },
   },
   {
     path: '/modules/molding-sample',
@@ -648,6 +631,9 @@ const finishRouteLoading = () => {
 }
 
 router.beforeEach(async (to, from) => {
+  if (to.path.startsWith(UV_BASE) && to.query.factory !== UV_FACTORY) {
+    return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
+  }
   if (!await guardSprayNavigation(to, from)) return false
   const navigationVersion = ++latestNavigationVersion
   if (routeLoadingTimer) {
@@ -712,6 +698,20 @@ router.beforeEach(async (to, from) => {
 
   if (to.name === 'change-password') {
     return postLoginRedirectLocation(resolvePostLoginRedirect(router, to.query.redirect))
+  }
+
+  if (to.name === 'module-detail') {
+    const department = String(to.params.department ?? '')
+    const moduleId = String(to.params.module ?? '')
+
+    if (!isModuleDepartmentId(department)) {
+      return { path: '/modules/engineering', replace: true }
+    }
+
+    const module = getDepartmentModule(department, moduleId)
+    if (!module || module.detailPage === false) {
+      return { path: `/modules/${department}`, query: to.query, replace: true }
+    }
   }
 
   const permissions = Array.isArray(to.meta.permissions) ? to.meta.permissions as string[] : []
