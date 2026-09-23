@@ -184,6 +184,69 @@ def test_frozen_templates_persist_and_only_explicit_block_rejects(monkeypatch):
         assert client.patch(BASE + "/master-data/" + current["id"], json=payload(changed.json(), data=data)).status_code == 409
 
 
+def test_first_formal_order_records_contract_format_and_reset_uses_next_order(monkeypatch):
+    with make_client(monkeypatch) as client:
+        prepare(client)
+        first_draft = create(client, contract_no="SC700149169/600")
+        assert not [r for r in read(client)["records"] if r["kind"] == "RULE"]
+        first = _submit_order(client, first_draft)
+        rule = next(r for r in read(client)["records"] if r["kind"] == "RULE" and r["customer_code"] == "DICKIE")
+        assert rule["data"]["contract_rule"]["templates"] == ["SC{9}/{3}"]
+        assert rule["data"]["item_rule"]["templates"] == ["{9}"]
+        assert rule["data"]["customer_po_rule"]["templates"] == []
+        assert rule["data"]["contract_rule"]["sample_count"] == 1
+        revision = rule["revision"]
+        _submit_order(client, create(client, contract_no="SC700149169/60000"))
+        rule = next(r for r in read(client)["records"] if r["id"] == rule["id"])
+        assert rule["revision"] == revision
+        assert rule["data"]["contract_rule"]["templates"] == ["SC{9}/{3}"]
+
+        cleared_data = deepcopy(rule["data"])
+        cleared_data["contract_rule"] = {"mode": "AUTO", "reset": True}
+        cleared = client.patch(BASE + "/master-data/" + rule["id"], json=payload(rule, data=cleared_data,
+            reason="删除旧合同号格式，等待下次正式订单重新记录"))
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["data"]["contract_rule"]["templates"] == []
+        assert cleared.json()["data"]["contract_rule"]["reset"] is True
+        assert not [r for r in read(client)["records"] if r["id"] == rule["id"]][0]["data"]["contract_rule"]["templates"]
+        _submit_order(client, create(client, contract_no="CN12345678/1234"))
+        refreshed = next(r for r in read(client)["records"] if r["id"] == rule["id"])
+        assert refreshed["data"]["contract_rule"]["templates"] == ["CN{8}/{4}"]
+        assert refreshed["data"]["contract_rule"]["reset"] is False
+        _submit_order(client, create(client, contract_no="CN12345678/9999", customer_po="PO-12345"))
+        with_po = next(r for r in read(client)["records"] if r["id"] == rule["id"])
+        assert with_po["data"]["customer_po_rule"]["templates"] == ["PO-{5}"]
+        assert with_po["data"]["contract_rule"]["templates"] == ["CN{8}/{4}"]
+        disabled_data = deepcopy(with_po["data"])
+        disabled_data["contract_rule"] = {"mode": "OFF", "reset": True}
+        disabled = client.patch(BASE + "/master-data/" + rule["id"], json=payload(with_po, data=disabled_data,
+            reason="主管明确停用合同号检查"))
+        assert disabled.status_code == 200, disabled.text
+        _submit_order(client, create(client, contract_no="NEW123456"))
+        still_disabled = next(r for r in read(client)["records"] if r["id"] == rule["id"])
+        assert still_disabled["data"]["contract_rule"]["mode"] == "OFF"
+        assert still_disabled["data"]["contract_rule"]["templates"] == []
+        assert any(r["kind"] == "CONTRACT" and r["code"] == first["contract_no"] for r in read(client)["records"])
+        assert next(r for r in client.get(BASE + "/orders", params={"factory_id": "huaxing"}).json()["items"]
+                    if r["id"] == first["id"])["contract_no"] == first["contract_no"]
+
+
+def test_bulk_formal_confirmation_records_only_the_first_customer_format(monkeypatch):
+    with make_client(monkeypatch) as client:
+        prepare(client)
+        first = create(client, contract_no="SC12345678")
+        second = create(client, contract_no="CN123456789")
+        result = client.post(BASE + "/orders/bulk-submit-supplier", json={"factory_id": "huaxing", "items": [
+            {"order_no": first["order_no"], "expected_revision": first["revision"]},
+            {"order_no": second["order_no"], "expected_revision": second["revision"]},
+        ]})
+        assert result.status_code == 200, result.text
+        assert len(result.json()) == 2
+        rule = next(r for r in read(client)["records"] if r["kind"] == "RULE" and r["customer_code"] == "DICKIE")
+        assert rule["data"]["contract_rule"]["templates"] == ["SC{8}"]
+        assert rule["data"]["contract_rule"]["sample_count"] == 1
+
+
 def test_warehouse_creation_atomic_rename_and_grants_preserve_positions(monkeypatch):
     with make_client(monkeypatch) as client:
         prepare(client)

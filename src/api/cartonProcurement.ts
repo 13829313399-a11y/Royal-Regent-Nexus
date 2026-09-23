@@ -405,6 +405,8 @@ export interface CartonImportBatchResponse {
     advance_days?: number | null
     parser_version?: string | null
     warnings?: string[]
+    review_count?: number
+    field_mappings?: Array<{ sheet: string; header_row: number; fields: Record<string, string> }>
     document?: { delivery_note_no?: string; delivery_date?: string; raw_text_excerpt?: string }
     rows?: CartonImportPreviewRow[]
   }
@@ -412,6 +414,16 @@ export interface CartonImportBatchResponse {
 }
 
 export interface CartonImportPreviewRow {
+  template?: string
+  order_type?: string
+  source_reference?: string
+  source_customer_name?: string
+  source_inspection_window?: string
+  source_customer_due_date?: string
+  date_review_required?: boolean
+  production_no?: string
+  customer_due_date?: string
+  procurement_state?: 'NEEDS_ORDER' | 'ORDERED' | 'COMPLETED' | 'REVIEW'
   customer_po?: string
   source_sheet?: string
   source_row?: number
@@ -428,19 +440,19 @@ export interface CartonImportPreviewRow {
   paper_quality?: string
   specification?: string
   delivered_quantity?: number
-  quantity?: number
+  quantity?: number | null
   unit_price?: number
   location?: string
   unit?: string
   carton_rule?: string
   inspection_window?: string
-  match_status?: 'MATCHED' | 'MISSING_ORDER' | 'QUANTITY_MISMATCH' | 'AMBIGUOUS'
+  match_status?: 'MATCHED' | 'MISSING_ORDER' | 'QUANTITY_MISMATCH' | 'AMBIGUOUS' | 'REVIEW_REQUIRED' | 'DATE_MISMATCH'
   order_status?: 'DRAFT' | 'PENDING_SUPPLIER' | 'CONFIRMED' | 'PARTIALLY_RECEIVED' | 'COMPLETED' | 'CANCELLED'
   inspection_start_date?: string
   required_delivery_date?: string
   advance_days?: number
   days_until_delivery?: number | null
-  reminder_status?: 'READY' | 'UPCOMING' | 'DUE_SOON' | 'OVERDUE' | 'MISSING_ORDER' | 'AMBIGUOUS' | 'INVALID_DATE'
+  reminder_status?: 'READY' | 'UPCOMING' | 'DUE_SOON' | 'OVERDUE' | 'MISSING_ORDER' | 'AMBIGUOUS' | 'INVALID_DATE' | 'REVIEW_REQUIRED'
   match_basis?: string
   suggestion?: string
   order_id?: string

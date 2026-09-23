@@ -107,14 +107,44 @@ const templateText = reactive({ contract_rule: '', item_rule: '', customer_po_ru
 const recognizedText = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
 const recognitionErrors = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
 const recognitionHints = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
-function resetNumberRule(key: FormatKey) {
+async function resetNumberRule(key: FormatKey) {
+  if (busy.value) return
+  const label = key === 'customer_po_rule' ? '客户 PO' : key === 'contract_rule' ? '合同号' : '货号'
+  const row = workspace.value.records.find(record => record.id === editingId.value && record.kind === 'RULE')
+  if (row?.data[key]?.mode === 'BLOCK' && form.reason.trim().length < 4) {
+    error.value = `删除${label}强制检查前，请填写具体说明`
+    return
+  }
+  const factory = props.factoryId, editingSession = editingId.value, customerCode = form.customer_code
+  busy.value = true; error.value = ''
+  try {
+    const data = { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), [key]: { ...defaultNumberRule(), reset: true } } as MasterData
+    const saved = await cartonMasterApi.save(factory, {
+      kind: 'RULE', code: row?.code || '', customer_code: customerCode,
+      status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0,
+      reason: row?.data[key]?.mode === 'BLOCK' ? form.reason.trim() : `删除旧${label}格式，等待下次正式订单重新记录`, data,
+    }, row?.id || '')
+    if (factory !== props.factoryId || editingId.value !== editingSession || form.customer_code !== customerCode) return
+    workspace.value.records = row
+      ? workspace.value.records.map(record => record.id === row.id ? { ...saved, sources: record.sources } : record)
+      : [...workspace.value.records, saved]
+    editingId.value = saved.id
+    form.expected_revision = saved.revision
+    originalHardCheck.value = ['contract_rule', 'item_rule', 'customer_po_rule'].some(rule => saved.data[rule as FormatKey]?.mode === 'BLOCK')
+    emit('changed')
+  } catch (e) { error.value = getApiErrorMessage(e); return }
+  finally { busy.value = false }
   form.data[key] = { ...defaultNumberRule(), reset: true }
   templateText[key] = ''; recognizedText[key] = ''; recognitionErrors[key] = ''
-  recognitionHints[key] = '格式已清空，保存后生效；需要时可重新识别。'
+  recognitionHints[key] = `旧${label}格式已删除；历史订单保留。下次确认并锁定该客户订单时，如编号可识别，将自动记录新格式。`
 }
 function identifyNumberRule(key: FormatKey) {
   const rule = form.data[key], raw = (rule.sample_text || '').trim()
   recognitionErrors[key] = ''; recognitionHints[key] = ''
+  if (rule.reset && !raw) {
+    recognitionHints[key] = '旧格式已删除；请填写新样例，或等待下次正式订单自动记录。'
+    return
+  }
   try {
     const values = raw ? raw.split(/[\n\r,，;；]+/).map(value => value.trim()).filter(Boolean) : historicalNumberSamples(workspace.value.records, form.customer_code, key)
     const result = recognizeNumberTemplates(values)
@@ -335,7 +365,7 @@ async function saveWarehouse() {
                 <div class="flex items-center justify-between gap-2 border-b bg-slate-50 px-3 py-2"><b>{{ key === 'customer_po_rule' ? '客户 PO 格式（选填）' : key === 'contract_rule' ? '合同号格式' : '货号格式' }}</b>
                   <select v-model="form.data[key].mode" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式检查方式`" class="h-8 max-w-[65%] rounded border bg-white px-2"><option value="AUTO">样例识别 · 软提醒</option><option value="OFF">不检查</option><option value="WARN">手动规则 · 软提醒</option><option value="BLOCK">手动规则 · 强制检查</option></select>
                 </div>
-                <div class="px-3 pt-2"><button type="button" :disabled="busy" :aria-label="`重置${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式`" class="text-xs font-semibold text-red-600 disabled:opacity-40" @click="resetNumberRule(key)">重置格式</button></div>
+                <div class="px-3 pt-2"><button type="button" :disabled="busy" :aria-label="`删除旧${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式`" class="text-xs font-semibold text-red-600 disabled:opacity-40" @click="resetNumberRule(key)">删除旧格式</button></div>
                 <p v-if="recognitionErrors[key]" role="alert" class="px-3 pt-2 text-xs text-red-600">{{ key === 'customer_po_rule' ? '客户 PO' : key === 'contract_rule' ? '合同号' : '货号' }}识别失败：{{ recognitionErrors[key] }}</p>
                 <p v-if="recognitionHints[key]" class="px-3 pt-2 text-xs text-amber-700">{{ recognitionHints[key] }}</p>
                 <div v-if="form.data[key].mode !== 'OFF'" class="p-3">
@@ -345,9 +375,9 @@ async function saveWarehouse() {
                     <p v-else class="text-slate-500">尚未识别到格式，展开填写样例。</p>
                   </div>
                   <details class="mt-2 border-t border-slate-100 pt-2">
-                    <summary class="cursor-pointer font-semibold text-teal-700">修改格式 / 重新识别</summary>
+                    <summary class="cursor-pointer font-semibold text-teal-700">修改格式</summary>
                     <div class="mt-3 space-y-2 text-slate-600">
-                      <label class="block">编号样例 <span class="text-slate-400">（每行一个；留空参考历史订单）</span><textarea v-model="form.data[key].sample_text" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}识别样例`" rows="2" maxlength="12000" class="mt-1 w-full rounded border bg-white p-2" :placeholder="key === 'contract_rule' ? 'SC700149169/600\nSC700143393/1600' : key === 'customer_po_rule' ? '粘贴该客户的完整客户 PO' : '粘贴该客户的完整货号'" /></label>
+                      <label class="block">编号样例 <span class="text-slate-400">{{ form.data[key].reset ? '（每行一个；删除后留空不会重新读取旧订单）' : '（每行一个；留空参考历史订单）' }}</span><textarea v-model="form.data[key].sample_text" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}识别样例`" rows="2" maxlength="12000" class="mt-1 w-full rounded border bg-white p-2" :placeholder="key === 'contract_rule' ? 'SC700149169/600\nSC700143393/1600' : key === 'customer_po_rule' ? '粘贴该客户的完整客户 PO' : '粘贴该客户的完整货号'" /></label>
                       <div class="flex flex-wrap items-center gap-2"><button type="button" :disabled="busy" class="rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`识别${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式`" @click="identifyNumberRule(key)">识别格式</button><span class="text-[11px] text-slate-500">识别参考：{{ form.data[key].source === 'MANUAL' ? '填写样例' : form.data[key].source === 'HISTORY' ? '历史订单' : '尚未识别' }} · {{ form.data[key].sample_count || 0 }} 个编号</span></div>
                       <label class="block">格式结果（可修改，每行一种）<textarea v-model="templateText[key]" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}固定格式`" rows="2" maxlength="5200" class="mt-1 w-full rounded border bg-white p-2 font-mono" placeholder="SC{9}/{3,4}" @input="editNumberTemplate(key)" /></label>
                       <p class="text-[11px] leading-5 text-slate-500">{9} = 9 位数字；{3,4} = 3 或 4 位。文字及符号按原样匹配；留空不执行分段检查。</p>

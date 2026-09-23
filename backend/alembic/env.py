@@ -31,6 +31,7 @@ from app.models import (
     carton_positions,
     carton_master,  # noqa: F401
     carton_supplier_settlement,  # noqa: F401
+    carton_supplier_portal,  # noqa: F401
     customer_order,  # noqa: F401
     customer_order_ledger,  # noqa: F401
     internal_quote,  # noqa: F401

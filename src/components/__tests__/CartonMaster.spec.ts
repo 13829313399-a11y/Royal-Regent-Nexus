@@ -448,11 +448,13 @@ it('keeps recognition errors on their own field and persists an explicit format 
   await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
   expect(wrapper.text()).toContain('货号识别失败')
   expect(wrapper.get<HTMLTextAreaElement>('[aria-label="客户 PO（选填）固定格式"]').element.value).toBe('PO-{6}')
-  await wrapper.get('[aria-label="重置货号格式"]').trigger('click')
+  await wrapper.get('[aria-label="删除旧货号格式"]').trigger('click')
   expect(wrapper.text()).not.toContain('货号识别失败')
   expect(wrapper.get<HTMLTextAreaElement>('[aria-label="货号固定格式"]').element.value).toBe('')
   await wrapper.get('form').trigger('submit'); await flushPromises()
-  const saved = save.mock.calls[0]![1].data
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(save.mock.calls[0]![1].data.customer_po_rule.templates).toEqual([])
+  const saved = save.mock.calls[1]![1].data
   expect(saved.item_rule.reset).toBe(true)
   expect(saved.item_rule.templates).toEqual([])
   expect(saved.customer_po_rule.templates).toEqual(['PO-{6}'])
@@ -461,5 +463,57 @@ it('keeps recognition errors on their own field and persists an explicit format 
   await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
   expect(wrapper.get<HTMLTextAreaElement>('[aria-label="货号固定格式"]').element.value).toBe('')
   expect(wrapper.text()).not.toContain('货号识别失败')
+  wrapper.unmount(); get.mockRestore(); save.mockRestore()
+})
+
+it('deletes a saved contract format immediately without restoring old order samples', async () => {
+  const old = { ...defaultMasterData(), lead_days: 6, contract_rule: {
+    ...defaultMasterData().contract_rule, templates: ['OLD{5}'], frozen: true, sample_text: 'OLD00001', source: 'MANUAL' as const,
+  } }
+  const rule: MasterRecord = { ...record('RULE'), kind: 'RULE', code: '', data: old }
+  const history: MasterRecord = { ...record('H'), kind: 'CONTRACT', sources: [{
+    order_no: 'O1', order_date: '', contract_no: 'OLD00001', item_no: '203307004', configuration: {},
+  }] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [rule, history] })
+  const saved: MasterRecord = { ...rule, revision: 2, data: { ...old, contract_rule: { ...defaultMasterData().contract_rule, reset: true } } }
+  const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(saved)
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [{ id: 'C', customer_code: '360', customer_name: '360' } as any] } })
+  await flushPromises()
+  await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
+  await wrapper.get('[aria-label="删除旧合同号格式"]').trigger('click'); await flushPromises()
+  expect(save).toHaveBeenCalledOnce()
+  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({
+    expected_revision: 1, data: expect.objectContaining({ lead_days: 6, contract_rule: expect.objectContaining({ templates: [], reset: true }) }),
+  }), 'RULE')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('')
+  await wrapper.get('[aria-label="识别合同号格式"]').trigger('click')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('')
+  expect(wrapper.text()).toContain('旧格式已删除')
+  wrapper.unmount(); get.mockRestore(); save.mockRestore()
+})
+
+it('persists deletion when a customer has history but no saved rule', async () => {
+  const history: MasterRecord = { ...record('H'), kind: 'CONTRACT', sources: [{
+    order_no: 'O1', order_date: '', contract_no: 'OLD00001', item_no: '203307004', configuration: {},
+  }] }
+  const cleared: MasterRecord = { ...record('NEW-RULE'), kind: 'RULE', code: '', data: {
+    ...defaultMasterData(), contract_rule: { ...defaultMasterData().contract_rule, reset: true },
+  } }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValueOnce({ ...emptyMaster(), can_manage: true, records: [history] })
+    .mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [history, cleared] })
+  const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(cleared)
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [{ id: 'C', customer_code: '360', customer_name: '360' } as any] } })
+  await flushPromises()
+  await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('OLD{5}')
+  await wrapper.get('[aria-label="删除旧合同号格式"]').trigger('click'); await flushPromises()
+  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({
+    customer_code: '360', expected_revision: 0,
+    data: expect.objectContaining({ contract_rule: expect.objectContaining({ templates: [], reset: true }) }),
+  }), '')
+  await wrapper.get('[aria-label="关闭基础资料编辑"]').trigger('click')
+  await wrapper.findAll('button').find(button => button.text() === '刷新资料')!.trigger('click'); await flushPromises()
+  await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('')
   wrapper.unmount(); get.mockRestore(); save.mockRestore()
 })

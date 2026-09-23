@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import CartonOpeningInventoryImport from '@/components/CartonOpeningInventoryImport.vue'
 import CartonHistoryImportDialog from '@/components/CartonHistoryImportDialog.vue'
+import CartonBusinessImportSummary from '@/components/CartonBusinessImportSummary.vue'
 import CartonSupplierSettlement from '@/components/CartonSupplierSettlement.vue'
 import { estimateMoney, moneyLabel, unitCostLabel, moneyTotals, type InventoryMoney } from '@/lib/cartonInventoryMoney'
 import CartonPaperPicker from '@/components/CartonPaperPicker.vue'
@@ -13,6 +14,7 @@ import { cartonMasterApi, emptyMaster, masterDueRules, masterPaperOptions, type 
 
 import CartonLocationPicker from '@/components/CartonLocationPicker.vue'
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
+import CartonReceiptPaperSelection from '@/components/CartonReceiptPaperSelection.vue'
 import { cartonPositionsApi, type CartonLocation, type LocationAllocation } from '@/api/cartonPositions'
 
 import { computed, nextTick, onBeforeUnmount, reactive, ref, shallowRef, watch, type Component } from 'vue'
@@ -251,6 +253,7 @@ const receiptOrderSort = ref<'DUE_ASC' | 'DUE_DESC' | 'DEFAULT'>('DUE_ASC')
 const showReceiptDialog = ref(false)
 const receiptDialogTrigger = ref<HTMLButtonElement | null>(null)
 const manualReceiptOrderNos = ref<string[]>([])
+const receiptContractKey = ref('')
 const receiptDueCalendarValue = shallowRef<DateRange>({ start: undefined, end: undefined })
 const receiptPlannedDueFrom = computed(() => receiptDueCalendarValue.value.start?.toString() ?? '')
 const receiptPlannedDueTo = computed(() => receiptDueCalendarValue.value.end?.toString() ?? '')
@@ -453,6 +456,7 @@ const orderRecords = ref<CartonOrderResponse[]>([])
 const inventoryOrderLines = computed(() => new Map(orderRecords.value.flatMap(order => order.lines.map(line => [line.id, line] as const))))
 
 interface ReceiptReviewLine extends ReceiptLineSeed {
+  selectedForReceipt?: boolean
   replenishmentIssueId?: string
   replacementResponsibility?: string
   replacementDocumentNo?: string
@@ -786,7 +790,7 @@ const canUndoScheduleImport = computed(() => authStore.can('carton_procurement:i
   || authStore.can('carton_procurement:import', selectedFactoryId.value, 'carton'))
 
 const visibleWeeklyChecks = computed(() => localWeeklyChecks.filter((row) =>
-  (!weeklyOnlyAttention.value || row.result !== '已匹配') && matchesCustomer(row.customer)
+  (!weeklyOnlyAttention.value || row.result !== '已匹配' || row.procurementState === '需要下单' || row.dateReviewRequired) && matchesCustomer(row.customer)
   && includesSearch([
     row.reference,
     row.poNumbers,
@@ -794,6 +798,8 @@ const visibleWeeklyChecks = computed(() => localWeeklyChecks.filter((row) =>
     row.itemNo,
     row.productName,
     row.result,
+    row.procurementState ?? '',
+    row.businessCustomer ?? '',
   ]),
 ))
 
@@ -989,11 +995,15 @@ function selectVisibleExceptions(selected: boolean) {
   selectedExceptionNos.value = selected ? [...new Set([...selectedExceptionNos.value, ...ids])] : selectedExceptionNos.value.filter(id => !ids.includes(id))
 }
 
+const selectedReceiptLines = computed(() => receiptLines.filter(row => row.selectedForReceipt !== false))
+const hasManualPaperSelection = computed(() => receiptLines.some(row => row.selectedForReceipt !== undefined))
+const manualReceiptDialogSelection = computed(() => receiptEntryMode.value === 'MANUAL' && hasManualPaperSelection.value && !currentReceipt.value)
+const receiptDialogRows = computed(() => manualReceiptDialogSelection.value ? receiptLines : visibleReceiptLines.value)
 const visibleReceiptLines = computed(() => {
-  if (showReceiptDialog.value) return receiptLines
+  if (showReceiptDialog.value) return selectedReceiptLines.value
   const term = globalSearch.value.trim().toLowerCase()
-  if (!term) return receiptLines
-  return receiptLines.filter((row) => [
+  if (!term) return selectedReceiptLines.value
+  return selectedReceiptLines.value.filter((row) => [
     receiptDeliveryNoteNo.value,
     row.orderNo,
     row.description,
@@ -1005,7 +1015,10 @@ const manualReceiptOrders = computed(() => orderRecords.value.filter((order) =>
   ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(order.status)
   && order.lines.some((line) => Number(line.remaining_quantity) > 0),
 ))
-const visibleManualReceiptOrders = computed(() => manualReceiptOrders.value.filter((order) => {
+function contractReceiptKey(order: CartonOrderResponse) {
+  return JSON.stringify([order.customer_code, order.contract_no])
+}
+const filteredManualReceiptOrders = computed(() => manualReceiptOrders.value.filter((order) => {
   const term = globalSearch.value.trim().toLowerCase()
   const text = [order.order_no, order.customer_name, order.contract_no, order.customer_po || '', order.item_no, order.product_name,
     ...order.lines.flatMap((line) => [line.packaging_type, line.paper_quality, line.specification])].join(' ').toLowerCase()
@@ -1014,6 +1027,19 @@ const visibleManualReceiptOrders = computed(() => manualReceiptOrders.value.filt
     && (!receiptPlannedDueTo.value || order.due_date <= receiptPlannedDueTo.value)
     && (!term || term.split(/\s+/).every((word) => text.includes(word)))
 }))
+const receiptContractOptions = computed(() => {
+  const groups = new Map<string, { key: string; label: string; count: number }>()
+  for (const order of filteredManualReceiptOrders.value) {
+    const key = contractReceiptKey(order)
+    const group = groups.get(key)
+    if (group) group.count += 1
+    else groups.set(key, { key, label: `${order.customer_name} · ${order.contract_no}`, count: 1 })
+  }
+  return [...groups.values()]
+})
+const visibleManualReceiptOrders = computed(() => filteredManualReceiptOrders.value.filter(order =>
+  !receiptContractKey.value || contractReceiptKey(order) === receiptContractKey.value,
+))
 
 const receiptLedgerRows = computed(() => {
   const rows = visibleManualReceiptOrders.value.map((order) => ({
@@ -1031,7 +1057,7 @@ const receiptLedgerRows = computed(() => {
 })
 
 const receiptUnsubmittedOrderNos = computed(() => {
-  const lineIds = new Set(receiptLines
+  const lineIds = new Set(selectedReceiptLines.value
     .filter((line) => line.sourceType === 'FORMAL_ORDER')
     .map((line) => line.orderLineId)
     .filter(Boolean))
@@ -1101,8 +1127,12 @@ function receiptLineEffectiveQuantity(row: ReceiptReviewLine) {
 
 const manualReceiptWillCompleteOrder = computed(() =>
   receiptEntryMode.value === 'MANUAL'
-  && receiptLines.length > 0
-  && receiptLines.every((row) => receiptLineEffectiveQuantity(row) >= row.remainingQuantity),
+  && selectedManualReceiptOrders.value.length > 0
+  && selectedManualReceiptOrders.value.every(order => order.lines.every(line => {
+    const remaining = Number(line.remaining_quantity)
+    const draft = selectedReceiptLines.value.find(row => row.orderLineId === line.id)
+    return remaining <= 0 || Boolean(draft && receiptLineEffectiveQuantity(draft) >= remaining)
+  })),
 )
 const receiptConfirmButtonLabel = computed(() => {
   if (currentReceipt.value?.status === 'REVERSED') return '已作废 / 冲销'
@@ -1115,7 +1145,7 @@ const receiptConfirmButtonLabel = computed(() => {
 })
 
 const pendingOrderCount = computed(() => localOrders.filter(row => !['已完成', '已取消'].includes(row.status) && matchesCustomer(row.customer) && includesSearch([row.id, row.contractNo, row.itemNo, row.customer])).length)
-const weeklyRiskCount = computed(() => visibleWeeklyChecks.value.filter((row) => row.result !== '已匹配').length)
+const weeklyRiskCount = computed(() => visibleWeeklyChecks.value.filter((row) => row.result !== '已匹配' || row.procurementState === '需要下单' || row.dateReviewRequired).length)
 const inspectionReminderCount = computed(() => visibleInspectionChecks.value.filter((row) => row.reminderStatus !== 'READY').length)
 const weeklyAttentionCount = computed(() => weeklyRiskCount.value + inspectionReminderCount.value)
 const openExceptionCount = computed(() => visibleExceptions.value.filter((row) => row.status !== '已关闭').length)
@@ -1298,6 +1328,7 @@ watch(selectedFactoryId, (factoryId, previousFactory) => {
   selectedCustomer.value = '全部客户'
   clearReceiptPlannedDueRange()
   receiptOrderSort.value = 'DUE_ASC'
+  receiptContractKey.value = ''
   orderForm.customerCode = ''
   receiptImportBatch.value = null
   receiptImportRows.value = []
@@ -1418,6 +1449,7 @@ watch([selectedCustomer, globalSearch], () => {
     ? `当前显示全部客户的${apiConnected.value ? '正式台账' : '只读演示记录'}。`
     : `当前已筛选客户：${selectedCustomer.value}。`
 })
+watch(selectedCustomer, () => { receiptContractKey.value = '' })
 
 watch(selectedOrderNos, () => {
   if (!exportingSelectedOrders.value && !issuingSelectedPurchaseOrders.value) combinedPurchaseOrderMessage.value = ''
@@ -1435,9 +1467,14 @@ function setActiveTab(tab: CartonTab) {
 }
 
 function populateManualReceipt(orderNos: string[]) {
+  const previous = new Map((!currentReceipt.value && receiptEntryMode.value === 'MANUAL' ? receiptLines : [])
+    .filter(line => line.selectedForReceipt !== undefined)
+    .map(line => [line.orderLineId, line]))
+  const fresh = previous.size === 0
   receiptCorrectionNote.value = ''
   const orders = manualReceiptOrders.value.filter((item) => orderNos.includes(item.order_no))
   currentReceipt.value = null
+  receiptEntryMode.value = 'MANUAL'
   receiptLines.splice(0)
   if (!orders.length) {
     actionMessage.value = manualReceiptOrders.value.length
@@ -1447,14 +1484,15 @@ function populateManualReceipt(orderNos: string[]) {
   }
   receiptLines.push(...orders.flatMap((order) => order.lines
     .filter((line) => Number(line.remaining_quantity) > 0)
-    .map((line) => ({
+    .map((line) => previous.get(line.id) ?? ({
         id: `MANUAL-${line.id}`,
+        selectedForReceipt: false,
         orderNo: `${order.order_no} · ${order.contract_no}-${order.item_no}`,
         description: `${line.packaging_type} ${line.paper_quality}`.trim(),
         specification: `${line.specification}${line.dimension_unit ? ` ${line.dimension_unit}` : ''}`,
-        deliveryQuantity: Number(line.remaining_quantity),
+        deliveryQuantity: 0,
         unitPrice: Number(line.unit_price),
-        receivedQuantity: Number(line.remaining_quantity),
+        receivedQuantity: 0,
         damagedQuantity: 0,
         rejectedQuantity: 0,
         unusableQuantity: 0,
@@ -1472,16 +1510,47 @@ function populateManualReceipt(orderNos: string[]) {
         remainingQuantity: Number(line.remaining_quantity),
       }))))
   for (const row of receiptLines) {
+    if (previous.has(row.orderLineId)) continue
     const options = receiptReplacementOptions(row)
     if (options.length === 1 && Number(options[0]!.remaining_quantity) >= row.remainingQuantity) {
       row.replenishmentIssueId = options[0]!.replenishment_issue_id
     }
     if (options.length) changeReceiptReplacement(row)
   }
-  receiptDeliveryNoteNo.value = ''
-  receiptDeliveryDate.value = businessTodayIso()
-  receiptAcceptanceDate.value = businessTodayIso()
-  actionMessage.value = `已批量载入 ${orders.length} 张订单的 ${receiptLines.length} 条待收纸品；默认全量收料，可逐行修改。`
+  if (fresh) {
+    receiptDeliveryNoteNo.value = ''
+    receiptDeliveryDate.value = businessTodayIso()
+    receiptAcceptanceDate.value = businessTodayIso()
+  }
+  actionMessage.value = `已展开 ${orders.length} 张订单的 ${receiptLines.length} 条待收纸品；请勾选本次到货纸品并填写实际收到数量。`
+}
+
+function selectReceiptContract() {
+  if (!receiptContractKey.value) return
+  manualReceiptOrderNos.value = [...new Set([...manualReceiptOrderNos.value, ...visibleManualReceiptOrders.value.map(order => order.order_no)])]
+  populateManualReceipt(manualReceiptOrderNos.value)
+}
+
+function selectReceiptPaper(id: string, checked: boolean) {
+  if (currentReceipt.value || savingReceipt.value) return
+  const row = receiptLines.find(line => line.id === id)
+  if (row) row.selectedForReceipt = checked
+}
+
+function updateReceiptActual(row: ReceiptReviewLine, quantity: number) {
+  if (currentReceipt.value || savingReceipt.value || row.selectedForReceipt === false) return
+  if (receiptEntryMode.value === 'MANUAL' && (row.deliveryQuantity === row.receivedQuantity || !row.deliveryQuantity)) {
+    row.deliveryQuantity = quantity
+  }
+  row.receivedQuantity = quantity
+}
+
+function setReceiptPaperQuantity(id: string, quantity: number) {
+  if (currentReceipt.value || savingReceipt.value) return
+  const row = receiptLines.find(line => line.id === id)
+  if (!row || row.selectedForReceipt === false) return
+  row.receivedQuantity = quantity
+  row.deliveryQuantity = quantity
 }
 
 function restoreReceiptFocus(event: Event) {
@@ -1494,6 +1563,7 @@ function clearReceiptPlannedDueRange() {
 }
 
 function clearReceiptOrderFilters() {
+  receiptContractKey.value = ''
   globalSearch.value = ''
   selectedCustomer.value = '全部客户'
   clearReceiptPlannedDueRange()
@@ -2072,6 +2142,8 @@ function mapWeeklyPreview(row: CartonImportPreviewRow, index: number): WeeklyChe
     MISSING_ORDER: '疑似漏单',
     QUANTITY_MISMATCH: '数量差异',
     AMBIGUOUS: '待人工选择',
+    REVIEW_REQUIRED: '待人工确认',
+    DATE_MISMATCH: '交期差异',
   } as Record<string, string>)[row.match_status ?? ''] ?? '待核对'
   const tone: CartonTone = row.match_status === 'MATCHED'
     ? 'green'
@@ -2080,6 +2152,14 @@ function mapWeeklyPreview(row: CartonImportPreviewRow, index: number): WeeklyChe
       : 'amber'
   return {
     id: `WK-${row.source_sheet ?? 'S'}-${row.source_row ?? index + 1}`,
+    orderType: row.order_type,
+    sourceReference: row.source_reference,
+    sourceLocation: row.source_sheet ? `${row.source_sheet} · 第 ${row.source_row} 行` : '',
+    customerDueDate: row.customer_due_date || row.source_customer_due_date,
+    dateReviewRequired: row.date_review_required,
+    procurementState: ({ NEEDS_ORDER: '需要下单', ORDERED: '已下单', COMPLETED: '已完单', REVIEW: '待确认' } as Record<string, string>)[row.procurement_state ?? ''] ?? (row.template ? '待确认' : ''),
+    quantityMissing: row.quantity === null || row.quantity === undefined,
+    businessCustomer: row.source_customer_name,
     reference: row.reference ?? row.contract_no ?? '',
     poNumbers: row.po_numbers ?? '',
     customer: row.customer_name || '待识别客户',
@@ -2087,7 +2167,7 @@ function mapWeeklyPreview(row: CartonImportPreviewRow, index: number): WeeklyChe
     productName: row.product_name ?? '',
     quantity: Number(row.quantity ?? 0),
     cartonRule: row.carton_rule ?? '',
-    inspectionWindow: row.inspection_window ?? '',
+    inspectionWindow: row.inspection_window || row.source_inspection_window || '',
     result,
     tone,
     linkedOrder: row.order_no ?? '—',
@@ -2105,6 +2185,8 @@ function mapException(row: CartonExceptionResponse): CartonExceptionRow {
       MISSING_ORDER: '疑似漏单',
       RECEIPT_UNMATCHED: '收料未匹配',
       QUANTITY_MISMATCH: '数量差异',
+      SCHEDULE_DATE_MISMATCH: '业务交期差异',
+      SCHEDULE_REVIEW_REQUIRED: '业务明细待确认',
       AMBIGUOUS_MATCH: '匹配不唯一',
       ORDER_APPENDED: '追单提醒',
       INSPECTION_ORDER_MISSING: '查货合同漏单',
@@ -2495,6 +2577,7 @@ async function confirmSubmitSupplierOrder() {
       closeSubmitSupplierDialog()
       auditRecords.value = await cartonProcurementApi.listAuditEvents(selectedFactoryId.value)
       actionMessage.value = `已确认并锁定 ${savedOrders.length} 张订单${skippedCount ? `；跳过 ${skippedCount} 张非待下单订单` : ''}。`
+      void refreshMaster()
     } catch (error) {
       actionMessage.value = `批量确认锁定失败：${getApiErrorMessage(error)}`
     } finally {
@@ -2516,6 +2599,7 @@ async function confirmSubmitSupplierOrder() {
     closeSubmitSupplierDialog()
     auditRecords.value = await cartonProcurementApi.listAuditEvents(selectedFactoryId.value)
     actionMessage.value = `订单 ${saved.order_no} 已确认并锁定普通编辑；有权限的仓管或主管可追加或减单。`
+    void refreshMaster()
   } catch (error) {
     actionMessage.value = `确认锁定失败：${getApiErrorMessage(error)}`
   } finally {
@@ -3079,6 +3163,7 @@ function mapInspectionPreview(row: CartonImportPreviewRow, index: number): Inspe
     MISSING_ORDER: '疑似漏单',
     AMBIGUOUS: '待人工关联',
     INVALID_DATE: '送货日期待补充',
+    REVIEW_REQUIRED: '待人工确认',
   } as Record<string, string>)[row.reminder_status ?? ''] ?? '待核对'
   const tone: CartonTone = row.reminder_status === 'READY'
     ? 'green'
@@ -4138,9 +4223,10 @@ function focusReceiptField(field: HTMLInputElement | null) {
 async function saveReceiptFeedback() {
   if (savingReceipt.value || currentReceipt.value) return
   receiptFeedbackMessage.value = ''
-  if (!receiptLines.length) {
+  const candidateLines = selectedReceiptLines.value
+  if (!candidateLines.length) {
     setReceiptFeedback(receiptEntryMode.value === 'MANUAL'
-      ? '当前没有可登记的订单明细，请先选择待收料订单。'
+      ? '请先勾选本次到货的纸品，并填写本次实际收到数量。'
       : '当前没有已复核的送货明细；导入文件后须先完成字段匹配，才能提交正式收料反馈。')
     return
   }
@@ -4148,11 +4234,11 @@ async function saveReceiptFeedback() {
     setReceiptFeedback('入库未完成：请先导入送货单并完成订单纸品匹配。')
     return
   }
-  if (receiptLines.some((row) => row.sourceType === 'FORMAL_ORDER' && !row.orderLineId)) {
+  if (candidateLines.some((row) => row.sourceType === 'FORMAL_ORDER' && !row.orderLineId)) {
     setReceiptFeedback('入库未完成：正式订单收料必须先完成订单纸品匹配。')
     return
   }
-  const incompleteAdHocLine = receiptLines.find((row) => row.sourceType === 'AD_HOC' && [
+  const incompleteAdHocLine = candidateLines.find((row) => row.sourceType === 'AD_HOC' && [
     row.customerCode,
     row.itemNo,
     row.packagingType,
@@ -4164,7 +4250,7 @@ async function saveReceiptFeedback() {
     setReceiptFeedback('入库未完成：非正式/打板收料必须补齐客户、货号、纸品类型、纸质、规格和单位。')
     return
   }
-  if (receiptLines.some(row => row.sourceType === 'FORMAL_ORDER' && (Number(row.deliveryQuantity) > 0 || Number(row.receivedQuantity) > 0) && (!row.paperQuality.trim() || !row.specification.trim()))) {
+  if (candidateLines.some(row => row.sourceType === 'FORMAL_ORDER' && (Number(row.deliveryQuantity) > 0 || Number(row.receivedQuantity) > 0) && (!row.paperQuality.trim() || !row.specification.trim()))) {
     setReceiptFeedback('入库未完成：请补齐本次收料纸品的纸质和规格。')
     return
   }
@@ -4187,19 +4273,27 @@ async function saveReceiptFeedback() {
     focusReceiptField(manualAcceptanceDateInput.value)
     return
   }
-  if (receiptLines.some((row) => Number(row.damagedQuantity) + Number(row.rejectedQuantity) + Number(row.unusableQuantity) > Number(row.receivedQuantity))) {
+  if (candidateLines.some((row) => Number(row.damagedQuantity) + Number(row.rejectedQuantity) + Number(row.unusableQuantity) > Number(row.receivedQuantity))) {
     setReceiptFeedback('入库未完成：破损、拒收和其他不可用数量之和不能大于实收数量。')
     return
   }
-  if (receiptLines.some((row) => Number(row.receivedQuantity) > Number(row.deliveryQuantity))) {
+  if (candidateLines.some((row) => Number(row.receivedQuantity) > Number(row.deliveryQuantity))) {
     setReceiptFeedback('入库未完成：实收数量不能大于送货数量。')
     return
   }
-  if (receiptEntryMode.value === 'MANUAL' && receiptLines.some((row) => row.sourceType === 'FORMAL_ORDER' && receiptLineEffectiveQuantity(row) > row.remainingQuantity)) {
+  if (receiptEntryMode.value === 'MANUAL' && candidateLines.some((row) => row.sourceType === 'FORMAL_ORDER' && receiptLineEffectiveQuantity(row) > row.remainingQuantity)) {
     setReceiptFeedback('入库未完成：人工录入的有效收料不能大于该订单明细当前待收数量。')
     return
   }
-  const linesToSubmit = receiptLines.filter((row) => Number(row.deliveryQuantity) > 0 || Number(row.receivedQuantity) > 0)
+  if (candidateLines.some(row => [row.deliveryQuantity, row.receivedQuantity, row.damagedQuantity, row.rejectedQuantity, row.unusableQuantity].some(value => !Number.isFinite(Number(value)) || Number(value) < 0))) {
+    setReceiptFeedback('入库未完成：收料数量必须是大于或等于 0 的有效数字。')
+    return
+  }
+  if (receiptEntryMode.value === 'MANUAL' && candidateLines.some(row => row.selectedForReceipt === true && Number(row.receivedQuantity) <= 0)) {
+    setReceiptFeedback('入库未完成：请为每条勾选纸品填写大于 0 的本次实际收到数量；未到货纸品请取消勾选。')
+    return
+  }
+  const linesToSubmit = candidateLines.filter((row) => Number(row.deliveryQuantity) > 0 || Number(row.receivedQuantity) > 0)
   if (linesToSubmit.some(receiptReplacementNeedsReview)) {
     setReceiptFeedback('历史补单收料尚未关联，请核对原收料后通过冲销重录关联补单，再继续入库。')
     return
@@ -4222,7 +4316,7 @@ async function saveReceiptFeedback() {
   const includesAdHoc = hasAdHocReceiptLines.value
   const targetOrderNos = manualReceiptOrderNos.value.join('、')
   try {
-    for (const row of receiptLines) {
+    for (const row of candidateLines) {
       const effective = receiptLineEffectiveQuantity(row)
       if (effective > 0 && (!row.allocations?.length || row.allocations.some(part => !part.location_id || Number(part.quantity) <= 0) || Math.abs(row.allocations.reduce((sum, part) => sum + Number(part.quantity), 0) - effective) > 0.00001)) {
         throw new Error(`${row.contractNo} ${row.itemNo}：请选择入库仓位，分仓合计须等于有效入库数量。`)
@@ -4602,6 +4696,7 @@ function refreshDemo() {
         </label>
 
         <div class="ml-auto flex items-center gap-2">
+          <RouterLink :to="{ path: '/carton-supplier-management', query: { factory: selectedFactoryId } }" class="inline-flex h-8 items-center rounded-lg border border-teal-200 bg-teal-50 px-2.5 text-xs font-semibold text-teal-800">供应商协同</RouterLink>
           <span class="hidden h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-medium text-slate-600 md:inline-flex">
             <Building2 class="size-4" aria-hidden="true" />
             当前厂区：{{ activeFactory.shortName }}
@@ -5084,8 +5179,8 @@ function refreshDemo() {
           <article v-if="weeklyCheckMode === 'ORDER_GAP'" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 class="font-bold text-slate-950">每周排期防漏单核对</h2>
-                <p class="mt-1 text-[11px] text-slate-500">按 Reference、PO、客户、货号和数量检查正式订单，发现漏下或数量不一致。</p>
+                <h2 class="font-bold text-slate-950">业务 ITEM 排期与下单核对</h2>
+                <p class="mt-1 text-[11px] text-slate-500">使用公司统一业务排期表，读取各 ITEM 表的正单，核对合同、客户 PO、货号、数量和客户走货期。</p>
               </div>
               <input ref="weeklyFileInput" type="file" accept=".xlsx,.xls" class="hidden" aria-label="选择每周排期文件" @change="handleWeeklyFile">
               <div class="flex flex-wrap items-center gap-2">
@@ -5094,7 +5189,7 @@ function refreshDemo() {
                   download="纸箱每周排期核对导入模板.xlsx"
                   class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
                 >
-                  <Download class="size-4" />下载排期模板
+                  <Download class="size-4" />旧版排期模板（兼容）
                 </a>
                 <button
                   type="button"
@@ -5102,7 +5197,7 @@ function refreshDemo() {
                   class="inline-flex h-9 items-center gap-2 rounded-lg border border-teal-200 bg-white px-3 text-[12px] font-bold text-teal-700 transition hover:bg-teal-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
                   @click="triggerWeeklyImport"
                 >
-                  <FileSpreadsheet class="size-4" />{{ importingWeekly ? '正在核对…' : '导入本周排期' }}
+                  <FileSpreadsheet class="size-4" />{{ importingWeekly ? '正在核对…' : '导入业务排期' }}
                 </button>
               </div>
             </div>
@@ -5135,9 +5230,9 @@ function refreshDemo() {
           <article class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 shadow-sm">
             <div class="flex gap-2 font-bold"><ShieldCheck class="size-4 shrink-0" />{{ weeklyCheckMode === 'ORDER_GAP' ? '防误建规则' : '提醒计算规则' }}</div>
             <div v-if="weeklyCheckMode === 'ORDER_GAP'" class="mt-2 space-y-1.5 text-[11px] leading-5">
-              <p>先按客户采购单号缩小范围，再优先用 <strong>Reference + 货号</strong> 匹配；只有合同号或货号能唯一确定订单时才回退匹配。</p>
+              <p>统一模板读取全部 <strong>ITEM 表</strong>，按合同号、货号及填写的客户 PO 核对。SO / Reference 单独保留；正单参与核对，其余类型待人工确认。旧排期模板仍兼容。</p>
               <p>唯一匹配后，将模板“数量”与正式订单的<strong>产品订单数量</strong>直接比较，不按装箱数换算。</p>
-              <p>结果分为已匹配、数量差异、疑似漏单或多个候选；导入只生成核对结果和待办，<strong>不会自动创建正式纸箱订单</strong>。</p>
+              <p>显示需要下单、已下单、已完单及数量或交期差异。文件缺少某行不代表取消订单；导入只生成核对结果和待办，<strong>不会自动创建或修改正式纸箱订单</strong>。</p>
             </div>
             <p v-else class="mt-2 text-[11px] leading-5">最迟交货日＝验货开始日－提前天数；只生成纸箱部提醒，<strong>不会修改订单或库存</strong>。</p>
           </article>
@@ -5169,23 +5264,24 @@ function refreshDemo() {
           <div v-else class="px-4 py-8 text-center text-[11px] text-slate-400">尚无当前类型的核对历史</div>
         </article>
 
+        <CartonBusinessImportSummary v-if="weeklyCheckMode === 'ORDER_GAP'" :batch="weeklyImportHistory.find(batch => batch.id === selectedWeeklyBatchId)" />
         <div v-if="weeklyCheckMode === 'ORDER_GAP'" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="overflow-x-auto">
             <table class="min-w-[1250px] w-full text-left">
               <thead class="bg-slate-50 text-[10px] font-bold text-slate-500">
-                <tr><th class="px-4 py-3">Reference / PO.NO</th><th class="px-4 py-3">客户 / 产品</th><th class="px-4 py-3">货号</th><th class="px-4 py-3 text-right">数量</th><th class="px-4 py-3">装箱</th><th class="px-4 py-3">验货期</th><th class="px-4 py-3">核对结果</th><th class="px-4 py-3">关联订单</th><th class="px-4 py-3">处理建议</th></tr>
+                <tr><th class="px-4 py-3">合同 / 客户 PO</th><th class="px-4 py-3">客户 / 产品</th><th class="px-4 py-3">货号 / 订单类型</th><th class="px-4 py-3 text-right">数量</th><th class="px-4 py-3">装箱</th><th class="px-4 py-3">验货期 / 客户走货期</th><th class="px-4 py-3">核对结果</th><th class="px-4 py-3">关联订单 / 下单状态</th><th class="px-4 py-3">处理建议</th></tr>
               </thead>
               <tbody class="divide-y divide-slate-100">
                 <tr v-for="row in visibleWeeklyChecks" :key="row.id" class="hover:bg-slate-50/80">
-                  <td class="px-4 py-3"><div class="font-semibold">{{ row.reference }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.poNumbers }}</div></td>
-                  <td class="px-4 py-3"><div class="font-semibold">{{ row.customer }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.productName }}</div></td>
-                  <td class="px-4 py-3 font-mono font-semibold">{{ row.itemNo }}</td>
-                  <td class="px-4 py-3 text-right font-semibold tabular-nums">{{ formatNumber(row.quantity) }}</td>
+                  <td class="px-4 py-3"><div class="font-semibold">{{ row.reference || '合同待确认' }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.poNumbers }}</div><div v-if="row.sourceReference" class="text-[10px] text-slate-500">SO: {{ row.sourceReference }}</div></td>
+                  <td class="px-4 py-3"><div class="font-semibold">{{ row.customer }}</div><div v-if="row.businessCustomer && row.businessCustomer !== row.customer" class="text-[10px] text-slate-500">业务客名：{{ row.businessCustomer }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.productName }}</div></td>
+                  <td class="px-4 py-3"><div class="font-mono font-semibold">{{ row.itemNo }}</div><div class="text-[10px] text-slate-500">{{ row.orderType }}</div></td>
+                  <td class="px-4 py-3 text-right font-semibold tabular-nums">{{ row.quantityMissing ? '待确认' : formatNumber(row.quantity) }}</td>
                   <td class="px-4 py-3">{{ row.cartonRule }}</td>
-                  <td class="px-4 py-3 font-semibold">{{ row.inspectionWindow }}</td>
+                  <td class="px-4 py-3"><div class="font-semibold">{{ row.inspectionWindow || '验货期未填' }}</div><div v-if="row.customerDueDate" class="text-[10px] text-slate-500">走货 {{ row.customerDueDate }}</div><div v-if="row.dateReviewRequired" class="text-[10px] text-amber-800">日期原文待确认</div></td>
                   <td class="px-4 py-3"><span class="rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(row.tone)">{{ row.result }}</span></td>
-                  <td class="px-4 py-3 font-mono text-[11px]">{{ row.linkedOrder }}</td>
-                  <td class="max-w-[280px] px-4 py-3 text-[11px] text-slate-500">{{ row.suggestion }}</td>
+                  <td class="px-4 py-3 text-[11px]"><div class="font-mono">{{ row.linkedOrder }}</div><div class="mt-1 font-semibold" :class="row.procurementState === '需要下单' ? 'text-amber-800' : 'text-teal-800'">{{ row.procurementState }}</div></td>
+                  <td class="max-w-[280px] px-4 py-3 text-[11px] text-slate-500"><div>{{ row.suggestion }}</div><div class="mt-1 text-[10px]">{{ row.sourceLocation }}</div></td>
                 </tr>
                 <tr v-if="visibleWeeklyChecks.length === 0"><td colspan="9" class="px-4 py-12 text-center text-slate-400">没有符合当前筛选条件的核对记录</td></tr>
               </tbody>
@@ -5225,18 +5321,19 @@ function refreshDemo() {
           <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-5 py-4">
             <div>
               <h2 class="flex items-center gap-2 text-lg font-bold text-slate-950"><Truck class="size-5 text-teal-700" />待收订单 <span class="text-sm font-medium text-slate-500">{{ visibleManualReceiptOrders.length }} 张</span></h2>
-              <p class="mt-1 text-sm text-slate-500">选择本次送货的订单，再登记送货单及实际收料数量。</p>
+              <p class="mt-1 text-sm text-slate-500">先选择大单（合同），再勾选外箱、内箱、平卡等本次到货纸品；各纸品可分批入库。</p>
             </div>
           </div>
           <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-50 px-5 py-3">
             <div class="flex flex-1 flex-wrap items-center gap-3">
               <label class="inline-flex items-center gap-2 text-xs font-semibold text-slate-600"><span>客户</span><select v-model="selectedCustomer" aria-label="待收订单客户筛选" class="h-9 min-w-28 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-teal-500"><option v-for="customer in customerFilterOptions" :key="customer" :value="customer">{{ customer }}</option></select></label>
+              <label class="inline-flex items-center gap-2 text-xs font-semibold text-slate-600"><span>选择大单（合同）</span><select v-model="receiptContractKey" aria-label="选择收料合同" class="h-9 max-w-80 rounded-lg border border-slate-200 bg-white px-3 text-xs" @change="selectReceiptContract"><option value="">全部合同</option><option v-for="contract in receiptContractOptions" :key="contract.key" :value="contract.key">{{ contract.label }} · {{ contract.count }} 张订单</option></select></label>
               <div role="group" aria-label="计划交期筛选" class="flex items-center gap-2 text-xs font-semibold text-slate-600">
                 <span>计划交期</span>
                 <DateRangeFilter v-model="receiptDueCalendarValue" label="选择计划交期范围" />
               </div>
               <label class="inline-flex items-center gap-2 text-xs font-semibold text-slate-600"><span>排序</span><select v-model="receiptOrderSort" aria-label="待收订单排序" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700 outline-none focus:border-teal-500"><option value="DUE_ASC">交期由近到远</option><option value="DUE_DESC">交期由远到近</option><option value="DEFAULT">下单日期最新</option></select></label>
-              <button v-if="selectedCustomer !== '全部客户' || globalSearch || receiptPlannedDueFrom || receiptPlannedDueTo" type="button" class="h-9 px-2 text-xs font-semibold text-teal-700 hover:text-teal-900" @click="clearReceiptOrderFilters">清除筛选</button>
+              <button v-if="selectedCustomer !== '全部客户' || globalSearch || receiptPlannedDueFrom || receiptPlannedDueTo || receiptContractKey" type="button" class="h-9 px-2 text-xs font-semibold text-teal-700 hover:text-teal-900" @click="clearReceiptOrderFilters">清除筛选</button>
             </div>
             <div class="flex items-center gap-4"><span class="text-sm text-slate-600">已选 <strong class="text-teal-700">{{ selectedManualReceiptOrders.length }}</strong> 张</span><button ref="receiptDialogTrigger" type="button" :disabled="!selectedManualReceiptOrders.length || !apiConnected" class="inline-flex h-10 items-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-bold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-40" @click="openManualReceipt()"><Plus class="size-4" />登记所选订单收料</button></div>
             <CartonSelectionSummary :rows="selectedManualReceiptOrders.map(row => ({ id: row.order_no, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no}${row.customer_po ? ' · PO ' + row.customer_po : ''}` }))" :visible-ids="visibleManualReceiptOrders.map(row => row.order_no)" unit="张" @clear="manualReceiptOrderNos = []; populateManualReceipt([])" @remove="manualReceiptOrderNos = manualReceiptOrderNos.filter(id => id !== $event); populateManualReceipt(manualReceiptOrderNos)" />
@@ -5309,6 +5406,7 @@ function refreshDemo() {
                 <button type="button" title="悬停预览完整明细，单击后保持显示" class="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-600 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700" :aria-label="`查看 ${row.id} 完整订单明细`" @mouseenter="previewOrderDetails(row.id)" @mouseleave="closeOrderDetailsPreview(row.id)" @focus="previewOrderDetails(row.id)" @blur="closeOrderDetailsPreview(row.id)" @click="openOrderDetails(row.id)">明细</button>
               </div>
             </div>
+            <CartonReceiptPaperSelection v-if="manualReceiptOrderNos.includes(row.id) && hasManualPaperSelection && receiptEntryMode === 'MANUAL' && !currentReceipt && !showReceiptDialog" :order="manualReceiptOrders.find(order => order.order_no === row.id)!" :drafts="receiptLines" :disabled="savingReceipt" @select="selectReceiptPaper" @quantity="setReceiptPaperQuantity" />
             </article>
             <p v-if="!visibleManualReceiptOrders.length" class="py-10 text-center text-sm text-slate-500">{{ backendLoading ? '正在加载待收订单…' : '当前没有符合条件的待收订单。只有已确认锁定或部分收料的订单会显示在这里。' }}</p>
           </div>
@@ -5743,8 +5841,8 @@ function refreshDemo() {
           </div>
           <div class="flex flex-wrap gap-x-6 gap-y-2 text-sm text-slate-600">
             <p v-if="receiptCorrectionNote" class="w-full text-amber-700">{{ receiptCorrectionNote }} <span v-if="!currentReceipt">本次使用带“更正”后缀的新登记号，请核对后确认入库。</span></p>
-            <span v-if="receiptEntryMode === 'MANUAL'">已选订单 <strong>{{ selectedManualReceiptOrders.length }} 张</strong></span><span>本次明细 <strong>{{ receiptLines.length }} 行</strong></span><span>有效收料<strong class="text-teal-700">{{ formatNumber(receiptTotals.effective) }}</strong></span>
-            <span v-if="receiptEntryMode === 'MANUAL' && receiptLines.length" :class="manualReceiptWillCompleteOrder ? 'text-emerald-700' : 'text-amber-700'">{{ manualReceiptWillCompleteOrder ? '全部收齐，确认后自动完成' : '分批收料，确认后保持部分收料' }}</span>
+            <span v-if="receiptEntryMode === 'MANUAL'">已选订单 <strong>{{ selectedManualReceiptOrders.length }} 张</strong></span><span>本次明细 <strong>{{ selectedReceiptLines.length }} 行</strong></span><span>有效收料<strong class="text-teal-700">{{ formatNumber(receiptTotals.effective) }}</strong></span>
+            <span v-if="receiptEntryMode === 'MANUAL' && selectedReceiptLines.length && !currentReceipt" :class="manualReceiptWillCompleteOrder ? 'text-emerald-700' : 'text-amber-700'">{{ manualReceiptWillCompleteOrder ? '全部收齐，确认后自动完成' : '分批收料，未收齐的订单继续待收' }}</span>
           </div>
         <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="border-b border-slate-200 px-4 py-3">
@@ -5753,63 +5851,65 @@ function refreshDemo() {
             <p class="mt-1 text-sm text-slate-500">有效收料 = 实收 − 破损 − 拒收 − 其他不可用；非正式/打板明细不补建正式订单，人工核对后点击确认入库，即生成库存流水并进入月结。</p>
           </div>
           <div class="overflow-x-auto">
-            <table class="min-w-[1440px] w-full text-left">
+            <table data-testid="receipt-review-table" class="min-w-[1440px] w-full text-left">
               <thead class="bg-slate-50 text-xs font-bold text-slate-500">
-                <tr><th class="px-4 py-3">合同 / 货号</th><th class="px-4 py-3">纸品类型 / 纸质 / 规格</th><th class="px-4 py-3 text-right">送货数量</th><th class="px-4 py-3 text-center">单价 / 单位 *</th><th class="px-3 py-3 text-right">实收</th><th class="px-3 py-3 text-right">破损</th><th class="px-3 py-3 text-right">拒收</th><th class="px-3 py-3 text-right">其他不可用</th><th class="px-4 py-3 text-right">有效收料</th><th class="px-4 py-3">仓位</th><th class="px-4 py-3">来源</th></tr>
+                <tr><th v-if="manualReceiptDialogSelection" class="px-3 py-3 whitespace-nowrap">本次收料</th><th class="px-4 py-3">合同 / 货号</th><th class="px-4 py-3">纸品类型 / 纸质 / 规格</th><th class="px-4 py-3 text-right">送货数量</th><th class="px-4 py-3 text-center">单价 / 单位 *</th><th class="px-3 py-3 text-right">实收</th><th class="px-3 py-3 text-right">破损</th><th class="px-3 py-3 text-right">拒收</th><th class="px-3 py-3 text-right">其他不可用</th><th class="px-4 py-3 text-right">有效收料</th><th class="px-4 py-3">仓位</th><th class="px-4 py-3">来源</th></tr>
               </thead>
               <tbody class="divide-y divide-slate-100">
-                <tr v-for="row in visibleReceiptLines" :key="row.id" class="[&>td]:align-top [&>td]:py-3">
+                <tr v-for="row in receiptDialogRows" :key="row.id" class="[&>td]:align-top [&>td]:py-3">
+                  <td v-if="manualReceiptDialogSelection" class="px-3 py-3"><input type="checkbox" :aria-label="`选择纸品 ${row.orderLineId}`" :checked="row.selectedForReceipt !== false" :disabled="savingReceipt" class="size-4 accent-teal-600" @change="selectReceiptPaper(row.id, ($event.target as HTMLInputElement).checked)"></td>
                   <td class="px-4 py-3">
                     <div v-if="row.sourceType === 'AD_HOC'" class="w-52 space-y-1.5">
                       <span class="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-bold text-amber-800 ring-1 ring-inset ring-amber-200">非正式 / 打板收料</span>
-                      <select v-model="row.customerCode" :aria-label="`${row.id} 客户`" :disabled="Boolean(currentReceipt) || savingReceipt" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50"><option value="">请选择客户 *</option><option v-for="customer in activeCustomers" :key="customer.id" :value="customer.customer_code">{{ customer.customer_name }}</option></select>
-                      <input v-model="row.contractNo" :aria-label="`${row.id} 合同或来源号`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="合同/打板来源号（可空）" class="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
-                      <input v-model="row.itemNo" :aria-label="`${row.id} 货号`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="货号 *" class="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <select v-model="row.customerCode" :aria-label="`${row.id} 客户`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50"><option value="">请选择客户 *</option><option v-for="customer in activeCustomers" :key="customer.id" :value="customer.customer_code">{{ customer.customer_name }}</option></select>
+                      <input v-model="row.contractNo" :aria-label="`${row.id} 合同或来源号`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="合同/打板来源号（可空）" class="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <input v-model="row.itemNo" :aria-label="`${row.id} 货号`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="货号 *" class="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                     </div>
                     <div v-else class="space-y-1">
                       <div class="break-all font-mono text-sm font-semibold">{{ row.contractNo || '—' }}</div>
+                      <div class="text-xs text-slate-500">{{ orderRecords.find(order => order.lines.some(line => line.id === row.orderLineId))?.customer_name }} · {{ row.orderNo }}</div>
                       <div v-if="customerPoForLine(row.orderLineId)" class="break-all text-xs text-teal-700">客户 PO {{ customerPoForLine(row.orderLineId) }}</div>
                       <div class="break-all font-mono text-xs text-slate-500">货号 {{ row.itemNo || '—' }}</div>
                     </div>
                   </td>
                   <td class="px-4 py-3">
                     <div v-if="row.sourceType === 'AD_HOC'" class="w-48 space-y-1.5">
-                      <input v-model="row.packagingType" :aria-label="`${row.id} 纸品类型`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="纸品类型 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
-                      <input v-model="row.paperQuality" :aria-label="`${row.id} 纸质`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="纸质 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
-                      <input v-model="row.specification" :aria-label="`${row.id} 规格`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="规格 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <input v-model="row.packagingType" :aria-label="`${row.id} 纸品类型`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="纸品类型 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <input v-model="row.paperQuality" :aria-label="`${row.id} 纸质`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="纸质 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <input v-model="row.specification" :aria-label="`${row.id} 规格`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="规格 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                     </div>
                     <div v-else-if="orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && (!line.paper_quality || !line.specification)))" class="w-48 space-y-1.5">
                       <div class="font-semibold">{{ row.packagingType }}</div>
-                      <input v-model="row.paperQuality" :aria-label="`${row.id} 纸质`" :disabled="Boolean(currentReceipt) || savingReceipt || orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && Boolean(line.paper_quality)))" placeholder="补填纸质 *" class="h-8 w-full rounded-md border border-amber-300 px-2 text-xs">
-                      <input v-model="row.specification" :aria-label="`${row.id} 规格`" :disabled="Boolean(currentReceipt) || savingReceipt || orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && Boolean(line.specification)))" placeholder="补填规格 *" class="h-8 w-full rounded-md border border-amber-300 px-2 text-xs">
+                      <input v-model="row.paperQuality" :aria-label="`${row.id} 纸质`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false || orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && Boolean(line.paper_quality)))" placeholder="补填纸质 *" class="h-8 w-full rounded-md border border-amber-300 px-2 text-xs">
+                      <input v-model="row.specification" :aria-label="`${row.id} 规格`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false || orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && Boolean(line.specification)))" placeholder="补填规格 *" class="h-8 w-full rounded-md border border-amber-300 px-2 text-xs">
                       <p class="text-[10px] text-amber-700">历史资料待补齐，入库后保留记录</p>
                     </div>
                     <template v-else><div class="font-semibold">{{ row.description }}</div><div class="mt-0.5 text-xs text-slate-500">{{ row.specification }}</div></template>
                   </td>
-                  <td class="px-4 py-2 text-right"><input v-if="receiptEntryMode === 'MANUAL' || row.sourceType === 'AD_HOC'" v-model.number="row.deliveryQuantity" :aria-label="`${row.id} 送货数量`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0" :max="row.sourceType === 'FORMAL_ORDER' && receiptEntryMode === 'MANUAL' ? row.remainingQuantity : undefined" class="ml-auto block h-8 w-24 rounded-md border border-slate-200 px-2 text-right font-semibold outline-none focus:border-blue-500 disabled:bg-slate-50"><div v-else class="font-semibold tabular-nums">{{ row.deliveryQuantity }}</div><div v-if="receiptEntryMode === 'MANUAL' && row.sourceType === 'FORMAL_ORDER'" class="mt-0.5 text-[9px] text-slate-400">待收 {{ formatNumber(row.remainingQuantity) }}</div></td>
+                  <td class="px-4 py-2 text-right"><input v-if="receiptEntryMode === 'MANUAL' || row.sourceType === 'AD_HOC'" v-model.number="row.deliveryQuantity" :aria-label="`${row.id} 送货数量`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" type="number" min="0" :max="row.sourceType === 'FORMAL_ORDER' && receiptEntryMode === 'MANUAL' ? row.remainingQuantity : undefined" class="ml-auto block h-8 w-24 rounded-md border border-slate-200 px-2 text-right font-semibold outline-none focus:border-blue-500 disabled:bg-slate-50"><div v-else class="font-semibold tabular-nums">{{ row.deliveryQuantity }}</div><div v-if="receiptEntryMode === 'MANUAL' && row.sourceType === 'FORMAL_ORDER'" class="mt-0.5 text-[9px] text-slate-400">待收 {{ formatNumber(row.remainingQuantity) }}</div></td>
                   <td class="px-4 py-2">
                     <div class="mx-auto w-28 text-center">
-                      <div v-if="freeReplacement(row)" class="text-xs font-semibold text-teal-700">供应商责任 · 免费补货<br>应付 0，不计月结<span class="mt-1 block font-normal text-slate-500">库存成本沿用原补单出库成本</span></div><input v-else v-model.number="row.unitPrice" :aria-label="`${row.id} 单价`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0.000001" step="0.000001" :aria-required="receiptLineEffectiveQuantity(row) > 0" :aria-invalid="receiptLineEffectiveQuantity(row) > 0 && !(Number(row.unitPrice) > 0)" placeholder="必填：送货单单价" class="block h-8 w-full rounded-md border border-slate-200 px-2 text-right text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <div v-if="freeReplacement(row)" class="text-xs font-semibold text-teal-700">供应商责任 · 免费补货<br>应付 0，不计月结<span class="mt-1 block font-normal text-slate-500">库存成本沿用原补单出库成本</span></div><input v-else v-model.number="row.unitPrice" :aria-label="`${row.id} 单价`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" type="number" min="0.000001" step="0.000001" :aria-required="row.selectedForReceipt !== false && receiptLineEffectiveQuantity(row) > 0" :aria-invalid="row.selectedForReceipt !== false && receiptLineEffectiveQuantity(row) > 0 && !(Number(row.unitPrice) > 0)" placeholder="必填：送货单单价" class="block h-8 w-full rounded-md border border-slate-200 px-2 text-right text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                       <div v-if="row.sourceType === 'AD_HOC'" class="mt-1 flex justify-center gap-1">
-                        <select v-model="row.currency" :aria-label="`${row.id} 币种`" :disabled="Boolean(currentReceipt) || savingReceipt" class="h-7 w-16 rounded border border-slate-200 bg-white px-1 text-[9px] disabled:bg-slate-50"><option value="CNY">CNY</option><option value="HKD">HKD</option><option value="USD">USD</option></select>
-                        <input v-model="row.unit" :aria-label="`${row.id} 单位`" :disabled="Boolean(currentReceipt) || savingReceipt" placeholder="单位" class="h-7 w-12 rounded border border-slate-200 px-1 text-[9px] disabled:bg-slate-50">
+                        <select v-model="row.currency" :aria-label="`${row.id} 币种`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" class="h-7 w-16 rounded border border-slate-200 bg-white px-1 text-[9px] disabled:bg-slate-50"><option value="CNY">CNY</option><option value="HKD">HKD</option><option value="USD">USD</option></select>
+                        <input v-model="row.unit" :aria-label="`${row.id} 单位`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="单位" class="h-7 w-12 rounded border border-slate-200 px-1 text-[9px] disabled:bg-slate-50">
                       </div>
                       <div v-else class="mt-1 text-xs text-slate-500">{{ row.currency }} / {{ row.unit }}</div>
-                      <div v-if="!freeReplacement(row) && receiptLineEffectiveQuantity(row) > 0 && !(Number(row.unitPrice) > 0)" class="mt-1 text-xs text-red-600">{{ currentReceipt?.status === 'POSTED' ? '历史入库待核价' : '请填写大于 0 的单价' }}</div>
+                      <div v-if="!freeReplacement(row) && row.selectedForReceipt !== false && receiptLineEffectiveQuantity(row) > 0 && !(Number(row.unitPrice) > 0)" class="mt-1 text-xs text-red-600">{{ currentReceipt?.status === 'POSTED' ? '历史入库待核价' : '请填写大于 0 的单价' }}</div>
                     </div>
                   </td>
-                  <td class="px-3 py-2"><input v-model.number="row.receivedQuantity" :aria-label="`${row.id} 实收`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right font-semibold outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
-                  <td class="px-3 py-2"><input v-model.number="row.damagedQuantity" :aria-label="`${row.id} 破损`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
-                  <td class="px-3 py-2"><input v-model.number="row.rejectedQuantity" :aria-label="`${row.id} 拒收`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
-                  <td class="px-3 py-2"><input v-model.number="row.unusableQuantity" :aria-label="`${row.id} 其他不可用`" :disabled="Boolean(currentReceipt) || savingReceipt" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
-                  <td class="px-4 py-3 text-right text-[14px] font-bold text-teal-700 tabular-nums">{{ receiptLineEffectiveQuantity(row) }}</td>
-                  <td class="px-4 py-2"><CartonReceiptAllocations v-model="row.allocations" :effective="receiptLineEffectiveQuantity(row)" :locations="inventoryLocations" :factory-id="selectedFactoryId" :disabled="Boolean(currentReceipt) || savingReceipt" @created="refreshLocations" /></td>
-                  <td class="px-4 py-3"><p v-if="receiptReplacementNeedsReview(row)" class="mb-2 text-xs text-red-600">历史补单收料未关联，请核对并冲销重录。</p><div v-if="receiptReplacementOptions(row).length && !currentReceipt" class="mb-2 min-w-40"><select v-model="row.replenishmentIssueId" :aria-label="`${row.id} 收料来源`" :disabled="savingReceipt" class="h-8 w-full rounded border px-1 text-xs" @change="changeReceiptReplacement(row)"><option :value="undefined">普通采购收料</option><option v-for="option in receiptReplacementOptions(row)" :key="option.replenishment_issue_id" :value="option.replenishment_issue_id">{{ option.document_no }} · {{ option.responsibility === 'SUPPLIER' ? '供应商责任／免费' : '我方责任／计费' }} · 待补 {{ option.remaining_quantity }}</option></select><p class="mt-1 text-xs text-slate-500">普通货与不同补单请分开登记。</p></div><p v-if="row.replacementDocumentNo" class="mb-1 text-xs text-teal-700">{{ row.replacementDocumentNo }} · {{ freeReplacement(row) ? '免费补货' : '我方责任／计入月结' }}</p><span class="inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ring-1 ring-inset" :class="row.sourceType === 'AD_HOC' ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-violet-50 text-violet-700 ring-violet-200'">{{ row.sourceLabel }}</span><button v-if="row.sourceType === 'AD_HOC' && !currentReceipt" type="button" class="mt-2 block text-[9px] font-bold text-red-600" @click="removeAdHocReceiptLine(row.id)">移除此行</button></td>
+                  <td class="px-3 py-2"><input :value="row.receivedQuantity || ''" @input="updateReceiptActual(row, Number(($event.target as HTMLInputElement).value))" :aria-label="`${row.id} 实收`" :max="receiptEntryMode === 'MANUAL' ? row.remainingQuantity : undefined" step="0.0001" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right font-semibold outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
+                  <td class="px-3 py-2"><input v-model.number="row.damagedQuantity" :aria-label="`${row.id} 破损`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
+                  <td class="px-3 py-2"><input v-model.number="row.rejectedQuantity" :aria-label="`${row.id} 拒收`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
+                  <td class="px-3 py-2"><input v-model.number="row.unusableQuantity" :aria-label="`${row.id} 其他不可用`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
+                  <td class="px-4 py-3 text-right text-[14px] font-bold text-teal-700 tabular-nums">{{ row.selectedForReceipt === false ? '—' : receiptLineEffectiveQuantity(row) }}</td>
+                  <td class="px-4 py-2"><CartonReceiptAllocations v-model="row.allocations" :effective="receiptLineEffectiveQuantity(row)" :locations="inventoryLocations" :factory-id="selectedFactoryId" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" @created="refreshLocations" /></td>
+                  <td class="px-4 py-3"><p v-if="receiptReplacementNeedsReview(row)" class="mb-2 text-xs text-red-600">历史补单收料未关联，请核对并冲销重录。</p><div v-if="receiptReplacementOptions(row).length && !currentReceipt" class="mb-2 min-w-40"><select v-model="row.replenishmentIssueId" :aria-label="`${row.id} 收料来源`" :disabled="savingReceipt || row.selectedForReceipt === false" class="h-8 w-full rounded border px-1 text-xs" @change="changeReceiptReplacement(row)"><option :value="undefined">普通采购收料</option><option v-for="option in receiptReplacementOptions(row)" :key="option.replenishment_issue_id" :value="option.replenishment_issue_id">{{ option.document_no }} · {{ option.responsibility === 'SUPPLIER' ? '供应商责任／免费' : '我方责任／计费' }} · 待补 {{ option.remaining_quantity }}</option></select><p class="mt-1 text-xs text-slate-500">普通货与不同补单请分开登记。</p></div><p v-if="row.replacementDocumentNo" class="mb-1 text-xs text-teal-700">{{ row.replacementDocumentNo }} · {{ freeReplacement(row) ? '免费补货' : '我方责任／计入月结' }}</p><span class="inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ring-1 ring-inset" :class="row.sourceType === 'AD_HOC' ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-violet-50 text-violet-700 ring-violet-200'">{{ row.sourceLabel }}</span><button v-if="row.sourceType === 'AD_HOC' && !currentReceipt" type="button" class="mt-2 block text-[9px] font-bold text-red-600" @click="removeAdHocReceiptLine(row.id)">移除此行</button></td>
                 </tr>
-                <tr v-if="visibleReceiptLines.length === 0"><td colspan="11" class="px-4 py-12 text-center text-slate-400">没有找到匹配的送货明细</td></tr>
+                <tr v-if="receiptDialogRows.length === 0"><td :colspan="manualReceiptDialogSelection ? 12 : 11" class="px-4 py-12 text-center text-slate-400">{{ receiptEntryMode === 'MANUAL' ? '所选订单暂无待收纸品' : '没有找到匹配的送货明细' }}</td></tr>
               </tbody>
               <tfoot class="border-t border-slate-200 bg-slate-50 font-bold">
-                <tr><td colspan="2" class="px-4 py-3">本页合计</td><td class="px-4 py-3 text-right">{{ receiptTotals.delivered }}</td><td class="px-4 py-3 text-right">—</td><td class="px-3 py-3 text-right">{{ receiptTotals.received }}</td><td colspan="3" class="px-3 py-3 text-right text-red-600">不可用 {{ receiptTotals.unusable }}</td><td class="px-4 py-3 text-right text-teal-700">{{ receiptTotals.effective }}</td><td colspan="2" class="px-4 py-3">—</td></tr>
+                <tr><td :colspan="manualReceiptDialogSelection ? 3 : 2" class="px-4 py-3">本次合计</td><td class="px-4 py-3 text-right">{{ receiptTotals.delivered }}</td><td class="px-4 py-3 text-right">—</td><td class="px-3 py-3 text-right">{{ receiptTotals.received }}</td><td colspan="3" class="px-3 py-3 text-right text-red-600">不可用 {{ receiptTotals.unusable }}</td><td class="px-4 py-3 text-right text-teal-700">{{ receiptTotals.effective }}</td><td colspan="2" class="px-4 py-3">—</td></tr>
               </tfoot>
             </table>
           </div>
@@ -5830,7 +5930,7 @@ function refreshDemo() {
               </div>
             </div>
             <div class="flex flex-wrap gap-2">
-              <button v-if="!currentReceipt" type="button" :disabled="receiptLines.length === 0 || savingReceipt" class="inline-flex h-9 items-center gap-2 rounded-lg border border-teal-300 bg-white px-4 text-[12px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:opacity-50" @click="saveReceiptFeedback">
+              <button v-if="!currentReceipt" type="button" :disabled="selectedReceiptLines.length === 0 || savingReceipt" class="inline-flex h-9 items-center gap-2 rounded-lg border border-teal-300 bg-white px-4 text-[12px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:opacity-50" @click="saveReceiptFeedback">
                 <CheckCircle2 class="size-4" />{{ savingReceipt ? '正在入库…' : '确认入库' }}
               </button>
               <button v-else type="button" :disabled="currentReceipt.status !== 'PENDING_CONFIRMATION' || confirmingReceipt" class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50" @click="confirmCurrentReceipt">
