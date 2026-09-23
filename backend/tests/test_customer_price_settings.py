@@ -192,6 +192,53 @@ def test_revision_conflicts_and_immutable_snapshots(api):
             db.commit()
 
 
+def test_existing_caixing_settings_gain_new_editable_defaults_without_mutating_old_snapshots(api):
+    client, context, engine = api
+    url = URL.replace("buzzbee", "caixing")
+    snapshots_url = SNAPSHOTS.replace("buzzbee", "caixing")
+    old = service._default("huaxing", "caixing").model_dump()
+    new_keys = {
+        "material_price_uplift_rate", "tool_material_scrap_rate", "electronic_scrap_rate",
+        "special_material_scrap_rate", "plush_scrap_rate", "fabric_material_scrap_rate",
+        "fabric_labor_scrap_rate", "plush_special_markup_rate", "plush_electronic_markup_rate",
+        "machine_hours_per_day", "machine_utilization_factor", "hkd_cny", "minimum_order_qty",
+    }
+    for key in new_keys:
+        old["rates"].pop(key)
+        old["rate_definitions"].pop(key)
+    old["revision"] = 1
+    with Session(engine) as db:
+        db.add(CustomerPriceSettings(
+            factory_id="huaxing", customer_id="caixing", revision=1,
+            settings_json=json.dumps(old), updated_at="", updated_by="", updated_by_name="",
+        ))
+        db.add(CustomerPriceSettingsSnapshot(
+            id="old-caixing-snapshot", factory_id="huaxing", customer_id="caixing",
+            revision=1, settings_json=json.dumps(old), created_at="", created_by="sales-user",
+        ))
+        db.commit()
+    current = client.get(url).json()
+    assert new_keys <= current["rates"].keys()
+    assert current["rates"]["plush_special_markup_rate"] == 0
+    assert new_keys.isdisjoint(client.get("/api/customer-price/settings/snapshots/old-caixing-snapshot").json()["rates"])
+    updated = client.put(url, json={key: current[key] for key in ("revision", "materials", "rates", "texts")})
+    assert updated.status_code == 200
+    snapshot = client.post(snapshots_url, json={"revision": 2}).json()
+    assert snapshot["rates"]["tool_material_scrap_rate"] == 0.02
+
+
+def test_caixing_moq_and_machine_time_are_validated(api):
+    client, _, _ = api
+    url = URL.replace("buzzbee", "caixing")
+    data = client.get(url).json()
+    body = {key: data[key] for key in ("revision", "materials", "rates", "texts")}
+    body["rates"]["minimum_order_qty"] = 2500.5
+    assert client.put(url, json=body).status_code == 422
+    body["rates"]["minimum_order_qty"] = 3000
+    body["rates"]["machine_hours_per_day"] = 0
+    assert client.put(url, json=body).status_code == 422
+
+
 @pytest.mark.parametrize("existing", [False, True])
 def test_simultaneous_saves_have_one_winner(tmp_path, existing):
     engine = create_engine(f"sqlite:///{tmp_path / 'race.db'}", connect_args={"timeout": 15})

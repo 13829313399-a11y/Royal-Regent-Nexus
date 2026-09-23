@@ -66,7 +66,12 @@ describe.skipIf(!phase)('L5.4 Caixing P4 real-source acceptance', () => {
     ]
     for (const item of cases) {
       expect(existsSync(item.p4Path)).toBe(true)
-      const prepared = prepareP4CustomerConversion(readArrayBuffer(item.p4Path), item.p4Path.split(/[\\/]/).pop() ?? 'P4.xlsx', 'caixing')
+      const prepared = prepareP4CustomerConversion(
+        readArrayBuffer(item.p4Path),
+        item.p4Path.split(/[\\/]/).pop() ?? 'P4.xlsx',
+        'caixing',
+        { quoteNo: `IQ-L5-4-CAIXING-${item.productType.toUpperCase()}`, versionLabel: 'V1', customer: '彩星', quantity: 3000 },
+      )
       expect(prepared.customerId).toBe('caixing')
       expect(prepared.result.productType).toBe(item.productType)
       expect(prepared.result.sheets[0].quoteData.metadata.itemNo).toBe(item.itemNo)

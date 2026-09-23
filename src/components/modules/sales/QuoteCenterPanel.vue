@@ -1545,6 +1545,10 @@ async function exportCustomerQuoteExcel() {
         </div>
       </div>
 
+      <div v-if="hasActiveCaixingConversion && caixingConversionResult?.warnings?.length" class="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="status">
+        <p class="font-semibold">彩星来源资料待核对</p>
+        <p v-for="(warning, index) in caixingConversionResult.warnings" :key="index" class="mt-1">{{ warning }}</p>
+      </div>
       <YinhuiDraftReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiDraft" :draft="yinhuiDraft" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote || isImportingInternalQuote" @update:draft="updateYinhuiDraft" @invalidate="yinhuiConfirmed = false" @save="downloadYinhuiDraft" />
       <YinhuiQuoteReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiConversionResult" v-model:confirmed="yinhuiConfirmed" :result="yinhuiConversionResult" :factory-id="activeFactoryId" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote || isImportingInternalQuote" />
 
