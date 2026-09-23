@@ -9,6 +9,7 @@
 | `npm run build` | 通过；既有第三方 PURE 标注/大 chunk 提示，非 UV 类型错误 |
 | `npm run typecheck:test` | 通过 |
 | `npm run test:unit -- src/features/uv-operations/__tests__ src/stores/__tests__/authScopedPermissions.spec.ts src/router/__tests__/authenticatedFactoryContext.spec.ts` | 5 文件、71 项通过 |
+| 上述前端范围及 `moduleCenterFactoryScope`、`productionModuleEntry`、`customerPriceCustomerScope`、`CustomerPricingSettingsPanel` | 合入主线后9文件、110项通过、1项既有跳过；覆盖UV卡片授权、跨厂隐藏及撤权；构建和测试类型检查再次通过 |
 | `pytest tests/test_uv_ops.py tests/test_uv_ops_edges.py tests/test_uv_ops_acceptance.py tests/test_uv_ops_workflows.py -q` | 74 项通过，112.15 秒，包含 SQLite 与 PostgreSQL |
 | `pytest tests/test_system_position_catalog.py tests/test_retired_workspace_permissions.py tests/test_auth_api.py tests/test_iam_api.py -q` | 首轮87通过/2旧期望失败；修正新增18权限的计数、read分类及固定岗位排除后，失败两项定向重跑通过；最终89项均有通过证据 |
 | `edge/uv-printing-agent/.venv/Scripts/python.exe -m pytest edge/uv-printing-agent/tests -q` | 12 项通过，0.34秒 |
