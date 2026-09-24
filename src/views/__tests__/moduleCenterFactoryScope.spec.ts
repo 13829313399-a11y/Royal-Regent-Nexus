@@ -15,6 +15,7 @@ import {
   type ModuleDepartmentId,
 } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import ModuleCenterView from '@/views/ModuleCenterView.vue'
 
 const routeState = vi.hoisted(() => ({
@@ -77,6 +78,10 @@ function expectFactoryScopedRoutes(modules: ModuleSnapshot[], factoryId: 'huakan
   for (const target of internalTargets) {
     const url = new URL(target, 'http://nexus.local')
     expect(url.pathname.startsWith('/')).toBe(true)
+    if (['/carton-supplier', '/carton-supplier/carton-mark'].includes(url.pathname)) {
+      expect(url.searchParams.get('factory')).toBeNull()
+      continue
+    }
     expect(url.searchParams.get('factory')).toBe(factoryId)
     expect(target).not.toContain('factory=huaxing')
   }
@@ -124,6 +129,30 @@ describe('module center factory scope', () => {
     routeState.params.department = 'engineering'
     routeState.query = {}
     routerPushMock.mockReset()
+  })
+
+  it('routes supplier accounts to their own collaboration and read-only carton mark pages', async () => {
+    routeState.path = '/modules/pmc-warehouse'
+    routeState.params.department = 'pmc-warehouse'
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAppStore().setActiveFactory('huaxing')
+    const auth = useAuthStore()
+    const wrapper = mount(ModuleCenterView, { global: { plugins: [pinia] } })
+    const getModule = (id: string) => wrapper.findAllComponents(ModuleCard)
+      .find(card => (card.props('module') as EnterpriseModule).id === id)!.props('module') as EnterpriseModule
+
+    expect(wrapper.findAllComponents(ModuleCard).some(card => (card.props('module') as EnterpriseModule).id === 'carton-procurement')).toBe(false)
+    expect(getModule('carton-supplier').route).toBe('/carton-supplier')
+    expect(getModule('carton-mark-check').route).toBe('/carton-supplier/carton-mark')
+
+    auth.factoryScopes = ['huaxing']
+    auth.permissions = ['carton_procurement:read', 'carton_mark:read']
+    await nextTick()
+    expect(getModule('carton-procurement').route).toBe('/modules/pmc-warehouse/carton-procurement?factory=huaxing')
+    expect(getModule('carton-supplier').route).toBe('/carton-supplier-management?factory=huaxing')
+    expect(getModule('carton-mark-check').route).toBe('/modules/pmc-warehouse/carton-mark-check?factory=huaxing')
+    wrapper.unmount()
   })
 
   it('registers the 3D printing card only for Huakang A', () => {
@@ -187,12 +216,13 @@ describe('module center factory scope', () => {
       const huakangCModules = moduleSnapshots(wrapper)
       const expectedHuakangCModules = departmentModuleRegistry[departmentId].modules
         .filter((module) => !module.factoryIds?.length || module.factoryIds.includes('huakang-c'))
+        .filter((module) => departmentId !== 'pmc-warehouse' || module.id !== 'carton-procurement')
       expect(huakangCModules).toHaveLength(expectedHuakangCModules.length)
       expect(huakangCModules.map(({ id, title, childLabels }) => ({ id, title, childLabels }))).toEqual(
         expectedHuakangCModules.map((module) => ({
           id: module.id,
           title: module.title,
-          childLabels: module.children.map((child) => child.label),
+          childLabels: module.children.filter(child => departmentId !== 'pmc-warehouse' || module.id !== 'carton-mark-check' || ['客人 Excel', '印刷 PDF'].includes(child.label)).map((child) => child.label),
         })),
       )
       expectNoForeignFactoryData(wrapper, huakangCModules, 'huakang-c', '华康C')

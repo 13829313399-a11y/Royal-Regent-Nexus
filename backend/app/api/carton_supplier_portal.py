@@ -4,28 +4,58 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_portal import MemberSave, CommitmentSave, ShipmentCreate, ShipmentReceive
+from app.schemas.carton_supplier_portal import MemberSave, CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
 
 router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
 
 @router.get("/memberships")
 def memberships(db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
-    from sqlalchemy import select
-    from app.models.carton_supplier_portal import SupplierMember
-    from app.models.carton_procurement import CartonSupplier
-    return [{"factory_id": member.factory_id, "supplier_name": supplier.supplier_name} for member, supplier in db.execute(
-        select(SupplierMember, CartonSupplier).join(CartonSupplier, CartonSupplier.id == SupplierMember.supplier_id).where(
-            SupplierMember.user_id == user.id, SupplierMember.status == "ACTIVE", CartonSupplier.status == "ACTIVE",
-            CartonSupplier.factory_id == SupplierMember.factory_id)).all()]
+    return [{"factory_id": supplier.factory_id, "supplier_name": supplier.supplier_name}
+        for supplier in service.supplier_factories(db, user)]
 
 @router.get("/workspace")
 def workspace(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.workspace(db, user, factory_id)
 
+@router.get("/documents")
+def documents(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.documents(db, user, factory_id)
+
+@router.post("/documents/export.xlsx")
+def export_documents(payload: SupplierDocumentExport, db: Session = Depends(get_db),
+                     user: AuthContext = Depends(get_current_user)):
+    content = service.export_documents(db, user, payload)
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote("供应商单据.xlsx"),
+                             "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
+@router.get("/activity")
+def activity(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.supplier_activity(db, user, factory_id)
+
+@router.get("/carton-mark/templates", response_model=list[SupplierMarkTemplateOut])
+def carton_mark_templates(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.supplier_mark_templates(db, user, factory_id)
+
+@router.get("/carton-mark/templates/{template_id}/documents/{kind}")
+def carton_mark_document(template_id: str, kind: str, factory_id: str, preview: bool = False,
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    document = service.supplier_mark_document(db, user, factory_id, template_id, kind)
+    disposition = "inline" if preview and kind == "print_pdf" else "attachment"
+    return Response(document.content, media_type=document.content_type, headers={
+        "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(document.file_name, safe=""),
+        "Content-Length": str(document.size_bytes), "X-Content-SHA256": document.sha256,
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
 @router.put("/papers/{line_id}/commitment")
 def accept(line_id: str, payload: CommitmentSave, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.accept_line(db, user, line_id, payload)
+
+@router.put("/commitments/batch")
+def accept_batch(payload: BatchCommitmentSave, db: Session = Depends(get_db),
+                 user: AuthContext = Depends(get_current_user)):
+    return {"order_ids": service.accept_lines(db, user, payload)}
 
 @router.post("/shipments", status_code=201)
 def ship(payload: ShipmentCreate, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):

@@ -1444,9 +1444,10 @@ def test_purchase_order_issues_export_only_net_supplier_change(monkeypatch):
         )
         assert initial_context_response.status_code == 200, initial_context_response.text
         initial_context = initial_context_response.json()
-        assert initial_context["pending_type"] == "INITIAL"
-        assert Decimal(initial_context["pending_product_quantity"]) == Decimal("2100")
-        assert initial_context["issues"] == []
+        assert initial_context["pending_type"] == "NONE"
+        assert Decimal(initial_context["pending_product_quantity"]) == Decimal("0")
+        assert len(initial_context["issues"]) == 1
+        assert initial_context["issues"][0]["document_no"].endswith("-P00")
 
         initial_issue_response = client.post(
             f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-issues.xlsx",
@@ -1454,6 +1455,7 @@ def test_purchase_order_issues_export_only_net_supplier_change(monkeypatch):
         )
         assert initial_issue_response.status_code == 200, initial_issue_response.text
         assert initial_issue_response.headers["x-purchase-order-document-no"].endswith("-P00")
+        assert initial_issue_response.headers["x-purchase-order-issue-id"] == initial_context["issues"][0]["id"]
         initial_workbook = load_workbook(BytesIO(initial_issue_response.content), data_only=False)
         initial_sheet = initial_workbook["首次采购单"]
         assert initial_sheet["G10"].value == 18

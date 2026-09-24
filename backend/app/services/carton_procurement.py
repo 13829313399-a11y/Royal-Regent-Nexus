@@ -811,8 +811,11 @@ def create_purchase_order_issue(
     user: AuthContext,
     *,
     commit: bool = True,
+    already_locked: bool = False,
+    reuse_initial: bool = False,
 ) -> CartonPurchaseOrderIssue:
-    _lock_receipt_factory(db, order.factory_id)
+    if not already_locked:
+        _lock_receipt_factory(db, order.factory_id)
     if order.revision != expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
@@ -825,6 +828,9 @@ def create_purchase_order_issue(
         order, _order_lines(db, order.id), latest_issue
     )
     if pending_type == "NONE":
+        if (reuse_initial and latest_issue and latest_issue.document_type == "INITIAL"
+                and latest_issue.source_order_revision == order.revision):
+            return latest_issue
         raise HTTPException(status_code=409, detail="当前订单没有尚未生成采购单的数量或交期变化")
 
     next_issue_sequence = (latest_issue.issue_sequence if latest_issue else 0) + 1
@@ -1189,6 +1195,11 @@ def update_order(
             status_code=409,
             detail="订单已有收料或库存流水，只能修改客户交期、自动计划交期和备注",
         )
+    if target_supplier_id != order.supplier_id and _order_has_supplier_evidence(db, order):
+        raise HTTPException(
+            status_code=409,
+            detail="订单已有供应商接单、送货或附件记录，不能改派供应商",
+        )
 
     before = {
         "revision": order.revision,
@@ -1336,6 +1347,7 @@ def submit_order_to_supplier(
         },
     )
     master_data.seed_first_number_formats(db, factory_id, order, user)
+    create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
     master_data.sync_history(db, factory_id)
     db.commit()
     db.refresh(order)
@@ -1386,6 +1398,7 @@ def bulk_submit_orders_to_supplier(
             },
         )
         master_data.seed_first_number_formats(db, factory_id, order, user)
+        create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
 
     master_data.sync_history(db, factory_id)
     db.commit()

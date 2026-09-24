@@ -816,6 +816,26 @@ describe('CartonProcurementView frontend workspace', () => {
     ])
   })
 
+  it('keeps order due reminders numeric when the browser formats locale dates with slashes', async () => {
+    const dueDate = businessDateOffset(3)
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([orderFixture('CT-LOCALE-DATE', dueDate)])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    const localeDate = vi.spyOn(Date.prototype, 'toLocaleDateString').mockReturnValue('2026/9/23')
+    let wrapper: ReturnType<typeof mountView> | undefined
+    try {
+      wrapper = mountView('orders')
+      await flushPromises()
+      expect(wrapper.get('[data-order-no="CT-LOCALE-DATE"]').text()).toContain('剩 3 天')
+      expect(wrapper.text()).not.toContain('NaN 天')
+    } finally {
+      wrapper?.unmount()
+      localeDate.mockRestore()
+    }
+  })
+
   it('filters orders by an inclusive range after consecutive calendar clicks', async () => {
     cartonApiMock.listCustomers.mockResolvedValue([])
     cartonApiMock.listOrders.mockResolvedValue([
@@ -1011,6 +1031,38 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     expect(cartonApiMock.exportPurchaseOrder).toHaveBeenCalledWith('huaxing', 'CT-260805-ABC123')
     expect(wrapper.text()).toContain('CT-260805-ABC123 采购单已生成并开始下载')
+  })
+
+  it('shows the failing order step in the editor and distinguishes a saved order from a log refresh failure', async () => {
+    const wrapper = mountView('orders'); await flushPromises()
+    await findButton(wrapper, '新建纸箱订单').trigger('click')
+    const form = wrapper.get('[data-testid="order-form-overlay"] form')
+    await form.trigger('submit')
+    expect(wrapper.get('[data-testid="order-save-feedback"]').text()).toContain('表单核对未通过：请先搜索并选择客户')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+
+    await wrapper.get('input[aria-label="订单客户"]').trigger('focus')
+    await wrapper.get('[aria-label="选择客户 Dickie"]').trigger('click')
+    await wrapper.get('input[aria-label="合同号"]').setValue('SC-ERR-001')
+    await wrapper.get('input[aria-label="货号"]').setValue('203399998')
+    await wrapper.get('input[aria-label="产品名称"]').setValue('测试产品')
+    await wrapper.get('input[aria-label="订单数量"]').setValue('100')
+    await wrapper.get('input[aria-label="客户交期"]').setValue(businessDateOffset(8))
+    await wrapper.get('input[aria-label="纸品类型 1"]').setValue('外箱')
+    await wrapper.get('input[aria-label="纸质 1"]').setValue('A33+B')
+    await wrapper.get('input[aria-label="规格 1"]').setValue('30 × 20 × 15 cm')
+    cartonApiMock.createOrder.mockRejectedValueOnce(new Error('合同号与现有订单重复'))
+    await form.trigger('submit'); await flushPromises()
+    expect(wrapper.get('[data-testid="order-save-feedback"]').text()).toContain('新建订单未完成（保存到服务器）：合同号与现有订单重复')
+    expect(wrapper.get('input[aria-label="合同号"]').element).toHaveProperty('value', 'SC-ERR-001')
+    expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(true)
+
+    cartonApiMock.listAuditEvents.mockRejectedValueOnce(new Error('操作日志暂不可用'))
+    await form.trigger('submit'); await flushPromises()
+    expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('订单 CT-260805-ABC123 已保存，但页面更新或操作日志读取失败：操作日志暂不可用')
+    expect(cartonApiMock.createOrder).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
   })
 
   it('suggests approximate historical item numbers and reuses the selected order snapshot', async () => {
@@ -1916,7 +1968,7 @@ describe('CartonProcurementView frontend workspace', () => {
         expect.objectContaining({ order_no: 'CT-BULK-SUBMITTED' }),
       ]),
     )
-    expect(wrapper.text()).toContain('已确认并锁定 1 张订单；跳过 1 张非待下单订单')
+    expect(wrapper.text()).toContain('已确认并锁定 1 张订单，首次采购单已自动发行到供应商协同；跳过 1 张非待下单订单')
     expect(wrapper.get('[data-order-no="CT-BULK-PENDING"]').text()).toContain('已确认锁定')
     expect((wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').element as HTMLInputElement).checked).toBe(true)
   })
@@ -2100,6 +2152,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('input[aria-label="MANUAL-LINE-VALIDATE 实收"]').setValue('30')
     await wrapper.get('input[aria-label="仓库及仓位"]').setValue('A-01')
     await findButton(wrapper, '确认入库').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="receipt-save-feedback"]').text()).toContain('入库未完成（提交收料并过账）')
     expect(wrapper.get('[data-testid="receipt-save-feedback"]').text()).toContain('当前订单待收数量已变更')
     expect(wrapper.get<HTMLInputElement>('input[aria-label="MANUAL-LINE-VALIDATE 实收"]').element.value).toBe('30')
     expect(wrapper.get('input[aria-label="MANUAL-LINE-VALIDATE 实收"]').attributes('disabled')).toBeUndefined()
@@ -2322,6 +2375,26 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(cartonApiMock.createReceipt).toHaveBeenCalledWith(expect.objectContaining({ post_immediately: true }))
     expect(cartonApiMock.confirmReceipt).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('全部明细已收齐并自动完成')
+  })
+
+  it('reports posted receipt success separately from a failed ledger refresh', async () => {
+    mockReceiptWorkspace([orderFixture('CT-REFRESH', businessDateOffset(3), 'PENDING_SUPPLIER')])
+    cartonApiMock.createReceipt.mockResolvedValue({
+      id: 'CTR-REFRESH', receipt_no: 'RC-REFRESH', status: 'POSTED', revision: 2, lines: [],
+    })
+    const wrapper = mountView('receipts'); await flushPromises()
+    await wrapper.get('button[aria-label="登记 CT-REFRESH 收料"]').trigger('click'); await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-REFRESH')
+    await wrapper.get('input[aria-label="仓库及仓位"]').setValue('A-01')
+    cartonApiMock.listOrders.mockRejectedValueOnce(new Error('台账暂不可用'))
+    await findButton(wrapper, '确认入库').trigger('click'); await flushPromises()
+    const feedback = wrapper.get('[data-testid="receipt-save-feedback"]')
+    expect(feedback.attributes('role')).toBe('status')
+    expect(feedback.text()).toContain('入库成功')
+    expect(feedback.text()).toContain('台账刷新失败，请刷新页面查看')
+    expect(cartonApiMock.createReceipt).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
   })
 
   it.each(['row', 'selected'] as const)('starts the remaining receipt batch from %s after direct posting', async (entry) => {

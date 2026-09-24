@@ -11,7 +11,8 @@ const props = defineProps<{ factoryId: string; customers: CartonCustomerResponse
 const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse]; use: [MasterRecord] }>()
 const workspace = ref(emptyMaster()), busy = ref(false), error = ref(''), loading = ref(false)
 const tab = ref('SETTINGS'), search = ref(''), customer = ref(''), editing = ref(false), editingId = ref('')
-const statusFilter = ref('ALL'), preferredOnly = ref(false)
+const statusFilter = ref('ACTIVE'), preferredOnly = ref(false)
+const configToRemove = ref<MasterRecord | null>(null), configActionMessage = ref('')
 const warehouseDeleting = ref(false)
 const warehouseEditing = ref(false), warehouseOriginal = ref(''), locationWarehouseLocked = ref(false)
 const sourceRow = ref<MasterRecord | null>(null), locationRow = ref<CartonLocation | null>(null)
@@ -61,7 +62,7 @@ async function processImport(apply = false) {
 }
 let returnFocus: HTMLElement | null = null
 watch(() => props.initialTab, value => { tab.value = value === 'CONFIG' ? 'CONFIG' : 'SETTINGS' }, { immediate: true })
-watch(() => editing.value || !!locationRow.value || !!sourceRow.value || warehouseEditing.value || !!importKind.value, async open => {
+watch(() => editing.value || !!locationRow.value || !!sourceRow.value || warehouseEditing.value || !!importKind.value || !!configToRemove.value, async open => {
   if (open) {
     returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     await nextTick()
@@ -73,7 +74,7 @@ function dialogKeys(event: KeyboardEvent) {
   if (!dialog) return
   if (event.key === 'Escape') {
     event.stopPropagation(); event.preventDefault()
-    if (!busy.value && !importBusy.value) { editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; closeImport() }
+    if (!busy.value && !importBusy.value) { editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; closeImport() }
   }
   if (event.key === 'Tab') {
     const nodes = [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
@@ -191,7 +192,7 @@ async function load() {
   catch (e) { if (version === generation) error.value = getApiErrorMessage(e) }
   finally { if (version === generation) loading.value = false }
 }
-watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; customer.value = ''; void load() }, { immediate: true })
+watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; configActionMessage.value = ''; statusFilter.value = 'ACTIVE'; customer.value = ''; void load() }, { immediate: true })
 function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = customer.value) {
   paperOnly.value = false
   ruleScopeLocked.value = (row?.kind || kind) === 'RULE'
@@ -245,6 +246,30 @@ async function save() {
     if (factory !== props.factoryId) return
     editing.value = false; await load(); emit('changed')
   } catch (e) { error.value = getApiErrorMessage(e) } finally { busy.value = false }
+}
+async function changeConfigAvailability(row: MasterRecord, status: 'ACTIVE' | 'INACTIVE') {
+  if (busy.value || !workspace.value.can_manage || row.kind !== 'CONFIG') return
+  const factory = props.factoryId
+  busy.value = true; error.value = ''; configActionMessage.value = ''
+  try {
+    const saved = await cartonMasterApi.save(factory, {
+      kind: 'CONFIG', code: row.code, customer_code: '', status, preferred: false,
+      expected_revision: row.revision,
+      reason: status === 'INACTIVE' ? '删除不再使用的货号包装资料' : '恢复货号包装资料',
+      data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row.data)) },
+    }, row.id)
+    if (factory !== props.factoryId) return
+    workspace.value.records = workspace.value.records.map(record => record.id === row.id ? { ...saved, sources: record.sources } : record)
+    configToRemove.value = null
+    statusFilter.value = 'ACTIVE'
+    preferredOnly.value = false
+    configActionMessage.value = status === 'INACTIVE'
+      ? `货号 ${row.code} 的这套包装已从可用资料移除；历史订单保留，可在“停用”中恢复。`
+      : `货号 ${row.code} 的这套包装已恢复，可继续用于落单。`
+    emit('changed')
+    await load()
+  } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) }
+  finally { busy.value = false }
 }
 function editLocation(row?: CartonLocation, warehouse?: string) {
   locationWarehouseLocked.value = Boolean(warehouse)
@@ -303,16 +328,26 @@ async function saveWarehouse() {
       <div class="flex flex-wrap items-center gap-3 border-b bg-slate-50 p-3">
         <span class="text-xs text-slate-500">本厂货号共用，不绑定客户</span>
         <input v-model="search" aria-label="基础资料搜索" placeholder="查找货号、产品名称、纸品或规格" class="h-9 min-w-56 flex-1 rounded-lg border bg-white px-3 text-xs">
-        <select v-model="statusFilter" aria-label="货号资料状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ALL">全部状态</option><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select><label class="text-xs"><input v-model="preferredOnly" type="checkbox"> 仅推荐</label><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="customer = ''; search = ''; statusFilter = 'ALL'; preferredOnly = false">清空筛选</button>
+        <select v-model="statusFilter" aria-label="货号资料状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ALL">全部状态</option><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select><label class="text-xs"><input v-model="preferredOnly" type="checkbox"> 仅推荐</label><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="customer = ''; search = ''; statusFilter = 'ACTIVE'; preferredOnly = false">清空筛选</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white" @click="edit()">新增货号与包装</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg border px-3 text-xs" @click="downloadTemplate('configurations')">下载货号包装模板</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg border px-3 text-xs" @click="openImport('configurations')">导入货号与包装</button>
       </div>
+      <p v-if="configActionMessage" role="status" class="border-b border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-800">{{ configActionMessage }}</p>
       <p class="border-b border-teal-100 bg-teal-50/60 px-3 py-2 text-xs leading-5 text-teal-800">一个货号可以有多个纸品：手工新增时点击“添加纸品”；模板导入时每个纸品写一行，同一套纸品使用相同的“货号 + 配置组”，并在每行重复填写相同的产品名称、推荐、状态和备注。</p>
       <div class="overflow-x-auto"><table class="w-full min-w-[960px] text-left text-xs"><thead class="bg-slate-50 text-slate-500"><tr><th class="p-3">包装方式</th><th class="p-3">货号 / 产品名称</th><th class="p-3">纸品类型 / 纸质 / 规格 / 单位 / 装箱数</th><th class="p-3">来源 / 状态</th><th class="p-3 text-right">操作</th></tr></thead>
-        <tbody class="divide-y divide-slate-100"><tr v-for="row in rows" :key="row.id" class="hover:bg-slate-50/60"><td class="p-3 font-semibold">{{ row.data.packing_name || '其他包装' }}</td><td class="p-3"><b class="font-mono">{{ row.code }}</b><div class="mt-1 text-slate-500">{{ row.data.product_name }}</div></td><td class="p-3"><div v-for="(line, i) in row.data.lines" :key="i" class="mb-1">{{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件</div><span v-if="workspace.records.filter(r => r.kind === 'CONFIG' && r.code === row.code).length > 1" class="text-amber-700">存在不同配置，落单时请核对</span><p class="mt-1 text-slate-500">{{ row.data.note }}</p></td><td class="p-3"><div>{{ row.maintained ? '高级权限维护' : '历史自动加入' }}</div><div class="mt-1" :class="row.status === 'ACTIVE' ? 'text-teal-700' : 'text-slate-400'">{{ row.status === 'ACTIVE' ? '启用' : '停用' }}{{ row.preferred ? ' · 推荐' : '' }}</div><button v-if="row.sources.length" type="button" class="mt-1 text-teal-700 underline" @click="sourceRow = row">{{ row.sources.length }} 条历史来源</button></td><td class="p-3"><div class="flex justify-end gap-2 whitespace-nowrap"><button v-if="workspace.can_manage" type="button" class="rounded-lg border px-3 py-2" :aria-label="`修改基础资料 ${row.code}`" @click="edit(row)">修改</button><button v-if="row.status === 'ACTIVE'" type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700" @click="emit('use', row)">用于落单</button></div></td></tr><tr v-if="!rows.length"><td colspan="5" class="p-12 text-center text-slate-400">暂无对应资料；正式历史订单中的货号与纸品配置会自动加入。</td></tr></tbody>
+        <tbody class="divide-y divide-slate-100"><tr v-for="row in rows" :key="row.id" :data-config-id="row.id" class="hover:bg-slate-50/60"><td class="p-3 font-semibold">{{ row.data.packing_name || '其他包装' }}</td><td class="p-3"><b class="font-mono">{{ row.code }}</b><div class="mt-1 text-slate-500">{{ row.data.product_name }}</div></td><td class="p-3"><div v-for="(line, i) in row.data.lines" :key="i" class="mb-1">{{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件</div><span v-if="workspace.records.filter(r => r.kind === 'CONFIG' && r.code === row.code).length > 1" class="text-amber-700">存在不同配置，落单时请核对</span><p class="mt-1 text-slate-500">{{ row.data.note }}</p></td><td class="p-3"><div>{{ row.maintained ? '高级权限维护' : '历史自动加入' }}</div><div class="mt-1" :class="row.status === 'ACTIVE' ? 'text-teal-700' : 'text-slate-400'">{{ row.status === 'ACTIVE' ? '启用' : '停用' }}{{ row.preferred ? ' · 推荐' : '' }}</div><button v-if="row.sources.length" type="button" class="mt-1 text-teal-700 underline" @click="sourceRow = row">{{ row.sources.length }} 条历史来源</button></td><td class="p-3"><div class="flex justify-end gap-2 whitespace-nowrap"><button v-if="workspace.can_manage" type="button" class="rounded-lg border px-3 py-2" :aria-label="`修改基础资料 ${row.code}`" @click="edit(row)">修改</button><button v-if="workspace.can_manage && row.status === 'ACTIVE'" type="button" class="rounded-lg border border-red-200 px-3 py-2 text-red-700" :aria-label="`删除货号包装 ${row.code}`" @click="configToRemove = row; error = ''">删除</button><button v-if="workspace.can_manage && row.status === 'INACTIVE'" type="button" :disabled="busy" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700 disabled:opacity-50" :aria-label="`恢复货号包装 ${row.code}`" @click="changeConfigAvailability(row, 'ACTIVE')">恢复</button><button v-if="row.status === 'ACTIVE'" type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700" @click="emit('use', row)">用于落单</button></div></td></tr><tr v-if="!rows.length"><td colspan="5" class="p-12 text-center text-slate-400">暂无对应资料；正式历史订单中的货号与纸品配置会自动加入。</td></tr></tbody>
       </table></div>
     </article>
+    <div v-if="configToRemove" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4">
+      <div role="dialog" aria-modal="true" aria-label="删除货号与包装资料" class="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl">
+        <h3 class="text-base font-bold text-slate-950">删除这套货号与包装资料？</h3>
+        <p class="mt-3 text-sm leading-6 text-slate-600">货号 {{ configToRemove.code }} · {{ configToRemove.data.product_name || '未填写产品名称' }} · {{ configToRemove.data.packing_name || '其他包装' }}</p>
+        <p class="mt-2 text-sm leading-6 text-slate-600">删除后不再用于新订单。历史订单及 {{ configToRemove.sources.length }} 条来源记录保留；可在状态筛选中选择“停用”并恢复。</p>
+        <p v-if="error" role="alert" class="mt-3 text-sm text-red-700">{{ error }}</p>
+        <div class="mt-5 flex justify-end gap-2"><button type="button" :disabled="busy" class="rounded-lg border px-4 py-2 text-sm" @click="configToRemove = null">取消</button><button type="button" :disabled="busy" class="rounded-lg bg-red-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" @click="changeConfigAvailability(configToRemove, 'INACTIVE')">{{ busy ? '正在删除…' : '确认删除' }}</button></div>
+      </div>
+    </div>
     <div v-if="importKind" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" data-testid="master-import-backdrop">
       <div role="dialog" aria-modal="true" aria-label="基础资料模板导入" class="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-5 shadow-xl">
         <div class="flex items-center justify-between"><h3 class="font-bold">导入{{ importLabels[importKind] }}</h3><button type="button" :disabled="importBusy" aria-label="关闭导入" @click="closeImport"><X class="size-5" /></button></div>

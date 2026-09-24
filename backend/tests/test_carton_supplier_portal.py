@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import pytest
 from test_molding_sample_api import make_client, login_as
-from test_carton_procurement_api import _create_order
+from test_carton_procurement_api import _create_order, _order_payload
 
 BASE = "/api/carton-supplier"
 PASSWORD = "SupplierOnly123!"
@@ -19,12 +19,15 @@ def setup_portal(client):
         json={"factory_id": "huaxing", "expected_revision": order["revision"]})
     assert response.status_code == 200, response.text
     from app.db import SessionLocal
-    from app.models.auth import AuthUser
+    from app.models.auth import AuthUser, EmployeeProfile
     from app.services.auth import make_password_hash
     salt, digest = make_password_hash(PASSWORD)
     with SessionLocal() as db:
         db.add(AuthUser(id="supplier-test", username="supplier-test", display_name="供应商测试", password_salt=salt,
             password_hash=digest, status="active", force_password_change=0, created_at="2026-09-21", updated_at="2026-09-21"))
+        db.add(EmployeeProfile(user_id="supplier-test", primary_factory_id="huaxing",
+            primary_department="pmc-warehouse", position="供应商联系人",
+            confirmation_status="confirmed", created_at="2026-09-21", updated_at="2026-09-21"))
         db.commit()
     login_as(client, "admin")
     bound = client.put(BASE + "/internal/members", json={"factory_id":"huaxing", "username":"supplier-test", "expected_revision":0, "reason":"测试明确授权绑定"})
@@ -57,6 +60,90 @@ def receive_payload(client, shipment):
             "paper_quality":line["paper_quality"], "specification":line["specification"],
             "location_allocations":[{"location_id":location,"quantity":8}], "difference_reason":"本次实际短收两件"} for line in shipment["lines"]]}
 
+def test_supplier_mark_templates_require_issued_order_membership_and_ready_latest_version(monkeypatch):
+    with make_client(monkeypatch) as client:
+        order = setup_portal(client)
+        from app.db import SessionLocal
+        from app.models.carton_mark import CartonMarkDocument, CartonMarkTemplate
+        from app.models.carton_procurement import CartonOrder
+        from app.models.carton_supplier_portal import SupplierMember
+
+        def add_template(db, key, *, factory="huaxing", customer="Dickie", item=None,
+                         version=1, status="核对通过", released=False, archived=False):
+            template = CartonMarkTemplate(id=key, factory_id=factory,
+                customer_name=customer, po=order["contract_no"],
+                item=item or order["item_no"], contract_number=order["contract_no"],
+                business_key_sha256=key.ljust(64, "0"), document_fingerprint=key.ljust(64, "1"),
+                version=version, check_status=status, check_result_json='{"private_check":"secret"}',
+                excel_sha256="a" * 64, pdf_sha256="b" * 64,
+                created_by="admin", created_at=f"2026-09-21T00:00:{version:02d}",
+                updated_at=f"2026-09-21T00:00:{version:02d}",
+                manual_released_at="2026-09-21T01:00:00" if released else "",
+                is_archived=archived)
+            db.add(template)
+            db.flush()
+            for kind, filename, content_type, content in (
+                ("source_excel", "customer.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", b"excel-data"),
+                ("print_pdf", "print.pdf", "application/pdf", b"%PDF-1.4 test"),
+            ):
+                db.add(CartonMarkDocument(id=f"{key}-{kind}", template_id=key, factory_id=factory,
+                    kind=kind, file_name=filename, content_type=content_type,
+                    size_bytes=len(content), sha256="a" * 64, content=content,
+                    created_at="2026-09-21T00:00:00"))
+
+        with SessionLocal() as db:
+            add_template(db, "match-v1")
+            add_template(db, "wrong-customer", customer="Other")
+            add_template(db, "wrong-item", item="OTHER-ITEM")
+            add_template(db, "wrong-factory", factory="huadeng")
+            db.commit()
+
+        url = BASE + "/carton-mark/templates"
+        download = BASE + "/carton-mark/templates/{}/documents/{}"
+        records = client.get(url, params={"factory_id": "huaxing"})
+        assert records.status_code == 200, records.text
+        assert [row["id"] for row in records.json()] == ["match-v1"]
+        assert "private_check" not in records.text and "created_by" not in records.text
+        assert client.get(download.format("match-v1", "source_excel"), params={"factory_id": "huaxing"}).content == b"excel-data"
+        assert client.get(download.format("match-v1", "print_pdf"), params={"factory_id": "huaxing"}).content == b"%PDF-1.4 test"
+        preview = client.get(download.format("match-v1", "print_pdf"), params={"factory_id": "huaxing", "preview": "true"})
+        assert preview.status_code == 200 and preview.headers["content-disposition"].startswith("inline;")
+        for hidden in ("wrong-customer", "wrong-item", "wrong-factory"):
+            assert client.get(download.format(hidden, "print_pdf"), params={"factory_id": "huaxing"}).status_code == 404
+        assert client.get(url, params={"factory_id": "huadeng"}).status_code in (403, 422)
+        assert client.get(download.format("match-v1", "other"), params={"factory_id": "huaxing"}).status_code == 422
+        assert client.get("/api/carton-mark/templates", params={"factory_id": "huaxing"}).status_code == 403
+
+        with SessionLocal() as db:
+            add_template(db, "match-v2", version=2, status="需复核")
+            db.commit()
+        assert client.get(url, params={"factory_id": "huaxing"}).json() == []
+        assert client.get(download.format("match-v1", "print_pdf"), params={"factory_id": "huaxing"}).status_code == 404
+
+        with SessionLocal() as db:
+            db.get(CartonMarkTemplate, "match-v2").manual_released_at = "2026-09-21T01:00:00"
+            db.commit()
+        assert [row["id"] for row in client.get(url, params={"factory_id": "huaxing"}).json()] == ["match-v2"]
+
+        with SessionLocal() as db:
+            db.get(CartonMarkTemplate, "match-v2").is_archived = True
+            db.commit()
+        assert client.get(url, params={"factory_id": "huaxing"}).json() == []
+
+        with SessionLocal() as db:
+            db.get(CartonMarkTemplate, "match-v2").is_archived = False
+            db.get(CartonOrder, order["id"]).status = "CANCELLED"
+            db.commit()
+        assert client.get(download.format("match-v2", "print_pdf"), params={"factory_id": "huaxing"}).status_code == 404
+
+        with SessionLocal() as db:
+            db.get(CartonOrder, order["id"]).status = "PENDING_SUPPLIER"
+            member = db.query(SupplierMember).filter_by(user_id="supplier-test").one()
+            member.status = "INACTIVE"
+            db.commit()
+        assert client.get(url, params={"factory_id": "huaxing"}).status_code == 403
+
+
 def test_supplier_membership_scope_and_whitelist(monkeypatch):
     with make_client(monkeypatch) as client:
         assert client.get(BASE+"/workspace", params={"factory_id":"huaxing"}).status_code == 401
@@ -75,11 +162,97 @@ def test_supplier_membership_scope_and_whitelist(monkeypatch):
         with SessionLocal() as db:
             db.add(CartonSupplier(id="other-supplier",factory_id="huaxing",supplier_code="OTHER",supplier_name="其他供应商",status="ACTIVE",created_at="2026-09-21",updated_at="2026-09-21")); db.flush()
             db.get(CartonOrder,order["id"]).supplier_id="other-supplier"; db.commit()
-        assert not client.get(BASE+"/workspace",params={"factory_id":"huaxing"}).json()["orders"]
-        assert client.put(BASE+f"/papers/{order['lines'][0]['id']}/commitment",json={"factory_id":"huaxing","issue_id":"guess","expected_revision":0,"promised_date":"2026-09-23"}).status_code == 404
+        assert client.get(BASE+"/workspace",params={"factory_id":"huaxing"}).status_code == 403
+        assert client.put(BASE+f"/papers/{order['lines'][0]['id']}/commitment",json={"factory_id":"huaxing","issue_id":"guess","expected_revision":0,"promised_date":"2026-09-23"}).status_code == 403
         login_as(client,"warehouse_keeper")
         assert client.put(BASE+"/internal/members",json={"factory_id":"huaxing","username":"supplier-test","expected_revision":1,"reason":"仓管不可自行绑定"}).status_code == 403
         assert client.get(BASE+"/workspace",params={"factory_id":"huaxing"}).status_code == 403
+
+
+def test_supplier_account_sees_same_supplier_issued_factories_without_internal_factory_role(monkeypatch):
+    with make_client(monkeypatch) as client:
+        setup_portal(client)
+        manager = login_as(client, "manager")
+        assert {"carton_procurement:master_manage", "carton_procurement:order_adjust"}.issubset(manager["permissions"])
+        assert client.put(BASE + "/internal/members", json={
+            "factory_id": "huaxing", "username": "supplier-test", "expected_revision": 1,
+            "status": "ACTIVE", "reason": "普通经理尝试开通跨厂账号"}).status_code == 403
+        supplier_login(client)
+        memberships = client.get(BASE + "/memberships")
+        assert memberships.status_code == 200
+        assert [item["factory_id"] for item in memberships.json()] == ["huaxing"]
+        assert client.get(BASE + "/workspace", params={"factory_id": "huakang-a"}).status_code == 403
+
+        login_as(client, "admin")
+        customer = client.post("/api/carton-procurement/customers", json={
+            "factory_id": "huakang-a", "customer_code": "DICKIE", "customer_name": "Dickie", "country_region": "德国"})
+        assert customer.status_code == 201, customer.text
+        payload = _order_payload()
+        payload.update(factory_id="huakang-a", contract_no="SC-HUAKANG-A")
+        created = client.post("/api/carton-procurement/orders", json=payload)
+        assert created.status_code == 201, created.text
+        order = created.json()
+        submitted = client.post(f"/api/carton-procurement/orders/{order['order_no']}/submit-supplier",
+            json={"factory_id": "huakang-a", "expected_revision": order["revision"]})
+        assert submitted.status_code == 200, submitted.text
+        issued = client.post(f"/api/carton-procurement/orders/{order['order_no']}/purchase-order-issues.xlsx",
+            json={"factory_id": "huakang-a", "expected_revision": submitted.json()["revision"]})
+        assert issued.status_code == 200, issued.text
+
+        supplier_login(client)
+        memberships = client.get(BASE + "/memberships")
+        assert [item["factory_id"] for item in memberships.json()] == ["huakang-a", "huaxing"]
+        scope = client.get(BASE + "/workspace", params={"factory_id": "huakang-a"})
+        assert scope.status_code == 200, scope.text
+        assert [item["contract_no"] for item in scope.json()["orders"]] == ["SC-HUAKANG-A"]
+        assert client.get(BASE + "/carton-mark/templates", params={"factory_id": "huakang-a"}).status_code == 200
+        supplier_order = scope.json()["orders"][0]
+        assert supplier_order["order_date"] == order["order_date"]
+        paper = supplier_order["lines"][0]
+        accepted = client.put(BASE + "/commitments/batch", json={
+            "factory_id": "huakang-a", "lines": [{
+                "order_line_id": line["id"], "issue_id": supplier_order["issue_id"],
+                "expected_revision": line["commitment_revision"], "promised_date": "2026-09-23",
+            } for line in supplier_order["lines"]]})
+        assert accepted.status_code == 200, accepted.text
+        shipment = client.post(BASE + "/shipments", json={
+            "factory_id": "huakang-a", "request_id": str(uuid4()),
+            "delivery_note_no": "DN-HUAKANG-A", "delivery_date": "2026-09-23",
+            "lines": [{"order_line_id": paper["id"], "issue_id": supplier_order["issue_id"], "quantity": 1}]})
+        assert shipment.status_code == 201, shipment.text
+        assert client.get("/api/carton-procurement/orders", params={"factory_id": "huakang-a"}).status_code == 403
+        assert client.get(BASE + "/workspace", params={"factory_id": "huadeng"}).status_code == 403
+
+        login_as(client, "admin")
+        denied = client.put(BASE + "/internal/members", json={
+            "factory_id": "huakang-a", "username": "supplier-test", "expected_revision": 0,
+            "status": "INACTIVE", "reason": "明确停用此厂区外部访问"})
+        assert denied.status_code == 200, denied.text
+        supplier_login(client)
+        assert [item["factory_id"] for item in client.get(BASE + "/memberships").json()] == ["huaxing"]
+        assert client.get(BASE + "/workspace", params={"factory_id": "huakang-a"}).status_code == 403
+
+
+def test_confirmed_order_is_immediately_visible_to_supplier_without_separate_issue(monkeypatch):
+    with make_client(monkeypatch) as client:
+        setup_portal(client)
+        login_as(client, "admin")
+        created = _create_order(client, submit_supplier=False)
+        confirmed = client.post(f"/api/carton-procurement/orders/{created['order_no']}/submit-supplier",
+            json={"factory_id": "huaxing", "expected_revision": created["revision"]})
+        assert confirmed.status_code == 200, confirmed.text
+        context = client.get(f"/api/carton-procurement/orders/{created['order_no']}/purchase-order-context",
+            params={"factory_id": "huaxing"}).json()
+        assert context["pending_type"] == "NONE"
+        assert len(context["issues"]) == 1
+        assert context["issues"][0]["document_no"].endswith("-P00")
+        redownload = client.post(f"/api/carton-procurement/orders/{created['order_no']}/purchase-order-issues.xlsx",
+            json={"factory_id": "huaxing", "expected_revision": confirmed.json()["revision"]})
+        assert redownload.status_code == 200, redownload.text
+        assert redownload.headers["x-purchase-order-issue-id"] == context["issues"][0]["id"]
+        supplier_login(client)
+        orders = client.get(BASE + "/workspace", params={"factory_id": "huaxing"}).json()["orders"]
+        assert created["order_no"] in {row["order_no"] for row in orders}
 
 def test_partial_receipt_atomicity_replay_and_remaining(monkeypatch):
     with make_client(monkeypatch) as client:
@@ -269,6 +442,30 @@ def test_replacement_sources_cannot_be_misclassified_as_ordinary_supplier_delive
         assert binding.status_code == 409 and "独立供应商账号" in binding.text
 
 
+def test_supplier_access_stops_when_bound_account_receives_an_internal_role(monkeypatch):
+    with make_client(monkeypatch) as client:
+        setup_portal(client)
+        from app.db import SessionLocal
+        from app.models.auth import AuthRole, AuthUserRole
+        from sqlalchemy import select
+
+        with SessionLocal() as db:
+            role = db.scalar(select(AuthRole).where(AuthRole.code == "warehouse_keeper"))
+            assert role is not None
+            db.add(AuthUserRole(id="supplier-now-internal", user_id="supplier-test", role_id=role.id,
+                                factory_id="huaxing", department="pmc-warehouse"))
+            db.commit()
+
+        assert client.get(BASE + "/memberships").json() == []
+        assert client.get(BASE + "/workspace", params={"factory_id": "huaxing"}).status_code == 403
+        assert client.get(BASE + "/carton-mark/templates", params={"factory_id": "huaxing"}).status_code == 403
+
+        with SessionLocal() as db:
+            db.delete(db.get(AuthUserRole, "supplier-now-internal"))
+            db.commit()
+        assert [item["factory_id"] for item in client.get(BASE + "/memberships").json()] == ["huaxing"]
+
+
 def test_attachment_formats_version_scope_and_download(monkeypatch):
     with make_client(monkeypatch) as client:
         raw=setup_portal(client)
@@ -299,11 +496,11 @@ def test_attachment_formats_version_scope_and_download(monkeypatch):
         with SessionLocal() as db:
             db.add(CartonSupplier(id="attachment-other",factory_id="huaxing",supplier_code="OTHER",supplier_name="其他供应商",status="ACTIVE",created_at="2026-09-21",updated_at="2026-09-21"));db.flush()
             db.get(CartonOrder,raw["id"]).supplier_id="attachment-other";db.commit()
-        assert client.get(BASE+f"/attachments/{attachment['id']}",params={"factory_id":"huaxing"}).status_code == 404
+        assert client.get(BASE+f"/attachments/{attachment['id']}",params={"factory_id":"huaxing"}).status_code == 403
         with SessionLocal() as db:
             db.get(CartonOrder,raw["id"]).supplier_id=raw["supplier_id"]
             db.get(CartonOrder,raw["id"]).status="CONFIRMED";db.commit()
-        assert client.get(BASE+f"/attachments/{attachment['id']}",params={"factory_id":"huaxing"}).status_code == 404
+        assert client.get(BASE+f"/attachments/{attachment['id']}",params={"factory_id":"huaxing"}).status_code == 403
 
 def test_portal_migration_in_isolated_database(monkeypatch,tmp_path):
     with make_client(monkeypatch):

@@ -4,6 +4,7 @@ import CartonHistoryImportDialog from '@/components/CartonHistoryImportDialog.vu
 import CartonBusinessImportSummary from '@/components/CartonBusinessImportSummary.vue'
 import CartonSupplierSettlement from '@/components/CartonSupplierSettlement.vue'
 import { estimateMoney, moneyLabel, unitCostLabel, moneyTotals, type InventoryMoney } from '@/lib/cartonInventoryMoney'
+import { formatBusinessDate } from '@/lib/dateTime'
 import CartonPaperPicker from '@/components/CartonPaperPicker.vue'
 import CartonMasterWorkspace from '@/components/CartonMasterWorkspace.vue'
 import CartonMasterOrderAssist from '@/components/CartonMasterOrderAssist.vue'
@@ -210,6 +211,8 @@ const orderSort = ref<'DUE_ASC' | 'DUE_DESC' | 'ORDER_DESC'>('DUE_ASC')
 const historyOrderFileInput = ref<HTMLInputElement | null>(null)
 const importingHistoryOrders = ref(false)
 const showOrderModal = ref(false)
+const orderFeedbackMessage = ref('')
+const orderFeedbackElement = ref<HTMLElement | null>(null)
 const editingOrderNo = ref('')
 const orderChangeReason = ref('')
 const submitSupplierOrderNo = ref('')
@@ -368,7 +371,7 @@ const canCorrectReceipt = computed(() => apiConnected.value
 const reversingMovementId = ref('')
 const reversalReason = ref('')
 const reversalBusy = ref(false)
-const closingPeriod = ref(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 7))
+const closingPeriod = ref(dateOffsetIso(`${businessTodayIso().slice(0, 7)}-01`, -1).slice(0, 7))
 const closingBusyId = ref('')
 const closingDecision = ref<{ closing: CartonClosingResponse; action: 'LOCK' | 'UNLOCK' } | null>(null)
 const closingDecisionReason = ref('')
@@ -518,7 +521,7 @@ const orderForm = reactive({
   itemNo: '',
   productName: '',
   orderQuantity: 0 as number | '',
-  orderDate: new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }),
+  orderDate: businessTodayIso(),
   customerDueDate: '',
   dueDate: '2026-08-12',
   note: '',
@@ -1764,7 +1767,7 @@ function importQuantityLabel(row: CartonImportPreviewRow) {
 }
 
 function businessTodayIso() {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
+  return formatBusinessDate(new Date().toISOString())
 }
 
 function formatMonthDay(value?: string | null) {
@@ -1842,7 +1845,9 @@ function rememberOrderFormMaterial() {
 function dueDayDelta(dueDate: string) {
   const today = Date.parse(`${businessTodayIso()}T00:00:00Z`)
   const due = Date.parse(`${dueDate}T00:00:00Z`)
-  return Number.isFinite(due) ? Math.round((due - today) / 86_400_000) : null
+  return Number.isFinite(today) && Number.isFinite(due)
+    ? Math.round((due - today) / 86_400_000)
+    : null
 }
 
 function orderDueReminder(order: CartonOrderRow): OrderDueReminder {
@@ -2249,7 +2254,7 @@ function applyReceiptImport(batch: CartonImportBatchResponse) {
   receiptDeliveryNoteNo.value = selectedDeliveryNo
   receiptDeliveryDate.value = rows.find((row) => row.delivery_date)?.delivery_date
     ?? batch.parse_summary.document?.delivery_date
-    ?? new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
+    ?? businessTodayIso()
   currentReceipt.value = null
   const extraDocuments = Math.max(0, deliveryNumbers.length - 1)
   actionMessage.value = `送货单识别完成：共 ${batch.parse_summary.row_count ?? rows.length} 行，已匹配 ${batch.parse_summary.matched_count ?? matched.length} 行，${batch.parse_summary.issue_count ?? 0} 行需要人工处理。${extraDocuments ? `本次还包含 ${extraDocuments} 张其他送货单，请分批复核。` : ''}`
@@ -2419,6 +2424,7 @@ function replaceOrderState(order: CartonOrderResponse) {
 }
 
 async function createLocalOrder() {
+  orderFeedbackMessage.value = ''
   const validMaterials = orderForm.materials.filter((material) =>
     material.packagingType.trim()
     && (orderForm.quantityBasis === 'EXPLICIT' ? Number(material.requiredQuantity) > 0 : material.paperQuality.trim() && material.specification.trim() && Number(material.unitsPerCarton) > 0),
@@ -2430,50 +2436,51 @@ async function createLocalOrder() {
       customer_name: currentOrder.customer_name,
     } : null)
   if (!selectedCustomer) {
-    actionMessage.value = '请先搜索并选择客户；新客户须由有高级维护权限的人员核对并保存。'
+    setOrderFeedback('表单核对未通过：请先搜索并选择客户；新客户须由有高级维护权限的人员核对并保存。')
     return
   }
   if (!orderForm.contractNo.trim() || !orderForm.itemNo.trim() || validMaterials.length !== orderForm.materials.length) {
-    actionMessage.value = '请填写合同号、货号，并补齐每条纸品明细的类型、纸质、规格和每箱个数。'
+    setOrderFeedback('表单核对未通过：请填写合同号、货号，并补齐每条纸品明细的类型、纸质、规格和每箱个数。')
     return
   }
   if (!BUSINESS_IDENTIFIER_RE.test(orderForm.contractNo.trim()) || !BUSINESS_IDENTIFIER_RE.test(orderForm.itemNo.trim())) {
-    actionMessage.value = '合同号和货号仅允许中英文、数字、空格及 - _ . / # ( ) + &，且首尾必须为文字或数字。'
+    setOrderFeedback('表单核对未通过：合同号和货号仅允许中英文、数字、空格及 - _ . / # ( ) + &，且首尾必须为文字或数字。')
     return
   }
   if ((orderForm.quantityBasis !== 'EXPLICIT' || orderForm.orderQuantity !== '') && (!Number.isFinite(Number(orderForm.orderQuantity)) || Number(orderForm.orderQuantity) <= 0)) {
-    actionMessage.value = '产品订单数量必须大于 0，系统不再预填 3600。'
+    setOrderFeedback('表单核对未通过：产品订单数量必须大于 0，系统不再预填 3600。')
     return
   }
   if (!orderForm.orderDate) {
-    actionMessage.value = '请选择下单日期。'
+    setOrderFeedback('表单核对未通过：请选择下单日期。')
     return
   }
   if (!currentOrder && !orderForm.customerDueDate) {
-    actionMessage.value = '请选择客户交期，系统会自动生成计划交期。'
+    setOrderFeedback('表单核对未通过：请选择客户交期，系统会自动生成计划交期。')
     return
   }
   if (orderForm.customerDueDate && orderForm.customerDueDate < orderForm.orderDate) {
-    actionMessage.value = '客户交期不能早于下单日期。'
+    setOrderFeedback('表单核对未通过：客户交期不能早于下单日期。')
     return
   }
   if (!calculatedOrderDueDate.value) {
-    actionMessage.value = '无法计算计划交期，请检查下单日期和客户交期。'
+    setOrderFeedback('表单核对未通过：无法计算计划交期，请检查下单日期和客户交期。')
     return
   }
   const matchingProduct = orderRecords.value.find((order) =>
     order.item_no.trim().toLowerCase() === orderForm.itemNo.trim().toLowerCase() && order.product_name.trim(),
   )
   if (!currentOrder && !orderForm.productName.trim() && !matchingProduct) {
-    actionMessage.value = '该货号尚无历史产品名称，请先填写产品名称；后续再用同一货号时会自动带出。'
+    setOrderFeedback('表单核对未通过：该货号尚无历史产品名称，请先填写产品名称；后续再用同一货号时会自动带出。')
     return
   }
   if (currentOrder && orderChangeReason.value.trim().length < 4) {
-    actionMessage.value = '修改正式订单必须填写至少 4 个字的修改原因。'
+    setOrderFeedback('表单核对未通过：修改正式订单必须填写至少 4 个字的修改原因。')
     return
   }
 
   savingOrder.value = true
+  let savedOrderNo = ''
   try {
     const payload = {
       factory_id: selectedFactoryId.value,
@@ -2515,6 +2522,7 @@ async function createLocalOrder() {
         ...payload,
         status: 'CONFIRMED',
       })
+    savedOrderNo = saved.order_no
     replaceOrderState(saved)
     void refreshMaster()
     rememberOrderFormMaterial()
@@ -2525,10 +2533,21 @@ async function createLocalOrder() {
       ? `正式纸箱订单 ${saved.order_no} 已按原因完成第 ${saved.revision} 版修订。`
       : `正式纸箱订单 ${saved.order_no} 已进入待下单，含 ${saved.lines.length} 条纸品明细；确认锁定前仍可修改、追加或取消。`
   } catch (error) {
-    actionMessage.value = `${currentOrder ? '订单修改' : '订单新建'}失败：${getApiErrorMessage(error)}`
+    if (savedOrderNo) {
+      showOrderModal.value = false
+      actionMessage.value = `订单 ${savedOrderNo} 已保存，但页面更新或操作日志读取失败：${getApiErrorMessage(error)}。请刷新台账查看，避免重复提交。`
+    } else {
+      setOrderFeedback(`${currentOrder ? '订单修订' : '新建订单'}未完成（保存到服务器）：${getApiErrorMessage(error)}。如请求超时，请先核对台账再重试。`)
+    }
   } finally {
     savingOrder.value = false
   }
+}
+
+function setOrderFeedback(message: string) {
+  orderFeedbackMessage.value = message
+  actionMessage.value = message
+  void nextTick(() => orderFeedbackElement.value?.scrollIntoView?.({ block: 'nearest' }))
 }
 
 function openSubmitSupplierOrder(orderNo: string) {
@@ -2576,7 +2595,7 @@ async function confirmSubmitSupplierOrder() {
       const skippedCount = selected.length - savedOrders.length
       closeSubmitSupplierDialog()
       auditRecords.value = await cartonProcurementApi.listAuditEvents(selectedFactoryId.value)
-      actionMessage.value = `已确认并锁定 ${savedOrders.length} 张订单${skippedCount ? `；跳过 ${skippedCount} 张非待下单订单` : ''}。`
+      actionMessage.value = `已确认并锁定 ${savedOrders.length} 张订单，首次采购单已自动发行到供应商协同${skippedCount ? `；跳过 ${skippedCount} 张非待下单订单` : ''}。`
       void refreshMaster()
     } catch (error) {
       actionMessage.value = `批量确认锁定失败：${getApiErrorMessage(error)}`
@@ -2598,7 +2617,7 @@ async function confirmSubmitSupplierOrder() {
     replaceOrderState(saved)
     closeSubmitSupplierDialog()
     auditRecords.value = await cartonProcurementApi.listAuditEvents(selectedFactoryId.value)
-    actionMessage.value = `订单 ${saved.order_no} 已确认并锁定普通编辑；有权限的仓管或主管可追加或减单。`
+    actionMessage.value = `订单 ${saved.order_no} 已确认并锁定，首次采购单已自动发行到供应商协同；有权限的仓管或主管可追加或减单。`
     void refreshMaster()
   } catch (error) {
     actionMessage.value = `确认锁定失败：${getApiErrorMessage(error)}`
@@ -2664,6 +2683,8 @@ function auditEventLabel(eventType: string) {
     INVENTORY_LOCATION_CREATED: '仓位建档',
     ORDER_CREATED: '订单创建确认',
     ORDER_SUBMITTED_SUPPLIER: '确认订单并锁定',
+    PURCHASE_ORDER_ISSUED: '供应商采购单发行',
+    PURCHASE_ORDER_BASELINE_BACKFILLED: '既有订单供应商历史基线补录',
     HISTORY_ORDER_PLACED: '历史已下单转待收料',
     HISTORY_ORDER_MATERIAL_COMPLETED: '收料补齐历史纸品资料',
     ORDER_UPDATED: '订单修改',
@@ -3751,6 +3772,7 @@ async function issueSelectedPurchaseOrders() {
 }
 
 function resetOrderForm() {
+  orderFeedbackMessage.value = ''
   chosenMaster.value = null
   const remembered = readOrderFormMemory()
   editingOrderNo.value = ''
@@ -3763,7 +3785,7 @@ function resetOrderForm() {
   orderForm.productName = ''
   orderForm.quantityBasis = 'CALCULATED'
   orderForm.orderQuantity = 0
-  orderForm.orderDate = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
+  orderForm.orderDate = businessTodayIso()
   orderForm.customerDueDate = ''
   orderForm.dueDate = ''
   orderForm.note = ''
@@ -3844,6 +3866,7 @@ function openEditOrderModal(orderNo: string) {
     actionMessage.value = '订单确认并锁定后不能再修改。'
     return
   }
+  orderFeedbackMessage.value = ''
   editingOrderNo.value = order.order_no
   orderChangeReason.value = '修正订单录入信息'
   orderForm.customerCode = order.customer_code
@@ -4315,6 +4338,7 @@ async function saveReceiptFeedback() {
   const willCompleteOrder = manualReceiptWillCompleteOrder.value
   const includesAdHoc = hasAdHocReceiptLines.value
   const targetOrderNos = manualReceiptOrderNos.value.join('、')
+  let receiptStep = '核对入库仓位'
   try {
     for (const row of candidateLines) {
       const effective = receiptLineEffectiveQuantity(row)
@@ -4322,6 +4346,7 @@ async function saveReceiptFeedback() {
         throw new Error(`${row.contractNo} ${row.itemNo}：请选择入库仓位，分仓合计须等于有效入库数量。`)
       }
     }
+    receiptStep = '提交收料并过账'
     currentReceipt.value = await cartonProcurementApi.createReceipt({
       post_immediately: true,
       factory_id: selectedFactoryId.value,
@@ -4371,11 +4396,14 @@ async function saveReceiptFeedback() {
       : `入库成功：送货单 ${receiptDeliveryNoteNo.value} 已生成库存流水，未收齐订单保持“部分收料”。`
     // Keep the posted receipt locked before refreshing; a refresh failure is not a posting failure.
     setReceiptFeedback(message, 'success')
-    try { await loadBackendData() } catch {
+    try {
+      await loadBackendData()
+      if (!apiConnected.value) setReceiptFeedback(`${message} 台账刷新失败，请刷新页面查看。`, 'success')
+    } catch {
       setReceiptFeedback(`${message} 台账刷新失败，请刷新页面查看。`, 'success')
     }
   } catch (error) {
-    setReceiptFeedback(`入库失败：${getApiErrorMessage(error)}`)
+    setReceiptFeedback(`入库未完成（${receiptStep}）：${getApiErrorMessage(error)}${receiptStep === '提交收料并过账' ? '。如请求超时，请先核对收料历史再重试。' : ''}`)
   } finally {
     savingReceipt.value = false
   }
@@ -4399,14 +4427,20 @@ async function confirmCurrentReceipt() {
     )
     receiptAcceptanceDate.value = currentReceipt.value.acceptance_date ?? ''
     const confirmedReceiptNo = currentReceipt.value.receipt_no
-    await loadBackendData()
-    setReceiptFeedback(includesAdHoc
+    const message = includesAdHoc
       ? `收料单 ${confirmedReceiptNo} 已人工确认；非正式/打板明细已生成独立入库流水，并纳入对应月份月结。`
       : willCompleteOrder
       ? `收料单 ${confirmedReceiptNo} 已确认入库，订单 ${targetOrderNos} 的全部明细已收齐并自动完成。`
-      : `收料单 ${confirmedReceiptNo} 已确认入库；后端已生成库存流水，未收齐订单保持“部分收料”。`, 'success')
+      : `收料单 ${confirmedReceiptNo} 已确认入库；后端已生成库存流水，未收齐订单保持“部分收料”。`
+    setReceiptFeedback(message, 'success')
+    try {
+      await loadBackendData()
+      if (!apiConnected.value) setReceiptFeedback(`${message} 台账刷新失败，请刷新页面查看。`, 'success')
+    } catch {
+      setReceiptFeedback(`${message} 台账刷新失败，请刷新页面查看。`, 'success')
+    }
   } catch (error) {
-    setReceiptFeedback(`确认入库失败：${getApiErrorMessage(error)}`)
+    setReceiptFeedback(`确认入库未完成（提交确认并过账）：${getApiErrorMessage(error)}。如请求超时，请先核对收料历史再重试。`)
   } finally {
     confirmingReceipt.value = false
   }
@@ -4696,7 +4730,6 @@ function refreshDemo() {
         </label>
 
         <div class="ml-auto flex items-center gap-2">
-          <RouterLink :to="{ path: '/carton-supplier-management', query: { factory: selectedFactoryId } }" class="inline-flex h-8 items-center rounded-lg border border-teal-200 bg-teal-50 px-2.5 text-xs font-semibold text-teal-800">供应商协同</RouterLink>
           <span class="hidden h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-medium text-slate-600 md:inline-flex">
             <Building2 class="size-4" aria-hidden="true" />
             当前厂区：{{ activeFactory.shortName }}
@@ -4951,7 +4984,7 @@ function refreshDemo() {
         <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div>
             <h2 class="font-bold text-slate-950">纸箱合同订单台账</h2>
-            <p class="mt-1 text-[11px] text-slate-500">待下单订单确认后整单锁定；再另行发行供应商采购单。有权限的仓管或主管可继续追加，也可减少尚未入库部分；全部到货后追加会恢复为“部分到货”。</p>
+            <p class="mt-1 text-[11px] text-slate-500">待下单订单确认后整单锁定，并自动发行首次采购单到供应商协同；后续追加或减单仍需另行发行变更单。有权限的仓管或主管可继续调整尚未入库部分。</p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <a href="/templates/carton-history-order-import-template.xlsx" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
@@ -6088,7 +6121,7 @@ function refreshDemo() {
           <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同备注</span><textarea v-model="orderForm.note" aria-label="订单备注" rows="3" placeholder="历史规格来源、刀模版本或特殊交付要求" class="w-full rounded-lg border border-slate-200 px-3 py-2 outline-none focus:border-teal-500"></textarea></label>
           <label v-if="editingOrderNo" class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">修改原因（默认已填写，可修改）</span><textarea v-model="orderChangeReason" aria-label="订单修改原因" rows="2" minlength="4" maxlength="500" placeholder="说明客户通知、数量修正或交期变化原因" class="w-full rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 outline-none focus:border-amber-500"></textarea></label>
         </div>
-        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4"><p class="text-[10px] text-slate-500">{{ editingOrderNo ? '保存后版本号递增并写入修改原因。' : '创建后仍可修改、追加或取消；必须另行“确认订单并锁定”后才允许入库。' }}</p><div class="flex gap-2"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="showOrderModal = false">返回</button><button type="submit" :disabled="savingOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ savingOrder ? '正在保存…' : editingOrderNo ? '保存订单修订' : '创建待下单订单' }}</button></div></div>
+        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4"><div class="min-w-0 flex-1"><p v-if="orderFeedbackMessage" ref="orderFeedbackElement" data-testid="order-save-feedback" role="alert" aria-live="polite" class="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold leading-5 text-red-700">{{ orderFeedbackMessage }}</p><p v-else class="text-[10px] text-slate-500">{{ editingOrderNo ? '保存后版本号递增并写入修改原因。' : '创建后仍可修改、追加或取消；必须另行“确认订单并锁定”后才允许入库。' }}</p></div><div class="flex gap-2"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-4 text-[12px] font-bold text-slate-600" @click="showOrderModal = false">返回</button><button type="submit" :disabled="savingOrder" class="h-9 rounded-lg bg-teal-700 px-4 text-[12px] font-bold text-white disabled:opacity-60">{{ savingOrder ? '正在保存…' : editingOrderNo ? '保存订单修订' : '创建待下单订单' }}</button></div></div>
       </form>
     </div>
 
@@ -6107,7 +6140,7 @@ function refreshDemo() {
     <div v-if="submitSupplierOrderNo || bulkSubmitSupplierOrderNos.length" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4" @click.self="closeSubmitSupplierDialog">
       <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="submit-supplier-title">
         <div class="flex items-start justify-between border-b border-slate-200 px-5 py-4">
-          <div><h2 id="submit-supplier-title" class="text-[16px] font-bold text-slate-950">{{ bulkSubmitSupplierOrderNos.length ? `批量确认并锁定 ${selectedSubmittableOrderCount} 张待下单订单` : `确认订单 ${submitSupplierOrderNo} 并锁定` }}</h2><p class="mt-1 text-[11px] text-slate-500">确认后订单进入“已确认锁定”状态并开放收料；这一步不会发送文件，之后需要另行发行供应商采购单。</p></div>
+          <div><h2 id="submit-supplier-title" class="text-[16px] font-bold text-slate-950">{{ bulkSubmitSupplierOrderNos.length ? `批量确认并锁定 ${selectedSubmittableOrderCount} 张待下单订单` : `确认订单 ${submitSupplierOrderNo} 并锁定` }}</h2><p class="mt-1 text-[11px] text-slate-500">确认后订单进入“已确认锁定”状态，首次采购单同步生成并出现在供应商协同；Excel 可从采购单历史重新下载。</p></div>
           <button type="button" aria-label="关闭确认订单并锁定" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="closeSubmitSupplierDialog"><X class="size-4" /></button>
         </div>
         <div class="p-5"><div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-[12px] font-semibold leading-6 text-amber-900">此操作会锁定普通编辑：确认锁定后客户、合同、货号和纸品资料不可直接修改；有权限的仓管或主管可继续追加，也可减少尚未入库且未进入待确认收料单的数量。</div></div>

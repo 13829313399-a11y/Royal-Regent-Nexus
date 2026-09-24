@@ -16,6 +16,18 @@ describe('supplier management route scope', () => {
     vi.resetAllMocks(); setActivePinia(createPinia())
     await router.replace('/login?logged_out=1')
   })
+  it('keeps the supplier mark route authenticated without granting internal carton permissions', async () => {
+    const user: AuthMeResponse = {
+      id: 'supplier', username: 'supplier', display_name: '供应商', roles: [], permissions: [],
+      factory_scopes: [], department_scopes: [], force_password_change: false, grants: [],
+      profile: { primary_factory_id: 'huaxing', primary_department: 'carton', position: '', confirmation_status: 'confirmed' },
+    }
+    api.getMe.mockResolvedValue(user); useAuthStore().applySession(user)
+    await router.replace('/carton-supplier/carton-mark?factory=huaxing')
+    expect(router.currentRoute.value.name).toBe('carton-supplier-carton-mark')
+    await router.replace('/modules/pmc-warehouse/carton-procurement?factory=huaxing')
+    expect(router.currentRoute.value.name).toBe('dashboard')
+  })
   it.each(['carton', 'pmc-warehouse'])('allows a %s-only read grant through the real navigation guard', async department => {
     const user: AuthMeResponse = {
       id: 'warehouse', username: 'warehouse', display_name: '仓管', roles: [],

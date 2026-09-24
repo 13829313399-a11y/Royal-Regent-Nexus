@@ -171,6 +171,7 @@ describe('纸箱基础资料', () => {
     await flushPromises()
     await wrapper.get('[role="tab"][aria-selected="false"]').trigger('click')
     expect(wrapper.find('[aria-label="修改基础资料 00123"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="删除货号包装 00123"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('用于落单')
     get.mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [a] })
     await wrapper.findAll('button').find(b => b.text() === '刷新资料')!.trigger('click'); await flushPromises()
@@ -182,6 +183,42 @@ describe('纸箱基础资料', () => {
     expect(wrapper.get('[aria-label="资料编号名称"]').attributes('disabled')).toBeDefined()
     wrapper.unmount(); get.mockRestore()
   })
+})
+
+it('removes one packaging configuration from usable records and restores it without deleting history', async () => {
+  let config: MasterRecord = { ...record('CFG'), preferred: true, sources: [{
+    order_no: 'CT-HISTORY', order_date: '2026-09-01', contract_no: 'SC-OLD', item_no: '00123',
+    customer_code: '360', configuration: {},
+  }] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockImplementation(async () => ({ ...emptyMaster(), can_manage: true, records: [config] }))
+  const save = vi.spyOn(cartonMasterApi, 'save').mockImplementation(async (_factory, payload) => {
+    config = { ...config, status: payload.status, preferred: payload.preferred, revision: config.revision + 1, maintained: true }
+    return { ...config, sources: [] }
+  })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } })
+  await flushPromises()
+  expect(wrapper.get<HTMLSelectElement>('[aria-label="货号资料状态"]').element.value).toBe('ACTIVE')
+  await wrapper.get('[data-config-id="CFG"] [aria-label="删除货号包装 00123"]').trigger('click')
+  const dialog = wrapper.get('[role="dialog"][aria-label="删除货号与包装资料"]')
+  expect(dialog.text()).toContain('历史订单及 1 条来源记录保留')
+  expect(save).not.toHaveBeenCalled()
+  await dialog.findAll('button').find(button => button.text() === '取消')!.trigger('click')
+  expect(save).not.toHaveBeenCalled()
+
+  await wrapper.get('[data-config-id="CFG"] [aria-label="删除货号包装 00123"]').trigger('click')
+  await wrapper.get('[role="dialog"][aria-label="删除货号与包装资料"]').findAll('button').find(button => button.text() === '确认删除')!.trigger('click')
+  await flushPromises()
+  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ kind: 'CONFIG', status: 'INACTIVE', preferred: false, expected_revision: 1, reason: '删除不再使用的货号包装资料' }), 'CFG')
+  expect(wrapper.find('[data-config-id="CFG"]').exists()).toBe(false)
+  expect(wrapper.get('[role="status"]').text()).toContain('可在“停用”中恢复')
+  await wrapper.get('[aria-label="货号资料状态"]').setValue('INACTIVE')
+  expect(wrapper.get('[data-config-id="CFG"]').text()).toContain('1 条历史来源')
+  await wrapper.get('[data-config-id="CFG"] [aria-label="恢复货号包装 00123"]').trigger('click')
+  await flushPromises()
+  expect(save).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ status: 'ACTIVE', preferred: false, expected_revision: 2, reason: '恢复货号包装资料' }), 'CFG')
+  expect(wrapper.get('[data-config-id="CFG"]').text()).toContain('启用')
+  expect(config.sources).toHaveLength(1)
+  wrapper.unmount(); get.mockRestore(); save.mockRestore()
 })
 
 it('uses saved templates without re-learning from later history or another customer', () => {
