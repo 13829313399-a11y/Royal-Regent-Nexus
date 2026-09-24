@@ -6,7 +6,14 @@ import {
   Printer,
   Thermometer,
   CircleCheck,
+  CircleAlert,
+  CircleHelp,
+  Clock3,
+  FileText,
   History,
+  Pause,
+  Power,
+  WifiOff,
 } from "@lucide/vue";
 import { useDialogFocus } from "@/composables/useDialogFocus";
 import { http, getApiErrorMessage } from "@/lib/http";
@@ -20,8 +27,8 @@ import {
   printerPreparationText,
   type PrinterEvent,
 } from "../printerPresentation";
-const props = defineProps<{ id: string; printer?: ThreeDPrinter }>();
-const emit = defineEmits<{ close: [] }>();
+const props = defineProps<{ id: string; printer?: ThreeDPrinter; open: boolean }>();
+const emit = defineEmits<{ close: []; 'after-close': [] }>();
 const root = ref<HTMLElement | null>(null);
 useDialogFocus(() => true, root, { onEscape: () => emit("close") });
 const data = ref<{
@@ -46,6 +53,15 @@ const online = computed(
 const state = computed(() =>
   online.value ? printer.value?.state || "UNKNOWN" : "OFFLINE",
 );
+const stateTone = computed(() => ["ERROR", "FAILED"].includes(state.value) ? 'fault'
+  : state.value === 'RUNNING' ? 'running' : state.value === 'FINISH' ? 'complete'
+    : state.value === 'PAUSE' ? 'paused' : isPrinterPreparing(state.value) ? 'preparing' : 'idle');
+const stateIcon = (value: string) => value === 'RUNNING' ? Printer
+  : value === 'FINISH' ? CircleCheck : ["ERROR", "FAILED"].includes(value) ? CircleAlert
+    : value === 'PAUSE' ? Pause : isPrinterPreparing(value) ? FileText
+      : value === 'IDLE' ? Power : value === 'OFFLINE' ? WifiOff : Clock3;
+const eventTone = (value: string) => ["ERROR", "FAILED"].includes(value) ? 'fault'
+  : value === 'FINISH' ? 'complete' : value === 'PAUSE' ? 'paused' : isPrinterPreparing(value) ? 'preparing' : 'normal';
 const events = computed(() => groupPrinterEvents(data.value?.events || []));
 const progress = computed(() =>
   Math.min(100, Math.max(0, printer.value?.progress_percent || 0)),
@@ -115,7 +131,9 @@ onBeforeUnmount(() => {
 });
 </script>
 <template>
-  <div class="printer-overlay" @click.self="emit('close')">
+  <Teleport to="body">
+    <Transition name="tdp-drawer" appear @after-leave="emit('after-close')">
+  <div v-if="open" class="printer-overlay tdp-theme" @click.self="emit('close')">
     <aside
       ref="root"
       role="dialog"
@@ -158,9 +176,9 @@ onBeforeUnmount(() => {
         <p v-if="error" role="alert" class="error-message">
           详情加载失败：{{ error }}，可点击刷新重试。
         </p>
-        <section class="status-panel">
+        <section class="status-panel" :class="`status-panel--${stateTone}`">
           <span class="eyebrow">当前状态</span>
-          <h3>{{ printerStateText(state) }}</h3>
+          <h3><component :is="stateIcon(state)" :size="24" aria-hidden="true" />{{ printerStateText(state) }}</h3>
           <p>{{ guidance }}</p>
           <p v-if="printer?.error_text" class="error-message">
             设备提示：{{ printer.error_text }}
@@ -234,8 +252,8 @@ onBeforeUnmount(() => {
             }}
           </p>
           <ol class="event-list">
-            <li v-for="item in events" :key="item.id">
-              <CircleCheck :size="17" />
+            <li v-for="item in events" :key="item.id" :class="`event--${eventTone(item.state)}`">
+              <component :is="stateIcon(item.state)" :size="17" aria-hidden="true" />
               <div>
                 <div class="event-heading">
                   <strong>{{ printerStateText(item.state) }}</strong
@@ -281,6 +299,8 @@ onBeforeUnmount(() => {
       </footer>
     </aside>
   </div>
+    </Transition>
+  </Teleport>
 </template>
 <style scoped>
 .printer-detail .section-heading {
@@ -297,8 +317,16 @@ onBeforeUnmount(() => {
   z-index: 50;
   display: flex;
   justify-content: flex-end;
-  background: rgb(0 0 0 / 0.3);
+  background: rgb(15 23 42 / 0.42);
 }
+.tdp-drawer-enter-active { transition: background-color 160ms ease; }
+.tdp-drawer-leave-active { transition: background-color 180ms ease; }
+.tdp-drawer-enter-from,
+.tdp-drawer-leave-to { background-color: transparent; }
+.tdp-drawer-enter-active .printer-detail { transition: transform 260ms cubic-bezier(.16,1,.3,1), opacity 260ms cubic-bezier(.16,1,.3,1); }
+.tdp-drawer-leave-active .printer-detail { transition: transform 180ms cubic-bezier(.2,.8,.2,1), opacity 180ms cubic-bezier(.2,.8,.2,1); }
+.tdp-drawer-enter-from .printer-detail { transform: translateX(20px); opacity: 0; }
+.tdp-drawer-leave-to .printer-detail { transform: translateX(12px); opacity: 0; }
 .printer-detail {
   width: 100%;
   max-width: 620px;
@@ -385,7 +413,19 @@ h3 {
   font-size: 27px;
   color: var(--primary);
   margin: 5px 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
 }
+.status-panel--fault { background: color-mix(in oklch, var(--destructive) 5%, var(--card)); border-color: color-mix(in oklch, var(--destructive) 24%, var(--border)); }
+.status-panel--fault h3 { color: var(--color-red-800); }
+.status-panel--paused { background: var(--color-amber-50); border-color: var(--color-amber-200); }
+.status-panel--paused h3 { color: var(--color-amber-800); }
+.status-panel--preparing { background: var(--color-blue-50); border-color: var(--color-blue-200); }
+.status-panel--preparing h3 { color: var(--color-blue-700); }
+.status-panel--complete { background: var(--color-emerald-50); border-color: var(--color-emerald-200); }
+.status-panel--complete h3 { color: var(--color-emerald-700); }
+.status-panel--idle h3 { color: var(--foreground); }
 .status-panel p {
   font-size: 14px;
   line-height: 1.8;
@@ -479,6 +519,10 @@ small {
   flex-shrink: 0;
   margin-top: 3px;
 }
+.event-list .event--fault svg { color: var(--color-red-800); }
+.event-list .event--paused svg { color: var(--color-amber-800); }
+.event-list .event--preparing svg { color: var(--color-blue-700); }
+.event-list .event--complete svg { color: var(--color-emerald-700); }
 .event-list li > div {
   flex: 1;
   min-width: 0;
@@ -539,5 +583,13 @@ small {
   .progress-caption {
     flex-wrap: wrap;
   }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tdp-drawer-enter-active,
+  .tdp-drawer-leave-active,
+  .tdp-drawer-enter-active .printer-detail,
+  .tdp-drawer-leave-active .printer-detail { transition: none; }
+  .tdp-drawer-enter-from .printer-detail,
+  .tdp-drawer-leave-to .printer-detail { transform: none; opacity: 1; }
 }
 </style>

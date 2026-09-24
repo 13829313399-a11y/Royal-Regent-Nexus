@@ -4,6 +4,8 @@ import { threeDPrintingApi } from "@/api/threeDPrinting";
 import type { ThreeDMaintenance } from "@/types/threeDPrinting";
 import LegacyDialog from "../components/LegacyDialog.vue";
 import PageControls from "../components/PageControls.vue";
+import TdpButton from "../components/TdpButton.vue";
+import { Plus, Search } from "@lucide/vue";
 import { useWorkspaceContext } from "../context";
 const {
   listPages,
@@ -64,9 +66,7 @@ async function saveForm() {
   <template v-if="dashboard">
     <section class="space-y-5">
       <div class="legacy-toolbar">
-        <button v-if="canOperate" class="action-button" @click="openAdd">
-          + 添加维修记录
-        </button>
+        <TdpButton v-if="canOperate" tone="primary" @click="openAdd"><template #icon><Plus :size="16" /></template>添加维修记录</TdpButton>
       </div>
       <form
         class="collection-filters flex flex-wrap gap-3 rounded-xl border bg-white p-3"
@@ -76,7 +76,7 @@ async function saveForm() {
           v-model="listPages.maintenance!.q"
           placeholder="搜索名称 / 客户 / 材料"
           class="rounded border p-2"
-        /><button type="submit" class="rounded border px-4">查询</button>
+        /><TdpButton tone="soft" type="submit" :busy="listPages.maintenance!.busy"><template #icon><Search :size="16" /></template>查询</TdpButton>
       </form>
       <PageControls
         :page="listPages.maintenance!.page"
@@ -84,7 +84,7 @@ async function saveForm() {
         :busy="listPages.maintenance!.busy"
         @change="loadPage('maintenance', $event)"
       />
-      <LegacyDialog v-if="showForm" title="维修记录" @close="showForm = false">
+      <LegacyDialog :open="showForm" title="维修记录" @close="showForm = false">
         <form
           v-if="canOperate"
           class="panel-card p-5"
@@ -127,9 +127,7 @@ async function saveForm() {
               >备注<input v-model="maintenanceForm.remark"
             /></label>
           </div>
-          <button class="action-button mt-4" type="submit" :disabled="saving">
-            <Wrench class="size-4" />保存维护记录
-          </button>
+          <TdpButton class="mt-4" tone="primary" type="submit" :busy="saving"><template #icon><Wrench class="size-4" /></template>保存维护记录</TdpButton>
         </form>
       </LegacyDialog>
       <div class="panel-card p-5">

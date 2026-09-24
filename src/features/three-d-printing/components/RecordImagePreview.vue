@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue';
+import { nextTick, ref, watch } from 'vue';
 import { ZoomIn, ZoomOut, Maximize } from '@lucide/vue';
 import LegacyDialog from './LegacyDialog.vue';
 
-defineProps<{ src: string }>();
-const emit = defineEmits<{ close: [] }>();
+const props = defineProps<{ src: string; open: boolean }>();
+const emit = defineEmits<{ close: []; 'after-close': [] }>();
 const zoom = ref(1);
 const canvas = ref<HTMLDivElement>();
+watch(() => props.open, async open => {
+  if (!open) return;
+  zoom.value = 1;
+  await nextTick();
+  if (canvas.value) { canvas.value.scrollLeft = 0; canvas.value.scrollTop = 0; }
+});
 async function setZoom(value: number) {
   const viewport = canvas.value;
   const ratio = value / zoom.value;
@@ -23,7 +29,7 @@ async function setZoom(value: number) {
 
 <template>
   <Teleport to="body">
-    <LegacyDialog title="图片详情" class="record-image-viewer" @close="emit('close')">
+    <LegacyDialog :open="open" title="图片详情" class="record-image-viewer" @close="emit('close')" @after-close="emit('after-close')">
       <div class="image-viewer-toolbar" role="group" aria-label="图片缩放">
         <button type="button" :disabled="zoom <= 1" @click="setZoom(zoom - 0.5)"><ZoomOut :size="16" />缩小</button>
         <output aria-live="polite">{{ Math.round(zoom * 100) }}%</output>
