@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { useWorkspaceContext } from "../context";
+import TdpButton from "../components/TdpButton.vue";
+import { RotateCcw } from "@lucide/vue";
 const {
   auditEvents,
   deletedRecords,
@@ -62,14 +64,15 @@ const {
             type="number"
         /></label>
       </div>
-      <button
+      <TdpButton
         v-if="canOperate"
-        class="action-button mt-4"
+        class="mt-4"
+        tone="primary"
         type="submit"
-        :disabled="saving"
+        :busy="saving"
       >
-        <Save class="size-4" />保存设置
-      </button>
+        <template #icon><Save class="size-4" /></template>保存设置
+      </TdpButton>
     </form>
     <div v-if="canReadAudit" class="panel-card p-5">
       <h2>已撤销记录（最近500条）</h2>
@@ -84,14 +87,14 @@ const {
         <span
           >{{ record.business_date }} · {{ record.product_name }} ·
           {{ record.machine_no }}号机</span
-        ><button
+        ><TdpButton
           v-if="canOperate"
-          class="action-button secondary"
+          tone="secondary"
           :disabled="saving"
           @click="restoreRecord(record)"
         >
-          恢复记录
-        </button>
+          <template #icon><RotateCcw :size="16" /></template>恢复记录
+        </TdpButton>
       </div>
     </div>
     <div class="panel-card p-5">

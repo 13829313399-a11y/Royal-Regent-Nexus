@@ -4,6 +4,8 @@ import { threeDPrintingApi } from "@/api/threeDPrinting";
 import type { ThreeDMaterial } from "@/types/threeDPrinting";
 import LegacyDialog from "../components/LegacyDialog.vue";
 import PageControls from "../components/PageControls.vue";
+import TdpButton from "../components/TdpButton.vue";
+import { Plus, Search, ClipboardPen, Save } from "@lucide/vue";
 import { useWorkspaceContext } from "../context";
 const props = withDefaults(
   defineProps<{ mode?: "materials" | "warehouse" }>(),
@@ -96,23 +98,23 @@ async function saveStock() {
 <template>
   <section v-if="dashboard" class="space-y-5">
     <div class="legacy-toolbar">
-      <input
+      <div class="tdp-search-field"><Search :size="16" aria-hidden="true" /><input
         v-model="query"
         :placeholder="
           mode === 'materials' ? '搜索材料名称 / 类型' : '搜索库存材料'
         "
-      /><button
+      /></div><TdpButton
         v-if="canOperate && mode === 'materials'"
-        class="action-button"
+        tone="primary"
         @click="add"
       >
-        + 添加材料</button
-      ><button
+        <template #icon><Plus :size="16" /></template>添加材料</TdpButton
+      ><TdpButton
         v-if="canOperate && mode === 'warehouse'"
-        class="action-button green"
+        tone="primary"
         @click="dialog = 'stock'"
       >
-        + 登记入库</button
+        <template #icon><Plus :size="16" /></template>登记入库</TdpButton
       ><span v-if="mode === 'warehouse'"
         >库存合计 {{ total.toFixed(2) }} kg</span
       >
@@ -146,12 +148,14 @@ async function saveStock() {
                 </div>
               </td>
             </tr>
+            <tr v-if="!items.length"><td :colspan="canOperate ? 4 : 3">暂无匹配材料</td></tr>
           </tbody>
         </table>
       </div>
     </div>
     <template v-else
       ><div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <p v-if="!inventory.length" class="panel-card p-5 text-sm text-muted-foreground">暂无匹配库存材料</p>
         <article v-for="m in inventory" :key="m.id" class="panel-card p-5">
           <div class="flex justify-between">
             <h2 class="font-bold">{{ m.material_name }}</h2>
@@ -163,13 +167,14 @@ async function saveStock() {
           <p class="text-xs text-slate-500">
             预警线 {{ (m.min_stock_g / 1000).toFixed(2) }} kg
           </p>
-          <button
+          <TdpButton
             v-if="canOperate"
-            class="action-button secondary mt-4"
+            class="mt-4"
+            tone="secondary"
             @click="adjustStock(m.material_name, m.stock_g, m.min_stock_g)"
           >
-            盘点调整
-          </button>
+            <template #icon><ClipboardPen :size="16" /></template>盘点调整
+          </TdpButton>
         </article>
       </div>
       <div class="panel-card">
@@ -210,7 +215,7 @@ async function saveStock() {
         /></div
     ></template>
     <LegacyDialog
-      v-if="dialog === 'material'"
+      :open="dialog === 'material'"
       :title="editId ? '编辑材料' : '添加材料'"
       @close="dialog = ''"
       ><form class="p-4 space-y-4" @submit.prevent="saveMaterial">
@@ -223,11 +228,11 @@ async function saveStock() {
             min="0"
             step="0.01"
             required /></label
-        ><button class="action-button" :disabled="saving">保存</button>
+        ><TdpButton tone="primary" type="submit" :busy="saving"><template #icon><Save :size="16" /></template>保存</TdpButton>
       </form></LegacyDialog
     >
     <LegacyDialog
-      v-if="dialog === 'stock'"
+      :open="dialog === 'stock'"
       title="登记入库"
       @close="dialog = ''"
       ><form class="p-4" @submit.prevent="saveStock">
@@ -264,7 +269,7 @@ async function saveStock() {
               step="0.01" /></label
           ><label>备注<input v-model="stockInForm.remark" /></label>
         </div>
-        <button class="action-button mt-4" :disabled="saving">保存入库</button>
+        <TdpButton class="mt-4" tone="primary" type="submit" :busy="saving"><template #icon><Save :size="16" /></template>保存入库</TdpButton>
       </form></LegacyDialog
     >
   </section>

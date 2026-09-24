@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { useWorkspaceContext } from "../context";
+import TdpButton from "../components/TdpButton.vue";
+import { Download } from "@lucide/vue";
 const { canExport, saving, dateFrom, dateTo, exportWorkbook } =
   useWorkspaceContext();
 </script>
@@ -12,14 +14,14 @@ const { canExport, saving, dateFrom, dateTo, exportWorkbook } =
     <div class="legacy-toolbar">
       <label>开始日期<input v-model="dateFrom" type="date" /></label
       ><label>结束日期<input v-model="dateTo" type="date" /></label
-      ><button
+      ><TdpButton
         v-if="canExport"
-        class="action-button"
-        :disabled="saving"
+        tone="primary"
+        :busy="saving"
         @click="exportWorkbook"
       >
-        导出 Excel
-      </button>
+        <template #icon><Download :size="16" /></template>导出 Excel
+      </TdpButton>
     </div>
   </section>
 </template>

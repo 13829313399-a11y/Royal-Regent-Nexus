@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import RecordImagePicker from "../components/RecordImagePicker.vue";
 import QuoteEditor from "../components/QuoteEditor.vue";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import ProductPicker from "../components/ProductPicker.vue";
 import PageControls from "../components/PageControls.vue";
 import LegacyPrinterGrid from "../components/LegacyPrinterGrid.vue";
 import LegacyDialog from "../components/LegacyDialog.vue";
+import TdpButton from '../components/TdpButton.vue';
+import { ArrowLeft, CalendarDays, CircleAlert, CircleCheck, Download, Moon, Pencil, Play, Search, Trash2, Plus } from '@lucide/vue';
 import { useWorkspaceContext } from "../context";
 import type {
   ThreeDDashboard,
@@ -44,9 +46,10 @@ const {
 } = useWorkspaceContext();
 const day = ref(todayText()),
   showForm = ref(false);
+const loadingDay = ref(false);
 const imagePicker = ref<InstanceType<typeof RecordImagePicker>>();
 function closeForm() { if (!saving.value) showForm.value = false; }
-watch(showForm, (open) => { if (!open) pendingRecordImage.value = null; });
+function afterFormClose() { if (!showForm.value) pendingRecordImage.value = null; }
 const displayedRecordImage = computed(() => recordImageUrl.value || (recordForm.product_id ? recordProductImageUrl.value || dashboard.value?.products.find(p => p.id === recordForm.product_id)?.image_url || "" : ""));
 const keyword = ref(listPages.records!.q);
 const searchAllDates = ref(true);
@@ -60,13 +63,16 @@ const stats = computed(
       {}) as ThreeDDashboard["summary"],
 );
 async function loadDay() {
+  if (loadingDay.value) return;
+  loadingDay.value = true;
   recordSearchAllDates.value = false;
   listPages.records!.q = "";
   listPages.records!.page = 1;
   keyword.value = "";
   dateFrom.value = day.value;
   dateTo.value = day.value;
-  await loadDashboard();
+  try { await loadDashboard(); }
+  finally { loadingDay.value = false; }
 }
 async function searchRecords() {
   listPages.records!.q = keyword.value.trim();
@@ -102,6 +108,7 @@ const statusNames: Record<string, string> = {
   fault: "故障",
   idle: "空闲",
 };
+const recordStatusIcons = { running: Play, done: CircleCheck, fault: CircleAlert, idle: Moon };
 const amount = (r: ThreeDProductionRecord, key: string) =>
   r.frozen_totals[key] == null ? "—" : money(r.frozen_totals[key]);
 const image = (r: ThreeDProductionRecord) =>
@@ -118,64 +125,61 @@ const time = (s: string) =>
 </script>
 <template>
   <section v-if="dashboard" class="space-y-5">
-    <form class="legacy-toolbar" @submit.prevent="loadDay">
+    <form class="legacy-toolbar tdp-record-toolbar" @submit.prevent="loadDay">
       <strong>日期：</strong
-      ><input v-model="day" type="date" aria-label="生产日期" required /><button
-        class="action-button"
-      >
-        加载</button
-      ><button
+      ><input v-model="day" type="date" aria-label="生产日期" required /><TdpButton tone="soft" type="submit" :busy="loadingDay">
+        <template #icon><CalendarDays :size="16" /></template>{{ loadingDay ? '加载中…' : '加载' }}
+      </TdpButton><TdpButton
         v-if="canOperate"
-        type="button"
-        class="action-button green"
+        tone="primary"
         @click="add"
       >
-        + 添加记录</button
-      ><button
+        <template #icon><Plus :size="16" /></template>添加记录</TdpButton><TdpButton
         v-if="canExport"
-        type="button"
-        class="action-button secondary"
+        tone="secondary"
+        :busy="saving"
         @click="exportWorkbook"
       >
-        {{ searching ? "导出所选日期 Excel" : "导出 Excel" }}</button
-      ><button
+        <template #icon><Download :size="16" /></template>{{ searching ? "导出所选日期 Excel" : "导出 Excel" }}</TdpButton><TdpButton
         v-if="canOperate"
-        type="button"
-        class="action-button secondary ml-auto"
+        tone="secondary"
+        class="ml-auto"
+        :busy="saving"
         @click="dayOff"
       >
+        <template #icon><Moon :size="16" /></template>
         {{
           dashboard.day_off_dates.includes(day) ? "恢复生产日" : "标记为休息日"
         }}
-      </button>
+      </TdpButton>
     </form>
     <form
       class="legacy-toolbar"
       aria-label="打印记录搜索"
       @submit.prevent="searchRecords"
     >
-      <input
+      <div class="tdp-search-field"><Search :size="16" aria-hidden="true" /><input
         v-model="keyword"
         type="search"
         aria-label="打印记录产品关键词"
         placeholder="输入产品关键词，查找打印记录"
         maxlength="200"
         class="min-w-0 flex-1"
-      />
-      <label class="flex items-center gap-2"
+      /></div>
+      <label class="tdp-search-scope"
         ><input v-model="searchAllDates" type="checkbox" />搜索全部历史</label
       >
-      <button class="action-button" :disabled="listPages.records!.busy">
-        搜索记录
-      </button>
-      <button
+      <TdpButton tone="soft" type="submit" :busy="listPages.records!.busy">
+        <template #icon><Search :size="16" /></template>{{ listPages.records!.busy ? '查询中…' : '搜索记录' }}
+      </TdpButton>
+      <TdpButton
         v-if="searching"
-        type="button"
-        class="action-button secondary"
+        tone="secondary"
+        :busy="loadingDay"
         @click="loadDay"
       >
-        返回当日记录
-      </button>
+        <template #icon><ArrowLeft :size="16" /></template>返回当日记录
+      </TdpButton>
       <span class="basis-full text-sm text-muted-foreground"
         >支持产品名称、打印文件名关键词；取消“搜索全部历史”可限定上方所选日期。</span
       >
@@ -249,7 +253,9 @@ const time = (s: string) =>
                 }}
               </td>
               <td>
-                <span class="tag">{{ statusNames[r.status] || r.status }}</span>
+                <span class="tag tdp-record-status" :class="`tdp-record-status--${r.status}`">
+                  <component :is="recordStatusIcons[r.status as keyof typeof recordStatusIcons] || CircleAlert" :size="13" aria-hidden="true" />{{ statusNames[r.status] || r.status }}
+                </span>
               </td>
               <td class="record-product">
                 <span v-if="r.auto_record" class="tag auto">自动</span
@@ -280,17 +286,17 @@ const time = (s: string) =>
               <td>{{ time(r.created_at || r.print_start_at) }}</td>
               <td v-if="canOperate">
                 <div class="row-actions">
-                  <button @click="edit(r)">编辑</button
-                  ><button class="danger" @click="removeRecord(r)">删除</button>
+                  <button type="button" @click="edit(r)"><Pencil :size="13" aria-hidden="true" />编辑</button
+                  ><button type="button" class="danger" @click="removeRecord(r)"><Trash2 :size="13" aria-hidden="true" />删除</button>
                 </div>
               </td>
             </tr>
             <tr v-if="!dashboard.records.length">
-              <td colspan="18" class="p-8 text-center">
+              <td :colspan="canOperate ? 18 : 17" class="p-8 text-center">
                 {{
                   searching
                     ? "没有找到匹配记录，请更换关键词或搜索全部历史。"
-                    : "暂无记录，点击“+ 添加记录”开始"
+                    : "暂无记录，点击“添加记录”开始"
                 }}
               </td>
             </tr>
@@ -305,9 +311,10 @@ const time = (s: string) =>
       />
     </div>
     <LegacyDialog
-      v-if="showForm" class="record-editor-dialog"
+      class="record-editor-dialog"
+      :open="showForm"
       :title="recordForm.id ? '编辑生产记录' : '添加生产记录'"
-      @close="closeForm" @paste="imagePicker?.pasteImage($event)"
+      @close="closeForm" @after-close="afterFormClose" @paste="imagePicker?.pasteImage($event)"
     >
       <form v-if="canOperate" class="record-editor" @submit.prevent="save">
         <div class="record-editor-content">
@@ -360,8 +367,8 @@ const time = (s: string) =>
         </div>
         <footer class="record-editor-footer">
           <span>{{ pendingRecordImage ? '1 张图片待上传，保存后生效' : '确认信息后保存本条生产记录' }}</span>
-          <button class="action-button secondary" type="button" :disabled="saving" @click="closeForm">取消</button>
-          <button class="action-button" type="submit" :disabled="saving"><Save class="size-4" />{{ saving ? '保存中…' : '保存记录' }}</button>
+          <TdpButton tone="secondary" :disabled="saving" @click="closeForm">取消</TdpButton>
+          <TdpButton tone="primary" type="submit" :busy="saving"><template #icon><Save class="size-4" /></template>{{ saving ? '保存中…' : '保存记录' }}</TdpButton>
         </footer>
       </form>
     </LegacyDialog>
