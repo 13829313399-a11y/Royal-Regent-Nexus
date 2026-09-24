@@ -773,6 +773,13 @@ def init_db() -> None:
                     missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
             if missing:
                 raise RuntimeError("喷油模块需要显式迁移至 20260922_0119；禁止自动修改已有业务库。缺少：" + ", ".join(missing))
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        existing_tables = set(inspector.get_table_names())
+        if "internal_quotes" in existing_tables:
+            missing = {"internal_quote_families", "internal_quote_alternatives"} - existing_tables
+            if missing:
+                raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             if not name.startswith("uv_ops_")
                             and (settings.spray_ops_enabled or not name.startswith("spray_ops_"))])

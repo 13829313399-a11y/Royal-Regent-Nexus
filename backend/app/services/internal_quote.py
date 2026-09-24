@@ -18,6 +18,7 @@ from app.services.transaction_lock import lock_transaction
 from app.models.auth import AuthUser, AuthUserRole, EmployeeProfile, SystemNotification
 from app.models.internal_quote import (
     InternalQuote,
+    InternalQuoteAlternative,
     InternalQuoteAttachment,
     InternalQuoteArtifactHandoff,
     InternalQuoteAuditLog,
@@ -111,7 +112,7 @@ ALL_QUOTE_DEPARTMENTS = tuple(
 )
 MUTABLE_SECTION_STATUSES = {"draft", "rejected"}
 REVIEWABLE_SECTION_STATUSES = {"pending_review", "na_pending"}
-COMPLETED_SECTION_STATUSES = {"approved", "not_applicable"}
+COMPLETED_SECTION_STATUSES = {"approved", "sealed", "not_applicable"}
 LEGACY_SECTION_REVIEW_MODULE_VERSION = "v2"
 WHOLE_QUOTE_REVIEW_MODULE_VERSION = "v3"
 VIEW_DEDUP_MINUTES = 5
@@ -153,6 +154,8 @@ def is_whole_quote_review(quote: InternalQuote) -> bool:
 
 
 def _ensure_section_review_workflow(quote: InternalQuote) -> None:
+    if quote.module_version == "v4":
+        raise HTTPException(409, "当前报价无需审核，请保存后直接输出；已输出版本请复制新版修改")
     if is_whole_quote_review(quote):
         raise HTTPException(
             status_code=409,
@@ -256,6 +259,24 @@ def quote_write(operation):
         if identity is None:
             raise HTTPException(404, "内部报价不存在或已被删除")
         lock_transaction(db, "internal-quote", f"{identity.factory_id}:{identity.batch_id or quote_id}")
+        quote = db.get(InternalQuote, quote_id)
+        if operation.__name__ == "archive_quote" and db.scalar(select(InternalQuote.id).where(
+            InternalQuote.batch_id == (quote.batch_id or quote.id), InternalQuote.module_version == "v4",
+            InternalQuote.final_release_status == "issued",
+        )):
+            raise HTTPException(409, "批次含已输出版本，请在方案面板逐版归档，保留历史文件")
+        alternative = db.get(InternalQuoteAlternative, quote_id)
+        if alternative and alternative.archived and operation.__name__ not in {
+            "copy_alternative", "clone_quote", "archive_alternative", "create_controlled_export",
+            "create_engineering_workbook_export", "select_alternative",
+        }:
+            raise HTTPException(409, "方案版本已归档，请先恢复后操作")
+        if quote.module_version == "v4" and quote.final_release_status == "issued" and operation.__name__ not in {
+            "copy_alternative", "clone_quote", "issue_alternative", "create_controlled_export",
+            "select_alternative", "archive_alternative", "report_alternative",
+            "create_engineering_workbook_export",
+        }:
+            raise HTTPException(409, "已输出版本已冻结，请复制新版本后修改")
         try:
             return operation(db, quote_id, *args, **kwargs)
         except IntegrityError as error:
@@ -381,6 +402,7 @@ def quote_to_out(
             and molding is not None
             and engineering.is_required
             and molding.is_required
+            and not (quote.module_version == "v4" and quote.final_release_status == "issued")
         ):
             payload_overrides["molding"] = prefill_molding_from_engineering(
                 _json_object(engineering.payload_json),
@@ -430,7 +452,8 @@ def quote_to_out(
         archive_reason=quote.archive_reason,
         final_release_status=quote.final_release_status,
         final_submission_revision=quote.final_submission_revision,
-        final_submission_manifest=_json_object(quote.final_submission_manifest_json),
+        final_submission_manifest={key: value for key, value in _json_object(quote.final_submission_manifest_json).items()
+                                   if key not in {"cost_context", "rr2_cost_summary"}},
         final_submitted_by=quote.final_submitted_by,
         final_submitted_by_name=quote.final_submitted_by_name,
         final_submitted_at=quote.final_submitted_at,
@@ -854,6 +877,10 @@ def _cost_context(
     calculation_overrides: dict[str, dict[str, object]] | None = None,
     payload_overrides: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, Decimal]:
+    if quote.module_version == "v4" and quote.final_release_status == "issued" and not calculation_overrides and not payload_overrides:
+        frozen = _json_object(quote.final_submission_manifest_json).get("cost_context")
+        if isinstance(frozen, dict):
+            return {key: Decimal(str(value)) for key, value in frozen.items()}
     sections = db.scalars(
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
     ).all()
@@ -2018,6 +2045,10 @@ def _invalidate_downstream_dependencies(
 def _derive_quote_status(db: Session, quote: InternalQuote) -> None:
     if quote.status == "archived":
         return
+    if quote.module_version == "v4":
+        quote.status = "exported" if quote.final_release_status == "issued" else "drafting"
+        quote.updated_at = now_text()
+        return
     sections = db.scalars(
         select(InternalQuoteSection).where(
             InternalQuoteSection.quote_id == quote.id,
@@ -2175,6 +2206,7 @@ def create_quote(
             target_date=payload.target_date,
             remark=payload.remark,
             module_version=(
+                "v4" if payload.workflow_mode == "direct_output" else
                 WHOLE_QUOTE_REVIEW_MODULE_VERSION
                 if payload.workflow_mode == "whole_quote_review"
                 else LEGACY_SECTION_REVIEW_MODULE_VERSION
@@ -3567,6 +3599,7 @@ def clone_quote(
         target_date=payload.target_date,
         remark=source.remark if payload.remark is None else payload.remark,
         module_version=(
+            "v4" if payload.workflow_mode == "direct_output" else
             WHOLE_QUOTE_REVIEW_MODULE_VERSION
             if payload.workflow_mode == "whole_quote_review"
             else LEGACY_SECTION_REVIEW_MODULE_VERSION
@@ -3857,6 +3890,10 @@ def _save_section_in_transaction(
     )
     old_revision = section.revision
     section.payload_json = next_payload_json
+    if quote.module_version == "v4":
+        # Copy/issue carry the header revision: any saved department edit must
+        # invalidate an older page's view of this product before it can freeze it.
+        quote.header_revision += 1
     section.status = "draft"
     section.revision += 1
     section.filled_by = user.display_name
@@ -4463,6 +4500,8 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
         quote.qty,
         factory_id=quote.factory_id,
     )
+    if quote.module_version == "v4" and quote.final_release_status == "issued":
+        rr2_cost_summary = _json_object(quote.final_submission_manifest_json).get("rr2_cost_summary", rr2_cost_summary)
     section_summaries: list[dict[str, object]] = []
     warnings: list[dict[str, object]] = []
     formula_mismatches = quote_formula_mismatches(quote, participating_sections)
@@ -4970,6 +5009,8 @@ def delete_quote(
     _check_revision(quote.header_revision, revision, "报价头")
     batch_quotes = get_quote_batch_rows(db, quote)
     quote_ids = [item.id for item in batch_quotes]
+    if db.scalar(select(InternalQuoteAlternative.quote_id).where(InternalQuoteAlternative.quote_id.in_(quote_ids))):
+        raise HTTPException(409, "已有方案版本记录的报价不可删除，请在方案面板归档")
     has_export = db.scalar(
         select(func.count(InternalQuoteExportFile.id)).where(
             InternalQuoteExportFile.quote_id.in_(quote_ids)

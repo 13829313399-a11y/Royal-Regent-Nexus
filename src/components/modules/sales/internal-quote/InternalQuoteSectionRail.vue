@@ -8,6 +8,7 @@ const props = withDefaults(defineProps<{
   sections: InternalQuoteSection[]
   activeCode: InternalQuoteSectionCode
   wholeQuoteReview?: boolean
+  directOutput?: boolean
   blockProgress?: Partial<Record<InternalQuoteSectionCode, InternalQuoteFormBlock[]>>
   differentSectionCodes?: InternalQuoteSectionCode[]
 }>(), {
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const statusLabel: Record<InternalQuoteSectionStatus, string> = {
+  sealed: '已输出并冻结',
   draft: '草稿',
   pending_review: '待审核',
   approved: '已通过',
@@ -116,7 +118,7 @@ function readyBlockCount(section: InternalQuoteSection) {
       </div>
       <button v-if="wholeQuoteReview" type="button" class="quote-page-anchor-button" @click="emit('select-page', 'actions')">
         <span class="quote-section-index quote-page-anchor-index">底</span>
-        <span class="quote-section-name"><strong>整单操作</strong><small>保存、提交与审核</small></span>
+        <span class="quote-section-name"><strong>整单操作</strong><small>{{ directOutput ? '保存与直接输出' : '保存、提交与审核' }}</small></span>
         <Circle class="quote-section-status-icon" aria-hidden="true" />
       </button>
     </nav>

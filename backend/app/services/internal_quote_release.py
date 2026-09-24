@@ -46,6 +46,8 @@ from app.services.internal_quote import (
     _ensure_active,
     _get_quote,
     _json_object,
+    _find_reference_set,
+    _rr2_cost_summary,
     _mark_quote_notifications_handled,
     ensure_quote_formula_current,
     ensure_quote_business_reviewer,
@@ -643,6 +645,8 @@ def submit_final_release(
     request: Request | None = None,
 ) -> InternalQuoteFinalReleaseOut:
     quote = _get_quote(db, quote_id)
+    if quote.module_version == "v4":
+        raise HTTPException(409, "当前报价无需审核，请使用直接输出")
     if is_whole_quote_review(quote):
         return _submit_whole_quote_review(db, quote, payload, user, request)
     ensure_quote_permission(
@@ -725,6 +729,8 @@ def review_final_release(
     request: Request | None = None,
 ) -> InternalQuoteFinalReleaseOut:
     quote = _get_quote(db, quote_id)
+    if quote.module_version == "v4":
+        raise HTTPException(409, "当前报价无需审核，请使用直接输出")
     if is_whole_quote_review(quote):
         return _review_whole_quote(db, quote, payload, user, request)
     sections = _quote_sections(db, quote.id)
@@ -1010,11 +1016,23 @@ def compare_quote_versions(
         for field in header_fields
         if getattr(base, field) != getattr(target, field)
     ]
+    base_reference = _find_reference_set(db, base)
+    target_reference = _find_reference_set(db, target)
+    base_snapshot = _json_object(base_reference.snapshot_json) if base_reference else {}
+    target_snapshot = _json_object(target_reference.snapshot_json) if target_reference else {}
+    header_changes.extend(_changes(base_snapshot, target_snapshot, "reference_snapshot"))
     base_sections = {section.department: section for section in _quote_sections(db, base.id)}
     target_sections = {section.department: section for section in _quote_sections(db, target.id)}
     section_comparisons: list[InternalQuoteSectionComparisonOut] = []
     total_before = _cost_context(db, base)["factory_price_hkd"]
     total_after = _cost_context(db, target)["factory_price_hkd"]
+    def prices(item, sections, snapshot):
+        frozen = _json_object(item.final_submission_manifest_json)
+        summary = frozen.get("rr2_cost_summary") if item.module_version == "v4" and item.final_release_status == "issued" else None
+        if not isinstance(summary, dict):
+            summary = _rr2_cost_summary(list(sections.values()), _cost_context(db, item), snapshot, item.qty, factory_id=item.factory_id)
+        return summary.get("shipping_pricing", {})
+    header_changes.extend(_changes(prices(base, base_sections, base_snapshot), prices(target, target_sections, target_snapshot), "shipping_pricing"))
     for section_code in SECTION_NAMES:
         before_section = base_sections.get(section_code)
         after_section = target_sections.get(section_code)
@@ -1057,9 +1075,10 @@ def _refresh_handoff(
     is_current = (
         export is not None
         and export.status == "current"
-        and export.release_stage == "p4_final_approved"
+        and export.release_stage in {"p4_final_approved", "p4_direct_issued"}
         and quote.status in FINAL_EXPORT_STAGES
-        and quote.final_release_status == "approved"
+        and ((export.release_stage == "p4_final_approved" and quote.final_release_status == "approved")
+             or (export.release_stage == "p4_direct_issued" and quote.module_version == "v4" and quote.final_release_status == "issued"))
         and quote.final_release_revision == handoff.release_revision
     )
     if not is_current and handoff.status != "revoked":
