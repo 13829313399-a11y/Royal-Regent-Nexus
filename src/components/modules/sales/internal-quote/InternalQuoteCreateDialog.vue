@@ -434,13 +434,13 @@ onBeforeUnmount(closeDocumentPreview)
                 <input v-model="form.initiatorDepartment" type="radio" value="sales-business" :disabled="!allowedInitiatorDepartments.includes('sales-business')">
                 <span class="quote-choice-check"><CheckCircle2 aria-hidden="true" /></span>
                 <strong>业务部建单</strong>
-                <small>维护报价头及业务部内容，完成后统一提交整单</small>
+                <small>维护报价头及业务部内容，保存完整后直接输出</small>
               </label>
               <label :class="{ active: form.initiatorDepartment === 'engineering', disabled: !allowedInitiatorDepartments.includes('engineering') }">
                 <input v-model="form.initiatorDepartment" type="radio" value="engineering" :disabled="!allowedInitiatorDepartments.includes('engineering')">
                 <span class="quote-choice-check"><CheckCircle2 aria-hidden="true" /></span>
                 <strong>工程部建单</strong>
-                <small>发起工程核价，同时指定唯一整单审核人</small>
+                <small>发起工程核价，并指定业务负责人</small>
               </label>
             </fieldset>
 
@@ -478,12 +478,12 @@ onBeforeUnmount(closeDocumentPreview)
                 <small v-if="!customerOptions.length" class="quote-owner-hint">请联系本厂业务主管或工程主管先维护客户资料。</small>
               </label>
               <label>
-                <span>业务负责人 / 整单审核人（仅业务部） <b>*</b></span>
+                <span>业务负责人（仅业务部） <b>*</b></span>
                 <select v-model="form.businessOwnerId" :disabled="!businessOwners.length" @change="selectBusinessOwner">
-                  <option value="" disabled>{{ businessOwners.length ? '选择业务部整单审核人' : '当前厂区暂无具备审核权限的业务部人员' }}</option>
+                  <option value="" disabled>{{ businessOwners.length ? '选择业务负责人' : '当前厂区暂无具备审核权限的业务部人员' }}</option>
                   <option v-for="owner in businessOwners" :key="owner.id" :value="owner.id">{{ owner.displayName }}（{{ owner.username }}）</option>
                 </select>
-                <small class="quote-owner-hint">整份报价只交给此人审核；个人自审仅适用于本人创建、本人负责且已获自审权限的报价。</small>
+                <small class="quote-owner-hint">新报价无需人工审核；资料保存完整后可直接输出，并保留版本。</small>
               </label>
               <label>
                 <span>客人目标价 <b>*</b></span>
@@ -570,7 +570,7 @@ onBeforeUnmount(closeDocumentPreview)
             </section>
 
             <section class="quote-create-baseline">
-              <p v-if="form.products.some(p => p.historySource || p.componentSources?.some(Boolean))" class="quote-history-notice">历史明细独立复制，不影响原单。材料/机型参考价按每款的选择冻结，汇率、倍率及地区运费按新单重新核价；配件重组不复制共享包装。请建单后核对包装、人工及电子公共费用，再重新提交审核。</p>
+              <p v-if="form.products.some(p => p.historySource || p.componentSources?.some(Boolean))" class="quote-history-notice">历史明细独立复制，不影响原单。材料/机型参考价按每款的选择冻结，汇率、倍率及地区运费按新单重新核价；配件重组不复制共享包装。请建单后核对包装、人工及电子公共费用，再直接输出。</p>
               <div class="quote-baseline-title">
                 <Building2 aria-hidden="true" />
                 <div><strong>当前厂区：{{ factoryName }}</strong><span>统一车间 {{ factoryId }}-workshop，不在页面内重复切换厂区</span></div>

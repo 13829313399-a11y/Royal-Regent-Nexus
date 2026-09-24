@@ -150,6 +150,8 @@ def internal_quote_export_file_name(
     export_date = date_match.group(0) if date_match else "未注明日期"
     suffix = f"_{export_date}.xlsx"
     stem = f"{quote_no}_{product_name}"
+    if quote.module_version == "v4":
+        stem += "_" + clean_component(quote.version_label, "V1")
     stem = stem[: 255 - len(suffix)].rstrip(" ._")
     return safe_file_name(f"{stem}{suffix}")
 
@@ -882,6 +884,8 @@ def confirm_import_batch(
     )
     old_revision = section.revision
     section.payload_json = canonical_json(merged_payload)
+    if quote.module_version == "v4":
+        quote.header_revision += 1
     section.status = "draft"
     section.revision += 1
     section.filled_by = user.display_name
@@ -1056,6 +1060,9 @@ def upload_attachment(
         ),
         request=request,
     )
+    if quote.module_version == "v4":
+        quote.header_revision += 1
+        quote.updated_at = now_text()
     db.commit()
     db.refresh(attachment)
     return _attachment_out(attachment)
@@ -1122,6 +1129,9 @@ def upload_product_image(
         ),
         request=request,
     )
+    if quote.module_version == "v4":
+        quote.header_revision += 1
+        quote.updated_at = now_text()
     db.commit()
     db.refresh(attachment)
     return _attachment_out(attachment)
@@ -1297,6 +1307,8 @@ def delete_import_attachment(
             str(image_id) for image_id in _json_object(batch.preview_json).get("embedded_image_attachment_ids", [])
         )
     section.payload_json = canonical_json(cleared_payload)
+    if quote.module_version == "v4":
+        quote.header_revision += 1
     section.status = "draft"
     section.revision += 1
     section.filled_by = user.display_name
@@ -1403,6 +1415,9 @@ def delete_supporting_attachment(
                detail=json.dumps({"attachment_id": attachment.id, "file_name": attachment.file_name}, ensure_ascii=False),
                request=request)
     db.delete(attachment)
+    if quote.module_version == "v4":
+        quote.header_revision += 1
+        quote.updated_at = now_text()
     db.commit()
 
 
@@ -1696,12 +1711,12 @@ def _ensure_export_sections_ready(
     incomplete = [
         section.department
         for section in required
-        if section.status not in {"approved", "not_applicable"}
+        if section.status not in {"approved", "sealed", "not_applicable"}
     ]
     invalid = [
         section.department
         for section in required
-        if section.status == "approved"
+        if section.status in {"approved", "sealed"}
         and (
             section.calculation_status != "valid"
             or section.dependency_status != "current"
@@ -1822,6 +1837,16 @@ def create_controlled_export(
     quote = _get_quote(db, quote_id)
     _ensure_active(quote)
     _ensure_export_permission(db, quote, user)
+    direct = quote.module_version == "v4" and quote.final_release_status == "issued"
+    if quote.module_version == "v4" and not direct:
+        raise HTTPException(409, "请使用直接输出，先冻结本方案版本")
+    if direct:
+        existing = db.scalar(select(InternalQuoteExportFile).where(
+            InternalQuoteExportFile.quote_id == quote.id,
+            InternalQuoteExportFile.release_stage == "p4_direct_issued",
+        ).order_by(InternalQuoteExportFile.exported_at, InternalQuoteExportFile.id))
+        if existing is not None:
+            return _export_out(existing)
     sections = _export_sections(db, quote)
     ensure_quote_formula_current(quote, sections)
     _ensure_export_sections_ready(sections)
@@ -1833,7 +1858,7 @@ def create_controlled_export(
             InternalQuoteAttachment.id,
         )
     ).all()
-    is_final_release = (
+    is_final_release = direct or (
         quote.status in {"fully_approved", "exported"}
         and quote.final_release_status == "approved"
         and quote.final_release_revision > 0
@@ -1877,7 +1902,7 @@ def create_controlled_export(
                     sections,
                     require_layout=False,
                 )
-    release_stage = "p4_final_approved" if is_final_release else "p3_section_approved"
+    release_stage = "p4_direct_issued" if direct else "p4_final_approved" if is_final_release else "p3_section_approved"
     template_version = P4_TEMPLATE_VERSION if is_final_release else P3_TEMPLATE_VERSION
     _supersede_outdated_exports(db, quote, sections)
     section_revisions = {section.department: section.revision for section in sections}
@@ -1894,6 +1919,8 @@ def create_controlled_export(
             section.department: section.calculation_hash for section in sections
         },
         "release_stage": release_stage,
+        "issued_by_name": str(_json_object(quote.final_submission_manifest_json).get("issued_by_name", "")) if direct else "",
+        "issued_at": str(_json_object(quote.final_submission_manifest_json).get("issued_at", "")) if direct else "",
         "p4_final_release_required": not is_final_release,
         "final_release_revision": quote.final_release_revision if is_final_release else 0,
         "final_release_manifest_sha256": (

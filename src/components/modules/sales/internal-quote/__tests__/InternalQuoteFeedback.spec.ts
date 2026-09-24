@@ -32,6 +32,34 @@ function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>)
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = '' })
 
 describe('internal quote feedback regressions', () => {
+  it.each([false, true])('saves Dickie additions on returned legacy quotes over HTTP (whole review: %s)', async wholeQuoteReview => {
+    const cryptoSource = globalThis.crypto
+    vi.stubGlobal('crypto', { getRandomValues: cryptoSource.getRandomValues.bind(cryptoSource) })
+    const { wrapper, section, save } = setup('sales', {
+      customer_quote_fields: { dickie: { client_name: '', product_rows: [] } },
+    })
+    try {
+      await wrapper.setProps({
+        quote: { ...wrapper.props('quote'), factoryId: 'huaxing', customer: 'Dickie', status: 'rejected' },
+        section: { ...section, status: 'rejected' },
+        wholeQuoteReview,
+      })
+      await wrapper.findAll('button').find(button => button.text() === '启用 Dickie 报客资料')!.trigger('click')
+      await wrapper.get('[aria-label="Dickie 产品名称 English"]').setValue('Double-decker Bus')
+      expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+      await wrapper.vm.saveWholeQuoteDraft(false)
+      expect(save).toHaveBeenCalledWith('feedback-quote', 'sales', 5, expect.objectContaining({
+        customer_quote_fields: expect.objectContaining({ dickie: expect.objectContaining({
+          mapping: expect.objectContaining({ version: 'dickie-v2', item_name: { zh: '', en: 'Double-decker Bus' } }),
+        }) }),
+      }), expect.anything(), false)
+      expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('adds an electronic quote on HTTP browsers without crypto.randomUUID', async () => {
     const cryptoSource = globalThis.crypto
     vi.stubGlobal('crypto', { getRandomValues: cryptoSource.getRandomValues.bind(cryptoSource) })

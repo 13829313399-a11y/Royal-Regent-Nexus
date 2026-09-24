@@ -66,6 +66,29 @@ class InternalQuote(Base):
     updated_at: Mapped[str] = mapped_column(String(32))
 
 
+class InternalQuoteFamily(Base):
+    __tablename__ = "internal_quote_families"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    selected_quote_id: Mapped[str] = mapped_column(String(64), default="")
+
+
+class InternalQuoteAlternative(Base):
+    __tablename__ = "internal_quote_alternatives"
+    __table_args__ = (UniqueConstraint("family_id", "scenario_id", "version_number", name="uq_quote_alternative_version"),)
+    quote_id: Mapped[str] = mapped_column(ForeignKey("internal_quotes.id"), primary_key=True)
+    family_id: Mapped[str] = mapped_column(ForeignKey("internal_quote_families.id"), index=True)
+    scenario_id: Mapped[str] = mapped_column(String(64))
+    scenario_name: Mapped[str] = mapped_column(String(128))
+    version_number: Mapped[int] = mapped_column(Integer)
+    source_quote_id: Mapped[str] = mapped_column(String(64), default="")
+    change_note: Mapped[str] = mapped_column(Text, default="")
+    issued_at: Mapped[str] = mapped_column(String(32), default="")
+    reported_at: Mapped[str] = mapped_column(String(32), default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class InternalQuoteSection(Base):
     __tablename__ = "internal_quote_sections"
     __table_args__ = (
