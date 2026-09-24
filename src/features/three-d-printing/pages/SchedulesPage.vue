@@ -3,6 +3,8 @@ import { ref, watch } from "vue";
 import LegacyDialog from "../components/LegacyDialog.vue";
 import ProductPicker from "../components/ProductPicker.vue";
 import PageControls from "../components/PageControls.vue";
+import TdpButton from "../components/TdpButton.vue";
+import { Plus, Search } from "@lucide/vue";
 import { useWorkspaceContext } from "../context";
 const {
   scheduleEditId,
@@ -55,9 +57,7 @@ async function saveForm() {
   <template v-if="dashboard">
     <section class="space-y-5">
       <div class="legacy-toolbar">
-        <button v-if="canOperate" class="action-button" @click="openAdd">
-          + 添加排期
-        </button>
+        <TdpButton v-if="canOperate" tone="primary" @click="openAdd"><template #icon><Plus :size="16" /></template>添加排期</TdpButton>
       </div>
       <form
         class="collection-filters flex flex-wrap gap-3 rounded-xl border bg-white p-3"
@@ -67,7 +67,7 @@ async function saveForm() {
           v-model="listPages.schedules!.q"
           placeholder="搜索名称 / 客户 / 材料"
           class="rounded border p-2"
-        /><button type="submit" class="rounded border px-4">查询</button>
+        /><TdpButton tone="soft" type="submit" :busy="listPages.schedules!.busy"><template #icon><Search :size="16" /></template>查询</TdpButton>
       </form>
       <PageControls
         :page="listPages.schedules!.page"
@@ -75,7 +75,7 @@ async function saveForm() {
         :busy="listPages.schedules!.busy"
         @change="loadPage('schedules', $event)"
       />
-      <LegacyDialog v-if="showForm" title="排期" @close="showForm = false">
+      <LegacyDialog :open="showForm" title="排期" @close="showForm = false">
         <form
           v-if="canOperate"
           class="panel-card p-5"
@@ -135,9 +135,7 @@ async function saveForm() {
               >备注<input v-model="scheduleForm.remark"
             /></label>
           </div>
-          <button class="action-button mt-4" type="submit" :disabled="saving">
-            <CalendarDays class="size-4" />保存计划
-          </button>
+          <TdpButton class="mt-4" tone="primary" type="submit" :busy="saving"><template #icon><CalendarDays class="size-4" /></template>保存计划</TdpButton>
         </form>
       </LegacyDialog>
       <div class="panel-card p-5">
