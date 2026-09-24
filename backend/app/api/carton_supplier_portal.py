@@ -4,8 +4,10 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_portal import MemberSave, CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SampleReceiptLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
+from app.services import carton_supplier_delivery_import as delivery_import
+import json
 
 router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
 
@@ -28,6 +30,14 @@ def export_documents(payload: SupplierDocumentExport, db: Session = Depends(get_
     content = service.export_documents(db, user, payload)
     return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote("供应商单据.xlsx"),
+                             "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
+@router.post("/documents/order-import.xlsx")
+def export_supplier_order_import(payload: SupplierDocumentExport, db: Session = Depends(get_db),
+                                 user: AuthContext = Depends(get_current_user)):
+    content = service.export_supplier_order_import(db, user, payload)
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote("东康订单导入模板.xlsx"),
                              "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
 
 @router.get("/activity")
@@ -61,6 +71,29 @@ def accept_batch(payload: BatchCommitmentSave, db: Session = Depends(get_db),
 def ship(payload: ShipmentCreate, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.create_shipment(db, user, payload)
 
+
+@router.post("/shipments/import-preview")
+async def preview_shipment_import(file: UploadFile = File(...), db: Session = Depends(get_db),
+                                  user: AuthContext = Depends(get_current_user)):
+    return delivery_import.preview(db, user, file.filename or "", await file.read(service.MAX_FILE + 1))
+
+
+@router.post("/shipments/import-confirm")
+async def confirm_shipment_import(file: UploadFile = File(...), sha256: str = Form(...),
+                                  selections: str = Form(...), db: Session = Depends(get_db),
+                                  user: AuthContext = Depends(get_current_user)):
+    try:
+        raw = json.loads(selections)
+        if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+            raise ValueError()
+        keys = [(item["factory_id"], item["delivery_note_no"]) for item in raw]
+        if any(not isinstance(factory, str) or not isinstance(note, str)
+            for factory, note in keys):
+            raise ValueError()
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(422, "所选送货单格式无效") from None
+    return delivery_import.confirm(db, user, file.filename or "", await file.read(service.MAX_FILE + 1), sha256, keys)
+
 @router.get("/attachments/{attachment_id}")
 def download(attachment_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     row = service.attachment_download(db, user, factory_id, attachment_id)
@@ -70,17 +103,14 @@ def download(attachment_id: str, factory_id: str, db: Session = Depends(get_db),
 def internal_workspace(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.workspace(db, user, factory_id, internal=True)
 
-@router.get("/internal/members")
-def members(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
-    return service.members(db, user, factory_id)
-
-@router.put("/internal/members")
-def save_member(payload: MemberSave, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
-    return service.save_member(db, user, payload)
-
 @router.post("/internal/shipments/{shipment_id}/receive")
 def receive(shipment_id: str, payload: ShipmentReceive, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.receive_shipment(db, user, shipment_id, payload)
+
+@router.post("/internal/receipt-lines/{receipt_line_id}/link-order")
+def link_sample_receipt(receipt_line_id: str, payload: SampleReceiptLink,
+                        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.link_sample_receipt(db, user, receipt_line_id, payload)
 
 @router.post("/internal/orders/{order_id}/attachments", status_code=201)
 async def upload(order_id: str, factory_id: str = Form(...), file: UploadFile = File(...),

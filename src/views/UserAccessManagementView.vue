@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, LoaderCircle, LockKeyhole, RefreshCw, Save, ShieldCheck, X } from '@lucide/vue'
 import { useRoute } from 'vue-router'
 import {
@@ -44,6 +44,16 @@ const selfReviewPreview = ref<UserAccessPreviewResponse | null>(null)
 const selfReviewDesiredEffect = ref<SelfReviewOverrideEffect>('allow')
 const confirmedHighRisk = ref(false)
 const selfReviewConfirmedHighRisk = ref(false)
+const supplierPermissionCodes = ['carton_supplier:read', 'carton_supplier:edit', 'carton_supplier:approve'] as const
+type SupplierPermissionCode = typeof supplierPermissionCodes[number]
+const supplierDraft = reactive<Record<SupplierPermissionCode, boolean>>({
+  'carton_supplier:read': false, 'carton_supplier:edit': false, 'carton_supplier:approve': false,
+})
+const supplierPreview = ref<UserAccessPreviewResponse | null>(null)
+const supplierReason = ref('')
+const supplierConfirmedHighRisk = ref(false)
+const isPreviewingSupplier = ref(false)
+const isCommittingSupplier = ref(false)
 const isLoading = ref(false)
 const isLoadingPosition = ref(false)
 const isPreviewing = ref(false)
@@ -56,6 +66,15 @@ let selectedPositionAccessRequestSequence = 0
 let previewRequestSequence = 0
 
 const canManageAccess = computed(() => authStore.can('system:access_manage'))
+const canManageSupplier = computed(() => canManageAccess.value && (authStore.grants ?? []).some(grant =>
+  (grant.role_code === 'admin' || grant.role_id === 'admin')
+  && grant.factory_id === '*' && ['*', 'system'].includes(grant.department)))
+const supplierCatalogReady = computed(() => supplierPermissionCodes.every(code =>
+  permissions.value.some(permission => permission.code === code && permission.status === 'active')))
+const supplierCurrent = computed(() => Object.fromEntries(supplierPermissionCodes.map(code => [code,
+  access.value?.overrides.some(item => item.permission_code === code && item.factory_id === '*'
+    && item.department === '*' && item.state === 'active' && item.effect === 'allow') ?? false,
+])) as Record<SupplierPermissionCode, boolean>)
 const userId = computed(() => String(route.params.userId ?? ''))
 const userFactory = computed(() => access.value?.profile?.primary_factory_id ?? '')
 const userDepartment = computed(() => access.value?.profile?.primary_department ?? '')
@@ -209,6 +228,7 @@ function ensureAccessManagementPermission() {
   successMessage.value = ''
   preview.value = null
   selfReviewPreview.value = null
+  supplierPreview.value = null
   return false
 }
 
@@ -253,6 +273,7 @@ async function loadData() {
     selectedPositionAccess.value = null
     preview.value = null
     selfReviewPreview.value = null
+    supplierPreview.value = null
     isLoading.value = false
     isLoadingPosition.value = false
     isPreviewing.value = false
@@ -272,11 +293,15 @@ async function loadData() {
       iamApi.listPermissions('all'),
     ])
     access.value = userAccess
+    for (const code of supplierPermissionCodes) supplierDraft[code] = userAccess.overrides.some(item =>
+      item.permission_code === code && item.factory_id === '*' && item.department === '*'
+      && item.state === 'active' && item.effect === 'allow')
     systemPositions.value = positions.filter((position) => position.is_system_position)
     permissions.value = catalog
     selectedSystemPositionRoleId.value = initialSystemPosition(userAccess, systemPositions.value)
     preview.value = null
     selfReviewPreview.value = null
+    supplierPreview.value = null
     await loadSelectedPositionAccess()
   } catch (error) {
     errorMessage.value = getApiErrorMessage(error)
@@ -443,6 +468,53 @@ async function commitSelfReviewChange() {
   }
 }
 
+async function previewSupplierPermissions() {
+  if (!canManageSupplier.value || !access.value) return
+  if (!supplierCatalogReady.value) { errorMessage.value = '供应商协同权限目录尚未启用，请重启后端完成权限同步。'; return }
+  if ((supplierDraft['carton_supplier:edit'] || supplierDraft['carton_supplier:approve'])
+    && !supplierDraft['carton_supplier:read']) {
+    errorMessage.value = '登记送货或确认接单前，必须同时授予查看权限。'; return
+  }
+  const overrides = supplierPermissionCodes.filter(code => supplierDraft[code] !== supplierCurrent.value[code])
+    .map(code => ({ permission_code: code, effect: supplierDraft[code] ? 'allow' as const : 'inherit' as const,
+      factory_id: '*', department: '*' }))
+  if (!overrides.length) { errorMessage.value = '供应商协同权限没有变化。'; return }
+  if (supplierReason.value.trim().length < 4) { errorMessage.value = '请填写至少四个字的权限变更原因。'; return }
+  isPreviewingSupplier.value = true
+  errorMessage.value = ''
+  successMessage.value = ''
+  supplierPreview.value = null
+  try {
+    supplierPreview.value = await iamApi.previewUserAccess(userId.value, {
+      base_revision: access.value.authorization_version,
+      reason: supplierReason.value.trim(), overrides,
+    })
+    supplierConfirmedHighRisk.value = false
+  } catch (error) {
+    errorMessage.value = getApiErrorMessage(error)
+    if ((error as { response?: { status?: number } })?.response?.status === 409) await loadData()
+  } finally { isPreviewingSupplier.value = false }
+}
+
+async function commitSupplierPermissions() {
+  if (!canManageSupplier.value || !supplierPreview.value) return
+  isCommittingSupplier.value = true
+  errorMessage.value = ''
+  try {
+    await iamApi.commitUserAccess(userId.value, supplierPreview.value.preview_token,
+      supplierConfirmedHighRisk.value)
+    supplierPreview.value = null
+    supplierReason.value = ''
+    await loadData()
+    await authStore.refreshSession()
+    successMessage.value = '供应商协同权限已更新。'
+  } catch (error) {
+    errorMessage.value = getApiErrorMessage(error)
+    supplierPreview.value = null
+    if ((error as { response?: { status?: number } })?.response?.status === 409) await loadData()
+  } finally { isCommittingSupplier.value = false }
+}
+
 function diffStateLabel(value: 'allow' | 'deny' | 'none') {
   return value === 'allow' ? '拥有' : value === 'deny' ? '禁止' : '无'
 }
@@ -484,7 +556,7 @@ onMounted(() => void loadData())
             <div class="mb-4 flex items-start justify-between gap-3">
               <div>
                 <h2 class="flex items-center gap-2 font-bold"><ShieldCheck class="size-4 text-emerald-700" />内置权限职位</h2>
-                <p class="mt-1 text-sm text-slate-500">更换职位后，原有底层角色和个人特殊权限会统一清理。</p>
+                <p class="mt-1 text-sm text-slate-500">更换职位后，原有底层角色和其他个人特殊权限会清理；供应商协同权限独立保留。</p>
               </div>
               <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">单一职位</span>
             </div>
@@ -614,6 +686,28 @@ onMounted(() => void loadData())
               </button>
               <span v-else class="text-xs font-semibold text-emerald-700">随当前业务主管/经理职位自动生效</span>
             </div>
+          </div>
+        </article>
+
+        <article v-if="canManageSupplier" data-testid="supplier-permission-card" class="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 class="font-bold text-slate-950">纸箱供应商协同权限</h2>
+          <p class="mt-2 text-sm text-slate-600">可与华康 B 质检等内部职位并存。查看范围自动限于东康已下单的服务厂区；仓库收货继续由内部权限控制。</p>
+          <p class="mt-1 text-xs text-slate-500">权限授予全部厂区 / 全部部门，具体订单仍按供应商和已发行采购单过滤。编辑用于登记送货；审批用于确认接单与承诺交期。</p>
+          <div class="mt-4 grid gap-2 sm:grid-cols-3">
+            <label v-for="code in supplierPermissionCodes" :key="code" class="flex items-center gap-2 rounded-xl border border-slate-200 p-3 text-sm font-semibold">
+              <input v-model="supplierDraft[code]" type="checkbox" :aria-label="permissionLabels.get(code) || code" :disabled="!supplierCatalogReady || isPreviewingSupplier || isCommittingSupplier" @change="supplierPreview = null">
+              {{ permissionLabels.get(code) || code }}
+            </label>
+          </div>
+          <label class="mt-4 block text-sm font-semibold">开通/收回原因
+            <input v-model="supplierReason" aria-label="供应商权限变更原因" class="mt-1 block h-10 w-full rounded-lg border border-slate-200 px-3" :disabled="isPreviewingSupplier || isCommittingSupplier" @input="supplierPreview = null">
+          </label>
+          <div class="mt-3 flex justify-end"><button type="button" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="!supplierCatalogReady || isPreviewingSupplier || isCommittingSupplier" @click="previewSupplierPermissions">{{ isPreviewingSupplier ? '正在预览…' : '预览供应商权限变更' }}</button></div>
+          <div v-if="supplierPreview" class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
+            <h3 class="font-bold">确认本次权限变更</h3>
+            <p v-for="diff in supplierPreview.diffs" :key="diff.permission_code" class="mt-1">{{ permissionLabels.get(diff.permission_code) || diff.permission_code }}：{{ diffStateLabel(diff.before) }} → {{ diffStateLabel(diff.after) }}</p>
+            <label v-if="supplierPreview.high_risk" class="mt-3 flex items-center gap-2"><input v-model="supplierConfirmedHighRisk" type="checkbox" aria-label="确认供应商高风险权限">已核对跨厂区审批权限</label>
+            <div class="mt-3 flex justify-end gap-2"><button type="button" class="rounded-lg border bg-white px-3 py-2" @click="supplierPreview = null">取消</button><button type="button" class="rounded-lg bg-emerald-700 px-4 py-2 font-bold text-white disabled:opacity-50" :disabled="isCommittingSupplier || (supplierPreview.high_risk && !supplierConfirmedHighRisk)" @click="commitSupplierPermissions">{{ isCommittingSupplier ? '正在保存…' : '确认保存权限' }}</button></div>
           </div>
         </article>
 

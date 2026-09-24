@@ -75,8 +75,9 @@ const visibleModules = computed(() => {
     if (currentDepartmentId.value === 'pmc-warehouse') {
       if (module.id === 'carton-supplier') {
         const internal = authStore.can('carton_procurement:read', factory.id)
-        return { ...scopedModule, route: internal
-          ? getFactoryScopedRoute('/carton-supplier-management', factory.id) : '/carton-supplier' }
+        const supplier = authStore.can('carton_supplier:read', factory.id, '*')
+        return { ...scopedModule, route: supplier ? '/carton-supplier'
+          : internal ? getFactoryScopedRoute('/carton-supplier-management', factory.id) : '/carton-supplier' }
       }
       if (module.id === 'carton-mark-check' && !authStore.can('carton_mark:read', factory.id)) {
         return { ...scopedModule, route: '/carton-supplier/carton-mark',

@@ -3,16 +3,19 @@ import { postCartonInventoryRequest } from './cartonInventoryRequest'
 import type { LocationAllocation } from './cartonPositions'
 export interface PortalAttachment { id: string; filename: string; version: number; size: number; sha256: string; created_at: string }
 export interface PortalPaper { id: string; line_no: number; child_no: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit: string; unit: string; required_quantity: string; received_quantity: string; in_transit_quantity: string; remaining_to_ship: string; accepted: boolean; shipping_blocked_reason?: string; commitment_revision: number; promised_date: string; unit_price?: string; currency?: string }
-export interface PortalOrder { id: string; order_no: string; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; status: string; issue_id: string; document_no: string; order_date: string; planned_date: string; awaiting_issue: boolean; lines: PortalPaper[]; attachments: PortalAttachment[] }
-export interface ShipmentLine { id: string; order_line_id: string; order_no: string; contract_no: string; customer_po: string; item_no: string; customer_name: string; child_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; unit_price?: string; currency?: string }
-export interface ReceiveLine { shipment_line_id: string; received_quantity: number; damaged_quantity: number; rejected_quantity: number; unusable_quantity: number; unit_price: number; paper_quality: string; specification: string; location_allocations: LocationAllocation[]; difference_reason: string }
-export interface PortalShipment { id: string; delivery_note_no: string; delivery_date: string; status: string; revision: number; created_at: string; confirmed_at: string; receipt_id?: string; receipt_status?: string; acceptance_date: string | null; lines: ShipmentLine[]; acceptance_lines: Pick<ReceiveLine, 'shipment_line_id' | 'received_quantity' | 'damaged_quantity' | 'rejected_quantity' | 'unusable_quantity' | 'difference_reason'>[] }
+export interface PortalOrder { id: string; order_no: string; customer_code?: string; revision?: number; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; status: string; issue_id: string; document_no: string; order_date: string; planned_date: string; awaiting_issue: boolean; lines: PortalPaper[]; attachments: PortalAttachment[] }
+export interface ShipmentLine { id: string; order_line_id: string | null; source_type?: 'FORMAL_ORDER' | 'AD_HOC_REVIEW'; order_no: string; contract_no: string; customer_po: string; item_no: string; customer_name: string; child_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; unit_price?: string; currency?: string }
+export interface ReceiveLine { shipment_line_id: string; received_quantity: number; damaged_quantity: number; rejected_quantity: number; unusable_quantity: number; unit_price: number; paper_quality: string; specification: string; location_allocations: LocationAllocation[]; difference_reason: string; no_order_decision?: '' | 'SAMPLE' | 'WRONG_DELIVERY'; customer_code?: string; sample_purpose?: string; requested_by?: string; unit?: string }
+export interface SampleReceipt { receipt_line_id: string; customer_code: string; customer_name: string; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; linked_order_line_id: string }
+export interface PortalShipment { id: string; delivery_note_no: string; delivery_date: string; status: string; revision: number; created_at: string; confirmed_at: string; source_filename?: string; source_sha256?: string; receipt_id?: string; receipt_status?: string; sample_receipts?: SampleReceipt[]; acceptance_date: string | null; lines: ShipmentLine[]; acceptance_lines: Pick<ReceiveLine, 'shipment_line_id' | 'received_quantity' | 'damaged_quantity' | 'rejected_quantity' | 'unusable_quantity' | 'difference_reason' | 'no_order_decision'>[] }
 export interface PortalWorkspace { factory_id: string; supplier_name: string; orders: PortalOrder[]; shipments: PortalShipment[] }
-export interface SupplierMember { id: string; username: string; display_name: string; status: 'ACTIVE' | 'INACTIVE'; revision: number }
+export interface DeliveryImportRow { source_sheet: string; source_row: number; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; delivered_quantity: number; order_no: string; child_no: string; order_line_id: string; issue_id: string; status: 'READY' | 'AD_HOC_REVIEW' | 'BLOCKED'; reason: string }
+export interface DeliveryImportGroup { factory_id: string; destination: string; delivery_note_no: string; delivery_date: string; ready: boolean; issues: string[]; rows: DeliveryImportRow[] }
+export interface DeliveryImportPreview { filename: string; sha256: string; row_count: number; groups: DeliveryImportGroup[] }
 export interface SupplierMarkTemplate { id: string; customer_name: string; po: string; item: string; contract_number: string; version: number; check_status: string; manual_released: boolean; excel_file_name: string; pdf_file_name: string; created_at: string }
 export interface SupplierDocumentOrder { order_no: string; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; order_date: string; planned_date: string }
-export interface SupplierDocumentLine { order_no: string; child_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; before_quantity?: string; change_quantity?: string; received_quantity?: string }
-export interface SupplierDocument { id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
+export interface SupplierDocumentLine { order_no: string; child_no: string; contract_no?: string; item_no?: string; customer_name?: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; before_quantity?: string; change_quantity?: string; received_quantity?: string }
+export interface SupplierDocument { id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; export_count: number; unmatched_line_count?: number; source_filename?: string; source_sha256?: string; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
 export interface SupplierActivity { id: string; created_at: string; action: string; reference_no: string; actor_name: string; factory_id: string }
 const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
@@ -21,11 +24,22 @@ export const cartonSupplierPortalApi = {
   async documents(factory_id: string) { return (await http.get<SupplierDocument[]>(base + '/documents', { params: { factory_id } })).data },
   async activity(factory_id: string) { return (await http.get<SupplierActivity[]>(base + '/activity', { params: { factory_id } })).data },
   async exportDocuments(documents: Pick<SupplierDocument, 'factory_id' | 'kind' | 'id'>[]) {
-    const { data } = await http.post<Blob>(base + '/documents/export.xlsx', { documents }, { responseType: 'blob' })
+    const selections = documents.map(({ factory_id, kind, id }) => ({ factory_id, kind, id }))
+    const { data } = await http.post<Blob>(base + '/documents/export.xlsx', { documents: selections }, { responseType: 'blob' })
     const url = URL.createObjectURL(data)
     const a = document.createElement('a')
     a.href = url
     a.download = '供应商单据.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  },
+  async exportOrderImport(documents: Pick<SupplierDocument, 'factory_id' | 'kind' | 'id'>[]) {
+    const selections = documents.map(({ factory_id, kind, id }) => ({ factory_id, kind, id }))
+    const { data } = await http.post<Blob>(base + '/documents/order-import.xlsx', { documents: selections }, { responseType: 'blob' })
+    const url = URL.createObjectURL(data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '东康订单导入模板.xlsx'
     a.click()
     URL.revokeObjectURL(url)
   },
@@ -37,9 +51,19 @@ export const cartonSupplierPortalApi = {
     return (await http.put<{ order_ids: string[] }>(base + '/commitments/batch', { factory_id, lines })).data
   },
   ship(payload: { factory_id: string; delivery_note_no: string; delivery_date: string; lines: { order_line_id: string; issue_id: string; quantity: number }[] }) { return postCartonInventoryRequest<PortalShipment>(base + '/shipments', payload) },
+  async previewDeliveryImport(file: File) {
+    const form = new FormData(); form.append('file', file)
+    return (await http.post<DeliveryImportPreview>(base + '/shipments/import-preview', form, { timeout: 120000 })).data
+  },
+  async confirmDeliveryImport(file: File, preview: DeliveryImportPreview, selections: { factory_id: string; delivery_note_no: string }[]) {
+    const form = new FormData(); form.append('file', file); form.append('sha256', preview.sha256)
+    form.append('selections', JSON.stringify(selections))
+    return (await http.post<{ shipments: PortalShipment[] }>(base + '/shipments/import-confirm', form, { timeout: 120000 })).data
+  },
   receive(id: string, payload: { factory_id: string; expected_revision: number; acceptance_date: string; lines: ReceiveLine[] }) { return postCartonInventoryRequest<PortalShipment>(`${base}/internal/shipments/${id}/receive`, payload) },
-  async members(factory_id: string) { return (await http.get<SupplierMember[]>(base + '/internal/members', { params: { factory_id } })).data },
-  async member(payload: { factory_id: string; username: string; expected_revision: number; status: 'ACTIVE' | 'INACTIVE'; reason: string }) { return (await http.put<SupplierMember[]>(base + '/internal/members', payload)).data },
+  async linkSampleReceipt(receiptLineId: string, payload: { factory_id: string; order_line_id: string; expected_order_revision: number; reason: string }) {
+    return (await http.post<{ receipt_line_id: string; order_line_id: string; order_no: string; quantity: string }>(`${base}/internal/receipt-lines/${encodeURIComponent(receiptLineId)}/link-order`, payload)).data
+  },
   async upload(order_id: string, factory_id: string, file: File) { const form = new FormData(); form.append('factory_id', factory_id); form.append('file', file); return (await http.post<PortalAttachment>(`${base}/internal/orders/${order_id}/attachments`, form)).data },
   async download(id: string, factory_id: string, filename: string, internal = false) { const { data } = await http.get<Blob>(`${base}${internal ? '/internal' : ''}/attachments/${id}`, { params: { factory_id }, responseType: 'blob' }); const url = URL.createObjectURL(data); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url) },
 }

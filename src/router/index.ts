@@ -27,11 +27,11 @@ const qcInspectionFullPageMeta = {
 const routes: RouteRecordRaw[] = [
   {
     path: '/carton-supplier', name: 'carton-supplier', component: () => import('@/views/CartonSupplierView.vue'),
-    meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true },
+    meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
   },
   {
     path: '/carton-supplier/carton-mark', name: 'carton-supplier-carton-mark', component: () => import('@/views/CartonSupplierMarkTemplatesView.vue'),
-    meta: { title: '供应商箱唛资料模板', fullPage: true, requiresAuth: true },
+    meta: { title: '供应商箱唛资料模板', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
   },
   {
     path: '/carton-supplier-management', name: 'carton-supplier-management', component: () => import('@/views/CartonSupplierManagementView.vue'),

@@ -1,5 +1,5 @@
-"""Explicit operator-only creation of a new, role-less supplier account.
-Run only after backup/migration. Never modifies an existing account.
+"""Explicit operator-only creation of a new account with no permissions.
+Grant supplier collaboration read/edit/approve separately through IAM.
 """
 import argparse
 import secrets
@@ -20,8 +20,7 @@ def main():
     from app.db import SessionLocal
     from app.models.auth import AuthUser, AuthAuditLog
     from app.services.auth import build_auth_context, make_password_hash, now_text
-    from app.services.carton_supplier_portal import internal_permission, fixed_supplier, save_member
-    from app.schemas.carton_supplier_portal import MemberSave
+    from app.services.carton_supplier_portal import internal_permission, fixed_supplier
     if not args.username.strip() or len(args.username) > 64 or not args.display_name.strip() or len(args.display_name) > 128:
         parser.error("Invalid account name")
     with SessionLocal() as db:
@@ -32,7 +31,7 @@ def main():
         internal_permission(context, args.factory, "carton_procurement:master_manage", "carton_procurement:order_adjust")
         fixed_supplier(db, args.factory)
         if db.scalar(select(AuthUser).where(AuthUser.username == args.username)):
-            parser.error("Account already exists; use reviewed member binding instead")
+            parser.error("Account already exists; use IAM to assign module permissions")
         if not args.apply:
             print("Validated: new role-less supplier account; use --apply to create after backup/migration.")
             return
@@ -46,12 +45,11 @@ def main():
             db.add(AuthAuditLog(user_id=actor.id, username=actor.username, action="supplier_account_created",
                 detail=f"new_user_id={user.id}; factory={args.factory}; no internal roles", created_at=now_text()))
             db.flush()
-            save_member(db, context, MemberSave(factory_id=args.factory, username=args.username,
-                expected_revision=0, reason="受控运维开通供应商账号"))
+            db.commit()
         except Exception:
             db.rollback()
             raise
-        print(f"Created {args.username}; first login must change password. No internal roles assigned.")
+        print(f"Created {args.username}; first login must change password. No permissions assigned.")
         print("Temporary password (deliver privately, do not retain logs): " + password)
 
 if __name__ == "__main__":

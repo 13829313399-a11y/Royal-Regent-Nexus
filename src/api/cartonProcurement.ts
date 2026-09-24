@@ -427,6 +427,8 @@ export interface CartonImportPreviewRow {
   customer_po?: string
   source_sheet?: string
   source_row?: number
+  destination?: string
+  destination_factory_id?: string
   delivery_note_no?: string
   delivery_date?: string
   reference?: string
@@ -442,6 +444,7 @@ export interface CartonImportPreviewRow {
   delivered_quantity?: number
   quantity?: number | null
   unit_price?: number
+  order_unit_price?: number | null
   location?: string
   unit?: string
   carton_rule?: string

@@ -8,13 +8,6 @@ class Payload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     factory_id: str = Field(min_length=1, max_length=64)
 
-class MemberSave(Payload):
-    username: str = Field(min_length=1, max_length=64)
-    expected_revision: int = Field(ge=0)
-    status: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
-    reason: str = Field(min_length=4, max_length=1000)
-
-
 class SupplierMarkTemplateOut(BaseModel):
     id: str
     customer_name: str
@@ -76,15 +69,33 @@ class ShipLine(BaseModel):
     issue_id: str = Field(min_length=1, max_length=96)
     quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
 
+class UnmatchedShipLine(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    source_sheet: str = Field(min_length=1, max_length=128)
+    source_row: int = Field(ge=1)
+    contract_no: str = Field(default="", max_length=128)
+    item_no: str = Field(min_length=1, max_length=128)
+    packaging_type: str = Field(min_length=1, max_length=64)
+    paper_quality: str = Field(min_length=1, max_length=128)
+    specification: str = Field(min_length=1, max_length=255)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+    unit: str = Field(default="个", min_length=1, max_length=32)
+    unit_price: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=6)
+
 class ShipmentCreate(Payload):
     request_id: str = Field(min_length=8, max_length=128)
     delivery_note_no: str = Field(min_length=1, max_length=128)
     delivery_date: date
-    lines: list[ShipLine] = Field(min_length=1, max_length=200)
+    lines: list[ShipLine] = Field(default_factory=list, max_length=200)
+    unmatched_lines: list[UnmatchedShipLine] = Field(default_factory=list, max_length=200)
     @model_validator(mode="after")
     def unique_lines(self):
+        if not self.lines and not self.unmatched_lines or len(self.lines) + len(self.unmatched_lines) > 200:
+            raise ValueError("送货单须有 1 至 200 行纸品")
         if len({line.order_line_id for line in self.lines}) != len(self.lines):
             raise ValueError("同一发货单不能重复引用同一纸品明细")
+        if len({(line.source_sheet, line.source_row) for line in self.unmatched_lines}) != len(self.unmatched_lines):
+            raise ValueError("同一发货单不能重复引用原表行")
         return self
 
 class ReceiveLine(BaseModel):
@@ -99,9 +110,20 @@ class ReceiveLine(BaseModel):
     specification: str = Field(default="", max_length=255)
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     difference_reason: str = Field(default="", max_length=1000)
+    no_order_decision: Literal["", "SAMPLE", "WRONG_DELIVERY"] = ""
+    customer_code: str = Field(default="", max_length=64)
+    sample_purpose: str = Field(default="", max_length=255)
+    requested_by: str = Field(default="", max_length=128)
+    unit: str = Field(default="", max_length=32)
 
 class ShipmentReceive(Payload):
     request_id: str = Field(min_length=8, max_length=128)
     expected_revision: int = Field(ge=1)
     acceptance_date: date
     lines: list[ReceiveLine] = Field(min_length=1, max_length=200)
+
+
+class SampleReceiptLink(Payload):
+    order_line_id: str = Field(min_length=1, max_length=96)
+    expected_order_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=1000)

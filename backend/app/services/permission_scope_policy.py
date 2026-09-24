@@ -221,6 +221,15 @@ CARTON_MARK_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     ),
 }
 
+CARTON_SUPPLIER_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
+    code: ScopePolicy(
+        ("*",),
+        requires_global_factory=True,
+        guidance="供应商协同权限须授予全部厂区 / 全部部门；只显示本供应商已下单的服务厂区和单据",
+    )
+    for code in ("carton_supplier:read", "carton_supplier:edit", "carton_supplier:approve")
+}
+
 ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "admin": ScopePolicy(
         ("*",),
@@ -293,9 +302,12 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
             permission_code,
             CARTON_MARK_PERMISSION_SCOPE_POLICIES.get(
                 permission_code,
-                INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                CARTON_SUPPLIER_PERMISSION_SCOPE_POLICIES.get(
                     permission_code,
-                    ScopePolicy(),
+                    INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                        permission_code,
+                        ScopePolicy(),
+                    ),
                 ),
             ),
         ),

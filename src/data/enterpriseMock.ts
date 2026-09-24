@@ -790,7 +790,7 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         id: 'carton-supplier',
         title: '供应商协同',
         owner: '东康供应商 / 仓管',
-        summary: '供应商查看已发行采购单、确认交期和登记发货；内部仓管管理成员与核实收料',
+        summary: '按模块权限查看已下单采购单、确认交期和登记发货；内部仓管核实收料',
         status: '已接入',
         statusTone: 'teal',
         stats: '已发行订单 · 供应商发货 · 仓管核实',
@@ -798,12 +798,12 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         route: '/carton-supplier',
         statusMetrics: [
           { label: '订单', value: '已发行', tone: 'teal' },
-          { label: '供应商', value: '本厂绑定', tone: 'blue' },
+          { label: '供应商', value: '权限开通', tone: 'blue' },
           { label: '收料', value: '仓管核实', tone: 'green' },
         ],
         todos: [],
         children: [
-          { label: '采购单', summary: '供应商仅查看本厂与自身绑定的已发行订单' },
+          { label: '采购单', summary: '仅查看东康已下单厂区的采购单' },
           { label: '交期与发货', summary: '供应商确认纸品交期并登记实际发货' },
           { label: '仓库反馈', summary: '内部仓管核实实收并反馈差异' },
         ],
