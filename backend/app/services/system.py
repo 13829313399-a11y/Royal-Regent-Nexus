@@ -26,6 +26,7 @@ from app.models.auth import (
     EmployeeProfile,
     SystemNotification,
 )
+from app.models.carton_supplier_portal import SupplierShipment
 from app.schemas.system import (
     PasswordResetApproveOut,
     PasswordResetMatchedUserOut,
@@ -49,10 +50,12 @@ from app.services.auth import (
     add_auth_audit,
     build_auth_context,
     can,
+    has_permission_in_scope,
     mark_password_reset_notification_handled,
     now_text,
     time_window_is_active,
 )
+from app.services import carton_supplier_notifications as shipment_notifications
 from app.services.iam_scope import OWN_FACTORY_SCOPE
 from app.services.permission_scope_policy import role_scope_policy, scope_is_applicable
 from app.services.system_positions import (
@@ -1161,6 +1164,10 @@ def list_system_notifications(
             )
         )
     notifications = db.scalars(statement.order_by(SystemNotification.created_at.desc())).all()
+    if "carton_procurement:read" in current_user.permissions:
+        notifications.extend(shipment_notifications.legacy_pending_notifications(
+            db, {row.id for row in notifications}, changed_after))
+    notifications.sort(key=lambda row: (row.created_at, row.id), reverse=True)
     return [
         notification_to_out(notification)
         for notification in notifications
@@ -1175,6 +1182,13 @@ def update_system_notification(
     payload: SystemNotificationUpdateRequest,
 ) -> SystemNotificationOut:
     notification = db.get(SystemNotification, notification_id)
+    if notification is None and notification_id.startswith(shipment_notifications.NOTIFICATION_PREFIX):
+        shipment_id = notification_id[len(shipment_notifications.NOTIFICATION_PREFIX):]
+        shipment = db.get(SupplierShipment, shipment_id)
+        if shipment is not None and shipment.status == "SENT":
+            candidate = shipment_notifications.notification_for(shipment)
+            if can_access_notification(db, current_user, candidate):
+                notification = shipment_notifications.create_notification(db, shipment)
     if notification is None:
         raise HTTPException(status_code=404, detail="通知不存在")
     if not can_access_notification(db, current_user, notification):
@@ -1184,7 +1198,7 @@ def update_system_notification(
     if status not in {"read", "handled"}:
         raise HTTPException(status_code=400, detail="通知状态只能设置为 read 或 handled")
     if (
-        notification.type in {"internal_quote", "password_reset"}
+        notification.type in {"internal_quote", "password_reset", shipment_notifications.NOTIFICATION_TYPE}
         and status == "handled"
         and notification.status != "handled"
     ):
@@ -1368,6 +1382,13 @@ def can_access_notification(
     current_user: AuthContext,
     notification: SystemNotification,
 ) -> bool:
+    if notification.type == shipment_notifications.NOTIFICATION_TYPE:
+        shipment = db.get(SupplierShipment, str(parse_payload(notification.payload_json).get("shipment_id") or ""))
+        if shipment is None or shipment.factory_id != notification.target_factory_id:
+            return False
+        return all(any(has_permission_in_scope(current_user, permission, shipment.factory_id, department)
+            for department in ("pmc-warehouse", "carton")) for permission in (
+                "carton_procurement:read", "carton_procurement:receipt_write", "carton_procurement:inventory_write"))
     if notification.target_user_id and notification.target_user_id == current_user.id:
         return True
     if not notification.target_permission:

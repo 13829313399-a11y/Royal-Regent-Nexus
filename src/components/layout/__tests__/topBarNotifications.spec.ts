@@ -335,6 +335,7 @@ describe('TopBar notifications', () => {
       roles: ['啤机部文员'],
       permissions: ['molding_sample:notification_read', 'molding_sample:production_read'],
       factoryScopes: ['huaxing'],
+      department: 'molding',
     })
     moldingSampleApiMock.listNotifications.mockResolvedValue([
       createNotification({
@@ -823,6 +824,40 @@ describe('TopBar notifications', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('0 条未读 · 1 项待处理')
     expect(wrapper.text()).toContain('新用户注册待审批')
+  })
+
+  it('routes a factory supplier shipment from pending to warehouse receipt and clears it when handled', async () => {
+    seedAccount({
+      roles: ['仓管员'],
+      department: 'pmc-warehouse',
+      permissions: ['carton_procurement:read', 'carton_procurement:receipt_write', 'carton_procurement:inventory_write'],
+    })
+    const shipmentId = `CSS-${'a'.repeat(32)}`
+    const pending = createSystemNotification({
+      id: `carton-shipment:${shipmentId}`,
+      type: 'carton_supplier_shipment',
+      title: '供应商送货单 DK-01 待核实',
+      target_permission: 'carton_procurement:receipt_write',
+      target_factory_id: 'huaxing',
+      target_department: 'pmc-warehouse',
+      payload: { shipment_id: shipmentId, delivery_note_no: 'DK-01' },
+    })
+    systemApiMock.listNotifications.mockResolvedValue([pending])
+    const wrapper = mountTopBar()
+    await flushPromises()
+    await wrapper.get('button[aria-label^="通知中心"]').trigger('click')
+    await wrapper.get('#notification-tab-pending').trigger('click')
+    expect(wrapper.text()).toContain('供应商送货单 DK-01 待核实')
+    expect(wrapper.text()).toContain('供应商送货')
+    const action = wrapper.findAll('a').find(link => link.text().includes('核实收料'))
+    expect(action?.attributes('href')).toBe(`/carton-supplier-management?factory=huaxing&shipment=${shipmentId}`)
+
+    systemApiMock.listNotifications.mockResolvedValue([{ ...pending, status: 'handled', handled_at: '2026-07-08 20:00' }])
+    await wrapper.get('button[aria-label="刷新通知"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('供应商送货单 DK-01 待核实')
+    await wrapper.get('#notification-tab-all').trigger('click')
+    expect(wrapper.text()).toContain('业务流程已完成')
   })
 
 })

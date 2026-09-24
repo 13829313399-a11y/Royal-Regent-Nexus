@@ -3336,6 +3336,13 @@ def reverse_receipt(
     receipt.updated_at = timestamp
     db.flush()
     order_line_ids = [line.order_line_id for line in lines if line.order_line_id]
+    sample_ids = {line.id for line in lines if line.source_type == "AD_HOC"}
+    if sample_ids:
+        order_line_ids.extend(event.entity_id for event in db.scalars(select(CartonAuditEvent).where(
+            CartonAuditEvent.factory_id == factory_id,
+            CartonAuditEvent.event_type == "SUPPLIER_SAMPLE_LINKED",
+            CartonAuditEvent.entity_type == "carton_order_line")).all()
+            if json.loads(event.detail_json).get("sample_receipt_line_id") in sample_ids)
     order_ids = set(db.scalars(select(CartonOrderLine.order_id).where(
         CartonOrderLine.factory_id == factory_id, CartonOrderLine.id.in_(order_line_ids),
     )))
@@ -3541,6 +3548,27 @@ def _create_import_exceptions(
     return created
 
 
+def _require_delivery_destination(factory_id: str, summary: dict[str, object]) -> None:
+    raw_rows = summary.get("rows")
+    if not isinstance(raw_rows, list):
+        return
+    rows = [row for row in raw_rows if isinstance(row, dict) and row.get("template") == "dongkang-delivery"]
+    if not rows:
+        return
+    if len(rows) != len(raw_rows):
+        raise HTTPException(422, "供应商送货文件混有未标识送货厂区的明细，请按厂区分别导出后导入")
+    destinations = {str(row.get("destination_factory_id") or "") for row in rows}
+    if len(destinations) != 1 or "" in destinations:
+        raise HTTPException(422, "供应商送货文件包含多个或无法识别的送货厂区，请按厂区分别导出后导入")
+    destination = destinations.pop()
+    if destination != factory_id:
+        raise HTTPException(409, detail={
+            "code": "DELIVERY_FACTORY_MISMATCH",
+            "factory_id": destination,
+            "message": f"该送货单属于 {destination}，请在对应厂区导入；当前厂区未保存导入批次",
+        })
+
+
 def create_import_batch(
     db: Session,
     factory_id: str,
@@ -3584,6 +3612,8 @@ def create_import_batch(
     if existing is not None:
         if existing.status == "REJECTED" and import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
             raise HTTPException(409, "该文件的导入批次已整批撤销，不能恢复；请更正文件后重新导入")
+        if import_type == "DELIVERY_NOTE":
+            _require_delivery_destination(factory_id, json.loads(existing.parse_summary_json))
         return import_batch_out(existing, duplicate=True)
     parse_options = dict(effective_profile)
     parse_options["reference_date"] = business_now().date().isoformat()
@@ -3595,6 +3625,8 @@ def create_import_batch(
         content,
         options=parse_options,
     )
+    if import_type == "DELIVERY_NOTE":
+        _require_delivery_destination(factory_id, parse_summary)
     batch = CartonImportBatch(
         id=f"CIB-{uuid4().hex}",
         factory_id=factory_id,

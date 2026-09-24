@@ -59,6 +59,7 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
+    CARTON_SUPPLIER_PERMISSION_CODES,
     UV_OPS_PERMISSION_CODES,
     INTERNAL_QUOTE_PERMISSION_CODES,
     INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
@@ -1822,6 +1823,9 @@ def ensure_authz_startup_safety(db: Session) -> None:
     active_overrides = list(
         db.scalars(
             select(AuthUserPermissionOverride).where(
+                AuthUserPermissionOverride.permission_id.notin_(
+                    select(AuthPermission.id).where(AuthPermission.code.in_(CARTON_SUPPLIER_PERMISSION_CODES))
+                ),
                 AuthUserPermissionOverride.status == "active",
                 AuthUserPermissionOverride.effect.in_({"allow", "deny"}),
                 AuthUserPermissionOverride.source_type.notin_(

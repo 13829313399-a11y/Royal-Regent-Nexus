@@ -69,6 +69,23 @@ class SupplierShipmentLine(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(18,4))
     snapshot_json: Mapped[str] = mapped_column(Text)
 
+class SupplierShipmentUnmatchedLine(Base):
+    """An imported vendor row awaiting an explicit warehouse no-order decision."""
+    __tablename__ = "carton_supplier_unmatched_lines"
+    __table_args__ = (
+        ForeignKeyConstraint(["shipment_id", "factory_id"],
+            ["carton_supplier_shipments.id", "carton_supplier_shipments.factory_id"]),
+        UniqueConstraint("shipment_id", "source_sheet", "source_row", name="uq_carton_supplier_unmatched_source"),
+        CheckConstraint("quantity > 0 AND source_row >= 1", name="ck_carton_supplier_unmatched_quantity"),
+    )
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    shipment_id: Mapped[str] = mapped_column(String(96), index=True)
+    factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_sheet: Mapped[str] = mapped_column(String(128))
+    source_row: Mapped[int] = mapped_column(Integer)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18,4))
+    snapshot_json: Mapped[str] = mapped_column(Text)
+
 class SupplierAttachment(Base):
     __tablename__ = "carton_supplier_attachments"
     __table_args__ = (UniqueConstraint("order_id", "filename", "version", name="uq_carton_supplier_attachment_version"),

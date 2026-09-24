@@ -107,6 +107,7 @@ function mountView(tab?: string, extraStubs: Record<string, boolean> = {}, inven
     global: {
       stubs: {
         AccountMenu: true,
+        NotificationCenter: true,
         CartonSupplierSettlement: true,
         PopoverPortal: { template: '<slot />' },
         ...extraStubs,
@@ -114,6 +115,12 @@ function mountView(tab?: string, extraStubs: Record<string, boolean> = {}, inven
     },
   })
 }
+
+it('keeps the shared pending notification entry in the standalone carton header', async () => {
+  const wrapper = mountView('closing', {}, false); await flushPromises()
+  expect(wrapper.find('notification-center-stub').exists()).toBe(true)
+  wrapper.unmount()
+})
 
 it('opens supplier reconciliation by default and preserves its mounted form across inventory month-end tabs', async () => {
   const w = mountView('closing', {}, false); await flushPromises()
@@ -2752,6 +2759,114 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('未找到四列表格边界')
     expect(wrapper.text()).toContain('未解析出结构化明细；请查看上方“识别诊断详情”')
     expect(wrapper.text()).toContain('删除本次导入')
+  })
+
+  it('reviews each imported delivery note separately and never preselects physical arrival', async () => {
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    cartonApiMock.uploadReceipt.mockResolvedValue({
+      id: 'CIB-TWO-NOTES', factory_id: 'huaxing', import_type: 'DELIVERY_NOTE', original_filename: '东康送货.xls',
+      source_sha256: 'two-notes', status: 'MATCHED', duplicate: false,
+      parse_summary: { engine: 'excel-header-mapping', parser_version: 'delivery-note-local-v7-dongkang',
+        row_count: 2, matched_count: 2, issue_count: 0, warnings: [], rows: [
+          { template: 'dongkang-delivery', source_sheet: '送货明细表', source_row: 2, delivery_note_no: 'DN-A', delivery_date: '2026-09-01',
+            contract_no: 'C-A', item_no: 'I-A', order_no: 'O-A', order_line_id: 'L-A', packaging_type: '普通箱',
+            paper_quality: 'A=B', specification: '18*12*17cm', delivered_quantity: 5, unit_price: 2, order_unit_price: 3, unit: '个', match_status: 'MATCHED' },
+          { template: 'dongkang-delivery', source_sheet: '送货明细表', source_row: 3, delivery_note_no: 'DN-B', delivery_date: '2026-09-02',
+            contract_no: 'C-B', item_no: 'I-B', order_no: 'O-B', order_line_id: 'L-B', packaging_type: '普通箱',
+            paper_quality: 'A=B', specification: '18*12*17cm', delivered_quantity: 8, unit_price: 2, order_unit_price: 3, unit: '个', match_status: 'MATCHED' },
+        ] },
+    })
+    const wrapper = mountView('receipts'); await flushPromises()
+    await findButton(wrapper, '送货单导入').trigger('click'); await flushPromises()
+    const input = wrapper.get('input[aria-label="选择送货单文件"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['xls'], '东康送货.xls')] })
+    await input.trigger('change'); await flushPromises()
+    expect(wrapper.get('select[aria-label="选择导入的送货单"]').findAll('option')).toHaveLength(2)
+    await wrapper.get('select[aria-label="选择导入的送货单"]').setValue('DN-B')
+    await findButton(wrapper, '核实实际到货').trigger('click')
+    const checkbox = wrapper.get<HTMLInputElement>('input[aria-label="选择纸品 L-B"]')
+    expect(checkbox.element.checked).toBe(false)
+    expect(wrapper.find('input[aria-label="选择纸品 L-A"]').exists()).toBe(false)
+    await findButton(wrapper, '本单全部到齐').trigger('click')
+    expect(checkbox.element.checked).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('input[aria-label$=" 实收"]').element.value).toBe('8')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label$=" 单价"]').element.value).toBe('3')
+    expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('switches supplier delivery-note previews even when no rows have matched orders', async () => {
+    cartonApiMock.uploadReceipt.mockResolvedValue({
+      id: 'CIB-UNMATCHED-NOTES', factory_id: 'huaxing', import_type: 'DELIVERY_NOTE', original_filename: '东康送货.xls',
+      source_sha256: 'unmatched-notes', status: 'REQUIRES_REVIEW', duplicate: false,
+      parse_summary: { engine: 'excel-header-mapping', row_count: 2, matched_count: 0, issue_count: 2, warnings: [], rows: [
+        { template: 'dongkang-delivery', source_sheet: '送货明细表', source_row: 2, delivery_note_no: 'DN-A',
+          contract_no: 'C-A', item_no: 'I-A', delivered_quantity: 5, match_status: 'MISSING_ORDER' },
+        { template: 'dongkang-delivery', source_sheet: '送货明细表', source_row: 3, delivery_note_no: 'DN-B',
+          contract_no: 'C-B', item_no: 'I-B', delivered_quantity: 8, match_status: 'MISSING_ORDER' },
+      ] },
+    })
+    const wrapper = mountView('receipts'); await flushPromises()
+    await findButton(wrapper, '送货单导入').trigger('click')
+    const input = wrapper.get('input[aria-label="选择送货单文件"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['xls'], '东康送货.xls')] })
+    await input.trigger('change'); await flushPromises()
+    expect(wrapper.get('select[aria-label="选择导入的送货单"]').element.value).toBe('DN-A')
+    expect(wrapper.get('table tbody').text()).toContain('C-A')
+    await wrapper.get('select[aria-label="选择导入的送货单"]').setValue('DN-B')
+    expect(wrapper.get('table tbody').text()).toContain('C-B')
+    expect(wrapper.get('table tbody').text()).not.toContain('C-A')
+    expect(wrapper.text()).toContain('先在当前厂区建立对应的正式纸箱订单')
+    expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('imports a single-factory supplier delivery file into its authorized destination factory', async () => {
+    const mismatch = Object.assign(new Error('Wrong factory'), { isAxiosError: true,
+      response: { status: 409, data: { detail: { code: 'DELIVERY_FACTORY_MISMATCH', factory_id: 'huakang-b' } } } })
+    cartonApiMock.uploadReceipt.mockRejectedValueOnce(mismatch).mockResolvedValueOnce({
+      id: 'CIB-HKB', factory_id: 'huakang-b', import_type: 'DELIVERY_NOTE', original_filename: '东康送货.xls',
+      source_sha256: 'hkb', status: 'REQUIRES_REVIEW', duplicate: false,
+      parse_summary: { engine: 'excel-header-mapping', row_count: 1, matched_count: 0, issue_count: 1, warnings: [], rows: [
+        { template: 'dongkang-delivery', source_sheet: '送货明细表', source_row: 2, delivery_note_no: 'DN-HKB',
+          contract_no: 'C-1', item_no: 'I-1', delivered_quantity: 5, match_status: 'MISSING_ORDER' },
+      ] },
+    })
+    routerReplaceMock.mockImplementation(async (target: { query: { factory: string; tab: string } }) => {
+      routeState.query.factory = target.query.factory
+      routeState.query.tab = target.query.tab
+    })
+    const wrapper = mountView('receipts'); await flushPromises()
+    await findButton(wrapper, '送货单导入').trigger('click')
+    const input = wrapper.get('input[aria-label="选择送货单文件"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['xls'], '东康送货.xls')] })
+    await input.trigger('change'); await flushPromises()
+    expect(cartonApiMock.uploadReceipt).toHaveBeenNthCalledWith(1, 'huaxing', expect.any(File))
+    expect(cartonApiMock.uploadReceipt).toHaveBeenNthCalledWith(2, 'huakang-b', expect.any(File))
+    expect(routerReplaceMock).toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ factory: 'huakang-b', tab: 'receipts' }) }))
+    expect(wrapper.text()).toContain('DN-HKB')
+    expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps a supplier delivery file in review when the account lacks destination-factory import access', async () => {
+    const mismatch = Object.assign(new Error('Wrong factory'), { isAxiosError: true,
+      response: { status: 409, data: { detail: { code: 'DELIVERY_FACTORY_MISMATCH', factory_id: 'huakang-b' } } } })
+    cartonApiMock.uploadReceipt.mockRejectedValue(mismatch)
+    authStoreMock.can.mockImplementation((_permission: string, factory: string) => factory !== 'huakang-b')
+    const wrapper = mountView('receipts'); await flushPromises()
+    await findButton(wrapper, '送货单导入').trigger('click')
+    const input = wrapper.get('input[aria-label="选择送货单文件"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['xls'], '东康送货.xls')] })
+    await input.trigger('change'); await flushPromises()
+    expect(cartonApiMock.uploadReceipt).toHaveBeenCalledTimes(1)
+    expect(routerReplaceMock).not.toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ factory: 'huakang-b' }) }))
+    expect(wrapper.text()).toContain('没有该厂区的导入权限')
+    wrapper.unmount()
   })
 
   it('separates realtime inventory operations from period-end reconciliation', () => {

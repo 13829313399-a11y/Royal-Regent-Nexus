@@ -19,6 +19,7 @@ import CartonReceiptPaperSelection from '@/components/CartonReceiptPaperSelectio
 import { cartonPositionsApi, type CartonLocation, type LocationAllocation } from '@/api/cartonPositions'
 
 import { computed, nextTick, onBeforeUnmount, reactive, ref, shallowRef, watch, type Component } from 'vue'
+import axios from 'axios'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -52,6 +53,7 @@ import {
   type DateRange,
 } from 'reka-ui'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import NotificationCenter from '@/components/notifications/NotificationCenter.vue'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import CartonStocktakeWorkspace from '@/components/CartonStocktakeWorkspace.vue'
 import CartonSelectionSummary from '@/components/CartonSelectionSummary.vue'
@@ -1000,7 +1002,7 @@ function selectVisibleExceptions(selected: boolean) {
 
 const selectedReceiptLines = computed(() => receiptLines.filter(row => row.selectedForReceipt !== false))
 const hasManualPaperSelection = computed(() => receiptLines.some(row => row.selectedForReceipt !== undefined))
-const manualReceiptDialogSelection = computed(() => receiptEntryMode.value === 'MANUAL' && hasManualPaperSelection.value && !currentReceipt.value)
+const manualReceiptDialogSelection = computed(() => hasManualPaperSelection.value && !currentReceipt.value)
 const receiptDialogRows = computed(() => manualReceiptDialogSelection.value ? receiptLines : visibleReceiptLines.value)
 const visibleReceiptLines = computed(() => {
   if (showReceiptDialog.value) return selectedReceiptLines.value
@@ -1302,7 +1304,10 @@ const receiptImportStats = computed(() => ({
   issues: receiptImportBatch.value?.parse_summary.issue_count ?? 0,
 }))
 const receiptImportNeedsReview = computed(() => receiptImportStats.value.total === 0 || receiptImportStats.value.matched === 0 || receiptImportStats.value.issues > 0)
-const receiptImportPreviewRows = computed(() => receiptImportRows.value.slice(0, 50))
+const receiptImportPreviewRows = computed(() => receiptImportRows.value
+  .filter(row => !receiptDeliveryNoteNo.value || !row.delivery_note_no || row.delivery_note_no === receiptDeliveryNoteNo.value)
+  .slice(0, 50))
+const receiptImportIsDongkang = computed(() => receiptImportRows.value.some(row => row.template === 'dongkang-delivery'))
 const receiptImportWarnings = computed(() => receiptImportBatch.value?.parse_summary.warnings ?? [])
 const receiptImportRawText = computed(() => receiptImportBatch.value?.parse_summary.document?.raw_text_excerpt?.trim() ?? '')
 
@@ -1537,7 +1542,10 @@ function selectReceiptContract() {
 function selectReceiptPaper(id: string, checked: boolean) {
   if (currentReceipt.value || savingReceipt.value) return
   const row = receiptLines.find(line => line.id === id)
-  if (row) row.selectedForReceipt = checked
+  if (row) {
+    row.selectedForReceipt = checked
+    if (receiptEntryMode.value === 'IMPORT') row.receivedQuantity = checked ? Number(row.deliveryQuantity) : 0
+  }
 }
 
 function updateReceiptActual(row: ReceiptReviewLine, quantity: number) {
@@ -2210,7 +2218,9 @@ function mapException(row: CartonExceptionResponse): CartonExceptionRow {
   }
 }
 
-function applyReceiptImport(batch: CartonImportBatchResponse) {
+const importedDeliveryNumbers = computed(() => [...new Set(receiptImportRows.value.map(row => row.delivery_note_no).filter((value): value is string => Boolean(value)))])
+
+function applyReceiptImport(batch: CartonImportBatchResponse, requestedDeliveryNo?: string) {
   const preserveAcceptanceDate = receiptBatchId.value === batch.id && !currentReceipt.value
   const rows = batch.parse_summary.rows ?? []
   receiptEntryMode.value = 'IMPORT'
@@ -2220,8 +2230,8 @@ function applyReceiptImport(batch: CartonImportBatchResponse) {
   receiptImportBatch.value = batch
   receiptImportRows.value = rows
   const matched = rows.filter((row) => row.match_status === 'MATCHED' && row.order_line_id)
-  const deliveryNumbers = [...new Set(matched.map((row) => row.delivery_note_no).filter(Boolean))] as string[]
-  const selectedDeliveryNo = deliveryNumbers[0]
+  const deliveryNumbers = [...new Set(rows.map((row) => row.delivery_note_no).filter(Boolean))] as string[]
+  const selectedDeliveryNo = (requestedDeliveryNo && deliveryNumbers.includes(requestedDeliveryNo) ? requestedDeliveryNo : deliveryNumbers[0])
     ?? batch.parse_summary.document?.delivery_note_no
     ?? `IMPORT-${batch.id.slice(-8).toUpperCase()}`
   const selectedRows = matched.filter((row) => !row.delivery_note_no || row.delivery_note_no === selectedDeliveryNo)
@@ -2231,8 +2241,9 @@ function applyReceiptImport(batch: CartonImportBatchResponse) {
     description: `${row.packaging_type ?? '待复核'} ${row.paper_quality ?? ''}`.trim(),
     specification: row.specification ?? '',
     deliveryQuantity: Number(row.delivered_quantity ?? 0),
-    unitPrice: Number(row.unit_price ?? 0),
-    receivedQuantity: Number(row.delivered_quantity ?? 0),
+    unitPrice: Number(row.template === 'dongkang-delivery' ? (row.order_unit_price ?? 0) : (row.unit_price ?? 0)),
+    receivedQuantity: 0,
+    selectedForReceipt: false,
     damagedQuantity: 0,
     rejectedQuantity: 0,
     unusableQuantity: 0,
@@ -2252,12 +2263,27 @@ function applyReceiptImport(batch: CartonImportBatchResponse) {
   if (!preserveAcceptanceDate) receiptAcceptanceDate.value = businessTodayIso()
   receiptBatchId.value = batch.id
   receiptDeliveryNoteNo.value = selectedDeliveryNo
-  receiptDeliveryDate.value = rows.find((row) => row.delivery_date)?.delivery_date
+  receiptDeliveryDate.value = selectedRows.find((row) => row.delivery_date)?.delivery_date
     ?? batch.parse_summary.document?.delivery_date
     ?? businessTodayIso()
   currentReceipt.value = null
   const extraDocuments = Math.max(0, deliveryNumbers.length - 1)
-  actionMessage.value = `送货单识别完成：共 ${batch.parse_summary.row_count ?? rows.length} 行，已匹配 ${batch.parse_summary.matched_count ?? matched.length} 行，${batch.parse_summary.issue_count ?? 0} 行需要人工处理。${extraDocuments ? `本次还包含 ${extraDocuments} 张其他送货单，请分批复核。` : ''}`
+  actionMessage.value = `送货单识别完成：共 ${batch.parse_summary.row_count ?? rows.length} 行，已匹配 ${batch.parse_summary.matched_count ?? matched.length} 行，${batch.parse_summary.issue_count ?? 0} 行需要人工处理。${extraDocuments ? `本次还包含 ${extraDocuments} 张其他送货单，可切换单号逐张核实。` : ''}`
+}
+
+function selectImportedDeliveryNote(noteNo: string) {
+  if (!receiptImportBatch.value || noteNo === receiptDeliveryNoteNo.value) return
+  if (receiptLines.some(row => row.selectedForReceipt) && !window.confirm('切换送货单会清除当前未提交的验收勾选，确定继续吗？')) return
+  applyReceiptImport(receiptImportBatch.value, noteNo)
+  showReceiptDialog.value = false
+}
+
+function selectAllImportedArrival() {
+  if (receiptEntryMode.value !== 'IMPORT' || currentReceipt.value || savingReceipt.value) return
+  for (const row of receiptLines) {
+    row.selectedForReceipt = Number(row.deliveryQuantity) > 0
+    row.receivedQuantity = row.selectedForReceipt ? Number(row.deliveryQuantity) : 0
+  }
 }
 
 function receiptImportLineId(batchId: string, row: CartonImportPreviewRow, index: number) {
@@ -2271,7 +2297,8 @@ function receiptImportRowAdded(row: CartonImportPreviewRow, index: number) {
 
 function addAdHocReceiptLine(row: CartonImportPreviewRow, index: number) {
   const batch = receiptImportBatch.value
-  if (!batch || row.match_status !== 'MISSING_ORDER') return
+  if (!batch || row.match_status !== 'MISSING_ORDER' || row.template === 'dongkang-delivery'
+    || (row.delivery_note_no && row.delivery_note_no !== receiptDeliveryNoteNo.value)) return
   const id = receiptImportLineId(batch.id, row, index)
   if (receiptLines.some((line) => line.id === id)) return
   const matchedCustomer = activeCustomers.value.find((customer) =>
@@ -4061,6 +4088,14 @@ function triggerReceiptImport() {
   receiptFileInput.value?.click()
 }
 
+function deliveryImportFactory(error: unknown): ProductionFactoryContextId | null {
+  if (!axios.isAxiosError(error) || error.response?.status !== 409) return null
+  const detail = error.response.data?.detail
+  if (!detail || typeof detail !== 'object' || detail.code !== 'DELIVERY_FACTORY_MISMATCH') return null
+  return typeof detail.factory_id === 'string' && isProductionFactoryContextId(detail.factory_id)
+    ? detail.factory_id : null
+}
+
 async function handleReceiptFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -4069,12 +4104,32 @@ async function handleReceiptFile(event: Event) {
   input.value = ''
   importingReceipt.value = true
   try {
-    const batch = await cartonProcurementApi.uploadReceipt(selectedFactoryId.value, file)
+    const originalFactory = selectedFactoryId.value
+    let batch: CartonImportBatchResponse
+    let redirectedFactory: ProductionFactoryContextId | null = null
+    try {
+      batch = await cartonProcurementApi.uploadReceipt(originalFactory, file)
+    } catch (error) {
+      const destination = deliveryImportFactory(error)
+      if (!destination) throw error
+      if (!authStore.can('carton_procurement:import', destination, 'pmc-warehouse')
+        && !authStore.can('carton_procurement:import', destination, 'carton')) {
+        throw new Error(`送货单属于 ${factoryContexts.find(factory => factory.id === destination)?.shortName ?? destination}；当前账号没有该厂区的导入权限`)
+      }
+      if (selectedFactoryId.value !== originalFactory) throw new Error('导入期间厂区已切换，请在当前厂区重新选择文件')
+      batch = await cartonProcurementApi.uploadReceipt(destination, file)
+      redirectedFactory = destination
+      await router.replace({ query: { ...route.query, factory: destination, tab: 'receipts' } })
+    }
+    if (selectedFactoryId.value !== batch.factory_id) throw new Error('导入已保存，但页面厂区未切换成功；请切换到送货厂区查看导入批次')
     apiConnected.value = true
     applyReceiptImport(batch)
+    selectedReceiptFileName.value = file.name
     showReceiptDialog.value = receiptLines.length > 0
     if (batch.duplicate) {
       actionMessage.value = `送货单“${file.name}”已导入过，已恢复原复核批次 ${batch.id}；没有重复创建收料或库存。`
+    } else if (redirectedFactory) {
+      actionMessage.value = `已按送货对象切换到 ${activeFactory.value.shortName} 并导入：${actionMessage.value}`
     }
   } catch (error) {
     actionMessage.value = `送货单导入失败：${getApiErrorMessage(error)}`
@@ -4734,6 +4789,7 @@ function refreshDemo() {
             <Building2 class="size-4" aria-hidden="true" />
             当前厂区：{{ activeFactory.shortName }}
           </span>
+          <NotificationCenter />
           <AccountMenu />
         </div>
       </div>
@@ -5349,6 +5405,7 @@ function refreshDemo() {
       <section v-else-if="activeTab === 'receipts'" class="space-y-4">
         <nav aria-label="收料入库子页面" class="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
           <button v-for="page in [{ id: 'PENDING' as const, label: '待收订单' }, { id: 'IMPORT' as const, label: '送货单导入' }, { id: 'HISTORY' as const, label: '收料历史' }]" :key="page.id" type="button" :aria-current="receiptPage === page.id ? 'page' : undefined" class="rounded-lg px-4 py-2 text-xs font-semibold" :class="receiptPage === page.id ? 'bg-teal-50 text-teal-800 ring-1 ring-teal-200' : 'text-slate-500 hover:bg-slate-50'" @click="openReceiptPage(page.id)">{{ page.label }}</button>
+          <RouterLink v-if="authStore.can('carton_procurement:read', selectedFactoryId, 'pmc-warehouse') || authStore.can('carton_procurement:read', selectedFactoryId, 'carton')" :to="{ path: '/carton-supplier-management', query: { factory: selectedFactoryId } }" class="ml-auto rounded-lg border border-teal-200 bg-teal-50 px-4 py-2 text-xs font-semibold text-teal-800 hover:bg-teal-100">供应商送货待确认</RouterLink>
         </nav>
         <article v-if="receiptPage === 'PENDING'" class="overflow-hidden rounded-xl border border-blue-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-5 py-4">
@@ -5449,7 +5506,7 @@ function refreshDemo() {
           <div class="flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 class="flex items-center gap-2 text-lg font-bold text-slate-950"><Upload class="size-5 text-teal-700" />送货单导入</h2>
-              <p class="mt-1 text-sm text-slate-500">上传送货单，复核识别明细后登记收料。</p>
+              <p class="mt-1 text-sm text-slate-500">支持供应商系统的 .xls/.xlsx 送货明细；按送货厂区匹配正式订单后，仓库核实实际到货。</p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
               <input ref="receiptFileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,image/heic,image/heif,.xlsx,.xls" class="hidden" aria-label="选择送货单文件" @change="handleReceiptFile">
@@ -5459,9 +5516,9 @@ function refreshDemo() {
           <p v-if="selectedReceiptFileName" class="mt-3 break-all text-xs text-slate-500">已选择：<span class="font-semibold text-slate-700">{{ selectedReceiptFileName }}</span></p>
         </article>
 
-        <div v-if="receiptPage === 'IMPORT' && receiptEntryMode === 'IMPORT' && receiptLines.length" class="flex items-center justify-between gap-3 rounded-xl border border-teal-200 bg-teal-50 p-4">
-          <span class="text-sm text-teal-900">{{ receiptLines.length }} 条明细待复核</span>
-          <button type="button" class="h-10 rounded-lg bg-teal-700 px-4 text-sm font-bold text-white" @click="showReceiptDialog = true">填写收料反馈</button>
+        <div v-if="receiptPage === 'IMPORT' && receiptEntryMode === 'IMPORT' && receiptImportBatch" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-200 bg-teal-50 p-4">
+          <div class="flex flex-wrap items-center gap-3 text-sm text-teal-900"><label v-if="importedDeliveryNumbers.length > 1" class="flex items-center gap-2">本次送货单 <select :value="receiptDeliveryNoteNo" aria-label="选择导入的送货单" class="h-9 rounded-lg border border-teal-300 bg-white px-2" @change="selectImportedDeliveryNote(($event.target as HTMLSelectElement).value)"><option v-for="number in importedDeliveryNumbers" :key="number" :value="number">{{ number }}</option></select></label><span>{{ receiptLines.length }} 条明细待复核</span><span v-if="!receiptLines.length" class="text-amber-700">当前送货单没有自动匹配的纸品，请先处理异常</span></div>
+          <button type="button" :disabled="!receiptLines.length" class="h-10 rounded-lg bg-teal-700 px-4 text-sm font-bold text-white disabled:opacity-40" @click="showReceiptDialog = true">核实实际到货</button>
         </div>
 
         <article v-if="receiptPage === 'IMPORT' && receiptImportBatch" class="overflow-hidden rounded-xl border bg-white shadow-sm" :class="receiptImportNeedsReview ? 'border-amber-300' : 'border-emerald-300'">
@@ -5486,7 +5543,8 @@ function refreshDemo() {
           <div v-if="receiptImportStats.matched === 0" class="border-b border-red-200 bg-red-50 px-4 py-3 text-[11px] leading-5 text-red-800">
             <strong v-if="receiptImportStats.total > 0">已识别 {{ receiptImportStats.total }} 行送货明细，但没有找到可关联的正式纸箱订单。</strong>
             <strong v-else>文件已成功导入，但未解析出结构化送货明细。</strong>
-            系统尚未生成收料明细或库存。确认确属非正式/打板收料时，可在下方加入收料明细并补齐字段；核对无误后点击“确认入库”，才会入库并计入月结。
+            <template v-if="receiptImportIsDongkang">供应商系统送货单需先在当前厂区建立对应的正式纸箱订单（客户单号 = 合同号、客户料号 = 货号）；空白客户料号需向供应商核实。订单建好后可删除本次零匹配批次并重新上传。系统尚未生成收料或库存。</template>
+            <template v-else>系统尚未生成收料明细或库存。确认确属非正式/打板收料时，可在下方加入收料明细并补齐字段；核对无误后点击“确认入库”，才会入库并计入月结。</template>
           </div>
           <details v-if="receiptImportWarnings.length || receiptImportRawText || receiptImportStats.total === 0" class="border-b border-blue-200 bg-blue-50 px-4 py-3 text-[10px] leading-5 text-blue-900" :open="receiptImportStats.matched === 0">
             <summary class="cursor-pointer select-none font-bold">识别诊断详情（OCR 原文、引擎与警告）</summary>
@@ -5520,9 +5578,9 @@ function refreshDemo() {
                   <td class="max-w-[260px] px-3 py-2.5 text-[10px] text-slate-500">{{ row.suggestion || '请人工复核识别结果' }}</td>
                   <td class="px-3 py-2.5">
                     <span v-if="row.match_status === 'MATCHED'" class="text-[10px] font-bold text-emerald-700">已关联正式订单</span>
-                    <button v-else-if="row.match_status === 'MISSING_ORDER' && !receiptImportRowAdded(row, index)" type="button" :disabled="Boolean(currentReceipt) || savingReceipt" class="inline-flex h-8 items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 text-[10px] font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-40" @click="addAdHocReceiptLine(row, index)"><Plus class="size-3.5" />作为非正式/打板收料</button>
+                    <button v-else-if="row.match_status === 'MISSING_ORDER' && row.template !== 'dongkang-delivery' && (!row.delivery_note_no || row.delivery_note_no === receiptDeliveryNoteNo) && !receiptImportRowAdded(row, index)" type="button" :disabled="Boolean(currentReceipt) || savingReceipt" class="inline-flex h-8 items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 text-[10px] font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-40" @click="addAdHocReceiptLine(row, index)"><Plus class="size-3.5" />作为非正式/打板收料</button>
                     <span v-else-if="receiptImportRowAdded(row, index)" class="text-[10px] font-bold text-blue-700">已加入收料明细</span>
-                    <span v-else class="text-[10px] text-slate-400">需先解决匹配不唯一</span>
+                    <span v-else class="text-[10px] text-slate-400">请到异常处理核对</span>
                   </td>
                 </tr>
                 <tr v-if="receiptImportPreviewRows.length === 0"><td colspan="10" class="px-4 py-10 text-center text-slate-400">未解析出结构化明细；请查看上方“识别诊断详情”中的 OCR 原文和警告</td></tr>
@@ -5882,6 +5940,7 @@ function refreshDemo() {
             <h2 class="font-bold text-slate-950">收料反馈明细</h2>
             <p class="mt-1 text-sm text-teal-700">请按送货单核对本次入库单价，默认带出订单已有价格；有效入库明细必填，且必须大于 0。</p>
             <p class="mt-1 text-sm text-slate-500">有效收料 = 实收 − 破损 − 拒收 − 其他不可用；非正式/打板明细不补建正式订单，人工核对后点击确认入库，即生成库存流水并进入月结。</p>
+            <button v-if="receiptEntryMode === 'IMPORT' && !currentReceipt" type="button" :disabled="savingReceipt" class="mt-2 rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-xs font-bold text-teal-800 disabled:opacity-40" @click="selectAllImportedArrival">本单全部到齐</button>
           </div>
           <div class="overflow-x-auto">
             <table data-testid="receipt-review-table" class="min-w-[1440px] w-full text-left">

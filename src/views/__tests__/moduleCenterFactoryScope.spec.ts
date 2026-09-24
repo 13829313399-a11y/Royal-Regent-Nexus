@@ -146,10 +146,21 @@ describe('module center factory scope', () => {
     expect(getModule('carton-supplier').route).toBe('/carton-supplier')
     expect(getModule('carton-mark-check').route).toBe('/carton-supplier/carton-mark')
 
-    auth.factoryScopes = ['huaxing']
-    auth.permissions = ['carton_procurement:read', 'carton_mark:read']
+    auth.factoryScopes = ['*']
+    auth.permissions = ['carton_supplier:read']
+    auth.effectiveAccess = [{ permission_code: 'carton_supplier:read', factory_id: '*', department: '*', effect: 'allow', allowed: true, source_type: 'user_override', source_ids: ['supplier-read'] }]
+    auth.hasEffectiveAccessSnapshot = true
+    await nextTick()
+    expect(getModule('carton-supplier').route).toBe('/carton-supplier')
+    expect(getModule('carton-mark-check').route).toBe('/carton-supplier/carton-mark')
+
+    auth.permissions = ['carton_supplier:read', 'carton_procurement:read', 'carton_mark:read']
     await nextTick()
     expect(getModule('carton-procurement').route).toBe('/modules/pmc-warehouse/carton-procurement?factory=huaxing')
+    expect(getModule('carton-supplier').route).toBe('/carton-supplier')
+    auth.permissions = ['carton_procurement:read', 'carton_mark:read']
+    auth.effectiveAccess = []
+    await nextTick()
     expect(getModule('carton-supplier').route).toBe('/carton-supplier-management?factory=huaxing')
     expect(getModule('carton-mark-check').route).toBe('/modules/pmc-warehouse/carton-mark-check?factory=huaxing')
     wrapper.unmount()
