@@ -35,11 +35,9 @@ from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
-from app.api.uv_printing import router as uv_printing_router
 from app.api.spray_operations import router as spray_operations_router
-from app.api.uv_finance import router as uv_finance_router
-from app.api.uv_ingest import router as uv_ingest_router
-from app.api.uv_handover import router as uv_handover_router
+from app.api.uv_operations import router as uv_operations_router
+from app.api.uv_agent import router as uv_agent_router
 from app.core.config import settings
 from app.db import init_db
 
@@ -102,9 +100,17 @@ async def lifespan(app: FastAPI):
     from app.services.three_d_live import hub
     hub.start()
     sweep_task = asyncio.create_task(three_d_sweep_loop())
+    from app.services.uv_operations.exports import worker as uv_export_worker
+    uv_export_task = asyncio.create_task(uv_export_worker()) if settings.uv_ops_enabled else None
     try:
         yield
     finally:
+        if uv_export_task:
+            uv_export_task.cancel()
+            try:
+                await uv_export_task
+            except asyncio.CancelledError:
+                pass
         sweep_task.cancel()
         try:
             await sweep_task
@@ -188,11 +194,9 @@ app.include_router(system_router)
 from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)
-app.include_router(uv_printing_router)
 app.include_router(spray_operations_router)
-app.include_router(uv_finance_router)
-app.include_router(uv_ingest_router, prefix="/api")
-app.include_router(uv_handover_router)
+app.include_router(uv_operations_router)
+app.include_router(uv_agent_router)
 app.include_router(three_d_connector_router)
 
 

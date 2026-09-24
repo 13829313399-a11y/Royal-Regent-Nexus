@@ -7,11 +7,11 @@ from pathlib import Path
 import sqlalchemy as sa
 
 
-MIGRATION = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "20260923_0121_backfill_supplier_order_baselines.py"
+MIGRATION = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "20260924_0122_backfill_supplier_order_baselines.py"
 
 
 def test_backfill_is_idempotent_and_never_resends_cancelled_or_existing_issues():
-    spec = importlib.util.spec_from_file_location("supplier_backfill_0121", MIGRATION)
+    spec = importlib.util.spec_from_file_location("supplier_backfill_0122", MIGRATION)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     engine = sa.create_engine("sqlite://")

@@ -53,6 +53,16 @@ describe('authenticated factory context with real navigation guards', () => {
     } finally { remove() }
   })
 
+  it('opens the rebuilt UV workspace only with an explicit A factory and current permission', async () => {
+    await router.replace('/modules/production/production-plan?factory=huakang-a')
+    expect(router.currentRoute.value.name).toBe('module-detail')
+    useAuthStore().applySession({...user('huakang-a'),permissions:['uv_ops:read'],effective_access:[{permission_code:'uv_ops:read',factory_id:'huakang-a',department:'production',effect:'allow',allowed:true,source_type:'role_binding',source_ids:['uv']} ]})
+    await router.push('/modules/production/uv-printing?factory=huakang-a')
+    expect(router.currentRoute.value.fullPath).toBe('/modules/production/uv-printing/live?factory=huakang-a')
+    await router.replace('/modules/production/uv-printing/live?factory=huakang-b')
+    expect(router.currentRoute.value.fullPath).toBe('/modules/production?factory=huakang-b')
+  })
+
   it('lets the explicit deep link win over the registered factory', async () => {
     await router.replace('/modules/pmc-warehouse?factory=huadeng')
     expect(useAppStore().activeFactoryId).toBe('huadeng')

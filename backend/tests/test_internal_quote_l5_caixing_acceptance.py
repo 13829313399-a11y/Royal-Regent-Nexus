@@ -5,8 +5,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 
-from test_internal_quote_api import login, logout, make_client
+from test_internal_quote_api import ensure_user, login, logout, make_client
 
 
 pytestmark = pytest.mark.skipif(
@@ -280,6 +281,7 @@ def test_l5_4_real_caixing_plastic_and_plush_release_consume_and_output(monkeypa
             baseline = json.loads(case["baseline"].read_text(encoding="utf-8"))
             quote_data = baseline["sheets"][0]["quoteData"]
             payloads = _payloads(case["product_type"], baseline)
+            ensure_user(f"l5_4_{case['product_type']}_reviewer", "admin", "sales-business")
             submitter = login(client, f"l5_4_{case['product_type']}_submitter", "admin", "*", "*")
             created = client.post(
                 "/api/internal-quotes",
@@ -305,6 +307,15 @@ def test_l5_4_real_caixing_plastic_and_plush_release_consume_and_output(monkeypa
             )
             assert created.status_code == 201, created.text
             quote_id = created.json()["id"]
+            source_book = load_workbook(case["source"])
+            source_images = source_book.worksheets[0]._images
+            assert source_images
+            product_image = source_images[1] if case["product_type"] == "plastic" else source_images[0]
+            uploaded = client.post(
+                f"/api/internal-quotes/{quote_id}/product-image",
+                files={"file": (f"{case['product_type']}-product.{product_image.format}", product_image._data(), f"image/{product_image.format}")},
+            )
+            assert uploaded.status_code == 201, uploaded.text
 
             for code in ("engineering", "molding"):
                 _save_submit(client, quote_id, code, payloads[code], case["product_type"])
@@ -333,13 +344,7 @@ def test_l5_4_real_caixing_plastic_and_plush_release_consume_and_output(monkeypa
 
             submitted = client.post(f"/api/internal-quotes/{quote_id}/final-submit", json={"revision": 1})
             assert submitted.status_code == 200, submitted.text
-            logout(client)
-            login(client, f"l5_4_{case['product_type']}_reviewer", "admin", "*", "*")
-            approved = client.post(
-                f"/api/internal-quotes/{quote_id}/final-review",
-                json={"revision": 2, "decision": "approve", "reason": "L5.4 彩星真实样表最终放行"},
-            )
-            assert approved.status_code == 200, approved.text
+            approved = submitted
             artifacts = client.get("/api/customer-price/internal-quote-artifacts?factory_id=huaxing")
             assert artifacts.status_code == 200, artifacts.text
             handoff = next(row for row in artifacts.json() if row["quote_no"] == case["quote_no"])

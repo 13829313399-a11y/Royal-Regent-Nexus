@@ -23,7 +23,6 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
-import { isUvModuleEnabled } from '@/features/uv-printing/transport/provider'
 import { SPRAY_BASE, isSprayFactory, sprayEnabled } from '@/features/spray-production/contracts'
 
 const route = useRoute()
@@ -57,9 +56,8 @@ const visibleModules = computed(() => {
 
   return departmentEntry.value.modules
     .filter((module) => {
-      // UV 专属卡片额外核验真正的 activeFactoryId，避免 activeProductionFactory
-      // 的集团兜底把华康A的 UV 模块显示在别的厂区/集团目录里。
-      if (module.id === 'uv-printing' && (appStore.activeFactoryId !== 'huakang-a' || !isUvModuleEnabled())) return false
+      // 新 UV 工作区仅属于华康 A，不采用集团厂区兜底。
+      if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
       if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
       if (currentDepartmentId.value === 'pmc-warehouse' && module.id === 'carton-procurement'
@@ -86,6 +84,14 @@ const visibleModules = computed(() => {
           status: '供应商只读', statusTone: 'teal' as const, todos: [],
           children: scopedModule.children.filter(child => ['客人 Excel', '印刷 PDF'].includes(child.label)) }
       }
+    }
+
+    if (module.id === 'uv-printing') {
+      const authorized = authStore.can('uv_ops:read', factory.id, 'production')
+      return {...scopedModule, summary:'机台现场、任务排程、班次核数、品质交接与材料核算',
+        status:authorized ? '工作区' : '权限待开通', statusTone:'teal' as const,
+        stats:authorized ? '进入华康 A 工作区' : '需要华康 A 生产部授权', detailPage:authorized,
+        route:authorized ? getFactoryScopedRoute('/modules/production/uv-printing/live', factory.id) : undefined}
     }
 
     if (module.id === 'spray-production' && sprayEnabled()) {

@@ -1,0 +1,20 @@
+server_url = "https://nexus.example.invalid"
+state_dir = "C:/ProgramData/RoyalRegent/UVAgent/state"
+poll_seconds = 5
+queue_limit = 1000000
+min_free_bytes = 104857600
+allow_loopback_http = false
+
+# Binding IDs/versions are supplied by the authenticated server config.
+# This local mapping is the ONLY place a source is granted filesystem access.
+[[sources]]
+source_id = "csv-01"
+adapter = "generic_csv_log"
+path = "C:/UVLogs/anonymous-fixture.csv"
+encoding = "utf-8-sig"
+format_version = "synthetic-csv-v1"
+
+# Simulator is explicitly synthetic, never a vendor driver.
+# [[sources]]
+# source_id = "simulation-01"
+# adapter = "simulator"

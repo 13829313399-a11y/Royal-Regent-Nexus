@@ -55,6 +55,46 @@ describe('supplier carton mark templates', () => {
 })
 
 describe('supplier batches and document desk', () => {
+  it('shows business-date delivery reminders without NaN for invalid dates or completed orders', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-23T04:00:00Z'))
+    try {
+      const data = fixture()
+      const source = data.orders[0]!
+      const variant = (id: string, plannedDate: string, status = source.status) => {
+        const order = structuredClone(source)
+        order.id = id
+        order.order_no = id
+        order.planned_date = plannedDate
+        order.status = status
+        order.lines.forEach((line, index) => { line.id = `${id}-${index}`; line.child_no = `${id}/0${index + 1}` })
+        return order
+      }
+      data.orders = [
+        variant('OVERDUE', '2026-09-20'), variant('TODAY', '2026-09-23'),
+        variant('TOMORROW', '2026-09-24'), variant('SOON', '2026-09-26'),
+        variant('LATER', '2026-09-27'), variant('INVALID', '2026-02-30'),
+        variant('COMPLETED', '2026-09-20', 'COMPLETED'),
+      ]
+      api.workspace.mockResolvedValue(data)
+      const wrapper = mount(CartonSupplierView, options); await flushPromises()
+      expect(wrapper.findAll('table')[0]!.find('thead').text()).toContain('交期提醒')
+      const rowText = (id: string) => wrapper.findAll('table')[0]!.findAll('tbody tr')
+        .find(row => row.find(`button[aria-label="查看订单 ${id} 明细"]`).exists())!.text()
+      expect(rowText('OVERDUE')).toContain('已逾期 3 天')
+      expect(rowText('TODAY')).toContain('今日交期')
+      expect(rowText('TOMORROW')).toContain('明日交期')
+      expect(rowText('SOON')).toContain('剩 3 天')
+      expect(rowText('LATER')).toContain('距交期 4 天')
+      expect(rowText('INVALID')).toContain('交期待确认')
+      expect(rowText('COMPLETED')).toContain('交付已完成')
+      expect(wrapper.text()).not.toContain('NaN')
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows selected orders even when the current filters hide them', async () => {
     const data = fixture()
     const second = structuredClone(data.orders[0]!)

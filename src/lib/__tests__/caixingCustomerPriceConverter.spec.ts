@@ -291,7 +291,8 @@ describe('Caixing customer price converter', () => {
     expect(readSheetPictureCount(templateZip, 'Deco List & Product Image')).toBeGreaterThan(0)
     expect(readSheetPictureCount(templateZip, 'Summary')).toBeGreaterThan(0)
     expect(readSheetPictureCount(outputZip, 'Deco List & Product Image')).toBe(0)
-    expect(readSheetPictureCount(outputZip, 'Summary')).toBe(0)
+    expect(readSheetPictureCount(outputZip, 'Summary')).toBe(1)
+    expect(outputZip['xl/media/image1.png']).toBeUndefined()
     const decoXml = strFromU8(outputZip['xl/worksheets/sheet1.xml'])
     expect(decoXml).not.toContain('[1]Summary!')
     expect(decoXml).toContain('<f>Summary!A3</f>')
@@ -397,7 +398,8 @@ describe('Caixing customer price converter', () => {
     expect(readSheetPictureCount(templateZip, 'Deco List & Product Image')).toBeGreaterThan(0)
     expect(readSheetPictureCount(templateZip, 'Summary')).toBeGreaterThan(0)
     expect(readSheetPictureCount(outputZip, 'Deco List & Product Image')).toBe(0)
-    expect(readSheetPictureCount(outputZip, 'Summary')).toBe(0)
+    expect(readSheetPictureCount(outputZip, 'Summary')).toBe(2)
+    expect(outputZip['xl/media/image1.png']).toBeUndefined()
     expect(readCellStyle(outputZip, 'xl/worksheets/sheet3.xml', 'E15')).toBe('533')
   })
 
@@ -425,4 +427,56 @@ describe('Caixing customer price converter', () => {
     expect(parseXlsxWorkbook(asArrayBuffer(createCaixingCustomerQuoteWorkbook(plastic))).sheets[0].rows[3][6]).toBe('塑胶')
     expect(parseXlsxWorkbook(asArrayBuffer(createCaixingCustomerQuoteWorkbook(plush))).sheets[0].rows[3][6]).toBe('毛绒')
   }, 60_000)
+
+  it('flags a material row that cites another material price without creating a customer multiplier', () => {
+    const rows = parseXlsxWorkbook(createMinimalCaixingWorkbook()).sheets[0].rows
+      .map((row) => [...row]) as XlsxCellInput[][]
+    for (const index of [0, 1, 3, 4]) rows[index] ??= []
+    rows[0][4] = 'ABS料'
+    rows[1][4] = 7.2
+    rows[3][4] = '特价PVC'
+    rows[4][4] = 6.8
+    rows[12][5] = { value: 6.8 / 454, formula: 'E5/454' }
+    const mismatched = convertCaixingInternalQuote(
+      asArrayBuffer(createXlsxWorkbook([{ name: '68963', rows }])), 'mismatch.xlsx', 'plastic',
+    )
+    expect(mismatched.warnings).toEqual([expect.stringContaining('第 13 行料型为 ABS，料价公式却引用 E5（PVC）')])
+    rows[12][5] = { value: 7.2 / 454, formula: 'E2/454' }
+    const corrected = convertCaixingInternalQuote(
+      asArrayBuffer(createXlsxWorkbook([{ name: '68963', rows }])), 'corrected.xlsx', 'plastic',
+    )
+    expect(corrected.warnings).toEqual([])
+  })
+
+  it('reports the supplied 68972 source formula mismatch as a review warning', () => {
+    const path = 'C:/Users/Aalyaan/Desktop/自动报客/华兴-彩星/塑胶/68972、68974两款机器人按图报价2026－9－4.xlsx'
+    if (!existsSync(path)) return
+    const result = convertCaixingInternalQuote(readFileAsArrayBuffer(path), '68972、68974两款机器人按图报价2026－9－4.xlsx', 'plastic')
+    expect(result.warnings?.some((warning) => warning.includes('第 59 行') && warning.includes('ABS') && warning.includes('PVC'))).toBe(true)
+  }, 60_000)
+
+  it('extends the plastic Tool Plan for both legacy parts and extra blow/slush processes', () => {
+    const result = convertCaixingInternalQuote(
+      createPlasticWorkbookWithProcessDetails(), '68963-legacy.xlsx', 'plastic',
+    )
+    const quote = result.sheets[0].quoteData
+    const first = quote.injectionRows[0]
+    for (let index = quote.injectionRows.length + 1; index <= 61; index += 1) {
+      quote.injectionRows.push({ ...first, lineNo: String(index), name: `补充零件 ${index}`,
+        materialCostHkd: 0, moldingCostHkd: 0, moldCostHkd: 0, customerMoldCostHkd: 0 })
+    }
+    const output = createCaixingCustomerQuoteWorkbook(result, readFileSync(plasticTemplatePath))
+    const workbook = parseXlsxWorkbook(asArrayBuffer(output), { includeFormulas: true })
+    const tool = workbook.sheets.find((sheet) => sheet.name === 'Tool Plan')!
+    const summary = workbook.sheets.find((sheet) => sheet.name === 'Summary')!
+    const blowIndex = tool.rows.findIndex((row) => row?.[5] === '剑身')
+    const slushIndex = tool.rows.findIndex((row) => row?.[5] === '软胶把手')
+    expect(blowIndex).toBe(76)
+    expect(slushIndex).toBe(77)
+    expect(tool.rows[blowIndex]?.[16]).toBe(1.4)
+    expect(tool.rows[slushIndex]?.[16]).toBe(.5)
+    expect(tool.cellFormulas?.Q79).toBe('SUM(Q60:Q78)')
+    expect(tool.cellFormulas?.Q80).toBe('Q58+Q79')
+    expect(summary.cellFormulas?.E19).toContain("'Tool Plan'!Q60:Q78")
+  }, 30_000)
 })

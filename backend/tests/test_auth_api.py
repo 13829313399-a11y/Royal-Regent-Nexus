@@ -49,6 +49,23 @@ def test_removed_production_workspace_is_not_registered(monkeypatch):
         assert not any(code.startswith("spray_production:") for code in catalog.APPLICATION_PERMISSION_CODES)
 
 
+def test_removed_print_workspace_stays_unregistered_with_legacy_flag(monkeypatch):
+    from sqlalchemy import inspect
+
+    with make_client(monkeypatch, UV_PRINTING_ENABLED="true") as client:
+        assert client.get("/health").status_code == 200
+        for path in ("summary", "ink-skus", "handovers", "ingest/events"):
+            assert client.get(f"/api/uv-printing/{path}").status_code == 404
+        assert client.post("/api/uv-printing/ingest/events", json={}).status_code == 404
+        paths = client.get("/openapi.json").json()["paths"]
+        assert not any(path.startswith("/api/uv-printing") for path in paths)
+        assert any(path.startswith("/api/three-d-printing") for path in paths)
+        database = importlib.import_module("app.db")
+        assert not any(name.startswith("uv_") for name in inspect(database.engine).get_table_names())
+        catalog = importlib.import_module("app.services.permission_codes")
+        assert not any(code.startswith("uv_printing:") for code in catalog.APPLICATION_PERMISSION_CODES)
+
+
 def make_avatar_png() -> bytes:
     image = Image.new("RGB", (480, 320), color=(13, 148, 136))
     output = BytesIO()
@@ -72,9 +89,6 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
         assert me_response.status_code == 200
         me = me_response.json()
         assert me["username"] == "admin"
-        if not importlib.import_module("app.core.config").settings.uv_printing_enabled:
-            from sqlalchemy import inspect
-            assert not any(name.startswith("uv_") for name in inspect(importlib.import_module("app.db").engine).get_table_names())
         assert me["display_name"] == "系统管理员"
         assert "系统管理员" in me["roles"]
         assert "system:user_manage" in me["permissions"]
@@ -100,6 +114,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                     code
                     for code in sorted(me["permissions"])
                     if code in {
+                        "uv_ops:read", "uv_ops:cost_read", "uv_ops:payroll_read", "uv_ops:audit_read",
                         "carton_mark:read",
                         "carton_procurement:read",
                         "customer_price:compare",
@@ -122,9 +137,6 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "qc_inspection:read",
                         "system:audit_read",
                         "system:permission_catalog_read",
-                        "uv_printing:read",
-                        "uv_printing:cost_read",
-                        "uv_printing:payroll_read",
                     }
                 ],
                 "unrestricted_department": False,

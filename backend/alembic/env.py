@@ -18,11 +18,8 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
-    uv_printing,  # noqa: F401
+    uv_operations,  # noqa: F401
     spray_ops,  # noqa: F401
-    uv_finance,  # noqa: F401
-    uv_ingest,  # noqa: F401
-    uv_handover,  # noqa: F401
     document_tools,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
@@ -52,6 +49,13 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def include_object(obj, name, type_, reflected, compare_to):
+    # Retired workspace tables are historical data, not autogenerate drop targets.
+    if type_ == "table" and reflected and compare_to is None and name.startswith("uv_"):
+        return False
+    return True
+
+
 def get_database_url() -> str:
     return settings.database_url.replace("%", "%%")
 
@@ -63,6 +67,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -83,6 +88,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=include_object,
         )
 
         with context.begin_transaction():

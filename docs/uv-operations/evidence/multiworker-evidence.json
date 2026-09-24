@@ -1,0 +1,23 @@
+{
+  "worker_processes": [
+    31352,
+    34280
+  ],
+  "workspace_requests": 20,
+  "consistent_revision": [
+    97
+  ],
+  "consistent_counts": {
+    "batches": 3,
+    "runs": 7,
+    "schedule": 2,
+    "shifts": 3,
+    "tasks": 3
+  },
+  "sse_reconnect_resets": [
+    true,
+    true,
+    true
+  ],
+  "mode": "same_database_two_uvicorn_workers_no_broker"
+}
