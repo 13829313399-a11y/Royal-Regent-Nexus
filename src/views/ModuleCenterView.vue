@@ -60,6 +60,8 @@ const visibleModules = computed(() => {
       if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
       if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
+      if (currentDepartmentId.value === 'pmc-warehouse' && module.id === 'carton-procurement'
+        && !authStore.can('carton_procurement:read', factory.id)) return false
       if (
         module.strictAccess
         && module.permissions?.length
@@ -69,6 +71,20 @@ const visibleModules = computed(() => {
     })
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
+
+    if (currentDepartmentId.value === 'pmc-warehouse') {
+      if (module.id === 'carton-supplier') {
+        const internal = authStore.can('carton_procurement:read', factory.id)
+        return { ...scopedModule, route: internal
+          ? getFactoryScopedRoute('/carton-supplier-management', factory.id) : '/carton-supplier' }
+      }
+      if (module.id === 'carton-mark-check' && !authStore.can('carton_mark:read', factory.id)) {
+        return { ...scopedModule, route: '/carton-supplier/carton-mark',
+          summary: '查看并下载与本厂已发行采购单关联、已核对可用的箱唛 Excel 和 PDF',
+          status: '供应商只读', statusTone: 'teal' as const, todos: [],
+          children: scopedModule.children.filter(child => ['客人 Excel', '印刷 PDF'].includes(child.label)) }
+      }
+    }
 
     if (module.id === 'uv-printing') {
       const authorized = authStore.can('uv_ops:read', factory.id, 'production')

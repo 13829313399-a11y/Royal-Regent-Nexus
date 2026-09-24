@@ -134,6 +134,18 @@ function findButton(wrapper: ReturnType<typeof mountView>, label: string) {
   return button
 }
 
+// Explicitly select and enter a full arrival for legacy receipt scenarios.
+async function fillAllManualReceiptPapers(wrapper: ReturnType<typeof mountView>) {
+  const dialog = wrapper.get('[role="dialog"]')
+  for (const checkbox of dialog.findAll<HTMLInputElement>('input[aria-label^="选择纸品 "]')) {
+    if (checkbox.element.checked) continue
+    const id = checkbox.attributes('aria-label')!.replace('选择纸品 ', '')
+    await checkbox.setValue(true)
+    const quantity = dialog.get<HTMLInputElement>(`input[aria-label="MANUAL-${id} 实收"]`)
+    await quantity.setValue(quantity.attributes('max') || '100')
+  }
+}
+
 async function clickCalendarDate(wrapper: ReturnType<typeof mountView>, date: string) {
   const selector = `[data-reka-calendar-cell-trigger][data-value="${date}"]:not([data-outside-view])`
   for (let attempt = 0; !wrapper.find(selector).exists() && attempt < 24; attempt += 1) {
@@ -218,6 +230,42 @@ function mockReceiptWorkspace(orders: ReturnType<typeof orderFixture>[]) {
 }
 
 describe('CartonProcurementView frontend workspace', () => {
+  it('shows unified ITEM provenance, review rows and procurement status separately', async () => {
+    mockReceiptWorkspace([])
+    cartonApiMock.listImports.mockResolvedValue([{
+      id: 'ITEM-BATCH', import_type: 'WEEKLY_SCHEDULE', status: 'REQUIRES_REVIEW',
+      original_filename: '统一业务.xlsx', created_at: '2026-09-21',
+      parse_summary: {
+        engine: 'unified-item-header-mapping', row_count: 2, review_count: 1,
+        field_mappings: [{ sheet: '水枪ITEM表', header_row: 3, fields: { contract_no: 'Contract No.', quantity: '數量' } }],
+        rows: [
+          { template: 'unified-item', source_sheet: '水枪ITEM表', source_row: 4, order_type: '正单',
+            contract_no: '53148', item_no: '57520-3', customer_po: '00123', po_numbers: '00123',
+            customer_name: 'BUZZ BEE', source_customer_name: 'COOP', quantity: 12624,
+            customer_due_date: '2026-10-25', match_status: 'DATE_MISMATCH', procurement_state: 'ORDERED',
+            source_inspection_window: '9/1-10% 9/14-100%', inspection_window: '', date_review_required: true,
+            order_no: 'CT-TEST', suggestion: '请确认交期' },
+          { template: 'unified-item', source_sheet: '水枪ITEM表', source_row: 5, order_type: '样板单',
+            item_no: '57520-3', quantity: null, match_status: 'REVIEW_REQUIRED', suggestion: '样板单待确认' },
+        ],
+      },
+    }])
+    const wrapper = mountView('weekly-check')
+    await flushPromises()
+    expect(wrapper.text()).toContain('统一业务模板 · ITEM 表')
+    expect(wrapper.text()).toContain('正单 1 行')
+    expect(wrapper.text()).toContain('待人工确认 2 行')
+    expect(wrapper.text()).toContain('交期差异')
+    expect(wrapper.text()).toContain('已下单')
+    expect(wrapper.text()).toContain('走货 2026-10-25')
+    expect(wrapper.text()).toContain('9/1-10% 9/14-100%')
+    expect(wrapper.text()).toContain('日期原文待确认')
+    expect(wrapper.text()).toContain('水枪ITEM表 · 第 4 行')
+    expect(wrapper.text()).toContain('COOP')
+    expect(wrapper.text()).toContain('00123')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('receives supplier-responsible replacements without asking for a payable price', async () => {
     const seed = orderFixture('CT-FREE-REPLACE', businessDateOffset(5), 'PARTIALLY_RECEIVED')
     const row = { ...seed, lines: [{ ...seed.lines[0]!, received_quantity: '90', remaining_quantity: '10',
@@ -226,6 +274,7 @@ describe('CartonProcurementView frontend workspace', () => {
     cartonApiMock.createReceipt.mockRejectedValueOnce(new Error('测试停止提交'))
     const wrapper = mountView('receipts'); await flushPromises()
     await wrapper.get('button[aria-label="登记 CT-FREE-REPLACE 收料"]').trigger('click'); await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
     expect(wrapper.text()).toContain('供应商责任 · 免费补货')
     expect(wrapper.find(`input[aria-label="MANUAL-${row.lines[0]!.id} 单价"]`).exists()).toBe(false)
     expect(wrapper.get<HTMLSelectElement>(`select[aria-label="MANUAL-${row.lines[0]!.id} 收料来源"]`).element.value).toBe('ISSUE-B01')
@@ -245,6 +294,7 @@ describe('CartonProcurementView frontend workspace', () => {
     mockReceiptWorkspace([row])
     const wrapper = mountView('receipts'); await flushPromises()
     await wrapper.get('button[aria-label="登记 CT-MIX-REPLACE 收料"]').trigger('click'); await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
     expect(wrapper.find(`input[aria-label="MANUAL-${row.lines[0]!.id} 单价"]`).exists()).toBe(true)
     await wrapper.get(`select[aria-label="MANUAL-${row.lines[0]!.id} 收料来源"]`).setValue('ISSUE-B01')
     expect(wrapper.get<HTMLInputElement>(`input[aria-label="MANUAL-${row.lines[0]!.id} 实收"]`).element.value).toBe('10')
@@ -611,6 +661,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(pages.findAll('button').map(b => b.text())).toEqual(['待收订单', '送货单导入', '收料历史'])
     expect(wrapper.find('table[aria-label="收料历史台账明细"]').exists()).toBe(false)
     await wrapper.get('button[aria-label="登记 KEEP 收料"]').trigger('click'); await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
     await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-KEEP')
     await findButton(wrapper, '返回待收订单').trigger('click'); await flushPromises()
     await pages.findAll('button')[2]!.trigger('click')
@@ -621,6 +672,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.find('table[aria-label="收料历史台账明细"]').exists()).toBe(false)
     await pages.findAll('button')[0]!.trigger('click')
     await wrapper.get('button[aria-label="登记 KEEP 收料"]').trigger('click'); await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
     expect(wrapper.get<HTMLInputElement>('input[aria-label="人工送货单号"]').element.value).toBe('DN-KEEP')
     wrapper.unmount()
   })
@@ -699,7 +751,7 @@ describe('CartonProcurementView frontend workspace', () => {
 
     expect(wrapper.text()).toContain('下单防漏核对')
     expect(wrapper.text()).toContain('下周查货提醒')
-    expect(wrapper.text()).toContain('导入本周排期')
+    expect(wrapper.text()).toContain('导入业务排期')
 
     await findButton(wrapper, '下周查货提醒').trigger('click')
     await wrapper.get('input[aria-label="提前交货天数"]').setValue('3')
@@ -762,6 +814,26 @@ describe('CartonProcurementView frontend workspace', () => {
       'CT-COMPLETED',
       'CT-CANCELLED',
     ])
+  })
+
+  it('keeps order due reminders numeric when the browser formats locale dates with slashes', async () => {
+    const dueDate = businessDateOffset(3)
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([orderFixture('CT-LOCALE-DATE', dueDate)])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    const localeDate = vi.spyOn(Date.prototype, 'toLocaleDateString').mockReturnValue('2026/9/23')
+    let wrapper: ReturnType<typeof mountView> | undefined
+    try {
+      wrapper = mountView('orders')
+      await flushPromises()
+      expect(wrapper.get('[data-order-no="CT-LOCALE-DATE"]').text()).toContain('剩 3 天')
+      expect(wrapper.text()).not.toContain('NaN 天')
+    } finally {
+      wrapper?.unmount()
+      localeDate.mockRestore()
+    }
   })
 
   it('filters orders by an inclusive range after consecutive calendar clicks', async () => {
@@ -959,6 +1031,38 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     expect(cartonApiMock.exportPurchaseOrder).toHaveBeenCalledWith('huaxing', 'CT-260805-ABC123')
     expect(wrapper.text()).toContain('CT-260805-ABC123 采购单已生成并开始下载')
+  })
+
+  it('shows the failing order step in the editor and distinguishes a saved order from a log refresh failure', async () => {
+    const wrapper = mountView('orders'); await flushPromises()
+    await findButton(wrapper, '新建纸箱订单').trigger('click')
+    const form = wrapper.get('[data-testid="order-form-overlay"] form')
+    await form.trigger('submit')
+    expect(wrapper.get('[data-testid="order-save-feedback"]').text()).toContain('表单核对未通过：请先搜索并选择客户')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+
+    await wrapper.get('input[aria-label="订单客户"]').trigger('focus')
+    await wrapper.get('[aria-label="选择客户 Dickie"]').trigger('click')
+    await wrapper.get('input[aria-label="合同号"]').setValue('SC-ERR-001')
+    await wrapper.get('input[aria-label="货号"]').setValue('203399998')
+    await wrapper.get('input[aria-label="产品名称"]').setValue('测试产品')
+    await wrapper.get('input[aria-label="订单数量"]').setValue('100')
+    await wrapper.get('input[aria-label="客户交期"]').setValue(businessDateOffset(8))
+    await wrapper.get('input[aria-label="纸品类型 1"]').setValue('外箱')
+    await wrapper.get('input[aria-label="纸质 1"]').setValue('A33+B')
+    await wrapper.get('input[aria-label="规格 1"]').setValue('30 × 20 × 15 cm')
+    cartonApiMock.createOrder.mockRejectedValueOnce(new Error('合同号与现有订单重复'))
+    await form.trigger('submit'); await flushPromises()
+    expect(wrapper.get('[data-testid="order-save-feedback"]').text()).toContain('新建订单未完成（保存到服务器）：合同号与现有订单重复')
+    expect(wrapper.get('input[aria-label="合同号"]').element).toHaveProperty('value', 'SC-ERR-001')
+    expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(true)
+
+    cartonApiMock.listAuditEvents.mockRejectedValueOnce(new Error('操作日志暂不可用'))
+    await form.trigger('submit'); await flushPromises()
+    expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('订单 CT-260805-ABC123 已保存，但页面更新或操作日志读取失败：操作日志暂不可用')
+    expect(cartonApiMock.createOrder).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
   })
 
   it('suggests approximate historical item numbers and reuses the selected order snapshot', async () => {
@@ -1864,7 +1968,7 @@ describe('CartonProcurementView frontend workspace', () => {
         expect.objectContaining({ order_no: 'CT-BULK-SUBMITTED' }),
       ]),
     )
-    expect(wrapper.text()).toContain('已确认并锁定 1 张订单；跳过 1 张非待下单订单')
+    expect(wrapper.text()).toContain('已确认并锁定 1 张订单，首次采购单已自动发行到供应商协同；跳过 1 张非待下单订单')
     expect(wrapper.get('[data-order-no="CT-BULK-PENDING"]').text()).toContain('已确认锁定')
     expect((wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').element as HTMLInputElement).checked).toBe(true)
   })
@@ -1953,6 +2057,109 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.get('[data-order-no="HIST-2025-001"]').text()).not.toContain('HIST-2025-001')
   })
 
+  it('selects a customer contract and posts only checked paper lines across distinct POs without completing unreceived siblings', async () => {
+    const first = { ...orderFixture('PAPER-A', businessDateOffset(3), 'PENDING_SUPPLIER'), contract_no: 'SC-SHARED', customer_po: 'PO-A', item_no: 'SAME-ITEM' }
+    first.lines.push({ ...first.lines[0]!, id: 'INNER-A', line_no: 2, packaging_type: '内箱', specification: '8*6*3' },
+      { ...first.lines[0]!, id: 'CARD-A', line_no: 3, packaging_type: '平卡', unit: '张', paper_quality: '', specification: '', unit_price: '0' })
+    const second = { ...orderFixture('PAPER-B', businessDateOffset(3), 'PENDING_SUPPLIER'), contract_no: 'SC-SHARED', customer_po: 'PO-B', item_no: 'SAME-ITEM' }
+    const otherCustomer = { ...orderFixture('PAPER-C', businessDateOffset(3), 'PENDING_SUPPLIER'), contract_no: 'SC-SHARED', customer_code: 'BETA', customer_name: 'Beta' }
+    mockReceiptWorkspace([first, second, otherCustomer])
+    cartonApiMock.createReceipt.mockImplementation(async payload => ({ ...payload, id: 'RC-PAPER', receipt_no: 'RC-PAPER', status: 'POSTED', revision: 2 }))
+    const wrapper = mountView('receipts'); await flushPromises()
+    await wrapper.get('select[aria-label="选择收料合同"]').setValue(JSON.stringify(['DICKIE', 'SC-SHARED']))
+    expect(wrapper.findAll('[data-receipt-order]')).toHaveLength(2)
+    expect(wrapper.find('[aria-label="PAPER-C 选择收料纸品"]').exists()).toBe(false)
+    const firstGroup = wrapper.get('[aria-label="PAPER-A 选择收料纸品"]')
+    expect(firstGroup.text()).toContain('客户 PO：PO-A')
+    expect(wrapper.get('[aria-label="PAPER-B 选择收料纸品"]').text()).toContain('客户 PO：PO-B')
+    expect(firstGroup.get<HTMLInputElement>('input[aria-label="选择纸品 LINE-PAPER-A"]').element.checked).toBe(false)
+    expect(firstGroup.get('input[aria-label="LINE-PAPER-A 本次实际收到"]').attributes('disabled')).toBeDefined()
+    await firstGroup.get('input[aria-label="选择纸品 LINE-PAPER-A"]').setValue(true)
+    await firstGroup.get('input[aria-label="LINE-PAPER-A 本次实际收到"]').setValue('100')
+    await findButton(wrapper, '登记所选订单收料').trigger('click'); await flushPromises()
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(dialog.text()).not.toContain('全部收齐，确认后自动完成')
+    await dialog.get('input[aria-label="选择纸品 INNER-A"]').setValue(true)
+    await dialog.get('input[aria-label="MANUAL-INNER-A 实收"]').setValue('25')
+    await dialog.get('input[aria-label="选择纸品 LINE-PAPER-B"]').setValue(true)
+    await dialog.get('input[aria-label="MANUAL-LINE-PAPER-B 实收"]').setValue('15')
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-PAPERS')
+    for (const picker of dialog.findAll('input[aria-label="仓库及仓位"]')) await picker.setValue('A-01')
+    const review = dialog.get('[data-testid="receipt-review-table"]')
+    expect(review.text()).toContain('PO-A'); expect(review.text()).toContain('PO-B')
+    expect(review.text()).toContain('平卡')
+    expect(review.get<HTMLInputElement>('input[aria-label="选择纸品 CARD-A"]').element.checked).toBe(false)
+    expect(review.get('input[aria-label="MANUAL-CARD-A 实收"]').attributes('disabled')).toBeDefined()
+    expect(dialog.find('[aria-label$="选择收料纸品"]').exists()).toBe(false)
+    expect(dialog.find('input[aria-label$="本次实际收到"]').exists()).toBe(false)
+    expect(review.findAll('input[aria-label="MANUAL-INNER-A 实收"]')).toHaveLength(1)
+    await findButton(wrapper, '确认入库').trigger('click'); await flushPromises()
+    expect(cartonApiMock.createReceipt).toHaveBeenCalledTimes(1)
+    expect(cartonApiMock.createReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      post_immediately: true,
+      lines: [expect.objectContaining({ order_line_id: 'LINE-PAPER-A', received_quantity: 100, delivered_quantity: 100 }),
+        expect.objectContaining({ order_line_id: 'INNER-A', received_quantity: 25, delivered_quantity: 25 }),
+        expect.objectContaining({ order_line_id: 'LINE-PAPER-B', received_quantity: 15, delivered_quantity: 15 })],
+    }))
+    expect(dialog.text()).not.toContain('全部明细已收齐并自动完成')
+    expect(cartonApiMock.confirmReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('preserves paper inputs when adding contracts and excludes unchecked values from all receipt validation', async () => {
+    const orders = ['KEEP-A', 'KEEP-B'].map(no => orderFixture(no, businessDateOffset(3), 'PENDING_SUPPLIER'))
+    mockReceiptWorkspace(orders)
+    cartonApiMock.createReceipt.mockImplementation(async payload => ({ ...payload, id: 'RC-KEEP', receipt_no: 'RC-KEEP', status: 'POSTED', revision: 2 }))
+    const wrapper = mountView('receipts'); await flushPromises()
+    await wrapper.get('select[aria-label="选择收料合同"]').setValue(JSON.stringify(['DICKIE', 'SC-KEEP-A']))
+    await wrapper.get('input[aria-label="选择纸品 LINE-KEEP-A"]').setValue(true)
+    await wrapper.get('input[aria-label="LINE-KEEP-A 本次实际收到"]').setValue('12')
+    await findButton(wrapper, '登记所选订单收料').trigger('click'); await flushPromises()
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-KEEP-PAPERS')
+    await wrapper.get('input[aria-label="实际验收日期"]').setValue('2026-09-20')
+    await wrapper.get('button[aria-label="关闭收料录入"]').trigger('click')
+    await wrapper.get('select[aria-label="选择收料合同"]').setValue(JSON.stringify(['DICKIE', 'SC-KEEP-B']))
+    await findButton(wrapper, '登记所选订单收料').trigger('click'); await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="MANUAL-LINE-KEEP-A 实收"]').element.value).toBe('12')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="人工送货单号"]').element.value).toBe('DN-KEEP-PAPERS')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="实际验收日期"]').element.value).toBe('2026-09-20')
+    await wrapper.get('input[aria-label="选择纸品 LINE-KEEP-B"]').setValue(true)
+    await wrapper.get('input[aria-label="MANUAL-LINE-KEEP-B 实收"]').setValue('999')
+    await wrapper.get('input[aria-label="MANUAL-LINE-KEEP-B 单价"]').setValue('0')
+    await wrapper.get('input[aria-label="选择纸品 LINE-KEEP-B"]').setValue(false)
+    await wrapper.get('input[aria-label="仓库及仓位"]').setValue('A-01')
+    await findButton(wrapper, '确认入库').trigger('click'); await flushPromises()
+    expect(cartonApiMock.createReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      lines: [expect.objectContaining({ order_line_id: 'LINE-KEEP-A', received_quantity: 12 })],
+    }))
+    wrapper.unmount()
+  })
+
+  it('requires positive entered quantities and retains a failed manual paper submission for correction', async () => {
+    mockReceiptWorkspace([orderFixture('VALIDATE', businessDateOffset(3), 'PENDING_SUPPLIER')])
+    cartonApiMock.createReceipt.mockRejectedValue(new Error('当前订单待收数量已变更，请刷新核对'))
+    const wrapper = mountView('receipts'); await flushPromises()
+    await wrapper.get('button[aria-label="登记 VALIDATE 收料"]').trigger('click'); await flushPromises()
+    await wrapper.get('input[aria-label="选择纸品 LINE-VALIDATE"]').setValue(true)
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-VALIDATE')
+    await findButton(wrapper, '确认入库').trigger('click')
+    expect(wrapper.get('[data-testid="receipt-save-feedback"]').text()).toContain('大于 0 的本次实际收到数量')
+    expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+    await wrapper.get('input[aria-label="MANUAL-LINE-VALIDATE 实收"]').setValue('101')
+    await findButton(wrapper, '确认入库').trigger('click')
+    expect(wrapper.get('[data-testid="receipt-save-feedback"]').text()).toContain('不能大于该订单明细当前待收数量')
+    expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+    await wrapper.get('input[aria-label="MANUAL-LINE-VALIDATE 实收"]').setValue('30')
+    await wrapper.get('input[aria-label="仓库及仓位"]').setValue('A-01')
+    await findButton(wrapper, '确认入库').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="receipt-save-feedback"]').text()).toContain('入库未完成（提交收料并过账）')
+    expect(wrapper.get('[data-testid="receipt-save-feedback"]').text()).toContain('当前订单待收数量已变更')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="MANUAL-LINE-VALIDATE 实收"]').element.value).toBe('30')
+    expect(wrapper.get('input[aria-label="MANUAL-LINE-VALIDATE 实收"]').attributes('disabled')).toBeUndefined()
+    expect(cartonApiMock.confirmReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('calculates effective receipts in the dialog without posting inventory', async () => {
     mockReceiptWorkspace([orderFixture('CT-DAMAGE', businessDateOffset(3), 'PENDING_SUPPLIER')])
     const wrapper = mountView('receipts')
@@ -1960,6 +2167,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     await wrapper.get('button[aria-label="登记 CT-DAMAGE 收料"]').trigger('click')
     await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
     expect(wrapper.get('[role="dialog"]').text()).toContain('收料反馈明细')
     await wrapper.get('input[aria-label="MANUAL-LINE-CT-DAMAGE 破损"]').setValue('2')
     await wrapper.get('input[aria-label="MANUAL-LINE-CT-DAMAGE 拒收"]').setValue('3')
@@ -1982,6 +2190,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     await wrapper.get('button[aria-label="登记 CT-ACCEPTANCE 收料"]').trigger('click')
     await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
     expect(wrapper.get<HTMLInputElement>('input[aria-label="实际验收日期"]').element.value).toBe(businessDateOffset(0))
     await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-ACCEPTANCE')
     await wrapper.get('input[aria-label="人工送货日期"]').setValue('2026-09-30')
@@ -1992,6 +2201,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await findButton(wrapper, '待收订单').trigger('click')
     await wrapper.get('button[aria-label="登记 CT-ACCEPTANCE 收料"]').trigger('click')
     await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
     expect(wrapper.get<HTMLInputElement>('input[aria-label="实际验收日期"]').element.value).toBe('2026-10-02')
     await findButton(wrapper, '确认入库').trigger('click')
     await flushPromises()
@@ -2104,10 +2314,11 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.findAll('button').some((button) => button.text() === '导入送货单')).toBe(false)
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     await wrapper.get('button[aria-label="登记 CT-260805-76C698 收料"]').trigger('click')
+    await fillAllManualReceiptPapers(wrapper)
 
     expect(wrapper.text()).toContain('人工录入订单收料')
-    const receiptTable = wrapper.get('[role="dialog"] table')
-    expect(receiptTable.text()).not.toContain('CT-260805-76C698')
+    const receiptTable = wrapper.get('[data-testid="receipt-review-table"]')
+    expect(receiptTable.text()).toContain('CT-260805-76C698')
     expect(receiptTable.text()).toContain('3722111')
     expect(receiptTable.text()).toContain('人工录入')
     expect(wrapper.text()).toContain('全部收齐，确认后自动完成')
@@ -2166,6 +2377,26 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('全部明细已收齐并自动完成')
   })
 
+  it('reports posted receipt success separately from a failed ledger refresh', async () => {
+    mockReceiptWorkspace([orderFixture('CT-REFRESH', businessDateOffset(3), 'PENDING_SUPPLIER')])
+    cartonApiMock.createReceipt.mockResolvedValue({
+      id: 'CTR-REFRESH', receipt_no: 'RC-REFRESH', status: 'POSTED', revision: 2, lines: [],
+    })
+    const wrapper = mountView('receipts'); await flushPromises()
+    await wrapper.get('button[aria-label="登记 CT-REFRESH 收料"]').trigger('click'); await flushPromises()
+    await fillAllManualReceiptPapers(wrapper)
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-REFRESH')
+    await wrapper.get('input[aria-label="仓库及仓位"]').setValue('A-01')
+    cartonApiMock.listOrders.mockRejectedValueOnce(new Error('台账暂不可用'))
+    await findButton(wrapper, '确认入库').trigger('click'); await flushPromises()
+    const feedback = wrapper.get('[data-testid="receipt-save-feedback"]')
+    expect(feedback.attributes('role')).toBe('status')
+    expect(feedback.text()).toContain('入库成功')
+    expect(feedback.text()).toContain('台账刷新失败，请刷新页面查看')
+    expect(cartonApiMock.createReceipt).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it.each(['row', 'selected'] as const)('starts the remaining receipt batch from %s after direct posting', async (entry) => {
     const orders = ['CT-BATCH-A', 'CT-BATCH-B'].map((number) => orderFixture(number, businessDateOffset(3), 'PENDING_SUPPLIER'))
     mockReceiptWorkspace(orders)
@@ -2186,6 +2417,7 @@ describe('CartonProcurementView frontend workspace', () => {
       if (entry === 'row') await wrapper.get('button[aria-label="登记 CT-BATCH-A 收料"]').trigger('click')
       else await findButton(wrapper, '登记所选订单收料').trigger('click')
       await flushPromises()
+      await fillAllManualReceiptPapers(wrapper)
     }
     if (entry === 'selected') {
       await wrapper.get('input[aria-label="全选待收订单"]').setValue(true)
@@ -3308,8 +3540,8 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     const template = wrapper.get('a[download="纸箱每周排期核对导入模板.xlsx"]')
     expect(template.attributes('href')).toBe('/templates/carton-weekly-schedule-template.xlsx')
-    expect(template.text()).toContain('下载排期模板')
-    expect(wrapper.text()).toContain('Reference + 货号')
+    expect(template.text()).toContain('旧版排期模板（兼容）')
+    expect(wrapper.text()).toContain('按合同号、货号及填写的客户 PO 核对')
     expect(wrapper.text()).toContain('不按装箱数换算')
     expect(wrapper.text()).toContain('核对历史')
     expect(wrapper.text()).toContain('每周排期-第32周.xlsx')

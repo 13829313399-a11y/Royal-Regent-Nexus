@@ -1,0 +1,99 @@
+from urllib.parse import quote
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi.responses import Response
+from sqlalchemy.orm import Session
+from app.db import get_db
+from app.services.auth import AuthContext, get_current_user
+from app.schemas.carton_supplier_portal import MemberSave, CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.services import carton_supplier_portal as service
+
+router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
+
+@router.get("/memberships")
+def memberships(db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return [{"factory_id": supplier.factory_id, "supplier_name": supplier.supplier_name}
+        for supplier in service.supplier_factories(db, user)]
+
+@router.get("/workspace")
+def workspace(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.workspace(db, user, factory_id)
+
+@router.get("/documents")
+def documents(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.documents(db, user, factory_id)
+
+@router.post("/documents/export.xlsx")
+def export_documents(payload: SupplierDocumentExport, db: Session = Depends(get_db),
+                     user: AuthContext = Depends(get_current_user)):
+    content = service.export_documents(db, user, payload)
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote("供应商单据.xlsx"),
+                             "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
+@router.get("/activity")
+def activity(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.supplier_activity(db, user, factory_id)
+
+@router.get("/carton-mark/templates", response_model=list[SupplierMarkTemplateOut])
+def carton_mark_templates(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.supplier_mark_templates(db, user, factory_id)
+
+@router.get("/carton-mark/templates/{template_id}/documents/{kind}")
+def carton_mark_document(template_id: str, kind: str, factory_id: str, preview: bool = False,
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    document = service.supplier_mark_document(db, user, factory_id, template_id, kind)
+    disposition = "inline" if preview and kind == "print_pdf" else "attachment"
+    return Response(document.content, media_type=document.content_type, headers={
+        "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(document.file_name, safe=""),
+        "Content-Length": str(document.size_bytes), "X-Content-SHA256": document.sha256,
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
+@router.put("/papers/{line_id}/commitment")
+def accept(line_id: str, payload: CommitmentSave, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.accept_line(db, user, line_id, payload)
+
+@router.put("/commitments/batch")
+def accept_batch(payload: BatchCommitmentSave, db: Session = Depends(get_db),
+                 user: AuthContext = Depends(get_current_user)):
+    return {"order_ids": service.accept_lines(db, user, payload)}
+
+@router.post("/shipments", status_code=201)
+def ship(payload: ShipmentCreate, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.create_shipment(db, user, payload)
+
+@router.get("/attachments/{attachment_id}")
+def download(attachment_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    row = service.attachment_download(db, user, factory_id, attachment_id)
+    return file_response(row)
+
+@router.get("/internal/workspace")
+def internal_workspace(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.workspace(db, user, factory_id, internal=True)
+
+@router.get("/internal/members")
+def members(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.members(db, user, factory_id)
+
+@router.put("/internal/members")
+def save_member(payload: MemberSave, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.save_member(db, user, payload)
+
+@router.post("/internal/shipments/{shipment_id}/receive")
+def receive(shipment_id: str, payload: ShipmentReceive, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.receive_shipment(db, user, shipment_id, payload)
+
+@router.post("/internal/orders/{order_id}/attachments", status_code=201)
+async def upload(order_id: str, factory_id: str = Form(...), file: UploadFile = File(...),
+                 db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    service.internal_permission(user, factory_id, "carton_procurement:order_write")
+    content = await file.read(service.MAX_FILE + 1)
+    return service.upload_attachment(db, user, factory_id, order_id, file.filename or "", content)
+
+@router.get("/internal/attachments/{attachment_id}")
+def internal_download(attachment_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return file_response(service.attachment_download(db, user, factory_id, attachment_id, internal=True))
+
+def file_response(row):
+    return Response(row.content, media_type=row.media_type, headers={
+        "Content-Disposition": "attachment; filename*=UTF-8''" + quote(row.filename, safe=""),
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})

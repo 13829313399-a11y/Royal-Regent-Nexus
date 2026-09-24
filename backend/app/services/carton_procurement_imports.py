@@ -22,6 +22,7 @@ MAX_PREVIEW_ROWS = 500
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
 DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v6-po"
+SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-v1"
 PACKAGING_TYPES = (
     "普通箱",
     "压线卡",
@@ -186,7 +187,7 @@ def _inspection_start_date(value: Any, reference_date: date) -> date | None:
     return result
 
 
-def _sheet_rows(filename: str, content: bytes) -> list[tuple[str, list[list[Any]], int]]:
+def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = False) -> list[tuple[str, list[list[Any]], int]]:
     suffix = Path(filename).suffix.lower()
     if suffix in {".xlsx", ".xlsm"}:
         try:
@@ -198,6 +199,8 @@ def _sheet_rows(filename: str, content: bytes) -> list[tuple[str, list[list[Any]
         result: list[tuple[str, list[list[Any]], int]] = []
         try:
             for sheet in workbook.worksheets:
+                if strict_item_limit and "item" in sheet.title.casefold() and sheet.max_row > MAX_IMPORT_ROWS:
+                    raise HTTPException(422, f"ITEM 工作表“{sheet.title}”超过 {MAX_IMPORT_ROWS} 行，请拆分或清理空白格式后导入")
                 rows = [list(row) for row in sheet.iter_rows(values_only=True, max_row=MAX_IMPORT_ROWS)]
                 result.append((sheet.title, rows, 1 if workbook.epoch.year == 1904 else 0))
         finally:
@@ -210,6 +213,8 @@ def _sheet_rows(filename: str, content: bytes) -> list[tuple[str, list[list[Any]
             workbook = xlrd.open_workbook(file_contents=content, formatting_info=False)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"无法读取旧版 XLS 文件：{exc}") from exc
+        if strict_item_limit and any("item" in sheet.name.casefold() and sheet.nrows > MAX_IMPORT_ROWS for sheet in workbook.sheets()):
+            raise HTTPException(422, f"ITEM 工作表超过 {MAX_IMPORT_ROWS} 行，请拆分后导入")
         return [
             (
                 sheet.name,
@@ -621,10 +626,104 @@ def _parse_delivery_image_table(content: bytes) -> dict[str, Any] | None:
     }
 
 
+def _item_date_text(value: Any, datemode: int) -> str:
+    # ITEM dates must be one complete date; staged/yearless text is human evidence.
+    if isinstance(value, str) and not re.fullmatch(
+        r"(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4}|\d{4}年\d{1,2}月\d{1,2}日?)",
+        value.strip(),
+    ):
+        return ""
+    try:
+        return _date_text(value, datemode)
+    except (ValueError, OverflowError):
+        return ""
+
+
+def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict[str, Any]:
+    """Read the unified ITEM source without including its duplicate order-summary tab."""
+    aliases = {
+        "contract_no": {"Contract No.", "合同号"},
+        "source_reference": {"SO#/Reference", "SO/Reference"},
+        "customer_po": {"P/O#:", "客户PO"},
+        "order_type": {"订单类型"},
+        "production_no": {"生产单号"},
+        "customer_name": {"客名"},
+        "item_no": {"产品编号"},
+        "product_name": {"产品中文名称"},
+        "quantity": {"數量", "数量"},
+        "carton_rule": {"装箱"},
+        "carton_count": {"箱数"},
+        "inspection_window": {"验货日期"},
+        "customer_due_date": {"客要求走货期"},
+        "note": {"备注"},
+    }
+    result: list[dict[str, Any]] = []
+    mappings: list[dict[str, Any]] = []
+    for name, rows, datemode in sheets:
+        header = _header_mapping(rows, aliases)
+        required = {"contract_no", "order_type", "item_no", "quantity"}
+        if header is None or not required.issubset(header[1]):
+            raise HTTPException(422, f"ITEM 工作表“{name}”缺少合同号、订单类型、产品编号或数量表头，请检查统一模板")
+        index, mapping = header
+        header_keys = [_header_key(value) for value in rows[index]]
+        for field, names in aliases.items():
+            if sum(key in {_header_key(name) for name in names} for key in header_keys) > 1:
+                raise HTTPException(422, f"ITEM 工作表“{name}”有重复的 {field} 列，请保留一个明确来源")
+        mappings.append({"sheet": name, "header_row": index + 1,
+                         "fields": {field: _text(rows[index][column]) for field, column in mapping.items()}})
+        for source_row, cells in enumerate(rows[index + 1:], index + 2):
+            values = {field: _text(_cell(cells, mapping, field)) for field in mapping}
+            if not any(values.get(field) for field in ("contract_no", "source_reference", "item_no", "quantity", "order_type")):
+                continue
+            quantity = _number(_cell(cells, mapping, "quantity"))
+            row: dict[str, Any] = {
+                **values, "source_customer_name": values.get("customer_name", ""), "source_sheet": name, "source_row": source_row,
+                "template": "unified-item", "quantity": _json_number(quantity),
+                "reference": values.get("contract_no", ""),
+                "po_numbers": values.get("customer_po", ""),
+                "source_inspection_window": values.get("inspection_window", ""),
+                "source_customer_due_date": values.get("customer_due_date", ""),
+                "inspection_window": _item_date_text(_cell(cells, mapping, "inspection_window"), datemode),
+                "customer_due_date": _item_date_text(_cell(cells, mapping, "customer_due_date"), datemode),
+            }
+            row["date_review_required"] = any(values.get(field) and not row[field]
+                                              for field in ("inspection_window", "customer_due_date"))
+            if values.get("order_type") != "正单":
+                row.update(match_status="REVIEW_REQUIRED", suggestion=f"{values.get('order_type') or '未标订单类型'}：待人工确认，不计入正单漏单核对")
+            elif not values.get("contract_no") or not values.get("item_no"):
+                row.update(match_status="REVIEW_REQUIRED", suggestion="正单缺少合同号或产品编号，不能按相邻行或单独货号推断订单")
+            elif quantity is None or quantity <= 0:
+                row.update(match_status="REVIEW_REQUIRED", suggestion="正单数量为空、无效或非正数，请确认需求；不会自动取消采购单")
+            result.append(row)
+            if len(result) > MAX_IMPORT_ROWS:
+                raise HTTPException(422, f"ITEM 数据超过 {MAX_IMPORT_ROWS} 行，请拆分文件后导入")
+    if not result:
+        raise HTTPException(422, "ITEM 工作表没有可核对的业务明细")
+    identities: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for row in result:
+        if row.get("match_status") == "REVIEW_REQUIRED":
+            continue
+        key = tuple(str(row.get(field) or "").strip().casefold() for field in ("contract_no", "customer_po", "item_no"))
+        identities.setdefault(key, []).append(row)
+    for duplicates in identities.values():
+        if len(duplicates) > 1:
+            for row in duplicates:
+                row.update(match_status="REVIEW_REQUIRED", suggestion="同合同、客户PO和货号存在多行正单，请先确认是重复还是分批需求；不会自动合并")
+    return {"rows": result, "engine": "unified-item-header-mapping", "field_mappings": mappings,
+            "warnings": ["仅核对 ITEM 表中的正单；其他订单类型保留待确认。接单表不重复导入。",
+                         "Contract No.、SO#/Reference、客户PO分别保留；空白编号不从相邻行补齐。",
+                         "无年份、多阶段或无效日期保留原文并标记待确认，不猜测日期。"],
+            "review_count": sum(row.get("match_status") == "REVIEW_REQUIRED" or row.get("date_review_required", False) for row in result)}
+
+
 def _parse_weekly(filename: str, content: bytes) -> dict[str, Any]:
+    sheets = _sheet_rows(filename, content, strict_item_limit=True)
+    item_sheets = [sheet for sheet in sheets if "item" in sheet[0].casefold()]
+    if item_sheets:
+        return _parse_item_schedule(item_sheets)
     parsed: list[dict[str, Any]] = []
     warnings: list[str] = []
-    for sheet_name, rows, _ in _sheet_rows(filename, content):
+    for sheet_name, rows, _ in sheets:
         header = _header_mapping(rows, WEEKLY_ALIASES)
         if header is None or not {"contract_no", "quantity"}.issubset(header[1]):
             sheet_key = _header_key(sheet_name)
@@ -808,26 +907,29 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
     )
     all_joined = joined
     for row in rows:
+        if row.get("match_status") == "REVIEW_REQUIRED":
+            continue
         po_key = str(row.get("customer_po") or "").strip().casefold()
         joined = [(line, order) for line, order in all_joined if not po_key or order.customer_po.strip().casefold() == po_key]
-        contract_key = _identity(row.get("contract_no"))
-        item_key = _identity(row.get("item_no"))
+        identity = (lambda value: _text(value).casefold()) if row.get("template") == "unified-item" else _identity
+        contract_key = identity(row.get("contract_no"))
+        item_key = identity(row.get("item_no"))
         exact = [
             (line, order)
             for line, order in joined
             if contract_key
             and item_key
-            and _identity(order.contract_no) == contract_key
-            and _identity(order.item_no) == item_key
+            and identity(order.contract_no) == contract_key
+            and identity(order.item_no) == item_key
         ]
         candidates = exact
         basis = "合同号 + 货号" if exact else ""
-        if not candidates and contract_key:
+        if not candidates and contract_key and row.get("template") != "unified-item":
             by_contract = [(line, order) for line, order in joined if _identity(order.contract_no) == contract_key]
             if len({order.id for _, order in by_contract}) == 1:
                 candidates = by_contract
                 basis = "合同号"
-        if not candidates and item_key:
+        if not candidates and item_key and row.get("template") != "unified-item":
             by_item = [(line, order) for line, order in joined if _identity(order.item_no) == item_key]
             if len({order.id for _, order in by_item}) == 1:
                 candidates = by_item
@@ -889,13 +991,33 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                 else:
                     row["match_status"] = "MATCHED"
                     row["suggestion"] = "已匹配正式纸箱订单" if import_type == "WEEKLY_SCHEDULE" else "已关联正式纸箱订单，等待计算交货提醒"
+                if row.get("template") == "unified-item":
+                    row["procurement_state"] = (
+                        "NEEDS_ORDER" if order.status in {"DRAFT", "CONFIRMED"}
+                        else "REVIEW" if order.product_order_quantity is None
+                        else "COMPLETED" if order.status == "COMPLETED" else "ORDERED"
+                    )
+                    if order.product_order_quantity is not None and schedule_quantity > Decimal(order.product_order_quantity):
+                        row["procurement_state"] = "NEEDS_ORDER"
+                    source_due = str(row.get("customer_due_date") or "")
+                    if source_due and order.customer_due_date and source_due != order.customer_due_date:
+                        row["date_difference"] = {"business_date": source_due, "order_date": order.customer_due_date}
+                        row["suggestion"] += f"；业务走货期 {source_due} 与订单客户交期 {order.customer_due_date} 不一致，请确认"
+                        if row["match_status"] == "MATCHED":
+                            row["match_status"] = "DATE_MISMATCH"
             else:
                 row["match_status"] = "AMBIGUOUS" if candidates else "MISSING_ORDER"
+                if row.get("template") == "unified-item":
+                    row["procurement_state"] = "REVIEW" if candidates else "NEEDS_ORDER"
                 row["suggestion"] = "找到多个候选订单，请人工选择" if candidates else (
                     "查货合同未找到正式纸箱订单，请先核对是否漏单"
                     if import_type == "INSPECTION_SCHEDULE"
                     else "未找到正式纸箱订单，仅生成异常待办"
                 )
+            if row.get("date_review_required"):
+                row["suggestion"] += "；日期原文需人工确认，不自动计算交期"
+                if row["match_status"] == "MATCHED":
+                    row["match_status"] = "REVIEW_REQUIRED"
             continue
 
         if len(candidates) == 1:
@@ -935,6 +1057,9 @@ def _apply_inspection_reminders(
     reference_date: date,
 ) -> None:
     for row in rows:
+        if row.get("match_status") == "REVIEW_REQUIRED" or row.get("date_review_required"):
+            row["reminder_status"] = "REVIEW_REQUIRED"
+            continue
         inspection_date = _inspection_start_date(row.get("inspection_window"), reference_date)
         row["advance_days"] = advance_days
         if inspection_date is None:
@@ -1027,7 +1152,7 @@ def parse_carton_import(
             "due_soon_count": sum(1 for row in rows if row.get("reminder_status") == "DUE_SOON"),
             "ready_count": sum(1 for row in rows if row.get("reminder_status") == "READY"),
             "advance_days": int(options.get("advance_days", 3)) if import_type == "INSPECTION_SCHEDULE" else None,
-            "parser_version": DELIVERY_IMPORT_PARSER_VERSION if import_type == "DELIVERY_NOTE" else None,
+            "parser_version": DELIVERY_IMPORT_PARSER_VERSION if import_type == "DELIVERY_NOTE" else SCHEDULE_IMPORT_PARSER_VERSION,
         }
     )
     return parsed

@@ -81,6 +81,7 @@ from app.schemas.carton_procurement import (
     DEFAULT_CARTON_SAFETY_LEAD_DAYS,
     derive_carton_plan_due_date,
 )
+from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine, SupplierCommitment, SupplierAttachment
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
 from app.schemas.carton_procurement import CartonLocationAllocation
 from app.services import carton_positions as positions
@@ -88,6 +89,7 @@ from app.services.carton_inventory_valuation import cost_key, load_valuation, va
 from app.services.carton_ledger_time import ledger_rows, ledger_time, ordered_ledger_rows
 from app.services.carton_procurement_imports import (
     DELIVERY_IMPORT_PARSER_VERSION,
+    SCHEDULE_IMPORT_PARSER_VERSION,
     parse_carton_import,
 )
 
@@ -809,8 +811,11 @@ def create_purchase_order_issue(
     user: AuthContext,
     *,
     commit: bool = True,
+    already_locked: bool = False,
+    reuse_initial: bool = False,
 ) -> CartonPurchaseOrderIssue:
-    _lock_receipt_factory(db, order.factory_id)
+    if not already_locked:
+        _lock_receipt_factory(db, order.factory_id)
     if order.revision != expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
@@ -823,6 +828,9 @@ def create_purchase_order_issue(
         order, _order_lines(db, order.id), latest_issue
     )
     if pending_type == "NONE":
+        if (reuse_initial and latest_issue and latest_issue.document_type == "INITIAL"
+                and latest_issue.source_order_revision == order.revision):
+            return latest_issue
         raise HTTPException(status_code=409, detail="当前订单没有尚未生成采购单的数量或交期变化")
 
     next_issue_sequence = (latest_issue.issue_sequence if latest_issue else 0) + 1
@@ -971,6 +979,16 @@ def get_purchase_order_issue(
     return issue
 
 
+def _guard_no_supplier_transit(db: Session, order: CartonOrder) -> None:
+    transit = db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
+        SupplierShipment.id == SupplierShipmentLine.shipment_id).join(CartonOrderLine,
+        CartonOrderLine.id == SupplierShipmentLine.order_line_id).where(
+            CartonOrderLine.order_id == order.id, SupplierShipment.factory_id == order.factory_id,
+            SupplierShipment.status == "SENT").limit(1))
+    if transit:
+        raise HTTPException(409, "订单有供应商在途发货，请先由仓库核实收到或确认整单未收到并退回，再办理减单或取消")
+
+
 def _order_has_business_activity(db: Session, order: CartonOrder) -> bool:
     line_ids = [line.id for line in _order_lines(db, order.id)]
     if not line_ids:
@@ -990,13 +1008,20 @@ def _order_has_business_activity(db: Session, order: CartonOrder) -> bool:
     return bool(movement_count)
 
 
+def _order_has_supplier_evidence(db: Session, order: CartonOrder) -> bool:
+    line_ids = [line.id for line in _order_lines(db, order.id)]
+    return bool(db.scalar(select(SupplierShipmentLine.id).where(SupplierShipmentLine.order_line_id.in_(line_ids)).limit(1))
+        or db.scalar(select(SupplierCommitment.order_line_id).where(SupplierCommitment.order_line_id.in_(line_ids)).limit(1))
+        or db.scalar(select(SupplierAttachment.id).where(SupplierAttachment.order_id == order.id).limit(1)))
+
+
 def can_delete_history_order(db: Session, order: CartonOrder) -> bool:
     imported = db.scalar(select(CartonAuditEvent.id).where(
         CartonAuditEvent.factory_id == order.factory_id,
         CartonAuditEvent.entity_id == order.id,
         CartonAuditEvent.event_type == "HISTORY_ORDER_IMPORTED",
     ).limit(1))
-    return bool(imported) and not _order_has_business_activity(db, order)
+    return bool(imported) and not _order_has_business_activity(db, order) and not _order_has_supplier_evidence(db, order)
 
 
 def delete_history_order(db: Session, order_no: str, payload: CartonOrderCancelRequest, user: AuthContext) -> None:
@@ -1170,6 +1195,11 @@ def update_order(
             status_code=409,
             detail="订单已有收料或库存流水，只能修改客户交期、自动计划交期和备注",
         )
+    if target_supplier_id != order.supplier_id and _order_has_supplier_evidence(db, order):
+        raise HTTPException(
+            status_code=409,
+            detail="订单已有供应商接单、送货或附件记录，不能改派供应商",
+        )
 
     before = {
         "revision": order.revision,
@@ -1316,6 +1346,8 @@ def submit_order_to_supplier(
             "revision": order.revision,
         },
     )
+    master_data.seed_first_number_formats(db, factory_id, order, user)
+    create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
     master_data.sync_history(db, factory_id)
     db.commit()
     db.refresh(order)
@@ -1365,6 +1397,8 @@ def bulk_submit_orders_to_supplier(
                 "bulk": True,
             },
         )
+        master_data.seed_first_number_formats(db, factory_id, order, user)
+        create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
 
     master_data.sync_history(db, factory_id)
     db.commit()
@@ -1382,6 +1416,7 @@ def cancel_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    _guard_no_supplier_transit(db, order)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"DRAFT", "CONFIRMED"}:
@@ -1559,6 +1594,7 @@ def reduce_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    _guard_no_supplier_transit(db, order)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}:
@@ -1696,6 +1732,7 @@ def return_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    _guard_no_supplier_transit(db, order)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PARTIALLY_RECEIVED", "COMPLETED"}:
@@ -1828,6 +1865,7 @@ def bulk_cancel_orders(
     orders: list[CartonOrder] = []
     for item in payload.items:
         order = get_order_by_no(db, factory_id, item.order_no)
+        _guard_no_supplier_transit(db, order)
         if order.revision != item.expected_revision:
             raise HTTPException(status_code=409, detail=f"订单 {item.order_no} 已更新，请刷新后重试")
         if order.status not in {"DRAFT", "CONFIRMED"}:
@@ -2303,7 +2341,7 @@ def create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext)
         raise
 
 
-def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True) -> CartonReceipt:
+def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True, supplier_shipment_id: str | None = None) -> CartonReceipt:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
@@ -2313,6 +2351,16 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         ensure_open(db, factory_id, supplier.id, payload.acceptance_date[:7])
     formal_inputs = [line for line in payload.lines if line.source_type == "FORMAL_ORDER"]
     line_ids = [line.order_line_id for line in formal_inputs if line.order_line_id]
+    registered_shipment = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == factory_id,
+        SupplierShipment.supplier_id == supplier.id, SupplierShipment.delivery_note_no == payload.delivery_note_no))
+    if registered_shipment and (registered_shipment.id != supplier_shipment_id or registered_shipment.status != "SENT"):
+        raise HTTPException(409, "此送货单已由供应商登记，请从供应商协同管理核实实际收到，不可重复人工登记")
+    if supplier_shipment_id and (not registered_shipment or registered_shipment.id != supplier_shipment_id):
+        raise HTTPException(409, "供应商发货关联与送货单不一致")
+    if not supplier_shipment_id and db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
+        SupplierShipment.id == SupplierShipmentLine.shipment_id).where(SupplierShipment.factory_id == factory_id,
+            SupplierShipment.status == "SENT", SupplierShipmentLine.order_line_id.in_(line_ids)).limit(1)):
+        raise HTTPException(409, "本次纸品已有供应商在途发货，请先在供应商协同管理核实，避免重复入库")
     if len(line_ids) != len(set(line_ids)):
         raise HTTPException(status_code=422, detail="同一张收料单不能重复填写同一订单明细")
     order_lines = list(db.scalars(
@@ -3422,6 +3470,7 @@ def _create_import_exceptions(
         if batch.import_type == "INSPECTION_SCHEDULE":
             reminder_status = str(row.get("reminder_status") or "")
             inspection_exception = {
+                "REVIEW_REQUIRED": ("SCHEDULE_REVIEW_REQUIRED", "MEDIUM", "业务订单类型或字段待人工确认"),
                 "MISSING_ORDER": ("INSPECTION_ORDER_MISSING", "HIGH", "下周查货合同未找到纸箱订单"),
                 "AMBIGUOUS": ("INSPECTION_ORDER_AMBIGUOUS", "HIGH", "下周查货合同存在多个候选订单"),
                 "INVALID_DATE": ("INSPECTION_DATE_INVALID", "MEDIUM", "查货合同的验货日期无法识别"),
@@ -3443,6 +3492,14 @@ def _create_import_exceptions(
                 category = "QUANTITY_MISMATCH"
                 severity = "MEDIUM"
                 title = "排期数量与纸箱订单数量不一致"
+            elif match_status == "DATE_MISMATCH":
+                category = "SCHEDULE_DATE_MISMATCH"
+                severity = "MEDIUM"
+                title = "业务走货期与纸箱订单客户交期不一致"
+            elif match_status == "REVIEW_REQUIRED":
+                category = "SCHEDULE_REVIEW_REQUIRED"
+                severity = "MEDIUM"
+                title = "业务订单类型或字段待人工确认"
             else:
                 category = "AMBIGUOUS_MATCH"
                 severity = "MEDIUM"
@@ -3509,6 +3566,8 @@ def create_import_batch(
     effective_profile["matching_version"] = "customer-po-v1"
     if import_type == "DELIVERY_NOTE":
         effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
+    elif import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
+        effective_profile["parser_version"] = SCHEDULE_IMPORT_PARSER_VERSION
     profile_text = (
         json.dumps(effective_profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         if effective_profile

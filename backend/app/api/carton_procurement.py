@@ -521,7 +521,7 @@ def post_purchase_order_issue_workbook(
         db, current_user, "carton_procurement:order_write", payload.factory_id
     )
     order = get_order_by_no(db, factory_id, order_no)
-    issue = create_purchase_order_issue(db, order, payload.expected_revision, current_user)
+    issue = create_purchase_order_issue(db, order, payload.expected_revision, current_user, reuse_initial=True)
     content = build_purchase_order_issue_workbook(issue)
     file_name = f"{issue.document_no}_{issue.document_type}.xlsx"
     return StreamingResponse(

@@ -643,6 +643,21 @@ def ensure_carton_supplier_settlement_schema_ready() -> None:
             raise RuntimeError("供应商月结尚未迁移至 20260909_0105；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def ensure_carton_supplier_portal_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        from app.services.carton_supplier_portal import TABLES
+        missing = []
+        for name in TABLES:
+            columns = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
+            missing.extend(f"{name}.{c.name}" for c in Base.metadata.tables[name].columns if c.name not in columns)
+        if missing:
+            raise RuntimeError("供应商协同尚未迁移至 20260921_0118；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def ensure_carton_explicit_quantity_schema_ready() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -700,6 +715,7 @@ def init_db() -> None:
         carton_positions,
         carton_master,  # noqa: F401
         carton_supplier_settlement,  # noqa: F401
+        carton_supplier_portal,  # noqa: F401
         customer_order,  # noqa: F401
         customer_order_ledger,  # noqa: F401
         internal_quote,  # noqa: F401
@@ -731,6 +747,7 @@ def init_db() -> None:
     ensure_carton_positions_schema_ready()
     ensure_carton_master_schema_ready()
     ensure_carton_supplier_settlement_schema_ready()
+    ensure_carton_supplier_portal_schema_ready()
     ensure_carton_explicit_quantity_schema_ready()
     ensure_carton_customer_po_schema_ready()
     ensure_document_tools_schema_ready()

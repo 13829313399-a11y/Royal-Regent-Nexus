@@ -1,0 +1,590 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { RouterLink } from 'vue-router'
+import { ClipboardList, FileText, History, PackageCheck, Search, Truck, X } from '@lucide/vue'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
+import { cartonSupplierPortalApi as api, type PortalOrder, type PortalPaper, type PortalShipment, type SupplierDocument, type SupplierActivity } from '@/api/cartonSupplierPortal'
+import { factoryContexts } from '@/data/enterpriseMock'
+import { formatBusinessDate, parseBusinessTimestamp } from '@/lib/dateTime'
+
+type SupplierOrder = PortalOrder & { factory_id: string }
+type SupplierShipment = PortalShipment & { factory_id: string }
+type SupplierWorkspace = { supplier_name: string; orders: SupplierOrder[]; shipments: SupplierShipment[] }
+const memberships = ref<{ factory_id: string; supplier_name: string }[]>([])
+const factoryFilter = ref('')
+const workspace = ref<SupplierWorkspace | null>(null)
+const activeTab = ref<'orders' | 'shipments' | 'documents' | 'activity'>('orders')
+const documents = ref<SupplierDocument[]>([])
+const activity = ref<SupplierActivity[]>([])
+const extraLoaded = reactive({ documents: false, activity: false })
+const extraLoadingState = reactive({ documents: false, activity: false })
+const extraLoading = computed(() => extraLoadingState.documents || extraLoadingState.activity)
+const extraGeneration = { documents: 0, activity: 0 }
+const documentSearch = ref('')
+const documentFactory = ref('')
+const documentKind = ref('')
+const documentStatus = ref('')
+const documentDateFrom = ref('')
+const documentDateTo = ref('')
+const selectedDocumentKeys = ref<string[]>([])
+const detailDocument = ref<SupplierDocument | null>(null)
+const activitySearch = ref('')
+const activityFactory = ref('')
+const bulkAcceptOpen = ref(false)
+const search = ref('')
+const customerFilter = ref('')
+const statusFilter = ref('ALL')
+const orderDateFrom = ref('')
+const orderDateTo = ref('')
+const selectedOnly = ref(false)
+const selectedOrderIds = ref<string[]>([])
+const detailOrderId = ref('')
+const detailPinned = ref(false)
+const acceptOrderId = ref('')
+const shipmentDialogOpen = ref(false)
+const selected = ref<string[]>([])
+const shipmentCandidateIds = ref<string[]>([])
+const dates = reactive<Record<string, string>>({})
+const dateIssueIds: Record<string, string> = {}
+const dirtyDates = new Set<string>()
+const quantities = reactive<Record<string, number>>({})
+const deliveryNos = reactive<Record<string, string>>({})
+const deliveryDate = ref(new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }))
+const error = ref('')
+const message = ref('')
+const loading = ref(false)
+const discovering = ref(false)
+const busy = ref(false)
+let generation = 0
+
+const orders = computed(() => workspace.value?.orders ?? [])
+function factoryDisplayName(id: string) {
+  return factoryContexts.find(item => item.id === id)?.shortName ?? id
+}
+const customers = computed(() => [...new Set(orders.value.map(order => order.customer_name))].sort((a, b) => a.localeCompare(b)))
+const query = computed(() => search.value.trim().toLocaleLowerCase())
+const filteredOrders = computed(() => orders.value.filter(order => {
+  if (factoryFilter.value && order.factory_id !== factoryFilter.value) return false
+  if (customerFilter.value && order.customer_name !== customerFilter.value) return false
+  if (statusFilter.value !== 'ALL' && orderStage(order) !== statusFilter.value) return false
+  if (orderDateFrom.value && (!order.order_date || order.order_date < orderDateFrom.value)) return false
+  if (orderDateTo.value && (!order.order_date || order.order_date > orderDateTo.value)) return false
+  if (!query.value) return true
+  return [order.customer_name, order.contract_no, order.customer_po, order.item_no,
+    order.order_no, order.document_no, order.product_name, ...order.lines.map(line => line.child_no)]
+    .some(value => value.toLocaleLowerCase().includes(query.value))
+}))
+const visibleOrders = computed(() => selectedOnly.value
+  ? orders.value.filter(order => selectedOrderIds.value.includes(order.id))
+  : filteredOrders.value)
+const detailOrder = computed(() => orders.value.find(order => order.id === detailOrderId.value) ?? null)
+const acceptOrder = computed(() => orders.value.find(order => order.id === acceptOrderId.value) ?? null)
+const selectedOrders = computed(() => orders.value.filter(order => selectedOrderIds.value.includes(order.id)))
+const selectableVisibleOrders = computed(() => visibleOrders.value.filter(canSelectOrder))
+const allVisibleSelected = computed(() => selectableVisibleOrders.value.length > 0 && selectableVisibleOrders.value.every(order => selectedOrderIds.value.includes(order.id)))
+const someVisibleSelected = computed(() => selectableVisibleOrders.value.some(order => selectedOrderIds.value.includes(order.id)))
+const selectedPapers = computed(() => orders.value.flatMap(order => order.lines
+  .filter(line => selected.value.includes(line.id)).map(line => ({ order, line }))))
+const shipmentCandidates = computed(() => orders.value.flatMap(order => order.lines
+  .filter(line => shipmentCandidateIds.value.includes(line.id)).map(line => ({ order, line }))))
+const shipmentGroups = computed(() => memberships.value.map(member => ({
+  ...member,
+  papers: shipmentCandidates.value.filter(({ order }) => order.factory_id === member.factory_id),
+})))
+const matchingShipments = computed(() => (workspace.value?.shipments ?? []).filter(shipment => {
+  if (factoryFilter.value && shipment.factory_id !== factoryFilter.value) return false
+  if (!query.value) return true
+  return [shipment.delivery_note_no, shipment.delivery_date,
+    ...shipment.lines.flatMap(line => [line.order_no, line.contract_no, line.item_no, line.customer_name, line.child_no])]
+    .some(value => value.toLocaleLowerCase().includes(query.value))
+}))
+function documentKey(row: Pick<SupplierDocument, 'factory_id' | 'kind' | 'id'>) {
+  return [row.factory_id, row.kind, row.id].join('|')
+}
+const filteredDocuments = computed(() => documents.value.filter(row => {
+  if (documentFactory.value && row.factory_id !== documentFactory.value) return false
+  if (documentKind.value && row.kind !== documentKind.value) return false
+  if (documentStatus.value && row.status !== documentStatus.value) return false
+  if (documentDateFrom.value && row.date < documentDateFrom.value) return false
+  if (documentDateTo.value && row.date > documentDateTo.value) return false
+  const term = documentSearch.value.trim().toLocaleLowerCase()
+  return !term || [row.document_no, ...row.orders.flatMap(order => [
+    order.order_no, order.customer_name, order.contract_no, order.customer_po, order.item_no,
+  ])].some(value => value.toLocaleLowerCase().includes(term))
+}))
+const selectedDocuments = computed(() => documents.value.filter(row => selectedDocumentKeys.value.includes(documentKey(row))))
+const allVisibleDocumentsSelected = computed(() => filteredDocuments.value.length > 0
+  && filteredDocuments.value.every(row => selectedDocumentKeys.value.includes(documentKey(row))))
+const filteredActivity = computed(() => activity.value.filter(row => {
+  if (activityFactory.value && row.factory_id !== activityFactory.value) return false
+  const term = activitySearch.value.trim().toLocaleLowerCase()
+  return !term || [row.action, row.reference_no, row.actor_name, factoryDisplayName(row.factory_id)]
+    .some(value => value.toLocaleLowerCase().includes(term))
+}))
+
+function open(order: PortalOrder) {
+  return ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(order.status) && !order.awaiting_issue
+}
+function canSelectOrder(order: PortalOrder) {
+  return order.status !== 'COMPLETED' && order.status !== 'CANCELLED'
+}
+function canShip(order: PortalOrder, line: PortalPaper) {
+  return open(order) && !order.lines.some(needsAcceptance) && line.accepted
+    && !line.shipping_blocked_reason && Number(line.remaining_to_ship) > 0
+}
+function needsAcceptance(line: PortalPaper) {
+  return Number(line.required_quantity) > 0 && !line.accepted
+}
+function orderStage(order: PortalOrder) {
+  if (order.awaiting_issue) return 'PENDING_ISSUE'
+  if (order.status === 'CANCELLED') return 'CANCELLED'
+  if (order.status === 'COMPLETED') return 'COMPLETED'
+  if (order.lines.some(line => Number(line.in_transit_quantity) > 0)) return 'RECEIPT_PENDING'
+  if (order.lines.some(needsAcceptance)) return 'PENDING_ACCEPTANCE'
+  if (order.status === 'PARTIALLY_RECEIVED' && order.lines.some(line => Number(line.remaining_to_ship) > 0)) return 'WAITING_SHIPMENT'
+  return 'ACCEPTED'
+}
+const stagePriority: Record<string, number> = {
+  PENDING_ACCEPTANCE: 0, WAITING_SHIPMENT: 1, ACCEPTED: 2,
+  RECEIPT_PENDING: 3, PENDING_ISSUE: 4, COMPLETED: 5, CANCELLED: 6,
+}
+function progressLines(order: PortalOrder) {
+  return order.lines.filter(line => Number(line.required_quantity) > 0)
+}
+function orderStatus(order: PortalOrder) {
+  const labels: Record<string, string> = {
+    CANCELLED: '已取消', COMPLETED: '已完成', PENDING_ISSUE: '变更待发行',
+    RECEIPT_PENDING: '送货待确定', PENDING_ACCEPTANCE: '待接单', WAITING_SHIPMENT: '待送货', ACCEPTED: '已确认接单',
+  }
+  return labels[orderStage(order)]
+}
+function dueReminder(order: PortalOrder) {
+  if (order.status === 'COMPLETED') return { label: '交付已完成', level: 'CLOSED' }
+  if (order.status === 'CANCELLED') return { label: '订单已取消', level: 'CLOSED' }
+  const today = parseBusinessTimestamp(formatBusinessDate(new Date().toISOString()))
+  const due = parseBusinessTimestamp(order.planned_date)
+  if (today === null || due === null) return { label: '交期待确认', level: 'INVALID' }
+  const days = Math.round((due - today) / 86_400_000)
+  if (days < 0) return { label: `已逾期 ${Math.abs(days)} 天`, level: 'OVERDUE' }
+  if (days === 0) return { label: '今日交期', level: 'TODAY' }
+  if (days === 1) return { label: '明日交期', level: 'DUE_SOON' }
+  if (days <= 3) return { label: `剩 ${days} 天`, level: 'DUE_SOON' }
+  return { label: `距交期 ${days} 天`, level: 'UPCOMING' }
+}
+function dueReminderClass(order: PortalOrder) {
+  const level = dueReminder(order).level
+  if (level === 'OVERDUE' || level === 'TODAY') return 'text-red-600'
+  if (level === 'DUE_SOON') return 'text-amber-700'
+  return 'text-slate-500'
+}
+function statusClass(order: PortalOrder) {
+  const stage = orderStage(order)
+  if (stage === 'PENDING_ISSUE' || stage === 'RECEIPT_PENDING') return 'bg-amber-50 text-amber-700 ring-amber-200'
+  if (stage === 'COMPLETED' || stage === 'ACCEPTED' || stage === 'WAITING_SHIPMENT') return 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+  if (stage === 'CANCELLED') return 'bg-slate-100 text-slate-500 ring-slate-200'
+  return 'bg-sky-50 text-sky-700 ring-sky-200'
+}
+function shipmentStatus(shipment: PortalShipment) {
+  return shipment.status === 'SENT' ? '待仓库确认' : shipment.status === 'NOT_RECEIVED' ? '仓库未收到' : '仓库已核实'
+}
+function clearFilters() {
+  factoryFilter.value = ''
+  search.value = ''
+  customerFilter.value = ''
+  statusFilter.value = 'ALL'
+  orderDateFrom.value = ''
+  orderDateTo.value = ''
+  selectedOnly.value = false
+}
+function toggleVisibleOrders(checked: boolean) {
+  const ids = new Set(selectedOrderIds.value)
+  for (const order of selectableVisibleOrders.value) checked ? ids.add(order.id) : ids.delete(order.id)
+  selectedOrderIds.value = [...ids]
+}
+function showOrderDetail(id: string, pinned = false) {
+  if (detailPinned.value && !pinned) return
+  detailOrderId.value = id
+  detailPinned.value = pinned
+}
+function closeOrderDetailPreview() {
+  if (!detailPinned.value) detailOrderId.value = ''
+}
+function closeOrderDetail() {
+  detailOrderId.value = ''
+  detailPinned.value = false
+}
+function onDetailKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    closeOrderDetail()
+    acceptOrderId.value = ''
+    shipmentDialogOpen.value = false
+    bulkAcceptOpen.value = false
+    detailDocument.value = null
+  }
+}
+function showAccept(order: SupplierOrder) {
+  closeOrderDetail()
+  shipmentDialogOpen.value = false
+  error.value = ''
+  message.value = ''
+  acceptOrderId.value = order.id
+}
+function showShipment(order: SupplierOrder) {
+  closeOrderDetail()
+  acceptOrderId.value = ''
+  error.value = ''
+  message.value = ''
+  selected.value = order.lines.filter(line => canShip(order, line)).map(line => line.id)
+  shipmentCandidateIds.value = [...selected.value]
+  shipmentDialogOpen.value = selected.value.length > 0
+  if (!shipmentDialogOpen.value) message.value = '此订单暂无可发纸品，请核对接单与剩余未送数量。'
+}
+function addSelectedOrdersToShipment() {
+  error.value = ''
+  if (selectedOrders.value.some(order => !open(order) || order.lines.some(needsAcceptance))) {
+    error.value = '所选订单中有尚未完成接单、待发行或已结束的订单；请先确认接单或调整选择。'
+    return
+  }
+  const eligible = selectedOrders.value.flatMap(order => order.lines.filter(line => canShip(order, line)).map(line => line.id))
+  selected.value = [...new Set(eligible)]
+  shipmentCandidateIds.value = [...selected.value]
+  shipmentDialogOpen.value = eligible.length > 0
+  message.value = eligible.length ? '' : '所选订单暂无可发纸品，请核对接单与剩余未送数量。'
+}
+function openBulkAccept() {
+  error.value = ''
+  if (!selectedOrders.value.length || selectedOrders.value.some(order =>
+    !open(order) || !order.lines.some(needsAcceptance))) {
+    error.value = '请只选择待接单且当前采购单已发行的订单。'
+    return
+  }
+  bulkAcceptOpen.value = true
+}
+async function confirmBulkAccept() {
+  if (busy.value) return
+  const pending = selectedOrders.value.flatMap(order => order.lines.filter(needsAcceptance)
+    .map(line => ({ order, line })))
+  if (!pending.length || pending.some(({ line }) => !dates[line.id])) {
+    error.value = '请为每条待接纸品填写承诺交期。'
+    return
+  }
+  busy.value = true
+  error.value = ''
+  const succeeded: string[] = []
+  let failureMessage = ''
+  try {
+    for (const factoryId of [...new Set(pending.map(({ order }) => order.factory_id))]) {
+      const lines = pending.filter(({ order }) => order.factory_id === factoryId)
+      await api.acceptBatch(factoryId, lines.map(({ order, line }) => ({
+        order_line_id: line.id, issue_id: order.issue_id,
+        expected_revision: line.commitment_revision, promised_date: dates[line.id]!,
+      })))
+      succeeded.push(factoryDisplayName(factoryId))
+      for (const { line } of lines) dirtyDates.delete(line.id)
+      extraLoaded.activity = false
+    }
+    message.value = `已确认 ${selectedOrders.value.length} 张订单的 ${pending.length} 条纸品。`
+    extraLoaded.activity = false
+    bulkAcceptOpen.value = false
+  } catch (reason) {
+    failure(reason)
+    failureMessage = `${succeeded.length ? `已完成 ${succeeded.join('、')}；` : ''}接单失败：${error.value}`
+  } finally {
+    await load()
+    if (failureMessage) error.value = failureMessage
+    busy.value = false
+  }
+}
+async function openTab(tab: typeof activeTab.value) {
+  activeTab.value = tab
+  if (tab === 'documents' || tab === 'activity') await loadExtra(tab)
+}
+async function loadExtra(tab: 'documents' | 'activity') {
+  if (extraLoadingState[tab] || extraLoaded[tab] || !memberships.value.length) return
+  const token = ++extraGeneration[tab]
+  extraLoadingState[tab] = true
+  try {
+    const data = await Promise.all(memberships.value.map(item =>
+      tab === 'documents' ? api.documents(item.factory_id) : api.activity(item.factory_id)))
+    if (token !== extraGeneration[tab]) return
+    if (tab === 'documents') {
+      documents.value = (data as SupplierDocument[][]).flat().sort((a, b) => b.created_at.localeCompare(a.created_at))
+      selectedDocumentKeys.value = selectedDocumentKeys.value.filter(key => documents.value.some(row => documentKey(row) === key))
+    } else {
+      activity.value = (data as SupplierActivity[][]).flat().sort((a, b) => b.created_at.localeCompare(a.created_at))
+    }
+    extraLoaded[tab] = true
+  } catch (reason) {
+    if (token === extraGeneration[tab]) failure(reason)
+  } finally {
+    if (token === extraGeneration[tab]) extraLoadingState[tab] = false
+  }
+}
+function toggleVisibleDocuments(checked: boolean) {
+  const keys = new Set(selectedDocumentKeys.value)
+  for (const row of filteredDocuments.value) checked ? keys.add(documentKey(row)) : keys.delete(documentKey(row))
+  selectedDocumentKeys.value = [...keys]
+}
+async function exportSelectedDocuments() {
+  if (busy.value || !selectedDocuments.value.length) return
+  busy.value = true
+  error.value = ''
+  try { await api.exportDocuments(selectedDocuments.value) }
+  catch (reason) { failure(reason) }
+  finally { busy.value = false }
+}
+function failure(reason: unknown) {
+  error.value = reason instanceof Error ? reason.message : '操作未完成，请刷新后重试'
+}
+async function load() {
+  const token = ++generation
+  const scopes = memberships.value.map(member => member.factory_id)
+  if (!scopes.length) return
+  loading.value = true
+  error.value = ''
+  try {
+    const workspaces = await Promise.all(scopes.map(scope => api.workspace(scope)))
+    if (token !== generation) return
+    const data: SupplierWorkspace = {
+      supplier_name: workspaces[0]?.supplier_name ?? '',
+      orders: workspaces.flatMap(item => item.orders.map(order => ({ ...order, factory_id: item.factory_id })))
+        .sort((a, b) => (stagePriority[orderStage(a)] ?? 9) - (stagePriority[orderStage(b)] ?? 9)
+          || a.planned_date.localeCompare(b.planned_date) || a.order_no.localeCompare(b.order_no)),
+      shipments: workspaces.flatMap(item => item.shipments.map(shipment => ({ ...shipment, factory_id: item.factory_id })))
+        .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+    }
+    workspace.value = data
+    const orderIds = new Set(data.orders.map(order => order.id))
+    const selectableOrderIds = new Set(data.orders.filter(canSelectOrder).map(order => order.id))
+    selectedOrderIds.value = selectedOrderIds.value.filter(id => selectableOrderIds.has(id))
+    if (detailOrderId.value && !orderIds.has(detailOrderId.value)) closeOrderDetail()
+    if (acceptOrderId.value && !orderIds.has(acceptOrderId.value)) acceptOrderId.value = ''
+    const availableLines = new Set(data.orders.flatMap(order => order.lines.filter(line => canShip(order, line)).map(line => line.id)))
+    selected.value = selected.value.filter(id => availableLines.has(id))
+    shipmentCandidateIds.value = shipmentCandidateIds.value.filter(id => availableLines.has(id))
+    for (const order of data.orders) for (const line of order.lines) {
+      if (dateIssueIds[line.id] !== order.issue_id) {
+        dirtyDates.delete(line.id)
+        dateIssueIds[line.id] = order.issue_id
+      }
+      if (!dirtyDates.has(line.id)) dates[line.id] = line.promised_date || order.planned_date
+    }
+  } catch (reason) {
+    if (token === generation) { workspace.value = null; failure(reason) }
+  } finally {
+    if (token === generation) loading.value = false
+  }
+}
+async function refresh() {
+  if (busy.value || discovering.value) return
+  discovering.value = true
+  error.value = ''
+  workspace.value = null
+  documents.value = []
+  activity.value = []
+  selectedDocumentKeys.value = []
+  detailDocument.value = null
+  extraLoaded.documents = false
+  extraLoaded.activity = false
+  ++extraGeneration.documents
+  ++extraGeneration.activity
+  extraLoadingState.documents = false
+  extraLoadingState.activity = false
+  ++generation
+  try {
+    const available = await api.memberships()
+    memberships.value = available
+    if (factoryFilter.value && !available.some(item => item.factory_id === factoryFilter.value)) factoryFilter.value = ''
+    if (available.length) {
+      await load()
+      if (activeTab.value === 'documents' || activeTab.value === 'activity') await loadExtra(activeTab.value)
+    }
+    else error.value = '暂无可查看的已下单厂区，请联系内部确认供应商账号已开通且采购单已发行。'
+  } catch (reason) { failure(reason) } finally { discovering.value = false }
+}
+onMounted(() => { void refresh(); window.addEventListener('keydown', onDetailKeydown) })
+onBeforeUnmount(() => window.removeEventListener('keydown', onDetailKeydown))
+async function accept(order: SupplierOrder, line: PortalPaper) {
+  if (busy.value) return
+  if (!dates[line.id]) { error.value = '请填写承诺交期'; return }
+  busy.value = true
+  error.value = ''
+  try {
+    await api.accept(line, order, order.factory_id, dates[line.id]!)
+    dirtyDates.delete(line.id)
+    extraLoaded.activity = false
+    message.value = `${line.child_no} 已确认接单`
+    await load()
+    if (order.lines.every(item => item.id === line.id || !needsAcceptance(item))) acceptOrderId.value = ''
+  } catch (reason) { failure(reason) } finally { busy.value = false }
+}
+async function ship(factoryId: string) {
+  if (busy.value) return
+  error.value = ''
+  const papers = selectedPapers.value.filter(({ order }) => order.factory_id === factoryId)
+  if (!deliveryNos[factoryId]?.trim() || !deliveryDate.value || !papers.length) {
+    error.value = '请填写送货单号、送货日期并勾选本次发货纸品'
+    return
+  }
+  if (papers.some(({ order, line }) => !canShip(order, line)
+    || !(Number(quantities[line.id]) > 0)
+    || Number(quantities[line.id]) > Number(line.remaining_to_ship))) {
+    error.value = '勾选纸品必须先接单，发货数量须大于 0 且不超过剩余未送'
+    return
+  }
+  busy.value = true
+  try {
+    await api.ship({ factory_id: factoryId, delivery_note_no: deliveryNos[factoryId]!.trim(),
+      delivery_date: deliveryDate.value, lines: papers.map(({ order, line }) => ({
+        order_line_id: line.id, issue_id: order.issue_id, quantity: Number(quantities[line.id]),
+      })) })
+    const shippedIds = new Set(papers.map(({ line }) => line.id))
+    selected.value = selected.value.filter(id => !shippedIds.has(id))
+    shipmentCandidateIds.value = shipmentCandidateIds.value.filter(id => !shippedIds.has(id))
+    deliveryNos[factoryId] = ''
+    message.value = `${factoryDisplayName(factoryId)}发货已登记，等待仓库核实实际收到；尚未计入库存。`
+    extraLoaded.documents = false
+    extraLoaded.activity = false
+    await load()
+    if (!shipmentCandidateIds.value.length) shipmentDialogOpen.value = false
+  } catch (reason) { failure(reason) } finally { busy.value = false }
+}
+async function download(id: string, factoryId: string, filename: string) {
+  try { await api.download(id, factoryId, filename) } catch (reason) { failure(reason) }
+}
+</script>
+
+<template>
+  <main class="min-h-screen bg-[#f3f8fc] text-slate-800">
+    <header class="sticky top-0 z-20 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
+      <div class="mx-auto flex max-w-[1720px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <div class="flex min-w-0 items-center gap-3">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-teal-700 text-white"><PackageCheck class="size-5" /></div>
+          <div class="min-w-0"><h1 class="truncate text-lg font-bold leading-tight">纸箱供应商协同</h1><p class="truncate text-xs text-slate-500">{{ workspace?.supplier_name || '供应商工作区' }} · 已下单订单 / 接单 / 发货 / 仓库反馈</p></div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <RouterLink to="/carton-supplier/carton-mark" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 text-xs font-semibold text-teal-800 hover:bg-teal-100"><FileText class="size-4" />箱唛资料模板</RouterLink>
+          <span v-if="memberships.length" class="rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600">服务厂区：{{ memberships.length }} 个 · 订单合并展示</span>
+          <button type="button" :disabled="busy || loading || discovering" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:border-teal-300 disabled:opacity-50" @click="refresh">{{ discovering ? '更新中…' : '刷新' }}</button>
+          <AccountMenu />
+        </div>
+      </div>
+      <nav class="mx-auto flex max-w-[1720px] items-center gap-1 overflow-x-auto px-4 sm:px-6" aria-label="供应商协同功能">
+        <button type="button" :aria-current="activeTab === 'orders' ? 'page' : undefined" :class="activeTab === 'orders' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('orders')"><ClipboardList class="size-4" />订单管理 <span class="rounded-full bg-white px-2 py-0.5 text-[10px]">{{ orders.length }}</span></button>
+        <button type="button" :aria-current="activeTab === 'shipments' ? 'page' : undefined" :class="activeTab === 'shipments' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('shipments')"><Truck class="size-4" />发货与仓库反馈 <span class="rounded-full bg-white px-2 py-0.5 text-[10px]">{{ workspace?.shipments.length ?? 0 }}</span></button>
+        <button type="button" :aria-current="activeTab === 'documents' ? 'page' : undefined" :class="activeTab === 'documents' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('documents')"><FileText class="size-4" />采购单与送货单</button>
+        <button type="button" :aria-current="activeTab === 'activity' ? 'page' : undefined" :class="activeTab === 'activity' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('activity')"><History class="size-4" />操作日志</button>
+      </nav>
+    </header>
+
+    <div class="mx-auto max-w-[1720px] space-y-4 px-4 py-5 sm:px-6">
+      <p v-if="error" role="alert" class="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
+      <p v-if="message" role="status" class="rounded-xl border border-teal-200 bg-teal-50 p-3 text-sm text-teal-800">{{ message }}</p>
+      <p v-if="loading && !workspace" class="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">正在读取供应商订单…</p>
+      <section v-if="workspace" class="space-y-4">
+        <div class="grid gap-3 sm:grid-cols-3">
+          <div class="rounded-xl border border-slate-200 bg-white px-4 py-3"><p class="text-xs text-slate-500">已下单订单</p><p class="mt-1 text-xl font-bold text-slate-900">{{ orders.length }} <span class="text-xs font-medium text-slate-500">张</span></p></div>
+          <div class="rounded-xl border border-slate-200 bg-white px-4 py-3"><p class="text-xs text-slate-500">待接单 / 待送货 / 已确认接单</p><p class="mt-1 text-xl font-bold text-teal-700">{{ orders.filter(order => ['PENDING_ACCEPTANCE', 'WAITING_SHIPMENT', 'ACCEPTED'].includes(orderStage(order))).length }} <span class="text-xs font-medium text-slate-500">张</span></p></div>
+          <div class="rounded-xl border border-slate-200 bg-white px-4 py-3"><p class="text-xs text-slate-500">送货待确定</p><p class="mt-1 text-xl font-bold text-amber-700">{{ orders.filter(order => orderStage(order) === 'RECEIPT_PENDING').length }} <span class="text-xs font-medium text-slate-500">张</span></p></div>
+        </div>
+
+        <template v-if="activeTab === 'orders'">
+          <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/60 p-3">
+              <label class="relative min-w-56 flex-1"><Search class="pointer-events-none absolute left-3 top-2.5 size-4 text-slate-400" /><input v-model="search" aria-label="搜索供应商订单" placeholder="搜索客户 / 合同 / PO / 货号 / 订单 / 单据" class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs outline-none focus:border-teal-500"></label>
+              <select v-model="factoryFilter" aria-label="供应商订单厂区筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700"><option value="">全部厂区</option><option v-for="item in memberships" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }} · {{ item.supplier_name }}</option></select>
+              <select v-model="customerFilter" aria-label="供应商订单客户筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部客户</option><option v-for="name in customers" :key="name" :value="name">{{ name }}</option></select>
+              <select v-model="statusFilter" aria-label="供应商订单状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="ALL">全部状态</option><option value="PENDING_ACCEPTANCE">待接单</option><option value="WAITING_SHIPMENT">待送货</option><option value="ACCEPTED">已确认接单</option><option value="RECEIPT_PENDING">送货待确定</option><option value="COMPLETED">已完成</option><option value="CANCELLED">已取消</option><option value="PENDING_ISSUE">变更待发行</option></select>
+              <label class="flex items-center gap-1 text-xs text-slate-600">下单日期从<input v-model="orderDateFrom" type="date" aria-label="下单日期开始" :max="orderDateTo || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
+              <label class="flex items-center gap-1 text-xs text-slate-600">至<input v-model="orderDateTo" type="date" aria-label="下单日期结束" :min="orderDateFrom || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
+              <button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:text-teal-700" @click="clearFilters">清空筛选</button>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5 text-xs">
+              <div class="flex flex-wrap items-center gap-3"><span class="font-semibold text-slate-700">订单 {{ visibleOrders.length }} / {{ orders.length }} 张</span><span class="text-slate-500">已选 <b class="text-teal-700">{{ selectedOrderIds.length }}</b> 张订单 · <b class="text-teal-700">{{ selectedPapers.length }}</b> 条发货纸品</span><button type="button" class="font-semibold text-teal-700 hover:text-teal-900" @click="selectedOnly = !selectedOnly">{{ selectedOnly ? '查看全部' : '查看已选' }}</button><button type="button" :disabled="!selectedOrderIds.length" class="text-slate-500 hover:text-slate-800 disabled:opacity-40" @click="selectedOrderIds = []; selectedOnly = false">清空选择</button></div>
+              <div class="flex flex-wrap gap-2"><button type="button" :disabled="!selectedOrderIds.length || busy" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-3 font-semibold text-teal-800 disabled:opacity-40" @click="openBulkAccept">批量确认接单</button><button type="button" :disabled="!selectedOrderIds.length || busy" class="h-9 rounded-lg bg-teal-700 px-3 font-semibold text-white hover:bg-teal-800 disabled:opacity-40" @click="addSelectedOrdersToShipment">将所选订单加入发货</button></div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full min-w-[1260px] text-left text-xs">
+                <thead class="bg-slate-50 text-[11px] font-bold text-slate-600"><tr><th class="w-12 px-4 py-3"><input type="checkbox" aria-label="全选当前筛选订单" :checked="allVisibleSelected" :indeterminate="someVisibleSelected && !allVisibleSelected" :disabled="!selectableVisibleOrders.length" class="size-4 accent-teal-700" @change="toggleVisibleOrders(($event.target as HTMLInputElement).checked)"></th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">客户</th><th class="px-3 py-3">合同号 / PO</th><th class="px-3 py-3">货号 / 产品</th><th class="px-3 py-3">下单日期</th><th class="px-3 py-3">计划交期</th><th class="px-3 py-3">交期提醒</th><th class="px-3 py-3">纸品明细</th><th class="px-3 py-3">送货进度</th><th class="px-3 py-3">订单状态</th><th class="px-3 py-3 text-right">操作</th></tr></thead>
+                <tbody class="divide-y divide-slate-100">
+                  <tr v-for="order in visibleOrders" :key="order.id" class="hover:bg-teal-50/40"><td class="px-4 py-3 align-top"><input v-model="selectedOrderIds" :value="order.id" type="checkbox" :aria-label="`选择订单 ${order.order_no}`" :disabled="!canSelectOrder(order)" class="size-4 accent-teal-700 disabled:cursor-not-allowed disabled:opacity-40"></td><td class="px-3 py-3 align-top font-semibold text-teal-800">{{ factoryDisplayName(order.factory_id) }}</td><td class="px-3 py-3 align-top"><b class="text-slate-900">{{ order.customer_name }}</b></td><td class="px-3 py-3 align-top"><b>{{ order.contract_no }}</b><p class="mt-1 text-slate-500">客户 PO {{ order.customer_po || '纸箱订单未填写' }}</p></td><td class="px-3 py-3 align-top"><b>{{ order.item_no }}</b><p class="mt-1 text-slate-500">{{ order.product_name }}</p></td><td class="px-3 py-3 align-top">{{ order.order_date || '历史未记录' }}</td><td class="px-3 py-3 align-top">{{ order.planned_date || '待确认' }}</td><td class="px-3 py-3 align-top"><span :class="dueReminderClass(order)" class="whitespace-nowrap font-semibold">{{ dueReminder(order).label }}</span></td><td class="px-3 py-3 align-top">{{ order.lines.filter(line => Number(line.required_quantity) > 0).length }} 条有效<span class="ml-1 text-slate-500">· {{ order.lines.filter(line => Number(line.required_quantity) > 0 && line.accepted).length }} 条已接</span></td><td class="px-3 py-3 align-top"><div v-for="line in progressLines(order)" :key="line.id" class="mb-1 whitespace-nowrap"><b>{{ line.packaging_type }}</b> {{ line.received_quantity }} / {{ line.required_quantity }} {{ line.unit }}<span v-if="Number(line.in_transit_quantity) > 0" class="block text-amber-700">在途 {{ line.in_transit_quantity }} {{ line.unit }}</span></div><span v-if="!progressLines(order).length" class="text-slate-400">无有效需求</span></td><td class="px-3 py-3 align-top"><span :class="statusClass(order)" class="inline-flex rounded-full px-2 py-1 text-[11px] font-bold ring-1 ring-inset">{{ orderStatus(order) }}</span></td><td class="px-3 py-3 text-right align-top"><div class="flex justify-end gap-1"><button v-if="open(order) && order.lines.some(needsAcceptance)" type="button" :aria-label="`确认订单 ${order.order_no} 接单`" class="rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 font-semibold text-teal-800" @click="showAccept(order)">确认接单</button><button v-else-if="order.lines.some(line => canShip(order, line))" type="button" :aria-label="`登记订单 ${order.order_no} 发货`" class="rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 font-semibold text-teal-800" @click="showShipment(order)">登记发货</button><button type="button" :aria-label="`查看订单 ${order.order_no} 明细`" title="悬停预览整单明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:border-teal-300 hover:text-teal-700" @mouseenter="showOrderDetail(order.id)" @mouseleave="closeOrderDetailPreview" @focus="showOrderDetail(order.id)" @blur="closeOrderDetailPreview" @click="showOrderDetail(order.id, true)">明细</button></div></td></tr>
+                  <tr v-if="!visibleOrders.length"><td colspan="12" class="px-4 py-10 text-center text-slate-500">{{ orders.length ? '没有符合当前筛选条件的订单' : '暂无已下单订单；请联系内部仓管确认订单已锁定。' }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <div v-if="detailOrder" data-testid="supplier-order-detail-overlay" class="fixed inset-0 z-[62] flex items-center justify-center p-4" :class="detailPinned ? 'pointer-events-auto bg-slate-950/45' : 'pointer-events-none bg-slate-950/25'" @click.self="closeOrderDetail">
+            <div role="dialog" aria-labelledby="supplier-order-detail-title" :aria-modal="detailPinned ? 'true' : undefined" :inert="detailPinned ? undefined : true" class="flex max-h-[88vh] w-full max-w-[1400px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+              <div class="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+                <div><h2 id="supplier-order-detail-title" class="text-lg font-bold text-slate-950">订单明细 · {{ factoryDisplayName(detailOrder.factory_id) }} · {{ detailOrder.customer_name }}</h2><p class="mt-1 text-xs text-teal-700">{{ detailPinned ? '已固定显示 · 查看纸品和交付资料' : '悬停预览 · 单击明细可固定查看' }}</p></div>
+                <button type="button" aria-label="关闭供应商订单明细" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="closeOrderDetail"><X class="size-4" /></button>
+              </div>
+              <div class="min-h-0 overflow-auto">
+                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/60 p-4">
+                  <div><p class="text-sm font-bold text-slate-900">合同 {{ detailOrder.contract_no }} · 货号 {{ detailOrder.item_no }}</p><p class="mt-1 text-xs text-slate-500">客户 PO {{ detailOrder.customer_po || '纸箱订单未填写' }} · {{ detailOrder.product_name }}</p><p class="mt-1 text-xs text-slate-500">下单日期 {{ detailOrder.order_date || '历史未记录' }} · 计划交期 {{ detailOrder.planned_date || '待确认' }} · {{ orderStatus(detailOrder) }}</p><p class="mt-1 text-xs text-slate-500">纸箱采购单据 {{ detailOrder.document_no }}</p><p v-if="detailOrder.awaiting_issue" class="mt-2 text-xs font-semibold text-amber-700">订单有尚未发行的变更，旧承诺暂停执行；请等待新版本发行后重新确认接单。</p><p v-else-if="!open(detailOrder)" class="mt-2 text-xs text-slate-500">{{ detailOrder.status === 'COMPLETED' ? '订单已收齐' : '订单已取消' }}，不可接单或发货。</p></div>
+                  <div class="flex flex-wrap items-center gap-2"><button v-for="file in detailOrder.attachments" :key="file.id" type="button" class="rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700" @click="download(file.id, detailOrder.factory_id, file.filename)">{{ file.filename }} · v{{ file.version }}</button></div>
+                </div>
+                <div class="overflow-x-auto"><table class="w-full min-w-[900px] text-left text-xs"><thead class="bg-slate-50 text-[11px] font-bold text-slate-600"><tr><th class="px-3 py-3">纸品子单</th><th class="px-3 py-3">纸质 / 规格</th><th class="px-3 py-3">需求数量</th><th class="px-3 py-3">已入库</th><th class="px-3 py-3">在途 / 剩余未送</th><th class="px-3 py-3">接单 / 承诺交期</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="line in detailOrder.lines" :key="line.id"><td class="px-3 py-3"><b>{{ line.packaging_type }} · {{ line.child_no }}</b><p v-if="line.shipping_blocked_reason" class="mt-1 text-[11px] text-amber-700">{{ line.shipping_blocked_reason }}</p></td><td class="px-3 py-3">{{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }}</td><td class="px-3 py-3">{{ line.required_quantity }} {{ line.unit }}</td><td class="px-3 py-3">{{ line.received_quantity }} {{ line.unit }}</td><td class="px-3 py-3">{{ line.in_transit_quantity }} / {{ line.remaining_to_ship }} {{ line.unit }}</td><td class="px-3 py-3">{{ Number(line.required_quantity) <= 0 ? '无需接单' : line.accepted ? '已确认' : '待确认' }} · {{ Number(line.required_quantity) <= 0 ? '需求已归零' : line.promised_date || '未承诺' }}</td></tr></tbody></table></div>
+              </div>
+              <div v-if="detailPinned" class="flex shrink-0 justify-end border-t border-slate-200 px-5 py-3"><button type="button" class="h-9 rounded-lg border border-slate-200 px-4 text-xs font-bold text-slate-600" @click="closeOrderDetail">关闭</button></div>
+            </div>
+          </div>
+
+          <div v-if="acceptOrder" class="fixed inset-0 z-[64] flex items-center justify-center bg-slate-950/45 p-4" @click.self="acceptOrderId = ''">
+            <div role="dialog" aria-modal="true" aria-labelledby="supplier-accept-title" class="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+              <div class="flex items-start justify-between border-b border-slate-200 p-5"><div><h2 id="supplier-accept-title" class="text-lg font-bold">确认接单 · {{ factoryDisplayName(acceptOrder.factory_id) }}</h2><p class="mt-1 text-xs text-slate-500">{{ acceptOrder.customer_name }} · 合同 {{ acceptOrder.contract_no }} · 货号 {{ acceptOrder.item_no }}</p></div><button type="button" aria-label="关闭接单窗口" class="rounded-lg p-2 text-slate-500 hover:bg-slate-100" @click="acceptOrderId = ''"><X class="size-4" /></button></div>
+              <div class="min-h-0 overflow-auto p-5"><p v-if="error" role="alert" class="mb-3 rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">{{ error }}</p><p v-if="message" role="status" class="mb-3 rounded-lg border border-teal-200 bg-teal-50 p-2 text-xs text-teal-800">{{ message }}</p><p class="mb-3 text-xs text-slate-500">逐条确认纸品及承诺交期；全部确认后，订单进入可发货状态。</p><div v-for="line in acceptOrder.lines" :key="line.id" class="flex flex-wrap items-center gap-3 border-b border-slate-100 py-3 text-xs"><div class="min-w-64 flex-1"><b>{{ line.packaging_type }} · {{ line.child_no }}</b><p class="mt-1 text-slate-500">{{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · 需求 {{ line.required_quantity }} {{ line.unit }}</p><p v-if="line.promised_date && !line.accepted" class="mt-1 text-amber-700">旧交期 {{ line.promised_date }}，需重新确认</p></div><span v-if="Number(line.required_quantity) <= 0" class="font-semibold text-slate-500">需求已归零 · 无需接单</span><span v-else-if="line.accepted" class="font-semibold text-emerald-700">已确认 · {{ line.promised_date }}</span><template v-else><label class="font-semibold text-slate-600">承诺交期 <input v-model="dates[line.id]" @input="dirtyDates.add(line.id)" type="date" :aria-label="`${line.child_no} 承诺交期`" :disabled="busy || !open(acceptOrder)" class="ml-1 h-9 rounded-lg border border-slate-200 px-2"></label><button type="button" :disabled="busy || !open(acceptOrder) || Number(line.required_quantity) <= 0" class="h-9 rounded-lg bg-teal-700 px-3 font-semibold text-white disabled:opacity-40" @click="accept(acceptOrder, line)">确认接单</button></template></div></div>
+              <div class="flex justify-end border-t border-slate-200 p-4"><button type="button" class="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold" @click="acceptOrderId = ''">关闭</button></div>
+            </div>
+          </div>
+
+          <div v-if="bulkAcceptOpen" class="fixed inset-0 z-[64] flex items-center justify-center bg-slate-950/45 p-4" @click.self="bulkAcceptOpen = false">
+            <div role="dialog" aria-modal="true" aria-labelledby="supplier-bulk-accept-title" class="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+              <div class="flex items-start justify-between border-b border-slate-200 p-5"><div><h2 id="supplier-bulk-accept-title" class="text-lg font-bold">批量确认接单 · {{ selectedOrders.length }} 张订单</h2><p class="mt-1 text-xs text-slate-500">按厂区分别提交；同一厂区的纸品全部校验通过后才一起保存。</p></div><button type="button" aria-label="关闭批量接单窗口" class="rounded-lg p-2 text-slate-500" @click="bulkAcceptOpen = false"><X class="size-4" /></button></div>
+              <div class="min-h-0 space-y-3 overflow-auto p-5"><div v-for="order in selectedOrders" :key="order.id" class="rounded-lg border border-slate-200 p-3"><h3 class="mb-2 text-sm font-bold">{{ factoryDisplayName(order.factory_id) }} · {{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}</h3><div v-for="line in order.lines.filter(needsAcceptance)" :key="line.id" class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 py-2 text-xs"><span>{{ line.packaging_type }} · {{ line.child_no }} · 需求 {{ line.required_quantity }} {{ line.unit }}</span><label>承诺交期 <input v-model="dates[line.id]" @input="dirtyDates.add(line.id)" type="date" :aria-label="`批量接单 ${line.child_no} 承诺交期`" :disabled="busy" class="ml-1 h-9 rounded-lg border border-slate-200 px-2"></label></div></div></div>
+              <div class="flex justify-end gap-2 border-t border-slate-200 p-4"><button type="button" :disabled="busy" class="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold" @click="bulkAcceptOpen = false">取消</button><button type="button" :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-40" @click="confirmBulkAccept">{{ busy ? '正在确认…' : '确认所选订单接单' }}</button></div>
+            </div>
+          </div>
+
+          <div v-if="shipmentDialogOpen" class="fixed inset-0 z-[64] flex items-center justify-center bg-slate-950/45 p-4" @click.self="shipmentDialogOpen = false">
+            <div role="dialog" aria-modal="true" aria-labelledby="supplier-shipment-title" class="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+              <div class="flex items-start justify-between border-b border-slate-200 p-5"><div><h2 id="supplier-shipment-title" class="text-lg font-bold">登记本次发货</h2><p class="mt-1 text-xs text-slate-500">选择纸品并逐条填写实际发货数量；不同厂区分别提交送货单。仓库核实前不计入库存。</p></div><button type="button" aria-label="关闭发货窗口" class="rounded-lg p-2 text-slate-500 hover:bg-slate-100" @click="shipmentDialogOpen = false"><X class="size-4" /></button></div>
+              <div class="min-h-0 space-y-4 overflow-auto p-5"><p v-if="error" role="alert" class="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">{{ error }}</p><p v-if="message" role="status" class="rounded-lg border border-teal-200 bg-teal-50 p-2 text-xs text-teal-800">{{ message }}</p>
+          <form v-for="group in shipmentGroups.filter(item => item.papers.length)" :key="group.factory_id" class="rounded-xl border border-teal-200 bg-white p-4 shadow-sm" @submit.prevent="ship(group.factory_id)">
+            <div class="flex flex-wrap items-end gap-3"><div class="mr-auto"><h2 class="text-sm font-bold text-slate-900">登记发往{{ factoryDisplayName(group.factory_id) }}的纸品</h2><p class="mt-1 text-xs text-slate-500">本厂区已选 {{ group.papers.filter(({ line }) => selected.includes(line.id)).length }} 条纸品；逐条填写实际数量后提交。</p></div><label class="text-xs font-semibold text-slate-600">送货单号<input v-model="deliveryNos[group.factory_id]" :disabled="busy" :aria-label="`供应商送货单号 ${factoryDisplayName(group.factory_id)}`" class="mt-1 block h-9 w-44 rounded-lg border border-slate-200 px-2" required></label><label class="text-xs font-semibold text-slate-600">送货日期<input v-model="deliveryDate" :disabled="busy" type="date" :aria-label="`供应商送货日期 ${factoryDisplayName(group.factory_id)}`" class="mt-1 block h-9 rounded-lg border border-slate-200 px-2" required></label><button :disabled="busy || !group.papers.some(({ line }) => selected.includes(line.id))" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white hover:bg-teal-800 disabled:opacity-40">{{ busy ? '正在保存…' : '登记发货' }}</button></div>
+            <div class="mt-4 divide-y divide-slate-100 rounded-lg border border-slate-100"><div v-for="{ order, line } in group.papers" :key="line.id" class="flex flex-wrap items-center gap-3 px-3 py-2 text-xs"><input v-model="selected" :value="line.id" type="checkbox" :aria-label="`选择发货 ${line.child_no}`" :disabled="busy" class="size-4 accent-teal-700"><span class="min-w-0 flex-1 text-slate-600"><b class="text-slate-800">{{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}</b><br>{{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} · 剩余未送 {{ line.remaining_to_ship }} {{ line.unit }}</span><label class="font-semibold text-slate-600">本次发货数量 <input v-model.number="quantities[line.id]" type="number" min="0.0001" step="0.0001" :max="line.remaining_to_ship" :aria-label="`发货数量 ${line.child_no}`" :disabled="busy || !selected.includes(line.id)" class="ml-2 h-9 w-28 rounded-lg border border-slate-200 px-2"></label></div></div>
+          </form>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="activeTab === 'shipments'">
+          <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 class="text-sm font-bold">发货与仓库反馈</h2><p class="mt-1 text-xs text-slate-500">发货登记后等待仓库核实；实收和差异保留在原送货单下。</p></div><div class="flex flex-wrap items-center gap-2"><select v-model="factoryFilter" aria-label="供应商发货厂区筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700"><option value="">全部厂区</option><option v-for="item in memberships" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }} · {{ item.supplier_name }}</option></select><label class="relative min-w-56"><Search class="pointer-events-none absolute left-3 top-2.5 size-4 text-slate-400" /><input v-model="search" aria-label="搜索供应商发货单" placeholder="搜索送货单 / 订单 / 合同 / 货号" class="h-9 w-full rounded-lg border border-slate-200 pl-9 pr-3 text-xs outline-none focus:border-teal-500"></label></div></div><div class="space-y-0 divide-y divide-slate-100"><article v-for="shipment in matchingShipments" :key="shipment.id" class="p-4"><div class="flex flex-wrap items-center justify-between gap-2"><div class="flex flex-wrap items-center gap-3"><b class="text-sm">{{ shipment.delivery_note_no }}</b><span class="text-xs font-semibold text-teal-800">送往{{ factoryDisplayName(shipment.factory_id) }}</span><span class="text-xs text-slate-500">{{ shipment.delivery_date }}</span><span class="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700">{{ shipmentStatus(shipment) }}</span></div><span class="text-xs text-slate-500">{{ shipment.lines.length }} 条纸品</span></div><p v-for="line in shipment.lines" :key="line.id" class="mt-2 text-xs text-slate-600">{{ line.order_no }} · {{ line.child_no }} · {{ line.packaging_type }} · 发货 {{ line.quantity }} {{ line.unit }}<template v-for="accepted in shipment.acceptance_lines.filter(item => item.shipment_line_id === line.id)" :key="accepted.shipment_line_id"> · 实收 {{ accepted.received_quantity }} · 不可用 {{ Number(accepted.damaged_quantity) + Number(accepted.rejected_quantity) + Number(accepted.unusable_quantity) }} · {{ accepted.difference_reason }}</template></p></article><p v-if="!matchingShipments.length" class="p-10 text-center text-sm text-slate-500">暂无符合条件的发货单</p></div></section>
+        </template>
+
+        <template v-else-if="activeTab === 'documents'">
+          <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 class="text-base font-bold">采购单与送货单</h2><p class="mt-1 text-xs text-slate-500">逐张查看已发行采购单和已登记送货单；勾选后合并导出 Excel。历史发行批次未记录，列表按独立单据展示。</p></div><button type="button" :disabled="!selectedDocuments.length || busy" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white disabled:opacity-40" @click="exportSelectedDocuments">导出所选 {{ selectedDocuments.length }} 张 Excel</button></div>
+            <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/60 p-3">
+              <label class="relative min-w-56 flex-1"><Search class="pointer-events-none absolute left-3 top-2.5 size-4 text-slate-400" /><input v-model="documentSearch" aria-label="搜索供应商单据" placeholder="搜索单据号 / 订单 / 客户 / 合同 / PO / 货号" class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs"></label>
+              <select v-model="documentFactory" aria-label="单据厂区筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部厂区</option><option v-for="item in memberships" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }}</option></select>
+              <select v-model="documentKind" aria-label="单据类型筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部类型</option><option value="PURCHASE">采购单</option><option value="DELIVERY">送货单</option></select>
+              <select v-model="documentStatus" aria-label="单据状态筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部状态</option><option value="已发行">已发行</option><option value="SENT">待仓库确认</option><option value="RECEIVED">已核实</option><option value="NOT_RECEIVED">仓库未收到</option></select>
+              <label class="text-xs">日期从 <input v-model="documentDateFrom" type="date" aria-label="单据日期开始" class="h-9 rounded-lg border border-slate-200 px-2"></label><label class="text-xs">至 <input v-model="documentDateTo" type="date" aria-label="单据日期结束" class="h-9 rounded-lg border border-slate-200 px-2"></label>
+              <button type="button" class="h-9 rounded-lg border border-slate-200 px-3 text-xs" @click="documentSearch = ''; documentFactory = ''; documentKind = ''; documentStatus = ''; documentDateFrom = ''; documentDateTo = ''">清空筛选</button>
+            </div>
+            <div class="flex items-center gap-3 border-b border-slate-100 px-4 py-2 text-xs"><span>单据 {{ filteredDocuments.length }} / {{ documents.length }} 张</span><span>已选 {{ selectedDocuments.length }} 张</span><button type="button" :disabled="!selectedDocumentKeys.length" class="text-slate-500 disabled:opacity-40" @click="selectedDocumentKeys = []">清空选择</button></div>
+            <div class="overflow-x-auto"><table class="w-full min-w-[920px] text-left text-xs"><thead class="bg-slate-50 font-bold text-slate-600"><tr><th class="px-4 py-3"><input type="checkbox" aria-label="全选当前筛选单据" :checked="allVisibleDocumentsSelected" @change="toggleVisibleDocuments(($event.target as HTMLInputElement).checked)"></th><th class="px-3 py-3">类型</th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">单据号</th><th class="px-3 py-3">日期</th><th class="px-3 py-3">包含订单</th><th class="px-3 py-3">纸品条数</th><th class="px-3 py-3">状态</th><th class="px-3 py-3 text-right">操作</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredDocuments" :key="documentKey(row)"><td class="px-4 py-3"><input v-model="selectedDocumentKeys" :value="documentKey(row)" type="checkbox" :aria-label="`选择单据 ${row.document_no}`"></td><td class="px-3 py-3">{{ row.kind === 'PURCHASE' ? '采购单' : '送货单' }}</td><td class="px-3 py-3">{{ factoryDisplayName(row.factory_id) }}</td><td class="px-3 py-3 font-bold">{{ row.document_no }}</td><td class="px-3 py-3">{{ row.date }}</td><td class="px-3 py-3">{{ row.orders.length }} 张 · {{ row.orders.map(item => item.contract_no).join('、') }}</td><td class="px-3 py-3">{{ row.lines.length }}</td><td class="px-3 py-3">{{ row.status === 'SENT' ? '待仓库确认' : row.status === 'RECEIVED' ? '已核实' : row.status === 'NOT_RECEIVED' ? '仓库未收到' : row.status }}</td><td class="px-3 py-3 text-right"><button type="button" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold" @click="detailDocument = row">明细</button></td></tr><tr v-if="!filteredDocuments.length"><td colspan="9" class="p-10 text-center text-slate-500">{{ extraLoading ? '正在读取单据…' : '暂无符合条件的单据' }}</td></tr></tbody></table></div>
+          </section>
+          <div v-if="detailDocument" class="fixed inset-0 z-[64] flex items-center justify-center bg-slate-950/45 p-4" @click.self="detailDocument = null"><div role="dialog" aria-modal="true" aria-labelledby="supplier-document-title" class="flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl"><div class="flex justify-between border-b border-slate-200 p-5"><div><h2 id="supplier-document-title" class="text-lg font-bold">{{ detailDocument.kind === 'PURCHASE' ? '采购单' : '送货单' }} · {{ detailDocument.document_no }}</h2><p class="mt-1 text-xs text-slate-500">{{ factoryDisplayName(detailDocument.factory_id) }} · {{ detailDocument.date }} · {{ detailDocument.orders.length }} 张订单</p></div><button type="button" aria-label="关闭单据明细" @click="detailDocument = null"><X class="size-4" /></button></div><div class="min-h-0 overflow-auto p-5"><div v-for="order in detailDocument.orders" :key="order.order_no" class="mb-2 rounded-lg border border-slate-200 p-3 text-xs"><b>{{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}</b><span class="ml-2 text-slate-500">PO {{ order.customer_po || '未填写' }} · 订单 {{ order.order_no }}</span></div><table class="w-full min-w-[720px] text-left text-xs"><thead class="bg-slate-50"><tr><th class="p-2">订单 / 纸品</th><th class="p-2">纸品类型</th><th class="p-2">纸质 / 规格</th><th class="p-2">{{ detailDocument.kind === 'PURCHASE' ? '变更前 / 本次变化 / 变更后' : '发货 / 实收' }}</th></tr></thead><tbody><tr v-for="line in detailDocument.lines" :key="line.child_no" class="border-t border-slate-100"><td class="p-2">{{ line.child_no }}</td><td class="p-2">{{ line.packaging_type }}</td><td class="p-2">{{ line.paper_quality }} · {{ line.specification }}</td><td class="p-2">{{ detailDocument.kind === 'PURCHASE' ? `${line.before_quantity} / ${line.change_quantity} / ${line.quantity}` : `${line.quantity} / ${line.received_quantity || 0}` }} {{ line.unit }}</td></tr></tbody></table></div></div></div>
+        </template>
+
+        <template v-else-if="activeTab === 'activity'">
+          <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 class="text-base font-bold">操作日志</h2><p class="mt-1 text-xs text-slate-500">显示本供应商可见订单的采购发行、接单、送货与仓库反馈。</p></div><div class="flex gap-2"><input v-model="activitySearch" aria-label="搜索供应商操作日志" placeholder="搜索操作 / 单据 / 人员" class="h-9 rounded-lg border border-slate-200 px-3 text-xs"><select v-model="activityFactory" aria-label="操作日志厂区筛选" class="h-9 rounded-lg border border-slate-200 px-2 text-xs"><option value="">全部厂区</option><option v-for="item in memberships" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }}</option></select></div></div><div class="overflow-x-auto"><table class="w-full min-w-[700px] text-left text-xs"><thead class="bg-slate-50 text-slate-600"><tr><th class="p-3">时间</th><th class="p-3">厂区</th><th class="p-3">操作</th><th class="p-3">单据 / 订单</th><th class="p-3">操作人</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredActivity" :key="row.id"><td class="p-3">{{ row.created_at }}</td><td class="p-3">{{ factoryDisplayName(row.factory_id) }}</td><td class="p-3 font-semibold">{{ row.action }}</td><td class="p-3">{{ row.reference_no }}</td><td class="p-3">{{ row.actor_name }}</td></tr><tr v-if="!filteredActivity.length"><td colspan="5" class="p-10 text-center text-slate-500">{{ extraLoading ? '正在读取操作日志…' : '暂无相关操作记录' }}</td></tr></tbody></table></div></section>
+        </template>
+      </section>
+    </div>
+  </main>
+</template>

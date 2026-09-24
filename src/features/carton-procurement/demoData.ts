@@ -26,6 +26,14 @@ export interface CartonOrderRow {
 }
 
 export interface WeeklyCheckRow {
+  orderType?: string
+  sourceReference?: string
+  sourceLocation?: string
+  customerDueDate?: string
+  dateReviewRequired?: boolean
+  procurementState?: string
+  quantityMissing?: boolean
+  businessCustomer?: string
   id: string
   reference: string
   poNumbers: string
