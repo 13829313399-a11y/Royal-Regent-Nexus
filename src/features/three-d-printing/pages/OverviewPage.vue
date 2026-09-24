@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { Activity, CalendarDays, ChartColumn, Coins, Package, Printer, ReceiptText, Wallet } from '@lucide/vue';
+import TdpButton from '../components/TdpButton.vue';
 import { useWorkspaceContext } from "../context";
 import type { ThreeDDashboard } from "@/types/threeDPrinting";
 const {
@@ -26,6 +28,20 @@ type Day = {
 };
 type Machine = { machine_no: number; hours: number };
 const daily = computed(() => (stats.value.daily as Day[]) || []);
+const highlightedBalance = ref<Day | null>(null);
+const selectedBalance = computed(() => highlightedBalance.value || daily.value.at(-1));
+const firstMetrics = computed(() => [
+  { label: '产值', display: money(stats.value.revenue), icon: ChartColumn },
+  { label: '支出', display: money(stats.value.totalCost), icon: ReceiptText },
+  { label: '结余', display: money(stats.value.balance), icon: Wallet },
+  { label: '材料成本', display: money(stats.value.materialCost), icon: Package },
+]);
+const secondMetrics = computed(() => [
+  { label: '生产记录', display: dashboard.value?.summary.recordCount ?? '—', icon: ReceiptText },
+  { label: '生产天数', display: stats.value.productionDays ?? '—', icon: CalendarDays },
+  { label: '在线机器', display: `${printerMetrics.value.connected} / ${printerMetrics.value.total}`, icon: Activity },
+  { label: '正在打印', display: printerMetrics.value.running, icon: Printer },
+]);
 const machines = computed(
   () => (dashboard.value?.summary.machineHours as Machine[]) || [],
 );
@@ -69,7 +85,7 @@ const costs = computed(
 </script>
 <template>
   <section v-if="dashboard" class="space-y-5">
-    <form class="legacy-toolbar" @submit.prevent="apply">
+    <form class="legacy-toolbar tdp-overview-toolbar" @submit.prevent="apply">
       <strong>查看周期：</strong
       ><select v-model="period" @change="apply">
         <option value="today">今天</option>
@@ -80,57 +96,34 @@ const costs = computed(
       ><template v-if="period === 'custom'"
         ><input v-model="dateFrom" type="date" aria-label="开始日期" /><span
           >至</span
-        ><input v-model="dateTo" type="date" aria-label="结束日期" /><button
-          class="action-button"
-        >
-          查看
-        </button></template
+        ><input v-model="dateTo" type="date" aria-label="结束日期" /><TdpButton tone="soft" type="submit">查看</TdpButton></template
       ><span class="text-xs text-slate-500"
         >{{ dateFrom || "全部历史" }} {{ dateTo ? "～ " + dateTo : "" }}</span
       >
     </form>
-    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <div
-        v-for="(value, label) in {
-          产值: stats.revenue,
-          支出: stats.totalCost,
-          结余: stats.balance,
-          材料成本: stats.materialCost,
-        }"
-        :key="label"
-        class="metric-card"
-      >
-        <span>{{ label }}</span
-        ><strong>{{ money(value) }}</strong>
+    <div class="tdp-metric-group tdp-metrics-first grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div v-for="metric in firstMetrics" :key="metric.label" class="metric-card">
+        <span>{{ metric.label }}</span><strong>{{ metric.display }}</strong>
+        <span class="tdp-metric-icon" aria-hidden="true"><component :is="metric.icon" :size="18" /></span>
       </div>
     </div>
-    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <div class="metric-card">
-        <span>生产记录</span
-        ><strong>{{ dashboard.summary.recordCount }}</strong>
-      </div>
-      <div class="metric-card">
-        <span>生产天数</span><strong>{{ stats.productionDays }}</strong>
-      </div>
-      <div class="metric-card">
-        <span>在线机器</span
-        ><strong
-          >{{ printerMetrics.connected }} / {{ printerMetrics.total }}</strong
-        >
-      </div>
-      <div class="metric-card">
-        <span>正在打印</span><strong>{{ printerMetrics.running }}</strong>
+    <div class="tdp-metric-group tdp-metrics-second grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div v-for="metric in secondMetrics" :key="metric.label" class="metric-card">
+        <span>{{ metric.label }}</span><strong>{{ metric.display }}</strong>
+        <span class="tdp-metric-icon tdp-metric-icon--neutral" aria-hidden="true"><component :is="metric.icon" :size="18" /></span>
       </div>
     </div>
-    <div class="grid gap-5 lg:grid-cols-2">
+    <div class="tdp-overview-panels grid gap-5 lg:grid-cols-2">
       <article class="panel-card p-5">
-        <h2 class="font-bold">产值与支出趋势</h2>
+        <h2 class="tdp-panel-title font-bold"><ChartColumn :size="17" aria-hidden="true" />产值与支出趋势</h2>
         <div class="legacy-chart">
           <div
             v-for="d in daily"
             :key="d.date"
             class="chart-column"
             :title="`${d.date} 产值 ${money(d.revenue)} 支出 ${money(d.totalCost)}`"
+            :aria-label="`${d.date} 产值 ${money(d.revenue)}，支出 ${money(d.totalCost)}`"
+            tabindex="0"
           >
             <div class="chart-pair">
               <i
@@ -149,17 +142,23 @@ const costs = computed(
         <p class="text-xs text-slate-500">青绿色：产值　灰色：支出</p>
       </article>
       <article class="panel-card p-5">
-        <h2 class="font-bold">每日结余</h2>
+        <h2 class="tdp-panel-title font-bold"><Wallet :size="17" aria-hidden="true" />每日结余</h2>
         <div class="legacy-chart">
           <div
             v-for="d in daily"
             :key="d.date"
             class="chart-column"
             :title="`${d.date} 结余 ${money(d.balance)}`"
+            :aria-label="`${d.date} 结余 ${money(d.balance)}${d.balance < 0 ? '，负值' : ''}`"
+            tabindex="0"
+            @focus="highlightedBalance = d"
+            @blur="highlightedBalance = null"
+            @mouseenter="highlightedBalance = d"
+            @mouseleave="highlightedBalance = null"
           >
             <div class="chart-pair">
               <i
-                :class="{ expense: d.balance < 0 }"
+                :class="{ negative: d.balance < 0 }"
                 :style="{
                   height: `${Math.max(1, (Math.abs(d.balance) / max) * 150)}px`,
                 }"
@@ -169,9 +168,10 @@ const costs = computed(
           </div>
           <p v-if="!daily.length">该期间暂无生产记录</p>
         </div>
+        <p class="tdp-chart-note" v-if="selectedBalance">{{ selectedBalance.date }} 结余 {{ money(selectedBalance.balance) }} · 柱高表示金额绝对值<span v-if="daily.some(d => d.balance < 0)">，红色表示负结余</span></p>
       </article>
       <article class="panel-card p-5">
-        <h2 class="font-bold mb-4">支出构成</h2>
+        <h2 class="tdp-panel-title font-bold mb-4"><Coins :size="17" aria-hidden="true" />支出构成</h2>
         <div v-for="[label, value] in costs" :key="label" class="mb-3">
           <div class="flex justify-between text-sm">
             <span>{{ label }}</span
@@ -187,7 +187,7 @@ const costs = computed(
         </div>
       </article>
       <article class="panel-card p-5">
-        <h2 class="font-bold mb-4">机器使用明细</h2>
+        <h2 class="tdp-panel-title font-bold mb-4"><Printer :size="17" aria-hidden="true" />机器使用明细</h2>
         <div
           v-for="m in machines"
           :key="m.machine_no"
@@ -225,6 +225,12 @@ const costs = computed(
   flex: 1;
   text-align: center;
 }
+.chart-column:hover,
+.chart-column:focus-visible { background: color-mix(in oklch, var(--accent) 60%, transparent); border-radius: 6px; outline: none; }
+.chart-column:focus-visible { box-shadow: inset 0 0 0 2px var(--ring); }
+.tdp-panel-title { display: flex; align-items: center; gap: 8px; color: var(--foreground); }
+.tdp-panel-title svg { color: var(--primary); }
+.tdp-chart-note { margin-top: 4px; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .chart-pair {
   display: flex;
   gap: 2px;
@@ -241,6 +247,7 @@ const costs = computed(
 .chart-pair .expense {
   background: var(--muted-foreground);
 }
+.chart-pair .negative { background: var(--color-red-700); }
 .chart-column small {
   font-size: 9px;
   white-space: nowrap;

@@ -116,7 +116,7 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionEditorSource).toContain('<footer v-if="!wholeQuoteReview" class="quote-editor-actions">')
     expect(sectionEditorSource).toContain('saveWholeQuoteDraft')
     for (const text of ['页面导航', '悬停部门，右侧查看填写状态', '报价概览', '整单操作', '未填写', '填写中', '已完成', '需处理']) expect(read('src/components/modules/sales/internal-quote/InternalQuoteSectionRail.vue')).toContain(text)
-    expect(storeSource).toContain("workflow_mode: 'whole_quote_review'")
+    expect(storeSource).toContain("workflow_mode: 'direct_output'")
     for (const text of ['removeParticipation', ':can-remove="canRemoveActive"', '@remove="removeParticipation"', '已不再计入进度、成本汇总和最终放行']) expect(collaborationSource).toContain(text)
     for (const text of ['manageableOptionalSections', 'participationChanges', 'saveParticipationChanges', '保存参与部门', '参与部门没有变化', '已参与', '未参与', 'participationRemovalConfirmOpen', '确认移除并保存', 'quoteStore.addParticipation', 'quoteStore.removeParticipation']) expect(collaborationSource).toContain(text)
     expect(collaborationSource).not.toContain('removals.length && !window.confirm')
@@ -283,7 +283,7 @@ describe('internal quote desk frontend layout', () => {
     expect(summarySource).not.toContain('<th>项目</th>')
     for (const text of ['rr2T1Fields', 'rr2T2Fields', 'rr2T3Fields', 'rr2T4Fields', "['glue_bag', '胶袋']", "['misc', '杂项']", "['total_cost', '总成本'", "['tax13b', '含税13%类'"]) expect(storeSource).toContain(text)
     expect(summarySource).not.toContain('责任分段成本汇总')
-    for (const text of ['报价与工程资料导出汇总', '审批 revision 矩阵', '内部报价继续受 SHA-256']) expect(exportSource).toContain(text)
+    for (const text of ['报价与工程资料导出汇总', '部门版本记录', '内部报价继续受 SHA-256']) expect(exportSource).toContain(text)
     expect(exportSource).toContain('统一内部格式：Huaxing Demo')
     for (const text of ['批次产品正式输出切换', '逐款独立输出', '整批共用一次审核结果', 'batchOutputReadyCount', 'switchOutputProduct', 'quoteStore.loadBatchProducts']) expect(exportSource).toContain(text)
     for (const text of ['调整报价基数', '初始材料价', '初始机型价', '运费与吊柜费 HKD 默认值', '吊柜费 HKD', '业务主管可修改', '跟客只读查看']) {

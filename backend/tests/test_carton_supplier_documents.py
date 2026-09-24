@@ -151,7 +151,7 @@ def test_supplier_documents_export_and_audit_are_scoped(monkeypatch):
         activity = client.get(BASE + "/activity", params={"factory_id": "huaxing"})
         assert activity.status_code == 200
         actions = {row["action"] for row in activity.json()}
-        assert {"采购单已发行", "纸品已确认接单", "送货单已登记"}.issubset(actions)
+        assert {"采购单已发行", "纸品已确认接单", "供应商已确认发货"}.issubset(actions)
         assert "detail_json" not in activity.text and "unit_price" not in activity.text
         assert client.post(BASE + "/documents/export.xlsx", json={"documents": [
             *selected, {"factory_id": "huadeng", "kind": "PURCHASE", "id": purchase["id"]},

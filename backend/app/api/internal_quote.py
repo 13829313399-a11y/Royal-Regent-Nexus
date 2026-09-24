@@ -56,6 +56,11 @@ from app.schemas.internal_quote import (
     InternalQuoteWholeProductSaveRequest,
 )
 from app.services.auth import AuthContext, get_current_user
+from app.schemas.internal_quote_alternatives import AlternativeCopyRequest, AlternativeSelectionRequest, AlternativeArchiveRequest, AlternativeSyncRequest
+from app.services.internal_quote_sync import sync_options, preview_sync, apply_sync
+from app.services.internal_quote_alternatives import (
+    list_alternatives, copy_alternative, select_alternative, archive_alternative, report_alternative, issue_alternative,
+)
 from app.services.internal_quote import (
     add_quote_participation,
     archive_quote,
@@ -131,6 +136,58 @@ from app.services.internal_quote_release import (
 
 
 router = APIRouter(prefix="/api/internal-quotes", tags=["internal-quotes"])
+
+
+@router.get("/{quote_id}/alternatives")
+def get_alternatives(quote_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return list_alternatives(db, quote_id, current_user)
+
+
+@router.get("/{quote_id}/alternative-sync/options")
+def get_sync_options(quote_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return sync_options(db, quote_id, current_user)
+
+
+@router.post("/{quote_id}/alternative-sync/preview")
+def post_sync_preview(quote_id: str, payload: AlternativeSyncRequest,
+                      db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return preview_sync(db, quote_id, payload, current_user)
+
+
+@router.post("/{quote_id}/alternative-sync/apply")
+def post_sync_apply(quote_id: str, payload: AlternativeSyncRequest, request: Request,
+                    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return apply_sync(db, quote_id, payload, current_user, request)
+
+
+@router.post("/{quote_id}/alternatives", response_model=InternalQuoteOut)
+def post_alternative(quote_id: str, payload: AlternativeCopyRequest, request: Request,
+                     db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return copy_alternative(db, quote_id, payload, current_user, request)
+
+
+@router.patch("/{quote_id}/alternative-selection")
+def patch_alternative_selection(quote_id: str, payload: AlternativeSelectionRequest, request: Request,
+                                db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return select_alternative(db, quote_id, payload, current_user, request)
+
+
+@router.post("/{quote_id}/alternative-archive")
+def post_alternative_archive(quote_id: str, payload: AlternativeArchiveRequest, request: Request,
+                             db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return archive_alternative(db, quote_id, payload, current_user, request)
+
+
+@router.post("/{quote_id}/reported")
+def post_alternative_reported(quote_id: str, payload: InternalQuoteRevisionRequest, request: Request,
+                              db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return report_alternative(db, quote_id, payload, current_user, request)
+
+
+@router.post("/{quote_id}/direct-issue", response_model=InternalQuoteExportFileOut)
+def post_direct_issue(quote_id: str, payload: InternalQuoteRevisionRequest, request: Request,
+                      db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return issue_alternative(db, quote_id, payload, current_user, request)
 customer_price_artifact_router = APIRouter(
     prefix="/api/customer-price/internal-quote-artifacts",
     tags=["customer-price-internal-quote-artifacts"],

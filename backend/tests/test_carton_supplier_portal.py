@@ -933,10 +933,10 @@ def test_portal_migration_in_isolated_database(monkeypatch,tmp_path):
             conn.execute(text("CREATE TABLE evidence_test (id INTEGER PRIMARY KEY, value TEXT)"));conn.execute(text("INSERT INTO evidence_test VALUES (1,'preserve')"))
             with Operations.context(MigrationContext.configure(conn)):module.upgrade()
             assert (set(TABLES) - {"carton_supplier_unmatched_lines"}).issubset(inspect(conn).get_table_names())
-            next_path=Path(__file__).parents[1]/"alembic/versions/20260924_0123_supplier_unmatched_delivery.py"
+            next_path=Path(__file__).parents[1]/"alembic/versions/20260924_0124_supplier_unmatched_delivery.py"
             next_spec=importlib.util.spec_from_file_location("unmatched_migration",next_path)
             next_module=importlib.util.module_from_spec(next_spec);next_spec.loader.exec_module(next_module)
-            assert next_module.down_revision == "20260924_0122"
+            assert next_module.down_revision == "20260924_0123"
             with Operations.context(MigrationContext.configure(conn)):next_module.upgrade()
             assert set(TABLES).issubset(inspect(conn).get_table_names())
             assert conn.execute(text("SELECT value FROM evidence_test")).scalar() == "preserve"

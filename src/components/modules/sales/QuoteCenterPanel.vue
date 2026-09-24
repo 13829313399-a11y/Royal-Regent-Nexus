@@ -180,6 +180,7 @@ const importedFileName = ref('')
 const importedFileSize = ref('')
 const importedAt = ref('')
 const receivedQuoteNo = ref('')
+const receivedVersionLabel = ref('')
 const importErrorMessage = ref('')
 const exportErrorMessage = ref('')
 const isImportingInternalQuote = ref(false)
@@ -225,6 +226,8 @@ function previewDickieBatch() {
     const result = combineDickieV2(dickieBatch.value)
     dickyConversionResult.value = result
     previewedDickieBatch = dickyConversionResult.value
+    receivedQuoteNo.value = ''
+    receivedVersionLabel.value = ''
     importedCustomerId.value = 'dicky'
     importedWorkbookSheets.value = result.sheets
     importedFileName.value = result.sourceFileName
@@ -373,6 +376,7 @@ function resetFactoryTransientState() {
   importedCustomerId.value = ''
   importedFileName.value = ''
   receivedQuoteNo.value = ''
+  receivedVersionLabel.value = ''
   importedFileSize.value = ''
   importedAt.value = ''
   importErrorMessage.value = ''
@@ -650,7 +654,7 @@ const hasSelectedCustomerImport = computed(() => Boolean(selectedImportFileName.
 
 const importOverviewMetrics = computed(() => [
   { label: '当前客户', value: selectedCustomer.value.name, detail: selectedCustomer.value.id === 'caixing' ? selectedCaixingProductTypeOption.value.label : '' },
-  { label: '内部报价', value: selectedImportFileName.value ? (receivedQuoteNo.value ? '已接收' : '已导入') : '待接收', detail: selectedImportFileName.value || '等待内部报价台放行' },
+  { label: '内部报价', value: selectedImportFileName.value ? (receivedQuoteNo.value ? '已接收' : '已导入') : '待接收', detail: selectedImportFileName.value || '等待内部报价台输出' },
   {
     label: '操作权限',
     value: selectedCustomerOperationSummary.value.value,
@@ -919,6 +923,7 @@ function commitP4Artifact(handoffId: string) {
 
   importedFileName.value = handoff.file_name
   receivedQuoteNo.value = handoff.quote_no
+  receivedVersionLabel.value = handoff.version_label
   importedCustomerId.value = conversion.customerId
   importedCaixingProductType.value = conversion.customerId === 'caixing' ? conversion.result.productType : ''
   importedAt.value = '刚刚'
@@ -1026,6 +1031,7 @@ async function importInternalQuoteFile(file: File | undefined) {
     return
   }
   receivedQuoteNo.value = ''
+  receivedVersionLabel.value = ''
   const requestId = ++importRequestSequence
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryGeneration = factoryGeneration
@@ -1272,6 +1278,12 @@ function escapeExcelCell(value: string | number) {
     .replace(/"/g, '&quot;')
 }
 
+function sourceVersionFileName(fileName: string) {
+  if (!receivedQuoteNo.value || !receivedVersionLabel.value) return fileName
+  const identity = `${receivedQuoteNo.value}_${receivedVersionLabel.value}`.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+  return fileName.replace(/(\.xlsx?)$/i, `_${identity}$1`)
+}
+
 async function exportCustomerQuoteExcel() {
   if (!selectedCustomer.value || !canExportSelectedCustomer.value || !canExportCustomerQuote.value || isExportingCustomerQuote.value) {
     return
@@ -1303,19 +1315,19 @@ async function exportCustomerQuoteExcel() {
       const template = await fetchTemplateBuffer(buzzBeeTemplateUrl(buzzBeeConversionResult.value.sheets[0]?.quoteData.templateProfile), 'BuzzBee 原版报客')
       if (!isCurrentExportRequest()) return
       const workbook = createBuzzBeeTemplateWorkbook(buzzBeeConversionResult.value, template)
-      fileName = buildBuzzBeeCustomerQuoteFileName(buzzBeeConversionResult.value)
+      fileName = sourceVersionFileName(buildBuzzBeeCustomerQuoteFileName(buzzBeeConversionResult.value))
       downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'disney' && disneyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(DISNEY_CUSTOMER_QUOTE_TEMPLATE_URL, '迪士尼报客')
       if (!isCurrentExportRequest()) return
       const workbook = createDisneyCustomerQuoteWorkbook(disneyConversionResult.value, templateBuffer)
-      fileName = buildDisneyCustomerQuoteFileName(disneyConversionResult.value)
+      fileName = sourceVersionFileName(buildDisneyCustomerQuoteFileName(disneyConversionResult.value))
       downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'dicky' && dickyConversionResult.value) {
       const templateBuffer = dickyConversionResult.value.v2Data ? undefined : await fetchTemplateBuffer(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL, 'Dickie 报客')
       if (!isCurrentExportRequest()) return
       const workbook = createDickyCustomerQuoteWorkbook(dickyConversionResult.value, templateBuffer)
-      fileName = buildDickyCustomerQuoteFileName(dickyConversionResult.value)
+      fileName = sourceVersionFileName(buildDickyCustomerQuoteFileName(dickyConversionResult.value))
       downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'caixing' && caixingConversionResult.value) {
       const productType = caixingConversionResult.value.productType
@@ -1326,20 +1338,20 @@ async function exportCustomerQuoteExcel() {
       const templateBuffer = await fetchTemplateBuffer(templateUrl, templateLabel)
       if (!isCurrentExportRequest()) return
       const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
-      fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
+      fileName = sourceVersionFileName(buildCaixingCustomerQuoteFileName(caixingConversionResult.value))
       downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'yinhui' && yinhuiConversionResult.value) {
       const conversion = yinhuiConversionResult.value
       const templateBuffer = await fetchTemplateBuffer(yinhuiTemplateUrl(conversion.quoteData.templateId), '银辉报客')
       if (!isCurrentExportRequest() || isImportingInternalQuote.value || selectedCustomer.value.id !== 'yinhui' || conversion !== yinhuiConversionResult.value || !yinhuiConfirmed.value) return
       const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value })
-      fileName = buildYinhuiCustomerQuoteFileName(conversion)
+      fileName = sourceVersionFileName(buildYinhuiCustomerQuoteFileName(conversion))
       downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'three-sixty' && threeSixtyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(THREE_SIXTY_CUSTOMER_QUOTE_TEMPLATE_URL, '360 报客')
       if (!isCurrentExportRequest()) return
       const workbook = createThreeSixtyCustomerQuoteWorkbook(threeSixtyConversionResult.value, templateBuffer)
-      fileName = buildThreeSixtyCustomerQuoteFileName(threeSixtyConversionResult.value)
+      fileName = sourceVersionFileName(buildThreeSixtyCustomerQuoteFileName(threeSixtyConversionResult.value))
       downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else {
       const tableRows = detailRows.length > 0
@@ -1460,7 +1472,7 @@ async function exportCustomerQuoteExcel() {
 
     <SectionPanel
       title="客户报价输出"
-      subtitle="在上方交接池接收内部报价台已放行的报价，核对后直接输出客户文件。"
+      subtitle="在上方交接池接收内部报价台已输出的报价，核对后直接输出客户文件。"
     >
       <template #action>
         <div class="flex flex-wrap items-center justify-end gap-2">
@@ -1501,7 +1513,7 @@ async function exportCustomerQuoteExcel() {
       </template>
       <div v-if="selectedCustomerId === 'dicky' && dickieBatch.length" class="mb-4 rounded-lg border border-teal-200 bg-teal-50 p-4 text-sm">
         <p class="font-semibold text-teal-900">Dickie 合并清单 · {{ dickieBatch.length }} 个产品</p>
-        <p class="mt-1 text-xs text-slate-600">逐个接收已放行报价后加入清单。公司、客户、联系人、日期、版本及报价类型一致时，可合并输出中英文两页。</p>
+        <p class="mt-1 text-xs text-slate-600">逐个接收已输出报价后加入清单。公司、客户、联系人、日期、版本及报价类型一致时，可合并输出中英文两页。</p>
         <ul class="my-3 space-y-2"><li v-for="(item, index) in dickieBatch" :key="item.v2Data!.products[0]!.identity" class="flex items-center justify-between gap-3"><span>{{ item.v2Data!.products[0]!.mapping.item_number }} · {{ item.v2Data!.products[0]!.mapping.item_name.zh }}</span><button type="button" class="text-xs underline" :disabled="isExportingCustomerQuote" @click="removeDickieFromBatch(index)">移除</button></li></ul>
         <button type="button" class="rounded-lg bg-teal-800 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" :disabled="!canExportSelectedCustomer || isImportingInternalQuote || isExportingCustomerQuote" @click="previewDickieBatch">预览合并报价</button>
         <button type="button" class="ml-3 text-xs underline" :disabled="isExportingCustomerQuote" @click="clearDickieBatch">清空清单</button>
@@ -1541,8 +1553,8 @@ async function exportCustomerQuoteExcel() {
       <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div>
         <div v-if="selectedCustomerId === 'dicky'" data-testid="dickie-direct-handoff" class="mb-3 rounded-lg border border-teal-200 bg-teal-50 px-5 py-4">
-          <p class="font-semibold text-teal-900">{{ receivedQuoteNo && hasSelectedCustomerImport ? `已接收内部报价：${receivedQuoteNo}` : '从内部报价台接收 Dickie 报价' }}</p>
-          <p class="mt-2 text-sm text-slate-600">内部报价台填写并审核放行 → 上方交接池接收并转换 → 输出 Quotation / 总表。</p>
+          <p class="font-semibold text-teal-900">{{ receivedQuoteNo && hasSelectedCustomerImport ? `已接收内部报价：${receivedQuoteNo} · ${receivedVersionLabel}` : '从内部报价台接收 Dickie 报价' }}</p>
+          <p class="mt-2 text-sm text-slate-600">内部报价台保存并输出 → 上方交接池接收并转换 → 输出 Quotation / 总表。</p>
         </div>
         <component :is="selectedCustomerId === 'dicky' ? 'details' : 'div'">
         <summary v-if="selectedCustomerId === 'dicky'" class="mb-3 cursor-pointer text-xs text-slate-500">历史 Excel 兼容入口</summary>
@@ -1745,7 +1757,9 @@ async function exportCustomerQuoteExcel() {
                       <span class="block font-semibold text-slate-950">{{ version.fileName }}</span>
                       <span class="mt-1 block text-xs text-slate-500">{{ version.createdAt }} · {{ version.detailCount }} 条</span>
                     </span>
+                    <span v-if="hasActiveDickyConversion && dickyConversionResult?.v2Data" class="text-xs text-slate-500">各 MOQ 单独核对</span>
                     <span
+                      v-else
                       class="rounded-full px-2 py-0.5 text-xs ring-1"
                       :class="version.deltaFromPreviousHkd === 0
                         ? 'bg-slate-50 text-slate-500 ring-slate-200'

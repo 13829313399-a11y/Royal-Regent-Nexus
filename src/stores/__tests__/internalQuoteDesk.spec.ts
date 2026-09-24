@@ -38,6 +38,7 @@ const apiMock = vi.hoisted(() => ({
   previewImport: vi.fn(),
   confirmImport: vi.fn(),
   uploadAttachment: vi.fn(),
+  uploadProductImage: vi.fn(),
   deleteImportAttachment: vi.fn(),
   deleteSupportingAttachment: vi.fn(),
   uploadComponentImage: vi.fn(),
@@ -482,8 +483,8 @@ describe('internal quote desk real API state', () => {
     const created = await store.createQuote(payload)
     const cloned = await store.cloneQuote(created.id, { ...payload, quoteNo: 'IQ-CLONE' })
 
-    expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'whole_quote_review' })
-    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'whole_quote_review' }))
+    expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'direct_output' })
+    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'direct_output' }))
     expect(cloned.id).toBe('clone-1')
   })
 
@@ -941,5 +942,14 @@ describe('internal quote desk real API state', () => {
     expect(apiMock.updateReferenceFx).toHaveBeenCalledWith('quote-1', 2, '0.9', '7.9')
     expect(apiMock.get).toHaveBeenCalledWith('quote-1')
     expect(apiMock.getReferenceSnapshot).toHaveBeenCalledWith('quote-1')
+  })
+
+  it('refreshes the output revision after uploading a product image', async () => {
+    const store = useInternalQuoteDeskStore()
+    apiMock.uploadProductImage.mockResolvedValue({ id: 'new-picture' })
+    apiMock.get.mockResolvedValueOnce(quote({ module_version: 'v4', header_revision: 9 }))
+    await store.uploadProductImage('quote-1', new File(['picture'], 'picture.png'))
+    expect(store.getQuoteById('quote-1')?.headerRevision).toBe(9)
+    expect(apiMock.listBatchProducts).toHaveBeenCalledWith('quote-1')
   })
 })

@@ -1,13 +1,13 @@
 """Preserve vendor delivery rows without a formal order for warehouse review.
 
-Revision ID: 20260924_0123
-Revises: 20260924_0122
+Revision ID: 20260924_0124
+Revises: 20260924_0123
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = "20260924_0123"
-down_revision = "20260924_0122"
+revision = "20260924_0124"
+down_revision = "20260924_0123"
 branch_labels = None
 depends_on = None
 

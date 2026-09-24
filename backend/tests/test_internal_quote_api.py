@@ -163,6 +163,7 @@ def create_payload(
         "target_customer_price": "USD 3.50",
         "target_date": "2026-08-01",
         "remark": "P1 回归",
+        "workflow_mode": "section_review",
     }
     if participating_sections is not None:
         payload["participating_sections"] = participating_sections
