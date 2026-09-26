@@ -12,13 +12,14 @@ const previewUserAccessMock = vi.hoisted(() => vi.fn())
 const commitUserAccessMock = vi.hoisted(() => vi.fn())
 const refreshSessionMock = vi.hoisted(() => vi.fn())
 const canMock = vi.hoisted(() => vi.fn())
+const authMock = vi.hoisted(() => ({ grants: [] as Array<{ role_id: string; factory_id: string; department: string }> }))
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { userId: 'user-1' } }),
 }))
 
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ can: canMock, refreshSession: refreshSessionMock }),
+  useAuthStore: () => ({ can: canMock, grants: authMock.grants, refreshSession: refreshSessionMock }),
 }))
 
 vi.mock('@/api/iam', () => ({
@@ -130,6 +131,7 @@ function mountView() {
 
 describe('UserAccessManagementView system position change', () => {
   beforeEach(() => {
+    authMock.grants = []
     canMock.mockReset().mockReturnValue(true)
     getUserAccessMock.mockReset().mockResolvedValue(access)
     listSystemPositionsMock.mockReset().mockResolvedValue(positions)
@@ -165,6 +167,64 @@ describe('UserAccessManagementView system position change', () => {
       status: 'committed', authorization_version: 3,
     })
     refreshSessionMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('previews and saves supplier read and approval separately from the internal position', async () => {
+    authMock.grants = [{ role_id: 'admin', factory_id: '*', department: 'system' }]
+    listPermissionsMock.mockResolvedValue(['read', 'edit', 'approve'].map((action, index) => ({
+      ...permission, code: `carton_supplier:${action}`, name: `供应商${action}`,
+      module_code: 'carton_supplier', action, status: 'active', sort_order: index + 1,
+    })))
+    previewUserAccessMock.mockResolvedValue({
+      preview_token: 'supplier-preview', base_revision: 2, requires_approval: false, high_risk: true,
+      diffs: [{ permission_code: 'carton_supplier:approve', factory_id: '*', department: '*',
+        before: 'none', after: 'allow', risk_level: 'high' }],
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    const card = wrapper.get('[data-testid="supplier-permission-card"]')
+    await card.get('input[aria-label="供应商read"]').setValue(true)
+    await card.get('input[aria-label="供应商approve"]').setValue(true)
+    await card.get('input[aria-label="供应商权限变更原因"]').setValue('开通接单权限')
+    await card.findAll('button').find(button => button.text().includes('预览供应商权限变更'))!.trigger('click')
+    await flushPromises()
+    expect(previewUserAccessMock).toHaveBeenCalledWith('user-1', {
+      base_revision: 2, reason: '开通接单权限',
+      overrides: [
+        { permission_code: 'carton_supplier:read', effect: 'allow', factory_id: '*', department: '*' },
+        { permission_code: 'carton_supplier:approve', effect: 'allow', factory_id: '*', department: '*' },
+      ],
+    })
+    expect(previewUserSystemPositionMock).not.toHaveBeenCalled()
+    await card.get('input[aria-label="确认供应商高风险权限"]').setValue(true)
+    await card.findAll('button').find(button => button.text().includes('确认保存权限'))!.trigger('click')
+    await flushPromises()
+    expect(commitUserAccessMock).toHaveBeenCalledWith('user-1', 'supplier-preview', true)
+    expect(refreshSessionMock).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('locks the supplier permission draft while a preview request is pending', async () => {
+    authMock.grants = [{ role_id: 'admin', factory_id: '*', department: 'system' }]
+    listPermissionsMock.mockResolvedValue(['read', 'edit', 'approve'].map((action, index) => ({
+      ...permission, code: `carton_supplier:${action}`, name: `供应商${action}`, module_code: 'carton_supplier',
+      action, status: 'active', sort_order: index + 1,
+    })))
+    const pending = deferred<Awaited<ReturnType<typeof previewUserAccessMock>>>()
+    previewUserAccessMock.mockReturnValueOnce(pending.promise)
+    const wrapper = mountView()
+    await flushPromises()
+    const card = wrapper.get('[data-testid="supplier-permission-card"]')
+    await card.get('input[aria-label="供应商read"]').setValue(true)
+    await card.get('input[aria-label="供应商权限变更原因"]').setValue('只读协同')
+    await card.findAll('button').find(button => button.text().includes('预览供应商权限变更'))!.trigger('click')
+    expect(card.get('input[aria-label="供应商read"]').attributes('disabled')).toBeDefined()
+    expect(card.get('input[aria-label="供应商权限变更原因"]').attributes('disabled')).toBeDefined()
+    pending.resolve({ preview_token: 'locked-preview', base_revision: 2, requires_approval: false,
+      high_risk: false, diffs: [] })
+    await flushPromises()
+    expect(card.get('input[aria-label="供应商read"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
   })
 
   it('keeps the page available without reading protected authorization data when access management is denied', async () => {

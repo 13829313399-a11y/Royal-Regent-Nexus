@@ -13,6 +13,19 @@ function client() {
 }
 
 describe('internal quote API adapter', () => {
+  it('keeps direct output, alternative versions and adoption guarded by their current revisions', async () => {
+    const http = client(), api = createInternalQuoteApi(http)
+    await api.directIssue('q1', 8)
+    await api.createAlternative('q1', { revision: 8, family_revision: 3, kind: 'version', name: '开窗盒', change_note: '改尺寸' })
+    await api.selectAlternative('q1', { family_revision: 4, selected_quote_id: 'q2', reason: '客户采用' })
+    await api.archiveAlternative('q1', { family_revision: 5, archived: true, reason: '已不采用' })
+    await api.markReported('q2', 9)
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/q1/direct-issue', { revision: 8 })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/q1/alternatives', { revision: 8, family_revision: 3, kind: 'version', name: '开窗盒', change_note: '改尺寸' })
+    expect(http.patch).toHaveBeenCalledWith('/internal-quotes/q1/alternative-selection', { family_revision: 4, selected_quote_id: 'q2', reason: '客户采用' })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/q1/alternative-archive', { family_revision: 5, archived: true, reason: '已不采用' })
+    expect(http.post).toHaveBeenCalledWith('/internal-quotes/q2/reported', { revision: 9 })
+  })
   it('requests expanded factory list and scoped business-owner choices', async () => {
     const http = client()
     const api = createInternalQuoteApi(http)

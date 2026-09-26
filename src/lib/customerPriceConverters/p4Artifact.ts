@@ -221,10 +221,12 @@ export function parseP4InternalQuoteArtifact(
       : `期望 ${P4_ARTIFACT_TEMPLATE_VERSION}，实际 ${templateVersion || '未知版本'}`
     throw new P4ArtifactValidationError(`当前受控文件不能直接转换：${suffix}`)
   }
-  if (text(approval.rows[3]?.[1]) !== 'P4 最终业务放行') {
+  const isDirectIssue = text(approval.rows[3]?.[1]) === 'P4 直接输出'
+  if (!isDirectIssue && text(approval.rows[3]?.[1]) !== 'P4 最终业务放行') {
     throw new P4ArtifactValidationError('当前工作簿不是 P4 最终业务放行文件')
   }
-  if (text(approval.rows[4]?.[1]) !== '最终业务放行完成，可交接客价转换台') {
+  const expectedBoundary = isDirectIssue ? '报价版本已冻结，可交接客价转换台' : '最终业务放行完成，可交接客价转换台'
+  if (text(approval.rows[4]?.[1]) !== expectedBoundary) {
     throw new P4ArtifactValidationError('P4 放行边界标记缺失或已被修改')
   }
   const approvalManifest = readApprovalManifest(approval.rows)
@@ -310,13 +312,13 @@ export function parseP4InternalQuoteArtifact(
     ))) {
       throw new P4ArtifactValidationError(`${metadata.name || code} 的结构化分片元数据不一致`)
     }
-    if (metadata.isRequired && !['approved', 'not_applicable'].includes(metadata.status)) {
+    if (metadata.isRequired && !(isDirectIssue ? ['sealed', 'not_applicable'] : ['approved', 'not_applicable']).includes(metadata.status)) {
       throw new P4ArtifactValidationError(`${metadata.name || code} 尚未最终通过`)
     }
     if (metadata.isRequired && metadata.dependencyStatus !== 'current') {
       throw new P4ArtifactValidationError(`${metadata.name || code} 依赖状态不是 current`)
     }
-    if (metadata.isRequired && metadata.status === 'approved' && metadata.calculationStatus !== 'valid') {
+    if (metadata.isRequired && ['approved', 'sealed'].includes(metadata.status) && metadata.calculationStatus !== 'valid') {
       throw new P4ArtifactValidationError(`${metadata.name || code} 计算状态不是 valid`)
     }
     if (metadata.isRequired && metadata.status === 'not_applicable' && metadata.calculationStatus !== 'not_applicable') {
@@ -324,7 +326,7 @@ export function parseP4InternalQuoteArtifact(
     }
     const payload = reconstructJson(chunkRows, 'payload', code)
     const calculation = reconstructJson(chunkRows, 'calculation', code)
-    if (metadata.isRequired && metadata.status === 'approved') {
+    if (metadata.isRequired && ['approved', 'sealed'].includes(metadata.status)) {
       if (text(calculation.calculation_hash as XlsxCellValue) !== metadata.calculationHash) {
         throw new P4ArtifactValidationError(`${metadata.name || code} 计算 hash 与结构化清单不一致`)
       }

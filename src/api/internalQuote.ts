@@ -302,6 +302,46 @@ export interface ApiInternalQuoteVersionComparison {
   total_delta_hkd: string
 }
 
+export interface ApiAlternativeSyncRequest {
+  revision: number
+  family_revision: number
+  blocks: string[]
+  targets: Array<{ quote_id: string; revision: number; create_version: boolean }>
+  reason: string
+  preview_token?: string
+}
+export interface ApiAlternativeSyncPreview {
+  preview_token: string
+  targets: Array<{ quote_id: string; version_label: string; create_version: boolean; changed: boolean;
+    before: ApiInternalQuote; after: ApiInternalQuote; sections: ApiInternalQuoteSectionComparison[] }>
+}
+
+export interface ApiInternalQuoteAlternative {
+  quote_id: string
+  scenario_id: string
+  scenario_name: string
+  version_number: number
+  version_label: string
+  source_quote_id: string
+  change_note: string
+  status: string
+  issued_at: string
+  reported_at: string
+  created_at: string
+  quote_no: string
+  product_name: string
+  customer: string
+  quantity: number
+  archived: boolean
+}
+
+export interface ApiInternalQuoteAlternativeFamily {
+  family_id: string
+  revision: number
+  selected_quote_id: string
+  items: ApiInternalQuoteAlternative[]
+}
+
 export interface ApiInternalQuoteBusinessOwner {
   id: string
   username: string
@@ -484,7 +524,7 @@ export interface InternalQuoteCreateRequest {
   target_date: string
   remark: string
   participating_sections: InternalQuoteSectionCode[]
-  workflow_mode: 'section_review' | 'whole_quote_review'
+  workflow_mode: 'section_review' | 'whole_quote_review' | 'direct_output'
   quote_type: 'single' | 'series' | 'multi_region'
   products: Array<{
     product_name: string
@@ -549,7 +589,7 @@ export interface InternalQuoteCloneRequest {
   target_date: string
   remark?: string
   participating_sections?: InternalQuoteSectionCode[]
-  workflow_mode?: 'section_review' | 'whole_quote_review'
+  workflow_mode?: 'section_review' | 'whole_quote_review' | 'direct_output'
 }
 
 export interface InternalQuoteHeaderUpdateRequest {
@@ -907,6 +947,25 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/exports`)
       return response.data
     },
+    async directIssue(quoteId: string, revision: number) {
+      const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/direct-issue`, { revision })
+      return response.data
+    },
+    async listAlternatives(quoteId: string) {
+      return (await client.get<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternatives`)).data
+    },
+    async createAlternative(quoteId: string, payload: { revision: number; family_revision: number; kind: 'scenario' | 'version'; name: string; change_note: string }) {
+      return (await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/alternatives`, payload)).data
+    },
+    async selectAlternative(quoteId: string, payload: { family_revision: number; selected_quote_id: string; reason: string }) {
+      return (await client.patch<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternative-selection`, payload)).data
+    },
+    async markReported(quoteId: string, revision: number) {
+      return (await client.post<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/reported`, { revision })).data
+    },
+    async archiveAlternative(quoteId: string, payload: { family_revision: number; reason: string; archived: boolean }) {
+      return (await client.post<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternative-archive`, payload)).data
+    },
     async downloadExport(quoteId: string, exportId: string) {
       const response = await client.get<Blob>(`/internal-quotes/${quoteId}/exports/${exportId}/download`, { responseType: 'blob' })
       return response.data
@@ -938,6 +997,15 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async compareVersion(quoteId: string, baseQuoteId: string) {
       const response = await client.get<ApiInternalQuoteVersionComparison>(`/internal-quotes/${quoteId}/compare/${baseQuoteId}`)
       return response.data
+    },
+    async syncOptions(quoteId: string) {
+      return (await client.get<Array<{ key: string; label: string; department: string }>>(`/internal-quotes/${quoteId}/alternative-sync/options`)).data
+    },
+    async previewAlternativeSync(quoteId: string, payload: ApiAlternativeSyncRequest) {
+      return (await client.post<ApiAlternativeSyncPreview>(`/internal-quotes/${quoteId}/alternative-sync/preview`, payload)).data
+    },
+    async applyAlternativeSync(quoteId: string, payload: ApiAlternativeSyncRequest) {
+      return (await client.post<{ targets: Array<{ quote_id: string; version_label: string; changed: boolean }> }>(`/internal-quotes/${quoteId}/alternative-sync/apply`, payload)).data
     },
   }
 }

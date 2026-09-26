@@ -16,16 +16,31 @@ describe('supplier management route scope', () => {
     vi.resetAllMocks(); setActivePinia(createPinia())
     await router.replace('/login?logged_out=1')
   })
-  it('keeps the supplier mark route authenticated without granting internal carton permissions', async () => {
+  it('opens supplier mark templates with supplier read permission without internal carton permissions', async () => {
     const user: AuthMeResponse = {
-      id: 'supplier', username: 'supplier', display_name: '供应商', roles: [], permissions: [],
-      factory_scopes: [], department_scopes: [], force_password_change: false, grants: [],
+      id: 'supplier', username: 'supplier', display_name: '供应商', roles: [], permissions: ['carton_supplier:read'],
+      factory_scopes: ['*'], department_scopes: ['*'], force_password_change: false,
+      grants: [{ role_id: 'supplier-reader', role_name: '供应商查看', factory_id: '*', department: '*', permissions: ['carton_supplier:read'], data_scope: 'group' }],
+      effective_access: [{ permission_code: 'carton_supplier:read', factory_id: '*', department: '*', effect: 'allow', allowed: true, source_type: 'user_override', source_ids: ['supplier-read'] }],
       profile: { primary_factory_id: 'huaxing', primary_department: 'carton', position: '', confirmation_status: 'confirmed' },
     }
     api.getMe.mockResolvedValue(user); useAuthStore().applySession(user)
     await router.replace('/carton-supplier/carton-mark?factory=huaxing')
     expect(router.currentRoute.value.name).toBe('carton-supplier-carton-mark')
+    await router.replace('/carton-supplier?factory=huaxing')
+    expect(router.currentRoute.value.name).toBe('carton-supplier')
     await router.replace('/modules/pmc-warehouse/carton-procurement?factory=huaxing')
+    expect(router.currentRoute.value.name).toBe('dashboard')
+  })
+  it('rejects supplier pages when supplier read permission is absent', async () => {
+    const user: AuthMeResponse = {
+      id: 'viewer', username: 'viewer', display_name: '普通账号', roles: [], permissions: [],
+      factory_scopes: [], department_scopes: [], force_password_change: false, grants: [],
+    }
+    api.getMe.mockResolvedValue(user); useAuthStore().applySession(user)
+    await router.replace('/carton-supplier')
+    expect(router.currentRoute.value.name).toBe('dashboard')
+    await router.replace('/carton-supplier/carton-mark?factory=huaxing')
     expect(router.currentRoute.value.name).toBe('dashboard')
   })
   it.each(['carton', 'pmc-warehouse'])('allows a %s-only read grant through the real navigation guard', async department => {

@@ -81,6 +81,7 @@ from app.services.permission_scope_policy import (
     role_scope_policy,
     scope_is_applicable,
 )
+from app.services.permission_codes import CARTON_SUPPLIER_PERMISSION_CODES
 from app.services.system_positions import (
     SPECIAL_SYSTEM_ROLE_CODES,
     SYSTEM_POSITION_DEFINITIONS,
@@ -208,7 +209,7 @@ def get_user_access(db: Session, current_user: AuthContext, user_id: str) -> Use
             or roles_by_id[binding.role_id].code not in SPECIAL_SYSTEM_ROLE_CODES
         )
     )
-    lifecycle_overrides = _lifecycle_active_overrides(db, user_id)
+    lifecycle_overrides = _position_cleanup_overrides(db, user_id)
     return UserAccessOut(
         user=UserAccessUserOut(
             id=user.id,
@@ -268,6 +269,9 @@ def preview_user_access(
     )
     actor_scopes = _manager_scopes(db, current_user.id)
     is_super_admin = _is_superadmin(db, current_user.id)
+    if any(item["kind"] == "permission_override" and item["permission_code"].startswith("carton_supplier:")
+           for item in operations) and not is_super_admin:
+        raise HTTPException(status_code=403, detail="供应商协同跨厂区权限仅集团超级管理员可配置")
     cross_scope = any(
         not _scope_is_managed(actor_scopes, item["factory_id"], item["department"])
         for item in operations
@@ -313,16 +317,26 @@ def commit_user_access(
     payload: AccessCommitRequest,
     request: Request | None = None,
 ) -> AccessCommitResponse:
-    _require_writes_enabled()
     _ensure_iam_manager(db, current_user)
     preview, preview_payload, summary = _load_preview(
         db, payload.preview_token, current_user.id, "user", user_id
     )
+    operations = preview_payload["operations"]
+    supplier_only = bool(operations) and all(
+        item["kind"] == "permission_override"
+        and item["permission_code"] in {"carton_supplier:read", "carton_supplier:edit", "carton_supplier:approve"}
+        and item["factory_id"] == "*" and item["department"] == "*"
+        for item in operations
+    )
+    if not supplier_only:
+        _require_writes_enabled()
     current_revision = _get_revision(db, user_id, for_update=True)
     if preview.base_revision != current_revision:
         raise HTTPException(status_code=409, detail="用户权限已变化，请重新预览")
 
     current_is_super_admin = _is_superadmin(db, current_user.id)
+    if supplier_only and not current_is_super_admin:
+        raise HTTPException(status_code=403, detail="供应商协同跨厂区权限仅集团超级管理员可配置")
     current_scopes = _manager_scopes(db, current_user.id)
     currently_cross_scope = any(
         not _scope_is_managed(current_scopes, item["factory_id"], item["department"])
@@ -463,7 +477,7 @@ def preview_system_position(
         item.id: item
         for item in db.scalars(select(AuthPermission)).all()
     }
-    lifecycle_overrides = _lifecycle_active_overrides(db, user_id)
+    lifecycle_overrides = _position_cleanup_overrides(db, user_id)
     for override in lifecycle_overrides:
         permission = permission_by_id.get(override.permission_id)
         if permission is None:
@@ -2144,6 +2158,13 @@ def _lifecycle_active_overrides(db: Session, user_id: str) -> list[AuthUserPermi
             )
         ).all()
     )
+
+
+def _position_cleanup_overrides(db: Session, user_id: str) -> list[AuthUserPermissionOverride]:
+    supplier_permission_ids = set(db.scalars(select(AuthPermission.id).where(
+        AuthPermission.code.in_(CARTON_SUPPLIER_PERMISSION_CODES))).all())
+    return [item for item in _lifecycle_active_overrides(db, user_id)
+            if item.permission_id not in supplier_permission_ids]
 
 
 def _metadata_is_effective(item: Any | None, state_attribute: str) -> bool:

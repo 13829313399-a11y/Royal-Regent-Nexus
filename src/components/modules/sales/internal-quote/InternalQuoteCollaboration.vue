@@ -2,6 +2,7 @@
 import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleDollarSign, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import InternalQuoteAlternatives from './InternalQuoteAlternatives.vue'
 import InternalQuoteActivityPanel from './InternalQuoteActivityPanel.vue'
 import InternalQuoteComponentScopePicker from './InternalQuoteComponentScopePicker.vue'
 import InternalQuoteComponentImage from './InternalQuoteComponentImage.vue'
@@ -91,7 +92,9 @@ const isMultiProduct = computed(() => batchProducts.value.length > 1)
 const batchReady = computed(() => batchProducts.value.length > 0
   && !(quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.value.id)
   && batchProducts.value.every((product) => product.status === 'fully_approved'))
-const isWholeQuoteReview = computed(() => quote.value.moduleVersion === 'v3')
+const isDirectOutput = computed(() => quote.value.moduleVersion === 'v4')
+const isContinuousQuote = computed(() => ['v3', 'v4'].includes(quote.value.moduleVersion))
+const canDirectOutput = computed(() => isDirectOutput.value && authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
 const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
@@ -108,7 +111,7 @@ const participationChanges = computed(() => {
 })
 const hasParticipationChanges = computed(() => participationChanges.value.additions.length > 0 || participationChanges.value.removals.length > 0)
 const activeSectionCode = computed<InternalQuoteSectionCode>(() => {
-  if (isWholeQuoteReview.value) return activeContinuousSectionCode.value
+  if (isContinuousQuote.value) return activeContinuousSectionCode.value
   const requested = String(route.query.section ?? '') as InternalQuoteSectionCode
   return participatingSections.value.some((section) => section.code === requested)
     ? requested
@@ -123,12 +126,13 @@ function sectionProgress(section: InternalQuoteSection): SectionProgressState {
   if (section.filledAt || Object.keys(section.payload).length) return 'in_progress'
   return 'empty'
 }
-const completedCount = computed(() => isWholeQuoteReview.value
+const completedCount = computed(() => isContinuousQuote.value
   ? participatingSections.value.filter((section) => sectionProgress(section) === 'completed').length
   : approvedCount.value)
 const progressPercent = computed(() => participatingSections.value.length ? completedCount.value / participatingSections.value.length * 100 : 0)
 const collaborationStatusLabel = computed(() => {
-  if (!isWholeQuoteReview.value) return quote.value.status === 'rejected' ? '存在退回' : '协作进行中'
+  if (isDirectOutput.value) return quote.value.status === 'exported' ? '已输出并冻结' : quote.value.status === 'archived' ? '已归档' : '方案填写中'
+  if (!isContinuousQuote.value) return quote.value.status === 'rejected' ? '存在退回' : '协作进行中'
   return {
     drafting: '整单填写中',
     pending_review: '整单填写中',
@@ -141,6 +145,7 @@ const collaborationStatusLabel = computed(() => {
   }[quote.value.status]
 })
 const wholeReviewDescription = computed(() => {
+  if (isDirectOutput.value) return quote.value.status === 'exported' ? '本方案版本已经输出并保留，后续调整请复制新版本；其他备选方案互不影响。' : '各部门填写并保存，资料完整后即可直接输出当前方案；输出时保留完整版本并交接客价转换台，无需人工审核。'
   if (quote.value.status === 'fully_approved') return '所有参与部门资料已经保存并通过服务端校验，可以统一提交给指定审核人。'
   if (quote.value.status === 'final_pending') return `整份报价已经锁定，正在等待 ${quote.value.businessOwner} 统一审核。`
   if (quote.value.status === 'rejected') return quote.value.finalReviewComment
@@ -162,11 +167,11 @@ const canReviewActive = computed(() => canReviewInternalQuoteSections(
   quote.value.businessOwnerId,
   quote.value.createdById,
 ))
-const canSubmitWholeReview = computed(() => isWholeQuoteReview.value
+const canSubmitWholeReview = computed(() => quote.value.moduleVersion === 'v3'
   && authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
 const canWithdrawWhole = computed(() => canWithdrawInternalQuote(authStore, quote.value))
 const canReviewWhole = computed(() => canReviewWholeInternalQuote(authStore, quote.value))
-const canSyncReference = computed(() => ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
+const canSyncReference = computed(() => !(isDirectOutput.value && ['exported', 'archived'].includes(quote.value.status)) && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
 const formulaStale = computed(() => Boolean(
   quote.value.currentFormulaVersion
   && quote.value.formulaVersion !== quote.value.currentFormulaVersion,
@@ -212,13 +217,14 @@ const markupBlockedReason = computed(() => {
   if (!canEditMarkup.value) return ''
   if (!salesSection.value) return '业务部分段不存在，暂时无法保存码数与杂项。'
   if (['draft', 'rejected'].includes(salesSection.value.status)) return ''
-  if (isWholeQuoteReview.value) return '整单已经提交或审核通过；整单退回并全部解锁后才能修改码数与杂项。'
+  if (isDirectOutput.value) return '此方案版本已输出并冻结，请复制新版本后修改。'
+  if (isContinuousQuote.value) return '整单已经提交或审核通过；整单退回并全部解锁后才能修改码数与杂项。'
   return '业务部已提交或审核完成；请先重开业务部分段，再保存新的码数与杂项。'
 })
 const canManageParticipation = computed(() => quote.value.status !== 'archived' && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:create', quote.value.factoryId, department)))
 const canEditHeader = computed(() => (
   !['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)
-  && (isWholeQuoteReview.value && quote.value.status === 'rejected'
+  && (isDirectOutput.value || isContinuousQuote.value && quote.value.status === 'rejected'
     || participatingSections.value.every((section) => section.status === 'draft' && section.revision === 1))
   && authStore.can('internal_quote:header_edit', quote.value.factoryId, 'sales-business')
 ))
@@ -233,7 +239,7 @@ const getQuoteRoute = (path: string) => getFactoryScopedRoute(
 function canRemoveSection(code: InternalQuoteSectionCode) {
   return canManageParticipation.value
     && optionalSectionCodes.includes(code)
-    && (!isWholeQuoteReview.value || ['drafting', 'rejected'].includes(quote.value.status))
+    && (!isContinuousQuote.value || ['drafting', 'rejected'].includes(quote.value.status))
 }
 
 function setSectionEditorRef(code: InternalQuoteSectionCode, instance: unknown) {
@@ -259,7 +265,7 @@ function setSectionNode(code: InternalQuoteSectionCode, node: unknown) {
 function setupSectionObserver() {
   sectionObserver?.disconnect()
   sectionObserver = undefined
-  if (!isWholeQuoteReview.value || typeof IntersectionObserver === 'undefined') return
+  if (!isContinuousQuote.value || typeof IntersectionObserver === 'undefined') return
   sectionObserver = new IntersectionObserver((entries) => {
     const visible = entries.filter((entry) => entry.isIntersecting)
       .sort((left, right) => Math.abs(left.boundingClientRect.top - 140) - Math.abs(right.boundingClientRect.top - 140))
@@ -270,7 +276,7 @@ function setupSectionObserver() {
 }
 
 function selectSection(code: InternalQuoteSectionCode) {
-  if (!isWholeQuoteReview.value) {
+  if (!isContinuousQuote.value) {
     void router.replace({ query: { ...route.query, section: code } })
     return
   }
@@ -712,6 +718,21 @@ async function saveWholeProductDraft() {
   }
 }
 
+async function openAlternative(id: string) {
+  await router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${id}/collaboration`))
+}
+
+async function directOutput() {
+  errorMessage.value = ''; message.value = ''
+  if (!canDirectOutput.value) { errorMessage.value = '当前账号没有输出权限。'; return }
+  if (hasUnsavedDepartmentChanges()) { errorMessage.value = '当前页面还有未保存的内容，请先保存当前款，再直接输出。'; return }
+  try {
+    const record = await quoteStore.directIssue(quote.value.id, quote.value.headerRevision) as { id: string; file_name: string }
+    message.value = '此方案版本已输出并冻结，已交接客价转换台。后续修改请复制新版本。'
+    await quoteStore.downloadExport(quote.value.id, record.id, record.file_name)
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '输出失败，请检查资料完整性后重试。' }
+}
+
 async function submitWholeReview() {
   message.value = ''
   errorMessage.value = ''
@@ -847,7 +868,7 @@ watch(quoteId, () => {
   productImagePreviewOpen.value = false
   materialsDialogOpen.value = false
 })
-watch([isWholeQuoteReview, participatingSections], async ([whole]) => {
+watch([isContinuousQuote, participatingSections], async ([whole]) => {
   if (!whole) {
     sectionObserver?.disconnect()
     sectionObserver = undefined
@@ -871,7 +892,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="quote-collaboration-page">
-    <nav class="quote-breadcrumb" aria-label="内部报价导航"><RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft />报价首页</RouterLink><ChevronRight /><span>{{ quote.quoteNo }}</span><ChevronRight /><strong>{{ isWholeQuoteReview ? '整单协作' : '部门协作' }}</strong></nav>
+    <nav class="quote-breadcrumb" aria-label="内部报价导航"><RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft />报价首页</RouterLink><ChevronRight /><span>{{ quote.quoteNo }}</span><ChevronRight /><strong>{{ isContinuousQuote ? '整单协作' : '部门协作' }}</strong></nav>
 
     <header id="quote-page-overview" class="quote-collaboration-head">
       <div class="quote-head-product">
@@ -888,9 +909,9 @@ onBeforeUnmount(() => {
             <span class="sr-only">{{ quoteStore.fileBusy ? '主图上传中' : currentProductImageUrl ? '更新产品主图' : '上传产品主图' }}</span>
           </label>
         </div>
-        <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ collaborationStatusLabel }}</span><b v-if="isMultiProduct">第 {{ quote.batchPosition }}/{{ quote.batchSize }} 款</b><em v-if="baselineDifferenceLabel" class="quote-baseline-comparison" :class="{ same: !currentBatchProduct?.differsFromBaseline }">{{ baselineDifferenceLabel }}</em></div><p>{{ quote.batchQuoteNo || quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />{{ isWholeQuoteReview ? '整批审核人' : '全部分段审核' }} · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
+        <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ collaborationStatusLabel }}</span><b v-if="isMultiProduct">第 {{ quote.batchPosition }}/{{ quote.batchSize }} 款</b><em v-if="baselineDifferenceLabel" class="quote-baseline-comparison" :class="{ same: !currentBatchProduct?.differsFromBaseline }">{{ baselineDifferenceLabel }}</em></div><p>{{ quote.batchQuoteNo || quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />{{ isDirectOutput ? '业务负责人' : isContinuousQuote ? '整批审核人' : '全部分段审核' }} · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
       </div>
-      <div class="quote-head-progress"><div><span>{{ isWholeQuoteReview ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="openMaterialsDialog"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isWholeQuoteReview || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
+      <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="openMaterialsDialog"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
     <details v-if="quote.historySources?.length" class="quote-history-evidence">
@@ -900,9 +921,11 @@ onBeforeUnmount(() => {
 
     <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；部门编辑、整单审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的部门编辑、整单审核或参考同步权限。' }}</p>
 
-    <section v-if="isWholeQuoteReview" class="quote-whole-review-panel" :class="quote.status">
+    <InternalQuoteAlternatives v-if="loadedQuote" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges" @open="openAlternative" @changed="loadQuote" />
+
+    <section v-if="isContinuousQuote" class="quote-whole-review-panel" :class="quote.status">
       <div class="quote-whole-review-icon"><ShieldCheck v-if="['released', 'exported'].includes(quote.status)" /><AlertTriangle v-else-if="quote.status === 'rejected'" /><LockKeyhole v-else-if="quote.status === 'final_pending'" /><Send v-else /></div>
-      <div class="quote-whole-review-copy"><span>{{ isMultiProduct ? '整批一次审核' : '整单审核' }}</span><h2>{{ collaborationStatusLabel }}</h2><p>{{ wholeReviewDescription }}</p><div><b>指定审核人：{{ quote.businessOwner }}</b><b v-if="isMultiProduct">产品数量：{{ batchProducts.length }} 款</b><b>当前款部门完成：{{ completedCount }}/{{ participatingSections.length }}</b><b>报价头 r{{ quote.headerRevision }}</b></div></div>
+      <div class="quote-whole-review-copy"><span>{{ isDirectOutput ? '方案独立输出' : isMultiProduct ? '整批一次审核' : '整单审核' }}</span><h2>{{ collaborationStatusLabel }}</h2><p>{{ wholeReviewDescription }}</p><div><b>{{ isDirectOutput ? '业务负责人' : '指定审核人' }}：{{ quote.businessOwner }}</b><b v-if="isMultiProduct">产品数量：{{ batchProducts.length }} 款</b><b>当前款部门完成：{{ completedCount }}/{{ participatingSections.length }}</b><b>报价头 r{{ quote.headerRevision }}</b></div></div>
     </section>
 
     <div class="quote-snapshot-banner"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>{{ formulaStale ? `公式 ${quote.formulaVersion} 已过期，当前为 ${quote.currentFormulaVersion}` : '同步最新参考表将产生新 revision，并使受影响审批失效' }}</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">{{ formulaStale ? '处理旧公式' : '同步最新参考表' }}</button></div>
@@ -928,14 +951,14 @@ onBeforeUnmount(() => {
     <p v-if="message" class="quote-page-message success">{{ message }}</p><p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p><p v-if="quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.id" class="quote-page-message error" role="status">{{ quoteStore.refreshWarning }} <button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="quoteStore.refreshAfterMutation(quote.id)">重新读取</button></p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
     <p v-if="quoteStore.conflictMessage" class="quote-page-message conflict"><span>{{ quoteStore.conflictMessage }}</span><button type="button" @click="loadQuote">放弃本地表单并重新读取</button></p>
 
-    <div class="quote-collaboration-grid" :class="{ 'whole-review-layout': isWholeQuoteReview }">
+    <div class="quote-collaboration-grid" :class="{ 'whole-review-layout': isContinuousQuote }">
       <aside class="quote-edge-panel quote-edge-panel-left" aria-label="鼠标移入展开页面导航">
         <button type="button" class="quote-edge-handle" aria-label="展开页面导航" title="移入或聚焦后展开页面导航"><ChevronRight /><span>页面导航</span></button>
         <div class="quote-edge-panel-body quote-navigation-stack">
-          <InternalQuoteSectionRail :sections="participatingSections" :active-code="activeSectionCode" :whole-quote-review="isWholeQuoteReview" :block-progress="sectionBlockProgress" :different-section-codes="baselineDifferentSections" @select="selectSection" @select-page="selectPageAnchor" />
+          <InternalQuoteSectionRail :sections="participatingSections" :active-code="activeSectionCode" :whole-quote-review="isContinuousQuote" :direct-output="isDirectOutput" :block-progress="sectionBlockProgress" :different-section-codes="baselineDifferentSections" @select="selectSection" @select-page="selectPageAnchor" />
         </div>
       </aside>
-      <div v-if="isWholeQuoteReview" class="quote-continuous-sections" aria-label="整单连续报价内容">
+      <div v-if="isContinuousQuote" class="quote-continuous-sections" aria-label="整单连续报价内容">
         <section v-if="isMultiProduct" class="quote-component-product-level" :aria-label="isComponentPricing ? 'JustPlay 系列产品当前单款' : '系列产品当前单款'">
           <div><strong>系列产品 / 当前单款</strong><span>{{ isComponentPricing ? '先选择系列中的单款，再选择该单款下的配件。' : '在这里切换当前填写的系列单款。' }}</span></div>
           <InternalQuoteProductActions :products="batchProducts" :current-quote-id="quote.id" :can-manage="canManageParticipation" :copy-busy-quote-id="copyBusyQuoteId" @switch="switchProduct" @copy-baseline="copyBaselineToProduct" />
@@ -946,14 +969,15 @@ onBeforeUnmount(() => {
           <InternalQuoteSectionEditor :ref="(instance) => setSectionEditorRef(section.code, instance)" :quote="quote" :section="section" :can-edit="canEditSection(section.code)" :can-review="false" :can-remove="canRemoveSection(section.code)" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(section.code)" :difference-details="currentBatchProduct?.differentSectionDetails[section.code] ?? []" whole-quote-review @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
         </article>
         <footer id="quote-page-actions" class="quote-whole-product-actions" aria-label="整单操作">
-          <div class="quote-whole-product-actions-copy"><strong>整单操作</strong><span>在这里查看汇总、保存当前款、切换款号、复制基准款，以及提交或审核整单。</span><small>当前款：{{ quote.productName }} · 最后更新 {{ quote.updatedAt }}</small></div>
+          <div class="quote-whole-product-actions-copy"><strong>整单操作</strong><span>{{ isDirectOutput ? '保存当前款后可直接输出；包装或结构调整时，在上方复制新方案或新版本。' : '在这里查看汇总、保存当前款、切换款号、复制基准款，以及提交或审核整单。' }}</span><small>当前款：{{ quote.productName }} · 最后更新 {{ quote.updatedAt }}</small></div>
           <div class="quote-whole-product-actions-controls">
             <button type="button" class="quote-whole-product-save" title="保存当前款全部现有内容" :disabled="wholeProductSaving || quoteStore.submitting" @click="saveWholeProductDraft"><Save />{{ wholeProductSaving ? '保存中…' : '保存' }}</button>
             <div class="quote-whole-review-actions quote-whole-product-workflow">
               <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与输出</RouterLink>
-              <button v-if="!['final_pending', 'released', 'exported', 'archived'].includes(quote.status)" type="button" class="primary" :title="!canSubmitWholeReview ? '当前账号没有整单提交权限' : !batchReady ? '全部产品完成后可提交审核' : '提交审核'" :disabled="!canSubmitWholeReview || !batchReady || quoteStore.submitting" @click="submitWholeReview"><Send />{{ quoteStore.submitting ? '提交中…' : '提交审核' }}</button>
-              <span v-if="!['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !canSubmitWholeReview">当前账号无提交权限</span>
-              <span v-else-if="!['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !batchReady">全部产品完成后可提交</span>
+              <button v-if="isDirectOutput && !['exported', 'archived'].includes(quote.status)" type="button" class="primary" title="输出后保留本版，修改请复制新版本" :disabled="!canDirectOutput || wholeProductSaving || quoteStore.submitting" @click="directOutput">直接输出并保留此版</button>
+              <button v-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status)" type="button" class="primary" :title="!canSubmitWholeReview ? '当前账号没有整单提交权限' : !batchReady ? '全部产品完成后可提交审核' : '提交审核'" :disabled="!canSubmitWholeReview || !batchReady || quoteStore.submitting" @click="submitWholeReview"><Send />{{ quoteStore.submitting ? '提交中…' : '提交审核' }}</button>
+              <span v-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !canSubmitWholeReview">当前账号无提交权限</span>
+              <span v-else-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !batchReady">全部产品完成后可提交</span>
               <template v-if="quote.status === 'final_pending' && canReviewWhole"><button type="button" class="reject" :disabled="quoteStore.submitting" @click="toggleWholeReject"><XCircle />退回整单</button><button type="button" class="primary" :disabled="quoteStore.submitting" @click="approveWholeReview"><ShieldCheck />整单审核通过</button></template>
               <span v-else-if="quote.status === 'final_pending'">等待指定审核人处理</span>
               <button v-if="canWithdrawWhole" type="button" class="reject" :disabled="quoteStore.submitting" @click="toggleWholeWithdraw"><ArrowLeft />退回修改</button>

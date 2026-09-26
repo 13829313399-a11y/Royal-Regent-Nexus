@@ -1,6 +1,6 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { reactive } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDickieMapping, DICKIE_FIXED_MATERIALS, DICKIE_FIXED_REMARKS } from '@/lib/dickieQuote'
 import { normalizeInternalQuotePayload, defaultSalesFreightReferenceRoutes, type SalesPayload, type EngineeringPayload } from '@/lib/internalQuoteSectionPayload'
 import InternalQuoteDickieSales from '../InternalQuoteDickieSales.vue'
@@ -11,7 +11,44 @@ const salesModel = () => reactive(normalizeInternalQuotePayload('sales', { shipp
 const click = async (wrapper: VueWrapper, text: string) => { await wrapper.findAll('button').find(button => button.text() === text)!.trigger('click') }
 const field = (wrapper: VueWrapper, label: string) => wrapper.get(`[aria-label="${label}"]`)
 
+afterEach(() => vi.unstubAllGlobals())
+
 describe('Dickie supplemental forms', () => {
+  it('enables legacy sales data, adds offers and reopens saved input without crypto.randomUUID', async () => {
+    const cryptoSource = globalThis.crypto
+    vi.stubGlobal('crypto', { getRandomValues: cryptoSource.getRandomValues.bind(cryptoSource) })
+    const sales = reactive(normalizeInternalQuotePayload('sales', {
+      customer_quote_fields: { dickie: { client_name: '', product_rows: [], remark_lines: [] } },
+      packaging_materials: [{ item: '旧包装', quantity: 1, unit_price_rmb: 2 }],
+    }) as SalesPayload)
+    const originalPackaging = JSON.stringify(sales.packaging_materials)
+    const errors: unknown[] = []
+    const wrapper = mount(InternalQuoteDickieSales, {
+      props: { sales, routes: defaultSalesFreightReferenceRoutes },
+      global: { config: { errorHandler: error => errors.push(error) } },
+    })
+    try {
+      await click(wrapper, '启用 Dickie 报客资料')
+      expect(errors).toEqual([])
+      await field(wrapper, 'Dickie 产品名称 English').setValue('Double-decker Bus')
+      await click(wrapper, '新增报价方案')
+      const mapping = sales.customer_quote_fields.dickie.mapping!
+      expect(mapping.offers).toHaveLength(2)
+      expect(new Set(mapping.offers.map(offer => offer.id)).size).toBe(2)
+      for (const offer of mapping.offers) expect(offer.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      const reloaded = reactive(normalizeInternalQuotePayload('sales', JSON.parse(JSON.stringify(sales))) as SalesPayload)
+      expect(reloaded.customer_quote_fields.dickie.mapping).toEqual(mapping)
+      expect(JSON.stringify(reloaded.packaging_materials)).toBe(originalPackaging)
+      expect(reloaded.customer_quote_fields.dickie.client_name).toBe('')
+      await wrapper.setProps({ sales: reloaded })
+      expect((field(wrapper, 'Dickie 产品名称 English').element as HTMLTextAreaElement).value).toBe('Double-decker Bus')
+      await field(wrapper, 'Dickie 客户 Client').setValue('Updated client')
+      expect(reloaded.customer_quote_fields.dickie.mapping?.client_name).toBe('Updated client')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('requires explicit activation and renders fixed bilingual terms and materials without inputs', async () => {
     const sales = salesModel()
     const before = JSON.stringify(sales)

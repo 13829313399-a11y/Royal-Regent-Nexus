@@ -1962,8 +1962,8 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         assert first.json()["parse_summary"]["row_count"] == 2
         assert first.json()["parse_summary"]["matched_count"] == 1
         assert first.json()["parse_summary"]["issue_count"] == 1
-        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-local-v6-po"
-        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-local-v6-po"
+        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-local-v7-dongkang"
+        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-local-v7-dongkang"
         matched = first.json()["parse_summary"]["rows"][0]
         assert matched["match_status"] == "MATCHED"
         assert matched["order_line_id"] == order["lines"][0]["id"]
@@ -2030,6 +2030,44 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
             "/api/carton-procurement/inventory/movements",
             params={"factory_id": "huaxing"},
         ).json()["total"] == 0
+
+
+def test_dongkang_delivery_import_redirects_to_destination_without_saving_wrong_factory(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        content = _workbook_bytes(
+            ["送货单号", "客户", "客户单号", "客户料号", "送货时间", "名称", "材质", "规格", "送货数量", "单价", "金额"],
+            [["DN-HKB-1", "华康（B）车间", "C-1", "I-1", "2026-09-24", "普通箱", "A=B", "18*12.5*17.25cm", 10, 2, 20]],
+        )
+        wrong_factory = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("dongkang.xlsx", content)},
+        )
+        assert wrong_factory.status_code == 409, wrong_factory.text
+        assert wrong_factory.json()["detail"]["code"] == "DELIVERY_FACTORY_MISMATCH"
+        assert wrong_factory.json()["detail"]["factory_id"] == "huakang-b"
+        latest = client.get("/api/carton-procurement/receipt-imports/latest", params={"factory_id": "huaxing"})
+        assert latest.status_code == 200
+        assert latest.json() is None
+        exceptions = client.get("/api/carton-procurement/exceptions", params={"factory_id": "huaxing"})
+        assert exceptions.json()["total"] == 0
+
+        mixed = _workbook_bytes(
+            ["送货单号", "客户", "客户单号", "客户料号", "送货时间", "名称", "材质", "规格", "送货数量", "单价", "金额"],
+            [
+                ["DN-MIX-1", "华兴车间", "C-1", "I-1", "2026-09-24", "普通箱", "A=B", "18*12*17cm", 5, 2, 10],
+                ["DN-MIX-2", "华康（B）车间", "C-2", "I-2", "2026-09-24", "普通箱", "A=B", "18*12*17cm", 5, 2, 10],
+            ],
+        )
+        mixed_response = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("mixed-dongkang.xlsx", mixed)},
+        )
+        assert mixed_response.status_code == 422
+        assert "按厂区分别导出" in mixed_response.json()["detail"]
+        assert client.get("/api/carton-procurement/receipt-imports/latest", params={"factory_id": "huaxing"}).json() is None
 
 
 def test_delivery_import_parser_version_reprocesses_an_older_file(monkeypatch):

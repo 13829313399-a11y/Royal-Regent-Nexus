@@ -5388,7 +5388,8 @@ def _build_approval_sheet(
 ) -> None:
     sheet = workbook.create_sheet("审批与版本")
     _style_title(sheet, "审批、公式与版本清单", 8)
-    is_final_release = manifest.get("release_stage") == "p4_final_approved"
+    is_direct = manifest.get("release_stage") == "p4_direct_issued"
+    is_final_release = manifest.get("release_stage") in {"p4_final_approved", "p4_direct_issued"}
     template_version = str(manifest.get("template_version") or P3_TEMPLATE_VERSION)
     release_label = "P4 最终业务放行" if is_final_release else "P3 分段审批后内部成本快照"
     boundary_label = (
@@ -5396,16 +5397,19 @@ def _build_approval_sheet(
         if is_final_release
         else "最终业务放行与客价交接在 P4 实施"
     )
+    if is_direct:
+        release_label = "P4 直接输出"
+        boundary_label = "报价版本已冻结，可交接客价转换台"
     summary = (
         ("模板版本", template_version, "公式版本", quote.formula_version),
         ("参考快照", quote.reference_snapshot_id, "报价头revision", quote.header_revision),
         ("导出阶段", release_label, "清单SHA-256", manifest.get("manifest_sha256", "")),
         ("边界说明", boundary_label, "", ""),
         (
-            "最终提交人",
-            manifest.get("final_submitted_by_name", ""),
-            "最终放行人/时间",
-            f"{manifest.get('final_reviewed_by_name', '')} {manifest.get('final_reviewed_at', '')}".strip(),
+            "输出人" if is_direct else "最终提交人",
+            manifest.get("issued_by_name" if is_direct else "final_submitted_by_name", ""),
+            "输出时间" if is_direct else "最终放行人/时间",
+            manifest.get("issued_at", "") if is_direct else f"{manifest.get('final_reviewed_by_name', '')} {manifest.get('final_reviewed_at', '')}".strip(),
         ),
     )
     for row_index, values in enumerate(summary, start=2):
@@ -5641,7 +5645,7 @@ def build_internal_quote_workbook(
     _build_sewing_sheet(workbook, by_code.get("sewing"), reference_snapshot or {})
     _build_hair_sheet(workbook, by_code.get("hair"))
     _build_assembly_sheet(workbook, by_code.get("assembly"))
-    if manifest.get("release_stage") == "p4_final_approved":
+    if manifest.get("release_stage") in {"p4_final_approved", "p4_direct_issued"}:
         from app.services.internal_quote_dickie import build_dickie_handoff
         customer_mapping = build_dickie_handoff(quote, sections, reference_snapshot or {}, cost_context or {})
         if quote.factory_id == "huaxing" and quote.customer.strip().lower() == "buzzbee":

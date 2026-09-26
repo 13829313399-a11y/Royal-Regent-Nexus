@@ -89,6 +89,12 @@ CARTON_PROCUREMENT_PERMISSION_CODES = (
     "carton_procurement:master_manage",
 )
 
+CARTON_SUPPLIER_PERMISSION_CODES = (
+    "carton_supplier:read",
+    "carton_supplier:edit",
+    "carton_supplier:approve",
+)
+
 THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:read",
     "three_d_printing:operate",
@@ -170,6 +176,7 @@ BUSINESS_PERMISSION_CODES = (
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
     *CARTON_PROCUREMENT_PERMISSION_CODES,
+    *CARTON_SUPPLIER_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *CUSTOMER_ORDER_PERMISSION_CODES,
     *THREE_D_PRINTING_PERMISSION_CODES,

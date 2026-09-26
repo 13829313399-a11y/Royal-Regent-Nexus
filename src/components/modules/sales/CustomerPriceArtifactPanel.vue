@@ -178,7 +178,7 @@ function downloadBlob(blob: Blob, fileName: string) {
 
 async function fetchVerifiedArtifact(artifact: CustomerPriceInternalQuoteArtifact) {
   const file = await customerPriceArtifactApi.download(artifact.id)
-  if (file.releaseStage && file.releaseStage !== 'p4_final_approved') {
+  if (file.releaseStage && !['p4_final_approved', 'p4_direct_issued'].includes(file.releaseStage)) {
     throw new Error(`服务端返回了非 P4 放行文件：${file.releaseStage}`)
   }
   if (file.sha256 && file.sha256.toLowerCase() !== artifact.sha256.toLowerCase()) {
@@ -382,13 +382,13 @@ onBeforeUnmount(() => {
       </p>
 
       <div v-if="loading" class="mt-4 flex min-h-32 items-center justify-center gap-3 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-600">
-        <LoaderCircle class="size-5 animate-spin" aria-hidden="true" />正在读取最终放行交接文件…
+        <LoaderCircle class="size-5 animate-spin" aria-hidden="true" />正在读取内部报价交接文件…
       </div>
 
       <div v-else-if="artifacts.length === 0" class="mt-4 flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-center">
         <Inbox class="size-7 text-slate-400" aria-hidden="true" />
         <strong class="mt-3 text-sm text-slate-800">{{ hasConfiguredCustomers ? '当前筛选下没有交接文件' : '当前厂区尚未配置报客映射' }}</strong>
-        <span class="mt-1 text-xs text-slate-500">{{ hasConfiguredCustomers ? '只有已由本单负责跟客最终放行且未被后续 revision 撤销的文件会进入待接收列表。' : '请先为本厂区建立独立客户映射链路，再接收 P4 交接文件。' }}</span>
+        <span class="mt-1 text-xs text-slate-500">{{ hasConfiguredCustomers ? '已直接输出并冻结，或按旧流程放行且仍有效的报价版本，会进入待接收列表。' : '请先为本厂区建立独立客户映射链路，再接收 P4 交接文件。' }}</span>
       </div>
 
       <div v-else class="mt-4 grid gap-3 xl:grid-cols-2">
@@ -409,7 +409,7 @@ onBeforeUnmount(() => {
             <div><dt class="text-slate-500">受控文件</dt><dd class="mt-1 truncate font-semibold text-slate-800" :title="artifact.file_name">{{ artifact.file_name }}</dd></div>
             <div><dt class="text-slate-500">文件大小</dt><dd class="mt-1 font-semibold text-slate-800">{{ formatFileSize(artifact.size_bytes) }}</dd></div>
             <div><dt class="text-slate-500">SHA-256</dt><dd class="mt-1 truncate font-mono text-slate-700" :title="artifact.sha256">{{ artifact.sha256 }}</dd></div>
-            <div><dt class="text-slate-500">放行时间</dt><dd class="mt-1 font-medium text-slate-700">{{ formatDate(artifact.created_at) }}</dd></div>
+            <div><dt class="text-slate-500">输出时间</dt><dd class="mt-1 font-medium text-slate-700">{{ formatDate(artifact.created_at) }}</dd></div>
           </dl>
 
           <p v-if="artifact.status === 'consumed'" class="mt-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{{ artifact.consumed_by_name || '已授权用户' }} 于 {{ formatDate(artifact.consumed_at) }} 接收 · {{ artifact.consumer_reference }}</p>

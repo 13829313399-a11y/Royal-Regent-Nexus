@@ -1,3 +1,5 @@
+import { createRandomUuid } from './randomUuid'
+
 // Customer-facing additions only. Costs, packing and tooling facts stay in their owning sections.
 export interface DickieBilingual { zh: string; en: string }
 export interface DickieAdjustment { label: string; percent: number; amount_hkd: number }
@@ -70,7 +72,7 @@ const num = (value: unknown, fallback = 0) => value === '' || value == null ? fa
 const bilingual = (value: unknown): DickieBilingual => ({ zh: txt(obj(value).zh), en: txt(obj(value).en) })
 const list = (value: unknown) => Array.isArray(value) ? value : []
 export function createDickieOffer(): DickieOffer {
-  return { id: globalThis.crypto.randomUUID(), included: true, label: { zh: '', en: '' }, moq: 0, moq_text: '', remark: { zh: '', en: '' }, route_40: '', route_20: '', route_lcl: '', price_source: 'calculated', confirmed_40: '', confirmed_20: '', confirmed_lcl: '', confirmed_reference: '', adjustments: [] }
+  return { id: createRandomUuid(), included: true, label: { zh: '', en: '' }, moq: 0, moq_text: '', remark: { zh: '', en: '' }, route_40: '', route_20: '', route_lcl: '', price_source: 'calculated', confirmed_40: '', confirmed_20: '', confirmed_lcl: '', confirmed_reference: '', adjustments: [] }
 }
 export function createDickieMapping(): DickieMapping {
   return { version: 'dickie-v2', company: 'hk', client_name: 'Simba Dickie toys', attention: 'Sam', from_name: 'Ben / Dickie', quote_date: '', revision: '', quotation_kind: 'quotation', item_number: '', item_name: { zh: '', en: '' }, item_note: { zh: '', en: '' }, inner_pack: 0, dimension_source: 'color_box', dimension_unit: 'cm', customer_carton_enabled: false, customer_carton_cm: { length: 0, width: 0, height: 0 }, remarks: [{ zh: '', en: '' }], offers: [createDickieOffer()], include_molds: false, first_shot: { zh: '', en: '' }, finish: { zh: '', en: '' }, lead_time_basis: { zh: '', en: '' } }
