@@ -229,10 +229,12 @@ def order_out(db, order, *, internal=False):
     blocked = blocked_replacement_lines(db, order.factory_id, ids)
     changed = _purchase_order_pending_change(order, current_lines, issue)[0] != "NONE"
     result = {key: header.get(key, "") for key in ("order_no", "customer_name", "contract_no", "customer_po", "item_no", "product_name")}
-    result.update(id=order.id, status=order.status, revision=order.revision, customer_code=order.customer_code,
+    result.update(id=order.id, status=order.status, revision=order.revision,
         issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "尚未发行",
         order_date=header.get("order_date") or order.order_date,
         planned_date=snapshot.get("after_due_date", ""), awaiting_issue=changed, lines=[])
+    if internal:
+        result["customer_code"] = order.customer_code
     for item in snapshot.get("lines", []):
         line_id = str(item["id"])
         required = Decimal(str(item["after_required_quantity"]))
