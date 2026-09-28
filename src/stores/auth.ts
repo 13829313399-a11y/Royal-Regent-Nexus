@@ -132,6 +132,7 @@ export function grantAllowsPermission(
   factoryId?: string,
   department?: string,
 ) {
+  if (factoryId && grant.factory_ceiling && !grant.factory_ceiling.includes(factoryId)) return false
   if (!grant.permissions.includes(permission)) return false
   if (!grantUsesScopedPositionContract(grant)) {
     return grantMatchesScope(grant, factoryId, department)

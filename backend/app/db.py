@@ -703,6 +703,27 @@ def ensure_document_tools_schema_ready() -> None:
             raise RuntimeError("文档工具尚未迁移至 20260908_0103_docs；请备份并迁移后启动。缺少：" + ", ".join(missing))
 
 
+def ensure_identity_schema_ready() -> None:
+    """Existing accounts require an explicit additive migration, even with writes off."""
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        tables = set(inspector.get_table_names())
+        if "auth_users" not in tables:
+            return
+        required = {
+            "employee_profiles": {"identity_mode", "identity_version", "employment_epoch", "primary_assignment_id", "primary_org_unit_id", "employment_status"},
+            "auth_role_binding_metadata": {"assignment_id", "role_version_id", "scope_ceiling_json", "employment_epoch"},
+            "auth_user_permission_overrides": {"assignment_id", "lifecycle_policy", "employment_epoch"},
+            "auth_access_requests": {"request_type", "lifecycle_state", "revision", "effective_at", "payload_json", "result_json"},
+            "auth_registration_requests": {"org_unit_id", "declared_profile_json"},
+        }
+        missing = [f"{table}.{column}" for table, columns in required.items()
+                   for column in columns - ({c["name"] for c in inspector.get_columns(table)} if table in tables else set())]
+        missing += sorted({"employee_assignments", "iam_org_units", "iam_org_departments", "iam_role_versions", "iam_delegations", "iam_handover_items", "iam_outbox", "iam_mutation_receipts"} - tables)
+        if missing:
+            raise RuntimeError("IAM V2 requires migration 20260926_0125 before startup: " + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
         uv_operations,  # noqa: F401
@@ -736,6 +757,7 @@ def init_db() -> None:
     from app.services.raw_material import seed_raw_material_defaults
     from app.services.three_d_printing import seed_three_d_printing_defaults
 
+    ensure_identity_schema_ready()
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()

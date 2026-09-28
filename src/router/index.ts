@@ -15,6 +15,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
+const identityUiEnabled = import.meta.env.VITE_IAM_IDENTITY_UI_ENABLED !== 'false'
 const qcInspectionFullPageMeta = {
   fullPage: true,
   requiresAuth: true,
@@ -440,7 +441,9 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/system/users',
     name: 'system-users',
-    component: () => import('@/views/SystemUserManagementView.vue'),
+    component: identityUiEnabled
+      ? () => import('@/features/identity-management/PeopleCenter.vue')
+      : () => import('@/views/SystemUserManagementView.vue'),
     meta: {
       title: '账号与权限管理',
       fullPage: true,
@@ -448,6 +451,12 @@ const routes: RouteRecordRaw[] = [
       permissions: ['system:user_manage'],
       enforcePermissions: true,
     },
+  },
+  {
+    path: '/system/users/registration',
+    name: 'system-registration',
+    component: () => import('@/views/SystemUserManagementView.vue'),
+    meta: { title: '注册审核与密码找回', fullPage: true, requiresAuth: true, permissions: ['system:user_manage'], enforcePermissions: true },
   },
   {
     path: '/system/users/:userId/access',
@@ -479,11 +488,17 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/system/iam/requests',
-    redirect: '/system/iam/roles',
+    ...(identityUiEnabled ? {
+      component: () => import('@/features/identity-management/IdentityRecords.vue'),
+      meta: { title: '变更办理', fullPage: true, requiresAuth: true, permissions: ['system:access_manage'], enforcePermissions: true },
+    } : { redirect: '/system/users' }),
   },
   {
     path: '/system/iam/audit',
-    redirect: '/system/iam/roles',
+    ...(identityUiEnabled ? {
+      component: () => import('@/features/identity-management/IdentityRecords.vue'),
+      meta: { title: '授权与人员记录', fullPage: true, requiresAuth: true, permissions: ['system:audit_read'], enforcePermissions: true },
+    } : { redirect: '/system/users' }),
   },
   {
     path: '/forbidden',
@@ -657,6 +672,7 @@ router.beforeEach(async (to, from) => {
   appStore.startRouteLoading()
 
   const factoryQuery = factoryQueryForRoute(to)
+  appStore.pinBusinessFactoryContext(to.path.startsWith('/modules/'))
   appStore.setRequestedFactoryContext(factoryQuery.factory)
 
   const authStore = useAuthStore()

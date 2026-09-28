@@ -23,6 +23,9 @@ def make_client(monkeypatch, **env_overrides):
     database_url = f"sqlite:///{TEST_TMP_DIR / f'auth_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
+    # Keep lifecycle regressions independent of a developer workstation .env.
+    monkeypatch.setenv("SPRAY_OPS_ENABLED", "false")
+    monkeypatch.setenv("UV_OPS_ENABLED", "false")
     for name, value in env_overrides.items():
         monkeypatch.setenv(name, value)
 
@@ -103,6 +106,8 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
         )
         assert me["grants"] == [
             {
+                "factory_ceiling": None,
+                "assignment_id": "",
                 "role_id": "admin",
                 "role_name": "系统管理员",
                 "factory_id": "*",

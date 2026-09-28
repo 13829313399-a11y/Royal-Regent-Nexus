@@ -8,6 +8,7 @@ const routerReplaceMock = vi.hoisted(() => vi.fn())
 vi.mock('@/api/auth', () => ({
   authApi: {
     register: registerMock,
+    organizationCatalog: async () => ({ organizations: [{ id: 'huaxing', name: '华兴', factory_id: 'huaxing', departments: [{ code: 'engineering', name: '工程部' }] }] }),
   },
 }))
 
@@ -26,6 +27,7 @@ describe('RegisterView position flow', () => {
 
   it('submits an arbitrary employee position without replacing it with a system role', async () => {
     const wrapper = mount(RegisterView)
+    await flushPromises()
 
     await wrapper.get('input[autocomplete="username"]').setValue(' tech-001 ')
     await wrapper.get('input[autocomplete="name"]').setValue(' 张三 ')
@@ -48,6 +50,7 @@ describe('RegisterView position flow', () => {
       phone: '13800000000',
       email: '',
       factory_id: 'huaxing',
+      org_unit_id: 'huaxing',
       department: 'engineering',
       position: '工程部技术员',
     })
