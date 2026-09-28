@@ -100,6 +100,7 @@ class UserAccessUserOut(BaseModel):
 class UserAccessOut(BaseModel):
     user: UserAccessUserOut
     profile: EmployeeProfileOut | None
+    identity_mode: Literal["legacy", "v2"]
     authorization_version: int
     role_bindings: list[RoleBindingOut]
     overrides: list[PermissionOverrideOut]
