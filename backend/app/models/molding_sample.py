@@ -196,6 +196,7 @@ class MoldingSampleProblem(Base):
     __tablename__ = "molding_sample_problems"
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    responsibility_revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     factory_id: Mapped[str] = mapped_column(String(64), index=True)
     order_type: Mapped[str] = mapped_column(String(32), default="injection", index=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("molding_sample_orders.id", ondelete="CASCADE"), index=True)

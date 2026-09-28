@@ -24,6 +24,7 @@ const systemApiMock = vi.hoisted(() => ({
 }))
 
 const mountedWrappers: Array<ReturnType<typeof mount>> = []
+vi.mock('@/components/notifications/NotificationCenter.vue', () => import('@/components/notifications/LegacyNotificationCenter.vue'))
 
 vi.mock('vue-router', () => ({
   RouterLink: {
@@ -143,6 +144,9 @@ function mountTopBar() {
 
 describe('TopBar notifications', () => {
   beforeEach(() => {
+    // This suite retains rollback-component behavior. The new center is covered
+    // by workCenter.spec.ts and the new component/API regression suites.
+    vi.stubEnv('VITE_WORK_CENTER_ENABLED', 'false')
     setActivePinia(createPinia())
     vi.clearAllMocks()
     window.localStorage.clear()
@@ -153,6 +157,7 @@ describe('TopBar notifications', () => {
   })
 
   afterEach(() => {
+    vi.unstubAllEnvs()
     mountedWrappers.splice(0).forEach((wrapper) => wrapper.unmount())
     vi.useRealTimers()
   })
