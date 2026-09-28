@@ -102,6 +102,34 @@ def latest_issue(db, order):
         if not _purchase_order_snapshot(issue).get("replenishment")), None)
 
 
+def acceptance_summary(db, order, lines):
+    """Internal read projection of supplier confirmation for the current ordinary issue."""
+    issue = latest_issue(db, order)
+    positive_ids = [line.id for line in lines if line.required_quantity > 0]
+    result = dict(status="NOT_ISSUED", label="尚未发送供应商",
+        issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "",
+        total_line_count=len(positive_ids), accepted_line_count=0, accepted_at="")
+    if order.status == "CANCELLED":
+        result.update(status="CANCELLED", label="订单已取消")
+    elif not issue or order.status not in VISIBLE_STATES:
+        pass
+    elif _purchase_order_pending_change(order, lines, issue)[0] != "NONE":
+        result.update(status="PENDING_CHANGE", label="变更待发行")
+    elif not positive_ids:
+        result.update(status="NOT_REQUIRED", label="无需接单")
+    else:
+        commitments = list(db.scalars(select(SupplierCommitment).where(
+            SupplierCommitment.factory_id == order.factory_id,
+            SupplierCommitment.issue_id == issue.id,
+            SupplierCommitment.order_line_id.in_(positive_ids))).all())
+        accepted = len(commitments)
+        status, label = ("ACCEPTED", "供应商已接单") if accepted == len(positive_ids) else (
+            ("PARTIAL", "供应商部分接单") if accepted else ("PENDING", "供应商待接单"))
+        result.update(status=status, label=label, accepted_line_count=accepted,
+            accepted_at=max((row.accepted_at for row in commitments), default=""))
+    return result
+
+
 def supplier_order(db, order_id, factory, supplier_id):
     order = db.scalar(select(CartonOrder).where(CartonOrder.id == order_id, CartonOrder.factory_id == factory,
         CartonOrder.supplier_id == supplier_id, CartonOrder.status.in_(VISIBLE_STATES)))
