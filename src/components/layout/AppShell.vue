@@ -1,15 +1,26 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import SidebarNav from '@/components/layout/SidebarNav.vue'
 import TopBar from '@/components/layout/TopBar.vue'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 import { usePresenceHeartbeat } from '@/composables/usePresenceHeartbeat'
-import { getPortalScope, resolvePortalShellAttribute } from '@/lib/portalRouteScope'
+import { getPortalScope, getHomeExperienceScope, resolvePortalShellAttribute } from '@/lib/portalRouteScope'
+import { createHomeAppearance, homeAppearanceKey, homeSearchKey } from '@/composables/useHomeAppearance'
 import '@/components/portal/styles/portal.css'
 import '@/components/portal/styles/portal-shell.css'
+import '@/components/portal/styles/home-prism.css'
+import '@/components/portal/styles/home-prism-motion.css'
+import '@/components/portal/styles/home-prism-shell.css'
 
 const route = useRoute()
+const homeScope = computed(() => getHomeExperienceScope(route))
+const homeAppearance = createHomeAppearance(computed(() => Boolean(homeScope.value)))
+provide(homeAppearanceKey, homeAppearance)
+const { effectiveMotion, density } = homeAppearance
+const searchRequest = ref(0)
+provide(homeSearchKey, searchRequest)
+const topbarHeight = ref(72)
 usePresenceHeartbeat()
 const isMobileNavigationOpen = ref(false)
 let releaseNavigationScrollLock: BodyScrollLockRelease | null = null
@@ -65,7 +76,7 @@ onBeforeUnmount(() => {
 <template>
   <RouterView v-if="isFullPage" />
 
-  <div v-else class="app-shell" :data-portal-shell="portalShellAttribute">
+  <div v-else class="app-shell" :data-portal-shell="portalShellAttribute" :data-home-experience="homeScope ? 'prism-v4' : undefined" :data-home-motion="homeScope ? effectiveMotion : undefined" :data-home-density="homeScope ? density : undefined" :style="homeScope ? { '--home-topbar-height': `${topbarHeight}px` } : undefined">
     <a
       href="#app-content"
       class="fixed left-4 top-3 z-[80] -translate-y-16 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-xl transition-transform focus:translate-y-0"
@@ -74,6 +85,9 @@ onBeforeUnmount(() => {
     </a>
     <TopBar
       :navigation-open="isMobileNavigationOpen"
+      :home-scope="homeScope"
+      @home-search="homeScope === 'department' && searchRequest++"
+      @height-change="topbarHeight = $event"
       @toggle-navigation="isMobileNavigationOpen = !isMobileNavigationOpen"
     />
     <div class="app-shell-content flex min-w-0">

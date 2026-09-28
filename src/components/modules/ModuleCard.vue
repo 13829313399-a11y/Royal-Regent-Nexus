@@ -1,19 +1,27 @@
 <script setup lang="ts">
-import { ArrowUpRight, ChevronRight } from '@lucide/vue'
+import { ArrowUpRight, ChevronRight, Eye, Pin } from '@lucide/vue'
 import { computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import type { EnterpriseModule } from '@/data/enterpriseMock'
 import StatusPill from '@/components/common/StatusPill.vue'
+import HomeSearchText from '@/components/portal/HomeSearchText.vue'
 
 const props = withDefaults(defineProps<{
   module: EnterpriseModule
   active?: boolean
   /** 门户首屏级联入场的次序，仅用于动画先后。 */
   index?: number
+  previewable?: boolean
+  pinned?: boolean
+  searchQuery?: string
 }>(), {
   active: false,
   index: 0,
+  previewable: false,
+  pinned: false,
+  searchQuery: '',
 })
+const emit = defineEmits<{ preview: [event: MouseEvent]; peek: []; cancelPeek: []; focusPreview: [] }>()
 
 const router = useRouter()
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
@@ -49,6 +57,7 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
   <article
     class="portal-module-card interactive-surface group relative overflow-hidden rounded-xl border p-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-500"
     :data-featured="active ? 'true' : 'false'"
+    :data-pinned="pinned ? 'true' : undefined"
     :data-navigable="isNavigable ? 'true' : 'false'"
     :data-portal-tone="module.statusTone"
     :style="{ '--portal-card-index': index }"
@@ -63,6 +72,9 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
     :aria-label="module.route ? `打开${module.title}` : undefined"
     @click="openModule(module)"
     @keydown="handleKeydown($event, module)"
+    @pointerenter="previewable && emit('peek')"
+    @pointerleave="emit('cancelPeek')"
+    @focusin="previewable && emit('focusPreview')"
   >
     <span
       v-if="active"
@@ -76,11 +88,11 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
         <component :is="module.icon" class="size-5" aria-hidden="true" />
       </span>
       <div class="min-w-0">
-        <h3 class="portal-module-card__title font-semibold text-slate-950">{{ module.title }}</h3>
+        <h3 class="portal-module-card__title font-semibold text-slate-950"><HomeSearchText :text="module.title" :query="searchQuery" /></h3>
         <p class="portal-module-card__owner mt-1 text-xs text-slate-500">{{ module.owner }}</p>
       </div>
     </div>
-    <p class="portal-module-card__summary text-sm leading-6 text-slate-700">{{ module.summary }}</p>
+    <p class="portal-module-card__summary text-sm leading-6 text-slate-700"><HomeSearchText :text="module.summary" :query="searchQuery" /></p>
     <div
       v-if="module.statusMetrics.length"
       class="portal-module-card__metrics mt-4 grid gap-3 sm:grid-cols-3"
@@ -97,11 +109,11 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
     </div>
     <div v-if="module.children.length" class="portal-module-card__children mt-4 flex flex-wrap gap-2">
       <span
-        v-for="child in module.children.slice(0, 3)"
+        v-for="child in (previewable ? module.children : module.children.slice(0, 3))"
         :key="`${module.id}-${child.label}`"
         class="portal-module-card__child rounded-full bg-slate-100/90 px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-200/70"
       >
-        {{ child.label }}
+        <HomeSearchText :text="child.label" :query="searchQuery" />
       </span>
     </div>
     <div class="portal-module-card__footer mt-4 flex items-center justify-between gap-3">
@@ -141,6 +153,9 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
         打开系统
         <ArrowUpRight class="portal-action__arrow size-4" aria-hidden="true" />
       </a>
+      <button v-if="previewable && (module.route || module.href)" type="button" class="home-preview-button" :aria-label="`预览${module.title}`" :aria-pressed="pinned" @click.stop="emit('preview', $event)">
+        <component :is="pinned ? Pin : Eye" :size="16" aria-hidden="true" />{{ pinned ? '已固定' : '预览' }}
+      </button>
     </div>
   </article>
 </template>

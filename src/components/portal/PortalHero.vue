@@ -25,9 +25,11 @@ withDefaults(defineProps<{
 
 <template>
   <div class="portal-hero">
+    <slot name="artwork">
     <div class="portal-hero__motif" aria-hidden="true">
       <PortalMotif :motif="motif" />
     </div>
+    </slot>
 
     <PageHeader
       class="portal-hero__header page-header"
