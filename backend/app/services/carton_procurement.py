@@ -2070,6 +2070,7 @@ def _protected_product_quantity(
 
 def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
     from app.services.carton_order_split import plans
+    from app.services.carton_supplier_portal import acceptance_summary
     lines = _order_lines(db, order.id)
     line_ids = [line.id for line in lines]
     from app.services.carton_replenishment_receipts import options_by_line, legacy_review_lines
@@ -2093,6 +2094,7 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
         sum((usage.get(line.id, {}).get("usage", Decimal(0)) for line in lines), Decimal(0)))
     deletion_reason = order_deletion_block_reason(db, order)
     return CartonOrderOut(
+        supplier_acceptance=acceptance_summary(db, order, lines),
         split_records=plans(db, order.factory_id, order.id),
         can_delete=not deletion_reason,
         deletion_block_reason=deletion_reason,
