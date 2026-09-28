@@ -117,6 +117,7 @@ class ReceiveLine(BaseModel):
     unit: str = Field(default="", max_length=32)
 
 class ShipmentReceive(Payload):
+    correction_reason: str = Field(default="", max_length=1000)
     split_confirmation: str = Field(default="", max_length=64)
     request_id: str = Field(min_length=8, max_length=128)
     expected_revision: int = Field(ge=1)
@@ -126,5 +127,13 @@ class ShipmentReceive(Payload):
 
 class SampleReceiptLink(Payload):
     order_line_id: str = Field(min_length=1, max_length=96)
+    expected_order_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=1000)
+
+
+class ShipmentLineLink(Payload):
+    order_line_id: str = Field(min_length=1, max_length=96)
+    customer_code: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
     expected_order_revision: int = Field(ge=1)
     reason: str = Field(min_length=4, max_length=1000)

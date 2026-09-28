@@ -421,6 +421,8 @@ export interface CartonImportBatchResponse {
 }
 
 export interface CartonImportPreviewRow {
+  source_material?: { packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string }
+  material_candidates?: { order_no: string; order_line_id: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string; conflicts: string[] }[]
   schedule_customer_code?: string
   schedule_customer_name?: string
   template?: string
