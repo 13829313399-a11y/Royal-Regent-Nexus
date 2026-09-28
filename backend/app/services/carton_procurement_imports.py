@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.carton_procurement import CartonOrder, CartonOrderLine
+from app.services.carton_material_identity import material_conflicts
 from app.services.carton_schedule_tracking import identity as schedule_identity, tracked
 
 
@@ -23,7 +24,7 @@ MAX_IMPORT_ROWS = 5_000
 MAX_PREVIEW_ROWS = 500
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
-DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v7-dongkang"
+DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v8-material-check"
 SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-sections-v2"
 PACKAGING_TYPES = (
     "普通箱",
@@ -828,9 +829,11 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
                 continue
             if (amount is None or amount <= 0) and not strict_rows:
                 continue
-            paper_quality, packaging_type = _split_paper(_cell(row, mapping, "paper_quality"))
+            quality_text = _text(_cell(row, mapping, "paper_quality"))
+            paper_quality, packaging_type = _split_paper(quality_text)
+            explicit_type = _text(_cell(row, mapping, "packaging_type")) if dongkang_format else ""
             if dongkang_format:
-                packaging_type = _text(_cell(row, mapping, "packaging_type")) or packaging_type
+                packaging_type = explicit_type or packaging_type
             parsed_row = {
                     "source_sheet": sheet_name,
                     "source_row": source_row,
@@ -840,6 +843,7 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
                     "customer_po": _text(_cell(row, mapping, "customer_po")),
                     "item_no": item_no,
                     "packaging_type": packaging_type,
+                    "packaging_type_explicit": bool(explicit_type) or any(quality_text.casefold().endswith(value.casefold()) for value in PACKAGING_TYPES),
                     "paper_quality": paper_quality,
                     "specification": _text(_cell(row, mapping, "specification")) if dongkang_format else _specification(row, mapping),
                     "delivered_quantity": _json_number(amount),
@@ -1032,33 +1036,21 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
             row["suggestion"] = "同合同货号存在多个客户 PO，请填写客户 PO 或人工选择订单"
             continue
         if import_type == "DELIVERY_NOTE" and candidates:
-            packaging = _text(row.get("packaging_type"))
-            paper_quality = _text(row.get("paper_quality"))
-            specification = _dimension_identity(row.get("specification"))
-            narrowing_basis: list[str] = []
-            if paper_quality not in {"", "待复核"}:
-                narrowed = [
-                    pair for pair in candidates
-                    if pair[0].paper_quality.lower() == paper_quality.lower()
-                ]
-                if narrowed:
-                    candidates = narrowed
-                    narrowing_basis.append("纸质")
-            if specification:
-                narrowed = [
-                    pair for pair in candidates
-                    if _dimension_identity(pair[0].specification) == specification
-                ]
-                if narrowed:
-                    candidates = narrowed
-                    narrowing_basis.append("规格")
-            if packaging not in {"", "待复核", "普通箱", "纸箱"}:
-                narrowed = [pair for pair in candidates if pair[0].packaging_type == packaging]
-                if narrowed:
-                    candidates = narrowed
-                    narrowing_basis.append("纸品类型")
-            if narrowing_basis:
-                basis += " + " + " + ".join(narrowing_basis)
+            row["source_material"] = {key: row.get(key) or "" for key in (
+                "packaging_type", "paper_quality", "specification", "dimension_unit")}
+            if row.get("packaging_type_explicit") is False:
+                row["source_material"]["packaging_type"] = ""
+            checked = [(line, order, material_conflicts(row, {
+                key: getattr(line, key) for key in ("packaging_type", "paper_quality", "specification", "dimension_unit")
+            })) for line, order in candidates]
+            candidates = [(line, order) for line, order, conflicts in checked if not conflicts]
+            if not candidates:
+                row.update(match_status="REVIEW_REQUIRED", suggestion="送货文件与订单的纸品类型、纸质、规格或尺寸单位冲突，请对照原单人工核实",
+                    material_candidates=[{"order_no": order.order_no, "order_line_id": line.id,
+                        **{key: getattr(line, key) for key in ("packaging_type", "paper_quality", "specification", "dimension_unit")},
+                        "conflicts": conflicts} for line, order, conflicts in checked])
+                continue
+            basis += " + 物料身份核实"
 
         unique_orders = {order.id: order for _, order in candidates}
         if import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:

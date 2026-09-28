@@ -1215,6 +1215,9 @@ def list_system_notifications(
     if "carton_procurement:read" in current_user.permissions:
         notifications.extend(shipment_notifications.legacy_pending_notifications(
             db, {row.id for row in notifications}, changed_after))
+        legacy_reversed = shipment_notifications.legacy_reversed_notifications(db, changed_after)
+        overrides = {row.id: row for row in legacy_reversed}
+        notifications = [row for row in notifications if row.id not in overrides] + legacy_reversed
     notifications.sort(key=lambda row: (row.created_at, row.id), reverse=True)
     return [
         notification_to_out(notification)
@@ -1233,14 +1236,24 @@ def update_system_notification(
     if notification is None and notification_id.startswith(shipment_notifications.NOTIFICATION_PREFIX):
         shipment_id = notification_id[len(shipment_notifications.NOTIFICATION_PREFIX):]
         shipment = db.get(SupplierShipment, shipment_id)
-        if shipment is not None and shipment.status == "SENT":
-            candidate = shipment_notifications.notification_for(shipment)
+        legacy = next((row for row in shipment_notifications.legacy_reversed_notifications(db)
+            if row.id == notification_id), None)
+        if shipment is not None and (shipment.status == "SENT" or legacy):
+            candidate = legacy or shipment_notifications.notification_for(shipment)
             if can_access_notification(db, current_user, candidate):
                 notification = shipment_notifications.create_notification(db, shipment)
     if notification is None:
         raise HTTPException(status_code=404, detail="通知不存在")
     if not can_access_notification(db, current_user, notification):
         raise HTTPException(status_code=403, detail="无权处理该通知")
+
+    if notification.type == shipment_notifications.NOTIFICATION_TYPE:
+        projected = next((row for row in shipment_notifications.legacy_reversed_notifications(db)
+            if row.id == notification.id), None)
+        if projected:
+            notification.status = projected.status
+            notification.title, notification.message = projected.title, projected.message
+            notification.created_at, notification.read_at, notification.handled_at = projected.created_at, projected.read_at, ""
 
     status = payload.status.strip()
     if status not in {"read", "handled"}:

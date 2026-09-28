@@ -1,6 +1,5 @@
 """Preview Dongkang delivery notes and dispatch confirmed notes to factory receipt queues."""
 import hashlib
-import re
 from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -13,9 +12,8 @@ from app.models.carton_procurement import CartonReceipt
 from app.models.carton_supplier_portal import SupplierShipment
 from app.schemas.carton_supplier_portal import ShipmentCreate
 from app.services import carton_supplier_portal as portal
-from app.services.carton_procurement_imports import (
-    _dimension_identity, _dongkang_identity, _parse_delivery_spreadsheet,
-)
+from app.services.carton_material_identity import material_conflicts
+from app.services.carton_procurement_imports import _dongkang_identity, _parse_delivery_spreadsheet
 
 MAX_IMPORT_ROWS = 500
 
@@ -32,13 +30,6 @@ def _source(filename, content):
 
 def _same_text(left, right):
     return _dongkang_identity(left) == _dongkang_identity(right)
-
-
-def _dimension_unit(value):
-    found = re.search(r"(inch|in|英寸|cm|厘米)\s*$", str(value or ""), re.IGNORECASE)
-    if not found:
-        return ""
-    return "inch" if found.group(1).casefold() in {"inch", "in", "英寸"} else "cm"
 
 
 def _request_id(digest, factory_id, note_no):
@@ -67,7 +58,7 @@ def preview(db, user, filename, content):
             "delivery_note_no": note_no, "delivery_date": source_row.get("delivery_date") or "",
             "ready": False, "issues": [], "rows": []})
         item = {field: source_row.get(field) for field in ("source_sheet", "source_row", "contract_no", "item_no",
-            "packaging_type", "paper_quality", "specification", "delivered_quantity")}
+            "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "delivered_quantity")}
         item["unit"] = "个"
         item["unit_price"] = source_row.get("unit_price") or 0
         item.update(order_no="", child_no="", order_line_id="", issue_id="", status="BLOCKED", reason="")
@@ -104,24 +95,9 @@ def preview(db, user, filename, content):
             continue
         candidates = [(order, line) for order in orders for line in order["lines"]
             if Decimal(line["required_quantity"]) > 0]
-        if source_row.get("specification"):
-            dimensions = _dimension_identity(source_row["specification"])
-            candidates = [(order, line) for order, line in candidates if
-                (_dimension_identity(line["specification"]) == dimensions if dimensions else
-                 _same_text(line["specification"], source_row["specification"]))]
-            source_unit = _dimension_unit(source_row["specification"])
-            if source_unit:
-                candidates = [(order, line) for order, line in candidates
-                    if source_unit == (_dimension_unit(line.get("dimension_unit"))
-                        or _dimension_unit(line["specification"]) or "cm")]
-        if source_row.get("paper_quality"):
-            candidates = [(order, line) for order, line in candidates
-                if _same_text(line["paper_quality"], source_row["paper_quality"])]
-        if len(candidates) > 1 and source_row.get("packaging_type"):
-            candidates = [(order, line) for order, line in candidates
-                if _same_text(line["packaging_type"], source_row["packaging_type"])]
+        candidates = [(order, line) for order, line in candidates if not material_conflicts(source_row, line)]
         if len(candidates) != 1:
-            item["reason"] = "合同与货号存在订单，但纸品规格/材质不符，请核对原单" if not candidates else "匹配到多条纸品，请核对规格与材质"
+            item["reason"] = "合同与货号存在订单，但纸品类型/规格/材质或尺寸单位不符，请核对原单" if not candidates else "匹配到多条纸品，请核对规格与材质"
             continue
         order, line = candidates[0]
         item.update(order_no=order["order_no"], child_no=line["child_no"],
@@ -191,6 +167,9 @@ def confirm(db, user, filename, content, expected_sha256, selections):
             sent.append(portal.create_shipment(db, user, payload, commit=False,
                 source={"filename": filename, "sha256": expected_sha256,
                     "rows": [row["source_row"] for row in group["rows"]],
+                    "delivery_materials": {row["order_line_id"]: {key: row.get(key) for key in (
+                        "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "source_sheet", "source_row")}
+                        for row in group["rows"] if row["status"] == "READY"},
                     "delivery_unit_prices": {row["order_line_id"]: row["unit_price"]
                         for row in group["rows"] if row["status"] == "READY"}}))
         db.commit()

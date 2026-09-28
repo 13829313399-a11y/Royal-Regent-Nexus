@@ -5,7 +5,7 @@ import CartonSupplierManagementView from '../CartonSupplierManagementView.vue'
 import CartonSupplierMarkTemplatesView from '../CartonSupplierMarkTemplatesView.vue'
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import type { PortalWorkspace } from '@/api/cartonSupplierPortal'
-const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
+const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
 const router = vi.hoisted(() => ({ replace: vi.fn() }))
 const routeState = vi.hoisted(() => ({ query: { factory: 'huaxing', shipment: undefined as string | undefined } }))
 const can = vi.hoisted(() => vi.fn((_permission: string) => true))
@@ -620,6 +620,46 @@ describe('supplier collaboration entry', () => {
   })
 })
 describe('internal supplier collaboration', () => {
+  it('requires a reason before correcting reversed receipt and carries it with the original note', async () => {
+    const data = fixture()
+    data.shipments[0]!.status = 'RECEIPT_REVERSED'
+    data.shipments[0]!.requires_correction = true
+    data.shipments[0]!.receipt_status = 'REVERSED'
+    api.workspace.mockResolvedValue(data)
+    const wrapper = mount(CartonSupplierManagementView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '更正原单验收')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '整单未到')!.trigger('click')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请填写至少四字更正原因')
+    await wrapper.get('input[aria-label="送货单验收更正原因"]').setValue('重核原单实际收到')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive).toHaveBeenCalledWith('SHIP-A', expect.objectContaining({ correction_reason: '重核原单实际收到', expected_revision: 1 }))
+    wrapper.unmount()
+  })
+
+  it('requires customer and explicit paper selection to link a no-order delivery before receiving', async () => {
+    const data = fixture()
+    data.orders[0]!.customer_code = 'DICKIE'
+    data.orders[0]!.revision = 3
+    data.shipments[0]!.lines = [{ ...data.shipments[0]!.lines[0]!, id: 'UNMATCHED', source_type: 'AD_HOC_REVIEW', order_line_id: null }]
+    api.workspace.mockResolvedValue(data)
+    api.linkShipmentLine.mockResolvedValue(data.shipments[0])
+    const wrapper = mount(CartonSupplierManagementView, options); await flushPromises()
+    expect(wrapper.get('button[aria-label="UNMATCHED 确认收货前关联"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('select[aria-label="UNMATCHED 关联客户"]').setValue('DICKIE')
+    const target = wrapper.get('select[aria-label="UNMATCHED 收货前关联订单"]')
+    expect(target.findAll('option').map(option => option.attributes('value'))).toEqual(['', 'LINE-0'])
+    await target.setValue('LINE-0')
+    await wrapper.get('input[aria-label="UNMATCHED 收货前关联原因"]').setValue('核对补建的正式订单')
+    await wrapper.get('button[aria-label="UNMATCHED 确认收货前关联"]').trigger('click'); await flushPromises()
+    expect(api.linkShipmentLine).toHaveBeenCalledWith('SHIP-A', 'UNMATCHED', {
+      factory_id: 'huaxing', customer_code: 'DICKIE', order_line_id: 'LINE-0',
+      expected_revision: 1, expected_order_revision: 3, reason: '核对补建的正式订单',
+    })
+    expect(api.receive).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('links a posted sample to a later formal line through an explicit warehouse action', async () => {
     const data = fixture()
     data.orders[0]!.customer_code = 'DICKIE'
