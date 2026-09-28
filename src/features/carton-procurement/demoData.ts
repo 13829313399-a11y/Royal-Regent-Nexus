@@ -26,6 +26,13 @@ export interface CartonOrderRow {
 }
 
 export interface WeeklyCheckRow {
+  customerCode?: string
+  scheduleSection?: 'PENDING' | 'CANCELLED' | 'SHIPPED'
+  scheduleChange?: string
+  scheduleIdentity?: string
+  sourceSheet?: string
+  sourceRow?: number
+  manualOrdered?: boolean
   orderType?: string
   sourceReference?: string
   sourceLocation?: string

@@ -183,7 +183,9 @@ def test_presence_thresholds_stable_order_filters_and_pagination(monkeypatch):
         directory_service = importlib.import_module("app.services.directory")
         auth_models = importlib.import_module("app.models.auth")
         db_module = importlib.import_module("app.db")
-        now = directory_service.business_now()
+        now = directory_service.business_now().replace(microsecond=0)
+        # Assert the boundary itself, independent of password hashing / CI load.
+        monkeypatch.setattr(directory_service, "business_now", lambda: now)
         with db_module.SessionLocal() as db:
             for user_id, seen_at in (
                 ("online-a", now - directory_service.timedelta(seconds=119)),

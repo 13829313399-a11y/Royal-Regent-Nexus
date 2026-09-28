@@ -5,7 +5,7 @@ import CartonSupplierManagementView from '../CartonSupplierManagementView.vue'
 import CartonSupplierMarkTemplatesView from '../CartonSupplierMarkTemplatesView.vue'
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import type { PortalWorkspace } from '@/api/cartonSupplierPortal'
-const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
+const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
 const router = vi.hoisted(() => ({ replace: vi.fn() }))
 const routeState = vi.hoisted(() => ({ query: { factory: 'huaxing', shipment: undefined as string | undefined } }))
 const can = vi.hoisted(() => vi.fn((_permission: string) => true))
@@ -552,6 +552,9 @@ describe('supplier collaboration entry', () => {
     expect(api.workspace).not.toHaveBeenCalled(); wrapper.unmount()
   })
   it('previews the supplier file and confirms selected matched notes', async () => {
+    const preview = await api.previewDeliveryImport()
+    preview.groups[0].rows[0].unit_price = 3.75
+    api.previewDeliveryImport.mockResolvedValue(preview)
     const wrapper = mount(CartonSupplierView, options); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '导入送货单')!.trigger('click')
     const input = wrapper.get<HTMLInputElement>('input[type="file"]')
@@ -560,6 +563,8 @@ describe('supplier collaboration entry', () => {
     await input.trigger('change'); await flushPromises()
     expect(api.previewDeliveryImport).toHaveBeenCalledWith(file)
     expect(wrapper.get('[role="dialog"]').text()).toContain('DN-NEW')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('送货单价')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('3.75')
     await wrapper.findAll('button').find(button => button.text() === '确认 1 张送货单发货')!.trigger('click'); await flushPromises()
     expect(api.confirmDeliveryImport).toHaveBeenCalledWith(file, expect.objectContaining({ sha256: 'abc' }), [{ factory_id: 'huaxing', delivery_note_no: 'DN-NEW' }])
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
@@ -615,6 +620,46 @@ describe('supplier collaboration entry', () => {
   })
 })
 describe('internal supplier collaboration', () => {
+  it('requires a reason before correcting reversed receipt and carries it with the original note', async () => {
+    const data = fixture()
+    data.shipments[0]!.status = 'RECEIPT_REVERSED'
+    data.shipments[0]!.requires_correction = true
+    data.shipments[0]!.receipt_status = 'REVERSED'
+    api.workspace.mockResolvedValue(data)
+    const wrapper = mount(CartonSupplierManagementView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '更正原单验收')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '整单未到')!.trigger('click')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请填写至少四字更正原因')
+    await wrapper.get('input[aria-label="送货单验收更正原因"]').setValue('重核原单实际收到')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive).toHaveBeenCalledWith('SHIP-A', expect.objectContaining({ correction_reason: '重核原单实际收到', expected_revision: 1 }))
+    wrapper.unmount()
+  })
+
+  it('requires customer and explicit paper selection to link a no-order delivery before receiving', async () => {
+    const data = fixture()
+    data.orders[0]!.customer_code = 'DICKIE'
+    data.orders[0]!.revision = 3
+    data.shipments[0]!.lines = [{ ...data.shipments[0]!.lines[0]!, id: 'UNMATCHED', source_type: 'AD_HOC_REVIEW', order_line_id: null }]
+    api.workspace.mockResolvedValue(data)
+    api.linkShipmentLine.mockResolvedValue(data.shipments[0])
+    const wrapper = mount(CartonSupplierManagementView, options); await flushPromises()
+    expect(wrapper.get('button[aria-label="UNMATCHED 确认收货前关联"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('select[aria-label="UNMATCHED 关联客户"]').setValue('DICKIE')
+    const target = wrapper.get('select[aria-label="UNMATCHED 收货前关联订单"]')
+    expect(target.findAll('option').map(option => option.attributes('value'))).toEqual(['', 'LINE-0'])
+    await target.setValue('LINE-0')
+    await wrapper.get('input[aria-label="UNMATCHED 收货前关联原因"]').setValue('核对补建的正式订单')
+    await wrapper.get('button[aria-label="UNMATCHED 确认收货前关联"]').trigger('click'); await flushPromises()
+    expect(api.linkShipmentLine).toHaveBeenCalledWith('SHIP-A', 'UNMATCHED', {
+      factory_id: 'huaxing', customer_code: 'DICKIE', order_line_id: 'LINE-0',
+      expected_revision: 1, expected_order_revision: 3, reason: '核对补建的正式订单',
+    })
+    expect(api.receive).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('links a posted sample to a later formal line through an explicit warehouse action', async () => {
     const data = fixture()
     data.orders[0]!.customer_code = 'DICKIE'
@@ -657,6 +702,20 @@ describe('internal supplier collaboration', () => {
     expect(api.receive).toHaveBeenCalledWith('SHIP-A', expect.objectContaining({ lines: [expect.objectContaining({
       no_order_decision: 'SAMPLE', customer_code: 'DICKIE', sample_purpose: '客户打板确认', requested_by: '纸箱部',
     })] }))
+    wrapper.unmount()
+  })
+  it('prefills the warehouse price from the supplier delivery sheet and shows the purchase price difference', async () => {
+    const data = fixture()
+    data.shipments[0]!.lines[0]!.delivery_unit_price = '3.75'
+    data.shipments[0]!.lines[1]!.delivery_unit_price = '4'
+    data.shipments[0]!.lines[1]!.currency = 'HKD'
+    api.workspace.mockResolvedValue(data)
+    const wrapper = mount(CartonSupplierManagementView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '核实实际收到')!.trigger('click')
+    expect(wrapper.findAll<HTMLInputElement>('input[type="number"][step="0.000001"]')[0]!.element.value).toBe('3.75')
+    expect(wrapper.findAll<HTMLInputElement>('input[type="number"][step="0.000001"]')[1]!.element.value).toBe('2')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('送货单 CNY 3.75 · 采购单 CNY 2')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('采购单为 HKD，已带采购单价')
     wrapper.unmount()
   })
   it('opens only the matching pending delivery note from a notification link', async () => {

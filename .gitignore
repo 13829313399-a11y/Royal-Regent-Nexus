@@ -114,3 +114,6 @@ outputs/opening-inventory-template-20260909/
 !/docs/spray-production/*.md
 /.codex/*
 !/.codex/config.toml
+
+# IAM V2 implementation and acceptance handoff
+!docs/iam-v2-20260926/*.md

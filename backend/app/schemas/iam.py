@@ -47,6 +47,10 @@ class EmployeeProfileOut(BaseModel):
 
 
 class RoleBindingOut(BaseModel):
+    assignment_id: str | None = None
+    role_version_id: str | None = None
+    factory_ceiling: list[str] | None = None
+    employment_epoch: int | None = None
     id: str
     role_id: str
     role_code: str
@@ -96,6 +100,7 @@ class UserAccessUserOut(BaseModel):
 class UserAccessOut(BaseModel):
     user: UserAccessUserOut
     profile: EmployeeProfileOut | None
+    identity_mode: Literal["legacy", "v2"]
     authorization_version: int
     role_bindings: list[RoleBindingOut]
     overrides: list[PermissionOverrideOut]

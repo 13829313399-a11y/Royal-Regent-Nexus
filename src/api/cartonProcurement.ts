@@ -1,5 +1,6 @@
 import { http } from '@/lib/http'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
+import type { SplitRecord } from './cartonOrderSplits'
 
 export interface CartonCustomerResponse {
   id: string
@@ -55,7 +56,21 @@ export interface CartonOrderLineResponse {
   note: string
 }
 
+export interface CartonSupplierAcceptanceResponse {
+  status: 'NOT_ISSUED' | 'PENDING' | 'PARTIAL' | 'ACCEPTED' | 'PENDING_CHANGE' | 'NOT_REQUIRED' | 'CANCELLED'
+  label: string
+  issue_id: string
+  document_no: string
+  total_line_count: number
+  accepted_line_count: number
+  accepted_at: string
+}
+
 export interface CartonOrderResponse {
+  supplier_acceptance?: CartonSupplierAcceptanceResponse
+  split_records?: SplitRecord[]
+  can_delete?: boolean
+  deletion_block_reason?: string
   can_delete_history?: boolean
   customer_po?: string
   usage_status?: string
@@ -122,6 +137,7 @@ export interface CartonPurchaseOrderContextResponse {
 }
 
 export interface CartonOrderCreateRequest {
+  schedule_source?: { batch_id: string; source_sheet: string; source_row: number }
   customer_po?: string
   master_config_id?: string
   master_config_revision?: number
@@ -154,7 +170,7 @@ export interface CartonOrderCreateRequest {
   }>
 }
 
-export type CartonOrderUpdateRequest = Omit<CartonOrderCreateRequest, 'status'> & {
+export type CartonOrderUpdateRequest = Omit<CartonOrderCreateRequest, 'status' | 'schedule_source'> & {
   reason: string
 }
 
@@ -407,6 +423,8 @@ export interface CartonImportBatchResponse {
     warnings?: string[]
     review_count?: number
     field_mappings?: Array<{ sheet: string; header_row: number; fields: Record<string, string> }>
+    change_counts?: Record<string, number>
+    schedule_customer?: { customer_code: string; customer_name: string }
     document?: { delivery_note_no?: string; delivery_date?: string; raw_text_excerpt?: string }
     rows?: CartonImportPreviewRow[]
   }
@@ -414,10 +432,18 @@ export interface CartonImportBatchResponse {
 }
 
 export interface CartonImportPreviewRow {
+  source_material?: { packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string }
+  material_candidates?: { order_no: string; order_line_id: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string; conflicts: string[] }[]
+  schedule_customer_code?: string
+  schedule_customer_name?: string
   template?: string
   order_type?: string
   source_reference?: string
   source_customer_name?: string
+  schedule_section?: 'PENDING' | 'CANCELLED' | 'SHIPPED'
+  schedule_change?: 'BASELINE' | 'UNCHANGED' | 'NEW' | 'CANCELLED' | 'CANCELLED_AFTER_ORDER' | 'SHIPPED' | 'REOPENED' | 'REVIEW_REQUIRED' | 'NOT_TRACKED'
+  schedule_identity?: string
+  manual_ordered?: boolean
   source_inspection_window?: string
   source_customer_due_date?: string
   date_review_required?: boolean
@@ -445,6 +471,7 @@ export interface CartonImportPreviewRow {
   quantity?: number | null
   unit_price?: number
   order_unit_price?: number | null
+  order_currency?: string
   location?: string
   unit?: string
   carton_rule?: string
@@ -639,6 +666,17 @@ export const cartonProcurementApi = {
   async deleteHistoryOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
     await http.post(`/carton-procurement/orders/${encodeURIComponent(order.order_no)}/delete-history`, {
       factory_id: factoryId, expected_revision: order.revision, reason,
+    })
+  },
+  async deleteOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
+    await http.post(`/carton-procurement/orders/${encodeURIComponent(order.order_no)}/delete`, {
+      factory_id: factoryId, expected_revision: order.revision, reason,
+    })
+  },
+  async bulkDeleteOrders(factoryId: string, orders: CartonOrderResponse[], reason: string) {
+    await http.post('/carton-procurement/orders/bulk-delete', {
+      factory_id: factoryId, reason,
+      items: orders.map(order => ({ order_no: order.order_no, expected_revision: order.revision })),
     })
   },
   async bulkDeleteHistoryOrders(factoryId: string, orders: CartonOrderResponse[], reason: string) {
@@ -935,13 +973,34 @@ export const cartonProcurementApi = {
       params: { factory_id: factoryId },
     })
   },
-  async uploadWeeklySchedule(factoryId: string, file: File) {
+  async uploadWeeklySchedule(factoryId: string, file: File, customerCode: string) {
     const form = new FormData()
     form.append('file', file)
+    form.append('customer_code', customerCode)
     const response = await http.post<CartonImportBatchResponse>(
       '/carton-procurement/weekly-imports',
       form,
       { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    return response.data
+  },
+  async listScheduleOrderMarks(factoryId: string) {
+    const response = await http.get<Record<string, { marked: boolean; actor: string; updated_at: string; order_ids?: string[] }>>(
+      '/carton-procurement/schedule-order-marks', { params: { factory_id: factoryId } },
+    )
+    return response.data
+  },
+  async setScheduleOrderMark(factoryId: string, batchId: string, sourceSheet: string, sourceRow: number, marked: boolean) {
+    const response = await http.post<{ identity: string; marked: boolean }>(
+      '/carton-procurement/schedule-order-marks',
+      { factory_id: factoryId, batch_id: batchId, source_sheet: sourceSheet, source_row: sourceRow, marked },
+    )
+    return response.data
+  },
+  async setScheduleOrderMarks(factoryId: string, batchId: string, rows: Array<{ source_sheet: string; source_row: number }>, marked: boolean) {
+    const response = await http.post<{ items: Array<{ identity: string; marked: boolean }>; changed_count: number }>(
+      '/carton-procurement/schedule-order-marks/bulk',
+      { factory_id: factoryId, batch_id: batchId, rows, marked },
     )
     return response.data
   },
@@ -985,6 +1044,7 @@ export const cartonProcurementApi = {
   },
   async createReceipt(payload: {
     post_immediately?: boolean
+    split_confirmation?: string
     factory_id: string
     delivery_note_no: string
     delivery_date: string
@@ -1020,10 +1080,11 @@ export const cartonProcurementApi = {
     const response = await http.post<CartonReceiptResponse>('/carton-procurement/receipts', payload)
     return response.data
   },
-  async confirmReceipt(factoryId: string, receiptId: string, expectedRevision: number) {
+  async confirmReceipt(factoryId: string, receiptId: string, expectedRevision: number, splitConfirmation = '') {
     const response = await http.post<CartonReceiptResponse>(`/carton-procurement/receipts/${receiptId}/confirm`, {
       factory_id: factoryId,
       expected_revision: expectedRevision,
+      split_confirmation: splitConfirmation,
     })
     return response.data
   },

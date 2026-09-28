@@ -244,6 +244,9 @@ def _initiator_department(user: AuthContext, factory_id: str) -> str:
             if department in {"sales-business", "engineering"}
         )
     )
+    if user.identity and user.identity.get("identity_mode") == "v2":
+        formal = {a["department_code"] for a in user.identity["active_assignments_summary"] if a["factory_id"] == factory_id}
+        candidates = tuple(d for d in candidates if d in formal)
     for department in candidates:
         if has_permission_in_scope(user, "internal_quote:clone", factory_id, department):
             return department
@@ -2610,7 +2613,10 @@ def get_quote_dashboard(
     )
 
 
-def _is_sales_quote_reviewer(user: AuthContext) -> bool:
+def _is_sales_quote_reviewer(user: AuthContext, factory_id: str = "") -> bool:
+    if user.identity and user.identity.get("identity_mode") == "v2":
+        return any(a["department_code"] == "sales-business" and a["factory_id"] == factory_id
+                   for a in user.identity["active_assignments_summary"])
     # Employee organization is authoritative; old accounts fall back to an
     # active, explicit Sales binding. Wildcard access is not Sales membership.
     department = user.profile.primary_department.strip() if user.profile else ""
@@ -2620,7 +2626,7 @@ def _is_sales_quote_reviewer(user: AuthContext) -> bool:
 
 
 def _can_review_quote(user: AuthContext, factory_id: str, created_by: str) -> bool:
-    return _is_sales_quote_reviewer(user) and (
+    return _is_sales_quote_reviewer(user, factory_id) and (
         can(user, "internal_quote:sales_review", factory_id, "sales-business")
         or (created_by == user.id and can(
             user, INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE, factory_id, "sales-business",
@@ -2640,7 +2646,7 @@ def validate_quote_business_owner(
 
 
 def _can_self_review_own_quote(user: AuthContext, quote: InternalQuote) -> bool:
-    return _is_sales_quote_reviewer(user) and quote.created_by == user.id and can(
+    return _is_sales_quote_reviewer(user, quote.factory_id) and quote.created_by == user.id and can(
         user,
         INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
         quote.factory_id,
@@ -2661,7 +2667,7 @@ def ensure_quote_business_reviewer(
             status_code=403,
             detail=f"仅建单时指定的业务审核负责人（{reviewer_name}）可审核全部部门分段",
         )
-    if not _is_sales_quote_reviewer(user):
+    if not _is_sales_quote_reviewer(user, quote.factory_id):
         raise HTTPException(status_code=403, detail="只有业务部人员可以审核内部报价")
     if _can_review_quote(user, quote.factory_id, quote.created_by):
         return
@@ -2684,6 +2690,7 @@ def list_business_owners(
         .where(
             AuthUser.status == "active",
             or_(
+                EmployeeProfile.identity_mode == "v2",
                 EmployeeProfile.primary_department == "sales-business",
                 AuthUserRole.department == "sales-business",
             ),

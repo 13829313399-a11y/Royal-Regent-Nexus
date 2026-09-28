@@ -16,6 +16,8 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
+import { identityUiEnabled } from '@/components/iam/workspace/iam-navigation'
+import { legacyIamAccountTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
   fullPage: true,
   requiresAuth: true,
@@ -440,9 +442,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/system',
+    component: () => import('@/components/iam/workspace/IamWorkspaceLayout.vue'),
+    meta: { fullPage: true, requiresAuth: true },
+    children: [
+  {
     path: '/system/users',
     name: 'system-users',
-    component: () => import('@/views/SystemUserManagementView.vue'),
+    component: identityUiEnabled
+      ? () => import('@/features/identity-management/PeopleCenter.vue')
+      : () => import('@/views/SystemUserManagementView.vue'),
     meta: {
       title: '账号与权限管理',
       fullPage: true,
@@ -450,6 +459,12 @@ const routes: RouteRecordRaw[] = [
       permissions: ['system:user_manage'],
       enforcePermissions: true,
     },
+  },
+  {
+    path: '/system/users/registration',
+    name: 'system-registration',
+    component: () => import('@/views/SystemUserManagementView.vue'),
+    meta: { title: '注册审核与密码找回', fullPage: true, requiresAuth: true, permissions: ['system:user_manage'], enforcePermissions: true },
   },
   {
     path: '/system/users/:userId/access',
@@ -481,11 +496,19 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/system/iam/requests',
-    redirect: '/system/iam/roles',
+    ...(identityUiEnabled ? {
+      component: () => import('@/features/identity-management/IdentityRecords.vue'),
+      meta: { title: '变更办理', fullPage: true, requiresAuth: true, permissions: ['system:access_manage'], enforcePermissions: true },
+    } : { redirect: '/system/users' }),
   },
   {
     path: '/system/iam/audit',
-    redirect: '/system/iam/roles',
+    ...(identityUiEnabled ? {
+      component: () => import('@/features/identity-management/IdentityRecords.vue'),
+      meta: { title: '授权与人员记录', fullPage: true, requiresAuth: true, permissions: ['system:audit_read'], enforcePermissions: true },
+    } : { redirect: '/system/users' }),
+  },
+    ],
   },
   {
     path: '/forbidden',
@@ -645,6 +668,10 @@ const finishRouteLoading = () => {
 }
 
 router.beforeEach(async (to, from) => {
+  if (to.path === '/system/users') {
+    const legacyTarget = legacyIamAccountTarget(to, identityUiEnabled)
+    if (legacyTarget) return legacyTarget
+  }
   if (to.path.startsWith(UV_BASE) && to.query.factory !== UV_FACTORY) {
     return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
   }
@@ -659,6 +686,7 @@ router.beforeEach(async (to, from) => {
   appStore.startRouteLoading()
 
   const factoryQuery = factoryQueryForRoute(to)
+  appStore.pinBusinessFactoryContext(to.path.startsWith('/modules/'))
   appStore.setRequestedFactoryContext(factoryQuery.factory)
 
   const authStore = useAuthStore()

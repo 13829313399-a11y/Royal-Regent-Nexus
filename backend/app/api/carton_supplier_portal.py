@@ -4,7 +4,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SampleReceiptLink, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
 from app.services import carton_supplier_delivery_import as delivery_import
 import json
@@ -111,6 +111,12 @@ def receive(shipment_id: str, payload: ShipmentReceive, db: Session = Depends(ge
 def link_sample_receipt(receipt_line_id: str, payload: SampleReceiptLink,
                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.link_sample_receipt(db, user, receipt_line_id, payload)
+
+
+@router.post("/internal/shipments/{shipment_id}/lines/{line_id}/link-order")
+def link_shipment_line(shipment_id: str, line_id: str, payload: ShipmentLineLink,
+                       db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.link_shipment_line(db, user, shipment_id, line_id, payload)
 
 @router.post("/internal/orders/{order_id}/attachments", status_code=201)
 async def upload(order_id: str, factory_id: str = Form(...), file: UploadFile = File(...),

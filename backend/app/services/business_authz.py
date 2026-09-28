@@ -47,6 +47,8 @@ def is_local_factory(user: AuthContext, factory_id: str) -> bool:
     if is_wildcard_super_admin(user):
         return True
 
+    if user.identity and user.identity.get("identity_mode") == "v2":
+        return any(a["factory_id"] == factory_id for a in user.identity["active_assignments_summary"])
     primary_factory_id = user.profile.primary_factory_id.strip() if user.profile else ""
     if primary_factory_id:
         return primary_factory_id == factory_id
@@ -112,7 +114,7 @@ def has_permission_for_departments(
     # Do not let the legacy compatibility fallback downgrade that decision.
     if canonical_result and is_wildcard_super_admin(user):
         return True
-    if settings.authz_mode == "enforce":
+    if settings.authz_mode == "enforce" or (user.identity and user.identity["identity_mode"] == "v2"):
         return canonical_result
 
     # Existing business endpoints historically checked only the factory. Keep
@@ -248,7 +250,7 @@ def legacy_local_molding_read_access(user: AuthContext, factory_id: str) -> bool
 
 def local_molding_read_access(user: AuthContext, factory_id: str) -> bool:
     canonical_result = canonical_local_molding_read_access(user, factory_id)
-    if settings.authz_mode == "enforce":
+    if settings.authz_mode == "enforce" or (user.identity and user.identity["identity_mode"] == "v2"):
         return canonical_result
 
     legacy_result = legacy_local_molding_read_access(user, factory_id)
@@ -265,7 +267,7 @@ def local_molding_read_access(user: AuthContext, factory_id: str) -> bool:
 
 def molding_read_access(user: AuthContext, factory_id: str) -> str | None:
     canonical_result = canonical_molding_read_access(user, factory_id)
-    if settings.authz_mode == "enforce":
+    if settings.authz_mode == "enforce" or (user.identity and user.identity["identity_mode"] == "v2"):
         return canonical_result
 
     legacy_result = legacy_molding_read_access(user, factory_id)
