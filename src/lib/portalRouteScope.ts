@@ -68,3 +68,9 @@ export function usesPortalRegion(scope: PortalScope, region: 'tools-header' | 'u
 export function resolvePortalShellAttribute(scope: PortalScope): 'jade-v3' | undefined {
   return usesPortalShell(scope) ? 'jade-v3' : undefined
 }
+
+/** V4 is a presentation-only opt-in for the eight exact home routes. */
+export function getHomeExperienceScope(route: RouteIdentity): 'dashboard' | 'department' | null {
+  const scope = getPortalScope(route)
+  return scope === 'dashboard' || scope === 'department' ? scope : null
+}
