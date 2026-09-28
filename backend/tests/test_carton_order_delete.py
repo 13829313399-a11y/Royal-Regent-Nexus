@@ -18,13 +18,19 @@ def current_orders(client):
     return client.get(f"{BASE}/orders", params={"factory_id": "huaxing"}).json()["items"]
 
 
-@pytest.mark.parametrize("submitted", [False, True])
-def test_supervisor_deletes_unused_ordinary_orders_with_full_audit(monkeypatch, submitted):
+@pytest.mark.parametrize("status", ["CONFIRMED", "PENDING_SUPPLIER", "CANCELLED"])
+def test_supervisor_deletes_unused_ordinary_orders_with_full_audit(monkeypatch, status):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         _freeze_carton_time(monkeypatch)
+        submitted = status == "PENDING_SUPPLIER"
         order = _create_order(client, submit_supplier=submitted)
         login_as(client, "admin")
+        if status == "CANCELLED":
+            response = client.post(f"{BASE}/orders/{order['order_no']}/cancel", json=delete_body(order))
+            assert response.status_code == 200, response.text
+            order = response.json()
+        assert order["status"] == status
         assert order["can_delete"] and not order["can_delete_history"]
         path = f"{BASE}/orders/{order['order_no']}/delete"
         assert client.post(path, json=delete_body(order, reason="   错")).status_code == 422
@@ -37,28 +43,68 @@ def test_supervisor_deletes_unused_ordinary_orders_with_full_audit(monkeypatch, 
         event = next(row for row in audits if row["event_type"] == "ORDER_DELETED")
         assert event["actor_user_id"] and event["detail"]["reason"] == delete_body(order)["reason"]
         assert event["detail"]["order"]["lines"]
+        assert event["detail"]["order"]["status"] == status
         assert bool(event["detail"]["purchase_issues"]) == submitted
+        if status == "CANCELLED":
+            assert any(row["event_type"] == "ORDER_CANCELLED" and row["entity_id"] == order["id"] for row in audits)
         assert client.get(f"{BASE}/customers", params={"factory_id": "huaxing"}).json()["total"] == 1
 
 
-@pytest.mark.parametrize("mode", ["pending", "posted", "reversed", "voided"])
+@pytest.mark.parametrize("mode", ["pending", "posted", "reversed", "voided", "returned"])
 def test_ordinary_order_with_receipt_evidence_cannot_be_deleted(monkeypatch, mode):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         _freeze_carton_time(monkeypatch)
         order = _create_order(client)
         login_as(client, "admin")
-        doc = receipt(client, order, post=mode in {"posted", "reversed"})
+        doc = receipt(client, order, post=mode in {"posted", "reversed", "returned"})
         if mode == "reversed":
             assert reverse(client, doc).status_code == 200
         if mode == "voided":
             response = reverse(client, doc, reason="待收记录作废测试")
             assert response.status_code == 200, response.text
+        if mode == "returned":
+            current = next(row for row in current_orders(client) if row["id"] == order["id"])
+            response = client.post(f"{BASE}/orders/{order['order_no']}/return", json=delete_body(current))
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "CANCELLED"
         current = next(row for row in current_orders(client) if row["id"] == order["id"])
         assert not current["can_delete"] and "收料" in current["deletion_block_reason"]
         response = client.post(f"{BASE}/orders/{order['order_no']}/delete", json=delete_body(current))
         assert response.status_code == 409, response.text
         assert len(current_orders(client)) == 1
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_supervisor_bulk_deletes_cancelled_orders_and_preserves_cancellation_audits(monkeypatch, mixed):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        _freeze_carton_time(monkeypatch)
+        rows = []
+        for index in range(2):
+            row = _create_order(client, submit_supplier=False)
+            login_as(client, "admin")
+            if not mixed or index == 0:
+                response = client.post(f"{BASE}/orders/{row['order_no']}/cancel", json=delete_body(row))
+                assert response.status_code == 200, response.text
+                row = response.json()
+            assert row["can_delete"]
+            rows.append(row)
+        body = {"factory_id": "huaxing", "reason": "清理已取消及重复订单", "items": [
+            {"order_no": row["order_no"], "expected_revision": row["revision"]} for row in rows]}
+        stale = {**body, "items": [body["items"][0], {**body["items"][1], "expected_revision": 99}]}
+        assert client.post(f"{BASE}/orders/bulk-delete", json=stale).status_code == 409
+        assert {row["id"] for row in current_orders(client)} == {row["id"] for row in rows}
+        assert client.post(f"{BASE}/orders/bulk-delete", json=body).status_code == 204
+        assert not current_orders(client)
+        audits = client.get(f"{BASE}/audit-events", params={"factory_id": "huaxing"}).json()["items"]
+        deleted = [event for event in audits if event["event_type"] == "ORDER_DELETED"]
+        assert len(deleted) == 2
+        assert len({event["detail"]["operation_id"] for event in deleted}) == 1
+        assert {event["detail"]["order"]["status"] for event in deleted} == (
+            {"CONFIRMED", "CANCELLED"} if mixed else {"CANCELLED"})
+        cancelled = [event for event in audits if event["event_type"] == "ORDER_CANCELLED"]
+        assert len(cancelled) == (1 if mixed else 2)
 
 
 def test_supplier_acceptance_blocks_order_deletion(monkeypatch):

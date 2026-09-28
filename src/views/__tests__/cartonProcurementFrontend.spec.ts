@@ -450,8 +450,11 @@ describe('CartonProcurementView frontend workspace', () => {
     wrapper.unmount()
   })
 
-  it('deletes all selected eligible orders only after confirmation and rejects a mixed UI selection', async () => {
-    const rows = ['H-A', 'H-B'].map(id => ({ ...orderFixture(id, businessDateOffset(3), 'PENDING_SUPPLIER'), can_delete: true }))
+  it.each(['mixed', 'cancelled'] as const)('deletes a %s selection including cancelled orders only after confirmation and rejects blocked orders', async (selection) => {
+    const rows = ['H-A', 'H-B'].map((id, index) => ({
+      ...orderFixture(id, businessDateOffset(3), selection === 'cancelled' || index === 1 ? 'CANCELLED' : 'PENDING_SUPPLIER'),
+      can_delete: true,
+    }))
     const ordinary = orderFixture('NORMAL', businessDateOffset(3))
     mockReceiptWorkspace([...rows, ordinary])
     const wrapper = mountView('orders'); await flushPromises()
@@ -460,7 +463,12 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(findButton(wrapper, '批量删除订单').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('已有收料、库存或供应商执行记录')
     await wrapper.get('[aria-label="选择订单 NORMAL"]').setValue(false)
+    if (selection === 'cancelled') {
+      await wrapper.get('[aria-label="订单状态筛选"]').setValue('CANCELLED')
+      expect(wrapper.get('[aria-label="已取消订单删除说明"]').text()).toContain('已取消订单也可删除')
+    }
     await wrapper.get('[aria-label="选择订单 H-B"]').setValue(true)
+    expect(findButton(wrapper, '批量删除订单').attributes('disabled')).toBeUndefined()
     await findButton(wrapper, '批量删除订单').trigger('click'); await flushPromises()
     expect(cartonApiMock.bulkDeleteOrders).not.toHaveBeenCalled()
     const reason = wrapper.get('[aria-label="订单删除原因"]')
@@ -898,6 +906,61 @@ describe('CartonProcurementView frontend workspace', () => {
       'CT-COMPLETED',
       'CT-CANCELLED',
     ])
+  })
+
+  it.each([
+    ['PENDING', '供应商待接单', 0],
+    ['PARTIAL', '供应商部分接单', 1],
+    ['ACCEPTED', '供应商已接单', 2],
+    ['PENDING_CHANGE', '变更待发行', 0],
+    ['NOT_ISSUED', '尚未发送供应商', 0],
+  ])('shows current supplier acknowledgement %s independently of internal locking', async (status, label, accepted) => {
+    const order = { ...orderFixture('CT-ACK', businessDateOffset(8), 'PENDING_SUPPLIER'),
+      supplier_acceptance: { status, label, issue_id: 'ISSUE-ACK', document_no: 'CT-ACK-P00',
+        total_line_count: 2, accepted_line_count: accepted, accepted_at: accepted ? '2026-09-28T04:00:00+00:00' : '' } }
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([order])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    const wrapper = mountView('orders')
+    await flushPromises()
+    const card = wrapper.get('[data-order-no="CT-ACK"]')
+    const acknowledgement = card.get('[aria-label="CT-ACK 供应商接单状态"]')
+    expect(acknowledgement.text()).toContain(label)
+    expect(card.text()).toContain('已确认锁定')
+    if (status === 'PARTIAL') expect(acknowledgement.text()).toContain('1/2')
+    await card.get('[aria-label="查看 CT-ACK 完整订单明细"]').trigger('click')
+    const detail = wrapper.get('[aria-label="订单供应商接单信息"]')
+    expect(detail.text()).toContain(label)
+    if (accepted) {
+      expect(detail.text()).toContain(`已接单 ${accepted}/2 项纸品`)
+      expect(detail.text()).toContain('CT-ACK-P00')
+      expect(detail.text()).toContain('最近接单')
+    }
+    if (status === 'PENDING_CHANGE') expect(detail.text()).toContain('需要供应商重新确认')
+    wrapper.unmount()
+  })
+
+  it('refreshes supplier confirmation from the order API after the supplier accepts', async () => {
+    const order = { ...orderFixture('CT-ACK-REFRESH', businessDateOffset(8), 'PENDING_SUPPLIER'),
+      supplier_acceptance: { status: 'PENDING', label: '供应商待接单', issue_id: 'ACK-REFRESH',
+        document_no: 'CT-ACK-REFRESH-P00', total_line_count: 1, accepted_line_count: 0, accepted_at: '' } }
+    cartonApiMock.listCustomers.mockResolvedValue([])
+    cartonApiMock.listOrders.mockResolvedValue([order])
+    cartonApiMock.listMovements.mockResolvedValue([])
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    const wrapper = mountView('orders')
+    await flushPromises()
+    expect(wrapper.get('[aria-label="CT-ACK-REFRESH 供应商接单状态"]').text()).toContain('供应商待接单')
+    cartonApiMock.listOrders.mockResolvedValue([{ ...order, supplier_acceptance: {
+      ...order.supplier_acceptance, status: 'ACCEPTED', label: '供应商已接单',
+      accepted_line_count: 1, accepted_at: '2026-09-28T04:00:00+00:00' } }])
+    await findButton(wrapper, '刷新').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[aria-label="CT-ACK-REFRESH 供应商接单状态"]').text()).toContain('供应商已接单')
+    wrapper.unmount()
   })
 
   it('keeps order due reminders numeric when the browser formats locale dates with slashes', async () => {

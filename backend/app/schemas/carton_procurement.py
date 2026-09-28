@@ -555,7 +555,18 @@ class CartonOrderHistorySuggestionListOut(BaseModel):
     items: list[CartonOrderHistorySuggestionOut]
 
 
+class CartonSupplierAcceptanceOut(BaseModel):
+    status: Literal["NOT_ISSUED", "PENDING", "PARTIAL", "ACCEPTED", "PENDING_CHANGE", "NOT_REQUIRED", "CANCELLED"] = "NOT_ISSUED"
+    label: str = "尚未发送供应商"
+    issue_id: str = ""
+    document_no: str = ""
+    total_line_count: int = 0
+    accepted_line_count: int = 0
+    accepted_at: str = ""
+
+
 class CartonOrderOut(BaseModel):
+    supplier_acceptance: CartonSupplierAcceptanceOut = Field(default_factory=CartonSupplierAcceptanceOut)
     split_records: list[dict] = Field(default_factory=list)
     can_delete: bool = False
     deletion_block_reason: str = ""

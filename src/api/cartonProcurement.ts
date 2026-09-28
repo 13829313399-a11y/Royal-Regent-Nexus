@@ -56,7 +56,18 @@ export interface CartonOrderLineResponse {
   note: string
 }
 
+export interface CartonSupplierAcceptanceResponse {
+  status: 'NOT_ISSUED' | 'PENDING' | 'PARTIAL' | 'ACCEPTED' | 'PENDING_CHANGE' | 'NOT_REQUIRED' | 'CANCELLED'
+  label: string
+  issue_id: string
+  document_no: string
+  total_line_count: number
+  accepted_line_count: number
+  accepted_at: string
+}
+
 export interface CartonOrderResponse {
+  supplier_acceptance?: CartonSupplierAcceptanceResponse
   split_records?: SplitRecord[]
   can_delete?: boolean
   deletion_block_reason?: string

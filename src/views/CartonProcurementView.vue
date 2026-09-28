@@ -368,6 +368,32 @@ async function refreshLocations() {
 }
 function usageLabel(orderNo: string) { return orderRecords.value.find(row => row.order_no === orderNo)?.usage_status_label || '未入库' }
 
+function supplierAcceptance(orderNo: string) {
+  return orderRecords.value.find(row => row.order_no === orderNo)?.supplier_acceptance
+}
+
+function supplierAcceptanceTone(orderNo: string) {
+  const status = supplierAcceptance(orderNo)?.status
+  if (status === 'ACCEPTED') return 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+  if (status === 'PARTIAL') return 'bg-sky-50 text-sky-700 ring-sky-200'
+  if (status === 'PENDING' || status === 'PENDING_CHANGE') return 'bg-amber-50 text-amber-800 ring-amber-200'
+  return 'bg-slate-50 text-slate-500 ring-slate-200'
+}
+
+function supplierAcceptanceDescription(orderNo: string) {
+  const acceptance = supplierAcceptance(orderNo)
+  if (!acceptance) return '接单状态待同步，请刷新订单台账。'
+  if (acceptance.status === 'PENDING_CHANGE') return '订单已变更；发行变更采购单后，需要供应商重新确认。'
+  if (acceptance.status === 'NOT_ISSUED') return '确认订单并发行采购单后，供应商可以确认接单。'
+  if (acceptance.status === 'CANCELLED') return '订单已取消。'
+  const parts = [acceptance.document_no, `已接单 ${acceptance.accepted_line_count}/${acceptance.total_line_count} 项纸品`]
+  if (acceptance.accepted_at) {
+    const acceptedAt = new Date(acceptance.accepted_at)
+    if (Number.isFinite(acceptedAt.getTime())) parts.push(`最近接单：${acceptedAt.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`)
+  }
+  return parts.filter(Boolean).join(' · ')
+}
+
 const relocationNote = ref('')
 const relocationBusy = ref(false)
 const relocationFeedback = ref('')
@@ -2138,7 +2164,7 @@ function canDeleteOrder(orderNo: string) {
 
 function orderDeleteHint(orderNo: string) {
   return orderRecords.value.find(order => order.order_no === orderNo)?.deletion_block_reason
-    || '主管级别可删除未收料且无供应商执行记录的订单，删除前需确认原因'
+    || '主管级别可删除未收料且无供应商执行记录的订单（含已取消订单），删除前需确认原因'
 }
 
 function openDeleteOrder(orderNo: string) {
@@ -5711,7 +5737,8 @@ const hasReceiptSplits = computed(() => splitReceiptLines.value.some(line => ord
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || issuingSelectedPurchaseOrders || !canIssuePurchaseOrders" title="首次与非首次采购单均可多选发行；包含追加或减单时会先确认" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300" @click="issueSelectedPurchaseOrders"><Send class="size-3.5" />{{ issuingSelectedPurchaseOrders ? '发行中…' : `发行供应商采购单（${selectedOrderNos.length}）` }}</button>
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || exportingSelectedOrders" :title="!apiConnected ? '后端未连接，当前演示订单不能导出' : '累计对账表不代表向供应商新增下单'" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="exportSelectedPurchaseOrders"><Download class="size-3.5" />{{ exportingSelectedOrders ? '合并生成中…' : '导出累计对账表' }}</button>
           <button type="button" :disabled="!selectedOrdersCanCancel || cancellingOrder" title="仅尚未确认锁定的待下单订单可批量取消" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="openBulkCancelOrders"><X class="size-3.5" />批量取消</button>
-          <button v-if="canDeleteOrders" type="button" :disabled="!selectedOrdersCanDelete || deletingOrders" title="主管级别可删除未收料且无供应商执行记录的订单；最多选择 100 张，全部校验通过后一次删除" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="deleteOrderTarget = null; deleteOrderTargets = [...selectedOrders]; deleteOrderReason = '订单录入有误'"><Trash2 class="size-3.5" />批量删除订单</button>
+          <button v-if="canDeleteOrders" type="button" :disabled="!selectedOrdersCanDelete || deletingOrders" title="主管级别可删除未收料且无供应商执行记录的订单（含已取消订单）；请先勾选，最多选择 100 张，全部校验通过后一次删除" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="deleteOrderTarget = null; deleteOrderTargets = [...selectedOrders]; deleteOrderReason = '订单录入有误'"><Trash2 class="size-3.5" />批量删除订单</button>
+          <p v-if="canDeleteOrders && orderStatusFilter === 'CANCELLED'" aria-label="已取消订单删除说明" class="basis-full text-[11px] text-slate-600">已取消订单也可删除：勾选后点击“批量删除订单”，或在该订单的“更多”中删除；已有收料、库存、供应商执行或拆单记录的订单仍不可删除。</p>
           <p v-if="canDeleteOrders && selectedOrders.length && !selectedOrdersCanDelete" class="basis-full text-[11px] text-red-700">已有收料、库存或供应商执行记录的订单不可删除（含待确认、作废或已冲销）；每次最多 100 张，全部校验通过后一次删除。</p>
           <CartonSelectionSummary :rows="selectedOrders.map(row => ({ id: row.order_no, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no}${row.customer_po ? ' · PO ' + row.customer_po : ''}` }))" :visible-ids="orderedVisibleOrders.map(row => row.id)" unit="张" @clear="selectedOrderNos = []" @remove="selectedOrderNos = selectedOrderNos.filter(id => id !== $event)" />
           <p
@@ -5820,7 +5847,8 @@ const hasReceiptSplits = computed(() => splitReceiptLines.value.some(line => ord
               </div>
               <div class="min-w-0 text-left">
                 <div class="mb-1 text-[10px] font-bold text-slate-400 lg:hidden">订单状态</div>
-                <span class="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(row.tone)">{{ row.status }}</span><div class="mt-1 whitespace-nowrap text-[10px] text-slate-500">领用：{{ usageLabel(row.id) }}</div>
+                <span class="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(row.tone)">{{ row.status }}</span>
+                <div class="mt-1" :aria-label="`${row.id} 供应商接单状态`" :title="supplierAcceptanceDescription(row.id)"><span class="inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="supplierAcceptanceTone(row.id)">{{ supplierAcceptance(row.id)?.label || '接单状态待同步' }}</span><span v-if="supplierAcceptance(row.id)?.status === 'PARTIAL'" class="ml-1 text-[10px] tabular-nums text-sky-700">{{ supplierAcceptance(row.id)?.accepted_line_count }}/{{ supplierAcceptance(row.id)?.total_line_count }}</span></div>
               </div>
               <div class="min-w-0 text-left">
                 <div class="mb-1 text-[10px] font-bold text-slate-400 lg:hidden">交期提醒</div>
@@ -6497,7 +6525,7 @@ const hasReceiptSplits = computed(() => splitReceiptLines.value.some(line => ord
       <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/40" />
       <DialogContent class="fixed left-1/2 top-1/2 z-[71] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-xl" @interact-outside.prevent @escape-key-down="event => { if (deletingOrders) event.preventDefault() }">
         <DialogTitle class="text-lg font-bold">{{ deleteOrderTarget ? `删除订单 ${deleteOrderTarget.order_no}` : `批量删除 ${deleteOrderTargets.length} 张订单` }}</DialogTitle>
-        <DialogDescription class="mt-2 text-sm text-slate-600">仅主管级别可删除未收料且无供应商执行记录的订单，全部校验通过后一次生效。删除后从台账移除，操作日志保留原始明细；已有收料或库存记录（含待确认、作废或已冲销）的订单不能删除。</DialogDescription>
+        <DialogDescription class="mt-2 text-sm text-slate-600">仅主管级别可删除未收料且无供应商执行记录的订单（含已取消订单），全部校验通过后一次生效。删除后从台账移除，操作日志保留原始明细；已有收料或库存记录（含待确认、作废或已冲销）的订单不能删除。</DialogDescription>
         <p v-if="deleteOrderTargets.length" class="mt-2 max-h-28 overflow-auto text-xs text-slate-600">{{ deleteOrderTargets.map(order => order.order_no).join('、') }}</p>
         <form class="mt-4 space-y-4" @submit.prevent="deleteOrder">
           <label class="block text-sm">删除原因 *<textarea v-model="deleteOrderReason" aria-label="订单删除原因" required minlength="4" maxlength="500" class="mt-2 w-full rounded-lg border p-3" /></label>
@@ -6756,6 +6784,11 @@ const hasReceiptSplits = computed(() => splitReceiptLines.value.some(line => ord
             <div><span class="text-slate-500">客户要求交期</span><b class="ml-2 tabular-nums text-slate-900" :title="orderDetailRow.customerDueDate || undefined">{{ formatMonthDay(orderDetailRow.customerDueDate) || '未记录' }}</b></div>
             <div><span class="text-slate-500">计划交期</span><b class="ml-2 tabular-nums text-slate-900" :title="orderDetailRow.dueDate">{{ formatMonthDay(orderDetailRow.dueDate) }}</b></div>
             <div class="min-w-0"><span class="text-slate-500">备注</span><b class="ml-2 break-words text-slate-900">{{ orderDetailRow.note || '—' }}</b></div>
+          </section>
+
+          <section aria-label="订单供应商接单信息" class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[12px]">
+            <div class="flex flex-wrap items-center gap-2"><span class="font-semibold text-slate-600">供应商接单</span><span class="inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ring-inset" :class="supplierAcceptanceTone(orderDetailRow.id)">{{ supplierAcceptance(orderDetailRow.id)?.label || '接单状态待同步' }}</span></div>
+            <p class="mt-2 break-words text-slate-500">{{ supplierAcceptanceDescription(orderDetailRow.id) }}</p>
           </section>
 
           <section class="overflow-hidden rounded-xl border border-slate-200">
