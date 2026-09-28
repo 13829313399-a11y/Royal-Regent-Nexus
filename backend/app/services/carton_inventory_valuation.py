@@ -53,6 +53,8 @@ def load_valuation(db: Session, factory_id: str, *, before: str | None = None) -
 
 def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAuditEvent]) -> Valuation:
     sequence: dict[str, int] = {}
+    split_sources: dict[str, str] = {}
+    split_order: dict[str, int] = {}
     prices: dict[str, Decimal] = {}
     for event in events:
         detail = json.loads(event.detail_json or "{}")
@@ -64,6 +66,12 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
             sequence[event.entity_id] = event.sequence
         elif event.event_type == "INVENTORY_MOVEMENT_REVERSED":
             sequence[detail.get("reversal_id", "")] = event.sequence
+        elif event.event_type == "ORDER_SPLIT_STOCK_MOVED":
+            for index, pair in enumerate(detail["pairs"]):
+                split_sources[pair["to_id"]] = pair["from_id"]
+                for rank, identifier in enumerate((pair["from_id"], pair["to_id"])):
+                    sequence[identifier] = event.sequence
+                    split_order[identifier] = 2 * index + rank
         elif event.event_type in {"ORDER_RETURNED", "INVENTORY_BULK_OUTBOUND_CREATED"}:
             for movement_id in detail.get("movement_ids", []):
                 sequence.setdefault(movement_id, event.sequence)
@@ -72,7 +80,7 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
         seq = sequence.get(row.id, sequence.get(row.source_id, 0))
         # Unsequenced legacy receipts/initial balances precede issues at the same
         # second. Ambiguous interleaved legacy transactions are not guessed.
-        return (ledger_time(row.occurred_at), seq, row.quantity < 0, row.id)
+        return (ledger_time(row.occurred_at), seq, split_order.get(row.id, 0), row.quantity < 0, row.id)
 
     ordered = sorted(rows, key=order_key)
     by_id = {row.id: row for row in rows}
@@ -106,6 +114,14 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
                     amount = qty * price
                 else:
                     amount = -result.amounts[original.id]
+            elif row.id in split_sources:
+                source = split_sources[row.id]
+                if source not in result.amounts:
+                    result.errors.append((row, "拆单库存缺少原归属扣减金额，不能按显示单价猜测"))
+                    amount = qty * price
+                else:
+                    amount = -result.amounts[source]
+                    unknown = {identifier: -coefficient for identifier, coefficient in movement_dependencies[source].items()}
             elif qty > 0:
                 amount = qty * price
                 if price == 0 and row.id not in prices:

@@ -100,16 +100,16 @@ def receive_payload(client, shipment):
             "location_allocations":[{"location_id":location,"quantity":8}], "difference_reason":"本次实际短收两件"} for line in shipment["lines"]]}
 
 
-def _dongkang_delivery_file(order, *, missing_item=False, destination="华兴", source_spec=None):
+def _dongkang_delivery_file(order, *, missing_item=False, destination="华兴", source_spec=None, source_price=None):
     from openpyxl import Workbook
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "送货明细"
-    sheet.append(["送货单号", "日期", "客户", "客户单号", "客户料号", "纸质", "规格", "数量"])
+    sheet.append(["送货单号", "日期", "客户", "客户单号", "客户料号", "纸质", "规格", "数量", "单价"])
     for index, line in enumerate(order["lines"]):
         sheet.append(["DK-IMPORT-01", "2026-09-24", destination, order["contract_no"],
             "" if missing_item and index == 0 else order["item_no"], line["paper_quality"],
-            source_spec or line["specification"], 10])
+            source_spec or line["specification"], 10, source_price])
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
@@ -276,7 +276,7 @@ def test_supplier_delivery_import_requires_review_then_routes_to_factory_receipt
     with make_client(monkeypatch) as client:
         setup_portal(client)
         pending = client.get(BASE + "/workspace", params={"factory_id": "huaxing"}).json()["orders"][0]
-        content = _dongkang_delivery_file(pending)
+        content = _dongkang_delivery_file(pending, source_price=3.75)
         upload = {"file": ("送货明细表.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
         preview = client.post(BASE + "/shipments/import-preview", files=upload)
         assert preview.status_code == 200, preview.text
@@ -332,7 +332,9 @@ def test_supplier_delivery_import_requires_review_then_routes_to_factory_receipt
         assert client.patch(f"/api/system/notifications/{notification_id}", json={"status": "handled"}).status_code == 409
         internal = client.get(BASE + "/internal/workspace", params={"factory_id": "huaxing"})
         assert internal.status_code == 200, internal.text
-        assert any(row["id"] == shipment["id"] for row in internal.json()["shipments"])
+        imported = next(row for row in internal.json()["shipments"] if row["id"] == shipment["id"])
+        assert all(float(line["delivery_unit_price"]) == 3.75 for line in imported["lines"])
+        assert all(float(line["unit_price"]) != 3.75 for line in imported["lines"])
         payload = receive_payload(client, shipment)
         payload["lines"][0]["damaged_quantity"] = 1
         payload["lines"][0]["location_allocations"][0]["quantity"] = 7
@@ -668,6 +670,7 @@ def test_partial_receipt_atomicity_replay_and_remaining(monkeypatch):
         assert [float(line["received_quantity"]) for line in data["orders"][0]["lines"]] == [8,8]
         assert float(data["orders"][0]["lines"][0]["remaining_to_ship"]) == 22
         assert "unit_price" not in json.dumps(data["shipments"])
+        assert "delivery_unit_price" not in json.dumps(data["shipments"])
         next_delivery=ship_payload(order);next_delivery["delivery_note_no"]="DN-NEXT-PARTIAL"
         response=client.post(BASE+"/shipments",json=next_delivery)
         assert response.status_code == 201,response.text

@@ -117,6 +117,7 @@ class ReceiveLine(BaseModel):
     unit: str = Field(default="", max_length=32)
 
 class ShipmentReceive(Payload):
+    split_confirmation: str = Field(default="", max_length=64)
     request_id: str = Field(min_length=8, max_length=128)
     expected_revision: int = Field(ge=1)
     acceptance_date: date
