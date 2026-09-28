@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.auth import SystemNotification
+from app.models.carton_procurement import CartonReceipt, CartonAuditEvent
 from app.models.carton_supplier_portal import SupplierShipment
 
 
@@ -41,6 +42,28 @@ def create_notification(db: Session, shipment: SupplierShipment) -> SystemNotifi
         notification = notification_for(shipment)
         db.add(notification)
     return notification
+
+
+def legacy_reversed_notifications(db: Session, changed_after: str | None = None) -> list[SystemNotification]:
+    """Project notes reversed before the atomic reopening hook was introduced."""
+    result = []
+    shipments = db.scalars(select(SupplierShipment).join(CartonReceipt, CartonReceipt.id == SupplierShipment.receipt_id)
+        .where(SupplierShipment.status == "RECEIVED", CartonReceipt.status == "REVERSED")).all()
+    for shipment in shipments:
+        stored = db.get(SystemNotification, notification_id(shipment.id))
+        candidate = notification_for(shipment)
+        event = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == shipment.factory_id,
+            CartonAuditEvent.entity_id == shipment.receipt_id, CartonAuditEvent.event_type == "RECEIPT_REVERSED")
+            .order_by(CartonAuditEvent.sequence.desc()).limit(1))
+        candidate.created_at = event.created_at if event else shipment.created_at
+        candidate.title = f"供应商送货单 {shipment.delivery_note_no[:100]} 收料已冲销，待更正"
+        candidate.message = "请沿原送货单更正验收；旧记录保留，不重复入库。"
+        candidate.status = "read" if stored and stored.status == "read" else "unread"
+        candidate.read_at = stored.read_at if stored and stored.status == "read" else ""
+        candidate.handled_at = ""
+        if not changed_after or max(candidate.created_at, candidate.read_at) >= changed_after:
+            result.append(candidate)
+    return result
 
 
 def handle_notification(db: Session, shipment: SupplierShipment) -> None:

@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -998,9 +998,10 @@ def _guard_no_supplier_transit(db: Session, order: CartonOrder) -> None:
     guard_order_change(db, order)
     transit = db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
         SupplierShipment.id == SupplierShipmentLine.shipment_id).join(CartonOrderLine,
-        CartonOrderLine.id == SupplierShipmentLine.order_line_id).where(
+        CartonOrderLine.id == SupplierShipmentLine.order_line_id).outerjoin(CartonReceipt,
+        CartonReceipt.id == SupplierShipment.receipt_id).where(
             CartonOrderLine.order_id == order.id, SupplierShipment.factory_id == order.factory_id,
-            SupplierShipment.status == "SENT").limit(1))
+            or_(SupplierShipment.status == "SENT", and_(SupplierShipment.status == "RECEIVED", CartonReceipt.status == "REVERSED"))).limit(1))
     if transit:
         raise HTTPException(409, "订单有供应商在途发货，请先由仓库核实收到或确认整单未收到并退回，再办理减单或取消")
 
@@ -2392,10 +2393,24 @@ def create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext)
         raise
 
 
-def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True, supplier_shipment_id: str | None = None) -> CartonReceipt:
+def _ensure_delivery_import_evidence(db, factory_id, batch_id):
+    if batch_id:
+        batch = db.get(CartonImportBatch, batch_id)
+        if not batch or batch.factory_id != factory_id or batch.import_type != "DELIVERY_NOTE" or batch.status == "REJECTED":
+            raise HTTPException(422, "送货导入批次不存在、已撤回或不属于当前厂区")
+        try:
+            summary = json.loads(batch.parse_summary_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            summary = {}
+        if summary.get("parser_version") != DELIVERY_IMPORT_PARSER_VERSION:
+            raise HTTPException(409, "历史送货预览未经过完整物料校验，请重新导入原文件后复核")
+
+
+def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True, supplier_shipment_id: str | None = None, corrects_receipt_id: str | None = None) -> CartonReceipt:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
+    _ensure_delivery_import_evidence(db, factory_id, payload.import_batch_id)
     from app.services.carton_supplier_settlement import date_check, ensure_open
     if payload.acceptance_date:
         date_check(payload.acceptance_date)
@@ -2408,6 +2423,13 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         raise HTTPException(409, "此送货单已由供应商登记，请从供应商协同管理核实实际收到，不可重复人工登记")
     if supplier_shipment_id and (not registered_shipment or registered_shipment.id != supplier_shipment_id):
         raise HTTPException(409, "供应商发货关联与送货单不一致")
+    receipt_note_no = payload.delivery_note_no
+    if corrects_receipt_id:
+        previous = db.get(CartonReceipt, corrects_receipt_id)
+        if not registered_shipment or registered_shipment.receipt_id != corrects_receipt_id or not previous or previous.factory_id != factory_id or previous.supplier_id != supplier.id or previous.status != "REVERSED":
+            raise HTTPException(409, "更正必须关联本送货单已冲销的上一张收料")
+        # Keep vendor note unique and unchanged; internal receipt revisions get a distinct evidence number.
+        receipt_note_no = f"{payload.delivery_note_no[:96]}#C-{previous.id[-12:]}"
     if not supplier_shipment_id and db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
         SupplierShipment.id == SupplierShipmentLine.shipment_id).where(SupplierShipment.factory_id == factory_id,
             SupplierShipment.status == "SENT", SupplierShipmentLine.order_line_id.in_(line_ids)).limit(1)):
@@ -2479,7 +2501,7 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         id=receipt_id,
         factory_id=factory_id,
         receipt_no=_new_number("RC"),
-        delivery_note_no=payload.delivery_note_no,
+        delivery_note_no=receipt_note_no,
         delivery_date=payload.delivery_date,
         acceptance_date=payload.acceptance_date,
         supplier_id=supplier.id,
@@ -2756,6 +2778,7 @@ def confirm_receipt(
         raise HTTPException(status_code=409, detail="当前收料单状态不能确认")
     if receipt.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="收料单已被其他人更新，请刷新后重试")
+    _ensure_delivery_import_evidence(db, factory_id, receipt.import_batch_id)
     from app.services.carton_supplier_settlement import date_check, ensure_open
     if receipt.acceptance_date:
         date_check(receipt.acceptance_date)
@@ -3439,6 +3462,8 @@ def reverse_receipt(
         "previous_status": previous_status, "reason": payload.reason,
         "reversal_ids": [row.id for row in reversals], "order_ids": sorted(order_ids),
     })
+    from app.services.carton_supplier_portal import reopen_reversed_shipment
+    reopen_reversed_shipment(db, receipt, user, payload.reason)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -3529,6 +3554,12 @@ def import_batch_out(batch: CartonImportBatch, *, duplicate: bool = False) -> Ca
         parse_summary = json.loads(batch.parse_summary_json or "{}")
     except (TypeError, json.JSONDecodeError):
         parse_summary = {"message": "历史导入批次的解析摘要无法读取，请重新导入原文件"}
+    if batch.import_type == "DELIVERY_NOTE" and parse_summary.get("parser_version") != DELIVERY_IMPORT_PARSER_VERSION:
+        parse_summary["material_review_required"] = True
+        for row in parse_summary.get("rows", []):
+            row.update(match_status="REVIEW_REQUIRED", suggestion="历史预览缺少原始物料校验证据，请重新导入原文件")
+            row.pop("order_line_id", None)
+        parse_summary["matched_count"] = 0
     return CartonImportBatchOut.model_validate(batch).model_copy(
         update={"parse_summary": parse_summary, "duplicate": duplicate}
     )
