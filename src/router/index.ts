@@ -8,6 +8,7 @@ import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
+import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
 import { UV_BASE, UV_FACTORY } from '@/features/uv-operations/contracts'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
@@ -180,6 +181,7 @@ const routes: RouteRecordRaw[] = [
   },
   ...sprayProductionRoutes,
   ...uvOperationsRoutes,
+  ...cuttingOperationsRoutes,
   {
     path: '/modules/pmc-warehouse/raw-material-management',
     name: 'raw-material-management',

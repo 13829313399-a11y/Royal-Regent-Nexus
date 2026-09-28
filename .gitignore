@@ -107,6 +107,7 @@ outputs/history-order-template-20260909/
 outputs/opening-inventory-template-20260909/
 !/docs/business/纸箱上线前最终验收报告.md
 !/docs/business/QC验货运营中心业务需求.md
+!/docs/business/huakang-c-cutting-module-plan.md
 
 # Shared Codex configuration/docs; local credentials and runtime state stay private.
 !/docs/agent-routing/*.md
