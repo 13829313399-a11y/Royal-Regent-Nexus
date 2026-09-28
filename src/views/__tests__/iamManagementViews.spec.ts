@@ -40,8 +40,8 @@ describe('IAM management view semantics and accessibility', () => {
       '跨厂操作 · 全业务部门',
       '不包含账号与权限管理',
       '已包含',
-      'permissionStatusLabel(permission.status)',
-      'permissionRiskLabel(permission.risk_level)',
+      "permission.status === 'inactive'",
+      "permission.risk_level === 'high'",
       'data-testid="role-templates-sticky-navigation"',
       'data-testid="role-catalog-protected-notice"',
       'data-testid="role-viewer-workspace"',
@@ -77,10 +77,15 @@ describe('IAM management view semantics and accessibility', () => {
     expect(source).not.toContain('xl:h-dvh')
     expect(source).not.toContain('xl:overflow-hidden')
     expect(source).not.toContain('xl:overflow-y-auto')
-    expect(source).toContain("const canReadPermissionCatalog = computed(() => authStore.can('system:permission_catalog_read'))")
-    expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canReadPermissionCatalog\.value\) \{[\s\S]*?return\s+\}/)
-    expect(source).toContain('@media (min-width: 1280px) and (min-height: 820px)')
-    expect(source).toContain('@media (max-width: 1279px), (max-height: 819px)')
+    expect(source).toContain(
+      "const canReadPermissionCatalog = computed(() => authStore.can('system:permission_catalog_read'))",
+    )
+    expect(source).toMatch(
+      /async function loadData\(\) \{\s+if \(!canReadPermissionCatalog\.value\) \{[\s\S]*?return\s+\}/,
+    )
+    expect(source).toContain('iamx-role-layout')
+    expect(source).not.toContain('class="iam-workspace')
+    expect(source).toMatch(/@media \(max-width:\s*1279px\)/)
   })
 
   it('provides complete business labels, status, risk, and fixed-scope presentation', () => {
@@ -95,36 +100,55 @@ describe('IAM management view semantics and accessibility', () => {
     expect(permissionStatusLabel('active')).toBe('已启用')
     expect(permissionStatusLabel('inactive')).toBe('已停用')
     expect(roleScopeModeLabel('cross_factory_operate')).toBe('跨厂操作')
-    expect(permissionEffectiveScopeLabel({ scope_type: 'factory_department', access_kind: 'read' }, 'cross_factory_read')).toBe('跨厂查看')
-    expect(permissionEffectiveScopeLabel({ scope_type: 'factory_department', access_kind: 'operate' }, 'cross_factory_read')).toBe('本厂操作')
-    expect(permissionDisplayLabel({
-      code: 'molding_sample:raw_material_write',
-      name: 'molding_sample:raw_material_write',
-      module_name: '啤办管理',
-      action: 'raw_material_write',
-    })).toBe('维护啤办原料资料')
-    expect(permissionDisplayLabel({
-      code: 'molding_sample:dispatch',
-      name: 'molding_sample:dispatch',
-      module_name: '啤办管理',
-      action: 'dispatch',
-    })).toBe('分派啤办生产任务')
-    expect(permissionDisplayLabel({
-      code: 'system:access_approve',
-      name: 'system:access_approve',
-      module_name: '系统管理',
-      action: 'access_approve',
-    })).toBe('审批权限申请')
+    expect(
+      permissionEffectiveScopeLabel(
+        { scope_type: 'factory_department', access_kind: 'read' },
+        'cross_factory_read',
+      ),
+    ).toBe('跨厂查看')
+    expect(
+      permissionEffectiveScopeLabel(
+        { scope_type: 'factory_department', access_kind: 'operate' },
+        'cross_factory_read',
+      ),
+    ).toBe('本厂操作')
+    expect(
+      permissionDisplayLabel({
+        code: 'molding_sample:raw_material_write',
+        name: 'molding_sample:raw_material_write',
+        module_name: '啤办管理',
+        action: 'raw_material_write',
+      }),
+    ).toBe('维护啤办原料资料')
+    expect(
+      permissionDisplayLabel({
+        code: 'molding_sample:dispatch',
+        name: 'molding_sample:dispatch',
+        module_name: '啤办管理',
+        action: 'dispatch',
+      }),
+    ).toBe('分派啤办生产任务')
+    expect(
+      permissionDisplayLabel({
+        code: 'system:access_approve',
+        name: 'system:access_approve',
+        module_name: '系统管理',
+        action: 'access_approve',
+      }),
+    ).toBe('审批权限申请')
 
-    const labelSource = readFileSync(join(process.cwd(), 'src/components/iam/permissionCatalogLabels.ts'), 'utf8')
+    const labelSource = readFileSync(
+      join(process.cwd(), 'src/components/iam/permissionCatalogLabels.ts'),
+      'utf8',
+    )
     expect(labelSource).not.toContain('LEGACY_IAM_PAGE_PERMISSION_CODES')
     expect(labelSource).not.toContain('isBuiltInPositionPermissionVisible')
   })
 
   it('keeps IAM navigation focused on users and built-in positions', () => {
     const source = readFileSync(join(process.cwd(), 'src/components/iam/IamNavigation.vue'), 'utf8')
-    expect(source).toContain("to: '/system/users', label: '用户与授权'")
-    expect(source).toContain("to: '/system/iam/roles', label: '内置职位权限'")
+    expect(source).toMatch(/to: '\/system\/users',\s*label: '用户与授权'/)
+    expect(source).toMatch(/to: '\/system\/iam\/roles',\s*label: '内置职位权限'/)
     expect(source).not.toContain("label: '权限目录'")
     expect(source).not.toContain("label: '权限申请'")
     expect(source).not.toContain("label: '操作记录'")

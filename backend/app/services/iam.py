@@ -220,6 +220,7 @@ def get_user_access(db: Session, current_user: AuthContext, user_id: str) -> Use
             email=email,
         ),
         profile=_profile_out(db, profile),
+        identity_mode="v2" if profile and profile.identity_mode == "v2" else "legacy",
         authorization_version=_get_revision(db, user_id),
         role_bindings=role_bindings,
         overrides=overrides,

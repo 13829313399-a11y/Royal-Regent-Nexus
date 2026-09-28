@@ -108,6 +108,8 @@ export interface EffectiveAccessEntry {
 export interface UserAccessResponse {
   user: IamUserSummary
   profile: EmployeeProfile | null
+  // Older servers omit this field; absence must not be interpreted as legacy.
+  identity_mode?: 'legacy' | 'v2'
   authorization_version: number
   role_bindings: RoleBinding[]
   overrides: UserPermissionOverride[]
