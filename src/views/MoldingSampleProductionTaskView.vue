@@ -395,9 +395,7 @@ const canCompleteSelectedTaskFactory = computed(() =>
   canProductionPermission('molding_sample:production_complete', selectedTaskFactoryId.value),
 )
 const canUpdateSelectedNotification = computed(() =>
-  canOperateProductionFactory(selectedTaskFactoryId.value)
-  && canFillbackSelectedTaskFactory.value
-  && canProductionPermission('molding_sample:notification_read', selectedTaskFactoryId.value),
+  canProductionPermission('molding_sample:notification_read', selectedTaskFactoryId.value),
 )
 const isSelectedFactoryReadOnly = computed(() =>
   selectedFactoryHasMoldingDepartment.value
@@ -608,9 +606,7 @@ const canRollbackCompletedTask = computed(() => canCompleteSelectedTaskFactory.v
 const canMarkSelectedNotificationRead = computed(() =>
   canUpdateSelectedNotification.value && selectedNotification.value?.status === '未读',
 )
-const canMarkSelectedNotificationHandled = computed(() =>
-  Boolean(canUpdateSelectedNotification.value && selectedNotification.value && selectedNotification.value.status !== '已处理'),
-)
+
 
 function readQueryString(value: unknown) {
   if (typeof value === 'string') {
@@ -2190,14 +2186,7 @@ watchEffect(() => {
                   >
                     标记已读
                   </button>
-                  <button
-                    type="button"
-                    :disabled="notificationUpdating || !canMarkSelectedNotificationHandled"
-                    class="h-7 rounded-md bg-[#17385e] px-2 text-[11px] font-semibold text-white transition hover:bg-[#204b73] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-                    @click="updateSelectedNotificationStatus('已处理')"
-                  >
-                    标记已处理
-                  </button>
+
                 </div>
                 <div
                   v-else

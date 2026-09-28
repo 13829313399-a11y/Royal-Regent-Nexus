@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import AppShell from '@/components/layout/AppShell.vue'
+import WorkCenterHost from '@/features/work-center/WorkCenterHost.vue'
+import '@/features/work-center/work-center.css'
+const workCenterEnabled = import.meta.env.VITE_WORK_CENTER_ENABLED !== 'false'
 const authorizationChanged = ref(false)
 const onChanged = () => { authorizationChanged.value = true }
 onMounted(() => window.addEventListener('authorization-context-changed', onChanged))
@@ -9,6 +12,7 @@ onUnmounted(() => window.removeEventListener('authorization-context-changed', on
 
 <template>
   <AppShell />
+  <WorkCenterHost v-if="workCenterEnabled" />
   <aside v-if="authorizationChanged" role="status" class="authorization-update-notice">
     <span>任职或授权已更新。提交前请核对当前厂区与可用操作。</span>
     <button type="button" @click="authorizationChanged = false">知道了</button>
