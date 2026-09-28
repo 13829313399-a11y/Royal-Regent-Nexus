@@ -70,6 +70,10 @@ def movement_guard(db, movement):
 
 
 def return_supplier(db, movement):
+    from app.services.carton_order_split import target_origin
+    split = target_origin(db, movement.factory_id, movement.order_line_id)
+    if split:
+        return split[0]["supplier_id"]
     if movement.order_line_id:
         line = db.get(CartonOrderLine, movement.order_line_id)
         order = db.get(CartonOrder, line.order_id) if line and line.factory_id == movement.factory_id else None

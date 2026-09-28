@@ -233,6 +233,9 @@ def order_out(db, order, *, internal=False):
         issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "尚未发行",
         order_date=header.get("order_date") or order.order_date,
         planned_date=snapshot.get("after_due_date", ""), awaiting_issue=changed, lines=[])
+    if internal:
+        from app.services.carton_order_split import plans
+        result["split_records"] = plans(db, order.factory_id, order.id)
     for item in snapshot.get("lines", []):
         line_id = str(item["id"])
         required = Decimal(str(item["after_required_quantity"]))
@@ -281,7 +284,8 @@ def shipment_out(db, row, *, internal=False):
         item = {key: snapshot.get(key, "") for key in ("order_no", "contract_no", "customer_po", "item_no", "customer_name", "child_no", "packaging_type", "paper_quality", "specification", "unit")}
         item.update(id=line.id, order_line_id=line.order_line_id, quantity=str(line.quantity), source_type="FORMAL_ORDER")
         if internal:
-            item.update(unit_price=snapshot.get("unit_price", "0"), currency=snapshot.get("currency", "CNY"))
+            item.update(unit_price=snapshot.get("unit_price", "0"),
+                delivery_unit_price=snapshot.get("delivery_unit_price"), currency=snapshot.get("currency", "CNY"))
         result["lines"].append(item)
     for line in db.scalars(select(SupplierShipmentUnmatchedLine).where(
         SupplierShipmentUnmatchedLine.shipment_id == row.id).order_by(SupplierShipmentUnmatchedLine.id)).all():
@@ -752,7 +756,10 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
         snapshots.append({"order_no": order.order_no, "contract_no": order.contract_no, "customer_po": order.customer_po,
             "item_no": order.item_no, "customer_name": order.customer_name, "child_no": f"{order.order_no}/{line.line_no:02d}",
             **{key: str(getattr(line, key)) for key in ("packaging_type", "paper_quality", "specification", "unit", "unit_price", "currency")},
-            **({"source_file": source} if source else {})})
+            **({"delivery_unit_price": str(source["delivery_unit_prices"][line.id])}
+                if source and line.id in source.get("delivery_unit_prices", {}) else {}),
+            **({"source_file": {key: source[key] for key in ("filename", "sha256", "rows") if key in source}}
+                if source else {})})
     row = SupplierShipment(id=f"CSS-{uuid4().hex}", factory_id=payload.factory_id, supplier_id=supplier.id,
         delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(), status="SENT", revision=1,
         request_id=payload.request_id, fingerprint=digest, created_by=user.id, created_at=now_text())
@@ -874,7 +881,7 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
             receipt = _create_receipt(db, CartonReceiptCreate(factory_id=payload.factory_id, supplier_id=row.supplier_id,
                 delivery_note_no=row.delivery_note_no, delivery_date=row.delivery_date, acceptance_date=payload.acceptance_date.isoformat(),
                 note=f"供应商发货单 {row.id}，逐纸品核实实际收到，差异保留待收需求", lines=receipt_lines), user, commit=False, supplier_shipment_id=row.id)
-            confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(factory_id=payload.factory_id, expected_revision=receipt.revision), user, commit=False)
+            confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(factory_id=payload.factory_id, expected_revision=receipt.revision, split_confirmation=payload.split_confirmation), user, commit=False)
         # The core lock helper expires ORM state, so update the shipment only after core posting.
         row.status = "NOT_RECEIVED" if reject_all else "RECEIVED"; row.revision += 1; row.receipt_id = receipt.id if receipt else None
         row.confirmed_by = user.id; row.confirmed_at = now_text()

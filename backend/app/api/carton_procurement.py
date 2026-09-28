@@ -9,6 +9,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.schemas.carton_order_split import SplitCreate, SplitAction, SplitReceiptPreview
+from app.services import carton_order_split as order_splits
 from app.schemas.carton_inventory_report import CartonInventoryReportOut
 from app.services.carton_inventory_report import inventory_report
 from app.schemas.carton_order_timeline import CartonOrderTimelineOut
@@ -35,7 +37,10 @@ from app.schemas.carton_procurement import (
     CartonReplenishmentOut,
     CartonImportBatchOut,
     CartonImportBatchUndoRequest,
+    CartonScheduleOrderMarkRequest,
+    CartonScheduleOrderMarkBulkRequest,
     CartonHistoryOrderBulkDeleteRequest,
+    CartonOrderBulkDeleteRequest,
     CartonImportBatchListOut,
     CartonHistoryOrderImportOut,
     CartonHistoryInventoryImportOut,
@@ -85,6 +90,9 @@ from app.services.carton_procurement import (
     closing_outputs,
     create_customer,
     create_import_batch,
+    schedule_order_state,
+    set_schedule_order_mark,
+    set_schedule_order_marks,
     create_inventory_movement,
     create_inventory_movements_bulk,
     create_order,
@@ -176,6 +184,53 @@ def _ensure_order_adjustment_permission(db: Session, user: AuthContext, factory_
     # Warehouse order adjustments do not grant supervisor-only stocktake/closing rights.
     for permission in ("order_write", "inventory_write"):
         _ensure_permission(db, user, f"carton_procurement:{permission}", factory_id)
+
+
+def _ensure_order_deletion_permission(db: Session, user: AuthContext, factory_id: str) -> None:
+    # Deletion requires the supervisor adjustment entitlement itself. The warehouse
+    # order_write + inventory_write fallback used by append/reduce does not apply.
+    for permission in ("order_write", "order_adjust"):
+        _ensure_permission(db, user, f"carton_procurement:{permission}", factory_id)
+
+
+@router.get("/orders/{order_no}/splits")
+def get_order_splits(order_no: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return order_splits.context(db, factory_id, order_no)
+
+
+@router.post("/orders/{order_no}/splits", status_code=201)
+def post_order_split(order_no: str, payload: SplitCreate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    _ensure_order_adjustment_permission(db, current_user, payload.factory_id)
+    return order_splits.create(db, order_no, payload, current_user)
+
+
+@router.post("/order-splits/{split_id}/confirm")
+def confirm_order_split(split_id: str, payload: SplitAction, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    for permission in ("read", "receipt_write", "inventory_write"):
+        _ensure_permission(db, current_user, f"carton_procurement:{permission}", payload.factory_id)
+    return order_splits.act(db, split_id, payload, current_user)
+
+
+@router.post("/order-splits/{split_id}/cancel")
+def cancel_order_split(split_id: str, payload: SplitAction, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    _ensure_order_adjustment_permission(db, current_user, payload.factory_id)
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, payload.factory_id)
+    plan = next((row for row in order_splits.plans(db, payload.factory_id) if row["id"] == split_id), None)
+    if plan and plan["pairs"]:
+        _ensure_permission(db, current_user, "carton_procurement:inventory_write", payload.factory_id)
+    return order_splits.act(db, split_id, payload, current_user, cancel=True)
+
+
+@router.post("/order-splits/receipt-preview")
+def preview_receipt_split(payload: SplitReceiptPreview, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, payload.factory_id)
+    return order_splits.receipt_preview(db, payload.factory_id, [line.model_dump() for line in payload.lines])
 
 
 @router.get("/customers", response_model=CartonCustomerListOut)
@@ -371,6 +426,29 @@ def post_order_reduce(
     return order_out(db, reduce_order(db, order_no, payload, current_user))
 
 
+@router.post("/orders/bulk-delete", status_code=204)
+def post_orders_bulk_delete(
+    payload: CartonOrderBulkDeleteRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_procurement import bulk_delete_orders
+    _ensure_order_deletion_permission(db, current_user, payload.factory_id)
+    bulk_delete_orders(db, payload, current_user)
+
+
+@router.post("/orders/{order_no}/delete", status_code=204)
+def post_order_delete(
+    order_no: str,
+    payload: CartonOrderCancelRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_procurement import delete_order
+    _ensure_order_deletion_permission(db, current_user, payload.factory_id)
+    delete_order(db, order_no, payload, current_user)
+
+
 @router.post("/orders/bulk-delete-history", status_code=204)
 def post_orders_bulk_delete_history(
     payload: CartonHistoryOrderBulkDeleteRequest,
@@ -378,7 +456,7 @@ def post_orders_bulk_delete_history(
     current_user: AuthContext = Depends(get_current_user),
 ):
     from app.services.carton_procurement import bulk_delete_history_orders
-    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    _ensure_order_deletion_permission(db, current_user, payload.factory_id)
     bulk_delete_history_orders(db, payload, current_user)
 
 
@@ -390,7 +468,7 @@ def post_order_delete_history(
     current_user: AuthContext = Depends(get_current_user),
 ):
     from app.services.carton_procurement import delete_history_order
-    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    _ensure_order_deletion_permission(db, current_user, payload.factory_id)
     delete_history_order(db, order_no, payload, current_user)
 
 
@@ -671,13 +749,52 @@ async def post_receipt_import(
 @router.post("/weekly-imports", response_model=CartonImportBatchOut, status_code=201)
 async def post_weekly_import(
     factory_id: str,
+    customer_code: str = Form(..., min_length=1, max_length=64),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
     content = await file.read()
-    return create_import_batch(db, factory_id, "WEEKLY_SCHEDULE", file, content, current_user)
+    return create_import_batch(db, factory_id, "WEEKLY_SCHEDULE", file, content, current_user,
+                               import_profile={"customer_code": customer_code})
+
+
+@router.get("/schedule-order-marks")
+def get_schedule_order_marks(
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return schedule_order_state(db, factory_id)
+
+
+@router.post("/schedule-order-marks")
+def post_schedule_order_mark(
+    payload: CartonScheduleOrderMarkRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:import", payload.factory_id)
+    return set_schedule_order_mark(
+        db, factory_id, payload.batch_id, payload.source_sheet,
+        payload.source_row, payload.marked, current_user,
+    )
+
+
+@router.post("/schedule-order-marks/bulk")
+def post_schedule_order_marks_bulk(
+    payload: CartonScheduleOrderMarkBulkRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:import", payload.factory_id)
+    return set_schedule_order_marks(
+        db, factory_id, payload.batch_id,
+        [(row.source_sheet, row.source_row) for row in payload.rows],
+        payload.marked, current_user,
+    )
 
 
 @router.post("/inspection-imports", response_model=CartonImportBatchOut, status_code=201)

@@ -5,7 +5,7 @@ from app.services.carton_replenishment import fulfilled_by_line, replenished_by_
 import hashlib
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from difflib import SequenceMatcher
@@ -52,6 +52,7 @@ from app.schemas.carton_procurement import (
     CartonImportBatchOut,
     CartonImportBatchUndoRequest,
     CartonHistoryOrderBulkDeleteRequest,
+    CartonOrderBulkDeleteRequest,
     CartonInventoryBalanceOut,
     CartonInventoryBulkCreate,
     CartonInventoryFlowSummaryOut,
@@ -92,6 +93,7 @@ from app.services.carton_procurement_imports import (
     SCHEDULE_IMPORT_PARSER_VERSION,
     parse_carton_import,
 )
+from app.services.carton_schedule_tracking import annotate_changes, customer_key, identity, tracked
 
 
 CARTON_DEPARTMENTS = ("pmc-warehouse", "carton")
@@ -473,10 +475,15 @@ def create_order(
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
+    schedule_source = _schedule_source_for_order(db, factory_id, payload)
     rules = master_data.validate_order(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, customer_po=payload.customer_po, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
     _validate_customer_po_identity(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, payload.customer_po)
     planned = derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"]) if payload.customer_due_date and payload.quantity_basis == "CALCULATED" else payload.due_date
     customer = get_active_customer(db, factory_id, payload.customer_code)
+    from app.services.carton_order_split import schedule_matches
+    if schedule_matches(db, factory_id, {"schedule_customer_code": customer.customer_code,
+            "contract_no": payload.contract_no, "item_no": payload.item_no, "customer_po": payload.customer_po}):
+        raise HTTPException(409, "该合同货号已关联拆分采购，请核对原单拆分记录；增加需求请另行追加，勿重复下单")
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
     product_name = payload.product_name
     product_name_source = "submitted"
@@ -577,6 +584,13 @@ def create_order(
             "product_name_source": product_name_source,
         },
     )
+    if schedule_source:
+        _audit(db, user, factory_id, "SCHEDULE_ORDER_LINKED", "schedule_order_link", identity(schedule_source), {
+            **payload.schedule_source.model_dump(),
+            "order_id": order.id, "order_no": order.order_no,
+            "customer": customer_key(schedule_source), "customer_code": order.customer_code,
+            "contract_no": order.contract_no, "item_no": order.item_no,
+        })
     try:
         if commit:
             db.commit()
@@ -980,6 +994,8 @@ def get_purchase_order_issue(
 
 
 def _guard_no_supplier_transit(db: Session, order: CartonOrder) -> None:
+    from app.services.carton_order_split import guard_order_change
+    guard_order_change(db, order)
     transit = db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
         SupplierShipment.id == SupplierShipmentLine.shipment_id).join(CartonOrderLine,
         CartonOrderLine.id == SupplierShipmentLine.order_line_id).where(
@@ -990,6 +1006,9 @@ def _guard_no_supplier_transit(db: Session, order: CartonOrder) -> None:
 
 
 def _order_has_business_activity(db: Session, order: CartonOrder) -> bool:
+    from app.services.carton_order_split import live_plans
+    if live_plans(db, order.factory_id, order.id):
+        return True
     line_ids = [line.id for line in _order_lines(db, order.id)]
     if not line_ids:
         return False
@@ -1015,13 +1034,33 @@ def _order_has_supplier_evidence(db: Session, order: CartonOrder) -> bool:
         or db.scalar(select(SupplierAttachment.id).where(SupplierAttachment.order_id == order.id).limit(1)))
 
 
-def can_delete_history_order(db: Session, order: CartonOrder) -> bool:
+def order_deletion_block_reason(db: Session, order: CartonOrder) -> str:
+    from app.services.carton_order_split import plans
+    if plans(db, order.factory_id, order.id):
+        return "已有拆单历史及归属记录，不能删除"
+    if order.status in {"PARTIALLY_RECEIVED", "COMPLETED"} or _order_has_business_activity(db, order):
+        return "已有收料或库存记录（含待确认、作废或已冲销），不能删除"
+    if _order_has_supplier_evidence(db, order):
+        return "已有供应商接单、发货或附件记录，不能删除，请核实后按取消或退单流程处理"
+    return ""
+
+
+def can_delete_history_order(db: Session, order: CartonOrder, *, block_reason: str | None = None) -> bool:
     imported = db.scalar(select(CartonAuditEvent.id).where(
         CartonAuditEvent.factory_id == order.factory_id,
         CartonAuditEvent.entity_id == order.id,
         CartonAuditEvent.event_type == "HISTORY_ORDER_IMPORTED",
     ).limit(1))
-    return bool(imported) and not _order_has_business_activity(db, order) and not _order_has_supplier_evidence(db, order)
+    return bool(imported) and not (order_deletion_block_reason(db, order) if block_reason is None else block_reason)
+
+
+def delete_order(db: Session, order_no: str, payload: CartonOrderCancelRequest, user: AuthContext) -> None:
+    if len(payload.reason.strip()) < 4:
+        raise HTTPException(422, "删除原因至少需要四个字符")
+    bulk_delete_orders(db, CartonOrderBulkDeleteRequest(
+        factory_id=payload.factory_id, reason=payload.reason,
+        items=[{"order_no": order_no, "expected_revision": payload.expected_revision}],
+    ), user)
 
 
 def delete_history_order(db: Session, order_no: str, payload: CartonOrderCancelRequest, user: AuthContext) -> None:
@@ -1033,7 +1072,7 @@ def delete_history_order(db: Session, order_no: str, payload: CartonOrderCancelR
     ), user)
 
 
-def _delete_history_order(db: Session, order: CartonOrder, reason: str, user: AuthContext, operation_id: str) -> None:
+def _delete_order(db: Session, order: CartonOrder, reason: str, user: AuthContext, operation_id: str, event_type: str) -> None:
     snapshot = order_out(db, order).model_dump(mode="json")
     lines = _order_lines(db, order.id)
     # Preserve stored lineage fields too (master configuration, factory and parent IDs).
@@ -1048,7 +1087,7 @@ def _delete_history_order(db: Session, order: CartonOrder, reason: str, user: Au
         CartonException.source_type == "ORDER",
         CartonException.source_id == order.id,
     )).all())
-    _audit(db, user, order.factory_id, "HISTORY_ORDER_DELETED", "carton_order", order.id,
+    _audit(db, user, order.factory_id, event_type, "carton_order", order.id,
            {"order_no": order.order_no, "reason": reason, "order": snapshot, "operation_id": operation_id,
             "exceptions": [CartonExceptionOut.model_validate(item).model_dump(mode="json") for item in exceptions],
             "purchase_issues": [{**{column.name: getattr(issue, column.name) for column in issue.__table__.columns},
@@ -1064,6 +1103,10 @@ def _delete_history_order(db: Session, order: CartonOrder, reason: str, user: Au
 
 
 def bulk_delete_history_orders(db: Session, payload: CartonHistoryOrderBulkDeleteRequest, user: AuthContext) -> None:
+    bulk_delete_orders(db, payload, user, history_only=True)
+
+
+def bulk_delete_orders(db: Session, payload: CartonOrderBulkDeleteRequest, user: AuthContext, *, history_only: bool = False) -> None:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     orders = []
@@ -1072,12 +1115,15 @@ def bulk_delete_history_orders(db: Session, payload: CartonHistoryOrderBulkDelet
         order = get_order_by_no(db, factory_id, item.order_no)
         if order.revision != item.expected_revision:
             raise HTTPException(409, f"订单 {item.order_no} 已更新，请刷新后重试")
-        if not can_delete_history_order(db, order):
-            raise HTTPException(409, f"订单 {item.order_no} 不可删除：仅无收料或库存记录的历史导入订单可以删除；入库后即使冲销也不能删除")
+        reason = order_deletion_block_reason(db, order)
+        if reason:
+            raise HTTPException(409, f"订单 {item.order_no} 不可删除：{reason}")
+        if history_only and not can_delete_history_order(db, order):
+            raise HTTPException(409, f"订单 {item.order_no} 不是历史导入订单，请使用订单删除入口")
         orders.append(order)
-    operation_id = f"HDEL-{uuid4().hex}"
+    operation_id = f"{'HDEL' if history_only else 'ODEL'}-{uuid4().hex}"
     for order in orders:
-        _delete_history_order(db, order, payload.reason, user, operation_id)
+        _delete_order(db, order, payload.reason, user, operation_id, "HISTORY_ORDER_DELETED" if history_only else "ORDER_DELETED")
     db.commit()
 
 
@@ -2022,6 +2068,7 @@ def _protected_product_quantity(
 
 
 def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
+    from app.services.carton_order_split import plans
     lines = _order_lines(db, order.id)
     line_ids = [line.id for line in lines]
     from app.services.carton_replenishment_receipts import options_by_line, legacy_review_lines
@@ -2043,8 +2090,12 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
         usage = usage_by_key(db, order.factory_id)
     usage_status = aggregate_status((usage.get(line.id, {}).get("status", "NOT_RECEIVED") for line in lines),
         sum((usage.get(line.id, {}).get("usage", Decimal(0)) for line in lines), Decimal(0)))
+    deletion_reason = order_deletion_block_reason(db, order)
     return CartonOrderOut(
-        can_delete_history=can_delete_history_order(db, order),
+        split_records=plans(db, order.factory_id, order.id),
+        can_delete=not deletion_reason,
+        deletion_block_reason=deletion_reason,
+        can_delete_history=can_delete_history_order(db, order, block_reason=deletion_reason),
         usage_status=usage_status, usage_status_label=LABELS[usage_status],
         id=order.id,
         factory_id=order.factory_id,
@@ -2326,7 +2377,7 @@ def create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext)
     try:
         receipt = _create_receipt(db, payload, user, commit=False)
         confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(
-            factory_id=factory_id, expected_revision=receipt.revision), user, commit=False)
+            factory_id=factory_id, expected_revision=receipt.revision, split_confirmation=payload.split_confirmation), user, commit=False)
         event = db.scalar(select(CartonAuditEvent).where(
             CartonAuditEvent.entity_id == receipt.id, CartonAuditEvent.event_type == "RECEIPT_CONFIRMED"))
         event.id = event_id
@@ -2727,6 +2778,9 @@ def confirm_receipt(
     timestamp = now_text()
     formal_lines = [line for line in lines if line.source_type == "FORMAL_ORDER"]
     order_line_ids = [line.order_line_id for line in formal_lines if line.order_line_id]
+    from app.services import carton_order_split as splits
+    split_preview = splits.validate_receipt_confirmation(db, factory_id,
+        [{"order_line_id": line.order_line_id, "effective_quantity": line.effective_quantity} for line in formal_lines], payload.split_confirmation)
     if len(order_line_ids) != len(formal_lines):
         raise HTTPException(status_code=409, detail="正式收料明细缺少订单关联，请联系管理员修复数据")
     order_lines = {
@@ -2838,6 +2892,8 @@ def confirm_receipt(
             "included_in_month_end": True,
         },
     )
+    db.flush()
+    splits.allocate_receipt(db, receipt, formal_lines, split_preview, user)
     try:
         db.commit() if commit else db.flush()
     except IntegrityError as exc:
@@ -3023,6 +3079,15 @@ def _prepare_inventory_movement(
     user: AuthContext,
 ) -> tuple[CartonInventoryMovement, Decimal, CartonAuditEvent]:
     factory_id = require_carton_factory(payload.factory_id)
+    from app.services.carton_order_split import PREFIX, target_origin
+    if payload.order_line_id and payload.order_line_id.startswith(PREFIX):
+        if not target_origin(db, factory_id, payload.order_line_id):
+            raise HTTPException(404, "拆分库存不属于当前厂区")
+        reference = db.scalar(select(CartonInventoryMovement).where(CartonInventoryMovement.factory_id == factory_id,
+            CartonInventoryMovement.order_line_id == payload.order_line_id).order_by(CartonInventoryMovement.occurred_at.desc(), CartonInventoryMovement.id.desc()))
+        if not reference:
+            raise HTTPException(404, "拆分库存尚未由仓库确认")
+        payload = payload.model_copy(update={"order_line_id": None, "reference_movement_id": reference.id})
     order_line: CartonOrderLine | None = None
     reference: CartonInventoryMovement | None = None
     if payload.order_line_id:
@@ -3287,6 +3352,11 @@ def reverse_receipt(
     timestamp = now_text()
     reversals = []
     if previous_status == "POSTED":
+        from app.services.carton_order_split import guard_order_change
+        for line in lines:
+            paper = db.get(CartonOrderLine, line.order_line_id) if line.order_line_id else None
+            if paper:
+                guard_order_change(db, db.get(CartonOrder, paper.order_id))
         movements = list(db.scalars(select(CartonInventoryMovement).where(
             CartonInventoryMovement.factory_id == factory_id,
             CartonInventoryMovement.source_type == "RECEIPT",
@@ -3391,6 +3461,8 @@ def reverse_inventory_movement(
         raise HTTPException(status_code=404, detail="库存流水不存在")
     if original.source_type == "ORDER_REPLENISHMENT":
         raise HTTPException(409, "补单出库已关联供应商补单，不能通过普通库存冲销取消")
+    if original.source_type in {"ORDER_SPLIT", "SPLIT_REVERSAL"}:
+        raise HTTPException(409, "拆单归属调整须整组撤销，不能单独冲销一侧库存")
     from app.services.carton_supplier_settlement import movement_guard
     movement_guard(db, original)
     if original.movement_type in {"INBOUND", "REVERSAL"}:
@@ -3489,28 +3561,48 @@ def _create_import_exceptions(
                 continue
             category, severity, title = inspection_exception
         else:
-            if match_status == "MATCHED":
-                continue
-            if match_status == "MISSING_ORDER":
-                category = "MISSING_ORDER" if batch.import_type == "WEEKLY_SCHEDULE" else "RECEIPT_UNMATCHED"
-                severity = "HIGH"
-                title = "周排期未找到正式纸箱订单" if batch.import_type == "WEEKLY_SCHEDULE" else "送货明细未找到订单纸品"
-            elif match_status == "QUANTITY_MISMATCH":
-                category = "QUANTITY_MISMATCH"
-                severity = "MEDIUM"
-                title = "排期数量与纸箱订单数量不一致"
-            elif match_status == "DATE_MISMATCH":
-                category = "SCHEDULE_DATE_MISMATCH"
-                severity = "MEDIUM"
-                title = "业务走货期与纸箱订单客户交期不一致"
-            elif match_status == "REVIEW_REQUIRED":
-                category = "SCHEDULE_REVIEW_REQUIRED"
-                severity = "MEDIUM"
-                title = "业务订单类型或字段待人工确认"
+            if batch.import_type == "WEEKLY_SCHEDULE":
+                change = str(row.get("schedule_change") or "")
+                section = str(row.get("schedule_section") or "PENDING")
+                if change == "CANCELLED_AFTER_ORDER":
+                    category, severity, title = "SCHEDULE_CANCELLED_AFTER_ORDER", "HIGH", "已下单业务订单转入取消单区"
+                elif change == "CANCELLED":
+                    category, severity, title = "SCHEDULE_CANCELLED", "MEDIUM", "业务订单转入取消单区"
+                elif section in {"CANCELLED", "SHIPPED"}:
+                    continue
+                elif row.get("manual_ordered") and match_status == "MISSING_ORDER":
+                    continue
+                elif change == "NEW" and not row.get("manual_ordered") and not row.get("order_id"):
+                    category = "SCHEDULE_NEW_ORDER"
+                    severity = "HIGH" if match_status == "MISSING_ORDER" else "MEDIUM"
+                    title = "业务排期新增待下单订单" if match_status == "MISSING_ORDER" else "业务排期新增订单待核对"
+                else:
+                    category = ""
             else:
-                category = "AMBIGUOUS_MATCH"
-                severity = "MEDIUM"
-                title = "导入明细存在多个候选订单"
+                category = ""
+            if not category:
+                if match_status == "MATCHED":
+                    continue
+                if match_status == "MISSING_ORDER":
+                    category = "MISSING_ORDER" if batch.import_type == "WEEKLY_SCHEDULE" else "RECEIPT_UNMATCHED"
+                    severity = "HIGH"
+                    title = "周排期未找到正式纸箱订单" if batch.import_type == "WEEKLY_SCHEDULE" else "送货明细未找到订单纸品"
+                elif match_status == "QUANTITY_MISMATCH":
+                    category = "QUANTITY_MISMATCH"
+                    severity = "MEDIUM"
+                    title = "排期数量与纸箱订单数量不一致"
+                elif match_status == "DATE_MISMATCH":
+                    category = "SCHEDULE_DATE_MISMATCH"
+                    severity = "MEDIUM"
+                    title = "业务走货期与纸箱订单客户交期不一致"
+                elif match_status == "REVIEW_REQUIRED":
+                    category = "SCHEDULE_REVIEW_REQUIRED"
+                    severity = "MEDIUM"
+                    title = "业务订单类型或字段待人工确认"
+                else:
+                    category = "AMBIGUOUS_MATCH"
+                    severity = "MEDIUM"
+                    title = "导入明细存在多个候选订单"
         exception = CartonException(
             id=f"CEX-{uuid4().hex}",
             factory_id=batch.factory_id,
@@ -3591,6 +3683,12 @@ def create_import_batch(
         _lock_receipt_factory(db, factory_id)
     sha256 = hashlib.sha256(content).hexdigest()
     effective_profile = dict(import_profile or {})
+    if import_type == "WEEKLY_SCHEDULE":
+        customer_code = str(effective_profile.get("customer_code") or "").strip()
+        if not customer_code:
+            raise HTTPException(422, "请选择当前厂区基础资料中的排期客户")
+        customer = get_active_customer(db, factory_id, customer_code)
+        effective_profile.update(customer_code=customer.customer_code)
     effective_profile["matching_version"] = "customer-po-v1"
     if import_type == "DELIVERY_NOTE":
         effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
@@ -3617,6 +3715,9 @@ def create_import_batch(
         return import_batch_out(existing, duplicate=True)
     parse_options = dict(effective_profile)
     parse_options["reference_date"] = business_now().date().isoformat()
+    if import_type == "WEEKLY_SCHEDULE":
+        parse_options["customer_name"] = customer.customer_name
+        parse_options["schedule_order_links"] = _schedule_order_links(db, factory_id)
     parse_summary = parse_carton_import(
         db,
         factory_id,
@@ -3625,6 +3726,22 @@ def create_import_batch(
         content,
         options=parse_options,
     )
+    if import_type == "WEEKLY_SCHEDULE" and any(
+        isinstance(row, dict) and row.get("template") == "unified-item"
+        for row in parse_summary.get("rows", [])
+    ):
+        rows = [row for row in parse_summary["rows"] if isinstance(row, dict)]
+        customers = {customer_key(row) for row in rows if customer_key(row)}
+        previous = _previous_schedule_by_customer(db, factory_id, customers)
+        marks = {key for key, detail in schedule_order_marks(db, factory_id).items() if detail["marked"]}
+        annotate_changes(rows, previous, marks)
+        parse_summary["change_counts"] = dict(Counter(row["schedule_change"] for row in rows))
+        parse_summary["issue_count"] = sum(
+            (row.get("schedule_section") == "PENDING" and row.get("match_status") != "MATCHED"
+             and not (row.get("manual_ordered") and row.get("match_status") == "MISSING_ORDER"))
+            or row.get("schedule_change") in {"CANCELLED", "CANCELLED_AFTER_ORDER"}
+            for row in rows
+        )
     if import_type == "DELIVERY_NOTE":
         _require_delivery_destination(factory_id, parse_summary)
     batch = CartonImportBatch(
@@ -3663,6 +3780,213 @@ def create_import_batch(
     db.commit()
     db.refresh(batch)
     return import_batch_out(batch)
+
+
+def schedule_order_marks(db: Session, factory_id: str) -> dict[str, dict[str, object]]:
+    """Latest manual decision for each business order, scoped to one factory."""
+    factory_id = require_carton_factory(factory_id)
+    events = db.scalars(select(CartonAuditEvent).where(
+        CartonAuditEvent.factory_id == factory_id,
+        CartonAuditEvent.entity_type == "schedule_order_mark",
+        CartonAuditEvent.event_type == "SCHEDULE_ORDER_MARK_CHANGED",
+    ).order_by(CartonAuditEvent.sequence)).all()
+    marks: dict[str, dict[str, object]] = {}
+    for event in events:
+        try:
+            detail = json.loads(event.detail_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(detail, dict):
+            continue
+        marks[event.entity_id] = {
+            "marked": detail.get("marked") is True,
+            "actor": event.actor_name,
+            "updated_at": event.created_at,
+        }
+    return marks
+
+
+def _schedule_order_links(db: Session, factory_id: str) -> dict[str, list[str]]:
+    """Retain explicit source-to-order evidence, excluding deleted/cancelled orders."""
+    events = db.scalars(select(CartonAuditEvent).where(
+        CartonAuditEvent.factory_id == factory_id,
+        CartonAuditEvent.entity_type == "schedule_order_link",
+        CartonAuditEvent.event_type == "SCHEDULE_ORDER_LINKED",
+    ).order_by(CartonAuditEvent.sequence)).all()
+    if not events:
+        return {}
+    orders = {order.id: order for order in db.scalars(select(CartonOrder).where(
+        CartonOrder.factory_id == factory_id, CartonOrder.status != "CANCELLED",
+    )).all()}
+    links: dict[str, list[str]] = {}
+    for event in events:
+        try:
+            detail = json.loads(event.detail_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(detail, dict):
+            continue
+        order = orders.get(detail.get("order_id"))
+        if order is None:
+            continue
+        if any(str(detail.get(field) or "").strip().casefold() != getattr(order, field).strip().casefold()
+               for field in ("contract_no", "item_no")):
+            continue
+        ids = links.setdefault(event.entity_id, [])
+        if order.id not in ids:
+            ids.append(order.id)
+    return links
+
+
+def schedule_order_state(db: Session, factory_id: str) -> dict[str, dict[str, object]]:
+    factory_id = require_carton_factory(factory_id)
+    state = schedule_order_marks(db, factory_id)
+    for key, order_ids in _schedule_order_links(db, factory_id).items():
+        state.setdefault(key, {"marked": False, "actor": "", "updated_at": ""})["order_ids"] = order_ids
+    from app.services.carton_order_split import live_plans
+    for plan in live_plans(db, factory_id):
+        for target in plan["targets"]:
+            key = identity({"schedule_customer_code": plan["customer_code"], "contract_no": target["contract_no"], "item_no": plan["item_no"]})
+            entry = state.setdefault(key, {"marked": False, "actor": "", "updated_at": ""})
+            ids = entry.setdefault("order_ids", [])
+            if plan["order_id"] not in ids:
+                ids.append(plan["order_id"])
+            entry.setdefault("split_ids", []).append(plan["id"])
+    return state
+
+
+def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrderCreate) -> dict[str, object] | None:
+    source = payload.schedule_source
+    if source is None:
+        return None
+    batch = db.get(CartonImportBatch, source.batch_id)
+    if batch is None or batch.factory_id != factory_id or batch.import_type != "WEEKLY_SCHEDULE" or batch.status == "REJECTED":
+        raise HTTPException(404, "有效的业务排期批次不存在")
+    rows = [row for row in import_batch_out(batch).parse_summary.get("rows", []) if isinstance(row, dict)]
+    matches = [row for row in rows if row.get("source_sheet") == source.source_sheet and row.get("source_row") == source.source_row]
+    if len(matches) != 1:
+        raise HTTPException(404, "排期明细不存在")
+    row = matches[0]
+    key = identity(row)
+    if row.get("schedule_customer_code") and row["schedule_customer_code"] != payload.customer_code:
+        raise HTTPException(422, "新订单客户必须与导入排期时选择的基础客户一致")
+    if not key or not tracked(row) or row.get("schedule_section") != "PENDING":
+        raise HTTPException(422, "只能使用待下单区的正单、加单或正式 PO 新建订单")
+    if sum(identity(item) == key and tracked(item) for item in rows) != 1 or row.get("schedule_change") == "REVIEW_REQUIRED":
+        raise HTTPException(409, "业务订单身份不唯一，请先核对排期")
+    if any(str(row.get(field) or "").strip().casefold() != getattr(payload, field).strip().casefold()
+           for field in ("contract_no", "item_no")):
+        raise HTTPException(422, "来源排期的合同和货号与新订单不一致，请重新核对")
+    latest = [item for item in _previous_schedule_by_customer(db, factory_id, {customer_key(row)}).get(customer_key(row), [])
+              if identity(item) == key and tracked(item)]
+    if len(latest) != 1 or latest[0].get("schedule_section") != "PENDING":
+        raise HTTPException(409, "最新排期已退单、走货或身份不唯一，请刷新后核对")
+    if schedule_order_marks(db, factory_id).get(key, {}).get("marked") or _schedule_order_links(db, factory_id).get(key):
+        raise HTTPException(409, "该业务排期已标记下单或已建订单，请查看原订单，勿重复下单")
+    from app.services.carton_order_split import schedule_matches
+    if schedule_matches(db, factory_id, row):
+        raise HTTPException(409, "该业务排期已关联拆分采购，请查看原订单拆单记录，勿重复下单")
+    existing = db.get(CartonOrder, row.get("order_id")) if row.get("order_id") else None
+    if existing and existing.factory_id == factory_id and existing.status != "CANCELLED":
+        raise HTTPException(409, "该业务排期已关联订单，请查看原订单，勿重复下单")
+    return row
+
+
+def set_schedule_order_mark(
+    db: Session, factory_id: str, batch_id: str, source_sheet: str,
+    source_row: int, marked: bool, user: AuthContext,
+) -> dict[str, object]:
+    result = set_schedule_order_marks(db, factory_id, batch_id, [(source_sheet, source_row)], marked, user)
+    return result["items"][0]
+
+
+def set_schedule_order_marks(
+    db: Session, factory_id: str, batch_id: str, sources: list[tuple[str, int]],
+    marked: bool, user: AuthContext,
+) -> dict[str, object]:
+    """Validate the entire selection before recording one atomic manual decision."""
+    factory_id = require_carton_factory(factory_id)
+    if not sources or len(sources) > 100 or len(set(sources)) != len(sources):
+        raise HTTPException(422, "每次请选择 1 至 100 条不同的业务排期记录")
+    _lock_receipt_factory(db, factory_id)
+    batch = db.get(CartonImportBatch, batch_id)
+    if batch is None or batch.factory_id != factory_id or batch.import_type != "WEEKLY_SCHEDULE" or batch.status == "REJECTED":
+        raise HTTPException(404, "有效的业务排期批次不存在")
+    summary = import_batch_out(batch).parse_summary
+    rows = [row for row in summary.get("rows", []) if isinstance(row, dict)]
+    counts = Counter(identity(row) for row in rows if tracked(row))
+    selected: list[tuple[str, dict[str, object]]] = []
+    for source_sheet, source_row in sources:
+        matches = [row for row in rows if row.get("source_sheet") == source_sheet and row.get("source_row") == source_row]
+        if len(matches) != 1:
+            raise HTTPException(404, "排期明细不存在，所选记录均未修改")
+        row = matches[0]
+        key = identity(row)
+        if not key or not tracked(row) or row.get("schedule_section") != "PENDING":
+            raise HTTPException(422, "只有身份完整且位于待下单区的正单、加单或正式 PO 可标记已下单")
+        if counts[key] != 1 or row.get("schedule_change") == "REVIEW_REQUIRED":
+            raise HTTPException(409, "本批次业务订单身份不唯一，请先人工核对，所选记录均未修改")
+        selected.append((key, row))
+    marks = schedule_order_marks(db, factory_id)
+    operation_id = f"SM-{uuid4().hex}"
+    changed_count = 0
+    for key, row in selected:
+        current = marks.get(key, {}).get("marked") is True
+        if current != marked:
+            _audit(db, user, factory_id, "SCHEDULE_ORDER_MARK_CHANGED", "schedule_order_mark", key, {
+                "marked": marked, "batch_id": batch_id, "source_sheet": row["source_sheet"],
+                "source_row": row["source_row"], "customer": row.get("source_customer_name") or row.get("customer_name"),
+                "contract_no": row.get("contract_no"), "customer_po": row.get("customer_po"),
+                "item_no": row.get("item_no"), "operation_id": operation_id,
+            })
+            changed_count += 1
+    db.commit()
+    return {"items": [{"identity": key, "marked": marked} for key, _ in selected], "changed_count": changed_count}
+
+
+def _previous_schedule_by_customer(db: Session, factory_id: str, customers: set[str]) -> dict[str, list[dict[str, object]]]:
+    previous: dict[str, list[dict[str, object]]] = {}
+    seen: dict[str, set[str]] = defaultdict(set)
+    if not customers:
+        return previous
+    batches = db.scalars(select(CartonImportBatch).join(
+        CartonAuditEvent,
+        (CartonAuditEvent.factory_id == CartonImportBatch.factory_id)
+        & (CartonAuditEvent.entity_id == CartonImportBatch.id)
+        & (CartonAuditEvent.entity_type == "carton_import_batch")
+        & (CartonAuditEvent.event_type == "IMPORT_BATCH_CREATED"),
+    ).where(
+        CartonImportBatch.factory_id == factory_id,
+        CartonImportBatch.import_type == "WEEKLY_SCHEDULE",
+        CartonImportBatch.status != "REJECTED",
+    ).order_by(CartonAuditEvent.sequence.desc())).all()
+    for batch in batches:
+        try:
+            summary = json.loads(batch.parse_summary_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        rows = summary.get("rows", []) if isinstance(summary, dict) else []
+        if not isinstance(rows, list):
+            continue
+        grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
+        for row in rows:
+            if isinstance(row, dict) and row.get("schedule_section"):
+                grouped[customer_key(row)].append(row)
+        for customer in customers:
+            source_rows = grouped.get(customer, [])
+            if not source_rows:
+                continue
+            destination = previous.setdefault(customer, [])
+            by_identity: dict[str, list[dict[str, object]]] = defaultdict(list)
+            for row in source_rows:
+                key = identity(row)
+                if key and tracked(row):
+                    by_identity[key].append(row)
+            for key, matching_rows in by_identity.items():
+                if key not in seen[customer]:
+                    destination.extend(matching_rows)
+                    seen[customer].add(key)
+    return previous
 
 
 def get_import_batch(
@@ -3830,11 +4154,18 @@ def list_import_batches(
     if import_type:
         query = query.where(CartonImportBatch.import_type == import_type)
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    if import_type == "WEEKLY_SCHEDULE":
+        query = query.outerjoin(CartonAuditEvent,
+            (CartonAuditEvent.factory_id == CartonImportBatch.factory_id)
+            & (CartonAuditEvent.entity_id == CartonImportBatch.id)
+            & (CartonAuditEvent.entity_type == "carton_import_batch")
+            & (CartonAuditEvent.event_type == "IMPORT_BATCH_CREATED"))
+        query = query.order_by(CartonAuditEvent.sequence.desc(), CartonImportBatch.created_at.desc())
+    else:
+        query = query.order_by(CartonImportBatch.created_at.desc(), CartonImportBatch.id.desc())
     rows = list(
         db.scalars(
-            query.order_by(CartonImportBatch.created_at.desc(), CartonImportBatch.id.desc())
-            .limit(limit)
-            .offset(offset)
+            query.limit(limit).offset(offset)
         ).all()
     )
     return int(total), [import_batch_out(row) for row in rows]

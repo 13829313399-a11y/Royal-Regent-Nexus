@@ -190,7 +190,9 @@ def confirm(db, user, filename, content, expected_sha256, selections):
                     for row in group["rows"] if row["status"] == "AD_HOC_REVIEW"])
             sent.append(portal.create_shipment(db, user, payload, commit=False,
                 source={"filename": filename, "sha256": expected_sha256,
-                    "rows": [row["source_row"] for row in group["rows"]]}))
+                    "rows": [row["source_row"] for row in group["rows"]],
+                    "delivery_unit_prices": {row["order_line_id"]: row["unit_price"]
+                        for row in group["rows"] if row["status"] == "READY"}}))
         db.commit()
     except Exception:
         db.rollback()

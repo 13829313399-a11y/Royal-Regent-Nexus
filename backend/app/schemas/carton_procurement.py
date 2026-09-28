@@ -190,7 +190,14 @@ class CartonOrderLineCreate(BaseModel):
         return _strip(value)
 
 
+class CartonScheduleOrderSource(BaseModel):
+    batch_id: str = Field(min_length=1, max_length=96)
+    source_sheet: str = Field(min_length=1, max_length=128)
+    source_row: int = Field(ge=1)
+
+
 class CartonOrderCreate(BaseModel):
+    schedule_source: CartonScheduleOrderSource | None = None
     customer_po: str = Field(default="", max_length=128)
 
     @field_validator("customer_po")
@@ -448,13 +455,17 @@ class CartonOrderBulkCancelRequest(BaseModel):
         return self
 
 
-class CartonHistoryOrderBulkDeleteRequest(CartonOrderBulkCancelRequest):
+class CartonOrderBulkDeleteRequest(CartonOrderBulkCancelRequest):
     @field_validator("reason")
     @classmethod
     def validate_delete_reason(cls, value: str) -> str:
         if len(value.strip()) < 4:
             raise ValueError("删除原因至少需要四个字符")
         return value.strip()
+
+
+class CartonHistoryOrderBulkDeleteRequest(CartonOrderBulkDeleteRequest):
+    pass
 
 
 class CartonImportBatchUndoRequest(BaseModel):
@@ -545,6 +556,9 @@ class CartonOrderHistorySuggestionListOut(BaseModel):
 
 
 class CartonOrderOut(BaseModel):
+    split_records: list[dict] = Field(default_factory=list)
+    can_delete: bool = False
+    deletion_block_reason: str = ""
     can_delete_history: bool = False
     customer_po: str = ""
     usage_status: str = "NOT_RECEIVED"
@@ -754,6 +768,7 @@ class CartonReceiptLineCreate(BaseModel):
 class CartonReceiptCreate(BaseModel):
     acceptance_date: str | None = None
     post_immediately: bool = False
+    split_confirmation: str = Field(default="", max_length=64)
     request_id: str | None = Field(default=None, min_length=8, max_length=128)
     factory_id: str = Field(min_length=1, max_length=64)
     delivery_note_no: str = Field(min_length=1, max_length=128)
@@ -849,6 +864,7 @@ class CartonReceiptListOut(BaseModel):
 
 
 class CartonReceiptConfirmRequest(BaseModel):
+    split_confirmation: str = Field(default="", max_length=64)
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
 
@@ -1204,6 +1220,26 @@ class CartonImportBatchListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonImportBatchOut]
+
+
+class CartonScheduleOrderMarkRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    batch_id: str = Field(min_length=1, max_length=96)
+    source_sheet: str = Field(min_length=1, max_length=128)
+    source_row: int = Field(ge=1)
+    marked: bool
+
+
+class CartonScheduleOrderMarkRow(BaseModel):
+    source_sheet: str = Field(min_length=1, max_length=128)
+    source_row: int = Field(ge=1)
+
+
+class CartonScheduleOrderMarkBulkRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    batch_id: str = Field(min_length=1, max_length=96)
+    rows: list[CartonScheduleOrderMarkRow] = Field(min_length=1, max_length=100)
+    marked: bool
 
 
 class CartonExceptionUpdate(BaseModel):
