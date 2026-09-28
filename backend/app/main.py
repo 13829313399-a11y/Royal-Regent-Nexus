@@ -19,6 +19,7 @@ from app.api.customer_order import router as customer_order_router
 from app.api.customer_order_ledger import router as customer_order_ledger_router
 from app.api.directory import router as directory_router
 from app.api.iam import router as iam_router
+from app.api.identity import router as identity_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.injection_scheduling import router as injection_scheduling_router
 from app.api.customer_price_settings import router as customer_price_settings_router
@@ -102,9 +103,17 @@ async def lifespan(app: FastAPI):
     sweep_task = asyncio.create_task(three_d_sweep_loop())
     from app.services.uv_operations.exports import worker as uv_export_worker
     uv_export_task = asyncio.create_task(uv_export_worker()) if settings.uv_ops_enabled else None
+    from app.services.identity_outbox import worker as identity_worker
+    identity_task = asyncio.create_task(identity_worker()) if settings.iam_identity_writes_enabled else None
     try:
         yield
     finally:
+        if identity_task:
+            identity_task.cancel()
+            try:
+                await identity_task
+            except asyncio.CancelledError:
+                pass
         if uv_export_task:
             uv_export_task.cancel()
             try:
@@ -186,6 +195,7 @@ app.include_router(customer_price_settings_router)
 app.include_router(indonesia_invoice_router)
 app.include_router(injection_scheduling_router)
 app.include_router(iam_router)
+app.include_router(identity_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
 app.include_router(raw_material_router)

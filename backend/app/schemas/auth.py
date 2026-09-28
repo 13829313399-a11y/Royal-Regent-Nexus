@@ -15,7 +15,8 @@ class RegisterRequest(BaseModel):
     confirm_password: str
     phone: str = ""
     email: str = ""
-    factory_id: str
+    factory_id: str = ""
+    org_unit_id: str = ""
     department: str
     position: str
 
@@ -71,6 +72,8 @@ class ChangePasswordRequest(BaseModel):
 
 
 class AuthGrant(BaseModel):
+    factory_ceiling: list[str] | None = None
+    assignment_id: str = ""
     role_id: str
     role_name: str
     factory_id: str
@@ -119,5 +122,6 @@ class AuthMeResponse(BaseModel):
     avatar_url: str = ""
     profile: AuthProfile | None = None
     authorization_version: int = 0
+    identity: dict | None = None
     effective_access: list[AuthEffectiveAccess] = Field(default_factory=list)
     authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"

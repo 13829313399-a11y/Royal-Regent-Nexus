@@ -39,6 +39,7 @@ import {
 } from '@/api/system'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import { factoryContexts } from '@/data/enterpriseMock'
+import { identityApi, type Organization } from '@/api/identity'
 import { getPositionSuggestions } from '@/data/positionCatalog'
 import {
   registrationDepartmentLabel,
@@ -76,7 +77,13 @@ const successMessage = ref('')
 const canManageUsers = computed(() => authStore.can('system:user_manage'))
 const currentAccountName = computed(() => authStore.currentUser?.display_name?.trim() || authStore.currentUser?.username || '当前账号')
 const currentAccountCode = computed(() => authStore.currentUser?.username || '已登录')
-const factoryOptions = computed(() => factoryContexts.filter((factory) => factory.id !== 'group'))
+const organizations = ref<Organization[]>([])
+const factoryOptions = computed(() => organizations.value.filter(o => o.kind !== 'group' && o.status === 'active').map(o => ({ id: o.id, shortName: o.name })))
+const approvalDepartments = computed(() => organizations.value.find(o => o.id === selectedProfile.value?.factory_id)?.departments ?? [])
+async function loadOrganizations() {
+  try { organizations.value = (await identityApi.catalog()).organizations } catch (e) { errorMessage.value = getApiErrorMessage(e) }
+}
+onMounted(loadOrganizations)
 const activeUsers = computed(() => users.value.filter((user) => user.status === 'active'))
 const pendingUsers = computed(() => users.value.filter((user) => user.status === 'pending'))
 const selectedPasswordResetRequest = computed(() =>
@@ -232,7 +239,8 @@ function approvalProfile(request: RegistrationRequestResponse) {
     display_name: request.display_name,
     phone: request.phone,
     email: request.email,
-    factory_id: request.factory_id,
+    factory_id: request.org_unit_id || request.factory_id,
+    business_factory_ids: [],
     department: request.department,
     position: request.position,
   }
@@ -345,7 +353,9 @@ async function approveRequest(request: RegistrationRequestResponse) {
     display_name: source.display_name.trim(),
     phone: source.phone.trim(),
     email: source.email.trim(),
-    factory_id: source.factory_id,
+    factory_id: organizations.value.find(o => o.id === source.factory_id)?.factory_id ?? source.factory_id,
+    org_unit_id: source.factory_id,
+    business_factory_ids: source.business_factory_ids ?? [],
     department: source.department,
     position: source.position.trim(),
   }
@@ -357,7 +367,7 @@ async function approveRequest(request: RegistrationRequestResponse) {
     errorMessage.value = '手机或邮箱至少填写一项'
     return
   }
-  if (!profile.factory_id || !profile.department) {
+  if (!profile.org_unit_id || !profile.department) {
     errorMessage.value = '请选择厂区和部门'
     return
   }
@@ -711,14 +721,14 @@ onMounted(() => {
               </label>
               <label class="position-confirm-field">
                 <span class="field-label"><span>所属厂区</span><small>主生产基地</small></span>
-                <select v-model="approvalProfile(selectedRequest).factory_id" aria-label="确认厂区">
+                <select v-model="approvalProfile(selectedRequest).factory_id" aria-label="确认厂区" @change="approvalProfile(selectedRequest).department = approvalDepartments[0]?.code ?? ''">
                   <option v-for="factory in factoryOptions" :key="factory.id" :value="factory.id">{{ factory.shortName }}</option>
                 </select>
               </label>
               <label class="position-confirm-field">
                 <span class="field-label"><span>所属部门</span><small>业务归属</small></span>
                 <select v-model="approvalProfile(selectedRequest).department" aria-label="确认部门" @change="handleProfileDepartmentChange(selectedRequest)">
-                  <option v-for="department in registrationDepartments" :key="department.id" :value="department.id">{{ department.name }}</option>
+                  <option v-for="department in approvalDepartments" :key="department.code" :value="department.code">{{ department.name }}</option>
                 </select>
               </label>
               <label class="position-confirm-field registration-position-field">
@@ -732,6 +742,12 @@ onMounted(() => {
                 </span>
               </label>
             </div>
+            <fieldset v-if="selectedProfile?.factory_id === 'group-management'" class="position-confirm-field">
+              <legend>业务范围（必须明确选择）</legend>
+              <label v-for="factory in organizations.filter(o => o.kind === 'factory' && o.status === 'active')" :key="factory.id">
+                <input v-model="approvalProfile(selectedRequest).business_factory_ids" type="checkbox" :value="factory.id" />{{ factory.name }}
+              </label>
+            </fieldset>
             <p class="position-role-note">
               真实职位只用于个人资料展示；下方内置权限职位才决定系统可用功能。
             </p>

@@ -11,7 +11,9 @@ class RegistrationProfileCorrection(BaseModel):
     display_name: str = Field(min_length=1, max_length=128)
     phone: str = Field(default="", max_length=64)
     email: str = Field(default="", max_length=128)
-    factory_id: str = Field(min_length=1, max_length=64)
+    factory_id: str = Field(default="", max_length=64)
+    org_unit_id: str = Field(default="", max_length=64)
+    business_factory_ids: list[str] = Field(default_factory=list, max_length=6)
     department: str = Field(min_length=1, max_length=64)
     position: str = Field(min_length=1, max_length=128)
 
@@ -73,6 +75,8 @@ class RegistrationRequestOut(BaseModel):
     phone: str
     email: str
     factory_id: str
+    org_unit_id: str = ""
+    org_unit_id: str = ""
     department: str
     position: str
     status: str

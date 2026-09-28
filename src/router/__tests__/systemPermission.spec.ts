@@ -29,8 +29,16 @@ describe('system user management routing', () => {
     expect(source).toMatch(/path:\s*'\/system\/users\/:userId\/access'[\s\S]{0,360}permissions:\s*\[['"]system:access_manage['"]\]/)
     expect(source).toMatch(/path:\s*'\/system\/iam\/roles'[\s\S]{0,360}permissions:\s*\[['"]system:permission_catalog_read['"]\]/)
     expect(source).toMatch(/path:\s*'\/system\/iam\/permissions',[\s\S]{0,80}redirect:\s*'\/system\/iam\/roles'/)
-    expect(source).toMatch(/path:\s*'\/system\/iam\/requests',[\s\S]{0,80}redirect:\s*'\/system\/iam\/roles'/)
-    expect(source).toMatch(/path:\s*'\/system\/iam\/audit',[\s\S]{0,80}redirect:\s*'\/system\/iam\/roles'/)
+    // V2 supplies real records pages; compatibility builds close these entries.
+    for (const [path, permission] of [['requests', 'access_manage'], ['audit', 'audit_read']]) {
+      const route = source.split(`path: '/system/iam/${path}',`)[1]?.split('\n  },')[0] || ''
+      expect(route).toContain('identityUiEnabled')
+      expect(route).toContain('identity-management/IdentityRecords.vue')
+      expect(route).toContain(`permissions: ['system:${permission}']`)
+      expect(route).toContain('requiresAuth: true')
+      expect(route).toContain('enforcePermissions: true')
+      expect(route).toContain("redirect: '/system/users'")
+    }
     expect(source).not.toContain('IamPermissionCatalogView.vue')
     expect(source).not.toContain('IamAccessRequestsView.vue')
     expect(source).not.toContain('IamAuditView.vue')

@@ -30,6 +30,8 @@ def _authorize(db, user, factory_id, permission="customer_price:settings_read"):
         grant.department == "sales-business" and time_window_is_active(grant.valid_from, grant.valid_until)
         for grant in user.grants
     )
+    if user.identity and user.identity.get("identity_mode") == "v2":
+        sales = any(a["department_code"] == "sales-business" and a["factory_id"] == factory_id for a in user.identity["active_assignments_summary"])
     if (sales or is_wildcard_super_admin(user)) and can(user, permission, factory_id, "sales-business"):
         return
     add_auth_audit(db, "permission_denied", user.username, user.id,
