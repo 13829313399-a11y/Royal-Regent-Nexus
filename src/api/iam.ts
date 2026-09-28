@@ -66,6 +66,10 @@ export interface EmployeeProfile {
 }
 
 export interface RoleBinding {
+  assignment_id?: string | null
+  role_version_id?: string | null
+  factory_ceiling?: string[] | null
+  employment_epoch?: number | null
   id: string
   role_id: string
   role_code: string

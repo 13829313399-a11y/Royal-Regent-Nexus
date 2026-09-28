@@ -12,6 +12,7 @@ vi.mock('vue-router', async (importOriginal) => {
 import { router, refreshAndRevalidateAuthorization } from '@/router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { installIdentitySync } from '@/lib/identitySync'
 
 function user(primaryFactoryId: string, id = 'a'): AuthMeResponse {
   return {
@@ -51,6 +52,49 @@ describe('authenticated factory context with real navigation guards', () => {
       expect(observed).toEqual(['huadeng'])
       expect(api.getMe).toHaveBeenCalled()
     } finally { remove() }
+  })
+
+  it.each([false, true])('refreshes the scheduled identity at server T, keeping an open form=%s', async (formOpen) => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    // Browser wall-clock skew does not move the server's transition boundary.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2040-01-01T00:00:00Z'))
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
+    const before = user('huakang-a')
+    before.identity = { identity_mode: 'v2', identity_version: 1, employment_epoch: 1, employment_status: 'active',
+      primary_assignment: null, active_assignments_summary: [], assignments: [], primary_factory_id: 'huakang-a',
+      primary_department: 'production', position: '', server_now: '2026-09-27T00:00:00Z',
+      next_transition_at: '2026-09-27T00:00:20Z', effective_context_key: 'before' }
+    useAuthStore().applySession(before)
+    api.getMe.mockResolvedValue(before)
+    await router.replace(formOpen ? '/modules/pmc-warehouse' : '/')
+    const stop = installIdentitySync(router, pinia)
+    const changed = vi.fn()
+    window.addEventListener('authorization-context-changed', changed)
+    try {
+      api.getMe.mockClear()
+      api.getMe.mockResolvedValue({ ...user('huakang-b'), identity: { ...before.identity,
+        primary_factory_id: 'huakang-b', effective_context_key: 'after', server_now: '2026-09-27T00:00:20Z', next_transition_at: null } })
+      await vi.advanceTimersByTimeAsync(19_999)
+      expect(api.getMe).not.toHaveBeenCalled()
+      expect(useAppStore().activeFactoryId).toBe('huakang-a')
+      await vi.advanceTimersByTimeAsync(201)
+      expect(api.getMe).toHaveBeenCalledTimes(1)
+      expect(useAuthStore().currentUser?.profile?.primary_factory_id).toBe('huakang-b')
+      expect(useAppStore().activeFactoryId).toBe(formOpen ? 'huakang-a' : 'huakang-b')
+      expect(changed).toHaveBeenCalledTimes(1)
+      if (formOpen) {
+        await router.replace('/')
+        expect(useAppStore().activeFactoryId).toBe('huakang-b')
+      }
+    } finally {
+      stop()
+      window.removeEventListener('authorization-context-changed', changed)
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
   })
 
   it('opens the rebuilt UV workspace only with an explicit A factory and current permission', async () => {
@@ -135,6 +179,17 @@ describe('authenticated factory context with real navigation guards', () => {
     await useAuthStore().login({ username: 'b', password: 'test-password' })
     await router.replace('/')
     expect(useAppStore().activeFactoryId).toBe('huaxing')
+  })
+
+  it('keeps an open business form on its original factory when the official assignment changes', async () => {
+    await router.replace('/modules/pmc-warehouse')
+    expect(useAppStore().activeFactoryId).toBe('huakang-a')
+    api.getMe.mockResolvedValue(user('huadeng'))
+    await refreshAndRevalidateAuthorization(useAuthStore(), router)
+    expect(useAppStore().activeFactoryId).toBe('huakang-a')
+    expect(useAuthStore().currentUser?.profile?.primary_factory_id).toBe('huadeng')
+    await router.replace('/')
+    expect(useAppStore().activeFactoryId).toBe('huadeng')
   })
 
   it('does not turn factory context into a grant for a strictly protected page', async () => {

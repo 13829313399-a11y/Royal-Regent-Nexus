@@ -14,6 +14,8 @@ const rejectPasswordResetRequestMock = vi.hoisted(() => vi.fn())
 const reissuePasswordResetRequestMock = vi.hoisted(() => vi.fn())
 const canMock = vi.hoisted(() => vi.fn())
 
+vi.mock('@/api/identity', () => ({ identityApi: { catalog: async () => ({ organizations: ['huaxing', 'huakang-a', 'huakang-b', 'huakang-c', 'huakang-d', 'huadeng'].map(id => ({ id, name: id, factory_id: id, kind: 'factory', status: 'active', departments: ['engineering', 'production', 'management', 'pmc-warehouse'].map(code => ({ code, name: code })) })) }) } }))
+
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 
 vi.mock('@/stores/auth', () => ({
@@ -139,7 +141,9 @@ describe('SystemUserManagementView registration approval', () => {
       created_at: '2026-07-18T08:05:00Z', updated_at: '2026-07-18T08:05:00Z', issue_count: 0,
       matched_user: {
         id: 'user-1', username: 'tech-001', display_name: '张三', status: 'active',
-        factory_id: 'huaxing', department: 'engineering', position: '工程师',
+        factory_id: 'huaxing',
+        org_unit_id: 'huaxing',
+        business_factory_ids: [], department: 'engineering', position: '工程师',
         phone: '13800000000', email: '',
       },
       match_checks: { username: true, display_name: true, contact: true, scope: true },
@@ -180,7 +184,7 @@ describe('SystemUserManagementView registration approval', () => {
     expect(approveRegistrationRequestMock).toHaveBeenCalledWith('registration-1', {
       system_position_role_id: 'position_engineering_supervisor',
       profile: {
-        display_name: '张小明', phone: '13800000000', email: '', factory_id: 'huaxing',
+        display_name: '张小明', phone: '13800000000', email: '', factory_id: 'huaxing', org_unit_id: 'huaxing', business_factory_ids: [],
         department: 'engineering', position: '高级工程技术员',
       },
       review_comment: '',
@@ -225,7 +229,7 @@ describe('SystemUserManagementView registration approval', () => {
     expect(approveRegistrationRequestMock).toHaveBeenCalledWith('registration-1', {
       system_position_role_id: 'position_engineering_engineer',
       profile: {
-        display_name: '张三', phone: '13800000000', email: '', factory_id: 'huaxing',
+        display_name: '张三', phone: '13800000000', email: '', factory_id: 'huaxing', org_unit_id: 'huaxing', business_factory_ids: [],
         department: 'production', position: '工程部技术员',
       },
       review_comment: '',
