@@ -2269,6 +2269,7 @@ def test_weekly_schedule_import_never_creates_formal_orders(monkeypatch):
         )
         response = client.post(
             "/api/carton-procurement/weekly-imports",
+            data={"customer_code": "DICKIE"},
             params={"factory_id": "huaxing"},
             files={"file": ("每周客人查货排期.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
@@ -2838,6 +2839,7 @@ def test_import_batch_history_is_persisted_and_filterable(monkeypatch):
         )
         weekly = client.post(
             "/api/carton-procurement/weekly-imports",
+            data={"customer_code": "DICKIE"},
             params={"factory_id": "huaxing"},
             files={"file": ("本周排期.xlsx", content)},
         )

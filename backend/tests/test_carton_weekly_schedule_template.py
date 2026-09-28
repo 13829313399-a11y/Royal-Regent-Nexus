@@ -54,6 +54,7 @@ def test_weekly_schedule_template_matches_import_contract(monkeypatch):
         _create_order(client)
         response = client.post(
             "/api/carton-procurement/weekly-imports",
+            data={"customer_code": "DICKIE"},
             params={"factory_id": "huaxing"},
             files={
                 "file": (

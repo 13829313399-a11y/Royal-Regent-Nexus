@@ -65,9 +65,16 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
     orders = {row.id: row for row in scoped(CartonOrder)
               if not customer_code or row.customer_code == customer_code}
     lines = {row.id: row for row in scoped(CartonOrderLine) if row.order_id in orders}
+    from app.services.carton_order_split import plans
+    split_records = {plan["id"]: plan for plan in plans(db, factory_id) if plan["order_id"] in orders}
+    split_lines = {line["target_line_id"]: lines[line["order_line_id"]]
+                   for plan in split_records.values() for target in plan["targets"] for line in target["lines"]
+                   if line["order_line_id"] in lines}
+    lines.update(split_lines)
     movements = [row for row in scoped(CartonInventoryMovement)
                  if (not customer_code or row.customer_code == customer_code)
                  and (not row.order_line_id or row.order_line_id in lines)]
+    split_stock_keys = {_key(row) for row in movements if row.order_line_id in split_lines}
     movements_by_id = {row.id: row for row in movements}
     receipts = {row.id: row for row in scoped(CartonReceipt)}
     receipt_lines = defaultdict(list)
@@ -85,6 +92,9 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
             sequences[audit.entity_id] = audit.sequence
         elif audit.event_type == "INVENTORY_MOVEMENT_REVERSED":
             sequences[detail.get("reversal_id", "")] = audit.sequence
+        elif audit.event_type == "ORDER_SPLIT_STOCK_MOVED":
+            for pair in detail["pairs"]:
+                sequences[pair["from_id"]] = sequences[pair["to_id"]] = audit.sequence
         elif audit.event_type in {"ORDER_RETURNED", "INVENTORY_BULK_OUTBOUND_CREATED"}:
             for identity in detail.get("movement_ids", []):
                 sequences.setdefault(identity, audit.sequence)
@@ -168,6 +178,13 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
             if audit.event_type == "ORDER_RETURNED":
                 event.description = "订单退单；实际库存减少见关联退单出库流水。"
             add(event, audit.sequence)
+        elif audit.entity_type == "carton_order_split" and audit.entity_id in split_records and audit.event_type != "ORDER_SPLIT_STOCK_MOVED":
+            plan = split_records[audit.entity_id]
+            label = {"ORDER_SPLIT_CREATED": "记录拆单方案", "ORDER_SPLIT_CONFIRMED": "仓库确认拆单", "ORDER_SPLIT_CANCELLED": "撤销拆单"}.get(audit.event_type)
+            if label:
+                add(Event(**base, **identity(orders[plan["order_id"]]), event_label=label, document_no=plan["id"],
+                    description="拆分去向：" + "；".join(f"{target['contract_no']} / PO {target['customer_po'] or '未填写'}" for target in plan["targets"])
+                    + "。原采购和收料来源保留，数量变更见成对归属流水。"), audit.sequence)
         elif audit.event_type == "PURCHASE_ORDER_ISSUED" and audit.entity_id in issues:
             issue = issues[audit.entity_id]
             add(Event(**base, **identity(orders[issue.order_id]), event_label="发行供应商采购单",
@@ -228,6 +245,8 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
             label = "盘点调整"
         elif row.source_type == "HISTORY_INVENTORY":
             label = "期初库存导入"
+        elif row.source_type == "ORDER_SPLIT":
+            label = "拆单归属转出" if row.quantity < 0 else "拆单归属转入"
         elif row.reversal_of_movement_id:
             original = movements_by_id.get(row.reversal_of_movement_id)
             label = {"INBOUND": "入库冲销", "OUTBOUND": "出库冲销", "ADJUSTMENT": "调整冲销"}.get(
@@ -256,7 +275,8 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
     for timestamp, _, _, event in sorted(result, key=lambda row: row[:3]):
         if order_id and event.order_id != order_id:
             continue
-        if inventory_key and (event.order_id is not None or event.inventory_key != inventory_key):
+        if inventory_key and (event.inventory_key != inventory_key or
+                event.order_id is not None and inventory_key not in split_stock_keys):
             continue
         if keyword and event.order_id not in matched_orders and event.inventory_key not in matched_stock:
             continue

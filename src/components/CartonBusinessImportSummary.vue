@@ -1,16 +1,24 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { CartonImportBatchResponse } from '@/api/cartonProcurement'
+import type { CartonImportBatchResponse, CartonImportPreviewRow } from '@/api/cartonProcurement'
 
-const props = defineProps<{ batch?: CartonImportBatchResponse }>()
+const props = defineProps<{ batch?: CartonImportBatchResponse; orderedMarks?: Record<string, { marked: boolean }> }>()
+function isMarked(row: CartonImportPreviewRow) {
+  return row.schedule_identity ? (props.orderedMarks?.[row.schedule_identity]?.marked ?? row.manual_ordered ?? false) : false
+}
 const summary = computed(() => props.batch?.parse_summary)
 const counts = computed(() => {
   const rows = summary.value?.rows ?? []
   return {
-    formal: rows.filter(row => row.order_type === '正单').length,
-    review: rows.filter(row => row.match_status === 'REVIEW_REQUIRED' || row.match_status === 'AMBIGUOUS' || row.procurement_state === 'REVIEW' || row.date_review_required).length,
-    needs: rows.filter(row => row.procurement_state === 'NEEDS_ORDER').length,
-    ordered: rows.filter(row => row.procurement_state === 'ORDERED').length,
+    formal: rows.filter(row => row.order_type === '正单' && (!row.schedule_section || row.schedule_section === 'PENDING')).length,
+    pending: rows.filter(row => row.schedule_section === 'PENDING').length,
+    shipped: rows.filter(row => row.schedule_section === 'SHIPPED').length,
+    cancelled: rows.filter(row => row.schedule_section === 'CANCELLED').length,
+    newOrders: rows.filter(row => row.schedule_change === 'NEW').length,
+    cancelledAfterOrder: rows.filter(row => row.schedule_change === 'CANCELLED_AFTER_ORDER').length,
+    review: rows.filter(row => row.schedule_section !== 'SHIPPED' && (row.schedule_section !== 'CANCELLED' || ['CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(row.schedule_change || '')) && (row.match_status === 'REVIEW_REQUIRED' || row.match_status === 'AMBIGUOUS' || row.procurement_state === 'REVIEW' || row.date_review_required)).length,
+    needs: rows.filter(row => row.procurement_state === 'NEEDS_ORDER' && !isMarked(row)).length,
+    ordered: rows.filter(row => (row.procurement_state === 'ORDERED' || isMarked(row)) && row.procurement_state !== 'COMPLETED').length,
     completed: rows.filter(row => row.procurement_state === 'COMPLETED').length,
   }
 })
@@ -27,12 +35,15 @@ const fieldLabels: Record<string, string> = {
     <h3 class="font-semibold text-slate-900">统一业务模板 · ITEM 表</h3>
     <div class="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm">
       <span>正单 {{ counts.formal }} 行</span>
+      <span v-if="counts.pending || counts.shipped || counts.cancelled">待下单区 {{ counts.pending }} · 已送货区 {{ counts.shipped }} · 退单区 {{ counts.cancelled }}</span>
+      <span v-if="counts.newOrders" class="font-semibold text-amber-800">新加单 {{ counts.newOrders }}</span>
+      <span v-if="counts.cancelledAfterOrder" class="font-semibold text-red-700">已下单后退单 {{ counts.cancelledAfterOrder }}</span>
       <span class="font-semibold text-amber-800">需要下单 {{ counts.needs }}</span>
       <span>已下单 {{ counts.ordered }}</span>
       <span>已完单 {{ counts.completed }}</span>
       <span class="text-amber-800">待人工确认 {{ counts.review }} 行</span>
     </div>
-    <p class="mt-2 text-xs leading-5 text-slate-600">仅正单参与自动核对。已完单表示采购收料完成，对账进度单独保留。核对结果是本次导入时的快照。</p>
+    <p class="mt-2 text-xs leading-5 text-slate-600">仅待下单区正单参与自动采购核对。已送货和退单保留来源记录；人工已下单标记单独保存，后续导入沿用。核对结果是本次导入时的快照。</p>
     <p v-for="warning in summary.warnings" :key="warning" class="mt-1 text-xs text-slate-600">{{ warning }}</p>
     <details class="mt-3 text-xs">
       <summary class="cursor-pointer font-medium text-teal-800">查看识别的工作表和字段</summary>

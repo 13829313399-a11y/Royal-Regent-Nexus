@@ -552,6 +552,9 @@ describe('supplier collaboration entry', () => {
     expect(api.workspace).not.toHaveBeenCalled(); wrapper.unmount()
   })
   it('previews the supplier file and confirms selected matched notes', async () => {
+    const preview = await api.previewDeliveryImport()
+    preview.groups[0].rows[0].unit_price = 3.75
+    api.previewDeliveryImport.mockResolvedValue(preview)
     const wrapper = mount(CartonSupplierView, options); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '导入送货单')!.trigger('click')
     const input = wrapper.get<HTMLInputElement>('input[type="file"]')
@@ -560,6 +563,8 @@ describe('supplier collaboration entry', () => {
     await input.trigger('change'); await flushPromises()
     expect(api.previewDeliveryImport).toHaveBeenCalledWith(file)
     expect(wrapper.get('[role="dialog"]').text()).toContain('DN-NEW')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('送货单价')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('3.75')
     await wrapper.findAll('button').find(button => button.text() === '确认 1 张送货单发货')!.trigger('click'); await flushPromises()
     expect(api.confirmDeliveryImport).toHaveBeenCalledWith(file, expect.objectContaining({ sha256: 'abc' }), [{ factory_id: 'huaxing', delivery_note_no: 'DN-NEW' }])
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
@@ -657,6 +662,20 @@ describe('internal supplier collaboration', () => {
     expect(api.receive).toHaveBeenCalledWith('SHIP-A', expect.objectContaining({ lines: [expect.objectContaining({
       no_order_decision: 'SAMPLE', customer_code: 'DICKIE', sample_purpose: '客户打板确认', requested_by: '纸箱部',
     })] }))
+    wrapper.unmount()
+  })
+  it('prefills the warehouse price from the supplier delivery sheet and shows the purchase price difference', async () => {
+    const data = fixture()
+    data.shipments[0]!.lines[0]!.delivery_unit_price = '3.75'
+    data.shipments[0]!.lines[1]!.delivery_unit_price = '4'
+    data.shipments[0]!.lines[1]!.currency = 'HKD'
+    api.workspace.mockResolvedValue(data)
+    const wrapper = mount(CartonSupplierManagementView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '核实实际收到')!.trigger('click')
+    expect(wrapper.findAll<HTMLInputElement>('input[type="number"][step="0.000001"]')[0]!.element.value).toBe('3.75')
+    expect(wrapper.findAll<HTMLInputElement>('input[type="number"][step="0.000001"]')[1]!.element.value).toBe('2')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('送货单 CNY 3.75 · 采购单 CNY 2')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('采购单为 HKD，已带采购单价')
     wrapper.unmount()
   })
   it('opens only the matching pending delivery note from a notification link', async () => {
