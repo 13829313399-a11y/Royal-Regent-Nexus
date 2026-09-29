@@ -22,12 +22,13 @@ import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import CartonReceiptPaperSelection from '@/components/CartonReceiptPaperSelection.vue'
 import { cartonPositionsApi, type CartonLocation, type LocationAllocation } from '@/api/cartonPositions'
 
-import { computed, nextTick, onBeforeUnmount, reactive, ref, shallowRef, watch, type Component } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, reactive, ref, shallowRef, watch, type Component } from 'vue'
 import axios from 'axios'
 import {
   AlertTriangle,
   ArrowLeft,
   Bell,
+  BookOpen,
   Boxes,
   Building2,
   CalendarClock,
@@ -113,6 +114,35 @@ import {
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
+import type { CartonGuideDestination } from '@/features/carton-procurement/usageGuide'
+
+const CartonUsageGuide = defineAsyncComponent({
+  loader: () => import('@/components/CartonUsageGuide.vue'),
+  onError(error, _retry, fail) {
+    closeUsageGuide()
+    const reason = error instanceof Error && error.message.trim() ? error.message : '教程文件未能加载'
+    reportActionFailure(`使用教程加载失败：${reason}。请刷新页面后重试。`)
+    fail()
+  },
+})
+const showUsageGuide = ref(false)
+const usageGuideTrigger = ref<HTMLButtonElement | null>(null)
+function closeUsageGuide() {
+  showUsageGuide.value = false
+  void nextTick(() => usageGuideTrigger.value?.focus())
+}
+function openUsageGuideDestination(destination: CartonGuideDestination) {
+  closeUsageGuide()
+  if (destination === 'opening-inventory') openInventoryPage('inventory', false, true)
+  else if (destination === 'supplier-receiving') {
+    if (canReviewSupplierDeliveries.value) void router.push({ path: '/carton-supplier-management', query: { factory: selectedFactoryId.value } })
+  } else if (destination === 'inventory') openInventoryPage('inventory')
+  else if (destination === 'receipts') {
+    openReceiptPage('PENDING')
+    setActiveTab('receipts')
+  }
+  else setActiveTab(destination)
+}
 
 type CartonTab = 'dashboard' | 'orders' | 'weekly-check' | 'receipts' | 'inventory' | 'inventory-movements' | 'inventory-summary' | 'master-data' | 'closing' | 'exceptions' | 'audit'
 const DEFAULT_CARTON_SAFETY_LEAD_DAYS = 3
@@ -5645,6 +5675,7 @@ watch([
             <Building2 class="size-4" aria-hidden="true" />
             当前厂区：{{ activeFactory.shortName }}
           </span>
+          <button ref="usageGuideTrigger" type="button" aria-label="打开纸箱使用教程" title="纸箱模块使用教程" class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-2 text-xs font-semibold text-teal-800 hover:bg-teal-100 sm:px-3" @click="showUsageGuide = true"><BookOpen class="size-4" aria-hidden="true" /><span class="hidden sm:inline">使用教程</span></button>
           <NotificationCenter />
           <AccountMenu />
         </div>
@@ -5665,6 +5696,8 @@ watch([
         </button>
       </nav>
     </header>
+
+    <CartonUsageGuide v-if="showUsageGuide" :factory-name="activeFactory.shortName" :can-review-supplier-deliveries="canReviewSupplierDeliveries" @close="closeUsageGuide" @navigate="openUsageGuideDestination" />
 
     <div class="mx-auto max-w-[1720px] space-y-4 px-4 pb-12 pt-4 sm:px-5">
       <section class="flex flex-col gap-3 rounded-xl border border-teal-200 bg-white px-4 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] lg:flex-row lg:items-center">

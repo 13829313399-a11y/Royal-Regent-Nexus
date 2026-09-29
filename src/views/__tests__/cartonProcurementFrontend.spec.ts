@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { reactive, type Component } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CartonProcurementView from '../CartonProcurementView.vue'
@@ -9,6 +9,7 @@ import type { SplitRecord } from '@/api/cartonOrderSplits'
 import type { WorkEntry } from '@/features/work-center/types'
 
 const routerReplaceMock = vi.hoisted(() => vi.fn())
+const routerPushMock = vi.hoisted(() => vi.fn())
 const routeState = vi.hoisted(() => ({
   query: { factory: 'huaxing' } as Record<string, string>,
 }))
@@ -100,7 +101,7 @@ vi.mock('vue-router', () => ({
     template: '<a><slot /></a>',
   },
   useRoute: () => routeState,
-  useRouter: () => ({ replace: routerReplaceMock }),
+  useRouter: () => ({ replace: routerReplaceMock, push: routerPushMock }),
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -111,7 +112,14 @@ vi.mock('@/stores/auth', () => ({
   useAuthStore: () => authStoreMock,
 }))
 
-function mountView(tab?: string, extraStubs: Record<string, boolean> = {}, inventoryClosing = true) {
+const usageGuideStub = {
+  name: 'CartonUsageGuideStub',
+  props: ['factoryName', 'canReviewSupplierDeliveries'],
+  emits: ['close', 'navigate'],
+  template: '<section data-testid="carton-usage-guide" />',
+}
+
+function mountView(tab?: string, extraStubs: Record<string, boolean | Component> = {}, inventoryClosing = true) {
   routeState.query = reactive(tab
     ? { factory: 'huaxing', tab, ...(tab === 'closing' && inventoryClosing ? { closing_view: 'inventory' } : {}) }
     : { factory: 'huaxing' })
@@ -832,6 +840,62 @@ describe('CartonProcurementView frontend workspace', () => {
         note: '',
       })),
     }))
+  })
+
+  it('opens and closes the guide without changing the current workspace or posting business records', async () => {
+    const wrapper = mountView('weekly-check', { CartonUsageGuide: usageGuideStub })
+    await flushPromises()
+    await wrapper.get('button[aria-label="打开纸箱使用教程"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent('[data-testid="carton-usage-guide"]').props('factoryName')).toBe('华兴')
+    wrapper.findComponent('[data-testid="carton-usage-guide"]').vm.$emit('close')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="carton-usage-guide"]').exists()).toBe(false)
+    expect(wrapper.get('nav[aria-label="订单管理子页面"] [aria-current="page"]').text()).toBe('排期核对与交期提醒')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    expect(cartonApiMock.uploadWeeklySchedule).not.toHaveBeenCalled()
+    expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+    expect(cartonApiMock.createInventoryMovement).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('opens the actual opening workspace and routes supplier receiving to the current factory', async () => {
+    routerReplaceMock.mockImplementation(async (target: { query: Record<string, string> }) => {
+      Object.assign(routeState.query, target.query)
+    })
+    const wrapper = mountView('orders', { CartonUsageGuide: usageGuideStub })
+    await flushPromises()
+    await wrapper.get('button[aria-label="打开纸箱使用教程"]').trigger('click')
+    await flushPromises()
+    wrapper.findComponent('[data-testid="carton-usage-guide"]').vm.$emit('navigate', 'opening-inventory')
+    await flushPromises()
+    expect(wrapper.find('input[aria-label="选择历史库存文件"]').exists()).toBe(true)
+    expect(cartonApiMock.uploadHistoryInventory).not.toHaveBeenCalled()
+    await wrapper.get('button[aria-label="打开纸箱使用教程"]').trigger('click')
+    await flushPromises()
+    routeState.query.factory = 'huadeng'
+    await flushPromises()
+    wrapper.findComponent('[data-testid="carton-usage-guide"]').vm.$emit('navigate', 'supplier-receiving')
+    await flushPromises()
+    expect(routerPushMock).toHaveBeenCalledWith({ path: '/carton-supplier-management', query: { factory: 'huadeng' } })
+    expect(cartonApiMock.confirmReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('opens pending receipts from a guide opened on the dashboard', async () => {
+    routerReplaceMock.mockImplementation(async (target: { query: Record<string, string> }) => {
+      Object.assign(routeState.query, target.query)
+    })
+    const wrapper = mountView('dashboard', { CartonUsageGuide: usageGuideStub })
+    await flushPromises()
+    await wrapper.get('button[aria-label="打开纸箱使用教程"]').trigger('click')
+    await flushPromises()
+    wrapper.findComponent('[data-testid="carton-usage-guide"]').vm.$emit('navigate', 'receipts')
+    await flushPromises()
+    expect(wrapper.get('nav[aria-label="收料入库子页面"] [aria-current="page"]').text()).toBe('待收订单')
+    expect(cartonApiMock.createReceipt).not.toHaveBeenCalled()
+    expect(cartonApiMock.confirmReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('keeps customer PO but exposes no offline supplement action', async () => {
