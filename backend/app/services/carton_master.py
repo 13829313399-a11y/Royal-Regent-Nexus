@@ -321,10 +321,10 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
 def due_rules(db, factory, customer):
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "RULE", Record.status == "ACTIVE",
                                                Record.customer_code.in_(["", customer]))))
-    result = {"lead_days": 3, "customer_days": None, "contract_rule": {}, "item_rule": {}, "customer_po_rule": {}, "revision": ""}
+    result = {"lead_days": 3, "production_days": 7, "customer_days": None, "contract_rule": {}, "item_rule": {}, "customer_po_rule": {}, "revision": ""}
     for row in sorted(rows, key=lambda r: bool(r.customer_code)):
         data = json.loads(row.data_json)
-        for key in ("lead_days", "customer_days"):
+        for key in ("lead_days", "production_days", "customer_days"):
             if data.get(key) is not None:
                 result[key] = data[key]
         if data.get("customer_days_disabled"):

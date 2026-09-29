@@ -320,6 +320,7 @@ def workspace(db, user, factory, *, internal=False):
     else:
         supplier_id = supplier_access(db, user, factory).id
     orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory, CartonOrder.supplier_id == supplier_id,
+        CartonOrder.deleted_at.is_(None),
         CartonOrder.status.in_(VISIBLE_STATES | {"DRAFT", "CONFIRMED"} if internal else VISIBLE_STATES)).order_by(CartonOrder.due_date, CartonOrder.order_no)).all()
     result = [order_out(db, row, internal=internal) for row in orders]
     shipments = db.scalars(select(SupplierShipment).where(SupplierShipment.factory_id == factory,

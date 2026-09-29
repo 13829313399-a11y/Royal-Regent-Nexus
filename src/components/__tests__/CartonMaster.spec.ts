@@ -143,6 +143,24 @@ it('hides both template and import actions without master permission', async () 
 })
 
 describe('纸箱基础资料', () => {
+  it.each(['', 'cm', 'mm', 'inch'])('defaults an unrecorded dimension unit to cm while retaining %s and loaded snapshots', async unit => {
+    const config = record('CFG')
+    config.data.lines![0]!.dimension_unit = unit
+    const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [config] })
+    const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(config)
+    const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } })
+    await flushPromises()
+    await wrapper.get('[aria-label="修改基础资料 00123"]').trigger('click')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="资料尺寸单位"]').element.value).toBe(unit || 'cm')
+    expect(config.data.lines![0]!.dimension_unit).toBe(unit)
+    await wrapper.get('[aria-label="资料尺寸单位"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ data: expect.objectContaining({ lines: expect.arrayContaining([
+      expect.objectContaining({ dimension_unit: unit || 'cm' }),
+    ]) }) }), 'CFG')
+    wrapper.unmount(); get.mockRestore(); save.mockRestore()
+  })
+
   it('keeps full alternative paper sets, shares configurations across customers and leaves differences as reminders', async () => {
     const a = record('A'), b = record('B', '360', '100'), foreign = record('F', 'OTHER')
     const wrapper = mount(Assist, { props: { records: [a, b, foreign, { ...a, id: 'STOP', status: 'INACTIVE' }], customer: '360', item: '00123', contract: 'C1', product: '消防车', lines: a.data.lines! } })
@@ -288,6 +306,16 @@ it('prefers pasted examples, preserves manual edits and keeps reopened formats f
   wrapper.unmount(); get.mockRestore(); save.mockRestore()
 })
 
+it('defaults production to seven days and respects active factory/customer overrides including zero', () => {
+  const factory = { ...record('F', ''), kind: 'RULE' as const, data: { production_days: 9 } }
+  const customer = { ...record('C'), kind: 'RULE' as const, data: { production_days: 0 } }
+  expect(masterDueRules([], '360').production_days).toBe(7)
+  expect(masterDueRules([factory, customer], '360').production_days).toBe(0)
+  expect(masterDueRules([factory, customer], 'OTHER').production_days).toBe(9)
+  expect(masterDueRules([factory, { ...customer, status: 'INACTIVE' }], '360').production_days).toBe(9)
+  expect(masterDueRules([factory, { ...customer, data: { production_days: null } }], '360').production_days).toBe(9)
+})
+
 it('keeps two pages and edits the one existing factory default in its fixed scope', async () => {
   const factory: MasterRecord = { ...record('FACTORY', ''), kind: 'RULE', code: '', data: { ...defaultMasterData(), lead_days: 8 } }
   const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [factory] })
@@ -300,8 +328,9 @@ it('keeps two pages and edits the one existing factory default in its fixed scop
   expect(wrapper.get('[aria-label="资料所属客户"]').attributes('disabled')).toBeDefined()
   expect(wrapper.find('[aria-label="合同号格式检查方式"]').exists()).toBe(false)
   await wrapper.get('[aria-label="默认采购提前天数"]').setValue('6')
+  await wrapper.get('[aria-label="供应商生产送货周期"]').setValue('9')
   await wrapper.get('form').trigger('submit'); await flushPromises()
-  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ customer_code: '', expected_revision: 1, data: expect.objectContaining({ lead_days: 6 }) }), 'FACTORY')
+  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ customer_code: '', expected_revision: 1, data: expect.objectContaining({ lead_days: 6, production_days: 9 }) }), 'FACTORY')
   wrapper.unmount(); save.mockRestore(); get.mockRestore()
 })
 
