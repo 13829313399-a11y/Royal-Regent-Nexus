@@ -7,6 +7,9 @@ export function entryRoute(entry: WorkEntry): RouteLocationRaw | null {
   if (!target) return null
   const id = target.params.id ?? ''
   if (!id || id.length > 128 || /[\\/?#\u0000-\u001f]/.test(id)) return null
+  // Account administration is a global workspace. Its source organization may
+  // be '*' or group-management, neither is a production-factory route scope.
+  if (target.route_key === 'account_requests') return { name: 'system-registration', query: { tab: target.query.stage?.startsWith('password_reset') ? 'password-reset' : 'pending', request_id: id } }
   const factory = target.query.factory ?? ''
   if (factory && !['huakang-a', 'huakang-b', 'huakang-c', 'huakang-d', 'huadeng', 'huaxing'].includes(factory)) return null
   switch (target.route_key) {
@@ -14,7 +17,6 @@ export function entryRoute(entry: WorkEntry): RouteLocationRaw | null {
     case 'molding_engineering': return { name: 'molding-sample', query: { factory, order_id: id } }
     case 'molding_production': return { name: 'molding-sample-production-tasks', query: { factory, order_id: id } }
     case 'shipment': return { name: 'carton-supplier-management', query: { factory, shipment: id } }
-    case 'account_requests': return { name: 'system-registration', query: { tab: target.query.stage?.startsWith('password_reset') ? 'password-reset' : 'pending', request_id: id } }
     default: return null
   }
 }

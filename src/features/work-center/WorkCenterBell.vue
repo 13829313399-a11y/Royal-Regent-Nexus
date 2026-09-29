@@ -4,6 +4,8 @@ import { Bell, ArrowUpRight, X, RefreshCw } from '@lucide/vue'
 import { PopoverRoot, PopoverTrigger, PopoverPortal, PopoverContent, PopoverClose, DialogRoot, DialogTrigger, DialogPortal, DialogOverlay, DialogContent, DialogClose, DialogTitle, DialogDescription } from 'reka-ui'
 import { useWorkCenterStore } from '@/stores/workCenter'
 import WorkEntryRow from './WorkEntryRow.vue'
+import WorkCenterHealth from './WorkCenterHealth.vue'
+import { workHealth } from './health'
 import { useRouter } from 'vue-router'
 const center = useWorkCenterStore(), router = useRouter()
 const tab = ref<'todo' | 'info'>('todo'), mobile = ref(false)
@@ -23,7 +25,7 @@ function select(id: string) { center.panelOpen = false; void router.push({ name:
       <DialogDescription v-if="mobile" class="sr-only">当前可处理事项与知会消息，打开事项工作台查看全部。</DialogDescription>
       <header><div><component :is="mobile ? DialogTitle : 'h2'">待办与消息</component><p>{{ center.count }} 项可处理<span v-if="center.summary?.overdue_total"> · {{ center.summary.overdue_total }} 项逾期</span></p></div><component :is="mobile ? DialogClose : PopoverClose" class="nc-icon-button" aria-label="关闭通知面板"><X :size="18" /></component></header>
       <nav aria-label="通知类别"><button :class="{ active: tab === 'todo' }" @click="changeTab('todo')">待办 {{ center.count }}</button><button :class="{ active: tab === 'info' }" @click="changeTab('info')">知会 {{ center.summary?.info_unread_total ?? 0 }}</button></nav>
-      <p v-if="center.bell?.health.status === 'partial'" class="nc-error" role="status">部分来源尚未核验，以下为已核实事项。</p><div class="nc-bell-list"><p v-if="center.loading" class="nc-muted">正在核验当前责任…</p><p v-else-if="center.error" class="nc-error">{{ center.error }}</p><template v-else><WorkEntryRow v-for="entry in tab === 'todo' ? center.bell?.items : center.information" :key="entry.id" :entry="entry" compact @select="select" /><p v-if="!(tab === 'todo' ? center.bell?.items.length : center.information.length)" class="nc-bell-empty">{{ center.bell?.health.status === 'partial' ? '暂时无法核实全部事项' : tab === 'todo' ? '已接入业务范围内暂无待办' : '暂无知会消息' }}</p></template></div>
+      <WorkCenterHealth :snapshot="center.bell" :syncing="center.syncing" @retry="center.refresh()" /><div class="nc-bell-list"><p v-if="center.loading" class="nc-muted">正在核验当前责任…</p><p v-else-if="center.error" class="nc-error">{{ center.error }}</p><template v-else><WorkEntryRow v-for="entry in tab === 'todo' ? center.bell?.items : center.information" :key="entry.id" :entry="entry" compact @select="select" /><p v-if="!(tab === 'todo' ? center.bell?.items.length : center.information.length)" class="nc-bell-empty">{{ workHealth(center.bell)?.warning ? '暂时无法核实全部事项' : tab === 'todo' ? '已接入业务范围内暂无待办' : '暂无知会消息' }}</p></template></div>
       <footer><RouterLink :to="{ name: 'notification-center', query: { view: tab } }" @click="center.panelOpen = false">打开事项工作台<ArrowUpRight :size="16" /></RouterLink><button class="nc-icon-button" aria-label="刷新事项" @click="center.refresh()"><RefreshCw :size="16" /></button></footer>
     </component></component>
   </component>
