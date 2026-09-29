@@ -184,11 +184,20 @@ class UvOpsScheduleBlock(Record, Base):
     __tablename__ = "uv_ops_schedule_blocks"
     machine_id = Column(String(64), nullable=False, index=True)
     task_id = Column(String(64), nullable=False)
+    batch_id = Column(String(64))  # Null only for preserved legacy whole-task plans.
+    fixture_id = Column(String(64))
+    fixture_evidence = Column(Text)
+    estimate_basis = Column(String(24), nullable=False, default="standard", server_default="standard")
+    estimated_seconds = Column(DECIMAL)
+    estimate_reason = Column(Text)
     start_at = Column(String(40), nullable=False, index=True)
     end_at = Column(String(40), nullable=False)
     fixed = Column(Boolean, nullable=False, default=False)
     status = Column(String(24), nullable=False, default="planned")
-    __table_args__ = scoped(("machine_id", "machines"), ("task_id", "tasks"), unique=(("task_id",),), checks=("end_at > start_at",))
+    __table_args__ = (*scoped(("machine_id", "machines"), ("task_id", "tasks"), ("batch_id", "batches"), ("fixture_id", "fixtures"), checks=("end_at > start_at",)),
+        UniqueConstraint("factory_id", "task_id", "batch_id", name="uq_uv_ops_schedule_task_batch"),
+        CheckConstraint("estimate_basis IN ('standard','manual')", name="ck_uv_ops_schedule_estimate_basis"),
+        CheckConstraint("estimated_seconds IS NULL OR estimated_seconds > 0", name="ck_uv_ops_schedule_estimated_seconds"))
 
 
 class UvOpsShift(Record, Base):
@@ -205,6 +214,7 @@ class UvOpsShift(Record, Base):
 
 class UvOpsParticipation(Record, Base):
     __tablename__ = "uv_ops_participations"
+    active_key = Column(Integer, nullable=True, default=1, server_default='1')
     shift_id = Column(String(64), nullable=False)
     task_id = Column(String(64), nullable=False)
     employee_id = Column(String(64), nullable=False)
@@ -277,6 +287,7 @@ class UvOpsProductionEntry(Record, Base):
 
 class UvOpsQualityEntry(Record, Base):
     __tablename__ = "uv_ops_quality_entries"
+    active_key = Column(Integer, nullable=True, default=1, server_default='1')
     batch_id = Column(String(64), nullable=False)
     task_id = Column(String(64), nullable=False)
     production_entry_id = Column(String(64), nullable=False)
@@ -352,6 +363,7 @@ class UvOpsInkMovement(Record, Base):
 
 class UvOpsExpense(Record, Base):
     __tablename__ = "uv_ops_expenses"
+    active_key = Column(Integer, nullable=True, default=1, server_default='1')
     category = Column(String(32), nullable=False)
     task_id = Column(String(64))
     cost_amount = Column(DECIMAL, nullable=False)
@@ -364,13 +376,14 @@ class UvOpsExpense(Record, Base):
 
 class UvOpsWageAccrual(Record, Base):
     __tablename__ = "uv_ops_wage_accruals"
+    active_key = Column(Integer, nullable=True, default=1, server_default='1')
     shift_id = Column(String(64), nullable=False)
     task_id = Column(String(64), nullable=False)
     business_date = Column(String(10), nullable=False, index=True)
     payroll_amount = Column(DECIMAL, nullable=False)
     currency = Column(String(3), nullable=False)
     payroll_evidence = Column(JSON, nullable=False)
-    __table_args__ = scoped(("shift_id", "shifts"), ("task_id", "tasks"), unique=(("shift_id", "task_id"),), checks=("payroll_amount >= 0",))
+    __table_args__ = scoped(("shift_id", "shifts"), ("task_id", "tasks"), unique=(("shift_id", "task_id", "active_key"),), checks=("payroll_amount >= 0",))
 
 
 class UvOpsWageAllocation(Record, Base):
@@ -547,13 +560,14 @@ class UvOpsReferenceEfficiency(Record, Base):
 
 class UvOpsRunCost(Record, Base):
     __tablename__ = 'uv_ops_run_costs'
+    active_key = Column(Integer, nullable=True, default=1, server_default='1')
     run_id = Column(String(64),nullable=False)
     business_date = Column(String(10),nullable=False)
     cost_amount = Column(DECIMAL,nullable=False)
     currency = Column(String(3),nullable=False)
     evidence = Column(Text,nullable=False)
     cost_allocations = Column(JSON,nullable=False)
-    __table_args__ = scoped(('run_id','runs'),unique=(('run_id',),),checks=('cost_amount >= 0',))
+    __table_args__ = scoped(('run_id','runs'),unique=(('run_id','active_key'),),checks=('cost_amount >= 0',))
 
 
 Index('ix_uv_ops_inbox_machine_observed',UvOpsAgentEventInbox.factory_id,UvOpsAgentEventInbox.machine_id,UvOpsAgentEventInbox.observed_at)
@@ -562,3 +576,29 @@ Index('ix_uv_ops_runs_recent',UvOpsRun.factory_id,UvOpsRun.created_at.desc(),UvO
 Index('ix_uv_ops_runs_unmatched',UvOpsRun.factory_id,UvOpsRun.match_evidence,UvOpsRun.started_at)
 Index('ix_uv_ops_production_task_date',UvOpsProductionEntry.factory_id,UvOpsProductionEntry.task_id,UvOpsProductionEntry.business_date)
 Index('ix_uv_ops_schedule_machine_time',UvOpsScheduleBlock.factory_id,UvOpsScheduleBlock.machine_id,UvOpsScheduleBlock.start_at,UvOpsScheduleBlock.end_at)
+
+
+class UvOpsReversal(Record, Base):
+    __tablename__ = 'uv_ops_reversals'
+    kind = Column(String(32), nullable=False)
+    entity_id = Column(String(64), nullable=False)
+    business_date = Column(String(10), nullable=False)
+    reason = Column(Text, nullable=False)
+    __table_args__ = scoped(unique=(('kind','entity_id'),), checks=("kind IN ('quality','expense','wage','run_cost','participation')",))
+
+
+class UvOpsExecution(Record, Base):
+    __tablename__ = 'uv_ops_executions'
+    task_id = Column(String(64), nullable=False)
+    batch_id = Column(String(64), nullable=False)
+    machine_id = Column(String(64), nullable=False)
+    schedule_id = Column(String(64), nullable=False)
+    fixture_code = Column(String(64), nullable=False)
+    shift_id = Column(String(64), nullable=False)
+    started_at = Column(String(40), nullable=False)
+    ended_at = Column(String(40))
+    start_evidence = Column(Text, nullable=False)
+    end_evidence = Column(Text)
+    ended_shift_id = Column(String(64))
+    active_key = Column(Integer, default=1, server_default='1')
+    __table_args__ = scoped(('task_id','tasks'), ('batch_id','batches'), ('machine_id','machines'), ('schedule_id','schedule_blocks'), ('shift_id','shifts'), ('ended_shift_id','shifts'), unique=(('batch_id','active_key'),('machine_id','active_key'),('fixture_code','active_key')), checks=("ended_at IS NULL OR ended_at > started_at", "(active_key = 1 AND ended_at IS NULL) OR (active_key IS NULL AND ended_at IS NOT NULL)"))

@@ -4,6 +4,7 @@ import { nextTick, reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DepartmentTabs from '@/components/modules/DepartmentTabs.vue'
 import ModuleCard from '@/components/modules/ModuleCard.vue'
+import SidebarNav from '@/components/layout/SidebarNav.vue'
 import PermissionMatrix from '@/components/modules/PermissionMatrix.vue'
 import TodoQueue from '@/components/modules/TodoQueue.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -142,7 +143,7 @@ describe('portal department homepage', () => {
     const header = wrapper.getComponent(PageHeader)
     expect(wrapper.getComponent(PortalHero).exists()).toBe(true)
     expect(wrapper.find('.portal-hero').exists()).toBe(true)
-    expect(wrapper.find('.portal-motif').exists()).toBe(true)
+    expect(wrapper.find('.home-artwork').exists()).toBe(true)
 
     const store = useAppStore()
     store.setActiveFactory('huakang-c')
@@ -157,7 +158,7 @@ describe('portal department homepage', () => {
     const root = wrapper.get('.rrn-portal')
     expect(root.attributes('data-portal-ui')).toBe('jade-v3')
     expect(root.attributes('style')).toContain(departmentPresentation.engineering.accent)
-    expect(wrapper.get('.portal-motif').attributes('data-motif')).toBe(departmentPresentation.engineering.motif)
+    expect(wrapper.get('.home-artwork svg').attributes('data-artwork')).toBe('engineering')
 
     route().params = { department: 'accounting' }
     route().path = '/modules/accounting'
@@ -165,7 +166,7 @@ describe('portal department homepage', () => {
 
     // 同一实例在部门参数变化后必须换上新配置，而不是沿用首次挂载的值。
     expect(wrapper.get('.rrn-portal').attributes('style')).toContain(departmentPresentation.accounting.accent)
-    expect(wrapper.get('.portal-motif').attributes('data-motif')).toBe(departmentPresentation.accounting.motif)
+    expect(wrapper.get('.home-artwork svg').attributes('data-artwork')).toBe('accounting')
     expect(wrapper.getComponent(PageHeader).props('title')).toContain('会计部')
     wrapper.unmount()
   })
@@ -263,7 +264,7 @@ describe('department tabs navigation', () => {
     route().path = '/modules/engineering'
     route().name = 'modules-department'
     route().params = { department: 'engineering' }
-    route().query = { factory: 'huaxing' }
+    route().query = { factory: 'huaxing', keep: 'context' }
     routerPushMock.mockReset()
   })
 
@@ -291,6 +292,7 @@ describe('department tabs navigation', () => {
     // 切换部门保留厂区与其他查询参数，厂区来源仍是当前 store 上下文。
     expect(pushed.query.factory).toBe(store.activeFactoryId)
     expect(pushed.query.factory).toBe('huaxing')
+    expect(pushed.query.keep).toBe('context')
     wrapper.unmount()
   })
 
@@ -301,6 +303,36 @@ describe('department tabs navigation', () => {
     expect(indicator.attributes('aria-hidden')).toBe('true')
     // 路由是状态来源，指示层不参与状态表达。
     expect(indicator.attributes('data-ready')).toBe('false')
+    wrapper.unmount()
+  })
+})
+
+describe('Prism integration resets and sidebar alias', () => {
+  it('clears search and pin state when the same view switches department', async () => {
+    route().params = { department: 'engineering' }
+    const wrapper = mountPortal()
+    await wrapper.get('.home-preview-button').trigger('click')
+    expect(wrapper.get('.home-preview').attributes('data-pinned')).toBe('true')
+    await wrapper.get('input[type="search"]').setValue('BOM')
+    route().params = { department: 'qc' }
+    await nextTick()
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.get('.home-preview').attributes('data-pinned')).toBe('false')
+    expect(wrapper.get('.home-artwork svg').attributes('data-artwork')).toBe('qc')
+    expect(wrapper.findAllComponents(ModuleCard).map(card => card.props('module').id)).toEqual(departmentModuleRegistry.qc.modules.map(module => module.id))
+    wrapper.unmount()
+  })
+  it('gives production one canonical current entry and keeps its configuration alias', () => {
+    route().name = 'modules-department'
+    route().path = '/modules/production'
+    route().params = { department: 'production' }
+    setActivePinia(createPinia())
+    const wrapper = mount(SidebarNav)
+    const current = wrapper.findAll('.sidebar-nav-link[aria-current="page"]')
+    expect(current).toHaveLength(1)
+    expect(current[0]!.attributes('aria-label')).toBe('生产部')
+    expect(wrapper.get('.sidebar-nav-link[aria-label="模块配置"]').attributes('aria-current')).toBeUndefined()
+    expect(wrapper.get('.home-sidebar-indicator').attributes('aria-hidden')).toBe('true')
     wrapper.unmount()
   })
 })

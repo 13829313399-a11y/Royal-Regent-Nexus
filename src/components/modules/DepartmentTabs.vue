@@ -5,6 +5,9 @@ import { departments, getDepartmentRoute, isModuleDepartmentId, type ModuleDepar
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 
+import { homePrismPresentation } from '@/components/portal/homePrismPresentation'
+
+const props = defineProps<{ homeExperience?: boolean }>()
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
@@ -34,8 +37,12 @@ function selectDepartment(departmentId: ModuleDepartmentId) {
 const trackRef = ref<HTMLElement | null>(null)
 const indicatorRef = ref<HTMLElement | null>(null)
 const indicatorReady = ref(false)
+const indicatorMoving = ref(false)
+let initialFrame = 0
 const indicatorStyle = ref<Record<string, string>>({})
 let resizeObserver: ResizeObserver | null = null
+let frame = 0
+let disposed = false
 
 function measureIndicator() {
   const track = trackRef.value
@@ -57,26 +64,39 @@ function measureIndicator() {
     height: `${height}px`,
   }
   indicatorReady.value = true
+  if (!indicatorMoving.value && !initialFrame) initialFrame = requestAnimationFrame(() => { initialFrame = 0; indicatorMoving.value = true })
 }
 
 async function refreshIndicator() {
   await nextTick()
-  measureIndicator()
+  scheduleMeasure()
+  if (props.homeExperience) {
+    const active = trackRef.value?.querySelector<HTMLElement>('[aria-current="page"]')
+    const track = trackRef.value
+    if (active && track && (active.offsetLeft < track.scrollLeft || active.offsetLeft + active.offsetWidth > track.scrollLeft + track.clientWidth)) track.scrollTo?.({ left: Math.max(0, active.offsetLeft - (track.clientWidth - active.offsetWidth) / 2), behavior: 'instant' })
+  }
 }
 
+function scheduleMeasure() {
+  if (disposed || frame) return
+  frame = requestAnimationFrame(() => { frame = 0; measureIndicator() })
+}
 onMounted(() => {
   void refreshIndicator()
   // 字体就绪后会改变按钮宽度，需要重新量测一次。
   if (typeof document !== 'undefined' && document.fonts?.ready) {
-    void document.fonts.ready.then(() => measureIndicator())
+    void document.fonts.ready.then(scheduleMeasure)
   }
   if (typeof ResizeObserver !== 'undefined' && trackRef.value) {
-    resizeObserver = new ResizeObserver(() => measureIndicator())
+    resizeObserver = new ResizeObserver(scheduleMeasure)
     resizeObserver.observe(trackRef.value)
   }
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  cancelAnimationFrame(frame)
+  cancelAnimationFrame(initialFrame)
   resizeObserver?.disconnect()
   resizeObserver = null
 })
@@ -91,6 +111,7 @@ watch(activeDepartmentId, () => {
     <span
       ref="indicatorRef"
       class="portal-tabs__indicator"
+      :data-moving="indicatorMoving"
       :data-ready="indicatorReady ? 'true' : 'false'"
       :style="indicatorStyle"
       aria-hidden="true"
@@ -108,6 +129,7 @@ watch(activeDepartmentId, () => {
       :aria-current="department.id === activeDepartmentId ? 'page' : undefined"
       @click="selectDepartment(department.id as ModuleDepartmentId)"
     >
+      <component :is="homePrismPresentation[department.id as ModuleDepartmentId].icon" v-if="homeExperience" :size="18" aria-hidden="true" />
       {{ department.name }}
     </Button>
   </div>

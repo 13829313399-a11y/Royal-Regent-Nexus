@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Menu, Search } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { factoryContexts, type FactoryContextId } from '@/data/enterpriseMock'
@@ -14,14 +14,31 @@ const router = useRouter()
 const appStore = useAppStore()
 const props = withDefaults(defineProps<{
   navigationOpen?: boolean
+  homeScope?: 'dashboard' | 'department' | null
 }>(), {
   navigationOpen: false,
+  homeScope: null,
 })
 const emit = defineEmits<{
   toggleNavigation: []
+  homeSearch: []
+  heightChange: [height: number]
 }>()
 const brandLogoSrc = '/brand/huadeng_group_dynamic_logo_topbar.svg'
 const navigationTriggerRef = ref<HTMLButtonElement | null>(null)
+const topbarRef = ref<HTMLElement | null>(null)
+let heightObserver: ResizeObserver | undefined
+function observeHeight() {
+  heightObserver?.disconnect()
+  if (!props.homeScope || !topbarRef.value || typeof ResizeObserver === 'undefined') return
+  heightObserver = new ResizeObserver(() => {
+    if (topbarRef.value) emit('heightChange', topbarRef.value.getBoundingClientRect().height)
+  })
+  heightObserver.observe(topbarRef.value)
+}
+onMounted(observeHeight)
+watch(() => props.homeScope, () => void nextTick(observeHeight))
+onBeforeUnmount(() => heightObserver?.disconnect())
 
 const searchPlaceholder = computed(() => {
   if (route.path.startsWith('/modules')) return '搜索模块、菜单、角色、权限、流程单'
@@ -70,7 +87,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
 </script>
 
 <template>
-  <header class="topbar-surface sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
+  <header ref="topbarRef" class="topbar-surface sticky top-0 z-40 h-auto border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">
     <div class="flex min-h-16 items-center gap-2.5 px-3 sm:min-h-[72px] sm:gap-3 sm:px-4 2xl:gap-5 2xl:px-6">
       <button
         ref="navigationTriggerRef"
@@ -98,7 +115,9 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         </span>
       </RouterLink>
 
-      <div class="topbar-search-slot hidden h-9 min-w-[180px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200/90 bg-slate-50/75 px-3 shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition-colors hover:border-slate-300 hover:bg-white lg:flex xl:min-w-[220px]">
+      <button v-if="homeScope === 'department'" type="button" class="topbar-search-slot home-search-trigger" @click="emit('homeSearch')"><Search :size="16" aria-hidden="true" /><span>搜索本部门入口</span><kbd>/</kbd></button>
+      <div v-else-if="homeScope === 'dashboard'" class="topbar-search-slot home-search-unavailable">全局业务搜索暂未接入</div>
+      <div v-else class="topbar-search-slot hidden h-9 min-w-[180px] max-w-xl flex-1 items-center gap-2 rounded-lg border border-slate-200/90 bg-slate-50/75 px-3 shadow-[inset_0_1px_2px_rgba(15,23,42,0.03)] transition-colors hover:border-slate-300 hover:bg-white lg:flex xl:min-w-[220px]">
         <Search class="size-4 shrink-0 text-slate-400" aria-hidden="true" />
         <span class="truncate text-sm text-slate-500">{{ searchPlaceholder }}</span>
       </div>
@@ -130,6 +149,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         </div>
       </div>
 
+      <label v-if="homeScope" class="home-factory-select"><span class="sr-only">当前厂区</span><select aria-label="当前厂区" :value="appStore.activeFactoryId" @change="selectFactory(($event.target as HTMLSelectElement).value as FactoryContextId)"><option v-for="factory in topBarFactoryContexts" :key="factory.id" :value="factory.id">{{ getTopBarFactoryLabel(factory) }}</option></select></label>
       <NotificationCenter />
       <AccountMenu />
     </div>

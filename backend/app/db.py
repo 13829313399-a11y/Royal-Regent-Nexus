@@ -736,6 +736,7 @@ def ensure_identity_schema_ready() -> None:
 
 def init_db() -> None:
     from app.models import (
+        work_center,  # noqa: F401
         uv_operations,  # noqa: F401
         spray_ops,  # noqa: F401
         document_tools,  # noqa: F401
@@ -767,6 +768,11 @@ def init_db() -> None:
     from app.services.raw_material import seed_raw_material_defaults
     from app.services.three_d_printing import seed_three_d_printing_defaults
 
+    from app.services.work_center.projection import install_projection_hooks
+    if not getattr(SessionLocal, "work_center_hooks_installed", False):
+        install_projection_hooks(SessionLocal)
+        SessionLocal.work_center_hooks_installed = True
+    ensure_work_center_schema_ready()
     ensure_identity_schema_ready()
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
@@ -831,3 +837,13 @@ def init_db() -> None:
         seed_molding_sample_defaults(db)
         seed_raw_material_defaults(db)
         seed_three_d_printing_defaults(db)
+
+
+def ensure_work_center_schema_ready():
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    required = {"work_center_entries", "work_center_events", "work_center_user_states", "work_center_preferences"}
+    if "auth_users" in tables and (not required.issubset(tables) or
+        "following" not in {c["name"] for c in inspector.get_columns("work_center_user_states")} or
+        ("molding_sample_problems" in tables and "responsibility_revision" not in {c["name"] for c in inspector.get_columns("molding_sample_problems")})):
+        raise RuntimeError("事项工作台需要先备份并执行 Alembic 20260928_0126 迁移；不会自动修改旧数据库")

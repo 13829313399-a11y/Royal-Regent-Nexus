@@ -1,5 +1,7 @@
 """Canonical user API; strict decisions apply in every platform rollout mode."""
+from app.services.uv_operations import corrections, execution
 from typing import Annotated
+from datetime import datetime
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -73,8 +75,7 @@ def access(db: Db, user: User, factory_id: str = ""):
 @router.get("/workspace")
 def workspace(db: Db, user: User, factory_id: str = ""):
     gate(db, user, factory_id)
-    data, coverage = live.workspace(db)
-    return a.envelope(db, user, data, coverage=coverage)
+    return live.response(db,user)
 
 
 @router.get("/live")
@@ -116,6 +117,34 @@ def machine_time(db: Db,user: User,start_date:str,end_date:str,factory_id:str=''
 def preview(body: s.SchedulePreview, db: Db, user: User):
     gate(db, user, body.factory_id, "plan_write")
     return a.envelope(db, user, planning.preview(db, body))
+
+
+@router.post('/schedule/recommendations')
+def recommend(body: s.ScheduleRecommend, db: Db, user: User):
+    gate(db,user,body.factory_id,'plan_write')
+    task=c.get(db,m.UvOpsTask,body.task_id)
+    return a.envelope(db,user,planning.recommendations(db,task,batch_id=body.batch_id,earliest_at=body.earliest_at,manual_seconds=body.manual_estimated_seconds))
+
+
+@router.get('/schedule/window')
+def schedule_window(db:Db,user:User,start_at:datetime,end_at:datetime,factory_id:str='',cursor:str='',limit:int=Query(200,ge=1,le=500)):
+    gate(db,user,factory_id)
+    start,end=c.ts(start_at),c.ts(end_at)
+    c.require(0<(end_at-start_at).total_seconds()<=31*86400,'schedule_window','请选择不超过31天的排程窗口',422)
+    query=c.query(m.UvOpsScheduleBlock).where(m.UvOpsScheduleBlock.status!='cancelled',m.UvOpsScheduleBlock.start_at<end,m.UvOpsScheduleBlock.end_at>start)
+    total=db.scalar(select(func.count()).select_from(query.subquery()))
+    if cursor: query=query.where(m.UvOpsScheduleBlock.id>cursor)
+    rows=list(db.scalars(query.order_by(m.UvOpsScheduleBlock.id).limit(limit+1)))
+    data=[c.record(row) for row in rows[:limit]]
+    tasks={row.id:row for row in db.scalars(c.query(m.UvOpsTask).where(m.UvOpsTask.id.in_({row.task_id for row in rows[:limit]})))}
+    started_pairs=set()
+    for model in (m.UvOpsProductionEntry,m.UvOpsRunAllocation,m.UvOpsExecution):
+        started_pairs.update(db.execute(select(model.task_id,model.batch_id).where(model.factory_id==m.FACTORY,model.task_id.in_(tasks)).distinct()).all())
+    for row in data:
+        row['task_code']=tasks[row['task_id']].code
+        row['task_status']=tasks[row['task_id']].status
+        row['started']=(row['task_id'],row['batch_id']) in started_pairs or tasks[row['task_id']].status in {'completed','cancelled'} or (row['batch_id'] is None and any(task_id==row['task_id'] for task_id,_ in started_pairs))
+    return a.envelope(db,user,data,pagination=dict(total=total,has_more=len(rows)>limit,next_cursor=rows[limit-1].id if len(rows)>limit else None))
 
 
 @router.get("/tasks/{entity_id}")
@@ -175,9 +204,12 @@ register('/sources/{entity_id}/unbind', s.Command, ('agent_manage',), ingest.unb
 register("/agents/{entity_id}/revoke", s.Command, ("agent_manage",), ingest.revoke)
 register("/runs/{entity_id}/match", s.RunMatch, ("production_write",), ingest.match_run)
 register("/tasks", s.TaskCreate, ("plan_write",), p.create_task)
+register('/tasks/{entity_id}/cancel',s.Command,('plan_write',),p.cancel_task)
 register('/tasks/{entity_id}/complete-accounting',s.CompleteAccounting,lambda body:('plan_write',*(('cost_read','cost_write') if body.price_policy_id else ()),*(('payroll_read','payroll_write') if body.wage_policy_id else ())),p.complete_accounting)
 register('/run-costs',s.RunCost,('cost_read','cost_write'),reports.run_cost)
 register("/schedule/commit", s.SchedulePreview, ("plan_write",), planning.commit)
+register('/schedule/{entity_id}/cancel',s.Command,('plan_write',),lambda db,user,entity_id,body:planning.change_plan(db,user,entity_id,body,cancel=True))
+register('/schedule/{entity_id}/unlock',s.Command,('plan_write',),planning.change_plan)
 register("/shifts", s.ShiftCreate, ("shift_write",), p.create_shift)
 register("/participations", s.ParticipationCreate, ("shift_write",), p.participate)
 register("/production/confirm", s.ProductionConfirm, ("production_write",), p.confirm)
@@ -186,6 +218,11 @@ register("/batches/{entity_id}/advance-pass", s.Command, ("production_write",), 
 register('/batches/{entity_id}/split',s.BatchSplit,('plan_write',),p.reshape_batch)
 register('/batches/{entity_id}/merge',s.BatchMerge,('plan_write',),lambda db,user,entity_id,body:p.reshape_batch(db,user,entity_id,body,merge=True))
 register("/quality/resolve", s.QualityResolve, ("quality_write",), p.quality)
+register('/schedule/{entity_id}/start',s.ExecutionStart,('production_write',),execution.start)
+register('/executions/{entity_id}/finish',s.ExecutionFinish,('production_write',),execution.finish)
+for route,kind,permissions in [('quality','quality',('quality_write',)),('participations','participation',('shift_write',)),('wages','wage',('payroll_read','payroll_write')),('expenses','expense',('cost_read','cost_write')),('run-costs','run_cost',('cost_read','cost_write'))]:
+    register('/'+route+'/{entity_id}/reverse',s.Command,permissions,lambda db,user,entity_id,body,kind=kind:corrections.reverse(db,user,entity_id,body,kind))
+
 register("/rework-tasks", s.ReworkCreate, ("quality_write", "plan_write"), p.rework_task)
 register("/handovers", s.HandoverCreate, ("handover_write",), p.handover_create)
 register('/handovers/{entity_id}/cancel',s.HandoverCancel,('handover_write',),p.cancel_handover)
@@ -235,6 +272,7 @@ register("/demands/{entity_id}/cancel", s.QuantityAction, ("plan_write",), cance
 register("/shifts/{entity_id}/reopen", s.Command, ("shift_write",), reopen_shift)
 
 COLLECTIONS = {
+    'executions':(m.UvOpsExecution,()), 'reversals':(m.UvOpsReversal,('audit_read',)),
     "machines": (m.UvOpsMachine, ()), "fixtures": (m.UvOpsFixture, ()), "products": (m.UvOpsProduct, ()),
     "process-versions": (m.UvOpsProcessVersion, ()), "file-versions": (m.UvOpsFileVersion, ()),
     "demands": (m.UvOpsDemand, ()), "tasks": (m.UvOpsTask, ()), "schedule": (m.UvOpsScheduleBlock, ()),
@@ -255,9 +293,9 @@ COLLECTIONS = {
 
 
 def register_collection(name, model, permissions):
-    def listing(db: Db, user: User, factory_id: str = "", cursor: str = "", limit: int = Query(100, ge=1, le=200)):
+    def listing(db: Db, user: User, factory_id: str = "", cursor: str = "", limit: int = Query(100, ge=1, le=200), history: bool = False):
         gate(db, user, factory_id, *permissions)
-        statement = c.query(model).order_by(model.id)
+        statement = c.query(model, history=history).order_by(model.id)
         if model == m.UvOpsBatch:
             statement = statement.where(model.active.is_(True))
         total = db.scalar(select(func.count()).select_from(statement.subquery()))

@@ -31,6 +31,15 @@ describe('UV live workspace lifecycle',()=>{
     wrapper=mount(defineComponent({setup(){w=createUvWorkspace();return()=>null}}))
   })
   afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks();vi.unstubAllGlobals()})
+  it('preserves the page and draft when session refresh returns equivalent grants',async()=>{
+    await flushPromises();const generation=w.contextVersion.value,stream=Stream.instances[0]!
+    w.selectedTaskId.value='DRAFT';w.data.value={tasks:[{id:'DRAFT',version:1}]}
+    auth.currentUser={id:'A'};auth.effectiveAccess=[]
+    await flushPromises()
+    expect(w.contextVersion.value).toBe(generation);expect(w.selectedTaskId.value).toBe('DRAFT')
+    expect(w.items('tasks')[0]?.id).toBe('DRAFT');expect(stream.closed).toBe(false)
+    expect(fetcher.mock.calls.filter(([url])=>url.includes('/access?'))).toHaveLength(1)
+  })
   it('ignores a completed old request after factory context changes, and closes its stream',async()=>{
     await flushPromises();const oldStream=Stream.instances[0]!
     let finish!:(value:ReturnType<typeof response>)=>void

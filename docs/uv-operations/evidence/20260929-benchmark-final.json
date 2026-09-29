@@ -1,0 +1,27 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+  "database": "PostgreSQL 16.15, loopback, separate disposable schema",
+  "network": "Service response including revision, Decimal serialization and per-user projection; excludes HTTP/authentication/browser",
+  "machines": 20,
+  "historical_runs": 100000,
+  "concurrent_workers": 50,
+  "window_seconds": 1.058,
+  "failure_rate": 0,
+  "pool_size": 50,
+  "schedule_days_loaded": 30,
+  "schedule_rows": 6000,
+  "snapshot_policy": "single-flight per committed revision; TTL 1 second; auth not cached",
+  "cold": {
+    "p50_ms": 630.05,
+    "p95_ms": 682.47,
+    "max_ms": 685.99,
+    "measurements": 50
+  },
+  "steady": {
+    "p50_ms": 299.21,
+    "p95_ms": 376.1,
+    "max_ms": 426.08,
+    "measurements": 150
+  }
+}

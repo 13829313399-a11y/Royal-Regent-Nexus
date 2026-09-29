@@ -1,5 +1,6 @@
 from decimal import Decimal
 from uuid import uuid4
+from sqlalchemy import or_
 from app.models import uv_operations as m
 from . import common as c
 
@@ -14,19 +15,24 @@ def balance(db, user, body, location):
 
 def movement(db, user, body):
     c.lock_period(db, body.business_date)
-    # Lock the SKU before creating balances, including initially empty keys.
-    c.get(db, m.UvOpsInkSku, body.sku_id, lock=True)
     if body.task_id:
-        c.get(db, m.UvOpsTask, body.task_id)
+        task=c.get(db,m.UvOpsTask,body.task_id,lock=True)
+        c.require(task.status!='cancelled','task_cancelled','已取消任务不能登记耗料')
+    # Task before SKU serializes with cancellation; SKU protects empty balances.
+    c.get(db, m.UvOpsInkSku, body.sku_id, lock=True)
     locations = sorted({body.location, body.target_location} - {None})
     balances = {location: balance(db, user, body, location) for location in locations}
     source = balances[body.location]
+    ids = [row.id for row in balances.values()]
+    latest = db.scalar(c.query(m.UvOpsInkMovement).where(or_(m.UvOpsInkMovement.balance_id.in_(ids), m.UvOpsInkMovement.other_balance_id.in_(ids))).order_by(m.UvOpsInkMovement.business_date.desc()).limit(1))
+    c.require(latest is None or body.business_date >= latest.business_date, 'inventory_date_order', '业务日期早于该库存或目标库位已有流水；请以当前日期登记有依据的调整，不能改写历史加权成本')
     c.require(source.version == body.expected_version or (body.expected_version == 0 and source.quantity_ml == 0), "version_conflict", "库存已变化，请刷新余额后重试", version=source.version)
     quantity, cost = body.quantity_ml, body.cost_value
     original = None
     if body.kind in {"reverse", "return"}:
         c.require(body.reversal_of is not None, "original_required", "退回或冲销必须关联原流水", 422)
         original = c.get(db, m.UvOpsInkMovement, body.reversal_of, lock=True)
+        c.require(body.business_date >= original.business_date, 'reversal_date', '退回或冲销日期不能早于原流水')
         c.require(original.balance_id == source.id and original.kind in {"receipt", "consume", "stocktake_in", "stocktake_out"}, "reversal_target", "该流水不能在此库存上冲销")
         c.require(quantity == original.quantity_ml, "full_reversal", "冲销需按原流水数量完整反向，再录入正确数量", 422)
         if body.kind == "return":

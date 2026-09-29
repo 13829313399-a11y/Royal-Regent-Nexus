@@ -232,6 +232,10 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             json={"factory_id": "huaxing", "expected_revision": receipt_revision,
                   "reason": "复核发现整张供应商送货单须冲销"})
         assert reversed_receipt.status_code == 200, reversed_receipt.text
+        login_as(client, "warehouse_keeper")
+        current_work = client.get("/api/work-center/snapshot", params={"module": "carton_supplier"})
+        assert current_work.status_code == 200, current_work.text
+        assert any(item["title"] == "更正送货验收" for item in current_work.json()["items"])
         with SessionLocal() as db:
             assert fulfilled_by_line(db, [target["id"]])[target["id"]] == Decimal("0")
             assert posted_receipt_sources(db, [target["id"]]) == {}
@@ -328,7 +332,11 @@ def test_supplier_delivery_import_requires_review_then_routes_to_factory_receipt
         assert notifications[0]["status"] == "unread"
         assert notifications[0]["target_factory_id"] == "huaxing"
         assert notifications[0]["payload"]["shipment_id"] == shipment["id"]
+        current_work = client.get("/api/work-center/snapshot", params={"module": "carton_supplier"})
+        assert current_work.status_code == 200, current_work.text
+        assert current_work.json()["query"]["filtered_total"] == 1
         assert client.patch(f"/api/system/notifications/{notification_id}", json={"status": "read"}).status_code == 200
+        assert client.get("/api/work-center/snapshot", params={"module": "carton_supplier"}).json()["query"]["filtered_total"] == 1
         assert client.patch(f"/api/system/notifications/{notification_id}", json={"status": "handled"}).status_code == 409
         internal = client.get(BASE + "/internal/workspace", params={"factory_id": "huaxing"})
         assert internal.status_code == 200, internal.text
@@ -341,6 +349,7 @@ def test_supplier_delivery_import_requires_review_then_routes_to_factory_receipt
         received = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=payload)
         assert received.status_code == 200, received.text
         assert received.json()["status"] == "RECEIVED"
+        assert client.get("/api/work-center/snapshot", params={"module": "carton_supplier"}).json()["query"]["filtered_total"] == 0
         assert float(received.json()["acceptance_lines"][0]["damaged_quantity"]) == 1
         notification = next(item for item in client.get("/api/system/notifications").json()
                             if item["id"] == notification_id)
