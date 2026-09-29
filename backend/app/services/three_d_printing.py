@@ -868,6 +868,12 @@ def _action_record(db, record_id, factory_id, revision):
     return record
 
 
+def _record_uses_live_inventory(record):
+    # Cloud runs are new production with Nexus ledger receipts, not imported
+    # opening balances. A legacy identity always keeps its historical boundary.
+    return record.source_system in {"nexus", "cloud-connector"} and record.legacy_id is None
+
+
 def _consume_record(db, record, actor_id, actor_name, reason, allow_negative=False):
     flags = set(_load_json(record.data_quality_flags_json or "[]", []))
     was_shortage = "material_shortage" in flags
@@ -1036,7 +1042,7 @@ def update_production_record(
     record.revision += 1
     record.updated_at = _now()
     next_ledger = (record.status in {"running", "done"}, record.material_name, float(record.weight_g), record.quantity)
-    historical = record.source_system != "nexus" or record.legacy_id is not None
+    historical = not _record_uses_live_inventory(record)
     if next_ledger != previous_ledger or "material_shortage" in _load_json(record.data_quality_flags_json, []):
         if historical:
             if not payload.history_only_correction:
@@ -1092,7 +1098,7 @@ def restore_production_record(db: Session, record_id: str, payload: ThreeDRecord
     record.revision += 1
     record.updated_at = _now()
     # Legacy opening balances already include old activity; never replay it.
-    if record.source_system == "nexus" and record.legacy_id is None:
+    if _record_uses_live_inventory(record):
         _consume_record(db, record, user.id, _actor_name(user), payload.reason, payload.allow_negative_stock)
     add_audit(db, factory_id=record.factory_id, entity_type="production_record", entity_id=record.id,
               action="restore", actor_id=user.id, actor_name=_actor_name(user), request_id=request_id,

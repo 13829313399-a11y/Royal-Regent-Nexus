@@ -44,6 +44,37 @@ afterEach(() => {
 });
 
 describe("3D operations workspace", () => {
+  it.each([false, true])("keeps analytics busy even if advice fails (%s)", async (adviceFails) => {
+    let finish!: (value: unknown) => void;
+    mocks.get.mockImplementation((url: string) => url.endsWith("/analytics")
+      ? new Promise(resolve => { finish = resolve; })
+      : adviceFails && url.endsWith("/recommendations") ? Promise.reject(new Error("建议暂不可用"))
+      : Promise.resolve({ data: { items: [], total: 0, page: 1, page_size: 50 } }));
+    wrapper = mount(OperationsPage, {
+      global: { provide: { [workspaceKey as symbol]: {
+        canOperate: ref(true), activeTab: ref("operations"), editSchedule: vi.fn(),
+      } } },
+    });
+    await flushPromises();
+    const button = () => wrapper.findAll("button").find(b => /正在计算|重新计算/.test(b.text()))!;
+    expect(button().attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("正在汇总设备历史");
+    await button().trigger("click");
+    expect(mocks.get.mock.calls.filter(([url]) => url.endsWith("/analytics"))).toHaveLength(1);
+    expect(mocks.get).toHaveBeenCalledWith("/three-d-printing/operations/analytics", { timeout: 90000 });
+    finish({ data: { machines: [] } });
+    await flushPromises();
+    expect(button().attributes("disabled")).toBeUndefined();
+    expect(wrapper.text()).not.toContain("正在汇总设备历史");
+    if (adviceFails) {
+      expect(wrapper.text()).toContain("建议暂不可用");
+      mocks.get.mockResolvedValue({ data: { items: [], machines: [] } });
+      await button().trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).not.toContain("建议暂不可用");
+    }
+  });
+
   it("queries products beyond the dashboard first page and emits the selected model", async () => {
     const product = {
       id: "remote-product-1200",

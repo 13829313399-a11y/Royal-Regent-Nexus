@@ -82,7 +82,7 @@ function releaseViewHeight() {
 }
 </script>
 <template>
-  <div class="three-d-workspace legacy-workspace tdp-theme" :class="{ 'tdp-first-reveal': firstReveal }">
+  <div translate="no" class="three-d-workspace legacy-workspace tdp-theme" :class="{ 'tdp-first-reveal': firstReveal }">
     <a class="tdp-skip-link" href="#tdp-main">跳到主要内容</a>
     <aside class="legacy-sidebar">
       <div class="legacy-brand" :class="{ 'tdp-reveal-once': firstReveal }">
