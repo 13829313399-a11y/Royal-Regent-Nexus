@@ -8,7 +8,7 @@ from app.services.document_tools.document_ir import ToolError
 def validate_outputs(files):
     checks = []
     for item in files:
-        if item["role"] not in {"result", "preview", "package"}:
+        if item["role"] not in {"result", "preview", "package", "result_page", "source_page"}:
             continue
         path = Path(item["path"])
         try:
@@ -27,6 +27,13 @@ def validate_outputs(files):
                 document = load_workbook(path, read_only=True, data_only=False)
                 details = {"sheets": len(document.sheetnames)}
                 document.close()
+            elif path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                from PIL import Image
+                with Image.open(path) as image:
+                    image.verify()
+                with Image.open(path) as image:
+                    image.load()
+                    details = {"width": image.width, "height": image.height}
             elif path.suffix.lower() == ".zip":
                 with ZipFile(path) as archive:
                     if archive.testzip() is not None or len(set(archive.namelist())) != len(archive.namelist()):

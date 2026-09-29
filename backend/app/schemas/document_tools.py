@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-Operation = Literal["word_to_pdf", "pdf_to_word", "word_to_excel", "excel_to_word", "pdf_to_excel", "excel_to_pdf", "pdf_split", "word_translate", "excel_translate", "pdf_translate"]
+Operation = Literal["word_to_pdf", "pdf_to_word", "word_to_excel", "excel_to_word", "pdf_to_excel", "excel_to_pdf", "pdf_split", "word_translate", "excel_translate", "pdf_translate", "image_translate"]
 
 
 class StrictModel(BaseModel):
@@ -52,6 +52,7 @@ class ConversionOptions(StrictModel):
 
 COMMON = {"page_selection", "ai_mode", "output_name"}
 OPTION_KEYS = {
+    "image_translate": {"output_name", "translation_direction", "translation_engine", "glossary", "page_selection"},
     "word_translate": {"output_name", "translation_direction", "translation_engine", "glossary"},
     "excel_translate": {"output_name", "translation_direction", "translation_engine", "glossary", "sheets"},
     "pdf_translate": {"output_name", "translation_direction", "translation_engine", "glossary", "page_selection"},
@@ -119,3 +120,4 @@ class PasswordInput(StrictModel):
 class PackageInput(StrictModel):
     artifact_ids: list[str] = Field(min_length=1, max_length=100)
     client_request_id: str = Field(min_length=1, max_length=96)
+    format: Literal["zip", "pdf"] = "zip"
