@@ -34,6 +34,7 @@ services:
     volumes:
       - three-d-assets:/app/backend/data/three-d-printing-assets
       - document-assets:/app/backend/data/document-tools
+      - image-translation-models:/app/backend/models/image-translation:ro
     restart: unless-stopped
     logging: *default-logging
 
@@ -47,6 +48,7 @@ services:
         condition: service_healthy
     volumes:
       - document-assets:/app/backend/data/document-tools
+      - image-translation-models:/app/backend/models/image-translation:ro
     healthcheck:
       test: ["CMD", "python", "-m", "app.workers.document_tools", "--healthcheck"]
       interval: 30s
@@ -74,3 +76,4 @@ volumes:
   postgres-data:
   three-d-assets:
   document-assets:
+  image-translation-models:

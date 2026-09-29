@@ -1,4 +1,16 @@
-FROM python:3.13-slim AS runtime
+FROM node:24-bookworm-slim AS image-pipeline-build
+WORKDIR /build/shinobu-web
+COPY shinobu-web/ ./
+RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build:server
+
+FROM node:24-bookworm-slim AS image-pipeline-deps
+ENV ONNXRUNTIME_NODE_INSTALL=skip
+WORKDIR /runtime
+COPY shinobu-web/server/runtime/package*.json ./
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ pkg-config libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
+    && npm ci --no-audit --no-fund
+
+FROM python:3.13-slim-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -16,6 +28,12 @@ COPY backend/scripts/install_document_translation_models.py /tmp/install_documen
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgl1 \
+        libcairo2 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libjpeg62-turbo \
+        libgif7 \
+        librsvg2-2 \
         libreoffice-calc \
         libreoffice-writer \
         fonts-noto-cjk \
@@ -33,7 +51,14 @@ RUN apt-get update \
     && rm -rf /tmp/document-translation-downloads
 
 ENV DOCUMENT_TRANSLATION_MODEL_DIR=/app/backend/models/document-translation \
-    DOCUMENT_TRANSLATION_DEVICE=cpu
+    DOCUMENT_TRANSLATION_DEVICE=cpu \
+    IMAGE_TRANSLATION_MODEL_DIR=/app/backend/models/image-translation \
+    IMAGE_TRANSLATION_RUNNER=/app/shinobu-web/server/dist/runner.mjs
+
+COPY --from=image-pipeline-deps /usr/local/bin/node /usr/local/bin/node
+COPY --from=image-pipeline-deps /runtime/node_modules /app/shinobu-web/node_modules
+COPY --from=image-pipeline-build /build/shinobu-web/server/dist /app/shinobu-web/server/dist
+COPY shinobu-web/LICENSE shinobu-web/THIRD_PARTY_NOTICES.md /app/shinobu-web/
 
 COPY backend/ ./
 COPY src/ /app/src/
