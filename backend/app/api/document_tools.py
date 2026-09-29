@@ -37,8 +37,8 @@ def capabilities(user: User):
 def upload(user: User, db: DB, file: UploadFile = File(...), factory_id: str = Form(default="")):
     name = storage.safe_name(file.filename or "document")
     kind = Path(name).suffix.lower().lstrip(".")
-    if kind not in {"doc", "docx", "xls", "xlsx", "pdf"}:
-        service.fail("UNSUPPORTED_TYPE", "请选择 DOC/DOCX、XLS/XLSX 或 PDF 文件", 422)
+    if kind not in {"doc", "docx", "xls", "xlsx", "pdf", "png", "jpg", "jpeg", "webp"}:
+        service.fail("UNSUPPORTED_TYPE", "请选择 Office、PDF、PNG、JPEG 或 WebP 文件", 422)
     source_id = service.uid()
     owner_key = hashlib.sha256(user.id.encode()).hexdigest()[:24]
     path = storage.resolve(f"sources/{owner_key}/{source_id}/original.{kind}")
@@ -111,6 +111,13 @@ def create_job(payload: CreateJob, user: User, db: DB):
     if source.detected_type not in service.OPERATIONS[payload.operation][1]:
         service.fail("TYPE_MISMATCH", "所选转换方向与源文件类型不符", 422)
     options = payload.options.model_dump(include=OPTION_KEYS[payload.operation])
+    if payload.operation == "image_translate":
+        from app.services.document_tools.image_translation import require_runtime
+        from app.services.document_tools.document_ir import ToolError
+        try:
+            require_runtime()
+        except ToolError as exc:
+            service.fail(exc.code, exc.message, 422)
     if payload.operation.endswith("_translate"):
         from app.services.document_tools.translation_engine import validate_translation_options
         from app.services.document_tools.document_ir import ToolError
@@ -124,12 +131,14 @@ def create_job(payload: CreateJob, user: User, db: DB):
 
 
 @router.get("/jobs")
-def list_jobs(user: User, db: DB, page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100), batch_id: str | None = None, status: str | None = None):
+def list_jobs(user: User, db: DB, page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100), batch_id: str | None = None, status: str | None = None, operation: str | None = None):
     filters = [Job.owner_user_id == user.id, service.visible_jobs()]
     if batch_id:
         filters.append(Job.batch_id == batch_id)
     if status:
         filters.append(Job.execution_status == status)
+    if operation:
+        filters.append(Job.operation == operation)
     total = db.scalar(select(func.count()).select_from(Job).where(*filters))
     rows = db.scalars(select(Job).where(*filters).order_by(Job.created_at.desc(), Job.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
     return {"items": [service.job_data(db, r) for r in rows], "total": total, "page": page, "page_size": page_size}
@@ -230,6 +239,26 @@ def retry(job_id: str, user: User, db: DB):
 @router.post("/jobs/{job_id}/revise", status_code=202)
 def revise(job_id: str, payload: ReviseJob, user: User, db: DB):
     parent = service.owned(db, Job, job_id, user.id)
+    if parent.operation == "image_translate":
+        if parent.execution_status != "succeeded":
+            service.fail("RESULT_NOT_READY", "请先完成翻译再框选补翻", 409)
+        if payload.base_revision != parent.artifact_revision:
+            service.fail("STALE_REVISION", "结果版本已变化，请刷新后重新补翻", 409)
+        if not payload.region or payload.corrections or payload.options is not None:
+            service.fail("INVALID_REGION", "图片补翻需要选择原图区域；修改翻译设置请重新生成", 422)
+        ir = service.load_ir(db, parent)
+        page = next((p for p in ir.get("pages", []) if p["page_index"] == payload.region.page_index), None)
+        box = payload.region.bbox_pt
+        if not page or box[2] > page["width_pt"] or box[3] > page["height_pt"] or min(box[2] - box[0], box[3] - box[1]) < 4:
+            service.fail("INVALID_REGION", "补翻区域超出原图或尺寸过小", 422)
+        # load_ir checks expiry; keep all base page artifacts valid as well.
+        for artifact in db.scalars(select(Artifact).where(Artifact.job_id == parent.id, Artifact.role == "result_page", Artifact.owner_user_id == user.id)):
+            if artifact.expires_at and artifact.expires_at <= time.time():
+                service.fail("ARTIFACT_EXPIRED", "原结果已到保存期限，请重新翻译", 410)
+        options = {**parent.options_json, "_recognize_region": payload.region.model_dump()}
+        job = service.enqueue(db, user.id, parent.source_id, parent.operation, options, parent=parent.id, kind="revise", revision=parent.artifact_revision + 1)
+        db.commit()
+        return {"job_id": job.id}
     if parent.operation.endswith("_translate"):
         service.fail("TRANSLATION_REVISION_UNSUPPORTED", "请下载译文修改，或调整翻译设置后重新生成", 422)
     if parent.execution_status != "succeeded" or parent.operation not in service.OPERATIONS:
@@ -299,9 +328,11 @@ def package(payload: PackageInput, user: User, db: DB):
         artifact = service.owned(db, Artifact, artifact_id, user.id)
         if artifact.role not in {"result", "package"}:
             service.fail("INVALID_ARTIFACT", "只能打包转换结果文件", 422)
+        if payload.format == "pdf" and artifact.format != "pdf":
+            service.fail("INVALID_ARTIFACT", "汇总 PDF 只接受 PDF 结果", 422)
         if artifact.expires_at and artifact.expires_at <= time.time():
             service.fail("ARTIFACT_EXPIRED", "选中的结果已到期", 410)
-    job = service.enqueue(db, user.id, None, "package", {"artifact_ids": payload.artifact_ids}, payload.client_request_id, kind="package")
+    job = service.enqueue(db, user.id, None, "package", {"artifact_ids": payload.artifact_ids, "format": payload.format}, payload.client_request_id, kind="package")
     db.commit()
     return {"job_id": job.id}
 

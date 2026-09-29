@@ -13,6 +13,7 @@ from app.models.document_tools import DocumentToolArtifact as Artifact, Document
 from app.services.document_tools import storage
 
 OPERATIONS = {
+    "image_translate": ("图片 / PDF 原位翻译", {"png", "jpg", "jpeg", "webp", "pdf"}),
     "word_translate": ("Word 翻译", {"doc", "docx"}),
     "excel_translate": ("Excel 翻译", {"xls", "xlsx"}),
     "pdf_translate": ("PDF 翻译", {"pdf"}),

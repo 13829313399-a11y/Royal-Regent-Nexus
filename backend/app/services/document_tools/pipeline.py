@@ -18,6 +18,10 @@ from app.services.document_tools.document_ir import Cancelled, DocumentIR, Engin
 
 
 def validate_source(path: Path, kind: str):
+    if kind in {"png", "jpg", "jpeg", "webp"}:
+        from .image_translation import read_image
+        read_image(path).close()
+        return
     with path.open("rb") as source:
         signature = source.read(8)
     if kind == "pdf":
@@ -78,6 +82,26 @@ def package_results(db, job, work, progress, cancelled):
         rows.append(row)
     db.expunge_all()
     db.commit()
+    if job.options_json.get("format") == "pdf":
+        from pypdf import PdfReader, PdfWriter
+        writer = PdfWriter()
+        for i, row in enumerate(rows):
+            if cancelled():
+                raise Cancelled()
+            if row.format != "pdf":
+                raise ToolError("INVALID_ARTIFACT", "汇总 PDF 只接受 PDF 结果")
+            reader = PdfReader(storage.resolve(row.storage_key))
+            if len(writer.pages) + len(reader.pages) > settings.document_tools_max_pages:
+                raise ToolError("PDF_PAGE_LIMIT", "汇总页数超过处理上限，请分批导出")
+            for page in reader.pages:
+                if cancelled():
+                    raise Cancelled()
+                writer.add_page(page)
+            progress("package", i + 1, len(rows))
+        output = work / "图片翻译汇总.pdf"
+        writer.write(output)
+        writer.close()
+        return EngineResult(DocumentIR(source_type="package"), [result_file(output, "package")], {"files": len(rows)})
     output = work / "文档结果.zip"
     used = set()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -151,7 +175,14 @@ def run_one(session_factory, claimed=None):
                     options["password"] = storage.decrypt_password(source.credential_ciphertext)
                 if settings.document_tools_ai_mode == "off":
                     options["ai_mode"] = "off"
-                if job.operation.endswith("_translate"):
+                if job.operation == "image_translate":
+                    from app.services.document_tools.image_translation import convert_image_translation
+                    options["output_name"] = options.get("output_name") or source.original_name
+                    result = convert_image_translation(path, options, work, progress, cancelled, parent_ir=ir)
+                elif source.detected_type in {"png", "jpg", "jpeg", "webp"}:
+                    from app.services.document_tools.image_translation import inspect_image
+                    result = inspect_image(path, work, progress, cancelled)
+                elif job.operation.endswith("_translate"):
                     from app.services.document_tools.translation_engine import convert_translation
                     options["output_name"] = options.get("output_name") or source.original_name
                     result = convert_translation(path, job.operation, options, work, progress, cancelled)

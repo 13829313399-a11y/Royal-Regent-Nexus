@@ -414,7 +414,7 @@ describe('public tool center', () => {
     const create = vi.spyOn(documentTools, 'create').mockResolvedValue({ job_id: 'translation-1' })
     const wrapper = render()
     await flushPromises()
-    await wrapper.get('.dt-tools button:nth-child(10)').trigger('click')
+    await wrapper.findAll('.dt-tools button').find(button => button.text() === operationLabels.excel_translate)!.trigger('click')
     await wrapper.get('.dt-translation-intro [aria-label="翻译方向"]').setValue('en_to_zh')
     await wrapper.get('.dt-translation-intro [aria-label="翻译方式"]').setValue('online')
     await upload(wrapper, [new File(['xlsx'], 'book.xlsx')])
@@ -423,6 +423,21 @@ describe('public tool center', () => {
     await wrapper.get('.dt-generate button').trigger('click')
     await flushPromises()
     expect(create).toHaveBeenCalledWith(source.id, 'excel_translate', { translation_direction: 'en_to_zh', translation_engine: 'online', sheets: ['Sheet1'] }, expect.any(String))
+  })
+
+  it('offers the image translator with the actual factory context', async () => {
+    useAppStore().setActiveFactory('group')
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.get('a.dt-image-translation-link').attributes('href'))
+      .toBe('/image-translation/?factory=group')
+    useAppStore().setActiveFactory('huaxing')
+    await flushPromises()
+    expect(wrapper.get('a.dt-image-translation-link').attributes('href'))
+      .toBe('/image-translation/?factory=huaxing')
+    routeState.query = { factory: 'huaxing' }
+    await flushPromises()
+    expect(wrapper.findAll('.dt-tools button')).toHaveLength(11)
   })
 
   it('keeps a failed file independent while uploading the next file', async () => {

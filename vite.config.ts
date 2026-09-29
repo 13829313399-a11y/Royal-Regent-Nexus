@@ -2,11 +2,12 @@ import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
+import { imageTranslationPlugin } from './scripts/vite-image-translation'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
-    plugins: [vue(), tailwindcss()],
+    plugins: [vue(), tailwindcss(), imageTranslationPlugin()],
     server: {
       // Worker artifacts are data, not frontend sources. HTML previews must
       // never trigger a full-page reload that discards the current selection.

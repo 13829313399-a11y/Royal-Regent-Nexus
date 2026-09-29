@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet
 from app.core.config import settings
 from app.services.document_tools.document_ir import ToolError
 
-MIME = {"pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "doc": "application/msword", "xls": "application/vnd.ms-excel", "zip": "application/zip", "json": "application/json", "png": "image/png"}
+MIME = {"pdf": "application/pdf", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "doc": "application/msword", "xls": "application/vnd.ms-excel", "zip": "application/zip", "json": "application/json", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
 
 
 def root() -> Path:
