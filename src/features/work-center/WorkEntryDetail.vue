@@ -36,9 +36,10 @@ function customSnooze() {
     <div class="nc-detail-content">
       <span class="nc-stage">{{ entry.lifecycle === 'superseded' ? '已被取代' : entry.lifecycle === 'resolved' ? '本阶段已完成' : entry.kind === 'info' ? '知会消息' : entry.can_act_now ? '当前可处理' : '我在等待' }}</span>
       <h2>{{ entry.title }}</h2><p class="nc-detail-ref">{{ entry.reference_label }}</p>
-      <div class="nc-why"><CheckCheck :size="18" /><div><strong>为什么需要我</strong><p>{{ entry.why_me }}</p></div></div>
-      <dl><div><dt>来源厂区</dt><dd>{{ entry.source_factory?.label || '个人账户' }}</dd></div><div v-if="entry.execution_factory"><dt>执行厂区</dt><dd>{{ entry.execution_factory.label }}</dd></div><div><dt>责任部门</dt><dd>{{ entry.department_label || '本人' }}</dd></div><div><dt>业务期限</dt><dd>{{ entry.due_at ? formatBusinessDateTime(entry.due_at) : '未设期限' }}</dd></div></dl>
       <p class="nc-summary-text">{{ entry.summary }}</p>
+      <template v-if="entry.details?.length"><h3>申请详情</h3><dl class="nc-request-details"><div v-for="field in entry.details" :key="field.label"><dt>{{ field.label }}</dt><dd>{{ field.format === 'datetime' ? formatBusinessDateTime(field.value) : field.value }}</dd></div></dl><h3>办理信息</h3></template>
+      <dl><div><dt>来源厂区</dt><dd>{{ entry.source_factory?.label || '个人账户' }}</dd></div><div v-if="entry.execution_factory"><dt>执行厂区</dt><dd>{{ entry.execution_factory.label }}</dd></div><div><dt>责任部门</dt><dd>{{ entry.department_label || '本人' }}</dd></div><div><dt>业务期限</dt><dd>{{ entry.due_at ? formatBusinessDateTime(entry.due_at) : '未设期限' }}</dd></div></dl>
+      <div class="nc-why"><CheckCheck :size="18" /><div><strong>为什么需要我</strong><p>{{ entry.why_me }}</p></div></div>
       <p v-if="entry.unavailable_reason" class="nc-message">{{ entry.unavailable_reason }}</p>
       <h3>最近经过</h3>
       <ol class="nc-timeline"><li v-for="event in timeline" :key="event.id"><p>{{ event.summary }}</p><time>{{ formatBusinessDateTime(event.occurred_at) }}</time></li></ol>

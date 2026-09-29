@@ -2,6 +2,7 @@ export type WorkView = 'todo' | 'assigned' | 'team' | 'waiting' | 'info' | 'hist
 export interface WorkEntry {
   id: string; kind: 'task' | 'info'; module: string; title: string; summary: string
   reference_label: string; lifecycle: 'open' | 'in_progress' | 'resolved' | 'cancelled' | 'superseded' | null
+  details?: { label: string; value: string; format?: 'text' | 'datetime' }[]
   viewer_relation: 'assignee' | 'candidate' | 'watcher' | 'recipient'
   source_factory: { id: string; label: string } | null
   execution_factory: { id: string; label: string } | null
@@ -19,7 +20,7 @@ export interface WorkSnapshot {
   summary: { actionable_total: number; assigned_total: number; team_queue_total: number; focus_total: number; snoozed_total: number; overdue_total: number; info_unread_total: number; waiting_total: number; verification_required_total: number }
   query: { filtered_total: number | null; cursor: string | null }; items: WorkEntry[]; next_cursor: string | null
   selected_entry_state: WorkEntry | { id: string; state: 'unavailable' } | null
-  health: { status: 'fresh' | 'partial' | 'stale'; as_of: string; unavailable_sources: string[]; coverage: { module: string; state: string }[] }
+  health: { status: 'fresh' | 'partial' | 'stale'; as_of: string; unavailable_sources: string[]; issues?: { module: string; reason: 'source_missing' | 'source_inconsistent'; count: number }[]; coverage: { module: string; state: string }[] }
 }
 export interface WorkQuery { view: WorkView; factory_scope: string; module: string; q: string; due: string; unread_only: boolean; cursor?: string; limit: number; selected_id?: string }
 export interface WorkPreferences { sound_enabled: boolean; toast_level: 'assigned' | 'all_tasks' | 'none'; version: number; business_timezone: string }

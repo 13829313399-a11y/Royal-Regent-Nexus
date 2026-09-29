@@ -202,23 +202,29 @@ def account_queries(db, user):
         and_(r.factory_id == f, r.department == d) for f in ALLOWED_FACTORY_IDS for d in ALLOWED_DEPARTMENTS
         if can(user, "system:user_manage", f, d)])
     yield projection(module="account_requests", entity_id=r.id, stage="registration", factory=r.factory_id,
-                     department=r.department, title="审核注册申请", reference=r.id, summary="请核对申请组织与任职资料。",
+                     department=r.department, title="审核注册申请", reference=applicant_reference(r),
+                     summary=literal("申请岗位：") + func.coalesce(func.nullif(func.trim(r.position), ""), "未填写") + "；请核对申请组织与任职资料。",
                      opened=r.submitted_at, visible=scope, can_act=True).where(r.status == "pending")
     p = AuthPasswordResetRequest
     # IAM target scope includes scheduled/additional assignments. Reuse the
     # authoritative domain check; do not approximate it with a profile join.
     reset_scope = reset_visibility(db, user)
     yield projection(module="account_requests", entity_id=p.id, stage="password_reset", factory=p.factory_id,
-                     department=p.department, title="核验密码重置申请", reference=p.id,
-                     summary="核实本人身份后，在原申请中审批。", opened=p.submitted_at,
+                     department=p.department, title="核验密码重置申请", reference=applicant_reference(p),
+                     summary=func.coalesce(func.nullif(func.trim(p.note), ""), "申请人未填写说明；请先核实本人身份，再审批密码重置。"), opened=p.submitted_at,
                      visible=reset_scope, can_act=True
                      ).where(p.status == "pending", p.claim_token_hash.is_not(None))
     from app.services.auth import now_text
     yield projection(module="account_requests", entity_id=p.id, stage="password_reset_claim", cycle=p.issue_count,
                      factory=p.factory_id, department=p.department, watcher=func.coalesce(p.reviewer_user_id, ""),
-                     title="等待申请人完成密码重置", reference=p.id, summary="管理员已批准，等待申请人领取并完成。",
+                     title="等待申请人完成密码重置", reference=applicant_reference(p), summary="管理员已批准，等待申请人在原浏览器完成密码重置。",
                      opened=p.approved_at, due=p.expires_at, visible=reset_scope, can_act=False
                      ).where(p.status == "approved", p.expires_at > now_text())
+
+
+def applicant_reference(request):
+    name, username = func.trim(request.display_name), func.trim(request.username)
+    return case((and_(name != "", name != username), name + "（" + username + "）"), else_=username)
 
 
 def reset_visibility(db, user, *, history=False):

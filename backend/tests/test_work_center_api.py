@@ -198,6 +198,7 @@ def test_quote_batch_reviewer_version_and_v2_nonroot(monkeypatch):
             data = svc.snapshot(db, reviewer)
             assert data["summary"]["actionable_total"] == 1
             assert data["health"]["status"] == "partial"
+            assert data["health"]["issues"] == [{"module": "internal_quote", "reason": "source_inconsistent", "count": 1}]
             for pos in (1, 2):
                 q = db.get(model.InternalQuote, f"v3-{pos}"); q.status = "rejected"; q.final_release_status = "rejected"
                 section = db.get(model.InternalQuoteSection, f"s{pos}")
@@ -345,6 +346,8 @@ def test_partial_adapter_failure_and_invalid_old_source_are_not_clean_zero(monke
         assert data["health"]["status"] == "partial"
         assert data["summary"]["verification_required_total"] == 1
         assert data["summary"]["actionable_total"] == 1
+        assert data["health"]["issues"] == [{"module": "internal_quote", "reason": "source_missing", "count": 1}]
+        assert data["health"]["unavailable_sources"] == []
         # Simulate an unavailable adapter table in this disposable DB only.
         with dbm.engine.begin() as conn: conn.execute(text("DROP TABLE carton_supplier_shipments"))
         response = client.get("/api/work-center/snapshot")
@@ -352,3 +355,69 @@ def test_partial_adapter_failure_and_invalid_old_source_are_not_clean_zero(monke
         assert response.json()["health"]["status"] == "partial"
         assert "carton_supplier" in response.json()["health"]["unavailable_sources"]
         assert response.json()["summary"]["actionable_total"] == 1
+
+
+def test_account_preview_uses_applicant_details_and_search_preserves_scope(monkeypatch):
+    with make_client(monkeypatch) as client:
+        uid = login(client)
+        dbm, svc = services()
+        auth = importlib.import_module("app.models.auth")
+        with dbm.SessionLocal() as db:
+            for ident, factory, name in (("registration-visible", "huakang-a", "张三"), ("registration-hidden", "huakang-b", "李四")):
+                db.add(auth.AuthRegistrationRequest(id=ident, user_id=uid, username=f"account-{factory}", display_name=name,
+                    factory_id=factory, department="engineering", position="工程技术员", phone="13800000000", email="staff@example.test",
+                    submitted_at="2026-09-29 09:30:00"))
+            db.commit()
+            viewer = actor(uid, permissions=("system:user_manage",))
+            entry_id = "account_requests:registration-visible:registration:1"
+            data = svc.snapshot(db, viewer, q="张三", selected_id=entry_id)
+            assert data["query"]["filtered_total"] == 1
+            item = data["items"][0]
+            assert item["reference_label"] == "张三（account-huakang-a）"
+            assert "工程技术员" in item["summary"]
+            fields = {field["label"]: field["value"] for field in item["details"]}
+            assert fields == {"申请人": "张三", "登录账号": "account-huakang-a", "申请岗位": "工程技术员", "联系电话": "13800000000",
+                              "联系邮箱": "staff@example.test", "申请时间": "2026-09-29T01:30:00+00:00"}
+            assert data["selected_entry_state"]["details"] == item["details"]
+            assert svc.detail(db, viewer, entry_id)["details"] == item["details"]
+            assert svc.snapshot(db, viewer, q="工程技术员")["query"]["filtered_total"] == 1
+            assert svc.snapshot(db, viewer, q="account-huakang-a")["query"]["filtered_total"] == 1
+            assert svc.snapshot(db, viewer, q="registration-visible")["query"]["filtered_total"] == 1
+            hidden = svc.snapshot(db, viewer, q="李四", selected_id="account_requests:registration-hidden:registration:1")
+            assert hidden["items"] == []
+            assert hidden["selected_entry_state"] == {"id": "account_requests:registration-hidden:registration:1", "state": "unavailable"}
+            assert svc.snapshot(db, actor(uid))["items"] == []
+        # Old persisted evidence may still contain only the opaque ID. History
+        # is enriched from the authorized source without requiring a migration.
+        with dbm.SessionLocal() as db:
+            db.get(auth.AuthRegistrationRequest, "registration-visible").status = "approved"
+            db.commit()
+            history = svc.snapshot(db, viewer, view="history")["items"][0]
+            assert history["reference_label"] == "张三（account-huakang-a）"
+            assert history["details"] == item["details"]
+
+
+def test_password_preview_has_contact_and_reason_but_no_secrets(monkeypatch):
+    with make_client(monkeypatch) as client:
+        uid = login(client)
+        dbm, _ = services()
+        auth = importlib.import_module("app.models.auth")
+        with dbm.SessionLocal() as db:
+            db.add(auth.AuthPasswordResetRequest(id="password-reset-preview", user_id=uid, username="admin", display_name="系统管理员",
+                factory_id="*", department="system", contact="办公室分机 123", note="忘记登录密码，需要恢复访问。",
+                claim_token_hash="never-return-this-claim", request_ip="secret-ip", user_agent="secret-agent", submitted_at="2026-09-29 10:00:00"))
+            db.commit()
+        response = client.get("/api/work-center/snapshot", params={"q": "恢复访问"})
+        assert response.status_code == 200, response.text
+        item = response.json()["items"][0]
+        assert item["reference_label"] == "系统管理员（admin）"
+        assert item["source_factory"]["label"] == "全集团"
+        assert item["department_label"] == "系统管理"
+        fields = {field["label"]: field["value"] for field in item["details"]}
+        assert fields["联系方式"] == "办公室分机 123"
+        assert fields["申请说明"] == "忘记登录密码，需要恢复访问。"
+        detail = client.get(f'/api/work-center/entries/{quote(item["id"], safe="")}')
+        assert detail.status_code == 200
+        assert detail.json()["details"] == item["details"]
+        for value in ("never-return-this-claim", "claim_token_hash", "secret-ip", "secret-agent"):
+            assert value not in response.text and value not in detail.text

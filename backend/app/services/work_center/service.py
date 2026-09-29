@@ -162,6 +162,14 @@ def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q=
     summary_query = select(*(func.coalesce(func.sum(case((condition, 1), else_=0)), 0).label(name) for name, condition in f.items()),
         func.coalesce(func.sum(case((c.verified.is_(False), 1), else_=0)), 0).label("verification_required_total")).select_from(rows)
     summary = dict(db.execute(summary_query).mappings().one())
+    # Historical orphan notices and currently inconsistent tasks have different
+    # user impact. Keep both visible without implying a source outage.
+    issues = []
+    if summary["verification_required_total"]:
+        issue_rows = db.execute(select(c.module, c.kind, func.count().label("count"))
+                                .where(c.verified.is_(False)).group_by(c.module, c.kind)).mappings()
+        issues = [{"module": item["module"], "reason": "source_missing" if item["kind"] == "diagnostic" else "source_inconsistent",
+                   "count": item["count"]} for item in issue_rows]
     conditions = {"todo": f["actionable_total"], "assigned": f["assigned_total"], "team": f["team_queue_total"],
                   "waiting": f["waiting_total"], "info": and_(c.kind == "info", c.archived_at.is_(None)),
                   "history": or_(c.lifecycle.in_(("resolved", "cancelled", "superseded")), c.archived_at.is_not(None))}
@@ -172,7 +180,8 @@ def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q=
         query = query.where(c.module == module)
     if q.strip():
         term = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        query = query.where(or_(c.reference.ilike(f"%{term}%", escape="\\"), c.title.ilike(f"%{term}%", escape="\\"), c.summary.ilike(f"%{term}%", escape="\\")))
+        query = query.where(or_(c.reference.ilike(f"%{term}%", escape="\\"), c.title.ilike(f"%{term}%", escape="\\"), c.summary.ilike(f"%{term}%", escape="\\"),
+                               and_(c.module == "account_requests", c.entity_id.ilike(f"%{term}%", escape="\\"))))
     if unread_only:
         query = query.where(c.attention > 0, c.read_version < c.version)
     today = clock.astimezone(BUSINESS_TIME_ZONE).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -190,14 +199,19 @@ def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q=
     page = db.execute(query.add_columns(*(value.label(f"sort_{i}") for i, value in enumerate(ordering))).order_by(*ordering).limit(limit + 1)).mappings().all()
     next_cursor = encode_cursor(fingerprint, [page[limit-1][f"sort_{i}"] for i in range(5)]) if len(page) > limit else None
     selected = None
+    selected_row = None
     if selected_id:
         selected_row = db.execute(select(rows).where(c.id == selected_id, c.kind.in_(("task", "info")))).mappings().first()
-        selected = dto(selected_row, user, clock) if selected_row else {"id": selected_id, "state": "unavailable"}
+        if not selected_row:
+            selected = {"id": selected_id, "state": "unavailable"}
+    presented = present_entries(db, [*page[:limit], *([selected_row] if selected_row else [])], user, clock)
+    if selected_row:
+        selected = presented[-1]
     return {"context": {"viewer_key": viewer_key, "scope_key": factory_scope, "server_time": stamp(clock),
                         "business_timezone": "Asia/Shanghai", "authz_recheck_at": authorization_boundary(user, clock)},
             "summary": summary, "query": {"filtered_total": total, "cursor": cursor},
-            "items": [dto(item, user, clock) for item in page[:limit]], "next_cursor": next_cursor,
-            "selected_entry_state": selected, "health": {"status": "partial" if summary["verification_required_total"] or db.info.get("work_center_unavailable") else "fresh", "as_of": stamp(clock), "unavailable_sources": sorted(db.info.get("work_center_unavailable", [])), "coverage": COVERAGE}}
+            "items": presented[:len(page[:limit])], "next_cursor": next_cursor,
+            "selected_entry_state": selected, "health": {"status": "partial" if summary["verification_required_total"] or db.info.get("work_center_unavailable") else "fresh", "as_of": stamp(clock), "unavailable_sources": sorted(db.info.get("work_center_unavailable", [])), "issues": issues, "coverage": COVERAGE}}
 
 
 def dto(row, user, clock):
@@ -211,11 +225,12 @@ def dto(row, user, clock):
              "internal_quote": "quote", "account_requests": "account_requests", "carton_supplier": "shipment", "identity": "identity"}[row["module"]]
     snoozed = row["snoozed_until"] if row["snoozed_attention_version"] == row["attention"] else None
     read_state = "read" if row["read_version"] >= row["version"] else "legacy_unknown" if row["attention"] == 0 else "unread"
-    factory = lambda value: {"id": value, "label": FACTORY_LABELS.get(value, value)} if value else None
+    factory_labels = {**FACTORY_LABELS, "*": "全集团", "group": "集团", "group-management": "集团职能部门"}
+    factory = lambda value: {"id": value, "label": factory_labels.get(value, value)} if value else None
     return {"id": row["id"], "kind": row["kind"], "module": row["module"], "title": row["title"], "summary": row["summary"],
             "reference_label": row["reference"], "lifecycle": row["lifecycle"], "viewer_relation": relation,
             "source_factory": factory(row["factory"]), "execution_factory": factory(row["execution"]),
-            "department_label": SECTION_NAMES.get(row["department"], {"production": "啤机部", "pmc-warehouse": "PMC仓库", "sales-business": "业务部", "management": "管理部"}.get(row["department"], row["department"])),
+            "department_label": SECTION_NAMES.get(row["department"], {"production": "啤机部", "pmc-warehouse": "PMC仓库", "sales-business": "业务部", "management": "管理部", "system": "系统管理", "*": "全部部门", "three-d-printing": "3D打印部"}.get(row["department"], row["department"])),
             "stage_label": row["title"], "responsible_label": "指派给我" if assigned else "团队队列" if active else "流程跟进",
             "why_me": "你是本批次指定审核人" if assigned and row["module"] == "internal_quote" else "你具备当前责任范围的办理权限" if active else "与你相关的流程信息",
             "priority": "normal", "priority_reasons": ["已到业务期限"] if row["due_epoch"] and row["due_epoch"] < clock.timestamp() else [],
@@ -230,12 +245,49 @@ def dto(row, user, clock):
                          "target": {"route_key": route, "params": {"id": row["entity_id"]}, "query": {"factory": row["execution"] if route == "molding_production" else row["factory"], "stage": stage, "cycle": row["cycle"]}}}]}
 
 
+def present_entries(db, rows, user, clock):
+    """Enrich only already-authorized, paginated rows with allowlisted fields.
+
+    Batch per request type, never perform a contact lookup for hidden sources.
+    Source data also makes pre-upgrade history readable without a DB backfill.
+    """
+    from app.models.auth import AuthRegistrationRequest, AuthPasswordResetRequest
+    sources = {}
+    for model, stages in ((AuthRegistrationRequest, {"registration"}),
+                          (AuthPasswordResetRequest, {"password_reset", "password_reset_claim"})):
+        ids = {row["entity_id"] for row in rows if row["module"] == "account_requests" and row["stage"] in stages}
+        if ids:
+            for request in db.scalars(select(model).where(model.id.in_(ids))):
+                for stage in stages:
+                    sources[(stage, request.id)] = request
+    result = []
+    for row in rows:
+        item = dto(row, user, clock)
+        request = sources.get((row["stage"], row["entity_id"])) if row["module"] == "account_requests" else None
+        if request is not None:
+            name, username = request.display_name.strip(), request.username.strip()
+            item["reference_label"] = f"{name}（{username}）" if name and name != username else username
+            fields = [("申请人", name or username), ("登录账号", username)]
+            if isinstance(request, AuthRegistrationRequest):
+                fields += [("申请岗位", request.position or "未填写"), ("联系电话", request.phone or "未填写"), ("联系邮箱", request.email or "未填写")]
+                item["summary"] = f"申请岗位：{request.position or '未填写'}；请核对申请组织与任职资料。"
+            else:
+                fields += [("联系方式", request.contact or "未填写"), ("申请说明", request.note or "未填写")]
+                if row["stage"] == "password_reset":
+                    item["summary"] = request.note or "申请人未填写说明；请先核实本人身份，再审批密码重置。"
+            item["details"] = [{"label": label, "value": value} for label, value in fields]
+            submitted = stamp(request.submitted_at)
+            item["details"].append({"label": "申请时间", "value": submitted or "未记录", "format": "datetime" if submitted else "text"})
+        result.append(item)
+    return result
+
+
 def detail(db, user, entry_id):
     rows, _ = authorized_rows(db, user)
     row = db.execute(select(rows).where(rows.c.id == entry_id, rows.c.kind.in_(("task", "info")))).mappings().first()
     if not row:
         raise HTTPException(404, "事项已失效或不在当前可见范围")
-    return dto(row, user, now())
+    return present_entries(db, [row], user, now())[0]
 
 
 def events(db, user, entry_id, cursor=None, limit=5):
