@@ -69,6 +69,17 @@ def test_ordinary_order_with_receipt_evidence_cannot_be_deleted(monkeypatch, mod
             assert response.status_code == 200, response.text
             assert response.json()["status"] == "CANCELLED"
         current = next(row for row in current_orders(client) if row["id"] == order["id"])
+        if mode == "returned":
+            before_receipts = client.get(f"{BASE}/receipts", params={"factory_id": "huaxing"}).json()
+            before_movements = client.get(f"{BASE}/inventory/movements", params={"factory_id": "huaxing"}).json()
+            before_report = client.get(f"{BASE}/inventory/report", params={"factory_id": "huaxing"}).json()
+            assert current["can_delete"] and not current["deletion_block_reason"]
+            assert client.post(f"{BASE}/orders/{order['order_no']}/delete", json=delete_body(current)).status_code == 204
+            assert not current_orders(client)
+            assert client.get(f"{BASE}/receipts", params={"factory_id": "huaxing"}).json() == before_receipts
+            assert client.get(f"{BASE}/inventory/movements", params={"factory_id": "huaxing"}).json() == before_movements
+            assert client.get(f"{BASE}/inventory/report", params={"factory_id": "huaxing"}).json() == before_report
+            return
         assert not current["can_delete"] and "收料" in current["deletion_block_reason"]
         response = client.post(f"{BASE}/orders/{order['order_no']}/delete", json=delete_body(current))
         assert response.status_code == 409, response.text

@@ -91,6 +91,36 @@ def test_history_enrichment_privileged_edits_variants_and_concurrency(monkeypatc
         assert other["lines"][0]["required_quantity"] == "36.0000"
 
 
+def test_production_cycle_is_configurable_in_scoped_revision_checked_rules(monkeypatch):
+    with make_client(monkeypatch) as client:
+        from app.db import SessionLocal
+        from app.services.carton_master import due_rules
+        prepare(client)
+        old = create(client, customer_due_date="2026-08-15")
+        with SessionLocal() as db:
+            assert due_rules(db, "huaxing", "DICKIE")["production_days"] == 7
+        base = {"factory_id": "huaxing", "kind": "RULE", "data": {"production_days": 9}, "reason": "供应商生产送货周期设置"}
+        saved = client.post(BASE + "/master-data", json=base)
+        assert saved.status_code == 201, saved.text
+        customer = client.post(BASE + "/master-data", json={**base, "customer_code": "DICKIE", "data": {"production_days": 0}})
+        assert customer.status_code == 201, customer.text
+        with SessionLocal() as db:
+            assert due_rules(db, "huaxing", "DICKIE")["production_days"] == 0
+            assert due_rules(db, "huaxing", "OTHER")["production_days"] == 9
+            assert due_rules(db, "huadeng", "DICKIE")["production_days"] == 7
+        for value in [-1, 366, 7.5]:
+            invalid = {**customer.json()["data"], "production_days": value}
+            assert client.patch(BASE + "/master-data/" + customer.json()["id"], json=payload(customer.json(), data=invalid)).status_code == 422
+        changed = client.patch(BASE + "/master-data/" + customer.json()["id"], json=payload(customer.json(), data={"production_days": None}))
+        assert changed.status_code == 200, changed.text
+        assert client.patch(BASE + "/master-data/" + customer.json()["id"], json=payload(customer.json())).status_code == 409
+        with SessionLocal() as db:
+            assert due_rules(db, "huaxing", "DICKIE")["production_days"] == 9
+        current = client.get(BASE + "/orders", params={"factory_id": "huaxing"}).json()["items"]
+        unchanged = next(order for order in current if order["id"] == old["id"])
+        assert (unchanged["due_date"], unchanged["safety_lead_days"]) == (old["due_date"], old["safety_lead_days"])
+
+
 def test_due_rules_keep_old_snapshots_and_enforce_number_rules(monkeypatch):
     with make_client(monkeypatch) as client:
         prepare(client)
