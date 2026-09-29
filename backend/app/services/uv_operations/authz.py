@@ -1,9 +1,15 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from sqlalchemy import inspect
+from weakref import WeakKeyDictionary
+from threading import Lock
 from app.core.config import settings
 from app.models import uv_operations as m
 from app.services.auth import authorization_decision
 from . import common as c
+
+_schemas=WeakKeyDictionary()
+_schema_lock=Lock()
 
 
 def allowed(user, action):
@@ -18,7 +24,15 @@ def authorize(user, factory, *actions):
 
 
 def ready(db):
-    c.require(inspect(db.bind).has_table("uv_ops_settings"), "schema_not_ready", "UV 模块尚未迁移，业务库不会自动建表", 503)
+    # Cache only immutable schema readiness, never permissions or business data.
+    if db.bind not in _schemas:
+        with _schema_lock:
+            if db.bind not in _schemas:
+                inspector=inspect(db.connection())
+                c.require(inspector.has_table('uv_ops_settings') and inspector.has_table('uv_ops_schedule_blocks'), 'schema_not_ready', 'UV 模块尚未迁移，业务库不会自动建表', 503)
+                c.require('batch_id' in {x['name'] for x in inspector.get_columns('uv_ops_schedule_blocks')},'schema_not_ready','UV 批次排程需要显式迁移至 20260929_0127',503)
+                c.require(inspector.has_table('uv_ops_executions') and inspector.has_table('uv_ops_reversals') and 'active_key' in {x['name'] for x in inspector.get_columns('uv_ops_wage_accruals')}, 'schema_not_ready', 'UV 纠错与执行凭证需要显式迁移至 20260929_0127', 503)
+                _schemas[db.bind]=True
     c.require(db.scalar(c.query(m.UvOpsSettings)) is not None, "schema_not_ready", "UV 模块配置尚未初始化", 503)
 
 
@@ -33,15 +47,19 @@ def project(value, user):
     def visit(item):
         if isinstance(item, dict):
             return {key: visit(child) for key, child in item.items() if key not in excluded}
-        if isinstance(item, list):
+        if isinstance(item, (list, tuple)):
             return [visit(child) for child in item]
+        if isinstance(item, Decimal):
+            return format(item, 'f')
+        if isinstance(item, datetime):
+            return c.ts(item)
         return item
-    return visit(c.json_value(value))
+    return visit(value)
 
 
-def envelope(db, user, data, *, coverage=None, pagination=None, warnings=None):
+def envelope(db, user, data, *, coverage=None, pagination=None, warnings=None, view_revision=None, as_of=None):
     config = db.scalar(c.query(m.UvOpsSettings))
-    result = dict(data=project(data, user), meta=dict(factory_id=m.FACTORY, as_of=datetime.now(UTC).isoformat(), data_mode=config.data_mode, authorization_version=user.authorization_version, view_revision=c.revision(db), coverage=coverage or dict(state="unknown", unmatched_runs=None, unconfirmed_output=None, missing_cost_records=None), warnings=warnings or []))
+    result = dict(data=project(data, user), meta=dict(factory_id=m.FACTORY, as_of=as_of or datetime.now(UTC).isoformat(), data_mode=config.data_mode, authorization_version=user.authorization_version, view_revision=c.revision(db) if view_revision is None else view_revision, coverage=coverage or dict(state="unknown", unmatched_runs=None, unconfirmed_output=None, missing_cost_records=None), warnings=warnings or []))
     if pagination is not None:
         result["pagination"] = pagination
     return result

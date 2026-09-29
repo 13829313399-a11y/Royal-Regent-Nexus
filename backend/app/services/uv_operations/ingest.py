@@ -100,6 +100,7 @@ def decimal_or_none(value):
 
 def event(db, agent_id, raw):
     body = s.AgentEvent.model_validate(raw)
+    period = c.lock_period(db, body.observed_at.astimezone(__import__('zoneinfo').ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d'), allow_closed=True)
     # Hold the identity lock only for this event transaction. Revocation takes
     # the same row lock and is rechecked before every subsequent event.
     agent = c.get(db, m.UvOpsAgent, agent_id, lock=True)
@@ -129,7 +130,6 @@ def event(db, agent_id, raw):
     count, ink = decimal_or_none(payload.get("count")), decimal_or_none(payload.get("ink_total_ml"))
     c.require(count is None or (unit != "unknown" and mode != "unknown"), "count_semantics", "有计数时必须明确单位和累计/增量语义", 422)
     observed = c.ts(body.observed_at)
-    period = c.lock_period(db, body.observed_at.astimezone(__import__('zoneinfo').ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d'), allow_closed=True)
     evidence = body.model_dump(mode="json") | dict(data_mode="synthetic" if binding.adapter_type == "simulator" else "fixture_log")
     inbox = c.add(db, m.UvOpsAgentEventInbox, agent_id=agent.id, machine_id=body.machine_id, binding_id=binding.id, event_id=body.event_id, stream_id=body.stream_id, sequence=body.sequence, observed_at=observed, kind=body.kind, payload_hash=digest, evidence=evidence, late_closed_period=bool(period and period.status == "closed"))
     if period.status == 'closed':
@@ -197,8 +197,6 @@ def batch(db, agent_id, body):
 
 
 def match_run(db, user, entity_id, body):
-    run = c.get(db, m.UvOpsRun, entity_id, lock=True, version=body.expected_version)
-    c.require(run.match_evidence is None, "already_matched", "该运行已有确认分配，不允许覆盖")
     c.require(sum((x.share for x in body.allocations), Decimal(0)) == 1, "allocation_shares", "运行成本与工时分摊比例之和必须为 100%", 422)
     # Serialize with task cancellation and batch split/merge. Lock shared roots
     # in stable order before their batches, matching production's lock order.
@@ -206,6 +204,8 @@ def match_run(db, user, entity_id, body):
     task_ids |= {task.parent_task_id for key in sorted(task_ids) if (task := c.get(db,m.UvOpsTask,key)).parent_task_id}
     tasks = {key:c.get(db,m.UvOpsTask,key,lock=True) for key in sorted(task_ids)}
     batches = {key:c.get(db,m.UvOpsBatch,key,lock=True) for key in sorted({item.batch_id for item in body.allocations})}
+    run = c.get(db, m.UvOpsRun, entity_id, lock=True, version=body.expected_version)
+    c.require(run.match_evidence is None, "already_matched", "该运行已有确认分配，不允许覆盖")
     occupied, allocations, pass_fixtures = set(), [], {}
     for item in body.allocations:
         task = tasks[item.task_id]
