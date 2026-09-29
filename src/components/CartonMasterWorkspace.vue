@@ -40,7 +40,10 @@ async function downloadTemplate(kind: MasterImportKind) {
     anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (e) {
     const message = await getApiErrorMessageAsync(e)
-    if (factory === props.factoryId) error.value = message
+    if (factory === props.factoryId) {
+      if (importKind.value === kind) importError.value = `模板下载失败：${message}`
+      else error.value = `模板下载失败：${message}`
+    }
   }
 }
 async function processImport(apply = false) {
@@ -55,7 +58,13 @@ async function processImport(apply = false) {
       : await cartonMasterApi.importPreview(factory, kind, file)
     if (factory !== props.factoryId || version !== importGeneration) return
     importPreview.value = result
-    if (apply) { importDone.value = true; await load(); if (factory === props.factoryId) emit('changed') }
+    if (apply) {
+      importDone.value = true
+      const refreshError = await load()
+      if (factory !== props.factoryId || version !== importGeneration) return
+      if (refreshError) importError.value = `基础资料已导入，但列表刷新失败：${refreshError}。请刷新查看，勿重复导入。`
+      emit('changed')
+    }
   } catch (e) {
     if (factory === props.factoryId && version === importGeneration) { importError.value = getApiErrorMessage(e); importPreview.value = null }
   } finally { if (version === importGeneration) importBusy.value = false }
@@ -187,10 +196,24 @@ const customerName = (code: string) => props.customers.find(c => c.customer_code
 const canPlace = (warehouse: string) => workspace.value.can_manage || workspace.value.warehouses.includes(warehouse)
 let generation = 0
 async function load() {
-  const version = ++generation; loading.value = true; error.value = ''
-  try { const data = await cartonMasterApi.get(props.factoryId); if (version === generation) workspace.value = data }
-  catch (e) { if (version === generation) error.value = getApiErrorMessage(e) }
+  const version = ++generation, factory = props.factoryId; loading.value = true; error.value = ''
+  try {
+    const data = await cartonMasterApi.get(factory)
+    if (version !== generation || factory !== props.factoryId) return
+    workspace.value = data
+    return ''
+  } catch (e) {
+    if (version !== generation || factory !== props.factoryId) return
+    error.value = getApiErrorMessage(e)
+    return error.value
+  }
   finally { if (version === generation) loading.value = false }
+}
+async function refreshAfterSave(factory: string, successMessage: string) {
+  const refreshError = await load()
+  if (factory !== props.factoryId) return
+  if (refreshError) error.value = `${successMessage}，但列表刷新失败：${refreshError}。请刷新查看，勿重复保存。`
+  emit('changed')
 }
 watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; configActionMessage.value = ''; statusFilter.value = 'ACTIVE'; customer.value = ''; void load() }, { immediate: true })
 function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = customer.value) {
@@ -246,8 +269,8 @@ async function save() {
     }
     await cartonMasterApi.save(factory, { ...form, data: JSON.parse(JSON.stringify(form.data)) as MasterData }, editingId.value)
     if (factory !== props.factoryId) return
-    editing.value = false; await load(); emit('changed')
-  } catch (e) { error.value = getApiErrorMessage(e) } finally { busy.value = false }
+    editing.value = false; await refreshAfterSave(factory, '基础资料已保存')
+  } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) } finally { busy.value = false }
 }
 async function changeConfigAvailability(row: MasterRecord, status: 'ACTIVE' | 'INACTIVE') {
   if (busy.value || !workspace.value.can_manage || row.kind !== 'CONFIG') return
@@ -287,8 +310,8 @@ async function saveLocation() {
     if (locationRow.value.id) await cartonMasterApi.location(factory, locationRow.value.id, locationForm)
     else await cartonPositionsApi.create(factory, locationForm.warehouse, locationForm.bin_code, locationForm.reason)
     if (factory !== props.factoryId) return
-    locationRow.value = null; await load(); emit('changed')
-  } catch (e) { error.value = getApiErrorMessage(e) } finally { busy.value = false }
+    locationRow.value = null; await refreshAfterSave(factory, '仓位资料已保存')
+  } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) } finally { busy.value = false }
 }
 function editWarehouse(name = '') {
   if (!workspace.value.can_manage) return
@@ -307,7 +330,7 @@ async function saveWarehouse() {
     else if (original) await cartonMasterApi.renameWarehouse(factory, original, warehouseForm.name, warehouseForm.revisions, warehouseForm.reason)
     else await cartonMasterApi.createWarehouse(factory, warehouseForm.name, warehouseForm.bin, warehouseForm.reason)
     if (factory !== props.factoryId) return
-    warehouseEditing.value = false; await load(); emit('changed')
+    warehouseEditing.value = false; await refreshAfterSave(factory, warehouseDeleting.value ? '仓库资料已删除' : '仓库资料已保存')
   } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) }
   finally { busy.value = false }
 }

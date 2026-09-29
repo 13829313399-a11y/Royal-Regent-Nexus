@@ -2,6 +2,7 @@ import { reactive } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CartonProcurementView from '../CartonProcurementView.vue'
+import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import { cartonMasterApi, emptyMaster } from '@/api/cartonMaster'
 import type { CartonImportBatchResponse, CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { SplitRecord } from '@/api/cartonOrderSplits'
@@ -61,6 +62,7 @@ const cartonApiMock = vi.hoisted(() => ({
   getPurchaseOrderContext: vi.fn(),
   issuePurchaseOrder: vi.fn(),
   downloadPurchaseOrderIssue: vi.fn(),
+  downloadPurchaseOrderBatch: vi.fn(),
   issuePurchaseOrders: vi.fn(),
   exportPurchaseOrders: vi.fn(),
   uploadReceipt: vi.fn(),
@@ -459,6 +461,33 @@ describe('CartonProcurementView frontend workspace', () => {
     wrapper.unmount()
   })
 
+  it.each([
+    ['closing', 'success'], ['closing', 'failure'],
+    ['exceptions', 'success'], ['exceptions', 'failure'],
+  ] as const)('ignores a late %s operation %s after switching factories', async (tab, outcome) => {
+    mockReceiptWorkspace([])
+    const closing = { id: 'OLD-CLOSING', factory_id: 'huaxing', customer_code: 'DICKIE', customer_name: '旧厂区客户', period: '2026-08', currency: 'CNY', status: 'DRAFT', revision: 1, opening_quantity: '0', inbound_quantity: '1', outbound_quantity: '0', adjustment_quantity: '0', ending_quantity: '1', ending_amount: '1', pricing_issues: [] }
+    const exception = { id: 'OLD-EX', exception_no: 'EX-OLD', factory_id: 'huaxing', source_type: 'WEEKLY_SCHEDULE', source_id: 'S', category: 'MISSING_ORDER', severity: 'MEDIUM', customer_name: '旧厂区客户', customer_code: 'DICKIE', contract_no: 'SC', item_no: 'ITEM', title: '旧厂区待核对', description: '', owner_department: '纸箱仓', status: 'OPEN', resolution_note: '', revision: 1, created_at: '', updated_at: '' }
+    cartonApiMock.listClosings.mockResolvedValue(tab === 'closing' ? [closing] : [])
+    cartonApiMock.listExceptions.mockResolvedValue(tab === 'exceptions' ? [exception] : [])
+    let resolve!: (value: unknown) => void
+    let reject!: (value: unknown) => void
+    const operation = tab === 'closing' ? cartonApiMock.updateClosingStatus : cartonApiMock.updateException
+    operation.mockReturnValue(new Promise((res, rej) => { resolve = res; reject = rej }))
+    const wrapper = mountView(tab, { Teleport: true }); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === (tab === 'closing' ? '提交核对' : '开始处理'))!.trigger('click')
+    expect(operation.mock.calls[0]?.[0]).toBe('huaxing')
+    cartonApiMock.listClosings.mockResolvedValue([])
+    cartonApiMock.listExceptions.mockResolvedValue([])
+    routeState.query.factory = 'huadeng'; await flushPromises()
+    if (outcome === 'failure') reject({ isAxiosError: true, response: { status: 409, data: { detail: '旧厂区记录版本已改变' } } })
+    else resolve({ ...(tab === 'closing' ? closing : exception), status: tab === 'closing' ? 'PENDING' : 'IN_PROGRESS', revision: 2 })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('旧厂区')
+    expect(wrapper.findComponent(CartonActionNotice).props('message')).toBe('')
+    wrapper.unmount()
+  })
+
   it('selects filtered exceptions while preserving hidden selections and submits all selected records', async () => {
     mockReceiptWorkspace([])
     const records = ['A', 'B'].map((id, index) => ({
@@ -744,6 +773,7 @@ describe('CartonProcurementView frontend workspace', () => {
       documentNo: 'CT-DEFAULT-P00',
     })
     cartonApiMock.downloadPurchaseOrderIssue.mockResolvedValue(new Blob(['issued-xlsx']))
+    cartonApiMock.downloadPurchaseOrderBatch.mockResolvedValue(new Blob(['merged-purchase-xlsx']))
     cartonApiMock.issuePurchaseOrders.mockResolvedValue({
       blob: new Blob(['issued-batch-xlsx']),
       issueCount: 1,
@@ -1464,6 +1494,41 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('[aria-label="排期下单 SC-IMPORT-BOUND ITEM-SCHEDULE"]').trigger('click')
     expect(wrapper.get('[aria-label="订单客户"]').element).toHaveProperty('value', 'Dickie')
     expect(wrapper.get('[aria-label="合同号"]').element).toHaveProperty('value', 'SC-IMPORT-BOUND')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each(['request', 'refresh', 'empty', 'reimport'] as const)('explains schedule import %s outcomes and keeps saved batches', async (stage) => {
+    mockReceiptWorkspace([])
+    const batch = mockWeeklySchedule([pendingScheduleFixture('SC-IMPORT-FAILURE')])
+    cartonApiMock.listImports.mockResolvedValue([])
+    if (stage === 'empty') Object.assign(batch.parse_summary, { rows: [], row_count: 0, warnings: ['缺少 Contract No. 表头'] })
+    if (stage === 'reimport') batch.parse_summary.reimported_from_batch_id = 'CIB-WITHDRAWN'
+    cartonApiMock.uploadWeeklySchedule.mockResolvedValue(batch)
+    const wrapper = mountView('weekly-check', { Teleport: true }); await flushPromises()
+    await wrapper.get('[aria-label="业务排期导入客户"]').setValue('DICKIE')
+    if (stage === 'request') cartonApiMock.uploadWeeklySchedule.mockRejectedValueOnce({
+      isAxiosError: true, message: 'Request failed with status code 422', response: { status: 422, data: { detail: '工作表缺少订单数量列' } },
+    })
+    if (stage === 'refresh') cartonApiMock.listExceptions.mockRejectedValueOnce(new Error('异常列表暂不可用'))
+    const input = wrapper.get<HTMLInputElement>('[aria-label="选择每周排期文件"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['xlsx'], '原排期.xlsx')] })
+    await input.trigger('change'); await flushPromises()
+    if (stage === 'reimport') {
+      expect(wrapper.text()).toContain('已重新导入为新批次，原撤销记录保留')
+      expect(wrapper.get('table').text()).toContain('SC-IMPORT-FAILURE')
+    } else {
+      const notice = wrapper.get('[data-testid="carton-action-notice"]')
+      if (stage === 'request') expect(notice.text()).toContain('排期导入失败：工作表缺少订单数量列')
+      if (stage === 'refresh') {
+        expect(notice.text()).toContain('已保存为批次')
+        expect(notice.text()).toContain('异常列表暂不可用')
+        expect(notice.text()).not.toContain('排期导入失败')
+        expect(wrapper.get('table').text()).toContain('SC-IMPORT-FAILURE')
+      }
+      if (stage === 'empty') expect(notice.text()).toContain('未识别到有效明细：缺少 Contract No. 表头')
+    }
+    expect(cartonApiMock.uploadWeeklySchedule).toHaveBeenCalledTimes(1)
     expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -2300,6 +2365,35 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(orderCard().find('button[aria-label="登记 CT-SUBMIT 收料"]').exists()).toBe(true)
   })
 
+  it.each(['request', 'refresh'] as const)('shows the exact single confirmation %s failure above the open operation', async (stage) => {
+    const order = orderFixture('CT-FAIL-SUBMIT', businessDateOffset(5), 'CONFIRMED')
+    mockReceiptWorkspace([order])
+    cartonApiMock.submitOrderToSupplier.mockResolvedValue({ ...order, revision: 2, status: 'PENDING_SUPPLIER' })
+    const wrapper = mountView('orders', { Teleport: true }); await flushPromises()
+    const failure = { isAxiosError: true, message: 'Request failed with status code 409', response: {
+      status: 409, data: { detail: stage === 'request' ? '供应商未配置，无法下单' : '操作日志暂不可用' },
+    } }
+    if (stage === 'request') cartonApiMock.submitOrderToSupplier.mockRejectedValueOnce(failure)
+    else cartonApiMock.listAuditEvents.mockRejectedValueOnce(failure)
+    await wrapper.get('[aria-label="确认订单 CT-FAIL-SUBMIT 并锁定"]').trigger('click')
+    await wrapper.get('[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
+    const notice = wrapper.get('[data-testid="carton-action-notice"]')
+    expect(notice.attributes('role')).toBe('alert')
+    if (stage === 'request') {
+      expect(notice.text()).toContain('确认锁定失败：供应商未配置，无法下单')
+      expect(wrapper.find('[aria-label="执行确认订单并锁定"]').exists()).toBe(true)
+    } else {
+      expect(notice.text()).toContain('已确认并锁定，采购单已发行')
+      expect(notice.text()).toContain('操作日志暂不可用')
+      expect(notice.text()).not.toContain('确认锁定失败')
+      expect(wrapper.find('[aria-label="执行确认订单并锁定"]').exists()).toBe(false)
+    }
+    expect(cartonApiMock.submitOrderToSupplier).toHaveBeenCalledTimes(1)
+    await wrapper.get('[aria-label="关闭操作提醒"]').trigger('click')
+    expect(wrapper.find('[data-testid="carton-action-notice"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('edits imported demand without deriving missing product or packing quantities or replacing the planned date', async () => {
     const seed = orderFixture('CT-HISTORY-EDIT', businessDateOffset(8))
     const order = { ...seed, quantity_basis: 'EXPLICIT', product_order_quantity: null,
@@ -2686,6 +2780,53 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('已确认并锁定 1 张订单，首次采购单已自动发行到供应商协同；跳过 1 张非待下单订单')
     expect(wrapper.get('[data-order-no="CT-BULK-PENDING"]').text()).toContain('已确认锁定')
     expect((wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it.each([
+    { downloadFails: false, auditFails: false },
+    { downloadFails: true, auditFails: false },
+    { downloadFails: false, auditFails: true },
+  ])('preserves confirmed batches with download failure=$downloadFails and audit failure=$auditFails', async ({ downloadFails, auditFails }) => {
+    const orders = ['CT-MERGE-A', 'CT-MERGE-B'].map(orderNo => orderFixture(orderNo, businessDateOffset(5)))
+    mockReceiptWorkspace(orders)
+    const batch = { id: 'CPB-TEST', document_no: 'CG-260929-BATCH', order_count: 2, generated_at: '2026-09-29T08:00:00+08:00' }
+    cartonApiMock.bulkSubmitOrdersToSupplier.mockResolvedValue(orders.map(order => ({
+      ...order, status: 'PENDING_SUPPLIER', revision: order.revision + 1, purchase_order_batch: batch,
+    })))
+    if (downloadFails) cartonApiMock.downloadPurchaseOrderBatch.mockRejectedValueOnce(new Error('下载连接断开'))
+    const wrapper = mountView('orders'); await flushPromises()
+    if (auditFails) cartonApiMock.listAuditEvents.mockRejectedValueOnce(new Error('操作记录连接断开'))
+    for (const order of orders) await wrapper.get(`input[aria-label="选择订单 ${order.order_no}"]`).setValue(true)
+    await findButton(wrapper, '确认订单并锁定（2）').trigger('click')
+    expect(wrapper.text()).toContain('本批订单自动合并为一张采购单并下载')
+    await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
+    expect(cartonApiMock.downloadPurchaseOrderBatch).toHaveBeenCalledTimes(1)
+    expect(cartonApiMock.downloadPurchaseOrderBatch).toHaveBeenCalledWith('huaxing', batch.id)
+    expect(wrapper.text()).toContain('已确认并锁定 2 张订单，合并为 1 张采购单并发行到供应商协同')
+    for (const order of orders) expect(wrapper.get(`[data-order-no="${order.order_no}"]`).text()).toContain('已确认锁定')
+    expect(wrapper.text()).not.toContain('批量确认锁定失败')
+    expect(wrapper.text()).toContain(downloadFails ? '合并单下载失败' : '合并采购单已下载')
+    if (auditFails) expect(wrapper.text()).toContain('操作记录刷新失败：操作记录连接断开')
+    wrapper.unmount()
+  })
+
+  it.each(['audit', 'download'])('ignores old-factory confirmation results during %s refresh', async (phase) => {
+    const orders = ['CT-SCOPE-A', 'CT-SCOPE-B'].map(orderNo => orderFixture(orderNo, businessDateOffset(5)))
+    mockReceiptWorkspace(orders)
+    const batch = { id: 'CPB-SCOPE', document_no: 'CG-260929-SCOPE', order_count: 2, generated_at: '2026-09-29T08:00:00+08:00' }
+    cartonApiMock.bulkSubmitOrdersToSupplier.mockResolvedValue(orders.map(order => ({
+      ...order, status: 'PENDING_SUPPLIER', revision: order.revision + 1, purchase_order_batch: batch,
+    })))
+    const wrapper = mountView('orders'); await flushPromises()
+    const switchFactory = () => { routeState.query.factory = 'huadeng' }
+    if (phase === 'audit') cartonApiMock.listAuditEvents.mockImplementationOnce(async () => { switchFactory(); return [] })
+    else cartonApiMock.downloadPurchaseOrderBatch.mockImplementationOnce(async () => { switchFactory(); return new Blob(['xlsx']) })
+    for (const order of orders) await wrapper.get(`input[aria-label="选择订单 ${order.order_no}"]`).setValue(true)
+    await findButton(wrapper, '确认订单并锁定（2）').trigger('click')
+    await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
+    expect(cartonApiMock.downloadPurchaseOrderBatch).toHaveBeenCalledTimes(phase === 'audit' ? 0 : 1)
+    expect(window.URL.createObjectURL).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('downloads the mapping template and imports grouped history orders', async () => {
@@ -3107,7 +3248,8 @@ describe('CartonProcurementView frontend workspace', () => {
     const feedback = wrapper.get('[data-testid="receipt-save-feedback"]')
     expect(feedback.attributes('role')).toBe('status')
     expect(feedback.text()).toContain('入库成功')
-    expect(feedback.text()).toContain('台账刷新失败，请刷新页面查看')
+    expect(feedback.text()).toContain('台账刷新失败：')
+    expect(feedback.text()).toContain('台账暂不可用')
     expect(cartonApiMock.createReceipt).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
@@ -4321,7 +4463,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('出库已登记')
 
     if (refreshFails) {
-      expect(wrapper.text()).toContain('结存暂未刷新')
+      expect(wrapper.text()).toContain('结存刷新失败：refresh failed')
       expect(wrapper.text()).not.toContain('出库失败')
       expect(wrapper.find('input[aria-label="库存作业数量"]').exists()).toBe(false)
       expect(cartonApiMock.createInventoryMovement).toHaveBeenCalledTimes(1)

@@ -15,6 +15,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
+from app.services.carton_purchase_batches import group_purchase_documents, load_purchase_batch, purchase_batch
 from app.models.carton_mark import CartonMarkDocument, CartonMarkTemplate
 from app.models.carton_procurement import CartonOrder, CartonOrderLine, CartonSupplier, CartonPurchaseOrderIssue, CartonReceipt, CartonReceiptLine, CartonAuditEvent
 from app.models.carton_supplier_portal import SupplierCommitment, SupplierShipment, SupplierShipmentLine, SupplierShipmentUnmatchedLine, SupplierAttachment
@@ -416,6 +417,7 @@ def documents(db, user, factory):
         CartonOrder.status.in_(VISIBLE_STATES))).all()
     order_ids = [order.id for order in orders]
     result = []
+    batches = {}
     if order_ids:
         issues = db.scalars(select(CartonPurchaseOrderIssue).where(
             CartonPurchaseOrderIssue.factory_id == factory,
@@ -424,6 +426,7 @@ def documents(db, user, factory):
             .order_by(CartonPurchaseOrderIssue.generated_at.desc())).all()
         for issue in issues:
             snapshot = _purchase_order_snapshot(issue)
+            batches[issue.id] = purchase_batch(issue)
             header = snapshot.get("order", {})
             result.append({
                 "id": issue.id, "kind": "PURCHASE", "factory_id": factory,
@@ -448,6 +451,7 @@ def documents(db, user, factory):
                     "quantity": str(line.get("after_required_quantity", "0")),
                 } for line in snapshot.get("lines", [])],
             })
+    result = group_purchase_documents(result, batches)
     shipments = db.scalars(select(SupplierShipment).where(
         SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier.id)
         .order_by(SupplierShipment.created_at.desc())).all()
@@ -480,7 +484,8 @@ def documents(db, user, factory):
             } for line in visible["lines"]],
         })
     if result:
-        purchase_ids = [row["id"] for row in result if row["kind"] == "PURCHASE"]
+        purchase_ids = [row["id"] for row in result if row["kind"] == "PURCHASE" and not row.get("is_batch")]
+        batch_ids = [row["id"] for row in result if row.get("is_batch")]
         delivery_ids = [row["id"] for row in result if row["kind"] == "DELIVERY"]
         export_counts = {
             (entity_type, entity_id): count for entity_type, entity_id, count in db.execute(
@@ -491,11 +496,13 @@ def documents(db, user, factory):
                     or_(and_(CartonAuditEvent.entity_type == "carton_purchase_order_issue",
                             CartonAuditEvent.entity_id.in_(purchase_ids)),
                         and_(CartonAuditEvent.entity_type == "supplier_shipment",
-                             CartonAuditEvent.entity_id.in_(delivery_ids))),
+                             CartonAuditEvent.entity_id.in_(delivery_ids)),
+                        and_(CartonAuditEvent.entity_type == "carton_purchase_order_batch",
+                             CartonAuditEvent.entity_id.in_(batch_ids))),
                 ).group_by(CartonAuditEvent.entity_type, CartonAuditEvent.entity_id)).all()
         }
         for row in result:
-            entity_type = "carton_purchase_order_issue" if row["kind"] == "PURCHASE" else "supplier_shipment"
+            entity_type = _document_entity_type(row)
             row["export_count"] = export_counts.get((entity_type, row["id"]), 0)
     return sorted(result, key=lambda item: (item["created_at"], item["document_no"]), reverse=True)
 
@@ -552,6 +559,17 @@ def _excel_text(value):
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
 
 
+def _document_entity_type(row):
+    if row.get("is_batch"):
+        return "carton_purchase_order_batch"
+    return "carton_purchase_order_issue" if row["kind"] == "PURCHASE" else "supplier_shipment"
+
+
+def _record_document_export(db, user, row, **details):
+    _audit(db, user, row["factory_id"], "SUPPLIER_DOCUMENT_EXPORTED", _document_entity_type(row), row["id"],
+           {"document_no": row["document_no"], "kind": row["kind"], **details})
+
+
 def export_documents(db, user, payload: SupplierDocumentExport):
     visible_by_factory = {}
     selected = []
@@ -569,7 +587,7 @@ def export_documents(db, user, payload: SupplierDocumentExport):
     for kind, title, headers in (
         ("PURCHASE", "采购单", ["厂区", "采购单号", "发行日期", "变更类型", "订单号", "客户", "合同号",
                               "客户PO", "货号", "计划交期", "纸品子单", "纸品类型", "纸质", "规格",
-                              "变更前", "本次变化", "变更后", "单位"]),
+                              "变更前", "本次变化", "变更后", "单位", "原采购单号"]),
         ("DELIVERY", "送货单", ["送货厂区", "送货单号", "送货日期", "仓库状态", "订单号", "客户", "合同号",
                               "客户PO", "货号", "纸品子单", "纸品类型", "纸质", "规格",
                               "发货数量", "仓库实收", "单位"]),
@@ -596,7 +614,7 @@ def export_documents(db, user, payload: SupplierDocumentExport):
                         order.get("customer_po"), order.get("item_no"), order.get("planned_date"),
                         line["child_no"], line["packaging_type"], line["paper_quality"],
                         line["specification"], line["before_quantity"], line["change_quantity"],
-                        line["quantity"], line["unit"],
+                        line["quantity"], line["unit"], line.get("source_document_no", document["document_no"]),
                     ]
                 else:
                     values = [
@@ -626,9 +644,7 @@ def export_documents(db, user, payload: SupplierDocumentExport):
     workbook.close()
     content = output.getvalue()
     for row in selected:
-        entity_type = "carton_purchase_order_issue" if row["kind"] == "PURCHASE" else "supplier_shipment"
-        _audit(db, user, row["factory_id"], "SUPPLIER_DOCUMENT_EXPORTED", entity_type, row["id"],
-               {"document_no": row["document_no"], "kind": row["kind"]})
+        _record_document_export(db, user, row)
     db.commit()
     return content
 
@@ -657,6 +673,7 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
         raise HTTPException(422, "对方导入模板一次只能包含一个送货厂区；请按厂区分别导出")
     visible_by_factory = {}
     issue_rows = []
+    selected = []
     for selection in payload.documents:
         if selection.kind != "PURCHASE":
             raise HTTPException(422, "对方订单导入模板只能选择采购单")
@@ -668,10 +685,15 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
         document = visible_by_factory[selection.factory_id].get(selection.id)
         if document is None:
             raise HTTPException(404, "所选采购单不存在或不属于当前供应商")
-        issue = db.get(CartonPurchaseOrderIssue, selection.id)
-        if issue is None or issue.factory_id != selection.factory_id:
-            raise HTTPException(404, "采购单发行快照不存在")
-        issue_rows.append((issue, _purchase_order_snapshot(issue)))
+        selected.append(document)
+        if document.get("is_batch"):
+            _batch, sources = load_purchase_batch(db, selection.factory_id, selection.id)
+        else:
+            issue = db.get(CartonPurchaseOrderIssue, selection.id)
+            if issue is None or issue.factory_id != selection.factory_id:
+                raise HTTPException(404, "采购单发行快照不存在")
+            sources = [issue]
+        issue_rows.extend((issue, _purchase_order_snapshot(issue), document) for issue in sources)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "006 (2)"
@@ -680,7 +702,7 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="087F74")
-    for issue, snapshot in issue_rows:
+    for issue, snapshot, document in issue_rows:
         header = snapshot.get("order", {})
         lines = snapshot.get("lines", [])
         if not isinstance(header, dict) or not isinstance(lines, list):
@@ -726,7 +748,8 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
                 length, width, height, float(change), _excel_text(line.get("paper_quality")),
                 _excel_text(line.get("packaging_type")), supplier_unit, unit_price,
                 promised_date, _excel_text(line.get("note")), _excel_text(delivery_note),
-                _excel_text(line.get("unit")), None, None, None, _excel_text(issue.document_no), "", "",
+                _excel_text(line.get("unit")), None, None, None, _excel_text(issue.document_no),
+                _excel_text(document["document_no"]) if document.get("is_batch") else "", "",
             ])
             sheet.cell(sheet.max_row, 12).number_format = "yyyy-mm-dd"
     sheet.auto_filter.ref = sheet.dimensions
@@ -735,9 +758,8 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
     output = BytesIO()
     workbook.save(output)
     workbook.close()
-    for issue, _snapshot in issue_rows:
-        _audit(db, user, issue.factory_id, "SUPPLIER_DOCUMENT_EXPORTED", "carton_purchase_order_issue", issue.id,
-               {"document_no": issue.document_no, "kind": "PURCHASE", "format": "SUPPLIER_ORDER_IMPORT"})
+    for document in selected:
+        _record_document_export(db, user, document, format="SUPPLIER_ORDER_IMPORT")
     db.commit()
     return output.getvalue()
 

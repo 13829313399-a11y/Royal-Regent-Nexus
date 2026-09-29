@@ -1,9 +1,11 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Blob as NodeBlob } from 'node:buffer'
 import CartonSupplierView from '../CartonSupplierView.vue'
 import CartonSupplierManagementView from '../CartonSupplierManagementView.vue'
 import CartonSupplierMarkTemplatesView from '../CartonSupplierMarkTemplatesView.vue'
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
+import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import type { PortalWorkspace } from '@/api/cartonSupplierPortal'
 const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
 const router = vi.hoisted(() => ({ replace: vi.fn() }))
@@ -57,6 +59,50 @@ describe('supplier carton mark templates', () => {
 })
 
 describe('supplier batches and document desk', () => {
+  it.each([false, true])('shows a confirmed batch and makes direct-export failure visible=%s', async (exportFails) => {
+    const merged = {
+      id: 'CPB-TEST', kind: 'PURCHASE' as const, factory_id: 'huaxing',
+      document_no: 'CG-260929-BATCH', document_type: 'INITIAL', date: '2026-09-29',
+      created_at: '2026-09-29T08:00:00+08:00', status: '已发行', replenishment: false,
+      export_count: 0, is_batch: true,
+      source_documents: ['A', 'B'].map(suffix => ({ id: `I-${suffix}`, document_no: `ORDER-${suffix}-P00`, order_no: `ORDER-${suffix}` })),
+      orders: ['A', 'B'].map(suffix => ({ order_no: `ORDER-${suffix}`, customer_name: 'Dickie',
+        contract_no: `SC-${suffix}`, customer_po: `PO-${suffix}`, item_no: `ITEM-${suffix}`,
+        product_name: `产品${suffix}`, order_date: '2026-09-29', planned_date: '2026-10-10' })),
+      lines: ['A', 'B'].map(suffix => ({ order_no: `ORDER-${suffix}`, child_no: `ORDER-${suffix}/01`,
+        source_document_no: `ORDER-${suffix}-P00`, packaging_type: '外箱', paper_quality: 'A33',
+        specification: '10*20*30', unit: '个', before_quantity: '0', change_quantity: '100', quantity: '100' })),
+    }
+    api.documents.mockResolvedValue([merged])
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text().includes('采购单与送货单'))!.trigger('click'); await flushPromises()
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.get('tbody tr').text()).toContain('合并采购单')
+    expect(wrapper.get('tbody tr').text()).toContain('2 张订单')
+    await wrapper.get('input[aria-label="搜索供应商单据"]').setValue('ORDER-B-P00')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    await wrapper.get('button[aria-label="查看单据 CG-260929-BATCH 明细"]').trigger('click'); await flushPromises()
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(dialog.text()).toContain('合并采购单 · CG-260929-BATCH')
+    for (const suffix of ['A', 'B']) {
+      expect(dialog.text()).toContain(`SC-${suffix}`)
+      expect(dialog.text()).toContain(`ITEM-${suffix}`)
+      expect(dialog.text()).toContain(`原采购单 ORDER-${suffix}-P00`)
+    }
+    api.documents.mockResolvedValue([{ ...merged, export_count: 1 }])
+    if (exportFails) api.exportDocuments.mockRejectedValueOnce(new Error('下载连接断开'))
+    await dialog.findAll('button').find(button => button.text() === '导出这张采购单')!.trigger('click'); await flushPromises()
+    expect(api.exportDocuments).toHaveBeenCalledWith([merged])
+    if (exportFails) {
+      expect(dialog.get('[role="alert"]').text()).toContain('下载连接断开')
+      expect(wrapper.get('[aria-label="CG-260929-BATCH 导出 0 次"]').text()).toBe('0')
+      await dialog.findAll('button').find(button => button.text() === '导出这张采购单')!.trigger('click'); await flushPromises()
+    }
+    expect(dialog.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="CG-260929-BATCH 导出 1 次"]').text()).toBe('1')
+    wrapper.unmount()
+  })
+
   it('shows only actions covered by edit or approve permission', async () => {
     can.mockImplementation(permission => permission === 'carton_supplier:read')
     let wrapper = mount(CartonSupplierView, options); await flushPromises()
@@ -168,7 +214,7 @@ describe('supplier batches and document desk', () => {
     ])
     api.workspace.mockImplementation(async (scope: string) => structuredClone(scope === 'huaxing' ? first : second))
     api.acceptBatch.mockImplementation(async (scope: string) => {
-      if (scope === 'huakang-a') throw new Error('版本已变更')
+      if (scope === 'huakang-a') throw { isAxiosError: true, message: 'Request failed with status code 409', response: { status: 409, data: { detail: '版本已变更，请刷新后重新确认承诺交期' } } }
       first.orders[0]!.lines.forEach(line => { line.accepted = true })
       return { order_ids: ['ORDER-A'] }
     })
@@ -180,6 +226,32 @@ describe('supplier batches and document desk', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('已完成 华兴')
     expect(wrapper.get('[role="alert"]').text()).toContain('版本已变更')
     expect(wrapper.get('[role="dialog"]').text()).toContain('ORDER-K')
+    expect(wrapper.findComponent(CartonActionNotice).props('message')).toContain('版本已变更，请刷新后重新确认承诺交期')
+    wrapper.unmount()
+  })
+
+  it.each(['request', 'refresh'] as const)('keeps the precise single acceptance %s outcome visible', async (stage) => {
+    const data = fixture()
+    data.orders[0]!.lines.forEach(line => { line.accepted = false; line.commitment_revision = 0 })
+    api.workspace.mockResolvedValue(data)
+    api.accept.mockResolvedValue(undefined)
+    const wrapper = mount(CartonSupplierView, { global: { stubs: { ...options.global.stubs, Teleport: true } } }); await flushPromises()
+    await wrapper.get('button[aria-label="确认订单 ORDER-A 接单"]').trigger('click')
+    const reason = stage === 'request' ? '采购单版本已更新，请核对后接单' : '供应商台账暂不可读取'
+    const failure = { isAxiosError: true, message: 'Request failed with status code 409', response: { status: 409, data: { detail: reason } } }
+    if (stage === 'request') api.accept.mockRejectedValueOnce(failure)
+    else api.workspace.mockRejectedValueOnce(failure)
+    await wrapper.get('[role="dialog"]').findAll('button').find(button => button.text() === '确认接单')!.trigger('click'); await flushPromises()
+    const notice = wrapper.findComponent(CartonActionNotice)
+    expect(notice.get('[role="alert"]').text()).toContain(reason)
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(stage === 'request')
+    if (stage === 'refresh') {
+      expect(notice.text()).toContain('已确认接单，但列表刷新失败')
+      expect(notice.text()).toContain('勿重复接单')
+    }
+    expect(api.accept).toHaveBeenCalledTimes(1)
+    await notice.get('button[aria-label="关闭操作提醒"]').trigger('click')
+    expect(notice.find('[role="alert"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -588,6 +660,21 @@ describe('supplier collaboration entry', () => {
     expect(api.confirmDeliveryImport).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+  it('reports persisted supplier delivery before a failed workspace refresh', async () => {
+    const wrapper = mount(CartonSupplierView, { global: { stubs: { ...options.global.stubs, Teleport: true } } }); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '导入送货单')!.trigger('click')
+    const input = wrapper.get<HTMLInputElement>('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['excel'], '送货明细表.xlsx')] })
+    await input.trigger('change'); await flushPromises()
+    api.workspace.mockRejectedValueOnce({ isAxiosError: true, message: 'Request failed with status code 503', response: { status: 503, data: { detail: '送货台账查询服务暂不可用' } } })
+    await wrapper.findAll('button').find(button => button.text() === '确认 1 张送货单发货')!.trigger('click'); await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    const notice = wrapper.findComponent(CartonActionNotice)
+    expect(notice.text()).toContain('发货已保存，但列表刷新失败：送货台账查询服务暂不可用')
+    expect(notice.text()).toContain('勿重复发货')
+    expect(api.confirmDeliveryImport).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
   it('routes a complete no-order candidate to warehouse review without calling it a formal order', async () => {
     const response = await api.previewDeliveryImport()
     response.groups[0].rows[0].status = 'AD_HOC_REVIEW'
@@ -620,6 +707,20 @@ describe('supplier collaboration entry', () => {
   })
 })
 describe('internal supplier collaboration', () => {
+  it('explains an attachment download failure using its JSON response', async () => {
+    vi.stubGlobal('Blob', NodeBlob)
+    try {
+      const data = fixture()
+      data.orders[0]!.attachments = [{ id: 'ATT-1', filename: '订单资料.pdf', version: 1, size: 12, sha256: 'abc', created_at: '' }]
+      api.workspace.mockResolvedValue(data)
+      api.download.mockRejectedValueOnce({ isAxiosError: true, message: 'Request failed with status code 403', response: { status: 403, data: new NodeBlob([JSON.stringify({ detail: '当前账号没有此订单附件的下载权限' })], { type: 'application/json' }) } })
+      const wrapper = mount(CartonSupplierManagementView, options); await flushPromises()
+      await wrapper.findAll('button').find(button => button.text() === '订单资料.pdf · v1')!.trigger('click'); await flushPromises()
+      expect(api.download).toHaveBeenCalledWith('ATT-1', 'huaxing', '订单资料.pdf', true)
+      expect(wrapper.get('[role="alert"]').text()).toContain('附件下载失败：当前账号没有此订单附件的下载权限')
+      wrapper.unmount()
+    } finally { vi.unstubAllGlobals() }
+  })
   it('requires a reason before correcting reversed receipt and carries it with the original note', async () => {
     const data = fixture()
     data.shipments[0]!.status = 'RECEIPT_REVERSED'

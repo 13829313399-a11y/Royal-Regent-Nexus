@@ -1,12 +1,13 @@
 <script setup lang="ts">
+import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ClipboardList, FileText, History, PackageCheck, Search, Truck, X } from '@lucide/vue'
+import { ArrowLeft, ClipboardList, FileText, History, PackageCheck, Search, Truck, X } from '@lucide/vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { cartonSupplierPortalApi as api, type PortalOrder, type PortalPaper, type PortalShipment, type SupplierDocument, type SupplierActivity, type DeliveryImportPreview, type DeliveryImportGroup } from '@/api/cartonSupplierPortal'
 import { factoryContexts } from '@/data/enterpriseMock'
 import { formatBusinessDate, parseBusinessTimestamp } from '@/lib/dateTime'
-import { getApiErrorMessageAsync } from '@/lib/http'
+import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
 type SupplierOrder = PortalOrder & { factory_id: string }
@@ -34,6 +35,7 @@ const documentDateTo = ref('')
 const selectedDocumentKeys = ref<string[]>([])
 const detailDocument = ref<SupplierDocument | null>(null)
 const detailDocumentPinned = ref(false)
+const detailDocumentError = ref('')
 const mergedDocumentsOpen = ref(false)
 const documentDetailDialog = ref<HTMLElement | null>(null)
 const mergedDocumentsDialog = ref<HTMLElement | null>(null)
@@ -128,7 +130,7 @@ const filteredDocuments = computed(() => documents.value.filter(row => {
   if (documentDateFrom.value && row.date < documentDateFrom.value) return false
   if (documentDateTo.value && row.date > documentDateTo.value) return false
   const term = documentSearch.value.trim().toLocaleLowerCase()
-  return !term || [row.document_no, ...row.lines.flatMap(line => [line.contract_no || '', line.item_no || '']), ...row.orders.flatMap(order => [
+  return !term || [row.document_no, ...row.lines.flatMap(line => [line.contract_no || '', line.item_no || '', line.source_document_no || '']), ...row.orders.flatMap(order => [
     order.order_no, order.customer_name, order.contract_no, order.customer_po, order.item_no,
   ])].some(value => value.toLocaleLowerCase().includes(term))
 }))
@@ -257,6 +259,7 @@ function showDocumentDetail(row: SupplierDocument, pinned = false) {
   if (detailDocumentPinned.value && !pinned) return
   detailDocument.value = row
   detailDocumentPinned.value = pinned
+  detailDocumentError.value = ''
   if (pinned) {
     documentDetailTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
     void nextTick(() => documentDetailDialog.value?.querySelector<HTMLElement>('[aria-label="关闭单据明细"]')?.focus())
@@ -269,6 +272,7 @@ function closeDocumentDetail() {
   const restore = detailDocumentPinned.value ? documentDetailTrigger : null
   detailDocument.value = null
   detailDocumentPinned.value = false
+  detailDocumentError.value = ''
   documentDetailTrigger = null
   if (restore) void nextTick(() => {
     if (!restore.isConnected) return
@@ -341,6 +345,7 @@ async function confirmBulkAccept() {
   }
   busy.value = true
   error.value = ''
+  message.value = ''
   const succeeded: string[] = []
   let failureMessage = ''
   try {
@@ -361,8 +366,9 @@ async function confirmBulkAccept() {
     failure(reason)
     failureMessage = `${succeeded.length ? `已完成 ${succeeded.join('、')}；` : ''}接单失败：${error.value}`
   } finally {
-    await load()
-    if (failureMessage) error.value = failureMessage
+    const refreshError = await load()
+    if (failureMessage) error.value = `${failureMessage}${refreshError ? `；列表刷新失败：${refreshError}` : ''}`
+    else if (refreshError) error.value = `${message.value} 接单已保存，但列表刷新失败：${refreshError}。请刷新查看，勿重复接单。`
     busy.value = false
   }
 }
@@ -395,8 +401,9 @@ async function loadExtra(tab: 'documents' | 'activity') {
       activity.value = (data as SupplierActivity[][]).flat().sort((a, b) => b.created_at.localeCompare(a.created_at))
     }
     extraLoaded[tab] = true
+    return ''
   } catch (reason) {
-    if (token === extraGeneration[tab]) failure(reason)
+    if (token === extraGeneration[tab]) { failure(reason); return error.value }
   } finally {
     if (token === extraGeneration[tab]) extraLoadingState[tab] = false
   }
@@ -436,9 +443,30 @@ async function exportSelectedDocuments() {
   try {
     await api.exportDocuments(selectedDocuments.value)
     extraLoaded.documents = false
-    await loadExtra('documents')
+    const refreshError = await loadExtra('documents')
+    if (refreshError) error.value = `文件已生成并开始下载，但单据记录刷新失败：${refreshError}。可稍后刷新记录。`
   }
   catch (reason) { error.value = await getApiErrorMessageAsync(reason) }
+  finally { busy.value = false }
+}
+async function exportDocument(row: SupplierDocument) {
+  if (busy.value) return
+  busy.value = true
+  error.value = ''
+  detailDocumentError.value = ''
+  try {
+    await api.exportDocuments([row])
+    extraLoaded.documents = false
+    const refreshError = await loadExtra('documents')
+    if (refreshError) {
+      error.value = `文件已生成并开始下载，但单据记录刷新失败：${refreshError}。可稍后刷新记录。`
+      if (detailDocument.value && documentKey(detailDocument.value) === documentKey(row)) detailDocumentError.value = error.value
+    }
+  } catch (reason) {
+    const message = await getApiErrorMessageAsync(reason)
+    error.value = message
+    if (detailDocument.value && documentKey(detailDocument.value) === documentKey(row)) detailDocumentError.value = message
+  }
   finally { busy.value = false }
 }
 async function exportSelectedOrderImports() {
@@ -449,13 +477,14 @@ async function exportSelectedOrderImports() {
   try {
     await api.exportOrderImport(purchases)
     extraLoaded.documents = false
-    await loadExtra('documents')
+    const refreshError = await loadExtra('documents')
+    if (refreshError) error.value = `导入模板已生成并开始下载，但单据记录刷新失败：${refreshError}。可稍后刷新记录。`
   }
   catch (reason) { error.value = await getApiErrorMessageAsync(reason) }
   finally { busy.value = false }
 }
 function failure(reason: unknown) {
-  error.value = reason instanceof Error ? reason.message : '操作未完成，请刷新后重试'
+  error.value = getApiErrorMessage(reason)
 }
 async function load() {
   const token = ++generation
@@ -487,8 +516,9 @@ async function load() {
       }
       if (!dirtyDates.has(line.id)) dates[line.id] = line.promised_date || order.planned_date
     }
+    return ''
   } catch (reason) {
-    if (token === generation) { workspace.value = null; failure(reason) }
+    if (token === generation) { workspace.value = null; failure(reason); return error.value }
   } finally {
     if (token === generation) loading.value = false
   }
@@ -533,7 +563,8 @@ async function accept(order: SupplierOrder, line: PortalPaper) {
     dirtyDates.delete(line.id)
     extraLoaded.activity = false
     message.value = `${line.child_no} 已确认接单`
-    await load()
+    const refreshError = await load()
+    if (refreshError) error.value = `${line.child_no} 已确认接单，但列表刷新失败：${refreshError}。请刷新查看，勿重复接单。`
     if (order.lines.every(item => item.id === line.id || !needsAcceptance(item))) acceptOrderId.value = ''
   } catch (reason) { failure(reason) } finally { busy.value = false }
 }
@@ -569,21 +600,25 @@ async function confirmDeliveryImport() {
     selectedImportNotes.value = []
     extraLoaded.documents = false
     extraLoaded.activity = false
-    await load()
     activeTab.value = 'shipments'
     message.value = `已确认 ${result.shipments.length} 张供应商送货单，并按送货厂区推送到仓库待确认；确认前不计入库存。`
+    const refreshError = await load()
+    if (refreshError) error.value = `${message.value} 发货已保存，但列表刷新失败：${refreshError}。请刷新查看，勿重复发货。`
   } catch (reason) { failure(reason) } finally { busy.value = false }
 }
 async function download(id: string, factoryId: string, filename: string) {
-  try { await api.download(id, factoryId, filename) } catch (reason) { failure(reason) }
+  error.value = ''
+  try { await api.download(id, factoryId, filename) } catch (reason) { error.value = `附件下载失败：${await getApiErrorMessageAsync(reason)}` }
 }
 </script>
 
 <template>
   <main class="min-h-screen bg-[#f3f8fc] text-slate-800">
+    <CartonActionNotice :message="error" @dismiss="error = ''" />
     <header :inert="detailDocumentPinned || mergedDocumentsOpen ? true : undefined" class="sticky top-0 z-20 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
       <div class="mx-auto flex max-w-[1720px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div class="flex min-w-0 items-center gap-3">
+          <RouterLink to="/modules/pmc-warehouse" aria-label="返回 PMC / 仓管模块" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:border-teal-300 hover:text-teal-700"><ArrowLeft class="size-4" aria-hidden="true" />返回</RouterLink>
           <div class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-teal-700 text-white"><PackageCheck class="size-5" /></div>
           <div class="min-w-0"><h1 class="truncate text-lg font-bold leading-tight">纸箱供应商协同</h1><p class="truncate text-xs text-slate-500">{{ workspace?.supplier_name || '供应商工作区' }} · 已下单订单 / 接单 / 发货 / 仓库反馈</p></div>
         </div>
@@ -697,7 +732,7 @@ async function download(id: string, factoryId: string, filename: string) {
 
         <template v-else-if="activeTab === 'documents'">
           <section :inert="detailDocumentPinned || mergedDocumentsOpen ? true : undefined" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 class="text-base font-bold">采购单与送货单</h2><p class="mt-1 text-xs text-slate-500">逐张查看已发行采购单和已登记送货单；勾选采购单可导出东康系统导入模板，原单据仍可合并预览和导出。</p></div><div class="flex flex-wrap gap-2"><button type="button" :disabled="busy || !selectedDocuments.some(row => row.kind === 'PURCHASE')" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-4 text-xs font-bold text-teal-800 disabled:opacity-40" @click="exportSelectedOrderImports">导出东康导入模板（{{ selectedDocuments.filter(row => row.kind === 'PURCHASE').length }} 张采购单）</button><button type="button" :disabled="!selectedDocuments.length" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white disabled:opacity-40" @click="openMergedDocuments">预览并导出 {{ selectedDocuments.length }} 张单据</button></div></div>
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 class="text-base font-bold">采购单与送货单</h2><p class="mt-1 text-xs text-slate-500">仓库同一次批量确认的订单自动合并为一张采购单，保留各订单明细；勾选采购单可导出东康导入模板或统一预览导出。</p></div><div class="flex flex-wrap gap-2"><button type="button" :disabled="busy || !selectedDocuments.some(row => row.kind === 'PURCHASE')" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-4 text-xs font-bold text-teal-800 disabled:opacity-40" @click="exportSelectedOrderImports">导出东康导入模板（{{ selectedDocuments.filter(row => row.kind === 'PURCHASE').length }} 张采购单）</button><button type="button" :disabled="!selectedDocuments.length" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white disabled:opacity-40" @click="openMergedDocuments">预览并导出 {{ selectedDocuments.length }} 张单据</button></div></div>
             <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/60 p-3">
               <label class="relative min-w-56 flex-1"><Search class="pointer-events-none absolute left-3 top-2.5 size-4 text-slate-400" /><input v-model="documentSearch" aria-label="搜索供应商单据" placeholder="搜索单据号 / 订单 / 客户 / 合同 / PO / 货号" class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs"></label>
               <select v-model="documentFactory" aria-label="单据厂区筛选" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部厂区</option><option v-for="item in memberships" :key="item.factory_id" :value="item.factory_id">{{ factoryDisplayName(item.factory_id) }}</option></select>
@@ -707,12 +742,14 @@ async function download(id: string, factoryId: string, filename: string) {
               <button type="button" class="h-9 rounded-lg border border-slate-200 px-3 text-xs" @click="documentSearch = ''; documentFactory = ''; documentKind = ''; documentStatus = ''; documentDateFrom = ''; documentDateTo = ''">清空筛选</button>
             </div>
             <div class="flex items-center gap-3 border-b border-slate-100 px-4 py-2 text-xs"><span>单据 {{ filteredDocuments.length }} / {{ documents.length }} 张</span><span>已选 {{ selectedDocuments.length }} 张单据 · {{ mergedDocumentOrders.length }} 张订单</span><span class="text-slate-400">一次最多 100 张单据</span><button type="button" :disabled="!selectedDocumentKeys.length" class="text-slate-500 disabled:opacity-40" @click="selectedDocumentKeys = []">清空选择</button></div>
-            <div class="overflow-x-auto"><table class="w-full min-w-[980px] text-left text-xs"><thead class="bg-slate-50 font-bold text-slate-600"><tr><th class="px-4 py-3"><input type="checkbox" aria-label="全选当前筛选单据" :checked="allVisibleDocumentsSelected" @change="toggleVisibleDocuments($event)"></th><th class="px-3 py-3">类型</th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">单据号</th><th class="px-3 py-3">日期</th><th class="px-3 py-3">包含订单</th><th class="px-3 py-3">纸品条数</th><th class="px-3 py-3">状态</th><th class="px-3 py-3" title="从启用导出次数记录起，每次成功生成 Excel 累计一次；合并导出涉及的每张单据分别计一次">导出次数</th><th class="px-3 py-3 text-right">操作</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredDocuments" :key="documentKey(row)"><td class="px-4 py-3"><input :checked="selectedDocumentKeys.includes(documentKey(row))" type="checkbox" :aria-label="`选择单据 ${row.document_no}`" @change="toggleDocument(row, $event)"></td><td class="px-3 py-3">{{ row.kind === 'PURCHASE' ? '采购单' : '送货单' }}</td><td class="px-3 py-3">{{ factoryDisplayName(row.factory_id) }}</td><td class="px-3 py-3 font-bold">{{ row.document_no }}</td><td class="px-3 py-3">{{ row.date }}</td><td class="px-3 py-3">{{ row.orders.length }} 张订单<span v-if="row.unmatched_line_count"> · {{ row.unmatched_line_count }} 条无单纸品</span> · {{ row.orders.map(item => item.contract_no).join('、') }}</td><td class="px-3 py-3">{{ row.lines.length }}</td><td class="px-3 py-3">{{ row.status === 'RECEIPT_REVERSED' ? '收料已冲销，待更正' : row.status === 'SENT' ? '待仓库确认' : row.status === 'RECEIVED' ? '已核实' : row.status === 'NOT_RECEIVED' ? '仓库未收到' : row.status }}</td><td class="px-3 py-3" :aria-label="`${row.document_no} 导出 ${row.export_count ?? 0} 次`">{{ row.export_count ?? 0 }}</td><td class="px-3 py-3 text-right"><button type="button" :aria-label="`查看单据 ${row.document_no} 明细`" title="悬停预览单据明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold" @mouseenter="showDocumentDetail(row)" @mouseleave="closeDocumentDetailPreview" @focus="showDocumentDetail(row)" @blur="closeDocumentDetailPreview" @click="showDocumentDetail(row, true)">明细</button></td></tr><tr v-if="!filteredDocuments.length"><td colspan="10" class="p-10 text-center text-slate-500">{{ extraLoading ? '正在读取单据…' : '暂无符合条件的单据' }}</td></tr></tbody></table></div>
+            <div class="overflow-x-auto"><table class="w-full min-w-[980px] text-left text-xs"><thead class="bg-slate-50 font-bold text-slate-600"><tr><th class="px-4 py-3"><input type="checkbox" aria-label="全选当前筛选单据" :checked="allVisibleDocumentsSelected" @change="toggleVisibleDocuments($event)"></th><th class="px-3 py-3">类型</th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">单据号</th><th class="px-3 py-3">日期</th><th class="px-3 py-3">包含订单</th><th class="px-3 py-3">纸品条数</th><th class="px-3 py-3">状态</th><th class="px-3 py-3" title="从启用导出次数记录起，每次成功生成 Excel 累计一次；合并导出涉及的每张单据分别计一次">导出次数</th><th class="px-3 py-3 text-right">操作</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="row in filteredDocuments" :key="documentKey(row)"><td class="px-4 py-3"><input :checked="selectedDocumentKeys.includes(documentKey(row))" type="checkbox" :aria-label="`选择单据 ${row.document_no}`" @change="toggleDocument(row, $event)"></td><td class="px-3 py-3">{{ row.kind === 'PURCHASE' ? (row.is_batch ? '合并采购单' : '采购单') : '送货单' }}</td><td class="px-3 py-3">{{ factoryDisplayName(row.factory_id) }}</td><td class="px-3 py-3 font-bold">{{ row.document_no }}</td><td class="px-3 py-3">{{ row.date }}</td><td class="px-3 py-3">{{ row.orders.length }} 张订单<span v-if="row.unmatched_line_count"> · {{ row.unmatched_line_count }} 条无单纸品</span> · {{ row.orders.map(item => item.contract_no).join('、') }}</td><td class="px-3 py-3">{{ row.lines.length }}</td><td class="px-3 py-3">{{ row.status === 'RECEIPT_REVERSED' ? '收料已冲销，待更正' : row.status === 'SENT' ? '待仓库确认' : row.status === 'RECEIVED' ? '已核实' : row.status === 'NOT_RECEIVED' ? '仓库未收到' : row.status }}</td><td class="px-3 py-3" :aria-label="`${row.document_no} 导出 ${row.export_count ?? 0} 次`">{{ row.export_count ?? 0 }}</td><td class="px-3 py-3 text-right"><button type="button" :aria-label="`查看单据 ${row.document_no} 明细`" title="悬停预览单据明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold" @mouseenter="showDocumentDetail(row)" @mouseleave="closeDocumentDetailPreview" @focus="showDocumentDetail(row)" @blur="closeDocumentDetailPreview" @click="showDocumentDetail(row, true)">明细</button></td></tr><tr v-if="!filteredDocuments.length"><td colspan="10" class="p-10 text-center text-slate-500">{{ extraLoading ? '正在读取单据…' : '暂无符合条件的单据' }}</td></tr></tbody></table></div>
           </section>
           <div v-if="detailDocument" data-testid="supplier-document-detail-overlay" class="fixed inset-0 z-[64] flex items-center justify-center p-4" :class="detailDocumentPinned ? 'pointer-events-auto bg-slate-950/45' : 'pointer-events-none bg-slate-950/25'" @click.self="closeDocumentDetail">
             <div ref="documentDetailDialog" role="dialog" aria-labelledby="supplier-document-title" :aria-modal="detailDocumentPinned ? 'true' : undefined" :inert="detailDocumentPinned ? undefined : true" class="flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl" @keydown="trapDialogTab">
-              <div class="flex justify-between border-b border-slate-200 p-5"><div><h2 id="supplier-document-title" class="text-lg font-bold">{{ detailDocument.kind === 'PURCHASE' ? '采购单' : '送货单' }} · {{ detailDocument.document_no }}</h2><p class="mt-1 text-xs text-slate-500">{{ factoryDisplayName(detailDocument.factory_id) }} · {{ detailDocument.date }} · {{ detailDocument.orders.length }} 张订单<span v-if="detailDocument.unmatched_line_count"> · {{ detailDocument.unmatched_line_count }} 条无单明细</span></p><p v-if="detailDocument.source_filename" class="mt-1 text-xs text-slate-500">原送货文件：{{ detailDocument.source_filename }}</p><p class="mt-1 text-xs text-teal-700">{{ detailDocumentPinned ? '已固定显示 · 可滚动查看单据' : '悬停预览 · 单击明细可固定查看' }}</p></div><button v-if="detailDocumentPinned" type="button" aria-label="关闭单据明细" @click="closeDocumentDetail"><X class="size-4" /></button></div>
-              <div class="min-h-0 overflow-auto p-5"><div v-for="order in detailDocument.orders" :key="order.order_no" class="mb-2 rounded-lg border border-slate-200 p-3 text-xs"><b>{{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}</b><span class="ml-2 text-slate-500">PO {{ order.customer_po || '未填写' }} · 订单 {{ order.order_no }}</span></div><table class="w-full min-w-[720px] text-left text-xs"><thead class="bg-slate-50"><tr><th class="p-2">订单 / 纸品</th><th class="p-2">纸品类型</th><th class="p-2">纸质 / 规格</th><th class="p-2">{{ detailDocument.kind === 'PURCHASE' ? '变更前 / 本次变化 / 变更后' : '发货 / 实收' }}</th></tr></thead><tbody><tr v-for="(line, index) in detailDocument.lines" :key="`${line.order_no}|${line.child_no}|${index}`" class="border-t border-slate-100"><td class="p-2">{{ line.child_no || `无单纸品 · ${line.contract_no || '无合同号'} / ${line.item_no || '无货号'}` }}</td><td class="p-2">{{ line.packaging_type }}</td><td class="p-2">{{ line.paper_quality }} · {{ line.specification }}</td><td class="p-2">{{ detailDocument.kind === 'PURCHASE' ? `${line.before_quantity} / ${line.change_quantity} / ${line.quantity}` : `${line.quantity} / ${line.received_quantity || 0}` }} {{ line.unit }}</td></tr></tbody></table></div>
+              <div class="flex justify-between border-b border-slate-200 p-5"><div><h2 id="supplier-document-title" class="text-lg font-bold">{{ detailDocument.kind === 'PURCHASE' ? (detailDocument.is_batch ? '合并采购单' : '采购单') : '送货单' }} · {{ detailDocument.document_no }}</h2><p class="mt-1 text-xs text-slate-500">{{ factoryDisplayName(detailDocument.factory_id) }} · {{ detailDocument.date }} · {{ detailDocument.orders.length }} 张订单<span v-if="detailDocument.unmatched_line_count"> · {{ detailDocument.unmatched_line_count }} 条无单明细</span></p><p v-if="detailDocument.source_filename" class="mt-1 text-xs text-slate-500">原送货文件：{{ detailDocument.source_filename }}</p><p class="mt-1 text-xs text-teal-700">{{ detailDocumentPinned ? '已固定显示 · 可滚动查看单据' : '悬停预览 · 单击明细可固定查看' }}</p></div><button v-if="detailDocumentPinned" type="button" aria-label="关闭单据明细" @click="closeDocumentDetail"><X class="size-4" /></button></div>
+              <div class="min-h-0 overflow-auto p-5"><div v-for="order in detailDocument.orders" :key="order.order_no" class="mb-2 rounded-lg border border-slate-200 p-3 text-xs"><b>{{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}</b><span class="ml-2 text-slate-500">PO {{ order.customer_po || '未填写' }} · 订单 {{ order.order_no }}</span><span v-if="order.product_name" class="ml-2 text-slate-500">{{ order.product_name }}</span></div><table class="w-full min-w-[720px] text-left text-xs"><thead class="bg-slate-50"><tr><th class="p-2">订单 / 纸品</th><th class="p-2">纸品类型</th><th class="p-2">纸质 / 规格</th><th class="p-2">{{ detailDocument.kind === 'PURCHASE' ? '变更前 / 本次变化 / 变更后' : '发货 / 实收' }}</th></tr></thead><tbody><tr v-for="(line, index) in detailDocument.lines" :key="`${line.order_no}|${line.child_no}|${index}`" class="border-t border-slate-100"><td class="p-2">{{ line.child_no || `无单纸品 · ${line.contract_no || '无合同号'} / ${line.item_no || '无货号'}` }}<span v-if="line.source_document_no" class="mt-1 block text-slate-500">原采购单 {{ line.source_document_no }}</span></td><td class="p-2">{{ line.packaging_type }}</td><td class="p-2">{{ line.paper_quality }} · {{ line.specification }}</td><td class="p-2">{{ detailDocument.kind === 'PURCHASE' ? `${line.before_quantity} / ${line.change_quantity} / ${line.quantity}` : `${line.quantity} / ${line.received_quantity || 0}` }} {{ line.unit }}</td></tr></tbody></table></div>
+              <p v-if="detailDocumentPinned && detailDocumentError" role="alert" class="mx-5 mb-3 shrink-0 rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ detailDocumentError }}</p>
+              <div v-if="detailDocumentPinned" class="flex shrink-0 justify-end border-t border-slate-200 p-4"><button type="button" :disabled="busy" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white disabled:opacity-40" @click="exportDocument(detailDocument)">导出这张{{ detailDocument.kind === 'PURCHASE' ? '采购单' : '送货单' }}</button></div>
             </div>
           </div>
           <div v-if="mergedDocumentsOpen && selectedDocuments.length" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" @click.self="closeMergedDocuments">

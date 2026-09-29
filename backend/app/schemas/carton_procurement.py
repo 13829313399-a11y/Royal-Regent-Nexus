@@ -565,7 +565,15 @@ class CartonSupplierAcceptanceOut(BaseModel):
     accepted_at: str = ""
 
 
+class CartonPurchaseOrderBatchOut(BaseModel):
+    id: str
+    document_no: str
+    order_count: int
+    generated_at: str
+
+
 class CartonOrderOut(BaseModel):
+    purchase_order_batch: CartonPurchaseOrderBatchOut | None = None
     supplier_acceptance: CartonSupplierAcceptanceOut = Field(default_factory=CartonSupplierAcceptanceOut)
     split_records: list[dict] = Field(default_factory=list)
     can_delete: bool = False
@@ -629,6 +637,7 @@ class CartonPurchaseOrderIssueCreate(BaseModel):
 
 
 class CartonPurchaseOrderIssueOut(BaseModel):
+    purchase_order_batch: CartonPurchaseOrderBatchOut | None = None
     is_replenishment: bool = False
     id: str
     factory_id: str
