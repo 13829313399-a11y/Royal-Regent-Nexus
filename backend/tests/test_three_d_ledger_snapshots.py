@@ -487,14 +487,18 @@ def test_legacy_cost_snapshots_and_missing_evidence_never_use_current_rates(clie
     assert result["summary"]["materialCost"] == 0
 
 
-def test_history_only_correction_requires_explicit_scope_and_preserves_balance(client):
+@pytest.mark.parametrize("source,legacy_id", [
+    ("legacy-sqlite", None), ("cloud-connector", "imported-cloud"), ("nexus", "imported-native"),
+])
+def test_history_only_correction_requires_explicit_scope_and_preserves_balance(client, source, legacy_id):
     stock(client)
     row = create(client)
     dbm = importlib.import_module("app.db")
     models = importlib.import_module("app.models.three_d_printing")
     with dbm.SessionLocal() as db:
         saved = db.get(models.ThreeDPrintingProductionRecord, row["id"])
-        saved.source_system = "legacy-sqlite"
+        saved.source_system = source
+        saved.legacy_id = legacy_id
         saved.inventory_consumed = False
         db.commit()
     data = {

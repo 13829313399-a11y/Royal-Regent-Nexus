@@ -821,6 +821,10 @@ def init_db() -> None:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             if not name.startswith("uv_ops_")
+                            # Existing telemetry stores upgrade explicitly via
+                            # 0130; startup must not create unversioned cache tables.
+                            and (name not in {"three_d_printing_telemetry_rollups", "three_d_printing_telemetry_rollup_state"}
+                                 or "three_d_printing_printer_state_events" not in existing_tables)
                             and (settings.spray_ops_enabled or not name.startswith("spray_ops_"))])
     ensure_sqlite_legacy_columns()
 

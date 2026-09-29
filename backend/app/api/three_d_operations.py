@@ -5,7 +5,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import DBAPIError
 
 from app.api.three_d_printing import MigrationDb, MigrationUser, _ensure_permission
 from app.core.config import settings
@@ -75,7 +76,15 @@ def analytics(
     days: int = Query(30, ge=1, le=366),
 ):
     guard(db, user, factory_id)
-    return service.analytics(db, days)
+    if db.bind.dialect.name == "postgresql":
+        db.execute(text("SET LOCAL statement_timeout = '75s'"))
+    try:
+        return service.analytics(db, days)
+    except DBAPIError as error:
+        if getattr(error.orig, "sqlstate", None) != "57014":
+            raise
+        db.rollback()
+        raise HTTPException(503, "运行统计计算超时，请稍后重试") from error
 
 
 @router.get("/thread/{record_id}")
