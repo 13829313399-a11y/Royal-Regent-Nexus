@@ -85,3 +85,9 @@ benchmark/typeset/fixtures/
 
 # Google GitHub Actions short-lived credentials
 gha-creds-*.json
+
+# Keep upstream source documentation despite the parent repository Markdown rule.
+!/*.md
+!/apps/model-gateway/README.md
+!/benchmark/typeset/horizontal/README.md
+!/scripts/legacy/README.md
