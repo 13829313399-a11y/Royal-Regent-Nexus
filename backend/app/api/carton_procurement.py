@@ -1,4 +1,5 @@
 from typing import Literal
+from datetime import datetime
 from decimal import Decimal
 from fastapi.encoders import jsonable_encoder
 from io import BytesIO
@@ -145,6 +146,7 @@ from app.services.carton_procurement_export import (
 from app.services.carton_procurement_history_import import import_history_orders, preview_history_orders
 from app.services.carton_procurement_history_inventory import import_history_inventory, preview_history_inventory
 from app.core.time import business_now
+from app.services.carton_purchase_batches import load_purchase_batch
 
 
 router = APIRouter(
@@ -652,6 +654,25 @@ def post_combined_purchase_order_workbook(
         media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}"},
     )
+
+
+@router.get("/purchase-order-batches/{batch_id}.xlsx")
+def get_purchase_order_batch_workbook(
+    batch_id: str,
+    factory_id: str,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    batch, issues = load_purchase_batch(db, factory_id, batch_id)
+    content = build_purchase_order_issue_batch_workbook(
+        issues, generated_at=datetime.fromisoformat(batch["generated_at"]),
+        batch_document_no=batch["document_no"],
+    )
+    return StreamingResponse(BytesIO(content), media_type=XLSX_MEDIA_TYPE, headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(batch['document_no'] + '_合并采购单.xlsx')}",
+        "X-Purchase-Order-Document-No": batch["document_no"],
+    })
 
 
 @router.post("/orders/purchase-order-issues.xlsx")

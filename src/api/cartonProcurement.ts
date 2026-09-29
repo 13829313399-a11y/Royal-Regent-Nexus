@@ -66,7 +66,15 @@ export interface CartonSupplierAcceptanceResponse {
   accepted_at: string
 }
 
+export interface CartonPurchaseOrderBatchResponse {
+  id: string
+  document_no: string
+  order_count: number
+  generated_at: string
+}
+
 export interface CartonOrderResponse {
+  purchase_order_batch?: CartonPurchaseOrderBatchResponse | null
   supplier_acceptance?: CartonSupplierAcceptanceResponse
   split_records?: SplitRecord[]
   can_delete?: boolean
@@ -107,6 +115,7 @@ export interface CartonOrderResponse {
 export type CartonPurchaseOrderDocumentType = 'LEGACY_BASELINE' | 'INITIAL' | 'APPEND' | 'REDUCE' | 'ADJUSTMENT'
 
 export interface CartonPurchaseOrderIssueResponse {
+  purchase_order_batch?: CartonPurchaseOrderBatchResponse | null
   is_replenishment?: boolean
   id: string
   factory_id: string
@@ -410,6 +419,7 @@ export interface CartonImportBatchResponse {
   created_at: string
   parse_summary: {
     message?: string
+    reimported_from_batch_id?: string
     engine?: string
     row_count?: number
     matched_count?: number
@@ -832,6 +842,13 @@ export const cartonProcurementApi = {
   async downloadPurchaseOrderIssue(factoryId: string, orderNo: string, issueId: string) {
     const response = await http.get<Blob>(
       `/carton-procurement/orders/${encodeURIComponent(orderNo)}/purchase-order-issues/${encodeURIComponent(issueId)}.xlsx`,
+      { params: { factory_id: factoryId }, responseType: 'blob', timeout: 30_000 },
+    )
+    return response.data
+  },
+  async downloadPurchaseOrderBatch(factoryId: string, batchId: string) {
+    const response = await http.get<Blob>(
+      `/carton-procurement/purchase-order-batches/${encodeURIComponent(batchId)}.xlsx`,
       { params: { factory_id: factoryId }, responseType: 'blob', timeout: 30_000 },
     )
     return response.data

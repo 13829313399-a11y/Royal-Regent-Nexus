@@ -1,5 +1,6 @@
 from __future__ import annotations
 from app.services import carton_master as master_data
+from app.services.carton_purchase_batches import new_purchase_batch, purchase_batch_out
 from app.services.carton_replenishment import fulfilled_by_line, replenished_by_line, protected_by_line
 
 import hashlib
@@ -609,6 +610,7 @@ def get_order_by_no(db: Session, factory_id: str, order_no: str) -> CartonOrder:
         select(CartonOrder).where(
             CartonOrder.factory_id == factory_id,
             CartonOrder.order_no == order_no,
+            CartonOrder.deleted_at.is_(None),
         )
     )
     if order is None:
@@ -632,6 +634,7 @@ def get_order_lines(db: Session, order_id: str) -> list[CartonOrderLine]:
 
 def _purchase_order_issue_out(issue: CartonPurchaseOrderIssue) -> CartonPurchaseOrderIssueOut:
     return CartonPurchaseOrderIssueOut(
+        purchase_order_batch=purchase_batch_out(issue),
         is_replenishment=bool(_purchase_order_snapshot(issue).get("replenishment")),
         id=issue.id,
         factory_id=issue.factory_id,
@@ -827,6 +830,8 @@ def create_purchase_order_issue(
     commit: bool = True,
     already_locked: bool = False,
     reuse_initial: bool = False,
+    purchase_batch: dict | None = None,
+    issue_id: str | None = None,
 ) -> CartonPurchaseOrderIssue:
     if not already_locked:
         _lock_receipt_factory(db, order.factory_id)
@@ -854,11 +859,17 @@ def create_purchase_order_issue(
     else:
         prefix = {"APPEND": "A", "REDUCE": "R", "ADJUSTMENT": "C"}[pending_type]
         document_no = f"{order.order_no}-{prefix}{type_sequence:02d}"
+    if purchase_batch is not None:
+        if (pending_type != "INITIAL" or order.factory_id != purchase_batch["factory_id"]
+                or order.supplier_id != purchase_batch["supplier_id"]
+                or issue_id not in purchase_batch["issue_ids"]):
+            raise HTTPException(status_code=409, detail="合并采购单的订单范围已变化，请刷新后重试")
+        snapshot["purchase_batch"] = purchase_batch
     before_quantity = quantity(Decimal(str(snapshot["before_product_quantity"]))) if snapshot["before_product_quantity"] is not None else None
     after_quantity = quantity(Decimal(str(snapshot["after_product_quantity"]))) if snapshot["after_product_quantity"] is not None else None
-    timestamp = now_text()
+    timestamp = purchase_batch["generated_at"] if purchase_batch else now_text()
     issue = CartonPurchaseOrderIssue(
-        id=f"CPOI-{uuid4().hex}",
+        id=issue_id or f"CPOI-{uuid4().hex}",
         factory_id=order.factory_id,
         order_id=order.id,
         order_no=order.order_no,
@@ -1036,6 +1047,12 @@ def _order_has_supplier_evidence(db: Session, order: CartonOrder) -> bool:
 
 
 def order_deletion_block_reason(db: Session, order: CartonOrder) -> str:
+    if order.deleted_at:
+        return "订单已删除"
+    if order.status == "CANCELLED":
+        return ""
+    if any(purchase_batch_out(issue) for issue in _purchase_order_issues(db, order.id)):
+        return "已发行合并采购单，不能直接删除，请按减单或退单流程处理以保留整单历史"
     from app.services.carton_order_split import plans
     if plans(db, order.factory_id, order.id):
         return "已有拆单历史及归属记录，不能删除"
@@ -1090,9 +1107,26 @@ def _delete_order(db: Session, order: CartonOrder, reason: str, user: AuthContex
     )).all())
     _audit(db, user, order.factory_id, event_type, "carton_order", order.id,
            {"order_no": order.order_no, "reason": reason, "order": snapshot, "operation_id": operation_id,
+            "history_retained": order.status == "CANCELLED",
             "exceptions": [CartonExceptionOut.model_validate(item).model_dump(mode="json") for item in exceptions],
             "purchase_issues": [{**{column.name: getattr(issue, column.name) for column in issue.__table__.columns},
                                  "snapshot": json.loads(issue.snapshot_json)} for issue in issues]})
+    if order.status == "CANCELLED":
+        timestamp = now_text()
+        order.deleted_at = timestamp
+        order.revision += 1
+        order.updated_at = timestamp
+        order.updated_by = user.id
+        order.updated_by_name = user.display_name
+        for exception in exceptions:
+            if exception.status not in {"RESOLVED", "CLOSED"}:
+                exception.status = "CLOSED"
+                exception.resolution_note = f"已取消订单从台账删除：{reason}"
+                exception.revision += 1
+                exception.updated_at = exception.resolved_at = timestamp
+                exception.updated_by = exception.resolved_by = user.id
+                exception.updated_by_name = exception.resolved_by_name = user.display_name
+        return
     for exception in exceptions:
         db.delete(exception)
     for issue in issues:
@@ -1419,6 +1453,15 @@ def bulk_submit_orders_to_supplier(
         orders.append(order)
 
     timestamp = now_text()
+    by_supplier = defaultdict(list)
+    for order in orders:
+        by_supplier[order.supplier_id].append(order)
+    batches_by_order = {}
+    for supplier_orders in by_supplier.values():
+        if len(supplier_orders) > 1:
+            batch = new_purchase_batch(supplier_orders, timestamp)
+            for order, issue_id in zip(supplier_orders, batch["issue_ids"]):
+                batches_by_order[order.id] = (batch, issue_id)
     for order in orders:
         master_data.validate_order(db, factory_id, order.customer_code, order.contract_no, order.item_no, customer_po=order.customer_po)
         previous_status = order.status
@@ -1445,7 +1488,16 @@ def bulk_submit_orders_to_supplier(
             },
         )
         master_data.seed_first_number_formats(db, factory_id, order, user)
-        create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
+        batch, issue_id = batches_by_order.get(order.id, (None, None))
+        create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True,
+                                    purchase_batch=batch, issue_id=issue_id)
+
+    for supplier_orders in by_supplier.values():
+        if len(supplier_orders) > 1:
+            batch = batches_by_order[supplier_orders[0].id][0]
+            _audit(db, user, factory_id, "PURCHASE_ORDER_BATCH_ISSUED", "carton_purchase_order_batch",
+                   batch["id"], {"document_no": batch["document_no"], "issue_ids": batch["issue_ids"],
+                                 "order_nos": [order.order_no for order in supplier_orders]})
 
     master_data.sync_history(db, factory_id)
     db.commit()
@@ -2093,7 +2145,12 @@ def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
     usage_status = aggregate_status((usage.get(line.id, {}).get("status", "NOT_RECEIVED") for line in lines),
         sum((usage.get(line.id, {}).get("usage", Decimal(0)) for line in lines), Decimal(0)))
     deletion_reason = order_deletion_block_reason(db, order)
+    initial_issue = db.scalar(select(CartonPurchaseOrderIssue).where(
+        CartonPurchaseOrderIssue.order_id == order.id,
+        CartonPurchaseOrderIssue.document_type == "INITIAL",
+    ).limit(1)) if order.status not in {"DRAFT", "CONFIRMED"} else None
     return CartonOrderOut(
+        purchase_order_batch=purchase_batch_out(initial_issue) if initial_issue else None,
         supplier_acceptance=acceptance_summary(db, order, lines),
         split_records=plans(db, order.factory_id, order.id),
         can_delete=not deletion_reason,
@@ -2170,7 +2227,7 @@ def list_orders(
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, list[CartonOrder]]:
-    query = select(CartonOrder).where(CartonOrder.factory_id == factory_id)
+    query = select(CartonOrder).where(CartonOrder.factory_id == factory_id, CartonOrder.deleted_at.is_(None))
     if customer_code:
         query = query.where(CartonOrder.customer_code == customer_code)
     if status_filter:
@@ -3607,7 +3664,7 @@ def _create_import_exceptions(
                     continue
                 elif change == "NEW" and not row.get("manual_ordered") and not row.get("order_id"):
                     category = "SCHEDULE_NEW_ORDER"
-                    severity = "HIGH" if match_status == "MISSING_ORDER" else "MEDIUM"
+                    severity = "MEDIUM"
                     title = "业务排期新增待下单订单" if match_status == "MISSING_ORDER" else "业务排期新增订单待核对"
                 else:
                     category = ""
@@ -3618,7 +3675,7 @@ def _create_import_exceptions(
                     continue
                 if match_status == "MISSING_ORDER":
                     category = "MISSING_ORDER" if batch.import_type == "WEEKLY_SCHEDULE" else "RECEIPT_UNMATCHED"
-                    severity = "HIGH"
+                    severity = "MEDIUM" if batch.import_type == "WEEKLY_SCHEDULE" else "HIGH"
                     title = "周排期未找到正式纸箱订单" if batch.import_type == "WEEKLY_SCHEDULE" else "送货明细未找到订单纸品"
                 elif match_status == "QUANTITY_MISMATCH":
                     category = "QUANTITY_MISMATCH"
@@ -3727,22 +3784,27 @@ def create_import_batch(
         effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
     elif import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
         effective_profile["parser_version"] = SCHEDULE_IMPORT_PARSER_VERSION
-    profile_text = (
-        json.dumps(effective_profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        if effective_profile
-        else ""
-    )
-    existing = db.scalar(
-        select(CartonImportBatch).where(
-            CartonImportBatch.factory_id == factory_id,
-            CartonImportBatch.import_type == import_type,
-            CartonImportBatch.source_sha256 == sha256,
-            CartonImportBatch.import_profile == profile_text,
+    identity_profile = dict(effective_profile)
+    reimported_from_batch_id = None
+    while True:
+        profile_text = json.dumps(identity_profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        existing = db.scalar(
+            select(CartonImportBatch).where(
+                CartonImportBatch.factory_id == factory_id,
+                CartonImportBatch.import_type == import_type,
+                CartonImportBatch.source_sha256 == sha256,
+                CartonImportBatch.import_profile == profile_text,
+            )
         )
-    )
-    if existing is not None:
+        if existing is None:
+            break
         if existing.status == "REJECTED" and import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
-            raise HTTPException(409, "该文件的导入批次已整批撤销，不能恢复；请更正文件后重新导入")
+            # Keep withdrawn evidence immutable. Each new incarnation links to
+            # its predecessor within the existing fingerprint/profile unique
+            # key; the factory lock makes retries reuse the active incarnation.
+            reimported_from_batch_id = existing.id
+            identity_profile["reimport_of"] = existing.id
+            continue
         if import_type == "DELIVERY_NOTE":
             _require_delivery_destination(factory_id, json.loads(existing.parse_summary_json))
         return import_batch_out(existing, duplicate=True)
@@ -3777,6 +3839,8 @@ def create_import_batch(
         )
     if import_type == "DELIVERY_NOTE":
         _require_delivery_destination(factory_id, parse_summary)
+    if reimported_from_batch_id:
+        parse_summary["reimported_from_batch_id"] = reimported_from_batch_id
     batch = CartonImportBatch(
         id=f"CIB-{uuid4().hex}",
         factory_id=factory_id,
@@ -3808,6 +3872,7 @@ def create_import_batch(
             "row_count": parse_summary.get("row_count", 0),
             "matched_count": parse_summary.get("matched_count", 0),
             "exception_count": exception_count,
+            **({"reimported_from_batch_id": reimported_from_batch_id} if reimported_from_batch_id else {}),
         },
     )
     db.commit()
@@ -4253,6 +4318,10 @@ def update_exception(
         batch = db.get(CartonImportBatch, exception.source_id)
         if batch is not None and batch.factory_id == factory_id and batch.status == "REJECTED":
             raise HTTPException(409, "来源导入批次已整批撤销，异常不能继续处理或重新打开")
+    if exception.source_type == "ORDER":
+        source_order = db.get(CartonOrder, exception.source_id)
+        if source_order is not None and source_order.factory_id == factory_id and source_order.deleted_at:
+            raise HTTPException(409, "来源订单已从台账删除，历史异常不能重新打开")
     if exception.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="异常记录已更新，请刷新后重试")
     if exception.status == "CLOSED" and payload.status != "OPEN":
