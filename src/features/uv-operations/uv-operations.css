@@ -24,3 +24,6 @@
 body:has(.uv-workspace){min-width:0}@media(max-width:360px){.uv-topbar{gap:8px;padding:0 12px}.uv-topbar h1{font-size:14px;white-space:nowrap}.uv-topbar .uv-avatar{display:none}}
 
 @media(max-width:700px){.uv-toast{position:static;margin-bottom:16px;max-width:100%;box-shadow:none}.uv-live-summary .uv-link{font-size:11px}}
+.uv-plan-tools{padding:0 24px 20px;display:flex;flex-wrap:wrap;gap:16px;align-items:center}.uv-plan-tools .uv-notice{width:100%;margin:0}.uv-plan-form input{max-width:240px}.uv-plan-form label{min-width:0}.uv-plan-block.manual{border-style:dashed;background:#fff7dc;color:#785219}.uv-plan-ghost{position:absolute;top:14px;height:64px;background:#d6efe7b3;border:2px dashed #237e69;border-radius:8px;pointer-events:none;padding:10px;color:#145e4d;z-index:4}.uv-plan-form select{max-width:280px}.uv-plan-preview .uv-list-row{padding:12px 0}.uv-plan-preview p{line-height:1.6}@media(max-width:700px){.uv-plan-tools{padding:0 16px 16px}.uv-plan-form input,.uv-plan-form select{max-width:100%}.uv-plan-preview .uv-list-row{align-items:flex-start;gap:10px}.uv-plan-preview small{overflow-wrap:anywhere}}
+
+.uv-plan-block.compact{min-width:3px;padding:0;border-left-width:2px;color:transparent}.uv-plan-block.compact small{visibility:hidden}.uv-plan-block.compact:focus-visible{outline:3px solid #105f54;outline-offset:2px}

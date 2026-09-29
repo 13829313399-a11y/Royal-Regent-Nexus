@@ -34,6 +34,7 @@ from app.api.pricing import router as pricing_router
 from app.api.qc_inspection import router as qc_inspection_router
 from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
+from app.api.work_center import router as work_center_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.api.spray_operations import router as spray_operations_router
@@ -201,6 +202,7 @@ app.include_router(pricing_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(system_router)
+app.include_router(work_center_router)
 from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)

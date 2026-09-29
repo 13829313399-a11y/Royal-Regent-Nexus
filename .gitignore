@@ -32,6 +32,7 @@ backend/data/*.sqlite
 backend/data/*.sqlite3
 backend/data/document-tools/
 backend/models/document-translation/
+backend/models/image-translation/
 .env
 .env.*
 !.env.example
@@ -69,6 +70,7 @@ backend/models/document-translation/
 !/edge/three-d-printing-agent/README.md
 !/edge/uv-printing-agent/README.md
 !/docs/uv-operations/*.md
+!/docs/work-center/*.md
 !/deploy/three-d-printing/network/README.md
 !/services/three-d-printer-connector/README.md
 
@@ -102,6 +104,7 @@ deploy/three-d-printing/network/reports/
 **/three-d-*.private.key
 
 # Local carton acceptance databases, evidence and template previews
+outputs/image-translation-qa/real-samples/
 backend/data/
 outputs/history-order-template-20260909/
 outputs/opening-inventory-template-20260909/

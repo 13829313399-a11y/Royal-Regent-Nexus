@@ -25,19 +25,17 @@ def permissions(kind):
 
 def create(db, user, body):
     a.authorize(user, body.factory_id, *permissions(body.kind))
+    c.require(body.kind not in {'daily','monthly'} or not body.selected_ids, 'report_selection', '日报月报仅支持完整日期范围，不能按记录 ID 导出局部汇总', 422)
     start, end = date.fromisoformat(body.start_date), date.fromisoformat(body.end_date)
     c.require(start <= end and (end-start).days <= 366, "export_window", "导出区间最多 366 天", 422)
     row = c.add(db, m.UvOpsExportJob, user, actor_id=user.id, kind=body.kind, filters=c.values(body, "kind"), permissions=list(permissions(body.kind)))
     return c.record(row)
 
 
-def rows(db, user, job, report=None):
+def selection_statement(job):
     filters = job.filters
-    if job.kind in {"daily", "monthly"}:
-        value = report if report is not None else reports.report(db, filters["start_date"], filters["end_date"])
-        return value["details"], {'cost_revenue'}, value["coverage"]
     model = MODELS[job.kind]
-    statement = c.query(model).order_by(model.created_at, model.id)
+    statement = c.query(model, history=True).order_by(model.created_at, model.id)
     if filters["selected_ids"]:
         statement = statement.where(model.id.in_(filters["selected_ids"]))
     else:
@@ -48,11 +46,43 @@ def rows(db, user, job, report=None):
             statement = statement.where(field.between(filters["start_date"], filters["end_date"]))
         else:
             statement = statement.where(field >= c.ts(filters["start_date"]+"T00:00:00+08:00"), field < c.ts(str(date.fromisoformat(filters["end_date"])+timedelta(days=1))+"T00:00:00+08:00"))
+    return statement
+
+
+def rows(db, user, job, report=None):
+    filters = job.filters
+    if job.kind in {"daily", "monthly"}:
+        c.require(not filters['selected_ids'], 'report_selection', '日报月报不支持选中记录范围', 422)
+        value = report if report is not None else reports.report(db, filters["start_date"], filters["end_date"])
+        return value["details"], {'cost_revenue'}, value["coverage"]
+    model = MODELS[job.kind]
+    statement = selection_statement(job)
     result = (a.project(c.record(row), user) for row in db.scalars(statement.execution_options(yield_per=500)))
     if filters["selected_ids"]:
         c.require(db.scalar(select(func.count()).select_from(statement.subquery())) == len(set(filters["selected_ids"])), "export_selection_missing", "部分选中记录不存在或不属于当前厂区", 422)
     numeric = {column.name for column in model.__table__.columns if isinstance(column.type, Numeric)}
     return result, numeric, dict(state="records", missing_cost_records=None)
+
+
+def append_sheet(workbook, title, records, numeric):
+    sheet = workbook.create_sheet(title)
+    sheet.freeze_panes = 'A2'
+    sheet.print_title_rows = '1:1'
+    iterator = iter(records)
+    first = next(iterator, None)
+    headers = list(first) if first else ['无匹配记录']
+    def append(values):
+        cells = []
+        for value in values:
+            if isinstance(value, (dict,list)): value = json.dumps(value,ensure_ascii=False)
+            cell = WriteOnlyCell(sheet,value)
+            if isinstance(value,str): cell.data_type = 's'
+            cells.append(cell)
+        sheet.append(cells)
+    append(headers)
+    for row in chain([first],iterator) if first else ():
+        append([Decimal(row[key]) if key in numeric and row.get(key) is not None else row.get(key) for key in headers])
+    for index in range(1,len(headers)+1): sheet.column_dimensions[get_column_letter(index)].width=22
 
 
 def build(db, user, job):
@@ -96,6 +126,27 @@ def build(db, user, job):
         sheet.append(values)
         count+=1
     sheet.auto_filter.ref=f'A1:{get_column_letter(len(headers))}{count+1}'
+    if job.kind in {'production','handovers','wages'}:
+        selected = selection_statement(job).with_only_columns(MODELS[job.kind].id).order_by(None)
+        if job.kind == 'production':
+            model, title, statement = m.UvOpsQualityEntry, '品质处置明细', c.query(m.UvOpsQualityEntry, history=True)
+            statement = statement.where(model.production_entry_id.in_(selected)) if job.filters['selected_ids'] else statement.where(model.business_date.between(job.filters['start_date'],job.filters['end_date']))
+        elif job.kind == 'handovers':
+            model, title, statement = m.UvOpsHandoverEvent, '签收拒收退回', c.query(m.UvOpsHandoverEvent)
+            statement = statement.where(model.handover_id.in_(selected)) if job.filters['selected_ids'] else statement.where(model.business_date.between(job.filters['start_date'],job.filters['end_date']))
+        else:
+            model, title, statement = m.UvOpsWageAllocation, '员工工资分配', c.query(m.UvOpsWageAllocation, history=True).where(m.UvOpsWageAllocation.accrual_id.in_(selected))
+        linked = (a.project(c.record(row), user) for row in db.scalars(statement.order_by(model.created_at,model.id).execution_options(yield_per=500)))
+        append_sheet(workbook,title,linked,{column.name for column in model.__table__.columns if isinstance(column.type,Numeric)})
+        if job.kind in {'production','handovers'}:
+            source_model,source_field,source_title = (m.UvOpsProductionEntry,model.production_entry_id,'品质来源核数') if job.kind=='production' else (m.UvOpsHandover,model.handover_id,'关联交接原单')
+            source_rows = db.scalars(c.query(source_model).where(source_model.id.in_(statement.with_only_columns(source_field).order_by(None))))
+            append_sheet(workbook,source_title,(a.project(c.record(row),user) for row in source_rows),{column.name for column in source_model.__table__.columns if isinstance(column.type,Numeric)})
+        if job.kind in {'production','wages'}:
+            kind = 'quality' if job.kind == 'production' else 'wage'
+            targets = statement.with_only_columns(model.id).order_by(None) if kind == 'quality' else selected
+            receipts = db.scalars(c.query(m.UvOpsReversal).where(m.UvOpsReversal.kind==kind,m.UvOpsReversal.entity_id.in_(targets)))
+            append_sheet(workbook,'撤销依据',(c.record(row) for row in receipts),set())
     if job.kind in {'daily','monthly'}:
         totals=workbook.create_sheet('按币种核算')
         columns=['currency','cost_revenue','cost_amount','payroll_total','cost_total','cost_margin']
@@ -112,7 +163,7 @@ def build(db, user, job):
         for key,value in [('coverage',report['coverage']),('warnings',report['warnings']),('report_basis',report.get('report_basis','current_open_ledger')),('totals',report['totals']),('yield_ratio',report['yield_ratio'])]:
             warnings.append([key,json.dumps(value,ensure_ascii=False)])
     meta = workbook.create_sheet("口径与范围")
-    for key, value in dict(factory_id=m.FACTORY, timezone="Asia/Shanghai", as_of=m.now(), template_version="uv-export-v1", scope="selected" if job.filters["selected_ids"] else "filtered_database", row_count=count, filters=job.filters, coverage=coverage, quantity_unit="pcs (unless column explicitly says board/ml/seconds)", money="currency per row; decimal numeric cells", data_mode=db.scalar(c.query(m.UvOpsSettings)).data_mode).items():
+    for key, value in dict(factory_id=m.FACTORY, timezone="Asia/Shanghai", as_of=m.now(), template_version="uv-export-v2", linked_scope="selected: complete linked history; date range: quality and handover events by their own business_date, source sheets retain original dates", scope="selected" if job.filters["selected_ids"] else "filtered_database", row_count=count, filters=job.filters, coverage=coverage, quantity_unit="pcs (unless column explicitly says board/ml/seconds)", money="currency per row; decimal numeric cells", data_mode=db.scalar(c.query(m.UvOpsSettings)).data_mode).items():
         meta.append([key, json.dumps(value, ensure_ascii=False) if isinstance(value,(dict,list)) else value])
     output = BytesIO()
     workbook.save(output)

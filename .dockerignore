@@ -7,6 +7,13 @@
 .vscode
 
 node_modules
+**/node_modules
+shinobu-web/apps/web/dist
+shinobu-web/apps/extension/dist*
+shinobu-web/tmp
+shinobu-web/public/models/*.onnx
+shinobu-web/public/models/*.ort
+shinobu-web/public/ort
 dist
 outputs
 
@@ -15,6 +22,8 @@ backend/.pytest_cache
 backend/.pytest-tmp
 backend/data
 backend/models/document-translation
+backend/models/image-translation
+shinobu-web/server/dist
 backend/**/__pycache__
 backend/**/*.pyc
 

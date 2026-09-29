@@ -8,7 +8,7 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
   <SectionPanel
     class="dashboard-section dashboard-section--modules"
     title="模块健康度"
-    subtitle="用于判断哪些部门模块优先建设、优先优化"
+    subtitle="模块健康度示例 · 保留现有五组目录读数"
   >
     <div class="dashboard-module-grid grid gap-x-10 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
       <div

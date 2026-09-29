@@ -49,3 +49,13 @@ forms.unbind={title:'解除主采集源绑定',permission:'agent_manage',path:'s
 
 forms.splitBatch={title:"拆分未加工批次",permission:"plan_write",path:"batches/:id/split",target:true,fields:[field("quantity","拆出件数（其余为另一子批）","number"),reason],notice:"仅允许首遍尚未加工批次。两个子批保留同一任务与冻结工艺，原批保留谱系且不能再加工。"}
 forms.mergeBatch={title:"合并未加工批次",permission:"plan_write",path:"batches/:id/merge",target:true,fields:[ref("other_batch_id","同一任务的另一未加工批次","batches"),reason],notice:"只合并同任务、未加工首遍批次；保留两个来源，不能合并不同产品或已加工数量。"}
+forms.cancelPlan={title:'撤销未开工计划',permission:'plan_write',path:'schedule/:id/cancel',target:true,fields:[reason],notice:'保留旧计划及操作依据，释放其机台和治具占用。已有运行或核数的计划不能撤销。'}
+forms.unlockPlan={title:'解锁固定计划',permission:'plan_write',path:'schedule/:id/unlock',target:true,fields:[reason],notice:'仅解锁，不移动计划；之后仍须预览和确认调整。'}
+forms.cancelTask={title:'取消未开工任务',permission:'plan_write',path:'tasks/:id/cancel',target:true,fields:[reason],notice:'保留任务和批次历史，取消未开工计划并归还需求可分配数量；有执行或费用记录时禁止取消。'}
+forms.cancelDemand={title:'取消未分配需求',permission:'plan_write',path:'demands/:id/cancel',target:true,fields:[field('quantity','取消件数','number'),reason]}
+
+for (const [name,title,path,permission] of [['reverseQuality','撤销品质处置','quality','quality_write'],['reverseParticipation','撤销参与工时','participations','shift_write'],['reverseWage','撤销工资核准','wages','payroll_write'],['reverseExpense','撤销费用凭证','expenses','cost_write'],['reverseRunCost','撤销整个运行成本池','run-costs','cost_write']]) {
+  forms[name!]={title:title!,path:path+'/:id/reverse',permission:permission!,target:true,fields:[reason],notice:'保留原始凭证及撤销依据。已封账期间须先有理由重开；已有下游依赖时须按顺序撤销，再重新录入或核准。'}
+}
+forms.startExecution={title:'登记批次实际开工',permission:'production_write',path:'schedule/:id/start',target:true,fields:[ref('shift_id','开工班次','shifts'),field('started_at','实际开工时间','datetime-local'),evidence],notice:'记录人工确认的实际执行，锁定本批计划。设备运行和报产仍需分别核对。'}
+forms.finishExecution={title:'登记批次实际完工',permission:'production_write',path:'executions/:id/finish',target:true,fields:[ref('shift_id','完工班次','shifts'),field('ended_at','实际完工时间','datetime-local'),evidence],notice:'可在下一开放班次记录跨班完工。完工不自动生成产量或工资。'}

@@ -6,6 +6,7 @@ import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import { cartonMasterApi, emptyMaster } from '@/api/cartonMaster'
 import type { CartonImportBatchResponse, CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { SplitRecord } from '@/api/cartonOrderSplits'
+import type { WorkEntry } from '@/features/work-center/types'
 
 const routerReplaceMock = vi.hoisted(() => vi.fn())
 const routeState = vi.hoisted(() => ({
@@ -19,6 +20,9 @@ const authStoreMock = vi.hoisted(() => ({
   can: vi.fn(() => true),
 }))
 const systemApiMock = vi.hoisted(() => ({ listNotifications: vi.fn() }))
+const workCenterApiMock = vi.hoisted(() => ({ snapshot: vi.fn<(...args: unknown[]) => Promise<{ items: Partial<WorkEntry>[]; query: { filtered_total: number } }>>() }))
+vi.mock('@/api/workCenter', () => ({ workCenterApi: workCenterApiMock }))
+vi.mock('@/stores/workCenter', () => ({ useWorkCenterStore: () => ({ bell: null }) }))
 const cartonApiMock = vi.hoisted(() => ({
   listCustomers: vi.fn(),
   createCustomer: vi.fn(),
@@ -737,6 +741,7 @@ describe('CartonProcurementView frontend workspace', () => {
     appStoreMock.activeProductionFactory = { id: 'huaxing', name: '华兴', shortName: '华兴' }
     authStoreMock.can.mockReturnValue(true)
     systemApiMock.listNotifications.mockResolvedValue([])
+    workCenterApiMock.snapshot.mockResolvedValue({ items: [], query: { filtered_total: 0 } })
     cartonApiMock.listCustomers.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listOrders.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listMovements.mockRejectedValue(new Error('offline test'))
@@ -4511,19 +4516,10 @@ describe('CartonProcurementView frontend workspace', () => {
 
   it('puts authorized, factory-scoped supplier delivery reminders at the top of the dashboard', async () => {
     const shipmentId = `CSS-${'a'.repeat(32)}`
-    const notification = (id: string, factory: string, status: string) => ({
-      id, target_user_id: '', target_permission: 'carton_procurement:receipt_write', target_factory_id: factory,
-      target_department: 'pmc-warehouse', type: 'carton_supplier_shipment',
-      title: `供应商送货单 ${id} 待核实`, message: '请核对本厂区实际到货',
-      payload: { shipment_id: id, delivery_note_no: id }, status,
-      created_at: '2026-09-24T08:00:00+08:00', read_at: '', handled_at: '',
-    })
-    const notifications = [
-      notification(shipmentId, 'huaxing', 'unread'),
-      notification(`CSS-${'b'.repeat(32)}`, 'huakang-a', 'unread'),
-      notification(`CSS-${'c'.repeat(32)}`, 'huaxing', 'handled'),
-    ]
-    systemApiMock.listNotifications.mockResolvedValue(notifications)
+    const notification = (id: string): Partial<WorkEntry> => ({ id, title: `供应商送货单 ${id} 待核实`, summary: '请核对本厂区实际到货',
+      actions: [{ key: 'open', label: '核实收料', mode: 'navigate', enabled: true, disabled_reason: null,
+        target: { route_key: 'supplier_shipment', params: { id }, query: { factory: 'huaxing' } } }] })
+    workCenterApiMock.snapshot.mockResolvedValue({ items: [notification(shipmentId)], query: { filtered_total: 1 } })
 
     const wrapper = mountView('dashboard')
     await flushPromises()
@@ -4537,13 +4533,13 @@ describe('CartonProcurementView frontend workspace', () => {
     const action = pending.findAllComponents({ name: 'RouterLink' }).find((link) => link.text() === '核实收料')
     expect(action?.props('to')).toEqual({ path: '/carton-supplier-management', query: { factory: 'huaxing', shipment: shipmentId } })
 
-    systemApiMock.listNotifications.mockResolvedValue([])
+    workCenterApiMock.snapshot.mockResolvedValue({ items: [], query: { filtered_total: 0 } })
     await wrapper.findAll('button').find((button) => button.text() === '刷新')!.trigger('click')
     await flushPromises()
     expect(pending.text()).toContain('供应商送货 0')
     expect(pending.text()).not.toContain(shipmentId)
 
-    systemApiMock.listNotifications.mockResolvedValue(notifications)
+    workCenterApiMock.snapshot.mockResolvedValue({ items: [notification(`CSS-${'b'.repeat(32)}`)], query: { filtered_total: 1 } })
     routeState.query.factory = 'huakang-a'
     await flushPromises()
     expect(pending.text()).toContain(`CSS-${'b'.repeat(32)}`)
@@ -4557,7 +4553,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     expect(wrapper.get('[aria-label="工作待办提醒"]').text()).toContain('业务排期提醒')
     expect(wrapper.get('[aria-label="工作待办提醒"]').text()).not.toContain('供应商送货待核实')
-    expect(systemApiMock.listNotifications).not.toHaveBeenCalled()
+    expect(workCenterApiMock.snapshot).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

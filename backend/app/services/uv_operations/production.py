@@ -62,6 +62,7 @@ def task_complete(db, task_id):
 def reshape_batch(db,user,entity_id,body,merge=False):
     source=c.get(db,m.UvOpsBatch,entity_id)
     task=c.get(db,m.UvOpsTask,source.task_id,lock=True)
+    c.require(task.status not in {'cancelled','completed'},'task_inactive','已取消或完成的任务不能拆合批次')
     ids={entity_id,body.other_batch_id} if merge else {entity_id}
     rows={key:c.get(db,m.UvOpsBatch,key,lock=True) for key in sorted(ids)}
     c.require(rows[entity_id].version==body.expected_version,'version_conflict','批次已变化')
@@ -72,7 +73,15 @@ def reshape_batch(db,user,entity_id,body,merge=False):
         c.require(row.task_id==task.id and row.active and row.pass_index==1 and row.remaining==row.quantity,'batch_started','仅可拆分或合并同一任务尚未加工的首遍批次')
         c.require(db.scalar(c.query(m.UvOpsProductionEntry).where(m.UvOpsProductionEntry.batch_id==row.id)) is None,'batch_history','已有加工历史的批次不能重新编组')
         c.require(db.scalar(c.query(m.UvOpsRunAllocation).where(m.UvOpsRunAllocation.batch_id==row.id)) is None,'batch_run_allocated','已确认运行分配的批次不能重新编组')
+        c.require(db.scalar(c.query(m.UvOpsExecution).where(m.UvOpsExecution.batch_id==row.id)) is None,'batch_started','已有实际开工记录，不能重新编组')
     total=sum(row.quantity for row in rows.values())
+    plans=list(db.scalars(c.query(m.UvOpsScheduleBlock).where(m.UvOpsScheduleBlock.task_id==task.id,
+        (m.UvOpsScheduleBlock.batch_id.in_(ids)) | m.UvOpsScheduleBlock.batch_id.is_(None),
+        m.UvOpsScheduleBlock.status!='cancelled')))
+    c.require(not any(row.fixed for row in plans),'plan_fixed','批次仍有固定计划，请先有理由解锁再拆合')
+    for plan in plans:
+        plan.status='cancelled'
+        c.touch(plan)
     if merge:
         quantities=[total]
     else:
@@ -85,6 +94,28 @@ def reshape_batch(db,user,entity_id,body,merge=False):
             c.add(db,m.UvOpsBatchRelation,user,source_id=row.id,target_id=child.id,quantity=row.quantity if merge else child.quantity,kind='merge' if merge else 'split')
     c.touch(task)
     return dict(batches=[c.record(row) for row in children],task=c.record(task))
+
+
+def cancel_task(db,user,entity_id,body):
+    source=c.get(db,m.UvOpsTask,entity_id)
+    c.require(source.parent_task_id is None,'root_task_required','返工任务请使用返工取消流程',422)
+    # Demand first matches task creation and serializes cancellation/reallocation.
+    demand=c.get(db,m.UvOpsDemand,source.demand_id,lock=True)
+    task=c.get(db,m.UvOpsTask,entity_id,lock=True,version=body.expected_version)
+    c.require(task.status in {'ready','planned'} and len(body.reason.strip())>=5,'task_started','仅能说明原因取消未开工任务')
+    for model in (m.UvOpsProductionEntry,m.UvOpsRunAllocation,m.UvOpsExecution,m.UvOpsParticipation,m.UvOpsExpense):
+        c.require(db.scalar(c.query(model).where(model.task_id==task.id).limit(1)) is None,'task_history','任务已有执行或费用依据，不能取消')
+    reversed_ink=select(m.UvOpsInkMovement.reversal_of).where(m.UvOpsInkMovement.factory_id==m.FACTORY,m.UvOpsInkMovement.reversal_of.is_not(None))
+    c.require(db.scalar(c.query(m.UvOpsInkMovement).where(m.UvOpsInkMovement.task_id==task.id,m.UvOpsInkMovement.reversal_of.is_(None),m.UvOpsInkMovement.id.notin_(reversed_ink)).limit(1)) is None,'task_history','任务仍有未冲销耗料，不能取消')
+    batches=list(db.scalars(c.query(m.UvOpsBatch).where(m.UvOpsBatch.task_id==task.id,m.UvOpsBatch.active.is_(True)).with_for_update()))
+    c.require(all(x.remaining==x.quantity and x.pass_index==1 for x in batches),'batch_started','批次已开始加工')
+    for batch in batches:
+        batch.active=False;c.touch(batch)
+    for row in db.scalars(c.query(m.UvOpsScheduleBlock).where(m.UvOpsScheduleBlock.task_id==task.id)):
+        row.status='cancelled';c.touch(row)
+    task.status='cancelled';c.touch(task)
+    demand.allocated-=task.quantity;c.touch(demand)
+    return dict(task=c.record(task),demand=c.record(demand))
 
 
 def complete_accounting(db,user,entity_id,body):
@@ -142,7 +173,8 @@ def shift_open(db, shift_id, *, lock=True):
 def participate(db, user, body):
     shift = shift_open(db, body.shift_id)
     c.require(db.scalar(c.query(m.UvOpsWageAccrual).where(m.UvOpsWageAccrual.shift_id == shift.id, m.UvOpsWageAccrual.task_id == body.task_id)) is None, 'payroll_frozen', '该任务本班工资已核准，不能追加参与人或工时')
-    c.get(db, m.UvOpsTask, body.task_id, lock=True)
+    task=c.get(db, m.UvOpsTask, body.task_id, lock=True)
+    c.require(task.status!='cancelled','task_cancelled','已取消任务不能登记参与工时')
     start, end = c.ts(body.start_at), c.ts(body.end_at)
     c.require(shift.start_at <= start < end <= shift.end_at, "participation_interval", "参与时段必须在班次内", 422)
     c.insert_once(db, m.UvOpsWorker, dict(id=body.employee_id, factory_id=m.FACTORY, employee_id=body.employee_id, name=body.employee_name, version=1, created_at=m.now(), updated_at=m.now(), created_by=user.id), ["factory_id", "employee_id"])
@@ -153,7 +185,7 @@ def participate(db, user, body):
     existing = db.scalar(c.query(m.UvOpsParticipation).where(m.UvOpsParticipation.employee_id == body.employee_id, m.UvOpsParticipation.task_id == body.task_id, m.UvOpsParticipation.start_at < end, m.UvOpsParticipation.end_at > start))
     c.require(existing is None, "participation_overlap", "该员工在此任务上已有重叠时段")
     # Once any overlapping allocation is paid, changing its divisor is forbidden.
-    paid = db.scalar(select(m.UvOpsWageAccrual.id).join(m.UvOpsParticipation, (m.UvOpsParticipation.task_id == m.UvOpsWageAccrual.task_id) & (m.UvOpsParticipation.shift_id == m.UvOpsWageAccrual.shift_id)).where(m.UvOpsParticipation.employee_id == body.employee_id, m.UvOpsParticipation.start_at < end, m.UvOpsParticipation.end_at > start))
+    paid = db.scalar(select(m.UvOpsWageAccrual.id).join(m.UvOpsParticipation, (m.UvOpsParticipation.task_id == m.UvOpsWageAccrual.task_id) & (m.UvOpsParticipation.shift_id == m.UvOpsWageAccrual.shift_id)).where(m.UvOpsWageAccrual.active_key == 1, m.UvOpsParticipation.active_key == 1, m.UvOpsParticipation.employee_id == body.employee_id, m.UvOpsParticipation.start_at < end, m.UvOpsParticipation.end_at > start))
     c.require(paid is None, "payroll_frozen", "重叠时段已有工资核准，不能改变其工时分母")
     return c.record(c.add(db, m.UvOpsParticipation, user, **c.values(body, "start_at", "end_at"), start_at=start, end_at=end))
 
@@ -391,7 +423,11 @@ def cancel_rework(db,user,entity_id,body):
     tasks={key:c.get(db,m.UvOpsTask,key,lock=True) for key in sorted({source.id,source.parent_task_id})}
     row=tasks[source.id]
     c.require(row.version==body.expected_version and row.status!='cancelled','version_conflict','返工任务状态或版本已变化')
-    c.require(db.scalar(c.query(m.UvOpsProductionEntry).where(m.UvOpsProductionEntry.task_id==row.id)) is None,'rework_started','已有加工凭证的返工任务不能直接取消')
+    originals=list(db.scalars(c.query(m.UvOpsProductionEntry).where(m.UvOpsProductionEntry.task_id==row.id,m.UvOpsProductionEntry.direction==1)))
+    c.require(all(db.scalar(c.query(m.UvOpsProductionEntry).where(m.UvOpsProductionEntry.reversal_of==entry.id)) is not None for entry in originals),'rework_started','请先冲销返工任务所有有效报产')
+    for model in (m.UvOpsQualityEntry,m.UvOpsWageAccrual,m.UvOpsRunAllocation):
+        c.require(db.scalar(c.query(model).where(model.task_id==row.id)) is None,'rework_started','仍有品质、工资或运行依据，不能取消返工任务')
+    c.require(db.scalar(c.query(m.UvOpsExecution).where(m.UvOpsExecution.task_id==row.id,m.UvOpsExecution.ended_at.is_(None))) is None,'rework_started','实际执行尚未结束')
     c.require(len(body.reason.strip())>=5,'reason_required','取消返工任务需说明理由',422)
     row.status='cancelled';c.touch(row)
     for block in db.scalars(c.query(m.UvOpsScheduleBlock).where(m.UvOpsScheduleBlock.task_id == row.id)):
@@ -429,18 +465,24 @@ def handover_action(db, user, entity_id, body, kind):
 
 def shift_gaps(db, shift):
     entries = list(db.scalars(c.query(m.UvOpsProductionEntry).where(m.UvOpsProductionEntry.shift_id == shift.id)))
-    task_ids = {x.task_id for x in entries}
+    reported = {x.task_id for x in entries}
     participants = {x.task_id for x in db.scalars(c.query(m.UvOpsParticipation).where(m.UvOpsParticipation.shift_id == shift.id))}
-    pending = list(db.scalars(c.query(m.UvOpsBatch).where(m.UvOpsBatch.task_id.in_(task_ids), m.UvOpsBatch.pending > 0)))
-    runs = list(db.scalars(c.query(m.UvOpsRun).where(m.UvOpsRun.started_at < shift.end_at, (m.UvOpsRun.ended_at.is_(None)) | (m.UvOpsRun.ended_at >= shift.start_at), m.UvOpsRun.match_evidence.is_(None))))
-    return dict(missing_participation=sorted(task_ids-participants), pending_quality=[x.id for x in pending], unmatched_runs=[x.id for x in runs],totals={key:sum(getattr(x,key)*x.direction for x in entries) for key in ('processed','good','rework','scrap','pending')})
+    plans = list(db.scalars(c.query(m.UvOpsScheduleBlock).where(m.UvOpsScheduleBlock.start_at < shift.end_at, m.UvOpsScheduleBlock.end_at > shift.start_at, m.UvOpsScheduleBlock.status != 'cancelled')))
+    executions = list(db.scalars(c.query(m.UvOpsExecution).where(m.UvOpsExecution.started_at < shift.end_at, (m.UvOpsExecution.ended_at.is_(None)) | (m.UvOpsExecution.ended_at > shift.start_at))))
+    task_ids = reported | participants | {x.task_id for x in plans} | {x.task_id for x in executions}
+    roots = {x.parent_task_id or x.id for x in db.scalars(c.query(m.UvOpsTask).where(m.UvOpsTask.id.in_(task_ids)))}
+    batches = list(db.scalars(c.query(m.UvOpsBatch).where(m.UvOpsBatch.task_id.in_(roots), m.UvOpsBatch.active.is_(True))))
+    runs = list(db.scalars(c.query(m.UvOpsRun).where(m.UvOpsRun.started_at < shift.end_at, (m.UvOpsRun.ended_at.is_(None)) | (m.UvOpsRun.ended_at >= shift.start_at))))
+    handovers = list(db.scalars(c.query(m.UvOpsHandover).where(m.UvOpsHandover.batch_id.in_([x.id for x in batches]), m.UvOpsHandover.business_date <= shift.business_date, m.UvOpsHandover.quantity > m.UvOpsHandover.received+m.UvOpsHandover.rejected)))
+    reported_pairs = {(x.task_id,x.batch_id) for x in entries if x.direction == 1 and not db.scalar(c.query(m.UvOpsProductionEntry).where(m.UvOpsProductionEntry.reversal_of == x.id))}
+    return dict(missing_participation=sorted(reported-participants), pending_quality=[x.id for x in batches if x.pending], unmatched_runs=[x.id for x in runs if x.match_evidence is None], running_runs=[x.id for x in runs if x.ended_at is None or x.ended_at>shift.end_at], running_executions=[x.id for x in executions if x.ended_at is None or x.ended_at>shift.end_at], incomplete_batches=[x.id for x in batches if x.remaining or x.intermediate or x.rework], unreported_plans=[x.id for x in plans if (x.task_id,x.batch_id) not in reported_pairs and not (x.batch_id is None and x.task_id in reported)], participation_without_output=sorted(participants-reported), outstanding_handovers=[x.id for x in handovers], totals={key:sum(getattr(x,key)*x.direction for x in entries) for key in ('processed','good','rework','scrap','pending')})
 
 
 def close_shift(db, user, entity_id, body):
     shift = shift_open(db, entity_id)
     c.require(shift.version == body.expected_version, "version_conflict", "班次已更新", version=shift.version)
     gaps = shift_gaps(db, shift)
-    c.require(not any(gaps[key] for key in ('missing_participation','pending_quality','unmatched_runs')) or len(body.wip_handover.strip()) >= 5, "shift_gaps", "仍有核数缺口，请处理或明确在制交班说明")
+    c.require(not any(value for key,value in gaps.items() if key != 'totals') or len(body.wip_handover.strip()) >= 5, "shift_gaps", "仍有核数缺口，请处理或明确在制交班说明")
     shift.status = "closed"
     shift.close_reason = body.wip_handover or "核对完成"
     c.touch(shift)
