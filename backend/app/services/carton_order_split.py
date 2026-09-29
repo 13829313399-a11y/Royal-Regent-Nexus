@@ -67,7 +67,8 @@ def guard_order_change(db, order):
 
 
 def _get_order(db, factory, number):
-    order = db.scalar(select(CartonOrder).where(CartonOrder.factory_id == factory, CartonOrder.order_no == number))
+    order = db.scalar(select(CartonOrder).where(CartonOrder.factory_id == factory, CartonOrder.order_no == number,
+        CartonOrder.deleted_at.is_(None)))
     if not order:
         raise HTTPException(404, "原纸箱订单不存在")
     return order

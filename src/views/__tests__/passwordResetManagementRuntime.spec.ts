@@ -1,6 +1,8 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SystemUserManagementView from '../SystemUserManagementView.vue'
+
+enableAutoUnmount(afterEach)
 
 const apiMocks = vi.hoisted(() => ({
   listRegistrationRequests: vi.fn(),
@@ -17,6 +19,9 @@ const apiMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('vue-router', () => ({
+  onBeforeRouteLeave: vi.fn(),
+  onBeforeRouteUpdate: vi.fn(),
+  useRouter: () => ({ replace: vi.fn() }),
   useRoute: () => ({ query: { tab: 'password-reset', request_id: 'password-reset-1' } }),
 }))
 
@@ -26,6 +31,8 @@ vi.mock('@/stores/auth', () => ({
     currentUser: { username: 'admin', display_name: '系统管理员' },
   }),
 }))
+
+vi.mock('@/api/identity', () => ({ identityApi: { catalog: async () => ({ organizations: [] }) } }))
 
 vi.mock('@/api/system', () => ({ systemApi: apiMocks }))
 
@@ -51,16 +58,27 @@ const matchedRequest = {
   updated_at: '2026-08-02T10:00:00+08:00',
   issue_count: 0,
   matched_user: {
-    id: 'user-employee', username: 'employee', display_name: '员工甲', status: 'active',
-    factory_id: 'huaxing', department: 'engineering', position: '工程师',
-    phone: '13800000000', email: 'employee@example.com',
+    id: 'user-employee',
+    username: 'employee',
+    display_name: '员工甲',
+    status: 'active',
+    factory_id: 'huaxing',
+    department: 'engineering',
+    position: '工程师',
+    phone: '13800000000',
+    email: 'employee@example.com',
   },
   match_checks: { username: true, display_name: true, contact: true, scope: true },
 } as const
 
 function mountView() {
   return mount(SystemUserManagementView, {
-    global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    global: {
+      stubs: {
+        teleport: { template: '<div><slot /></div>' },
+        RouterLink: { template: '<a><slot /></a>' },
+      },
+    },
   })
 }
 
@@ -83,19 +101,25 @@ describe('password reset management runtime', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const approveButton = wrapper.findAll('button').find((button) => button.text().includes('批准并开放自助改密'))
+    const approveButton = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('批准并开放自助改密'))
     await approveButton!.trigger('click')
-    await wrapper.get('textarea[placeholder="例如：已电话核验员工身份"]').setValue('已电话核验员工身份')
-    const confirmButton = wrapper.findAll('button').find((button) => button.text().includes('确认批准'))
+    await wrapper
+      .get('textarea[placeholder="例如：已电话核验员工身份"]')
+      .setValue('已电话核验员工身份')
+    const confirmButton = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('确认批准'))
     expect(confirmButton!.attributes('disabled')).toBeDefined()
     await wrapper.get('input[type="checkbox"]').setValue(true)
     await confirmButton!.trigger('click')
     await flushPromises()
 
-    expect(apiMocks.approvePasswordResetRequest).toHaveBeenCalledWith(
-      'password-reset-1',
-      { review_comment: '已电话核验员工身份', identity_verified: true },
-    )
+    expect(apiMocks.approvePasswordResetRequest).toHaveBeenCalledWith('password-reset-1', {
+      review_comment: '已电话核验员工身份',
+      identity_verified: true,
+    })
     expect(wrapper.text()).toContain('已批准。申请人可在提交申请的原浏览器中设置新密码。')
     expect(wrapper.text()).not.toContain('复制临时密码')
     expect(wrapper.findAll('button').some((button) => button.text().includes('复制'))).toBe(false)
@@ -109,7 +133,9 @@ describe('password reset management runtime', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('未匹配系统账号，不能批准')
-    expect(wrapper.findAll('button').some((button) => button.text().includes('批准并开放自助改密'))).toBe(false)
+    expect(
+      wrapper.findAll('button').some((button) => button.text().includes('批准并开放自助改密')),
+    ).toBe(false)
     expect(wrapper.findAll('button').some((button) => button.text().includes('驳回'))).toBe(true)
   })
 
@@ -122,6 +148,21 @@ describe('password reset management runtime', () => {
 
     expect(wrapper.text()).toContain('旧版流程')
     expect(wrapper.text()).toContain('重新提交密码重置申请')
-    expect(wrapper.findAll('button').some((button) => button.text().includes('批准并开放自助改密'))).toBe(false)
+    expect(
+      wrapper.findAll('button').some((button) => button.text().includes('批准并开放自助改密')),
+    ).toBe(false)
+  })
+  it('never substitutes another account for an unavailable explicit request link', async () => {
+    apiMocks.getPasswordResetRequest.mockRejectedValue({ response: { status: 404 } })
+    apiMocks.listPasswordResetRequests.mockResolvedValue([
+      { ...matchedRequest, id: 'different-request', display_name: '其他可见人员' },
+    ])
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('指定申请不存在或不在当前可见范围')
+    expect(wrapper.findAll('button').some((b) => b.text().includes('批准并开放自助改密'))).toBe(
+      false,
+    )
+    wrapper.unmount()
   })
 })

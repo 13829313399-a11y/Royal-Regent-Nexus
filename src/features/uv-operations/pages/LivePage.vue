@@ -9,7 +9,7 @@ const w=useUvWorkspace(), matching=ref<Entity|null>(null)
 const machines=computed(()=>w.liveData.value.machines??[]), runs=computed(()=>w.liveData.value.runs??[])
 const unmatched=computed(()=>runs.value.filter(row=>!row.match_evidence))
 const activeShifts=computed(()=>(w.liveData.value.shifts??[]).filter(row=>row.status==='open'))
-function current(machine:Entity) {return runs.value.find(row=>row.machine_id===machine.id&&row.state==='running')}
+function current(machine:Entity) {return runs.value.find(row=>row.id===machine.current_run_id)}
 function next(machine:Entity) {return (w.liveData.value.schedule??[]).filter(row=>row.machine_id===machine.id&&row.status==='planned'&&String(row.end_at)>new Date().toISOString()).sort((a,b)=>String(a.start_at).localeCompare(String(b.start_at)))[0]}
 function taskTitle(id:unknown) {const task=(w.liveData.value.tasks??[]).find(row=>row.id===id);return task?str(task,'code'):String(id??'尚未分配')}
 function select(machine:Entity) {const block=next(machine);if(block) w.selectedTaskId.value=String(block.task_id)}

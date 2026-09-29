@@ -65,7 +65,14 @@ http.interceptors.request.use((config) => {
 })
 
 http.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const method = response.config.method?.toLowerCase()
+    const changesWork = /^\/(injection|internal-quotes|carton-supplier|carton-procurement|system|iam)(\/|$)/.test(response.config.url ?? '')
+    if (changesWork && method && !['get', 'head', 'options'].includes(method) && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('work-center-invalidated'))
+    }
+    return response
+  },
   (error: AxiosError<ApiErrorPayload>) => {
     if (error.response?.status === 401) {
       unauthorizedHandler?.(error)

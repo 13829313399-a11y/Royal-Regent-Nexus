@@ -134,7 +134,8 @@ export function createUvWorkspace() {
   function explain(cause: unknown) { return cause instanceof Error ? cause.message : '服务暂时不可用，请保留输入后重试' }
   function online() { offline.value=!navigator.onLine; if(navigator.onLine) { void refresh(); startLive() } else stopLive() }
   function visibility() { if(document.hidden) stopLive(); else { void refresh(); startLive() } }
-  watch(() => [auth.currentUser?.id, auth.authorizationVersion, JSON.stringify(auth.effectiveAccess), route.query.factory, app.activeFactoryId], () => { void initialize() }, { immediate:true })
+  // Refreshing an unchanged session must not remount pages and discard a draft.
+  watch(() => JSON.stringify([auth.currentUser?.id, auth.authorizationVersion, auth.effectiveAccess, route.query.factory, app.activeFactoryId]), () => { void initialize() }, { immediate:true })
   window.addEventListener('online',online); window.addEventListener('offline',online); document.addEventListener('visibilitychange',visibility)
   onBeforeUnmount(() => { clear(); window.removeEventListener('online',online); window.removeEventListener('offline',online); document.removeEventListener('visibilitychange',visibility) })
   return {data,liveData,meta,permissions,error,errorCode,notification,loading,refreshing,ready,offline,selectedTaskId,contextVersion,pagination,valid,can,items,request,refresh,initialize,load,command,explain,clear}

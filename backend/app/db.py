@@ -686,6 +686,16 @@ def ensure_carton_customer_po_schema_ready() -> None:
             raise RuntimeError("客户 PO 尚未迁移至 20260912_0108；请先备份数据库并执行迁移")
 
 
+def ensure_carton_order_deletion_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        if "carton_orders" not in names or "deleted_at" not in {c["name"] for c in inspector.get_columns("carton_orders")}:
+            raise RuntimeError("已取消订单删除尚未迁移至 20260929_0126；请先备份数据库并执行迁移")
+
+
 def ensure_document_tools_schema_ready() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -726,6 +736,7 @@ def ensure_identity_schema_ready() -> None:
 
 def init_db() -> None:
     from app.models import (
+        work_center,  # noqa: F401
         uv_operations,  # noqa: F401
         spray_ops,  # noqa: F401
         document_tools,  # noqa: F401
@@ -757,6 +768,11 @@ def init_db() -> None:
     from app.services.raw_material import seed_raw_material_defaults
     from app.services.three_d_printing import seed_three_d_printing_defaults
 
+    from app.services.work_center.projection import install_projection_hooks
+    if not getattr(SessionLocal, "work_center_hooks_installed", False):
+        install_projection_hooks(SessionLocal)
+        SessionLocal.work_center_hooks_installed = True
+    ensure_work_center_schema_ready()
     ensure_identity_schema_ready()
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
@@ -772,6 +788,7 @@ def init_db() -> None:
     ensure_carton_supplier_portal_schema_ready()
     ensure_carton_explicit_quantity_schema_ready()
     ensure_carton_customer_po_schema_ready()
+    ensure_carton_order_deletion_schema_ready()
     ensure_document_tools_schema_ready()
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -820,3 +837,13 @@ def init_db() -> None:
         seed_molding_sample_defaults(db)
         seed_raw_material_defaults(db)
         seed_three_d_printing_defaults(db)
+
+
+def ensure_work_center_schema_ready():
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    required = {"work_center_entries", "work_center_events", "work_center_user_states", "work_center_preferences"}
+    if "auth_users" in tables and (not required.issubset(tables) or
+        "following" not in {c["name"] for c in inspector.get_columns("work_center_user_states")} or
+        ("molding_sample_problems" in tables and "responsibility_revision" not in {c["name"] for c in inspector.get_columns("molding_sample_problems")})):
+        raise RuntimeError("事项工作台需要先备份并执行 Alembic 20260928_0126 迁移；不会自动修改旧数据库")

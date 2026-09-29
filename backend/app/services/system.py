@@ -129,6 +129,26 @@ def target_user_scopes(db: Session, user_id: str) -> set[tuple[str, str]]:
     return scopes
 
 
+def target_users_scopes(db: Session, user_ids) -> dict[str, set[tuple[str, str]]]:
+    """Batch equivalent of target_user_scopes for queues, including future grants."""
+    from app.models.identity import EmployeeAssignment, IamOrgUnit
+    from app.services.identity_resolver import assignment_dict, utc_now
+    from app.services.identity_policy import additional_source_scopes
+    profiles = {p.user_id: p for p in db.scalars(select(EmployeeProfile).where(EmployeeProfile.user_id.in_(user_ids)))}
+    result = additional_source_scopes(db, user_ids)
+    for p in profiles.values():
+        if p.identity_mode != "v2" and p.primary_factory_id and p.primary_department:
+            result.setdefault(p.user_id, set()).add((p.primary_factory_id, p.primary_department))
+    at = utc_now()
+    for a, org in db.execute(select(EmployeeAssignment, IamOrgUnit).join(IamOrgUnit).where(EmployeeAssignment.user_id.in_(user_ids))):
+        profile = profiles.get(a.user_id)
+        if profile and profile.identity_mode == "v2" and a.employment_epoch == profile.employment_epoch:
+            item = assignment_dict(a, org, at)
+            if item["state"] in {"current", "scheduled"}:
+                result.setdefault(a.user_id, set()).add((item["factory_id"] or item["org_unit_id"], item["department_code"]))
+    return result
+
+
 def can_manage_target_user(db: Session, current_user: AuthContext, user_id: str) -> bool:
     scopes = target_user_scopes(db, user_id)
     if not scopes:
@@ -1219,11 +1239,9 @@ def list_system_notifications(
         overrides = {row.id: row for row in legacy_reversed}
         notifications = [row for row in notifications if row.id not in overrides] + legacy_reversed
     notifications.sort(key=lambda row: (row.created_at, row.id), reverse=True)
-    return [
-        notification_to_out(notification)
-        for notification in notifications
-        if can_access_notification(db, current_user, notification)
-    ]
+    from app.services.work_center.compatibility import system_out
+    return system_out(db, current_user, [notification for notification in notifications
+        if can_access_notification(db, current_user, notification)])
 
 
 def update_system_notification(
@@ -1247,35 +1265,16 @@ def update_system_notification(
     if not can_access_notification(db, current_user, notification):
         raise HTTPException(status_code=403, detail="无权处理该通知")
 
-    if notification.type == shipment_notifications.NOTIFICATION_TYPE:
-        projected = next((row for row in shipment_notifications.legacy_reversed_notifications(db)
-            if row.id == notification.id), None)
-        if projected:
-            notification.status = projected.status
-            notification.title, notification.message = projected.title, projected.message
-            notification.created_at, notification.read_at, notification.handled_at = projected.created_at, projected.read_at, ""
-
+    from app.services.work_center.compatibility import personal_read, system_out
     status = payload.status.strip()
     if status not in {"read", "handled"}:
-        raise HTTPException(status_code=400, detail="通知状态只能设置为 read 或 handled")
-    if (
-        notification.type in {"internal_quote", "password_reset", shipment_notifications.NOTIFICATION_TYPE}
-        and status == "handled"
-        and notification.status != "handled"
-    ):
-        raise HTTPException(status_code=409, detail="该通知由对应业务流程自动处理")
-
-    if notification.status == "handled":
-        return notification_to_out(notification)
-
-    now = now_text()
-    notification.status = status
-    if status in {"read", "handled"} and not notification.read_at:
-        notification.read_at = now
-    if status == "handled":
-        notification.handled_at = now
+        raise HTTPException(400, "通知状态只能设置为 read 或 handled")
+    if status == "handled" and notification.status != "handled":
+        raise HTTPException(409, "通知不再提供通用完成操作，请在对应业务中处理")
+    personal_read(db, current_user, "system", notification.id)
     db.commit()
-    return notification_to_out(notification)
+    return system_out(db, current_user, [notification])[0]
+
 
 
 def load_registration_request(db: Session, request_id: str) -> AuthRegistrationRequest:
@@ -1450,6 +1449,17 @@ def can_access_notification(
     current_user: AuthContext,
     notification: SystemNotification,
 ) -> bool:
+    if notification.type == "password_reset":
+        source_id = str(parse_payload(notification.payload_json).get("password_reset_request_id") or "")
+        source = db.get(AuthPasswordResetRequest, source_id)
+        return bool(source and can_access_password_reset_request(db, current_user, source))
+    if notification.type == "internal_quote":
+        from app.models.internal_quote import InternalQuote
+        from app.services.internal_quote import ALL_QUOTE_DEPARTMENTS
+        from app.services.business_authz import has_permission_for_departments
+        source = db.get(InternalQuote, str(parse_payload(notification.payload_json).get("quote_id") or ""))
+        if source is None or not has_permission_for_departments(current_user, "internal_quote:read", source.factory_id, ALL_QUOTE_DEPARTMENTS):
+            return False
     if notification.type == shipment_notifications.NOTIFICATION_TYPE:
         shipment = db.get(SupplierShipment, str(parse_payload(notification.payload_json).get("shipment_id") or ""))
         if shipment is None or shipment.factory_id != notification.target_factory_id:

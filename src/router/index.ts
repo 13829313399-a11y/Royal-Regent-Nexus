@@ -15,7 +15,8 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
-const identityUiEnabled = import.meta.env.VITE_IAM_IDENTITY_UI_ENABLED !== 'false'
+import { identityUiEnabled } from '@/components/iam/workspace/iam-navigation'
+import { legacyIamAccountTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
   fullPage: true,
   requiresAuth: true,
@@ -26,6 +27,7 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/notifications', name: 'notification-center', component: () => import('@/views/NotificationCenterView.vue'), meta: { title: '事项工作台', requiresAuth: true } },
   {
     path: '/carton-supplier', name: 'carton-supplier', component: () => import('@/views/CartonSupplierView.vue'),
     meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
@@ -439,6 +441,11 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/system',
+    component: () => import('@/components/iam/workspace/IamWorkspaceLayout.vue'),
+    meta: { fullPage: true, requiresAuth: true },
+    children: [
+  {
     path: '/system/users',
     name: 'system-users',
     component: identityUiEnabled
@@ -499,6 +506,8 @@ const routes: RouteRecordRaw[] = [
       component: () => import('@/features/identity-management/IdentityRecords.vue'),
       meta: { title: '授权与人员记录', fullPage: true, requiresAuth: true, permissions: ['system:audit_read'], enforcePermissions: true },
     } : { redirect: '/system/users' }),
+  },
+    ],
   },
   {
     path: '/forbidden',
@@ -658,6 +667,10 @@ const finishRouteLoading = () => {
 }
 
 router.beforeEach(async (to, from) => {
+  if (to.path === '/system/users') {
+    const legacyTarget = legacyIamAccountTarget(to, identityUiEnabled)
+    if (legacyTarget) return legacyTarget
+  }
   if (to.path.startsWith(UV_BASE) && to.query.factory !== UV_FACTORY) {
     return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
   }

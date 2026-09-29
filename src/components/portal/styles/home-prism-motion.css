@@ -1,0 +1,52 @@
+/* Layout movement, reveal and hover each own a different element. Never fill article transforms. */
+.rrn-home[data-home-experience='prism-v4'] .portal-module-card { animation: none; opacity: 1; transform: none; transition: transform 180ms var(--home-ease), border-color 180ms, box-shadow 180ms; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-module-card[data-navigable='true']:hover { transform: translateY(-4px); box-shadow: 0 15px 30px -18px #0b503a55; border-color: var(--home-accent); }
+.rrn-home[data-home-experience='prism-v4'] .portal-module-card:focus-visible { box-shadow: 0 0 0 4px var(--home-soft); }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-module-card:hover .portal-module-card__icon { transform: translateY(-1px) scale(1.05); }
+.rrn-home[data-home-experience='prism-v4'] .portal-module-card__icon::before { transition: transform 200ms var(--home-ease); }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-module-card:hover .portal-module-card__icon::before { transform: translate(5px, 5px); }
+.rrn-home[data-home-experience='prism-v4'] .portal-tabs__indicator { transition: transform 300ms var(--home-ease), width 300ms var(--home-ease); }
+.rrn-home[data-home-experience='prism-v4'] .portal-tabs__indicator[data-ready='false'] { transition: none; }
+.rrn-home[data-home-experience='prism-v4'] .portal-tabs__indicator[data-moving='false'] { transition: none; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .home-card-reveal[data-reveal='true'] { animation: home-card-in 380ms var(--home-ease) backwards; animation-delay: min(calc(var(--home-index, 0) * 36ms), 180ms); }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .home-artwork svg { transform: translate(var(--art-x, 0px), var(--art-y, 0px)); transition: transform 180ms ease-out; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .home-artwork__front { animation: home-art-front 650ms var(--home-ease) backwards; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .home-artwork__back { animation: home-art-back 600ms var(--home-ease) backwards; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .home-artwork__trace { stroke-dasharray: 450; stroke-dashoffset: 0; animation: home-art-trace 1200ms ease-out backwards; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .home-artwork__scan { animation: home-scan 1100ms var(--home-ease) backwards; }
+.rrn-home[data-home-experience='prism-v4'] .home-preview__body { animation: home-fade-in 180ms ease-out; }
+.rrn-home[data-home-experience='prism-v4'] .home-filter-move { transition: transform 220ms var(--home-ease); }
+.rrn-home[data-home-experience='prism-v4'] .home-filter-enter-active { transition: opacity 180ms; }
+.rrn-home[data-home-experience='prism-v4'] .home-filter-enter-from { opacity: .3; }
+/* Leaving rows are removed immediately: no stale permission/factory targets during a visual exit. */
+.rrn-home[data-home-experience='prism-v4'] .home-filter-leave-active { display: none; }
+.rrn-home[data-home-experience='prism-v4'] .home-dialog[data-state='open'] { animation: home-dialog-in 240ms var(--home-ease); }
+.rrn-home[data-home-experience='prism-v4'] .home-dialog-overlay[data-state='open'] { animation: home-fade-in 200ms; }
+.rrn-home[data-home-experience='prism-v4'] .portal-action:active { transform: translateY(1px); }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-action--primary::after { content: ''; position: absolute; pointer-events: none; inset: -50% auto -50% -80%; width: 40%; background: linear-gradient(90deg, transparent, #ffffff28, transparent); transform: skewX(-20deg); }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='expressive'] .portal-action--primary:is(:hover, :focus-visible)::after { animation: home-shine 500ms ease-out; }
+.rrn-home[data-home-experience='prism-v4'].dashboard-page :is(.dashboard-section, .dashboard-metric) { animation: home-fade-in 360ms ease-out backwards; }
+.rrn-home[data-home-experience='prism-v4'].dashboard-page .dashboard-metric { animation-delay: calc(var(--metric-index) * 36ms); }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='calm'] :is(.home-artwork *, .home-card-reveal) { animation: none; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='calm'] .portal-tabs__indicator { transition-duration: 120ms; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='calm'] .portal-module-card:hover { transform: none; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='off'] *,
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='off'] *::before,
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='off'] *::after { animation: none !important; transition: none !important; }
+.rrn-home[data-home-experience='prism-v4'][data-home-motion='off'] :is(.portal-module-card, .portal-module-card__icon, .home-artwork svg):hover { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .rrn-home[data-home-experience='prism-v4'] *,
+  .rrn-home[data-home-experience='prism-v4'] *::before,
+  .rrn-home[data-home-experience='prism-v4'] *::after { animation: none !important; transition: none !important; }
+}
+@media (hover: none), (max-width: 767px) {
+  .rrn-home[data-home-experience='prism-v4'] .portal-action--primary::after { display: none; }
+}
+@keyframes home-card-in { from { opacity: .6; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes home-fade-in { from { opacity: .65; } to { opacity: 1; } }
+@keyframes home-art-front { from { opacity: .4; transform: translate(10px, 8px); } to { opacity: 1; transform: translate(0, 0); } }
+@keyframes home-art-back { from { opacity: .15; transform: translate(5px, -5px); } }
+@keyframes home-art-trace { from { stroke-dashoffset: 450; opacity: 0; } to { stroke-dashoffset: 0; opacity: 1; } }
+@keyframes home-scan { from { transform: translateY(-30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes home-dialog-in { from { opacity: .4; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes home-shine { to { transform: translateX(575%) skewX(-20deg); } }
