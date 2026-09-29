@@ -200,6 +200,7 @@ function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = 
   originalStatus.value = row?.status || 'ACTIVE'
   originalHardCheck.value = row?.data.contract_rule?.mode === 'BLOCK' || row?.data.item_rule?.mode === 'BLOCK' || row?.data.customer_po_rule?.mode === 'BLOCK'
   Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, customer_po_rule: { ...defaultNumberRule(), ...row?.data.customer_po_rule }, item_rule: { ...defaultNumberRule(), ...row?.data.item_rule } } })
+  if (form.kind === 'CONFIG') for (const line of form.data.lines) line.dimension_unit = line.dimension_unit?.trim() || 'cm'
   for (const key of ['paper_types', 'paper_qualities', 'specifications'] as const) paperOptionText[key] = (form.data[key] || []).join('\n')
   itemText.value = (form.data.item_nos || []).join('\n'); warehouseText.value = (form.data.warehouses || []).join('\n')
   if (!['CONTRACT', 'RULE'].includes(form.kind)) form.customer_code = ''
@@ -230,6 +231,7 @@ async function save() {
     }
     if (!paperOnly.value) {
     form.data.lead_days = form.data.lead_days === null || String(form.data.lead_days) === '' ? null : Number(form.data.lead_days)
+    form.data.production_days = form.data.production_days === null || String(form.data.production_days) === '' ? null : Number(form.data.production_days)
     form.data.customer_days = form.data.customer_days === null || String(form.data.customer_days) === '' ? null : Number(form.data.customer_days)
     }
     if (paperOnly.value) for (const key of Object.keys(paperFields) as (keyof typeof paperFields)[]) {
@@ -389,8 +391,9 @@ async function saveWarehouse() {
             </section>
 
             <div v-if="!paperOnly" class="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-              <div class="grid gap-3 sm:grid-cols-2">
+              <div class="grid gap-3 sm:grid-cols-3">
                 <label class="font-semibold">采购安全提前量 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.lead_days" type="number" min="0" max="365" aria-label="默认采购提前天数" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 3 天' : '默认 3 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"><span class="mt-1 block font-normal leading-5 text-slate-500">计划交期＝客户交期－提前天数。例如客户 20 日要货，提前 3 天，计划 17 日到货。</span></label>
+                <label class="font-semibold">供应商生产送货周期 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.production_days" type="number" min="0" max="365" step="1" aria-label="供应商生产送货周期" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 7 天' : '默认 7 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"><span class="mt-1 block font-normal leading-5 text-slate-500">最迟下单日＝纸箱需到仓日－生产送货周期。提前 3 天提醒；超过最迟下单日且未下单才报疑似漏单。</span></label>
                 <label class="font-semibold">客户交期建议 <span class="font-normal text-slate-500">（下单后自然日）</span><input v-model="form.data.customer_days" :disabled="form.data.customer_days_disabled" type="number" min="0" max="730" aria-label="客户交期建议天数" :placeholder="form.data.customer_days_disabled ? '已关闭建议' : form.customer_code ? '空白沿用本厂，未设置则不建议' : '空白不提供建议'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2 disabled:bg-slate-100 disabled:text-slate-400"><span class="mt-1 block font-normal leading-5 text-slate-500">建议客户交期＝下单日期＋建议天数。仅供人工采纳，以客户实际要求为准。</span></label>
               </div>
               <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-slate-500"><span>仅新单采用；旧单及追加保留原提前量。</span><label class="inline-flex items-center gap-1.5"><input v-model="form.data.customer_days_disabled" type="checkbox" aria-label="关闭客户交期建议"> 不提供交期建议</label></div>

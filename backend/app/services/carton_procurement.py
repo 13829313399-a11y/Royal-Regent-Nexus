@@ -609,6 +609,7 @@ def get_order_by_no(db: Session, factory_id: str, order_no: str) -> CartonOrder:
         select(CartonOrder).where(
             CartonOrder.factory_id == factory_id,
             CartonOrder.order_no == order_no,
+            CartonOrder.deleted_at.is_(None),
         )
     )
     if order is None:
@@ -1036,6 +1037,10 @@ def _order_has_supplier_evidence(db: Session, order: CartonOrder) -> bool:
 
 
 def order_deletion_block_reason(db: Session, order: CartonOrder) -> str:
+    if order.deleted_at:
+        return "订单已删除"
+    if order.status == "CANCELLED":
+        return ""
     from app.services.carton_order_split import plans
     if plans(db, order.factory_id, order.id):
         return "已有拆单历史及归属记录，不能删除"
@@ -1090,9 +1095,26 @@ def _delete_order(db: Session, order: CartonOrder, reason: str, user: AuthContex
     )).all())
     _audit(db, user, order.factory_id, event_type, "carton_order", order.id,
            {"order_no": order.order_no, "reason": reason, "order": snapshot, "operation_id": operation_id,
+            "history_retained": order.status == "CANCELLED",
             "exceptions": [CartonExceptionOut.model_validate(item).model_dump(mode="json") for item in exceptions],
             "purchase_issues": [{**{column.name: getattr(issue, column.name) for column in issue.__table__.columns},
                                  "snapshot": json.loads(issue.snapshot_json)} for issue in issues]})
+    if order.status == "CANCELLED":
+        timestamp = now_text()
+        order.deleted_at = timestamp
+        order.revision += 1
+        order.updated_at = timestamp
+        order.updated_by = user.id
+        order.updated_by_name = user.display_name
+        for exception in exceptions:
+            if exception.status not in {"RESOLVED", "CLOSED"}:
+                exception.status = "CLOSED"
+                exception.resolution_note = f"已取消订单从台账删除：{reason}"
+                exception.revision += 1
+                exception.updated_at = exception.resolved_at = timestamp
+                exception.updated_by = exception.resolved_by = user.id
+                exception.updated_by_name = exception.resolved_by_name = user.display_name
+        return
     for exception in exceptions:
         db.delete(exception)
     for issue in issues:
@@ -2170,7 +2192,7 @@ def list_orders(
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[int, list[CartonOrder]]:
-    query = select(CartonOrder).where(CartonOrder.factory_id == factory_id)
+    query = select(CartonOrder).where(CartonOrder.factory_id == factory_id, CartonOrder.deleted_at.is_(None))
     if customer_code:
         query = query.where(CartonOrder.customer_code == customer_code)
     if status_filter:
@@ -3607,7 +3629,7 @@ def _create_import_exceptions(
                     continue
                 elif change == "NEW" and not row.get("manual_ordered") and not row.get("order_id"):
                     category = "SCHEDULE_NEW_ORDER"
-                    severity = "HIGH" if match_status == "MISSING_ORDER" else "MEDIUM"
+                    severity = "MEDIUM"
                     title = "业务排期新增待下单订单" if match_status == "MISSING_ORDER" else "业务排期新增订单待核对"
                 else:
                     category = ""
@@ -3618,7 +3640,7 @@ def _create_import_exceptions(
                     continue
                 if match_status == "MISSING_ORDER":
                     category = "MISSING_ORDER" if batch.import_type == "WEEKLY_SCHEDULE" else "RECEIPT_UNMATCHED"
-                    severity = "HIGH"
+                    severity = "MEDIUM" if batch.import_type == "WEEKLY_SCHEDULE" else "HIGH"
                     title = "周排期未找到正式纸箱订单" if batch.import_type == "WEEKLY_SCHEDULE" else "送货明细未找到订单纸品"
                 elif match_status == "QUANTITY_MISMATCH":
                     category = "QUANTITY_MISMATCH"
@@ -4253,6 +4275,10 @@ def update_exception(
         batch = db.get(CartonImportBatch, exception.source_id)
         if batch is not None and batch.factory_id == factory_id and batch.status == "REJECTED":
             raise HTTPException(409, "来源导入批次已整批撤销，异常不能继续处理或重新打开")
+    if exception.source_type == "ORDER":
+        source_order = db.get(CartonOrder, exception.source_id)
+        if source_order is not None and source_order.factory_id == factory_id and source_order.deleted_at:
+            raise HTTPException(409, "来源订单已从台账删除，历史异常不能重新打开")
     if exception.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="异常记录已更新，请刷新后重试")
     if exception.status == "CLOSED" and payload.status != "OPEN":

@@ -96,6 +96,8 @@ class CartonOrder(Base):
     safety_lead_days: Mapped[int] = mapped_column(Integer, default=3)
     due_date: Mapped[str] = mapped_column(String(10), index=True)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", index=True)
+    # Cancelled orders leave the ledger without deleting referenced business history.
+    deleted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[str] = mapped_column(String(64), index=True)
