@@ -32,12 +32,17 @@ def expense(db, user, body):
         c.get(db, m.UvOpsTask, body.task_id)
     for month in sorted({(start+timedelta(days=i)).strftime("%Y-%m") for i in range((end-start).days+1)}):
         c.lock_period(db, month+"-01")
+    if body.task_id:
+        task=c.get(db,m.UvOpsTask,body.task_id,lock=True)
+        c.require(task.status!='cancelled','task_cancelled','不能对已取消任务登记费用')
     return c.record(c.add(db, m.UvOpsExpense, user, **c.values(body)))
 
 
 def run_cost(db,user,body):
     from .payroll import split_money
     c.lock_period(db,body.business_date)
+    allocations=list(db.scalars(c.query(m.UvOpsRunAllocation).where(m.UvOpsRunAllocation.run_id==body.run_id)))
+    for key in sorted({x.task_id for x in allocations}): c.get(db,m.UvOpsTask,key,lock=True)
     run=c.get(db,m.UvOpsRun,body.run_id,lock=True,version=body.expected_version)
     c.require(run.match_evidence is not None,'run_unmatched','请先核对运行的拼版分配',422)
     c.require(db.scalar(c.query(m.UvOpsRunCost).where(m.UvOpsRunCost.run_id==run.id)) is None,'run_cost_exists','本次运行已有一份成本分配，不能重复计入')

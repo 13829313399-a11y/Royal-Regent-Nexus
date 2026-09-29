@@ -1,8 +1,10 @@
 # 数据字典
 
-新域限定 `huakang-a`，42 张表；下表从当前 SQLAlchemy 模型生成，仅含结构，不含业务数据。金额及非整数计量使用 Numeric(18,6)，API 序列化为十进制字符串。`id` 为稳定技术标识，名称不参与关联。时间存储为带 UTC 时区的 ISO 文本，业务日采用 Asia/Shanghai。
+新域限定 `huakang-a`，44 张表。以下从当前模型生成；金额和非整数计量为 Numeric(18,6)，API 为十进制字符串。业务日 Asia/Shanghai，时间为 UTC ISO 文本。
 
-所有 Record 表都有 factory_id、id、version、created_at、updated_at、created_by；版本用于并发冲突检查。历史记录通过相反方向流水或有原因的状态转换修正，不直接删除。空金额代表未知，与明确 0 区分。
+`id` 为稳定标识；`version` 检查并发。品质、工时、费用、工资、Run 成本的 `active_key=1` 表示有效，冲销后置 NULL，原始金额/数量/分配仍保留，`uv_ops_reversals` 保存理由。执行记录的 active_key 表示正在执行，完工置 NULL；它不产生核数。排程 batch_id 可空仅兼容旧整任务计划，新排程必须绑定实体批次。
+
+迁移 `20260929_0127` 追加执行与冲销表、批次排程字段并保留旧数据和 CHECK。
 
 ## uv_ops_agent_event_inbox
 
@@ -30,6 +32,8 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, agent_id, event_id；factory_id, agent_id, stream_id, sequence；factory_id, id
+
 索引：ix_uv_ops_agent_event_inbox_factory_id, ix_uv_ops_inbox_machine_observed
 
 ## uv_ops_agents
@@ -54,6 +58,8 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, id；pairing_hash；token_hash
+
 索引：ix_uv_ops_agents_factory_id
 
 ## uv_ops_audit
@@ -74,6 +80,8 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, id
+
 索引：ix_uv_ops_audit_entity_id, ix_uv_ops_audit_factory_id
 
 ## uv_ops_batch_relations
@@ -91,7 +99,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：source_id != target_id; quantity > 0; factory_id = 'huakang-a'
+约束：factory_id = 'huakang-a'；quantity > 0；source_id != target_id
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_batch_relations_factory_id
 
@@ -118,7 +128,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：quantity > 0; reserved >= 0; intermediate >= 0; reserved + received <= good; scrap >= 0; factory_id = 'huakang-a'; received >= 0; good >= 0; pending >= 0; remaining + intermediate + good + rework + scrap + pending = quantity; remaining >= 0; rework >= 0
+约束：factory_id = 'huakang-a'；good >= 0；intermediate >= 0；pending >= 0；quantity > 0；received >= 0；remaining + intermediate + good + rework + scrap + pending = quantity；remaining >= 0；reserved + received <= good；reserved >= 0；rework >= 0；scrap >= 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_batches_factory_id
 
@@ -144,14 +156,46 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; allocated >= 0; cancelled >= 0; quantity > 0; allocated + cancelled <= quantity
+约束：allocated + cancelled <= quantity；allocated >= 0；cancelled >= 0；factory_id = 'huakang-a'；quantity > 0
+
+唯一键：factory_id, code；factory_id, id；factory_id, source_type, source_line_id
 
 索引：ix_uv_ops_demands_factory_id
+
+## uv_ops_executions
+
+| 字段 | 类型 | 可空 | 关联 |
+|---|---|---|---|
+| `task_id` | `VARCHAR(64)` | 否 | uv_ops_tasks.id |
+| `batch_id` | `VARCHAR(64)` | 否 | uv_ops_batches.id |
+| `machine_id` | `VARCHAR(64)` | 否 | uv_ops_machines.id |
+| `schedule_id` | `VARCHAR(64)` | 否 | uv_ops_schedule_blocks.id |
+| `fixture_code` | `VARCHAR(64)` | 否 | — |
+| `shift_id` | `VARCHAR(64)` | 否 | uv_ops_shifts.id |
+| `started_at` | `VARCHAR(40)` | 否 | — |
+| `ended_at` | `VARCHAR(40)` | 是 | — |
+| `start_evidence` | `TEXT` | 否 | — |
+| `end_evidence` | `TEXT` | 是 | — |
+| `ended_shift_id` | `VARCHAR(64)` | 是 | uv_ops_shifts.id |
+| `active_key` | `INTEGER` | 是 | — |
+| `id` | `VARCHAR(64)` | 否 | — |
+| `factory_id` | `VARCHAR(32)` | 否 | uv_ops_batches.factory_id, uv_ops_machines.factory_id, uv_ops_schedule_blocks.factory_id, uv_ops_shifts.factory_id, uv_ops_shifts.factory_id, uv_ops_tasks.factory_id |
+| `version` | `INTEGER` | 否 | — |
+| `created_at` | `VARCHAR(40)` | 否 | — |
+| `updated_at` | `VARCHAR(40)` | 否 | — |
+| `created_by` | `VARCHAR(64)` | 否 | — |
+
+约束：(active_key = 1 AND ended_at IS NULL) OR (active_key IS NULL AND ended_at IS NOT NULL)；ended_at IS NULL OR ended_at > started_at；factory_id = 'huakang-a'
+
+唯一键：factory_id, batch_id, active_key；factory_id, fixture_code, active_key；factory_id, id；factory_id, machine_id, active_key
+
+索引：ix_uv_ops_executions_factory_id
 
 ## uv_ops_expenses
 
 | 字段 | 类型 | 可空 | 关联 |
 |---|---|---|---|
+| `active_key` | `INTEGER` | 是 | — |
 | `category` | `VARCHAR(32)` | 否 | — |
 | `task_id` | `VARCHAR(64)` | 是 | uv_ops_tasks.id |
 | `cost_amount` | `NUMERIC(18, 6)` | 否 | — |
@@ -166,7 +210,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：cost_amount >= 0; category IN ('direct','department','investment'); factory_id = 'huakang-a'
+约束：category IN ('direct','department','investment')；cost_amount >= 0；factory_id = 'huakang-a'
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_expenses_business_date, ix_uv_ops_expenses_factory_id
 
@@ -192,6 +238,8 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, id
+
 索引：ix_uv_ops_export_jobs_factory_id
 
 ## uv_ops_file_versions
@@ -215,7 +263,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：role IN ('artwork','preview','production'); size_bytes > 0; factory_id = 'huakang-a'
+约束：factory_id = 'huakang-a'；role IN ('artwork','preview','production')；size_bytes > 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_file_versions_factory_id
 
@@ -235,7 +285,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：width_mm > 0; factory_id = 'huakang-a'; slots > 0; height_mm > 0
+约束：factory_id = 'huakang-a'；height_mm > 0；slots > 0；width_mm > 0
+
+唯一键：factory_id, code, revision；factory_id, id
 
 索引：ix_uv_ops_fixtures_factory_id
 
@@ -255,7 +307,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; quantity > 0
+约束：factory_id = 'huakang-a'；quantity > 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_handover_events_factory_id
 
@@ -279,7 +333,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：received + rejected <= quantity; rejected >= 0; returned <= received; factory_id = 'huakang-a'; returned >= 0; quantity > 0; received >= 0
+约束：factory_id = 'huakang-a'；quantity > 0；received + rejected <= quantity；received >= 0；rejected >= 0；returned <= received；returned >= 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_handovers_business_date, ix_uv_ops_handovers_factory_id
 
@@ -309,6 +365,8 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, id
+
 索引：ix_uv_ops_import_jobs_factory_id
 
 ## uv_ops_import_rows
@@ -326,6 +384,8 @@
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
 约束：factory_id = 'huakang-a'
+
+唯一键：factory_id, id；factory_id, identity
 
 索引：ix_uv_ops_import_rows_factory_id
 
@@ -346,7 +406,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：quantity_ml >= 0; cost_value >= 0; factory_id = 'huakang-a'
+约束：cost_value >= 0；factory_id = 'huakang-a'；quantity_ml >= 0
+
+唯一键：factory_id, id；factory_id, sku_id, lot, location
 
 索引：ix_uv_ops_ink_balances_factory_id
 
@@ -371,7 +433,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; quantity_ml > 0; cost_value >= 0
+约束：cost_value >= 0；factory_id = 'huakang-a'；quantity_ml > 0
+
+唯一键：factory_id, id；factory_id, reversal_of
 
 索引：ix_uv_ops_ink_movements_business_date, ix_uv_ops_ink_movements_factory_id
 
@@ -392,7 +456,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; capacity_ml > 0
+约束：capacity_ml > 0；factory_id = 'huakang-a'
+
+唯一键：factory_id, code；factory_id, id
 
 索引：ix_uv_ops_ink_skus_factory_id
 
@@ -415,7 +481,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：width_mm IS NULL OR width_mm > 0; height_mm IS NULL OR height_mm > 0; factory_id = 'huakang-a'
+约束：factory_id = 'huakang-a'；height_mm IS NULL OR height_mm > 0；width_mm IS NULL OR width_mm > 0
+
+唯一键：factory_id, code；factory_id, id
 
 索引：ix_uv_ops_machines_factory_id
 
@@ -423,6 +491,7 @@
 
 | 字段 | 类型 | 可空 | 关联 |
 |---|---|---|---|
+| `active_key` | `INTEGER` | 是 | — |
 | `shift_id` | `VARCHAR(64)` | 否 | uv_ops_shifts.id |
 | `task_id` | `VARCHAR(64)` | 否 | uv_ops_tasks.id |
 | `employee_id` | `VARCHAR(64)` | 否 | — |
@@ -437,7 +506,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：end_at > start_at; role_coefficient > 0; factory_id = 'huakang-a'
+约束：end_at > start_at；factory_id = 'huakang-a'；role_coefficient > 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_participations_factory_id
 
@@ -455,7 +526,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; status IN ('open','closed')
+约束：factory_id = 'huakang-a'；status IN ('open','closed')
+
+唯一键：factory_id, id；factory_id, period
 
 索引：ix_uv_ops_periods_factory_id
 
@@ -477,7 +550,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：basis IN ('piece','area'); factory_id = 'huakang-a'; measured_area_m2 IS NULL OR measured_area_m2 > 0; rate >= 0
+约束：basis IN ('piece','area')；factory_id = 'huakang-a'；measured_area_m2 IS NULL OR measured_area_m2 > 0；rate >= 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_price_policies_factory_id
 
@@ -503,7 +578,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：passes > 0; factory_id = 'huakang-a'; faces > 0; width_mm > 0; pieces_per_board > 0; height_mm > 0; cycle_seconds IS NULL OR cycle_seconds > 0
+约束：cycle_seconds IS NULL OR cycle_seconds > 0；faces > 0；factory_id = 'huakang-a'；height_mm > 0；passes > 0；pieces_per_board > 0；width_mm > 0
+
+唯一键：factory_id, id；factory_id, product_id, revision
 
 索引：ix_uv_ops_process_versions_factory_id
 
@@ -533,7 +610,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：good >= 0; processed = good + rework + scrap + pending; pending >= 0; factory_id = 'huakang-a'; rework >= 0; direction IN (-1,1); processed > 0; scrap >= 0
+约束：direction IN (-1,1)；factory_id = 'huakang-a'；good >= 0；pending >= 0；processed = good + rework + scrap + pending；processed > 0；rework >= 0；scrap >= 0
+
+唯一键：factory_id, id；factory_id, reversal_of
 
 索引：ix_uv_ops_production_entries_business_date, ix_uv_ops_production_entries_factory_id, ix_uv_ops_production_task_date
 
@@ -553,12 +632,15 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, code；factory_id, id
+
 索引：ix_uv_ops_products_factory_id
 
 ## uv_ops_quality_entries
 
 | 字段 | 类型 | 可空 | 关联 |
 |---|---|---|---|
+| `active_key` | `INTEGER` | 是 | — |
 | `batch_id` | `VARCHAR(64)` | 否 | uv_ops_batches.id |
 | `task_id` | `VARCHAR(64)` | 否 | uv_ops_tasks.id |
 | `production_entry_id` | `VARCHAR(64)` | 否 | uv_ops_production_entries.id |
@@ -575,7 +657,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：quantity > 0; disposition IN ('good','rework','scrap'); factory_id = 'huakang-a'
+约束：disposition IN ('good','rework','scrap')；factory_id = 'huakang-a'；quantity > 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_quality_entries_business_date, ix_uv_ops_quality_entries_factory_id
 
@@ -598,6 +682,8 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, actor_id, operation_id；factory_id, id
+
 索引：ix_uv_ops_receipts_factory_id
 
 ## uv_ops_reference_efficiency
@@ -618,7 +704,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; cost_amount >= 0; cycle_seconds > 0; pieces_per_board > 0; available_seconds > 0
+约束：available_seconds > 0；cost_amount >= 0；cycle_seconds > 0；factory_id = 'huakang-a'；pieces_per_board > 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_reference_efficiency_factory_id
 
@@ -638,7 +726,30 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, id
+
 索引：ix_uv_ops_report_snapshots_factory_id
+
+## uv_ops_reversals
+
+| 字段 | 类型 | 可空 | 关联 |
+|---|---|---|---|
+| `kind` | `VARCHAR(32)` | 否 | — |
+| `entity_id` | `VARCHAR(64)` | 否 | — |
+| `business_date` | `VARCHAR(10)` | 否 | — |
+| `reason` | `TEXT` | 否 | — |
+| `id` | `VARCHAR(64)` | 否 | — |
+| `factory_id` | `VARCHAR(32)` | 否 | — |
+| `version` | `INTEGER` | 否 | — |
+| `created_at` | `VARCHAR(40)` | 否 | — |
+| `updated_at` | `VARCHAR(40)` | 否 | — |
+| `created_by` | `VARCHAR(64)` | 否 | — |
+
+约束：factory_id = 'huakang-a'；kind IN ('quality','expense','wage','run_cost','participation')
+
+唯一键：factory_id, id；factory_id, kind, entity_id
+
+索引：ix_uv_ops_reversals_factory_id
 
 ## uv_ops_rework_bindings
 
@@ -654,6 +765,8 @@
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
 约束：factory_id = 'huakang-a'
+
+唯一键：factory_id, id；factory_id, task_id
 
 索引：ix_uv_ops_rework_bindings_factory_id
 
@@ -676,7 +789,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：share > 0; factory_id = 'huakang-a'; share <= 1; full_boards >= 0; tail_pieces >= 0
+约束：factory_id = 'huakang-a'；full_boards >= 0；share <= 1；share > 0；tail_pieces >= 0
+
+唯一键：factory_id, id；factory_id, run_id, task_id, batch_id, pass_index
 
 索引：ix_uv_ops_run_allocations_factory_id
 
@@ -684,6 +799,7 @@
 
 | 字段 | 类型 | 可空 | 关联 |
 |---|---|---|---|
+| `active_key` | `INTEGER` | 是 | — |
 | `run_id` | `VARCHAR(64)` | 否 | uv_ops_runs.id |
 | `business_date` | `VARCHAR(10)` | 否 | — |
 | `cost_amount` | `NUMERIC(18, 6)` | 否 | — |
@@ -697,7 +813,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：cost_amount >= 0; factory_id = 'huakang-a'
+约束：cost_amount >= 0；factory_id = 'huakang-a'
+
+唯一键：factory_id, id；factory_id, run_id, active_key
 
 索引：ix_uv_ops_run_costs_factory_id
 
@@ -733,6 +851,8 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：factory_id, id；factory_id, native_identity
+
 索引：ix_uv_ops_runs_factory_id, ix_uv_ops_runs_machine_started, ix_uv_ops_runs_recent, ix_uv_ops_runs_unmatched
 
 ## uv_ops_schedule_blocks
@@ -741,18 +861,26 @@
 |---|---|---|---|
 | `machine_id` | `VARCHAR(64)` | 否 | uv_ops_machines.id |
 | `task_id` | `VARCHAR(64)` | 否 | uv_ops_tasks.id |
+| `batch_id` | `VARCHAR(64)` | 是 | uv_ops_batches.id |
+| `fixture_id` | `VARCHAR(64)` | 是 | uv_ops_fixtures.id |
+| `fixture_evidence` | `TEXT` | 是 | — |
+| `estimate_basis` | `VARCHAR(24)` | 否 | — |
+| `estimated_seconds` | `NUMERIC(18, 6)` | 是 | — |
+| `estimate_reason` | `TEXT` | 是 | — |
 | `start_at` | `VARCHAR(40)` | 否 | — |
 | `end_at` | `VARCHAR(40)` | 否 | — |
 | `fixed` | `BOOLEAN` | 否 | — |
 | `status` | `VARCHAR(24)` | 否 | — |
 | `id` | `VARCHAR(64)` | 否 | — |
-| `factory_id` | `VARCHAR(32)` | 否 | uv_ops_machines.factory_id, uv_ops_tasks.factory_id |
+| `factory_id` | `VARCHAR(32)` | 否 | uv_ops_batches.factory_id, uv_ops_fixtures.factory_id, uv_ops_machines.factory_id, uv_ops_tasks.factory_id |
 | `version` | `INTEGER` | 否 | — |
 | `created_at` | `VARCHAR(40)` | 否 | — |
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：end_at > start_at; factory_id = 'huakang-a'
+约束：end_at > start_at；estimate_basis IN ('standard','manual')；estimated_seconds IS NULL OR estimated_seconds > 0；factory_id = 'huakang-a'
+
+唯一键：factory_id, id；factory_id, task_id, batch_id
 
 索引：ix_uv_ops_schedule_blocks_factory_id, ix_uv_ops_schedule_blocks_machine_id, ix_uv_ops_schedule_blocks_start_at, ix_uv_ops_schedule_machine_time
 
@@ -772,6 +900,8 @@
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
 约束：factory_id = 'huakang-a'
+
+唯一键：factory_id；factory_id, id
 
 索引：ix_uv_ops_settings_factory_id
 
@@ -793,7 +923,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：end_at > start_at; factory_id = 'huakang-a'; status IN ('open','closed')
+约束：end_at > start_at；factory_id = 'huakang-a'；status IN ('open','closed')
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_shifts_business_date, ix_uv_ops_shifts_factory_id
 
@@ -818,6 +950,8 @@
 
 约束：factory_id = 'huakang-a'
 
+唯一键：active_key；active_source_key；factory_id, agent_id, source_id, binding_version；factory_id, id
+
 索引：ix_uv_ops_source_bindings_factory_id
 
 ## uv_ops_source_cursors
@@ -840,6 +974,8 @@
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
 约束：factory_id = 'huakang-a'
+
+唯一键：factory_id, binding_id；factory_id, id
 
 索引：ix_uv_ops_source_cursors_factory_id
 
@@ -867,7 +1003,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：quantity > 0; factory_id = 'huakang-a'
+约束：factory_id = 'huakang-a'；quantity > 0
+
+唯一键：factory_id, code；factory_id, id
 
 索引：ix_uv_ops_tasks_factory_id
 
@@ -875,6 +1013,7 @@
 
 | 字段 | 类型 | 可空 | 关联 |
 |---|---|---|---|
+| `active_key` | `INTEGER` | 是 | — |
 | `shift_id` | `VARCHAR(64)` | 否 | uv_ops_shifts.id |
 | `task_id` | `VARCHAR(64)` | 否 | uv_ops_tasks.id |
 | `business_date` | `VARCHAR(10)` | 否 | — |
@@ -888,7 +1027,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; payroll_amount >= 0
+约束：factory_id = 'huakang-a'；payroll_amount >= 0
+
+唯一键：factory_id, id；factory_id, shift_id, task_id, active_key
 
 索引：ix_uv_ops_wage_accruals_business_date, ix_uv_ops_wage_accruals_factory_id
 
@@ -907,7 +1048,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; payroll_amount >= 0; payroll_weight_seconds >= 0
+约束：factory_id = 'huakang-a'；payroll_amount >= 0；payroll_weight_seconds >= 0
+
+唯一键：factory_id, accrual_id, employee_id；factory_id, id
 
 索引：ix_uv_ops_wage_allocations_factory_id
 
@@ -928,7 +1071,9 @@
 | `updated_at` | `VARCHAR(40)` | 否 | — |
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
-约束：factory_id = 'huakang-a'; bonus_rate >= 0; basis IN ('piece','hour','base_bonus'); rate >= 0
+约束：basis IN ('piece','hour','base_bonus')；bonus_rate >= 0；factory_id = 'huakang-a'；rate >= 0
+
+唯一键：factory_id, id
 
 索引：ix_uv_ops_wage_policies_factory_id
 
@@ -946,5 +1091,7 @@
 | `created_by` | `VARCHAR(64)` | 否 | — |
 
 约束：factory_id = 'huakang-a'
+
+唯一键：factory_id, employee_id；factory_id, id
 
 索引：ix_uv_ops_workers_factory_id
