@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
+from app.services.customer_order_ocr import order_ocr_request
 from app.db import get_db
 from app.models.customer_order import CustomerOrderExportAudit
 from app.schemas.customer_order import CustomerOrderExportAuditOut, CustomerOrderImportPreviewOut
@@ -1286,6 +1287,7 @@ def list_customer_order_export_audits(
 @router.post(
     "/{customer_code}/preview-batch",
     response_model=CustomerOrderImportPreviewOut,
+    dependencies=[Depends(order_ocr_request)],
 )
 async def preview_mapped_customer_order_batch(
     customer_code: str,
@@ -1345,7 +1347,7 @@ async def preview_mapped_customer_order_batch(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/{customer_code}/export-batch")
+@router.post("/{customer_code}/export-batch", dependencies=[Depends(order_ocr_request)])
 async def export_mapped_customer_order_batch(
     customer_code: str,
     factory_id: str = Form("huaxing"),
