@@ -52,7 +52,10 @@ async function load() {
     workspace.value = result
     const current = result.documents[0]
     if (current) accept(current); else resetForm()
-  } catch (err) { if (token === generation) error.value = getApiErrorMessage(err) }
+    return ''
+  } catch (err) {
+    if (token === generation && factory === props.factoryId) { error.value = getApiErrorMessage(err); return error.value }
+  }
   finally { if (token === generation) busy.value = false }
 }
 function change() { dirty.value = true; message.value = '' }
@@ -103,8 +106,12 @@ async function saveDate() {
   busy.value = true; error.value = ''
   try {
     await api.acceptance(dateFix.receipt_id, factory, dateFix.revision, dateFix.acceptance_date, dateFix.reason)
-    if (token === generation && factory === props.factoryId) await load()
-  } catch (err) { if (token === generation) error.value = getApiErrorMessage(err) }
+    if (token !== generation || factory !== props.factoryId) return
+    const refreshError = await load()
+    if (factory !== props.factoryId || token + 1 !== generation) return
+    message.value = '验收日期已保存，对账月份按实际验收日期重新核对。'
+    if (refreshError) error.value = `验收日期已保存，但对账刷新失败：${refreshError}。请刷新查看，勿重复保存。`
+  } catch (err) { if (token === generation && factory === props.factoryId) error.value = `验收日期未保存：${getApiErrorMessage(err)}` }
   finally { if (token === generation) busy.value = false }
 }
 function leave() { return !dirty.value || window.confirm('供应商账单有未保存的内容，确定离开吗？') }

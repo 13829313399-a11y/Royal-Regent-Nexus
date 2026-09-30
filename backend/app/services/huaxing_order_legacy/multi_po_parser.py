@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import io
 import re
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -11,7 +9,7 @@ from typing import Any, BinaryIO
 import pdfplumber
 from openpyxl import load_workbook
 
-from app.services.carton_mark import configure_tesseract, missing_tesseract_message
+from app.services.customer_order_ocr import read_scanned_order_pdf
 
 
 CLIENTS = {
@@ -82,16 +80,18 @@ def _ocr_contract_page(pytesseract_module, image, language: str) -> str:
         image,
         lang=language,
         config="--oem 3 --psm 6 -c preserve_interword_spaces=1",
+        timeout=30,
     )
     # A sparse second pass over the contract header/customer band is especially
     # useful for distinguishing 8/9 in Walmart PO numbers without doubling the
     # OCR cost for the full page.
-    header_band = image.crop((0, int(image.height * 0.16), image.width, int(image.height * 0.48)))
-    sparse = pytesseract_module.image_to_string(
-        header_band,
-        lang=language,
-        config="--oem 3 --psm 11",
-    )
+    with image.crop((0, int(image.height * 0.16), image.width, int(image.height * 0.48))) as header_band:
+        sparse = pytesseract_module.image_to_string(
+            header_band,
+            lang=language,
+            config="--oem 3 --psm 11",
+            timeout=15,
+        )
     return dense + "\n" + sparse
 
 
@@ -104,48 +104,16 @@ def read_pdf_pages(
     """Read native PDF text, falling back to bounded page-preserving OCR."""
     content = _pdf_bytes(source)
     with pdfplumber.open(io.BytesIO(content)) as pdf:
+        if len(pdf.pages) > max_pages:
+            raise ValueError(f"扫描 PDF 最多支持 {max_pages} 页，当前为 {len(pdf.pages)} 页")
         pages = [(page.extract_text(x_tolerance=2, y_tolerance=3) or "") for page in pdf.pages]
     if not pages:
         raise ValueError("PDF 没有页面")
-    if len(pages) > max_pages:
-        raise ValueError(f"扫描 PDF 最多支持 {max_pages} 页，当前为 {len(pages)} 页")
     native_chars = sum(len(re.sub(r"\s+", "", page)) for page in pages)
     if native_chars >= len(pages) * min_native_chars_per_page:
         return pages, False
 
-    try:
-        import pypdfium2 as pdfium  # type: ignore
-        import pytesseract  # type: ignore
-    except Exception as exc:
-        raise ValueError("扫描 PDF OCR 依赖未安装：需要 pypdfium2、Pillow 和 pytesseract") from exc
-    tesseract_cmd, language = configure_tesseract(pytesseract)
-    if not tesseract_cmd:
-        raise ValueError(missing_tesseract_message())
-
-    document = pdfium.PdfDocument(content)
-    ocr_pages: list[str] = []
-    pending = deque()
-    try:
-        # Keep only three rendered pages alive at once. Tesseract itself runs in
-        # separate processes, so a small worker pool materially shortens 49-page
-        # Barter batches without retaining the whole document as bitmaps.
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="barter-ocr") as executor:
-            for page_index in range(len(document)):
-                image = document[page_index].render(scale=4).to_pil().convert("RGB")
-                pending.append(executor.submit(
-                    _ocr_contract_page,
-                    pytesseract,
-                    image,
-                    language,
-                ))
-                if len(pending) >= 3:
-                    ocr_pages.append(pending.popleft().result())
-            while pending:
-                ocr_pages.append(pending.popleft().result())
-    finally:
-        if hasattr(document, "close"):
-            document.close()
-    return ocr_pages, True
+    return read_scanned_order_pdf(content, len(pages)), True
 
 
 def read_pdf(source: str | Path | bytes | BinaryIO) -> tuple[str, int]:

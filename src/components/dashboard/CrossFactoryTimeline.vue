@@ -7,7 +7,7 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
   <SectionPanel
     class="dashboard-section dashboard-section--timeline"
     title="跨厂区事项"
-    subtitle="按 SLA 排序的重点事项"
+    subtitle="跨厂区事项示例 · 按 SLA 排序"
   >
     <ol class="dashboard-timeline">
       <li

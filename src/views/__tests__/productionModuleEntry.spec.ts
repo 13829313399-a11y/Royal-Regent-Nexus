@@ -197,7 +197,7 @@ describe('production module entry', () => {
 
     for (const requiredCopy of [
       '导入内部报价',
-      '在上方交接池接收内部报价台已放行的报价',
+      '在上方交接池接收内部报价台已输出的报价',
       '当前客户：',
       '导入后会锁定客户并生成下方明细对比',
       '输出报客价 Excel',

@@ -1,8 +1,8 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Royal Regent UV Operations",
-    "version": "1.0.0"
+    "title": "Huakang A UV Operations",
+    "version": "1.1.0"
   },
   "paths": {
     "/api/uv-operations/access": {
@@ -374,6 +374,128 @@
         }
       }
     },
+    "/api/uv-operations/schedule/recommendations": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Recommend",
+        "operationId": "recommend_api_uv_operations_schedule_recommendations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleRecommend"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/schedule/window": {
+      "get": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Schedule Window",
+        "operationId": "schedule_window_api_uv_operations_schedule_window_get",
+        "parameters": [
+          {
+            "name": "start_at",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Start At"
+            }
+          },
+          {
+            "name": "end_at",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "title": "End At"
+            }
+          },
+          {
+            "name": "factory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Factory Id"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/uv-operations/tasks/{entity_id}": {
       "get": {
         "tags": [
@@ -639,6 +761,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -738,6 +870,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -839,6 +981,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -938,6 +1090,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -1039,6 +1201,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -1138,6 +1310,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -1239,6 +1421,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -1338,6 +1530,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -1439,6 +1641,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -1538,6 +1750,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -1789,8 +2011,68 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/tasks/{entity_id}/cancel": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Tasks Entity Id Cancel",
+        "operationId": "uv_post_tasks_entity_id_cancel_api_uv_operations_tasks__entity_id__cancel_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Command"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1939,6 +2221,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -1979,6 +2271,106 @@
             }
           },
           "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/schedule/{entity_id}/cancel": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Schedule Entity Id Cancel",
+        "operationId": "uv_post_schedule_entity_id_cancel_api_uv_operations_schedule__entity_id__cancel_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Command"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/schedule/{entity_id}/unlock": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Schedule Entity Id Unlock",
+        "operationId": "uv_post_schedule_entity_id_unlock_api_uv_operations_schedule__entity_id__unlock_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Command"
+              }
+            }
+          }
         },
         "responses": {
           "200": {
@@ -2077,6 +2469,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -2177,6 +2579,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -2480,6 +2892,356 @@
         }
       }
     },
+    "/api/uv-operations/schedule/{entity_id}/start": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Schedule Entity Id Start",
+        "operationId": "uv_post_schedule_entity_id_start_api_uv_operations_schedule__entity_id__start_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutionStart"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/executions/{entity_id}/finish": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Executions Entity Id Finish",
+        "operationId": "uv_post_executions_entity_id_finish_api_uv_operations_executions__entity_id__finish_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutionFinish"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/quality/{entity_id}/reverse": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Quality Entity Id Reverse",
+        "operationId": "uv_post_quality_entity_id_reverse_api_uv_operations_quality__entity_id__reverse_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Command"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/participations/{entity_id}/reverse": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Participations Entity Id Reverse",
+        "operationId": "uv_post_participations_entity_id_reverse_api_uv_operations_participations__entity_id__reverse_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Command"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/wages/{entity_id}/reverse": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Wages Entity Id Reverse",
+        "operationId": "uv_post_wages_entity_id_reverse_api_uv_operations_wages__entity_id__reverse_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Command"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/expenses/{entity_id}/reverse": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Expenses Entity Id Reverse",
+        "operationId": "uv_post_expenses_entity_id_reverse_api_uv_operations_expenses__entity_id__reverse_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Command"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/run-costs/{entity_id}/reverse": {
+      "post": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv Post Run Costs Entity Id Reverse",
+        "operationId": "uv_post_run_costs_entity_id_reverse_api_uv_operations_run_costs__entity_id__reverse_post",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Command"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/uv-operations/rework-tasks": {
       "post": {
         "tags": [
@@ -2594,6 +3356,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -3045,6 +3817,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -3144,6 +3926,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -3636,6 +4428,152 @@
         }
       }
     },
+    "/api/uv-operations/executions": {
+      "get": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv List Executions",
+        "operationId": "uv_list_executions_api_uv_operations_executions_get",
+        "parameters": [
+          {
+            "name": "factory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Factory Id"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/uv-operations/reversals": {
+      "get": {
+        "tags": [
+          "uv-operations"
+        ],
+        "summary": "Uv List Reversals",
+        "operationId": "uv_list_reversals_api_uv_operations_reversals_get",
+        "parameters": [
+          {
+            "name": "factory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Factory Id"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/uv-operations/file-versions": {
       "get": {
         "tags": [
@@ -3674,6 +4612,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -3738,6 +4686,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -3800,6 +4758,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -3864,6 +4832,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -3926,6 +4904,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -3990,6 +4978,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -4052,6 +5050,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -4116,6 +5124,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -4178,6 +5196,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -4242,6 +5270,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -4304,6 +5342,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -4368,6 +5416,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -4430,6 +5488,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -4494,6 +5562,16 @@
               "default": 100,
               "title": "Limit"
             }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
+            }
           }
         ],
         "responses": {
@@ -4556,6 +5634,16 @@
               "minimum": 1,
               "default": 100,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "History"
             }
           }
         ],
@@ -5708,6 +6796,116 @@
           "token"
         ],
         "title": "Enroll"
+      },
+      "ExecutionFinish": {
+        "properties": {
+          "factory_id": {
+            "type": "string",
+            "const": "huakang-a",
+            "title": "Factory Id"
+          },
+          "operation_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Operation Id"
+          },
+          "expected_version": {
+            "type": "integer",
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "default": 0
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Reason",
+            "default": ""
+          },
+          "shift_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Shift Id"
+          },
+          "ended_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Ended At"
+          },
+          "evidence": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 2,
+            "title": "Evidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "factory_id",
+          "operation_id",
+          "shift_id",
+          "ended_at",
+          "evidence"
+        ],
+        "title": "ExecutionFinish"
+      },
+      "ExecutionStart": {
+        "properties": {
+          "factory_id": {
+            "type": "string",
+            "const": "huakang-a",
+            "title": "Factory Id"
+          },
+          "operation_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Operation Id"
+          },
+          "expected_version": {
+            "type": "integer",
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "default": 0
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Reason",
+            "default": ""
+          },
+          "shift_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Shift Id"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "evidence": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 2,
+            "title": "Evidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "factory_id",
+          "operation_id",
+          "shift_id",
+          "started_at",
+          "evidence"
+        ],
+        "title": "ExecutionStart"
       },
       "ExpenseCreate": {
         "properties": {
@@ -7598,6 +8796,106 @@
             "minLength": 1,
             "title": "Task Id"
           },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "batch_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2147483647.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Version"
+          },
+          "fixture_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixture Id"
+          },
+          "fixture_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2147483647.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixture Version"
+          },
+          "fixture_evidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000,
+                "minLength": 2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixture Evidence"
+          },
+          "manual_estimated_seconds": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                  }
+                ],
+                "decimal_places": 6,
+                "gt": 0,
+                "max_digits": 18
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Estimated Seconds"
+          },
+          "estimate_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000,
+                "minLength": 2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimate Reason"
+          },
           "machine_id": {
             "type": "string",
             "maxLength": 64,
@@ -7695,6 +8993,63 @@
           "blocks"
         ],
         "title": "SchedulePreview"
+      },
+      "ScheduleRecommend": {
+        "properties": {
+          "factory_id": {
+            "type": "string",
+            "const": "huakang-a",
+            "title": "Factory Id"
+          },
+          "task_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Task Id"
+          },
+          "batch_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Batch Id"
+          },
+          "earliest_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Earliest At"
+          },
+          "manual_estimated_seconds": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                  }
+                ],
+                "decimal_places": 6,
+                "gt": 0,
+                "max_digits": 18
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Estimated Seconds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "factory_id",
+          "task_id",
+          "batch_id",
+          "earliest_at"
+        ],
+        "title": "ScheduleRecommend"
       },
       "ShiftClose": {
         "properties": {

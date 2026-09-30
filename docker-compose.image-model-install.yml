@@ -1,0 +1,6 @@
+# One-off administrator installation. Do not include this file in normal startup.
+services:
+  api:
+    volumes:
+      - ${IMAGE_MODEL_IMPORT_DIR:?Set IMAGE_MODEL_IMPORT_DIR to the verified model source directory}:/model-import:ro
+      - image-translation-models:/app/backend/models/image-translation:rw

@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     document_tools_qwen_layout_model: str = "qwen3-vl-plus"
     document_tools_translation_model: str = "qwen3-vl-plus"
     document_tools_qwen_timeout_seconds: int = Field(default=90, ge=5, le=300)
+    image_translation_model_dir: str = str(BACKEND_DIR / "models" / "image-translation")
+    image_translation_runner: str = str(BACKEND_DIR.parent / "shinobu-web" / "server" / "dist" / "runner.mjs")
+    image_translation_node: str = "node"
+    image_translation_timeout_seconds: int = Field(default=1800, ge=30, le=7200)
+    image_translation_max_pixels: int = Field(default=24_000_000, ge=1, le=40_000_000)
+    image_translation_max_total_pixels: int = Field(default=80_000_000, ge=1, le=200_000_000)
     @property
     def effective_session_cookie_secure(self) -> bool:
         return self.session_cookie_secure

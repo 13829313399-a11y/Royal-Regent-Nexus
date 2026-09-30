@@ -122,6 +122,7 @@ onBeforeUnmount(() => {
 
 <template>
   <dialog
+    translate="no"
     v-if="present"
     ref="dialog"
     class="legacy-dialog three-d-workspace tdp-theme"

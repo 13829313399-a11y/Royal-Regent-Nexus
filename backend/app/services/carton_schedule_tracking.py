@@ -24,9 +24,25 @@ def identity(row: dict[str, Any]) -> str:
     item = unicodedata.normalize("NFKC", str(row.get("item_no") or "")).strip().casefold()
     if not customer or not contract or not item:
         return ""
-    # PO may be populated later in the source workbook. Ambiguous customer/contract/item
-    # combinations are rejected by annotate_changes and the mark API, never merged.
-    source = json.dumps([customer, contract, item], ensure_ascii=False, separators=(",", ":"))
+    # ITEM's SO#/Reference is the business PO that distinguishes otherwise equal
+    # contract/item demands. P/O#: is preserved as separate source evidence.
+    source_reference = unicodedata.normalize("NFKC", str(row.get("source_reference") or "")).strip().casefold()
+    parts = [customer, contract, item, source_reference] if source_reference else [customer, contract, item]
+    source = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def legacy_identity(row: dict[str, Any]) -> str:
+    """Pre-SO identity, used only to migrate unambiguous audit evidence on read."""
+    return identity({**row, "source_reference": ""})
+
+
+def operation_identity(row: dict[str, Any], batch_id: str, duplicate: bool) -> str:
+    key = identity(row)
+    if not key or not duplicate:
+        return key
+    source = json.dumps([key, batch_id, row.get("source_sheet"), row.get("source_row")],
+                        ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
@@ -53,6 +69,7 @@ def annotate_changes(
     for row in rows:
         key = identity(row)
         row["schedule_identity"] = key
+        row["schedule_identity_duplicate"] = bool(key and current_counts[key] > 1)
         row["manual_ordered"] = key in ordered_marks if key else False
         row["schedule_change"] = "UNCHANGED"
         if not tracked(row):

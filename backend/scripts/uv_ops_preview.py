@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 database=os.environ.get('UV_PREVIEW_DATABASE','uv_ops_preview')
-if database not in {'uv_ops_preview','uv_ops_preview_v2','uv_ops_preview_v3'}:
+if database not in {'uv_ops_preview','uv_ops_preview_v2','uv_ops_preview_v3','uv_ops_preview_v4'}:
     raise SystemExit('Only explicitly disposable UV preview databases are allowed')
 os.environ['DATABASE_URL']='postgresql+psycopg://uvqa@127.0.0.1:55439/'+database
 os.environ['UV_OPS_ENABLED']='true'
@@ -19,7 +19,7 @@ os.environ['THREE_D_CONNECTOR_ENABLED']='false'
 from contextlib import asynccontextmanager
 import asyncio
 from fastapi import FastAPI
-from app.api import auth, uv_operations, uv_agent
+from app.api import auth, uv_operations, uv_agent, directory, work_center
 from app.db import SessionLocal
 from app.models.auth import AuthUser, AuthUserRole, AuthRole, AuthRolePermission, AuthPermission
 from app.models import uv_operations as m
@@ -64,6 +64,8 @@ app=FastAPI(title='UV isolated synthetic acceptance',lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(uv_operations.router)
 app.include_router(uv_agent.router)
+app.include_router(directory.router)
+app.include_router(work_center.router)
 
 
 @app.get('/health')

@@ -37,6 +37,18 @@ class Command(DTO):
     reason: str = Field(default="", max_length=2000)
 
 
+class ExecutionStart(Command):
+    shift_id: Id
+    started_at: Instant
+    evidence: Evidence
+
+
+class ExecutionFinish(Command):
+    shift_id: Id
+    ended_at: Instant
+    evidence: Evidence
+
+
 class MachineCreate(Command):
     code: Id
     name: str = Field(min_length=1, max_length=128)
@@ -163,6 +175,13 @@ class RunCost(Command):
 
 class ScheduleItem(DTO):
     task_id: Id
+    batch_id: Id | None = None
+    batch_version: Qty | None = None
+    fixture_id: Id | None = None
+    fixture_version: Qty | None = None
+    fixture_evidence: Evidence | None = None
+    manual_estimated_seconds: Positive | None = None
+    estimate_reason: Evidence | None = None
     machine_id: Id
     start_at: Instant
     end_at: Instant
@@ -174,6 +193,14 @@ class ScheduleItem(DTO):
 
 class SchedulePreview(Command):
     blocks: list[ScheduleItem] = Field(min_length=1, max_length=100)
+
+
+class ScheduleRecommend(DTO):
+    factory_id: Literal['huakang-a']
+    task_id: Id
+    batch_id: Id
+    earliest_at: Instant
+    manual_estimated_seconds: Positive | None = None
 
 
 class ShiftCreate(Command):

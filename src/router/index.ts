@@ -28,6 +28,7 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/notifications', name: 'notification-center', component: () => import('@/views/NotificationCenterView.vue'), meta: { title: '事项工作台', requiresAuth: true } },
   {
     path: '/carton-supplier', name: 'carton-supplier', component: () => import('@/views/CartonSupplierView.vue'),
     meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },

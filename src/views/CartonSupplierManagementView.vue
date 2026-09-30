@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
-import { getApiErrorMessage } from '@/lib/http'
+import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { cartonSupplierPortalApi as api, type PortalWorkspace, type PortalShipment, type ShipmentLine, type ReceiveLine, type SampleReceipt } from '@/api/cartonSupplierPortal'
 import { cartonPositionsApi, type CartonLocation } from '@/api/cartonPositions'
 import { cartonProcurementApi, type CartonCustomerResponse } from '@/api/cartonProcurement'
@@ -180,7 +180,14 @@ async function upload(orderId: string, event: Event) {
   busy.value = true; error.value = ''; const scope = factory.value
   try { await api.upload(orderId, scope, file); if (scope === factory.value) { message.value = '附件已绑定订单；旧版本继续保留。'; await load() } } catch (reason) { failure(reason) } finally { busy.value = false; input.value = '' }
 }
-async function download(id: string, filename: string) { try { await api.download(id, factory.value, filename, true) } catch (reason) { failure(reason) } }
+async function download(id: string, filename: string) {
+  const scope = factory.value
+  error.value = ''
+  try { await api.download(id, scope, filename, true) } catch (reason) {
+    const cause = await getApiErrorMessageAsync(reason)
+    if (scope === factory.value) error.value = `附件下载失败：${cause}`
+  }
+}
 </script>
 <template>
   <main class="min-h-screen bg-slate-50 p-4 text-slate-800 md:p-8">

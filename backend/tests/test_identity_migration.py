@@ -7,10 +7,13 @@ import subprocess
 import sys
 from uuid import uuid4
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 BACKEND = Path(__file__).resolve().parents[1]
+HEAD = ScriptDirectory.from_config(Config(str(BACKEND / "alembic.ini"))).get_current_head()
 
 
 def test_additive_upgrade_preserves_legacy_rows_and_is_idempotent(tmp_path):
@@ -71,7 +74,7 @@ command.upgrade(Config("alembic.ini"), "head")
     upgrade("head")
     upgrade("head")
     with sqlite3.connect(database) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchall() == [("20260926_0125",)]
+        assert db.execute("SELECT version_num FROM alembic_version").fetchall() == [(HEAD,)]
         for table, (columns, rows) in before.items():
             names = ','.join('"' + c + '"' for c in columns)
             assert db.execute(f'SELECT {names} FROM "{table}"').fetchall() == rows
@@ -107,7 +110,7 @@ def test_postgres_real_alembic_chain_in_disposable_schema():
                                  cwd=BACKEND, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=240)
             assert run.returncode == 0, run.stderr[-15000:]
         with engine.connect() as connection:
-            assert connection.scalar(text('SELECT version_num FROM alembic_version')) == '20260926_0125'
+            assert connection.scalar(text('SELECT version_num FROM alembic_version')) == HEAD
             assert connection.scalar(text("SELECT count(*) FROM auth_iam_state WHERE key='identity_mutation_lock'")) == 1
             assert connection.scalar(text('SELECT count(*) FROM employee_assignments')) == 0
     finally:

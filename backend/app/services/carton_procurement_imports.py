@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -25,7 +26,8 @@ MAX_PREVIEW_ROWS = 500
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
 DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v8-material-check"
-SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-sections-v2"
+SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-so-identity-v3"
+INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v2"
 PACKAGING_TYPES = (
     "普通箱",
     "压线卡",
@@ -747,15 +749,16 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
     for row in result:
         if row.get("match_status") == "REVIEW_REQUIRED":
             continue
-        key = tuple(str(row.get(field) or "").strip().casefold() for field in ("contract_no", "customer_po", "item_no"))
+        key = tuple(unicodedata.normalize("NFKC", str(row.get(field) or "")).strip().casefold()
+                    for field in ("contract_no", "item_no", "source_reference"))
         identities.setdefault(key, []).append(row)
     for duplicates in identities.values():
         if len(duplicates) > 1:
             for row in duplicates:
-                row.update(match_status="REVIEW_REQUIRED", suggestion="同合同、客户PO和货号存在多行正单，请先确认是重复还是分批需求；不会自动合并")
+                row.update(match_status="REVIEW_REQUIRED", suggestion="合同、货号和 SO#/Reference 相同，待人工确认是否重复或分批；可继续标记或按此下单")
     return {"rows": result, "engine": "unified-item-header-mapping", "field_mappings": mappings,
             "warnings": ["读取 ITEM 表的待下单、取消单和已走货分区；仅待下单区正单参与纸箱漏单核对，其他记录保留待确认。接单表不重复导入。",
-                         "Contract No.、SO#/Reference、客户PO分别保留；空白编号不从相邻行补齐。",
+                         "Contract No.、SO#/Reference、P/O#: 分别保留；同合同货号按 SO#/Reference 区分，空白编号不从相邻行补齐。",
                          "无年份、多阶段或无效日期保留原文并标记待确认，不猜测日期。"],
             "review_count": sum(row.get("match_status") == "REVIEW_REQUIRED" or row.get("date_review_required", False) for row in result)}
 
@@ -996,10 +999,10 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                 row.update(match_status="REVIEW_REQUIRED", suggestion=(
                     f"送货对象“{row.get('destination') or '空'}”与当前厂区不符或无法识别；请在正确厂区导入并人工核对"))
                 continue
-        po_key = str(row.get("customer_po") or "").strip().casefold()
-        joined = [(line, order) for line, order in scoped_joined if not po_key or order.customer_po.strip().casefold() == po_key]
-        if linked_ids:
-            joined = [(line, order) for line, order in joined if order.id in linked_ids]
+        po_key = str((row.get("source_reference") if row.get("template") == "unified-item" and row.get("source_reference")
+                      else row.get("customer_po")) or "").strip().casefold()
+        joined = [(line, order) for line, order in scoped_joined
+                  if (order.id in linked_ids if linked_ids else not po_key or order.customer_po.strip().casefold() == po_key)]
         if row.get("template") == "unified-item":
             identity = lambda value: _text(value).casefold()
         elif row.get("template") == "dongkang-delivery":
@@ -1249,7 +1252,8 @@ def parse_carton_import(
             "due_soon_count": sum(1 for row in rows if row.get("reminder_status") == "DUE_SOON"),
             "ready_count": sum(1 for row in rows if row.get("reminder_status") == "READY"),
             "advance_days": int(options.get("advance_days", 3)) if import_type == "INSPECTION_SCHEDULE" else None,
-            "parser_version": DELIVERY_IMPORT_PARSER_VERSION if import_type == "DELIVERY_NOTE" else SCHEDULE_IMPORT_PARSER_VERSION,
+            "parser_version": DELIVERY_IMPORT_PARSER_VERSION if import_type == "DELIVERY_NOTE" else (
+                SCHEDULE_IMPORT_PARSER_VERSION if import_type == "WEEKLY_SCHEDULE" else INSPECTION_IMPORT_PARSER_VERSION),
         }
     )
     return parsed

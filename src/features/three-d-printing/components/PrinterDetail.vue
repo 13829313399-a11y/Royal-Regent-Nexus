@@ -133,7 +133,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <Transition name="tdp-drawer" appear @after-leave="emit('after-close')">
-  <div v-if="open" class="printer-overlay tdp-theme" @click.self="emit('close')">
+  <div v-if="open" translate="no" class="printer-overlay tdp-theme" @click.self="emit('close')">
     <aside
       ref="root"
       role="dialog"

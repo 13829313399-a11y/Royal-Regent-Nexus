@@ -86,6 +86,22 @@ describe('供应商月结对账', () => {
     expect(w.get('input[aria-label^="账单数量"]').attributes('disabled')).toBeDefined()
     w.unmount()
   })
+  it('reports a saved acceptance date separately from its failed statement refresh', async () => {
+    const ws = workspace()
+    ws.undated_receipts = [{ receipt_id: 'R0', revision: 3, document_no: 'OLD', confirmed_at: '2026-09-01', acceptance_date: null }]
+    vi.mocked(api.workspace).mockResolvedValue(ws)
+    vi.mocked(api.acceptance).mockResolvedValue({})
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await button(w, '核实验收日期 OLD').trigger('click')
+    await w.get('[aria-label="补录实际验收日期"]').setValue('2026-10-02')
+    await w.get('[aria-label="验收日期核实依据"]').setValue('已核对仓库签收单')
+    vi.mocked(api.workspace).mockRejectedValueOnce(new Error('对账服务暂不可用'))
+    await button(w, '保存核实日期').trigger('submit'); await flushPromises()
+    expect(w.get('[role="alert"]').text()).toContain('验收日期已保存，但对账刷新失败：对账服务暂不可用')
+    expect(api.acceptance).toHaveBeenCalledTimes(1)
+    expect(w.find('[aria-label="补录实际验收日期"]').exists()).toBe(false)
+    w.unmount()
+  })
   it('ignores an old factory response arriving after switching factories', async () => {
     let resolve!: (value: SupplierWorkspace) => void
     vi.mocked(api.workspace).mockImplementationOnce(() => new Promise(r => { resolve = r }))

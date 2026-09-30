@@ -34,6 +34,7 @@ from app.api.pricing import router as pricing_router
 from app.api.qc_inspection import router as qc_inspection_router
 from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
+from app.api.work_center import router as work_center_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.api.spray_operations import router as spray_operations_router
@@ -101,6 +102,8 @@ async def lifespan(app: FastAPI):
     from app.services.three_d_live import hub
     hub.start()
     sweep_task = asyncio.create_task(three_d_sweep_loop())
+    from app.services.three_d_telemetry_rollups import worker as telemetry_rollup_worker
+    rollup_task = asyncio.create_task(telemetry_rollup_worker())
     from app.services.uv_operations.exports import worker as uv_export_worker
     uv_export_task = asyncio.create_task(uv_export_worker()) if settings.uv_ops_enabled else None
     from app.services.identity_outbox import worker as identity_worker
@@ -108,6 +111,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        rollup_task.cancel()
+        try:
+            await rollup_task
+        except asyncio.CancelledError:
+            pass
         if identity_task:
             identity_task.cancel()
             try:
@@ -201,6 +209,7 @@ app.include_router(pricing_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(system_router)
+app.include_router(work_center_router)
 from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)

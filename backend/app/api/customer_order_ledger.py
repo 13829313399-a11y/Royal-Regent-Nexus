@@ -18,6 +18,7 @@ from app.services.business_authz import ensure_permission_for_departments, has_p
 from app.services import customer_order_ledger as ledger
 from app.services import customer_order_history as history
 from app.services import customer_order_schedule as schedule
+from app.services.customer_order_ocr import order_ocr_request
 
 router = APIRouter(prefix="/api/customer-order-ledger", tags=["customer-order-ledger"])
 FACTORIES = {"huaxing", "huadeng", "huakang-a", "huakang-b", "huakang-c", "huakang-d"}
@@ -185,7 +186,7 @@ def source_download(source_id: str, factory_id: str, db: Session = Depends(get_d
         "Content-Disposition": "attachment; filename*=UTF-8''" + quote(source.file_name), "X-Content-Type-Options": "nosniff"})
 
 
-@router.post("/imports/{customer_code}")
+@router.post("/imports/{customer_code}", dependencies=[Depends(order_ocr_request)])
 async def import_orders(customer_code: str, factory_id: str = Form(...), received_date: str = Form(...),
     confirmed: bool = Form(...), skipped_issue_keys: str = Form("[]"), manual_overrides: str = Form("[]"),
     preview_fingerprint: str = Form(...), confirmation_reason: str = Form(""),

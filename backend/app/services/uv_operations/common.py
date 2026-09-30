@@ -55,12 +55,20 @@ def add(db, entity_type, user=None, **values):
     return item
 
 
-def query(model):
-    return select(model).where(model.factory_id == m.FACTORY)
+REVERSIBLE = (m.UvOpsParticipation, m.UvOpsQualityEntry, m.UvOpsExpense, m.UvOpsWageAccrual, m.UvOpsRunCost)
+
+
+def query(model, *, history=False):
+    statement = select(model).where(model.factory_id == m.FACTORY)
+    if not history and model in REVERSIBLE:
+        statement = statement.where(model.active_key == 1)
+    if not history and model == m.UvOpsWageAllocation:
+        statement = statement.where(model.accrual_id.in_(select(m.UvOpsWageAccrual.id).where(m.UvOpsWageAccrual.factory_id == m.FACTORY, m.UvOpsWageAccrual.active_key == 1)))
+    return statement
 
 
 def get(db, model, entity_id, *, lock=False, version=None):
-    statement = query(model).where(model.id == entity_id)
+    statement = query(model, history=True).where(model.id == entity_id)
     if lock:
         statement = statement.with_for_update().execution_options(populate_existing=True)
     item = db.scalar(statement)
@@ -132,4 +140,7 @@ def values(body, *extra_exclude):
 
 def revision(db):
     # Append-only facts + heartbeat versions, monotonic without a factory mutex.
-    return sum(db.scalar(select(func.count()).select_from(model)) or 0 for model in (m.UvOpsAudit, m.UvOpsAgentEventInbox)) + (db.scalar(select(func.sum(m.UvOpsAgent.version))) or 0)
+    audit = select(func.count()).select_from(m.UvOpsAudit).scalar_subquery()
+    events = select(func.count()).select_from(m.UvOpsAgentEventInbox).scalar_subquery()
+    agents = select(func.coalesce(func.sum(m.UvOpsAgent.version), 0)).scalar_subquery()
+    return db.scalar(select(audit+events+agents))

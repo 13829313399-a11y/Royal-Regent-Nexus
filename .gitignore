@@ -32,6 +32,7 @@ backend/data/*.sqlite
 backend/data/*.sqlite3
 backend/data/document-tools/
 backend/models/document-translation/
+backend/models/image-translation/
 .env
 .env.*
 !.env.example
@@ -63,12 +64,14 @@ backend/models/document-translation/
 !/docs/business/injection-scheduling-v3.md
 !/docs/business/internal-quote-l6-release-readiness.md
 !/docs/business/纸箱模块业务逻辑说明书.md
+!/docs/business/纸箱模块使用教程.md
 !/docs/business/纸箱模块-基础资料建设方案.md
 !/docs/business/纸箱月结与供应商对账方案.md
 !/docs/business/纸箱全流程核查报告.md
 !/edge/three-d-printing-agent/README.md
 !/edge/uv-printing-agent/README.md
 !/docs/uv-operations/*.md
+!/docs/work-center/*.md
 !/deploy/three-d-printing/network/README.md
 !/services/three-d-printer-connector/README.md
 
@@ -102,6 +105,7 @@ deploy/three-d-printing/network/reports/
 **/three-d-*.private.key
 
 # Local carton acceptance databases, evidence and template previews
+outputs/image-translation-qa/real-samples/
 backend/data/
 outputs/history-order-template-20260909/
 outputs/opening-inventory-template-20260909/

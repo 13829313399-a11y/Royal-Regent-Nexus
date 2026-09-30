@@ -40,7 +40,10 @@ async function downloadTemplate(kind: MasterImportKind) {
     anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (e) {
     const message = await getApiErrorMessageAsync(e)
-    if (factory === props.factoryId) error.value = message
+    if (factory === props.factoryId) {
+      if (importKind.value === kind) importError.value = `模板下载失败：${message}`
+      else error.value = `模板下载失败：${message}`
+    }
   }
 }
 async function processImport(apply = false) {
@@ -55,7 +58,13 @@ async function processImport(apply = false) {
       : await cartonMasterApi.importPreview(factory, kind, file)
     if (factory !== props.factoryId || version !== importGeneration) return
     importPreview.value = result
-    if (apply) { importDone.value = true; await load(); if (factory === props.factoryId) emit('changed') }
+    if (apply) {
+      importDone.value = true
+      const refreshError = await load()
+      if (factory !== props.factoryId || version !== importGeneration) return
+      if (refreshError) importError.value = `基础资料已导入，但列表刷新失败：${refreshError}。请刷新查看，勿重复导入。`
+      emit('changed')
+    }
   } catch (e) {
     if (factory === props.factoryId && version === importGeneration) { importError.value = getApiErrorMessage(e); importPreview.value = null }
   } finally { if (version === importGeneration) importBusy.value = false }
@@ -187,10 +196,24 @@ const customerName = (code: string) => props.customers.find(c => c.customer_code
 const canPlace = (warehouse: string) => workspace.value.can_manage || workspace.value.warehouses.includes(warehouse)
 let generation = 0
 async function load() {
-  const version = ++generation; loading.value = true; error.value = ''
-  try { const data = await cartonMasterApi.get(props.factoryId); if (version === generation) workspace.value = data }
-  catch (e) { if (version === generation) error.value = getApiErrorMessage(e) }
+  const version = ++generation, factory = props.factoryId; loading.value = true; error.value = ''
+  try {
+    const data = await cartonMasterApi.get(factory)
+    if (version !== generation || factory !== props.factoryId) return
+    workspace.value = data
+    return ''
+  } catch (e) {
+    if (version !== generation || factory !== props.factoryId) return
+    error.value = getApiErrorMessage(e)
+    return error.value
+  }
   finally { if (version === generation) loading.value = false }
+}
+async function refreshAfterSave(factory: string, successMessage: string) {
+  const refreshError = await load()
+  if (factory !== props.factoryId) return
+  if (refreshError) error.value = `${successMessage}，但列表刷新失败：${refreshError}。请刷新查看，勿重复保存。`
+  emit('changed')
 }
 watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; configActionMessage.value = ''; statusFilter.value = 'ACTIVE'; customer.value = ''; void load() }, { immediate: true })
 function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = customer.value) {
@@ -200,6 +223,7 @@ function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = 
   originalStatus.value = row?.status || 'ACTIVE'
   originalHardCheck.value = row?.data.contract_rule?.mode === 'BLOCK' || row?.data.item_rule?.mode === 'BLOCK' || row?.data.customer_po_rule?.mode === 'BLOCK'
   Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, customer_po_rule: { ...defaultNumberRule(), ...row?.data.customer_po_rule }, item_rule: { ...defaultNumberRule(), ...row?.data.item_rule } } })
+  if (form.kind === 'CONFIG') for (const line of form.data.lines) line.dimension_unit = line.dimension_unit?.trim() || 'cm'
   for (const key of ['paper_types', 'paper_qualities', 'specifications'] as const) paperOptionText[key] = (form.data[key] || []).join('\n')
   itemText.value = (form.data.item_nos || []).join('\n'); warehouseText.value = (form.data.warehouses || []).join('\n')
   if (!['CONTRACT', 'RULE'].includes(form.kind)) form.customer_code = ''
@@ -230,6 +254,7 @@ async function save() {
     }
     if (!paperOnly.value) {
     form.data.lead_days = form.data.lead_days === null || String(form.data.lead_days) === '' ? null : Number(form.data.lead_days)
+    form.data.production_days = form.data.production_days === null || String(form.data.production_days) === '' ? null : Number(form.data.production_days)
     form.data.customer_days = form.data.customer_days === null || String(form.data.customer_days) === '' ? null : Number(form.data.customer_days)
     }
     if (paperOnly.value) for (const key of Object.keys(paperFields) as (keyof typeof paperFields)[]) {
@@ -244,8 +269,8 @@ async function save() {
     }
     await cartonMasterApi.save(factory, { ...form, data: JSON.parse(JSON.stringify(form.data)) as MasterData }, editingId.value)
     if (factory !== props.factoryId) return
-    editing.value = false; await load(); emit('changed')
-  } catch (e) { error.value = getApiErrorMessage(e) } finally { busy.value = false }
+    editing.value = false; await refreshAfterSave(factory, '基础资料已保存')
+  } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) } finally { busy.value = false }
 }
 async function changeConfigAvailability(row: MasterRecord, status: 'ACTIVE' | 'INACTIVE') {
   if (busy.value || !workspace.value.can_manage || row.kind !== 'CONFIG') return
@@ -285,8 +310,8 @@ async function saveLocation() {
     if (locationRow.value.id) await cartonMasterApi.location(factory, locationRow.value.id, locationForm)
     else await cartonPositionsApi.create(factory, locationForm.warehouse, locationForm.bin_code, locationForm.reason)
     if (factory !== props.factoryId) return
-    locationRow.value = null; await load(); emit('changed')
-  } catch (e) { error.value = getApiErrorMessage(e) } finally { busy.value = false }
+    locationRow.value = null; await refreshAfterSave(factory, '仓位资料已保存')
+  } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) } finally { busy.value = false }
 }
 function editWarehouse(name = '') {
   if (!workspace.value.can_manage) return
@@ -305,7 +330,7 @@ async function saveWarehouse() {
     else if (original) await cartonMasterApi.renameWarehouse(factory, original, warehouseForm.name, warehouseForm.revisions, warehouseForm.reason)
     else await cartonMasterApi.createWarehouse(factory, warehouseForm.name, warehouseForm.bin, warehouseForm.reason)
     if (factory !== props.factoryId) return
-    warehouseEditing.value = false; await load(); emit('changed')
+    warehouseEditing.value = false; await refreshAfterSave(factory, warehouseDeleting.value ? '仓库资料已删除' : '仓库资料已保存')
   } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) }
   finally { busy.value = false }
 }
@@ -389,8 +414,9 @@ async function saveWarehouse() {
             </section>
 
             <div v-if="!paperOnly" class="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-              <div class="grid gap-3 sm:grid-cols-2">
+              <div class="grid gap-3 sm:grid-cols-3">
                 <label class="font-semibold">采购安全提前量 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.lead_days" type="number" min="0" max="365" aria-label="默认采购提前天数" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 3 天' : '默认 3 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"><span class="mt-1 block font-normal leading-5 text-slate-500">计划交期＝客户交期－提前天数。例如客户 20 日要货，提前 3 天，计划 17 日到货。</span></label>
+                <label class="font-semibold">供应商生产送货周期 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.production_days" type="number" min="0" max="365" step="1" aria-label="供应商生产送货周期" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 7 天' : '默认 7 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"><span class="mt-1 block font-normal leading-5 text-slate-500">最迟下单日＝纸箱需到仓日－生产送货周期。提前 3 天提醒；超过最迟下单日且未下单才报疑似漏单。</span></label>
                 <label class="font-semibold">客户交期建议 <span class="font-normal text-slate-500">（下单后自然日）</span><input v-model="form.data.customer_days" :disabled="form.data.customer_days_disabled" type="number" min="0" max="730" aria-label="客户交期建议天数" :placeholder="form.data.customer_days_disabled ? '已关闭建议' : form.customer_code ? '空白沿用本厂，未设置则不建议' : '空白不提供建议'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2 disabled:bg-slate-100 disabled:text-slate-400"><span class="mt-1 block font-normal leading-5 text-slate-500">建议客户交期＝下单日期＋建议天数。仅供人工采纳，以客户实际要求为准。</span></label>
               </div>
               <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-slate-500"><span>仅新单采用；旧单及追加保留原提前量。</span><label class="inline-flex items-center gap-1.5"><input v-model="form.data.customer_days_disabled" type="checkbox" aria-label="关闭客户交期建议"> 不提供交期建议</label></div>

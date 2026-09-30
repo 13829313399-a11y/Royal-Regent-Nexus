@@ -596,6 +596,8 @@ class ThreeDPrintingPrinterStateEvent(Base):
         ForeignKeyConstraint(["printer_id", "factory_id"], ["three_d_printing_printers.id", "three_d_printing_printers.factory_id"], name="fk_3d_event_printer", ondelete="RESTRICT"),
         ForeignKeyConstraint(["connector_instance_id", "factory_id"], ["three_d_printing_connector_instances.id", "three_d_printing_connector_instances.factory_id"], name="fk_3d_event_connector", ondelete="RESTRICT"),
         Index("ix_3d_event_printer_observed", "factory_id", "printer_id", "observed_at"),
+        Index("ix_3d_event_analytics", "factory_id", "machine_no", "observed_at",
+              postgresql_include=["state", "error_code", "temperatures_json"]),
         CheckConstraint("sequence >= 0", name="ck_3d_event_sequence"),
         CheckConstraint("length(raw_payload_json) <= 65536", name="ck_3d_event_payload_limit"),
     )
@@ -617,6 +619,21 @@ class ThreeDPrintingPrinterStateEvent(Base):
     error_text: Mapped[str] = mapped_column(String(255), default="")
     payload_version: Mapped[int] = mapped_column(Integer, default=1)
     raw_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class ThreeDPrintingTelemetryRollup(Base):
+    __tablename__ = "three_d_printing_telemetry_rollups"
+    factory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    bucket_start: Mapped[str] = mapped_column(String(32), primary_key=True)
+    dirty: Mapped[bool] = mapped_column(Boolean, default=True)
+    counters_json: Mapped[str] = mapped_column(Text, default="{}")
+    calculated_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class ThreeDPrintingTelemetryRollupState(Base):
+    __tablename__ = "three_d_printing_telemetry_rollup_state"
+    factory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    initialized_at: Mapped[str] = mapped_column(String(32), default="")
 
 
 class ThreeDPrintingMaterialAlias(Base):
