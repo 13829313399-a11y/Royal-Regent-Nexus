@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
 import openpyxl
+from app.services.sparse_worksheet import insert_rows as insert_sparse_rows
 from openpyxl.formula.translate import Translator
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.formula import ArrayFormula
@@ -209,10 +210,10 @@ def is_unified_schedule(schedule_content: bytes) -> bool:
 
 
 def _marker_row(worksheet) -> int:
-    for row in range(4, (worksheet.max_row or 4) + 1):
-        values = (_text(worksheet.cell(row, column).value) for column in range(1, worksheet.max_column + 1))
-        if any("取消单" in value for value in values):
-            return row
+    candidates = [row for (row, _), cell in worksheet._cells.items()
+                  if row >= 4 and "取消单" in _text(cell.value)]
+    if candidates:
+        return min(candidates)
     raise CustomerOrderUnifiedError(f"{worksheet.title} 未找到“取消单”边界")
 
 
@@ -1337,7 +1338,7 @@ def _ensure_output_slots(workbook, count: int) -> list[int]:
         for sheet_name in SHEETS:
             worksheet = workbook[sheet_name]
             current_marker = _marker_row(worksheet)
-            worksheet.insert_rows(current_marker, 1)
+            insert_sparse_rows(worksheet, current_marker, 1)
             _copy_template_row(worksheet, current_marker - 1, current_marker)
         slots.append(_marker_row(workbook[ITEM_SHEET]) - 1)
     return slots[:count]

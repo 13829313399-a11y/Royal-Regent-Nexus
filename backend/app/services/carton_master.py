@@ -219,11 +219,10 @@ def workspace(db, factory, user):
         provenance.setdefault(source.record_id, []).append(source)
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory).order_by(Record.preferred.desc(), Record.updated_at.desc())))
     admin = can_manage(user, factory)
+    # The ACCESS editor is retired (save_record rejects it). Keep its response
+    # field for compatibility without resolving every employee's IAM context
+    # on each master-data read. Existing ACCESS provenance stays visible below.
     users = []
-    if admin:
-        for candidate in db.scalars(select(AuthUser).where(AuthUser.status == "active")):
-            if inventory_allowed(build_auth_context(db, candidate), factory):
-                users.append({"id": candidate.id, "name": candidate.display_name or candidate.username})
     # Saved pending orders contribute scalar suggestions without enrolling configurations.
     paper_history = {}
     for field in ("packaging_type", "paper_quality", "specification"):

@@ -12,6 +12,19 @@ def prepare(client):
     login_as(client, "admin")
 
 
+def test_master_read_does_not_resolve_every_employee_for_retired_access_editor(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        from app.services import carton_master
+        def unused(*args, **kwargs):
+            raise AssertionError("Retired ACCESS editor must not enumerate employee permissions")
+        monkeypatch.setattr(carton_master, "build_auth_context", unused)
+        response = client.get(BASE + "/master-data", params={"factory_id": "huaxing"})
+        assert response.status_code == 200, response.text
+        assert response.json()["users"] == []
+        assert response.json()["can_manage"]
+
+
 def create(client, **changes):
     data = {**_order_payload(), **changes}
     response = client.post(BASE + "/orders", json=data)
