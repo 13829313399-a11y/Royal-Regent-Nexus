@@ -36,13 +36,17 @@ export function scheduleOrderReminder(source: CartonImportPreviewRow, options: {
   if (source.template === 'unified-item' && !['正单', '加单', '正式PO'].includes(source.order_type?.trim() ?? '')) return null
   const result = (state: ScheduleOrderReminder['state'], label: string, tone: CartonTone, detail: string): ScheduleOrderReminder =>
     ({ state, label, tone, detail, attention: state !== 'WAIT' && state !== 'ORDERED', deadline: '', arrivalDate: '', days: null })
-  if (options.orderCount > 1 || options.identityReview || source.schedule_change === 'REVIEW_REQUIRED'
-    || source.match_status === 'AMBIGUOUS') return result('REVIEW', '待人工确认', 'amber', '订单身份或关联不唯一，请核实后判断是否已下单。')
-  if (options.marked || ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(options.orderStatus ?? '')) {
-    return result('ORDERED', options.marked ? '人工已下单' : options.orderStatus === 'COMPLETED' ? '已完单' : '已下单', 'green', '已下单，停止下单时限提醒；排期退单和数量变化继续核对。')
-  }
+  if (options.orderCount > 1 || options.identityReview || source.match_status === 'AMBIGUOUS')
+    return result('REVIEW', '待人工确认', 'amber', '订单身份或关联不唯一，请核实后判断是否已下单。')
   if (!source.item_no?.trim() || !(source.contract_no || source.reference)?.trim() || Number(source.quantity ?? 0) <= 0) {
     return result('REVIEW', '待人工确认', 'amber', '合同、货号或数量不完整，请核实后计算下单时限。')
+  }
+  if (source.schedule_identity_duplicate) return result('REVIEW', '待人工确认', 'amber',
+    '合同、货号和 SO#/Reference 相同，请核实是否重复或分批；仍可标记已下单或按此下单。')
+  if (source.schedule_change === 'REVIEW_REQUIRED')
+    return result('REVIEW', '待人工确认', 'amber', '订单身份或关联不唯一，请核实后判断是否已下单。')
+  if (options.marked || ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(options.orderStatus ?? '')) {
+    return result('ORDERED', options.marked ? '人工已下单' : options.orderStatus === 'COMPLETED' ? '已完单' : '已下单', 'green', '已下单，停止下单时限提醒；排期退单和数量变化继续核对。')
   }
   const dateValues = [source.inspection_window, source.customer_due_date].filter(Boolean)
   const dates = dateValues.map(completeScheduleDate).filter(Boolean).sort()

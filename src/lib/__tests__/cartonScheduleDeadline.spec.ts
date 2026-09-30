@@ -65,6 +65,13 @@ describe('current schedule order deadline', () => {
     expect(scheduleOrderReminder({ ...source, quantity: 0 }, options)).toMatchObject({ state: 'REVIEW' })
   })
 
+  it('shows a soft SO collision warning without hiding invalid quantities', () => {
+    expect(scheduleOrderReminder({ ...source, schedule_identity_duplicate: true, schedule_change: 'REVIEW_REQUIRED' }, options))
+      .toMatchObject({ state: 'REVIEW', label: '待人工确认', detail: expect.stringContaining('仍可标记已下单或按此下单') })
+    expect(scheduleOrderReminder({ ...source, schedule_identity_duplicate: true, quantity: 0 }, options))
+      .toMatchObject({ state: 'REVIEW', detail: expect.stringContaining('数量不完整') })
+  })
+
   it('supports changed or zero-day cycles and retains calendar dates across month boundaries', () => {
     const row = { ...source, inspection_window: '', customer_due_date: '2026-03-03' }
     expect(scheduleOrderReminder(row, { ...options, today: '2026-02-28', productionDays: 0 })).toMatchObject({ deadline: '2026-02-28', state: 'DUE_TODAY' })

@@ -261,7 +261,7 @@ function pendingScheduleFixture(contractNo: string, sourceRow = 4, overrides: Pa
   return { template: 'unified-item', source_sheet: 'ITEM表', source_row: sourceRow, order_type: '正单',
     contract_no: contractNo, customer_po: `PO-${contractNo}`, item_no: 'ITEM-SCHEDULE', product_name: '消防车',
     customer_code: 'DICKIE', customer_name: 'Dickie', source_customer_name: 'Dickie',
-    source_reference: 'SO-BUSINESS', quantity: 240, carton_rule: '0/12',
+    source_reference: `PO-${contractNo}`, quantity: 240, carton_rule: '0/12',
     customer_due_date: businessDateOffset(12), source_customer_due_date: businessDateOffset(12),
     schedule_customer_code: 'DICKIE', schedule_customer_name: 'Dickie',
     schedule_section: 'PENDING', schedule_change: 'BASELINE', schedule_identity: `KEY-${contractNo}`,
@@ -281,6 +281,27 @@ function mockWeeklySchedule(rows: CartonImportPreviewRow[]) {
 }
 
 describe('CartonProcurementView frontend workspace', () => {
+  it('keeps repeated SO rows actionable with separate source keys and pre-fills SO as customer PO', async () => {
+    mockReceiptWorkspace([])
+    mockWeeklySchedule([
+      pendingScheduleFixture('SC-SO-DUP', 4, { source_reference: 'SO-21', customer_po: 'ORIGINAL-PO',
+        schedule_identity: 'KEY-SO-4', schedule_identity_duplicate: true,
+        schedule_change: 'REVIEW_REQUIRED', match_status: 'REVIEW_REQUIRED' }),
+      pendingScheduleFixture('SC-SO-DUP', 5, { source_reference: 'SO-21', customer_po: 'ORIGINAL-PO',
+        schedule_identity: 'KEY-SO-5', schedule_identity_duplicate: true,
+        schedule_change: 'REVIEW_REQUIRED', match_status: 'REVIEW_REQUIRED' }),
+    ])
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    const actions = wrapper.findAll('[aria-label="排期下单 SC-SO-DUP ITEM-SCHEDULE"]')
+    expect(actions).toHaveLength(2)
+    expect(actions.every(action => !action.attributes('disabled'))).toBe(true)
+    expect(wrapper.get('table.weekly-schedule-table').text()).toContain('待人工确认')
+    await actions[0]!.trigger('click'); await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[aria-label="客户 PO"]').element.value).toBe('SO-21')
+    expect(wrapper.get('[data-testid="order-form-overlay"]').text()).toContain('可继续保存本行订单')
+    wrapper.unmount()
+  })
+
   it('uses current order deadlines in the schedule and only puts due/review work on the prominent board', async () => {
     const masterGet = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue(emptyMaster())
     const makeRow = (contract: string, days: number, sourceRow: number, extra: Partial<CartonImportPreviewRow> = {}) =>
@@ -466,6 +487,26 @@ describe('CartonProcurementView frontend workspace', () => {
     const wrapper = mountView('exceptions'); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '标记已解决')!.trigger('click'); await flushPromises()
     expect(cartonApiMock.updateException).toHaveBeenCalledWith('huaxing', expect.objectContaining({ id: row.id }), 'RESOLVED', '')
+    wrapper.unmount()
+  })
+
+  it('labels legacy and new delivery review exceptions as receipt work', async () => {
+    mockReceiptWorkspace([])
+    const base = {
+      factory_id: 'huaxing', source_type: 'DELIVERY_NOTE', source_id: 'DELIVERY-1',
+      severity: 'MEDIUM', customer_name: 'Dickie', customer_code: 'DICKIE',
+      contract_no: 'SC', item_no: 'ITEM', description: '请核对纸品', owner_department: '纸箱仓管',
+      status: 'OPEN', resolution_note: '', revision: 1,
+      created_at: '2026-09-16T10:00:00', updated_at: '2026-09-16T10:00:00',
+    }
+    cartonApiMock.listExceptions.mockResolvedValue([
+      { ...base, id: 'OLD-REVIEW', exception_no: 'EX-OLD-REVIEW', category: 'SCHEDULE_REVIEW_REQUIRED', title: '业务订单类型或字段待人工确认' },
+      { ...base, id: 'NEW-REVIEW', exception_no: 'EX-NEW-REVIEW', category: 'RECEIPT_REVIEW_REQUIRED', title: '送货明细待人工确认' },
+    ])
+    const wrapper = mountView('exceptions'); await flushPromises()
+    expect(wrapper.text()).toContain('收料待确认')
+    expect(wrapper.text()).toContain('送货明细待人工确认')
+    expect(wrapper.text()).not.toContain('业务订单类型或字段待人工确认')
     wrapper.unmount()
   })
 
@@ -1801,7 +1842,7 @@ describe('CartonProcurementView frontend workspace', () => {
     }
     expect(form.find('input[aria-label="纸品类型 2"]').exists()).toBe(false)
     expect(form.get('output[aria-label="纸箱数量 1"]').text()).toBe('20')
-    expect(form.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).toContain('SO-BUSINESS')
+    expect(form.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).toContain(source.source_reference)
     expect(form.find('[aria-label="业务排期加单提示"]').exists()).toBe(orderType === '加单')
     expect(form.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value.includes('业务排期订单类型：加单')).toBe(orderType === '加单')
     expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
@@ -4569,7 +4610,7 @@ describe('CartonProcurementView frontend workspace', () => {
     const wrapper = mountView('weekly-check')
     await flushPromises()
     expect(wrapper.find('a[download="纸箱每周排期核对导入模板.xlsx"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('按所选基础客户、合同号和货号跟踪变化')
+    expect(wrapper.text()).toContain('按所选基础客户、合同号、货号和 SO#/Reference')
     expect(wrapper.text()).toContain('不按装箱数换算')
     expect(wrapper.text()).toContain('核对历史')
     expect(wrapper.text()).toContain('每周排期-第32周.xlsx')

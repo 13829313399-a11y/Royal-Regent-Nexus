@@ -91,10 +91,11 @@ from app.services.carton_inventory_valuation import cost_key, load_valuation, va
 from app.services.carton_ledger_time import ledger_rows, ledger_time, ordered_ledger_rows
 from app.services.carton_procurement_imports import (
     DELIVERY_IMPORT_PARSER_VERSION,
+    INSPECTION_IMPORT_PARSER_VERSION,
     SCHEDULE_IMPORT_PARSER_VERSION,
     parse_carton_import,
 )
-from app.services.carton_schedule_tracking import annotate_changes, customer_key, identity, tracked
+from app.services.carton_schedule_tracking import annotate_changes, customer_key, identity, legacy_identity, operation_identity, tracked
 
 
 CARTON_DEPARTMENTS = ("pmc-warehouse", "carton")
@@ -478,11 +479,16 @@ def create_order(
     _lock_receipt_factory(db, factory_id)
     schedule_source = _schedule_source_for_order(db, factory_id, payload)
     rules = master_data.validate_order(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, customer_po=payload.customer_po, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
-    _validate_customer_po_identity(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, payload.customer_po)
+    duplicate_schedule_source = bool(schedule_source and schedule_source.get("schedule_identity_duplicate")
+                                     and payload.customer_po.strip().casefold() == str(
+                                         schedule_source.get("source_reference") or schedule_source.get("customer_po") or ""
+                                     ).strip().casefold())
+    if not duplicate_schedule_source:
+        _validate_customer_po_identity(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, payload.customer_po)
     planned = derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"]) if payload.customer_due_date and payload.quantity_basis == "CALCULATED" else payload.due_date
     customer = get_active_customer(db, factory_id, payload.customer_code)
     from app.services.carton_order_split import schedule_matches
-    if schedule_matches(db, factory_id, {"schedule_customer_code": customer.customer_code,
+    if not duplicate_schedule_source and schedule_matches(db, factory_id, {"schedule_customer_code": customer.customer_code,
             "contract_no": payload.contract_no, "item_no": payload.item_no, "customer_po": payload.customer_po}):
         raise HTTPException(409, "该合同货号已关联拆分采购，请核对原单拆分记录；增加需求请另行追加，勿重复下单")
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
@@ -586,11 +592,12 @@ def create_order(
         },
     )
     if schedule_source:
-        _audit(db, user, factory_id, "SCHEDULE_ORDER_LINKED", "schedule_order_link", identity(schedule_source), {
+        _audit(db, user, factory_id, "SCHEDULE_ORDER_LINKED", "schedule_order_link", str(schedule_source["schedule_identity"]), {
             **payload.schedule_source.model_dump(),
             "order_id": order.id, "order_no": order.order_no,
             "customer": customer_key(schedule_source), "customer_code": order.customer_code,
             "contract_no": order.contract_no, "item_no": order.item_no,
+            "source_reference": schedule_source.get("source_reference"),
         })
     try:
         if commit:
@@ -3608,11 +3615,58 @@ def reverse_inventory_movement(
     return _movement_out(reversal, current - original.quantity)
 
 
+_OLD_ITEM_DUPLICATE_SUGGESTION = "同合同、客户PO和货号存在多行正单，请先确认是重复还是分批需求；不会自动合并"
+_SO_DUPLICATE_SUGGESTION = "合同、货号和 SO#/Reference 相同，待人工确认是否重复或分批；可继续标记或按此下单"
+
+
+def _project_item_schedule_rows(batch_id: str, summary: dict[str, object]) -> None:
+    """Expose independent actions for repeated SO rows without rewriting import evidence."""
+    rows = [row for row in summary.get("rows", []) if isinstance(row, dict) and row.get("template") == "unified-item"]
+    counts = Counter(identity(row) for row in rows if tracked(row) and identity(row))
+    legacy = summary.get("parser_version") != SCHEDULE_IMPORT_PARSER_VERSION
+    for row in rows:
+        key = identity(row)
+        duplicate = bool(key and counts[key] > 1)
+        row["schedule_identity_duplicate"] = duplicate
+        row["schedule_identity"] = operation_identity(row, batch_id, duplicate)
+        if legacy or duplicate:
+            # Old snapshots used the three-field key. Current audit decisions,
+            # remapped per SO, are the only authority for the live mark state.
+            row["manual_ordered"] = False
+        if legacy and not duplicate and key and row.get("schedule_change") == "REVIEW_REQUIRED":
+            # v2 could merge SO rows in either this or the preceding batch.
+            row["schedule_change"] = "BASELINE"
+            row["legacy_match_stale"] = True
+        if legacy and row.get("suggestion") == _OLD_ITEM_DUPLICATE_SUGGESTION:
+            if duplicate:
+                row["suggestion"] = _SO_DUPLICATE_SUGGESTION
+            else:
+                # The old P/O# collision was not an SO collision. Matching in a
+                # stored preview cannot be rerun without the source workbook.
+                row.update(match_status="MISSING_ORDER", schedule_change="BASELINE",
+                           suggestion="旧批次曾按 P/O#: 判重；此行 SO 不同，可继续操作。请核对现有订单，重新导入原文件可刷新匹配结果",
+                           legacy_match_stale=True)
+        if legacy and row.get("source_reference") and row.get("order_id"):
+            # v2 could match P/O#: to an unrelated SO. Explicit source links
+            # remain available separately through remapped audit evidence.
+            for field in ("order_id", "order_no", "order_status", "match_basis", "date_difference"):
+                row.pop(field, None)
+            if row.get("schedule_section") == "PENDING":
+                row.update(match_status="MISSING_ORDER", procurement_state="NEEDS_ORDER",
+                           suggestion="旧批次曾按 P/O#: 关联订单；请按 SO 核对现有订单，重新导入原文件可刷新匹配结果",
+                           legacy_match_stale=True)
+    if legacy and rows:
+        summary["review_count"] = sum(row.get("match_status") == "REVIEW_REQUIRED" or row.get("date_review_required", False) for row in rows)
+        summary["matched_count"] = sum(row.get("match_status") == "MATCHED" for row in rows)
+
+
 def import_batch_out(batch: CartonImportBatch, *, duplicate: bool = False) -> CartonImportBatchOut:
     try:
         parse_summary = json.loads(batch.parse_summary_json or "{}")
     except (TypeError, json.JSONDecodeError):
         parse_summary = {"message": "历史导入批次的解析摘要无法读取，请重新导入原文件"}
+    if batch.import_type == "WEEKLY_SCHEDULE" and isinstance(parse_summary, dict):
+        _project_item_schedule_rows(batch.id, parse_summary)
     if batch.import_type == "DELIVERY_NOTE" and parse_summary.get("parser_version") != DELIVERY_IMPORT_PARSER_VERSION:
         parse_summary["material_review_required"] = True
         for row in parse_summary.get("rows", []):
@@ -3639,7 +3693,6 @@ def _create_import_exceptions(
         if batch.import_type == "INSPECTION_SCHEDULE":
             reminder_status = str(row.get("reminder_status") or "")
             inspection_exception = {
-                "REVIEW_REQUIRED": ("SCHEDULE_REVIEW_REQUIRED", "MEDIUM", "业务订单类型或字段待人工确认"),
                 "MISSING_ORDER": ("INSPECTION_ORDER_MISSING", "HIGH", "下周查货合同未找到纸箱订单"),
                 "AMBIGUOUS": ("INSPECTION_ORDER_AMBIGUOUS", "HIGH", "下周查货合同存在多个候选订单"),
                 "INVALID_DATE": ("INSPECTION_DATE_INVALID", "MEDIUM", "查货合同的验货日期无法识别"),
@@ -3659,6 +3712,10 @@ def _create_import_exceptions(
                 elif change == "CANCELLED":
                     category, severity, title = "SCHEDULE_CANCELLED", "MEDIUM", "业务订单转入取消单区"
                 elif section in {"CANCELLED", "SHIPPED"}:
+                    continue
+                elif match_status == "REVIEW_REQUIRED":
+                    # The business schedule already shows this row-level review
+                    # warning; it is not a separate warehouse work item.
                     continue
                 elif row.get("manual_ordered") and match_status == "MISSING_ORDER":
                     continue
@@ -3686,13 +3743,18 @@ def _create_import_exceptions(
                     severity = "MEDIUM"
                     title = "业务走货期与纸箱订单客户交期不一致"
                 elif match_status == "REVIEW_REQUIRED":
-                    category = "SCHEDULE_REVIEW_REQUIRED"
+                    category = "RECEIPT_REVIEW_REQUIRED"
                     severity = "MEDIUM"
-                    title = "业务订单类型或字段待人工确认"
+                    title = "送货明细待人工确认"
                 else:
                     category = "AMBIGUOUS_MATCH"
                     severity = "MEDIUM"
                     title = "导入明细存在多个候选订单"
+        description = str(row.get("suggestion") or "请人工复核导入内容并关联正式纸箱订单")
+        if batch.import_type == "WEEKLY_SCHEDULE" and row.get("template") == "unified-item" and row.get("source_sheet") and row.get("source_row"):
+            sheet = str(row["source_sheet"]).replace("\n", " ").replace("\r", " ")
+            so = str(row.get("source_reference") or "未填").replace("\n", " ").replace("\r", " ")
+            description += f"\n来源：{sheet} · 第 {row['source_row']} 行 · SO：{so}"
         exception = CartonException(
             id=f"CEX-{uuid4().hex}",
             factory_id=batch.factory_id,
@@ -3706,7 +3768,7 @@ def _create_import_exceptions(
             contract_no=str(row.get("contract_no") or row.get("reference") or ""),
             item_no=str(row.get("item_no") or ""),
             title=title,
-            description=str(row.get("suggestion") or "请人工复核导入内容并关联正式纸箱订单"),
+            description=description,
             owner_department=(
                 "纸箱部"
                 if batch.import_type == "INSPECTION_SCHEDULE"
@@ -3779,11 +3841,13 @@ def create_import_batch(
             raise HTTPException(422, "请选择当前厂区基础资料中的排期客户")
         customer = get_active_customer(db, factory_id, customer_code)
         effective_profile.update(customer_code=customer.customer_code)
-    effective_profile["matching_version"] = "customer-po-v1"
+    effective_profile["matching_version"] = "item-so-v2" if import_type == "WEEKLY_SCHEDULE" else "customer-po-v1"
     if import_type == "DELIVERY_NOTE":
         effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
-    elif import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
+    elif import_type == "WEEKLY_SCHEDULE":
         effective_profile["parser_version"] = SCHEDULE_IMPORT_PARSER_VERSION
+    elif import_type == "INSPECTION_SCHEDULE":
+        effective_profile["parser_version"] = INSPECTION_IMPORT_PARSER_VERSION
     identity_profile = dict(effective_profile)
     reimported_from_batch_id = None
     while True:
@@ -3841,8 +3905,11 @@ def create_import_batch(
         _require_delivery_destination(factory_id, parse_summary)
     if reimported_from_batch_id:
         parse_summary["reimported_from_batch_id"] = reimported_from_batch_id
+    batch_id = f"CIB-{uuid4().hex}"
+    if import_type == "WEEKLY_SCHEDULE":
+        _project_item_schedule_rows(batch_id, parse_summary)
     batch = CartonImportBatch(
-        id=f"CIB-{uuid4().hex}",
+        id=batch_id,
         factory_id=factory_id,
         import_type=import_type,
         original_filename=filename,
@@ -3880,6 +3947,32 @@ def create_import_batch(
     return import_batch_out(batch)
 
 
+def _schedule_event_key(db: Session, factory_id: str, event_key: str, detail: dict[str, object], cache: dict[str, list[dict[str, object]]]) -> str:
+    batch_id = str(detail.get("batch_id") or "")
+    if not batch_id:
+        return event_key
+    if batch_id not in cache:
+        batch = db.get(CartonImportBatch, batch_id)
+        try:
+            summary = json.loads(batch.parse_summary_json or "{}") if batch else {}
+        except (TypeError, json.JSONDecodeError):
+            summary = {}
+        cache[batch_id] = [row for row in summary.get("rows", []) if isinstance(row, dict)] if batch and batch.factory_id == factory_id else []
+    rows = cache[batch_id]
+    matches = [row for row in rows if row.get("source_sheet") == detail.get("source_sheet")
+               and row.get("source_row") == detail.get("source_row")]
+    if len(matches) != 1:
+        return event_key
+    row = matches[0]
+    old_key = legacy_identity(row)
+    group_key = identity(row)
+    duplicate = sum(identity(item) == group_key and tracked(item) for item in rows) > 1
+    operation_key = operation_identity(row, batch_id, duplicate)
+    if event_key == old_key and sum(legacy_identity(item) == old_key and tracked(item) for item in rows) != 1:
+        return event_key  # Legacy evidence cannot be assigned to one SO row.
+    return operation_key if event_key in {old_key, group_key, operation_key} else event_key
+
+
 def schedule_order_marks(db: Session, factory_id: str) -> dict[str, dict[str, object]]:
     """Latest manual decision for each business order, scoped to one factory."""
     factory_id = require_carton_factory(factory_id)
@@ -3889,6 +3982,9 @@ def schedule_order_marks(db: Session, factory_id: str) -> dict[str, dict[str, ob
         CartonAuditEvent.event_type == "SCHEDULE_ORDER_MARK_CHANGED",
     ).order_by(CartonAuditEvent.sequence)).all()
     marks: dict[str, dict[str, object]] = {}
+    cache: dict[str, list[dict[str, object]]] = {}
+    decisions: list[tuple[CartonAuditEvent, dict[str, object], str]] = []
+    destinations: dict[str, set[str]] = defaultdict(set)
     for event in events:
         try:
             detail = json.loads(event.detail_json or "{}")
@@ -3896,7 +3992,14 @@ def schedule_order_marks(db: Session, factory_id: str) -> dict[str, dict[str, ob
             continue
         if not isinstance(detail, dict):
             continue
-        marks[event.entity_id] = {
+        key = _schedule_event_key(db, factory_id, event.entity_id, detail, cache)
+        decisions.append((event, detail, key))
+        destinations[event.entity_id].add(key)
+    for event, detail, projected_key in decisions:
+        # One legacy key could have been toggled from several different SO rows.
+        # Its historical final decision cannot safely be assigned to any one SO.
+        key = projected_key if len(destinations[event.entity_id]) == 1 else event.entity_id
+        marks[key] = {
             "marked": detail.get("marked") is True,
             "actor": event.actor_name,
             "updated_at": event.created_at,
@@ -3917,6 +4020,7 @@ def _schedule_order_links(db: Session, factory_id: str) -> dict[str, list[str]]:
         CartonOrder.factory_id == factory_id, CartonOrder.status != "CANCELLED",
     )).all()}
     links: dict[str, list[str]] = {}
+    cache: dict[str, list[dict[str, object]]] = {}
     for event in events:
         try:
             detail = json.loads(event.detail_json or "{}")
@@ -3930,7 +4034,8 @@ def _schedule_order_links(db: Session, factory_id: str) -> dict[str, list[str]]:
         if any(str(detail.get(field) or "").strip().casefold() != getattr(order, field).strip().casefold()
                for field in ("contract_no", "item_no")):
             continue
-        ids = links.setdefault(event.entity_id, [])
+        key = _schedule_event_key(db, factory_id, event.entity_id, detail, cache)
+        ids = links.setdefault(key, [])
         if order.id not in ids:
             ids.append(order.id)
     return links
@@ -3970,19 +4075,26 @@ def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrde
         raise HTTPException(422, "新订单客户必须与导入排期时选择的基础客户一致")
     if not key or not tracked(row) or row.get("schedule_section") != "PENDING":
         raise HTTPException(422, "只能使用待下单区的正单、加单或正式 PO 新建订单")
-    if sum(identity(item) == key and tracked(item) for item in rows) != 1 or row.get("schedule_change") == "REVIEW_REQUIRED":
+    if row.get("schedule_change") == "REVIEW_REQUIRED" and not row.get("schedule_identity_duplicate"):
         raise HTTPException(409, "业务订单身份不唯一，请先核对排期")
+    if not isinstance(row.get("quantity"), (int, float)) or row["quantity"] <= 0:
+        raise HTTPException(422, "来源排期数量无效，请先核对")
     if any(str(row.get(field) or "").strip().casefold() != getattr(payload, field).strip().casefold()
            for field in ("contract_no", "item_no")):
         raise HTTPException(422, "来源排期的合同和货号与新订单不一致，请重新核对")
     latest = [item for item in _previous_schedule_by_customer(db, factory_id, {customer_key(row)}).get(customer_key(row), [])
               if identity(item) == key and tracked(item)]
-    if len(latest) != 1 or latest[0].get("schedule_section") != "PENDING":
+    if not latest or (len(latest) != 1 and not row.get("schedule_identity_duplicate")) or any(
+        item.get("schedule_section") != "PENDING" for item in latest
+    ):
         raise HTTPException(409, "最新排期已退单、走货或身份不唯一，请刷新后核对")
-    if schedule_order_marks(db, factory_id).get(key, {}).get("marked") or _schedule_order_links(db, factory_id).get(key):
+    if row.get("schedule_identity_duplicate") and any(item.get("_batch_id") != batch.id for item in latest):
+        raise HTTPException(409, "该重复 SO 来源不是最新有效批次，请在最新排期中核对后操作")
+    operation_key = str(row["schedule_identity"])
+    if schedule_order_marks(db, factory_id).get(operation_key, {}).get("marked") or _schedule_order_links(db, factory_id).get(operation_key):
         raise HTTPException(409, "该业务排期已标记下单或已建订单，请查看原订单，勿重复下单")
     from app.services.carton_order_split import schedule_matches
-    if schedule_matches(db, factory_id, row):
+    if not row.get("schedule_identity_duplicate") and schedule_matches(db, factory_id, row):
         raise HTTPException(409, "该业务排期已关联拆分采购，请查看原订单拆单记录，勿重复下单")
     existing = db.get(CartonOrder, row.get("order_id")) if row.get("order_id") else None
     if existing and existing.factory_id == factory_id and existing.status != "CANCELLED":
@@ -4012,18 +4124,19 @@ def set_schedule_order_marks(
         raise HTTPException(404, "有效的业务排期批次不存在")
     summary = import_batch_out(batch).parse_summary
     rows = [row for row in summary.get("rows", []) if isinstance(row, dict)]
-    counts = Counter(identity(row) for row in rows if tracked(row))
     selected: list[tuple[str, dict[str, object]]] = []
     for source_sheet, source_row in sources:
         matches = [row for row in rows if row.get("source_sheet") == source_sheet and row.get("source_row") == source_row]
         if len(matches) != 1:
             raise HTTPException(404, "排期明细不存在，所选记录均未修改")
         row = matches[0]
-        key = identity(row)
+        key = str(row.get("schedule_identity") or "")
         if not key or not tracked(row) or row.get("schedule_section") != "PENDING":
             raise HTTPException(422, "只有身份完整且位于待下单区的正单、加单或正式 PO 可标记已下单")
-        if counts[key] != 1 or row.get("schedule_change") == "REVIEW_REQUIRED":
+        if row.get("schedule_change") == "REVIEW_REQUIRED" and not row.get("schedule_identity_duplicate"):
             raise HTTPException(409, "本批次业务订单身份不唯一，请先人工核对，所选记录均未修改")
+        if not isinstance(row.get("quantity"), (int, float)) or row["quantity"] <= 0:
+            raise HTTPException(422, "来源排期数量无效，所选记录均未修改")
         selected.append((key, row))
     marks = schedule_order_marks(db, factory_id)
     operation_id = f"SM-{uuid4().hex}"
@@ -4035,7 +4148,8 @@ def set_schedule_order_marks(
                 "marked": marked, "batch_id": batch_id, "source_sheet": row["source_sheet"],
                 "source_row": row["source_row"], "customer": row.get("source_customer_name") or row.get("customer_name"),
                 "contract_no": row.get("contract_no"), "customer_po": row.get("customer_po"),
-                "item_no": row.get("item_no"), "operation_id": operation_id,
+                "item_no": row.get("item_no"), "source_reference": row.get("source_reference"),
+                "operation_id": operation_id,
             })
             changed_count += 1
     db.commit()
@@ -4082,7 +4196,7 @@ def _previous_schedule_by_customer(db: Session, factory_id: str, customers: set[
                     by_identity[key].append(row)
             for key, matching_rows in by_identity.items():
                 if key not in seen[customer]:
-                    destination.extend(matching_rows)
+                    destination.extend({**row, "_batch_id": batch.id} for row in matching_rows)
                     seen[customer].add(key)
     return previous
 
@@ -4143,6 +4257,16 @@ def _active_import_exception():
         CartonImportBatch.import_type.in_(("WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE")),
         CartonImportBatch.status == "REJECTED",
     ).exists()
+
+
+def _visible_exception():
+    return and_(
+        _active_import_exception(),
+        ~and_(
+            CartonException.source_type.in_(("WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE")),
+            CartonException.category == "SCHEDULE_REVIEW_REQUIRED",
+        ),
+    )
 
 
 def delete_unmatched_delivery_import(
@@ -4278,7 +4402,7 @@ def list_exceptions(
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[int, list[CartonException]]:
-    query = select(CartonException).where(CartonException.factory_id == factory_id, _active_import_exception())
+    query = select(CartonException).where(CartonException.factory_id == factory_id, _visible_exception())
     if status_filter:
         query = query.where(CartonException.status == status_filter)
     if search:
@@ -4918,6 +5042,7 @@ def dashboard(db: Session, factory_id: str) -> CartonDashboardOut:
         select(func.count()).select_from(CartonException).where(
             CartonException.factory_id == factory_id,
             CartonException.status.in_(("OPEN", "IN_PROGRESS")),
+            _visible_exception(),
         )
     ) or 0
     return CartonDashboardOut(

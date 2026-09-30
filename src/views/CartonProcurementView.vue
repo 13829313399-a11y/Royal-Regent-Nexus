@@ -972,6 +972,7 @@ const visibleWeeklyChecks = computed(() => localWeeklyChecks.filter((row) =>
   && includesSearch([
     row.reference,
     row.poNumbers,
+    row.sourceReference ?? '',
     row.customer,
     row.itemNo,
     row.productName,
@@ -1030,7 +1031,7 @@ function scheduleAssessment(row: WeeklyCheckRow) {
   const source = scheduleSourceRow(row)
   const reminder = source ? currentScheduleReminder(source) : null
   // Quantity/date matching evidence is independent of the current ordering deadline.
-  const preserveMatch = source && (['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source.match_status || '')
+  const preserveMatch = source && !source.schedule_identity_duplicate && (['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source.match_status || '')
     || (source.match_status === 'REVIEW_REQUIRED' && reminder?.state === 'ORDERED'))
   return { result: preserveMatch || !reminder ? row.result : reminder.label,
     tone: preserveMatch || !reminder ? row.tone : reminder.tone, reminder,
@@ -1080,6 +1081,7 @@ function businessIdentity(value: string | undefined) {
 function weeklyRowForException(exception: CartonExceptionResponse, batch: CartonImportBatchResponse | undefined) {
   const contractKey = businessIdentity(exception.contract_no)
   const itemKey = businessIdentity(exception.item_no)
+  const location = exception.description.match(/\n来源：(.+) · 第 (\d+) 行 · SO：(.*)$/)
   const rows = batch?.parse_summary.rows?.filter((row) => {
     const rowContractKey = businessIdentity(row.contract_no ?? row.reference)
     const rowItemKey = businessIdentity(row.item_no)
@@ -1087,6 +1089,8 @@ function weeklyRowForException(exception: CartonExceptionResponse, batch: Carton
       && (!itemKey || rowItemKey === itemKey)
       && (!exception.customer_name || businessIdentity(row.customer_name) === businessIdentity(exception.customer_name))
       && (!['SCHEDULE_CANCELLED', 'SCHEDULE_CANCELLED_AFTER_ORDER'].includes(exception.category) || row.schedule_section === 'CANCELLED')
+      && (!location || (row.source_sheet === location[1] && row.source_row === Number(location[2])
+        && (row.source_reference || '未填') === location[3]))
   }) ?? []
   return rows.length === 1 ? rows[0] ?? null : null
 }
@@ -1107,7 +1111,7 @@ const businessOrderAlerts = computed<BusinessOrderAlert[]>(() => {
   const alerts = new Map<string, BusinessOrderAlert>()
   const sourceKey = (row: CartonImportPreviewRow) => row.schedule_identity || JSON.stringify([
     row.schedule_customer_code || row.customer_code || scheduleIdentifier(row.customer_name),
-    scheduleIdentifier(row.contract_no || row.reference), scheduleIdentifier(row.item_no),
+    scheduleIdentifier(row.contract_no || row.reference), scheduleIdentifier(row.item_no), scheduleIdentifier(row.source_reference),
   ])
   const candidates = exceptionRecords.value.filter(exception => exception.factory_id === selectedFactoryId.value
     && exception.source_type === 'WEEKLY_SCHEDULE'
@@ -1118,6 +1122,7 @@ const businessOrderAlerts = computed<BusinessOrderAlert[]>(() => {
     const batch = batches.get(exception.source_id)
     if (!batch) continue
     const sourceRow = weeklyRowForException(exception, batch)
+    if (sourceRow?.legacy_match_stale && exception.category === 'QUANTITY_MISMATCH') continue
     const order = orderForBusinessAlert(sourceRow, exception)
     const scheduleQuantity = Number(sourceRow?.quantity ?? 0)
     const orderQuantity = Number(order?.product_order_quantity ?? 0)
@@ -2498,6 +2503,7 @@ function mapWeeklyPreview(row: CartonImportPreviewRow, index: number): WeeklyChe
     scheduleSection: row.schedule_section,
     scheduleChange: row.schedule_change,
     scheduleIdentity: row.schedule_identity,
+    identityDuplicate: row.schedule_identity_duplicate,
     sourceSheet: row.source_sheet,
     sourceRow: row.source_row,
     manualOrdered: row.manual_ordered,
@@ -2539,7 +2545,8 @@ function mapException(row: CartonExceptionResponse): CartonExceptionRow {
       RECEIPT_UNMATCHED: '收料未匹配',
       QUANTITY_MISMATCH: '数量差异',
       SCHEDULE_DATE_MISMATCH: '业务交期差异',
-      SCHEDULE_REVIEW_REQUIRED: '业务明细待确认',
+      SCHEDULE_REVIEW_REQUIRED: row.source_type === 'DELIVERY_NOTE' ? '收料待确认' : '业务明细待确认',
+      RECEIPT_REVIEW_REQUIRED: '收料待确认',
       AMBIGUOUS_MATCH: '匹配不唯一',
       ORDER_APPENDED: '追单提醒',
       INSPECTION_ORDER_MISSING: '查货合同漏单',
@@ -2549,7 +2556,9 @@ function mapException(row: CartonExceptionResponse): CartonExceptionRow {
       INSPECTION_DELIVERY_DUE: '纸箱交货临近',
       INSPECTION_DELIVERY_REMINDER: '纸箱提前交货提醒',
     } as Record<string, string>)[row.category] ?? row.category,
-    title: row.title,
+    title: row.source_type === 'DELIVERY_NOTE' && row.category === 'SCHEDULE_REVIEW_REQUIRED'
+      ? '送货明细待人工确认'
+      : row.title,
     detail: [row.contract_no, row.item_no, row.description].filter(Boolean).join(' · '),
     owner: row.owner_department,
     deadline: `创建于 ${row.created_at.replace('T', ' ').slice(0, 16)}`,
@@ -2688,7 +2697,9 @@ function canMarkScheduleRow(row: WeeklyCheckRow, batchId = selectedWeeklyBatchId
   return apiConnected.value && canUndoScheduleImport.value
     && weeklyImportHistory.value.some(batch => batch.id === batchId && batch.status !== 'REJECTED')
     && row.scheduleSection === 'PENDING' && Boolean(row.scheduleIdentity && row.sourceSheet && row.sourceRow)
-    && ['正单', '正式PO', '加单'].includes(row.orderType || '') && row.scheduleChange !== 'REVIEW_REQUIRED'
+    && ['正单', '正式PO', '加单'].includes(row.orderType || '')
+    && !row.quantityMissing && row.quantity > 0
+    && (row.scheduleChange !== 'REVIEW_REQUIRED' || row.identityDuplicate)
 }
 
 function toggleScheduleSelection(row: WeeklyCheckRow) {
@@ -4513,18 +4524,20 @@ function scheduleCustomerForSource(source: CartonImportPreviewRow) {
 }
 
 function scheduleSplitsForSource(source: CartonImportPreviewRow) {
+  const linkedIds = source.schedule_identity_duplicate
+    ? new Set(scheduleMarkRecords.value[source.schedule_identity ?? '']?.order_ids ?? []) : null
   return orderRecords.value.filter(order => order.factory_id === selectedFactoryId.value
     && order.customer_code === source.schedule_customer_code
+    && (!linkedIds || linkedIds.has(order.id))
   ).flatMap(order => (order.split_records ?? []).filter(plan => plan.status !== 'CANCELLED'
     && scheduleIdentifier(plan.item_no) === scheduleIdentifier(source.item_no))
     .flatMap(plan => plan.targets.filter(target => scheduleIdentifier(target.contract_no) === scheduleIdentifier(source.contract_no)
-      && (!source.customer_po || scheduleIdentifier(target.customer_po) === scheduleIdentifier(source.customer_po)))
+      && (!(source.source_reference || source.customer_po)
+        || scheduleIdentifier(target.customer_po) === scheduleIdentifier(source.source_reference || source.customer_po)))
       .map(target => ({ order, plan, target }))))
 }
 
 function scheduleOrdersForSource(source: CartonImportPreviewRow) {
-  const splitLinked = [...new Map(scheduleSplitsForSource(source).map(match => [match.order.id, match.order])).values()]
-  if (splitLinked.length) return splitLinked
   const linkedIds = new Set([...(scheduleMarkRecords.value[source.schedule_identity ?? '']?.order_ids ?? []),
     ...(source.order_id ? [source.order_id] : [])])
   const linked = orderRecords.value.filter(order => linkedIds.has(order.id) && order.factory_id === selectedFactoryId.value
@@ -4532,11 +4545,33 @@ function scheduleOrdersForSource(source: CartonImportPreviewRow) {
     && order.status !== 'CANCELLED' && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no || source.reference)
     && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no))
   if (linked.length) return linked
+  if (source.schedule_identity_duplicate) return []
+  const splitLinked = [...new Map(scheduleSplitsForSource(source).map(match => [match.order.id, match.order])).values()]
+  if (splitLinked.length) return splitLinked
   const customer = scheduleCustomerForSource(source)
   if (!customer) return []
   const key = JSON.stringify([customer.customer_code, scheduleIdentifier(source.contract_no || source.reference), scheduleIdentifier(source.item_no)])
-  return (scheduleOrderIndex.value.get(key) ?? []).filter(order => !source.customer_po
-    || scheduleIdentifier(order.customer_po) === scheduleIdentifier(source.customer_po))
+  const po = source.source_reference || source.customer_po
+  return (scheduleOrderIndex.value.get(key) ?? []).filter(order => !po
+    || scheduleIdentifier(order.customer_po) === scheduleIdentifier(po))
+}
+
+function scheduleDuplicateCandidates(source: CartonImportPreviewRow) {
+  if (!source.schedule_identity_duplicate) return []
+  return orderRecords.value.filter(order => order.factory_id === selectedFactoryId.value
+    && order.status !== 'CANCELLED' && order.customer_code === source.schedule_customer_code
+    && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no)
+    && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no)
+    && scheduleIdentifier(order.customer_po) === scheduleIdentifier(source.source_reference || source.customer_po))
+}
+
+function scheduleOtherPoCandidates(source: CartonImportPreviewRow) {
+  if (!source.source_reference) return []
+  return orderRecords.value.filter(order => order.factory_id === selectedFactoryId.value
+    && order.status !== 'CANCELLED' && order.customer_code === source.schedule_customer_code
+    && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no)
+    && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no)
+    && scheduleIdentifier(order.customer_po) !== scheduleIdentifier(source.source_reference))
 }
 
 function scheduleLinkedOrderLabel(row: WeeklyCheckRow) {
@@ -4569,8 +4604,10 @@ function scheduleOrderActionLabel(row: WeeklyCheckRow) {
 function canUseScheduleSource(source: CartonImportPreviewRow) {
   return (!source.schedule_section || source.schedule_section === 'PENDING')
     && (source.template !== 'unified-item' || ['正单', '正式PO', '加单'].includes(source.order_type ?? ''))
-    && source.schedule_change !== 'REVIEW_REQUIRED' && source.match_status !== 'AMBIGUOUS'
+    && (source.schedule_change !== 'REVIEW_REQUIRED' || source.schedule_identity_duplicate)
+    && source.match_status !== 'AMBIGUOUS'
     && Boolean(source.contract_no || source.reference) && Boolean(source.item_no)
+    && Number(source.quantity ?? 0) > 0
 }
 
 function scheduleOrderActionDisabled(row: WeeklyCheckRow) {
@@ -4595,7 +4632,7 @@ function openOrderFromSchedule(source: CartonImportPreviewRow, batchId: string, 
   resetOrderForm()
   scheduleOrderSource.value = { batchId, filename: batch.original_filename, row: { ...source } }
   orderForm.customerCode = scheduleCustomerForSource(source)?.customer_code ?? ''
-  orderForm.customerPo = source.customer_po || ''
+  orderForm.customerPo = source.source_reference || source.customer_po || ''
   orderForm.contractNo = source.contract_no || source.reference || ''
   orderForm.itemNo = source.item_no || ''
   orderForm.productName = source.product_name || ''
@@ -6266,7 +6303,7 @@ watch([
           <article class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 shadow-sm">
             <div class="flex gap-2 font-bold"><ShieldCheck class="size-4 shrink-0" />{{ weeklyCheckMode === 'ORDER_GAP' ? '防误建规则' : '提醒计算规则' }}</div>
             <div v-if="weeklyCheckMode === 'ORDER_GAP'" class="mt-2 space-y-1.5 text-[11px] leading-5">
-              <p>读取全部 <strong>ITEM 表</strong>及其分区，按所选基础客户、合同号和货号跟踪变化，客户 PO、文档客名和 SO / Reference 单独保留。待下单区正单参与采购核对，其余类型待人工确认。</p>
+              <p>读取全部 <strong>ITEM 表</strong>及其分区，按所选基础客户、合同号、货号和 <strong>SO#/Reference（客户 PO）</strong> 跟踪变化；原表 P/O#: 和文档客名单独保留。三项业务字段相同的多行提示人工确认，但可分别标记或按此下单。</p>
               <p>唯一匹配后，将模板“数量”与正式订单的<strong>产品订单数量</strong>直接比较，不按装箱数换算。</p>
               <p>已在外部下单的可多选标记；未下单的点击<strong>按此下单</strong>，带入资料、补齐纸品并确认保存。文件缺少某行不代表退单；明确转入退单区才提醒核实，原采购单仍需人工决定。</p>
             </div>
@@ -6347,7 +6384,7 @@ watch([
                 <tr>
                   <th class="w-10 px-3 py-3"><input type="checkbox" aria-label="全选当前可标记排期" :checked="allVisibleScheduleRowsSelected" :disabled="!selectableVisibleScheduleRows.length || Boolean(scheduleMarkBusy)" class="size-4 accent-teal-700" @change="toggleVisibleScheduleSelection"></th>
                   <th class="px-4 py-3">客户 / 产品</th>
-                  <th class="px-4 py-3">合同 / 客户 PO</th>
+                  <th class="px-4 py-3">合同 / 原表 P/O# / SO</th>
                   <th class="px-4 py-3">货号 / 订单类型</th>
                   <th class="px-4 py-3"><span class="block">排期区</span><span class="block">变化</span></th>
                   <th class="px-4 py-3 text-right">数量</th>
@@ -6363,7 +6400,7 @@ watch([
                 <tr v-for="row in visibleWeeklyChecks" :key="row.id" class="hover:bg-slate-50/80">
                   <td class="px-3 py-3"><input type="checkbox" :aria-label="`选择排期 ${row.reference} ${row.itemNo}`" :checked="selectedScheduleRowIds.includes(row.id)" :disabled="!canMarkScheduleRow(row) || Boolean(scheduleMarkBusy)" class="size-4 accent-teal-700 disabled:opacity-30" @change="toggleScheduleSelection(row)"></td>
                   <td class="px-4 py-3"><div class="font-semibold">{{ row.customer }}</div><div v-if="row.businessCustomer && row.businessCustomer !== row.customer" class="text-[10px] text-slate-500">业务客名：{{ row.businessCustomer }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.productName }}</div></td>
-                  <td class="px-4 py-3"><div class="font-semibold">{{ row.reference || '合同待确认' }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.poNumbers }}</div><div v-if="row.sourceReference" class="text-[10px] text-slate-500">SO: {{ row.sourceReference }}</div></td>
+                  <td class="px-4 py-3"><div class="font-semibold">{{ row.reference || '合同待确认' }}</div><div v-if="row.poNumbers" class="mt-0.5 text-[10px] text-slate-500">P/O#: {{ row.poNumbers }}</div><div v-if="row.sourceReference" class="text-[10px] text-slate-500">SO: {{ row.sourceReference }}</div></td>
                   <td class="px-4 py-3"><div class="font-mono font-semibold">{{ row.itemNo }}</div><span v-if="row.orderType?.trim() === '加单'" :aria-label="`加单提醒 ${row.reference} ${row.itemNo}`" class="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 ring-1 ring-inset ring-amber-200">加单</span><div v-else class="text-[10px] text-slate-500">{{ row.orderType }}</div></td>
                   <td class="px-4 py-3 text-[11px]"><div class="font-bold" :class="row.scheduleSection === 'CANCELLED' ? 'text-red-700' : row.scheduleSection === 'SHIPPED' ? 'text-blue-700' : 'text-teal-700'">{{ scheduleSectionLabel(row.scheduleSection) }}</div><div class="mt-1" :class="row.scheduleChange === 'CANCELLED_AFTER_ORDER' ? 'font-bold text-red-700' : row.scheduleChange === 'NEW' ? 'font-bold text-amber-700' : 'text-slate-500'">{{ scheduleChangeLabel(row.scheduleChange) }}</div></td>
                   <td class="px-4 py-3 text-right font-semibold tabular-nums">{{ row.quantityMissing ? '待确认' : formatNumber(row.quantity) }}</td>
@@ -6372,7 +6409,7 @@ watch([
                   <td class="px-4 py-3"><span class="rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(scheduleAssessment(row).tone)">{{ scheduleAssessment(row).result }}</span><div v-if="scheduleAssessment(row).reminder?.deadline" class="mt-1 text-[10px] text-slate-500" :title="scheduleAssessment(row).reminder?.detail">最迟下单 {{ scheduleAssessment(row).reminder?.deadline }}</div></td>
                   <td class="px-4 py-3 text-[11px]"><div class="font-mono">{{ scheduleLinkedOrderLabel(row) }}</div><div class="mt-1 font-semibold" :class="scheduleProcurementLabel(row) === '需要下单' ? 'text-amber-800' : 'text-teal-800'">{{ scheduleProcurementLabel(row) }}</div></td>
                   <td class="px-4 py-3"><button v-if="row.scheduleSection === 'PENDING' && row.scheduleIdentity && ['正单', '正式PO', '加单'].includes(row.orderType || '')" type="button" :disabled="!canMarkScheduleRow(row) || Boolean(scheduleMarkBusy)" :aria-label="`${scheduleIsMarked(row) ? '取消已下单标记' : '标记已下单'} ${row.reference} ${row.itemNo}`" class="whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-[10px] font-bold disabled:opacity-40" :class="scheduleIsMarked(row) ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'" @click="toggleScheduleMark(row)">{{ scheduleIsMarked(row) ? '✓ 已下单' : '标记已下单' }}</button><span v-else class="text-[10px] text-slate-400">{{ scheduleIsMarked(row) ? '✓ 已下单' : '—' }}</span></td>
-                  <td class="px-4 py-3 text-[11px] text-slate-500"><button v-if="!row.scheduleSection || row.scheduleSection === 'PENDING'" type="button" :aria-label="`排期下单 ${row.reference} ${row.itemNo}`" :disabled="scheduleOrderActionDisabled(row)" class="mb-2 whitespace-nowrap rounded-lg bg-teal-700 px-3 py-1.5 text-[10px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500" @click="openScheduleOrder(row)">{{ scheduleOrderActionLabel(row) }}</button><div>{{ scheduleAssessment(row).suggestion }}</div><div class="mt-1 text-[10px]">{{ row.sourceLocation }}</div></td>
+                  <td class="px-4 py-3 text-[11px] text-slate-500"><button v-if="!row.scheduleSection || row.scheduleSection === 'PENDING'" type="button" :aria-label="`排期下单 ${row.reference} ${row.itemNo}`" :disabled="scheduleOrderActionDisabled(row)" class="mb-2 whitespace-nowrap rounded-lg bg-teal-700 px-3 py-1.5 text-[10px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500" @click="openScheduleOrder(row)">{{ scheduleOrderActionLabel(row) }}</button><div>{{ scheduleAssessment(row).suggestion }}</div><div v-if="scheduleSourceRow(row)?.legacy_match_stale" class="mt-1 text-amber-700">此旧批次的下单匹配需按 SO 重新核对；重新导入原文件可刷新结果。</div><div v-if="row.identityDuplicate && scheduleSourceRow(row) && scheduleDuplicateCandidates(scheduleSourceRow(row)!).length" class="mt-1 text-amber-700">已有同 SO 候选订单：{{ scheduleDuplicateCandidates(scheduleSourceRow(row)!).map(order => order.order_no).join('、') }}；请核实后操作。</div><div v-if="scheduleSourceRow(row) && scheduleOtherPoCandidates(scheduleSourceRow(row)!).length" class="mt-1 text-amber-700">同合同货号已有其他 PO 订单：{{ scheduleOtherPoCandidates(scheduleSourceRow(row)!).map(order => order.order_no).join('、') }}；请确认不是同一需求。</div><div class="mt-1 text-[10px]">{{ row.sourceLocation }}</div></td>
                 </tr>
                 <tr v-if="visibleWeeklyChecks.length === 0"><td colspan="12" class="px-4 py-12 text-center text-slate-400">没有符合当前筛选条件的核对记录</td></tr>
               </tbody>
@@ -7140,7 +7177,7 @@ watch([
           <button type="button" :aria-label="editingOrderNo ? '关闭修改订单' : '关闭新建订单'" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="showOrderModal = false"><X class="size-4" /></button>
         </div>
         <div class="space-y-5 p-5">
-          <div v-if="scheduleOrderSource" class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-[11px] leading-5 text-teal-800"><p>来自业务排期 {{ scheduleOrderSource.filename }} · {{ scheduleOrderSource.row.source_sheet }} 第 {{ scheduleOrderSource.row.source_row }} 行。已带入下单资料，请补齐纸质、规格并核对后保存。</p><p v-if="scheduleOrderSource.row.order_type?.trim() === '加单'" aria-label="业务排期加单提示" class="font-bold text-amber-800">加单提示：本次下单来源于业务加单。</p><p v-if="!orderForm.customerCode" class="font-bold text-amber-800">原表客户尚未匹配本厂客户资料，请先选择正确客户。</p><p v-if="scheduleOrderSource.row.date_review_required" class="font-bold text-amber-800">原表日期需要人工确认：{{ scheduleOrderSource.row.source_customer_due_date || scheduleOrderSource.row.source_inspection_window }}，请填写完整交期。</p></div>
+          <div v-if="scheduleOrderSource" class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-[11px] leading-5 text-teal-800"><p>来自业务排期 {{ scheduleOrderSource.filename }} · {{ scheduleOrderSource.row.source_sheet }} 第 {{ scheduleOrderSource.row.source_row }} 行。已带入下单资料，请补齐纸质、规格并核对后保存。</p><p v-if="scheduleOrderSource.row.schedule_identity_duplicate" class="font-bold text-amber-800">合同、货号和 SO#/Reference 在本批次重复，请确认是否为分批需求；可继续保存本行订单。</p><p v-if="scheduleOrderSource.row.legacy_match_stale" class="font-bold text-amber-800">此旧批次的历史匹配不能直接证明该 SO 已下单，请核对原订单；重新导入原文件可刷新结果。</p><p v-if="scheduleDuplicateCandidates(scheduleOrderSource.row).length" class="font-bold text-amber-800">已有同 SO 候选订单：{{ scheduleDuplicateCandidates(scheduleOrderSource.row).map(order => order.order_no).join('、') }}。请核实是否需要再建一张订单。</p><p v-if="scheduleOtherPoCandidates(scheduleOrderSource.row).length" class="font-bold text-amber-800">同合同货号已有其他 PO 订单：{{ scheduleOtherPoCandidates(scheduleOrderSource.row).map(order => order.order_no).join('、') }}。请确认不是同一需求。</p><p v-if="scheduleOrderSource.row.order_type?.trim() === '加单'" aria-label="业务排期加单提示" class="font-bold text-amber-800">加单提示：本次下单来源于业务加单。</p><p v-if="!orderForm.customerCode" class="font-bold text-amber-800">原表客户尚未匹配本厂客户资料，请先选择正确客户。</p><p v-if="scheduleOrderSource.row.date_review_required" class="font-bold text-amber-800">原表日期需要人工确认：{{ scheduleOrderSource.row.source_customer_due_date || scheduleOrderSource.row.source_inspection_window }}，请填写完整交期。</p></div>
           <p v-if="copiedOrderNo" class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-[11px] leading-5 text-teal-800">复制自订单 {{ copiedOrderNo }}，已带入 {{ orderForm.materials.length }} 条纸品资料。请核对本次合同、客户 PO、数量和纸品信息，并重新选择交期；保存后生成新的待下单订单。</p>
           <div v-if="editingOrderStructureLocked" class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800">该订单已确认锁定或发生正式收料，不能再保存修改。</div>
           <section>
