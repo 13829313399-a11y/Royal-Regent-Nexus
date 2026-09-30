@@ -115,8 +115,9 @@ def test_invalid_ai_output_is_not_published(monkeypatch, response):
     monkeypatch.setattr(engine, "online_configured", lambda: True)
     monkeypatch.setattr(settings, "document_tools_qwen_base_url", "https://example.test/v1")
     with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(response)}}]}))) as client:
-        with pytest.raises(ToolError, match="不完整"):
+        with pytest.raises(ToolError) as error:
             engine.online_batch(["数量"], "zh_to_en", "", lambda: False, client)
+        assert error.value.code == 'TRANSLATION_RESPONSE'
 
 
 def test_number_changes_and_cancellation_rejected(monkeypatch, offline):

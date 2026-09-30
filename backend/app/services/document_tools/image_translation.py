@@ -13,7 +13,7 @@ import warnings
 import zlib
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject, NumberObject
 
@@ -264,8 +264,8 @@ def append_image_pdf(writer, image_path, width, height):
     page[NameObject("/Contents")] = writer._add_object(content)
 
 
-def append_preserved_pdf(writer, original_page, source_path, result_path, width, height):
-    """Keep original PDF objects. A lossless difference overlay changes only ink.
+def append_preserved_pdf(writer, original_page, source_path, result_path, width, height, *, preserve_boxes=()):
+    """Keep PDF objects beneath a lossless overlay with opaque glyph-edge padding.
 
     Existing vectors, original text (including all digits), images and page
     geometry remain in the PDF. This is translation, never secure redaction.
@@ -278,12 +278,31 @@ def append_preserved_pdf(writer, original_page, source_path, result_path, width,
     changed = np.any(a != b, axis=2)
     if not changed.any():
         return
-    alpha = EncodedStreamObject(); alpha._data = zlib.compress((changed.astype('uint8')*255).tobytes())
+    # A glyph-shaped mask only aligns with the rasterizer and zoom that created
+    # the source preview. Other viewers/font hinting and fractional page sizes
+    # expose the original vector glyph edges through its transparent pixels.
+    # Include neighboring RESULT pixels (not a white fill) in the opaque cover.
+    # Three raster pixels also cover the subpixel image/mask resampling fringe.
+    with Image.fromarray(changed.astype('uint8') * 255) as mask:
+        with mask.filter(ImageFilter.MaxFilter(7)) as padded:
+            coverage = np.array(padded)
+    # Keep unchanged numbers and rules as original vectors. Only the extra
+    # padding is restricted; already translated pixels are never clipped here.
+    for box in preserve_boxes:
+        padding = box.get('padding', 3)
+        x0, y0 = max(0, math.floor(box['x']) - padding), max(0, math.floor(box['y']) - padding)
+        x1 = min(b.shape[1], math.ceil(box['x'] + box['width']) + padding)
+        y1 = min(b.shape[0], math.ceil(box['y'] + box['height']) + padding)
+        if x1 > x0 and y1 > y0:
+            patch = coverage[y0:y1, x0:x1]
+            patch[~changed[y0:y1, x0:x1]] = 0
+    alpha = EncodedStreamObject(); alpha._data = zlib.compress(coverage.tobytes())
     alpha.update({NameObject('/Type'):NameObject('/XObject'),NameObject('/Subtype'):NameObject('/Image'),
                   NameObject('/Width'):NumberObject(b.shape[1]),NameObject('/Height'):NumberObject(b.shape[0]),
                   NameObject('/ColorSpace'):NameObject('/DeviceGray'),NameObject('/BitsPerComponent'):NumberObject(8),NameObject('/Filter'):NameObject('/FlateDecode')})
-    pixels = b.copy(); pixels[~changed] = 0
-    image = EncodedStreamObject(); image._data = zlib.compress(pixels.tobytes())
+    # Keep real RGB even outside the soft mask: PDF readers can interpolate RGB
+    # and alpha separately, so zero-filled transparent pixels create dark halos.
+    image = EncodedStreamObject(); image._data = zlib.compress(b.tobytes())
     image.update({**alpha,NameObject('/ColorSpace'):NameObject('/DeviceRGB'),NameObject('/SMask'):writer._add_object(alpha)})
     overlay = PageObject.create_blank_page(width=width,height=height)
     overlay[NameObject('/Resources')]=DictionaryObject({NameObject('/XObject'):DictionaryObject({NameObject('/Translation'):writer._add_object(image)})})
@@ -297,7 +316,7 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
     validate_translation_options(options, "image_translate")
     work.mkdir(parents=True, exist_ok=True)
     ir = DocumentIR(source_type=path.suffix.lstrip("."), engine_manifest={"image_pipeline": "shinobu-node", "translation": options.get("translation_engine", "offline")})
-    inputs, metadata, native, raster_areas = [], [], {}, {}
+    inputs, metadata, native, raster_areas, preserved_boxes = [], [], {}, {}, {}
     deadline = time.monotonic() + settings.image_translation_timeout_seconds
     def check():
         if cancelled():
@@ -329,6 +348,19 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
                 width, height = g["width_pt"], g["height_pt"]
                 scale = scales[index]
                 native[index] = native_regions(text_document.pages[index], scale)
+                preserved_boxes[index] = [r['box'] for r in native[index] if r['protected']]
+                for edge in text_document.pages[index].edges:
+                    if edge.get('orientation') not in {'h', 'v'}:
+                        continue
+                    half_stroke = max(float(edge.get('linewidth') or 0) * scale, 1) / 2
+                    preserved_boxes[index].append({
+                        'x': edge['x0'] * scale - half_stroke, 'y': edge['top'] * scale - half_stroke,
+                        'width': (edge['x1'] - edge['x0']) * scale + 2 * half_stroke,
+                        'height': (edge['bottom'] - edge['top']) * scale + 2 * half_stroke,
+                        # Keep only a one-pixel resampling guard around rules:
+                        # wider gaps expose English descenders above underlines.
+                        'padding': 1,
+                    })
                 raster_areas[index] = [{'x':max(0,im['x0'])*scale,'y':max(0,im['top'])*scale,
                     'width':(min(width,im['x1'])-max(0,im['x0']))*scale,
                     'height':(min(height,im['bottom'])-max(0,im['top']))*scale}
@@ -429,7 +461,8 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
         if path.suffix.lower() == '.pdf':
             if i == 0:
                 preserved_reader = open_pdf(normalized)
-            append_preserved_pdf(pdf, preserved_reader.pages[page.page_index], work / f"source-{page.page_index + 1:04d}.png", output, page.width_pt, page.height_pt)
+            append_preserved_pdf(pdf, preserved_reader.pages[page.page_index], work / f"source-{page.page_index + 1:04d}.png", output, page.width_pt, page.height_pt,
+                                 preserve_boxes=preserved_boxes.get(page.page_index, ()))
         else:
             append_image_pdf(pdf, output, page.width_pt, page.height_pt)
         ir.blocks.append(Block(id=f"page-{page.page_index}", kind="image", source=SourceAnchor(page_index=page.page_index, method="image_translation"), style={"image_path": str(output.resolve())}))

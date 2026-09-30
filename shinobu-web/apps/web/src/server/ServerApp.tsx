@@ -235,11 +235,11 @@ export function App() {
         }}><span>{region.source}</span><strong>{region.rendered?region.translation:preserveLabel[region.reason]??'保留待核对'}</strong></button>)}</div></details>}
       </section>
       <aside className="rs-settings"><h2><Icon name="settings" />翻译设置</h2><div className="rs-callout"><strong><Icon name="shield" />无需安装，上传即可处理</strong><p>文件和结果仅当前账号可见。</p></div>
-        <label>翻译方向<select value={options.translation_direction} onChange={event => setOptions(old => ({ ...old, translation_direction: event.target.value as Options['translation_direction'] }))}><option value="en_to_zh">英文 → 简体中文</option><option value="zh_to_en">中文 → 英文</option></select></label>
-        <label>翻译方式<select value={options.translation_engine} onChange={event => setOptions(old => ({ ...old, translation_engine: event.target.value as Options['translation_engine'] }))}><option value="offline">服务器离线翻译{capabilities && !capabilities.translation.offline_available ? '（未就绪）' : ''}</option><option value="online">在线 AI 精译{capabilities && !capabilities.translation.online_available ? '（未配置）' : ''}</option></select></label>
-        <p className="rs-help">{options.translation_engine === 'offline' ? '文件上传到网站服务器处理，内容不发送至外部 AI。' : '识别后的文字及术语将发送至网站配置的 AI 服务。'}</p>
-        {options.translation_engine === 'online' && <label>专业术语（可选）<textarea maxLength={4000} value={options.glossary} onChange={event => setOptions(old => ({ ...old, glossary: event.target.value }))} placeholder="例如：Quantity = 数量" /></label>}
-        <label>PDF 页码<input value={options.page_selection} onChange={event => setOptions(old => ({ ...old, page_selection: event.target.value }))} placeholder="all 或 1-3,5" /></label><small>all 表示全部页面；图片始终处理整张。</small>
+        <label className="rs-setting-row">翻译方向<select value={options.translation_direction} onChange={event => setOptions(old => ({ ...old, translation_direction: event.target.value as Options['translation_direction'] }))}><option value="en_to_zh">英文 → 简体中文</option><option value="zh_to_en">中文 → 英文</option></select></label>
+        <div className="rs-setting-field"><label className="rs-setting-row">翻译方式<select value={options.translation_engine} onChange={event => setOptions(old => ({ ...old, translation_engine: event.target.value as Options['translation_engine'] }))}><option value="offline">服务器离线翻译{capabilities && !capabilities.translation.offline_available ? '（未就绪）' : ''}</option><option value="online">在线 AI 精译{capabilities && !capabilities.translation.online_available ? '（未配置）' : ''}</option></select></label>
+          <p className="rs-help">{options.translation_engine === 'offline' ? '服务器本地处理，不外发至 AI。' : '文字与术语发送至配置的 AI 服务。'}</p></div>
+        {options.translation_engine === 'online' && <details className="rs-settings-details"><summary>专业术语（可选）</summary><textarea aria-label="专业术语" maxLength={4000} value={options.glossary} onChange={event => setOptions(old => ({ ...old, glossary: event.target.value }))} placeholder="例如：Quantity = 数量" /></details>}
+        <div className="rs-setting-field"><label className="rs-setting-row">PDF 页码<input value={options.page_selection} onChange={event => setOptions(old => ({ ...old, page_selection: event.target.value }))} placeholder="all 或 1-3,5" /></label><small>all = 全部页；指定页如 1-3,5。</small></div>
         {capabilities && !capabilities.image_translation?.available && <p role="status" className="rs-error">{capabilities.image_translation?.reason ?? '请联系管理员更新后台图片处理服务。'}</p>}
         <button className="primary rs-start" disabled={busy || !available || !ready.length} onClick={() => void action(async () => { for (const item of ready) await create(item); })}><Icon name="language" />{busy ? '请稍候…' : `开始翻译${ready.length ? `（${ready.length} 个文件）` : ''}`}</button>
         {current?.state === 'awaiting_input' && <form onSubmit={event => { event.preventDefault(); void action(async () => { await request(`/sources/${current.sourceId}/password`, controller.current.signal, { password }); setPassword(''); update(current.key, { state: 'inspecting', error: '' }); }); }}><label>PDF 打开密码<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="off" /></label><button disabled={busy || !password}>解锁文件</button></form>}
@@ -252,7 +252,7 @@ export function App() {
           })}>按当前设置重新翻译</button>}
           {!activeJob(job) && <button className="rs-danger" disabled={busy} onClick={() => void action(async () => { if (!window.confirm('从任务记录中移除此任务？已保存文件不会被物理删除。')) return; await request(`/jobs/${job.id}`, controller.current.signal, undefined, 'DELETE'); setItems(old => old.filter(item => item.job?.id !== job.id)); setSelected(''); await refresh(); })}><Icon name="trash" />移除任务记录</button>}
         </section>}
-        <p className="rs-help">优先保留数字、尺寸、型号和色号。只在原文字区域回填；不确定或放不下的内容保留原文，可在“逐项核对”中查看。原文件始终保留。</p>
+        <details className="rs-settings-details"><summary>原文保护说明</summary><p className="rs-help">保留数字、尺寸、型号和色号，只在原文字区域回填。不确定或放不下的内容保留原文，可在“逐项核对”中查看。原文件始终保留；图片整张处理。</p></details>
       </aside>
     </main>}
     </div>
