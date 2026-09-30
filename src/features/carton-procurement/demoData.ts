@@ -30,6 +30,7 @@ export interface WeeklyCheckRow {
   scheduleSection?: 'PENDING' | 'CANCELLED' | 'SHIPPED'
   scheduleChange?: string
   scheduleIdentity?: string
+  identityDuplicate?: boolean
   sourceSheet?: string
   sourceRow?: number
   manualOrdered?: boolean

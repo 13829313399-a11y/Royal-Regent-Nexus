@@ -2314,7 +2314,7 @@ def test_inspection_schedule_import_calculates_delivery_reminders_without_writin
         result = response.json()
         summary = result["parse_summary"]
         assert result["import_type"] == "INSPECTION_SCHEDULE"
-        assert json.loads(result["import_profile"]) == {"advance_days": 3, "matching_version": "customer-po-v1", "parser_version": "schedule-item-v1"}
+        assert json.loads(result["import_profile"]) == {"advance_days": 3, "matching_version": "customer-po-v1", "parser_version": "schedule-item-sections-v2"}
         assert summary["row_count"] == 2
         assert summary["matched_count"] == 1
         assert summary["reminder_count"] == 2

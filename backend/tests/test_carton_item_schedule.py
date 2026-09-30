@@ -1,6 +1,7 @@
 from datetime import datetime
 from io import BytesIO
 from types import SimpleNamespace
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -69,6 +70,98 @@ def test_duplicate_formal_rows_and_missing_keys_require_review():
         source_row(contract='53136', qty=0), source_row(contract='53137', qty=None)]))
     assert all(row['match_status'] == 'REVIEW_REQUIRED' for row in result['rows'])
     assert result['review_count'] == 5
+
+
+def test_same_contract_item_and_source_po_are_distinct_when_so_differs():
+    first = source_row(contract='RL232607816', item='1020264069')
+    second = list(first)
+    first[2], second[2] = 'RL-449658-21', 'RL-449658-23'
+    result = _parse_weekly('schedule.xlsx', workbook([first, second]))
+    assert all(row.get('match_status') != 'REVIEW_REQUIRED' for row in result['rows'])
+    from app.services.carton_schedule_tracking import annotate_changes
+    annotate_changes(result['rows'], {}, set())
+    assert result['rows'][0]['schedule_identity'] != result['rows'][1]['schedule_identity']
+    assert all(not row['schedule_identity_duplicate'] for row in result['rows'])
+    third = list(first)
+    repeated = _parse_weekly('schedule.xlsx', workbook([first, third]))
+    assert all(row['match_status'] == 'REVIEW_REQUIRED' for row in repeated['rows'])
+    assert all('可继续' in row['suggestion'] for row in repeated['rows'])
+
+
+def test_legacy_batch_projection_uses_so_without_spreading_old_audit_marks():
+    from app.services.carton_procurement import _project_item_schedule_rows, _schedule_event_key
+    from app.services.carton_schedule_tracking import identity, legacy_identity
+
+    base = dict(schedule_customer_code='DICKIE', contract_no='53135', item_no='0040220-1',
+                customer_po='SHARED', source_sheet='ITEM', order_type='正单', schedule_section='PENDING',
+                template='unified-item', match_status='REVIEW_REQUIRED', schedule_change='REVIEW_REQUIRED',
+                suggestion='同合同、客户PO和货号存在多行正单，请先确认是重复还是分批需求；不会自动合并')
+    rows = [dict(base, source_reference='SO-21', source_row=4, manual_ordered=True),
+            dict(base, source_reference='SO-23', source_row=5, manual_ordered=True)]
+    old_batch = SimpleNamespace(factory_id='huaxing', parse_summary_json=json.dumps({'rows': rows}))
+    summary = {'parser_version': 'schedule-item-sections-v2', 'rows': [dict(row) for row in rows]}
+    _project_item_schedule_rows('batch-1', summary)
+    assert [row['match_status'] for row in summary['rows']] == ['MISSING_ORDER', 'MISSING_ORDER']
+    assert summary['rows'][0]['schedule_identity'] == identity(rows[0])
+    assert summary['rows'][1]['schedule_identity'] == identity(rows[1])
+    assert not any(row['manual_ordered'] for row in summary['rows'])
+    db = SimpleNamespace(get=lambda model, batch_id: old_batch)
+    detail = {'batch_id': 'batch-1', 'source_sheet': 'ITEM', 'source_row': 4}
+    assert _schedule_event_key(db, 'huaxing', legacy_identity(rows[0]), detail, {}) == legacy_identity(rows[0])
+    assert _schedule_event_key(db, 'huaxing', identity(rows[0]), detail, {}) == identity(rows[0])
+    single_batch = SimpleNamespace(factory_id='huaxing', parse_summary_json=json.dumps({'rows': [rows[0]]}))
+    db = SimpleNamespace(get=lambda model, batch_id: single_batch)
+    assert _schedule_event_key(db, 'huaxing', legacy_identity(rows[0]), detail, {}) == identity(rows[0])
+    matched = dict(rows[0], order_id='old-order', order_no='OLD-1', order_status='PENDING_SUPPLIER',
+                   match_status='MATCHED', procurement_state='ORDERED', suggestion='已匹配正式纸箱订单')
+    matched_summary = {'parser_version': 'schedule-item-sections-v2', 'rows': [matched]}
+    _project_item_schedule_rows('batch-2', matched_summary)
+    assert matched_summary['rows'][0]['match_status'] == 'MISSING_ORDER'
+    assert matched_summary['rows'][0]['legacy_match_stale'] is True
+    assert 'order_id' not in matched_summary['rows'][0]
+
+
+def test_legacy_shared_mark_history_across_so_is_not_reassigned_to_either_so():
+    from app.services.carton_procurement import schedule_order_marks
+    from app.services.carton_schedule_tracking import identity, legacy_identity
+
+    base = dict(schedule_customer_code='DICKIE', contract_no='53135', item_no='0040220-1',
+                order_type='正单', schedule_section='PENDING', source_sheet='ITEM', template='unified-item', source_row=4)
+    first = dict(base, source_reference='SO-A')
+    second = dict(base, source_reference='SO-B')
+    old_key = legacy_identity(first)
+    batches = {
+        'batch-A': SimpleNamespace(factory_id='huaxing', parse_summary_json=json.dumps({'rows': [first]})),
+        'batch-B': SimpleNamespace(factory_id='huaxing', parse_summary_json=json.dumps({'rows': [second]})),
+    }
+    events = [SimpleNamespace(entity_id=old_key, detail_json=json.dumps({
+        'batch_id': batch_id, 'source_sheet': 'ITEM', 'source_row': 4, 'marked': marked}),
+        actor_name='tester', created_at=str(index))
+        for index, (batch_id, marked) in enumerate([('batch-A', True), ('batch-B', False)])]
+    db = SimpleNamespace(get=lambda model, batch_id: batches[batch_id],
+                         scalars=lambda query: SimpleNamespace(all=lambda: events))
+    marks = schedule_order_marks(db, 'huaxing')
+    assert marks[old_key]['marked'] is False
+    assert identity(first) not in marks and identity(second) not in marks
+
+
+def test_legacy_different_original_po_and_so_rows_no_longer_keep_identity_block():
+    from app.services.carton_procurement import _project_item_schedule_rows
+
+    base = dict(schedule_customer_code='DICKIE', contract_no='53135', item_no='0040220-1',
+                order_type='正单', schedule_section='PENDING', source_sheet='ITEM', template='unified-item',
+                match_status='MISSING_ORDER', schedule_change='REVIEW_REQUIRED')
+    rows = [dict(base, customer_po='PO-1', source_reference='SO-1', source_row=4),
+            dict(base, customer_po='PO-2', source_reference='SO-2', source_row=5)]
+    summary = {'parser_version': 'schedule-item-sections-v2', 'rows': rows}
+    _project_item_schedule_rows('batch-1', summary)
+    assert [row['schedule_change'] for row in rows] == ['BASELINE', 'BASELINE']
+    assert all(not row['schedule_identity_duplicate'] for row in rows)
+    later = {'parser_version': 'schedule-item-sections-v2', 'rows': [
+        dict(base, customer_po='PO-1', source_reference='SO-1', source_row=4)]}
+    _project_item_schedule_rows('batch-2', later)
+    assert later['rows'][0]['schedule_change'] == 'BASELINE'
+    assert later['rows'][0]['legacy_match_stale'] is True
 
 
 def test_item_rows_not_silently_truncated_at_old_preview_limit():
@@ -149,6 +242,70 @@ def test_unified_matching_never_falls_back_to_only_contract_or_only_item():
     assert rows[0]['match_status'] == 'MISSING_ORDER'
 
 
+def test_unified_matching_uses_so_instead_of_shared_original_po():
+    first = source_row()
+    second = list(first)
+    first[2], second[2] = 'SO-21', 'SO-23'
+    rows = _parse_weekly('schedule.xlsx', workbook([first, second]))['rows']
+    _match_rows(MatchingDb([order(customer_po='SO-21'), order(id='o2', order_no='CO2', customer_po='SO-23')]),
+                'huaxing', 'WEEKLY_SCHEDULE', rows)
+    assert [row['order_id'] for row in rows] == ['o1', 'o2']
+
+
+def test_duplicate_so_rows_can_each_create_an_order_with_separate_source_links(monkeypatch):
+    from test_molding_sample_api import make_client, login_as
+    from test_carton_procurement_api import _order_payload
+
+    with make_client(monkeypatch) as client:
+        _prepare_schedule_customer(client)
+        login_as(client, 'admin')
+        first = source_row()
+        first[2] = 'SO-REPEATED'
+        imported = client.post('/api/carton-procurement/weekly-imports', data={'customer_code': 'DICKIE'},
+            params={'factory_id': 'huaxing'}, files={'file': ('duplicate-so.xlsx', workbook([first, first]))})
+        assert imported.status_code == 201, imported.text
+        batch = imported.json()
+        rows = batch['parse_summary']['rows']
+        assert all(row['schedule_identity_duplicate'] for row in rows)
+        assert rows[0]['schedule_identity'] != rows[1]['schedule_identity']
+        payload = {**_order_payload(), 'contract_no': '53135', 'item_no': '0040220-1',
+                   'customer_po': 'SO-REPEATED', 'product_order_quantity': 360}
+        created = []
+        for source_row_no in (4, 5):
+            response = client.post('/api/carton-procurement/orders', json={**payload, 'schedule_source': {
+                'batch_id': batch['id'], 'source_sheet': '子弹枪ITEM表', 'source_row': source_row_no}})
+            assert response.status_code == 201, response.text
+            created.append(response.json()['id'])
+        state = client.get('/api/carton-procurement/schedule-order-marks', params={'factory_id': 'huaxing'}).json()
+        assert state[rows[0]['schedule_identity']]['order_ids'] == [created[0]]
+        assert state[rows[1]['schedule_identity']]['order_ids'] == [created[1]]
+        assert client.post('/api/carton-procurement/orders', json={**payload, 'schedule_source': {
+            'batch_id': batch['id'], 'source_sheet': '子弹枪ITEM表', 'source_row': 4}}).status_code == 409
+
+
+def test_duplicate_so_source_must_come_from_latest_effective_batch(monkeypatch):
+    from test_molding_sample_api import make_client, login_as
+    from test_carton_procurement_api import _order_payload
+
+    with make_client(monkeypatch) as client:
+        _prepare_schedule_customer(client)
+        login_as(client, 'admin')
+        values = source_row()
+        values[2] = 'SO-REPEATED'
+        old = client.post('/api/carton-procurement/weekly-imports', data={'customer_code': 'DICKIE'},
+            params={'factory_id': 'huaxing'}, files={'file': ('old.xlsx', workbook([values, values]))})
+        assert old.status_code == 201, old.text
+        latest = client.post('/api/carton-procurement/weekly-imports', data={'customer_code': 'DICKIE'},
+            params={'factory_id': 'huaxing'}, files={'file': ('latest.xlsx', workbook([values]))})
+        assert latest.status_code == 201, latest.text
+        payload = {**_order_payload(), 'contract_no': '53135', 'item_no': '0040220-1',
+                   'customer_po': 'SO-REPEATED', 'product_order_quantity': 360,
+                   'schedule_source': {'batch_id': old.json()['id'], 'source_sheet': '子弹枪ITEM表', 'source_row': 5}}
+        rejected = client.post('/api/carton-procurement/orders', json=payload)
+        assert rejected.status_code == 409, rejected.text
+        assert '最新有效批次' in rejected.json()['detail']
+
+
 @pytest.mark.parametrize('status,quantity,state', [
     ('CONFIRMED', 360, 'NEEDS_ORDER'), ('PENDING_SUPPLIER', 360, 'ORDERED'),
     ('COMPLETED', 360, 'COMPLETED'), ('COMPLETED', 350, 'NEEDS_ORDER'),
@@ -212,10 +369,80 @@ def test_import_api_persists_review_and_is_idempotent_without_writing_orders(mon
         assert repeat.json()['id'] == body['id']
         assert repeat.json()['duplicate'] is True
         exceptions = client.get('/api/carton-procurement/exceptions', params={'factory_id': 'huaxing'}).json()
-        assert {row['category'] for row in exceptions['items']} == {'MISSING_ORDER', 'SCHEDULE_REVIEW_REQUIRED'}
-        assert exceptions['total'] == 2
+        assert {row['category'] for row in exceptions['items']} == {'MISSING_ORDER'}
+        assert exceptions['total'] == 1
+        assert client.get('/api/carton-procurement/dashboard', params={'factory_id': 'huaxing'}).json()['open_exception_count'] == 1
+        assert any('来源：子弹枪ITEM表 · 第 4 行 · SO：未填' in row['description'] for row in exceptions['items'])
         assert client.get('/api/carton-procurement/orders', params={'factory_id': 'huaxing'}).json()['total'] == 0
         assert client.get('/api/carton-procurement/receipts', params={'factory_id': 'huaxing'}).json()['total'] == 0
+
+
+def test_legacy_business_review_exception_is_hidden_without_removing_delivery_review(monkeypatch):
+    from test_molding_sample_api import make_client, login_as
+
+    with make_client(monkeypatch) as client:
+        _prepare_schedule_customer(client)
+        login_as(client, 'warehouse_keeper')
+        imported = client.post(
+            '/api/carton-procurement/weekly-imports',
+            params={'factory_id': 'huaxing'},
+            data={'customer_code': 'DICKIE'},
+            files={'file': ('unified.xlsx', workbook([source_row('样板单')]))},
+        )
+        assert imported.status_code == 201, imported.text
+
+        from app import db as db_module
+        from app.models.carton_procurement import CartonException
+
+        def legacy_exception(identifier, source_type):
+            return CartonException(
+                id=identifier, factory_id='huaxing', exception_no=identifier,
+                source_type=source_type, source_id=imported.json()['id'],
+                category='SCHEDULE_REVIEW_REQUIRED', severity='MEDIUM',
+                customer_code='DICKIE', customer_name='Dickie',
+                contract_no='53135', item_no='0040220-1',
+                title='业务订单类型或字段待人工确认', description='旧版核对提示',
+                owner_department='纸箱下单', status='OPEN', revision=1,
+                created_by='test', updated_by='test',
+                created_at='2026-09-30T10:00:00', updated_at='2026-09-30T10:00:00',
+            )
+
+        with db_module.SessionLocal() as db:
+            db.add_all([
+                legacy_exception('EX-OLD-BUSINESS-REVIEW', 'WEEKLY_SCHEDULE'),
+                legacy_exception('EX-OLD-DELIVERY-REVIEW', 'DELIVERY_NOTE'),
+            ])
+            db.commit()
+
+        exceptions = client.get('/api/carton-procurement/exceptions', params={'factory_id': 'huaxing'}).json()
+        assert exceptions['total'] == 1
+        assert [row['exception_no'] for row in exceptions['items']] == ['EX-OLD-DELIVERY-REVIEW']
+        assert client.get('/api/carton-procurement/dashboard', params={'factory_id': 'huaxing'}).json()['open_exception_count'] == 1
+
+
+def test_inspection_review_warning_stays_in_import_without_exception():
+    from app.services.carton_procurement import _create_import_exceptions
+
+    added = []
+    db = SimpleNamespace(add=added.append)
+    batch = SimpleNamespace(id='inspection-batch', factory_id='huaxing', import_type='INSPECTION_SCHEDULE')
+    user = SimpleNamespace(id='keeper', display_name='仓管')
+    summary = {'rows': [{'match_status': 'REVIEW_REQUIRED', 'reminder_status': 'REVIEW_REQUIRED'}]}
+    assert _create_import_exceptions(db, batch, summary, user) == 0
+    assert added == []
+
+
+def test_delivery_review_keeps_a_receipt_specific_exception():
+    from app.services.carton_procurement import _create_import_exceptions
+
+    added = []
+    db = SimpleNamespace(add=added.append)
+    batch = SimpleNamespace(id='delivery-batch', factory_id='huaxing', import_type='DELIVERY_NOTE')
+    user = SimpleNamespace(id='keeper', display_name='仓管')
+    summary = {'rows': [{'match_status': 'REVIEW_REQUIRED', 'suggestion': '请核对送货单纸品'}]}
+    assert _create_import_exceptions(db, batch, summary, user) == 1
+    assert added[0].category == 'RECEIPT_REVIEW_REQUIRED'
+    assert added[0].title == '送货明细待人工确认'
 
 
 def test_item_section_titles_override_row_order_type_and_shipped_is_not_pending():
@@ -322,7 +549,7 @@ def test_bulk_marks_are_atomic_idempotent_and_keep_ordered_cancellation_reminder
         assert client.get('/api/carton-procurement/orders', params={'factory_id': 'huaxing'}).json()['total'] == 0
 
 
-def test_bulk_marks_reject_duplicate_rows_identity_collisions_wrong_factory_and_permission(monkeypatch):
+def test_bulk_marks_keep_duplicate_source_rows_independent_and_check_permissions(monkeypatch):
     from test_molding_sample_api import make_client, login_as
     with make_client(monkeypatch) as client:
         _prepare_schedule_customer(client)
@@ -334,9 +561,14 @@ def test_bulk_marks_reject_duplicate_rows_identity_collisions_wrong_factory_and_
         payload = {'factory_id': 'huaxing', 'batch_id': baseline.json()['id'], 'marked': True, 'rows': [source]}
         assert client.post('/api/carton-procurement/schedule-order-marks/bulk', json={**payload, 'rows': [source, source]}).status_code == 422
         assert client.post('/api/carton-procurement/schedule-order-marks/bulk', json={**payload, 'rows': [source] * 101}).status_code == 422
-        assert client.post('/api/carton-procurement/schedule-order-marks/bulk', json={**payload, 'rows': [source, {'source_sheet': '子弹枪ITEM表', 'source_row': 4}]}).status_code == 409
+        repeated = client.post('/api/carton-procurement/schedule-order-marks/bulk', json={
+            **payload, 'rows': [source, {'source_sheet': '子弹枪ITEM表', 'source_row': 4}]})
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()['changed_count'] == 2
+        assert len({item['identity'] for item in repeated.json()['items']}) == 2
         assert client.post('/api/carton-procurement/schedule-order-marks/bulk', json={**payload, 'factory_id': 'huadeng'}).status_code == 404
-        assert client.get('/api/carton-procurement/schedule-order-marks', params={'factory_id': 'huaxing'}).json() == {}
+        state = client.get('/api/carton-procurement/schedule-order-marks', params={'factory_id': 'huaxing'}).json()
+        assert all(state[item['identity']]['marked'] for item in repeated.json()['items'])
         login_as(client, 'engineer')
         denied = client.post('/api/carton-procurement/schedule-order-marks/bulk', json=payload)
         assert denied.status_code == 403, denied.text
@@ -426,8 +658,10 @@ def test_source_order_creation_rejects_marked_ambiguous_stale_and_other_factory_
             files={'file': ('duplicate.xlsx', workbook([source_row(contract='53137'), source_row(contract='53137')]))})
         assert duplicate.status_code == 201, duplicate.text
         ambiguous = {**payload, 'contract_no': '53137', 'schedule_source': {**source, 'batch_id': duplicate.json()['id']}}
+        created = client.post('/api/carton-procurement/orders', json=ambiguous)
+        assert created.status_code == 201, created.text
         assert client.post('/api/carton-procurement/orders', json=ambiguous).status_code == 409
-        assert client.get('/api/carton-procurement/orders', params={'factory_id': 'huaxing'}).json()['total'] == 0
+        assert client.get('/api/carton-procurement/orders', params={'factory_id': 'huaxing'}).json()['total'] == 1
 
 
 def test_weekly_import_requires_active_factory_customer_and_isolated_customer_identity(monkeypatch):

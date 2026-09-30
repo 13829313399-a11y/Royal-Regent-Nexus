@@ -382,10 +382,11 @@ def target_origin(db, factory, identifier):
 
 
 def schedule_matches(db, factory, row, records=None):
+    po = row.get("source_reference") if row.get("template") == "unified-item" and row.get("source_reference") else row.get("customer_po")
     return [(plan, target) for plan in (live_plans(db, factory) if records is None else records) for target in plan["targets"]
             if row.get("schedule_customer_code") == plan["customer_code"] and norm(row.get("contract_no")) == norm(target["contract_no"])
             and norm(row.get("item_no")) == norm(plan["item_no"])
-            and (not row.get("customer_po") or norm(row["customer_po"]) == norm(target["customer_po"]))]
+            and (not po or norm(po) == norm(target["customer_po"]))]
 
 
 def annotate_schedule(db, factory, row, records=None):
@@ -399,8 +400,9 @@ def annotate_schedule(db, factory, row, records=None):
     parent = db.get(CartonOrder, plan["order_id"])
     exact_orders = list(db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory,
         CartonOrder.customer_code == plan["customer_code"], CartonOrder.status != "CANCELLED")))
+    po = row.get("source_reference") if row.get("template") == "unified-item" and row.get("source_reference") else row.get("customer_po")
     if any(norm(order.contract_no) == norm(target["contract_no"]) and norm(order.item_no) == norm(plan["item_no"])
-           and (not row.get("customer_po") or norm(order.customer_po) == norm(row["customer_po"])) for order in exact_orders):
+           and (not po or norm(order.customer_po) == norm(po)) for order in exact_orders):
         row.update(match_status="AMBIGUOUS", procurement_state="REVIEW", suggestion="该合同货号同时匹配原采购和拆单，请按客户 PO 核对")
         return True
     expected = Decimal(target["product_quantity"]) if target["product_quantity"] is not None else None

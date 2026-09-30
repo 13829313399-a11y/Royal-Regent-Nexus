@@ -453,6 +453,8 @@ export interface CartonImportPreviewRow {
   schedule_section?: 'PENDING' | 'CANCELLED' | 'SHIPPED'
   schedule_change?: 'BASELINE' | 'UNCHANGED' | 'NEW' | 'CANCELLED' | 'CANCELLED_AFTER_ORDER' | 'SHIPPED' | 'REOPENED' | 'REVIEW_REQUIRED' | 'NOT_TRACKED'
   schedule_identity?: string
+  schedule_identity_duplicate?: boolean
+  legacy_match_stale?: boolean
   manual_ordered?: boolean
   source_inspection_window?: string
   source_customer_due_date?: string
