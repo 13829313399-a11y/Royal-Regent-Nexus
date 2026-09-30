@@ -66,7 +66,8 @@ body { min-width: 320px; overflow: hidden; background: var(--background); color:
 .rs-workspace { display: grid; grid-template-columns: 224px minmax(0,1fr) 284px; flex: 1; min-height: 0; min-width: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--card); box-shadow: 0 4px 16px -12px #0f172a20; }
 .rs-queue, .rs-settings { display: flex; flex-direction: column; gap: 14px; padding: 18px 16px; min-width: 0; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--input) transparent; }
 .rs-queue { border-right: 1px solid var(--border); background: linear-gradient(180deg, var(--card), var(--secondary)); }
-.rs-settings { border-left: 1px solid var(--border); gap: 16px; }
+.rs-settings { border-left: 1px solid var(--border); gap: 10px; padding-block: 14px; }
+.rs-settings > * { flex-shrink: 0; }
 .rs-queue > button, .rs-settings > button { flex-shrink: 0; }
 .rs-section-title { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .rs-section-title > span { color: var(--muted-foreground); font-size: 11px; white-space: nowrap; }
@@ -113,16 +114,25 @@ body { min-width: 320px; overflow: hidden; background: var(--background); color:
 .rs-review-list { max-height: 145px; overflow: auto; display: grid; gap: 5px; margin-top: 10px; scrollbar-width: thin; }
 .rs-review-list button { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; text-align: left; overflow-wrap: anywhere; font-size: 11px; font-weight: 400; border-color: var(--border); min-height: 32px; }
 .rs-review-list strong { font-weight: 500; }
-.rs-callout { padding: 12px; border: 1px solid color-mix(in oklch, var(--primary) 12%, var(--border)); border-radius: 8px; background: color-mix(in oklch, var(--accent) 55%, var(--card)); line-height: 1.7; }
+.rs-callout { padding: 8px 10px; border: 1px solid color-mix(in oklch, var(--primary) 12%, var(--border)); border-radius: 8px; background: color-mix(in oklch, var(--accent) 55%, var(--card)); line-height: 1.5; }
 .rs-callout strong { display: flex; align-items: center; gap: 6px; color: var(--accent-foreground); font-size: 12px; font-weight: 600; }
-.rs-callout p { color: var(--muted-foreground); font-size: 11px; margin-top: 5px; padding-left: 23px; }
-.rs-settings label { display: grid; gap: 7px; font-size: 12px; font-weight: 600; }
-.rs-settings select, .rs-settings input, .rs-settings textarea { width: 100%; min-width: 0; font-weight: 400; font-size: 12px; }
-.rs-settings textarea { min-height: 76px; resize: vertical; }
+.rs-callout p { color: var(--muted-foreground); font-size: 11px; margin-top: 3px; padding-left: 23px; }
+.rs-settings label { display: grid; gap: 5px; font-size: 12px; font-weight: 600; }
+.rs-settings .rs-setting-row { grid-template-columns: 60px minmax(0, 1fr); align-items: center; gap: 8px; }
+.rs-setting-field { display: grid; gap: 4px; }
+.rs-settings select, .rs-settings input, .rs-settings textarea { width: 100%; min-width: 0; padding: 7px 8px; font-weight: 400; font-size: 12px; }
+.rs-settings textarea { min-height: 56px; resize: vertical; }
+.rs-settings .rs-help, .rs-settings small { font-size: 11px; line-height: 1.5; }
+.rs-settings .rs-help { margin: 0 !important; }
+.rs-settings-details { font-size: 11px; color: var(--muted-foreground); }
+.rs-settings-details summary { cursor: pointer; width: fit-content; padding-block: 2px; }
+.rs-settings-details[open] > :not(summary) { margin-top: 6px !important; }
 .rs-help { margin: -5px 0 0 !important; }
-.rs-start { min-height: 40px !important; }
+.rs-start { min-height: 36px !important; }
 .rs-settings form { display: grid; gap: 10px; }
-.rs-task { border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; padding-top: 16px; }
+.rs-task { border-top: 1px solid var(--border); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding-top: 10px; }
+.rs-task > :where(h3, p, .rs-download) { grid-column: 1 / -1; }
+.rs-task > button { min-height: 30px; padding: 5px 6px; }
 .rs-task p, .rs-task h3 { margin: 0; font-size: 12px; }
 .rs-task > p { color: var(--muted-foreground); }
 .rs-task button { font-size: 11px; }
