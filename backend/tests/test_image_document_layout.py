@@ -97,6 +97,7 @@ def test_erased_pdf_text_does_not_reappear_at_other_zoom_levels(tmp_path, scale,
 def test_pdf_export_padding_keeps_neighboring_digits_and_rules(tmp_path, monkeypatch, scale):
     import pypdfium2 as pdfium
     from app.services.document_tools import image_translation as engine
+    from app.services.document_tools import translation_engine
 
     source = tmp_path / 'native.pdf'
     native_pdf(source)
@@ -118,6 +119,7 @@ def test_pdf_export_padding_keeps_neighboring_digits_and_rules(tmp_path, monkeyp
         return []
 
     monkeypatch.setattr(engine, 'require_runtime', lambda: None)
+    monkeypatch.setattr(translation_engine.local, 'document_translation_status', lambda _: {'available': True})
     monkeypatch.setattr(engine, 'run_node', typeset)
     work = tmp_path / 'work'
     engine.convert_image_translation(source, {}, work, lambda *_: None, lambda: False)
