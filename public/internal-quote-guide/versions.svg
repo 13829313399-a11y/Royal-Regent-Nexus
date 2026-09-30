@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="510" viewBox="0 0 1080 510" role="img" aria-labelledby="title desc">
+<title id="title">包装方案与版本的区别</title><desc id="desc">已输出的方案 A 第一版继续保留；相同方案修改复制第二版；不同包装复制为方案 B。客户采用必须指向准确的已输出版本。</desc>
+<rect width="1080" height="510" rx="18" fill="#f8fafc"/>
+<g font-family="Microsoft YaHei, PingFang SC, sans-serif">
+<text x="36" y="48" fill="#134e4a" font-size="23" font-weight="700">方案不同，各自独立；同方案修改，复制新版本</text><text x="36" y="81" fill="#64748b" font-size="15">版本关系示意 · A / B 为演示名称</text>
+<rect x="36" y="120" width="275" height="250" rx="14" fill="white" stroke="#99d5cc" stroke-width="2"/>
+<text x="60" y="155" fill="#0f766e" font-size="20" font-weight="700">方案 A · 第一版</text><text x="60" y="192" fill="#475569" font-size="17">已输出</text><text x="60" y="228" fill="#475569" font-size="16">原文件与内容保留</text><text x="60" y="258" fill="#475569" font-size="16">普通保存不新增版本</text><text x="60" y="333" fill="#0f766e" font-size="16">作为复制来源</text>
+<path d="M 321 185 H 435 M 321 310 H 435" stroke="#0f766e" stroke-width="2"/><path d="m 426 178 10 7 -10 7 m 0 111 10 7 -10 7" fill="none" stroke="#0f766e" stroke-width="2"/>
+<g fill="#475569" font-size="14"><text x="327" y="165">同方案调整</text><text x="327" y="291">不同包装</text></g>
+<rect x="450" y="120" width="594" height="116" rx="14" fill="#e6f6f2"/><text x="473" y="155" fill="#0f766e" font-size="20" font-weight="700">复制新版本 → 方案 A · 第二版</text><text x="473" y="187" fill="#475569" font-size="16">新草稿修改、保存、核对，再输出保留这一版</text><text x="473" y="214" fill="#475569" font-size="16">客户采用时选准确的已输出版本</text>
+<rect x="450" y="256" width="594" height="114" rx="14" fill="#eff6ff"/><text x="473" y="291" fill="#0369a1" font-size="20" font-weight="700">复制为新方案 → 方案 B · 第一版</text><text x="473" y="323" fill="#475569" font-size="16">填写方案名与修改说明，独立核对、保存和输出</text><text x="473" y="350" fill="#475569" font-size="16">修改 B 不会自动修改 A</text>
+<rect x="36" y="401" width="1008" height="76" rx="12" fill="#fffbeb"/><text x="58" y="432" fill="#92400e" font-size="17" font-weight="700">客户采用 ≠ 所有版本都采用</text><text x="58" y="460" fill="#92400e" font-size="16">标记实际报客与采用版本；不再使用的版本可按说明归档，原始记录仍保留。</text>
+</g></svg>
