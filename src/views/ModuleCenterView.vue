@@ -29,6 +29,7 @@ import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { SPRAY_BASE, isSprayFactory, sprayEnabled } from '@/features/spray-production/contracts'
+import { isCuttingFactory } from '@/features/cutting-operations/navigation'
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -65,6 +66,7 @@ const visibleModules = computed(() => {
       // 新 UV 工作区仅属于华康 A，不采用集团厂区兜底。
       if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
       if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
+      if (module.id === 'cutting' && !isCuttingFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
       if (currentDepartmentId.value === 'pmc-warehouse' && module.id === 'carton-procurement'
         && !authStore.can('carton_procurement:read', factory.id)) return false
@@ -77,6 +79,10 @@ const visibleModules = computed(() => {
     })
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
+
+    if (module.id === 'cutting') {
+      return { ...scopedModule, stats: module.stats }
+    }
 
     if (currentDepartmentId.value === 'pmc-warehouse') {
       if (module.id === 'carton-supplier') {
