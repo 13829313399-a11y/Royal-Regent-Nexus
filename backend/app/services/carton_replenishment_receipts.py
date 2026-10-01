@@ -57,10 +57,12 @@ def options_by_line(db, factory, line_ids, *, exclude_receipt=None):
     for movement in movements:
         grouped[(movement.source_id, movement.order_line_id)].append(movement)
     result = defaultdict(list)
+    issues = {issue.id: issue for issue in db.scalars(select(CartonPurchaseOrderIssue).where(
+        CartonPurchaseOrderIssue.id.in_({key[0] for key in grouped}), CartonPurchaseOrderIssue.factory_id == factory))}
     for (issue_id, line_id), rows in grouped.items():
         if line_id in blocked:
             continue
-        issue = db.get(CartonPurchaseOrderIssue, issue_id)
+        issue = issues.get(issue_id)
         if not issue or issue.factory_id != factory:
             raise HTTPException(409, "补单出库缺少采购单依据，请核实")
         evidence = json.loads(issue.snapshot_json)["replenishment"]

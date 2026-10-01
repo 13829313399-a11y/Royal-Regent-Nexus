@@ -7,14 +7,14 @@ import hashlib
 import json
 import re
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from difflib import SequenceMatcher
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -104,7 +104,7 @@ CARTON_DEFAULT_SUPPLIER_NAME = "河源东康纸品有限公司"
 QUANTITY_QUANTUM = Decimal("0.0001")
 MONEY_QUANTUM = Decimal("0.0001")
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
-ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".heic", ".heif"}
+ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xlsm", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".heic", ".heif"}
 CURRENCY_ALIASES = {
     "RMB": "CNY",
     "人民币": "CNY",
@@ -1053,19 +1053,19 @@ def _order_has_supplier_evidence(db: Session, order: CartonOrder) -> bool:
         or db.scalar(select(SupplierAttachment.id).where(SupplierAttachment.order_id == order.id).limit(1)))
 
 
-def order_deletion_block_reason(db: Session, order: CartonOrder) -> str:
+def order_deletion_block_reason(db: Session, order: CartonOrder, *, projection=None) -> str:
     if order.deleted_at:
         return "订单已删除"
     if order.status == "CANCELLED":
         return ""
-    if any(purchase_batch_out(issue) for issue in _purchase_order_issues(db, order.id)):
+    if any(purchase_batch_out(issue) for issue in (projection["issues"] if projection is not None else _purchase_order_issues(db, order.id))):
         return "已发行合并采购单，不能直接删除，请按减单或退单流程处理以保留整单历史"
     from app.services.carton_order_split import plans
-    if plans(db, order.factory_id, order.id):
+    if (projection["plans"] if projection is not None else plans(db, order.factory_id, order.id)):
         return "已有拆单历史及归属记录，不能删除"
-    if order.status in {"PARTIALLY_RECEIVED", "COMPLETED"} or _order_has_business_activity(db, order):
+    if order.status in {"PARTIALLY_RECEIVED", "COMPLETED"} or (projection["business_activity"] if projection is not None else _order_has_business_activity(db, order)):
         return "已有收料或库存记录（含待确认、作废或已冲销），不能删除"
-    if _order_has_supplier_evidence(db, order):
+    if (projection["supplier_evidence"] if projection is not None else _order_has_supplier_evidence(db, order)):
         return "已有供应商接单、发货或附件记录，不能删除，请核实后按取消或退单流程处理"
     return ""
 
@@ -2047,8 +2047,9 @@ def _posted_received_by_line(db: Session, line_ids: list[str]) -> dict[str, Deci
 def _latest_completed_append_baseline(
     db: Session,
     order_id: str,
+    *, detail_rows=None,
 ) -> tuple[Decimal, dict[str, Decimal]] | None:
-    detail_rows = db.scalars(
+    detail_rows = detail_rows if detail_rows is not None else db.scalars(
         select(CartonAuditEvent.detail_json)
         .where(
             CartonAuditEvent.entity_type == "carton_order",
@@ -2082,6 +2083,7 @@ def _protected_product_quantity(
     lines: list[CartonOrderLine],
     posted_received: dict[str, Decimal],
     pending_received: dict[str, Decimal],
+    *, append_details=None,
 ) -> Decimal:
     if order.quantity_basis == "EXPLICIT":
         return None
@@ -2096,7 +2098,7 @@ def _protected_product_quantity(
     if not any(amount > 0 for amount in protected_cartons.values()):
         return Decimal(0)
 
-    completed_append_baseline = _latest_completed_append_baseline(db, order.id)
+    completed_append_baseline = _latest_completed_append_baseline(db, order.id, detail_rows=append_details)
     protected_candidates: list[Decimal] = []
     for line in lines:
         received_cartons = protected_cartons[line.id]
@@ -2127,42 +2129,43 @@ def _protected_product_quantity(
     return min(current_quantity, max(protected_candidates))
 
 
-def order_out(db: Session, order: CartonOrder, *, usage=None) -> CartonOrderOut:
+def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -> CartonOrderOut:
     from app.services.carton_order_split import plans
     from app.services.carton_supplier_portal import acceptance_summary
-    lines = _order_lines(db, order.id)
+    lines = projection["lines"] if projection is not None else _order_lines(db, order.id)
     line_ids = [line.id for line in lines]
     from app.services.carton_replenishment_receipts import options_by_line, legacy_review_lines
-    replenishment_options = options_by_line(db, order.factory_id, line_ids)
-    replenishment_review = legacy_review_lines(db, order.factory_id, line_ids)
-    posted_received = protected_by_line(db, line_ids)
-    received = fulfilled_by_line(db, line_ids)
-    replenished = replenished_by_line(db, line_ids)
-    pending_received = _pending_received_by_line(db, line_ids)
+    replenishment_options = projection["options"] if projection is not None else options_by_line(db, order.factory_id, line_ids)
+    replenishment_review = projection["review"] if projection is not None else legacy_review_lines(db, order.factory_id, line_ids)
+    posted_received = projection["protected"] if projection is not None else protected_by_line(db, line_ids)
+    received = projection["received"] if projection is not None else fulfilled_by_line(db, line_ids)
+    replenished = projection["replenished"] if projection is not None else replenished_by_line(db, line_ids)
+    pending_received = projection["pending"] if projection is not None else _pending_received_by_line(db, line_ids)
     protected_product_quantity = _protected_product_quantity(
         db,
         order,
         lines,
         posted_received,
         {key: max(Decimal(0), value - (posted_received.get(key, Decimal(0)) - received.get(key, Decimal(0)))) for key, value in pending_received.items()},
+        append_details=projection["append_details"] if projection is not None else None,
     )
     from app.services.carton_usage import usage_by_key, aggregate_status, LABELS
     if usage is None:
         usage = usage_by_key(db, order.factory_id)
     usage_status = aggregate_status((usage.get(line.id, {}).get("status", "NOT_RECEIVED") for line in lines),
         sum((usage.get(line.id, {}).get("usage", Decimal(0)) for line in lines), Decimal(0)))
-    deletion_reason = order_deletion_block_reason(db, order)
-    initial_issue = db.scalar(select(CartonPurchaseOrderIssue).where(
+    deletion_reason = order_deletion_block_reason(db, order, projection=projection)
+    initial_issue = (next((issue for issue in projection["issues"] if issue.document_type == "INITIAL"), None) if projection is not None else db.scalar(select(CartonPurchaseOrderIssue).where(
         CartonPurchaseOrderIssue.order_id == order.id,
         CartonPurchaseOrderIssue.document_type == "INITIAL",
-    ).limit(1)) if order.status not in {"DRAFT", "CONFIRMED"} else None
+    ).limit(1))) if order.status not in {"DRAFT", "CONFIRMED"} else None
     return CartonOrderOut(
         purchase_order_batch=purchase_batch_out(initial_issue) if initial_issue else None,
-        supplier_acceptance=acceptance_summary(db, order, lines),
-        split_records=plans(db, order.factory_id, order.id),
+        supplier_acceptance=acceptance_summary(db, order, lines, projection=projection),
+        split_records=projection["plans"] if projection is not None else plans(db, order.factory_id, order.id),
         can_delete=not deletion_reason,
         deletion_block_reason=deletion_reason,
-        can_delete_history=can_delete_history_order(db, order, block_reason=deletion_reason),
+        can_delete_history=(projection["history_imported"] and not deletion_reason) if projection is not None else can_delete_history_order(db, order, block_reason=deletion_reason),
         usage_status=usage_status, usage_status_label=LABELS[usage_status],
         id=order.id,
         factory_id=order.factory_id,
@@ -2233,10 +2236,31 @@ def list_orders(
     due_to: str = "",
     limit: int = 50,
     offset: int = 0,
+    customer_name: str = "", order_from: str = "", order_to: str = "",
+    due_filter: str = "ALL", sort: str = "ORDER_DESC",
+    statistics: dict | None = None,
 ) -> tuple[int, list[CartonOrder]]:
     query = select(CartonOrder).where(CartonOrder.factory_id == factory_id, CartonOrder.deleted_at.is_(None))
     if customer_code:
         query = query.where(CartonOrder.customer_code == customer_code)
+    if customer_name:
+        query = query.where(CartonOrder.customer_name == customer_name)
+    if order_from:
+        query = query.where(CartonOrder.order_date >= order_from)
+    if order_to:
+        query = query.where(CartonOrder.order_date <= order_to)
+    today = business_now().date().isoformat()
+    soon = (business_now().date() + timedelta(days=3)).isoformat()
+    open_order = CartonOrder.status.notin_(["COMPLETED", "CANCELLED"])
+    valid_due = and_(CartonOrder.due_date.is_not(None), CartonOrder.due_date != "")
+    due_conditions = {
+        "OVERDUE": and_(open_order, valid_due, CartonOrder.due_date < today),
+        "TODAY": and_(open_order, CartonOrder.due_date == today),
+        "DUE_SOON": and_(open_order, CartonOrder.due_date > today, CartonOrder.due_date <= soon),
+        "UPCOMING": and_(open_order, CartonOrder.due_date > soon),
+    }
+    if due_filter in due_conditions:
+        query = query.where(due_conditions[due_filter])
     if status_filter:
         query = query.where(CartonOrder.status == status_filter)
     if due_from:
@@ -2244,20 +2268,49 @@ def list_orders(
     if due_to:
         query = query.where(CartonOrder.due_date <= due_to)
     if search:
-        pattern = f"%{search}%"
-        query = query.where(
-            or_(
-                CartonOrder.order_no.ilike(pattern),
-                CartonOrder.customer_name.ilike(pattern),
-                CartonOrder.contract_no.ilike(pattern),
-                CartonOrder.item_no.ilike(pattern),
-                CartonOrder.product_name.ilike(pattern),
-            )
-        )
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        # Match the ledger's joined display text, including translated status,
+        # cross-field phrases and literal wildcard characters.
+        pattern = "%" + search.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+        status_label = case({"DRAFT": "草稿", "CONFIRMED": "待下单", "PENDING_SUPPLIER": "已确认锁定",
+            "PARTIALLY_RECEIVED": "部分收料", "COMPLETED": "已完成", "CANCELLED": "已取消"},
+            value=CartonOrder.status, else_=CartonOrder.status)
+        line_text = (CartonOrderLine.packaging_type + " " + CartonOrderLine.paper_quality + " "
+            + CartonOrderLine.specification + case((CartonOrderLine.dimension_unit != "", " " + CartonOrderLine.dimension_unit), else_=""))
+        searchable_lines = select(CartonOrderLine.order_id, CartonOrderLine.line_no, line_text.label("text")).where(
+            CartonOrderLine.factory_id == factory_id).order_by(CartonOrderLine.order_id, CartonOrderLine.line_no).subquery()
+        if db.get_bind().dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import aggregate_order_by
+            material_text = func.string_agg(searchable_lines.c.text, aggregate_order_by(" ", searchable_lines.c.line_no))
+        else:
+            material_text = func.group_concat(searchable_lines.c.text, " ")
+        materials = select(searchable_lines.c.order_id, material_text.label("text")).group_by(searchable_lines.c.order_id).subquery()
+        query = query.outerjoin(materials, materials.c.order_id == CartonOrder.id)
+        display_text = (CartonOrder.order_no + " " + CartonOrder.customer_name + " " + CartonOrder.contract_no + " "
+            + func.coalesce(CartonOrder.customer_po, "") + " " + CartonOrder.product_name + " " + CartonOrder.item_no
+            + " " + status_label + " " + func.coalesce(materials.c.text, ""))
+        query = query.where(display_text.ilike(pattern, escape="!"))
+    if statistics is not None:
+        selected_ids = query.with_only_columns(CartonOrder.id).subquery()
+        totals = db.execute(select(func.count(),
+            *(func.sum(case((due_conditions[key], 1), else_=0)) for key in ("OVERDUE", "TODAY", "DUE_SOON")),
+            func.sum(case((open_order, 1), else_=0)),
+        ).select_from(CartonOrder).where(CartonOrder.id.in_(select(selected_ids.c.id)))).one()
+        total = totals[0]
+        statistics.update(zip(("overdue", "today", "dueSoon", "pending"), (int(value or 0) for value in totals[1:])))
+    else:
+        total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    if sort == "DUE_ASC":
+        priority = case((~open_order, 5), (~valid_due, 4),
+            (CartonOrder.due_date < today, 0), (CartonOrder.due_date == today, 1),
+            (CartonOrder.due_date <= soon, 2), else_=3)
+        ordering = (priority, CartonOrder.due_date, CartonOrder.order_no)
+    elif sort == "DUE_DESC":
+        ordering = (CartonOrder.due_date.desc(), CartonOrder.order_no)
+    else:
+        ordering = (CartonOrder.order_date.desc(), CartonOrder.order_no.desc())
     rows = list(
         db.scalars(
-            query.order_by(CartonOrder.order_date.desc(), CartonOrder.created_at.desc())
+            query.order_by(*ordering)
             .limit(limit)
             .offset(offset)
         ).all()
@@ -3821,6 +3874,7 @@ def create_import_batch(
     content: bytes,
     user: AuthContext,
     import_profile: dict[str, object] | None = None,
+    *, parsed_source: dict | None = None,
 ) -> CartonImportBatchOut:
     factory_id = require_carton_factory(factory_id)
     filename = Path(upload.filename or "未命名文件").name
@@ -3831,6 +3885,9 @@ def create_import_batch(
         raise HTTPException(status_code=422, detail="导入文件不能为空")
     if len(content) > MAX_IMPORT_BYTES:
         raise HTTPException(status_code=413, detail="导入文件不能超过 20 MB")
+    if parsed_source is None:
+        from app.services.carton_procurement_imports import parse_carton_file
+        parsed_source = parse_carton_file(import_type, filename, content)
     if import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
         _lock_receipt_factory(db, factory_id)
     sha256 = hashlib.sha256(content).hexdigest()
@@ -3884,6 +3941,7 @@ def create_import_batch(
         filename,
         content,
         options=parse_options,
+        parsed_source=parsed_source,
     )
     if import_type == "WEEKLY_SCHEDULE" and any(
         isinstance(row, dict) and row.get("template") == "unified-item"
