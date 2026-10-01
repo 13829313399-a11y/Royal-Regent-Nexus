@@ -84,6 +84,7 @@ import {
   type CartonInventoryMovementResponse,
   type CartonOrderHistorySuggestionResponse,
   type CartonOrderResponse,
+  type CartonScheduleOrder,
   type CartonPurchaseOrderContextResponse,
   type CartonPurchaseOrderIssueResponse,
   type CartonReceiptResponse,
@@ -293,6 +294,12 @@ const orderStatusFilter = ref('ALL')
 const orderDueFilter = ref<'ALL' | 'OVERDUE' | 'TODAY' | 'DUE_SOON' | 'UPCOMING'>('ALL')
 const orderDateRange = shallowRef<DateRange>({ start: undefined, end: undefined })
 const orderSort = ref<'DUE_ASC' | 'DUE_DESC' | 'ORDER_DESC'>('DUE_ASC')
+const orderPage = ref(1)
+const orderPageSize = 50
+const orderTotal = ref(0)
+const orderStatistics = ref({ overdue: 0, today: 0, dueSoon: 0, pending: 0 })
+const orderPageNumbers = ref<string[]>([])
+const orderPageCount = computed(() => Math.max(1, Math.ceil(orderTotal.value / orderPageSize)))
 const historyOrderFileInput = ref<HTMLInputElement | null>(null)
 const importingHistoryOrders = ref(false)
 const showOrderModal = ref(false)
@@ -570,6 +577,9 @@ const closingRecords = ref<CartonClosingResponse[]>([])
 const exceptionRecords = ref<CartonExceptionResponse[]>([])
 const customerRecords = ref<CartonCustomerResponse[]>([])
 const orderRecords = ref<CartonOrderResponse[]>([])
+const scheduleOrderRecords = shallowRef<CartonScheduleOrder[]>([])
+let scheduleDetailGeneration = 0
+const scheduleMatchingOrders = computed(() => activeTab.value === 'weekly-check' ? scheduleOrderRecords.value : orderRecords.value)
 const inventoryOrderLines = computed(() => {
   const result = new Map(orderRecords.value.flatMap(order => order.lines.map(line => [line.id, line] as const)))
   for (const order of orderRecords.value) for (const plan of order.split_records ?? []) {
@@ -892,6 +902,7 @@ function matchesCustomer(customer: string) {
 }
 
 const visibleOrders = computed(() => localOrders.filter((row) => {
+  if (apiConnected.value && activeTab.value === 'orders' && !orderPageNumbers.value.includes(row.id)) return false
   const rawOrder = orderRecords.value.find((order) => order.order_no === row.id)
   const statusMatches = orderStatusFilter.value === 'ALL'
     || rawOrder?.status === orderStatusFilter.value
@@ -986,20 +997,37 @@ const visibleWeeklyChecks = computed(() => localWeeklyChecks.filter((row) =>
   return !a ? (!b ? 0 : 1) : !b ? -1 : a.localeCompare(b) * (scheduleSort.value === 'DATE_DESC' ? -1 : 1)
 }))
 const selectedScheduleRows = computed(() => localWeeklyChecks.filter(row => selectedScheduleRowIds.value.includes(row.id)))
-const selectableVisibleScheduleRows = computed(() => visibleWeeklyChecks.value.filter(row => canMarkScheduleRow(row)))
+const schedulePage = ref(1)
+const schedulePageSize = 50
+const schedulePageCount = computed(() => Math.max(1, Math.ceil(visibleWeeklyChecks.value.length / schedulePageSize)))
+const pagedWeeklyChecks = computed(() => visibleWeeklyChecks.value.slice((schedulePage.value - 1) * schedulePageSize, schedulePage.value * schedulePageSize))
+const selectableVisibleScheduleRows = computed(() => pagedWeeklyChecks.value.filter(row => canMarkScheduleRow(row)))
 const allVisibleScheduleRowsSelected = computed(() => selectableVisibleScheduleRows.value.length > 0
   && selectableVisibleScheduleRows.value.every(row => selectedScheduleRowIds.value.includes(row.id)))
-const hiddenScheduleSelectionCount = computed(() => selectedScheduleRows.value.filter(row => !visibleWeeklyChecks.value.includes(row)).length)
+const hiddenScheduleSelectionCount = computed(() => selectedScheduleRows.value.filter(row => !pagedWeeklyChecks.value.includes(row)).length)
 const activeScheduleSourceRows = computed(() => {
   const batch = weeklyImportHistory.value.find(item => item.id === selectedWeeklyBatchId.value && item.status !== 'REJECTED')
   return new Map((batch?.parse_summary.rows ?? []).map((source, index) => [`WK-${source.source_sheet ?? 'S'}-${source.source_row ?? index + 1}`, source]))
 })
 const scheduleOrderIndex = computed(() => {
-  const index = new Map<string, CartonOrderResponse[]>()
-  for (const order of orderRecords.value) {
+  const index = new Map<string, CartonScheduleOrder[]>()
+  for (const order of scheduleMatchingOrders.value) {
     if (order.factory_id !== selectedFactoryId.value || order.status === 'CANCELLED') continue
     const key = JSON.stringify([order.customer_code, scheduleIdentifier(order.contract_no), scheduleIdentifier(order.item_no)])
     index.set(key, [...(index.get(key) ?? []), order])
+  }
+  return index
+})
+const scheduleOrdersById = computed(() => new Map(scheduleMatchingOrders.value.map(order => [order.id, order])))
+const scheduleSplitIndex = computed(() => {
+  const pairs = scheduleMatchingOrders.value.filter(order => order.factory_id === selectedFactoryId.value)
+    .flatMap(order => (order.split_records ?? []).filter(plan => plan.status !== 'CANCELLED')
+      .flatMap(plan => plan.targets.map(target => ({ order, plan, target }))))
+  const index = new Map<string, typeof pairs>()
+  for (const pair of pairs) {
+    const key = JSON.stringify([pair.order.customer_code, scheduleIdentifier(pair.plan.item_no), scheduleIdentifier(pair.target.contract_no)])
+    const matches = index.get(key) ?? []
+    matches.push(pair); index.set(key, matches)
   }
   return index
 })
@@ -1071,7 +1099,7 @@ interface BusinessOrderAlert {
   status: CartonExceptionResponse['status']
   reminder: ScheduleOrderReminder | null
   sourceRow: CartonImportPreviewRow | null
-  order: CartonOrderResponse | null
+  order: CartonScheduleOrder | null
 }
 
 function businessIdentity(value: string | undefined) {
@@ -1394,6 +1422,10 @@ const visibleInspectionChecks = computed(() => localInspectionChecks.filter((row
   ]),
 ))
 
+const inspectionPage = ref(1)
+const inspectionPageCount = computed(() => Math.max(1, Math.ceil(visibleInspectionChecks.value.length / 50)))
+const pagedInspectionChecks = computed(() => visibleInspectionChecks.value.slice((inspectionPage.value - 1) * 50, inspectionPage.value * 50))
+
 type OrderDueLevel = 'OVERDUE' | 'TODAY' | 'DUE_SOON' | 'UPCOMING' | 'CLOSED' | 'INVALID'
 
 interface OrderDueReminder {
@@ -1413,7 +1445,7 @@ const orderedVisibleOrders = computed(() => [...visibleOrders.value].sort((left,
     || left.id.localeCompare(right.id)
 }))
 
-const orderDueSummary = computed(() => visibleOrders.value.reduce((summary, order) => {
+const orderDueSummary = computed(() => apiConnected.value && activeTab.value === 'orders' ? orderStatistics.value : visibleOrders.value.reduce((summary, order) => {
   const level = orderDueReminder(order).level
   if (level === 'OVERDUE') summary.overdue += 1
   if (level === 'TODAY') summary.today += 1
@@ -1457,7 +1489,7 @@ const receiptConfirmButtonLabel = computed(() => {
   return '人工确认并入库'
 })
 
-const pendingOrderCount = computed(() => localOrders.filter(row => !['已完成', '已取消'].includes(row.status) && matchesCustomer(row.customer) && includesSearch([row.id, row.contractNo, row.itemNo, row.customer])).length)
+const pendingOrderCount = computed(() => apiConnected.value && activeTab.value === 'orders' ? orderStatistics.value.pending : localOrders.filter(row => !['已完成', '已取消'].includes(row.status) && matchesCustomer(row.customer) && includesSearch([row.id, row.contractNo, row.itemNo, row.customer])).length)
 const weeklyRiskCount = computed(() => visibleWeeklyChecks.value.filter(scheduleNeedsAttention).length)
 const inspectionReminderCount = computed(() => visibleInspectionChecks.value.filter((row) => row.reminderStatus !== 'READY').length)
 const weeklyAttentionCount = computed(() => weeklyRiskCount.value + inspectionReminderCount.value)
@@ -1620,6 +1652,7 @@ const receiptImportWarnings = computed(() => receiptImportBatch.value?.parse_sum
 const receiptImportRawText = computed(() => receiptImportBatch.value?.parse_summary.document?.raw_text_excerpt?.trim() ?? '')
 
 watch(selectedFactoryId, (factoryId, previousFactory) => {
+  orderPage.value = 1; orderTotal.value = 0; orderPageNumbers.value = []
   clearActionNotice()
   closingGeneration++; if (closingBusyId.value === 'generate') closingBusyId.value = ''
   customerEditGeneration += 1
@@ -2236,10 +2269,19 @@ function canReplenishOrder(orderNo: string) {
   return canIssuePurchaseOrders.value && canWriteCartonInventory.value
     && ['PARTIALLY_RECEIVED', 'COMPLETED'].includes(rawOrderStatus(orderNo))
 }
-function openReplenishOrder(orderNo: string) {
+async function openReplenishOrder(orderNo: string) {
   if (!canReplenishOrder(orderNo)) return
   replenishTarget.value = orderRecords.value.find(row => row.order_no === orderNo) || null
   replenishResponsibility.value = ''; replenishReason.value = ''; replenishQuantities.value = {}; replenishError.value = ''
+  const factory = selectedFactoryId.value
+  try {
+    const balances = await cartonProcurementApi.listInventoryBalances(factory)
+    if (factory === selectedFactoryId.value && replenishTarget.value?.order_no === orderNo) {
+      localInventoryBalances.splice(0, localInventoryBalances.length, ...balances.map(mapInventoryBalance))
+    }
+  } catch (error) {
+    if (factory === selectedFactoryId.value && replenishTarget.value?.order_no === orderNo) replenishError.value = `库存读取失败：${getApiErrorMessage(error)}`
+  }
 }
 async function submitReplenishment() {
   const order = replenishTarget.value
@@ -2822,6 +2864,51 @@ function removeAdHocReceiptLine(lineId: string) {
   receiptFeedbackMessage.value = ''
 }
 
+function applyScheduleHistory(weeklyImports: CartonImportBatchResponse[], inspectionImports: CartonImportBatchResponse[]) {
+  weeklyImportHistory.value = weeklyImports
+  inspectionImportHistory.value = inspectionImports
+  if (weeklyImports.find(batch => batch.id === selectedWeeklyBatchId.value)?.status === 'REJECTED') {
+    selectedWeeklyFileName.value = ''; selectedWeeklyBatchId.value = ''; localWeeklyChecks.splice(0)
+  }
+  if (inspectionImports.find(batch => batch.id === selectedInspectionBatchId.value)?.status === 'REJECTED') {
+    selectedInspectionFileName.value = ''; selectedInspectionBatchId.value = ''; localInspectionChecks.splice(0)
+  }
+  if (!selectedWeeklyFileName.value) {
+    const active = weeklyImports.find(batch => batch.status !== 'REJECTED')
+    if (active) restoreWeeklyImport(active)
+    else localWeeklyChecks.splice(0)
+  }
+  if (!selectedInspectionFileName.value) {
+    const active = inspectionImports.find(batch => batch.status !== 'REJECTED')
+    if (active) restoreInspectionImport(active)
+    else localInspectionChecks.splice(0)
+  }
+}
+
+async function loadLedgerOrders(factoryId: string, generation: number) {
+  const [page, selected] = await Promise.all([
+    cartonProcurementApi.listOrdersPage(factoryId, {
+      limit: orderPageSize, offset: (orderPage.value - 1) * orderPageSize,
+      customer_name: selectedCustomer.value === '全部客户' ? '' : selectedCustomer.value,
+      status_filter: orderStatusFilter.value === 'ALL' ? '' : orderStatusFilter.value,
+      due_filter: orderDueFilter.value, sort: orderSort.value, search: globalSearch.value.trim(),
+      order_from: orderDateRange.value.start?.toString() ?? '', order_to: orderDateRange.value.end?.toString() ?? '',
+    }),
+    selectedOrderNos.value.length ? cartonProcurementApi.selectedOrders(factoryId, selectedOrderNos.value) : Promise.resolve([]),
+  ])
+  if (factoryId === selectedFactoryId.value && generation === backendLoadGeneration) {
+    orderTotal.value = page.total
+    orderStatistics.value = page.statistics ?? { overdue: 0, today: 0, dueSoon: 0, pending: 0 }
+    if (orderPage.value > Math.max(1, Math.ceil(page.total / orderPageSize))) {
+      orderPage.value = Math.max(1, Math.ceil(page.total / orderPageSize))
+    }
+    orderPageNumbers.value = page.items.map(row => row.order_no)
+    const available = new Set([...page.items, ...selected].map(row => row.order_no))
+    selectedOrderNos.value = selectedOrderNos.value.filter(number => available.has(number))
+  }
+  return [...new Map([...selected, ...page.items].map(row => [row.order_no, row])).values()]
+}
+
 async function loadBackendData(factoryId = selectedFactoryId.value, options: { supersede?: boolean } = {}) {
   // Successful destructive writes must invalidate any pre-write read already in flight.
   if (!options.supersede && backendLoading.value && backendLoadFactory === factoryId) return
@@ -2829,6 +2916,35 @@ async function loadBackendData(factoryId = selectedFactoryId.value, options: { s
   backendLoadFactory = factoryId
   backendLoading.value = true
   try {
+    if (activeTab.value === 'weekly-check') {
+      const [customers, orders, weekly, inspection, marks, exceptions] = await Promise.all([
+        cartonProcurementApi.listCustomers(factoryId), cartonProcurementApi.scheduleOrders(factoryId),
+        cartonProcurementApi.listImports(factoryId, 'WEEKLY_SCHEDULE'), cartonProcurementApi.listImports(factoryId, 'INSPECTION_SCHEDULE'),
+        cartonProcurementApi.listScheduleOrderMarks(factoryId), cartonProcurementApi.listExceptions(factoryId),
+      ])
+      if (factoryId !== selectedFactoryId.value || generation !== backendLoadGeneration) return
+      customerRecords.value = customers
+      scheduleOrderRecords.value = orders
+      scheduleMarkRecords.value = marks
+      exceptionRecords.value = exceptions
+      applyScheduleHistory(weekly, inspection)
+      apiConnected.value = true
+      void refreshMaster()
+      return { success: true, error: '' }
+    }
+    if (activeTab.value === 'orders') {
+      const [customers, orders] = await Promise.all([
+        cartonProcurementApi.listCustomers(factoryId), loadLedgerOrders(factoryId, generation),
+      ])
+      if (factoryId !== selectedFactoryId.value || generation !== backendLoadGeneration) return
+      customerRecords.value = customers
+      orderRecords.value = orders
+      localOrders.splice(0, localOrders.length, ...orders.map(mapOrder))
+      apiConnected.value = true
+      actionMessage.value = `已连接 ${activeFactory.value.shortName} 正式台账；订单、收料导入、库存流水和月结均由后端保存。`
+      void refreshMaster()
+      return { success: true, error: '' }
+    }
     const [
       customers,
       orders,
@@ -2940,6 +3056,13 @@ async function refreshAfterSavedAction(message: string, factoryId = selectedFact
 }
 
 function replaceOrderState(order: CartonOrderResponse) {
+  const scheduleIndex = scheduleOrderRecords.value.findIndex(item => item.id === order.id)
+  scheduleOrderRecords.value = scheduleIndex < 0 ? [...scheduleOrderRecords.value, order]
+    : scheduleOrderRecords.value.map(item => item.id === order.id ? order : item)
+  if (activeTab.value === 'orders' && !orderPageNumbers.value.includes(order.order_no)) {
+    orderPageNumbers.value = [order.order_no, ...orderPageNumbers.value]
+    orderTotal.value += 1
+  }
   const recordIndex = orderRecords.value.findIndex((item) => item.order_no === order.order_no)
   if (recordIndex >= 0) orderRecords.value.splice(recordIndex, 1, order)
   else orderRecords.value.unshift(order)
@@ -4526,21 +4649,17 @@ function scheduleCustomerForSource(source: CartonImportPreviewRow) {
 function scheduleSplitsForSource(source: CartonImportPreviewRow) {
   const linkedIds = source.schedule_identity_duplicate
     ? new Set(scheduleMarkRecords.value[source.schedule_identity ?? '']?.order_ids ?? []) : null
-  return orderRecords.value.filter(order => order.factory_id === selectedFactoryId.value
-    && order.customer_code === source.schedule_customer_code
-    && (!linkedIds || linkedIds.has(order.id))
-  ).flatMap(order => (order.split_records ?? []).filter(plan => plan.status !== 'CANCELLED'
-    && scheduleIdentifier(plan.item_no) === scheduleIdentifier(source.item_no))
-    .flatMap(plan => plan.targets.filter(target => scheduleIdentifier(target.contract_no) === scheduleIdentifier(source.contract_no)
-      && (!(source.source_reference || source.customer_po)
-        || scheduleIdentifier(target.customer_po) === scheduleIdentifier(source.source_reference || source.customer_po)))
-      .map(target => ({ order, plan, target }))))
+  const key = JSON.stringify([source.schedule_customer_code, scheduleIdentifier(source.item_no), scheduleIdentifier(source.contract_no)])
+  return (scheduleSplitIndex.value.get(key) ?? []).filter(({ order, target }) => (!linkedIds || linkedIds.has(order.id))
+    && (!(source.source_reference || source.customer_po)
+      || scheduleIdentifier(target.customer_po) === scheduleIdentifier(source.source_reference || source.customer_po)))
 }
 
 function scheduleOrdersForSource(source: CartonImportPreviewRow) {
   const linkedIds = new Set([...(scheduleMarkRecords.value[source.schedule_identity ?? '']?.order_ids ?? []),
     ...(source.order_id ? [source.order_id] : [])])
-  const linked = orderRecords.value.filter(order => linkedIds.has(order.id) && order.factory_id === selectedFactoryId.value
+  const linked = [...linkedIds].map(id => scheduleOrdersById.value.get(id)).filter((order): order is CartonScheduleOrder => Boolean(order))
+    .filter(order => order.factory_id === selectedFactoryId.value
     && (!source.schedule_customer_code || order.customer_code === source.schedule_customer_code)
     && order.status !== 'CANCELLED' && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no || source.reference)
     && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no))
@@ -4558,7 +4677,7 @@ function scheduleOrdersForSource(source: CartonImportPreviewRow) {
 
 function scheduleDuplicateCandidates(source: CartonImportPreviewRow) {
   if (!source.schedule_identity_duplicate) return []
-  return orderRecords.value.filter(order => order.factory_id === selectedFactoryId.value
+  return scheduleMatchingOrders.value.filter(order => order.factory_id === selectedFactoryId.value
     && order.status !== 'CANCELLED' && order.customer_code === source.schedule_customer_code
     && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no)
     && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no)
@@ -4567,7 +4686,7 @@ function scheduleDuplicateCandidates(source: CartonImportPreviewRow) {
 
 function scheduleOtherPoCandidates(source: CartonImportPreviewRow) {
   if (!source.source_reference) return []
-  return orderRecords.value.filter(order => order.factory_id === selectedFactoryId.value
+  return scheduleMatchingOrders.value.filter(order => order.factory_id === selectedFactoryId.value
     && order.status !== 'CANCELLED' && order.customer_code === source.schedule_customer_code
     && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no)
     && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no)
@@ -4618,12 +4737,28 @@ function scheduleOrderActionDisabled(row: WeeklyCheckRow) {
   return orders.length > 1 || !canIssuePurchaseOrders.value || scheduleIsMarked(row) || !canUseScheduleSource(source) || savingOrder.value
 }
 
-function openOrderFromSchedule(source: CartonImportPreviewRow, batchId: string, note = '') {
+async function openOrderFromSchedule(source: CartonImportPreviewRow, batchId: string, note = '') {
   if (!apiConnected.value || savingOrder.value) return
+  const detailGeneration = ++scheduleDetailGeneration
+  const loadGeneration = backendLoadGeneration
+  const tab = activeTab.value
+  const selectedBatch = selectedWeeklyBatchId.value
+  const isCurrent = () => detailGeneration === scheduleDetailGeneration && loadGeneration === backendLoadGeneration
+    && tab === activeTab.value && selectedBatch === selectedWeeklyBatchId.value
   const batch = weeklyImportHistory.value.find(item => item.id === batchId && item.status !== 'REJECTED')
   if (!batch) return
   const orders = scheduleOrdersForSource(source)
   if (orders.length === 1) {
+    const factory = selectedFactoryId.value
+    try {
+      const [detail] = await cartonProcurementApi.selectedOrders(factory, [orders[0]!.order_no])
+      if (factory !== selectedFactoryId.value || !isCurrent()) return
+      if (!detail) throw new Error('订单已删除，请刷新排期后核对')
+      replaceOrderState(detail)
+    } catch (error) {
+      if (factory === selectedFactoryId.value && isCurrent()) reportActionFailure(`订单读取失败：${getApiErrorMessage(error)}`)
+      return
+    }
     if (scheduleSplitsForSource(source).length) openOrderSplit(orders[0]!.order_no)
     else openOrderDetails(orders[0]!.order_no)
     return
@@ -5663,6 +5798,17 @@ const splitReceiptLines = computed(() => currentReceipt.value
     effective_quantity: Math.max(0, receiptLineEffectiveQuantity(line)) })))
 const hasReceiptSplits = computed(() => splitReceiptLines.value.some(line => orderRecords.value.some(order =>
   order.lines.some(paper => paper.id === line.order_line_id) && order.split_records?.some(plan => plan.status !== 'CANCELLED'))))
+watch([selectedCustomer, globalSearch, orderStatusFilter, orderDueFilter, orderDateRange, orderSort], () => {
+  if (activeTab.value !== 'orders') return
+  if (orderPage.value !== 1) orderPage.value = 1
+  else void loadBackendData(selectedFactoryId.value, { supersede: true })
+})
+watch(visibleWeeklyChecks, () => { schedulePage.value = 1 })
+watch(visibleInspectionChecks, () => { inspectionPage.value = 1 })
+watch(orderPage, () => { if (activeTab.value === 'orders') void loadBackendData(selectedFactoryId.value, { supersede: true }) })
+watch(activeTab, (tab, previous) => {
+  if (['orders', 'weekly-check'].includes(tab) || ['orders', 'weekly-check'].includes(previous)) void loadBackendData(selectedFactoryId.value, { supersede: true })
+})
 watch([
   savingOrder, submittingSupplierOrder, importingWeekly, importingInspection, importingReceipt,
   savingReceipt, confirmingReceipt, exportingOrderNo, exportingSelectedOrders,
@@ -6220,6 +6366,11 @@ watch([
 
           </article>
           <div v-if="visibleOrders.length === 0" class="px-4 py-12 text-center text-slate-400">没有符合当前筛选条件的合同订单</div>
+          <nav aria-label="订单分页" class="flex items-center justify-end gap-3 border-t border-slate-200 px-4 py-3 text-xs">
+            <span>共 {{ orderTotal }} 张 · 第 {{ orderPage }} / {{ orderPageCount }} 页 · 每页 {{ orderPageSize }} 张</span>
+            <button type="button" :disabled="backendLoading || orderPage <= 1" class="rounded border px-3 py-1 disabled:opacity-40" @click="orderPage--">上一页</button>
+            <button type="button" :disabled="backendLoading || orderPage >= orderPageCount" class="rounded border px-3 py-1 disabled:opacity-40" @click="orderPage++">下一页</button>
+          </nav>
         </div>
       </section>
 
@@ -6360,7 +6511,9 @@ watch([
             <label class="space-y-1 text-[11px] font-semibold text-slate-600"><span class="block">结束日期</span><input v-model="scheduleDateTo" aria-label="排期结束日期" type="date" :min="scheduleDateFrom || undefined" class="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"></label>
             <label class="space-y-1 text-[11px] font-semibold text-slate-600"><span class="block">排序</span><select v-model="scheduleSort" aria-label="排期日期排序" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs"><option value="SOURCE">原表顺序</option><option value="DATE_ASC">日期由近到远</option><option value="DATE_DESC">日期由远到近</option></select></label>
             <button type="button" class="h-9 rounded-lg border border-slate-200 px-3 text-xs text-slate-600" @click="clearWeeklyFilters">清空排期筛选</button>
-            <span class="pb-2 text-[11px] text-slate-500">当前批次显示 {{ visibleWeeklyChecks.length }} / {{ localWeeklyChecks.length }} 条</span>
+            <span class="pb-2 text-[11px] text-slate-500">筛选结果 {{ visibleWeeklyChecks.length }} / {{ localWeeklyChecks.length }} 条 · 第 {{ schedulePage }} / {{ schedulePageCount }} 页</span>
+            <button type="button" aria-label="排期上一页" :disabled="schedulePage <= 1" class="rounded border px-3 py-2 text-xs disabled:opacity-40" @click="schedulePage--">上一页</button>
+            <button type="button" aria-label="排期下一页" :disabled="schedulePage >= schedulePageCount" class="rounded border px-3 py-2 text-xs disabled:opacity-40" @click="schedulePage++">下一页</button>
           </div>
           <p v-if="scheduleDateRangeInvalid" role="alert" class="mt-2 text-xs text-red-700">结束日期不能早于开始日期。</p>
           <p v-else-if="scheduleDateFrom || scheduleDateTo" class="mt-2 text-[11px] text-slate-500">日期范围包含起止当天；日期未填或原文待确认的记录不计入该范围。</p>
@@ -6397,7 +6550,7 @@ watch([
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100">
-                <tr v-for="row in visibleWeeklyChecks" :key="row.id" class="hover:bg-slate-50/80">
+                <tr v-for="row in pagedWeeklyChecks" :key="row.id" class="hover:bg-slate-50/80">
                   <td class="px-3 py-3"><input type="checkbox" :aria-label="`选择排期 ${row.reference} ${row.itemNo}`" :checked="selectedScheduleRowIds.includes(row.id)" :disabled="!canMarkScheduleRow(row) || Boolean(scheduleMarkBusy)" class="size-4 accent-teal-700 disabled:opacity-30" @change="toggleScheduleSelection(row)"></td>
                   <td class="px-4 py-3"><div class="font-semibold">{{ row.customer }}</div><div v-if="row.businessCustomer && row.businessCustomer !== row.customer" class="text-[10px] text-slate-500">业务客名：{{ row.businessCustomer }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.productName }}</div></td>
                   <td class="px-4 py-3"><div class="font-semibold">{{ row.reference || '合同待确认' }}</div><div v-if="row.poNumbers" class="mt-0.5 text-[10px] text-slate-500">P/O#: {{ row.poNumbers }}</div><div v-if="row.sourceReference" class="text-[10px] text-slate-500">SO: {{ row.sourceReference }}</div></td>
@@ -6423,7 +6576,7 @@ watch([
                 <tr><th class="px-4 py-3">Reference / PO.NO</th><th class="px-4 py-3">客户 / 产品</th><th class="px-4 py-3">货号</th><th class="px-4 py-3">验货期</th><th class="px-4 py-3">最迟交货日</th><th class="px-4 py-3 text-center">提前天数</th><th class="px-4 py-3">提醒状态</th><th class="px-4 py-3">关联订单</th><th class="px-4 py-3">处理建议</th></tr>
               </thead>
               <tbody class="divide-y divide-slate-100">
-                <tr v-for="row in visibleInspectionChecks" :key="row.id" class="hover:bg-slate-50/80">
+                <tr v-for="row in pagedInspectionChecks" :key="row.id" class="hover:bg-slate-50/80">
                   <td class="px-4 py-3"><div class="font-semibold">{{ row.reference }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.poNumbers }}</div></td>
                   <td class="px-4 py-3"><div class="font-semibold">{{ row.customer }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.productName }}</div></td>
                   <td class="px-4 py-3 font-mono font-semibold">{{ row.itemNo }}</td>
@@ -6439,8 +6592,12 @@ watch([
             </table>
           </div>
         </div>
+      <nav v-if="weeklyCheckMode !== 'ORDER_GAP'" aria-label="查货分页" class="flex justify-end gap-3 text-xs">
+        <span>{{ visibleInspectionChecks.length }} 条 · 第 {{ inspectionPage }} / {{ inspectionPageCount }} 页</span>
+        <button :disabled="inspectionPage <= 1" @click="inspectionPage--">上一页</button>
+        <button :disabled="inspectionPage >= inspectionPageCount" @click="inspectionPage++">下一页</button>
+      </nav>
       </section>
-
       <section v-else-if="activeTab === 'receipts'" class="space-y-4">
         <nav aria-label="收料入库子页面" class="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
           <button v-for="page in [{ id: 'PENDING' as const, label: '待收订单' }, { id: 'IMPORT' as const, label: '送货单导入' }, { id: 'HISTORY' as const, label: '收料历史' }]" :key="page.id" type="button" :aria-current="receiptPage === page.id ? 'page' : undefined" class="rounded-lg px-4 py-2 text-xs font-semibold" :class="receiptPage === page.id ? 'bg-teal-50 text-teal-800 ring-1 ring-teal-200' : 'text-slate-500 hover:bg-slate-50'" @click="openReceiptPage(page.id)">{{ page.label }}</button>
