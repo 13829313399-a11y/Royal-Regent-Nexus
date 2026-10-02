@@ -299,6 +299,30 @@ def get_dashboard(
     return dashboard(db, factory_id)
 
 
+@router.get("/dashboard/workspace")
+def get_dashboard_workspace(
+    factory_id: str,
+    customer: str = Query("", max_length=128), search: str = Query("", max_length=128),
+    status: Literal["OPEN", "ALL"] = "OPEN",
+    kind: Literal["ALL", "MISSING_ORDER", "NEW_ORDER", "QUANTITY_INCREASE", "QUANTITY_DECREASE", "QUANTITY_REVIEW", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_ORDER"] = "ALL",
+    offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_dashboard import workspace
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return workspace(db, factory_id, customer=customer, search=search, status=status, kind=kind, offset=offset, limit=limit)
+
+
+@router.get("/dashboard/alert-context")
+def get_dashboard_alert_context(
+    factory_id: str, alert_id: str = Query(..., min_length=1, max_length=4096),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_dashboard import alert_context
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return alert_context(db, factory_id, alert_id)
+
+
 @router.get("/orders", response_model=CartonOrderListOut)
 def get_orders(
     factory_id: str,
