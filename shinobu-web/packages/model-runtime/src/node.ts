@@ -18,6 +18,8 @@ import { configureModelRuntimePerformanceObserver } from './runtime/performanceO
 export type NodeModelRuntimeOptions = {
   manifestRoot: string;
   modelRoot: string;
+  /** Bound CPU pools for shared server workers; omitted keeps standalone defaults. */
+  cpuThreads?: number;
   observer?: DiagnosticLogObserver;
   performanceObserver?: ModelRuntimePerformanceObserver;
 };
@@ -28,7 +30,7 @@ export function createNodeModelRuntime(
   configureModelRuntimePerformanceObserver(options.performanceObserver);
   const registry = createModelRegistry({
     environment: 'node',
-    backend: { createSession, disposeSession, disposeAll },
+    backend: { createSession: (...args) => createSession(...args, options.cpuThreads), disposeSession, disposeAll },
     loadManifest: () => loadManifestNode(options.manifestRoot),
     resolveAsset: (asset) => resolveModelFilePath(asset, options.modelRoot),
     observer: options.observer,

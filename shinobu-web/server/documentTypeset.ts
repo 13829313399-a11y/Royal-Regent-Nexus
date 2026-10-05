@@ -24,7 +24,6 @@ const identifiers = /\d|https?:\/\/|www\.|@|^[#＃]|^(?:PANTON[E]?|UPC|CE|CPSC|A
 export function preserveReason(region: Region, direction: string): string | undefined {
   const text = region.sourceText.trim();
   if (region.protected || identifiers.test(text)) return 'protected';
-  if (region.method !== 'native' && region.fgColor && Math.max(...region.fgColor)-Math.min(...region.fgColor)>35) return 'styled-text';
   if (!(direction === 'zh_to_en' ? /[\u3400-\u9fff]/ : /[A-Za-z]{2}/).test(text)) return 'not-source-language';
   if (region.direction === 'v' || region.box.height > region.box.width * 1.8) return 'vertical';
   if ((region.prob ?? 1) < .90) return 'low-confidence';
@@ -84,7 +83,7 @@ export function splitRuledRegion(source: Canvas, region: Region): Region[] {
 /** Candidate word cuts use observed whitespace, never proportional text widths.
  * The caller must re-OCR and verify the concatenated text before accepting. */
 export function splitMixedWords(source:Canvas,region:Region):Region[] {
-  if(!/\d/.test(region.sourceText)||!/[a-z]/.test(region.sourceText)) return [region];
+  if(!/\d/.test(region.sourceText)||!/[A-Za-z]/.test(region.sourceText)) return [region];
   const count=region.sourceText.trim().split(/\s+/).length;
   if(count<2||count>24||region.direction==='v') return [region];
   const b=region.box,x=Math.max(0,Math.floor(b.x)),y=Math.max(0,Math.floor(b.y));
@@ -245,7 +244,9 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     }
     ctx.putImageData(cleaned,x,y);
     ctx.save(); ctx.beginPath(); ctx.rect(x,y,w,h); ctx.clip();
-    ctx.fillStyle=(bg[0]*.299+bg[1]*.587+bg[2]*.114)>140?'#202124':'#ffffff';
+    const fg=region.fgColor;
+    ctx.fillStyle=fg?.length===3&&fg.every(v=>Number.isFinite(v)&&v>=0&&v<=255)&&colorDistance(fg,bg)>35
+      ? `rgb(${fg.join(',')})` : (bg[0]*.299+bg[1]*.587+bg[2]*.114)>140?'#202124':'#ffffff';
     ctx.textBaseline='alphabetic';
     const baseline=Math.max(top+metrics.actualBoundingBoxAscent,Math.min(bottom-metrics.actualBoundingBoxDescent,
       center+(metrics.actualBoundingBoxAscent-metrics.actualBoundingBoxDescent)/2));

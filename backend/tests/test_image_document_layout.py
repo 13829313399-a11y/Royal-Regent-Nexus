@@ -137,6 +137,17 @@ def test_pdf_export_padding_keeps_neighboring_digits_and_rules(tmp_path, monkeyp
         assert np.array_equal(images[0][y0:y1, x0:x1], images[1][y0:y1, x0:x1])
 
 
+def test_image_view_captions_use_manufacturing_meanings_without_model_calls():
+    def unexpected_model_call(*args):
+        raise AssertionError('view captions should use the image glossary')
+    assert translate_image_texts(
+        ['FRONT', 'BACK', 'LEFT', 'RIGHT', 'TOP', 'BOTTOM',
+         'FRONT RIGHT', 'FRONT LEFT', 'BACK RIGHT', 'BACK LEFT', 'Standing Plush', 'Plush Guide'],
+        'en_to_zh', unexpected_model_call,
+    ) == ['正面', '背面', '左侧', '右侧', '顶部', '底部',
+          '右前方', '左前方', '右后方', '左后方', '站立式毛绒玩具', '毛绒玩具指南']
+
+
 def test_bad_translation_is_isolated_without_changing_numbers():
     def translate(texts,direction):
         if 'unknown' in texts: raise ToolError('TRANSLATION_NUMBERS_CHANGED','bad output')

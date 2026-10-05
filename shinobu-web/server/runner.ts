@@ -1,6 +1,7 @@
 /** Private stdio worker. Only the Python worker supplies paths and translations. */
 import { readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
+import { availableParallelism } from 'node:os';
 import { createCanvas, loadImage, registerFont, Image, ImageData, type Canvas } from 'canvas';
 import { type PipelinePlatform, type PipelineConfig } from '@shinobu/image-pipeline';
 import { createNodeModelRuntime } from '@shinobu/model-runtime/node';
@@ -50,7 +51,8 @@ const platform = {
 
 async function main() {
   const init = await receive();
-  const modelRuntime = createNodeModelRuntime({ manifestRoot: import.meta.dirname, modelRoot: init.modelRoot });
+  const modelRuntime = createNodeModelRuntime({ manifestRoot: import.meta.dirname, modelRoot: init.modelRoot,
+    cpuThreads: Math.max(1, Math.min(4, Math.floor(availableParallelism()/2))) });
   // Server CPU is predictable and avoids implicitly trying unavailable CUDA drivers.
   const runtime = { ...modelRuntime, getSession: (name: Parameters<typeof modelRuntime.getSession>[0]) => modelRuntime.getSession(name, ['cpu']) };
   registerDocumentFont(import.meta.dirname);

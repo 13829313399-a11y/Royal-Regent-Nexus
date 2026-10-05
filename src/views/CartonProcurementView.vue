@@ -470,6 +470,8 @@ const inventoryOutboundReasons = computed(() => ({ USAGE: ['客户要货', '补�
 watch(outboundKind, () => { inventoryOperationReason.value = outboundKind.value === 'OTHER' ? '' : inventoryOutboundReasons.value[0] ?? '' })
 const inventoryOperationReason = ref('客户要货')
 const selectedInventoryTargetIds = ref<string[]>([])
+const inventoryBalanceSort = ref<'DEFAULT' | 'CUSTOMER_ASC' | 'CONTRACT_ASC' | 'ITEM_ASC' | 'LOCATION_ASC' | 'BALANCE_ASC' | 'BALANCE_DESC' | 'INBOUND_ASC' | 'INBOUND_DESC'>('DEFAULT')
+const inventoryTextCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
 const inventoryBalanceDateRange = shallowRef<DateRange>({ start: undefined, end: undefined })
 const inventoryBalanceDateFrom = computed(() => inventoryBalanceDateRange.value.start?.toString() ?? '')
 const inventoryBalanceDateTo = computed(() => inventoryBalanceDateRange.value.end?.toString() ?? '')
@@ -1378,7 +1380,7 @@ function inventoryBalanceLatestDocumentNo(row: InventoryBalanceRow) {
 }
 
 const inventoryBalances = computed(() => {
-  return localInventoryBalances.filter((row) => {
+  const rows = localInventoryBalances.filter((row) => {
     const latestDocumentNo = inventoryBalanceLatestDocumentNo(row)
     const rowDate = row.inboundDate.slice(0, 10)
     const fields = [
@@ -1400,6 +1402,24 @@ const inventoryBalances = computed(() => {
       && (!locationFilter.value || row.locationId === locationFilter.value)
       && dateMatches
       && includesSearch(fields)
+  })
+  return rows.sort((left, right) => {
+    switch (inventoryBalanceSort.value) {
+      case 'CUSTOMER_ASC': return inventoryTextCollator.compare(left.customer, right.customer)
+      case 'CONTRACT_ASC': return inventoryTextCollator.compare(left.poNumber, right.poNumber)
+      case 'ITEM_ASC': return inventoryTextCollator.compare(left.itemNo, right.itemNo)
+      case 'LOCATION_ASC': return inventoryTextCollator.compare(left.location, right.location)
+      case 'BALANCE_ASC': return left.balance - right.balance
+      case 'BALANCE_DESC': return right.balance - left.balance
+      case 'INBOUND_ASC':
+      case 'INBOUND_DESC': {
+        if (!left.inboundDate || !right.inboundDate) return Number(!left.inboundDate) - Number(!right.inboundDate)
+        return inventoryBalanceSort.value === 'INBOUND_ASC'
+          ? left.inboundDate.localeCompare(right.inboundDate)
+          : right.inboundDate.localeCompare(left.inboundDate)
+      }
+      default: return 0
+    }
   })
 })
 const hasInventoryBalanceFilters = computed(() => Boolean(
@@ -1614,6 +1634,7 @@ watch(selectedFactoryId, (factoryId, previousFactory) => {
   showInventoryOperation.value = false
   showInventoryRelocation.value = false
   relocationTarget.value = null
+  inventoryBalanceSort.value = 'DEFAULT'
   inventoryBalanceDateRange.value = { start: undefined, end: undefined }
   inventoryMovementDateRange.value = { start: undefined, end: undefined }
   weeklyOnlyAttention.value = false; weeklyHistoryExpanded.value = false; weeklyHistorySearch.value = ''
@@ -6855,6 +6876,7 @@ watch([
               <label class="inline-flex items-center gap-2 whitespace-nowrap"><span class="text-xs font-semibold text-slate-600">仓库</span><select v-model="warehouseFilter" aria-label="库存仓库筛选" class="h-9 w-32 rounded-lg border border-slate-200 bg-white px-2 text-xs" @change="locationFilter = ''"><option value="">全部仓库</option><option v-for="place in [...new Set(inventoryLocations.map(row => row.warehouse))]" :key="place">{{ place }}</option></select></label>
               <label class="inline-flex items-center gap-2 whitespace-nowrap"><span class="text-xs font-semibold text-slate-600">仓位</span><select v-model="locationFilter" aria-label="库存仓位筛选" class="h-9 w-44 rounded-lg border border-slate-200 bg-white px-2 text-xs"><option value="">全部仓位</option><option v-for="place in inventoryLocations.filter(row => !warehouseFilter || row.warehouse === warehouseFilter)" :key="place.id" :value="place.id">{{ place.label }}</option></select></label>
               <div class="inline-flex items-center gap-2 whitespace-nowrap"><span class="text-xs font-semibold text-slate-600">最近入库日期</span><DateRangeFilter v-model="inventoryBalanceDateRange" label="结存台账最近入库日期范围" title="按最近入库日期筛选" /></div>
+              <label class="inline-flex items-center gap-2 whitespace-nowrap"><span class="text-xs font-semibold text-slate-600">排序</span><select v-model="inventoryBalanceSort" aria-label="实时库存排序" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"><option value="DEFAULT">默认顺序</option><option value="CUSTOMER_ASC">客户名称顺序</option><option value="CONTRACT_ASC">合同号顺序</option><option value="ITEM_ASC">货号顺序</option><option value="LOCATION_ASC">仓位顺序</option><option value="BALANCE_ASC">结余从少到多</option><option value="BALANCE_DESC">结余从多到少</option><option value="INBOUND_DESC">最近入库最新</option><option value="INBOUND_ASC">最近入库最早</option></select></label>
               <button type="button" aria-label="清空结存台账筛选" :disabled="!hasInventoryBalanceFilters" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-bold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40" @click="clearInventoryBalanceFilters">清空筛选</button>
             </div>
             <div class="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2 text-xs"><button type="button" class="h-9 rounded-lg border border-slate-200 bg-white px-3 font-semibold text-teal-700" @click="openMaster('LOCATION')">仓位维护</button><CartonLocationPicker v-if="showLocationManager" v-model="newLocationSelection" :locations="inventoryLocations" :factory-id="selectedFactoryId" @created="refreshLocations" /><span class="px-1 text-slate-600">已选 <b class="text-teal-700">{{ selectedInventoryTargetIds.length }}</b> 条</span><button type="button" :disabled="!apiConnected || !selectedInventoryTargetIds.length" class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 font-bold text-white disabled:opacity-40" @click="openInventoryOperation('OUTBOUND', '', true, $event)"><PackageCheck class="size-4" />登记所选库存出库</button></div>

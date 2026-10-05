@@ -1,11 +1,41 @@
 import { describe, it, expect } from 'vitest';
 import { createCanvas } from 'canvas';
 import { resolve } from 'node:path';
-import { prepareRegions, renderDocument, splitRuledRegion, registerDocumentFont, type Region } from '../../server/documentTypeset';
+import { prepareRegions, renderDocument, splitRuledRegion, splitMixedWords, registerDocumentFont, type Region } from '../../server/documentTypeset';
 
 registerDocumentFont(resolve('server/dist'));
 const region=(text:string,x:number,width:number):Region=>({id:text,sourceText:text,box:{x,y:40,width,height:30},prob:.99,method:'native'});
 describe('document-safe typesetting',()=>{
+  it('translates ordinary colored captions while retaining color codes and uncertain OCR',()=>{
+    const colored=(text:string):Region=>({...region(text,20,180),method:'ocr',fgColor:[210,25,65]});
+    for(const text of ['FRONT','Collar must be present','Show a definite']) {
+      expect(prepareRegions([colored(text)],'en_to_zh')[0].skipReason).toBeUndefined();
+    }
+    expect(prepareRegions([colored('PANTONE')],'en_to_zh')[0].skipReason).toBe('protected');
+    expect(prepareRegions([{...colored('FRONT'),prob:.7}],'en_to_zh')[0].skipReason).toBe('low-confidence');
+  });
+  it('renders a colored heading in its original foreground color without changing adjacent numbers',()=>{
+    const source=createCanvas(400,150),c=source.getContext('2d');
+    c.fillStyle='white';c.fillRect(0,0,400,150);c.fillStyle='rgb(210,25,65)';c.font='24px Arial';
+    c.fillText('FRONT RIGHT',20,64);c.fillText('3/4',220,64);
+    const regions=prepareRegions([{...region('FRONT RIGHT',18,185),method:'ocr',fgColor:[210,25,65]},region('3/4',218,70)],'en_to_zh');
+    regions[0].translatedText='右前方';const output=renderDocument(source,regions),d=output.getContext('2d');
+    expect(regions[0].rendered).toBe(true);
+    expect(d.getImageData(215,30,80,50).data).toEqual(c.getImageData(215,30,80,50).data);
+    const pixels=d.getImageData(20,40,180,30).data;
+    expect(Array.from({length:pixels.length/4},(_,i)=>[pixels[i*4],pixels[i*4+1],pixels[i*4+2]])
+      .some(rgb=>rgb[0]===210&&rgb[1]===25&&rgb[2]===65)).toBe(true);
+  });
+  it('cuts uppercase captions with fractions at actual word gaps for verified re-OCR',()=>{
+    const source=createCanvas(500,120),c=source.getContext('2d');
+    c.fillStyle='white';c.fillRect(0,0,500,120);c.fillStyle='#d21941';c.font='24px Arial';
+    const text='FRONT RIGHT 3/4';c.fillText(text,20,64);
+    const parts=splitMixedWords(source,{...region(text,18,c.measureText(text).width+4),method:'ocr'});
+    expect(parts).toHaveLength(3);
+    expect(parts.every(p=>p.sourceText==='')).toBe(true);
+    expect(parts[2].box.x).toBeGreaterThan(20+c.measureText('FRONT RIGHT').width);
+    expect(splitMixedWords(source,{...region('Q91075',18,100),method:'ocr'})).toHaveLength(1);
+  });
   it('never translates standalone or inline numbers, model IDs, hex colors and units',()=>{
     for(const text of ['00123','4.5"','0.05mm','Quantity 123','Q91075','#5f5075','5265C','PANTONE']) {
       expect(prepareRegions([region(text,10,100)],'en_to_zh')[0].skipReason).toBe('protected');
