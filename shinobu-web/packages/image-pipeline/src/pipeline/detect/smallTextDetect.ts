@@ -244,8 +244,15 @@ export function detectSmallTextRegions(
         );
       }
       let analyzedTile = false;
-      for (const lightText of opts.documentMode ? [false, true] : [false]) {
-        const signal = lightText ? grays.map((gray) => 255 - gray) : grays;
+      // Saturated red/blue labels can have the same luminance as a dark panel.
+      // A chroma pass separates their strokes without lowering the text/shape
+      // component checks; ordinary browser mode retains its original pass.
+      for (const polarity of opts.documentMode ? ['dark', 'light', 'chroma'] : ['dark']) {
+        const signal = polarity === 'light' ? grays.map((gray) => 255 - gray)
+          : polarity === 'chroma' ? grays.map((_, index) => {
+            const p=index*4;
+            return 255-(Math.max(pixels[p],pixels[p+1],pixels[p+2])-Math.min(pixels[p],pixels[p+1],pixels[p+2]));
+          }) : grays;
         const threshold = estimateThreshold(signal);
         const dark = new Uint8Array(total);
         let ink = 0;
@@ -309,7 +316,20 @@ export function detectSmallTextRegions(
             && line.width >= line.height * 1.5
             && line.width <= line.height * 4;
           if (glyphRatio < (shortWord ? Math.min(opts.minGlyphRatio, 0.4) : opts.minGlyphRatio)) continue;
-          if (line.members < opts.minComponentsPerLine) continue;
+          if (line.members < opts.minComponentsPerLine) {
+            // Tiny bold serif letters can touch (EYE) and become one component.
+            // Admit a chroma word only with multiple narrow stroke valleys;
+            // solid color panels and a single hollow shape still fail.
+            let valleys=0,inValley=false;
+            if(polarity==='chroma'&&line.width>=line.height*2.2&&line.width<=line.height*8) {
+              for(let x=line.x+1;x<line.x+line.width-1;x++) {
+                let count=0;for(let y=line.y;y<line.y+line.height;y++)count+=dark[y*tileWidth+x];
+                if(count<=line.height*.3) {if(!inValley)valleys++;inValley=true;}
+                else inValley=false;
+              }
+            }
+            if(valleys<2)continue;
+          }
 
           const box = {
             x: line.x + left,

@@ -155,6 +155,21 @@ def test_bad_translation_is_isolated_without_changing_numbers():
     assert translate_image_texts(['Hair','good','unknown'],'en_to_zh',translate)==['头发','安全文字','unknown']
 
 
+def test_plush_pattern_captions_use_parts_and_materials_instead_of_proper_names():
+    def unexpected_model_call(*args):
+        raise AssertionError('pattern captions should use the image glossary')
+    assert translate_image_texts(
+        ['EAR', 'EYE', 'NOSE', 'SPOT', 'LEG', 'SIDE HEAD', 'CENTER HEAD',
+         'ARM', 'UNDER ARM', 'SOLE', 'TAIL', 'FRONT BODY', 'BACK BODY',
+         'Seam Allowance', 'Cut', 'White Plush', 'Black Flock', 'Tricot',
+         'Red Vinyl', 'Snoopy', 'Sitting Plush Pattern', 'Seam Allowanc e'],
+        'en_to_zh', unexpected_model_call,
+    ) == ['耳朵', '眼睛', '鼻子', '斑点', '腿部', '侧头片', '中间头片',
+          '手臂', '内臂片', '脚底', '尾巴', '前身片', '后身片',
+          '缝份', '裁', '白色毛绒布', '黑色植绒布', '经编布',
+          '红色胶片', '史努比', '坐姿毛绒玩具纸样', '缝份']
+
+
 def test_online_provider_errors_are_not_silently_hidden():
     import pytest
     def translate(*args):raise ToolError('TRANSLATION_NETWORK','unavailable')

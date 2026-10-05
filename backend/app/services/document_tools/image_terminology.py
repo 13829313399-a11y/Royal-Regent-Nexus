@@ -13,6 +13,16 @@ TERMS = {
     'shoe sole': '鞋底', 'tentacle': '触手', 'scale': '比例', 'deco': '配色图',
     'mini plush': '迷你毛绒玩具', 'plush': '毛绒玩具',
     'standing plush': '站立式毛绒玩具', 'plush guide': '毛绒玩具指南',
+    'snoopy': '史努比', 'sitting plush pattern': '坐姿毛绒玩具纸样',
+    'standing plush pattern': '站姿毛绒玩具纸样',
+    'ear': '耳朵', 'eye': '眼睛', 'nose': '鼻子', 'spot': '斑点',
+    'head': '头部', 'side head': '侧头片', 'center head': '中间头片', 'centre head': '中间头片',
+    'arm': '手臂', 'under': '下侧', 'under arm': '内臂片', 'leg': '腿部', 'foot': '脚部',
+    'sole': '脚底', 'tail': '尾巴', 'front body': '前身片', 'back body': '后身片', 'collar': '领圈',
+    'seam allowance': '缝份', 'cut': '裁',
+    'white plush': '白色毛绒布', 'black plush': '黑色毛绒布',
+    'flock': '植绒布', 'black flock': '黑色植绒布', 'tricot': '经编布',
+    'vinyl': '胶片', 'red vinyl': '红色胶片',
     'front': '正面', 'back': '背面', 'left': '左侧', 'right': '右侧',
     'top': '顶部', 'bottom': '底部',
     'front right': '右前方', 'front left': '左前方',
@@ -45,6 +55,7 @@ TERMS = {
     'product functional requirement and defect scoring': '产品功能要求及缺陷判定',
     'new': '新制', 'tool': '模具',
 }
+COMPACT_TERMS = {re.sub(r'\s+', '', key): value for key, value in TERMS.items()}
 
 
 def translate_image_texts(texts, direction, translate):
@@ -52,8 +63,11 @@ def translate_image_texts(texts, direction, translate):
     pending = {}
     for i, text in enumerate(texts):
         key = re.sub(r'\s+', ' ', text).strip().lower()
-        if direction == 'en_to_zh' and key in TERMS:
-            values[i] = TERMS[key]
+        # OCR may insert a space inside a word ("Allowanc e"). Only repair
+        # whitespace when the complete letters match a known caption.
+        term = TERMS.get(key) or COMPACT_TERMS.get(re.sub(r'\s+', '', key))
+        if direction == 'en_to_zh' and term:
+            values[i] = term
         else:
             pending.setdefault(text, []).append(i)
     if pending:
