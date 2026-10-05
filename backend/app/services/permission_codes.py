@@ -160,6 +160,7 @@ INTERNAL_QUOTE_PERMISSION_CODES = (
 )
 
 SYSTEM_MANAGEMENT_PERMISSION_CODES = (
+    "system:feedback_manage",
     "system:user_manage",
     "system:role_manage",
     "system:access_manage",

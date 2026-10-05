@@ -303,11 +303,12 @@ QC_INSPECTION_REQUIRED_TABLES = {
     "qc_inspection_audit_events",
     "qc_inspection_idempotency_records",
 }
-CARTON_MARK_LIBRARY_REVISION = "20260819_0080"
+CARTON_MARK_LIBRARY_REVISION = "20261005_0132"
 CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
     "carton_mark_customers",
     "carton_mark_templates",
     "carton_mark_documents",
+    "carton_mark_assets",
 }
 def ensure_carton_mark_library_schema_ready() -> None:
     """Refuse to let create_all silently bypass the persistent library migration."""
@@ -734,6 +735,19 @@ def ensure_identity_schema_ready() -> None:
             raise RuntimeError("IAM V2 requires migration 20260926_0125 before startup: " + ", ".join(missing))
 
 
+def ensure_carton_feedback_schema_ready() -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "auth_users" not in tables:
+        return
+    required = {"carton_feedback", "carton_feedback_replies", "carton_feedback_images", "carton_feature_updates"}
+    from app.models import carton_feedback  # noqa: F401
+    missing_columns = any({column.name for column in Base.metadata.tables[table].columns}
+        - {column["name"] for column in inspector.get_columns(table)} for table in required & tables)
+    if required - tables or missing_columns:
+        raise RuntimeError("纸箱反馈结构未就绪，请先备份数据库并执行 Alembic upgrade head 再启动应用。")
+
+
 def init_db() -> None:
     from app.models import (
         work_center,  # noqa: F401
@@ -742,6 +756,7 @@ def init_db() -> None:
         document_tools,  # noqa: F401
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
+        carton_feedback,  # noqa: F401
         carton_procurement,  # noqa: F401
         carton_stocktake,  # noqa: F401
         carton_positions,
@@ -780,6 +795,7 @@ def init_db() -> None:
     ensure_three_d_printing_schema_ready()
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()
+    ensure_carton_feedback_schema_ready()
     ensure_injection_v3_schema_ready()
     ensure_carton_stocktake_schema_ready()
     ensure_carton_positions_schema_ready()

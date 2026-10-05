@@ -161,7 +161,7 @@ describe('module center factory scope', () => {
     auth.permissions = ['carton_procurement:read', 'carton_mark:read']
     auth.effectiveAccess = []
     await nextTick()
-    expect(getModule('carton-supplier').route).toBe('/carton-supplier-management?factory=huaxing')
+    expect(getModule('carton-supplier').route).toBe('/modules/pmc-warehouse/carton-procurement?factory=huaxing&tab=receipts&receipt_page=supplier')
     expect(getModule('carton-mark-check').route).toBe('/modules/pmc-warehouse/carton-mark-check?factory=huaxing')
     wrapper.unmount()
   })

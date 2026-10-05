@@ -1183,6 +1183,9 @@ export const cartonProcurementApi = {
     })
     return response.data
   },
+  async listAuditEventsPage(factoryId: string, filters: Record<string, string | number> = {}) {
+    return (await http.get<{ items: CartonAuditEventResponse[]; total: number; limit: number; offset: number; event_types: Record<string, string>; actors: { id: string; name: string }[] }>('/carton-procurement/audit-events', { params: { factory_id: factoryId, limit: 50, ...filters } })).data
+  },
   async listAuditEvents(factoryId: string, filters: {
     search?: string
     eventType?: string

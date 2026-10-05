@@ -22,6 +22,7 @@ from app.schemas.carton_order_timeline import CartonOrderTimelineOut
 from app.services.carton_order_timeline import order_timeline
 from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
 from app.services.carton_stocktake import create_stocktake, stocktake_detail, list_stocktakes, act_stocktake
+from app.services.carton_procurement import audit_query_options
 from app.schemas.carton_procurement import (
     CartonAuditEventListOut,
     CartonClosingGenerateRequest,
@@ -338,6 +339,7 @@ def get_orders(
     order_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     due_filter: Literal["ALL", "OVERDUE", "TODAY", "DUE_SOON", "UPCOMING"] = "ALL",
     sort: Literal["ORDER_DESC", "DUE_ASC", "DUE_DESC"] = "ORDER_DESC",
+    collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED"] = "ALL",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -354,7 +356,7 @@ def get_orders(
         limit=limit,
         offset=offset,
         customer_name=customer_name, order_from=order_from, order_to=order_to, due_filter=due_filter, sort=sort,
-        statistics=statistics,
+        statistics=statistics, collaboration_filter=collaboration_filter,
     )
     from app.services.carton_order_projection import order_page_out
     return CartonOrderListOut(factory_id=factory_id, total=total, limit=limit,
@@ -1196,9 +1198,10 @@ def post_history_inventory_preview(
 @router.get("/stocktakes")
 def stocktakes_list(factory_id: str, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0),
                     status: Literal["", "DRAFT", "SUBMITTED", "POSTED", "CANCELLED"] = "",
+                    date_from: str = "", date_to: str = "", sort: Literal["ASC", "DESC"] = "DESC",
                     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, user, "carton_procurement:read", factory_id)
-    return list_stocktakes(db, factory_id, limit, offset, status)
+    return list_stocktakes(db, factory_id, limit, offset, status, date_from, date_to, sort)
 
 
 @router.get("/stocktakes/{identifier}")
@@ -1352,6 +1355,7 @@ def get_audit_events(
     date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    sort: Literal["ASC", "DESC"] = "DESC",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1366,6 +1370,7 @@ def get_audit_events(
         date_to=date_to.strip(),
         limit=limit,
         offset=offset,
+        sort=sort,
     )
     return CartonAuditEventListOut(
         factory_id=factory_id,
@@ -1373,6 +1378,7 @@ def get_audit_events(
         limit=limit,
         offset=offset,
         items=items,
+        **audit_query_options(db, factory_id),
     )
 
 

@@ -137,3 +137,21 @@ class ShipmentLineLink(Payload):
     expected_revision: int = Field(ge=1)
     expected_order_revision: int = Field(ge=1)
     reason: str = Field(min_length=4, max_length=1000)
+
+
+class SupplierMarkAssetOrderOut(BaseModel):
+    id: str
+    customer_name: str
+    contract_no: str
+    customer_po: str
+    item_no: str
+
+
+class SupplierMarkAssetOut(BaseModel):
+    id: str
+    file_name: str
+    kind: str
+    size_bytes: int
+    contract_number: str
+    created_at: str
+    orders: list[SupplierMarkAssetOrderOut]

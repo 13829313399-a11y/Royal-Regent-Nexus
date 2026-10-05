@@ -2237,7 +2237,7 @@ def list_orders(
     limit: int = 50,
     offset: int = 0,
     customer_name: str = "", order_from: str = "", order_to: str = "",
-    due_filter: str = "ALL", sort: str = "ORDER_DESC",
+    due_filter: str = "ALL", sort: str = "ORDER_DESC", collaboration_filter: str = "ALL",
     statistics: dict | None = None,
 ) -> tuple[int, list[CartonOrder]]:
     query = select(CartonOrder).where(CartonOrder.factory_id == factory_id, CartonOrder.deleted_at.is_(None))
@@ -2289,6 +2289,10 @@ def list_orders(
             + func.coalesce(CartonOrder.customer_po, "") + " " + CartonOrder.product_name + " " + CartonOrder.item_no
             + " " + status_label + " " + func.coalesce(materials.c.text, ""))
         query = query.where(display_text.ilike(pattern, escape="!"))
+    if collaboration_filter != "ALL":
+        from app.services.carton_supplier_portal import acceptance_order_ids
+        matches = acceptance_order_ids(db, list(db.scalars(query)), collaboration_filter)
+        query = query.where(CartonOrder.id.in_(matches))
     if statistics is not None:
         selected_ids = query.with_only_columns(CartonOrder.id).subquery()
         totals = db.execute(select(func.count(),
@@ -4541,6 +4545,15 @@ def update_exception(
     return exception
 
 
+def audit_query_options(db, factory_id):
+    from app.services.carton_query import AUDIT_LABELS
+    events = list(db.scalars(select(CartonAuditEvent.event_type).where(CartonAuditEvent.factory_id == factory_id).distinct()))
+    actors = db.execute(select(CartonAuditEvent.actor_user_id, CartonAuditEvent.actor_name).where(CartonAuditEvent.factory_id == factory_id).distinct()).all()
+    names = dict(actors)
+    return dict(event_types={code: AUDIT_LABELS.get(code, code) for code in sorted(events)},
+                actors=[{"id": key, "name": value or key} for key, value in sorted(names.items(), key=lambda pair: pair[1] or pair[0])])
+
+
 def list_audit_events(
     db: Session,
     factory_id: str,
@@ -4552,31 +4565,35 @@ def list_audit_events(
     date_to: str = "",
     limit: int = 100,
     offset: int = 0,
+    sort: str = "DESC",
 ) -> tuple[int, list[CartonAuditEventOut]]:
+    from app.services.carton_query import AUDIT_LABELS, date_bounds, literal_pattern
+    first, after = date_bounds(date_from, date_to)
     query = select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory_id)
     if event_type:
         query = query.where(CartonAuditEvent.event_type == event_type)
     if actor_user_id:
         query = query.where(CartonAuditEvent.actor_user_id == actor_user_id)
-    if date_from:
-        query = query.where(CartonAuditEvent.created_at >= f"{date_from}T00:00:00")
-    if date_to:
-        query = query.where(CartonAuditEvent.created_at <= f"{date_to}T23:59:59")
+    if first:
+        query = query.where(CartonAuditEvent.created_at >= first)
+    if after:
+        query = query.where(CartonAuditEvent.created_at < after)
     if search:
-        pattern = f"%{search}%"
+        pattern = literal_pattern(search)
         query = query.where(
             or_(
-                CartonAuditEvent.event_type.ilike(pattern),
-                CartonAuditEvent.entity_type.ilike(pattern),
-                CartonAuditEvent.entity_id.ilike(pattern),
-                CartonAuditEvent.actor_name.ilike(pattern),
-                CartonAuditEvent.detail_json.ilike(pattern),
+                CartonAuditEvent.event_type.ilike(pattern, escape="!"),
+                CartonAuditEvent.entity_type.ilike(pattern, escape="!"),
+                CartonAuditEvent.entity_id.ilike(pattern, escape="!"),
+                CartonAuditEvent.actor_name.ilike(pattern, escape="!"),
+                CartonAuditEvent.detail_json.ilike(pattern, escape="!"),
+                CartonAuditEvent.event_type.in_([key for key, label in AUDIT_LABELS.items() if search.casefold() in label.casefold()]),
             )
         )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = list(
         db.scalars(
-            query.order_by(CartonAuditEvent.sequence.desc()).limit(limit).offset(offset)
+            query.order_by(CartonAuditEvent.sequence.asc() if sort == "ASC" else CartonAuditEvent.sequence.desc()).limit(limit).offset(offset)
         ).all()
     )
     items: list[CartonAuditEventOut] = []

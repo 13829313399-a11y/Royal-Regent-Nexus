@@ -20,6 +20,10 @@ export interface SupplierDocumentOrder { order_no: string; customer_name: string
 export interface SupplierDocumentLine { order_no: string; child_no: string; contract_no?: string; item_no?: string; customer_name?: string; source_document_no?: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; before_quantity?: string; change_quantity?: string; received_quantity?: string }
 export interface SupplierDocument { id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; export_count: number; is_batch?: boolean; source_documents?: { id: string; document_no: string; order_no: string }[]; unmatched_line_count?: number; source_filename?: string; source_sha256?: string; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
 export interface SupplierActivity { id: string; created_at: string; action: string; reference_no: string; actor_name: string; factory_id: string }
+export interface SupplierMarkAsset {
+  id: string; file_name: string; kind: 'pdf' | 'excel'; size_bytes: number; contract_number: string; created_at: string
+  orders: { id: string; customer_name: string; contract_no: string; customer_po: string; item_no: string }[]
+}
 const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
   async memberships() { return (await http.get<{ factory_id: string; supplier_name: string }[]>(base + '/memberships')).data },
@@ -27,6 +31,7 @@ export const cartonSupplierPortalApi = {
   async pendingShipments(factory_id: string, limit = 3) { return (await http.get<PendingSupplierShipments>(base + '/internal/shipments/pending', { params: { factory_id, limit } })).data },
   async documents(factory_id: string) { return (await http.get<SupplierDocument[]>(base + '/documents', { params: { factory_id } })).data },
   async activity(factory_id: string) { return (await http.get<SupplierActivity[]>(base + '/activity', { params: { factory_id } })).data },
+  async activityPage(filters: Record<string, string | number>) { return (await http.get<{ items: SupplierActivity[]; total: number; limit: number; offset: number }>(base + '/activity-page', { params: filters })).data },
   async exportDocuments(documents: Pick<SupplierDocument, 'factory_id' | 'kind' | 'id'>[]) {
     const selections = documents.map(({ factory_id, kind, id }) => ({ factory_id, kind, id }))
     const { data } = await http.post<Blob>(base + '/documents/export.xlsx', { documents: selections }, { responseType: 'blob' })
@@ -48,6 +53,9 @@ export const cartonSupplierPortalApi = {
     URL.revokeObjectURL(url)
   },
   async markTemplates(factory_id: string) { return (await http.get<SupplierMarkTemplate[]>(base + '/carton-mark/templates', { params: { factory_id } })).data },
+  async markAssets(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkAsset[]>(base + '/carton-mark/assets', { params: { factory_id }, signal })).data },
+  previewMarkAssetUrl(id: string, factory_id: string) { return http.getUri({ url: `${base}/carton-mark/assets/${encodeURIComponent(id)}/document`, params: { factory_id, preview: true } }) },
+  async downloadMarkAsset(id: string, factory_id: string, signal?: AbortSignal) { return (await http.get<Blob>(`${base}/carton-mark/assets/${encodeURIComponent(id)}/document`, { params: { factory_id }, responseType: 'blob', signal })).data },
   previewMarkPdfUrl(template_id: string, factory_id: string) { return http.getUri({ url: `${base}/carton-mark/templates/${encodeURIComponent(template_id)}/documents/print_pdf`, params: { factory_id, preview: true } }) },
   async downloadMarkDocument(template_id: string, kind: 'source_excel' | 'print_pdf', factory_id: string, filename: string) { const { data } = await http.get<Blob>(`${base}/carton-mark/templates/${template_id}/documents/${kind}`, { params: { factory_id }, responseType: 'blob' }); const url = URL.createObjectURL(data); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url) },
   async accept(line: PortalPaper, order: PortalOrder, factory_id: string, promised_date: string) { return (await http.put<PortalOrder>(`${base}/papers/${line.id}/commitment`, { factory_id, issue_id: order.issue_id, expected_revision: line.commitment_revision, promised_date })).data },

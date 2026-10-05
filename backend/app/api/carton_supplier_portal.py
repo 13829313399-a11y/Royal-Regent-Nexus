@@ -1,4 +1,5 @@
 from urllib.parse import quote
+from typing import Literal
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
@@ -9,6 +10,7 @@ from app.services import carton_supplier_portal as service
 from app.services import carton_supplier_delivery_import as delivery_import
 from app.services import carton_supplier_settlement as settlement
 from app.schemas.carton_supplier_settlement import SupplierSettlementReview
+from app.schemas.carton_supplier_portal import SupplierMarkAssetOut
 import json
 
 router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
@@ -57,6 +59,32 @@ def export_supplier_order_import(payload: SupplierDocumentExport, db: Session = 
 @router.get("/activity")
 def activity(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.supplier_activity(db, user, factory_id)
+
+
+@router.get("/activity-page")
+def activity_page(factory_id: str = "", search: str = Query(default="", max_length=128),
+                  event_type: str = Query(default="", max_length=64),
+                  date_from: str = "", date_to: str = "", sort: Literal["ASC", "DESC"] = "DESC",
+                  limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0),
+                  db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.supplier_activity_page(db, user, factory_id, search=search.strip(), event_type=event_type,
+        date_from=date_from, date_to=date_to, sort=sort, limit=limit, offset=offset)
+
+@router.get("/carton-mark/assets", response_model=list[SupplierMarkAssetOut])
+def carton_mark_assets(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.supplier_mark_assets(db, user, factory_id)
+
+
+@router.get("/carton-mark/assets/{asset_id}/document")
+def carton_mark_asset_document(asset_id: str, factory_id: str, preview: bool = False,
+                              db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    asset = service.supplier_mark_asset_document(db, user, factory_id, asset_id)
+    disposition = "inline" if preview and asset.kind == "pdf" else "attachment"
+    return Response(asset.content, media_type=asset.content_type, headers={
+        "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(asset.file_name, safe=""),
+        "Content-Length": str(asset.size_bytes), "X-Content-SHA256": asset.sha256,
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
 
 @router.get("/carton-mark/templates", response_model=list[SupplierMarkTemplateOut])
 def carton_mark_templates(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):

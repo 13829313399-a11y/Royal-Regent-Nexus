@@ -15,6 +15,33 @@ function mountGuide(canReviewSupplierDeliveries = true) {
 afterEach(() => vi.restoreAllMocks())
 
 describe('carton usage guide interaction', () => {
+  it('offers supplier chapters and opens supplier workspaces without internal receiving navigation', async () => {
+    const wrapper = mountGuide(false)
+    await wrapper.setProps({ audience: 'supplier' })
+    expect(wrapper.text()).toContain('供应商协同使用教程')
+    expect(wrapper.find('#carton-guide-opening').exists()).toBe(false)
+    await wrapper.get('input[aria-label="查找教程步骤"]').setValue('同一份月结')
+    expect(wrapper.find('#carton-guide-supplier-monthly').exists()).toBe(true)
+    await wrapper.findAll('button').find(button => button.text() === '打开月结对账')!.trigger('click')
+    expect(wrapper.emitted('supplierNavigate')).toEqual([['supplier-settlements']])
+    expect(wrapper.emitted('navigate')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('prints all supplier chapters after filtering, without warehouse instructions', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => {})
+    const wrapper = mountGuide(false)
+    await wrapper.setProps({ audience: 'supplier' })
+    await wrapper.get('input[aria-label="查找教程步骤"]').setValue('同一份月结')
+    await wrapper.findAll('button').find(button => button.text() === '打印 / 保存 PDF')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('#carton-guide-supplier-start').exists()).toBe(true)
+    expect(wrapper.find('#carton-guide-supplier-failure').exists()).toBe(true)
+    expect(wrapper.find('#carton-guide-master').exists()).toBe(false)
+    expect(print).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
   it('searches instructions and requests only the corresponding workspace', async () => {
     const wrapper = mountGuide()
     await wrapper.get('input[aria-label="查找教程步骤"]').setValue('导入历史库存')

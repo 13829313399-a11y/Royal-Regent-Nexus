@@ -24,6 +24,7 @@ from app.models import (
     document_tools,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
+    carton_feedback,  # noqa: F401
     carton_procurement,  # noqa: F401
     carton_stocktake,  # noqa: F401
     carton_positions,

@@ -4,16 +4,21 @@ import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import { factoryContexts } from '@/data/enterpriseMock'
 import { supplierSettlementApi as api, type SettlementDocument, type SupplierSettlementWorkspace } from '@/api/cartonSupplierSettlement'
+import CartonSettlementFilters from '@/components/CartonSettlementFilters.vue'
+import { matchesSettlementLine, settlementStage, type SettlementLineFilter } from '@/features/carton-procurement/queryFilters'
 
 const props = defineProps<{ factories: { factory_id: string; supplier_name: string }[] }>()
 const auth = useAuthStore()
 const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
 const factory = ref(''), period = ref(today().slice(0, 7)), currency = ref('CNY')
 const workspace = ref<SupplierSettlementWorkspace | null>(null), selected = ref('')
+const query = ref(''), lineFilter = ref<SettlementLineFilter>('ALL'), documentFilter = ref('ALL')
 const busy = ref(false), error = ref(''), message = ref(''), reason = ref('')
 let generation = 0
 const document = computed(() => workspace.value?.documents.find(row => row.id === selected.value))
 const sourceMap = computed(() => new Map(document.value?.sources.map(row => [row.source_key, row]) ?? []))
+const shown = computed(() => document.value?.statement.lines.filter(line => matchesSettlementLine(line, sourceMap.value.get(line.source_key), document.value?.result.line_results.find(row => row.id === line.id), query.value, lineFilter.value)) ?? [])
+const filteredDocuments = computed(() => workspace.value?.documents.filter(doc => documentFilter.value === 'ALL' || settlementStage(doc) === documentFilter.value || doc.id === selected.value) ?? [])
 const canReview = computed(() => auth.can('carton_supplier:approve', '*', '*') && auth.can('carton_supplier:approve', factory.value, '*'))
 const reviewable = computed(() => !!document.value && document.value.status === 'DRAFT' && !document.value.stale && canReview.value)
 const confirmable = computed(() => reviewable.value && document.value!.period < today().slice(0, 7) && !document.value!.result.issues.length)
@@ -48,6 +53,7 @@ watch(() => props.factories, values => {
   if (!values.some(row => row.factory_id === factory.value)) factory.value = values[0]?.factory_id ?? ''
 }, { immediate: true })
 watch([factory, period, currency], () => void load(), { immediate: true })
+watch(factory, () => { query.value = ''; lineFilter.value = 'ALL'; documentFilter.value = 'ALL' })
 watch(selected, () => { reason.value = ''; message.value = '' })
 onBeforeUnmount(() => { generation++ })
 </script>
@@ -70,14 +76,15 @@ onBeforeUnmount(() => { generation++ })
     <p v-else-if="!document" class="rounded-xl border bg-white p-8 text-sm text-slate-500">本期暂无本厂保存的协同月结草稿，请联系本厂核实月份或生成草稿。</p>
     <article v-if="document" class="overflow-hidden rounded-xl border bg-white">
       <div class="flex flex-wrap items-center gap-3 border-b p-4 text-xs">
-        <select v-model="selected" :disabled="busy" aria-label="供应商月结版本" class="h-9 rounded-lg border px-3"><option v-for="doc in workspace!.documents" :key="doc.id" :value="doc.id">版本 {{ doc.version }} · {{ doc.statement.statement_no }} · {{ doc.status === 'CONFIRMED' ? '双方已确认' : doc.status === 'SUPERSEDED' ? '历史版本' : '核对草稿' }}</option></select>
+        <select v-model="selected" :disabled="busy" aria-label="供应商月结版本" class="h-9 rounded-lg border px-3"><option v-for="doc in filteredDocuments" :key="doc.id" :value="doc.id">版本 {{ doc.version }} · {{ doc.statement.statement_no }} · {{ doc.status === 'CONFIRMED' ? '双方已确认' : doc.status === 'SUPERSEDED' ? '历史版本' : '核对草稿' }}</option></select>
         <span>{{ document.statement.tax_basis === 'INCLUSIVE' ? '含税' : '未税' }} · {{ document.currency }}</span>
         <span v-if="document.stale" class="text-amber-800">来源已变化，须本厂更新草稿后重新核对</span>
         <span v-else-if="document.result.supplier_review">{{ document.result.supplier_review.decision === 'CONFIRMED' ? '供应商已确认' : '供应商已提出异议' }} · {{ document.result.supplier_review.at }}</span>
         <span v-else>供应商待确认</span>
       </div>
+      <CartonSettlementFilters v-model:query="query" v-model:lines="lineFilter" v-model:stage="documentFilter" :shown="shown.length" :total="document.statement.lines.length" />
       <div class="overflow-x-auto"><table class="w-full min-w-[960px] text-left text-xs" aria-label="双方月结明细"><thead class="bg-slate-50 text-slate-600"><tr><th class="p-3">单据 / 货号 / 规格</th><th class="p-3">供应商原送货</th><th class="p-3">本厂有效验收</th><th class="p-3">拟结算数量 / 单价 / 金额</th><th class="p-3">核对依据</th></tr></thead><tbody class="divide-y">
-        <tr v-for="line in document.statement.lines" :key="line.id"><td class="p-3"><b>{{ line.document_no }}</b><p>{{ sourceMap.get(line.source_key)?.item_no }} · {{ sourceMap.get(line.source_key)?.packaging_type }} · {{ sourceMap.get(line.source_key)?.specification }}</p><p class="mt-1 text-slate-500">{{ sourceMap.get(line.source_key)?.kind === 'RETURN' ? '退货' : '验收' }} {{ sourceMap.get(line.source_key)?.acceptance_date || '待核实' }}</p></td>
+        <tr v-for="line in shown" :key="line.id"><td class="p-3"><b>{{ line.document_no }}</b><p>{{ sourceMap.get(line.source_key)?.item_no }} · {{ sourceMap.get(line.source_key)?.packaging_type }} · {{ sourceMap.get(line.source_key)?.specification }}</p><p class="mt-1 text-slate-500">{{ sourceMap.get(line.source_key)?.kind === 'RETURN' ? '退货' : '验收' }} {{ sourceMap.get(line.source_key)?.acceptance_date || '待核实' }}</p></td>
           <td class="p-3"><template v-if="sourceMap.get(line.source_key)?.supplier_delivery">{{ sourceMap.get(line.source_key)?.supplier_delivery?.quantity }} {{ sourceMap.get(line.source_key)?.unit }}<p>单价 {{ display(sourceMap.get(line.source_key)?.supplier_delivery?.original_unit_price ?? sourceMap.get(line.source_key)?.supplier_delivery?.unit_price) }}</p><p>金额 {{ display(sourceMap.get(line.source_key)?.supplier_delivery?.amount) }}</p><p v-if="sourceMap.get(line.source_key)?.supplier_delivery?.price_warning" class="mt-1 text-amber-800">{{ sourceMap.get(line.source_key)?.supplier_delivery?.price_warning }}</p></template><span v-else>凭证补录 / 退货核对</span></td>
           <td class="p-3">{{ display(sourceMap.get(line.source_key)?.quantity) }} {{ sourceMap.get(line.source_key)?.unit }}<p>单价 {{ display(sourceMap.get(line.source_key)?.unit_price) }}</p><p>金额 {{ display(sourceMap.get(line.source_key)?.amount) }}</p></td>
           <td class="p-3">{{ display(line.quantity) }} {{ sourceMap.get(line.source_key)?.unit }}<p>单价 {{ display(line.unit_price) }}</p><p class="font-bold text-teal-700">金额 {{ display(line.amount) }}</p></td>

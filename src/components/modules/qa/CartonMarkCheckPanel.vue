@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute } from 'vue-router'
 import {
   cartonMarkApi,
+  type CartonMarkAsset,
   type CartonMarkAutoCheckResponse,
   type CartonMarkBatchCheckResponse,
   type CartonMarkComparisonItem,
@@ -144,6 +145,11 @@ const allPhotoRecords = ref<CartonMarkPhotoRecord[]>([])
 const customerOptions = ref<CartonMarkCustomer[]>([])
 const selectedFile = ref<File | null>(null)
 const selectedExcelFile = ref<File | null>(null)
+const selectedExcelAssetId = ref('')
+const selectedPdfAssetId = ref('')
+const librarySelectionGeneration = { pdf: 0, excel: 0 }
+let libraryMetadataGeneration = 0
+const pendingLibraryReads = reactive({ pdf: false, excel: false })
 const selectedFrontPhotoFile = ref<File | null>(null)
 const selectedSidePhotoFile = ref<File | null>(null)
 const selectedFrontBatchFiles = ref<File[]>([])
@@ -266,12 +272,14 @@ const photoReadyRecords = computed(() => {
 })
 
 const selectedFileLabel = computed(() => {
+  if (pendingLibraryReads.pdf) return '正在读取仓库 PDF…'
   if (!selectedFile.value) return '未选择 PDF'
 
   return `${selectedFile.value.name} · ${formatFileSize(selectedFile.value.size)}`
 })
 
 const selectedExcelFileLabel = computed(() => {
+  if (pendingLibraryReads.excel) return '正在读取仓库 Excel…'
   if (!selectedExcelFile.value) return '未选择 Excel'
 
   return `${selectedExcelFile.value.name} · ${formatFileSize(selectedExcelFile.value.size)}`
@@ -307,6 +315,7 @@ const hasSelectedCustomerOption = computed(() => {
 const canSubmit = computed(() => {
   return Boolean(
     canUploadTemplate.value
+    && !pendingLibraryReads.pdf && !pendingLibraryReads.excel
     && hasSelectedCustomerOption.value
     && form.item.trim()
     && form.contractNumber.trim()
@@ -1330,11 +1339,18 @@ async function replaceStoredPhotoRecord(nextPhoto: CartonMarkPhotoRecord) {
 }
 
 function resetForm() {
+  librarySelectionGeneration.pdf++
+  librarySelectionGeneration.excel++
+  libraryMetadataGeneration++
+  pendingLibraryReads.pdf = false
+  pendingLibraryReads.excel = false
   form.customerName = ''
   form.item = ''
   form.contractNumber = ''
   selectedExcelFile.value = null
   selectedFile.value = null
+  selectedExcelAssetId.value = ''
+  selectedPdfAssetId.value = ''
 
   if (excelFileInput.value) {
     excelFileInput.value.value = ''
@@ -1473,7 +1489,11 @@ function openBatchPhotoFilePicker(side: CartonMarkPhotoSide) {
   sideBatchPhotoFileInput.value?.click()
 }
 
-function selectPrintPdf(file: File | undefined, input?: HTMLInputElement) {
+function selectPrintPdf(file: File | undefined, input?: HTMLInputElement, libraryCompletion = false) {
+  librarySelectionGeneration.pdf++
+  if (!libraryCompletion) libraryMetadataGeneration++
+  pendingLibraryReads.pdf = false
+  selectedPdfAssetId.value = ''
   errorMessage.value = ''
   successMessage.value = ''
   documentReviewMessage.value = ''
@@ -1509,7 +1529,11 @@ function handlePdfFileDrop(event: DragEvent) {
   selectPrintPdf(event.dataTransfer?.files[0])
 }
 
-function selectExcelContract(file: File | undefined, input?: HTMLInputElement) {
+function selectExcelContract(file: File | undefined, input?: HTMLInputElement, libraryCompletion = false) {
+  librarySelectionGeneration.excel++
+  if (!libraryCompletion) libraryMetadataGeneration++
+  pendingLibraryReads.excel = false
+  selectedExcelAssetId.value = ''
   errorMessage.value = ''
   successMessage.value = ''
   documentReviewMessage.value = ''
@@ -1540,6 +1564,52 @@ function handleExcelFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   selectExcelContract(input.files?.[0], input)
 }
+
+async function useLibraryAsset(asset: CartonMarkAsset) {
+  if (!canUploadTemplate.value || isSaving.value || asset.factory_id !== activeFactoryId.value) return
+  const requestedFactoryId = activeFactoryId.value
+  const requestedGeneration = factoryGeneration
+  const selection = ++librarySelectionGeneration[asset.kind]
+  const metadata = ++libraryMetadataGeneration
+  const previousForm = { ...form }
+  pendingLibraryReads[asset.kind] = true
+  if (asset.kind === 'pdf') {
+    selectedFile.value = null
+    selectedPdfAssetId.value = ''
+  } else {
+    selectedExcelFile.value = null
+    selectedExcelAssetId.value = ''
+  }
+  try {
+    const blob = await cartonMarkApi.downloadAsset(requestedFactoryId, asset.id)
+    if (!isPanelMounted || !isCurrentFactoryTask(requestedFactoryId, requestedGeneration)
+      || selection !== librarySelectionGeneration[asset.kind] || isSaving.value || !canUploadTemplate.value) return
+    const canFillMetadata = metadata === libraryMetadataGeneration
+    const file = new File([blob], asset.file_name, { type: blob.type })
+    if (asset.kind === 'pdf') {
+      selectPrintPdf(file, undefined, true)
+      selectedPdfAssetId.value = asset.id
+    } else {
+      selectExcelContract(file, undefined, true)
+      selectedExcelAssetId.value = asset.id
+    }
+    if (canFillMetadata && asset.contract_number && form.contractNumber === previousForm.contractNumber) form.contractNumber = asset.contract_number
+    const items = [...new Set(asset.orders.map(order => order.item_no))]
+    if (canFillMetadata && items.length === 1 && form.item === previousForm.item) form.item = items[0] || ''
+    const customers = [...new Set(asset.orders.map(order => order.customer_name))]
+    if (canFillMetadata && form.customerName === previousForm.customerName && customers.length === 1 && customerOptions.value.some(customer => normalizeKey(customer.name) === normalizeKey(customers[0] || ''))) {
+      form.customerName = customers[0] || ''
+    }
+    successMessage.value = `已从仓库选择 ${asset.file_name}，提交核对时直接使用保存的原文件。`
+  } catch (error) {
+    if (isPanelMounted && isCurrentFactoryTask(requestedFactoryId, requestedGeneration)
+      && selection === librarySelectionGeneration[asset.kind]) errorMessage.value = getApiErrorMessage(error)
+  } finally {
+    if (selection === librarySelectionGeneration[asset.kind]) pendingLibraryReads[asset.kind] = false
+  }
+}
+
+defineExpose({ useLibraryAsset })
 
 function handleExcelFileDrop(event: DragEvent) {
   selectExcelContract(event.dataTransfer?.files[0])
@@ -1637,6 +1707,9 @@ async function submitTemplate() {
     return
   }
 
+  librarySelectionGeneration.pdf++
+  librarySelectionGeneration.excel++
+  libraryMetadataGeneration++
   isSaving.value = true
 
   const requestedFactoryId = activeFactoryId.value
@@ -1659,6 +1732,8 @@ async function submitTemplate() {
       contractNumber,
       excelContract: currentExcelFile,
       printPdf: currentFile,
+      excelAssetId: selectedExcelAssetId.value || undefined,
+      pdfAssetId: selectedPdfAssetId.value || undefined,
       signal: controller.signal,
     })
     if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration) && isPanelMounted) {
