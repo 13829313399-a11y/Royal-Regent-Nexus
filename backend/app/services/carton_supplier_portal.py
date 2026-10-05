@@ -6,6 +6,7 @@ from datetime import date
 from decimal import Decimal
 from io import BytesIO
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 from uuid import uuid4
 from zipfile import ZipFile, BadZipFile
 from xml.etree import ElementTree
@@ -16,7 +17,8 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 from app.services.carton_purchase_batches import group_purchase_documents, load_purchase_batch, purchase_batch
-from app.models.carton_mark import CartonMarkDocument, CartonMarkTemplate
+from app.models.carton_mark import CartonMarkAsset, CartonMarkDocument, CartonMarkTemplate
+from app.services import carton_mark_assets as mark_assets
 from app.models.carton_procurement import CartonOrder, CartonOrderLine, CartonSupplier, CartonPurchaseOrderIssue, CartonReceipt, CartonReceiptLine, CartonAuditEvent
 from app.models.carton_supplier_portal import SupplierCommitment, SupplierShipment, SupplierShipmentLine, SupplierShipmentUnmatchedLine, SupplierAttachment
 from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
@@ -131,6 +133,34 @@ def acceptance_summary(db, order, lines, *, projection=None):
     return result
 
 
+def acceptance_order_ids(db, orders, status):
+    """Use the canonical current-issue projection before ledger counting/paging.
+
+    Only three batched evidence reads are needed; a replenishment issue or an old
+    commitment must never make the current ordinary purchase look accepted.
+    """
+    from collections import defaultdict
+    result = []
+    for start in range(0, len(orders), 400):
+        batch = orders[start:start + 400]
+        identifiers = [order.id for order in batch]
+        lines, issues, commitments = defaultdict(list), defaultdict(list), defaultdict(list)
+        for row in db.scalars(select(CartonOrderLine).where(CartonOrderLine.order_id.in_(identifiers))):
+            lines[row.order_id].append(row)
+        for row in db.scalars(select(CartonPurchaseOrderIssue).where(
+                CartonPurchaseOrderIssue.order_id.in_(identifiers)).order_by(CartonPurchaseOrderIssue.issue_sequence.desc())):
+            issues[row.order_id].append(row)
+        line_ids = [line.id for own in lines.values() for line in own]
+        for row in db.scalars(select(SupplierCommitment).where(SupplierCommitment.order_line_id.in_(line_ids))):
+            commitments[row.order_line_id].append(row)
+        for order in batch:
+            own = lines[order.id]
+            projection = {"issues": issues[order.id], "commitments": [row for line in own for row in commitments[line.id]]}
+            if acceptance_summary(db, order, own, projection=projection)["status"] == status:
+                result.append(order.id)
+    return result
+
+
 def supplier_order(db, order_id, factory, supplier_id):
     order = db.scalar(select(CartonOrder).where(CartonOrder.id == order_id, CartonOrder.factory_id == factory,
         CartonOrder.supplier_id == supplier_id, CartonOrder.status.in_(VISIBLE_STATES)))
@@ -142,6 +172,57 @@ def supplier_order(db, order_id, factory, supplier_id):
 def _mark_identity(customer_name, po, item, contract_number):
     return tuple(" ".join(value.strip().split()).casefold() for value in
         (customer_name, po, item, contract_number))
+
+
+def _supplier_mark_assets(db, user, factory):
+    """Share source files by contract using issued headers, with factory-wide ambiguity checks."""
+    supplier = supplier_access(db, user, factory)
+    projections, eligible = [], {}
+    for order in mark_assets.available_orders(db, factory):
+        issue = latest_issue(db, order)
+        header = _purchase_order_snapshot(issue).get("order", {}) if issue else {}
+        if not isinstance(header, dict):
+            header = {}
+        # Unissued orders still participate in detecting cross-customer collisions.
+        projections.append(SimpleNamespace(id=order.id, order_no=order.order_no,
+            contract_no=str(header.get("contract_no", order.contract_no)),
+            customer_code=str(header.get("customer_code", order.customer_code)),
+            customer_name=str(header.get("customer_name", order.customer_name)),
+            item_no=str(header.get("item_no", order.item_no))))
+        if (issue and order.supplier_id == supplier.id
+                and header.get("supplier_id") == supplier.id
+                and order.status in OPEN_STATES | {"COMPLETED"}):
+            eligible[order.id] = dict(id=order.id,
+                customer_name=str(header.get("customer_name") or ""),
+                contract_no=str(header.get("contract_no") or ""),
+                customer_po=str(header.get("customer_po") or ""),
+                item_no=str(header.get("item_no") or ""))
+    result = []
+    for asset in db.scalars(select(CartonMarkAsset).where(
+            CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False))
+            .order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id.desc())):
+        projected = mark_assets.asset_out(asset, projections)
+        if projected.binding_status != "BOUND":
+            continue
+        orders = [eligible[o.id] for o in projected.orders if o.id in eligible]
+        if orders:
+            result.append((asset, orders))
+    return result
+
+
+def supplier_mark_assets(db, user, factory):
+    return [dict(id=asset.id, file_name=asset.file_name, kind=asset.kind,
+        size_bytes=asset.size_bytes, contract_number=asset.contract_number,
+        created_at=asset.created_at, orders=orders)
+        for asset, orders in _supplier_mark_assets(db, user, factory)]
+
+
+def supplier_mark_asset_document(db, user, factory, asset_id):
+    asset = next((asset for asset, _ in _supplier_mark_assets(db, user, factory)
+        if asset.id == asset_id), None)
+    if asset is None:
+        raise HTTPException(404, "未找到可查看的箱唛资料")
+    return asset
 
 
 def _visible_supplier_mark_templates(db, user, factory):
@@ -525,7 +606,7 @@ def documents(db, user, factory):
     return sorted(result, key=lambda item: (item["created_at"], item["document_no"]), reverse=True)
 
 
-def supplier_activity(db, user, factory):
+def _activity_rules(db, user, factory):
     supplier = supplier_access(db, user, factory)
     order_rows = db.scalars(select(CartonOrder).where(
         CartonOrder.factory_id == factory, CartonOrder.supplier_id == supplier.id,
@@ -540,8 +621,6 @@ def supplier_activity(db, user, factory):
     shipments = db.scalars(select(SupplierShipment).where(
         SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier.id)).all()
     shipment_nos = {row.id: row.delivery_note_no for row in shipments}
-    if not order_ids and not issue_nos and not shipment_nos:
-        return []
     allowed = {
         "PURCHASE_ORDER_ISSUED": ("carton_purchase_order_issue", issue_nos, "采购单已发行"),
         "SUPPLIER_PAPER_ACCEPTED": ("carton_order", order_nos, "纸品已确认接单"),
@@ -551,25 +630,48 @@ def supplier_activity(db, user, factory):
         "SUPPLIER_SHIPMENT_RECEIPT_REVERSED": ("supplier_shipment", shipment_nos, "原收料已冲销，等待仓库更正"),
         "SUPPLIER_SHIPMENT_LINE_LINKED": ("supplier_shipment", shipment_nos, "无单纸品已关联正式订单"),
     }
-    rows = db.scalars(select(CartonAuditEvent).where(
-        CartonAuditEvent.factory_id == factory,
-        CartonAuditEvent.event_type.in_(allowed),
-        or_(
-            and_(CartonAuditEvent.entity_type == "carton_order", CartonAuditEvent.entity_id.in_(order_ids)),
-            and_(CartonAuditEvent.entity_type == "carton_purchase_order_issue", CartonAuditEvent.entity_id.in_(issue_nos)),
-            and_(CartonAuditEvent.entity_type == "supplier_shipment", CartonAuditEvent.entity_id.in_(shipment_nos)),
-        )).order_by(CartonAuditEvent.sequence.desc()).limit(500)).all()
+    return allowed
+
+
+def supplier_activity_page(db, user, factory="", *, search="", event_type="", date_from="", date_to="", sort="DESC", limit=50, offset=0):
+    from app.services.carton_query import date_bounds, literal_pattern
+    first, after = date_bounds(date_from, date_to)
+    factories = [factory] if factory else [supplier.factory_id for supplier in supplier_factories(db, user)]
+    rules = {scope: _activity_rules(db, user, scope) for scope in factories}
+    # Match each event to its allowed entity and supplier-owned ID before both
+    # counting and paging. Never search or return the raw internal detail JSON.
+    scopes = [and_(CartonAuditEvent.factory_id == scope, CartonAuditEvent.event_type == code,
+                   CartonAuditEvent.entity_type == rule[0], CartonAuditEvent.entity_id.in_(rule[1]))
+              for scope, allowed in rules.items() for code, rule in allowed.items()]
+    query = select(CartonAuditEvent).where(or_(*scopes) if scopes else CartonAuditEvent.id.in_([]))
+    if event_type:
+        query = query.where(CartonAuditEvent.event_type == event_type)
+    if first:
+        query = query.where(CartonAuditEvent.created_at >= first)
+    if after:
+        query = query.where(CartonAuditEvent.created_at < after)
+    if search:
+        term = search.casefold()
+        matches = [and_(CartonAuditEvent.factory_id == scope, CartonAuditEvent.event_type == code,
+                        CartonAuditEvent.entity_id.in_([key for key, number in rule[1].items()
+                            if term in number.casefold() or term in rule[2].casefold()]))
+                   for scope, allowed in rules.items() for code, rule in allowed.items()]
+        query = query.where(or_(CartonAuditEvent.actor_name.ilike(literal_pattern(search), escape="!"), *matches))
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    rows = db.scalars(query.order_by(CartonAuditEvent.sequence.asc() if sort == "ASC" else CartonAuditEvent.sequence.desc()).limit(limit).offset(offset))
     result = []
     for row in rows:
-        rule = allowed.get(row.event_type)
-        if not rule or row.entity_type != rule[0] or row.entity_id not in rule[1]:
-            continue
+        rule = rules[row.factory_id][row.event_type]
         result.append({
             "id": row.id, "created_at": row.created_at, "action": rule[2],
             "reference_no": rule[1][row.entity_id], "actor_name": row.actor_name or "系统",
-            "factory_id": factory,
+            "factory_id": row.factory_id, "event_type": row.event_type,
         })
-    return result
+    return {"items": result, "total": total, "limit": limit, "offset": offset}
+
+
+def supplier_activity(db, user, factory):
+    return supplier_activity_page(db, user, factory, limit=500)["items"]
 
 
 def _excel_text(value):

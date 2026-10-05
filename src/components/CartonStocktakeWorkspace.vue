@@ -14,7 +14,11 @@ const balances = ref<CartonInventoryBalanceResponse[]>([])
 const documents = ref<StocktakeHeader[]>([])
 const doc = ref<StocktakeDetail | null>(null)
 const inventoryQuery = ref(''), documentStatus = ref<StocktakeStatus | ''>('')
+const documentFrom = ref(''), documentTo = ref(''), documentSort = ref('DESC')
 const customer = ref(''), location = ref(''), chosen = ref<string[]>([])
+const paper = ref(''), unit = ref('')
+const papers = computed(() => [...new Set(balances.value.map(row => row.packaging_type))].sort())
+const units = computed(() => [...new Set(balances.value.map(row => row.unit))].sort())
 const busy = ref(false), error = ref(''), message = ref(''), dirty = ref(false), acknowledged = ref(false)
 const counts = ref<Record<string, { actual: string; reason: string }>>({})
 const reviewReason = ref(''), offset = ref(0)
@@ -31,7 +35,7 @@ const editable = computed(() => doc.value?.status === 'DRAFT' && own.value && ca
 const canApprove = computed(() => canWrite.value && !doc.value?.reconciliation_error)
 const customers = computed(() => [...new Map(balances.value.map(row => [row.customer_code, row.customer_name])).entries()])
 const locations = computed(() => [...new Set(balances.value.map(row => row.latest_location))].sort())
-const filtered = computed(() => balances.value.filter(row => (!customer.value || row.customer_code === customer.value) && (!location.value || (row.latest_location || '__empty') === location.value) && [row.contract_no, row.item_no, row.packaging_type, row.paper_quality, row.specification].join(' ').toLowerCase().includes(inventoryQuery.value.trim().toLowerCase())))
+const filtered = computed(() => balances.value.filter(row => (!paper.value || row.packaging_type === paper.value) && (!unit.value || row.unit === unit.value) && (!customer.value || row.customer_code === customer.value) && (!location.value || (row.latest_location || '__empty') === location.value) && [row.contract_no, row.item_no, row.packaging_type, row.paper_quality, row.specification].join(' ').toLowerCase().includes(inventoryQuery.value.trim().toLowerCase())))
 const selectedVisible = computed(() => filtered.value.length > 0 && filtered.value.every(row => chosen.value.includes((row.position_key || row.latest_movement_id))))
 function selectVisible(checked: boolean) {
   const ids = filtered.value.map(row => (row.position_key || row.latest_movement_id))
@@ -55,7 +59,7 @@ async function run(action: () => Promise<void>) {
 }
 async function load() {
   await run(async () => {
-    const result = await Promise.allSettled([cartonProcurementApi.listInventoryBalances(props.factoryId), cartonStocktakeApi.list(props.factoryId, offset.value, documentStatus.value)])
+    const result = await Promise.allSettled([cartonProcurementApi.listInventoryBalances(props.factoryId), cartonStocktakeApi.list(props.factoryId, offset.value, documentStatus.value, { date_from: documentFrom.value, date_to: documentTo.value, sort: documentSort.value })])
     if (result[0].status === 'fulfilled') balances.value = result[0].value
     serviceReady.value = result[1].status === 'fulfilled'
     if (result[1].status === 'fulfilled') documents.value = result[1].value
@@ -145,7 +149,7 @@ onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload
       <div class="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3">
         <label>客户 <select v-model="customer" aria-label="盘点客户"><option value="">全部客户</option><option v-for="[code, name] in customers" :key="code" :value="code">{{ name }}</option></select></label>
         <label>仓位 <select v-model="location" aria-label="盘点仓位"><option value="">全部仓位</option><option v-for="place in locations" :key="place" :value="place || '__empty'">{{ place || '未设置仓位' }}</option></select></label>
-        <input v-model="inventoryQuery" aria-label="盘点库存搜索" placeholder="合同 / 货号 / 纸品" class="h-9 rounded border px-3"><button type="button" class="secondary" @click="customer = ''; location = ''; inventoryQuery = ''">清空筛选</button>
+        <label>纸品 <select v-model="paper" aria-label="盘点纸品类型"><option value="">全部纸品</option><option v-for="name in papers" :key="name">{{ name }}</option></select></label><label>单位 <select v-model="unit" aria-label="盘点库存单位"><option value="">全部单位</option><option v-for="name in units" :key="name">{{ name }}</option></select></label><input v-model="inventoryQuery" aria-label="盘点库存搜索" placeholder="合同 / 货号 / 纸品" class="h-9 rounded border px-3"><button type="button" class="secondary" @click="customer = ''; location = ''; inventoryQuery = ''; paper = ''; unit = ''">清空筛选</button>
         <span class="ml-auto text-xs text-slate-500">已选 {{ chosen.length }} 条 / 最多 500 条</span><button class="primary" :disabled="busy || !serviceReady || !canWrite || !chosen.length || chosen.length > 500" @click="create">生成盘点单</button>
       </div>
       <CartonSelectionSummary :rows="balances.filter(row => chosen.includes(row.position_key || row.latest_movement_id)).map(row => ({ id: row.position_key || row.latest_movement_id, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no} · ${row.latest_location}` }))" :visible-ids="filtered.map(row => row.position_key || row.latest_movement_id)" @clear="chosen = []" @remove="chosen = chosen.filter(id => id !== $event)" />
@@ -153,7 +157,7 @@ onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload
         <tr v-for="row in filtered" :key="(row.position_key || row.latest_movement_id)"><td><input v-model="chosen" type="checkbox" :value="(row.position_key || row.latest_movement_id)" :aria-label="`盘点 ${row.contract_no} ${row.item_no} ${row.packaging_type}`"></td><td>{{ row.customer_name }}</td><td>{{ row.contract_no }}</td><td>{{ row.item_no }}</td><td>{{ row.packaging_type }} · {{ row.paper_quality }} · {{ row.specification }}</td><td>{{ row.latest_location || '未设置' }}</td><td class="text-right font-semibold">{{ Number(row.balance).toLocaleString() }} {{ row.unit }}</td></tr>
         <tr v-if="!filtered.length"><td colspan="7" class="text-center text-slate-400">没有符合条件的库存</td></tr>
       </tbody></table></div>
-      <div class="border-t pt-4"><div class="mb-2 flex flex-wrap items-center justify-between gap-3"><div class="flex items-center gap-3"><h3 class="font-bold">盘点记录</h3><button type="button" class="secondary" :disabled="busy" @click="documentStatus = 'SUBMITTED'; offset = 0; load()">待确认入账</button></div><label class="block text-xs">状态 <select v-model="documentStatus" :disabled="busy" aria-label="盘点记录状态" @change="offset = 0; load()"><option value="">全部状态</option><option v-for="(label, value) in statusNames" :key="value" :value="value">{{ label }}</option></select></label></div><p class="my-2 text-xs text-slate-500">同一库存同时只能有一张进行中的盘点单，可打开草稿继续填写。</p>
+      <div class="border-t pt-4"><div class="mb-2 flex flex-wrap items-center justify-between gap-3"><div class="flex items-center gap-3"><h3 class="font-bold">盘点记录</h3><button type="button" class="secondary" :disabled="busy" @click="documentStatus = 'SUBMITTED'; offset = 0; load()">待确认入账</button></div><label class="block text-xs">状态 <select v-model="documentStatus" :disabled="busy" aria-label="盘点记录状态" @change="offset = 0; load()"><option value="">全部状态</option><option v-for="(label, value) in statusNames" :key="value" :value="value">{{ label }}</option></select></label></div><div class="mb-3 flex flex-wrap items-end gap-2 text-xs"><label>盘点创建日期从<input v-model="documentFrom" :disabled="busy" aria-label="盘点创建起始日期" type="date" class="ml-2" @change="offset = 0; load()"></label><label>至<input v-model="documentTo" :disabled="busy" aria-label="盘点创建结束日期" type="date" class="ml-2" @change="offset = 0; load()"></label><select v-model="documentSort" :disabled="busy" aria-label="盘点记录排序" @change="offset = 0; load()"><option value="DESC">最近创建优先</option><option value="ASC">最早创建优先</option></select><button type="button" :disabled="busy" class="secondary" @click="documentStatus = ''; documentFrom = ''; documentTo = ''; offset = 0; load()">清除记录筛选</button><button type="button" :disabled="busy" class="secondary" @click="documentSort = 'DESC'; offset = 0; load()">恢复默认排序</button></div><p class="my-2 text-xs text-slate-500">同一库存同时只能有一张进行中的盘点单，可打开草稿继续填写。</p>
         <div class="overflow-auto rounded-lg border border-slate-200"><table class="stocktake-records min-w-[850px]"><colgroup><col><col style="width:180px"><col style="width:100px"><col style="width:180px"><col style="width:120px"></colgroup><thead><tr><th>盘点单号</th><th>创建人 / 时间</th><th>状态</th><th>确认人 / 时间</th><th class="text-right">操作</th></tr></thead><tbody><tr v-for="item in documents" :key="item.id"><td class="font-mono text-xs">{{ item.id }}</td><td>{{ item.created_by_name }}<small>{{ item.created_at.replace('T', ' ').slice(0, 19) }}</small></td><td>{{ statusNames[item.status] }}</td><td>{{ item.reviewed_by_name || '—' }}<small>{{ item.reviewed_at.replace('T', ' ').slice(0, 19) }}</small></td><td class="text-right"><button class="secondary whitespace-nowrap" :disabled="busy" @click="open(item.id)">{{ item.status === 'SUBMITTED' ? '查看 / 确认' : '查看 / 处理' }}</button></td></tr><tr v-if="!documents.length"><td colspan="5" class="text-center text-slate-400">暂无盘点记录</td></tr></tbody></table></div>
         <div class="mt-3 flex justify-end gap-2"><button class="secondary" :disabled="busy || offset === 0" @click="page(-1)">上一页</button><button class="secondary" :disabled="busy || documents.length < 100" @click="page(1)">下一页</button></div>
       </div>

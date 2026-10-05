@@ -17,7 +17,8 @@ from test_module_feedback import create_payload, png, user
 
 
 BACKEND = Path(__file__).resolve().parents[1]
-HEAD = "20261005_0131"
+HEAD = "20261005_0136"
+MERGE = "20261005_0131"
 
 
 @pytest.mark.parametrize("start", ["20260929_0130", "20261005_0120"])
@@ -34,7 +35,7 @@ def test_both_branches_upgrade_to_single_head_preserving_existing_rows(tmp_path,
 
     script = ScriptDirectory.from_config(Config(str(BACKEND / "alembic.ini")))
     assert script.get_heads() == [HEAD]
-    assert set(script.get_revision(HEAD).down_revision) == {"20260929_0130", "20261005_0120"}
+    assert set(script.get_revision(MERGE).down_revision) == {"20260929_0130", "20261005_0120"}
     assert script.get_revision("20261005_0120").down_revision == "20260924_0119"
     upgrade(start)
     with sqlite3.connect(database) as connection:

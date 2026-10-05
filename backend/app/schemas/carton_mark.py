@@ -1,6 +1,46 @@
 from pydantic import BaseModel, Field, field_validator
 
 
+class CartonMarkAssetOrderOut(BaseModel):
+    id: str
+    order_no: str
+    contract_no: str
+    customer_name: str
+    item_no: str
+
+
+class CartonMarkAssetOut(BaseModel):
+    id: str
+    factory_id: str
+    file_name: str
+    kind: str
+    size_bytes: int
+    sha256: str
+    contract_number: str
+    bound_order_id: str | None
+    recognition_source: str
+    candidates: list[str]
+    warning: str
+    binding_status: str
+    orders: list[CartonMarkAssetOrderOut]
+    revision: int
+    created_by_name: str
+    created_at: str
+
+
+class CartonMarkAssetBindingRequest(BaseModel):
+    contract_number: str = Field(default="", max_length=128)
+    order_id: str | None = Field(default=None, max_length=96)
+    revision: int = Field(ge=1)
+
+
+class CartonMarkAssetUploadResult(BaseModel):
+    file_name: str
+    status: str
+    message: str = ""
+    asset: CartonMarkAssetOut | None = None
+
+
 class CartonMarkExtractedField(BaseModel):
     key: str
     label: str

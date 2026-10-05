@@ -163,7 +163,7 @@ describe('库存盘点工作台', () => {
     expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 0')
     mocks.list.mockRejectedValue(new Error('查询失败'))
     await wrapper.get('[aria-label="盘点记录状态"]').setValue('POSTED'); await flushPromises()
-    expect(mocks.list).toHaveBeenLastCalledWith('huaxing', 0, 'POSTED')
+    expect(mocks.list).toHaveBeenLastCalledWith('huaxing', 0, 'POSTED', { date_from: '', date_to: '', sort: 'DESC' })
     expect(wrapper.text()).not.toContain('PD-1')
     wrapper.unmount()
   })

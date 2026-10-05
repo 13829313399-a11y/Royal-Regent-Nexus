@@ -41,14 +41,16 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v30"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v31"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 150
+    assert len(registered_codes) == 151
+    assert "system:feedback_manage" in permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES
+    assert "system:feedback_manage" not in permission_codes.BUSINESS_PERMISSION_CODES
     assert permission_codes.MODULE_FEEDBACK_PERMISSION_CODES == ("module_feedback:submit", "module_feedback:manage")
     assert not set(permission_codes.MODULE_FEEDBACK_PERMISSION_CODES) & set(permission_codes.BUSINESS_PERMISSION_CODES)
     assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 141
@@ -56,7 +58,7 @@ def test_fixed_system_position_definition_contract():
     assert all(not (set(definition.permission_codes) & set(permission_codes.UV_OPS_PERMISSION_CODES)) for definition in definitions)
     assert len(permission_codes.SPRAY_OPS_PERMISSION_CODES) == 14
     assert all(not (set(definition.permission_codes) & set(permission_codes.SPRAY_OPS_PERMISSION_CODES)) for definition in definitions)
-    assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
+    assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 8
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
         assert set(definition.permission_codes) <= registered_codes

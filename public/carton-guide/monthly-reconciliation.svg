@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="545" viewBox="0 0 1080 545" role="img" aria-labelledby="title desc" lang="zh-CN">
+<title id="title">双方月结：同一版本，依次确认</title><desc id="desc">原送货证据 + 本厂有效验收 + 拟结算明细，按同厂区、月份及币种核对。操作示意，不表示真实业务已完成。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#0f766e"/></marker></defs>
+<g font-family="Microsoft YaHei, PingFang SC, sans-serif">
+<rect width="1080" height="545" fill="#f1f5f9"/>
+<rect x="16" y="16" width="1048" height="513" rx="16" fill="white" stroke="#e2e8f0"/>
+<rect x="16" y="16" width="1048" height="88" rx="16" fill="#f0fdfa"/>
+<text x="40" y="54" font-size="27" font-weight="700" fill="#134e4a">双方月结：同一版本，依次确认</text>
+<text x="40" y="84" font-size="17" fill="#475569">原送货证据 + 本厂有效验收 + 拟结算明细，按同厂区、月份及币种核对</text>
+<text x="40" y="144" font-size="19" font-weight="700" fill="#0f766e">按顺序办理，每一步先核对当前单据</text>
+<rect x="40" y="170" width="184" height="142" rx="12" fill="#f0fdfa" stroke="#cbd5e1"/>
+<text x="54" y="199" font-size="16" font-weight="700" fill="#0f766e">1 · 本厂</text>
+<text x="54" y="233" font-size="21" font-weight="700" fill="#0f172a">保存草稿</text>
+<text x="54" y="265" font-size="16" fill="#475569">核对来源及价格</text>
+<text x="54" y="289" font-size="16" fill="#475569">保存并核对差异</text>
+<path d="M227 240 H237" stroke="#0f766e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="240" y="170" width="184" height="142" rx="12" fill="#eff6ff" stroke="#cbd5e1"/>
+<text x="254" y="199" font-size="16" font-weight="700" fill="#0f766e">2 · 供应商</text>
+<text x="254" y="233" font-size="21" font-weight="700" fill="#0f172a">核对明细</text>
+<text x="254" y="265" font-size="16" fill="#475569">读取当前版本</text>
+<text x="254" y="289" font-size="16" fill="#475569">有问题提出异议</text>
+<path d="M427 240 H437" stroke="#0f766e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="440" y="170" width="184" height="142" rx="12" fill="#f0fdfa" stroke="#cbd5e1"/>
+<text x="454" y="199" font-size="16" font-weight="700" fill="#0f766e">3 · 本厂与供方</text>
+<text x="454" y="233" font-size="21" font-weight="700" fill="#0f172a">处理差异</text>
+<text x="454" y="265" font-size="16" fill="#475569">核实原单及依据</text>
+<text x="454" y="289" font-size="16" fill="#475569">保存后重新核对</text>
+<path d="M627 240 H637" stroke="#0f766e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="640" y="170" width="184" height="142" rx="12" fill="#eff6ff" stroke="#cbd5e1"/>
+<text x="654" y="199" font-size="16" font-weight="700" fill="#0f766e">4 · 供应商</text>
+<text x="654" y="233" font-size="21" font-weight="700" fill="#0f172a">确认本月</text>
+<text x="654" y="265" font-size="16" fill="#475569">月份结束后</text>
+<text x="654" y="289" font-size="16" fill="#475569">确认当前版本</text>
+<path d="M827 240 H837" stroke="#0f766e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="840" y="170" width="184" height="142" rx="12" fill="#f0fdfa" stroke="#cbd5e1"/>
+<text x="854" y="199" font-size="16" font-weight="700" fill="#0f766e">5 · 本厂负责人</text>
+<text x="854" y="233" font-size="21" font-weight="700" fill="#0f172a">确认完成</text>
+<text x="854" y="265" font-size="16" fill="#475569">核实供方已确认</text>
+<text x="854" y="289" font-size="16" fill="#475569">保留双方证据</text>
+<rect x="40" y="343" width="1000" height="119" rx="12" fill="#fffbeb" stroke="#fde68a"/>
+<text x="58" y="373" font-size="18" font-weight="700" fill="#92400e">核对时留意</text>
+<text x="58" y="406" font-size="17" fill="#78350f">来源或结算修改后，旧供应商确认失效；重核版本需要重新核对。</text>
+<text x="58" y="438" font-size="17" fill="#78350f">期初库存与车间领用不作供应商新进货；对账完成不表示付款。</text>
+<text x="40" y="506" font-size="15" fill="#64748b">纸箱使用教程 · 操作示意 / 演示数据 · 以真实业务、目的厂区和账号权限为准</text>
+</g></svg>

@@ -12,6 +12,7 @@ const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse
 const workspace = ref(emptyMaster()), busy = ref(false), error = ref(''), loading = ref(false)
 const tab = ref('SETTINGS'), search = ref(''), customer = ref(''), editing = ref(false), editingId = ref('')
 const statusFilter = ref('ACTIVE'), preferredOnly = ref(false)
+const configSort = ref('DEFAULT')
 const configToRemove = ref<MasterRecord | null>(null), configActionMessage = ref('')
 const warehouseDeleting = ref(false)
 const warehouseEditing = ref(false), warehouseOriginal = ref(''), locationWarehouseLocked = ref(false)
@@ -175,7 +176,7 @@ function resetNumberRules() {
 
 const itemText = ref(''), warehouseText = ref('')
 const tabs = [{ id: 'CONFIG', label: '货号与包装' }, { id: 'CONTRACT', label: '合同登记' }, { id: 'RULE', label: '客户与交期规则' }, { id: 'WORKSHOP', label: '车间' }, { id: 'LOCATION', label: '仓库与仓位' }, { id: 'ACCESS', label: '仓库维护授权' }]
-const rows = computed(() => workspace.value.records.filter(r => r.kind === 'CONFIG' && (statusFilter.value === 'ALL' || r.status === statusFilter.value) && (!preferredOnly.value || r.preferred) && JSON.stringify([r.code, r.data]).toLowerCase().includes(search.value.toLowerCase())))
+const rows = computed(() => workspace.value.records.filter(r => r.kind === 'CONFIG' && (statusFilter.value === 'ALL' || r.status === statusFilter.value) && (!preferredOnly.value || r.preferred) && JSON.stringify([r.code, r.data]).toLowerCase().includes(search.value.toLowerCase())).sort((a, b) => configSort.value === 'CODE' ? a.code.localeCompare(b.code, 'zh-CN', { numeric: true }) : configSort.value === 'CUSTOMER' ? customerName(a.customer_code).localeCompare(customerName(b.customer_code), 'zh-CN') || a.code.localeCompare(b.code, 'zh-CN', { numeric: true }) : 0))
 function editRule(code: string) {
   const existing = workspace.value.records.find(r => r.kind === 'RULE' && r.customer_code === code)
   edit(existing, 'RULE', code)
@@ -215,7 +216,7 @@ async function refreshAfterSave(factory: string, successMessage: string) {
   if (refreshError) error.value = `${successMessage}，但列表刷新失败：${refreshError}。请刷新查看，勿重复保存。`
   emit('changed')
 }
-watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; configActionMessage.value = ''; statusFilter.value = 'ACTIVE'; customer.value = ''; void load() }, { immediate: true })
+watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; configActionMessage.value = ''; configSort.value = 'DEFAULT'; statusFilter.value = 'ACTIVE'; customer.value = ''; void load() }, { immediate: true })
 function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = customer.value) {
   paperOnly.value = false
   ruleScopeLocked.value = (row?.kind || kind) === 'RULE'
@@ -353,7 +354,7 @@ async function saveWarehouse() {
       <div class="flex flex-wrap items-center gap-3 border-b bg-slate-50 p-3">
         <span class="text-xs text-slate-500">本厂货号共用，不绑定客户</span>
         <input v-model="search" aria-label="基础资料搜索" placeholder="查找货号、产品名称、纸品或规格" class="h-9 min-w-56 flex-1 rounded-lg border bg-white px-3 text-xs">
-        <select v-model="statusFilter" aria-label="货号资料状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ALL">全部状态</option><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select><label class="text-xs"><input v-model="preferredOnly" type="checkbox"> 仅推荐</label><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="customer = ''; search = ''; statusFilter = 'ACTIVE'; preferredOnly = false">清空筛选</button>
+        <select v-model="configSort" aria-label="货号资料排序" class="h-9 rounded-lg border px-3 text-xs"><option value="DEFAULT">原顺序</option><option value="CODE">货号顺序</option><option value="CUSTOMER">客户 / 货号顺序</option></select><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="configSort = 'DEFAULT'">恢复默认排序</button><select v-model="statusFilter" aria-label="货号资料状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ALL">全部状态</option><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select><label class="text-xs"><input v-model="preferredOnly" type="checkbox"> 仅推荐</label><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="customer = ''; search = ''; statusFilter = 'ACTIVE'; preferredOnly = false">清空筛选</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white" @click="edit()">新增货号与包装</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg border px-3 text-xs" @click="downloadTemplate('configurations')">下载货号包装模板</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg border px-3 text-xs" @click="openImport('configurations')">导入货号与包装</button>
