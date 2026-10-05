@@ -34,6 +34,7 @@ import { customerOrderApi } from '@/api/customerOrder'
 import type { MappedCustomerCode } from '@/api/customerOrder'
 import { customerOrderLedgerApi } from '@/api/customerOrderLedger'
 import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
+import type { FeedbackContext } from '@/api/moduleFeedback'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
 import CustomerOrderSchedule from './CustomerOrderSchedule.vue'
 import { getApiErrorMessage } from '@/lib/http'
@@ -509,6 +510,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   navigate: [section: CustomerOrderCenterSection]
+  feedback: [context: FeedbackContext]
 }>()
 
 const poInput = ref<HTMLInputElement | null>(null)
@@ -545,6 +547,21 @@ const reconciliationLoading = ref(false)
 const reconciliationQuery = ref('')
 const reconciliationPage = ref(1)
 const reconciliationTotal = ref(0)
+
+function feedbackContext(): FeedbackContext {
+  const row = previewBatch.value?.rows.length === 1 ? previewBatch.value.rows[0] : undefined
+  return {
+    section: props.activeSection,
+    page: props.activeSection === 'preview' ? '预览与确认' : 'PO 与排期导入',
+    customer_code: selectedCustomerCode.value || undefined,
+    order_reference: row?.po_no || row?.contract_no || undefined,
+    product_no: row?.product_no || undefined,
+    batch_id: previewBatch.value?.preview_fingerprint?.slice(0, 64),
+    error_message: (parseFailureMessage.value || exportFailureMessage.value).slice(0, 1000) || undefined,
+    file_names: [...poFiles.value.map(file => file.name), ...(scheduleFile.value ? [scheduleFile.value.name] : [])].slice(0, 10),
+  }
+}
+defineExpose({ feedbackContext })
 const testDuplicateIssueCodes = new Set([
   'duplicate_reference',
   'existing_order_line',
@@ -1987,6 +2004,7 @@ onBeforeUnmount(() => {
                   </li>
                 </ul>
               </div>
+              <button type="button" class="button button--ghost" @click="emit('feedback', feedbackContext())">反馈此问题</button>
               <button
                 v-if="previewBatch"
                 type="button"
@@ -2286,7 +2304,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'ledger'" key="ledger" class="order-view" data-testid="order-ledger">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'exceptions'" key="exceptions" class="order-view" data-testid="order-exceptions">
@@ -2379,11 +2397,11 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'customer-schedule'" key="customer-schedule" class="order-view" data-testid="order-customer-schedule">
-        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" />
+        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'schedule'" key="schedule-live" class="order-view" data-testid="order-schedule">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="false" key="schedule" class="order-view" data-testid="order-schedule-static">

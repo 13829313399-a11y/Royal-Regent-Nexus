@@ -135,6 +135,8 @@ Raw-material master records are global and use `factory_id='*'`, with material c
 
 ### Internal Quote, Customer Price and Pricing
 
+客价转换台提供“使用教程”弹窗，说明客户基础信息、报价接收与恢复预览、输出和 Dickie 合并流程；教程明确保存新参数后须恢复预览或重新导入，重复导出沿用当前参数快照。与客户订单中心共用 `UsageGuideDialog`，教程正文统一维护在 `src/data/salesUsageGuides.ts`。
+
 Internal quotes are persistent and factory-scoped. Collaboration is organized into:
 
 - Engineering
@@ -200,6 +202,12 @@ Customer-price artifacts are derived from approved structured quote data through
 The pricing API persists factory- and customer-scoped pricing quotes. Totals are recalculated server-side and tampered client totals are rejected.
 
 ### Customer Order Center
+
+客户订单中心顶部“使用教程”在桌面与移动端均可打开，覆盖导入核对、异常处理、保存与排期下载、发送、分批走货及历史迁入；教程强调 Excel 导出与台账保存是独立操作，订单中心不维护生产排产。
+
+客户订单中心是模块反馈试点，入口包括顶部“反馈问题”、侧栏/移动端“反馈与答复”、导入错误及订单详情。共用 `src/features/module-feedback` 与 `/api/module-feedback`，目前只开放 `customer-order-center`。用户可提交文字、表情、上传/粘贴截图和附件；截图支持画框、箭头、画笔、文字、裁剪及不透明遮挡，保存后仅发送编辑后的图片。浏览器支持时可主动授权截图。页面、厂区、订单标识、文件名等上下文随草稿冻结；原始业务文件须主动添加，不能自动上传。附件限定 PNG/JPG/WebP/PDF/XLS/XLSX，每次最多 5 个、单个 10 MB、合计 25 MB，服务端验证内容并经受保护接口读取。
+
+运行时员工身份已确认且归属具体厂区的在用账号，均可在所属厂区提交及查看本人反馈，无须业务角色或订单查看权限；未确认、集团归属及其他厂区不能以此资格提交。`module_feedback:submit` 用于独立禁止或禁用反馈，明确允许也不能扩大员工所属厂区；业务数据权限的拒绝不阻止反馈权限问题。开发处理须显式 `module_feedback:manage`（厂区/系统部门范围），不随普通业务职位或总经理业务权限自动授予。每种授权模式均校验范围与明确拒绝，职位的跨厂范围不自动扩展反馈提交或订单关联。能力接口 `can_link_order` 独立校验本厂规范 `customer_order:read`，保留同厂内置职位的部门语义。无订单查看权限时前端只自动关联页面/分区/应用版本，用户仍可主动描述问题及添加资料；服务端在查询前拒绝携带订单 ID 的请求，撤销订单查看权限后也隐藏作者旧反馈中自动派生的订单字段，保存的证据保持原样。开发者点选回复、开始处理、请求资料、上线邀请验证后明确发送；上线邀请必须有实际环境/版本或修复说明。状态为已提交、待补充、处理中、待验证、已解决；资料补齐自动转处理中，只有反馈作者能确认解决或重新打开。回复支持仅附件；并发修改校验 revision，网络结果未知时保留原请求进行幂等重试。用户/开发者未读独立统计，只按当前可见对话版本记录已读，页面在前台每 30 秒检查更新。反馈消息、附件、已读凭据为只追加证据。迁移 `20261005_0120` 新增四表及证据保护；已有反馈时禁止丢弃数据的降级。前向汇合迁移 `20261005_0131` 将反馈分支与 main 的 `20260929_0130` 汇合，既有迁移不重写。本地原工作区数据库经备份、副本演练和旧数据核对已升级至反馈版本并启用，生产发布尚未执行。
 
 Customer-order preview, export, ledger import and history parsing now use a disposable file-processing process rather than the API thread pool. A request-wide 240-second budget, a nonblocking per-process gate plus a worker-owned per-container file lock, Linux 2 GiB address-space/CPU limits and a worker watchdog bound heavy Excel/native-PDF/OCR work; disconnects or cancellation reap the owned process group including nested OCR and converters. Authorization reads release their DB connection before file computation; business validation, fingerprint checks and atomic writes remain in the API after success. Output IPC is limited to 128 MiB. The existing sequential OCR, one-thread and page-render protections remain inside this boundary. Workbook insertion moves only existing cells, preserving distant user content without materializing its rectangular extent; existing formula/merge/validation adjustments remain authoritative. Ledger import/history file endpoints have a dedicated 270-second proxy timeout, while ordinary endpoints retain their short limits. The retired carton ACCESS editor no longer causes all-employee IAM resolution on master-data reads; canonical role checks and legacy provenance remain unchanged. Multi-replica distributed admission is not implemented. Abrupt supervisor death may leave a bounded worker temporary directory; orphan-directory retention remains separate maintenance. This process boundary is deployed in the current production performance overlay; future source releases must preserve it.
 
