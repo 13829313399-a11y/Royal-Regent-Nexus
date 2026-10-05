@@ -32,6 +32,7 @@ import { threeDPrintingApi } from "@/api/threeDPrinting";
 import { useThreeDLive } from "@/composables/useThreeDLive";
 import { useAppStore } from "@/stores/app";
 import { useAuthStore } from "@/stores/auth";
+import { isPrinterPreparing } from "../printerPresentation";
 import type {
   ThreeDAuditEvent,
   ThreeDDashboard,
@@ -343,6 +344,7 @@ export function useWorkspace() {
   });
 
   function stateLabel(state: string) {
+    if (isPrinterPreparing(state)) return "准备中";
     return (
       {
         RUNNING: "打印中",

@@ -1,0 +1,11 @@
+{
+  "source_read_only": true,
+  "source_revision": "20260928_0126",
+  "copy_revision": "20260929_0127",
+  "preserved_tables": 321,
+  "row_count_changes": {},
+  "lost_checks": {},
+  "integrity": "ok",
+  "foreign_key_errors": [],
+  "uv_tables": 44
+}

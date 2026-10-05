@@ -23,6 +23,7 @@ export interface RegisterRequest {
   phone: string
   email: string
   factory_id: string
+  org_unit_id?: string
   department: string
   position: string
 }
@@ -81,6 +82,8 @@ export interface ChangePasswordRequest {
 export type AuthGrantScopeMode = 'own_factory' | 'cross_factory_read' | 'cross_factory_operate'
 
 export interface AuthGrant {
+  factory_ceiling?: string[] | null
+  assignment_id?: string
   role_id: string
   role_code?: string
   role_name: string
@@ -114,6 +117,7 @@ export interface AuthEffectiveAccess {
 export type AuthzMode = 'legacy' | 'shadow' | 'enforce'
 
 export interface AuthMeResponse {
+  identity?: import('./identity').IdentityContext | null
   id: string
   username: string
   display_name: string
@@ -135,6 +139,9 @@ export function createAuthApi(client: AuthHttpClient = http) {
     async login(payload: LoginRequest) {
       const response = await client.post<AuthMeResponse>('/auth/login', payload)
       return response.data
+    },
+    async organizationCatalog() {
+      return (await client.get<{ organizations: { id: string; name: string; factory_id: string; departments: { code: string; name: string }[] }[] }>('/auth/organization-catalog')).data
     },
     async register(payload: RegisterRequest) {
       const response = await client.post<RegisterResponse>('/auth/register', payload)

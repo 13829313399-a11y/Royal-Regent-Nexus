@@ -26,12 +26,8 @@ VALID_ACCESS_KINDS = {READ_ACCESS_KIND, OPERATE_ACCESS_KIND}
 # their read-only contract is explicitly recorded here and in IAM metadata.
 READ_PERMISSION_CODES = frozenset(
     {
+        "uv_ops:read", "uv_ops:cost_read", "uv_ops:payroll_read", "uv_ops:audit_read",
         "injection_scheduling:read",
-        "spray_production:read",
-        "uv_printing:read",
-        "uv_printing:cost_read",
-        "uv_printing:payroll_read",
-        "spray_production:cost_read",
         "molding_sample:read",
         "molding_sample:cross_factory_read",
         "molding_sample:cross_factory_cost_read",
@@ -41,6 +37,7 @@ READ_PERMISSION_CODES = frozenset(
         "carton_mark:read",
         "carton_procurement:read",
         "customer_price:read",
+        "customer_price:settings_read",
         "customer_price:compare",
         "customer_order:read",
         "customer_order:audit_read",
@@ -56,10 +53,10 @@ READ_PERMISSION_CODES = frozenset(
 )
 
 # Notification access is read-only, but a cross-factory-read position must not
-# inherit another factory's bell feed. Roles that intentionally receive
-# cross-factory notifications use ``cross_factory_operate`` instead.
+# inherit another factory's bell feed or confidential customer pricing inputs.
+# Explicit cross-factory operating scope remains a separate authority.
 CROSS_FACTORY_READ_LOCAL_ONLY_PERMISSION_CODES = frozenset(
-    {"molding_sample:notification_read"}
+    {"molding_sample:notification_read", "customer_price:settings_read"}
 )
 
 # Every built-in position may inspect the production-task queue at any factory,

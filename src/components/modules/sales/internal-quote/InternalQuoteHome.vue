@@ -185,6 +185,7 @@ const statusMeta: Record<InternalQuoteStatus, { label: string; tone: string }> =
   archived: { label: '已归档', tone: 'slate' },
 }
 function quoteStatusLabel(quote: InternalQuote) {
+  if (quote.moduleVersion === 'v4') return quote.status === 'exported' ? '已输出并冻结' : quote.status === 'archived' ? '已归档' : '填写中 / 可直接输出'
   if (quote.moduleVersion !== 'v3') return statusMeta[quote.status].label
   return {
     drafting: '整单填写中',

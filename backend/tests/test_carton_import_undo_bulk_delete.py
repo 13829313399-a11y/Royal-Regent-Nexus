@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+import json
 
 import pytest
 
@@ -129,6 +130,11 @@ def schedule(client, kind="weekly"):
         [[f"MISSING-{i}", f"PO-{i}", "Dickie", f"ITEM-{i}", "排期产品", 1200, "1/60", "8月15日-8月18日"] for i in (1, 2)],
     )
     kwargs = {"params": {"factory_id": "huaxing"}, "files": {"file": ("schedule.xlsx", content)}}
+    if kind == "weekly":
+        customers = client.get(f"{BASE}/customers", params={"factory_id": "huaxing"}).json()["items"]
+        if not any(row["customer_code"] == "DICKIE" for row in customers):
+            _customer(client, "Dickie")
+        kwargs["data"] = {"customer_code": "DICKIE"}
     response = client.post(f"{BASE}/{kind}-imports", **kwargs)
     assert response.status_code == 201, response.text
     return response.json(), kwargs
@@ -160,7 +166,6 @@ def test_schedule_undo_keeps_audit_retires_all_results_and_exceptions_once(monke
         assert response.json()["status"] == "REJECTED"
         assert response.json()["parse_summary"] == batch["parse_summary"]
         assert client.post(path, json=body).status_code == 409
-        assert client.post(f"{BASE}/{kind}-imports", **upload).status_code == 409
         assert client.get(f"{BASE}/exceptions", params={"factory_id": "huaxing"}).json()["total"] == 0
         assert client.get(f"{BASE}/imports/{batch['id']}", params={"factory_id": "huaxing"}).json()["status"] == "REJECTED"
         assert _orders(client) == original_orders
@@ -184,11 +189,114 @@ def test_schedule_undo_keeps_audit_retires_all_results_and_exceptions_once(monke
         assert event["detail"]["reason"] == body["reason"]
         assert len(event["detail"]["exceptions"]) == 2
         assert event["detail"]["batch"]["parse_summary"] == batch["parse_summary"]
+        reimport = client.post(f"{BASE}/{kind}-imports", **upload)
+        assert reimport.status_code == 201, reimport.text
+        replacement = reimport.json()
+        assert replacement["id"] != batch["id"] and replacement["duplicate"] is False
+        assert replacement["status"] == "REQUIRES_REVIEW"
+        assert replacement["source_sha256"] == batch["source_sha256"]
+        assert json.loads(replacement["import_profile"])["reimport_of"] == batch["id"]
+        assert replacement["parse_summary"]["reimported_from_batch_id"] == batch["id"]
+        assert replacement["parse_summary"]["row_count"] == 2
+        assert client.get(f"{BASE}/imports/{batch['id']}", params={"factory_id": "huaxing"}).json() == response.json()
+        fresh_exceptions = client.get(f"{BASE}/exceptions", params={"factory_id": "huaxing"}).json()["items"]
+        assert len(fresh_exceptions) == 2
+        assert {item["source_id"] for item in fresh_exceptions} == {replacement["id"]}
+        assert not {item["id"] for item in exceptions} & {item["id"] for item in fresh_exceptions}
+        repeat = client.post(f"{BASE}/{kind}-imports", **{**upload, "files": {"file": ("renamed.xlsx", upload["files"]["file"][1])}})
+        assert repeat.status_code == 201 and repeat.json()["duplicate"] is True
+        assert repeat.json()["id"] == replacement["id"]
+        assert client.get(f"{BASE}/exceptions", params={"factory_id": "huaxing"}).json()["items"] == fresh_exceptions
+        created_events = [entry for entry in audits(client) if entry["event_type"] == "IMPORT_BATCH_CREATED"]
+        assert len(created_events) == 2
+        assert next(entry for entry in created_events if entry["entity_id"] == replacement["id"])["detail"]["reimported_from_batch_id"] == batch["id"]
+        assert client.post(f"{BASE}/imports/{replacement['id']}/undo", json=body).status_code == 200
+        third = client.post(f"{BASE}/{kind}-imports", **upload).json()
+        assert third["id"] not in {batch["id"], replacement["id"]}
+        assert third["parse_summary"]["reimported_from_batch_id"] == replacement["id"]
+        assert client.post(f"{BASE}/{kind}-imports", **upload).json()["id"] == third["id"]
+        assert _orders(client) == original_orders
+        assert client.get(f"{BASE}/inventory/movements", params={"factory_id": "huaxing"}).json()["items"] == []
         if kind == "weekly":
+            assert client.post(f"{BASE}/imports/{third['id']}/undo", json=body).status_code == 200
             from test_carton_history_delete_and_exception_bulk import create_exceptions
             delivery_rows = create_exceptions(client)
             response = client.post(f"{BASE}/imports/{delivery_rows[0]['source_id']}/undo", json=body)
             assert response.status_code == 409
+
+
+@pytest.mark.parametrize("kind", ["weekly", "inspection"])
+def test_concurrent_schedule_reimports_share_one_new_batch(monkeypatch, kind):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        _freeze_carton_time(monkeypatch)
+        batch, upload = schedule(client, kind)
+        assert client.post(f"{BASE}/imports/{batch['id']}/undo", json={
+            "factory_id": "huaxing", "reason": "撤销后重新导入",
+        }).status_code == 200
+        from app.services import carton_procurement as service
+        original_lock = service.lock_transaction
+        barrier = Barrier(2)
+
+        def synchronized_lock(*args, **kwargs):
+            barrier.wait(timeout=10)
+            return original_lock(*args, **kwargs)
+
+        monkeypatch.setattr(service, "lock_transaction", synchronized_lock)
+        from io import BytesIO
+        from fastapi import UploadFile
+        from app.db import SessionLocal
+        from app.services.auth import AuthContext
+        actor = AuthContext("user-admin", "admin", "Admin", (), (), frozenset(), ("huaxing",), ("carton",))
+
+        def reimport(_):
+            # Exercise separate request transactions concurrently; the async
+            # TestClient endpoint otherwise serializes this synchronous parser.
+            with SessionLocal() as db:
+                return service.create_import_batch(
+                    db, "huaxing", batch["import_type"], UploadFile(filename="schedule.xlsx", file=BytesIO(upload["files"]["file"][1])),
+                    upload["files"]["file"][1], actor,
+                    json.loads(batch["import_profile"]),
+                )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(reimport, (1, 2)))
+        monkeypatch.setattr(service, "lock_transaction", original_lock)
+        assert len({response.id for response in responses}) == 1
+        assert sorted(response.duplicate for response in responses) == [False, True]
+        assert all(response.parse_summary["reimported_from_batch_id"] == batch["id"] for response in responses)
+        assert len([event for event in audits(client) if event["event_type"] == "IMPORT_BATCH_CREATED"]) == 2
+        assert client.get(f"{BASE}/exceptions", params={"factory_id": "huaxing"}).json()["total"] == 2
+
+
+def test_reimport_identity_keeps_factory_customer_and_inspection_options_isolated(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        _freeze_carton_time(monkeypatch)
+        batch, upload = schedule(client)
+        _customer(client, "Other")
+        _customer(client, "Dickie", factory="huadeng")
+        other_customer = client.post(f"{BASE}/weekly-imports", **{**upload, "data": {"customer_code": "OTHER"}}).json()
+        other_factory = client.post(f"{BASE}/weekly-imports", **{**upload, "params": {"factory_id": "huadeng"}}).json()
+        assert client.post(f"{BASE}/imports/{batch['id']}/undo", json={
+            "factory_id": "huaxing", "reason": "撤销当前客户排期",
+        }).status_code == 200
+        replacement = client.post(f"{BASE}/weekly-imports", **upload).json()
+        assert replacement["id"] != batch["id"]
+        for kwargs, original in (({**upload, "data": {"customer_code": "OTHER"}}, other_customer),
+                                 ({**upload, "params": {"factory_id": "huadeng"}}, other_factory)):
+            repeat = client.post(f"{BASE}/weekly-imports", **kwargs)
+            assert repeat.status_code == 201 and repeat.json()["duplicate"] is True
+            assert repeat.json()["id"] == original["id"]
+        inspection, inspection_upload = schedule(client, "inspection")
+        different_options = {**inspection_upload, "params": {"factory_id": "huaxing", "advance_days": 5}}
+        option_batch = client.post(f"{BASE}/inspection-imports", **different_options).json()
+        assert option_batch["id"] != inspection["id"]
+        assert client.post(f"{BASE}/imports/{inspection['id']}/undo", json={
+            "factory_id": "huaxing", "reason": "撤销查货提醒批次",
+        }).status_code == 200
+        assert client.post(f"{BASE}/inspection-imports", **inspection_upload).json()["id"] != inspection["id"]
+        assert client.post(f"{BASE}/inspection-imports", **different_options).json()["id"] == option_batch["id"]
 
 
 @pytest.mark.parametrize("scope", ["missing", "foreign", "denied"])

@@ -70,6 +70,10 @@ def movement_guard(db, movement):
 
 
 def return_supplier(db, movement):
+    from app.services.carton_order_split import target_origin
+    split = target_origin(db, movement.factory_id, movement.order_line_id)
+    if split:
+        return split[0]["supplier_id"]
     if movement.order_line_id:
         line = db.get(CartonOrderLine, movement.order_line_id)
         order = db.get(CartonOrder, line.order_id) if line and line.factory_id == movement.factory_id else None
@@ -203,6 +207,13 @@ def compare(rows, statement, source_issues):
             statement_unknown = True
         else:
             line_issues.extend(row["issues"])
+            vendor = row.get("supplier_delivery")
+            if statement.get("origin") == "COLLABORATION" and vendor:
+                changed = any(line.get(key) is not None and vendor.get(key) is not None
+                              and Decimal(str(line[key])) != Decimal(str(vendor[key]))
+                              for key in ("quantity", "unit_price", "amount"))
+                if changed and len(line.get("note", "").strip()) < 4:
+                    line_issues.append("调整供应商原送货数量或价格须填写至少四字核对依据，并由供应商确认")
             if line.get("document_no", "").strip() != row["document_no"]:
                 line_issues.append("供应商单据号与本厂单据号不一致")
             local_price = Decimal(row["unit_price"]) if row["unit_price"] is not None else None
@@ -266,17 +277,43 @@ def workspace(db, factory, supplier_id, period, currency):
         raise HTTPException(422, "账期月份无效")
     currency = core.normalize_currency(currency)
     rows, fingerprint, issues, undated = sources(db, factory, supplier.id, period, currency)
+    from app.services.carton_settlement_collaboration import build
+    collaboration = build(db, factory, supplier.id, period, currency, rows, fingerprint) if supplier.supplier_code == "HEYUAN-DONGKANG" else None
     documents = list(db.scalars(select(CartonSupplierSettlement).where(CartonSupplierSettlement.factory_id == factory,
         CartonSupplierSettlement.supplier_id == supplier.id, CartonSupplierSettlement.period == period,
         CartonSupplierSettlement.currency == currency).order_by(CartonSupplierSettlement.version.desc())))
     return {"factory_id": factory, "supplier_id": supplier.id, "supplier_name": supplier.supplier_name,
             "period": period, "currency": currency, "source_fingerprint": fingerprint, "sources": rows,
             "issues": issues, "undated_receipts": undated,
-            "documents": [document_out(row, fingerprint) for row in documents]}
+            "collaboration": collaboration,
+            "documents": [document_out(row, collaboration["source_fingerprint"]
+                          if collaboration and json.loads(row.statement_json).get("origin") == "COLLABORATION" else fingerprint) for row in documents]}
+
+
+def comparison_context(current, origin):
+    if origin == "COLLABORATION":
+        if not current.get("collaboration"):
+            raise HTTPException(409, "当前供应商尚未接入协同月结，请使用手工对账")
+        return {**current, **{key: current["collaboration"][key] for key in ("sources", "source_fingerprint")}}
+    return current
+
+
+def calculate(current, statement):
+    result = compare(current["sources"], statement, current["issues"])
+    if statement.get("origin") == "COLLABORATION":
+        result["unsettled_shipments"] = current["collaboration"]["unsettled_shipments"]
+    return result
+
+
+def review_fingerprint(row):
+    return hashlib.sha256(dump({"sources": row.source_fingerprint, "statement": json.loads(row.statement_json)}).encode()).hexdigest()
 
 
 def save(db, payload, user):
     current = workspace(db, payload.factory_id, payload.supplier_id, payload.period, payload.currency)
+    if not payload.id and payload.origin != "COLLABORATION" and current.get("collaboration") and any(row.get("supplier_delivery") for row in current["collaboration"]["sources"]):
+        raise HTTPException(409, "本期已有供应商协同送货记录，请使用协同对账并保留双方确认")
+    current = comparison_context(current, payload.origin)
     if payload.source_fingerprint != current["source_fingerprint"]:
         raise HTTPException(409, "收货、退货或价格来源已变化，请刷新后重新核对")
     if payload.id:
@@ -285,6 +322,8 @@ def save(db, payload, user):
             raise HTTPException(404, "对账单不存在")
         if row.status != "DRAFT" or row.revision != payload.expected_revision:
             raise HTTPException(409, "对账单状态或版本已变化")
+        if json.loads(row.statement_json).get("origin") == "COLLABORATION" and payload.origin != "COLLABORATION":
+            raise HTTPException(409, "协同对账须保留双方确认流程，不能改为手工单绕过确认")
         row.revision += 1
     else:
         if current["documents"]:
@@ -296,9 +335,9 @@ def save(db, payload, user):
         db.add(row)
     row.source_fingerprint = current["source_fingerprint"]
     row.sources_json = dump(current["sources"])
-    statement = payload.model_dump(mode="json", include={"statement_no", "tax_basis", "same_price_basis", "lines"})
+    statement = payload.model_dump(mode="json", include={"origin", "statement_no", "tax_basis", "same_price_basis", "lines"})
     row.statement_json = dump(statement)
-    row.result_json = dump(compare(current["sources"], statement, current["issues"]))
+    row.result_json = dump(calculate(current, statement))
     row.updated_at = core.now_text()
     core._audit(db, user, row.factory_id, "SUPPLIER_SETTLEMENT_SAVED", "carton_supplier_settlement", row.id,
                 {"revision": row.revision, "version": row.version, "statement": statement, "source_fingerprint": row.source_fingerprint})
@@ -324,6 +363,9 @@ def act(db, identifier, payload, user, reopen=False):
             source_fingerprint=row.source_fingerprint, sources_json=row.sources_json, statement_json=row.statement_json,
             result_json=row.result_json, created_at=core.now_text(), updated_at=core.now_text(), created_by=user.id,
             confirmed_at="", confirmed_by="", reopen_reason=payload.reason.strip())
+        reopened_result = json.loads(new.result_json)
+        reopened_result.pop("supplier_review", None)
+        new.result_json = dump(reopened_result)
         db.add(new)
         core._audit(db, user, factory, "SUPPLIER_SETTLEMENT_REOPENED", "carton_supplier_settlement", row.id,
                     {"reason": payload.reason.strip(), "new_id": new.id, "version": new.version})
@@ -334,11 +376,18 @@ def act(db, identifier, payload, user, reopen=False):
     if row.period >= _posting_date(core.now_text())[:7]:
         raise HTTPException(409, "本月尚未结束，可保存核对草稿，月末结束后再确认")
     current = workspace(db, factory, row.supplier_id, row.period, row.currency)
+    statement = json.loads(row.statement_json)
+    current = comparison_context(current, statement.get("origin", "MANUAL"))
     if current["source_fingerprint"] != row.source_fingerprint:
         raise HTTPException(409, "来源已变化，请刷新并重新保存核对结果")
-    result = compare(current["sources"], json.loads(row.statement_json), current["issues"])
+    result = calculate(current, statement)
     if result["issues"]:
         raise HTTPException(409, "仍有未处理差异：" + "；".join(result["issues"][:5]))
+    if statement.get("origin") == "COLLABORATION":
+        review = json.loads(row.result_json).get("supplier_review", {})
+        if review.get("decision") != "CONFIRMED" or review.get("fingerprint") != review_fingerprint(row):
+            raise HTTPException(409, "请先由供应商确认当前版本月结明细，再完成本厂确认")
+        result["supplier_review"] = review
     row.result_json = dump(result)
     row.status = "CONFIRMED"
     row.revision += 1
@@ -346,6 +395,50 @@ def act(db, identifier, payload, user, reopen=False):
     row.confirmed_at = row.updated_at = core.now_text()
     core._audit(db, user, factory, "SUPPLIER_SETTLEMENT_CONFIRMED", "carton_supplier_settlement", row.id,
                 {"version": row.version, "result": result, "source_fingerprint": row.source_fingerprint})
+    db.commit()
+    return document_out(row)
+
+
+def supplier_workspace(db, user, factory, period, currency):
+    from app.services.carton_supplier_portal import supplier_access
+    supplier = supplier_access(db, user, factory)
+    current = workspace(db, factory, supplier.id, period, currency)
+    # Publish saved collaborative versions only. Unsaved internal forms and
+    # legacy independently entered statements are not vendor acknowledgements.
+    return {"factory_id": factory, "supplier_name": supplier.supplier_name,
+            "period": current["period"], "currency": current["currency"],
+            "documents": [doc for doc in current["documents"] if doc["statement"].get("origin") == "COLLABORATION"]}
+
+
+def supplier_review(db, identifier, payload, user):
+    from app.services.carton_supplier_portal import supplier_access
+    factory = core.require_carton_factory(payload.factory_id)
+    core._lock_receipt_factory(db, factory)
+    supplier = supplier_access(db, user, factory, "carton_supplier:approve")
+    row = db.get(CartonSupplierSettlement, identifier)
+    if row is None or row.factory_id != factory or row.supplier_id != supplier.id:
+        raise HTTPException(404, "未找到可核对的供应商月结")
+    statement = json.loads(row.statement_json)
+    if row.status != "DRAFT" or statement.get("origin") != "COLLABORATION" or row.revision != payload.expected_revision:
+        raise HTTPException(409, "月结状态或版本已变化，请刷新后重新核对")
+    current = comparison_context(workspace(db, factory, supplier.id, row.period, row.currency), "COLLABORATION")
+    if current["source_fingerprint"] != row.source_fingerprint:
+        raise HTTPException(409, "送货或验收来源已变化，请本厂更新草稿后再核对")
+    result = calculate(current, statement)
+    if payload.decision == "CONFIRMED":
+        if row.period >= _posting_date(core.now_text())[:7]:
+            raise HTTPException(409, "本月尚未结束，可先核对明细，月份结束后再确认")
+        if result["issues"]:
+            raise HTTPException(409, "仍有未处理差异，暂不能确认月结")
+    elif len(payload.reason.strip()) < 4:
+        raise HTTPException(422, "请填写至少四字的异议说明")
+    result["supplier_review"] = {"decision": payload.decision, "reason": payload.reason.strip(),
+        "by": user.id, "at": core.now_text(), "fingerprint": review_fingerprint(row)}
+    row.result_json = dump(result)
+    row.revision += 1
+    row.updated_at = core.now_text()
+    core._audit(db, user, factory, "SUPPLIER_SETTLEMENT_REVIEWED", "carton_supplier_settlement", row.id,
+                {"revision": row.revision, "version": row.version, "review": result["supplier_review"]})
     db.commit()
     return document_out(row)
 

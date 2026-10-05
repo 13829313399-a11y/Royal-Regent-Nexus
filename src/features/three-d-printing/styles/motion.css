@@ -1,0 +1,72 @@
+.tdp-theme .tdp-view-host { position: relative; }
+.tdp-theme .tdp-view-enter-active { position: relative; z-index: 1; background: var(--tdp-canvas); transition: opacity 220ms var(--tdp-ease-enter), transform 220ms var(--tdp-ease-enter); }
+.tdp-theme .tdp-view-leave-active { position: absolute; inset: 0; width: 100%; pointer-events: none; transition: opacity 80ms ease; }
+.tdp-theme .tdp-view-enter-from { opacity: .94; transform: translateY(4px); }
+.tdp-theme .tdp-view-leave-to { opacity: 0; }
+.tdp-theme .tdp-reveal-once { animation: tdp-reveal var(--tdp-reveal) var(--tdp-ease-enter) var(--tdp-reveal-delay, 0ms) 1 backwards; }
+.tdp-theme.tdp-first-reveal .tdp-overview-toolbar,
+.tdp-theme.tdp-first-reveal .tdp-record-toolbar { animation: tdp-reveal 220ms var(--tdp-ease-enter) 30ms 1 backwards; }
+.tdp-theme.tdp-first-reveal .tdp-metrics-first,
+.tdp-theme.tdp-first-reveal .legacy-machine-grid { animation: tdp-reveal 240ms var(--tdp-ease-enter) 60ms 1 backwards; }
+.tdp-theme.tdp-first-reveal .tdp-metrics-second { animation: tdp-reveal 240ms var(--tdp-ease-enter) 90ms 1 backwards; }
+.tdp-theme.tdp-first-reveal .tdp-overview-panels,
+.tdp-theme.tdp-first-reveal .legacy-record-table { animation: tdp-reveal 260ms var(--tdp-ease-enter) 100ms 1 backwards; }
+.tdp-theme .tdp-view-enter-active,
+.tdp-theme .tdp-view-leave-active,
+.tdp-theme .tdp-reveal-once { will-change: opacity, transform; }
+@keyframes tdp-reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes tdp-button-sheen { to { transform: translateX(520%) rotate(18deg); } }
+@keyframes tdp-spin { to { transform: rotate(360deg); } }
+.tdp-theme.legacy-dialog.tdp-dialog--entering::backdrop { animation: tdp-backdrop-in 180ms ease-out 1 both; }
+.tdp-theme.legacy-dialog.tdp-dialog--exiting::backdrop { animation: tdp-backdrop-out 160ms ease-in 1 both; }
+@keyframes tdp-backdrop-in { from { background: rgb(15 23 42 / 0); } to { background: rgb(15 23 42 / .42); } }
+@keyframes tdp-backdrop-out { from { background: rgb(15 23 42 / .42); } to { background: rgb(15 23 42 / 0); } }
+.tdp-theme .tdp-button__spinner,
+.tdp-theme .tdp-refreshing { animation: tdp-spin 800ms linear infinite; }
+.tdp-theme .tdp-skeleton-block {
+  background: linear-gradient(90deg, var(--muted), color-mix(in oklch, var(--accent) 45%, var(--muted)), var(--muted));
+  background-size: 200% 100%;
+  animation: tdp-skeleton-shift 1800ms ease-in-out infinite;
+}
+@keyframes tdp-skeleton-shift { to { background-position-x: -200%; } }
+.tdp-theme .tdp-skeleton { display: grid; gap: 18px; }
+.tdp-theme .tdp-skeleton-toolbar { height: 66px; border-radius: 14px; }
+.tdp-theme .tdp-skeleton-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.tdp-theme .tdp-skeleton-metrics > i { display: block; height: 104px; border-radius: 14px; }
+.tdp-theme .tdp-skeleton-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.tdp-theme .tdp-skeleton-panels > i { display: block; height: 260px; border-radius: 14px; }
+.tdp-theme .tdp-skeleton-machines { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tdp-theme .tdp-skeleton-machines > i { display: block; height: 185px; border-radius: 14px; }
+@media (max-width: 1100px) { .tdp-theme .tdp-skeleton-machines { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+@media (max-width: 700px) {
+  .tdp-theme .tdp-skeleton-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .tdp-theme .tdp-skeleton-panels { grid-template-columns: minmax(0,1fr); }
+  .tdp-theme .tdp-skeleton-machines { grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tdp-theme .tdp-view-enter-active,
+  .tdp-theme .tdp-view-leave-active,
+  .tdp-theme .tdp-nav-indicator,
+  .tdp-theme .tdp-button,
+  .tdp-theme .legacy-machine,
+  .tdp-theme .machine-progress i { transition: none; }
+  .tdp-theme .tdp-view-enter-from,
+  .tdp-theme .tdp-view-leave-to { opacity: 1; transform: none; }
+  .tdp-theme .tdp-reveal-once,
+  .tdp-theme.tdp-first-reveal .tdp-overview-toolbar,
+  .tdp-theme.tdp-first-reveal .tdp-record-toolbar,
+  .tdp-theme.tdp-first-reveal .tdp-metrics-first,
+  .tdp-theme.tdp-first-reveal .tdp-metrics-second,
+  .tdp-theme.tdp-first-reveal .tdp-overview-panels,
+  .tdp-theme.tdp-first-reveal .legacy-machine-grid,
+  .tdp-theme.tdp-first-reveal .legacy-record-table,
+  .tdp-theme .tdp-button--primary:hover::after,
+  .tdp-theme .tdp-button__spinner,
+  .tdp-theme.legacy-dialog.tdp-dialog--entering::backdrop,
+  .tdp-theme.legacy-dialog.tdp-dialog--exiting::backdrop,
+  .tdp-theme .tdp-refreshing,
+  .tdp-theme .tdp-skeleton-block { animation: none; }
+  .tdp-theme .tdp-button:not(:disabled):hover,
+  .tdp-theme .legacy-machine:hover,
+  .tdp-theme .legacy-machine:focus-visible { transform: none; }
+}

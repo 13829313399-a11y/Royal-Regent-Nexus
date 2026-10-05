@@ -81,6 +81,7 @@ from app.services.permission_scope_policy import (
     role_scope_policy,
     scope_is_applicable,
 )
+from app.services.permission_codes import CARTON_SUPPLIER_PERMISSION_CODES
 from app.services.system_positions import (
     SPECIAL_SYSTEM_ROLE_CODES,
     SYSTEM_POSITION_DEFINITIONS,
@@ -119,6 +120,7 @@ DEPARTMENT_NAMES = {
 }
 MODULE_NAMES = {
     "module_feedback": "模块反馈（开发处理）",
+    "uv_ops": "UV 打印管理（华康 A）",
     "injection_scheduling": "注塑排产中枢",
     "molding_sample": "啤办管理",
     "carton_mark": "箱唛管理",
@@ -208,7 +210,7 @@ def get_user_access(db: Session, current_user: AuthContext, user_id: str) -> Use
             or roles_by_id[binding.role_id].code not in SPECIAL_SYSTEM_ROLE_CODES
         )
     )
-    lifecycle_overrides = _lifecycle_active_overrides(db, user_id)
+    lifecycle_overrides = _position_cleanup_overrides(db, user_id)
     return UserAccessOut(
         user=UserAccessUserOut(
             id=user.id,
@@ -218,7 +220,8 @@ def get_user_access(db: Session, current_user: AuthContext, user_id: str) -> Use
             phone=phone,
             email=email,
         ),
-        profile=_profile_out(profile),
+        profile=_profile_out(db, profile),
+        identity_mode="v2" if profile and profile.identity_mode == "v2" else "legacy",
         authorization_version=_get_revision(db, user_id),
         role_bindings=role_bindings,
         overrides=overrides,
@@ -268,6 +271,9 @@ def preview_user_access(
     )
     actor_scopes = _manager_scopes(db, current_user.id)
     is_super_admin = _is_superadmin(db, current_user.id)
+    if any(item["kind"] == "permission_override" and item["permission_code"].startswith("carton_supplier:")
+           for item in operations) and not is_super_admin:
+        raise HTTPException(status_code=403, detail="供应商协同跨厂区权限仅集团超级管理员可配置")
     cross_scope = any(
         not _scope_is_managed(actor_scopes, item["factory_id"], item["department"])
         for item in operations
@@ -313,16 +319,29 @@ def commit_user_access(
     payload: AccessCommitRequest,
     request: Request | None = None,
 ) -> AccessCommitResponse:
-    _require_writes_enabled()
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     _ensure_iam_manager(db, current_user)
     preview, preview_payload, summary = _load_preview(
         db, payload.preview_token, current_user.id, "user", user_id
     )
+    operations = preview_payload["operations"]
+    supplier_only = bool(operations) and all(
+        item["kind"] == "permission_override"
+        and item["permission_code"] in {"carton_supplier:read", "carton_supplier:edit", "carton_supplier:approve"}
+        and item["factory_id"] == "*" and item["department"] == "*"
+        for item in operations
+    )
+    if not supplier_only:
+        _require_writes_enabled()
     current_revision = _get_revision(db, user_id, for_update=True)
     if preview.base_revision != current_revision:
         raise HTTPException(status_code=409, detail="用户权限已变化，请重新预览")
 
     current_is_super_admin = _is_superadmin(db, current_user.id)
+    if supplier_only and not current_is_super_admin:
+        raise HTTPException(status_code=403, detail="供应商协同跨厂区权限仅集团超级管理员可配置")
     current_scopes = _manager_scopes(db, current_user.id)
     currently_cross_scope = any(
         not _scope_is_managed(current_scopes, item["factory_id"], item["department"])
@@ -362,7 +381,11 @@ def preview_system_position(
     user_id: str,
     payload: SystemPositionPreviewRequest,
 ) -> SystemPositionPreviewResponse:
+    from app.services.identity_policy import fail
     _ensure_iam_manager(db, current_user)
+    profile_guard = db.get(EmployeeProfile, user_id)
+    if profile_guard and profile_guard.identity_mode == "v2":
+        fail("IDENTITY_CHANGE_REQUIRED", "此人员已使用正式任职，请通过任职变更办理")
     user = _load_user(db, user_id)
     profile = db.get(EmployeeProfile, user_id)
     if profile is None or not profile.primary_factory_id or not profile.primary_department:
@@ -463,7 +486,7 @@ def preview_system_position(
         item.id: item
         for item in db.scalars(select(AuthPermission)).all()
     }
-    lifecycle_overrides = _lifecycle_active_overrides(db, user_id)
+    lifecycle_overrides = _position_cleanup_overrides(db, user_id)
     for override in lifecycle_overrides:
         permission = permission_by_id.get(override.permission_id)
         if permission is None:
@@ -568,6 +591,13 @@ def commit_system_position(
     payload: AccessCommitRequest,
     request: Request | None = None,
 ) -> AccessCommitResponse:
+    from app.services.identity_policy import fail
+    profile_guard = db.get(EmployeeProfile, user_id)
+    if profile_guard and profile_guard.identity_mode == "v2":
+        fail("IDENTITY_CHANGE_REQUIRED", "此人员已使用正式任职，请通过任职变更办理")
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     _require_writes_enabled()
     _ensure_iam_manager(db, current_user)
     preview, preview_payload, summary = _load_preview(
@@ -822,6 +852,9 @@ def commit_role_access(
     payload: AccessCommitRequest,
     request: Request | None = None,
 ) -> RoleAccessCommitResponse:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     _ensure_role_manager(db, current_user)
     role = _load_role(db, role_id)
     if get_system_position(role.id) is not None:
@@ -915,6 +948,9 @@ def commit_role_access(
         request=request,
     )
     preview.consumed_at = now_text()
+    db.flush()
+    from app.services.identity_policy import ensure_admin_survives
+    ensure_admin_survives(db)
     db.commit()
     return RoleAccessCommitResponse(
         authorization_version=metadata.version,
@@ -928,7 +964,7 @@ def list_access_requests(
     status: str = "",
 ) -> list[AccessRequestOut]:
     _ensure_iam_manager(db, current_user)
-    query = select(AuthAccessRequest).order_by(AuthAccessRequest.created_at.desc())
+    query = select(AuthAccessRequest).where(AuthAccessRequest.request_type == "access").order_by(AuthAccessRequest.created_at.desc())
     if status:
         query = query.where(AuthAccessRequest.status == status)
     if not _is_superadmin(db, current_user.id):
@@ -943,6 +979,9 @@ def approve_access_request(
     payload: AccessRequestDecision,
     request: Request | None = None,
 ) -> AccessRequestOut:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     _require_writes_enabled()
     _ensure_access_reviewer(db, current_user)
     reason = _required_reason(payload.reason)
@@ -1008,6 +1047,9 @@ def reject_access_request(
     payload: AccessRequestDecision,
     request: Request | None = None,
 ) -> AccessRequestOut:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     _require_writes_enabled()
     _ensure_access_reviewer(db, current_user)
     reason = _required_reason(payload.reason)
@@ -1096,8 +1138,10 @@ def search_users(
     result: list[UserSearchOut] = []
     for user in db.scalars(query).all():
         profile = db.get(EmployeeProfile, user.id)
-        factory_id = profile.primary_factory_id if profile else ""
-        department = profile.primary_department if profile else ""
+        from app.services.identity_resolver import resolve_identity_at
+        identity = resolve_identity_at(db, user.id)
+        factory_id = identity["primary_factory_id"]
+        department = identity["primary_department"]
         full = is_super_admin or _scope_is_managed(scopes, factory_id, department) or _user_has_managed_binding(
             db, user.id, scopes
         )
@@ -1109,7 +1153,7 @@ def search_users(
                 status=user.status if full else "",
                 primary_factory_id=factory_id,
                 primary_department=department,
-                position=(profile.position if profile and full else ""),
+                position=(identity["position"] if full else ""),
                 manageable=full,
             )
         )
@@ -1147,13 +1191,15 @@ def _permission_out(permission: AuthPermission, metadata: AuthPermissionMetadata
     )
 
 
-def _profile_out(profile: EmployeeProfile | None) -> EmployeeProfileOut | None:
+def _profile_out(db: Session, profile: EmployeeProfile | None) -> EmployeeProfileOut | None:
     if profile is None:
         return None
+    from app.services.identity_resolver import resolve_identity_at
+    identity = resolve_identity_at(db, profile.user_id)
     return EmployeeProfileOut(
-        primary_factory_id=profile.primary_factory_id,
-        primary_department=profile.primary_department,
-        position=profile.position,
+        primary_factory_id=identity["primary_factory_id"],
+        primary_department=identity["primary_department"],
+        position=identity["position"],
         confirmation_status=profile.confirmation_status,
     )
 
@@ -1178,6 +1224,10 @@ def _role_bindings_out(db: Session, user_id: str) -> list[RoleBindingOut]:
         meta = metadata.get(binding.id)
         result.append(
             RoleBindingOut(
+                assignment_id=meta.assignment_id if meta else None,
+                role_version_id=meta.role_version_id if meta else None,
+                factory_ceiling=json.loads(meta.scope_ceiling_json) if meta and meta.scope_ceiling_json is not None else None,
+                employment_epoch=meta.employment_epoch if meta else None,
                 id=binding.id,
                 role_id=binding.role_id,
                 role_code=role.code if role else binding.role_id,
@@ -1477,6 +1527,10 @@ def _apply_user_operations(
                 db, actor_user_id, target_user_id, operation, reason, request, access_request_id
             )
 
+    db.flush()
+    from app.services.identity_policy import ensure_admin_survives
+    ensure_admin_survives(db)
+
 
 def _apply_role_binding_operation(
     db: Session,
@@ -1487,6 +1541,10 @@ def _apply_role_binding_operation(
     request: Request | None,
     access_request_id: str,
 ) -> None:
+    from app.services.identity_policy import fail
+    profile_guard = db.get(EmployeeProfile, target_user_id)
+    if profile_guard and profile_guard.identity_mode == "v2":
+        fail("IDENTITY_CHANGE_REQUIRED", "此人员已使用正式任职，请通过任职变更办理")
     now = now_text()
     old_binding = db.get(AuthUserRole, operation["binding_id"]) if operation["binding_id"] else None
     if operation["operation"] in {"update", "revoke"} and (
@@ -1610,6 +1668,12 @@ def _apply_override_operation(
             created_at=now,
             updated_at=now,
         )
+        profile = db.get(EmployeeProfile, target_user_id)
+        if profile and profile.identity_mode == "v2":
+            if profile.employment_status == "left":
+                raise HTTPException(409, "离职人员须通过复职办理")
+            new_override.employment_epoch = profile.employment_epoch
+            new_override.lifecycle_policy = "independent"
         db.add(new_override)
     _add_event(
         db,
@@ -1913,9 +1977,13 @@ def _ensure_iam_manager(db: Session, user: AuthContext) -> None:
 
 def _ensure_can_view_user_access(db: Session, user: AuthContext, target_user_id: str) -> None:
     _ensure_iam_manager(db, user)
+    profile = db.get(EmployeeProfile, target_user_id)
+    if profile and profile.identity_mode == "v2":
+        from app.services.identity_policy import ensure_reader
+        ensure_reader(db, user, target_user_id)
+        return
     if _is_superadmin(db, user.id):
         return
-    profile = db.get(EmployeeProfile, target_user_id)
     scopes = _manager_scopes(db, user.id)
     if profile and _scope_is_managed(scopes, profile.primary_factory_id, profile.primary_department):
         return
@@ -1997,42 +2065,22 @@ def _permission_candidate_scopes(
     user_id: str,
     permission_codes: set[str],
 ) -> set[tuple[str, str]]:
-    role_ids: set[str] = set()
-    for code in permission_codes:
-        role_ids.update(_role_ids_for_permission(db, code))
     scopes: set[tuple[str, str]] = set()
-    for binding in _active_bindings(db, user_id):
-        if binding.role_id not in role_ids:
+    user = db.get(AuthUser, user_id)
+    if not user:
+        return scopes
+    context = build_auth_context(db, user)
+    for grant in context.grants:
+        matching = grant.permissions & permission_codes
+        if not matching and grant.role_code != "admin":
             continue
-        system_position = get_system_position(binding.role_id)
-        if system_position is None:
-            scopes.add((binding.factory_id, binding.department))
+        if not grant.unrestricted_department:
+            scopes.add((grant.factory_id, grant.department))
             continue
-
-        matching_permission_codes = (
-            set(_role_permission_codes(db, binding.role_id)) & permission_codes
-        )
-        if not matching_permission_codes:
-            continue
-        metadata = _get_role_metadata(db, binding.role_id)
-        scope_mode = _role_scope_mode(metadata, True)
-
-        # Built-in positions are department-independent inside their concrete
-        # home factory. A wildcard own-factory binding has no safe anchor and
-        # therefore contributes no candidate scope.
-        if binding.factory_id != "*":
-            scopes.add((binding.factory_id, "*"))
-
-        expands_cross_factory = scope_mode == CROSS_FACTORY_OPERATE_SCOPE or (
-            scope_mode == CROSS_FACTORY_READ_SCOPE
-            and any(
-                _permission_access_kind(db, _permission_by_code(db, code))
-                == READ_ACCESS_KIND
-                for code in matching_permission_codes
-            )
-        )
-        if expands_cross_factory:
-            scopes.update((factory_id, "*") for factory_id in ALLOWED_FACTORY_IDS)
+        if grant.factory_id != "*":
+            scopes.add((grant.factory_id, "*"))
+        if grant.scope_mode == CROSS_FACTORY_OPERATE_SCOPE or (grant.scope_mode == CROSS_FACTORY_READ_SCOPE and matching & grant.read_permissions):
+            scopes.update((f, "*") for f in (grant.factory_ceiling if grant.factory_ceiling is not None else ALLOWED_FACTORY_IDS))
     permission_ids = {
         permission.id
         for permission in db.scalars(
@@ -2054,6 +2102,13 @@ def _is_superadmin(
     excluded_binding_ids: set[str] | None = None,
     added_bindings: list[dict[str, str]] | None = None,
 ) -> bool:
+    if not excluded_binding_ids and not added_bindings:
+        account = db.get(AuthUser, user_id)
+        if account is None or account.status != "active":
+            return False
+        context = build_auth_context(db, account)
+        if not all(can(context, code, "*", "*") for code in ("system:user_manage", "system:access_manage")):
+            return False
     excluded_binding_ids = excluded_binding_ids or set()
     roles = {item.id: item for item in db.scalars(select(AuthRole)).all()}
     for binding in _active_bindings(db, user_id):
@@ -2098,10 +2153,12 @@ def _active_bindings(db: Session, user_id: str = "") -> list[AuthUserRole]:
             )
         ).all()
     }
-    return [
-        binding for binding in bindings
-        if _metadata_is_effective(metadata.get(binding.id), state_attribute="state")
-    ]
+    from app.services.identity_sources import source_is_active
+    from app.services.identity_resolver import utc_now
+    at = utc_now()
+    return [binding for binding in bindings
+            if _metadata_is_effective(metadata.get(binding.id), state_attribute="state")
+            and source_is_active(db, metadata.get(binding.id), db.get(EmployeeProfile, binding.user_id), at)]
 
 
 def _lifecycle_active_bindings(db: Session, user_id: str = "") -> list[AuthUserRole]:
@@ -2132,7 +2189,12 @@ def _active_overrides(db: Session, user_id: str) -> list[AuthUserPermissionOverr
             select(AuthUserPermissionOverride).where(AuthUserPermissionOverride.user_id == user_id)
         ).all()
     )
-    return [item for item in overrides if _metadata_is_effective(item, state_attribute="status")]
+    from app.services.identity_sources import source_is_active
+    from app.services.identity_resolver import utc_now
+    profile = db.get(EmployeeProfile, user_id)
+    at = utc_now()
+    return [item for item in overrides if _metadata_is_effective(item, state_attribute="status")
+            and source_is_active(db, item, profile, at)]
 
 
 def _lifecycle_active_overrides(db: Session, user_id: str) -> list[AuthUserPermissionOverride]:
@@ -2146,15 +2208,20 @@ def _lifecycle_active_overrides(db: Session, user_id: str) -> list[AuthUserPermi
     )
 
 
+def _position_cleanup_overrides(db: Session, user_id: str) -> list[AuthUserPermissionOverride]:
+    supplier_permission_ids = set(db.scalars(select(AuthPermission.id).where(
+        AuthPermission.code.in_(CARTON_SUPPLIER_PERMISSION_CODES))).all())
+    return [item for item in _lifecycle_active_overrides(db, user_id)
+            if item.permission_id not in supplier_permission_ids]
+
+
 def _metadata_is_effective(item: Any | None, state_attribute: str) -> bool:
     if item is None:
         return True
     if getattr(item, state_attribute, "active") != "active":
         return False
-    now = datetime.now()
-    valid_from = _parse_time(getattr(item, "valid_from", ""))
-    valid_until = _parse_time(getattr(item, "valid_until", ""))
-    return not (valid_from and valid_from > now) and not (valid_until and valid_until <= now)
+    from app.services.auth import time_window_is_active
+    return time_window_is_active(getattr(item, "valid_from", ""), getattr(item, "valid_until", ""))
 
 
 def _scope_matches(binding_factory: str, binding_department: str, factory_id: str, department: str) -> bool:
@@ -2598,7 +2665,7 @@ def _load_access_request(db: Session, request_id: str) -> AuthAccessRequest:
         .where(AuthAccessRequest.id == request_id)
         .with_for_update()
     )
-    if item is None:
+    if item is None or item.request_type != "access":
         raise HTTPException(status_code=404, detail="权限申请不存在")
     return item
 

@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v30"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v32"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -5282,6 +5282,7 @@ def _build_structured_data_sheet(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
     reference_snapshot: dict[str, Any],
+    customer_mapping: dict[str, Any] | None = None,
 ) -> None:
     sheet = workbook.create_sheet("结构化数据")
     _style_title(sheet, "P4 客价转换结构化数据", 12)
@@ -5336,6 +5337,14 @@ def _build_structured_data_sheet(
             text_columns={11},
         )
         row_index += 1
+    if customer_mapping is not None:
+        chunks = _json_chunks(customer_mapping)
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            _body_row(sheet, row_index, (
+                "customer_mapping", "quote", "客户映射", "approved", quote.header_revision,
+                "valid", "current", quote.reference_snapshot_id, chunk_index, len(chunks), chunk, "是",
+            ), text_columns={11})
+            row_index += 1
     by_code = {section.department: section for section in sections}
     for code in SECTION_ORDER:
         section = by_code.get(code)
@@ -5379,7 +5388,8 @@ def _build_approval_sheet(
 ) -> None:
     sheet = workbook.create_sheet("审批与版本")
     _style_title(sheet, "审批、公式与版本清单", 8)
-    is_final_release = manifest.get("release_stage") == "p4_final_approved"
+    is_direct = manifest.get("release_stage") == "p4_direct_issued"
+    is_final_release = manifest.get("release_stage") in {"p4_final_approved", "p4_direct_issued"}
     template_version = str(manifest.get("template_version") or P3_TEMPLATE_VERSION)
     release_label = "P4 最终业务放行" if is_final_release else "P3 分段审批后内部成本快照"
     boundary_label = (
@@ -5387,16 +5397,19 @@ def _build_approval_sheet(
         if is_final_release
         else "最终业务放行与客价交接在 P4 实施"
     )
+    if is_direct:
+        release_label = "P4 直接输出"
+        boundary_label = "报价版本已冻结，可交接客价转换台"
     summary = (
         ("模板版本", template_version, "公式版本", quote.formula_version),
         ("参考快照", quote.reference_snapshot_id, "报价头revision", quote.header_revision),
         ("导出阶段", release_label, "清单SHA-256", manifest.get("manifest_sha256", "")),
         ("边界说明", boundary_label, "", ""),
         (
-            "最终提交人",
-            manifest.get("final_submitted_by_name", ""),
-            "最终放行人/时间",
-            f"{manifest.get('final_reviewed_by_name', '')} {manifest.get('final_reviewed_at', '')}".strip(),
+            "输出人" if is_direct else "最终提交人",
+            manifest.get("issued_by_name" if is_direct else "final_submitted_by_name", ""),
+            "输出时间" if is_direct else "最终放行人/时间",
+            manifest.get("issued_at", "") if is_direct else f"{manifest.get('final_reviewed_by_name', '')} {manifest.get('final_reviewed_at', '')}".strip(),
         ),
     )
     for row_index, values in enumerate(summary, start=2):
@@ -5632,8 +5645,19 @@ def build_internal_quote_workbook(
     _build_sewing_sheet(workbook, by_code.get("sewing"), reference_snapshot or {})
     _build_hair_sheet(workbook, by_code.get("hair"))
     _build_assembly_sheet(workbook, by_code.get("assembly"))
-    if manifest.get("release_stage") == "p4_final_approved":
-        _build_structured_data_sheet(workbook, quote, sections, reference_snapshot or {})
+    if manifest.get("release_stage") in {"p4_final_approved", "p4_direct_issued"}:
+        from app.services.internal_quote_dickie import build_dickie_handoff
+        customer_mapping = build_dickie_handoff(quote, sections, reference_snapshot or {}, cost_context or {})
+        if quote.factory_id == "huaxing" and quote.customer.strip().lower() == "buzzbee":
+            customer_mapping = {
+                "version": "buzzbee-v2", "factory_id": quote.factory_id,
+                "quote_no": quote.quote_no, "version_label": quote.version_label,
+                "customer": quote.customer, "product_name": quote.product_name,
+                "quote_date": str(quote.created_at)[:10],
+                "formula_version": quote.formula_version,
+                "reference_snapshot_id": quote.reference_snapshot_id,
+            }
+        _build_structured_data_sheet(workbook, quote, sections, reference_snapshot or {}, customer_mapping)
     _build_approval_sheet(workbook, quote, sections, manifest)
     for technical_sheet in workbook.worksheets[1:]:
         technical_sheet.sheet_state = "veryHidden"

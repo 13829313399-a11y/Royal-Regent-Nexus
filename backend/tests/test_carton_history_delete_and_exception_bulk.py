@@ -55,6 +55,7 @@ def test_normal_order_cannot_use_history_delete(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         row = _create_order(client)
+        login_as(client, "admin")
         assert not row["can_delete_history"]
         assert delete(client, row).status_code == 409
 

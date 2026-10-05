@@ -1,3 +1,4 @@
+import { pricingRate, pricingMaterial, assertPricingCustomer, type CustomerPricingSettings } from './pricingSettings'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import {
   excelDateSerial,
@@ -91,6 +92,7 @@ interface ThreeSixtyQuoteMetadata {
 }
 
 export interface ThreeSixtyQuoteData {
+  pricing?: CustomerPricingSettings
   metadata: ThreeSixtyQuoteMetadata
   plasticRows: ThreeSixtyPlasticRow[]
   purchaseRows: ThreeSixtyMaterialRow[]
@@ -146,6 +148,7 @@ export interface ThreeSixtyConvertedSheet {
 }
 
 export interface ThreeSixtyConversionResult {
+  pricing?: CustomerPricingSettings
   sourceFileName: string
   sheets: ThreeSixtyConvertedSheet[]
 }
@@ -221,6 +224,7 @@ function normalizeMaterial(rawMaterial: string, rawGrade = ''): ThreeSixtyMateri
 function createGenericRow(
   line: Record<string, unknown>,
   totalHkd = numberValue(line.amount_hkd),
+  pricing?: CustomerPricingSettings,
 ): ThreeSixtyMaterialRow {
   const usage = numberValue(line.quantity) || 1
   const description = textValue(line.item) || textValue(line.description) || '未命名物料'
@@ -228,8 +232,8 @@ function createGenericRow(
     description,
     specification: textValue(line.specification),
     usage,
-    unitPriceUsd: round(totalHkd / THREE_SIXTY_HKD_USD / usage),
-    totalUsd: round(totalHkd / THREE_SIXTY_HKD_USD),
+    unitPriceUsd: round(totalHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD) / usage),
+    totalUsd: round(totalHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)),
     internalHkd: round(totalHkd),
   }
 }
@@ -239,8 +243,9 @@ function createDetailRow(
   description: string,
   internalHkd: number,
   customerUsd: number,
+  pricing?: CustomerPricingSettings,
 ): ThreeSixtyQuoteDetailRow {
-  const customerHkd = round(customerUsd * THREE_SIXTY_HKD_USD)
+  const customerHkd = round(customerUsd * pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD))
   const differenceHkd = round(customerHkd - internalHkd)
   const margin = internalHkd > 0 ? (differenceHkd / internalHkd) * 100 : 0
   return {
@@ -262,6 +267,7 @@ function paintingLabor(
   artifact: P4InternalQuoteArtifact,
   laborUsd: Record<ThreeSixtyLaborCode, number>,
   otherRows: ThreeSixtyMaterialRow[],
+  pricing?: CustomerPricingSettings,
 ) {
   const operationMap: Record<string, ThreeSixtyLaborCode> = {
     clamp: 'book',
@@ -279,22 +285,22 @@ function paintingLabor(
     const kind = textValue(line.kind)
     const amountHkd = numberValue(line.amount_hkd)
     if (kind === 'painting_quick_paint' || kind === 'painting_quick_paint_tax') {
-      if (amountHkd > 0) otherRows.push(createGenericRow(line, amountHkd))
+      if (amountHkd > 0) otherRows.push(createGenericRow(line, amountHkd, pricing))
       return
     }
     if (kind === 'painting_quick_labor') {
-      laborUsd.spray += amountHkd / THREE_SIXTY_HKD_USD
+      laborUsd.spray += amountHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
       return
     }
     if (kind !== 'painting') return
     const operations = objectValue(line.operations)
     const operationEntries = Object.entries(operations)
     if (!operationEntries.length) {
-      laborUsd.spray += amountHkd / THREE_SIXTY_HKD_USD
+      laborUsd.spray += amountHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
       return
     }
     operationEntries.forEach(([operation, value]) => {
-      laborUsd[operationMap[operation] ?? 'spray'] += numberValue(value) / THREE_SIXTY_HKD_USD
+      laborUsd[operationMap[operation] ?? 'spray'] += numberValue(value) / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
     })
   })
 }
@@ -309,6 +315,7 @@ function classifySewingLabor(value: string): ThreeSixtyLaborCode | null {
 function buildPlasticRows(
   artifact: P4InternalQuoteArtifact,
   laborUsd: Record<ThreeSixtyLaborCode, number>,
+  pricing?: CustomerPricingSettings,
 ) {
   const payload = artifact.sections.molding.payload
   const injectionPayload = rows(payload.injection_lines)
@@ -333,7 +340,7 @@ function buildPlasticRows(
       ? numberValue(line.loss_weight_g)
       : numberValue(source.estimated_weight_g)
     const totalWeightG = weightG * quantity
-    const priceUsdKg = THREE_SIXTY_MATERIAL_PRICES_USD_KG[material]
+    const priceUsdKg = requiredMaterialPrice(material, pricing)
     const materialUsd = totalWeightG * priceUsdKg / 1000
     let moldingHkd = 0
     if (kind === 'injection') {
@@ -342,7 +349,7 @@ function buildPlasticRows(
       const multiplier = numberValue(line.profit_multiplier) || 1
       moldingHkd = (numberValue(line.labor_hkd) + numberValue(line.burr_hkd)) * multiplier * quantity
     }
-    const moldingUsd = moldingHkd / THREE_SIXTY_HKD_USD
+    const moldingUsd = moldingHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
     laborUsd.molding += moldingUsd
     plasticRows.push({
       moldNo: textValue(line.mold_no),
@@ -367,9 +374,13 @@ function buildPlasticRows(
     const quantity = numberValue(line.quantity) || 1
     const weightG = numberValue(line.weight_g)
     const material = normalizeMaterial(textValue(line.material) || 'Roto-PVC')
-    const materialUsd = weightG * quantity * THREE_SIXTY_MATERIAL_PRICES_USD_KG[material] / 1000
+    const materialUsd = weightG * quantity * requiredMaterialPrice(material, pricing) / 1000
     const internalHkd = numberValue(line.amount_hkd)
-    const residualLaborUsd = Math.max(0, internalHkd / THREE_SIXTY_HKD_USD - materialUsd)
+    // The source combined cost contains its original resin allowance. Maintain
+    // that fixed HKD labor remainder when the customer's resin table changes.
+    const baselineMaterialHkd = weightG * quantity * requiredMaterialPrice(material) / 1000 * THREE_SIXTY_HKD_USD
+    const residualLaborUsd = Math.max(0, internalHkd - baselineMaterialHkd)
+      / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
     laborUsd.molding += residualLaborUsd
     plasticRows.push({
       moldNo: '',
@@ -380,7 +391,7 @@ function buildPlasticRows(
       usage: quantity,
       partWeightG: weightG,
       totalWeightG: weightG * quantity,
-      unitPriceUsd: THREE_SIXTY_MATERIAL_PRICES_USD_KG[material],
+      unitPriceUsd: requiredMaterialPrice(material, pricing),
       totalUsd: round(materialUsd),
       internalHkd,
       machine: 'RC',
@@ -391,7 +402,7 @@ function buildPlasticRows(
   return plasticRows
 }
 
-function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixtyQuoteData {
+function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact, pricing?: CustomerPricingSettings): ThreeSixtyQuoteData {
   const normalizedFactory = normalizeFactory(artifact.factoryAndWorkshop)
   if (!normalizedFactory.includes('huakanga') && !normalizedFactory.includes('华康a')) {
     throw new Error(`360 映射仅适用于华康 A，当前受控文件厂区为“${artifact.factoryAndWorkshop || '未填写'}”`)
@@ -425,7 +436,7 @@ function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixty
     wood: 0,
     packing: 0,
   }
-  const plasticRows = buildPlasticRows(artifact, laborUsd)
+  const plasticRows = buildPlasticRows(artifact, laborUsd, pricing)
   const purchaseRows: ThreeSixtyMaterialRow[] = []
   const electronicRows: ThreeSixtyMaterialRow[] = []
   const fabricRows: ThreeSixtyMaterialRow[] = []
@@ -436,9 +447,9 @@ function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixty
     if (textValue(line.kind) !== 'material') return
     const classification = `${textValue(line.category)} ${textValue(line.auxiliary_category)} ${textValue(line.item)}`
     if (/包装|包裝|纸箱|紙箱|彩盒|胶纸|膠紙|胶针|膠針|利宝|利寶|锡线|錫線/i.test(classification)) {
-      packagingRows.push(createGenericRow(line))
+      packagingRows.push(createGenericRow(line, undefined, pricing))
     } else {
-      purchaseRows.push(createGenericRow(line))
+      purchaseRows.push(createGenericRow(line, undefined, pricing))
     }
   })
 
@@ -450,10 +461,10 @@ function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixty
     ? electronicAuthoritativeTotal / electronicRawTotal
     : 1
   electronicLines.forEach((line) => electronicRows.push(
-    createGenericRow(line, numberValue(line.amount_hkd) * electronicScale),
+    createGenericRow(line, numberValue(line.amount_hkd) * electronicScale, pricing),
   ))
   if (!electronicRows.length && electronicAuthoritativeTotal > 0) {
-    electronicRows.push(createGenericRow({ item: 'Electronic Material', quantity: 1 }, electronicAuthoritativeTotal))
+    electronicRows.push(createGenericRow({ item: 'Electronic Material', quantity: 1 }, electronicAuthoritativeTotal, pricing))
   }
 
   const sewingRows = sectionRows(artifact, 'sewing')
@@ -470,37 +481,37 @@ function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixty
     const amountHkd = amountRmb / rmbHkd
     const laborCode = classifySewingLabor(label)
     if (laborCode) {
-      laborUsd[laborCode] += amountHkd / THREE_SIXTY_HKD_USD
+      laborUsd[laborCode] += amountHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
       return
     }
     const usage = numberValue(line.usage) || 1
-    const unitPriceUsd = numberValue(line.unit_price_rmb) * (numberValue(line.markup) || 1) / rmbHkd / THREE_SIXTY_HKD_USD
+    const unitPriceUsd = numberValue(line.unit_price_rmb) * (numberValue(line.markup) || 1) / rmbHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
     fabricRows.push({
       description: textValue(line.item) || textValue(line.part) || '布料',
       specification: [textValue(line.part), textValue(line.craft)].filter(Boolean).join(' / '),
       usage,
       unitPriceUsd: round(unitPriceUsd),
-      totalUsd: round(amountHkd / THREE_SIXTY_HKD_USD),
+      totalUsd: round(amountHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)),
       internalHkd: round(amountHkd),
     })
     sewingMaterialHkd += amountHkd
   })
   const sewingResidualHkd = Math.max(0, sectionTotal(artifact, 'sewing') - sewingMaterialHkd)
-  laborUsd.sewing += sewingResidualHkd / THREE_SIXTY_HKD_USD
+  laborUsd.sewing += sewingResidualHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
 
   sectionRows(artifact, 'hair').forEach((line) => {
     if (textValue(line.kind) !== 'hair') return
-    fabricRows.push(createGenericRow({ ...line, quantity: 1 }))
+    fabricRows.push(createGenericRow({ ...line, quantity: 1 }, undefined, pricing))
   })
 
   sectionRows(artifact, 'sales').forEach((line) => {
-    if (textValue(line.kind) === 'packaging_material') packagingRows.push(createGenericRow(line))
+    if (textValue(line.kind) === 'packaging_material') packagingRows.push(createGenericRow(line, undefined, pricing))
   })
-  paintingLabor(artifact, laborUsd, otherRows)
+  paintingLabor(artifact, laborUsd, otherRows, pricing)
 
   sectionRows(artifact, 'assembly').forEach((line) => {
     if (textValue(line.kind) !== 'assembly_process') return
-    const amountUsd = numberValue(line.amount_hkd_pcs) / THREE_SIXTY_HKD_USD
+    const amountUsd = numberValue(line.amount_hkd_pcs) / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
     if (textValue(line.category) === 'packaging') laborUsd.packing += amountUsd
     else laborUsd.assembly += amountUsd
   })
@@ -547,7 +558,7 @@ function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixty
     purchase: round(sum(purchaseRows.map((row) => row.totalUsd))),
     electronic: round(sum(electronicRows.map((row) => row.totalUsd))),
     fabric: round(sum(fabricRows.map((row) => row.totalUsd))),
-    packaging: round(sum(packagingRows.map((row) => row.totalUsd)) + carton.perPieceHkd / THREE_SIXTY_HKD_USD),
+    packaging: round(sum(packagingRows.map((row) => row.totalUsd)) + carton.perPieceHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)),
     others: round(sum(otherRows.map((row) => row.totalUsd))),
   }
   Object.keys(laborUsd).forEach((key) => {
@@ -556,10 +567,10 @@ function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixty
   const materialTotalUsd = round(sum(Object.values(materialTotalsUsd)))
   const laborTotalUsd = round(sum(Object.values(laborUsd)))
   const basicTotalUsd = round(materialTotalUsd + laborTotalUsd)
-  const materialScrapUsd = round(materialTotalUsd * THREE_SIXTY_MATERIAL_SCRAP_RATE)
-  const markupUsd = round(basicTotalUsd * THREE_SIXTY_MARKUP_RATE)
+  const materialScrapUsd = round(materialTotalUsd * pricingRate(pricing, 'scrap_rate', THREE_SIXTY_MATERIAL_SCRAP_RATE))
+  const markupUsd = round(basicTotalUsd * pricingRate(pricing, 'markup_rate', THREE_SIXTY_MARKUP_RATE))
   const exFactoryUsd = round(basicTotalUsd + materialScrapUsd + markupUsd)
-  const transportationUsd = round(numberValue(freight.freight_per_piece_hkd) / THREE_SIXTY_HKD_USD)
+  const transportationUsd = round(numberValue(freight.freight_per_piece_hkd) / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD))
   const totalFobUsd = round(exFactoryUsd + transportationUsd)
   const testingTotalUsd = salesPayload.testing_fee_enabled === false
     ? 0
@@ -584,6 +595,7 @@ function buildThreeSixtyQuoteData(artifact: P4InternalQuoteArtifact): ThreeSixty
 
   const colorBox = objectValue(salesPayload.color_box_size_in)
   return {
+    pricing,
     metadata: {
       msBrand: textValue(customerFields.ms_brand),
       firstEtd: textValue(customerFields.first_etd),
@@ -648,8 +660,10 @@ function validateTemplateCapacity(data: ThreeSixtyQuoteData) {
 export function convertThreeSixtyP4InternalQuote(
   artifact: P4InternalQuoteArtifact,
   sourceFileName: string,
+  pricing?: CustomerPricingSettings,
 ): ThreeSixtyConversionResult {
-  const quoteData = buildThreeSixtyQuoteData(artifact)
+  assertPricingCustomer(pricing, 'three-sixty')
+  const quoteData = buildThreeSixtyQuoteData(artifact, pricing)
   validateTemplateCapacity(quoteData)
   const detailSpecs: Array<[string, number, number]> = [
     ['Plastic Material', sum(quoteData.plasticRows.map((row) => row.internalHkd)), quoteData.materialTotalsUsd.plastic],
@@ -659,16 +673,17 @@ export function convertThreeSixtyP4InternalQuote(
     ['Packaging Material', sum(quoteData.packagingRows.map((row) => row.internalHkd)) + quoteData.carton.perPieceHkd, quoteData.materialTotalsUsd.packaging],
     ['Others / Paint', sectionTotal(artifact, 'painting'), quoteData.materialTotalsUsd.others],
     ['Labour', sectionTotal(artifact, 'molding') + sectionTotal(artifact, 'assembly'), quoteData.laborTotalUsd],
-    ['Material Scrap 2%', 0, quoteData.materialScrapUsd],
-    ['Markup 12%', 0, quoteData.markupUsd],
+    [`Material Scrap ${pricingRate(pricing, 'scrap_rate', THREE_SIXTY_MATERIAL_SCRAP_RATE) * 100}%`, 0, quoteData.materialScrapUsd],
+    [`Markup ${pricingRate(pricing, 'markup_rate', THREE_SIXTY_MARKUP_RATE) * 100}%`, 0, quoteData.markupUsd],
     ['Transportation', 0, quoteData.transportationUsd],
     ['Testing Cost', 0, quoteData.testingPerUnitUsd],
     ['Tooling Cost', 0, quoteData.toolingPerUnitUsd],
   ]
   const details = detailSpecs.map(([description, internalHkd, customerUsd], index) => (
-    createDetailRow(index + 1, description, internalHkd, customerUsd)
+    createDetailRow(index + 1, description, internalHkd, customerUsd, pricing)
   ))
   return {
+    pricing,
     sourceFileName,
     sheets: [{
       id: 'three-sixty-breakdown',
@@ -677,7 +692,7 @@ export function convertThreeSixtyP4InternalQuote(
       sourceFileName,
       rowCount: details.length,
       totalInternalHkd: quoteData.internalTotalHkd,
-      totalCustomerHkd: round(quoteData.totalWithToolingUsd * THREE_SIXTY_HKD_USD),
+      totalCustomerHkd: round(quoteData.totalWithToolingUsd * pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)),
       details,
       quoteData,
     }],
@@ -842,14 +857,15 @@ function legacyRow(
   usage: number,
   internalHkd: number,
   specification = '',
+  pricing?: CustomerPricingSettings,
 ): ThreeSixtyMaterialRow {
   const safeUsage = usage > 0 ? usage : 1
   return {
     description,
     specification,
     usage: safeUsage,
-    unitPriceUsd: round(internalHkd / THREE_SIXTY_HKD_USD / safeUsage),
-    totalUsd: round(internalHkd / THREE_SIXTY_HKD_USD),
+    unitPriceUsd: round(internalHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD) / safeUsage),
+    totalUsd: round(internalHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)),
     internalHkd: round(internalHkd),
   }
 }
@@ -880,6 +896,7 @@ function legacyLabelNumbers(
 function buildLegacyThreeSixtyQuoteData(
   workbook: XlsxParsedWorkbook,
   sourceFileName: string,
+  pricing?: CustomerPricingSettings,
 ): ThreeSixtyQuoteData {
   const breakdown = workbook.sheets.find((sheet) => sheet.name.trim().toLowerCase() === 'breakdown')
   const internal = workbook.sheets.find((sheet) => /内部明细|內部明細/i.test(sheet.name))
@@ -932,8 +949,8 @@ function buildLegacyThreeSixtyQuoteData(
       const totalWeightG = weightG * usage
       const moldingHkd = legacyCellNumber(row[9])
       const internalHkd = legacyCellNumber(row[10]) + moldingHkd
-      const materialUsd = totalWeightG * THREE_SIXTY_MATERIAL_PRICES_USD_KG[material] / 1000
-      const moldingUsd = moldingHkd / THREE_SIXTY_HKD_USD
+      const materialUsd = totalWeightG * requiredMaterialPrice(material, pricing) / 1000
+      const moldingUsd = moldingHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
       laborUsd.molding += moldingUsd
       plasticRows.push({
         moldNo: '',
@@ -944,7 +961,7 @@ function buildLegacyThreeSixtyQuoteData(
         usage,
         partWeightG: weightG,
         totalWeightG,
-        unitPriceUsd: THREE_SIXTY_MATERIAL_PRICES_USD_KG[material],
+        unitPriceUsd: requiredMaterialPrice(material, pricing),
         totalUsd: round(materialUsd),
         internalHkd: round(internalHkd),
         machine: legacyCellText(row[6]),
@@ -978,8 +995,10 @@ function buildLegacyThreeSixtyQuoteData(
       const weightG = numberValue(description.match(/(\d+(?:\.\d+)?)\s*g/i)?.[1])
       if (weightG <= 0) throw new Error(`360 搪胶明细“${description}”缺少克重`)
       const material: ThreeSixtyMaterial = 'Roto-PVC'
-      const materialUsd = weightG * THREE_SIXTY_MATERIAL_PRICES_USD_KG[material] / 1000
-      const moldingUsd = Math.max(0, internalHkd / THREE_SIXTY_HKD_USD - materialUsd)
+      const materialUsd = weightG * requiredMaterialPrice(material, pricing) / 1000
+      const baselineMaterialHkd = weightG * requiredMaterialPrice(material) / 1000 * THREE_SIXTY_HKD_USD
+      const moldingUsd = Math.max(0, internalHkd - baselineMaterialHkd)
+        / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
       laborUsd.molding += moldingUsd
       plasticRows.push({
         moldNo: '',
@@ -990,7 +1009,7 @@ function buildLegacyThreeSixtyQuoteData(
         usage: 1,
         partWeightG: weightG,
         totalWeightG: weightG,
-        unitPriceUsd: THREE_SIXTY_MATERIAL_PRICES_USD_KG[material],
+        unitPriceUsd: requiredMaterialPrice(material, pricing),
         totalUsd: round(materialUsd),
         internalHkd: round(internalHkd),
         machine: 'RC',
@@ -1000,23 +1019,23 @@ function buildLegacyThreeSixtyQuoteData(
       continue
     }
     if (/喷油油漆|噴油油漆|油漆/.test(description)) {
-      otherRows.push(legacyRow(description, 1, internalHkd))
+      otherRows.push(legacyRow(description, 1, internalHkd, undefined, pricing))
       continue
     }
     if (/喷油工|噴油工/.test(category) || /喷油人工|噴油人工/.test(description)) {
-      laborUsd.spray += internalHkd / THREE_SIXTY_HKD_USD
+      laborUsd.spray += internalHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
       continue
     }
     if (/装工|裝工/.test(category)) {
-      laborUsd[/包装|包裝/.test(description) ? 'packing' : 'assembly'] += internalHkd / THREE_SIXTY_HKD_USD
+      laborUsd[/包装|包裝/.test(description) ? 'packing' : 'assembly'] += internalHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
       continue
     }
     if (/眼珠|眼睛/.test(description)) {
-      purchaseRows.push(legacyRow(description, legacyUsage(description), internalHkd))
+      purchaseRows.push(legacyRow(description, legacyUsage(description), internalHkd, undefined, pricing))
       continue
     }
     if (/车衣|車衣/.test(category)) {
-      fabricRows.push(legacyRow(description, 1, internalHkd))
+      fabricRows.push(legacyRow(description, 1, internalHkd, undefined, pricing))
       continue
     }
     if (/纸箱|紙箱/.test(category) || /外箱/.test(description)) {
@@ -1024,7 +1043,7 @@ function buildLegacyThreeSixtyQuoteData(
       continue
     }
     if (/彩盒|吸塑|贴纸|貼紙|扎带|扎帶|胶钉|膠釘|胶纸|膠紙|雪梨纸|雪梨紙|利宝|利寶|锡线|錫線/.test(description)) {
-      packagingRows.push(legacyRow(description, legacyUsage(description), internalHkd))
+      packagingRows.push(legacyRow(description, legacyUsage(description), internalHkd, undefined, pricing))
     }
   }
 
@@ -1056,7 +1075,7 @@ function buildLegacyThreeSixtyQuoteData(
   }
 
   if (freightPerPieceHkd <= 0) {
-    freightPerPieceHkd = legacyCellNumber(breakdownRows[37]?.[11]) * THREE_SIXTY_HKD_USD
+    freightPerPieceHkd = legacyCellNumber(breakdownRows[37]?.[11]) * pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
     freightRouteLabel = '40HQ'
   }
   const [quantityPerContainerExact] = legacyLabelNumbers(internalRows, /每柜数量|每櫃數量/, 1)
@@ -1073,16 +1092,16 @@ function buildLegacyThreeSixtyQuoteData(
     purchase: round(sum(purchaseRows.map((row) => row.totalUsd))),
     electronic: round(sum(electronicRows.map((row) => row.totalUsd))),
     fabric: round(sum(fabricRows.map((row) => row.totalUsd))),
-    packaging: round(sum(packagingRows.map((row) => row.totalUsd)) + carton.perPieceHkd / THREE_SIXTY_HKD_USD),
+    packaging: round(sum(packagingRows.map((row) => row.totalUsd)) + carton.perPieceHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)),
     others: round(sum(otherRows.map((row) => row.totalUsd))),
   }
   const materialTotalUsd = round(sum(Object.values(materialTotalsUsd)))
   const laborTotalUsd = round(sum(Object.values(laborUsd)))
   const basicTotalUsd = round(materialTotalUsd + laborTotalUsd)
-  const materialScrapUsd = round(materialTotalUsd * THREE_SIXTY_MATERIAL_SCRAP_RATE)
-  const markupUsd = round(basicTotalUsd * THREE_SIXTY_MARKUP_RATE)
+  const materialScrapUsd = round(materialTotalUsd * pricingRate(pricing, 'scrap_rate', THREE_SIXTY_MATERIAL_SCRAP_RATE))
+  const markupUsd = round(basicTotalUsd * pricingRate(pricing, 'markup_rate', THREE_SIXTY_MARKUP_RATE))
   const exFactoryUsd = round(basicTotalUsd + materialScrapUsd + markupUsd)
-  const transportationUsd = round(freightPerPieceHkd / THREE_SIXTY_HKD_USD)
+  const transportationUsd = round(freightPerPieceHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD))
   const totalFobUsd = round(exFactoryUsd + transportationUsd)
   const testingTotalUsd = legacyCellNumber(breakdownRows[40]?.[4])
   const testingPerUnitUsd = round(testingTotalUsd / quantity)
@@ -1098,11 +1117,12 @@ function buildLegacyThreeSixtyQuoteData(
     + sum(packagingRows.map((row) => row.internalHkd))
     + sum(otherRows.map((row) => row.internalHkd))
     + carton.perPieceHkd
-    + laborTotalUsd * THREE_SIXTY_HKD_USD
+    + laborTotalUsd * pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)
     + freightPerPieceHkd,
   )
 
   return {
+    pricing,
     metadata: {
       msBrand: legacyCellText(breakdownRows[6]?.[2]),
       firstEtd: legacyExcelDate(breakdownRows[8]?.[2]),
@@ -1152,8 +1172,9 @@ function buildLegacyThreeSixtyQuoteData(
 function convertLegacyThreeSixtyInternalQuote(
   workbook: XlsxParsedWorkbook,
   sourceFileName: string,
+  pricing?: CustomerPricingSettings,
 ): ThreeSixtyConversionResult {
-  const quoteData = buildLegacyThreeSixtyQuoteData(workbook, sourceFileName)
+  const quoteData = buildLegacyThreeSixtyQuoteData(workbook, sourceFileName, pricing)
   validateTemplateCapacity(quoteData)
   const detailSpecs: Array<[string, number, number]> = [
     ['Plastic Material', sum(quoteData.plasticRows.map((row) => row.internalHkd)), quoteData.materialTotalsUsd.plastic],
@@ -1162,17 +1183,18 @@ function convertLegacyThreeSixtyInternalQuote(
     ['Fabric Material', sum(quoteData.fabricRows.map((row) => row.internalHkd)), quoteData.materialTotalsUsd.fabric],
     ['Packaging Material', sum(quoteData.packagingRows.map((row) => row.internalHkd)) + quoteData.carton.perPieceHkd, quoteData.materialTotalsUsd.packaging],
     ['Others / Paint', sum(quoteData.otherRows.map((row) => row.internalHkd)), quoteData.materialTotalsUsd.others],
-    ['Labour', quoteData.laborTotalUsd * THREE_SIXTY_HKD_USD, quoteData.laborTotalUsd],
-    ['Material Scrap 2%', 0, quoteData.materialScrapUsd],
-    ['Markup 12%', 0, quoteData.markupUsd],
-    ['Transportation', quoteData.transportationUsd * THREE_SIXTY_HKD_USD, quoteData.transportationUsd],
+    ['Labour', quoteData.laborTotalUsd * pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD), quoteData.laborTotalUsd],
+    [`Material Scrap ${pricingRate(pricing, 'scrap_rate', THREE_SIXTY_MATERIAL_SCRAP_RATE) * 100}%`, 0, quoteData.materialScrapUsd],
+    [`Markup ${pricingRate(pricing, 'markup_rate', THREE_SIXTY_MARKUP_RATE) * 100}%`, 0, quoteData.markupUsd],
+    ['Transportation', quoteData.transportationUsd * pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD), quoteData.transportationUsd],
     ['Testing Cost', 0, quoteData.testingPerUnitUsd],
     ['Tooling Cost', 0, quoteData.toolingPerUnitUsd],
   ]
   const details = detailSpecs.map(([description, internalHkd, customerUsd], index) => (
-    createDetailRow(index + 1, description, internalHkd, customerUsd)
+    createDetailRow(index + 1, description, internalHkd, customerUsd, pricing)
   ))
   return {
+    pricing,
     sourceFileName,
     sheets: [{
       id: 'three-sixty-breakdown',
@@ -1181,14 +1203,15 @@ function convertLegacyThreeSixtyInternalQuote(
       sourceFileName,
       rowCount: details.length,
       totalInternalHkd: quoteData.internalTotalHkd,
-      totalCustomerHkd: round(quoteData.totalWithToolingUsd * THREE_SIXTY_HKD_USD),
+      totalCustomerHkd: round(quoteData.totalWithToolingUsd * pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD)),
       details,
       quoteData,
     }],
   }
 }
 
-export function convertThreeSixtyInternalQuote(buffer: ArrayBuffer, sourceFileName: string): ThreeSixtyConversionResult {
+export function convertThreeSixtyInternalQuote(buffer: ArrayBuffer, sourceFileName: string, pricing?: CustomerPricingSettings): ThreeSixtyConversionResult {
+  assertPricingCustomer(pricing, 'three-sixty')
   const packageEntries = unzipSync(new Uint8Array(buffer))
   const workbookXml = packageEntries['xl/workbook.xml']
     ? strFromU8(packageEntries['xl/workbook.xml'])
@@ -1197,10 +1220,10 @@ export function convertThreeSixtyInternalQuote(buffer: ArrayBuffer, sourceFileNa
     && /name="(?:审批与版本|審批與版本)"/.test(workbookXml)
   if (isP4Workbook) {
     const artifact = parseP4InternalQuoteArtifact(buffer)
-    return convertThreeSixtyP4InternalQuote(artifact, sourceFileName)
+    return convertThreeSixtyP4InternalQuote(artifact, sourceFileName, pricing)
   }
   const workbook = parseLegacyThreeSixtyWorkbook(packageEntries)
-  return convertLegacyThreeSixtyInternalQuote(workbook, sourceFileName)
+  return convertLegacyThreeSixtyInternalQuote(workbook, sourceFileName, pricing)
 }
 
 function columnNameToIndex(column: string) {
@@ -1345,7 +1368,7 @@ function addGenericRows(patches: TemplateCellPatch[], input: ThreeSixtyMaterialR
   })
 }
 
-function buildTemplatePatches(data: ThreeSixtyQuoteData): TemplateCellPatch[] {
+function buildTemplatePatches(data: ThreeSixtyQuoteData, pricing?: CustomerPricingSettings): TemplateCellPatch[] {
   const patches: TemplateCellPatch[] = [
     { ref: 'C7', value: data.metadata.msBrand },
     { ref: 'C9', value: data.metadata.firstEtd },
@@ -1355,7 +1378,7 @@ function buildTemplatePatches(data: ThreeSixtyQuoteData): TemplateCellPatch[] {
     { ref: 'O14', value: data.metadata.revision },
     { ref: 'O16', value: data.metadata.quantity },
     { ref: 'O18', value: data.totalWithTestingUsd, formula: 'L42' },
-    { ref: 'O20', value: THREE_SIXTY_HKD_USD },
+    { ref: 'O20', value: pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD) },
     { ref: 'O22', value: data.toolingTotalUsd > 0 ? data.totalWithToolingUsd : 'NIL', formula: 'L45' },
     { ref: 'O23', value: data.metadata.toolingCount },
   ]
@@ -1383,15 +1406,15 @@ function buildTemplatePatches(data: ThreeSixtyQuoteData): TemplateCellPatch[] {
     { ref: 'L34', value: data.basicTotalUsd, formula: 'SUM(L32:L33)' },
     { ref: 'O34', value: data.basicTotalUsd, formula: 'SUM(O32:O33)' },
     { ref: 'L35', value: data.materialScrapUsd, formula: 'L32*M35' },
-    { ref: 'M35', value: THREE_SIXTY_MATERIAL_SCRAP_RATE },
+    { ref: 'M35', value: pricingRate(pricing, 'scrap_rate', THREE_SIXTY_MATERIAL_SCRAP_RATE) },
     { ref: 'N35', value: 0, formula: 'O35-L35' },
     { ref: 'O35', value: data.materialScrapUsd, formula: 'O32*P35' },
-    { ref: 'P35', value: THREE_SIXTY_MATERIAL_SCRAP_RATE },
+    { ref: 'P35', value: pricingRate(pricing, 'scrap_rate', THREE_SIXTY_MATERIAL_SCRAP_RATE) },
     { ref: 'L36', value: data.markupUsd, formula: 'L34*M36' },
-    { ref: 'M36', value: THREE_SIXTY_MARKUP_RATE },
+    { ref: 'M36', value: pricingRate(pricing, 'markup_rate', THREE_SIXTY_MARKUP_RATE) },
     { ref: 'N36', value: 0, formula: 'O36-L36' },
     { ref: 'O36', value: data.markupUsd, formula: 'O34*P36' },
-    { ref: 'P36', value: THREE_SIXTY_MARKUP_RATE },
+    { ref: 'P36', value: pricingRate(pricing, 'markup_rate', THREE_SIXTY_MARKUP_RATE) },
     { ref: 'L37', value: data.exFactoryUsd, formula: 'L34+L35+L36' },
     { ref: 'O37', value: data.exFactoryUsd, formula: 'O34+O35+O36' },
     { ref: 'L38', value: data.transportationUsd },
@@ -1480,8 +1503,8 @@ function buildTemplatePatches(data: ThreeSixtyQuoteData): TemplateCellPatch[] {
     { ref: 'J138', value: data.carton.heightIn },
     { ref: 'K138', value: data.carton.qtyPerCarton },
     { ref: 'L138', value: 1 / data.carton.qtyPerCarton },
-    { ref: 'O138', value: data.carton.cartonPriceHkd / THREE_SIXTY_HKD_USD },
-    { ref: 'P138', value: data.carton.perPieceHkd / THREE_SIXTY_HKD_USD, formula: 'L138*O138' },
+    { ref: 'O138', value: data.carton.cartonPriceHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD) },
+    { ref: 'P138', value: data.carton.perPieceHkd / pricingRate(pricing, 'hkd_usd', THREE_SIXTY_HKD_USD), formula: 'L138*O138' },
     { ref: 'P143', value: data.materialTotalsUsd.packaging, formula: 'SUM(P133:P142)' },
   )
   addGenericRows(patches, data.otherRows, Array.from({ length: 5 }, (_, index) => 148 + index))
@@ -1519,13 +1542,15 @@ export function createThreeSixtyCustomerQuoteWorkbook(
   result: ThreeSixtyConversionResult,
   templateBuffer: ArrayBuffer | Uint8Array,
 ): Uint8Array {
+  const pricing = result.pricing
+
   const firstSheet = result.sheets[0]
   if (!firstSheet) throw new Error('没有可输出的 360 报客数据')
   const bytes = templateBuffer instanceof Uint8Array ? templateBuffer : new Uint8Array(templateBuffer)
   const zip = unzipSync(bytes)
   const sheetPath = 'xl/worksheets/sheet1.xml'
   if (!zip[sheetPath]) throw new Error('360 客户模板缺少 Breakdown 工作表')
-  zip[sheetPath] = strToU8(applyPatches(strFromU8(zip[sheetPath]), buildTemplatePatches(firstSheet.quoteData)))
+  zip[sheetPath] = strToU8(applyPatches(strFromU8(zip[sheetPath]), buildTemplatePatches(firstSheet.quoteData, pricing)))
   if (zip['xl/workbook.xml']) {
     let workbookXml = strFromU8(zip['xl/workbook.xml'])
     workbookXml = workbookXml.replace(
@@ -1546,4 +1571,10 @@ export function buildThreeSixtyCustomerQuoteFileName(result: ThreeSixtyConversio
   if (!data) return 'RR_360_Customer_Quote.xlsx'
   const date = data.metadata.quoteDate.replace(/-/g, '')
   return `RR_${safeFileName(data.metadata.productName)}_360_${safeFileName(data.metadata.revision)}_${date}.xlsx`
+}
+
+function requiredMaterialPrice(material: string, pricing?: CustomerPricingSettings): number {
+  const price = pricingMaterial(pricing, material, 'USD', 'kg', THREE_SIXTY_MATERIAL_PRICES_USD_KG[material as ThreeSixtyMaterial] ?? null)
+  if (price === null) throw new Error(`360 客户料价未配置：${material}`)
+  return price
 }

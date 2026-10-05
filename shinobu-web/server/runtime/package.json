@@ -1,0 +1,11 @@
+{
+  "name": "rr-image-translation-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "canvas": "3.2.3",
+    "onnxruntime-node": "1.27.0"
+  },
+  "overrides": { "adm-zip": "^0.6.0" }
+}

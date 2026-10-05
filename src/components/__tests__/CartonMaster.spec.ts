@@ -7,7 +7,7 @@ import Settings from '../CartonMasterSettings.vue'
 import { http } from '@/lib/http'
 import { cartonMasterApi, defaultMasterData, emptyMaster, masterDueRules, historicalNumberSamples, numberWarning, type MasterRecord } from '@/api/cartonMaster'
 
-vi.mock('@/lib/http', async importOriginal => ({ ...await importOriginal<typeof import('@/lib/http')>(), http: { get: vi.fn(), post: vi.fn(), patch: vi.fn() }, getApiErrorMessage: () => '请求失败' }))
+vi.mock('@/lib/http', async importOriginal => ({ ...await importOriginal<typeof import('@/lib/http')>(), http: { get: vi.fn(), post: vi.fn(), patch: vi.fn() } }))
 const record = (id: string, customer = '360', count = '120'): MasterRecord => ({
   id, kind: 'CONFIG', customer_code: customer, code: '00123', status: 'ACTIVE', revision: 1,
   preferred: false, maintained: false, updated_at: '', sources: [],
@@ -42,7 +42,7 @@ it.each(['下载纸品选项模板', '下载仓位模板'])('shows backend JSON 
   await flushPromises()
   await wrapper.findAll('button').find(button => button.text() === label)!.trigger('click')
   await flushPromises()
-  expect(wrapper.get('[role="alert"]').text()).toBe('当前厂区无模板下载权限')
+  expect(wrapper.get('[role="alert"]').text()).toBe('模板下载失败：当前厂区无模板下载权限')
   expect(download).toHaveBeenCalledWith('huaxing', label === '下载仓位模板' ? 'locations' : 'paper-options')
   wrapper.unmount(); download.mockRestore(); get.mockRestore()
 })
@@ -64,6 +64,44 @@ it('discards template download errors when factory changes during Blob parsing',
   expect(wrapper.find('[role="alert"]').exists()).toBe(false)
   expect(wrapper.text()).not.toContain('旧厂区下载错误')
   wrapper.unmount(); download.mockRestore(); get.mockRestore()
+})
+
+it('keeps a pending template download failure visible inside the import dialog', async () => {
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+  let rejectDownload!: (reason: unknown) => void
+  const download = vi.spyOn(cartonMasterApi, 'template').mockImplementation(() => new Promise<Blob>((_, reject) => { rejectDownload = reject }))
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
+  try {
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '下载纸品选项模板')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '导入纸品选项')!.trigger('click')
+    rejectDownload({ isAxiosError: true, message: 'Request failed', response: { status: 403, data: { detail: '当前账号不可下载此模板' } } })
+    await flushPromises()
+    expect(wrapper.get('[role="dialog"]').get('[role="alert"]').text()).toBe('模板下载失败：当前账号不可下载此模板')
+  } finally { wrapper.unmount(); download.mockRestore(); get.mockRestore() }
+})
+
+it('keeps a completed master import locked and explains its refresh failure in the dialog', async () => {
+  const result = { factory_id: 'huaxing', kind: 'paper-options' as const, fingerprint: 'file', master_revision: 'revision', preview_token: 'token', added: 1, skipped: 0, errors: [] as string[], details: [] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+  const preview = vi.spyOn(cartonMasterApi, 'importPreview').mockResolvedValue(result)
+  const apply = vi.spyOn(cartonMasterApi, 'importApply').mockResolvedValue(result)
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
+  try {
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '导入纸品选项')!.trigger('click')
+    const input = wrapper.get<HTMLInputElement>('[aria-label="选择基础资料模板文件"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['xlsx'], '资料.xlsx')] })
+    await input.trigger('change')
+    await wrapper.findAll('button').find(button => button.text() === '预览导入')!.trigger('click'); await flushPromises()
+    get.mockRejectedValueOnce(new Error('资料读取暂不可用'))
+    await wrapper.findAll('button').find(button => button.text() === '确认导入')!.trigger('click'); await flushPromises()
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(dialog.text()).toContain('导入完成')
+    expect(dialog.get('[role="alert"]').text()).toContain('基础资料已导入，但列表刷新失败：资料读取暂不可用')
+    expect(dialog.findAll('button').some(button => button.text() === '确认导入')).toBe(false)
+    expect(apply).toHaveBeenCalledTimes(1)
+  } finally { wrapper.unmount(); get.mockRestore(); preview.mockRestore(); apply.mockRestore() }
 })
 
 it.each(['paper-options', 'configurations', 'locations'] as const)('previews and confirms %s imports, retaining dialog until explicit close', async kind => {
@@ -143,6 +181,24 @@ it('hides both template and import actions without master permission', async () 
 })
 
 describe('纸箱基础资料', () => {
+  it.each(['', 'cm', 'mm', 'inch'])('defaults an unrecorded dimension unit to cm while retaining %s and loaded snapshots', async unit => {
+    const config = record('CFG')
+    config.data.lines![0]!.dimension_unit = unit
+    const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [config] })
+    const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(config)
+    const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } })
+    await flushPromises()
+    await wrapper.get('[aria-label="修改基础资料 00123"]').trigger('click')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="资料尺寸单位"]').element.value).toBe(unit || 'cm')
+    expect(config.data.lines![0]!.dimension_unit).toBe(unit)
+    await wrapper.get('[aria-label="资料尺寸单位"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ data: expect.objectContaining({ lines: expect.arrayContaining([
+      expect.objectContaining({ dimension_unit: unit || 'cm' }),
+    ]) }) }), 'CFG')
+    wrapper.unmount(); get.mockRestore(); save.mockRestore()
+  })
+
   it('keeps full alternative paper sets, shares configurations across customers and leaves differences as reminders', async () => {
     const a = record('A'), b = record('B', '360', '100'), foreign = record('F', 'OTHER')
     const wrapper = mount(Assist, { props: { records: [a, b, foreign, { ...a, id: 'STOP', status: 'INACTIVE' }], customer: '360', item: '00123', contract: 'C1', product: '消防车', lines: a.data.lines! } })
@@ -171,6 +227,7 @@ describe('纸箱基础资料', () => {
     await flushPromises()
     await wrapper.get('[role="tab"][aria-selected="false"]').trigger('click')
     expect(wrapper.find('[aria-label="修改基础资料 00123"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="删除货号包装 00123"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('用于落单')
     get.mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [a] })
     await wrapper.findAll('button').find(b => b.text() === '刷新资料')!.trigger('click'); await flushPromises()
@@ -182,6 +239,42 @@ describe('纸箱基础资料', () => {
     expect(wrapper.get('[aria-label="资料编号名称"]').attributes('disabled')).toBeDefined()
     wrapper.unmount(); get.mockRestore()
   })
+})
+
+it('removes one packaging configuration from usable records and restores it without deleting history', async () => {
+  let config: MasterRecord = { ...record('CFG'), preferred: true, sources: [{
+    order_no: 'CT-HISTORY', order_date: '2026-09-01', contract_no: 'SC-OLD', item_no: '00123',
+    customer_code: '360', configuration: {},
+  }] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockImplementation(async () => ({ ...emptyMaster(), can_manage: true, records: [config] }))
+  const save = vi.spyOn(cartonMasterApi, 'save').mockImplementation(async (_factory, payload) => {
+    config = { ...config, status: payload.status, preferred: payload.preferred, revision: config.revision + 1, maintained: true }
+    return { ...config, sources: [] }
+  })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } })
+  await flushPromises()
+  expect(wrapper.get<HTMLSelectElement>('[aria-label="货号资料状态"]').element.value).toBe('ACTIVE')
+  await wrapper.get('[data-config-id="CFG"] [aria-label="删除货号包装 00123"]').trigger('click')
+  const dialog = wrapper.get('[role="dialog"][aria-label="删除货号与包装资料"]')
+  expect(dialog.text()).toContain('历史订单及 1 条来源记录保留')
+  expect(save).not.toHaveBeenCalled()
+  await dialog.findAll('button').find(button => button.text() === '取消')!.trigger('click')
+  expect(save).not.toHaveBeenCalled()
+
+  await wrapper.get('[data-config-id="CFG"] [aria-label="删除货号包装 00123"]').trigger('click')
+  await wrapper.get('[role="dialog"][aria-label="删除货号与包装资料"]').findAll('button').find(button => button.text() === '确认删除')!.trigger('click')
+  await flushPromises()
+  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ kind: 'CONFIG', status: 'INACTIVE', preferred: false, expected_revision: 1, reason: '删除不再使用的货号包装资料' }), 'CFG')
+  expect(wrapper.find('[data-config-id="CFG"]').exists()).toBe(false)
+  expect(wrapper.get('[role="status"]').text()).toContain('可在“停用”中恢复')
+  await wrapper.get('[aria-label="货号资料状态"]').setValue('INACTIVE')
+  expect(wrapper.get('[data-config-id="CFG"]').text()).toContain('1 条历史来源')
+  await wrapper.get('[data-config-id="CFG"] [aria-label="恢复货号包装 00123"]').trigger('click')
+  await flushPromises()
+  expect(save).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ status: 'ACTIVE', preferred: false, expected_revision: 2, reason: '恢复货号包装资料' }), 'CFG')
+  expect(wrapper.get('[data-config-id="CFG"]').text()).toContain('启用')
+  expect(config.sources).toHaveLength(1)
+  wrapper.unmount(); get.mockRestore(); save.mockRestore()
 })
 
 it('uses saved templates without re-learning from later history or another customer', () => {
@@ -251,6 +344,16 @@ it('prefers pasted examples, preserves manual edits and keeps reopened formats f
   wrapper.unmount(); get.mockRestore(); save.mockRestore()
 })
 
+it('defaults production to seven days and respects active factory/customer overrides including zero', () => {
+  const factory = { ...record('F', ''), kind: 'RULE' as const, data: { production_days: 9 } }
+  const customer = { ...record('C'), kind: 'RULE' as const, data: { production_days: 0 } }
+  expect(masterDueRules([], '360').production_days).toBe(7)
+  expect(masterDueRules([factory, customer], '360').production_days).toBe(0)
+  expect(masterDueRules([factory, customer], 'OTHER').production_days).toBe(9)
+  expect(masterDueRules([factory, { ...customer, status: 'INACTIVE' }], '360').production_days).toBe(9)
+  expect(masterDueRules([factory, { ...customer, data: { production_days: null } }], '360').production_days).toBe(9)
+})
+
 it('keeps two pages and edits the one existing factory default in its fixed scope', async () => {
   const factory: MasterRecord = { ...record('FACTORY', ''), kind: 'RULE', code: '', data: { ...defaultMasterData(), lead_days: 8 } }
   const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [factory] })
@@ -263,8 +366,9 @@ it('keeps two pages and edits the one existing factory default in its fixed scop
   expect(wrapper.get('[aria-label="资料所属客户"]').attributes('disabled')).toBeDefined()
   expect(wrapper.find('[aria-label="合同号格式检查方式"]').exists()).toBe(false)
   await wrapper.get('[aria-label="默认采购提前天数"]').setValue('6')
+  await wrapper.get('[aria-label="供应商生产送货周期"]').setValue('9')
   await wrapper.get('form').trigger('submit'); await flushPromises()
-  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ customer_code: '', expected_revision: 1, data: expect.objectContaining({ lead_days: 6 }) }), 'FACTORY')
+  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ customer_code: '', expected_revision: 1, data: expect.objectContaining({ lead_days: 6, production_days: 9 }) }), 'FACTORY')
   wrapper.unmount(); save.mockRestore(); get.mockRestore()
 })
 
@@ -388,7 +492,7 @@ it('requires explicit warehouse deletion confirmation, preserves refusal and sen
     { id: 'P2', factory_id: 'huaxing', warehouse: 'A', bin_code: '02', label: 'A/02', revision: 5 },
   ]
   const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, locations })
-  const remove = vi.spyOn(cartonMasterApi, 'deleteWarehouse').mockRejectedValueOnce(new Error('used')).mockResolvedValue({ deleted: true })
+  const remove = vi.spyOn(cartonMasterApi, 'deleteWarehouse').mockRejectedValueOnce(new Error('该仓库已使用，不能删除')).mockResolvedValue({ deleted: true })
   const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
   await flushPromises()
   await wrapper.get('[aria-label="修改仓库 A"]').trigger('click')
@@ -399,7 +503,7 @@ it('requires explicit warehouse deletion confirmation, preserves refusal and sen
   await wrapper.get('form[aria-label="维护仓库"]').trigger('submit'); await flushPromises()
   expect(remove).toHaveBeenCalledWith('huaxing', 'A', { P1: 3, P2: 5 }, '删除未使用空仓')
   expect(wrapper.find('form[aria-label="维护仓库"]').exists()).toBe(true)
-  expect(wrapper.find('[role="alert"]').text()).toBe('请求失败')
+  expect(wrapper.find('[role="alert"]').text()).toBe('该仓库已使用，不能删除')
   get.mockResolvedValue({ ...emptyMaster(), can_manage: true, locations: [] })
   await wrapper.get('form[aria-label="维护仓库"]').trigger('submit'); await flushPromises()
   expect(wrapper.find('form[aria-label="维护仓库"]').exists()).toBe(false)
@@ -448,11 +552,13 @@ it('keeps recognition errors on their own field and persists an explicit format 
   await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
   expect(wrapper.text()).toContain('货号识别失败')
   expect(wrapper.get<HTMLTextAreaElement>('[aria-label="客户 PO（选填）固定格式"]').element.value).toBe('PO-{6}')
-  await wrapper.get('[aria-label="重置货号格式"]').trigger('click')
+  await wrapper.get('[aria-label="删除旧货号格式"]').trigger('click')
   expect(wrapper.text()).not.toContain('货号识别失败')
   expect(wrapper.get<HTMLTextAreaElement>('[aria-label="货号固定格式"]').element.value).toBe('')
   await wrapper.get('form').trigger('submit'); await flushPromises()
-  const saved = save.mock.calls[0]![1].data
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(save.mock.calls[0]![1].data.customer_po_rule.templates).toEqual([])
+  const saved = save.mock.calls[1]![1].data
   expect(saved.item_rule.reset).toBe(true)
   expect(saved.item_rule.templates).toEqual([])
   expect(saved.customer_po_rule.templates).toEqual(['PO-{6}'])
@@ -461,5 +567,57 @@ it('keeps recognition errors on their own field and persists an explicit format 
   await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
   expect(wrapper.get<HTMLTextAreaElement>('[aria-label="货号固定格式"]').element.value).toBe('')
   expect(wrapper.text()).not.toContain('货号识别失败')
+  wrapper.unmount(); get.mockRestore(); save.mockRestore()
+})
+
+it('deletes a saved contract format immediately without restoring old order samples', async () => {
+  const old = { ...defaultMasterData(), lead_days: 6, contract_rule: {
+    ...defaultMasterData().contract_rule, templates: ['OLD{5}'], frozen: true, sample_text: 'OLD00001', source: 'MANUAL' as const,
+  } }
+  const rule: MasterRecord = { ...record('RULE'), kind: 'RULE', code: '', data: old }
+  const history: MasterRecord = { ...record('H'), kind: 'CONTRACT', sources: [{
+    order_no: 'O1', order_date: '', contract_no: 'OLD00001', item_no: '203307004', configuration: {},
+  }] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [rule, history] })
+  const saved: MasterRecord = { ...rule, revision: 2, data: { ...old, contract_rule: { ...defaultMasterData().contract_rule, reset: true } } }
+  const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(saved)
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [{ id: 'C', customer_code: '360', customer_name: '360' } as any] } })
+  await flushPromises()
+  await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
+  await wrapper.get('[aria-label="删除旧合同号格式"]').trigger('click'); await flushPromises()
+  expect(save).toHaveBeenCalledOnce()
+  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({
+    expected_revision: 1, data: expect.objectContaining({ lead_days: 6, contract_rule: expect.objectContaining({ templates: [], reset: true }) }),
+  }), 'RULE')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('')
+  await wrapper.get('[aria-label="识别合同号格式"]').trigger('click')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('')
+  expect(wrapper.text()).toContain('旧格式已删除')
+  wrapper.unmount(); get.mockRestore(); save.mockRestore()
+})
+
+it('persists deletion when a customer has history but no saved rule', async () => {
+  const history: MasterRecord = { ...record('H'), kind: 'CONTRACT', sources: [{
+    order_no: 'O1', order_date: '', contract_no: 'OLD00001', item_no: '203307004', configuration: {},
+  }] }
+  const cleared: MasterRecord = { ...record('NEW-RULE'), kind: 'RULE', code: '', data: {
+    ...defaultMasterData(), contract_rule: { ...defaultMasterData().contract_rule, reset: true },
+  } }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValueOnce({ ...emptyMaster(), can_manage: true, records: [history] })
+    .mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [history, cleared] })
+  const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(cleared)
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [{ id: 'C', customer_code: '360', customer_name: '360' } as any] } })
+  await flushPromises()
+  await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('OLD{5}')
+  await wrapper.get('[aria-label="删除旧合同号格式"]').trigger('click'); await flushPromises()
+  expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({
+    customer_code: '360', expected_revision: 0,
+    data: expect.objectContaining({ contract_rule: expect.objectContaining({ templates: [], reset: true }) }),
+  }), '')
+  await wrapper.get('[aria-label="关闭基础资料编辑"]').trigger('click')
+  await wrapper.findAll('button').find(button => button.text() === '刷新资料')!.trigger('click'); await flushPromises()
+  await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
+  expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('')
   wrapper.unmount(); get.mockRestore(); save.mockRestore()
 })

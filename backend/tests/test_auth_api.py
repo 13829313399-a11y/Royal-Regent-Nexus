@@ -23,6 +23,9 @@ def make_client(monkeypatch, **env_overrides):
     database_url = f"sqlite:///{TEST_TMP_DIR / f'auth_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
+    # Keep lifecycle regressions independent of a developer workstation .env.
+    monkeypatch.setenv("SPRAY_OPS_ENABLED", "false")
+    monkeypatch.setenv("UV_OPS_ENABLED", "false")
     for name, value in env_overrides.items():
         monkeypatch.setenv(name, value)
 
@@ -32,6 +35,38 @@ def make_client(monkeypatch, **env_overrides):
 
     main = importlib.import_module("app.main")
     return TestClient(main.app)
+
+
+def test_removed_production_workspace_is_not_registered(monkeypatch):
+    from sqlalchemy import inspect
+
+    with make_client(monkeypatch) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/api/spray-production/summary?factory_id=huakang-a").status_code == 404
+        paths = client.get("/openapi.json").json()["paths"]
+        assert not any(path.startswith("/api/spray-production") for path in paths)
+        assert any(path.startswith("/api/internal-quotes") for path in paths)
+        database = importlib.import_module("app.db")
+        assert not any(name.startswith("spray_") for name in inspect(database.engine).get_table_names())
+        catalog = importlib.import_module("app.services.permission_codes")
+        assert not any(code.startswith("spray_production:") for code in catalog.APPLICATION_PERMISSION_CODES)
+
+
+def test_removed_print_workspace_stays_unregistered_with_legacy_flag(monkeypatch):
+    from sqlalchemy import inspect
+
+    with make_client(monkeypatch, UV_PRINTING_ENABLED="true") as client:
+        assert client.get("/health").status_code == 200
+        for path in ("summary", "ink-skus", "handovers", "ingest/events"):
+            assert client.get(f"/api/uv-printing/{path}").status_code == 404
+        assert client.post("/api/uv-printing/ingest/events", json={}).status_code == 404
+        paths = client.get("/openapi.json").json()["paths"]
+        assert not any(path.startswith("/api/uv-printing") for path in paths)
+        assert any(path.startswith("/api/three-d-printing") for path in paths)
+        database = importlib.import_module("app.db")
+        assert not any(name.startswith("uv_") for name in inspect(database.engine).get_table_names())
+        catalog = importlib.import_module("app.services.permission_codes")
+        assert not any(code.startswith("uv_printing:") for code in catalog.APPLICATION_PERMISSION_CODES)
 
 
 def make_avatar_png() -> bytes:
@@ -57,9 +92,6 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
         assert me_response.status_code == 200
         me = me_response.json()
         assert me["username"] == "admin"
-        if not importlib.import_module("app.core.config").settings.uv_printing_enabled:
-            from sqlalchemy import inspect
-            assert not any(name.startswith("uv_") for name in inspect(importlib.import_module("app.db").engine).get_table_names())
         assert me["display_name"] == "系统管理员"
         assert "系统管理员" in me["roles"]
         assert "system:user_manage" in me["permissions"]
@@ -74,6 +106,8 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
         )
         assert me["grants"] == [
             {
+                "factory_ceiling": None,
+                "assignment_id": "",
                 "role_id": "admin",
                 "role_name": "系统管理员",
                 "factory_id": "*",
@@ -85,15 +119,15 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                     code
                     for code in sorted(me["permissions"])
                     if code in {
+                        "uv_ops:read", "uv_ops:cost_read", "uv_ops:payroll_read", "uv_ops:audit_read",
                         "carton_mark:read",
                         "carton_procurement:read",
                         "customer_price:compare",
                         "customer_price:read",
+                        "customer_price:settings_read",
                         "customer_order:audit_read",
                         "customer_order:read",
                         "injection_scheduling:read",
-                        "spray_production:read",
-                        "spray_production:cost_read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",
@@ -108,9 +142,6 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "qc_inspection:read",
                         "system:audit_read",
                         "system:permission_catalog_read",
-                        "uv_printing:read",
-                        "uv_printing:cost_read",
-                        "uv_printing:payroll_read",
                     }
                 ],
                 "unrestricted_department": False,
@@ -428,6 +459,8 @@ def test_sales_customer_supervisor_role_is_seeded_with_customer_price_permission
             ).all()
             assert {permission.code for permission in permissions} == {
                 "customer_price:read",
+                "customer_price:settings_read",
+                "customer_price:settings_manage",
                 "customer_price:import_internal_quote",
                 "customer_price:export_customer_quote",
                 "customer_price:compare",
@@ -568,6 +601,120 @@ def test_seed_upgrades_existing_business_roles_with_internal_quote_p4_release_pe
             assert db.query(auth_models.AuthRolePermission).filter(
                 auth_models.AuthRolePermission.id.in_(expected_mappings)
             ).count() == len(expected_mappings)
+
+
+@pytest.mark.parametrize("existing_owner_grant", [False, True])
+def test_seed_upgrades_legacy_sales_pricing_access_without_overriding_scope_or_denials(monkeypatch, existing_owner_grant):
+    with make_client(monkeypatch, AUTHZ_MODE="enforce"):
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        auth = importlib.import_module("app.services.auth")
+        pricing = importlib.import_module("app.services.customer_price_settings")
+        with db_module.SessionLocal() as db:
+            marker = db.get(models.AuthIamState, auth.CUSTOMER_PRICE_SETTINGS_GRANT_MARKER)
+            assert marker is not None
+            db.delete(marker)
+            permissions = {
+                row.code: row for row in db.query(models.AuthPermission).filter(
+                    models.AuthPermission.code.in_([
+                        "customer_price:settings_read", "customer_price:settings_manage",
+                    ])
+                ).all()
+            }
+            sales_roles = ("sales_customer_owner", "sales_customer_supervisor")
+            db.query(models.AuthRolePermission).filter(
+                models.AuthRolePermission.role_id.in_(sales_roles),
+                models.AuthRolePermission.permission_id.in_([row.id for row in permissions.values()]),
+            ).delete(synchronize_session=False)
+            # A partially upgraded role can already have a grant with a noncanonical ID.
+            if existing_owner_grant:
+                db.add(models.AuthRolePermission(
+                    id="existing-pricing-read", role_id="sales_customer_owner",
+                    permission_id=permissions["customer_price:settings_read"].id,
+                ))
+            roles_by_user = {
+                "pricing-owner": "sales_customer_owner",
+                "pricing-supervisor": "sales_customer_supervisor",
+                "pricing-denied": "sales_customer_supervisor",
+                "pricing-engineer": "engineer",
+            }
+            for user_id, role_id in roles_by_user.items():
+                department = "engineering" if role_id == "engineer" else "sales-business"
+                db.add(models.AuthUser(
+                    id=user_id, username=user_id, display_name=user_id,
+                    password_salt="unused", password_hash="unused",
+                ))
+                db.flush()
+                db.add(models.AuthUserRole(
+                    id=f"{user_id}-binding", user_id=user_id, role_id=role_id,
+                    factory_id="huaxing", department=department,
+                ))
+                db.add(models.EmployeeProfile(
+                    user_id=user_id, primary_factory_id="huaxing", primary_department=department,
+                ))
+            db.add(models.AuthUserPermissionOverride(
+                id="pricing-explicit-deny", user_id="pricing-denied",
+                permission_id=permissions["customer_price:settings_read"].id,
+                effect="deny", factory_id="huaxing", department="sales-business",
+            ))
+            db.flush()
+            auth.seed_iam_sidecars(db, auth.now_text())
+            db.commit()
+            role_versions = {
+                role: db.get(models.AuthRoleMetadata, role).version for role in sales_roles
+            }
+            user_revisions = {
+                uid: db.get(models.AuthUserAuthorizationRevision, uid).revision for uid in roles_by_user
+            }
+            other_grants = {
+                (row.id, row.role_id, row.permission_id) for row in db.query(models.AuthRolePermission)
+                if row.role_id not in sales_roles
+            }
+
+            auth.seed_auth_defaults(db)
+
+            def context(uid):
+                return auth.build_auth_context(db, db.get(models.AuthUser, uid))
+
+            for uid in ("pricing-owner", "pricing-supervisor"):
+                assert pricing.get_settings(db, "huaxing", "buzzbee", context(uid)).revision == 0
+                assert auth.can(context(uid), "customer_price:import_internal_quote", "huaxing", "sales-business")
+                assert auth.can(context(uid), "customer_price:export_customer_quote", "huaxing", "sales-business")
+                assert not auth.can(context(uid), "customer_price:settings_read", "huakang-a", "sales-business")
+            assert not auth.can(context("pricing-owner"), "customer_price:settings_manage", "huaxing", "sales-business")
+            assert auth.can(context("pricing-supervisor"), "customer_price:settings_manage", "huaxing", "sales-business")
+            for uid in ("pricing-denied", "pricing-engineer"):
+                with pytest.raises(pricing.HTTPException) as denied:
+                    pricing.get_settings(db, "huaxing", "buzzbee", context(uid))
+                assert denied.value.status_code == 403
+            assert db.get(models.AuthUserPermissionOverride, "pricing-explicit-deny").effect == "deny"
+            assert db.get(models.AuthRoleMetadata, "sales_customer_owner").version == role_versions["sales_customer_owner"] + int(not existing_owner_grant)
+            assert db.get(models.AuthRoleMetadata, "sales_customer_supervisor").version == role_versions["sales_customer_supervisor"] + 1
+            for uid, role in roles_by_user.items():
+                expected_increment = int(role == "sales_customer_supervisor" or (role == "sales_customer_owner" and not existing_owner_grant))
+                assert db.get(models.AuthUserAuthorizationRevision, uid).revision == user_revisions[uid] + expected_increment
+                binding = db.get(models.AuthUserRole, f"{uid}-binding")
+                assert binding.factory_id == "huaxing" and binding.role_id == role
+            assert other_grants == {
+                (row.id, row.role_id, row.permission_id) for row in db.query(models.AuthRolePermission)
+                if row.role_id not in sales_roles
+            }
+            assert db.query(models.AuthRolePermission).filter_by(
+                role_id="sales_customer_owner", permission_id=permissions["customer_price:settings_read"].id,
+            ).count() == 1
+            upgraded_version = db.get(models.AuthRoleMetadata, "sales_customer_supervisor").version
+            upgraded_revision = db.get(models.AuthUserAuthorizationRevision, "pricing-supervisor").revision
+            auth.seed_auth_defaults(db)
+            assert db.get(models.AuthRoleMetadata, "sales_customer_supervisor").version == upgraded_version
+            assert db.get(models.AuthUserAuthorizationRevision, "pricing-supervisor").revision == upgraded_revision
+
+            # After the one-time upgrade, a deliberate role-level revocation stays revoked.
+            db.query(models.AuthRolePermission).filter_by(
+                role_id="sales_customer_supervisor", permission_id=permissions["customer_price:settings_read"].id,
+            ).delete(synchronize_session=False)
+            db.commit()
+            auth.seed_auth_defaults(db)
+            assert not auth.can(context("pricing-supervisor"), "customer_price:settings_read", "huaxing", "sales-business")
 
 
 def test_seed_upgrades_existing_business_supervisor_with_self_review_once(monkeypatch):

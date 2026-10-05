@@ -38,7 +38,8 @@ const message = ref('')
 const errorMessage = ref('')
 const totalHkd = computed(() => quote.value.factoryPriceHkd)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
-const eligible = computed(() => ['released', 'exported'].includes(quote.value.status))
+const isDirectOutput = computed(() => quote.value.moduleVersion === 'v4')
+const eligible = computed(() => isDirectOutput.value ? quote.value.status !== 'archived' : ['released', 'exported'].includes(quote.value.status))
 const canExport = computed(() => authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignQuote = computed(() => isForeignFactory(authStore, quote.value.factoryId))
@@ -48,6 +49,7 @@ const getQuoteRoute = (path: string) => getFactoryScopedRoute(
   isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
 )
 const exportStatusLabel = computed(() => {
+  if (isDirectOutput.value) return canExport.value ? quote.value.status === 'exported' ? '已输出并冻结，可下载' : '可直接输出，保存后由系统检查' : '当前账号没有输出权限'
   if (!eligible.value) return '尚未最终放行'
   if (canExport.value) return '已最终放行，可导出'
   return isForeignQuote.value ? '跨厂只读，不能导出' : '无受控导出权限'
@@ -73,8 +75,10 @@ async function confirmExport() {
   errorMessage.value = ''
   try {
     if (!canExport.value) throw new Error(isForeignQuote.value ? '跨厂报价仅供查看，不能生成受控文件。' : '当前账号没有受控导出权限。')
-    if (!confirmChecked.value) throw new Error('请先确认导出 revision 与最终放行版本一致。')
-    const created = await quoteStore.createExport(quote.value.id)
+    if (!confirmChecked.value) throw new Error(isDirectOutput.value ? '请确认当前资料已核对，输出后此版将冻结保留。' : '请先确认导出 revision 与最终放行版本一致。')
+    const created = isDirectOutput.value && quote.value.status !== 'exported'
+      ? await quoteStore.directIssue(quote.value.id, quote.value.headerRevision)
+      : await quoteStore.createExport(quote.value.id)
     const exportRecord = created as { id?: string; file_name?: string }
     if (!exportRecord.id) throw new Error('内部报价已生成，但未返回可下载的文件编号。')
     const fileName = exportRecord.file_name ?? `${quote.value.quoteNo}_${quote.value.versionLabel}_内部报价.xlsx`
@@ -90,7 +94,7 @@ async function confirmEngineeringExport() {
   errorMessage.value = ''
   try {
     if (!canExport.value) throw new Error(isForeignQuote.value ? '跨厂报价仅供查看，不能生成工程资料。' : '当前账号没有工程资料导出权限。')
-    if (!confirmChecked.value) throw new Error('请先确认导出 revision 与最终放行版本一致。')
+    if (!confirmChecked.value) throw new Error(isDirectOutput.value ? '请确认当前资料已核对，输出后此版将冻结保留。' : '请先确认导出 revision 与最终放行版本一致。')
     const fileName = `${quote.value.quoteNo}_${quote.value.versionLabel}_工程资料.xlsx`
     await quoteStore.downloadEngineeringWorkbook(quote.value.id, fileName)
     message.value = `工程资料已按原模板生成并下载：${fileName}。`
@@ -144,7 +148,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
     </header>
 
     <nav v-if="batchProducts.length > 1" class="quote-export-products" aria-label="批次产品正式输出切换">
-      <div><strong>本批 {{ batchProducts.length }} 款，逐款独立输出</strong><small>整批共用一次审核结果；当前已有 {{ batchOutputReadyCount }}/{{ batchProducts.length }} 款可生成正式文件</small></div>
+      <div><strong>本批 {{ batchProducts.length }} 款，逐款独立输出</strong><small>{{ isDirectOutput ? '每款独立输出，不影响其他款；当前已有' : '整批共用一次审核结果；当前已有' }} {{ batchOutputReadyCount }}/{{ batchProducts.length }} 款可生成正式文件</small></div>
       <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" :aria-current="product.quoteId === quote.id ? 'page' : undefined" @click="switchOutputProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b><span>{{ product.productName }}<small>{{ product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准' }}</small></span><em :class="product.status">{{ statusLabels[product.status] }}</em></button>
     </nav>
 
@@ -157,7 +161,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
 
     <section class="quote-export-grid">
       <article class="quote-export-preview">
-        <header><div><FileSpreadsheet aria-hidden="true" /><span><strong>工作簿内容预览</strong><small>导出内容严格绑定最终放行时的 revision 集合与参考快照</small></span></div><em>{{ quote.formulaVersion }}</em></header>
+        <header><div><FileSpreadsheet aria-hidden="true" /><span><strong>工作簿内容预览</strong><small>导出内容绑定所选版本的完整资料与参考价格快照</small></span></div><em>{{ quote.formulaVersion }}</em></header>
         <div class="quote-workbook-card">
           <div class="quote-workbook-title"><span><Files aria-hidden="true" /></span><div><strong>{{ quote.quoteNo }}_{{ quote.versionLabel }}_内部报价.xlsx</strong><small>统一内部格式：Huaxing Demo · {{ quote.factoryName }} · {{ selectedTemplate }}</small></div></div>
           <div class="quote-sheet-list"><span v-for="(sheet, index) in workbookSheets" :key="sheet"><b>{{ index + 1 }}</b><strong>{{ sheet }}</strong><CheckCircle2 aria-hidden="true" /></span></div>
@@ -166,17 +170,17 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
           <div class="quote-workbook-title"><span><FileSpreadsheet aria-hidden="true" /></span><div><strong>{{ quote.quoteNo }}_{{ quote.versionLabel }}_工程资料.xlsx</strong><small>独立工作簿：完全沿用工程资料原模板的线条、字体、颜色、字号、行高与列宽</small></div></div>
           <div class="quote-sheet-list engineering-sheets"><span v-for="(sheet, index) in engineeringWorkbookSheets" :key="sheet"><b>{{ index + 1 }}</b><strong>{{ sheet }}</strong><CheckCircle2 aria-hidden="true" /></span></div>
         </div>
-        <section class="quote-revision-matrix"><h2>审批 revision 矩阵</h2><div><article v-for="section in participatingSections" :key="section.code"><span><strong>{{ section.label }}</strong><small>{{ section.status === 'approved' ? section.reviewer : '不适用已批准' }}</small></span><b>r{{ section.revision }}</b><CheckCircle2 aria-hidden="true" /></article></div></section>
+        <section class="quote-revision-matrix"><h2>部门版本记录</h2><div><article v-for="section in participatingSections" :key="section.code"><span><strong>{{ section.label }}</strong><small>{{ isDirectOutput ? (section.status === 'sealed' ? '输出版本已保留' : '输出时自动校验') : section.status === 'approved' ? section.reviewer : '不适用已批准' }}</small></span><b>r{{ section.revision }}</b><CheckCircle2 aria-hidden="true" /></article></div></section>
       </article>
 
       <aside class="quote-export-controls">
-        <section class="quote-integrity-card"><ShieldCheck aria-hidden="true" /><div><span>完整性校验</span><strong>{{ eligible ? '放行版本一致' : '未通过' }}</strong><small>{{ quote.referenceSnapshotId }}</small></div></section>
+        <section class="quote-integrity-card"><ShieldCheck aria-hidden="true" /><div><span>完整性校验</span><strong>{{ isDirectOutput ? (quote.status === 'exported' ? '输出版本已冻结' : '输出时执行完整性校验') : eligible ? '放行版本一致' : '未通过' }}</strong><small>{{ quote.referenceSnapshotId }}</small></div></section>
         <label><span>内部报价模板（服务端固定）</span><select v-model="selectedTemplate" disabled><option value="internal-quote-p4-v2">internal-quote-p4-v2</option></select><small>P4 v2 封装实际参与分段的原始参数供客价转换预检；客户折扣、返点、对客税项仍由客户转换规则处理。</small></label>
-        <section class="quote-export-checklist"><h2><FileCheck2 aria-hidden="true" />导出前检查</h2><p><CheckCircle2 aria-hidden="true" />所有参与分段均已审批或获批不适用</p><p><CheckCircle2 aria-hidden="true" />业务最终放行完成</p><p><CheckCircle2 aria-hidden="true" />参考快照与公式版本已锁定</p><p><CheckCircle2 aria-hidden="true" />无阻断级计算警告</p></section>
-        <label class="quote-confirm-check"><input v-model="confirmChecked" type="checkbox"><span>确认当前分段 revision 集合与最终放行时一致</span></label>
+        <section class="quote-export-checklist"><h2><FileCheck2 aria-hidden="true" />导出前检查</h2><p><CheckCircle2 aria-hidden="true" />{{ isDirectOutput ? '参与部门内容均已保存且计算有效' : '所有参与分段均已审批或获批不适用' }}</p><p><CheckCircle2 aria-hidden="true" />{{ isDirectOutput ? '直接输出，无需人工审核' : '业务最终放行完成' }}</p><p><CheckCircle2 aria-hidden="true" />参考快照与公式版本已锁定</p><p><CheckCircle2 aria-hidden="true" />无阻断级计算警告</p></section>
+        <label class="quote-confirm-check"><input v-model="confirmChecked" type="checkbox"><span>{{ isDirectOutput ? '确认当前资料已核对；首次输出将冻结保留此版，后续修改需复制新版' : '确认当前分段 revision 集合与最终放行时一致' }}</span></label>
         <div class="quote-export-actions">
           <button type="button" class="quote-export-button" :disabled="!eligible || !canExport || quoteStore.submitting || quoteStore.fileBusy" @click="confirmExport"><Download aria-hidden="true" />生成内部报价 XLSX</button>
-          <button type="button" class="quote-export-button engineering" :disabled="!eligible || !canExport || quoteStore.submitting || quoteStore.fileBusy" @click="confirmEngineeringExport"><Download aria-hidden="true" />生成工程资料 XLSX</button>
+          <button type="button" class="quote-export-button engineering" :disabled="(isDirectOutput && quote.status !== 'exported') || !eligible || !canExport || quoteStore.submitting || quoteStore.fileBusy" @click="confirmEngineeringExport"><Download aria-hidden="true" />生成工程资料 XLSX</button>
         </div>
         <p class="quote-backend-note">内部报价继续受 SHA-256、放行阶段和历史留存控制，并作为客价转换输入；工程资料单独按原模板即时生成，不进入客价转换和内部报价历史。</p>
       </aside>

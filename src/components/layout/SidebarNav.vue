@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { getHomeExperienceScope } from '@/lib/portalRouteScope'
+import { homePrismPresentation } from '@/components/portal/homePrismPresentation'
 import { X } from '@lucide/vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { shouldShowPageNavigation } from '@/config/pageAccessPolicy'
@@ -33,7 +35,9 @@ const visibleNavigationGroups = computed(() => navigationGroups
   }))
   .filter((group) => group.items.length))
 
-function isActive(item: NavigationItem) {
+const homeScope = computed(() => getHomeExperienceScope(route))
+function isActive(item: NavigationItem, group?: string) {
+  if (homeScope.value) return group === 'MAIN' && (homeScope.value === 'dashboard' ? item.to === '/' : item.departmentId === route.params.department)
   if (route.path === item.to) {
     return true
   }
@@ -103,6 +107,51 @@ watch(() => props.mobileOpen, (isOpen) => {
     void nextTick(() => mobileCloseButtonRef.value?.focus())
   }
 })
+const trackRef = ref<HTMLElement | null>(null)
+const indicatorStyle = ref<Record<string, string>>({})
+const indicatorReady = ref(false)
+const indicatorMoving = ref(false)
+let initialFrame = 0
+let observer: ResizeObserver | undefined
+let frame = 0
+let disposed = false
+function measure() {
+  frame = 0
+  const track = trackRef.value
+  const active = track?.querySelector<HTMLElement>('[aria-current="page"]')
+  if (!homeScope.value || !track || !active) { indicatorReady.value = false; return }
+  const box = active.getBoundingClientRect()
+  const parent = track.getBoundingClientRect()
+  indicatorStyle.value = { transform: `translate3d(${box.left - parent.left + track.scrollLeft}px, ${box.top - parent.top + track.scrollTop}px, 0)`, width: `${box.width}px`, height: `${box.height}px` }
+  indicatorReady.value = true
+  if (!indicatorMoving.value && !initialFrame) initialFrame = requestAnimationFrame(() => { initialFrame = 0; indicatorMoving.value = true })
+}
+function scheduleMeasure() {
+  if (disposed || !homeScope.value || frame) return
+  frame = requestAnimationFrame(measure)
+}
+function connectIndicator() {
+  observer?.disconnect(); cancelAnimationFrame(frame); frame = 0
+  sidebarRef.value?.removeEventListener('scroll', scheduleMeasure)
+  if (!homeScope.value) {
+    cancelAnimationFrame(initialFrame); initialFrame = 0
+    indicatorReady.value = false; indicatorMoving.value = false
+    return
+  }
+  sidebarRef.value?.addEventListener('scroll', scheduleMeasure, { passive: true })
+  if (typeof ResizeObserver !== 'undefined') {
+    observer = new ResizeObserver(scheduleMeasure)
+    if (trackRef.value) observer.observe(trackRef.value)
+    if (sidebarRef.value) observer.observe(sidebarRef.value)
+  }
+  scheduleMeasure()
+}
+onMounted(() => {
+  connectIndicator()
+  void document.fonts?.ready.then(scheduleMeasure)
+})
+watch([() => route.params.department, homeScope, () => props.mobileOpen], () => void nextTick(connectIndicator))
+onBeforeUnmount(() => { disposed = true; observer?.disconnect(); cancelAnimationFrame(frame); cancelAnimationFrame(initialFrame); sidebarRef.value?.removeEventListener('scroll', scheduleMeasure) })
 </script>
 
 <template>
@@ -141,7 +190,8 @@ watch(() => props.mobileOpen, (isOpen) => {
       </button>
     </div>
 
-    <div class="flex-1 space-y-7 px-4 py-5 lg:px-3 lg:py-7 2xl:px-4">
+    <div ref="trackRef" class="home-sidebar-track flex-1 space-y-7 px-4 py-5 lg:px-3 lg:py-7 2xl:px-4">
+      <span v-if="homeScope" class="home-sidebar-indicator" :style="indicatorStyle" :data-ready="indicatorReady" :data-moving="indicatorMoving" aria-hidden="true" />
       <div v-for="group in visibleNavigationGroups" :key="group.label" class="space-y-2">
         <p class="sidebar-group-label px-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 lg:sr-only 2xl:not-sr-only">
           {{ group.label }}
@@ -152,22 +202,23 @@ watch(() => props.mobileOpen, (isOpen) => {
             :key="`${group.label}-${item.label}`"
             :to="getNavigationTarget(item)"
             class="sidebar-nav-link group relative flex h-10 items-center gap-3 overflow-hidden rounded-lg px-3 text-sm transition-[color,background-color,box-shadow] duration-150 lg:justify-center lg:px-0 2xl:justify-start 2xl:px-3"
-            :class="isActive(item)
+            :class="isActive(item, group.label)
               ? 'bg-gradient-to-r from-teal-50 to-teal-50/45 font-semibold text-teal-800 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.08)]'
               : 'text-slate-600 hover:bg-slate-50/90 hover:text-slate-950'"
             :aria-label="item.label"
-            :aria-current="isActive(item) ? 'page' : undefined"
+            :aria-current="isActive(item, group.label) ? 'page' : undefined"
             :title="item.label"
+            :style="homeScope && item.departmentId && isModuleDepartmentId(item.departmentId) ? { '--home-nav-accent': homePrismPresentation[item.departmentId].accent, '--home-nav-soft': homePrismPresentation[item.departmentId].soft } : undefined"
             @click="handleSelect(item)"
           >
             <span
-              v-if="isActive(item)"
+              v-if="!homeScope && isActive(item, group.label)"
               class="absolute inset-y-2 left-0 w-0.5 rounded-r-full bg-teal-600"
               aria-hidden="true"
             />
             <span
               class="sidebar-nav-icon flex size-7 shrink-0 items-center justify-center rounded-md transition-colors"
-              :class="isActive(item) ? 'bg-white/85 text-teal-700 shadow-sm' : 'text-slate-400 group-hover:bg-white group-hover:text-slate-700'"
+              :class="isActive(item, group.label) ? 'bg-white/85 text-teal-700 shadow-sm' : 'text-slate-400 group-hover:bg-white group-hover:text-slate-700'"
             >
               <component :is="item.icon" class="size-4" aria-hidden="true" />
             </span>

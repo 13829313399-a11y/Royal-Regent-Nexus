@@ -1,3 +1,0 @@
-{"source_job_id":"DEMO-job-001","seq":1,"observed_at":"2026-09-13T01:00:00Z","state":"running","raw_task_name":"DEMO-0001","raw_count":"10","raw_unit":"unknown","runtime_status":"printing"}
-{"source_job_id":"DEMO-job-001","seq":2,"observed_at":"2026-09-13T01:00:20Z","state":"completed","completion_evidence":"inferred","time_evidence":"inferred","raw_task_name":"DEMO-0001","raw_count":"10","raw_unit":"unknown","ink_total_ml":"10","ink_measurement":"cumulative"}
-{"source_job_id":"DEMO-job-002","seq":1,"observed_at":"2026-09-13T01:00:30Z","state":"completed","completion_evidence":"explicit","time_evidence":"observed","raw_task_name":"DEMO-0001","raw_count":"0","raw_unit":"piece"}

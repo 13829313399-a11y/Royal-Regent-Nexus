@@ -65,5 +65,5 @@ def test_registration_catalog_accepts_frontend_options_and_rejects_unknown(monke
         rejected = client.post(
             "/api/auth/register", json={**register_payload(), "department": "unknown-department"}
         )
-        assert rejected.status_code == 400
+        assert rejected.status_code == 400, rejected.text
         assert rejected.json()["detail"] == "请选择有效部门"

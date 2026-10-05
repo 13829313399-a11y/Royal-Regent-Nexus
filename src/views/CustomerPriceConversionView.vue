@@ -11,38 +11,14 @@ const appStore = useAppStore()
 appStore.setActiveDepartment('sales-business')
 const hasConfiguredCustomerMappings = computed(() => ['huaxing', 'huakang-a'].includes(appStore.activeProductionFactory.id))
 
-const metrics = computed(() => {
-  if (!hasConfiguredCustomerMappings.value) {
-    return [
-      { label: '待转换', value: '0', detail: `${appStore.activeProductionFactory.shortName} 暂无待转换报价` },
-      { label: '待复核', value: '0', detail: `${appStore.activeProductionFactory.shortName} 暂无待复核版本` },
-      { label: '客户范围', value: '待配置', detail: '等待本厂客户与报价资料接入' },
-    ]
-  }
-
-  if (appStore.activeProductionFactory.id === 'huakang-a') {
-    return [
-      { label: '待转换', value: '1', detail: '360 客户报价' },
-      { label: '待复核', value: '0', detail: '等待首次 P4 转换' },
-      { label: '客户范围', value: '360', detail: '当前仅华康 A 已建立映射' },
-    ]
-  }
-
-  return [
-    { label: '待转换', value: '5', detail: 'BuzzBee / 迪士尼 / Dickie / 彩星 / 银辉' },
-    { label: '待复核', value: '1', detail: '主管核对输出版本' },
-    { label: '客户范围', value: '全部', detail: '按账号权限导入和输出' },
-  ]
-})
 </script>
 
 <template>
   <SalesModuleWorkbench
     title="客价转换台"
-    description="选择客户、导入内部报价 Excel，并按客户模板输出报客价文件与版本差异。"
+    description="接收内部报价台已放行的报价，按客户映射核对并输出报客价。"
     badge="客户报价转换"
     search-placeholder="搜索客户、文件或导出版本"
-    :metrics="metrics"
   >
     <template #icon><FileSpreadsheet aria-hidden="true" /></template>
     <div class="mb-4 flex justify-end">

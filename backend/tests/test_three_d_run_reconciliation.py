@@ -10,6 +10,76 @@ from test_three_d_connector import event, post, session
 environment = environment_fixture
 
 
+def test_cloud_record_edit_delete_restore_uses_receipts_once(environment):
+    from uuid import uuid4
+    env = environment
+    seed_product(env)
+    ref = session(env)
+    post(env, "/events", event(env, ref, current_file="part.3mf"))
+    record = runs(env)[0]
+    business = importlib.import_module("app.services.three_d_printing")
+    data = business.production_record_out(record)
+    assert data["source_system"] == "cloud-connector" and data["inventory_consumed"]
+    request = {**data, "weight_g": 30, "quantity": 1, "reason": "纠正实际重量", "idempotency_key": uuid4().hex}
+    response = env[0].put(PUBLIC + "/records/" + record.id, json=request)
+    assert response.status_code == 200, response.text
+    # Repeated save returns the same record without another inventory movement.
+    assert env[0].put(PUBLIC + "/records/" + record.id, json=request).status_code == 200
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 70
+        moves = list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))
+        assert sorted(float(m.delta_g) for m in moves) == [-30, -20, 20]
+    row = response.json()
+    deleted = env[0].delete(PUBLIC + "/records/" + record.id, params={
+        "factory_id": "huakang-a", "revision": row["revision"],
+        "reason": "撤销错误记录", "idempotency_key": uuid4().hex,
+    })
+    assert deleted.status_code == 204, deleted.text
+    with env[1].SessionLocal() as db:
+        saved = db.get(env[2].ThreeDPrintingProductionRecord, record.id)
+        revision = saved.revision
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 100
+    action = {"factory_id": "huakang-a", "revision": revision,
+              "reason": "恢复记录", "idempotency_key": uuid4().hex}
+    for _ in range(2):
+        restored = env[0].post(PUBLIC + "/records/" + record.id + "/restore", json=action)
+        assert restored.status_code == 200, restored.text
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 70
+        assert len(list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))) == 5
+
+
+def test_cloud_shortage_record_can_be_corrected_without_forcing_negative_stock(environment):
+    from uuid import uuid4
+    env = environment
+    seed_product(env)
+    with env[1].SessionLocal() as db:
+        db.get(env[2].ThreeDPrintingInventory, "stock").stock_g = 0
+        db.commit()
+    ref = session(env)
+    post(env, "/events", event(env, ref, current_file="part.3mf"))
+    business = importlib.import_module("app.services.three_d_printing")
+    row = business.production_record_out(runs(env)[0])
+    assert row["material_status"] == "material_shortage"
+    request = {**row, "weight_g": 121, "quantity": 1, "reason": "纠正产品用量", "idempotency_key": uuid4().hex}
+    response = env[0].put(PUBLIC + "/records/" + row["id"], json=request)
+    assert response.status_code == 200, response.text
+    assert response.json()["weight_g"] == 121
+    assert response.json()["material_status"] == "material_shortage"
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 0
+        assert not list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))
+        db.get(env[2].ThreeDPrintingInventory, "stock").stock_g = 500
+        db.commit()
+    request = {**response.json(), "reason": "补料后重试", "idempotency_key": uuid4().hex}
+    for _ in range(2):
+        response = env[0].put(PUBLIC + "/records/" + row["id"], json=request)
+        assert response.status_code == 200, response.text
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 379
+        assert len(list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))) == 1
+
+
 def runs(env):
     with env[1].SessionLocal() as db:
         return list(db.scalars(select(env[2].ThreeDPrintingProductionRecord)))
@@ -42,6 +112,45 @@ def seed_product(env, *, duplicate=False, name="part", material="PLA"):
             )
         )
         db.commit()
+
+
+def test_preparation_is_visible_but_only_running_creates_and_consumes(environment, monkeypatch):
+    env = environment
+    seed_product(env)
+    ref = session(env)
+    post(env, "/events", event(env, ref, state="PREPARE", current_file="part.3mf"))
+    post(env, "/events", event(env, ref, 2, "PREPARE", current_file="part.3mf"))
+    assert runs(env) == []
+    with env[1].SessionLocal() as db:
+        assert db.get(env[2].ThreeDPrintingPrinter, ref["printer_id"]).state == "PREPARE"
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 100
+        assert list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement))) == []
+    post(env, "/events", event(env, ref, 3, "RUNNING", current_file="part.3mf"))
+    assert len(runs(env)) == 1 and runs(env)[0].run_status == "running"
+    post(env, "/events", event(env, ref, 4, "PREPARE", current_file="part.3mf"))
+    monkeypatch.setattr(env[3].settings, "three_d_reconciliation_terminal_grace_seconds", 0)
+    sweep = importlib.import_module("app.services.three_d_run_reconciliation")
+    with env[1].SessionLocal() as db:
+        assert sweep.sweep_open_runs(db, factory_id="huakang-a", now=env[4][0]).settled == []
+        db.commit()
+    assert runs(env)[0].print_end_at == ""
+    post(env, "/events", event(env, ref, 5, "RUNNING", current_file="part.3mf"))
+    post(env, "/events", event(env, ref, 6, "FINISH", current_file="part.3mf"))
+    assert len(runs(env)) == 1 and runs(env)[0].run_status == "succeeded"
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 80
+        assert len(list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))) == 1
+
+
+def test_cancelled_preparation_does_not_create_a_production_record(environment):
+    env = environment
+    seed_product(env)
+    ref = session(env)
+    for sequence, state in enumerate(["PREPARE", "FAILED", "IDLE", "PREPARE", "STALE"], 1):
+        post(env, "/events", event(env, ref, sequence, state, current_file="part.3mf"))
+    assert runs(env) == []
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 100
 
 
 def test_reconnect_reconcile_does_not_reconsume_and_terminal_is_immutable(environment):

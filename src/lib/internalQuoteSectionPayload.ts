@@ -1,4 +1,5 @@
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
+import { normalizeDickieMapping, normalizeDickieMold, type DickieMapping, type DickieMoldSupplement } from './dickieQuote'
 
 export type DisneyPurchasedSection = 'product' | 'package'
 export type EngineeringMaterialCategory = 'hardware' | 'auxiliary' | 'packaging'
@@ -48,6 +49,7 @@ export interface EngineeringMoldPartRow {
   quantity: number
 }
 export interface EngineeringMoldRow extends QuotePricingMetadata {
+  dickie_export?: DickieMoldSupplement
   item: string
   mold_no: string
   chinese_name: string
@@ -191,6 +193,7 @@ export interface ElectronicSummary {
 }
 
 export interface InjectionRow extends Omit<QuotePricingMetadata, 'markup_override'> {
+  buzzbee_material?: string
   engineering_source_key?: string
   engineering_synced_fields?: string[]
   engineering_sync_disabled?: boolean
@@ -229,9 +232,11 @@ export interface CaixingToolPlanRow {
   material: string
   color: string
   material_cost_hkd: number
+  material_price_hkd_lb: number | null
   machine_size: string
   cycle_time_seconds: number
   process_cost_hkd: number
+  machine_daily_hkd: number | null
 }
 export interface BlowRow extends Omit<QuotePricingMetadata, 'markup_override'> {
   item: string
@@ -456,12 +461,13 @@ export interface DisneyCustomerQuoteFields { item_number: string; quote_date: st
 export interface DickieProductQuoteRow { line_no: number; item_text_en: string; units_per_carton: string; carton_cbm: number; color_box_size_cm: string; carton_size_cm: string; production_moq: string; price_40h_hkd: number; price_20h_hkd: number; price_lcl_hkd: number }
 export interface DickieRemarkLine { line_no: number; text_en: string }
 export interface DickieMaterialPrice { material: string; price_hkd_lb: number }
-export interface DickieCustomerQuoteFields { client_name: string; quote_date: string; attention: string; revision: string; from_name: string; project_name_en: string; first_shot_time: string; finish_time: string; product_rows: DickieProductQuoteRow[]; remark_lines: DickieRemarkLine[]; material_prices_hkd: DickieMaterialPrice[] }
+export interface DickieCustomerQuoteFields { mapping?: DickieMapping; client_name: string; quote_date: string; attention: string; revision: string; from_name: string; project_name_en: string; first_shot_time: string; finish_time: string; product_rows: DickieProductQuoteRow[]; remark_lines: DickieRemarkLine[]; material_prices_hkd: DickieMaterialPrice[] }
 export interface CaixingCustomerQuoteFields {
   product_type: 'plastic' | 'plush'
   item_number: string
   item_name: string
   quote_date: string
+  markup_rate_override: number | null
 }
 export interface ThreeSixtyCustomerQuoteFields {
   ms_brand: string
@@ -471,7 +477,7 @@ export interface ThreeSixtyCustomerQuoteFields {
   first_etd: string
   freight_route_key: string
 }
-export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[] }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields; three_sixty: ThreeSixtyCustomerQuoteFields }
+export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[]; template_profile?: string; notes?: string }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields; three_sixty: ThreeSixtyCustomerQuoteFields }
 export interface SalesMarkupTier {
   moq: number
   markup_x: number
@@ -1567,6 +1573,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       quantity: numberValue(row.quantity ?? row.sets, 1), net_weight_g: numberValue(row.net_weight_g ?? row.weight_g),
       cycle_time_seconds: numberValue(row.cycle_time_seconds ?? row.cycle_sec), mold_size: textValue(row.mold_size), mold_specification: textValue(row.mold_specification),
       image_reference: textValue(row.image_reference), image_attachment_ids: Array.isArray(row.image_attachment_ids) ? row.image_attachment_ids.map(textValue).filter(Boolean) : [], cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb), remark: textValue(row.remark ?? row.note),
+      ...(row.dickie_export ? { dickie_export: normalizeDickieMold(row.dickie_export) } : {}),
       machine_code: textValue(row.machine_code), target_output: numberValue(row.target_output), parts: engineeringMoldParts(row), source_row: numberValue(row.source_row),
       disney_mold_no: textValue(row.disney_mold_no), disney_parts: textValue(row.disney_parts), disney_material: textValue(row.disney_material), disney_cavities: numberValue(row.disney_cavities), disney_parts_per_shot: numberValue(row.disney_parts_per_shot), disney_tool_cost_usd: numberValue(row.disney_tool_cost_usd),
       dickie_project_name_en: textValue(row.dickie_project_name_en), dickie_mold_no: textValue(row.dickie_mold_no), dickie_parts_en: textValue(row.dickie_parts_en), dickie_resin: textValue(row.dickie_resin), dickie_mold_size: textValue(row.dickie_mold_size), dickie_mold_material: textValue(row.dickie_mold_material), dickie_cavities: numberValue(row.dickie_cavities), dickie_parts_per_shot: numberValue(row.dickie_parts_per_shot), dickie_mold_cost_hkd: numberValue(row.dickie_mold_cost_hkd), dickie_remark_en: textValue(row.dickie_remark_en),
@@ -1628,6 +1635,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     return {
       injection_loss_rate_percent: injectionLossRate,
       injection_lines: rows(source.injection_lines).map((row) => ({
+        buzzbee_material: textValue(row.buzzbee_material),
         ...importBatchMetadata(row),
         ...pricingMetadata(row, false),
         engineering_source_key: textValue(row.engineering_source_key),
@@ -1651,7 +1659,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         output_count: textValue(row.output_count ?? row.cavity_note), mold_price_rmb: numberValue(row.mold_price_rmb ?? row.mold_price_note), remark: textValue(row.remark ?? row.note),
       })),
       caixing_tool_plan_rows: rows(source.caixing_tool_plan_rows).map((row) => ({
-        ref_no: textValue(row.ref_no), process_type: ['BL', 'CP', 'DC', 'RC'].includes(textValue(row.process_type)) ? textValue(row.process_type) : 'IN', tool_no: textValue(row.tool_no), tooling_cost_hkd: numberValue(row.tooling_cost_hkd), description: textValue(row.description), sku_no: textValue(row.sku_no), cavities: numberValue(row.cavities), up: numberValue(row.up), net_weight_g: numberValue(row.net_weight_g), material_code: numberValue(row.material_code), material: textValue(row.material), color: textValue(row.color), material_cost_hkd: numberValue(row.material_cost_hkd), machine_size: textValue(row.machine_size), cycle_time_seconds: numberValue(row.cycle_time_seconds), process_cost_hkd: numberValue(row.process_cost_hkd),
+        ref_no: textValue(row.ref_no), process_type: ['BL', 'CP', 'DC', 'RC'].includes(textValue(row.process_type)) ? textValue(row.process_type) : 'IN', tool_no: textValue(row.tool_no), tooling_cost_hkd: numberValue(row.tooling_cost_hkd), description: textValue(row.description), sku_no: textValue(row.sku_no), cavities: numberValue(row.cavities), up: numberValue(row.up), net_weight_g: numberValue(row.net_weight_g), material_code: numberValue(row.material_code), material: textValue(row.material), color: textValue(row.color), material_cost_hkd: numberValue(row.material_cost_hkd), material_price_hkd_lb: row.material_price_hkd_lb == null || row.material_price_hkd_lb === '' ? null : numberValue(row.material_price_hkd_lb), machine_size: textValue(row.machine_size), cycle_time_seconds: numberValue(row.cycle_time_seconds), process_cost_hkd: numberValue(row.process_cost_hkd), machine_daily_hkd: row.machine_daily_hkd == null || row.machine_daily_hkd === '' ? null : numberValue(row.machine_daily_hkd),
       })),
     }
   }
@@ -1890,6 +1898,8 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     } : {}),
     customer_quote_fields: {
       buzzbee: {
+        template_profile: textValue(objectValue(objectValue(source.customer_quote_fields).buzzbee).template_profile) || 'standard',
+        notes: textValue(objectValue(objectValue(source.customer_quote_fields).buzzbee).notes),
         color_box_tiers: rows(objectValue(objectValue(source.customer_quote_fields).buzzbee).color_box_tiers)
           .slice(0, 2)
           .map((row) => ({ quote_price_hkd: numberValue(row.quote_price_hkd), fsc_price_hkd: numberValue(row.fsc_price_hkd), moq: textValue(row.moq) })),
@@ -1909,6 +1919,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         setup_charge_usd: numberValue(objectValue(objectValue(source.customer_quote_fields).disney).setup_charge_usd),
       },
       dickie: {
+        mapping: normalizeDickieMapping(objectValue(objectValue(source.customer_quote_fields).dickie).mapping),
         client_name: textValue(objectValue(objectValue(source.customer_quote_fields).dickie).client_name),
         quote_date: textValue(objectValue(objectValue(source.customer_quote_fields).dickie).quote_date),
         attention: textValue(objectValue(objectValue(source.customer_quote_fields).dickie).attention),
@@ -1932,6 +1943,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         item_number: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).item_number),
         item_name: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).item_name),
         quote_date: textValue(objectValue(objectValue(source.customer_quote_fields).caixing).quote_date),
+        markup_rate_override: (() => { const value = objectValue(objectValue(source.customer_quote_fields).caixing).markup_rate_override; return value == null || value === '' ? null : numberValue(value) })(),
       },
       three_sixty: {
         ms_brand: textValue(objectValue(objectValue(source.customer_quote_fields).three_sixty).ms_brand),

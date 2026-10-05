@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Factory } from '@lucide/vue'
 import { factoryHeatmap } from '@/data/enterpriseMock'
 import type { FactoryContextId } from '@/data/enterpriseMock'
 import ProgressMeter from '@/components/common/ProgressMeter.vue'
@@ -37,7 +38,7 @@ function isActiveFactory(factoryId: FactoryContextId) {
   <SectionPanel
     class="dashboard-section dashboard-section--factories"
     title="厂区运行热力图"
-    subtitle="按厂区查看工程、PMC、生产、QA、业务的模块状态"
+    subtitle="厂区运行索引 · 以下状态与评分为示例数据"
   >
     <div class="dashboard-factory-grid grid gap-5 md:grid-cols-2">
       <article
@@ -49,7 +50,7 @@ function isActiveFactory(factoryId: FactoryContextId) {
         <div class="mb-3 flex items-start justify-between gap-3">
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <h3>{{ factory.name }}</h3>
+              <h3 class="dashboard-factory-title"><Factory aria-hidden="true" />{{ factory.name }}</h3>
               <span v-if="isActiveFactory(factory.factoryId)" class="dashboard-factory-tag">
                 当前厂区
               </span>

@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { ArrowUpRight, Plus } from '@lucide/vue'
-import { computed, ref, watch } from 'vue'
-import { sprayProductionApi, type SpraySummary } from '@/api/sprayProduction'
-import { RouterLink, useRoute } from 'vue-router'
+import { Plus, Search, X } from '@lucide/vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   departmentMap,
   departmentModuleRegistry,
@@ -20,18 +19,21 @@ import PortalHero from '@/components/portal/PortalHero.vue'
 import { getDepartmentPresentation } from '@/components/portal/portalPresentation'
 import ProgressMeter from '@/components/common/ProgressMeter.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
-import StatusPill from '@/components/common/StatusPill.vue'
+import HomePrismArtwork from '@/components/portal/HomePrismArtwork.vue'
+import HomeAppearanceControl from '@/components/portal/HomeAppearanceControl.vue'
+import HomePreviewRegion from '@/components/portal/HomePreviewRegion.vue'
+import { homePaletteStyle } from '@/components/portal/homePrismPresentation'
+import { useHomeAppearance, homeSearchKey } from '@/composables/useHomeAppearance'
+import { useHomePresentation, canPreviewModule } from '@/composables/useHomePresentation'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
-import { isUvModuleEnabled } from '@/features/uv-printing/transport/provider'
+import { SPRAY_BASE, isSprayFactory, sprayEnabled } from '@/features/spray-production/contracts'
+import { isCuttingFactory } from '@/features/cutting-operations/navigation'
 
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
-const spraySummary = ref<SpraySummary | null>(null)
-const spraySummaryState = ref('进入查看本厂记录')
-let spraySummaryRequest = 0
 
 const currentDepartmentId = computed<ModuleDepartmentId>(() => {
   const department = String(route.params.department ?? '')
@@ -47,6 +49,7 @@ const currentDepartment = computed(() => departmentMap[currentDepartmentId.value
 const departmentPresentation = computed(() => getDepartmentPresentation(currentDepartmentId.value))
 const portalRootStyle = computed(() => ({
   '--portal-accent': departmentPresentation.value.accent,
+  ...homePaletteStyle(currentDepartmentId.value),
   '--portal-accent-soft': departmentPresentation.value.accentSoft,
 }))
 const title = computed(() => `${appStore.activeProductionFactory.name} · ${currentDepartment.value.name}模块中心`)
@@ -60,10 +63,13 @@ const visibleModules = computed(() => {
 
   return departmentEntry.value.modules
     .filter((module) => {
-      // UV 专属卡片额外核验真正的 activeFactoryId，避免 activeProductionFactory
-      // 的集团兜底把华康A的 UV 模块显示在别的厂区/集团目录里。
-      if (module.id === 'uv-printing' && (appStore.activeFactoryId !== 'huakang-a' || !isUvModuleEnabled())) return false
+      // 新 UV 工作区仅属于华康 A，不采用集团厂区兜底。
+      if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
+      if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
+      if (module.id === 'cutting' && !isCuttingFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
+      if (currentDepartmentId.value === 'pmc-warehouse' && module.id === 'carton-procurement'
+        && !authStore.can('carton_procurement:read', factory.id)) return false
       if (
         module.strictAccess
         && module.permissions?.length
@@ -74,13 +80,39 @@ const visibleModules = computed(() => {
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
 
-    if (module.id === 'spray-production') {
-      const live = spraySummary.value?.factory_id === appStore.activeFactoryId ? spraySummary.value : null
-      return { ...scopedModule, stats: live ? `正在执行 ${live.counts.running} · 已排待开工 ${live.counts.planned}` : spraySummaryState.value,
-        statusMetrics: live ? [
-          { label: '执行工单', value: String(live.counts.orders), tone: 'teal' as const },
-          { label: '正在执行', value: String(live.counts.running), tone: 'blue' as const },
-        ] : [] }
+    if (module.id === 'cutting') {
+      return { ...scopedModule, stats: module.stats }
+    }
+
+    if (currentDepartmentId.value === 'pmc-warehouse') {
+      if (module.id === 'carton-supplier') {
+        const internal = authStore.can('carton_procurement:read', factory.id)
+        const supplier = authStore.can('carton_supplier:read', factory.id, '*')
+        return { ...scopedModule, route: supplier ? '/carton-supplier'
+          : internal ? getFactoryScopedRoute('/carton-supplier-management', factory.id) : '/carton-supplier' }
+      }
+      if (module.id === 'carton-mark-check' && !authStore.can('carton_mark:read', factory.id)) {
+        return { ...scopedModule, route: '/carton-supplier/carton-mark',
+          summary: '查看并下载与本厂已发行采购单关联、已核对可用的箱唛 Excel 和 PDF',
+          status: '供应商只读', statusTone: 'teal' as const, todos: [],
+          children: scopedModule.children.filter(child => ['客人 Excel', '印刷 PDF'].includes(child.label)) }
+      }
+    }
+
+    if (module.id === 'uv-printing') {
+      const authorized = authStore.can('uv_ops:read', factory.id, 'production')
+      return {...scopedModule, summary:'机台现场、任务排程、班次核数、品质交接与材料核算',
+        status:authorized ? '工作区' : '权限待开通', statusTone:'teal' as const,
+        stats:authorized ? '进入华康 A 工作区' : '需要华康 A 生产部授权', detailPage:authorized,
+        route:authorized ? getFactoryScopedRoute('/modules/production/uv-printing/live', factory.id) : undefined}
+    }
+
+    if (module.id === 'spray-production' && sprayEnabled()) {
+      const authorized = authStore.can('spray_ops:read', factory.id, 'production')
+      return { ...scopedModule, summary: '分批来料、工序排产、实绩质量、用料与交收月结',
+        status: authorized ? '工作区' : '权限待开通', statusTone: 'teal' as const,
+        stats: authorized ? '进入当前工厂工作区' : '需要当前工厂授权',
+        detailPage: authorized, route: authorized ? getFactoryScopedRoute(`${SPRAY_BASE}/overview`, factory.id) : undefined }
     }
 
     if (currentDepartmentId.value === 'engineering' && module.id === 'molding-sample') {
@@ -117,19 +149,44 @@ const visibleModules = computed(() => {
     })
 })
 
-const featuredModule = computed(() => visibleModules.value[0] ?? null)
-const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
-
-watch(() => [currentDepartmentId.value, appStore.activeFactoryId], async () => {
-  const request = ++spraySummaryRequest
-  spraySummary.value = null
-  const factory = appStore.activeFactoryId
-  if (currentDepartmentId.value !== 'production' || !['huaxing', 'huakang-a', 'huakang-b', 'huadeng'].includes(factory)) return
-  if (!authStore.canAny(['spray_production:read'], factory, 'production')) { spraySummaryState.value = '本厂业务统计未授权'; return }
-  spraySummaryState.value = '正在读取本厂业务统计'
-  try { const result = await sprayProductionApi.summary(factory); if (request === spraySummaryRequest) spraySummary.value = result }
-  catch { if (request === spraySummaryRequest) spraySummaryState.value = '统计暂不可用，进入工作区重试' }
-}, { immediate: true })
+const { density, effectiveMotion } = useHomeAppearance()
+const scope = computed(() => JSON.stringify([authStore.currentUser?.id, appStore.activeFactoryId, appStore.activeProductionFactory.id, currentDepartmentId.value]))
+const { input, query, composing, filteredModules, featuredModule, pinnedId, dialogOpen, clearSearch, commitSearch, preview, pin, unpin, cancelPreview } = useHomePresentation(visibleModules, scope)
+const containerRef = ref<HTMLElement | null>(null)
+const searchRef = ref<HTMLInputElement | null>(null)
+const opener = ref<HTMLElement | null>(null)
+const narrow = ref(false)
+const revealing = ref(true)
+const searchRequest = inject(homeSearchKey, ref(0))
+let resizeObserver: ResizeObserver | undefined
+let revealTimer: ReturnType<typeof setTimeout> | undefined
+function focusSearch() { searchRef.value?.focus(); searchRef.value?.scrollIntoView?.({ block: 'nearest' }) }
+function openPreview(id: string, event: MouseEvent) {
+  opener.value = event.currentTarget as HTMLElement
+  if (pin(id) && narrow.value) dialogOpen.value = true
+}
+function shortcut(event: KeyboardEvent) {
+  if (event.key !== '/' || event.isComposing || composing.value || event.ctrlKey || event.altKey || event.metaKey) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || document.querySelector('[role="dialog"], [data-reka-popper-content-wrapper]')) return
+  event.preventDefault(); focusSearch()
+}
+function stopHiddenPreview() { if (document.hidden) cancelPreview() }
+onMounted(() => {
+  revealTimer = setTimeout(() => { revealing.value = false }, 600)
+  document.addEventListener('keydown', shortcut)
+  document.addEventListener('visibilitychange', stopHiddenPreview)
+  if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
+    resizeObserver = new ResizeObserver(entries => { narrow.value = (entries[0]?.contentRect.width ?? 1000) < 640 })
+    resizeObserver.observe(containerRef.value)
+  }
+})
+watch(searchRequest, () => void nextTick(focusSearch))
+onBeforeUnmount(() => {
+  clearTimeout(revealTimer); resizeObserver?.disconnect()
+  document.removeEventListener('keydown', shortcut)
+  document.removeEventListener('visibilitychange', stopHiddenPreview)
+})
 
 watch(currentDepartmentId, (departmentId) => {
   appStore.setActiveDepartment(departmentId)
@@ -137,156 +194,48 @@ watch(currentDepartmentId, (departmentId) => {
 </script>
 
 <template>
-  <div
-    class="rrn-portal app-page space-y-6"
-    data-portal-ui="jade-v3"
-    :style="portalRootStyle"
-  >
-    <PortalHero
-      eyebrow="Department Workspace"
-      :title="title"
-      :description="departmentEntry.heroSubtitle"
-      :motif="departmentPresentation.motif"
-      pending-note="新增系统模块暂未接入"
-    >
-      <template #actions>
-        <Button type="button" size="lg" disabled>
-          <Plus class="size-4" aria-hidden="true" />
-          新增系统模块
-        </Button>
-      </template>
+  <div ref="containerRef" class="rrn-home-container">
+  <div class="rrn-portal rrn-home app-page space-y-6" data-portal-ui="jade-v3" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-home-density="density" :data-department="currentDepartmentId" :style="portalRootStyle">
+    <PortalHero eyebrow="Department Workspace" :title="title" :description="departmentEntry.heroSubtitle" :motif="departmentPresentation.motif" pending-note="新增系统模块暂未接入">
+      <template #artwork><HomePrismArtwork :identity="currentDepartmentId" /></template>
+      <template #actions><HomeAppearanceControl /><Button type="button" size="lg" disabled><Plus class="size-4" aria-hidden="true" />新增系统模块</Button></template>
     </PortalHero>
-
-    <DepartmentTabs />
-
-    <div class="grid gap-6 xl:grid-cols-[1fr_380px]">
-      <SectionPanel
-        class="portal-section"
-        :title="departmentEntry.panelTitle"
-        :subtitle="departmentEntry.panelSubtitle"
-      >
-        <div class="portal-module-grid grid gap-5 md:grid-cols-2">
-          <ModuleCard
-            v-for="(module, index) in visibleModules"
-            :key="module.id"
-            :module="module"
-            :index="index"
-            :active="featuredModule?.id === module.id"
-          />
-        </div>
-
-        <div class="portal-candidates">
-          <h3 class="portal-candidates__title">推荐下一批模块</h3>
-          <p class="portal-candidates__list">
-            {{ departmentEntry.quickCandidates.join('、') }}
-          </p>
-          <div class="portal-candidates__meter">
-            <ProgressMeter :value="58" :tone="currentDepartmentId === 'production' ? 'amber' : 'teal'" />
+    <DepartmentTabs home-experience />
+    <div class="home-department-layout">
+      <SectionPanel class="portal-section home-module-section" :title="departmentEntry.panelTitle" :subtitle="departmentEntry.panelSubtitle">
+        <div class="home-search-toolbar">
+          <div class="home-search-field">
+            <label for="home-module-search">搜索本部门入口</label>
+            <div class="home-search-input"><Search :size="18" aria-hidden="true" />
+              <input id="home-module-search" ref="searchRef" :value="input" type="search" autocomplete="off" placeholder="模块名称、功能说明或标签" @input="commitSearch(($event.target as HTMLInputElement).value)" @compositionstart="composing = true" @compositionend="composing = false; commitSearch(($event.target as HTMLInputElement).value)" @keydown.esc.stop.prevent="clearSearch">
+              <button v-if="input" type="button" aria-label="清除入口搜索" @click="clearSearch(); focusSearch()"><X :size="16" aria-hidden="true" /></button>
+            </div>
           </div>
-          <p class="portal-candidates__note">
-            规划示意，不代表已完成比例 · {{ currentDepartment.focus }}
-          </p>
+          <div class="home-segmented" role="group" aria-label="显示密度"><button type="button" :aria-pressed="density === 'comfortable'" @click="density = 'comfortable'">舒适</button><button type="button" :aria-pressed="density === 'compact'" @click="density = 'compact'">紧凑</button></div>
+          <p class="home-search-count" role="status" aria-live="polite">{{ query ? `找到 ${filteredModules.length} 个入口` : `${visibleModules.length} 个可见模块 · 当前厂区目录` }}</p>
         </div>
+        <TransitionGroup name="home-filter" tag="div" class="portal-module-grid" :data-module-count="filteredModules.length" :css="effectiveMotion !== 'off'">
+          <div v-for="(module, index) in filteredModules" :key="`${scope}:${module.id}`" class="home-grid-item">
+            <div class="home-card-reveal" :data-reveal="revealing && !query" :style="{ '--home-index': index }">
+              <ModuleCard :module="module" :index="index" :active="featuredModule?.id === module.id" :pinned="pinnedId === module.id" :previewable="canPreviewModule(module)" :search-query="query" @preview="openPreview(module.id, $event)" @peek="!narrow && preview(module.id)" @cancel-peek="cancelPreview" @focus-preview="!narrow && preview(module.id, true)" />
+            </div>
+          </div>
+        </TransitionGroup>
+        <div v-if="!filteredModules.length" class="home-empty" role="status"><h3>{{ visibleModules.length ? '没有找到匹配的入口' : '当前厂区没有可显示的模块' }}</h3><p>{{ visibleModules.length ? '试试模块名称、功能说明或标签，也可以清除搜索。' : '请核对当前厂区与账号授权，目录将按可用范围显示。' }}</p><button v-if="query" type="button" class="home-preview-button" @click="clearSearch">清除搜索</button></div>
+        <div class="portal-candidates"><h3 class="portal-candidates__title">推荐下一批模块</h3><p class="portal-candidates__list">{{ departmentEntry.quickCandidates.join('、') }}</p><div class="portal-candidates__meter"><ProgressMeter :value="58" :tone="currentDepartmentId === 'production' ? 'amber' : 'teal'" /></div><p class="portal-candidates__note">规划示意，不代表已完成比例 · {{ currentDepartment.focus }}</p></div>
       </SectionPanel>
-
-      <aside class="space-y-6">
-        <SectionPanel
-          class="portal-section"
-          title="模块聚焦"
-          subtitle="这里先展示当前部门最优先建设的模块，点击卡片可进入独立详情页"
-        >
-          <div v-if="featuredModule" class="space-y-5">
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0">
-                <h3 class="portal-focus__title">{{ featuredModule.title }}</h3>
-                <p class="portal-focus__owner">{{ featuredModule.owner }}</p>
-              </div>
-              <StatusPill :label="featuredModule.status" :tone="featuredModule.statusTone" />
-            </div>
-
-            <p class="portal-focus__summary">{{ featuredModule.summary }}</p>
-
-            <div v-if="featuredModule.statusMetrics.length" class="portal-focus__metrics grid gap-3 sm:grid-cols-3">
-              <div
-                v-for="metric in featuredModule.statusMetrics"
-                :key="`${featuredModule.id}-${metric.label}`"
-                class="portal-focus__metric"
-              >
-                <p class="portal-focus__metric-label">{{ metric.label }}</p>
-                <p class="portal-focus__metric-value">{{ metric.value }}</p>
-              </div>
-            </div>
-
-            <div v-if="featuredModule.children.length">
-              <p class="portal-focus__label">结构建议</p>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <span
-                  v-for="child in featuredModule.children"
-                  :key="`${featuredModule.id}-${child.label}`"
-                  class="portal-module-card__child"
-                >
-                  {{ child.label }}
-                </span>
-              </div>
-            </div>
-
-            <div v-if="featuredModule.todos.length">
-              <p class="portal-focus__label">当前待办</p>
-              <ul class="portal-focus__todos mt-3">
-                <li v-for="todo in featuredModule.todos" :key="todo" class="portal-focus__todo">
-                  {{ todo }}
-                </li>
-              </ul>
-            </div>
-
-            <div v-if="featuredModule.href" class="flex flex-wrap gap-3">
-              <RouterLink
-                v-if="!isExternalLink(featuredModule.href)"
-                :to="featuredModule.href"
-                class="portal-action portal-action--primary"
-              >
-                打开系统
-                <ArrowUpRight class="portal-action__arrow size-4" aria-hidden="true" />
-              </RouterLink>
-              <a
-                v-else
-                :href="featuredModule.href"
-                target="_blank"
-                rel="noreferrer"
-                class="portal-action portal-action--primary"
-              >
-                打开系统
-                <ArrowUpRight class="portal-action__arrow size-4" aria-hidden="true" />
-              </a>
-            </div>
-          </div>
-          <p v-else class="portal-focus__empty">
-            当前厂区没有可显示的模块。
-          </p>
-        </SectionPanel>
-
-        <PermissionMatrix
-          appearance="portal"
-          :rows="departmentEntry.permissionRows"
-          :note="departmentPresentation.permissionNote"
-        />
-        <TodoQueue
-          appearance="portal"
-          :items="visibleDepartmentTodos"
-          :empty-text="departmentPresentation.todoEmptyText"
-        />
+      <aside class="home-aside" @pointerenter="cancelPreview">
+        <HomePreviewRegion v-if="visibleModules.length" v-model:open="dialogOpen" :module="featuredModule" :pinned="Boolean(pinnedId)" :searching="Boolean(query)" :narrow="narrow" :identity="currentDepartmentId" :opener="opener" @unpin="unpin" />
+        <PermissionMatrix appearance="portal" :rows="departmentEntry.permissionRows" :note="departmentPresentation.permissionNote" />
+        <TodoQueue appearance="portal" subtitle="目录待办示例 · 实际事项请进入业务模块" :items="visibleDepartmentTodos" :empty-text="departmentPresentation.todoEmptyText" />
       </aside>
     </div>
+  </div>
   </div>
 </template>
 
 <style scoped>
-/*
- * 容器查询只能匹配后代元素，元素不能查询自己的容器。
- * 所以容器声明在门户根节点 `.rrn-portal` 上，`portal.css` 里的
- * `@container portal-page (...)` 规则作用于它内部的后代。
- */
-.rrn-portal {
-  container: portal-page / inline-size;
-}
+/* This ancestor is intentionally distinct from the child being queried. */
+.rrn-home-container { container: home-page / inline-size; min-width: 0; }
+.rrn-portal { container: portal-page / inline-size; }
 </style>

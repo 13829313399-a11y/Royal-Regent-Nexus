@@ -5,14 +5,19 @@ import {
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
 import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
-import { uvPreviewRoutes, uvPrintingRoutes } from '@/features/uv-printing/routes'
-import { isUvPreviewEnabled } from '@/features/uv-printing/transport/provider'
+import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
+import { sprayProductionRoutes } from '@/features/spray-production/routes'
+import { uvOperationsRoutes } from '@/features/uv-operations/routes'
+import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
+import { UV_BASE, UV_FACTORY } from '@/features/uv-operations/contracts'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
+import { identityUiEnabled } from '@/components/iam/workspace/iam-navigation'
+import { legacyIamAccountTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
   fullPage: true,
   requiresAuth: true,
@@ -23,6 +28,19 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/notifications', name: 'notification-center', component: () => import('@/views/NotificationCenterView.vue'), meta: { title: '事项工作台', requiresAuth: true } },
+  {
+    path: '/carton-supplier', name: 'carton-supplier', component: () => import('@/views/CartonSupplierView.vue'),
+    meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
+  },
+  {
+    path: '/carton-supplier/carton-mark', name: 'carton-supplier-carton-mark', component: () => import('@/views/CartonSupplierMarkTemplatesView.vue'),
+    meta: { title: '供应商箱唛资料模板', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
+  },
+  {
+    path: '/carton-supplier-management', name: 'carton-supplier-management', component: () => import('@/views/CartonSupplierManagementView.vue'),
+    meta: { title: '供应商协同管理', fullPage: true, requiresAuth: true, permissions: ['carton_procurement:read'], enforcePermissions: true, strictPermissions: true },
+  },
   {
     path: '/login',
     name: 'login',
@@ -102,23 +120,6 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/modules/production/spray-production',
-    component: () => import('@/views/SprayProductionView.vue'),
-    meta: { title: '喷油部生产管理', fullPage: true, requiresAuth: true, permissions: ['spray_production:read'], permissionDepartment: 'production', enforcePermissions: true, allowAuthenticatedReadOnly: true },
-    children: [
-      { path: '', redirect: to => ({ path: '/modules/production/spray-production/overview', query: to.query }) },
-      { path: 'overview', component: () => import('@/features/spray-production/pages/OverviewPage.vue') },
-      { path: 'orders/:id?', component: () => import('@/features/spray-production/pages/OrdersPage.vue') },
-      { path: 'schedule', component: () => import('@/features/spray-production/pages/SchedulePage.vue') },
-      { path: 'reports/:id?', component: () => import('@/features/spray-production/pages/ReportsPage.vue') },
-      { path: 'wip', component: () => import('@/features/spray-production/pages/WipPage.vue') },
-      { path: 'logistics', component: () => import('@/features/spray-production/pages/LogisticsPage.vue') },
-      { path: 'finance', component: () => import('@/features/spray-production/pages/FinancePage.vue') },
-      { path: 'master', component: () => import('@/features/spray-production/pages/MasterPage.vue') },
-      { path: 'imports/:id?', component: () => import('@/features/spray-production/pages/ImportsPage.vue') },
-    ],
-  },
-  {
     path: '/modules/production/injection-scheduling',
     name: 'injection-scheduling',
     component: () => import('@/views/InjectionSchedulingView.vue'),
@@ -181,10 +182,9 @@ const routes: RouteRecordRaw[] = [
       permissionDepartment: 'three-d-printing',
     },
   },
-  // 华康A · UV打印管理：正式路由在通用动态模块路由之前明确定义，懒加载工作区与子页。
-  ...uvPrintingRoutes,
-  // DEV 专属样例预览：仅 `VITE_UV_PREVIEW=true` 时注册，生产构建不可达。
-  ...uvPreviewRoutes(isUvPreviewEnabled()),
+  ...sprayProductionRoutes,
+  ...uvOperationsRoutes,
+  ...cuttingOperationsRoutes,
   {
     path: '/modules/pmc-warehouse/raw-material-management',
     name: 'raw-material-management',
@@ -418,21 +418,7 @@ const routes: RouteRecordRaw[] = [
       title: '模块详情',
       requiresAuth: true,
     },
-    beforeEnter: (to) => {
-      const department = String(to.params.department ?? '')
-      const moduleId = String(to.params.module ?? '')
 
-      if (!isModuleDepartmentId(department)) {
-        return { path: '/modules/engineering', replace: true }
-      }
-
-      const module = getDepartmentModule(department, moduleId)
-      if (!module || module.detailPage === false) {
-        return { path: `/modules/${department}`, replace: true }
-      }
-
-      return true
-    },
   },
   {
     path: '/modules/molding-sample',
@@ -457,9 +443,16 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/system',
+    component: () => import('@/components/iam/workspace/IamWorkspaceLayout.vue'),
+    meta: { fullPage: true, requiresAuth: true },
+    children: [
+  {
     path: '/system/users',
     name: 'system-users',
-    component: () => import('@/views/SystemUserManagementView.vue'),
+    component: identityUiEnabled
+      ? () => import('@/features/identity-management/PeopleCenter.vue')
+      : () => import('@/views/SystemUserManagementView.vue'),
     meta: {
       title: '账号与权限管理',
       fullPage: true,
@@ -467,6 +460,12 @@ const routes: RouteRecordRaw[] = [
       permissions: ['system:user_manage'],
       enforcePermissions: true,
     },
+  },
+  {
+    path: '/system/users/registration',
+    name: 'system-registration',
+    component: () => import('@/views/SystemUserManagementView.vue'),
+    meta: { title: '注册审核与密码找回', fullPage: true, requiresAuth: true, permissions: ['system:user_manage'], enforcePermissions: true },
   },
   {
     path: '/system/users/:userId/access',
@@ -498,11 +497,19 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/system/iam/requests',
-    redirect: '/system/iam/roles',
+    ...(identityUiEnabled ? {
+      component: () => import('@/features/identity-management/IdentityRecords.vue'),
+      meta: { title: '变更办理', fullPage: true, requiresAuth: true, permissions: ['system:access_manage'], enforcePermissions: true },
+    } : { redirect: '/system/users' }),
   },
   {
     path: '/system/iam/audit',
-    redirect: '/system/iam/roles',
+    ...(identityUiEnabled ? {
+      component: () => import('@/features/identity-management/IdentityRecords.vue'),
+      meta: { title: '授权与人员记录', fullPage: true, requiresAuth: true, permissions: ['system:audit_read'], enforcePermissions: true },
+    } : { redirect: '/system/users' }),
+  },
+    ],
   },
   {
     path: '/forbidden',
@@ -661,7 +668,15 @@ const finishRouteLoading = () => {
   }, remainingTime)
 }
 
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
+  if (to.path === '/system/users') {
+    const legacyTarget = legacyIamAccountTarget(to, identityUiEnabled)
+    if (legacyTarget) return legacyTarget
+  }
+  if (to.path.startsWith(UV_BASE) && to.query.factory !== UV_FACTORY) {
+    return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
+  }
+  if (!await guardSprayNavigation(to, from)) return false
   const navigationVersion = ++latestNavigationVersion
   if (routeLoadingTimer) {
     window.clearTimeout(routeLoadingTimer)
@@ -672,6 +687,7 @@ router.beforeEach(async (to) => {
   appStore.startRouteLoading()
 
   const factoryQuery = factoryQueryForRoute(to)
+  appStore.pinBusinessFactoryContext(to.path.startsWith('/modules/'))
   appStore.setRequestedFactoryContext(factoryQuery.factory)
 
   const authStore = useAuthStore()
@@ -725,6 +741,20 @@ router.beforeEach(async (to) => {
 
   if (to.name === 'change-password') {
     return postLoginRedirectLocation(resolvePostLoginRedirect(router, to.query.redirect))
+  }
+
+  if (to.name === 'module-detail') {
+    const department = String(to.params.department ?? '')
+    const moduleId = String(to.params.module ?? '')
+
+    if (!isModuleDepartmentId(department)) {
+      return { path: '/modules/engineering', replace: true }
+    }
+
+    const module = getDepartmentModule(department, moduleId)
+    if (!module || module.detailPage === false) {
+      return { path: `/modules/${department}`, query: to.query, replace: true }
+    }
   }
 
   const permissions = Array.isArray(to.meta.permissions) ? to.meta.permissions as string[] : []

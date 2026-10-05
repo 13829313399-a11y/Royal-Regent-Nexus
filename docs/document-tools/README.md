@@ -12,7 +12,7 @@ PDF 支持 `page_selection`，先原生提取/扫描识别，再生成重新排�
 
 离线模式使用现有 `DOCUMENT_TRANSLATION_MODEL_DIR` 和 `DOCUMENT_TRANSLATION_DEVICE`，PDF OCR 强制本地，不外发内容。在线模式需要 `DOCUMENT_TOOLS_AI_MODE=auto`，复用服务器 `DOCUMENT_TOOLS_QWEN_API_KEY`、`DOCUMENT_TOOLS_QWEN_BASE_URL`、`DOCUMENT_TOOLS_QWEN_PROTOCOL` 和超时设置，新增 `DOCUMENT_TOOLS_TRANSLATION_MODEL`（默认 `qwen3-vl-plus`）。DashScope 使用多模态 generation 地址和支持纯文字输入的 VL 模型；兼容 Chat 协议使用配置的 `/chat/completions` 地址。协议参考：[千问文本生成官方文档](https://www.alibabacloud.com/help/en/model-studio/text-generation)。API 与 worker 必须同时获得这些配置并重启。
 
-在线模式仅将需要翻译的文字和用户填写的 `glossary` 术语发送至已配置服务；PDF 扫描识别还可能发送图像区域。密钥只在服务器配置，不写入前端、任务或日志。在线服务不自动切回离线；错误响应、截断、空译文、段落数量不符及检测到数字/型号变化会明确失败。每批最多 30 段/6000 字符，总量最多 50 万字符。能力接口的配置就绪状态不代表真实翻译精度已验证，上线应以合成样本对目标服务实测。
+在线模式仅将需要翻译的文字和用户填写的 `glossary` 术语发送至已配置服务；PDF 扫描识别还可能发送图像区域。密钥只在服务器配置，不写入前端、任务或日志。在线批次最多 12 段，通常不超过 2400 字符；单段可独立发送至原有 6000 字符上限，不截断段内文字。截断、格式异常、空译文或数量不符时，失败批次按原顺序二分重试，单段最多再试一次；不会重复发送已经成功的批次。只接受完整 JSON 或完整 JSON 代码块，不猜测缺失译文的对应位置。网络、鉴权、限流、服务拒绝以及数字/型号变化仍明确失败，不自动切回离线；恢复失败的任务也不发布部分结果。离线批次仍为最多 30 段/6000 字符，总量上限仍为 50 万字符。能力接口的配置就绪状态不代表真实翻译精度已验证，上线应以合成样本对目标服务实测。
 
 ### 华兴批量改名
 

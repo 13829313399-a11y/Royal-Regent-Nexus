@@ -22,9 +22,31 @@ def replenished_by_line(db, line_ids):
         .group_by(CartonInventoryMovement.order_line_id))}
 
 
+def _posted_linked_samples(db, line_ids):
+    if not line_ids:
+        return
+    events = list(db.scalars(select(CartonAuditEvent).where(
+        CartonAuditEvent.event_type == "SUPPLIER_SAMPLE_LINKED",
+        CartonAuditEvent.entity_type == "carton_order_line",
+        CartonAuditEvent.entity_id.in_(line_ids))))
+    links = [(event, json.loads(event.detail_json).get("sample_receipt_line_id")) for event in events]
+    samples = {sample.id: (sample, receipt) for sample, receipt in db.execute(select(CartonReceiptLine, CartonReceipt)
+        .join(CartonReceipt, CartonReceipt.id == CartonReceiptLine.receipt_id)
+        .where(CartonReceiptLine.id.in_({sample_id for _, sample_id in links if sample_id})))} if links else {}
+    for event, sample_id in links:
+        sample, receipt = samples.get(sample_id, (None, None))
+        if sample and receipt and sample.factory_id == event.factory_id == receipt.factory_id \
+                and sample.source_type == "AD_HOC" and receipt.status == "POSTED":
+            yield event.entity_id, sample
+
+
 def fulfilled_by_line(db, line_ids):
     from app.services.carton_procurement import _posted_received_by_line, quantity
     received = _posted_received_by_line(db, line_ids)
+    # A later formal order may reconcile an already-posted sample receipt. The
+    # original AD_HOC receipt and inbound remain immutable and are counted once.
+    for line_id, sample in _posted_linked_samples(db, line_ids):
+        received[line_id] = received.get(line_id, Decimal(0)) + sample.effective_quantity
     replaced = replenished_by_line(db, line_ids)
     result = {line_id: quantity(received.get(line_id, Decimal(0)) - replaced.get(line_id, Decimal(0))) for line_id in line_ids}
     if any(value < 0 for value in result.values()):
@@ -40,6 +62,8 @@ def posted_receipt_sources(db, line_ids):
         CartonReceipt.status == "POSTED", CartonReceiptLine.order_line_id.in_(line_ids),
     )):
         result[line_id][receipt_line_id] = str(qty)
+    for line_id, sample in _posted_linked_samples(db, line_ids):
+        result[line_id][sample.id] = str(sample.effective_quantity)
     return dict(result)
 
 

@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import CustomerPricingSettingsPanel from './CustomerPricingSettingsPanel.vue'
+import { customerPricingSettingsApi } from '@/api/customerPricingSettings'
+import { stampPricingReference } from '@/lib/customerPriceConverters/pricingSettings'
+import { buzzBeeTemplateUrl, createBuzzBeeTemplateWorkbook } from '@/lib/customerPriceConverters/buzzbeeTemplate'
 import { CheckCircle2, Download, Eye, Search, UploadCloud, Users } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -7,7 +11,6 @@ import type { CustomerPriceInternalQuoteArtifact } from '@/api/customerPriceArti
 import {
   buildBuzzBeeCustomerQuoteFileName,
   convertBuzzBeeInternalQuote,
-  createBuzzBeeCustomerQuoteWorkbook,
   type BuzzBeeConversionResult,
 } from '@/lib/customerPriceConverters/buzzbee'
 import {
@@ -44,6 +47,7 @@ import YinhuiQuoteReview from '@/components/modules/sales/YinhuiQuoteReview.vue'
 import YinhuiDraftReview from '@/components/modules/sales/YinhuiDraftReview.vue'
 import { createYinhuiDraft, loadYinhuiDraft, saveYinhuiDraft, type YinhuiDraft } from '@/lib/customerPriceConverters/yinhuiDraft'
 import { buildYinhuiCustomerQuoteFileName, isYinhuiCustomer, validateYinhuiExport, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
+import { combineDickieV2 } from '@/lib/customerPriceConverters/dickieV2'
 import { yinhuiTemplateUrl } from '@/lib/customerPriceConverters/yinhuiProfiles'
 import { createYinhuiCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/yinhuiTemplate'
 import { useAppStore } from '@/stores/app'
@@ -76,9 +80,6 @@ interface CustomerOption {
   name: string
   factoryId: string
   department: string
-  workshop: string
-  owner: string
-  activeQuoteCount: number
 }
 
 interface QuoteSheetDetailRow {
@@ -106,6 +107,7 @@ interface ImportedWorkbookSheet {
 }
 
 interface ExportedQuoteVersion {
+  pricingSnapshotId?: string
   id: string
   fileName: string
   customerId: string
@@ -128,60 +130,44 @@ const customerOptions: CustomerOption[] = [
     name: 'BuzzBee',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '啤机车间 A',
-    owner: '李业务',
-    activeQuoteCount: 1,
   },
   {
     id: 'disney',
     name: '迪士尼',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '啤机车间 A',
-    owner: '李业务',
-    activeQuoteCount: 1,
   },
   {
     id: 'dicky',
     name: 'Dickie',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '啤机车间 A',
-    owner: 'Ben / Dickie',
-    activeQuoteCount: 1,
   },
   {
     id: 'caixing',
     name: '彩星',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '啤机车间 A',
-    owner: '陈善杰',
-    activeQuoteCount: 2,
   },
   {
     id: 'yinhui',
     name: '银辉',
     factoryId: 'huaxing',
     department: 'sales-business',
-    workshop: '华兴',
-    owner: '临时独立映射',
-    activeQuoteCount: 0,
   },
   {
     id: 'three-sixty',
     name: '360',
     factoryId: 'huakang-a',
     department: 'sales-business',
-    workshop: '华康 A',
-    owner: '郑大能',
-    activeQuoteCount: 1,
   },
 ]
 
 const selectedCustomerId = ref(
   customerOptions.find((customer) => customer.factoryId === activeFactoryId.value)?.id ?? '',
 )
+// Maintenance selection never feeds the conversion or its frozen pricing snapshot.
+const settingsCustomerId = ref(selectedCustomerId.value)
 const caixingProductTypeOptions = [
   { id: 'plastic', label: '塑胶', detail: '塑胶 / 注塑类报客价' },
   { id: 'plush', label: '毛绒', detail: '毛绒 / 车衣车发类报客价' },
@@ -193,6 +179,8 @@ const importedCustomerId = ref('')
 const importedFileName = ref('')
 const importedFileSize = ref('')
 const importedAt = ref('')
+const receivedQuoteNo = ref('')
+const receivedVersionLabel = ref('')
 const importErrorMessage = ref('')
 const exportErrorMessage = ref('')
 const isImportingInternalQuote = ref(false)
@@ -204,6 +192,51 @@ const exportedQuoteVersions = ref<ExportedQuoteVersion[]>([])
 const buzzBeeConversionResult = ref<BuzzBeeConversionResult | null>(null)
 const disneyConversionResult = ref<DisneyConversionResult | null>(null)
 const dickyConversionResult = ref<DickyConversionResult | null>(null)
+const dickieBatch = ref<DickyConversionResult[]>([])
+let previewedDickieBatch: DickyConversionResult | null = null
+function invalidateDickieBatchPreview() {
+  if (previewedDickieBatch && dickyConversionResult.value === previewedDickieBatch) {
+    dickyConversionResult.value = null
+    importedWorkbookSheets.value = []
+    importedFileName.value = ''
+    importedCustomerId.value = ''
+  }
+  previewedDickieBatch = null
+}
+function removeDickieFromBatch(index: number) {
+  if (isExportingCustomerQuote.value) return
+  invalidateDickieBatchPreview()
+  dickieBatch.value.splice(index, 1)
+}
+function clearDickieBatch() {
+  if (isExportingCustomerQuote.value) return
+  invalidateDickieBatchPreview()
+  dickieBatch.value = []
+}
+function addDickieToBatch() {
+  const result = dickyConversionResult.value
+  if (activeFactoryId.value !== 'huaxing' || !canExportCustomerQuote.value || !result?.v2Data || result.v2Data.products.length !== 1) return
+  const identity = result.v2Data.products[0]!.identity
+  if (dickieBatch.value.some(r => r.v2Data!.products[0]!.identity === identity)) return
+  dickieBatch.value.push(result)
+}
+function previewDickieBatch() {
+  if (activeFactoryId.value !== 'huaxing' || selectedCustomerId.value !== 'dicky' || !canExportSelectedCustomer.value || !dickieBatch.value.length || isImportingInternalQuote.value || isExportingCustomerQuote.value) return
+  try {
+    const result = combineDickieV2(dickieBatch.value)
+    dickyConversionResult.value = result
+    previewedDickieBatch = dickyConversionResult.value
+    receivedQuoteNo.value = ''
+    receivedVersionLabel.value = ''
+    importedCustomerId.value = 'dicky'
+    importedWorkbookSheets.value = result.sheets
+    importedFileName.value = result.sourceFileName
+    selectedSheetId.value = 'all'
+    exportErrorMessage.value = ''
+  } catch (error) {
+    exportErrorMessage.value = error instanceof Error ? error.message : '合并报价失败'
+  }
+}
 const caixingConversionResult = ref<CaixingConversionResult | null>(null)
 const threeSixtyConversionResult = ref<ThreeSixtyConversionResult | null>(null)
 const yinhuiConversionResult = ref<YinhuiConversionResult | null>(null)
@@ -336,11 +369,14 @@ function isCurrentFactoryTask(factoryId: string, generation: number) {
 
 function resetFactoryTransientState() {
   selectedCustomerId.value = customerOptions.find((customer) => customer.factoryId === activeFactoryId.value)?.id ?? ''
+  settingsCustomerId.value = selectedCustomerId.value
   selectedCaixingProductType.value = 'plastic'
   importedCaixingProductType.value = ''
   detailSearchQuery.value = ''
   importedCustomerId.value = ''
   importedFileName.value = ''
+  receivedQuoteNo.value = ''
+  receivedVersionLabel.value = ''
   importedFileSize.value = ''
   importedAt.value = ''
   importErrorMessage.value = ''
@@ -354,6 +390,7 @@ function resetFactoryTransientState() {
   buzzBeeConversionResult.value = null
   disneyConversionResult.value = null
   dickyConversionResult.value = null
+  dickieBatch.value = []
   caixingConversionResult.value = null
   threeSixtyConversionResult.value = null
   yinhuiConversionResult.value = null
@@ -384,11 +421,11 @@ const selectedCustomer = computed<CustomerOption>(() => {
       name: '未配置客户',
       factoryId: activeFactoryId.value,
       department: 'sales-business',
-      workshop: '',
-      owner: '',
-      activeQuoteCount: 0,
     }
 })
+
+const settingsCustomer = computed(() => visibleCustomers.value.find(customer => customer.id === settingsCustomerId.value)
+  ?? visibleCustomers.value[0])
 
 const canImportSelectedCustomer = computed(() => {
   if (!selectedCustomer.value.id) return false
@@ -396,8 +433,10 @@ const canImportSelectedCustomer = computed(() => {
     'customer_price:import_internal_quote',
     selectedCustomer.value.factoryId,
     selectedCustomer.value.department,
-  )
+  ) && authStore.can('customer_price:settings_read', selectedCustomer.value.factoryId, 'sales-business')
 })
+
+watch(() => authStore.can('customer_price:settings_read', activeFactoryId.value, 'sales-business'), allowed => { if (!allowed) resetFactoryTransientState() })
 
 const canExportSelectedCustomer = computed(() => {
   if (!selectedCustomer.value.id) return false
@@ -405,7 +444,7 @@ const canExportSelectedCustomer = computed(() => {
     'customer_price:export_customer_quote',
     selectedCustomer.value.factoryId,
     selectedCustomer.value.department,
-  )
+  ) && authStore.can('customer_price:settings_read', selectedCustomer.value.factoryId, 'sales-business')
 })
 
 const selectedCustomerOperationSummary = computed(() => {
@@ -538,6 +577,15 @@ const hasActiveDickyConversion = computed(() => {
     && Boolean(dickyConversionResult.value)
 })
 
+const activeDickieOffers = computed(() => {
+  const query = detailSearchQuery.value.trim().toLowerCase()
+  const products = hasActiveDickyConversion.value ? dickyConversionResult.value?.v2Data?.products ?? [] : []
+  return products.flatMap(p => p.offers.map((offer, index) => ({
+    id: `${p.identity}:${index}`, itemNo: p.mapping.item_number, name: p.mapping.item_name.zh,
+    label: offer.label.zh, moq: offer.moq, prices: offer.prices,
+  }))).filter(row => !query || `${row.itemNo} ${row.name} ${row.label} ${row.moq}`.toLowerCase().includes(query))
+})
+
 const hasActiveCaixingConversion = computed(() => {
   return selectedCustomer.value.id === 'caixing'
     && selectedImportMatchesCurrentChoice.value
@@ -551,6 +599,13 @@ const hasActiveThreeSixtyConversion = computed(() => {
 })
 
 const comparisonMetrics = computed(() => {
+  const products = hasActiveDickyConversion.value ? dickyConversionResult.value?.v2Data?.products : undefined
+  if (products) return [
+    { label: '报价产品', value: String(products.length), detail: receivedQuoteNo.value || selectedImportFileName.value },
+    { label: '报价方案', value: String(products.reduce((sum, p) => sum + p.offers.length, 0)), detail: '按 MOQ 和运输方式分别报价' },
+    { label: '输出模板', value: '中英文', detail: 'Quotation / 总表' },
+    { label: '已输出版本', value: String(activeExportedVersions.value.length), detail: activeExportedVersions.value[0]?.fileName ?? '暂无导出' },
+  ]
   const totalInternal = activeWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalInternalHkd, 0)
   const totalCustomer = activeWorkbookSheets.value.reduce((sum, sheet) => sum + sheet.totalCustomerHkd, 0)
   const delta = activeExportedVersions.value[0]?.deltaFromPreviousHkd ?? 0
@@ -598,8 +653,8 @@ const canExportCustomerQuote = computed(() => {
 const hasSelectedCustomerImport = computed(() => Boolean(selectedImportFileName.value))
 
 const importOverviewMetrics = computed(() => [
-  { label: '当前客户', value: selectedCustomer.value.name, detail: selectedCustomer.value.id === 'caixing' ? `${selectedCaixingProductTypeOption.value.label} · ${selectedCustomer.value.owner}` : `${selectedCustomer.value.workshop} · ${selectedCustomer.value.owner}` },
-  { label: '内部报价', value: selectedImportFileName.value ? '已导入' : '待导入', detail: selectedImportFileName.value || '等待 Excel' },
+  { label: '当前客户', value: selectedCustomer.value.name, detail: selectedCustomer.value.id === 'caixing' ? selectedCaixingProductTypeOption.value.label : '' },
+  { label: '内部报价', value: selectedImportFileName.value ? (receivedQuoteNo.value ? '已接收' : '已导入') : '待接收', detail: selectedImportFileName.value || '等待内部报价台输出' },
   {
     label: '操作权限',
     value: selectedCustomerOperationSummary.value.value,
@@ -727,6 +782,7 @@ function readFileAsArrayBuffer(file: File) {
 function configuredCustomerId(customerName: string): P4ConfiguredCustomerId | null {
   if (activeFactoryId.value === 'huaxing' && isYinhuiCustomer(customerName)) return 'yinhui'
   const normalized = customerName.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (activeFactoryId.value === 'huaxing' && ['dickie', 'dicky'].includes(normalized)) return 'dicky'
   const matched = visibleCustomers.value.find((customer) => customer.name.trim().toLowerCase().replace(/[\s_-]+/g, '') === normalized)
   return matched && ['buzzbee', 'disney', 'dicky', 'caixing', 'three-sixty'].includes(matched.id)
     ? matched.id as P4ConfiguredCustomerId
@@ -757,6 +813,7 @@ async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, bl
   if (!customerId) {
     throw new Error(`尚未配置“${handoff.customer}”的 P4 客户转换规则`)
   }
+  const pricing = await customerPricingSettingsApi.snapshot(requestedFactoryId, customerId)
   const workbook = await blob.arrayBuffer()
   if (!isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
     throw new Error('厂区已切换，请在当前厂区重新接收交接文件')
@@ -774,6 +831,7 @@ async function prepareP4Artifact(handoff: CustomerPriceInternalQuoteArtifact, bl
       formulaVersion: handoffManifestText(handoff, 'formula_version'),
       referenceSnapshotId: handoffManifestText(handoff, 'reference_snapshot_id'),
     },
+    pricing,
   )
   preparedP4Conversions.set(handoff.id, {
     handoff,
@@ -864,6 +922,8 @@ function commitP4Artifact(handoffId: string) {
   }
 
   importedFileName.value = handoff.file_name
+  receivedQuoteNo.value = handoff.quote_no
+  receivedVersionLabel.value = handoff.version_label
   importedCustomerId.value = conversion.customerId
   importedCaixingProductType.value = conversion.customerId === 'caixing' ? conversion.result.productType : ''
   importedAt.value = '刚刚'
@@ -970,12 +1030,16 @@ async function importInternalQuoteFile(file: File | undefined) {
   if (!file || !customer || !canImportSelectedCustomer.value) {
     return
   }
+  receivedQuoteNo.value = ''
+  receivedVersionLabel.value = ''
   const requestId = ++importRequestSequence
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryGeneration = factoryGeneration
   const isCurrentImportRequest = () => (
     requestId === importRequestSequence
     && isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)
+    && selectedCustomerId.value === customer.id
+    && canImportSelectedCustomer.value
   )
 
   importErrorMessage.value = ''
@@ -983,6 +1047,8 @@ async function importInternalQuoteFile(file: File | undefined) {
   if (customer.id === 'yinhui') yinhuiConfirmed.value = false
 
   try {
+    const pricing = await customerPricingSettingsApi.snapshot(requestedFactoryId, customer.id)
+    if (!isCurrentImportRequest()) return
     if (customer.id === 'buzzbee') {
       if (!file.name.toLowerCase().endsWith('.xlsx')) {
         throw new Error('BuzzBee 当前先支持 .xlsx 内部报价，旧 .xls 请先另存为 .xlsx')
@@ -990,7 +1056,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertBuzzBeeInternalQuote(buffer, file.name)
+      const conversionResult = convertBuzzBeeInternalQuote(buffer, file.name, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = conversionResult
@@ -1009,7 +1075,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertDisneyInternalQuote(buffer, file.name)
+      const conversionResult = convertDisneyInternalQuote(buffer, file.name, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = null
@@ -1028,7 +1094,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertDickyInternalQuote(buffer, file.name)
+      const conversionResult = convertDickyInternalQuote(buffer, file.name, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = null
@@ -1047,7 +1113,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertCaixingInternalQuote(buffer, file.name, selectedCaixingProductType.value)
+      const conversionResult = convertCaixingInternalQuote(buffer, file.name, selectedCaixingProductType.value, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = null
@@ -1063,7 +1129,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       if (!/\.(xlsx|json)$/i.test(file.name)) throw new Error('银辉支持 .xlsx 原内部报价、P4 最终放行文件或已保存的 .json 内部核对草稿')
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const draft = file.name.toLowerCase().endsWith('.json') ? loadYinhuiDraft(new TextDecoder().decode(buffer)) : createYinhuiDraft(buffer, file.name)
+      const draft = file.name.toLowerCase().endsWith('.json') ? loadYinhuiDraft(new TextDecoder().decode(buffer), pricing) : createYinhuiDraft(buffer, file.name, [], [], pricing)
       updateYinhuiDraft(draft)
       const result = draft.result
       yinhuiConfirmed.value = false
@@ -1080,7 +1146,7 @@ async function importInternalQuoteFile(file: File | undefined) {
       }
       const buffer = await readFileAsArrayBuffer(file)
       if (!isCurrentImportRequest()) return
-      const conversionResult = convertThreeSixtyInternalQuote(buffer, file.name)
+      const conversionResult = convertThreeSixtyInternalQuote(buffer, file.name, pricing)
       const detailCount = conversionResult.sheets.reduce((sum, sheet) => sum + sheet.details.length, 0)
 
       buzzBeeConversionResult.value = null
@@ -1212,15 +1278,24 @@ function escapeExcelCell(value: string | number) {
     .replace(/"/g, '&quot;')
 }
 
+function sourceVersionFileName(fileName: string) {
+  if (!receivedQuoteNo.value || !receivedVersionLabel.value) return fileName
+  const identity = `${receivedQuoteNo.value}_${receivedVersionLabel.value}`.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+  return fileName.replace(/(\.xlsx?)$/i, `_${identity}$1`)
+}
+
 async function exportCustomerQuoteExcel() {
   if (!selectedCustomer.value || !canExportSelectedCustomer.value || !canExportCustomerQuote.value || isExportingCustomerQuote.value) {
     return
   }
+  const exportCustomerId = selectedCustomerId.value
   const requestId = ++exportRequestSequence
   const requestedFactoryId = activeFactoryId.value
   const requestedFactoryGeneration = factoryGeneration
   const isCurrentExportRequest = () => (
     requestId === exportRequestSequence
+    && selectedCustomerId.value === exportCustomerId
+    && canExportSelectedCustomer.value
     && isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)
   )
 
@@ -1228,27 +1303,32 @@ async function exportCustomerQuoteExcel() {
   isExportingCustomerQuote.value = true
 
   try {
+    const conversionResult = ({ buzzbee: buzzBeeConversionResult.value, disney: disneyConversionResult.value, dicky: dickyConversionResult.value, caixing: caixingConversionResult.value, 'three-sixty': threeSixtyConversionResult.value, yinhui: yinhuiConversionResult.value } as const)[exportCustomerId as 'buzzbee' | 'disney' | 'dicky' | 'caixing' | 'three-sixty' | 'yinhui']
+    const pricing = conversionResult?.pricing
+    if (!pricing?.snapshot_id) throw new Error('请重新接收或导入报价，以记录本次使用的客户参数版本')
     const detailRows = activeWorkbookDetailRows.value
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     const versionNumber = activeExportedVersions.value.length + 1
     let fileName = `${selectedCustomer.value.name}-报客价-V${versionNumber}-${date}.xls`
 
     if (selectedCustomer.value.id === 'buzzbee' && buzzBeeConversionResult.value) {
-      const workbook = createBuzzBeeCustomerQuoteWorkbook(buzzBeeConversionResult.value)
-      fileName = buildBuzzBeeCustomerQuoteFileName(buzzBeeConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      const template = await fetchTemplateBuffer(buzzBeeTemplateUrl(buzzBeeConversionResult.value.sheets[0]?.quoteData.templateProfile), 'BuzzBee 原版报客')
+      if (!isCurrentExportRequest()) return
+      const workbook = createBuzzBeeTemplateWorkbook(buzzBeeConversionResult.value, template)
+      fileName = sourceVersionFileName(buildBuzzBeeCustomerQuoteFileName(buzzBeeConversionResult.value))
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'disney' && disneyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(DISNEY_CUSTOMER_QUOTE_TEMPLATE_URL, '迪士尼报客')
       if (!isCurrentExportRequest()) return
       const workbook = createDisneyCustomerQuoteWorkbook(disneyConversionResult.value, templateBuffer)
-      fileName = buildDisneyCustomerQuoteFileName(disneyConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      fileName = sourceVersionFileName(buildDisneyCustomerQuoteFileName(disneyConversionResult.value))
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'dicky' && dickyConversionResult.value) {
-      const templateBuffer = await fetchTemplateBuffer(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL, 'Dickie 报客')
+      const templateBuffer = dickyConversionResult.value.v2Data ? undefined : await fetchTemplateBuffer(DICKY_CUSTOMER_QUOTE_TEMPLATE_URL, 'Dickie 报客')
       if (!isCurrentExportRequest()) return
       const workbook = createDickyCustomerQuoteWorkbook(dickyConversionResult.value, templateBuffer)
-      fileName = buildDickyCustomerQuoteFileName(dickyConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      fileName = sourceVersionFileName(buildDickyCustomerQuoteFileName(dickyConversionResult.value))
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'caixing' && caixingConversionResult.value) {
       const productType = caixingConversionResult.value.productType
       const templateUrl = productType === 'plush'
@@ -1258,21 +1338,21 @@ async function exportCustomerQuoteExcel() {
       const templateBuffer = await fetchTemplateBuffer(templateUrl, templateLabel)
       if (!isCurrentExportRequest()) return
       const workbook = createCaixingCustomerQuoteWorkbook(caixingConversionResult.value, templateBuffer)
-      fileName = buildCaixingCustomerQuoteFileName(caixingConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      fileName = sourceVersionFileName(buildCaixingCustomerQuoteFileName(caixingConversionResult.value))
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'yinhui' && yinhuiConversionResult.value) {
       const conversion = yinhuiConversionResult.value
       const templateBuffer = await fetchTemplateBuffer(yinhuiTemplateUrl(conversion.quoteData.templateId), '银辉报客')
       if (!isCurrentExportRequest() || isImportingInternalQuote.value || selectedCustomer.value.id !== 'yinhui' || conversion !== yinhuiConversionResult.value || !yinhuiConfirmed.value) return
       const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value })
-      fileName = buildYinhuiCustomerQuoteFileName(conversion)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      fileName = sourceVersionFileName(buildYinhuiCustomerQuoteFileName(conversion))
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'three-sixty' && threeSixtyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(THREE_SIXTY_CUSTOMER_QUOTE_TEMPLATE_URL, '360 报客')
       if (!isCurrentExportRequest()) return
       const workbook = createThreeSixtyCustomerQuoteWorkbook(threeSixtyConversionResult.value, templateBuffer)
-      fileName = buildThreeSixtyCustomerQuoteFileName(threeSixtyConversionResult.value)
-      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
+      fileName = sourceVersionFileName(buildThreeSixtyCustomerQuoteFileName(threeSixtyConversionResult.value))
+      downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
     } else {
       const tableRows = detailRows.length > 0
         ? detailRows.map((row) => `
@@ -1346,6 +1426,7 @@ async function exportCustomerQuoteExcel() {
       : Number(visibleConversionRows.value.reduce((sum, row) => sum + row.customerPriceHkd, 0).toFixed(2))
     const previousVersion = activeExportedVersions.value[0]
     const exportedVersion: ExportedQuoteVersion = {
+      pricingSnapshotId: pricing.snapshot_id,
       id: `EXP-${selectedCustomer.value.id}-${Date.now()}`,
       fileName,
       customerId: selectedCustomer.value.id,
@@ -1373,6 +1454,14 @@ async function exportCustomerQuoteExcel() {
 
 <template>
   <div class="space-y-5">
+    <CustomerPricingSettingsPanel
+      v-if="settingsCustomer"
+      :factory-id="activeFactoryId"
+      :customer-id="settingsCustomer.id"
+      :customer-name="settingsCustomer.name"
+      :customers="artifactCustomerOptions"
+      @update:customer-id="settingsCustomerId = $event"
+    />
     <CustomerPriceArtifactPanel
       :customers="artifactCustomerOptions"
       :selected-customer-id="selectedCustomerId"
@@ -1382,8 +1471,8 @@ async function exportCustomerQuoteExcel() {
     />
 
     <SectionPanel
-      title="导入内部报价"
-      subtitle="优先从上方 P4 v2 交接池直接转换；客户专属字段不足时会在接收前阻断，并保留这里的原专用 Excel 导入路径"
+      title="客户报价输出"
+      subtitle="在上方交接池接收内部报价台已输出的报价，核对后直接输出客户文件。"
     >
       <template #action>
         <div class="flex flex-wrap items-center justify-end gap-2">
@@ -1401,11 +1490,15 @@ async function exportCustomerQuoteExcel() {
           >
             <Users class="size-4" aria-hidden="true" />
             {{ customer.name }}
-            <span class="rounded-full bg-white px-2 py-0.5 text-[11px] text-slate-500 ring-1 ring-slate-200">
-              {{ customer.activeQuoteCount }} 单
-            </span>
           </button>
 
+          <button
+            v-if="canExportCustomerQuote && selectedCustomerId === 'dicky' && dickyConversionResult?.v2Data?.products.length === 1"
+            type="button"
+            class="inline-flex h-9 items-center rounded-lg border border-teal-300 px-3 text-xs font-semibold text-teal-800"
+            :disabled="isImportingInternalQuote || isExportingCustomerQuote"
+            @click="addDickieToBatch"
+          >加入 Dickie 合并清单</button>
           <button
             v-if="canExportCustomerQuote"
             type="button"
@@ -1418,6 +1511,13 @@ async function exportCustomerQuoteExcel() {
           </button>
         </div>
       </template>
+      <div v-if="selectedCustomerId === 'dicky' && dickieBatch.length" class="mb-4 rounded-lg border border-teal-200 bg-teal-50 p-4 text-sm">
+        <p class="font-semibold text-teal-900">Dickie 合并清单 · {{ dickieBatch.length }} 个产品</p>
+        <p class="mt-1 text-xs text-slate-600">逐个接收已输出报价后加入清单。公司、客户、联系人、日期、版本及报价类型一致时，可合并输出中英文两页。</p>
+        <ul class="my-3 space-y-2"><li v-for="(item, index) in dickieBatch" :key="item.v2Data!.products[0]!.identity" class="flex items-center justify-between gap-3"><span>{{ item.v2Data!.products[0]!.mapping.item_number }} · {{ item.v2Data!.products[0]!.mapping.item_name.zh }}</span><button type="button" class="text-xs underline" :disabled="isExportingCustomerQuote" @click="removeDickieFromBatch(index)">移除</button></li></ul>
+        <button type="button" class="rounded-lg bg-teal-800 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" :disabled="!canExportSelectedCustomer || isImportingInternalQuote || isExportingCustomerQuote" @click="previewDickieBatch">预览合并报价</button>
+        <button type="button" class="ml-3 text-xs underline" :disabled="isExportingCustomerQuote" @click="clearDickieBatch">清空清单</button>
+      </div>
 
       <div
         v-if="selectedCustomer.id === 'caixing'"
@@ -1443,10 +1543,21 @@ async function exportCustomerQuoteExcel() {
         </div>
       </div>
 
+      <div v-if="hasActiveCaixingConversion && caixingConversionResult?.warnings?.length" class="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="status">
+        <p class="font-semibold">彩星来源资料待核对</p>
+        <p v-for="(warning, index) in caixingConversionResult.warnings" :key="index" class="mt-1">{{ warning }}</p>
+      </div>
       <YinhuiDraftReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiDraft" :draft="yinhuiDraft" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote || isImportingInternalQuote" @update:draft="updateYinhuiDraft" @invalidate="yinhuiConfirmed = false" @save="downloadYinhuiDraft" />
       <YinhuiQuoteReview v-if="selectedCustomer.id === 'yinhui' && selectedImportMatchesCurrentChoice && yinhuiConversionResult" v-model:confirmed="yinhuiConfirmed" :result="yinhuiConversionResult" :factory-id="activeFactoryId" :disabled="!canExportSelectedCustomer || isExportingCustomerQuote || isImportingInternalQuote" />
 
       <div class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div>
+        <div v-if="selectedCustomerId === 'dicky'" data-testid="dickie-direct-handoff" class="mb-3 rounded-lg border border-teal-200 bg-teal-50 px-5 py-4">
+          <p class="font-semibold text-teal-900">{{ receivedQuoteNo && hasSelectedCustomerImport ? `已接收内部报价：${receivedQuoteNo} · ${receivedVersionLabel}` : '从内部报价台接收 Dickie 报价' }}</p>
+          <p class="mt-2 text-sm text-slate-600">内部报价台保存并输出 → 上方交接池接收并转换 → 输出 Quotation / 总表。</p>
+        </div>
+        <component :is="selectedCustomerId === 'dicky' ? 'details' : 'div'">
+        <summary v-if="selectedCustomerId === 'dicky'" class="mb-3 cursor-pointer text-xs text-slate-500">历史 Excel 兼容入口</summary>
         <label
           class="flex min-h-[118px] flex-col items-center justify-center rounded-lg border px-6 py-5 text-center transition-colors"
           :class="!canImportSelectedCustomer
@@ -1516,12 +1627,14 @@ async function exportCustomerQuoteExcel() {
               @change="handleInternalQuoteImport"
             >
         </label>
+        </component>
+        </div>
 
         <aside class="grid gap-2 sm:grid-cols-2 xl:grid-cols-2">
           <article class="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">导入状态</p>
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">报价来源</p>
             <p class="mt-2 truncate text-sm font-semibold text-slate-950">
-              {{ selectedImportFileName || '尚未导入内部报价表' }}
+              {{ selectedImportFileName || '等待接收内部报价' }}
             </p>
             <p class="mt-1 break-words text-xs leading-5 text-slate-500">{{ selectedImportFileDetail }}</p>
           </article>
@@ -1533,7 +1646,7 @@ async function exportCustomerQuoteExcel() {
           >
             <p class="text-xs font-medium text-slate-500">{{ metric.label }}</p>
             <p class="mt-2 text-lg font-semibold text-slate-950">{{ metric.value }}</p>
-            <p class="mt-1 truncate text-xs text-slate-500">{{ metric.detail }}</p>
+            <p v-if="metric.detail" class="mt-1 truncate text-xs text-slate-500">{{ metric.detail }}</p>
           </article>
         </aside>
 
@@ -1555,8 +1668,8 @@ async function exportCustomerQuoteExcel() {
     </SectionPanel>
 
     <SectionPanel
-      title="明细对比区"
-      subtitle="下方整块区域用于承接 Sheet、报客价版本、明细价格差异和利润带对比"
+      :title="hasActiveDickyConversion && dickyConversionResult?.v2Data ? 'Dickie 报价方案' : '明细对比区'"
+      :subtitle="hasActiveDickyConversion && dickyConversionResult?.v2Data ? '按产品、MOQ 及运输方式核对报客单价（HKD）' : '下方整块区域用于承接 Sheet、报客价版本、明细价格差异和利润带对比'"
     >
       <template #action>
         <label class="relative block min-w-0 lg:w-72">
@@ -1573,9 +1686,9 @@ async function exportCustomerQuoteExcel() {
       <div class="rounded-lg border border-slate-200 bg-white p-4">
         <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h3 class="text-base font-semibold text-slate-950">多 Sheet / 多报客价明细对比区</h3>
+            <h3 class="text-base font-semibold text-slate-950">{{ hasActiveDickyConversion && dickyConversionResult?.v2Data ? '中英文报价输出预览' : '多 Sheet / 多报客价明细对比区' }}</h3>
             <p class="mt-1 text-sm text-slate-500">
-              上传一个多 Sheet 内部报价表后，导出的每一份报客价都会沉淀为一个版本，方便逐项对比。
+              接收内部报价后，核对产品及各档价格，再输出客户报价文件。
             </p>
           </div>
           <div class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:w-[560px]">
@@ -1644,7 +1757,9 @@ async function exportCustomerQuoteExcel() {
                       <span class="block font-semibold text-slate-950">{{ version.fileName }}</span>
                       <span class="mt-1 block text-xs text-slate-500">{{ version.createdAt }} · {{ version.detailCount }} 条</span>
                     </span>
+                    <span v-if="hasActiveDickyConversion && dickyConversionResult?.v2Data" class="text-xs text-slate-500">各 MOQ 单独核对</span>
                     <span
+                      v-else
                       class="rounded-full px-2 py-0.5 text-xs ring-1"
                       :class="version.deltaFromPreviousHkd === 0
                         ? 'bg-slate-50 text-slate-500 ring-slate-200'
@@ -1665,7 +1780,14 @@ async function exportCustomerQuoteExcel() {
 
           <div class="overflow-hidden rounded-lg border border-slate-200">
             <div class="overflow-x-auto">
-              <table class="min-w-[940px] w-full text-left text-sm">
+              <table v-if="hasActiveDickyConversion && dickyConversionResult?.v2Data" data-testid="dickie-offer-preview" class="min-w-[800px] w-full text-left text-sm">
+                <thead class="bg-slate-50 text-xs text-slate-500"><tr><th class="p-3">产品编号 / 名称</th><th class="p-3">报价方案</th><th class="p-3">MOQ</th><th class="p-3">40 柜 HKD</th><th class="p-3">20 柜 HKD</th><th class="p-3">散货 HKD</th></tr></thead>
+                <tbody class="divide-y divide-slate-200 bg-white">
+                  <tr v-for="row in activeDickieOffers" :key="row.id"><td class="p-3">{{ row.itemNo }}<br>{{ row.name }}</td><td class="p-3">{{ row.label }}</td><td class="p-3">{{ row.moq }}</td><td v-for="(price, index) in row.prices" :key="index" class="p-3 font-semibold">{{ price.toFixed(1) }}</td></tr>
+                  <tr v-if="!activeDickieOffers.length"><td colspan="6" class="p-6 text-center text-slate-500">当前筛选下暂无报价方案。</td></tr>
+                </tbody>
+              </table>
+              <table v-else class="min-w-[940px] w-full text-left text-sm">
                 <thead class="bg-slate-50 text-xs font-semibold uppercase text-slate-500">
                   <tr>
                     <th class="px-4 py-3">Sheet</th>

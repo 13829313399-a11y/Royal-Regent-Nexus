@@ -8,6 +8,8 @@ import {
   type XlsxOutputSheet,
 } from './xlsxLite'
 import type { P4InternalQuoteArtifact } from './p4Artifact'
+import { pricingRate, pricingMaterial, assertPricingCustomer, type CustomerPricingSettings } from './pricingSettings'
+import type { YinhuiProductImage } from './yinhuiTemplate'
 
 type DetailCompareStatus = '上调' | '下调' | '持平'
 
@@ -15,11 +17,6 @@ interface BuzzBeeMaterialRule {
   name: string
   en: string
   price: number
-}
-
-interface BuzzBeeMachineRule {
-  maxTons: number
-  cost: number
 }
 
 interface BuzzBeeInternalInjectionItem {
@@ -35,6 +32,7 @@ interface BuzzBeeInternalInjectionItem {
 }
 
 interface BuzzBeeInternalCostRow {
+  quantity?: number
   taxTag: string
   category: string
   description: string
@@ -90,7 +88,13 @@ interface BuzzBeeQuotePurchaseRow {
   category: string
 }
 
-interface BuzzBeeQuoteData {
+export interface BuzzBeeQuoteData {
+  pricing?: CustomerPricingSettings
+  templateProfile?: string
+  quoteDate?: string
+  revision?: string
+  notes?: string
+  image?: YinhuiProductImage
   sheetName: string
   productName: string
   injectionRows: BuzzBeeQuoteInjectionRow[]
@@ -148,6 +152,7 @@ export interface BuzzBeeConvertedSheet {
 }
 
 export interface BuzzBeeConversionResult {
+  pricing?: CustomerPricingSettings
   sourceFileName: string
   sheets: BuzzBeeConvertedSheet[]
 }
@@ -183,30 +188,16 @@ const P4_MATERIAL_ALIASES: Record<string, string> = {
   PVC: '环保PVC',
 }
 
-const MACHINES: BuzzBeeMachineRule[] = [
-  { maxTons: 6, cost: 1040 },
-  { maxTons: 9, cost: 1160 },
-  { maxTons: 12, cost: 1280 },
-  { maxTons: 14, cost: 1650 },
-  { maxTons: 18, cost: 1890 },
-  { maxTons: 24, cost: 2130 },
-  { maxTons: 34, cost: 2460 },
-  { maxTons: 44, cost: 2700 },
-  { maxTons: 49.9, cost: 2790 },
-  { maxTons: 999, cost: 3090 },
-]
-
 const MARKUPS = {
-  beer: 1.1,
   assembly: 1,
   paint: 1,
   spray: 1,
   carton: 1.03,
-  carShell: 1.03,
   default: 1.05,
 }
 
-const ADDITIONAL_PART_KEYWORDS = /子弹|波波球|波波|加值件|附加件/
+const ADDITIONAL_PART_KEYWORDS = /子弹|子彈|泡棉弹|泡棉彈|软弹|軟彈|水弹|水彈|飞镖|飛鏢|\bdarts?\b|\bbullets?\b/i
+const BULLET_PACKAGING = /吸塑|包装|包裝|盒|袋|托|筒|仓|倉|夹|夾|弹簧|彈簧|贴纸|貼紙/
 const SKIP_COST_DESCRIPTION = /^[×÷=*\/]$|报客价|目标价|相差|旺季价|按出厂|占货价|减税|料价成本|含税|不含人工|毛利|利润|总成本|外购件成本|未减税|减税后|人民币|港币|RMB|HKD|US\$|USD/i
 const INTERNAL_ONLY_COST_BOUNDARY = /^(?:运费|吊柜费|报价[（(]|包含测试费用)/
 
@@ -252,18 +243,14 @@ function findMaterial(materialZh: string) {
   return MATERIALS.find((item) => item.name.replace(/料$/, '') === simplified)
 }
 
-function findMachineCost(tons: number) {
-  return MACHINES.find((machine) => tons <= machine.maxTons)?.cost ?? MACHINES[MACHINES.length - 1].cost
-}
-
-function markupFor(category: string) {
-  if (category.includes('啤工')) return MARKUPS.beer
-  if (category.includes('装配工') || category.includes('装工')) return MARKUPS.assembly
-  if (category.includes('油漆')) return MARKUPS.paint
-  if (category.includes('喷油工')) return MARKUPS.spray
-  if (category.includes('纸箱')) return MARKUPS.carton
-  if (category.includes('车衣')) return MARKUPS.carShell
-  return MARKUPS.default
+function markupFor(category: string, pricing?: CustomerPricingSettings) {
+  if (category.includes('啤工')) return pricingRate(pricing, 'injection_multiplier', 1)
+  if (category.includes('装配工') || category.includes('装工')) return pricingRate(pricing, 'assembly_multiplier', MARKUPS.assembly)
+  if (category.includes('油漆')) return pricingRate(pricing, 'paint_multiplier', MARKUPS.paint)
+  if (category.includes('喷油工')) return pricingRate(pricing, 'spray_multiplier', MARKUPS.spray)
+  if (category.includes('纸箱')) return pricingRate(pricing, 'carton_multiplier', MARKUPS.carton)
+  if (category.includes('车衣')) return pricingRate(pricing, 'sewing_multiplier', 1.05)
+  return pricingRate(pricing, 'detail_multiplier', MARKUPS.default)
 }
 
 function hasInjectionHeader(rows: XlsxCellValue[][]) {
@@ -503,14 +490,14 @@ function parseBuzzBeeInternalSheets(buffer: ArrayBuffer): BuzzBeeInternalSheet[]
   return targets.map((sheet) => parseInternalSheet(sheet.rows, sheet.name))
 }
 
-function convertToClientData(parsed: BuzzBeeInternalSheet): BuzzBeeQuoteData {
+function convertToClientData(parsed: BuzzBeeInternalSheet, pricing?: CustomerPricingSettings): BuzzBeeQuoteData {
   const injectionRows = parsed.items.map((item) => {
     const material = findMaterial(item.materialZh)
-    const pricePerKg = material?.price ?? 0
+    const pricePerKg = pricingMaterial(pricing, material?.en ?? item.materialZh.replace(/料$/, ''), 'HKD', 'kg', material?.price ?? null)
+    if (pricePerKg === null) throw new Error(`缺少 BuzzBee 客户料价：${item.materialZh}`)
     const materialName = material?.en ?? item.materialZh.replace(/料$/, '')
-    const amount = round(item.weightG * pricePerKg / 1000, 4)
-    const fallbackBeer = findMachineCost(item.machineTons) / item.targetYield / item.setsPerShot * MARKUPS.beer
-    const beer = round(item.customerBeerCostHint || fallbackBeer, 4)
+    const amount = item.weightG * pricePerKg / 1000 * pricingRate(pricing, 'material_multiplier', 1)
+    const beer = round(item.beerCostInternal * pricingRate(pricing, 'injection_multiplier', 1), 4)
 
     return {
       name: item.name,
@@ -533,7 +520,7 @@ function convertToClientData(parsed: BuzzBeeInternalSheet): BuzzBeeQuoteData {
   parsed.costRows.forEach((row) => {
     const category = row.category
     const internal = row.internalValue || 0
-    const markup = markupFor(category)
+    const markup = markupFor(category, pricing)
 
     if (category === '料价' || category === '啤工') return
     if (category === '装配工' || category.includes('装工')) {
@@ -556,15 +543,18 @@ function convertToClientData(parsed: BuzzBeeInternalSheet): BuzzBeeQuoteData {
       || category.includes('吊柜费')
     ) return
 
-    const { qty, desc } = cleanPurchaseDescription(row.description)
-    const customerAmount = row.customerValueHint || internal * markup
+    const cleaned = cleanPurchaseDescription(row.description)
+    const qty = row.quantity ?? cleaned.qty
+    const desc = row.quantity === undefined ? cleaned.desc : row.description
+    const customerAmount = internal * markup
     if (customerAmount <= 0) {
       return
     }
 
-    const price = roundMoney(customerAmount / Math.max(qty, 1))
-    const amount = roundMoney(price * qty)
-    const target = ADDITIONAL_PART_KEYWORDS.test(row.description) ? additionalParts : purchaseRows
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error(`BuzzBee 明细用量无效：${row.description}`)
+    const price = roundMoney(customerAmount / qty)
+    const amount = price * qty
+    const target = ADDITIONAL_PART_KEYWORDS.test(row.description) && !BULLET_PACKAGING.test(row.description) ? additionalParts : purchaseRows
 
     target.push({
       desc,
@@ -576,7 +566,7 @@ function convertToClientData(parsed: BuzzBeeInternalSheet): BuzzBeeQuoteData {
     })
   })
 
-  const cartonPrice = roundMoney(parsed.box.cartonPriceInternal * MARKUPS.carton)
+  const cartonPrice = roundMoney(parsed.box.cartonPriceInternal * pricingRate(pricing, 'carton_multiplier', MARKUPS.carton))
   if (cartonPrice > 0) {
     purchaseRows.push({
       desc: '纸箱',
@@ -589,17 +579,18 @@ function convertToClientData(parsed: BuzzBeeInternalSheet): BuzzBeeQuoteData {
   }
 
   const injectionWeight = round(injectionRows.reduce((sum, row) => sum + row.weight, 0), 4)
-  const injectionAmount = round(injectionRows.reduce((sum, row) => sum + row.amount, 0), 4)
-  const injectionBeer = round(injectionRows.reduce((sum, row) => sum + row.beer, 0), 4)
-  const purchaseSubTotal = round(purchaseRows.reduce((sum, row) => sum + row.amount, 0), 4)
-  const process = round(paintTotal + sprayTotal + assemblyTotal, 4)
-  const sub = round(injectionAmount + injectionBeer + purchaseSubTotal + process, 4)
-  const po = round(sub * 0.1, 4)
-  const total = round(sub + po, 4)
-  const additionalTotal = round(additionalParts.reduce((sum, row) => sum + row.amount, 0), 4)
-  const exftyCost = round(total + additionalTotal, 4)
+  const injectionAmount = injectionRows.reduce((sum, row) => sum + row.amount, 0)
+  const injectionBeer = injectionRows.reduce((sum, row) => sum + row.beer, 0)
+  const purchaseSubTotal = purchaseRows.reduce((sum, row) => sum + row.amount, 0)
+  const process = paintTotal + sprayTotal + assemblyTotal
+  const sub = injectionAmount + injectionBeer + purchaseSubTotal + process
+  const po = sub * pricingRate(pricing, 'po_rate', 0.1)
+  const total = round(sub + po, 2)
+  const additionalTotal = additionalParts.reduce((sum, row) => sum + row.amount, 0)
+  const exftyCost = total + additionalTotal
 
   return {
+    pricing,
     sheetName: parsed.sheetName,
     productName: parsed.productName,
     injectionRows,
@@ -625,7 +616,7 @@ function convertToClientData(parsed: BuzzBeeInternalSheet): BuzzBeeQuoteData {
       total,
     },
     exftyCost,
-    usd: round(exftyCost / 7.75, 4),
+    usd: exftyCost / pricingRate(pricing, 'hkd_usd', 7.75),
     box: parsed.box,
     colorBox: parsed.colorBox,
   }
@@ -699,7 +690,7 @@ function buildDetailRows(sheetId: string, sheetName: string, data: BuzzBeeQuoteD
     rows.push(detailRow(sheetId, sheetName, 'PRO-001', 'PROCESS 工艺人工', data.breakdown.process, data.breakdown.process))
   }
 
-  rows.push(detailRow(sheetId, sheetName, 'PO-001', 'P+O 10%', 0, data.breakdown.po))
+  rows.push(detailRow(sheetId, sheetName, 'PO-001', `P+O ${pricingRate(data.pricing, 'po_rate', 0.1) * 100}%`, 0, data.breakdown.po))
 
   data.additionalParts.forEach((row, index) => {
     rows.push(detailRow(
@@ -715,8 +706,8 @@ function buildDetailRows(sheetId: string, sheetName: string, data: BuzzBeeQuoteD
   return rows
 }
 
-function convertSheet(parsed: BuzzBeeInternalSheet, sourceFileName: string, index: number): BuzzBeeConvertedSheet {
-  const quoteData = convertToClientData(parsed)
+function convertSheet(parsed: BuzzBeeInternalSheet, sourceFileName: string, index: number, pricing?: CustomerPricingSettings): BuzzBeeConvertedSheet {
+  const quoteData = convertToClientData(parsed, pricing)
   const sheetId = `buzzbee-${index + 1}-${parsed.productName.replace(/\s+/g, '') || 'quote'}`
   const details = buildDetailRows(sheetId, parsed.productName, quoteData)
   const totalInternalHkd = round(details.reduce((sum, row) => sum + row.internalPriceHkd, 0), 3)
@@ -754,7 +745,7 @@ function p4BuzzBeeMaterial(value: unknown) {
   return P4_MATERIAL_ALIASES[source] ?? `${source.replace(/料$/, '')}料`
 }
 
-function p4BuzzBeeColorBox(artifact: P4InternalQuoteArtifact, pcsPerCarton: number, hasInternalColorBoxCost: boolean): BuzzBeeInternalColorBox {
+function p4BuzzBeeColorBox(artifact: P4InternalQuoteArtifact, pcsPerCarton: number, hasInternalColorBoxCost: boolean, pricing?: CustomerPricingSettings): BuzzBeeInternalColorBox {
   const customerFields = p4Object(artifact.sections.sales.payload.customer_quote_fields)
   const buzzBeeFields = p4Object(customerFields.buzzbee)
   const tiers = p4Rows(buzzBeeFields.color_box_tiers)
@@ -762,27 +753,24 @@ function p4BuzzBeeColorBox(artifact: P4InternalQuoteArtifact, pcsPerCarton: numb
     return { price1: 0, fsc1: 0, moq1: '', price2: 0, fsc2: 0, moq2: '' }
   }
   if (tiers.length !== 2) {
-    throw new Error('BuzzBee 直转被阻断：彩盒必须完整填写两档报客价、FSC 与 MOQ')
+    throw new Error('BuzzBee 直转被阻断：彩盒必须完整填写两档整箱报客价与 MOQ')
   }
   const normalized = tiers.map((row, index) => {
     const quotePrice = p4Number(row.quote_price_hkd)
-    const fscPrice = p4Number(row.fsc_price_hkd)
+    const fscPrice = quotePrice * pricingRate(pricing, 'fsc_multiplier', 1.03)
     const moq = String(row.moq ?? '').trim()
-    if (!quotePrice || !fscPrice || !moq) {
-      throw new Error(`BuzzBee 直转被阻断：彩盒第 ${index + 1} 档缺少报客价、FSC 或 MOQ`)
-    }
-    if (Math.abs(fscPrice - quotePrice * MARKUPS.carton) > 0.02) {
-      throw new Error(`BuzzBee 直转被阻断：彩盒第 ${index + 1} 档 FSC 必须等于报客彩盒价 × 1.03`)
+    if (quotePrice <= 0 || fscPrice <= 0 || !moq) {
+      throw new Error(`BuzzBee 直转被阻断：彩盒第 ${index + 1} 档缺少整箱报客价或 MOQ`)
     }
     return { quotePrice, fscPrice, moq }
   })
   const packCount = pcsPerCarton || 1
   return {
     price1: normalized[0].quotePrice,
-    fsc1: round(normalized[0].quotePrice / packCount * MARKUPS.carton, 4),
+    fsc1: round(normalized[0].quotePrice / packCount * pricingRate(pricing, 'fsc_multiplier', 1.03), 4),
     moq1: normalized[0].moq,
     price2: normalized[1].quotePrice,
-    fsc2: round(normalized[1].quotePrice / packCount * MARKUPS.carton, 4),
+    fsc2: round(normalized[1].quotePrice / packCount * pricingRate(pricing, 'fsc_multiplier', 1.03), 4),
     moq2: normalized[1].moq,
   }
 }
@@ -815,6 +803,7 @@ function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[]
         taxTag: '',
         category: category === 'hardware' ? '五金' : category === 'packaging' ? '包装材料' : '其它外购',
         description: String(row.item ?? ''),
+        quantity: p4Number(row.quantity) || 1,
         internalValue: p4Number(row.amount_hkd),
         customerValueHint: 0,
       })
@@ -831,33 +820,29 @@ function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[]
       taxTag: p4Number(row.tax_rate_percent) > 0 ? `${p4Number(row.tax_rate_percent)}%` : '',
       category: packagingCategoryLabels[String(row.category ?? '')] ?? '包装材料',
       description: String(row.item ?? ''),
+      quantity: p4Number(row.quantity) || 1,
       internalValue: p4Number(row.amount_hkd),
       customerValueHint: 0,
     })
   })
 
-  const electronicBreakdown = p4Rows(artifact.sections.electronic.calculation.line_breakdown)
-    .filter((row) => row.kind === 'electronic_component')
-  if (electronicBreakdown.length > 0) {
-    electronicBreakdown.forEach((row, index) => {
-      const internalValue = p4Number(row.line_hkd)
-      if (internalValue <= 0) return
-      costRows.push({
-        taxTag: '',
-        category: '电子',
-        description: String(row.item ?? `电子材料${index + 1}`),
-        internalValue,
-        customerValueHint: 0,
-      })
+  const electronic = artifact.sections.electronic.calculation
+  const electronicGroups = p4Rows(electronic.quote_groups)
+  if (electronicGroups.length) {
+    electronicGroups.forEach((group) => {
+      const internalValue = p4Number(p4Object(group.totals).total_hkd)
+      if (internalValue > 0) costRows.push({ taxTag: '', category: '电子', description: String(group.name || '电子'), quantity: 1, internalValue, customerValueHint: 0 })
     })
   } else {
-    const electronic = p4Total(artifact, 'electronic')
-    if (electronic > 0) costRows.push({ taxTag: '', category: '电子', description: '电子材料及加工', internalValue: electronic, customerValueHint: 0 })
+    const internalValue = p4Total(artifact, 'electronic')
+    if (internalValue > 0) costRows.push({ taxTag: '', category: '电子', description: String(artifact.sections.electronic.payload.name || '电子'), quantity: 1, internalValue, customerValueHint: 0 })
   }
 
   let paint = 0
   let spray = 0
   p4Rows(artifact.sections.painting.calculation.line_breakdown).forEach((row) => {
+    if (row.kind === 'painting_quick_labor') { spray += p4Number(row.amount_hkd); return }
+    if (row.kind === 'painting_quick_paint' || row.kind === 'painting_quick_paint_tax') { paint += p4Number(row.amount_hkd); return }
     const operations = p4Object(row.operations)
     paint += p4Number(operations.paint)
     spray += Object.entries(operations).reduce((sum, [code, value]) => sum + (code === 'paint' ? 0 : p4Number(value)), 0)
@@ -893,7 +878,9 @@ function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[]
 export function convertBuzzBeeP4InternalQuote(
   artifact: P4InternalQuoteArtifact,
   sourceFileName: string,
+  pricing?: CustomerPricingSettings,
 ): BuzzBeeConversionResult {
+  assertPricingCustomer(pricing, 'buzzbee')
   const moldingPayload = artifact.sections.molding.payload
   const injectionLines = p4Rows(moldingPayload.injection_lines)
   if (injectionLines.length === 0) {
@@ -906,16 +893,14 @@ export function convertBuzzBeeP4InternalQuote(
   }
 
   const items = injectionLines.map((row, index): BuzzBeeInternalInjectionItem => {
-    const materialZh = p4BuzzBeeMaterial(row.material)
-    if (!findMaterial(materialZh)) {
+    const materialZh = String(row.buzzbee_material || '').trim() || p4BuzzBeeMaterial(row.material)
+    if (!findMaterial(materialZh) && pricingMaterial(pricing, materialZh.replace(/料$/, ''), 'HKD', 'kg', null) === null) {
       throw new Error(`BuzzBee 直转缺少客户材料价：第 ${index + 1} 行 ${String(row.material ?? '')}`)
     }
     const machineCode = p4MachineCodeValue(row.machine_code)
     const sets = p4Number(row.sets)
     const targetOutput = p4Number(row.target_output)
-    if (!machineCode || !sets || !targetOutput) {
-      throw new Error(`BuzzBee 直转缺少第 ${index + 1} 行机型 A 码、套数或目标数`)
-    }
+    if (!sets) throw new Error(`BuzzBee 直转缺少第 ${index + 1} 行每啤套数`)
     const calculation = injectionBreakdown[index] as Record<string, unknown>
     const quantity = p4Number(row.quantity) || 1
     return {
@@ -956,15 +941,20 @@ export function convertBuzzBeeP4InternalQuote(
       width: p4Number(carton.width_in),
       height: p4Number(carton.height_in),
       pcsPerCarton,
-      cartonPriceInternal: p4Number(cartonCalculation.per_piece_hkd),
+      cartonPriceInternal: p4Rows(cartonOwner.calculation.line_breakdown).filter(row => row.kind === 'carton').reduce((sum, row) => sum + p4Number(row.per_piece_hkd), 0),
       cube: p4Number(cartonCalculation.cuft),
     },
-    colorBox: p4BuzzBeeColorBox(artifact, pcsPerCarton, packagingMaterials.length > 0),
+    colorBox: p4BuzzBeeColorBox(artifact, pcsPerCarton, packagingMaterials.length > 0, pricing),
   }
-  return {
-    sourceFileName,
-    sheets: [convertSheet(parsed, sourceFileName, 0)],
-  }
+  const sheet = convertSheet(parsed, sourceFileName, 0, pricing)
+  const metadata = artifact.customerMapping ?? {}
+  sheet.quoteData.quoteDate = String(metadata.quote_date || artifact.quoteDate || '')
+  if (pricing && !/^\d{4}-\d{2}-\d{2}$/.test(sheet.quoteData.quoteDate)) throw new Error('BuzzBee 缺少新建报价日期，请重新导出已放行的内部报价')
+  sheet.quoteData.revision = artifact.versionLabel
+  const customerFields = p4Object(p4Object(salesPayload.customer_quote_fields).buzzbee)
+  sheet.quoteData.templateProfile = String(customerFields.template_profile || 'standard')
+  sheet.quoteData.notes = String(customerFields.notes || '')
+  return { sourceFileName, pricing, sheets: [sheet] }
 }
 
 function cell(value: XlsxCellValue, style: number = XLSX_STYLE.border): XlsxCellInput {
@@ -1186,7 +1176,7 @@ function buildQuoteOutputSheet(data: BuzzBeeQuoteData, date: Date): XlsxOutputSh
     cartonSizeRow,
     6,
     data.colorBox.fsc1,
-    `F${cartonSizeRow}*${formatFormulaNumber(MARKUPS.carton)}`,
+    `F${cartonSizeRow}*${formatFormulaNumber(pricingRate(data.pricing, 'fsc_multiplier', 1.03))}`,
     XLSX_STYLE.number2,
   )
   setCell(rows, cartonSizeRow, 7, data.colorBox.moq1)
@@ -1203,7 +1193,7 @@ function buildQuoteOutputSheet(data: BuzzBeeQuoteData, date: Date): XlsxOutputSh
     color2Row,
     6,
     data.colorBox.fsc2,
-    `F${color2Row}*${formatFormulaNumber(MARKUPS.carton)}`,
+    `F${color2Row}*${formatFormulaNumber(pricingRate(data.pricing, 'fsc_multiplier', 1.03))}`,
     XLSX_STYLE.number2,
   )
   setCell(rows, color2Row, 7, data.colorBox.moq2)
@@ -1245,12 +1235,14 @@ function buildQuoteOutputSheet(data: BuzzBeeQuoteData, date: Date): XlsxOutputSh
   }
 }
 
-export function convertBuzzBeeInternalQuote(buffer: ArrayBuffer, sourceFileName: string): BuzzBeeConversionResult {
+export function convertBuzzBeeInternalQuote(buffer: ArrayBuffer, sourceFileName: string, pricing?: CustomerPricingSettings): BuzzBeeConversionResult {
+  assertPricingCustomer(pricing, 'buzzbee')
   const parsedSheets = parseBuzzBeeInternalSheets(buffer)
-  const sheets = parsedSheets.map((sheet, index) => convertSheet(sheet, sourceFileName, index))
+  const sheets = parsedSheets.map((sheet, index) => convertSheet(sheet, sourceFileName, index, pricing))
 
   return {
     sourceFileName,
+    pricing,
     sheets,
   }
 }
@@ -1269,7 +1261,8 @@ export function buildBuzzBeeCustomerQuoteFileName(result: BuzzBeeConversionResul
     ? `${firstProduct}等${result.sheets.length}款`
     : firstProduct
 
-  return `R0 RR ITEM ${sanitizeFileNamePart(productName)}（${formatFileDate(date)}）.xlsx`
+  const data = result.sheets[0]?.quoteData
+  return `${sanitizeFileNamePart(data?.revision || 'R0')} RR ITEM ${sanitizeFileNamePart(productName)}（${data?.quoteDate || formatFileDate(date)}）.xlsx`
 }
 
 export function createBuzzBeeCustomerQuoteWorkbook(result: BuzzBeeConversionResult) {

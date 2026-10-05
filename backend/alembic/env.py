@@ -18,11 +18,9 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
-    spray_production,  # noqa: F401
-    uv_printing,  # noqa: F401
-    uv_finance,  # noqa: F401
-    uv_ingest,  # noqa: F401
-    uv_handover,  # noqa: F401
+    work_center,  # noqa: F401
+    uv_operations,  # noqa: F401
+    spray_ops,  # noqa: F401
     document_tools,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
@@ -31,10 +29,12 @@ from app.models import (
     carton_positions,
     carton_master,  # noqa: F401
     carton_supplier_settlement,  # noqa: F401
+    carton_supplier_portal,  # noqa: F401
     customer_order,  # noqa: F401
     customer_order_ledger,  # noqa: F401
     internal_quote,  # noqa: F401
     module_feedback,  # noqa: F401
+    customer_price_settings,  # noqa: F401
     injection_scheduling,  # noqa: F401
     molding_sample,  # noqa: F401
     pricing,  # noqa: F401
@@ -51,6 +51,13 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def include_object(obj, name, type_, reflected, compare_to):
+    # Retired workspace tables are historical data, not autogenerate drop targets.
+    if type_ == "table" and reflected and compare_to is None and name.startswith("uv_"):
+        return False
+    return True
+
+
 def get_database_url() -> str:
     return settings.database_url.replace("%", "%%")
 
@@ -62,6 +69,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -82,6 +90,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=include_object,
         )
 
         with context.begin_transaction():

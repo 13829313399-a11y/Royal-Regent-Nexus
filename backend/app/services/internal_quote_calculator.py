@@ -294,7 +294,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
         "injection_loss_rate_percent": "default 3; changing it applies to newly normalized rows",
         "injection_lines": [{"item": "mold name", "mold_no": "text", "material": "frozen material category", "grade": "frozen concrete grade", "color": "text", "net_weight_g": "decimal>=0", "loss_rate_percent": "default from section or snapshot", "machine_name": "record only", "machine_code": "A-code or imported bare numeric A-code", "cavity": "record only", "sets": "decimal>0", "target_output": "decimal>0", "cycle_time_seconds": "record only", "quantity": "default 1", "remark": "text", "disney_mold_no": "text", "disney_resin_cost_usd_kg": "decimal>0", "disney_cycle_time_seconds": "decimal>0", "disney_labor_rate_usd_hr": "decimal>0"}],
         "blow_lines": [{"item": "text", "daily_capacity": "record only", "material": "exact text", "grade": "exact text", "estimated_weight_g": "decimal>=0", "labor_hkd": "decimal>=0", "burr_hkd": "decimal>=0", "profit_multiplier": "default 1.05", "quantity": "default 1", "output_count": "record only", "mold_price_rmb": "record only", "remark": "text"}],
-        "caixing_tool_plan_rows": [{"ref_no": "unique text", "process_type": "IN|BL|CP|DC|RC", "tool_no": "text", "tooling_cost_hkd": "decimal>=0", "description": "text", "sku_no": "text", "cavities": "decimal>0", "up": "decimal>0", "net_weight_g": "decimal>0", "material_code": "decimal>0", "material": "text", "color": "text", "material_cost_hkd": "decimal>0", "machine_size": "text", "cycle_time_seconds": "decimal>0", "process_cost_hkd": "decimal>0"}],
+        "caixing_tool_plan_rows": [{"ref_no": "unique text; plastic up to 100 rows, plush up to 51", "process_type": "IN|BL|CP|DC|RC", "tool_no": "text", "tooling_cost_hkd": "decimal>=0", "description": "text", "sku_no": "text", "cavities": "decimal>0", "up": "decimal>0", "net_weight_g": "decimal>0", "material_code": "decimal>0", "material": "text", "color": "text", "material_cost_hkd": "decimal>=0; required unless raw lb price or unique approved molding source exists", "material_price_hkd_lb": "optional decimal>0", "machine_size": "text", "cycle_time_seconds": "decimal>0", "process_cost_hkd": "decimal>=0; required unless raw daily price or unique approved molding source exists", "machine_daily_hkd": "optional decimal>0"}],
     },
     "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "fixed 13"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/UV/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "cost_allocation": "split for explicit oil/labor; direct reserved for legacy quick rows", "paint_cost_hkd": "optional decimal>=0; blank pair requires completion", "labor_cost_hkd": "optional decimal>=0; missing one equals total minus other", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
     "slush": {"lines": [{"product_code": "text", "item": "glue part name", "material": "record only", "weight_g": "record only decimal>=0", "daily_output_24h": "record only decimal>=0", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "remark": "text"}], "formula": "line total HKD = quantity * unit price HKD; total RMB = total HKD * frozen RMB/HKD rate"},
@@ -333,6 +333,18 @@ def positive_value(value: Any, field: str, default: str = "0") -> Decimal:
     if result <= ZERO:
         raise CalculationInputError(f"{field} 必须大于 0")
     return result
+
+
+def _caixing_material_key(value: Any) -> str:
+    cleaned = re.sub(r"[（）()].*?[（）()]", "", str(value or "").replace("料型", "").replace("料", ""))
+    cleaned = re.sub(r"\s+", "", cleaned).upper()
+    for alias, code in (("C-ABS", "C-ABS"), ("透明ABS", "C-ABS"),
+                        ("C-PP", "C-PP"), ("PP透明", "C-PP"), ("透明PP", "C-PP"),
+                        ("ABS", "ABS"), ("PVC", "PVC"), ("POM", "POM"),
+                        ("HIPS", "HIPS"), ("TPR", "TPR"), ("PP", "PP"), ("PE", "PE")):
+        if alias in cleaned:
+            return code
+    return cleaned
 
 
 def resolve_sales_misc_and_settlement(
@@ -1178,8 +1190,8 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
     caixing_rows = payload.get("caixing_tool_plan_rows", []) or []
     if not isinstance(caixing_rows, list):
         raise CalculationInputError("彩星 Tool Plan 必须是数组")
-    if len(caixing_rows) > 51:
-        raise CalculationInputError("彩星 Tool Plan 最多允许 51 行")
+    if len(caixing_rows) > 100:
+        raise CalculationInputError("彩星 Tool Plan 最多允许 100 行")
     caixing_refs: set[str] = set()
     for index, row in enumerate(caixing_rows):
         label = f"彩星 Tool Plan 第 {index + 1} 行"
@@ -1204,9 +1216,36 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         up = positive_value(row.get("up"), f"{label} Up")
         net_weight = positive_value(row.get("net_weight_g"), f"{label} 净重")
         material_code = positive_value(row.get("material_code"), f"{label} Material Code")
-        material_cost = positive_value(row.get("material_cost_hkd"), f"{label} Material Cost")
+        if material_code != material_code.to_integral_value() or material_code > 14:
+            raise CalculationInputError(f"{label} Material Code 必须是 1 至 14 的整数")
+        material_cost = decimal_value(row.get("material_cost_hkd"), f"{label} Material Cost")
+        raw_material_price = row.get("material_price_hkd_lb")
+        if raw_material_price not in (None, ""):
+            positive_value(raw_material_price, f"{label} 内部材料磅价")
         cycle_time = positive_value(row.get("cycle_time_seconds"), f"{label} Cycle Time")
-        process_cost = positive_value(row.get("process_cost_hkd"), f"{label} Process Cost")
+        process_cost = decimal_value(row.get("process_cost_hkd"), f"{label} Process Cost")
+        raw_machine_price = row.get("machine_daily_hkd")
+        if raw_machine_price not in (None, ""):
+            positive_value(raw_machine_price, f"{label} 内部啤机日价")
+        source_kind = {"IN": "injection", "BL": "blow"}.get(process_type)
+        source_candidates = [source for source in result["line_breakdown"]
+                             if source_kind and source.get("kind") == source_kind
+                             and _caixing_material_key(source.get("material")) == _caixing_material_key(material)
+                             and source.get("material_price_hkd_lb")]
+        tool_no = str(row.get("tool_no", "")).strip().upper()
+        by_tool = [source for source in source_candidates
+                   if tool_no and str(source.get("mold_no", "")).strip().upper() == tool_no]
+        name = "".join(description.upper().split())
+        by_name = [source for source in (by_tool or source_candidates)
+                   if "".join(str(source.get("item", "")).upper().split()) == name]
+        by_weight = [source for source in (by_tool or source_candidates)
+                     if source.get("net_weight_g") is not None
+                     and abs(Decimal(str(source["net_weight_g"])) - net_weight) < Decimal("0.001")]
+        source_match = next((group[0] for group in (by_name, by_tool, by_weight) if len(group) == 1), None)
+        if material_cost <= ZERO and raw_material_price in (None, "") and source_match is None:
+            raise CalculationInputError(f"{label}须填写客户料金额或内部材料磅价，或匹配唯一内部啤机明细")
+        if process_cost <= ZERO and raw_machine_price in (None, "") and not (source_match and source_match.get("machine_shift_price_hkd")):
+            raise CalculationInputError(f"{label}须填写客户啤工或内部啤机日价，或匹配唯一内部啤机明细")
         tooling_cost = decimal_value(row.get("tooling_cost_hkd"), f"{label} Tooling Cost")
         if process_type == "IN":
             positive_value(machine_size, f"{label} Machine Size")
@@ -1227,6 +1266,10 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
             "tooling_cost_hkd": decimal_text(tooling_cost),
             "material_cost_hkd": decimal_text(material_cost),
             "process_cost_hkd": decimal_text(process_cost),
+            **({"material_price_hkd_lb": decimal_text(Decimal(str(raw_material_price)))}
+               if raw_material_price not in (None, "") else {}),
+            **({"machine_daily_hkd": decimal_text(Decimal(str(raw_machine_price)))}
+               if raw_machine_price not in (None, "") else {}),
             "amount_hkd": "0.0000",
         })
     total = injection_total + blow_total

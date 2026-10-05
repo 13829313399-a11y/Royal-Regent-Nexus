@@ -47,6 +47,33 @@ function button(wrapper: Awaited<ReturnType<typeof setup>>, label: string) {
 }
 
 describe('BuzzBee batch rename review workflow', () => {
+  it('selects BuzzBee Indonesia invoices and downloads the invoice filename', async () => {
+    const invoiceRule: PdfRenameRuleDefinition = {
+      ...rule, id: 'buzzbee-indonesia-invoice', label: 'BuzzBee印尼发票',
+      description: '识别红色发票号，生成 客发票--发票号.pdf。',
+    }
+    api.getPdfRenameRules.mockResolvedValueOnce({ rules: [rule, invoiceRule], limits: {} })
+    const invoice = structuredClone(result)
+    invoice.rule = invoiceRule
+    invoice.items[0]!.interval_name = '客发票--104753'
+    invoice.items[0]!.target_file_name = '客发票--104753.pdf'
+    invoice.items[0]!.fields = [{ key: 'invoice_number', label: '红色发票号',
+      raw_text: '104753', normalized_text: '104753', route: 'LOCAL_OCR', confidence: .8 }]
+    api.previewPdfRename.mockResolvedValueOnce(invoice)
+    const wrapper = await setup()
+    expect(wrapper.get('select').text()).toContain('BuzzBee印尼发票')
+    await wrapper.get('select').setValue(invoiceRule.id)
+    await button(wrapper, '生成改名预览').trigger('click')
+    await flushPromises()
+    expect(api.previewPdfRename).toHaveBeenCalledWith(expect.any(Array), invoiceRule.id, 'huaxing', expect.any(AbortSignal), [])
+    expect(wrapper.text()).toContain('客发票--104753.pdf')
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await button(wrapper, '确认并下载 ZIP').trigger('click')
+    await flushPromises()
+    expect(api.executePdfRename).toHaveBeenCalledWith(expect.any(Array), invoiceRule.id, 'review-1', true, 'huaxing', expect.any(AbortSignal), [])
+    expect(download).toHaveBeenCalledOnce()
+  })
+
   it('downloads a validated scan without a review checkbox or required manual name', async () => {
     const ready = structuredClone(result)
     ready.summary = { total: 1, ready: 1, review: 0, error: 0 }

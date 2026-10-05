@@ -1,0 +1,39 @@
+import { flushPromises, mount } from "@vue/test-utils";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import PrinterDetail from "../components/PrinterDetail.vue";
+import { printerStateText } from "../printerPresentation";
+import type { ThreeDPrinter } from "@/types/threeDPrinting";
+
+vi.mock("@/lib/http", () => ({
+  http: { get: vi.fn(async () => ({ data: { events: [], commands: [] } })) },
+  getApiErrorMessage: (e: Error) => e.message,
+}));
+
+const printer = {
+  id: "preparing-printer", machine_no: 1, model: "Bambu", connected: true,
+  state: "PREPARE", current_file: "测试产品.3mf", last_seen_at: "2026-09-21T06:00:00Z",
+  progress_percent: 100, remaining_minutes: 0, nozzle_temperature: 50, bed_temperature: 30,
+} as ThreeDPrinter;
+let wrapper: ReturnType<typeof mount>;
+afterEach(() => wrapper?.unmount());
+
+describe("printer preparation", () => {
+  it.each(["PREPARE", "PREPARING", "DOWNLOADING", "SLICING"])("shows %s as preparation without displaying old print progress", async (state) => {
+    expect(printerStateText(state)).toBe("准备中");
+    wrapper = mount(PrinterDetail, { attachTo: document.body, props: { id: printer.id, printer: { ...printer, state }, open: true } });
+    await flushPromises();
+    const panel = () => document.querySelector('.printer-overlay')!;
+    expect(panel().querySelector(".status-panel h3")?.textContent).toBe("准备中");
+    expect(panel().textContent).toContain("正在下载文件或进行打印前准备");
+    expect(panel().querySelector(".task-panel h3")?.textContent).toBe("当前打印任务");
+    expect(panel().textContent).toContain("测试产品.3mf");
+    expect(panel().querySelector('[role="progressbar"]')).toBeNull();
+    await wrapper.setProps({ printer: { ...printer, state: "RUNNING", progress_percent: 2 } });
+    expect(panel().querySelector(".status-panel h3")?.textContent).toBe("正在打印");
+    expect(panel().querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("2");
+    expect(panel().textContent).not.toContain("正在下载文件");
+    await wrapper.setProps({ printer: { ...printer, connected: false, status_stale: true } });
+    expect(panel().querySelector(".status-panel h3")?.textContent).toBe("设备离线");
+    expect(panel().querySelector('[role="progressbar"]')).toBeNull();
+  });
+});

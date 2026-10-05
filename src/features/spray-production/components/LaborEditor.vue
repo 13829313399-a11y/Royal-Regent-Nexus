@@ -1,0 +1,17 @@
+<script setup lang="ts">
+import { ref, watch } from 'vue'
+import { Button } from '@/components/ui/button'
+import { useSprayWorkspace } from '../workspace'
+import { type Entity, type Employee } from '../contracts'
+import WorkspaceDialog from './WorkspaceDialog.vue'
+interface Labor {employee_id:string;hours:string;overtime_hours:string;nonproductive_hours:string;weight:string;personal_quantity:string|null;reason:string}
+interface Row extends Entity {labor:Labor[]}
+const props=defineProps<{report:Entity|null}>(),emit=defineEmits<{close:[];saved:[]}>(),w=useSprayWorkspace()
+const rows=ref<Row[]>([]),selected=ref(''),people=ref<Labor[]>([]),employee=ref(''),reason=ref(''),error=ref(''),busy=ref(false)
+watch(()=>props.report,async report=>{rows.value=(report?.rows??[]) as Row[];selected.value=rows.value[0]?.id??'';reason.value='';error.value='';if(report)await w.load(['employees'])})
+watch(selected,id=>{people.value=(rows.value.find(r=>r.id===id)?.labor??[]).map(p=>({...p}))})
+function add(){if(employee.value&&!people.value.some(p=>p.employee_id===employee.value))people.value.push({employee_id:employee.value,hours:'',overtime_hours:'0',nonproductive_hours:'0',weight:'1',personal_quantity:null,reason:''});employee.value='';w.dirty.value=true}
+async function save(){if(!props.report)return;busy.value=true;try{await w.command(`reports/${props.report.id}/labor`,{business_date:w.businessDate.value,row_id:selected.value,labor:people.value,reason:reason.value},props.report.version);emit('saved');emit('close')}catch(cause){error.value=w.explain(cause)}finally{busy.value=false}}
+async function close(){if(w.dirty.value&&!(await w.confirmDiscard('放弃尚未保存的工时？')))return;w.dirty.value=false;emit('close')}
+</script>
+<template><WorkspaceDialog :open="!!report" title="核对实名工时" wide @close="close"><form class="spray-form" @submit.prevent="save" @input="w.dirty.value=true"><label>日报行<select v-model="selected"><option v-for="(row,index) in rows" :key="row.id" :value="row.id">第 {{index+1}} 行 · 加工 {{row.processed}}</option></select></label><label>增加员工<select v-model="employee" @change="add"><option value="">请选择实名员工</option><option v-for="person in w.items<Employee>('employees')" :key="person.id" :value="person.id">{{person.code}} · {{person.name}}</option></select></label><div v-for="(person,index) in people" :key="person.employee_id" class="wide spray-panel spray-panel__body"><div class="spray-actions"><strong>{{w.items<Employee>('employees').find(e=>e.id===person.employee_id)?.name}}</strong><button type="button" class="spray-text-button" @click="people.splice(index,1)">移除此人</button></div><div class="spray-form"><label>实际正班小时<input v-model="person.hours" inputmode="decimal" required/></label><label>加班小时<input v-model="person.overtime_hours" inputmode="decimal" required/></label><label>非生产工时<input v-model="person.nonproductive_hours" inputmode="decimal" required/></label><label>分摊权重<input v-model="person.weight" inputmode="decimal" required/></label><label>个人计件数量<input v-model="person.personal_quantity" inputmode="decimal" placeholder="班组计件留空"/></label><label>非生产原因<input v-model="person.reason" :required="Number(person.nonproductive_hours)>0"/></label></div></div><label class="wide">本次工时核对依据<textarea v-model="reason" required/></label><p class="wide spray-muted">已确认工资会冻结当日工时。修改会使尚未确认的工资试算失效，需重新试算。</p><p v-if="error" class="wide spray-alert" role="alert">{{error}}</p><Button type="submit" :disabled="busy||!people.length">保存实名工时</Button></form></WorkspaceDialog></template>
