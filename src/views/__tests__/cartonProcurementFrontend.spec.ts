@@ -11,6 +11,7 @@ import { cartonMasterApi, emptyMaster } from '@/api/cartonMaster'
 import type { CartonImportBatchResponse, CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { SplitRecord } from '@/api/cartonOrderSplits'
 import type { WorkEntry } from '@/features/work-center/types'
+import type { PendingSupplierShipments } from '@/api/cartonSupplierPortal'
 
 const dashboardMock = vi.hoisted(() => ({ workspace: vi.fn(), context: vi.fn(), batch: vi.fn() }))
 vi.mock('@/api/cartonDashboard', () => ({ cartonDashboardApi: dashboardMock }))
@@ -30,7 +31,10 @@ const authStoreMock = vi.hoisted(() => ({
 const systemApiMock = vi.hoisted(() => ({ listNotifications: vi.fn() }))
 const workCenterApiMock = vi.hoisted(() => ({ snapshot: vi.fn<(...args: unknown[]) => Promise<{ items: Partial<WorkEntry>[]; query: { filtered_total: number } }>>() }))
 vi.mock('@/api/workCenter', () => ({ workCenterApi: workCenterApiMock }))
-vi.mock('@/stores/workCenter', () => ({ useWorkCenterStore: () => ({ bell: null }) }))
+const supplierPortalApiMock = vi.hoisted(() => ({ pendingShipments: vi.fn<(...args: unknown[]) => Promise<PendingSupplierShipments>>() }))
+vi.mock('@/api/cartonSupplierPortal', () => ({ cartonSupplierPortalApi: supplierPortalApiMock }))
+const workCenterStoreState = reactive<{ bell: { context: { viewer_key: string }; health: { as_of: string } } | null }>({ bell: null })
+vi.mock('@/stores/workCenter', () => ({ useWorkCenterStore: () => workCenterStoreState }))
 const cartonApiMock = vi.hoisted(() => ({
   listCustomers: vi.fn(),
   createCustomer: vi.fn(),
@@ -195,6 +199,7 @@ it('keeps the shared pending notification entry in the standalone carton header'
 it('opens supplier reconciliation by default and preserves its mounted form across inventory month-end tabs', async () => {
   const w = mountView('closing', {}, false); await flushPromises()
   const tabs = w.get('[aria-label="月结对账子页面"]')
+  expect(tabs.findAll('button').map(row => row.text())).toEqual(['双方月结对账', '库存月结记录'])
   expect(tabs.findAll('button')[0]!.attributes('aria-pressed')).toBe('true')
   const supplier = w.get('carton-supplier-settlement-stub').element
   await tabs.findAll('button')[1]!.trigger('click')
@@ -873,6 +878,8 @@ describe('CartonProcurementView frontend workspace', () => {
     authStoreMock.can.mockReturnValue(true)
     systemApiMock.listNotifications.mockResolvedValue([])
     workCenterApiMock.snapshot.mockResolvedValue({ items: [], query: { filtered_total: 0 } })
+    supplierPortalApiMock.pendingShipments.mockResolvedValue({ factory_id: 'huaxing', items: [], total: 0 })
+    workCenterStoreState.bell = null
     cartonApiMock.listCustomers.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listOrders.mockRejectedValue(new Error('offline test'))
     cartonApiMock.listMovements.mockRejectedValue(new Error('offline test'))
@@ -4823,10 +4830,8 @@ describe('CartonProcurementView frontend workspace', () => {
 
   it('puts authorized, factory-scoped supplier delivery reminders at the top of the dashboard', async () => {
     const shipmentId = `CSS-${'a'.repeat(32)}`
-    const notification = (id: string): Partial<WorkEntry> => ({ id, title: `供应商送货单 ${id} 待核实`, summary: '请核对本厂区实际到货',
-      actions: [{ key: 'open', label: '核实收料', mode: 'navigate', enabled: true, disabled_reason: null,
-        target: { route_key: 'supplier_shipment', params: { id }, query: { factory: 'huaxing' } } }] })
-    workCenterApiMock.snapshot.mockResolvedValue({ items: [notification(shipmentId)], query: { filtered_total: 1 } })
+    const shipment = (id: string) => ({ id, delivery_note_no: id, delivery_date: '2026-09-24', requires_correction: false })
+    supplierPortalApiMock.pendingShipments.mockResolvedValue({ factory_id: 'huaxing', items: [shipment(shipmentId)], total: 1 })
 
     const wrapper = mountView('dashboard')
     await flushPromises()
@@ -4839,14 +4844,16 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(pending.text()).not.toContain(`CSS-${'c'.repeat(32)}`)
     const action = pending.findAllComponents({ name: 'RouterLink' }).find((link) => link.text() === '核实收料')
     expect(action?.props('to')).toEqual({ path: '/carton-supplier-management', query: { factory: 'huaxing', shipment: shipmentId } })
+    expect(supplierPortalApiMock.pendingShipments).toHaveBeenCalledWith('huaxing', 3)
+    expect(workCenterApiMock.snapshot).not.toHaveBeenCalled()
 
-    workCenterApiMock.snapshot.mockResolvedValue({ items: [], query: { filtered_total: 0 } })
+    supplierPortalApiMock.pendingShipments.mockResolvedValue({ factory_id: 'huaxing', items: [], total: 0 })
     await wrapper.findAll('button').find((button) => button.text() === '刷新')!.trigger('click')
     await flushPromises()
     expect(pending.text()).toContain('供应商送货 0')
     expect(pending.text()).not.toContain(shipmentId)
 
-    workCenterApiMock.snapshot.mockResolvedValue({ items: [notification(`CSS-${'b'.repeat(32)}`)], query: { filtered_total: 1 } })
+    supplierPortalApiMock.pendingShipments.mockResolvedValue({ factory_id: 'huakang-a', items: [shipment(`CSS-${'b'.repeat(32)}`)], total: 1 })
     routeState.query.factory = 'huakang-a'
     await flushPromises()
     expect(pending.text()).toContain(`CSS-${'b'.repeat(32)}`)
@@ -4861,6 +4868,66 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.get('[aria-label="工作待办提醒"]').text()).toContain('业务排期提醒')
     expect(wrapper.get('[aria-label="工作待办提醒"]').text()).not.toContain('供应商送货待核实')
     expect(workCenterApiMock.snapshot).not.toHaveBeenCalled()
+    expect(supplierPortalApiMock.pendingShipments).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows reversed supplier delivery reminders with the exact correction link and full queue count', async () => {
+    supplierPortalApiMock.pendingShipments.mockResolvedValue({ factory_id: 'huaxing', total: 5, items: [{
+      id: 'CSS-REVERSED', delivery_note_no: '121345661', delivery_date: '2026-09-24', requires_correction: true,
+    }] })
+    const wrapper = mountView('dashboard'); await flushPromises()
+    const pending = wrapper.get('[aria-label="工作待办提醒"]')
+    expect(pending.text()).toContain('供应商送货 5')
+    expect(pending.text()).toContain('121345661 · 待更正验收')
+    expect(pending.text()).toContain('原收料已冲销，请重新核实')
+    expect(pending.text()).toContain('另有 2 张待核实送货单')
+    const link = pending.findAllComponents({ name: 'RouterLink' }).find(row => row.text() === '更正验收')
+    expect(link?.props('to')).toEqual({ path: '/carton-supplier-management', query: { factory: 'huaxing', shipment: 'CSS-REVERSED' } })
+    wrapper.unmount()
+  })
+
+  it('shows supplier delivery reminder query failures without claiming an empty receiving queue', async () => {
+    supplierPortalApiMock.pendingShipments.mockRejectedValue(new Error('送货队列暂时不可用'))
+    const wrapper = mountView('dashboard'); await flushPromises()
+    const pending = wrapper.get('[aria-label="工作待办提醒"]')
+    expect(pending.text()).toContain('供应商送货 暂不可用')
+    expect(pending.text()).toContain('送货队列暂时不可用')
+    expect(pending.text()).not.toContain('本厂区当前没有待核实')
+    supplierPortalApiMock.pendingShipments.mockResolvedValue({ factory_id: 'huaxing', total: 0, items: [] })
+    await pending.findAll('button').find(row => row.text() === '重试')!.trigger('click'); await flushPromises()
+    expect(pending.text()).toContain('本厂区当前没有待核实')
+    expect(pending.text()).not.toContain('送货队列暂时不可用')
+    wrapper.unmount()
+  })
+
+  it('discards late supplier delivery reminders from a previous factory', async () => {
+    let releaseOld!: (value: PendingSupplierShipments) => void
+    const oldResponse = new Promise<PendingSupplierShipments>(resolve => { releaseOld = resolve })
+    supplierPortalApiMock.pendingShipments.mockImplementation(async factory => factory === 'huaxing' ? oldResponse : {
+      factory_id: 'huakang-a', total: 1, items: [{ id: 'CSS-NEW', delivery_note_no: 'NEW-NOTE', delivery_date: '2026-09-25', requires_correction: false }],
+    })
+    const wrapper = mountView('dashboard'); await flushPromises()
+    routeState.query.factory = 'huakang-a'; await flushPromises()
+    releaseOld({ factory_id: 'huaxing', total: 99, items: [{ id: 'CSS-OLD', delivery_note_no: 'OLD-NOTE', delivery_date: '2026-09-24', requires_correction: false }] })
+    await flushPromises()
+    const pending = wrapper.get('[aria-label="工作待办提醒"]')
+    expect(pending.text()).toContain('NEW-NOTE')
+    expect(pending.text()).toContain('供应商送货 1')
+    expect(pending.text()).not.toContain('OLD-NOTE')
+    wrapper.unmount()
+  })
+
+  it('refreshes supplier delivery reminders when the shared bell observes a source update', async () => {
+    const wrapper = mountView('dashboard'); await flushPromises()
+    workCenterStoreState.bell = { context: { viewer_key: 'admin' }, health: { as_of: '2026-09-30T10:00:00+08:00' } }
+    await flushPromises()
+    supplierPortalApiMock.pendingShipments.mockResolvedValue({ factory_id: 'huaxing', total: 1, items: [{
+      id: 'CSS-BELL', delivery_note_no: 'AFTER-UPDATE', delivery_date: '2026-09-24', requires_correction: false,
+    }] })
+    workCenterStoreState.bell.health.as_of = '2026-09-30T10:01:00+08:00'
+    await flushPromises()
+    expect(wrapper.get('[aria-label="工作待办提醒"]').text()).toContain('AFTER-UPDATE')
     wrapper.unmount()
   })
 

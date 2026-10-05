@@ -24,6 +24,7 @@ class StatementLine(BaseModel):
 
 
 class SettlementSave(BaseModel):
+    origin: Literal["MANUAL", "COLLABORATION"] = "MANUAL"
     factory_id: str = Field(min_length=1, max_length=64)
     supplier_id: str | None = Field(default=None, max_length=96)
     period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -41,6 +42,10 @@ class SettlementAction(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
     reason: str = Field(default="", max_length=2000)
+
+
+class SupplierSettlementReview(SettlementAction):
+    decision: Literal["CONFIRMED", "DISPUTED"]
 
 
 class AcceptanceDateUpdate(SettlementAction):

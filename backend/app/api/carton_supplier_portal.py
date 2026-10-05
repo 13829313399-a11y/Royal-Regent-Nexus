@@ -1,5 +1,5 @@
 from urllib.parse import quote
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
@@ -7,6 +7,8 @@ from app.services.auth import AuthContext, get_current_user
 from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
 from app.services import carton_supplier_delivery_import as delivery_import
+from app.services import carton_supplier_settlement as settlement
+from app.schemas.carton_supplier_settlement import SupplierSettlementReview
 import json
 
 router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
@@ -15,6 +17,18 @@ router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
 def memberships(db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return [{"factory_id": supplier.factory_id, "supplier_name": supplier.supplier_name}
         for supplier in service.supplier_factories(db, user)]
+
+
+@router.get("/settlements/workspace")
+def settlement_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), currency: str = "CNY",
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return settlement.supplier_workspace(db, user, factory_id, period, currency)
+
+
+@router.post("/settlements/{identifier}/review")
+def settlement_review(identifier: str, payload: SupplierSettlementReview,
+                      db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return settlement.supplier_review(db, identifier, payload, user)
 
 @router.get("/workspace")
 def workspace(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
@@ -102,6 +116,11 @@ def download(attachment_id: str, factory_id: str, db: Session = Depends(get_db),
 @router.get("/internal/workspace")
 def internal_workspace(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.workspace(db, user, factory_id, internal=True)
+
+@router.get("/internal/shipments/pending")
+def internal_pending_shipments(factory_id: str, limit: int = Query(default=3, ge=1, le=100),
+                              db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.pending_shipments(db, user, factory_id, limit=limit)
 
 @router.post("/internal/shipments/{shipment_id}/receive")
 def receive(shipment_id: str, payload: ShipmentReceive, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
