@@ -275,6 +275,10 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code == "module_feedback:submit":
+        return ScopePolicy(guidance="已确认员工默认仅可在所属厂区提交及查看本人反馈；可单独禁止，允许授权不能扩大到其他厂区")
+    if permission_code == "module_feedback:manage":
+        return ScopePolicy(("system",), guidance="开发反馈专用权限，仅按明确授权的厂区和系统部门生效；普通业务职位不继承")
     if permission_code in INJECTION_SCHEDULING_PERMISSION_CODES:
         return ScopePolicy(
             (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),

@@ -175,6 +175,11 @@ BUSINESS_PERMISSION_CODES = (
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )
 
+# Private employee submission and developer review are separate from business
+# entitlements. Submission defaults to confirmed home-factory employees; its
+# catalog entry supports independent disabling and explicit IAM denies.
+MODULE_FEEDBACK_PERMISSION_CODES = ("module_feedback:submit", "module_feedback:manage")
+
 APPLICATION_PERMISSION_CODES = tuple(
-    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES))
+    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES))
 )

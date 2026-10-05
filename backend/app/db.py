@@ -688,6 +688,27 @@ def ensure_document_tools_schema_ready() -> None:
             raise RuntimeError("文档工具尚未迁移至 20260908_0103_docs；请备份并迁移后启动。缺少：" + ", ".join(missing))
 
 
+def ensure_module_feedback_schema_ready() -> None:
+    """An existing database must be explicitly migrated before feedback starts."""
+    from app.models import module_feedback  # noqa: F401
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if not names:
+            return
+        missing = []
+        for name, table in Base.metadata.tables.items():
+            if not name.startswith("module_feedback_"):
+                continue
+            if name not in names:
+                missing.append(name)
+            else:
+                columns = {column["name"] for column in inspector.get_columns(name)}
+                missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
+        if missing:
+            raise RuntimeError("模块反馈需要迁移至 20261005_0120；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
         spray_production,
@@ -706,6 +727,7 @@ def init_db() -> None:
         customer_order,  # noqa: F401
         customer_order_ledger,  # noqa: F401
         internal_quote,  # noqa: F401
+        module_feedback,  # noqa: F401
         injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
@@ -722,6 +744,7 @@ def init_db() -> None:
     from app.services.raw_material import seed_raw_material_defaults
     from app.services.three_d_printing import seed_three_d_printing_defaults
 
+    ensure_module_feedback_schema_ready()
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()
