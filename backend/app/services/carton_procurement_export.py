@@ -593,6 +593,14 @@ def build_combined_purchase_order_workbook(
 
     current_row = 8
     line_count = 0
+    body_font = Font(name="Microsoft YaHei", size=9, color="0F172A")
+    body_border = Border(left=thin, right=thin, bottom=thin)
+    order_border = Border(left=thin, right=thin, top=medium, bottom=thin)
+    stripe_fill = PatternFill("solid", fgColor="F8FAFC")
+    body_alignment = {column: Alignment(
+        horizontal="center" if column in {1, 7, 8, 15} else "right" if column in {9, 13, 14} else "left",
+        vertical="center", wrap_text=column in {3, 4, 5, 6, 12},
+    ) for column in range(1, 17)}
     for order_index, (order, lines) in enumerate(orders, start=1):
         for line_index, line in enumerate(lines, start=1):
             values = [
@@ -615,15 +623,11 @@ def build_combined_purchase_order_workbook(
             ]
             for column, value in enumerate(values, start=1):
                 cell = sheet.cell(row=current_row, column=column, value=value)
-                cell.font = Font(name="Microsoft YaHei", size=9, color="0F172A")
-                cell.alignment = Alignment(
-                    horizontal="center" if column in {1, 7, 8, 15} else "right" if column in {9, 13, 14} else "left",
-                    vertical="center",
-                    wrap_text=column in {3, 4, 5, 6, 12},
-                )
-                cell.border = Border(left=thin, right=thin, bottom=thin)
+                cell.font = body_font
+                cell.alignment = body_alignment[column]
+                cell.border = order_border if line_index == 1 else body_border
                 if order_index % 2 == 0:
-                    cell.fill = PatternFill("solid", fgColor="F8FAFC")
+                    cell.fill = stripe_fill
             sheet.cell(row=current_row, column=14, value=float(line.required_quantity) if getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" else f"=ROUNDUP(I{current_row}/M{current_row},0)")
             sheet.cell(row=current_row, column=9).number_format = (
                 "#,##0" if order.product_order_quantity is not None and order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
@@ -632,14 +636,6 @@ def build_combined_purchase_order_workbook(
                 "#,##0" if line.usage_quantity is not None and line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
             )
             sheet.cell(row=current_row, column=14).number_format = "#,##0"
-            if line_index == 1:
-                for column in range(1, 17):
-                    sheet.cell(row=current_row, column=column).border = Border(
-                        left=thin,
-                        right=thin,
-                        top=medium,
-                        bottom=thin,
-                    )
             sheet.row_dimensions[current_row].height = 28
             current_row += 1
             line_count += 1

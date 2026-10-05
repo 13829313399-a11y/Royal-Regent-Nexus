@@ -260,7 +260,10 @@ def test_concurrent_confirmations_share_factory_lock(monkeypatch):
         preview = upload(client, "configurations", content).json()
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(lambda _: upload(client, "configurations", content, preview["preview_token"]), range(2)))
-        assert sorted(r.status_code for r in responses) == [200, 409]
+        assert sorted(r.status_code for r in responses) in ([200, 409], [200, 429])
+        # The bounded file worker may reject before entering the factory lock.
+        # Once it is free, the original stale preview must still be rejected.
+        assert upload(client, "configurations", content, preview["preview_token"]).status_code == 409
         assert len(read(client)["records"]) == 1
 
 
@@ -360,7 +363,8 @@ def test_locations_snapshot_changes_invalidate_preview_and_concurrent_apply(monk
         preview = upload(client, "locations", content).json()
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(lambda _: upload(client, "locations", content, preview["preview_token"]), range(2)))
-        assert sorted(r.status_code for r in responses) == [200, 409]
+        assert sorted(r.status_code for r in responses) in ([200, 409], [200, 429])
+        assert upload(client, "locations", content, preview["preview_token"]).status_code == 409
         assert len([r for r in read(client)["locations"] if r["warehouse"] == "导入仓"]) == 2
 
 

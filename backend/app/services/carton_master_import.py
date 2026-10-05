@@ -350,12 +350,12 @@ def plan(db, factory, kind, entries, errors):
     return {"added": additions, "skipped": skipped, "errors": errors, "details": details}, writes
 
 
-def run(db, user, factory, kind, content, filename, expected=None):
+def run(db, user, factory, kind, content, filename, expected=None, *, parsed=None):
     from app.services.carton_procurement import _lock_receipt_factory, _audit
     master.require_manage(db, user, factory)
     if expected is not None:
         _lock_receipt_factory(db, factory)
-    entries, errors = parse(content, filename, kind)
+    entries, errors = parsed if parsed is not None else parse(content, filename, kind)
     fingerprint = hashlib.sha256(content).hexdigest()
     revision = snapshot(db, factory, kind)
     token = master.digest(["master-import-v1", factory, kind, fingerprint, revision])

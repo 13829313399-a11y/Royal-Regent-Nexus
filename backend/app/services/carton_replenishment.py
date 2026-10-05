@@ -25,13 +25,16 @@ def replenished_by_line(db, line_ids):
 def _posted_linked_samples(db, line_ids):
     if not line_ids:
         return
-    for event in db.scalars(select(CartonAuditEvent).where(
+    events = list(db.scalars(select(CartonAuditEvent).where(
         CartonAuditEvent.event_type == "SUPPLIER_SAMPLE_LINKED",
         CartonAuditEvent.entity_type == "carton_order_line",
-        CartonAuditEvent.entity_id.in_(line_ids))).all():
-        sample_id = json.loads(event.detail_json).get("sample_receipt_line_id")
-        sample = db.get(CartonReceiptLine, sample_id) if sample_id else None
-        receipt = db.get(CartonReceipt, sample.receipt_id) if sample else None
+        CartonAuditEvent.entity_id.in_(line_ids))))
+    links = [(event, json.loads(event.detail_json).get("sample_receipt_line_id")) for event in events]
+    samples = {sample.id: (sample, receipt) for sample, receipt in db.execute(select(CartonReceiptLine, CartonReceipt)
+        .join(CartonReceipt, CartonReceipt.id == CartonReceiptLine.receipt_id)
+        .where(CartonReceiptLine.id.in_({sample_id for _, sample_id in links if sample_id})))} if links else {}
+    for event, sample_id in links:
+        sample, receipt = samples.get(sample_id, (None, None))
         if sample and receipt and sample.factory_id == event.factory_id == receipt.factory_id \
                 and sample.source_type == "AD_HOC" and receipt.status == "POSTED":
             yield event.entity_id, sample

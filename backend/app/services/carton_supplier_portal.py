@@ -103,9 +103,9 @@ def latest_issue(db, order):
         if not _purchase_order_snapshot(issue).get("replenishment")), None)
 
 
-def acceptance_summary(db, order, lines):
+def acceptance_summary(db, order, lines, *, projection=None):
     """Internal read projection of supplier confirmation for the current ordinary issue."""
-    issue = latest_issue(db, order)
+    issue = next((issue for issue in projection["issues"] if not _purchase_order_snapshot(issue).get("replenishment")), None) if projection is not None else latest_issue(db, order)
     positive_ids = [line.id for line in lines if line.required_quantity > 0]
     result = dict(status="NOT_ISSUED", label="尚未发送供应商",
         issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "",
@@ -119,7 +119,7 @@ def acceptance_summary(db, order, lines):
     elif not positive_ids:
         result.update(status="NOT_REQUIRED", label="无需接单")
     else:
-        commitments = list(db.scalars(select(SupplierCommitment).where(
+        commitments = [row for row in projection["commitments"] if row.issue_id == issue.id and row.order_line_id in positive_ids] if projection is not None else list(db.scalars(select(SupplierCommitment).where(
             SupplierCommitment.factory_id == order.factory_id,
             SupplierCommitment.issue_id == issue.id,
             SupplierCommitment.order_line_id.in_(positive_ids))).all())

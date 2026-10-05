@@ -619,6 +619,7 @@ class CartonOrderListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonOrderOut]
+    statistics: dict[str, int] = Field(default_factory=dict)
 
 
 CartonPurchaseOrderDocumentType = Literal[

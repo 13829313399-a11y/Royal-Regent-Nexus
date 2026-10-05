@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="480" viewBox="0 0 1080 480" role="img" aria-labelledby="title desc">
+<title id="title">内部报价操作顺序</title><desc id="desc">建单、部门填写、汇总核对后直接输出并保留版本，再交接客价；已输出版本需要修改时先复制。历史报价按原审核流程办理。</desc>
+<rect width="1080" height="480" rx="18" fill="#f0fdfa"/>
+<g font-family="Microsoft YaHei, PingFang SC, sans-serif">
+<text x="36" y="47" font-size="23" fill="#134e4a" font-weight="700">一份报价，从原始资料到保留版本</text>
+<text x="36" y="78" font-size="15" fill="#64748b">新建报价的日常路径 · 操作示意</text>
+<g fill="#fff" stroke="#99d5cc" stroke-width="2"><rect x="36" y="110" width="228" height="160" rx="14"/><rect x="296" y="110" width="228" height="160" rx="14"/><rect x="556" y="110" width="228" height="160" rx="14"/><rect x="816" y="110" width="228" height="160" rx="14"/></g>
+<g fill="#0f766e" font-size="16" font-weight="700"><text x="55" y="141">01 · 建单与分配</text><text x="315" y="141">02 · 部门填写保存</text><text x="575" y="141">03 · 核对汇总</text><text x="835" y="141">04 · 输出保留此版</text></g>
+<g fill="#475569" font-size="16"><text x="55" y="177">确认厂区、客户、产品</text><text x="55" y="208">安排参与部门与资料</text><text x="55" y="239">每款单独核对</text><text x="315" y="177">按原始资料填写 / 导入</text><text x="315" y="208">处理缺项和计算提示</text><text x="315" y="239">确认当前款已保存</text><text x="575" y="177">核对成本与报价档位</text><text x="575" y="208">检查包装、币种、费用</text><text x="575" y="239">确认产品与方案版本</text><text x="835" y="177">有权限的业务人员操作</text><text x="835" y="208">封存版本，核对文件</text><text x="835" y="239">按需要交接客价转换</text></g>
+<g fill="#0f766e" font-size="28"><text x="272" y="198">›</text><text x="532" y="198">›</text><text x="792" y="198">›</text></g>
+<rect x="36" y="300" width="1008" height="68" rx="12" fill="#fff"/><text x="57" y="329" font-size="17" fill="#0f766e" font-weight="700">后续要改包装或成本？</text><text x="57" y="354" font-size="16" fill="#475569">先复制新方案 / 新版本，再填写、保存、核对和输出。原已输出文件保持不变。</text>
+<rect x="36" y="386" width="1008" height="62" rx="12" fill="#fffbeb"/><text x="57" y="412" font-size="16" fill="#92400e" font-weight="700">历史报价保留原审核流程</text><text x="57" y="435" font-size="15" fill="#92400e">看到整单或分段审核按钮时，按该份报价流程处理；新报价不额外增加历史审核步骤。</text>
+</g></svg>

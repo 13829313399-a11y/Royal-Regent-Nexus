@@ -114,7 +114,10 @@ def _stop_process_tree(process: subprocess.Popen) -> None:
                 )
         else:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                if os.getpgid(process.pid) == process.pid:
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    os.kill(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
     finally:
@@ -130,7 +133,7 @@ def _run_worker(command: list[str], budget: OcrBudget) -> int:
     process = subprocess.Popen(
         command, cwd=BACKEND_DIR, env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=os.name != "nt",
+        start_new_session=os.name != "nt" and not os.environ.get("RR_CUSTOMER_ORDER_JOB_WORKER"),
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     try:

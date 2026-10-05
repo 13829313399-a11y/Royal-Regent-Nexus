@@ -3,11 +3,18 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CartonProcurementView from '../CartonProcurementView.vue'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
+import { buildBusinessOrderAlerts } from '@/features/carton-procurement/businessAlerts'
+import { scheduleOrderReminder } from '@/lib/cartonScheduleDeadline'
+import type { CartonDashboardWorkspace } from '@/api/cartonDashboard'
+import type { CartonOrderResponse, CartonExceptionResponse } from '@/api/cartonProcurement'
 import { cartonMasterApi, emptyMaster } from '@/api/cartonMaster'
 import type { CartonImportBatchResponse, CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { SplitRecord } from '@/api/cartonOrderSplits'
 import type { WorkEntry } from '@/features/work-center/types'
 import type { PendingSupplierShipments } from '@/api/cartonSupplierPortal'
+
+const dashboardMock = vi.hoisted(() => ({ workspace: vi.fn(), context: vi.fn(), batch: vi.fn() }))
+vi.mock('@/api/cartonDashboard', () => ({ cartonDashboardApi: dashboardMock }))
 
 const routerReplaceMock = vi.hoisted(() => vi.fn())
 const routerPushMock = vi.hoisted(() => vi.fn())
@@ -34,6 +41,9 @@ const cartonApiMock = vi.hoisted(() => ({
   updateCustomer: vi.fn(),
   deleteCustomer: vi.fn(),
   listOrders: vi.fn(),
+  listOrdersPage: vi.fn(),
+  scheduleOrders: vi.fn(),
+  selectedOrders: vi.fn(),
   listMovements: vi.fn(),
   listInventoryBalances: vi.fn(),
   createInventoryMovement: vi.fn(),
@@ -123,6 +133,45 @@ const usageGuideStub = {
   template: '<section data-testid="carton-usage-guide" />',
 }
 
+// Existing business fixtures now cross the dedicated dashboard transport boundary.
+// Production query/aggregation correctness is covered by backend dashboard tests.
+async function dashboardFixture(factory: string, filters: { customer?: string; search?: string; status?: string; kind?: string; offset?: number; limit?: number } = {}) {
+  const [orders, customers, batches, exceptions, storedMarks, balances] = await Promise.all([
+    cartonApiMock.listOrders(factory), cartonApiMock.listCustomers(factory), cartonApiMock.listImports(factory, 'WEEKLY_SCHEDULE'),
+    cartonApiMock.listExceptions(factory), cartonApiMock.listScheduleOrderMarks(factory), cartonApiMock.listInventoryBalances(factory),
+  ]) as [CartonOrderResponse[], { customer_code: string; customer_name: string }[], CartonImportBatchResponse[], CartonExceptionResponse[], Record<string, { marked: boolean; actor: string; updated_at: string }>, { balance: string; unit: string; customer_name: string; contract_no: string; item_no: string }[]]
+  const marks = { ...storedMarks }
+  for (const [i, call] of cartonApiMock.setScheduleOrderMarks.mock.calls.entries()) {
+    try {
+      const result = await cartonApiMock.setScheduleOrderMarks.mock.results[i]?.value
+      for (const item of result?.items ?? []) marks[item.identity] = { marked: item.marked, actor: '', updated_at: '' }
+    } catch { /* A failed write must not materialize a mark. */ }
+  }
+  const match = (r: CartonImportPreviewRow) => orders.filter(o => o.factory_id === factory && o.status !== 'CANCELLED'
+    && (r.order_id ? o.id === r.order_id : o.contract_no === (r.contract_no || r.reference) && o.item_no === r.item_no
+      && (!r.customer_code || o.customer_code === r.customer_code)
+      && (!(r.source_reference || r.customer_po) || o.customer_po === (r.source_reference || r.customer_po))))
+  const all = buildBusinessOrderAlerts({ factoryId: factory, batches, exceptions, ordersForSource: match,
+    reminder: r => scheduleOrderReminder(r, { today: businessDateOffset(0), leadDays: 3, productionDays: 7,
+      marked: Boolean(marks[r.schedule_identity || '']?.marked ?? r.manual_ordered), orderCount: match(r).length, orderStatus: match(r)[0]?.status }) })
+  const visible = all.filter(a => (!filters.customer || a.customerName === filters.customer)
+    && (!filters.search || JSON.stringify(a).toLowerCase().includes(filters.search.toLowerCase()))
+    && (filters.status === 'ALL' || ['OPEN', 'IN_PROGRESS'].includes(a.status)) && (!filters.kind || filters.kind === 'ALL' || a.kind === filters.kind))
+  const actionable = visible.filter(a => ['OPEN', 'IN_PROGRESS'].includes(a.status) && (!a.reminder || a.reminder.attention))
+  const units = new Map<string, number>()
+  for (const b of balances) if (Number(b.balance) > 0 && (!filters.customer || b.customer_name === filters.customer)
+    && (!filters.search || JSON.stringify(b).toLowerCase().includes(filters.search.toLowerCase()))) units.set(b.unit, (units.get(b.unit) || 0) + Math.round(Number(b.balance) * 10000))
+  const result: CartonDashboardWorkspace = { factory_id: factory, business_date: businessDateOffset(0), generated_at: '',
+    items: visible.slice(filters.offset || 0, (filters.offset || 0) + (filters.limit || 8)), total: visible.length, offset: filters.offset || 0, limit: filters.limit || 8,
+    summary: { total: actionable.length, missing: actionable.filter(a => a.reminder?.attention).length,
+      increase: actionable.filter(a => a.kind === 'QUANTITY_INCREASE').length, decrease: actionable.filter(a => ['QUANTITY_DECREASE', 'SCHEDULE_CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(a.kind)).length },
+    reminders: actionable.slice(0, 3), pending_order_count: orders.filter(o => !['COMPLETED', 'CANCELLED'].includes(o.status)).length,
+    open_exception_count: exceptions.filter(e => ['OPEN', 'IN_PROGRESS'].includes(e.status)).length, weekly_attention_count: actionable.length,
+    inventory_by_unit: [...units].map(([unit, value]) => ({ unit, quantity: String(value / 10000) })), recent_orders: orders.slice(0, 3),
+    priority_exceptions: exceptions.slice(0, 3), pending_splits: [], pending_split_count: 0 }
+  return { result, all, orders, customers, batches, marks, match }
+}
+
 function mountView(tab?: string, extraStubs: Record<string, boolean | Component> = {}, inventoryClosing = true) {
   routeState.query = reactive(tab
     ? { factory: 'huaxing', tab, ...(tab === 'closing' && inventoryClosing ? { closing_view: 'inventory' } : {}) }
@@ -197,7 +246,9 @@ async function openOrderMoreActions(card: any, orderNo: string) {
 }
 
 function businessDateOffset(days: number) {
-  const current = new Date(`${new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })}T00:00:00Z`)
+  const parts = new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
+  const part = (kind: string) => parts.find(item => item.type === kind)!.value
+  const current = new Date(`${part('year')}-${part('month')}-${part('day')}T00:00:00Z`)
   current.setUTCDate(current.getUTCDate() + days)
   return current.toISOString().slice(0, 10)
 }
@@ -791,6 +842,37 @@ describe('CartonProcurementView frontend workspace', () => {
 
   beforeEach(() => {
     vi.resetAllMocks()
+    dashboardMock.workspace.mockImplementation(async (factory: string, filters) => (await dashboardFixture(factory, filters)).result)
+    dashboardMock.context.mockImplementation(async (factory: string, id: string) => {
+      const evidence = await dashboardFixture(factory)
+      const alert = evidence.all.find(a => a.id === id)!
+      return { alert, batch: evidence.batches.find(b => b.id === alert.batchId), orders: alert.order ? evidence.orders.filter(o => o.id === alert.order!.id) : [],
+        matching_orders: alert.sourceRow ? evidence.match(alert.sourceRow) : [], marks: evidence.marks }
+    })
+    cartonApiMock.scheduleOrders.mockImplementation((factory: string) => cartonApiMock.listOrders(factory))
+    cartonApiMock.listOrdersPage.mockImplementation(async (factory: string, filters: Record<string, string | number>) => {
+      const all = await cartonApiMock.listOrders(factory) as ReturnType<typeof orderFixture>[]
+      const items = all.filter(row => (!filters.customer_name || row.customer_name === filters.customer_name)
+        && (!filters.status_filter || row.status === filters.status_filter)
+        && (!filters.order_from || row.order_date >= String(filters.order_from))
+        && (!filters.order_to || row.order_date <= String(filters.order_to))
+        && (!filters.search || JSON.stringify(row).toLowerCase().includes(String(filters.search).toLowerCase()))
+        && (filters.due_filter === 'ALL' || !filters.due_filter || (() => {
+          if (['COMPLETED', 'CANCELLED'].includes(row.status)) return false
+          const today = businessDateOffset(0), soon = businessDateOffset(3)
+          if (filters.due_filter === 'OVERDUE') return row.due_date < today
+          if (filters.due_filter === 'TODAY') return row.due_date === today
+          if (filters.due_filter === 'DUE_SOON') return row.due_date > today && row.due_date <= soon
+          return row.due_date > soon
+        })()))
+      const pending = items.filter(row => !['COMPLETED', 'CANCELLED'].includes(row.status))
+      return { items: items.slice(Number(filters.offset), Number(filters.offset) + Number(filters.limit)), total: items.length,
+        statistics: { pending: pending.length, overdue: pending.filter(row => row.due_date < businessDateOffset(0)).length,
+          today: pending.filter(row => row.due_date === businessDateOffset(0)).length,
+          dueSoon: pending.filter(row => row.due_date > businessDateOffset(0) && row.due_date <= businessDateOffset(3)).length } }
+    })
+    cartonApiMock.selectedOrders.mockImplementation(async (factory: string, numbers: string[]) =>
+      (await cartonApiMock.listOrders(factory) as ReturnType<typeof orderFixture>[]).filter(row => numbers.includes(row.order_no)))
     positionsMock.locations.mockResolvedValue([{ id: 'LOC-A', factory_id: 'huaxing', warehouse: '默认仓', bin_code: 'A-01', label: 'A-01' }, { id: 'LOC-B', factory_id: 'huaxing', warehouse: '默认仓', bin_code: 'B-02', label: 'B-02' }])
     appStoreMock.activeProductionFactory = { id: 'huaxing', name: '华兴', shortName: '华兴' }
     authStoreMock.can.mockReturnValue(true)
@@ -888,6 +970,120 @@ describe('CartonProcurementView frontend workspace', () => {
         note: '',
       })),
     }))
+  })
+
+  const emptyDashboard = (factory = 'huaxing'): CartonDashboardWorkspace => ({ factory_id: factory, business_date: '2026-10-02', generated_at: '2026-10-02T10:00:00+08:00',
+    items: [], total: 0, offset: 0, limit: 8, summary: { total: 0, missing: 0, increase: 0, decrease: 0 }, reminders: [],
+    pending_order_count: 0, weekly_attention_count: 0, open_exception_count: 0, inventory_by_unit: [], recent_orders: [], priority_exceptions: [], pending_splits: [], pending_split_count: 0 })
+
+  it('cold-loads only the bounded dashboard transport and paginates against complete totals', async () => {
+    mockReceiptWorkspace([])
+    const source = pendingScheduleFixture('SERVER-ONLY')
+    const batch = mockWeeklySchedule([source])
+    const evidence = await dashboardFixture('huaxing')
+    const alert = evidence.all[0]!
+    cartonApiMock.listOrders.mockClear(); cartonApiMock.listImports.mockClear(); cartonApiMock.listExceptions.mockClear()
+    const response = { ...emptyDashboard(), items: [alert], reminders: [alert], total: 5000, summary: { total: 5000, missing: 5000, increase: 0, decrease: 0 } }
+    dashboardMock.workspace.mockResolvedValue(response)
+    const wrapper = mountView('dashboard'); await flushPromises()
+    expect(dashboardMock.workspace).toHaveBeenCalledWith('huaxing', expect.objectContaining({ status: 'OPEN', offset: 0, limit: 8 }))
+    expect(cartonApiMock.listOrders).not.toHaveBeenCalled()
+    expect(cartonApiMock.listImports).not.toHaveBeenCalled()
+    expect(cartonApiMock.listExceptions).not.toHaveBeenCalled()
+    expect(cartonApiMock.listAuditEvents).not.toHaveBeenCalled()
+    expect(cartonApiMock.listMovements).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('第 1 / 625 页 · 共 5000 条')
+    await findButton(wrapper, '下一页提醒').trigger('click'); await flushPromises()
+    expect(dashboardMock.workspace).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ offset: 8, limit: 8 }))
+    expect(wrapper.text()).toContain('第 2 / 625 页')
+    let release!: (v: unknown) => void
+    dashboardMock.context.mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    await wrapper.get(`[aria-label="按提醒新建 ${alert.alertNo}"]`).trigger('click'); await flushPromises()
+    await findButton(wrapper, '下一页提醒').trigger('click'); await flushPromises()
+    release({ alert, batch, orders: [], matching_orders: [], marks: {} }); await flushPromises()
+    expect(wrapper.find('[aria-label="合同号"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('discards an older factory dashboard response and resets filter pagination', async () => {
+    mockReceiptWorkspace([])
+    let release!: (v: CartonDashboardWorkspace) => void
+    dashboardMock.workspace.mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    const wrapper = mountView('dashboard'); await flushPromises()
+    dashboardMock.workspace.mockResolvedValue({ ...emptyDashboard('huakang-b'), pending_order_count: 7 })
+    routeState.query.factory = 'huakang-b'; await flushPromises()
+    release({ ...emptyDashboard(), pending_order_count: 99999 }); await flushPromises()
+    expect(wrapper.text()).not.toContain('99999')
+    expect(dashboardMock.workspace).toHaveBeenLastCalledWith('huakang-b', expect.objectContaining({ offset: 0 }))
+    await wrapper.get('input[placeholder="搜索合同 / PO / 货号 / 单据..."]').setValue('SEARCH-NEW')
+    await new Promise(resolve => setTimeout(resolve, 230)); await flushPromises()
+    expect(dashboardMock.workspace).toHaveBeenLastCalledWith('huakang-b', expect.objectContaining({ search: 'SEARCH-NEW', offset: 0 }))
+    wrapper.unmount()
+  })
+
+  it('opens the exact reminder batch even when the latest 50 imports belong to another customer', async () => {
+    mockReceiptWorkspace([])
+    routerReplaceMock.mockImplementation(async (target: { query: Record<string, string> }) => { Object.assign(routeState.query, target.query) })
+    const target = mockWeeklySchedule([pendingScheduleFixture('SC-EXACT-TARGET')])
+    const evidence = await dashboardFixture('huaxing')
+    const alert = evidence.all[0]!
+    dashboardMock.workspace.mockResolvedValue(evidence.result)
+    dashboardMock.batch.mockResolvedValue(target)
+    authStoreMock.can.mockImplementation(((permission: string) => permission !== 'carton_procurement:import') as () => boolean)
+    const newer = { ...target, id: 'NEWER-OTHER', original_filename: '其他客户排期.xlsx', parse_summary: {
+      schedule_customer: { customer_code: 'OTHER', customer_name: 'OTHER' },
+      rows: [pendingScheduleFixture('SC-WRONG-BATCH', 4, { schedule_customer_code: 'OTHER', schedule_customer_name: 'OTHER' })],
+    } }
+    cartonApiMock.listImports.mockImplementation(async (_factory: string, type: string) => type === 'WEEKLY_SCHEDULE' ? [newer] : [])
+    const wrapper = mountView('dashboard'); await flushPromises()
+    await wrapper.get(`[aria-label="查看提醒 ${alert.alertNo}"]`).trigger('click'); await flushPromises()
+    expect(dashboardMock.batch).toHaveBeenCalledWith('huaxing', target.id)
+    expect(wrapper.get('table').text()).toContain('SC-EXACT-TARGET')
+    expect(wrapper.get('table').text()).not.toContain('SC-WRONG-BATCH')
+    wrapper.unmount()
+  })
+
+  it('keeps the latest split selection and ignores late results after closing or leaving', async () => {
+    mockReceiptWorkspace([])
+    const a = orderFixture('SPLIT-A', businessDateOffset(3)), b = orderFixture('SPLIT-B', businessDateOffset(3))
+    dashboardMock.workspace.mockResolvedValue({ ...emptyDashboard(), pending_splits: [a, b], pending_split_count: 2 })
+    let releaseA!: (value: CartonOrderResponse[]) => void
+    let releaseB!: (value: CartonOrderResponse[]) => void
+    cartonApiMock.selectedOrders.mockReturnValueOnce(new Promise(resolve => { releaseA = resolve }))
+      .mockReturnValueOnce(new Promise(resolve => { releaseB = resolve }))
+    const wrapper = mountView('dashboard', { CartonOrderSplitDialog: true }); await flushPromises()
+    const actions = wrapper.findAll('button').filter(button => button.text() === '核对拆单')
+    await actions[0]!.trigger('click'); await actions[1]!.trigger('click')
+    releaseB([b]); await flushPromises()
+    releaseA([a]); await flushPromises()
+    expect(wrapper.getComponent({ name: 'CartonOrderSplitDialog' }).props('order').order_no).toBe('SPLIT-B')
+    let afterClose!: (value: CartonOrderResponse[]) => void
+    cartonApiMock.selectedOrders.mockReturnValueOnce(new Promise(resolve => { afterClose = resolve }))
+    await actions[0]!.trigger('click')
+    wrapper.getComponent({ name: 'CartonOrderSplitDialog' }).vm.$emit('close'); await flushPromises()
+    afterClose([a]); await flushPromises()
+    expect(wrapper.findComponent({ name: 'CartonOrderSplitDialog' }).exists()).toBe(false)
+    let reject!: (error: Error) => void
+    cartonApiMock.selectedOrders.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail }))
+    await actions[0]!.trigger('click'); routeState.query.tab = 'orders'; await flushPromises()
+    reject(new Error('old split failure')); await flushPromises()
+    expect(wrapper.text()).not.toContain('old split failure')
+    wrapper.unmount()
+  })
+
+  it('refreshes server reminders after Shanghai midnight without uploading again', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    try {
+      vi.setSystemTime(new Date('2026-10-02T15:59:30Z'))
+      mockReceiptWorkspace([])
+      dashboardMock.workspace.mockResolvedValue(emptyDashboard())
+      const wrapper = mountView('dashboard'); await flushPromises()
+      expect(dashboardMock.workspace).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(60_000); await flushPromises()
+      expect(dashboardMock.workspace).toHaveBeenCalledTimes(2)
+      expect(cartonApiMock.uploadWeeklySchedule).not.toHaveBeenCalled()
+      wrapper.unmount()
+    } finally { vi.useRealTimers() }
   })
 
   it('opens and closes the guide without changing the current workspace or posting business records', async () => {
@@ -1235,6 +1431,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await dateFilter.trigger('click')
     await flushPromises()
     await findButton(wrapper, '清除日期').trigger('click')
+    await flushPromises()
     expect(wrapper.findAll('[data-order-no]')).toHaveLength(4)
     expect(wrapper.find('[data-testid="date-range-calendar"]').exists()).toBe(false)
     expect(dateFilter.text()).toContain('选择日期范围')
@@ -1864,7 +2061,9 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('已建单 · 待确认')
     expect(wrapper.get('[aria-label="排期下单 SC-SCHEDULE-NEW ITEM-SCHEDULE"]').text()).toBe('查看订单')
+    cartonApiMock.selectedOrders.mockResolvedValue([await cartonApiMock.createOrder.mock.results[0]!.value])
     await wrapper.get('[aria-label="排期下单 SC-SCHEDULE-NEW ITEM-SCHEDULE"]').trigger('click')
+    await flushPromises()
     expect(wrapper.find('[data-testid="order-detail-overlay"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="order-detail-overlay"]').text().includes('业务排期订单类型：加单')).toBe(orderType === '加单')
     expect(cartonApiMock.createOrder).toHaveBeenCalledTimes(1)
@@ -2719,7 +2918,8 @@ describe('CartonProcurementView frontend workspace', () => {
   it('reserves pending receipt quantity when calculating the maximum reduction', async () => {
     const submitted = orderFixture('CT-PENDING-RECEIPT', businessDateOffset(5), 'PENDING_SUPPLIER')
     cartonApiMock.listCustomers.mockResolvedValue([])
-    cartonApiMock.listOrders.mockResolvedValue([submitted])
+    cartonApiMock.listOrders.mockResolvedValue([{ ...submitted, maximum_reducible_quantity: '60',
+      lines: submitted.lines.map(line => ({ ...line, pending_received_quantity: '40', maximum_reducible_quantity: '60' })) }])
     cartonApiMock.listMovements.mockResolvedValue([])
     cartonApiMock.listInventoryBalances.mockResolvedValue([])
     cartonApiMock.listClosings.mockResolvedValue([])
@@ -3909,8 +4109,10 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     expect(wrapper.get('[aria-label="看板库存数量合计"]').text()).toBe('100.0001 个')
     await wrapper.get('input[placeholder="搜索合同 / PO / 货号 / 单据..."]').setValue('')
+    await new Promise(resolve => setTimeout(resolve, 230)); await flushPromises()
     expect(wrapper.get('[aria-label="看板库存数量合计"]').text()).toBe('265 个 · 90 张')
     await wrapper.get('input[placeholder="搜索合同 / PO / 货号 / 单据..."]').setValue('NO-MATCH')
+    await new Promise(resolve => setTimeout(resolve, 230)); await flushPromises()
     expect(wrapper.get('[aria-label="看板库存数量合计"]').text()).toBe('暂无库存')
     wrapper.unmount()
   })
@@ -4791,12 +4993,14 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(panel.text()).toContain('订单减少 / 退单')
     expect(panel.text()).toContain('订单 100 → 排期 160 （+60）')
 
-    await panel.get('button[aria-label="追加订单 EX-INCREASE"]').trigger('click')
+    await panel.get('button[aria-label="处理数量变化 EX-INCREASE"]').trigger('click')
+    await flushPromises()
     expect(wrapper.get('input[aria-label="追加订单数量"]').element.value).toBe('60')
     expect(wrapper.get('textarea[aria-label="追加订单原因"]').element.value).toContain('EX-INCREASE')
     await wrapper.get('button[aria-label="关闭追加订单"]').trigger('click')
 
     await panel.get('button[aria-label="按提醒新建 EX-MISSING"]').trigger('click')
+    await flushPromises()
     expect(wrapper.text()).toContain('新建纸箱合同订单')
     expect(wrapper.get('input[aria-label="合同号"]').element.value).toBe('SC-BUSINESS-MISSING')
     expect(wrapper.get('input[aria-label="货号"]').element.value).toBe('ITEM-MISSING')
@@ -4804,7 +5008,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.get('textarea[aria-label="订单备注"]').element.value).toContain('EX-MISSING')
     await wrapper.get('button[aria-label="关闭新建订单"]').trigger('click')
 
-    await panel.get('button[aria-label="查看订单 EX-DECREASE"]').trigger('click')
+    await panel.get('button[aria-label="处理数量变化 EX-DECREASE"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('当前没有可直接减少的未入库量')
     expect(wrapper.find('textarea[aria-label="订单取消退单原因"]').exists()).toBe(false)
@@ -4833,6 +5037,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(panel.text()).toContain('已下单后退单')
     expect(panel.text()).not.toContain('开始处理')
     await panel.get('button[aria-label="核实退单 EX-CANCELLED"]').trigger('click')
+    await flushPromises()
     expect(wrapper.text()).toContain('已下单业务订单转入取消单区')
     wrapper.unmount()
   })
@@ -5028,6 +5233,56 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.text()).toContain('最终锁账须由有权限的主管执行')
   })
 
+  it('renders schedule pages of 50 rows from the lightweight order index', async () => {
+    mockReceiptWorkspace([])
+    mockWeeklySchedule(Array.from({ length: 101 }, (_, i) => pendingScheduleFixture(`LARGE-${i}`, i + 4)))
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    expect(wrapper.findAll('.weekly-schedule-table tbody tr')).toHaveLength(50)
+    expect(cartonApiMock.scheduleOrders).toHaveBeenCalledWith('huaxing')
+    expect(cartonApiMock.listReceipts).not.toHaveBeenCalled()
+    await wrapper.get('[aria-label="排期下一页"]').trigger('click')
+    expect(wrapper.findAll('.weekly-schedule-table tbody tr')).toHaveLength(50)
+    await wrapper.get('[aria-label="排期下一页"]').trigger('click')
+    expect(wrapper.findAll('.weekly-schedule-table tbody tr')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('does not replace a newer schedule detail with an older response', async () => {
+    const orders = ['DETAIL-A', 'DETAIL-B'].map(number => ({ ...orderFixture(number, businessDateOffset(3)),
+      item_no: 'ITEM-SCHEDULE', customer_po: `PO-SC-${number}` }))
+    mockReceiptWorkspace(orders)
+    mockWeeklySchedule(orders.map((order, i) => pendingScheduleFixture(order.contract_no, i + 4,
+      { order_id: order.id, match_status: 'MATCHED' })))
+    let resolveA!: (rows: typeof orders) => void
+    cartonApiMock.selectedOrders.mockImplementation((_factory: string, numbers: string[]) => numbers[0] === 'DETAIL-A'
+      ? new Promise(resolve => { resolveA = resolve }) : Promise.resolve([orders[1]]))
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    await wrapper.get('[aria-label="排期下单 SC-DETAIL-A ITEM-SCHEDULE"]').trigger('click')
+    await wrapper.get('[aria-label="排期下单 SC-DETAIL-B ITEM-SCHEDULE"]').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="order-detail-overlay"]').text()).toContain('DETAIL-B')
+    resolveA([orders[0]!]); await flushPromises()
+    expect(wrapper.get('[data-testid="order-detail-overlay"]').text()).toContain('DETAIL-B')
+    expect(wrapper.get('[data-testid="order-detail-overlay"]').text()).not.toContain('DETAIL-A')
+    wrapper.unmount()
+  })
+
+  it('loads 50 orders at a time and preserves a selected order across pages without loading other ledgers', async () => {
+    mockReceiptWorkspace(Array.from({ length: 51 }, (_, i) => orderFixture(`PAGE-${i}`, businessDateOffset(3))))
+    const wrapper = mountView('orders'); await flushPromises()
+    expect(wrapper.findAll('[data-order-no]')).toHaveLength(50)
+    expect(cartonApiMock.listReceipts).not.toHaveBeenCalled()
+    expect(cartonApiMock.listMovements).not.toHaveBeenCalled()
+    await wrapper.get('[aria-label="选择订单 PAGE-0"]').setValue(true)
+    await wrapper.get('[aria-label="订单分页"]').findAll('button')[1]!.trigger('click'); await flushPromises()
+    expect(wrapper.findAll('[data-order-no]')).toHaveLength(1)
+    expect(wrapper.find('[data-order-no="PAGE-50"]').exists()).toBe(true)
+    expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 1')
+    expect(cartonApiMock.selectedOrders).toHaveBeenCalledWith('huaxing', ['PAGE-0'])
+    await wrapper.get('[aria-label="订单分页"]').findAll('button')[0]!.trigger('click'); await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[aria-label="选择订单 PAGE-0"]').element.checked).toBe(true)
+    wrapper.unmount()
+  })
+
   it('keeps hidden order selections explicit and supports product search and clearing', async () => {
     mockReceiptWorkspace([{ ...orderFixture('FILTER-A', businessDateOffset(3)), product_name: '消防车' }, orderFixture('FILTER-B', businessDateOffset(4))])
     const wrapper = mountView('orders'); await flushPromises()
@@ -5037,6 +5292,7 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.find('[data-order-no="FILTER-B"]').exists()).toBe(false)
     expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('其中 1 张不在当前筛选内')
     await wrapper.get('[aria-label="清空订单筛选"]').trigger('click')
+    await flushPromises()
     expect(wrapper.find('[data-order-no="FILTER-B"]').exists()).toBe(true)
     await findButton(wrapper, '清空选择').trigger('click')
     expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 0')

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from contextvars import ContextVar
+from contextlib import contextmanager
 import re
 import unicodedata
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -23,11 +26,22 @@ from app.services.carton_schedule_tracking import identity as schedule_identity,
 
 MAX_IMPORT_ROWS = 5_000
 MAX_PREVIEW_ROWS = 500
+_prepared_sheets = ContextVar("carton_prepared_sheets", default=None)
+
+
+@contextmanager
+def prepared_sheets(filename, content, sheets):
+    token = _prepared_sheets.set((filename, hashlib.sha256(content).digest(), sheets))
+    try:
+        yield
+    finally:
+        _prepared_sheets.reset(token)
+
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
-DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v8-material-check"
-SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-so-identity-v3"
-INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v2"
+DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v9-complete"
+SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-so-identity-v4-complete"
+INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v3-complete"
 PACKAGING_TYPES = (
     "普通箱",
     "压线卡",
@@ -202,6 +216,10 @@ def _inspection_start_date(value: Any, reference_date: date) -> date | None:
 
 def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = False,
                 strict_row_limit: int | None = None) -> list[tuple[str, list[list[Any]], int]]:
+    prepared = _prepared_sheets.get()
+    if prepared is not None and not strict_item_limit and strict_row_limit is None \
+            and prepared[:2] == (filename, hashlib.sha256(content).digest()):
+        return list(prepared[2])
     suffix = Path(filename).suffix.lower()
     if suffix in {".xlsx", ".xlsm"}:
         try:
@@ -212,12 +230,19 @@ def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = Fals
             raise HTTPException(status_code=422, detail=f"无法读取 Excel 文件：{exc}") from exc
         result: list[tuple[str, list[list[Any]], int]] = []
         try:
-            for sheet in workbook.worksheets:
+            sheets = workbook.worksheets
+            if strict_item_limit:
+                # The ITEM contract excludes duplicate summary sheets. Select
+                # before materializing cells, not after reading the whole book.
+                sheets = [sheet for sheet in sheets if "item" in sheet.title.casefold()] or sheets
+            for sheet in sheets:
                 if strict_row_limit and sheet.max_row > strict_row_limit:
                     raise HTTPException(422, f"送货工作表“{sheet.title}”超过 {strict_row_limit} 行，请拆分文件后导入")
                 if strict_item_limit and "item" in sheet.title.casefold() and sheet.max_row > MAX_IMPORT_ROWS:
                     raise HTTPException(422, f"ITEM 工作表“{sheet.title}”超过 {MAX_IMPORT_ROWS} 行，请拆分或清理空白格式后导入")
-                rows = [list(row) for row in sheet.iter_rows(values_only=True, max_row=MAX_IMPORT_ROWS)]
+                if sheet.max_row > MAX_IMPORT_ROWS + 1 or sheet.max_column > 256:
+                    raise HTTPException(422, f"工作表“{sheet.title}”超过 5000 条明细或 256 列，请拆分或清理空白格式后导入；本次未导入任何行")
+                rows = [list(row) for row in sheet.iter_rows(values_only=True)]
                 result.append((sheet.title, rows, 1 if workbook.epoch.year == 1904 else 0))
         finally:
             workbook.close()
@@ -229,17 +254,22 @@ def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = Fals
             workbook = xlrd.open_workbook(file_contents=content, formatting_info=False)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"无法读取旧版 XLS 文件：{exc}") from exc
-        if strict_row_limit and any(sheet.nrows > strict_row_limit for sheet in workbook.sheets()):
+        sheets = workbook.sheets()
+        if strict_item_limit:
+            sheets = [sheet for sheet in sheets if "item" in sheet.name.casefold()] or sheets
+        if any(sheet.nrows > MAX_IMPORT_ROWS + 1 or sheet.ncols > 256 for sheet in sheets):
+            raise HTTPException(422, "工作表超过 5000 条明细或 256 列，请拆分后导入；本次未导入任何行")
+        if strict_row_limit and any(sheet.nrows > strict_row_limit for sheet in sheets):
             raise HTTPException(422, f"送货工作表超过 {strict_row_limit} 行，请拆分文件后导入")
         if strict_item_limit and any("item" in sheet.name.casefold() and sheet.nrows > MAX_IMPORT_ROWS for sheet in workbook.sheets()):
             raise HTTPException(422, f"ITEM 工作表超过 {MAX_IMPORT_ROWS} 行，请拆分后导入")
         return [
             (
                 sheet.name,
-                [sheet.row_values(index) for index in range(min(sheet.nrows, MAX_IMPORT_ROWS))],
+                [sheet.row_values(index) for index in range(sheet.nrows)],
                 workbook.datemode,
             )
-            for sheet in workbook.sheets()
+            for sheet in sheets
         ]
     raise HTTPException(status_code=422, detail="该导入类型需要 Excel 文件")
 
@@ -805,9 +835,8 @@ def _parse_weekly(filename: str, content: bytes) -> dict[str, Any]:
                     "inspection_window": _text(_cell(row, mapping, "inspection_window")),
                 }
             )
-            if len(parsed) >= MAX_PREVIEW_ROWS:
-                warnings.append(f"导入预览最多显示 {MAX_PREVIEW_ROWS} 行，其余行未进入本批次")
-                return {"rows": parsed, "warnings": warnings, "engine": "excel-header-mapping"}
+            if len(parsed) > MAX_IMPORT_ROWS:
+                raise HTTPException(422, f"排期超过 {MAX_IMPORT_ROWS} 条明细，请拆分文件；本次未导入任何行")
     if not parsed:
         raise HTTPException(status_code=422, detail="未在文件中找到可识别的每周查货排期明细")
     return {"rows": parsed, "warnings": warnings, "engine": "excel-header-mapping"}
@@ -860,9 +889,8 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
                 if not item_no:
                     parsed_row.update(match_status="REVIEW_REQUIRED", suggestion="客户料号为空；请对照送货单补齐货号后人工匹配，不按合同号自动关联")
             parsed.append(parsed_row)
-            if len(parsed) >= MAX_PREVIEW_ROWS:
-                warnings.append(f"导入预览最多显示 {MAX_PREVIEW_ROWS} 行，其余行未进入本批次")
-                return {"rows": parsed, "warnings": warnings, "engine": "excel-header-mapping"}
+            if len(parsed) > (MAX_PREVIEW_ROWS if strict_rows else MAX_IMPORT_ROWS):
+                raise HTTPException(422, "送货明细超过本批次上限，请拆分文件；本次未导入任何行")
     if not parsed:
         raise HTTPException(status_code=422, detail="未在文件中找到可识别的送货或入库明细")
     return {"rows": parsed, "warnings": warnings, "engine": "excel-header-mapping"}
@@ -967,15 +995,28 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
             )
         ).all()
     )
-    all_joined = joined
+    # Build candidate buckets once. Normalization and scanning all order lines
+    # for every source row made otherwise small SQL reads quadratic in Python.
+    by_id = defaultdict(list)
+    indexes = {}
+    for mode, normalize in (("plain", _identity), ("item", lambda value: _text(value).casefold()),
+                            ("delivery", _dongkang_identity)):
+        exact_index, contract_index, item_index = defaultdict(list), defaultdict(list), defaultdict(list)
+        for line, order in joined:
+            contract, item = normalize(order.contract_no), normalize(order.item_no)
+            exact_index[(contract, item)].append((line, order))
+            contract_index[contract].append((line, order))
+            item_index[item].append((line, order))
+        indexes[mode] = (exact_index, contract_index, item_index)
+    for line, order in joined:
+        by_id[order.id].append((line, order))
     counts = Counter(schedule_identity(row) for row in rows if tracked(row))
     for row in rows:
-        scoped_joined = [(line, order) for line, order in all_joined
-                         if not row.get("schedule_customer_code") or order.customer_code == row["schedule_customer_code"]]
         linked_ids = (schedule_order_links or {}).get(schedule_identity(row), []) if (
             import_type == "WEEKLY_SCHEDULE" and tracked(row) and counts[schedule_identity(row)] == 1
         ) else []
-        linked_pairs = [(line, order) for line, order in scoped_joined if order.id in linked_ids
+        linked_pairs = [(line, order) for identifier in linked_ids for line, order in by_id[identifier]
+                        if (not row.get("schedule_customer_code") or order.customer_code == row["schedule_customer_code"])
                         and order.contract_no.strip().casefold() == str(row.get("contract_no") or "").strip().casefold()
                         and order.item_no.strip().casefold() == str(row.get("item_no") or "").strip().casefold()]
         linked_orders = {order.id: order for _, order in linked_pairs}
@@ -1001,8 +1042,10 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                 continue
         po_key = str((row.get("source_reference") if row.get("template") == "unified-item" and row.get("source_reference")
                       else row.get("customer_po")) or "").strip().casefold()
-        joined = [(line, order) for line, order in scoped_joined
-                  if (order.id in linked_ids if linked_ids else not po_key or order.customer_po.strip().casefold() == po_key)]
+        def scoped(pairs):
+            return [(line, order) for line, order in pairs
+                    if (not row.get("schedule_customer_code") or order.customer_code == row["schedule_customer_code"])
+                    and (order.id in linked_ids if linked_ids else not po_key or order.customer_po.strip().casefold() == po_key)]
         if row.get("template") == "unified-item":
             identity = lambda value: _text(value).casefold()
         elif row.get("template") == "dongkang-delivery":
@@ -1011,23 +1054,18 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
             identity = _identity
         contract_key = identity(row.get("contract_no"))
         item_key = identity(row.get("item_no"))
-        exact = [
-            (line, order)
-            for line, order in joined
-            if contract_key
-            and item_key
-            and identity(order.contract_no) == contract_key
-            and identity(order.item_no) == item_key
-        ]
+        mode = "item" if row.get("template") == "unified-item" else "delivery" if row.get("template") == "dongkang-delivery" else "plain"
+        exact_index, contract_index, item_index = indexes[mode]
+        exact = scoped(exact_index.get((contract_key, item_key), ())) if contract_key and item_key else []
         candidates = exact
         basis = "合同号 + 货号" if exact else ""
         if not candidates and contract_key and row.get("template") not in {"unified-item", "dongkang-delivery"}:
-            by_contract = [(line, order) for line, order in joined if _identity(order.contract_no) == contract_key]
+            by_contract = scoped(contract_index.get(contract_key, ()))
             if len({order.id for _, order in by_contract}) == 1:
                 candidates = by_contract
                 basis = "合同号"
         if not candidates and item_key and row.get("template") not in {"unified-item", "dongkang-delivery"}:
-            by_item = [(line, order) for line, order in joined if _identity(order.item_no) == item_key]
+            by_item = scoped(item_index.get(item_key, ()))
             if len({order.id for _, order in by_item}) == 1:
                 candidates = by_item
                 basis = "唯一货号"
@@ -1204,8 +1242,15 @@ def parse_carton_import(
     filename: str,
     content: bytes,
     options: dict[str, Any] | None = None,
+    *, parsed_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     options = options or {}
+    parsed = parsed_source if parsed_source is not None else parse_carton_file(import_type, filename, content)
+    return match_carton_import(db, factory_id, import_type, parsed, options)
+
+
+def parse_carton_file(import_type: str, filename: str, content: bytes) -> dict[str, Any]:
+    """Pure file computation; safe to run without a database in a child process."""
     suffix = Path(filename).suffix.lower()
     if import_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
         parsed = _parse_weekly(filename, content)
@@ -1213,6 +1258,12 @@ def parse_carton_import(
         parsed = _parse_delivery_spreadsheet(filename, content)
     else:
         parsed = _parse_delivery_document(filename, content)
+    if len(parsed.get("rows", [])) > MAX_IMPORT_ROWS:
+        raise HTTPException(422, f"文件超过 {MAX_IMPORT_ROWS} 条明细，请拆分文件；本次未导入任何行")
+    return parsed
+
+
+def match_carton_import(db, factory_id, import_type, parsed, options):
     rows = parsed.get("rows", [])
     if import_type == "WEEKLY_SCHEDULE" and options.get("customer_code"):
         parsed["schedule_customer"] = {"customer_code": options["customer_code"], "customer_name": options["customer_name"]}

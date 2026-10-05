@@ -1,6 +1,8 @@
 """Huakang A's customer extensions to the September unified schedule."""
 from __future__ import annotations
 
+from app.services.sparse_worksheet import insert_rows as insert_sparse_rows
+
 from copy import copy
 from decimal import Decimal, ROUND_CEILING
 import re
@@ -160,7 +162,7 @@ def _insert_rows(workbook, target, start, amount):
     merges = [CellRange(str(r)) for r in target.merged_cells.ranges if r.max_row >= start]
     for merged in merges:
         target.unmerge_cells(str(merged))
-    target.insert_rows(start, amount)
+    insert_sparse_rows(target, start, amount)
     _shift_target_sheet_structures(target, start, amount, merges)
     for sheet, old_row, column, value in formulas:
         new_row = old_row + amount if sheet is target and old_row >= start else old_row

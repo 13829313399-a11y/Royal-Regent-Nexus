@@ -38,11 +38,11 @@ def test_dongkang_delivery_sheet_maps_business_keys_and_requires_correct_factory
     order = SimpleNamespace(id="O-1", order_no="O-1", contract_no="C-1", item_no="I-1", customer_po="",
                             customer_code="D", customer_name="D", status="PENDING_SUPPLIER")
     line = SimpleNamespace(id="L-1", order_id="O-1", packaging_type="普通箱", paper_quality="A=B",
-                           specification="18*12.5*17.25", required_quantity=100, unit="个", unit_price=2, currency="CNY")
+                           specification="18*12.5*17.25", dimension_unit="cm", required_quantity=100, unit="个", unit_price=2, currency="CNY")
     chinese_order = SimpleNamespace(id="O-2", order_no="O-2", contract_no="C-1", item_no="超人斗篷", customer_po="",
                                     customer_code="D", customer_name="D", status="PENDING_SUPPLIER")
     chinese_line = SimpleNamespace(id="L-2", order_id="O-2", packaging_type="普通箱", paper_quality="A=B",
-                                   specification="18*12.5*17.25", required_quantity=7, unit="个", unit_price=2, currency="CNY")
+                                   specification="18*12.5*17.25", dimension_unit="cm", required_quantity=7, unit="个", unit_price=2, currency="CNY")
     class FakeDB:
         def execute(self, _query):
             return SimpleNamespace(all=lambda: [(line, order), (chinese_line, chinese_order)])

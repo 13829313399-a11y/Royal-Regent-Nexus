@@ -49,3 +49,24 @@ it('undoes the entire import batch with factory and reason and no row selection'
     factory_id: 'huaxing', reason: '本次导入文件有误',
   })
 })
+
+it('polls a file job before completing it and never writes after parser failure', async () => {
+  vi.useFakeTimers()
+  get.mockReset(); post.mockReset()
+  try {
+    post.mockResolvedValueOnce({ data: { id: 'J', status: 'PROCESSING' } })
+      .mockResolvedValueOnce({ data: { id: 'BATCH' } })
+    get.mockResolvedValueOnce({ data: { id: 'J', status: 'PROCESSING' } })
+      .mockResolvedValueOnce({ data: { id: 'J', status: 'READY' } })
+    const pending = cartonProcurementApi.uploadWeeklySchedule('huakang-b', new File(['xlsx'], 'schedule.xlsx'), 'TEST')
+    await vi.advanceTimersByTimeAsync(750)
+    expect(post).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(750)
+    expect(await pending).toEqual({ id: 'BATCH' })
+    expect(post.mock.calls[1]).toEqual(['/carton-procurement/file-jobs/J/complete', null,
+      { params: { factory_id: 'huakang-b' }, timeout: 60_000 }])
+    post.mockReset().mockResolvedValueOnce({ data: { id: 'FAIL', status: 'FAILED', error: '文件超限，整批未导入' } })
+    await expect(cartonProcurementApi.uploadReceipt('huakang-b', new File(['bad'], 'bad.xlsx'))).rejects.toThrow('文件超限')
+    expect(post).toHaveBeenCalledTimes(1)
+  } finally { vi.useRealTimers() }
+})
