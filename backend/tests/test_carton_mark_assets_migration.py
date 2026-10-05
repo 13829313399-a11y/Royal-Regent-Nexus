@@ -16,7 +16,7 @@ def _run_alembic(url, *arguments):
 def test_asset_migration_backfills_originals_deduplicates_and_refuses_data_loss(tmp_path):
     path = tmp_path / "asset-migration.db"
     url = f"sqlite:///{path.as_posix()}"
-    result = _run_alembic(url, "upgrade", "20261005_0131")
+    result = _run_alembic(url, "upgrade", "20261005_0134")
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as db:
         for index, contract in enumerate(("4500222793", "SC-OTHER")):
@@ -34,7 +34,7 @@ def test_asset_migration_backfills_originals_deduplicates_and_refuses_data_loss(
                   (f"doc-{index}-{kind}", f"template-{index}", kind, "source.xlsx" if kind == "source_excel" else "print.pdf",
                    "application/octet-stream", len(content), hashlib.sha256(content).hexdigest(), content))
         before = db.execute("SELECT id, check_status, check_result_json FROM carton_mark_templates ORDER BY id").fetchall()
-    result = _run_alembic(url, "upgrade", "20261005_0132")
+    result = _run_alembic(url, "upgrade", "20261005_0135")
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT id, check_status, check_result_json FROM carton_mark_templates ORDER BY id").fetchall() == before
@@ -44,7 +44,7 @@ def test_asset_migration_backfills_originals_deduplicates_and_refuses_data_loss(
         foreign_keys = db.execute("PRAGMA foreign_key_list(carton_mark_assets)").fetchall()
         assert any(row[3] == "bound_order_id" and row[6] == "SET NULL" for row in foreign_keys)
         assert any(row[3] == "factory_id" and row[4] == "factory_id" for row in foreign_keys)
-    result = _run_alembic(url, "downgrade", "20261005_0131")
+    result = _run_alembic(url, "downgrade", "20261005_0134")
     assert result.returncode != 0 and "RuntimeError" in result.stderr
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM carton_mark_assets").fetchone()[0] == 2

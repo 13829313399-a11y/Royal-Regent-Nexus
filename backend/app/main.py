@@ -23,6 +23,7 @@ from app.api.iam import router as iam_router
 from app.api.identity import router as identity_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.injection_scheduling import router as injection_scheduling_router
+from app.api.module_feedback import router as module_feedback_router
 from app.api.customer_price_settings import router as customer_price_settings_router
 from app.api.internal_quote import (
     customer_price_artifact_router,
@@ -201,6 +202,7 @@ app.include_router(customer_order_ledger_router)
 app.include_router(directory_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
+app.include_router(module_feedback_router)
 app.include_router(customer_price_settings_router)
 app.include_router(indonesia_invoice_router)
 app.include_router(injection_scheduling_router)
