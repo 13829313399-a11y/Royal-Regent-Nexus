@@ -1,11 +1,82 @@
 import { describe, it, expect } from 'vitest';
 import { createCanvas } from 'canvas';
 import { resolve } from 'node:path';
-import { prepareRegions, renderDocument, splitRuledRegion, splitMixedWords, registerDocumentFont, type Region } from '../../server/documentTypeset';
+import { prepareRegions, renderDocument, splitRuledRegion, splitMixedWords, verifiedWordParts, documentWordCrops, documentOcrRetry, acceptDocumentOcrRetry, registerDocumentFont, type Region } from '../../server/documentTypeset';
 
 registerDocumentFont(resolve('server/dist'));
 const region=(text:string,x:number,width:number):Region=>({id:text,sourceText:text,box:{x,y:40,width,height:30},prob:.99,method:'native'});
 describe('document-safe typesetting',()=>{
+  it('verifies a faint cut separator from pixels and retains numeric and material code pixels',()=>{
+    const source=createCanvas(400,130),c=source.getContext('2d');
+    c.fillStyle='white';c.fillRect(0,0,400,130);c.fillStyle='black';c.font='24px Arial';
+    c.fillText('Cut',20,64);c.fillText('2',85,64);c.fillRect(120,53,8,2);c.fillText('BR',150,64);c.fillText('Tricot',210,64);
+    const parent={...region('Cut 2 - BR Tricot',18,280),method:'ocr',direction:'h'};
+    const parts=[region('',18,48),region('',80,25),region('',115,20),region('',145,40),region('',205,90)].map((r,i)=>({...r,id:`part-${i}`,method:'ocr'}));
+    const recognized=new Map(parts.filter((_,i)=>i!==2).map((r,i)=>[r.id,{...r,sourceText:['Cut','2','BR','Tricot'][i],prob:.99}]));
+    recognized.get(parts[0].id)!.direction='v';
+    const verified=verifiedWordParts(source,parent,parts,recognized)!;
+    expect(verified.map(r=>r.sourceText)).toEqual(['Cut','2','-','BR','Tricot']);
+    expect(verified[0].direction).toBe('h');
+    const regions=prepareRegions(verified,'en_to_zh');
+    regions[0].translatedText='裁';regions[4].translatedText='经编布';
+    const output=renderDocument(source,regions).getContext('2d');
+    expect(regions[0].rendered).toBe(true);expect(regions[4].rendered).toBe(true);
+    for(const [x,width] of [[78,30],[113,25],[143,44]])expect(output.getImageData(x,35,width,40).data).toEqual(c.getImageData(x,35,width,40).data);
+    recognized.set(parts[1].id,{...parts[1],sourceText:'3',prob:.999});
+    expect(verifiedWordParts(source,parent,parts,recognized)).toBeUndefined();
+    c.clearRect(115,40,20,30);
+    expect(verifiedWordParts(source,parent,parts,recognized)).toBeUndefined();
+  });
+  it('retries low-contrast captions on a copy and rejects changed quantities',()=>{
+    const source=createCanvas(400,130),c=source.getContext('2d');
+    c.fillStyle='#221f20';c.fillRect(0,0,400,130);c.fillStyle='#e41345';c.font='24px Arial';c.fillText('EYE',20,64);
+    const before=source.toBuffer();
+    const parent={...region('EYE',18,62),method:'ocr',prob:.96};
+    const retry=documentOcrRetry(source,[parent,{...region('Q91075',200,95),method:'ocr'},region('HEAD',100,70)]);
+    expect(retry.regions).toHaveLength(1);expect(source.toBuffer()).toEqual(before);
+    const data=retry.canvas.getContext('2d').getImageData(18,40,62,30).data;
+    expect(Array.from(data).some(v=>v===0)).toBe(true);expect(Array.from(data).some(v=>v===255)).toBe(true);
+    expect(retry.regions[0].fgColor?.[0]).toBeGreaterThan(150);expect(retry.regions[0].fgColor?.[1]).toBeLessThan(70);
+    const cut={...parent,sourceText:'Cut 2 - White Plus!'};
+    expect(acceptDocumentOcrRetry(cut,{...parent,sourceText:'Cut 2 - White Plush',prob:.99})).toBe(true);
+    expect(acceptDocumentOcrRetry(cut,{...parent,sourceText:'Cut 3 - White Plush',prob:.999})).toBe(false);
+    expect(acceptDocumentOcrRetry(cut,{...parent,sourceText:'Cut 2 - White Plush',prob:.96})).toBe(false);
+    expect(acceptDocumentOcrRetry({...cut,sourceText:'Cut 2 Q91075 Plush'},{...parent,sourceText:'Cut 2 R91075 Plush',prob:.999})).toBe(false);
+    expect(documentOcrRetry(source,[{...parent,sourceText:''}]).regions).toHaveLength(1);
+    expect(documentOcrRetry(source,[{...parent,prob:.999}]).regions).toHaveLength(0);
+  });
+  it('includes a clipped material suffix for recognition without expanding into adjacent quantities',()=>{
+    const source=createCanvas(400,120),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,400,120);
+    c.fillStyle='black';c.fillRect(260,45,4,12);c.fillRect(269,45,5,12);
+    const word={...region('Plush',200,60),method:'ocr'},neighbor=region('2',269,20);
+    const crops=documentWordCrops(source,[word],[neighbor]);
+    const b=crops[0].box;
+    expect(b.x+b.width).toBeGreaterThanOrEqual(264);expect(b.x+b.width).toBeLessThan(269);
+    expect(word.box).toEqual({x:200,y:40,width:60,height:30});
+  });
+  it('accepts a verified material suffix only for cut captions while quantities and material codes stay fixed',()=>{
+    const source=createCanvas(400,130),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,400,130);
+    const parts=['Cut','2','BR','Plush'].map((text,i)=>({...region(text,20+i*80,70),id:`part-${i}`,method:'ocr',prob:.99}));
+    const recognized=new Map(parts.map(r=>[r.id,r]));
+    expect(verifiedWordParts(source,region('Cut 2 BR Plus!',20,310),parts,recognized)?.map(r=>r.sourceText)).toEqual(['Cut','2','BR','Plush']);
+    expect(verifiedWordParts(source,region('Quantity 2 BR Plus!',20,310),parts,recognized)).toBeUndefined();
+    expect(verifiedWordParts(source,region('Cut 3 BR Plus!',20,310),parts,recognized)).toBeUndefined();
+    expect(verifiedWordParts(source,region('Cut 2 PVC Plus!',20,310),parts,recognized)).toBeUndefined();
+    recognized.set(parts[3].id,{...parts[3],prob:.96});
+    expect(verifiedWordParts(source,region('Cut 2 BR Plus!',20,310),parts,recognized)).toBeUndefined();
+  });
+  it('allows captions next to detected direction arrows without erasing the arrow',()=>{
+    const source=createCanvas(220,170),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,220,170);
+    c.fillStyle='#d21941';c.font='24px Arial';c.fillText('ARM',30,64);
+    c.fillStyle='black';c.fillRect(58,76,2,50);
+    const label={...region('ARM',28,62),method:'ocr'};
+    const arrow={...region('<>',48,25),box:{x:48,y:68,width:25,height:68},method:'ocr'};
+    const regions=prepareRegions([label,arrow],'en_to_zh');
+    expect(regions[0].skipReason).toBeUndefined();expect(regions[1].skipReason).toBe('diagram');
+    regions[0].translatedText='手臂';const output=renderDocument(source,regions);
+    expect(regions[0].rendered).toBe(true);
+    expect(output.getContext('2d').getImageData(47,67,27,70).data).toEqual(c.getImageData(47,67,27,70).data);
+  });
   it('translates ordinary colored captions while retaining color codes and uncertain OCR',()=>{
     const colored=(text:string):Region=>({...region(text,20,180),method:'ocr',fgColor:[210,25,65]});
     for(const text of ['FRONT','Collar must be present','Show a definite']) {
@@ -25,6 +96,27 @@ describe('document-safe typesetting',()=>{
     const pixels=d.getImageData(20,40,180,30).data;
     expect(Array.from({length:pixels.length/4},(_,i)=>[pixels[i*4],pixels[i*4+1],pixels[i*4+2]])
       .some(rgb=>rgb[0]===210&&rgb[1]===25&&rgb[2]===65)).toBe(true);
+  });
+  it('retains the curved edge of a dark piece surrounding a red caption',()=>{
+    const source=createCanvas(180,100),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,180,100);
+    c.fillStyle='#221f20';c.beginPath();c.ellipse(65,48,45,17,0,0,Math.PI*2);c.fill();
+    c.fillStyle='#e41345';c.font='20px Arial';c.fillText('EYE',40,56);
+    // A measured OCR foreground can differ from the saturated glyph center.
+    const r={...region('EYE',40,50),box:{x:40,y:35,width:50,height:25},method:'ocr',fgColor:[205,60,77],translatedText:'一'};
+    const output=renderDocument(source,[r]);expect(r.rendered).toBe(true);
+    const before=c.getImageData(0,0,180,100).data,after=output.getContext('2d').getImageData(0,0,180,100).data;
+    for(let y=0;y<100;y++)for(let x=0;x<180;x++) {
+      if(x>=39&&x<=91&&y>=34&&y<=61)continue;
+      const p=(y*180+x)*4;expect(after.slice(p,p+4)).toEqual(before.slice(p,p+4));
+    }
+    const remaining=output.getContext('2d').getImageData(66,35,24,25).data;
+    expect(Array.from({length:remaining.length/4},(_,i)=>remaining[i*4]-remaining[i*4+1]).some(v=>v>60)).toBe(false);
+  });
+  it('isolates a separator joined to a cut quantity without leaving Cut protected',()=>{
+    const source=createCanvas(250,120),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,250,120);
+    c.fillStyle='black';c.font='24px Arial';c.fillText('Cut',20,64);c.fillText('2',85,64);c.fillRect(120,53,8,2);
+    const parts=splitMixedWords(source,{...region('Cut 2-',18,115),method:'ocr'});
+    expect(parts).toHaveLength(3);
   });
   it('cuts uppercase captions with fractions at actual word gaps for verified re-OCR',()=>{
     const source=createCanvas(500,120),c=source.getContext('2d');
