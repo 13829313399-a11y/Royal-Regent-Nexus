@@ -41,17 +41,19 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v28"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v30"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 136
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 129
-    assert len(permission_codes.UV_PRINTING_PERMISSION_CODES) == 13
-    assert len(permission_codes.SPRAY_PRODUCTION_PERMISSION_CODES) == 12
+    assert len(registered_codes) == 148
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 141
+    assert len(permission_codes.UV_OPS_PERMISSION_CODES) == 18
+    assert all(not (set(definition.permission_codes) & set(permission_codes.UV_OPS_PERMISSION_CODES)) for definition in definitions)
+    assert len(permission_codes.SPRAY_OPS_PERMISSION_CODES) == 14
+    assert all(not (set(definition.permission_codes) & set(permission_codes.SPRAY_OPS_PERMISSION_CODES)) for definition in definitions)
     assert len(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES) == 7
     for definition in definitions:
         assert len(definition.permission_codes) == len(set(definition.permission_codes))
@@ -95,8 +97,13 @@ def test_fixed_system_position_definition_contract():
     assert set(general_manager.permission_codes) == positions.GENERAL_MANAGER_PERMISSION_CODES
     assert positions.GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES == frozenset(
         (
+            "customer_price:settings_read",
+            "customer_price:settings_manage",
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
+            *permission_codes.SPRAY_OPS_PERMISSION_CODES,
+            *permission_codes.UV_OPS_PERMISSION_CODES,
+            *permission_codes.CARTON_SUPPLIER_PERMISSION_CODES,
         )
     )
     assert not any(
@@ -190,10 +197,6 @@ def test_fixed_system_position_definition_contract():
     assert "internal_quote:painting_review" not in painting_clerk.permission_codes
     assert "internal_quote:painting_review" in painting_supervisor.permission_codes
     assert painting_manager.permission_codes == painting_supervisor.permission_codes
-    assert 'spray_production:report' in painting_clerk.permission_codes
-    assert 'spray_production:cost_read' not in painting_clerk.permission_codes
-    assert 'spray_production:cost_write' not in painting_clerk.permission_codes
-    assert set(permission_codes.SPRAY_PRODUCTION_PERMISSION_CODES) <= set(painting_manager.permission_codes)
 
     molding_clerk = positions.get_system_position("position_molding_clerk")
     molding_supervisor = positions.get_system_position("position_molding_supervisor")

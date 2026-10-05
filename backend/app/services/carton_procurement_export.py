@@ -214,12 +214,14 @@ def build_purchase_order_issue_batch_workbook(
     issues: list[CartonPurchaseOrderIssue],
     *,
     generated_at: datetime,
+    batch_document_no: str = "",
 ) -> bytes:
     workbook = Workbook()
     workbook.properties.creator = "Royal Regent Nexus"
-    workbook.properties.title = f"供应商采购单发行批次（{len(issues)} 份）"
+    workbook.properties.title = (f"{batch_document_no} 合并采购单" if batch_document_no
+                                 else f"供应商采购单发行批次（{len(issues)} 份）")
     sheet = workbook.active
-    sheet.title = "供应商采购单批次"
+    sheet.title = "合并采购单" if batch_document_no else "供应商采购单批次"
     sheet.sheet_view.showGridLines = False
     sheet.freeze_panes = "A6"
 
@@ -229,20 +231,21 @@ def build_purchase_order_issue_batch_workbook(
     white = "FFFFFF"
     thin = Side(style="thin", color="CBD5E1")
     sheet.merge_cells("A1:Q1")
-    sheet["A1"] = f"Royal Regent Nexus · {FACTORY_NAMES.get(issues[0].factory_id, issues[0].factory_id)}供应商采购单发行批次"
+    sheet["A1"] = f"Royal Regent Nexus · {FACTORY_NAMES.get(issues[0].factory_id, issues[0].factory_id)}{'合并采购单' if batch_document_no else '供应商采购单发行批次'}"
     sheet["A1"].font = Font(name="Microsoft YaHei", size=18, bold=True, color=white)
     sheet["A1"].fill = PatternFill("solid", fgColor=teal_dark)
     sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
     sheet.row_dimensions[1].height = 34
     sheet.merge_cells("A2:Q2")
-    sheet["A2"] = "每个采购单号均为独立固定快照；供应商只执行“本次箱数变化”，累计数量仅供核对。"
+    sheet["A2"] = (f"合并采购单号：{batch_document_no} · 每张原订单明细分别保留，按各行本次数量执行。" if batch_document_no
+                    else "每个采购单号均为独立固定快照；供应商只执行“本次箱数变化”，累计数量仅供核对。")
     sheet["A2"].font = Font(name="Microsoft YaHei", size=10, bold=True, color=teal_dark)
     sheet["A2"].fill = PatternFill("solid", fgColor=teal_light)
     sheet["A2"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     sheet.merge_cells("A4:H4")
     sheet["A4"] = f"批次生成时间：{generated_at.strftime('%Y-%m-%d %H:%M')}"
     sheet.merge_cells("I4:Q4")
-    sheet["I4"] = f"独立采购单：{len(issues)} 份"
+    sheet["I4"] = f"包含订单：{len(issues)} 张" if batch_document_no else f"独立采购单：{len(issues)} 份"
 
     headers = [
         "序号", "采购单号", "单据类型", "原合同订单号", "客户", "合同号", "货号", "计划交期",
@@ -590,6 +593,14 @@ def build_combined_purchase_order_workbook(
 
     current_row = 8
     line_count = 0
+    body_font = Font(name="Microsoft YaHei", size=9, color="0F172A")
+    body_border = Border(left=thin, right=thin, bottom=thin)
+    order_border = Border(left=thin, right=thin, top=medium, bottom=thin)
+    stripe_fill = PatternFill("solid", fgColor="F8FAFC")
+    body_alignment = {column: Alignment(
+        horizontal="center" if column in {1, 7, 8, 15} else "right" if column in {9, 13, 14} else "left",
+        vertical="center", wrap_text=column in {3, 4, 5, 6, 12},
+    ) for column in range(1, 17)}
     for order_index, (order, lines) in enumerate(orders, start=1):
         for line_index, line in enumerate(lines, start=1):
             values = [
@@ -612,15 +623,11 @@ def build_combined_purchase_order_workbook(
             ]
             for column, value in enumerate(values, start=1):
                 cell = sheet.cell(row=current_row, column=column, value=value)
-                cell.font = Font(name="Microsoft YaHei", size=9, color="0F172A")
-                cell.alignment = Alignment(
-                    horizontal="center" if column in {1, 7, 8, 15} else "right" if column in {9, 13, 14} else "left",
-                    vertical="center",
-                    wrap_text=column in {3, 4, 5, 6, 12},
-                )
-                cell.border = Border(left=thin, right=thin, bottom=thin)
+                cell.font = body_font
+                cell.alignment = body_alignment[column]
+                cell.border = order_border if line_index == 1 else body_border
                 if order_index % 2 == 0:
-                    cell.fill = PatternFill("solid", fgColor="F8FAFC")
+                    cell.fill = stripe_fill
             sheet.cell(row=current_row, column=14, value=float(line.required_quantity) if getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" else f"=ROUNDUP(I{current_row}/M{current_row},0)")
             sheet.cell(row=current_row, column=9).number_format = (
                 "#,##0" if order.product_order_quantity is not None and order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
@@ -629,14 +636,6 @@ def build_combined_purchase_order_workbook(
                 "#,##0" if line.usage_quantity is not None and line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
             )
             sheet.cell(row=current_row, column=14).number_format = "#,##0"
-            if line_index == 1:
-                for column in range(1, 17):
-                    sheet.cell(row=current_row, column=column).border = Border(
-                        left=thin,
-                        right=thin,
-                        top=medium,
-                        bottom=thin,
-                    )
             sheet.row_dimensions[current_row].height = 28
             current_row += 1
             line_count += 1

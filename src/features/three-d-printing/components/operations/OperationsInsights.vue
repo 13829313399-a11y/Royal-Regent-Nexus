@@ -8,6 +8,7 @@ const {
   metrics,
   percent,
   analyze,
+  analyzing,
   prepare,
   applyAdvice,
   loading,
@@ -17,8 +18,9 @@ const {
   <div class="panel-card p-5">
     <div class="section-heading">
       <h2>排程建议与运行统计</h2>
-      <button class="action-button secondary" @click="analyze">重新计算</button>
+      <button class="action-button secondary" :disabled="analyzing" :aria-busy="analyzing" @click="analyze">{{ analyzing ? '正在计算…' : '重新计算' }}</button>
     </div>
+    <p v-if="analyzing" role="status">正在汇总设备历史，记录较多时需要稍候。</p>
     <p>{{ adviceMessage }}</p>
     <article
       v-for="item in advice"

@@ -26,6 +26,7 @@ from app.models.auth import (
     EmployeeProfile,
     SystemNotification,
 )
+from app.models.carton_supplier_portal import SupplierShipment
 from app.schemas.system import (
     PasswordResetApproveOut,
     PasswordResetMatchedUserOut,
@@ -49,10 +50,12 @@ from app.services.auth import (
     add_auth_audit,
     build_auth_context,
     can,
+    has_permission_in_scope,
     mark_password_reset_notification_handled,
     now_text,
     time_window_is_active,
 )
+from app.services import carton_supplier_notifications as shipment_notifications
 from app.services.iam_scope import OWN_FACTORY_SCOPE
 from app.services.permission_scope_policy import role_scope_policy, scope_is_applicable
 from app.services.system_positions import (
@@ -76,6 +79,8 @@ PASSWORD_RESET_CLAIM_HOURS = 4
 
 
 def is_superadmin(current_user: AuthContext) -> bool:
+    if not can(current_user, "system:user_manage", "*", "*"):
+        return False
     return any(
         grant.role_code == "admin"
         and grant.factory_id == "*"
@@ -112,25 +117,43 @@ def ensure_user_manage(
 def target_user_scopes(db: Session, user_id: str) -> set[tuple[str, str]]:
     scopes: set[tuple[str, str]] = set()
     profile = db.get(EmployeeProfile, user_id)
-    if profile and profile.primary_factory_id and profile.primary_department:
+    if profile and profile.identity_mode == "v2":
+        from app.services.identity_resolver import resolve_identity_at
+        identity = resolve_identity_at(db, user_id)
+        scopes.update((a["factory_id"] or a["org_unit_id"], a["department_code"]) for a in identity["assignments"]
+                      if a["state"] in {"current", "scheduled"} and a["employment_epoch"] == profile.employment_epoch)
+    elif profile and profile.primary_factory_id and profile.primary_department:
         scopes.add((profile.primary_factory_id, profile.primary_department))
-    bindings = db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user_id)).all()
-    for binding in bindings:
-        metadata = db.get(AuthRoleBindingMetadata, binding.id)
-        if metadata and (
-            metadata.state != "active"
-            or not time_window_is_active(metadata.valid_from, metadata.valid_until)
-        ):
-            continue
-        scopes.add((binding.factory_id, binding.department))
+    from app.services.identity_policy import additional_source_scopes
+    scopes.update(additional_source_scopes(db, [user_id]).get(user_id, set()))
     return scopes
 
 
+def target_users_scopes(db: Session, user_ids) -> dict[str, set[tuple[str, str]]]:
+    """Batch equivalent of target_user_scopes for queues, including future grants."""
+    from app.models.identity import EmployeeAssignment, IamOrgUnit
+    from app.services.identity_resolver import assignment_dict, utc_now
+    from app.services.identity_policy import additional_source_scopes
+    profiles = {p.user_id: p for p in db.scalars(select(EmployeeProfile).where(EmployeeProfile.user_id.in_(user_ids)))}
+    result = additional_source_scopes(db, user_ids)
+    for p in profiles.values():
+        if p.identity_mode != "v2" and p.primary_factory_id and p.primary_department:
+            result.setdefault(p.user_id, set()).add((p.primary_factory_id, p.primary_department))
+    at = utc_now()
+    for a, org in db.execute(select(EmployeeAssignment, IamOrgUnit).join(IamOrgUnit).where(EmployeeAssignment.user_id.in_(user_ids))):
+        profile = profiles.get(a.user_id)
+        if profile and profile.identity_mode == "v2" and a.employment_epoch == profile.employment_epoch:
+            item = assignment_dict(a, org, at)
+            if item["state"] in {"current", "scheduled"}:
+                result.setdefault(a.user_id, set()).add((item["factory_id"] or item["org_unit_id"], item["department_code"]))
+    return result
+
+
 def can_manage_target_user(db: Session, current_user: AuthContext, user_id: str) -> bool:
-    if is_superadmin(current_user):
-        return True
     scopes = target_user_scopes(db, user_id)
-    return bool(scopes) and all(
+    if not scopes:
+        return is_superadmin(current_user)
+    return all(
         can(current_user, "system:user_manage", factory_id, department)
         for factory_id, department in scopes
     )
@@ -292,6 +315,9 @@ def approve_registration_request(
     payload: RegistrationApproveRequest,
     request: Request | None = None,
 ) -> RegistrationRequestOut:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     if payload.system_position_role_id.strip() or payload.profile is not None:
         return approve_registration_with_system_position(
             db,
@@ -453,6 +479,9 @@ def approve_registration_request(
 
     user.status = "active"
     user.updated_at = now
+    from app.services.identity_registration import enroll_approved_registration
+    db.flush()
+    enroll_approved_registration(db, user, profile, registration_request, current_user)
     registration_request.status = "approved"
     registration_request.reviewer_user_id = current_user.id
     registration_request.review_comment = payload.review_comment.strip()
@@ -485,6 +514,14 @@ def approve_registration_with_system_position(
     payload: RegistrationApproveRequest,
     request: Request | None = None,
 ) -> RegistrationRequestOut:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
+    if payload.profile and payload.profile.org_unit_id:
+        from app.services.identity_registration import registration_org, approve_functional_registration
+        approved_org = registration_org(db, payload.profile.factory_id, payload.profile.org_unit_id, payload.profile.department)
+        if approved_org.kind == "functional_unit":
+            return approve_functional_registration(db, current_user, load_registration_request(db, request_id), payload)
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
     ensure_user_manage(
@@ -714,6 +751,7 @@ def approve_registration_with_system_position(
         profile = EmployeeProfile(user_id=user.id, created_at=now)
         db.add(profile)
     profile.primary_factory_id = factory_id
+    profile.primary_org_unit_id = factory_id
     profile.primary_department = department
     profile.position = position
     profile.phone = phone
@@ -731,6 +769,9 @@ def approve_registration_with_system_position(
     registration_request.factory_id = factory_id
     registration_request.department = department
     registration_request.position = position
+    from app.services.identity_registration import enroll_approved_registration
+    db.flush()
+    enroll_approved_registration(db, user, profile, registration_request, current_user)
     registration_request.status = "approved"
     registration_request.reviewer_user_id = current_user.id
     registration_request.review_comment = payload.review_comment.strip()
@@ -762,6 +803,9 @@ def reject_registration_request(
     payload: RegistrationRejectRequest,
     request: Request | None = None,
 ) -> RegistrationRequestOut:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
     ensure_user_manage(
@@ -829,6 +873,9 @@ def update_user_status(
     payload: UserStatusUpdateRequest,
     request: Request | None = None,
 ) -> UserOut:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     ensure_manage_target_user(db, current_user, user_id)
     next_status = payload.status.strip()
     if next_status not in {"active", "suspended"}:
@@ -843,8 +890,26 @@ def update_user_status(
         if active_admin_count <= 1:
             raise HTTPException(status_code=400, detail="不能停用最后一个集团超级管理员")
 
+    from app.services.identity_changes import revoke_sessions
+    from app.services.identity_policy import ensure_admin_survives, fail
+    profile = db.get(EmployeeProfile, user_id)
+    if profile and profile.employment_status == "left":
+        fail("REHIRE_REQUIRED", "离职人员须重新确认任职后复职")
+    if next_status == "suspended":
+        revoke_sessions(db, user_id)
+    if profile:
+        profile.employment_status = "frozen" if next_status == "suspended" else "active"
+        profile.identity_version += 1
+    if db.get(AuthUserAuthorizationRevision, user_id) is None:
+        # Shared IAM lock above serializes legacy sidecar initialization.
+        db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=0, updated_at=now_text()))
+        db.flush()
+    revision = lock_authorization_revision(db, user_id)
+    increment_authorization_revision(revision, now_text())
     user.status = next_status
     user.updated_at = now_text()
+    db.flush()
+    ensure_admin_survives(db)
     add_auth_audit(
         db,
         "user_status_updated",
@@ -980,6 +1045,9 @@ def open_password_reset_claim_window(
     action: str,
     request: Request | None = None,
 ) -> PasswordResetApproveOut:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     reset_request = load_password_reset_request_for_update(db, current_user, request_id)
     if not reset_request.claim_token_hash:
         raise HTTPException(
@@ -1108,6 +1176,9 @@ def reject_password_reset_request(
     payload: PasswordResetReviewRequest,
     request: Request | None = None,
 ) -> PasswordResetRequestOut:
+    from app.services.identity_policy import lock_mutation, fresh_actor
+    lock_mutation(db)
+    current_user = fresh_actor(db, current_user.id)
     reset_request = load_password_reset_request_for_update(db, current_user, request_id)
     if reset_request.status != "pending":
         raise HTTPException(status_code=409, detail="仅待审核申请可以驳回")
@@ -1161,11 +1232,16 @@ def list_system_notifications(
             )
         )
     notifications = db.scalars(statement.order_by(SystemNotification.created_at.desc())).all()
-    return [
-        notification_to_out(notification)
-        for notification in notifications
-        if can_access_notification(db, current_user, notification)
-    ]
+    if "carton_procurement:read" in current_user.permissions:
+        notifications.extend(shipment_notifications.legacy_pending_notifications(
+            db, {row.id for row in notifications}, changed_after))
+        legacy_reversed = shipment_notifications.legacy_reversed_notifications(db, changed_after)
+        overrides = {row.id: row for row in legacy_reversed}
+        notifications = [row for row in notifications if row.id not in overrides] + legacy_reversed
+    notifications.sort(key=lambda row: (row.created_at, row.id), reverse=True)
+    from app.services.work_center.compatibility import system_out
+    return system_out(db, current_user, [notification for notification in notifications
+        if can_access_notification(db, current_user, notification)])
 
 
 def update_system_notification(
@@ -1175,32 +1251,30 @@ def update_system_notification(
     payload: SystemNotificationUpdateRequest,
 ) -> SystemNotificationOut:
     notification = db.get(SystemNotification, notification_id)
+    if notification is None and notification_id.startswith(shipment_notifications.NOTIFICATION_PREFIX):
+        shipment_id = notification_id[len(shipment_notifications.NOTIFICATION_PREFIX):]
+        shipment = db.get(SupplierShipment, shipment_id)
+        legacy = next((row for row in shipment_notifications.legacy_reversed_notifications(db)
+            if row.id == notification_id), None)
+        if shipment is not None and (shipment.status == "SENT" or legacy):
+            candidate = legacy or shipment_notifications.notification_for(shipment)
+            if can_access_notification(db, current_user, candidate):
+                notification = shipment_notifications.create_notification(db, shipment)
     if notification is None:
         raise HTTPException(status_code=404, detail="通知不存在")
     if not can_access_notification(db, current_user, notification):
         raise HTTPException(status_code=403, detail="无权处理该通知")
 
+    from app.services.work_center.compatibility import personal_read, system_out
     status = payload.status.strip()
     if status not in {"read", "handled"}:
-        raise HTTPException(status_code=400, detail="通知状态只能设置为 read 或 handled")
-    if (
-        notification.type in {"internal_quote", "password_reset"}
-        and status == "handled"
-        and notification.status != "handled"
-    ):
-        raise HTTPException(status_code=409, detail="该通知由对应业务流程自动处理")
-
-    if notification.status == "handled":
-        return notification_to_out(notification)
-
-    now = now_text()
-    notification.status = status
-    if status in {"read", "handled"} and not notification.read_at:
-        notification.read_at = now
-    if status == "handled":
-        notification.handled_at = now
+        raise HTTPException(400, "通知状态只能设置为 read 或 handled")
+    if status == "handled" and notification.status != "handled":
+        raise HTTPException(409, "通知不再提供通用完成操作，请在对应业务中处理")
+    personal_read(db, current_user, "system", notification.id)
     db.commit()
-    return notification_to_out(notification)
+    return system_out(db, current_user, [notification])[0]
+
 
 
 def load_registration_request(db: Session, request_id: str) -> AuthRegistrationRequest:
@@ -1329,6 +1403,12 @@ def notification_target_scope(
     if notification.type == "password_reset":
         reset_request_id = str(payload.get("password_reset_request_id") or "").strip()
         reset_request = db.get(AuthPasswordResetRequest, reset_request_id) if reset_request_id else None
+        matched_user_id = reset_request.user_id if reset_request else str(payload.get("matched_user_id") or "").strip()
+        if matched_user_id:
+            from app.services.identity_resolver import resolve_identity_at
+            identity = resolve_identity_at(db, matched_user_id)
+            if identity["identity_mode"] == "v2":
+                return (identity["primary_factory_id"] or "*", identity["primary_department"] or "system")
         if reset_request and reset_request.factory_id and reset_request.department:
             if not reset_request.user_id:
                 return None
@@ -1336,9 +1416,10 @@ def notification_target_scope(
         matched_user_id = str(payload.get("matched_user_id") or "").strip()
         if not matched_user_id:
             return None
-        profile = db.get(EmployeeProfile, matched_user_id)
-        if profile and profile.primary_factory_id and profile.primary_department:
-            return profile.primary_factory_id, profile.primary_department
+        from app.services.identity_resolver import resolve_identity_at
+        identity = resolve_identity_at(db, matched_user_id)
+        if identity["primary_factory_id"] and identity["primary_department"]:
+            return identity["primary_factory_id"], identity["primary_department"]
         if target_factory_id and target_department:
             return target_factory_id, target_department
         return None
@@ -1368,6 +1449,24 @@ def can_access_notification(
     current_user: AuthContext,
     notification: SystemNotification,
 ) -> bool:
+    if notification.type == "password_reset":
+        source_id = str(parse_payload(notification.payload_json).get("password_reset_request_id") or "")
+        source = db.get(AuthPasswordResetRequest, source_id)
+        return bool(source and can_access_password_reset_request(db, current_user, source))
+    if notification.type == "internal_quote":
+        from app.models.internal_quote import InternalQuote
+        from app.services.internal_quote import ALL_QUOTE_DEPARTMENTS
+        from app.services.business_authz import has_permission_for_departments
+        source = db.get(InternalQuote, str(parse_payload(notification.payload_json).get("quote_id") or ""))
+        if source is None or not has_permission_for_departments(current_user, "internal_quote:read", source.factory_id, ALL_QUOTE_DEPARTMENTS):
+            return False
+    if notification.type == shipment_notifications.NOTIFICATION_TYPE:
+        shipment = db.get(SupplierShipment, str(parse_payload(notification.payload_json).get("shipment_id") or ""))
+        if shipment is None or shipment.factory_id != notification.target_factory_id:
+            return False
+        return all(any(has_permission_in_scope(current_user, permission, shipment.factory_id, department)
+            for department in ("pmc-warehouse", "carton")) for permission in (
+                "carton_procurement:read", "carton_procurement:receipt_write", "carton_procurement:inventory_write"))
     if notification.target_user_id and notification.target_user_id == current_user.id:
         return True
     if not notification.target_permission:
@@ -1401,7 +1500,7 @@ def can_access_notification(
     )
     if notification.type == "password_reset":
         return canonical_result
-    if settings.authz_mode == "enforce":
+    if settings.authz_mode == "enforce" or (current_user.identity and current_user.identity["identity_mode"] == "v2"):
         return canonical_result
 
     legacy_factory_id = notification.target_factory_id.strip()
@@ -1483,6 +1582,7 @@ def registration_request_to_out(registration_request: AuthRegistrationRequest) -
         phone=registration_request.phone,
         email=registration_request.email,
         factory_id=registration_request.factory_id,
+        org_unit_id=registration_request.org_unit_id or registration_request.factory_id,
         department=registration_request.department,
         position=registration_request.position,
         status=registration_request.status,
@@ -1497,7 +1597,8 @@ def registration_request_to_out(registration_request: AuthRegistrationRequest) -
 
 
 def user_to_out(db: Session, user: AuthUser) -> UserOut:
-    all_user_roles = db.scalars(select(AuthUserRole).where(AuthUserRole.user_id == user.id)).all()
+    from app.services.iam import _active_bindings
+    all_user_roles = _active_bindings(db, user.id)
     user_roles = []
     for user_role in all_user_roles:
         metadata = db.get(AuthRoleBindingMetadata, user_role.id)
@@ -1513,6 +1614,8 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
     } if user_roles else {}
     phone, email = latest_registration_contact(db, user.id)
     profile = db.get(EmployeeProfile, user.id)
+    from app.services.identity_resolver import resolve_identity_at
+    identity = resolve_identity_at(db, user.id)
     system_position_roles = sorted(
         [
             roles_by_id[item.role_id]
@@ -1549,9 +1652,9 @@ def user_to_out(db: Session, user: AuthUser) -> UserOut:
             )
             for user_role in user_roles
         ],
-        primary_factory_id=profile.primary_factory_id if profile else "",
-        primary_department=profile.primary_department if profile else "",
-        position=profile.position if profile else "",
+        primary_factory_id=identity["primary_factory_id"],
+        primary_department=identity["primary_department"],
+        position=identity["position"],
         system_position_role_id=system_position_role.id if system_position_role else "",
         system_position_role_name=system_position_role.name if system_position_role else "",
     )
@@ -1563,6 +1666,8 @@ def password_reset_request_to_out(
 ) -> PasswordResetRequestOut:
     user = db.get(AuthUser, reset_request.user_id) if reset_request.user_id else None
     profile = db.get(EmployeeProfile, user.id) if user else None
+    from app.services.identity_resolver import resolve_identity_at
+    identity = resolve_identity_at(db, user.id) if user else {}
     matched_user = None
     if user is not None:
         matched_user = PasswordResetMatchedUserOut(
@@ -1570,9 +1675,9 @@ def password_reset_request_to_out(
             username=user.username,
             display_name=user.display_name,
             status=user.status,
-            factory_id=profile.primary_factory_id if profile else "",
-            department=profile.primary_department if profile else "",
-            position=profile.position if profile else "",
+            factory_id=identity["primary_factory_id"],
+            department=identity["primary_department"],
+            position=identity["position"],
             phone=profile.phone if profile else "",
             email=profile.email if profile else "",
         )
@@ -1585,9 +1690,9 @@ def password_reset_request_to_out(
         "contact": bool(profile)
         and normalized_contact
         in {profile.phone.strip().casefold(), profile.email.strip().casefold()} - {""},
-        "scope": bool(profile)
-        and profile.primary_factory_id == reset_request.factory_id
-        and profile.primary_department == reset_request.department,
+        "scope": bool(identity)
+        and identity["primary_factory_id"] == reset_request.factory_id
+        and identity["primary_department"] == reset_request.department,
     }
     output_status = reset_request.status
     if reset_request.claim_token_hash is None and output_status in {"pending", "approved", "expired"}:

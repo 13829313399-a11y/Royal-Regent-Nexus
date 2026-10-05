@@ -21,6 +21,8 @@ export const useAppStore = defineStore('app', {
     activeFactoryId: 'group' as FactoryContextId,
     authenticatedFactoryContext: null as AuthenticatedFactoryContext | null,
     requestedFactoryId: null as FactoryContextId | null,
+    preserveFactoryDuringRefresh: false,
+    pendingPrimaryFactoryId: null as FactoryContextId | null,
     activeDepartmentId: 'engineering' as ModuleDepartmentId,
     selectedApprovalId: approvalRows[0]?.id ?? '',
     isRouteLoading: false,
@@ -52,6 +54,13 @@ export const useAppStore = defineStore('app', {
     },
   },
   actions: {
+    pinBusinessFactoryContext(pinned: boolean) {
+      this.preserveFactoryDuringRefresh = pinned
+      if (!pinned && this.pendingPrimaryFactoryId) {
+        this.activeFactoryId = this.pendingPrimaryFactoryId
+        this.pendingPrimaryFactoryId = null
+      }
+    },
     // Record the destination without changing the visible context before authentication.
     // Session/profile updates also use this hint so a deep link stays authoritative.
     setRequestedFactoryContext(value: unknown) {
@@ -70,9 +79,14 @@ export const useAppStore = defineStore('app', {
       if (this.requestedFactoryId) {
         this.activeFactoryId = this.requestedFactoryId
       } else if (needsInitialization) {
-        this.activeFactoryId = primaryFactoryId && isFactoryContextId(primaryFactoryId)
+        const nextFactory = primaryFactoryId && isFactoryContextId(primaryFactoryId)
           ? primaryFactoryId
           : 'group'
+        if (this.preserveFactoryDuringRefresh && previous?.userId === context.userId) {
+          this.pendingPrimaryFactoryId = nextFactory
+        } else {
+          this.activeFactoryId = nextFactory
+        }
       }
 
       if (needsInitialization) {
@@ -82,6 +96,7 @@ export const useAppStore = defineStore('app', {
     resetAuthenticatedFactoryContext() {
       this.authenticatedFactoryContext = null
       this.requestedFactoryId = null
+      this.pendingPrimaryFactoryId = null
       this.activeFactoryId = 'group'
     },
     setActiveFactory(factoryId: FactoryContextId) {

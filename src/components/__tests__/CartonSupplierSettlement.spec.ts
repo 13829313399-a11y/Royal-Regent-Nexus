@@ -20,10 +20,112 @@ const document = (): SettlementDocument => ({
   created_at: '', updated_at: '', confirmed_at: '', confirmed_by: '', reopen_reason: '', stale: false,
 })
 const button = (w: ReturnType<typeof mount>, text: string) => w.findAll('button').find(b => b.text() === text)!
+function collaborativeWorkspace(): SupplierWorkspace {
+  const ws = workspace(), source = { ...ws.sources[0]!, supplier_delivery: { shipment_id: 'SHIP1', line_id: 'SL1', document_no: 'DELIVERY-1', delivery_date: '2026-09-30', quantity: '10', unit_price: '2', amount: '20.00', currency: 'CNY', received_quantity: '10', damaged_quantity: '0', rejected_quantity: '0', unusable_quantity: '0', difference_reason: '', quantity_difference: '0', price_difference: '0' } }
+  ws.collaboration = { sources: [source], source_fingerprint: 'c'.repeat(64), unsettled_shipments: [], lines: document().statement.lines }
+  return ws
+}
 afterEach(() => vi.useRealTimers())
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-01T04:00:00Z')); vi.resetAllMocks(); mocks.can.mockReturnValue(true); vi.mocked(api.workspace).mockResolvedValue(workspace()) })
 
 describe('供应商月结对账', () => {
+  it('shows one bilateral workflow with normal data read-only and opens adjustment only on the selected line', async () => {
+    vi.mocked(api.workspace).mockResolvedValue(collaborativeWorkspace())
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(w.get('[aria-label="双方月结流程"]').text()).toContain('1 · 本厂核对并保存')
+    expect(w.get('[aria-label="双方月结流程"]').text()).toContain('2 · 供应商核对确认')
+    expect(w.get('[aria-label="双方月结流程"]').text()).toContain('3 · 本厂完成月结')
+    expect(w.find('[aria-label="账单数量 L1"]').exists()).toBe(false)
+    expect(w.get('[aria-label="拟结算明细 L1"]').text()).toContain('10 个')
+    expect(w.get('thead').text()).toContain('供应商原送货本厂有效验收拟结算')
+    await w.get('[aria-label="处理结算明细 L1"]').trigger('click')
+    expect(w.get<HTMLInputElement>('[aria-label="账单数量 L1"]').element.value).toBe('10')
+    expect(button(w, '放弃未保存内容')).toBeUndefined()  // Opening the row does not change business data.
+    await w.get('[aria-label="账单金额 L1"]').setValue('18')
+    expect(button(w, '放弃未保存内容')).toBeDefined()
+    expect(w.get('[aria-label="双方月结流程"]').text()).toContain('修改待保存')
+    expect(w.get('[aria-label="双方月结流程"]').text()).toContain('更新后须重新确认')
+    w.unmount()
+  })
+  it('keeps a completed collaborative version read-only and shows its previous confirmation evidence', async () => {
+    const ws = collaborativeWorkspace(), doc = document()
+    doc.status = 'SUPERSEDED'; doc.statement.origin = 'COLLABORATION'; doc.sources = ws.collaboration!.sources
+    doc.result.supplier_review = { decision: 'CONFIRMED', reason: '双方确认原凭证', by: 'VENDOR', at: '2026-11-01', fingerprint: 'x' }
+    ws.documents = [doc]; vi.mocked(api.workspace).mockResolvedValue(ws)
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(w.text()).toContain('历史版本 · 只读')
+    expect(w.get('[aria-label="双方月结确认状态"]').text()).toContain('历史确认记录')
+    expect(w.text()).toContain('供应商已确认 · 2026-11-01')
+    expect(w.find('[aria-label="处理结算明细 L1"]').exists()).toBe(false)
+    expect(w.find('[aria-label="账单金额 L1"]').exists()).toBe(false)
+    expect(button(w, '保存并核对差异')).toBeUndefined()
+    w.unmount()
+  })
+  it('marks a stale supplier acknowledgement as needing renewed confirmation in every current-version status', async () => {
+    const ws = collaborativeWorkspace(), doc = document()
+    doc.statement.origin = 'COLLABORATION'; doc.sources = ws.collaboration!.sources; doc.stale = true
+    doc.result.supplier_review = { decision: 'CONFIRMED', reason: '', by: 'VENDOR', at: '2026-11-01', fingerprint: 'x' }
+    ws.documents = [doc]; vi.mocked(api.workspace).mockResolvedValue(ws)
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(w.get('[aria-label="双方月结流程"]').text()).toContain('更新后须重新确认')
+    expect(w.get('[aria-label="双方月结确认状态"]').text()).toContain('须更新并保存后重新取得供应商确认')
+    expect(w.get('[aria-label="双方月结确认状态"]').text()).not.toContain('供应商已确认')
+    expect(button(w, '确认对账完成').attributes('disabled')).toBeDefined()
+    w.unmount()
+  })
+  it('converts an existing manual draft without erasing invoice identity, return evidence or unmatched vendor rows', async () => {
+    const ws = workspace(), doc = document()
+    doc.statement.statement_no = 'EXTERNAL-BILL'; doc.statement.tax_basis = 'EXCLUSIVE'
+    doc.statement.lines[0]!.note = '已有凭证依据'
+    doc.statement.lines.push({ ...doc.statement.lines[0]!, id: 'EXTRA', source_key: '', document_no: 'EXTRA-BILL' })
+    ws.documents = [doc]
+    ws.collaboration = { sources: ws.sources.map(row => ({ ...row, supplier_delivery: null })),
+      source_fingerprint: 'c'.repeat(64), unsettled_shipments: [], lines: doc.statement.lines.slice(0, 1).map(row => ({ ...row, quantity: null, unit_price: null, amount: null, note: '' })) }
+    vi.mocked(api.workspace).mockResolvedValue(ws); vi.mocked(api.save).mockResolvedValue(doc)
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await button(w, '接入双方对账').trigger('click')
+    expect(w.get<HTMLInputElement>('[aria-label="供应商账单号"]').element.value).toBe('EXTERNAL-BILL')
+    expect(w.get<HTMLInputElement>('[aria-label="账单金额 L1"]').element.value).toBe('20.00')
+    expect(w.get<HTMLInputElement>('[aria-label="未匹配送货单 EXTRA"]').element.value).toBe('EXTRA-BILL')
+    await button(w, '保存并核对差异').trigger('submit'); await flushPromises()
+    expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ id: doc.id, origin: 'COLLABORATION', statement_no: 'EXTERNAL-BILL', tax_basis: 'EXCLUSIVE', source_fingerprint: 'c'.repeat(64), lines: expect.arrayContaining([expect.objectContaining({ note: '已有凭证依据', amount: '20.00' })]) }))
+    w.unmount()
+  })
+  it('prefills independent vendor evidence and leaves unlinked historical receipts blank', async () => {
+    const ws = workspace()
+    const source = { ...ws.sources[0]!, quantity: '8', amount: '16', supplier_delivery: { shipment_id: 'SHIP1', line_id: 'SL1', document_no: 'DELIVERY-1', delivery_date: '2026-09-30', quantity: '10', unit_price: '2', amount: '20', currency: 'CNY', received_quantity: '8', damaged_quantity: '0', rejected_quantity: '0', unusable_quantity: '0', difference_reason: '原送货少到两件', quantity_difference: '2', price_difference: '0' } }
+    ws.collaboration = { sources: [source, { ...ws.sources[0]!, source_key: 'RECEIPT:HISTORY', document_no: 'HISTORY', supplier_delivery: null }], source_fingerprint: 'c'.repeat(64), unsettled_shipments: [{ shipment_id: 'PENDING', document_no: 'PENDING-NOTE', delivery_date: '2026-10-31', acceptance_date: null, status: 'SENT', reason: '待仓库验收' }], lines: [
+      { ...document().statement.lines[0]!, quantity: '10', amount: '20' },
+      { ...document().statement.lines[0]!, id: 'H1', source_key: 'RECEIPT:HISTORY', document_no: 'HISTORY', quantity: null, unit_price: null, amount: null },
+    ] }
+    vi.mocked(api.workspace).mockResolvedValue(ws)
+    const saved = document(); saved.statement.origin = 'COLLABORATION'; saved.sources = ws.collaboration.sources
+    saved.statement.lines = ws.collaboration.lines; saved.source_fingerprint = 'c'.repeat(64)
+    vi.mocked(api.save).mockResolvedValue(saved)
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(w.find('[aria-label="账单数量 L1"]').exists()).toBe(false)
+    expect(w.get('[aria-label="处理结算明细 L1"]').text()).toBe('处理差异')
+    await w.get('[aria-label="处理结算明细 L1"]').trigger('click')
+    expect(w.get<HTMLInputElement>('[aria-label="账单数量 L1"]').element.value).toBe('10')
+    expect(w.get<HTMLInputElement>('[aria-label="账单数量 H1"]').element.value).toBe('')
+    expect(w.text()).toContain('原送货少到两件'); expect(w.text()).toContain('PENDING-NOTE')
+    await button(w, '保存并核对差异').trigger('submit'); await flushPromises()
+    expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ origin: 'COLLABORATION', source_fingerprint: 'c'.repeat(64) }))
+    expect(button(w, '确认对账完成').attributes('disabled')).toBeDefined()
+    expect(w.text()).toContain('待供应商在供应商协同')
+    w.unmount()
+  })
+  it('requires supplier acknowledgement and invalidates the final button when an acknowledged draft is edited', async () => {
+    const ws = workspace(), doc = document(); doc.statement.origin = 'COLLABORATION'
+    doc.result.supplier_review = { decision: 'CONFIRMED', reason: '', by: 'VENDOR', at: '2026-11-01', fingerprint: 'x' }
+    ws.documents = [doc]; vi.mocked(api.workspace).mockResolvedValue(ws)
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(button(w, '确认对账完成').attributes('disabled')).toBeUndefined()
+    await w.get('[aria-label="账单金额 L1"]').setValue('21')
+    expect(button(w, '确认对账完成').attributes('disabled')).toBeDefined()
+    expect(w.text()).toContain('保存后需重新取得供应商确认')
+    w.unmount()
+  })
   it('leaves vendor values empty and uses acceptance month independently of the order date', async () => {
     const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
     expect(w.text()).toContain('2026-10-02'); expect(w.text()).toContain('SEP30')
@@ -84,6 +186,22 @@ describe('供应商月结对账', () => {
     expect(button(w, '核实验收日期 OLD')).toBeUndefined()
     expect(button(w, '保存并核对差异')).toBeUndefined()
     expect(w.get('input[aria-label^="账单数量"]').attributes('disabled')).toBeDefined()
+    w.unmount()
+  })
+  it('reports a saved acceptance date separately from its failed statement refresh', async () => {
+    const ws = workspace()
+    ws.undated_receipts = [{ receipt_id: 'R0', revision: 3, document_no: 'OLD', confirmed_at: '2026-09-01', acceptance_date: null }]
+    vi.mocked(api.workspace).mockResolvedValue(ws)
+    vi.mocked(api.acceptance).mockResolvedValue({})
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await button(w, '核实验收日期 OLD').trigger('click')
+    await w.get('[aria-label="补录实际验收日期"]').setValue('2026-10-02')
+    await w.get('[aria-label="验收日期核实依据"]').setValue('已核对仓库签收单')
+    vi.mocked(api.workspace).mockRejectedValueOnce(new Error('对账服务暂不可用'))
+    await button(w, '保存核实日期').trigger('submit'); await flushPromises()
+    expect(w.get('[role="alert"]').text()).toContain('验收日期已保存，但对账刷新失败：对账服务暂不可用')
+    expect(api.acceptance).toHaveBeenCalledTimes(1)
+    expect(w.find('[aria-label="补录实际验收日期"]').exists()).toBe(false)
     w.unmount()
   })
   it('ignores an old factory response arriving after switching factories', async () => {

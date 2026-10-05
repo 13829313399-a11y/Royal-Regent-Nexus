@@ -6,6 +6,25 @@ import { cartonProcurementApi } from '../cartonProcurement'
 const originalAdapter = http.defaults.adapter
 afterEach(() => { http.defaults.adapter = originalAdapter })
 
+it('sends the selected schedule customer with the untouched file and factory through Axios', async () => {
+  const requests: InternalAxiosRequestConfig[] = []
+  http.defaults.adapter = async config => {
+    requests.push(config)
+    return { data: { id: 'JOB-1', status: 'READY' }, status: 200, statusText: 'OK', headers: {}, config }
+  }
+  const file = new File(['schedule-test-bytes'], '业务排期.xlsx')
+  await cartonProcurementApi.uploadWeeklySchedule('huaxing', file, 'DICKIE')
+  const request = requests[0]!
+  expect(request.url).toBe('/carton-procurement/file-jobs/imports')
+  expect(request.params).toEqual({ factory_id: 'huaxing', import_type: 'WEEKLY_SCHEDULE', advance_days: 3 })
+  expect(request.data).toBeInstanceOf(FormData)
+  expect(request.data.get('file')).toBe(file)
+  expect(request.data.get('customer_code')).toBe('DICKIE')
+  expect(request.headers.getContentType()).toBe('multipart/form-data')
+  expect(requests[1]!.url).toBe('/carton-procurement/file-jobs/JOB-1/complete')
+  expect(requests[1]!.params).toEqual({ factory_id: 'huaxing' })
+})
+
 it('preserves Excel files through the real Axios transforms for previews and confirmation', async () => {
   const requests: InternalAxiosRequestConfig[] = []
   http.defaults.adapter = async (config) => {

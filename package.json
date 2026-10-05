@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
-    "dev:uv": "vite --host 127.0.0.1 --port 5181 --strictPort",
-    "build": "vue-tsc -b && vite build",
+    "build": "vue-tsc -b && vite build && npm run build:image-translation",
+    "build:image-translation": "node scripts/build-image-translation.mjs",
     "preview": "vite preview",
     "test:unit": "vitest run",
     "typecheck:app": "vue-tsc --noEmit -p tsconfig.app.json",

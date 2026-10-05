@@ -3,6 +3,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 
+# Register referenced identity tables for create_all and Alembic metadata.
+from app.models import identity as _identity_models  # noqa: F401
+
 
 class AuthUser(Base):
     __tablename__ = "auth_users"
@@ -98,6 +101,8 @@ class AuthAuditLog(Base):
 
 class AuthRegistrationRequest(Base):
     __tablename__ = "auth_registration_requests"
+    org_unit_id: Mapped[str] = mapped_column(String(64), default="")
+    declared_profile_json: Mapped[str] = mapped_column(Text, default="{}")
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("auth_users.id", ondelete="CASCADE"), index=True)
@@ -198,6 +203,12 @@ class EmployeeProfile(Base):
     primary_factory_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     primary_department: Mapped[str] = mapped_column(String(64), default="", index=True)
     position: Mapped[str] = mapped_column(String(128), default="")
+    primary_assignment_id: Mapped[str | None] = mapped_column(ForeignKey("employee_assignments.id"), nullable=True)
+    primary_org_unit_id: Mapped[str] = mapped_column(String(64), default="")
+    employment_status: Mapped[str] = mapped_column(String(16), default="active")
+    employment_epoch: Mapped[int] = mapped_column(Integer, default=1)
+    identity_version: Mapped[int] = mapped_column(Integer, default=0)
+    identity_mode: Mapped[str] = mapped_column(String(16), default="legacy", index=True)
     phone: Mapped[str] = mapped_column(String(64), default="")
     email: Mapped[str] = mapped_column(String(128), default="")
     confirmation_status: Mapped[str] = mapped_column(String(32), default="needs_review", index=True)
@@ -247,6 +258,10 @@ class AuthRoleBindingMetadata(Base):
         primary_key=True,
     )
     state: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    assignment_id: Mapped[str | None] = mapped_column(ForeignKey("employee_assignments.id"), nullable=True, index=True)
+    role_version_id: Mapped[str | None] = mapped_column(ForeignKey("iam_role_versions.id"), nullable=True)
+    scope_ceiling_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    employment_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_type: Mapped[str] = mapped_column(String(64), default="legacy_import", index=True)
     source_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     valid_from: Mapped[str] = mapped_column(String(32), default="")
@@ -275,6 +290,9 @@ class AuthUserPermissionOverride(Base):
         index=True,
     )
     effect: Mapped[str] = mapped_column(String(16), index=True)
+    assignment_id: Mapped[str | None] = mapped_column(ForeignKey("employee_assignments.id"), nullable=True, index=True)
+    lifecycle_policy: Mapped[str] = mapped_column(String(32), default="independent")
+    employment_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     factory_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     department: Mapped[str] = mapped_column(String(64), default="", index=True)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
@@ -321,6 +339,12 @@ class AuthAccessRequest(Base):
         index=True,
     )
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    request_type: Mapped[str] = mapped_column(String(48), default="access", index=True)
+    lifecycle_state: Mapped[str] = mapped_column(String(32), default="", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    effective_at: Mapped[str] = mapped_column(String(32), default="")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
     reason: Mapped[str] = mapped_column(Text, default="")
     base_revision: Mapped[int] = mapped_column(Integer, default=0)
     decision_by_user_id: Mapped[str] = mapped_column(String(64), default="", index=True)

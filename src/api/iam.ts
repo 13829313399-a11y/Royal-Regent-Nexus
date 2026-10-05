@@ -66,6 +66,10 @@ export interface EmployeeProfile {
 }
 
 export interface RoleBinding {
+  assignment_id?: string | null
+  role_version_id?: string | null
+  factory_ceiling?: string[] | null
+  employment_epoch?: number | null
   id: string
   role_id: string
   role_code: string
@@ -104,6 +108,8 @@ export interface EffectiveAccessEntry {
 export interface UserAccessResponse {
   user: IamUserSummary
   profile: EmployeeProfile | null
+  // Older servers omit this field; absence must not be interpreted as legacy.
+  identity_mode?: 'legacy' | 'v2'
   authorization_version: number
   role_bindings: RoleBinding[]
   overrides: UserPermissionOverride[]

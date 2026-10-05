@@ -606,3 +606,71 @@ def test_analytics_counts_quantity_and_clips_cross_window_runs(environment):
     assert row["occupied_hours"] == pytest.approx(6, abs=0.01)
     assert row["performance"] == pytest.approx(1)
     assert row["availability"] == pytest.approx(0.25, abs=0.001)
+
+
+def test_analytics_streams_projected_telemetry_before_execution(environment, monkeypatch):
+    """Large payloads and multiple batches must not be buffered in the API process."""
+    from datetime import timedelta
+    from sqlalchemy import event as sql_event
+
+    env = environment
+    ref = session(env)
+    efficiency = importlib.import_module("app.services.three_d_efficiency")
+    now = env[4][0]
+    monkeypatch.setattr(efficiency, "business_now", lambda: now)
+    with env[1].SessionLocal() as db:
+        # More than two fetch batches, a genuine telemetry gap, and a second printer.
+        start = now - timedelta(hours=2)
+        for n in range(1201):
+            observed = start + timedelta(seconds=n)
+            db.add(env[2].ThreeDPrintingPrinterStateEvent(
+                id=f"bulk-{n}", factory_id="huakang-a", printer_id=env[5][0],
+                connector_instance_id=env[3].instance_key(ref["instance_id"]),
+                machine_no=1, connection_session_id="bulk", sequence=n,
+                observed_at=observed.isoformat(), received_at=observed.isoformat(),
+                state="PAUSE", raw_payload_json=json.dumps({"large": "x" * 8000}),
+            ))
+        db.add(env[2].ThreeDPrintingPrinterStateEvent(
+            id="after-gap", factory_id="huakang-a", printer_id=env[5][0],
+            connector_instance_id=env[3].instance_key(ref["instance_id"]),
+            machine_no=1, connection_session_id="bulk", sequence=1201,
+            observed_at=now.isoformat(), received_at=now.isoformat(),
+            state="RUNNING", error_code="E1", temperatures_json='{"nozzle":350}',
+        ))
+        db.commit()
+
+    streamed = []
+    def inspect_query(_conn, _cursor, statement, _params, context, _many):
+        if "FROM three_d_printing_printer_state_events" not in statement:
+            return
+        assert context.execution_options.get("stream_results") is True
+        assert context.execution_options.get("yield_per") == 500
+        assert "raw_payload_json" not in statement
+        assert "current_file" not in statement
+        streamed.append(True)
+
+    sql_event.listen(env[1].engine, "before_cursor_execute", inspect_query)
+    try:
+        with env[1].SessionLocal() as db:
+            result = efficiency.counters(db, 1)
+    finally:
+        sql_event.remove(env[1].engine, "before_cursor_execute", inspect_query)
+    assert streamed
+    assert result[1]["pause_hours"] == 0.33
+    assert result[1]["observed_hours"] == 0.33
+    assert result[1]["error_events"] == 1
+    assert result[1]["temperature_alarm_events"] == 1
+    assert result[2]["observed_hours"] == 0
+
+
+def test_analytics_query_timeout_returns_retryable_error(environment, monkeypatch):
+    from sqlalchemy.exc import DBAPIError
+    service = importlib.import_module("app.services.three_d_operations")
+    def timed_out(*_args):
+        original = Exception("statement timeout")
+        original.sqlstate = "57014"
+        raise DBAPIError("SELECT", {}, original)
+    monkeypatch.setattr(service, "analytics", timed_out)
+    response = environment[0].get(BASE + "/analytics")
+    assert response.status_code == 503
+    assert "计算超时" in response.json()["detail"]

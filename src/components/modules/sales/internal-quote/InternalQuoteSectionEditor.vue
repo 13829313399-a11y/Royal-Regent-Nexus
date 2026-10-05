@@ -263,6 +263,7 @@ let resolveUnsavedPrompt: ((choice: UnsavedNavigationChoice) => void) | undefine
 let pendingUnsavedPrompt: Promise<UnsavedNavigationChoice> | undefined
 
 const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: string }> = {
+  sealed: { label: '已输出并冻结', tone: 'green' },
   draft: { label: '草稿', tone: 'slate' }, pending_review: { label: '待业务审核人审核', tone: 'amber' },
   approved: { label: '审核通过', tone: 'green' }, rejected: { label: '已退回', tone: 'red' },
   na_pending: { label: '不适用待审', tone: 'amber' }, not_applicable: { label: '不适用', tone: 'slate' },
@@ -273,6 +274,7 @@ const activeStatusMeta = computed(() => {
     draft: { label: props.section.filledAt ? '部门内容已保存' : '等待填写', tone: props.section.filledAt ? 'green' : 'slate' },
     pending_review: { label: '已锁定，待整单审核', tone: 'amber' },
     approved: { label: '整单审核通过', tone: 'green' },
+    sealed: { label: '已输出并冻结', tone: 'green' },
     rejected: { label: '整单已退回，可修改', tone: 'red' },
     na_pending: { label: '已锁定，待整单审核', tone: 'amber' },
     not_applicable: { label: '本单不适用', tone: 'slate' },
@@ -303,6 +305,7 @@ const lockMessage = computed(() => {
   if (props.wholeQuoteReview) {
     if (mutable.value) return '当前账号没有本部门编辑权限，内容保持只读。'
     if (props.section.status === 'pending_review') return '整份报价已经提交并统一锁定，等待指定整单审核人处理。'
+    if (props.section.status === 'sealed') return '此方案版本已输出并保留；需要修改时，请复制新版本。'
     if (props.section.status === 'approved') return '整单审核已经通过，本部门内容保持锁定。'
     return `当前部门内容为“${activeStatusMeta.value.label}”，暂不可编辑。`
   }
@@ -827,7 +830,7 @@ function confirmRemoveParticipation() {
       <div class="electronic-quote-total"><strong>电子部全部报价预览</strong><span>RMB {{ detailAmount(electronicSectionSummary.quoteRmb) }}</span><span>HKD {{ detailAmount(electronicSectionSummary.quoteHkd) }}</span><em>{{ electronicGroupOptions.length }} 份报价金额合计；正式金额以保存后的服务端计算为准。</em></div>
     </section>
     <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
-    <InternalQuoteSectionForm v-if="showElectronicForm" v-model="formPayload" :code="section.code" :quote-id="quote.id" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" />
+    <InternalQuoteSectionForm v-if="showElectronicForm" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"

@@ -81,6 +81,8 @@ def _timestamp(value) -> str:
 
 def _directory_expressions(now=None):
     checked_at = now or business_now()
+    from app.services.identity_resolver import identity_columns
+    identity_factory, identity_department, identity_position = identity_columns(checked_at)
     online_cutoff = _timestamp(checked_at - timedelta(seconds=ONLINE_WINDOW_SECONDS))
     away_cutoff = _timestamp(checked_at - timedelta(seconds=AWAY_WINDOW_SECONDS))
 
@@ -99,15 +101,15 @@ def _directory_expressions(now=None):
         FALLBACK_NAME,
     )
     position = func.coalesce(
-        func.nullif(func.trim(EmployeeProfile.position), ""),
+        func.nullif(func.trim(identity_position), ""),
         FALLBACK_POSITION,
     )
     factory = func.coalesce(
-        func.nullif(func.trim(EmployeeProfile.primary_factory_id), ""),
+        func.nullif(func.trim(identity_factory), ""),
         FALLBACK_FACTORY,
     )
     department = func.coalesce(
-        func.nullif(func.trim(EmployeeProfile.primary_department), ""),
+        func.nullif(func.trim(identity_department), ""),
         FALLBACK_DEPARTMENT,
     )
     return presence_state, presence_rank, display_name, position, factory, department
@@ -139,19 +141,19 @@ def _base_conditions(
         )
         if matching_factories:
             search_conditions.append(
-                EmployeeProfile.primary_factory_id.in_(matching_factories)
+                factory.in_(matching_factories)
             )
         if matching_departments:
             search_conditions.append(
-                EmployeeProfile.primary_department.in_(matching_departments)
+                profile_department.in_(matching_departments)
             )
         conditions.append(
             or_(*search_conditions)
         )
     if factory_id.strip():
-        conditions.append(EmployeeProfile.primary_factory_id == factory_id.strip())
+        conditions.append(factory == factory_id.strip())
     if department.strip():
-        conditions.append(EmployeeProfile.primary_department == department.strip())
+        conditions.append(profile_department == department.strip())
     return conditions
 
 

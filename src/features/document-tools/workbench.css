@@ -50,7 +50,8 @@
   display: grid;
   gap: 4px;
 }
-.dt-tools button {
+.dt-tools button,
+.dt-tools .dt-image-translation-link {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -65,7 +66,8 @@
     color 180ms var(--dt-ease);
   white-space: nowrap;
 }
-.dt-tools button:hover {
+.dt-tools button:hover,
+.dt-tools .dt-image-translation-link:hover {
   background: var(--muted);
 }
 .dt-tools .active {
@@ -641,7 +643,8 @@
   overflow: auto;
   gap: 6px;
 }
-.dt-phone .dt-tools button {
+.dt-phone .dt-tools button,
+.dt-phone .dt-tools .dt-image-translation-link {
   min-height: 42px;
   padding: 8px 12px;
 }

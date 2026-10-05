@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { pricingRate } from '@/lib/customerPriceConverters/pricingSettings'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { yinhuiExportIssues, yinhuiTotals, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
 import { setYinhuiDraftMoq } from '@/lib/customerPriceConverters/yinhuiDraft'
@@ -134,7 +135,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
     <p v-if="total.missingMaterialPrices.length" class="mt-3 rounded-md border border-amber-300 bg-amber-100 p-3 text-sm text-amber-950" role="alert" data-testid="yinhui-missing-prices">
       报客料价待补：{{ total.missingMaterialPrices.join('、') }}。对应 Tool Plan 单价留空，合计暂未包含这些料价；仍可确认后导出。文件名标注“待补料价”，客表 STAGE 标注 PRICE PENDING，请补齐后再发送客户。
     </p>
-    <p class="mt-3 text-sm font-semibold text-slate-800">{{ result.quoteData.importIssues?.length ? '已识别成本小计（草稿待补正）' : total.missingMaterialPrices.length ? '已知成本小计（待补料价）' : 'EX-FACTORY' }} HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / 7.8).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
+    <p class="mt-3 text-sm font-semibold text-slate-800">{{ result.quoteData.importIssues?.length ? '已识别成本小计（草稿待补正）' : total.missingMaterialPrices.length ? '已知成本小计（待补料价）' : 'EX-FACTORY' }} HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / pricingRate(result.quoteData.pricing, 'hkd_usd', 7.8)).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
     <div v-if="error" class="mt-2 text-sm text-red-700" role="alert" data-testid="yinhui-export-issues"><p>输出前还需处理 {{ errors.length }} 项：</p><ul class="mt-1 list-disc pl-5"><li v-for="item in errors" :key="item">{{ item }}</li></ul></div>
     <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || translating || disabled" class="mt-1"><span>已核对型号、MOQ、产品及物料名称、图片、料型、模具费及运费；确认按上述临时映射生成。<strong v-if="result.manualReviewReasons?.length">我已人工核对 Tool Plan 提醒及其金额影响，同意放行。</strong><strong v-if="total.missingMaterialPrices.length">我已知悉缺失料价将留空、当前合计不完整，同意先导出并补齐料价。</strong></span></label>
   </fieldset>

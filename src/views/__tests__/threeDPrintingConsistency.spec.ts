@@ -124,7 +124,7 @@ describe('3D history and ledger operations', () => {
     await flushPromises()
     await button('每日记录').trigger('click')
     await flushPromises()
-    await button('+ 添加记录').trigger('click')
+    await button('添加记录').trigger('click')
     const file = new File(['photo'], '现场.png', { type: 'image/png' })
     await wrapper.get('dialog').trigger('paste', { clipboardData: { items: [{ kind: 'file', type: file.type, getAsFile: () => file }] } })
     expect(wrapper.get('img[alt="记录图片预览"]').attributes('src')).toBe('blob:record-preview')
@@ -155,7 +155,7 @@ describe('3D history and ledger operations', () => {
     await flushPromises()
     await button('每日记录').trigger('click')
     await flushPromises()
-    await button('+ 添加记录').trigger('click')
+    await button('添加记录').trigger('click')
     const file = new File(['photo'], 'x.png', { type: 'image/png' })
     await wrapper.get('dialog').trigger('paste', { clipboardData: { items: [{ kind: 'file', type: file.type, getAsFile: () => file }] } })
     await wrapper.get('form.record-editor').trigger('submit')
@@ -204,7 +204,7 @@ describe('3D history and ledger operations', () => {
     await flushPromises()
     await button('产品库').trigger('click')
     await flushPromises()
-    await button('+ 添加产品').trigger('click')
+    await button('添加产品').trigger('click')
     const name = wrapper.get('dialog input[required]')
     await name.setValue('粘贴图片产品')
     const file = new File(['png'], 'clipboard.png', { type: 'image/png' })
@@ -233,7 +233,7 @@ describe('3D history and ledger operations', () => {
     await flushPromises()
     await button('产品库').trigger('click')
     await flushPromises()
-    await button('+ 添加产品').trigger('click')
+    await button('添加产品').trigger('click')
     const zone = wrapper.get('[aria-label="产品图片粘贴区"]')
     const textEvent = new Event('paste', { bubbles: true, cancelable: true })
     Object.defineProperty(textEvent, 'clipboardData', { value: { items: [{ kind: 'string', type: 'text/plain' }] } })
@@ -305,6 +305,41 @@ describe('3D history and ledger operations', () => {
     await flushPromises()
     expect(api.collection).toHaveBeenLastCalledWith('records', expect.objectContaining({ q: '河马头', date_from: '', date_to: '', page: 1 }))
     expect(wrapper.text()).toContain('全部历史 · 打印记录')
+  })
+
+  it('shows preparation in daily and machine cards, then follows live printing and offline states', async () => {
+    class Stream extends EventTarget {
+      static latest: Stream
+      constructor() { super(); Stream.latest = this }
+      close() {}
+    }
+    vi.stubGlobal('EventSource', Stream)
+    wrapper = mount(View)
+    await flushPromises()
+    await button('每日记录').trigger('click')
+    const update = async (state: string, connected = true) => {
+      Stream.latest.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify({
+        printers: [{ id: 'p1', machine_no: 1, connected, state,
+          current_file: '正在下载的产品.3mf', progress_percent: 100, remaining_minutes: 0,
+          nozzle_temperature: 40, bed_temperature: 30 }],
+        run_version: `preparation-${state}`,
+      }) }))
+      await flushPromises()
+    }
+    await update('PREPARE')
+    expect(wrapper.get('.machine-state').text()).toBe('准备中')
+    expect(wrapper.get('.machine-file').text()).toBe('正在下载的产品')
+    expect(wrapper.find('.machine-progress').exists()).toBe(false)
+    await button('机器状态').trigger('click')
+    expect(wrapper.get('.machine-state').text()).toBe('准备中')
+    await update('RUNNING')
+    expect(wrapper.get('.machine-state').text()).toBe('打印中')
+    expect(wrapper.find('.machine-progress').exists()).toBe(true)
+    await update('FAILED')
+    expect(wrapper.get('.machine-state').text()).toBe('失败')
+    await update('STALE', false)
+    expect(wrapper.get('.machine-state').text()).toBe('离线')
+    expect(wrapper.find('.machine-progress').exists()).toBe(false)
   })
 
   it('does not overwrite a live printer snapshot with a slower dashboard response', async () => {
@@ -407,7 +442,7 @@ describe('3D history and ledger operations', () => {
     await flushPromises()
     await button('每日记录').trigger('click')
     await flushPromises()
-    await button('+ 添加记录').trigger('click')
+    await button('添加记录').trigger('click')
     const form = wrapper.get('form.record-editor')
     await form.trigger('submit')
     await flushPromises()
@@ -417,7 +452,7 @@ describe('3D history and ledger operations', () => {
     const firstKey = api.createRecord.mock.calls[0]![0].idempotency_key
     expect(firstKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(api.createRecord.mock.calls[1]![0].idempotency_key).toBe(firstKey)
-    await button('+ 添加记录').trigger('click')
+    await button('添加记录').trigger('click')
     await wrapper.get('form.record-editor').trigger('submit')
     await flushPromises()
     expect(api.createRecord.mock.calls[2]![0].idempotency_key).not.toBe(firstKey)

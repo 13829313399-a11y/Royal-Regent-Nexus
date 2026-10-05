@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   ArrowLeft,
   AtSign,
@@ -21,8 +21,6 @@ import {
 import { useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
 import AuthAmbientGrid from '@/components/auth/AuthAmbientGrid.vue'
-import { factoryContexts } from '@/data/enterpriseMock'
-import { registrationDepartments } from '@/data/registrationDepartments'
 import { getApiErrorMessage } from '@/lib/http'
 
 const router = useRouter()
@@ -46,8 +44,16 @@ const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const passwordChineseMessage = '密码不能包含中文，请使用英文、数字或符号'
 const brandLogoUrl = '/brand/huadeng_group_dynamic_logo.svg'
 
-const factoryOptions = computed(() => factoryContexts.filter((factory) => factory.id !== 'group'))
-const departmentOptions = registrationDepartments
+const organizations = ref<Awaited<ReturnType<typeof authApi.organizationCatalog>>['organizations']>([])
+const catalogReady = ref(false)
+const factoryOptions = computed(() => organizations.value.map(o => ({ id: o.id, shortName: o.name, name: o.name })))
+const departmentOptions = computed(() => organizations.value.find(o => o.id === factoryId.value)?.departments.map(d => ({ id: d.code, name: d.name })) ?? [])
+watch(factoryId, () => { if (!departmentOptions.value.some(d => d.id === department.value)) department.value = departmentOptions.value[0]?.id ?? '' })
+async function loadCatalog() {
+  try { organizations.value = (await authApi.organizationCatalog()).organizations; catalogReady.value = true; errorMessage.value = '' }
+  catch (e) { errorMessage.value = getApiErrorMessage(e); catalogReady.value = false }
+}
+onMounted(loadCatalog)
 
 function normalizePasswordInput(value: string) {
   const normalizedValue = value.replace(chinesePasswordGlobalPattern, '')
@@ -70,6 +76,7 @@ const confirmPasswordModel = computed({
 })
 
 function validateForm() {
+  if (!catalogReady.value) return '组织目录加载失败，请重试'
   if (!username.value.trim()) return '请输入账号或工号'
   if (!displayName.value.trim()) return '请输入姓名'
   if (password.value.length < 6) return '密码至少需要 6 位'
@@ -103,7 +110,8 @@ async function submitRegistration() {
       confirm_password: confirmPassword.value,
       phone: phone.value.trim(),
       email: email.value.trim(),
-      factory_id: factoryId.value,
+      factory_id: organizations.value.find(o => o.id === factoryId.value)?.factory_id ?? '',
+      org_unit_id: factoryId.value,
       department: department.value,
       position: position.value.trim(),
     })
@@ -196,6 +204,7 @@ async function submitRegistration() {
             <span>{{ successMessage }}</span>
           </div>
 
+          <button v-if="!catalogReady" type="button" @click="loadCatalog">重新加载组织目录</button>
           <form class="form-grid" novalidate @submit.prevent="submitRegistration">
             <label class="field-block">
               <span>账号 / 工号 <b>*</b></span>

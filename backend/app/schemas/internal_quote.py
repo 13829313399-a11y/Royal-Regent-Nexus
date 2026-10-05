@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 InitiatorDepartment = Literal["sales-business", "engineering"]
 ReviewDecision = Literal["approve", "reject"]
-InternalQuoteWorkflowMode = Literal["section_review", "whole_quote_review"]
+InternalQuoteWorkflowMode = Literal["section_review", "whole_quote_review", "direct_output"]
 InternalQuoteType = Literal["single", "series", "multi_region"]
 InternalQuoteRegionCode = Literal["", "mainland", "indonesia"]
 InternalQuoteImportType = Literal["mold", "hardware", "electronic", "molding", "painting", "slush", "sewing", "hair", "assembly"]
@@ -108,7 +108,7 @@ class InternalQuoteCreateRequest(BaseModel):
     target_customer_price: str = Field(default="无", min_length=1, max_length=128)
     target_date: str = Field(default="", max_length=32)
     remark: str = Field(default="", max_length=4000)
-    workflow_mode: InternalQuoteWorkflowMode = "section_review"
+    workflow_mode: InternalQuoteWorkflowMode = "direct_output"
     quote_type: InternalQuoteType = "single"
     products: list[InternalQuoteProductCreateRequest] = Field(default_factory=list, max_length=20)
     pricing_components: list[str] = Field(default_factory=list, max_length=50)
@@ -404,7 +404,7 @@ class InternalQuoteCloneRequest(BaseModel):
     target_customer_price: str | None = Field(default=None, min_length=1, max_length=128)
     target_date: str = Field(default="", max_length=32)
     remark: str | None = Field(default=None, max_length=4000)
-    workflow_mode: InternalQuoteWorkflowMode | None = None
+    workflow_mode: InternalQuoteWorkflowMode | None = "direct_output"
     participating_sections: list[InternalQuoteSectionCode] | None = None
 
     @field_validator(

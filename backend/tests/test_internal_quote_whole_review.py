@@ -269,7 +269,7 @@ def test_whole_quote_rejection_unlocks_every_participating_section(monkeypatch):
         assert header_unlocked.json()["remark"] == "退回后整单资料已解锁"
 
 
-def test_clone_preserves_whole_quote_workflow_unless_explicitly_overridden(monkeypatch):
+def test_clone_can_explicitly_preserve_legacy_whole_quote_workflow(monkeypatch):
     with make_client(monkeypatch) as client:
         owner = login(
             client,
@@ -291,6 +291,7 @@ def test_clone_preserves_whole_quote_workflow_unless_explicitly_overridden(monke
             f"/api/internal-quotes/{created.json()['id']}/clone",
             json={
                 "quote_no": "IQ-TEST-WHOLE-CLONE-TARGET",
+                "workflow_mode": "whole_quote_review",
                 "version_label": "V2",
                 "business_owner_id": owner["id"],
                 "business_owner_name": owner["display_name"],

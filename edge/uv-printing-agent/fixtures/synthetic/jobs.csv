@@ -1,0 +1,4 @@
+event_key,machine_code,native_job_id,event_type,event_time,count,count_unit,counter_mode,ink_total_ml
+SYN-001,UV-SYNTHETIC,synthetic-job-1,start,2026-09-23T08:00:00+08:00,0,board,cumulative,
+SYN-002,UV-SYNTHETIC,synthetic-job-1,progress,2026-09-23T08:01:00+08:00,1,board,cumulative,
+SYN-003,UV-SYNTHETIC,synthetic-job-1,complete,2026-09-23T08:02:00+08:00,3,board,cumulative,

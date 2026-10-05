@@ -1,3 +1,4 @@
+import { assertPricingCustomer, type CustomerPricingSettings } from './pricingSettings'
 import { convertYinhuiP4InternalQuote, type YinhuiConversionResult } from './yinhui'
 import { extractYinhuiProductImage } from './yinhuiTemplate'
 import {
@@ -91,30 +92,30 @@ export function prepareP4CustomerConversion(
   sourceFileName: string,
   customerId: P4ConfiguredCustomerId,
   handoffMetadata: P4ArtifactMetadata = {},
+  pricing?: CustomerPricingSettings,
 ): P4PreparedCustomerConversion {
+  assertPricingCustomer(pricing, customerId)
   const artifact = parseP4InternalQuoteArtifact(buffer, handoffMetadata)
   if (!customerNameMatches(customerId, artifact.customer)) {
     throw new P4CustomerMappingError(`受控文件客户“${artifact.customer || '未填写'}”与当前客户模板不一致`)
   }
 
   if (customerId === 'yinhui') {
-    const result = convertYinhuiP4InternalQuote(artifact, sourceFileName)
+    const result = convertYinhuiP4InternalQuote(artifact, sourceFileName, pricing)
     result.quoteData.image = extractYinhuiProductImage(buffer, '报价明细')
     return { customerId, artifact, result }
   }
   if (customerId === 'buzzbee') {
-    return {
-      customerId,
-      artifact,
-      result: convertBuzzBeeP4InternalQuote(artifact, sourceFileName),
-    }
+    const result = convertBuzzBeeP4InternalQuote(artifact, sourceFileName, pricing)
+    result.sheets[0]!.quoteData.image = extractYinhuiProductImage(buffer, '报价明细')
+    return { customerId, artifact, result }
   }
   if (customerId === 'disney') {
     try {
       return {
         customerId,
         artifact,
-        result: convertDisneyP4InternalQuote(artifact, sourceFileName),
+        result: convertDisneyP4InternalQuote(artifact, sourceFileName, pricing),
       }
     } catch (error) {
       if (error instanceof P4CustomerMappingError) throw error
@@ -123,10 +124,12 @@ export function prepareP4CustomerConversion(
   }
   if (customerId === 'dicky') {
     try {
+      const result = convertDickyP4InternalQuote(artifact, sourceFileName, pricing)
+      if (result.v2Data) result.v2Data.products[0]!.image = extractYinhuiProductImage(buffer, '报价明细')
       return {
         customerId,
         artifact,
-        result: convertDickyP4InternalQuote(artifact, sourceFileName),
+        result,
       }
     } catch (error) {
       if (error instanceof P4CustomerMappingError) throw error
@@ -138,7 +141,7 @@ export function prepareP4CustomerConversion(
       return {
         customerId,
         artifact,
-        result: convertThreeSixtyP4InternalQuote(artifact, sourceFileName),
+        result: convertThreeSixtyP4InternalQuote(artifact, sourceFileName, pricing),
       }
     } catch (error) {
       if (error instanceof P4CustomerMappingError) throw error
@@ -146,10 +149,12 @@ export function prepareP4CustomerConversion(
     }
   }
   try {
+    const result = convertCaixingP4InternalQuote(artifact, sourceFileName, pricing)
+    result.sheets[0]!.quoteData.image = extractYinhuiProductImage(buffer, '报价明细')
     return {
       customerId: 'caixing',
       artifact,
-      result: convertCaixingP4InternalQuote(artifact, sourceFileName),
+      result,
     }
   } catch (error) {
     if (error instanceof P4CustomerMappingError) throw error

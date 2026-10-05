@@ -147,6 +147,8 @@ INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         guidance="仅允许获授权业务人员审核本人创建且由本人负责的内部报价",
     ),
     "customer_price:read": ScopePolicy(("sales-business",)),
+    "customer_price:settings_read": ScopePolicy(("sales-business",)),
+    "customer_price:settings_manage": ScopePolicy(("sales-business",)),
     "customer_price:import_internal_quote": ScopePolicy(("sales-business",)),
     "customer_price:export_customer_quote": ScopePolicy(("sales-business",)),
     "customer_price:compare": ScopePolicy(("sales-business",)),
@@ -219,6 +221,15 @@ CARTON_MARK_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     ),
 }
 
+CARTON_SUPPLIER_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
+    code: ScopePolicy(
+        ("*",),
+        requires_global_factory=True,
+        guidance="供应商协同权限须授予全部厂区 / 全部部门；只显示本供应商已下单的服务厂区和单据",
+    )
+    for code in ("carton_supplier:read", "carton_supplier:edit", "carton_supplier:approve")
+}
+
 ROLE_SCOPE_POLICIES: dict[str, ScopePolicy] = {
     "admin": ScopePolicy(
         ("*",),
@@ -275,6 +286,8 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code.startswith("uv_ops:"):
+        return ScopePolicy(("production",), guidance="仅华康 A 生产部；新 UV 权限需单独授权，不沿用退役模块权限")
     if permission_code in INJECTION_SCHEDULING_PERMISSION_CODES:
         return ScopePolicy(
             (*PRODUCTION_DEPARTMENTS, *MANAGEMENT_DEPARTMENTS),
@@ -289,9 +302,12 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
             permission_code,
             CARTON_MARK_PERMISSION_SCOPE_POLICIES.get(
                 permission_code,
-                INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                CARTON_SUPPLIER_PERMISSION_SCOPE_POLICIES.get(
                     permission_code,
-                    ScopePolicy(),
+                    INTERNAL_QUOTE_PERMISSION_SCOPE_POLICIES.get(
+                        permission_code,
+                        ScopePolicy(),
+                    ),
                 ),
             ),
         ),

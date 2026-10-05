@@ -116,7 +116,7 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionEditorSource).toContain('<footer v-if="!wholeQuoteReview" class="quote-editor-actions">')
     expect(sectionEditorSource).toContain('saveWholeQuoteDraft')
     for (const text of ['页面导航', '悬停部门，右侧查看填写状态', '报价概览', '整单操作', '未填写', '填写中', '已完成', '需处理']) expect(read('src/components/modules/sales/internal-quote/InternalQuoteSectionRail.vue')).toContain(text)
-    expect(storeSource).toContain("workflow_mode: 'whole_quote_review'")
+    expect(storeSource).toContain("workflow_mode: 'direct_output'")
     for (const text of ['removeParticipation', ':can-remove="canRemoveActive"', '@remove="removeParticipation"', '已不再计入进度、成本汇总和最终放行']) expect(collaborationSource).toContain(text)
     for (const text of ['manageableOptionalSections', 'participationChanges', 'saveParticipationChanges', '保存参与部门', '参与部门没有变化', '已参与', '未参与', 'participationRemovalConfirmOpen', '确认移除并保存', 'quoteStore.addParticipation', 'quoteStore.removeParticipation']) expect(collaborationSource).toContain(text)
     expect(collaborationSource).not.toContain('removals.length && !window.confirm')
@@ -246,9 +246,9 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionFormSource).toContain("const isDisney = computed(() => ['disney', '迪士尼'].includes(normalizedCustomer.value))")
     expect(sectionFormSource).toContain("const isCaixing = computed(() => ['caixing', '彩星'].includes(normalizedCustomer.value))")
     expect(sectionFormSource).toContain("const isThreeSixty = computed(() => ['360', 'threesixty'].includes(normalizedCustomer.value))")
-    for (const customerFlag of ['isDickie']) {
-      expect(sectionFormSource).toContain(`const ${customerFlag} = computed(() => false)`)
-    }
+    expect(sectionFormSource).toContain("props.factoryId === 'huaxing' && ['dickie', 'dicky'].includes(normalizedCustomer.value)")
+    expect(sectionFormSource).toContain('<InternalQuoteDickieSales v-if="isDickie"')
+    expect(sectionFormSource).toContain('<InternalQuoteDickieMolds v-if="isDickie"')
     for (const text of ['迪士尼采购件客户字段部分', '迪士尼模具客户字段部分', '迪士尼注塑客户参数部分', '迪士尼包装件客户字段部分', 'row.disney_unit_price_usd', 'carton.disney_unit_price_usd']) expect(sectionFormSource).toContain(text)
     for (const text of ['协作评论', '业务操作时间线', '浏览记录', '短时间刷新会去重', '客人目标价', 'quote.targetCustomerPrice']) expect(activitySource).toContain(text)
     for (const text of ['调整汇率', '保存汇率', '保存会生成新 revision', 'updateFx']) expect(activitySource).toContain(text)
@@ -283,7 +283,7 @@ describe('internal quote desk frontend layout', () => {
     expect(summarySource).not.toContain('<th>项目</th>')
     for (const text of ['rr2T1Fields', 'rr2T2Fields', 'rr2T3Fields', 'rr2T4Fields', "['glue_bag', '胶袋']", "['misc', '杂项']", "['total_cost', '总成本'", "['tax13b', '含税13%类'"]) expect(storeSource).toContain(text)
     expect(summarySource).not.toContain('责任分段成本汇总')
-    for (const text of ['报价与工程资料导出汇总', '审批 revision 矩阵', '内部报价继续受 SHA-256']) expect(exportSource).toContain(text)
+    for (const text of ['报价与工程资料导出汇总', '部门版本记录', '内部报价继续受 SHA-256']) expect(exportSource).toContain(text)
     expect(exportSource).toContain('统一内部格式：Huaxing Demo')
     for (const text of ['批次产品正式输出切换', '逐款独立输出', '整批共用一次审核结果', 'batchOutputReadyCount', 'switchOutputProduct', 'quoteStore.loadBatchProducts']) expect(exportSource).toContain(text)
     for (const text of ['调整报价基数', '初始材料价', '初始机型价', '运费与吊柜费 HKD 默认值', '吊柜费 HKD', '业务主管可修改', '跟客只读查看']) {

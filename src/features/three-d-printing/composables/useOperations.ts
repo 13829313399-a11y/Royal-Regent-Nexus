@@ -50,6 +50,7 @@ export function useOperations() {
     resourceKey = ref(""),
     revision = ref(0),
     requestKey = ref(createRandomUuid());
+  const analyzing = ref(false);
 
   const form = reactive<Record<string, unknown>>({}),
     selectedFiles = ref<string[]>([]);
@@ -426,16 +427,25 @@ export function useOperations() {
   }
 
   async function analyze() {
+    if (analyzing.value) return;
+    analyzing.value = true;
+    message.value = "";
     try {
-      const [a, b] = await Promise.all([
+      const [a, b] = await Promise.allSettled([
         http.get(`${base}/recommendations`),
-        http.get(`${base}/analytics`),
+        http.get(`${base}/analytics`, { timeout: 90000 }),
       ]);
-      advice.value = a.data.items;
-      adviceMessage.value = a.data.notice ?? a.data.blocked_reason ?? "";
-      metrics.value = b.data.machines;
+      if (a.status === "fulfilled") {
+        advice.value = a.value.data.items;
+        adviceMessage.value = a.value.data.notice ?? a.value.data.blocked_reason ?? "";
+      }
+      if (b.status === "fulfilled") metrics.value = b.value.data.machines;
+      const failed = [a, b].find(result => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
     } catch (e) {
       message.value = getApiErrorMessage(e);
+    } finally {
+      analyzing.value = false;
     }
   }
 
@@ -489,6 +499,7 @@ export function useOperations() {
     }
   });
   return {
+    analyzing,
     departments,
     departmentNames,
     base,

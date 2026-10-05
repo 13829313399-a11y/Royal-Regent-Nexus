@@ -1,6 +1,7 @@
 """Factory-isolated master data with immutable historical provenance."""
 import hashlib
 import json
+import re
 from decimal import Decimal
 from uuid import uuid4
 from fastapi import HTTPException
@@ -93,6 +94,57 @@ def record_out(row, sources=()):
             "sources": [json.loads(s.snapshot_json) for s in sources]}
 
 
+def seed_first_number_formats(db, factory, order, user):
+    """Record missing customer formats from a formal order without changing history."""
+    from app.schemas.carton_master import MasterData
+    from app.services.carton_number_templates import parse_template
+    from app.services.carton_procurement import _audit, now_text
+
+    row = db.scalar(select(Record).where(Record.factory_id == factory, Record.kind == "RULE",
+                                       Record.customer_code == order.customer_code))
+    if row and row.status != "ACTIVE":
+        return
+    data = json.loads(row.data_json) if row else MasterData().model_dump(mode="json")
+    captured = []
+    for key, raw in (("contract_rule", order.contract_no), ("item_rule", order.item_no),
+                     ("customer_po_rule", order.customer_po)):
+        value = (raw or "").strip().upper()
+        if not re.search(r"[0-9]", value) or re.search(r"[{}\s]", value):
+            continue
+        template = re.sub(r"[0-9]+", lambda match: "{" + str(len(match.group())) + "}", value)
+        try:
+            parse_template(template)
+        except ValueError:
+            continue
+        previous = data.get(key) or {}
+        if previous.get("templates") or previous.get("frozen"):
+            continue
+        if (previous.get("mode", "AUTO") != "AUTO" or previous.get("prefix") or
+                previous.get("min_length", 0) != 0 or previous.get("max_length", 128) != 128 or
+                previous.get("characters", "ANY") != "ANY" or
+                (previous.get("sample_text") and not previous.get("reset"))):
+            continue
+        data[key] = {"mode": "AUTO", "prefix": "", "min_length": 0, "max_length": 128,
+                     "characters": "ANY", "templates": [template], "frozen": True,
+                     "reset": False, "sample_text": value, "source": "HISTORY", "sample_count": 1}
+        captured.append(key)
+    if not captured:
+        return
+    before = record_out(row) if row else None
+    if row is None:
+        row = Record(id="CMD-" + uuid4().hex, factory_id=factory, kind="RULE",
+                     identity=digest([order.customer_code, ""]), customer_code=order.customer_code,
+                     code="", revision=0)
+        db.add(row)
+    row.data_json = encoded(data)
+    row.revision += 1
+    row.updated_at = now_text()
+    db.flush()
+    _audit(db, user, factory, "MASTER_DATA_SAVED", "carton_master", row.id,
+           {"reason": "正式下单自动记录客户编号格式", "order_id": order.id, "fields": captured,
+            "before": before, "after": record_out(row)})
+
+
 def sync_history(db, factory):
     """Caller holds the factory lock. No pagination limit and no business-row mutation."""
     from app.services.carton_procurement import now_text
@@ -167,11 +219,10 @@ def workspace(db, factory, user):
         provenance.setdefault(source.record_id, []).append(source)
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory).order_by(Record.preferred.desc(), Record.updated_at.desc())))
     admin = can_manage(user, factory)
+    # The ACCESS editor is retired (save_record rejects it). Keep its response
+    # field for compatibility without resolving every employee's IAM context
+    # on each master-data read. Existing ACCESS provenance stays visible below.
     users = []
-    if admin:
-        for candidate in db.scalars(select(AuthUser).where(AuthUser.status == "active")):
-            if inventory_allowed(build_auth_context(db, candidate), factory):
-                users.append({"id": candidate.id, "name": candidate.display_name or candidate.username})
     # Saved pending orders contribute scalar suggestions without enrolling configurations.
     paper_history = {}
     for field in ("packaging_type", "paper_quality", "specification"):
@@ -269,10 +320,10 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
 def due_rules(db, factory, customer):
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "RULE", Record.status == "ACTIVE",
                                                Record.customer_code.in_(["", customer]))))
-    result = {"lead_days": 3, "customer_days": None, "contract_rule": {}, "item_rule": {}, "customer_po_rule": {}, "revision": ""}
+    result = {"lead_days": 3, "production_days": 7, "customer_days": None, "contract_rule": {}, "item_rule": {}, "customer_po_rule": {}, "revision": ""}
     for row in sorted(rows, key=lambda r: bool(r.customer_code)):
         data = json.loads(row.data_json)
-        for key in ("lead_days", "customer_days"):
+        for key in ("lead_days", "production_days", "customer_days"):
             if data.get(key) is not None:
                 result[key] = data[key]
         if data.get("customer_days_disabled"):

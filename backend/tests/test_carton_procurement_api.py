@@ -1444,9 +1444,10 @@ def test_purchase_order_issues_export_only_net_supplier_change(monkeypatch):
         )
         assert initial_context_response.status_code == 200, initial_context_response.text
         initial_context = initial_context_response.json()
-        assert initial_context["pending_type"] == "INITIAL"
-        assert Decimal(initial_context["pending_product_quantity"]) == Decimal("2100")
-        assert initial_context["issues"] == []
+        assert initial_context["pending_type"] == "NONE"
+        assert Decimal(initial_context["pending_product_quantity"]) == Decimal("0")
+        assert len(initial_context["issues"]) == 1
+        assert initial_context["issues"][0]["document_no"].endswith("-P00")
 
         initial_issue_response = client.post(
             f"/api/carton-procurement/orders/{submitted['order_no']}/purchase-order-issues.xlsx",
@@ -1454,6 +1455,7 @@ def test_purchase_order_issues_export_only_net_supplier_change(monkeypatch):
         )
         assert initial_issue_response.status_code == 200, initial_issue_response.text
         assert initial_issue_response.headers["x-purchase-order-document-no"].endswith("-P00")
+        assert initial_issue_response.headers["x-purchase-order-issue-id"] == initial_context["issues"][0]["id"]
         initial_workbook = load_workbook(BytesIO(initial_issue_response.content), data_only=False)
         initial_sheet = initial_workbook["首次采购单"]
         assert initial_sheet["G10"].value == 18
@@ -1960,8 +1962,8 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         assert first.json()["parse_summary"]["row_count"] == 2
         assert first.json()["parse_summary"]["matched_count"] == 1
         assert first.json()["parse_summary"]["issue_count"] == 1
-        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-local-v6-po"
-        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-local-v6-po"
+        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-local-v7-dongkang"
+        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-local-v7-dongkang"
         matched = first.json()["parse_summary"]["rows"][0]
         assert matched["match_status"] == "MATCHED"
         assert matched["order_line_id"] == order["lines"][0]["id"]
@@ -2028,6 +2030,44 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
             "/api/carton-procurement/inventory/movements",
             params={"factory_id": "huaxing"},
         ).json()["total"] == 0
+
+
+def test_dongkang_delivery_import_redirects_to_destination_without_saving_wrong_factory(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        content = _workbook_bytes(
+            ["送货单号", "客户", "客户单号", "客户料号", "送货时间", "名称", "材质", "规格", "送货数量", "单价", "金额"],
+            [["DN-HKB-1", "华康（B）车间", "C-1", "I-1", "2026-09-24", "普通箱", "A=B", "18*12.5*17.25cm", 10, 2, 20]],
+        )
+        wrong_factory = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("dongkang.xlsx", content)},
+        )
+        assert wrong_factory.status_code == 409, wrong_factory.text
+        assert wrong_factory.json()["detail"]["code"] == "DELIVERY_FACTORY_MISMATCH"
+        assert wrong_factory.json()["detail"]["factory_id"] == "huakang-b"
+        latest = client.get("/api/carton-procurement/receipt-imports/latest", params={"factory_id": "huaxing"})
+        assert latest.status_code == 200
+        assert latest.json() is None
+        exceptions = client.get("/api/carton-procurement/exceptions", params={"factory_id": "huaxing"})
+        assert exceptions.json()["total"] == 0
+
+        mixed = _workbook_bytes(
+            ["送货单号", "客户", "客户单号", "客户料号", "送货时间", "名称", "材质", "规格", "送货数量", "单价", "金额"],
+            [
+                ["DN-MIX-1", "华兴车间", "C-1", "I-1", "2026-09-24", "普通箱", "A=B", "18*12*17cm", 5, 2, 10],
+                ["DN-MIX-2", "华康（B）车间", "C-2", "I-2", "2026-09-24", "普通箱", "A=B", "18*12*17cm", 5, 2, 10],
+            ],
+        )
+        mixed_response = client.post(
+            "/api/carton-procurement/receipt-imports",
+            params={"factory_id": "huaxing"},
+            files={"file": ("mixed-dongkang.xlsx", mixed)},
+        )
+        assert mixed_response.status_code == 422
+        assert "按厂区分别导出" in mixed_response.json()["detail"]
+        assert client.get("/api/carton-procurement/receipt-imports/latest", params={"factory_id": "huaxing"}).json() is None
 
 
 def test_delivery_import_parser_version_reprocesses_an_older_file(monkeypatch):
@@ -2229,6 +2269,7 @@ def test_weekly_schedule_import_never_creates_formal_orders(monkeypatch):
         )
         response = client.post(
             "/api/carton-procurement/weekly-imports",
+            data={"customer_code": "DICKIE"},
             params={"factory_id": "huaxing"},
             files={"file": ("每周客人查货排期.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
@@ -2273,7 +2314,7 @@ def test_inspection_schedule_import_calculates_delivery_reminders_without_writin
         result = response.json()
         summary = result["parse_summary"]
         assert result["import_type"] == "INSPECTION_SCHEDULE"
-        assert json.loads(result["import_profile"]) == {"advance_days": 3, "matching_version": "customer-po-v1"}
+        assert json.loads(result["import_profile"]) == {"advance_days": 3, "matching_version": "customer-po-v1", "parser_version": "schedule-item-sections-v2"}
         assert summary["row_count"] == 2
         assert summary["matched_count"] == 1
         assert summary["reminder_count"] == 2
@@ -2798,6 +2839,7 @@ def test_import_batch_history_is_persisted_and_filterable(monkeypatch):
         )
         weekly = client.post(
             "/api/carton-procurement/weekly-imports",
+            data={"customer_code": "DICKIE"},
             params={"factory_id": "huaxing"},
             files={"file": ("本周排期.xlsx", content)},
         )

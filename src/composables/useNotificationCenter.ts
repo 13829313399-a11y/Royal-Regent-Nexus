@@ -256,6 +256,13 @@ export function useNotificationCenter() {
   }
 
   function getSystemRoute(notification: SystemNotificationResponse) {
+    if (notification.type === 'carton_supplier_shipment') {
+      const shipmentId = typeof notification.payload.shipment_id === 'string' ? notification.payload.shipment_id : ''
+      const query = new URLSearchParams({ factory: notification.target_factory_id })
+      if (/^CSS-[a-f0-9]{32}$/.test(shipmentId)) query.set('shipment', shipmentId)
+      return isProductionFactoryContextId(notification.target_factory_id)
+        ? `/carton-supplier-management?${query.toString()}` : ''
+    }
     if (notification.type === 'internal_quote') {
       let targetRoute = INTERNAL_QUOTE_ROUTE_BASE
       if (notification.payload.event === 'customer_price_artifact_available') {
@@ -327,6 +334,7 @@ export function useNotificationCenter() {
 
   function normalizeSystemNotification(notification: SystemNotificationResponse): NotificationCenterItem {
     const internalQuoteEvent = typeof notification.payload.event === 'string' ? notification.payload.event : ''
+    const isSupplierShipment = notification.type === 'carton_supplier_shipment'
     const isPending = notification.status !== 'handled'
       && (notification.type !== 'internal_quote' || ACTIONABLE_INTERNAL_QUOTE_EVENTS.has(internalQuoteEvent))
     return {
@@ -343,23 +351,26 @@ export function useNotificationCenter() {
       role: notification.target_permission,
       title: notification.title,
       summary: notification.message,
-      contextLabel: [
-        notification.target_factory_id,
-        notification.target_department,
-        notification.type === 'password_reset'
-          ? '账号服务'
-          : notification.type === 'internal_quote' ? '内部报价' : '用户与授权',
-      ].filter(Boolean).join(' · '),
+      contextLabel: isSupplierShipment
+        ? [notification.target_factory_id, notification.payload.delivery_note_no, '仓库收料'].filter(Boolean).join(' · ')
+        : [
+          notification.target_factory_id,
+          notification.target_department,
+          notification.type === 'password_reset'
+            ? '账号服务'
+            : notification.type === 'internal_quote' ? '内部报价' : '用户与授权',
+        ].filter(Boolean).join(' · '),
       route: getSystemRoute(notification),
-      actionLabel: '查看详情',
+      actionLabel: isSupplierShipment ? '核实收料' : '查看详情',
       createdAt: notification.created_at,
       categoryLabel: notification.type === 'password_reset'
         ? '密码重置'
-        : notification.type === 'internal_quote' ? '内部报价' : '系统通知',
+        : notification.type === 'internal_quote' ? '内部报价' : isSupplierShipment ? '供应商送货' : '系统通知',
       referenceLabel: notification.type === 'password_reset'
         ? '账号服务'
-        : notification.type === 'internal_quote' ? String(notification.payload.quote_no || '内部报价') : '用户与授权',
-      targetLabel: notification.type === 'internal_quote' ? '业务协作' : '系统管理',
+        : notification.type === 'internal_quote' ? String(notification.payload.quote_no || '内部报价')
+          : isSupplierShipment ? String(notification.payload.delivery_note_no || '送货单') : '用户与授权',
+      targetLabel: notification.type === 'internal_quote' ? '业务协作' : isSupplierShipment ? '仓库收料' : '系统管理',
       raw: notification,
     }
   }

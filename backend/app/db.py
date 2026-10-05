@@ -643,6 +643,21 @@ def ensure_carton_supplier_settlement_schema_ready() -> None:
             raise RuntimeError("供应商月结尚未迁移至 20260909_0105；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def ensure_carton_supplier_portal_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        from app.services.carton_supplier_portal import TABLES
+        missing = []
+        for name in TABLES:
+            columns = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
+            missing.extend(f"{name}.{c.name}" for c in Base.metadata.tables[name].columns if c.name not in columns)
+        if missing:
+            raise RuntimeError("供应商协同尚未迁移至 20260921_0118；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def ensure_carton_explicit_quantity_schema_ready() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -671,6 +686,16 @@ def ensure_carton_customer_po_schema_ready() -> None:
             raise RuntimeError("客户 PO 尚未迁移至 20260912_0108；请先备份数据库并执行迁移")
 
 
+def ensure_carton_order_deletion_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "alembic_version" not in names:
+            return
+        if "carton_orders" not in names or "deleted_at" not in {c["name"] for c in inspector.get_columns("carton_orders")}:
+            raise RuntimeError("已取消订单删除尚未迁移至 20260929_0126；请先备份数据库并执行迁移")
+
+
 def ensure_document_tools_schema_ready() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -688,13 +713,32 @@ def ensure_document_tools_schema_ready() -> None:
             raise RuntimeError("文档工具尚未迁移至 20260908_0103_docs；请备份并迁移后启动。缺少：" + ", ".join(missing))
 
 
+def ensure_identity_schema_ready() -> None:
+    """Existing accounts require an explicit additive migration, even with writes off."""
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        tables = set(inspector.get_table_names())
+        if "auth_users" not in tables:
+            return
+        required = {
+            "employee_profiles": {"identity_mode", "identity_version", "employment_epoch", "primary_assignment_id", "primary_org_unit_id", "employment_status"},
+            "auth_role_binding_metadata": {"assignment_id", "role_version_id", "scope_ceiling_json", "employment_epoch"},
+            "auth_user_permission_overrides": {"assignment_id", "lifecycle_policy", "employment_epoch"},
+            "auth_access_requests": {"request_type", "lifecycle_state", "revision", "effective_at", "payload_json", "result_json"},
+            "auth_registration_requests": {"org_unit_id", "declared_profile_json"},
+        }
+        missing = [f"{table}.{column}" for table, columns in required.items()
+                   for column in columns - ({c["name"] for c in inspector.get_columns(table)} if table in tables else set())]
+        missing += sorted({"employee_assignments", "iam_org_units", "iam_org_departments", "iam_role_versions", "iam_delegations", "iam_handover_items", "iam_outbox", "iam_mutation_receipts"} - tables)
+        if missing:
+            raise RuntimeError("IAM V2 requires migration 20260926_0125 before startup: " + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
-        spray_production,
-        uv_printing,
-        uv_finance,
-        uv_ingest,
-        uv_handover,
+        work_center,  # noqa: F401
+        uv_operations,  # noqa: F401
+        spray_ops,  # noqa: F401
         document_tools,  # noqa: F401
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
@@ -703,9 +747,11 @@ def init_db() -> None:
         carton_positions,
         carton_master,  # noqa: F401
         carton_supplier_settlement,  # noqa: F401
+        carton_supplier_portal,  # noqa: F401
         customer_order,  # noqa: F401
         customer_order_ledger,  # noqa: F401
         internal_quote,  # noqa: F401
+        customer_price_settings,  # noqa: F401
         injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
         pricing,  # noqa: F401
@@ -722,6 +768,12 @@ def init_db() -> None:
     from app.services.raw_material import seed_raw_material_defaults
     from app.services.three_d_printing import seed_three_d_printing_defaults
 
+    from app.services.work_center.projection import install_projection_hooks
+    if not getattr(SessionLocal, "work_center_hooks_installed", False):
+        install_projection_hooks(SessionLocal)
+        SessionLocal.work_center_hooks_installed = True
+    ensure_work_center_schema_ready()
+    ensure_identity_schema_ready()
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()
@@ -733,8 +785,10 @@ def init_db() -> None:
     ensure_carton_positions_schema_ready()
     ensure_carton_master_schema_ready()
     ensure_carton_supplier_settlement_schema_ready()
+    ensure_carton_supplier_portal_schema_ready()
     ensure_carton_explicit_quantity_schema_ready()
     ensure_carton_customer_po_schema_ready()
+    ensure_carton_order_deletion_schema_ready()
     ensure_document_tools_schema_ready()
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -746,37 +800,39 @@ def init_db() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
         names = set(inspector.get_table_names())
-        if "alembic_version" in names:
-            missing = [name for name in Base.metadata.tables if name.startswith("spray_") and name not in names]
-            for table, column in [("spray_order_lines", "graph_route"),("spray_steps","predecessors"),("spray_tasks","shared_allocations"),("spray_resources","shared_requirements")]:
-                if table in names and column not in {c["name"] for c in inspector.get_columns(table)}:
-                    missing.append(table + "." + column)
-            if missing:
-                raise RuntimeError("喷油模块需要迁移至 20260911_0110；请先备份并迁移。缺少：" + ", ".join(missing))
-    with engine.connect() as connection:
-        inspector = inspect(connection)
-        names = set(inspector.get_table_names())
-        if settings.uv_printing_enabled and ("alembic_version" in names or any(name.startswith("uv_") for name in names)):
+        if settings.spray_ops_enabled and names:
             missing = []
             for name, table in Base.metadata.tables.items():
-                if not name.startswith("uv_"):
+                if not name.startswith("spray_ops_"):
                     continue
                 if name not in names:
                     missing.append(name)
                 else:
-                    columns = {c["name"] for c in inspector.get_columns(name)}
-                    missing.extend(name + "." + c.name for c in table.columns if c.name not in columns)
+                    columns = {column["name"] for column in inspector.get_columns(name)}
+                    missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
             if missing:
-                raise RuntimeError("UV模块需要迁移至 20260914_0115；请先备份并迁移。缺少：" + ", ".join(missing))
+                raise RuntimeError("喷油模块需要显式迁移至 20260922_0119；禁止自动修改已有业务库。缺少：" + ", ".join(missing))
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        existing_tables = set(inspector.get_table_names())
+        if "internal_quotes" in existing_tables:
+            missing = {"internal_quote_families", "internal_quote_alternatives"} - existing_tables
+            if missing:
+                raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            if settings.uv_printing_enabled or not name.startswith("uv_")])
+                            if not name.startswith("uv_ops_")
+                            # Existing telemetry stores upgrade explicitly via
+                            # 0130; startup must not create unversioned cache tables.
+                            and (name not in {"three_d_printing_telemetry_rollups", "three_d_printing_telemetry_rollup_state"}
+                                 or "three_d_printing_printer_state_events" not in existing_tables)
+                            and (settings.spray_ops_enabled or not name.startswith("spray_ops_"))])
     ensure_sqlite_legacy_columns()
 
     with SessionLocal() as db:
-        for factory_id in ("huaxing", "huakang-a", "huakang-b", "huadeng"):
-            if db.get(spray_production.SprayFactory, factory_id) is None:
-                db.add(spray_production.SprayFactory(factory_id=factory_id, revision=0))
-        db.commit()
+        if settings.spray_ops_enabled:
+            from app.services.spray_ops.common import seed_factories
+            seed_factories(db)
+            db.commit()
         from app.services.injection_scheduling.common import seed_settings
         seed_settings(db)
         seed_auth_defaults(db)
@@ -785,3 +841,13 @@ def init_db() -> None:
         seed_molding_sample_defaults(db)
         seed_raw_material_defaults(db)
         seed_three_d_printing_defaults(db)
+
+
+def ensure_work_center_schema_ready():
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    required = {"work_center_entries", "work_center_events", "work_center_user_states", "work_center_preferences"}
+    if "auth_users" in tables and (not required.issubset(tables) or
+        "following" not in {c["name"] for c in inspector.get_columns("work_center_user_states")} or
+        ("molding_sample_problems" in tables and "responsibility_revision" not in {c["name"] for c in inspector.get_columns("molding_sample_problems")})):
+        raise RuntimeError("事项工作台需要先备份并执行 Alembic 20260928_0126 迁移；不会自动修改旧数据库")

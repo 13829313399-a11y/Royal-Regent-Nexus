@@ -12,6 +12,7 @@ export type Operation =
   | 'word_translate'
   | 'excel_translate'
   | 'pdf_translate'
+  | 'image_translate'
 export interface Anchor {
   method?: string
   page_index?: number | null
@@ -253,6 +254,7 @@ export const documentTools = {
 }
 
 export const operationLabels: Record<Operation, string> = {
+  image_translate: '图片 / PDF 原位翻译',
   word_to_pdf: 'Word → PDF',
   pdf_to_word: 'PDF → Word',
   word_to_excel: 'Word → Excel',

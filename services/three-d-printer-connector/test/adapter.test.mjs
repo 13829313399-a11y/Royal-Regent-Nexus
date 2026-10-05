@@ -5,6 +5,25 @@ import { BambuAdapter } from '../src/bambu/BambuAdapter.mjs';
 import { Decoder, mqttString, packet, publishBody, publishPacket } from '../src/bambu/mqtt.mjs';
 import { initialStatus, mergeReport } from '../src/bambu/status.mjs';
 
+test('download and preparation stay distinct from printing across partial reports and job changes', () => {
+  const finished = mergeReport(initialStatus(), {
+    gcode_state: 'FINISH', subtask_id: 'old-job', mc_percent: 100,
+  }, 'before');
+  for (const gcode_state of ['PREPARE', 'PREPARING', 'DOWNLOADING', 'SLICING']) {
+    const preparing = mergeReport(finished, {
+      gcode_state, subtask_id: 'new-job', subtask_name: 'part.3mf',
+    }, 'now');
+    assert.equal(preparing.state, 'PREPARE');
+    assert.equal(preparing.current_file, 'part.3mf');
+    assert.equal(preparing.progress_percent, 0);
+    const partial = mergeReport(preparing, { nozzle_temper: 60 }, 'later');
+    assert.equal(partial.state, 'PREPARE');
+    assert.equal(mergeReport(partial, { gcode_state: 'RUNNING', mc_percent: 1 }, 'start').state, 'RUNNING');
+    assert.equal(mergeReport(partial, { gcode_state: 'FAILED' }, 'failed').state, 'FAILED');
+    assert.equal(mergeReport(partial, { gcode_state: 'IDLE' }, 'cancelled').state, 'IDLE');
+  }
+});
+
 test('zero device error clears an earlier error while partial reports preserve it', () => {
   const failed = mergeReport(initialStatus(), { print_error: 123 }, 'now');
   assert.equal(failed.error_code, '123');

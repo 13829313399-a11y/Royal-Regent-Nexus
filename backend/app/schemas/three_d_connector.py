@@ -42,7 +42,7 @@ class StateEvent(SessionRef):
     observed_at: datetime | None = None
     connected: bool
     state: Literal[
-        "RUNNING", "PAUSE", "FINISH", "IDLE", "FAILED", "ERROR", "UNKNOWN", "STALE"
+        "PREPARE", "RUNNING", "PAUSE", "FINISH", "IDLE", "FAILED", "ERROR", "UNKNOWN", "STALE"
     ]
     current_file: str = Field(default="", max_length=512)
     device_job_key: str = Field(default="", max_length=128)

@@ -9,7 +9,10 @@ const preview = ref('');
 const error = ref('');
 const dragging = ref(false);
 const previewOpen = ref(false);
+const previewSource = ref('');
 const displayedImage = computed(() => preview.value || props.existingUrl);
+function openPreview() { previewSource.value = displayedImage.value; previewOpen.value = true; }
+function afterPreviewClose() { if (!previewOpen.value) previewSource.value = ''; }
 watch(() => props.modelValue, (file, _, cleanup) => {
   preview.value = file ? URL.createObjectURL(file) : '';
   const url = preview.value;
@@ -47,21 +50,21 @@ defineExpose({ pasteImage });
   <section class="record-photo" aria-label="记录图片">
     <div class="photo-heading"><h3>记录图片</h3><span v-if="modelValue">待保存</span><span v-else-if="existingUrl">{{ inherited ? '产品参考图' : '已保存' }}</span></div>
     <button class="photo-zone" :class="{ dragging, 'has-photo': displayedImage }" type="button" :aria-label="displayedImage ? '放大查看记录图片' : '记录图片粘贴区'"
-      :disabled="!displayedImage && (!allowed || disabled)" @click="displayedImage ? previewOpen = true : input?.click()"
+      :disabled="!displayedImage && (!allowed || disabled)" @click="displayedImage ? openPreview() : input?.click()"
       @dragover.prevent="dragging = allowed && !disabled" @dragleave="dragging = false" @drop.prevent="drop">
       <img v-if="displayedImage" :src="displayedImage" alt="记录图片预览" />
       <template v-else><ImagePlus :size="30" /><strong>{{ allowed ? '粘贴一张现场图片' : '暂无图片' }}</strong><span v-if="allowed">Ctrl + V 粘贴 · 拖入或选择图片</span></template>
     </button>
     <input ref="input" class="photo-input" type="file" accept="image/jpeg,image/png,image/webp" aria-label="选择记录图片" :disabled="!allowed || disabled" @change="select" />
     <div class="photo-actions">
-      <button v-if="displayedImage" type="button" @click="previewOpen = true"><ZoomIn :size="14" />放大查看</button>
+      <button v-if="displayedImage" type="button" @click="openPreview"><ZoomIn :size="14" />放大查看</button>
       <button v-if="allowed" type="button" :disabled="disabled" @click="input?.click()"><Upload :size="14" />{{ displayedImage ? '更换图片' : '选择图片' }}</button>
       <button v-if="allowed && modelValue" type="button" :disabled="disabled" @click="emit('update:modelValue', null); error = ''"><X :size="14" />取消本次图片</button>
     </div>
     <p v-if="error" class="photo-error" role="alert">{{ error }}</p>
     <p v-else>{{ allowed ? '在窗口任意位置粘贴，保存记录时上传。' : '当前账号无图片上传权限。' }}</p>
     <small>仅用于本条记录 · PNG / JPG / WebP · 最大 5MB</small>
-    <RecordImagePreview v-if="previewOpen && displayedImage" :src="displayedImage" @close="previewOpen = false" />
+    <RecordImagePreview :open="previewOpen" :src="previewSource" @close="previewOpen = false" @after-close="afterPreviewClose" />
   </section>
 </template>
 

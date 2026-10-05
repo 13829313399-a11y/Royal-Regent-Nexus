@@ -490,6 +490,9 @@ def store_event(db, payload):
         raw_payload_json=encoded,
     )
     db.add(event)
+    from app.services.three_d_telemetry_rollups import invalidate
+
+    invalidate(db, payload.observed_at)
     observation_only = row.connection_owner == OBSERVER
     connected = payload.connected and (
         observation_only or network_health_snapshot(db)["status"] == "healthy"

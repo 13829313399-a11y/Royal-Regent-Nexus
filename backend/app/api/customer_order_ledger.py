@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Respon
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
-from starlette.concurrency import run_in_threadpool
+from app.services.customer_order_jobs import run_order_job, order_job_request
 
 from app.api import customer_order as mapping
 from app.db import get_db
@@ -19,7 +19,7 @@ from app.services import customer_order_ledger as ledger
 from app.services import customer_order_history as history
 from app.services import customer_order_schedule as schedule
 
-router = APIRouter(prefix="/api/customer-order-ledger", tags=["customer-order-ledger"])
+router = APIRouter(prefix="/api/customer-order-ledger", tags=["customer-order-ledger"], dependencies=[Depends(order_job_request)])
 FACTORIES = {"huaxing", "huadeng", "huakang-a", "huakang-b", "huakang-c", "huakang-d"}
 
 
@@ -69,7 +69,7 @@ async def history_parse(db, user, factory, customer, upload):
     authorize(db, user, factory)
     mapping._ensure_customer_factory(customer, factory)
     content = await upload.read(history.MAX_BYTES + 1)
-    workbook = await run_in_threadpool(history.parse_workbook, content)
+    workbook = await run_order_job(history.parse_workbook, content, db=db)
     parsed = history.preview(db, content, upload.filename or "", factory, customer, mapping.CUSTOMER_NAMES[customer], workbook=workbook)
     return content, parsed
 
@@ -219,14 +219,14 @@ async def import_orders(customer_code: str, factory_id: str = Form(...), receive
         po_files=files, schedule_file_name=schedule_file.filename or "", schedule_content=schedule_content)
     try:
         create_preview = mapping._create_special_batch_preview if special else mapping._create_mapped_customer_preview
-        preview = await run_in_threadpool(create_preview, **kwargs)
+        preview = await run_order_job(create_preview, db=db, **kwargs)
         mapping._finalize_preview(preview, received_date=received_date, current_user=current_user, factory_id=factory_id)
         mapping._ensure_preview_fingerprint(preview, received_date, preview_fingerprint)
         actual_keys = mapping._actual_confirmed_issue_keys(preview, resolution_keys)
         mapping._actual_manual_overrides(preview, overrides)
         # Validate and apply manual inputs using the exact existing writer. Its source files remain unchanged.
         export = mapping._export_special_batch_schedule if special else mapping._export_mapped_customer_schedule
-        _, _, resolved = await run_in_threadpool(export, **kwargs, skipped_issue_keys=actual_keys, manual_overrides=overrides)
+        _, _, resolved = await run_order_job(export, db=db, **kwargs, skipped_issue_keys=actual_keys, manual_overrides=overrides)
     except (mapping.CustomerOrderWorkbookError, mapping.HuaxingCustomerOrderError,
             mapping.HuadengCustomerOrderError, mapping.HuakangACustomerOrderError, mapping.HuakangCCustomerOrderError) as exc:
         raise HTTPException(400, str(exc)) from exc
