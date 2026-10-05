@@ -53,7 +53,7 @@ const SESSION_CREATE_TIMEOUT_MS = 60000;
 
 async function createSessionWithTimeout(
   modelPath: string,
-  options: { executionProviders: string[] },
+  options: import('onnxruntime-node').InferenceSession.SessionOptions,
   timeoutMs: number
 ): Promise<OrtInferenceSession> {
   const ort = await getOrtNode();
@@ -72,11 +72,13 @@ async function createSessionWithTimeout(
 
 async function tryCreateSession(
   modelPath: string,
-  executionProviders: string[]
+  executionProviders: string[],
+  cpuThreads?: number
 ): Promise<{ session: OrtInferenceSession; provider: RuntimeProvider } | null> {
   try {
     const session = await createSessionWithTimeout(modelPath, {
       executionProviders,
+      ...(cpuThreads === undefined ? {} : { intraOpNumThreads: cpuThreads, interOpNumThreads: 1 }),
     }, SESSION_CREATE_TIMEOUT_MS);
 
     // Determine which EP actually succeeded by checking session options
@@ -93,13 +95,16 @@ export async function createSession(
   modelKey: string,
   modelUrl: string,
   preferred: RuntimeProvider[],
-  _sessionOptions?: OnnxSessionOptions
+  _sessionOptions?: OnnxSessionOptions,
+  cpuThreads?: number
 ): Promise<WorkerSessionHandle> {
+  if (cpuThreads !== undefined && (!Number.isInteger(cpuThreads) || cpuThreads < 1)) throw new Error('Invalid CPU thread count');
+  const sessionKey = cpuThreads === undefined ? modelKey : `${modelKey}:cpu-threads=${cpuThreads}`;
   // In Node context, modelUrl is a local file path (absolute).
-  const existing = sessions.get(modelKey);
+  const existing = sessions.get(sessionKey);
   if (existing) {
     return {
-      sessionId: modelKey,
+      sessionId: sessionKey,
       provider: existing.provider,
       inputNames: [...existing.session.inputNames],
       outputNames: [...existing.session.outputNames],
@@ -122,14 +127,14 @@ export async function createSession(
   // Try each EP configuration
   const errors: string[] = [];
   for (const ep of epOrder) {
-    const result = await tryCreateSession(modelUrl, [ep]);
+    const result = await tryCreateSession(modelUrl, [ep], ep === 'cpu' ? cpuThreads : undefined);
     if (result) {
-      sessions.set(modelKey, { session: result.session, provider: result.provider, modelPath: modelUrl });
+      sessions.set(sessionKey, { session: result.session, provider: result.provider, modelPath: modelUrl });
       if (result.provider === "cpu" && preferred.includes("cuda")) {
         console.warn("[onnxNodeBridge] CUDA 不可用，回退到 CPU");
       }
       return {
-        sessionId: modelKey,
+        sessionId: sessionKey,
         provider: result.provider,
         inputNames: [...result.session.inputNames],
         outputNames: [...result.session.outputNames],
