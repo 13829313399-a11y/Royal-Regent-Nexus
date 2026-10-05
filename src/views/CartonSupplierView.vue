@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
+import CartonSupplierMonthlyReview from '@/components/CartonSupplierMonthlyReview.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ArrowLeft, ClipboardList, FileText, History, PackageCheck, Search, Truck, X } from '@lucide/vue'
@@ -19,7 +20,7 @@ const canEdit = computed(() => auth.can('carton_supplier:edit', '*', '*'))
 const memberships = ref<{ factory_id: string; supplier_name: string }[]>([])
 const factoryFilter = ref('')
 const workspace = ref<SupplierWorkspace | null>(null)
-const activeTab = ref<'orders' | 'shipments' | 'documents' | 'activity'>('orders')
+const activeTab = ref<'orders' | 'shipments' | 'documents' | 'activity' | 'settlements'>('orders')
 const documents = ref<SupplierDocument[]>([])
 const activity = ref<SupplierActivity[]>([])
 const extraLoaded = reactive({ documents: false, activity: false })
@@ -634,6 +635,7 @@ async function download(id: string, factoryId: string, filename: string) {
         <button type="button" :aria-current="activeTab === 'shipments' ? 'page' : undefined" :class="activeTab === 'shipments' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('shipments')"><Truck class="size-4" />发货与仓库反馈 <span class="rounded-full bg-white px-2 py-0.5 text-[10px]">{{ workspace?.shipments.length ?? 0 }}</span></button>
         <button type="button" :aria-current="activeTab === 'documents' ? 'page' : undefined" :class="activeTab === 'documents' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('documents')"><FileText class="size-4" />采购单与送货单</button>
         <button type="button" :aria-current="activeTab === 'activity' ? 'page' : undefined" :class="activeTab === 'activity' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('activity')"><History class="size-4" />操作日志</button>
+        <button type="button" :aria-current="activeTab === 'settlements' ? 'page' : undefined" :class="activeTab === 'settlements' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('settlements')"><FileText class="size-4" />月结对账</button>
       </nav>
     </header>
 
@@ -648,7 +650,8 @@ async function download(id: string, factoryId: string, filename: string) {
           <div class="rounded-xl border border-slate-200 bg-white px-4 py-3"><p class="text-xs text-slate-500">送货待确定</p><p class="mt-1 text-xl font-bold text-amber-700">{{ orders.filter(order => orderStage(order) === 'RECEIPT_PENDING').length }} <span class="text-xs font-medium text-slate-500">张</span></p></div>
         </div>
 
-        <template v-if="activeTab === 'orders'">
+        <CartonSupplierMonthlyReview v-if="activeTab === 'settlements'" :factories="memberships" />
+        <template v-else-if="activeTab === 'orders'">
           <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
             <div class="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/60 p-3">
               <label class="relative min-w-56 flex-1"><Search class="pointer-events-none absolute left-3 top-2.5 size-4 text-slate-400" /><input v-model="search" aria-label="搜索供应商订单" placeholder="搜索客户 / 合同 / PO / 货号 / 订单 / 单据" class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs outline-none focus:border-teal-500"></label>

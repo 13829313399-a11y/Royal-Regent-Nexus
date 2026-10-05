@@ -10,6 +10,8 @@ export interface ReceiveLine { shipment_line_id: string; received_quantity: numb
 export interface SampleReceipt { receipt_line_id: string; customer_code: string; customer_name: string; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; linked_order_line_id: string }
 export interface PortalShipment { id: string; delivery_note_no: string; delivery_date: string; status: string; revision: number; created_at: string; confirmed_at: string; source_filename?: string; source_sha256?: string; receipt_id?: string; receipt_status?: string; requires_correction?: boolean; acceptance_history?: { confirmed_at: string; acceptance_date: string | null; status: string; lines: PortalShipment['acceptance_lines'] }[]; sample_receipts?: SampleReceipt[]; acceptance_date: string | null; lines: ShipmentLine[]; acceptance_lines: Pick<ReceiveLine, 'shipment_line_id' | 'received_quantity' | 'damaged_quantity' | 'rejected_quantity' | 'unusable_quantity' | 'difference_reason' | 'no_order_decision'>[] }
 export interface PortalWorkspace { factory_id: string; supplier_name: string; orders: PortalOrder[]; shipments: PortalShipment[] }
+export interface PendingSupplierShipment { id: string; delivery_note_no: string; delivery_date: string; requires_correction: boolean }
+export interface PendingSupplierShipments { factory_id: string; total: number; items: PendingSupplierShipment[] }
 export interface DeliveryImportRow { source_sheet: string; source_row: number; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; delivered_quantity: number; unit_price?: number; order_no: string; child_no: string; order_line_id: string; issue_id: string; status: 'READY' | 'AD_HOC_REVIEW' | 'BLOCKED'; reason: string }
 export interface DeliveryImportGroup { factory_id: string; destination: string; delivery_note_no: string; delivery_date: string; ready: boolean; issues: string[]; rows: DeliveryImportRow[] }
 export interface DeliveryImportPreview { filename: string; sha256: string; row_count: number; groups: DeliveryImportGroup[] }
@@ -22,6 +24,7 @@ const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
   async memberships() { return (await http.get<{ factory_id: string; supplier_name: string }[]>(base + '/memberships')).data },
   async workspace(factory_id: string, internal = false) { return (await http.get<PortalWorkspace>(base + (internal ? '/internal' : '') + '/workspace', { params: { factory_id } })).data },
+  async pendingShipments(factory_id: string, limit = 3) { return (await http.get<PendingSupplierShipments>(base + '/internal/shipments/pending', { params: { factory_id, limit } })).data },
   async documents(factory_id: string) { return (await http.get<SupplierDocument[]>(base + '/documents', { params: { factory_id } })).data },
   async activity(factory_id: string) { return (await http.get<SupplierActivity[]>(base + '/activity', { params: { factory_id } })).data },
   async exportDocuments(documents: Pick<SupplierDocument, 'factory_id' | 'kind' | 'id'>[]) {

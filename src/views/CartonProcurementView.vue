@@ -61,9 +61,8 @@ import {
 } from 'reka-ui'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import NotificationCenter from '@/components/notifications/NotificationCenter.vue'
-import { workCenterApi } from '@/api/workCenter'
+import { cartonSupplierPortalApi, type PendingSupplierShipment } from '@/api/cartonSupplierPortal'
 import { useWorkCenterStore } from '@/stores/workCenter'
-import type { WorkEntry } from '@/features/work-center/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import CartonStocktakeWorkspace from '@/components/CartonStocktakeWorkspace.vue'
 import CartonSelectionSummary from '@/components/CartonSelectionSummary.vue'
@@ -225,7 +224,7 @@ function reportActionFailure(message: string, tone: 'error' | 'warning' = 'error
 function clearActionNotice() { actionNoticeMessage.value = '' }
 const apiConnected = ref(false)
 const backendLoading = ref(false)
-const supplierReminderNotifications = ref<WorkEntry[]>([])
+const pendingSupplierReminders = ref<PendingSupplierShipment[]>([])
 const supplierReminderTotal = ref(0)
 const workCenter = useWorkCenterStore()
 const supplierReminderLoading = ref(false)
@@ -1221,9 +1220,8 @@ const dashboardBusinessReminders = computed(() => visibleBusinessOrderAlerts.val
   ['OPEN', 'IN_PROGRESS'].includes(alert.status) && (!alert.reminder || alert.reminder.attention),
 ))
 
-const pendingSupplierReminders = computed(() => supplierReminderNotifications.value)
-function supplierReminderRoute(notification: WorkEntry) {
-  return { path: '/carton-supplier-management', query: { factory: selectedFactoryId.value, shipment: notification.actions[0]?.target?.params.id } }
+function supplierReminderRoute(shipment: PendingSupplierShipment) {
+  return { path: '/carton-supplier-management', query: { factory: selectedFactoryId.value, shipment: shipment.id } }
 }
 
 async function loadSupplierReminders() {
@@ -1233,10 +1231,10 @@ async function loadSupplierReminders() {
   supplierReminderLoading.value = true
   supplierReminderError.value = ''
   try {
-    const result = await workCenterApi.snapshot({ view: 'todo', module: 'carton_supplier', factory_scope: factoryId, limit: 3 })
+    const result = await cartonSupplierPortalApi.pendingShipments(factoryId, 3)
     if (generation !== supplierReminderGeneration || factoryId !== selectedFactoryId.value || activeTab.value !== 'dashboard') return
-    supplierReminderNotifications.value = result.items
-    supplierReminderTotal.value = result.query.filtered_total ?? 0
+    pendingSupplierReminders.value = result.items
+    supplierReminderTotal.value = result.total
   } catch (error) {
     if (generation !== supplierReminderGeneration || factoryId !== selectedFactoryId.value || activeTab.value !== 'dashboard') return
     supplierReminderError.value = getApiErrorMessage(error)
@@ -1247,7 +1245,7 @@ async function loadSupplierReminders() {
 
 watch([selectedFactoryId, activeTab, canReviewSupplierDeliveries, () => authStore.currentUser?.id, () => workCenter.bell?.context.viewer_key], () => {
   supplierReminderGeneration++
-  supplierReminderNotifications.value = []
+  pendingSupplierReminders.value = []
   supplierReminderError.value = ''
   supplierReminderLoading.value = false
 
@@ -5809,7 +5807,7 @@ watch([
             </div>
             <div class="flex flex-wrap items-center gap-2 text-[11px] font-bold" aria-live="polite">
               <span class="rounded-full bg-red-600 px-3 py-1 text-white">业务排期 {{ businessAlertSummary.total }}</span>
-              <span v-if="canReviewSupplierDeliveries" class="rounded-full bg-teal-700 px-3 py-1 text-white">供应商送货 {{ supplierReminderLoading && !supplierReminderNotifications.length ? '读取中' : supplierReminderError && !supplierReminderNotifications.length ? '暂不可用' : supplierReminderTotal }}</span>
+              <span v-if="canReviewSupplierDeliveries" class="rounded-full bg-teal-700 px-3 py-1 text-white">供应商送货 {{ supplierReminderLoading && !pendingSupplierReminders.length ? '读取中' : supplierReminderError && !pendingSupplierReminders.length ? '暂不可用' : supplierReminderTotal }}</span>
             </div>
           </div>
           <div class="grid gap-3 p-3 sm:p-4 lg:grid-cols-2">
@@ -5833,12 +5831,12 @@ watch([
                 <RouterLink :to="{ path: '/carton-supplier-management', query: { factory: selectedFactoryId } }" class="text-[11px] font-bold text-teal-800 hover:underline">查看全部</RouterLink>
               </div>
               <p v-if="supplierReminderError" role="alert" class="mt-3 text-xs text-red-700">送货提醒暂未更新：{{ supplierReminderError }} <button type="button" class="font-bold underline" @click="loadSupplierReminders">重试</button></p>
-              <p v-if="supplierReminderLoading && !supplierReminderNotifications.length" class="mt-3 text-xs text-slate-500">正在读取本厂区送货提醒…</p>
+              <p v-if="supplierReminderLoading && !pendingSupplierReminders.length" class="mt-3 text-xs text-slate-500">正在读取本厂区送货提醒…</p>
               <p v-else-if="!supplierReminderError && !pendingSupplierReminders.length" class="mt-3 text-xs text-slate-500">本厂区当前没有待核实的供应商送货单。</p>
               <div v-if="pendingSupplierReminders.length" class="mt-2 divide-y divide-teal-100">
-                <div v-for="notification in pendingSupplierReminders.slice(0, 3)" :key="notification.id" class="flex flex-wrap items-center justify-between gap-2 py-2">
-                  <div class="min-w-0 flex-1"><div class="truncate text-xs font-semibold text-slate-900">{{ notification.title }}</div><div class="truncate text-[10px] text-slate-600">{{ notification.summary }}</div></div>
-                  <RouterLink :to="supplierReminderRoute(notification)" class="rounded-lg bg-teal-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-800">核实收料</RouterLink>
+                <div v-for="shipment in pendingSupplierReminders.slice(0, 3)" :key="shipment.id" class="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <div class="min-w-0 flex-1"><div class="truncate text-xs font-semibold text-slate-900">送货单 {{ shipment.delivery_note_no }} · {{ shipment.requires_correction ? '待更正验收' : '待核实收料' }}</div><div class="truncate text-[10px] text-slate-600">送货日期 {{ shipment.delivery_date }}{{ shipment.requires_correction ? ' · 原收料已冲销，请重新核实' : ' · 请核对本厂区实际到货' }}</div></div>
+                  <RouterLink :to="supplierReminderRoute(shipment)" class="rounded-lg bg-teal-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-800">{{ shipment.requires_correction ? '更正验收' : '核实收料' }}</RouterLink>
                 </div>
               </div>
               <p v-if="supplierReminderTotal > 3" class="mt-2 text-[10px] text-teal-800">另有 {{ supplierReminderTotal - 3 }} 张待核实送货单。</p>
@@ -6769,7 +6767,7 @@ watch([
       <CartonInventorySummary v-else-if="activeTab === 'inventory-summary'" :factory-id="selectedFactoryId" :customers="customerRecords" :search="globalSearch" :refresh-key="inventoryReportRefreshKey" :connected="apiConnected" @clear-search="globalSearch = ''" @inventory="setActiveTab('inventory')" @closing="setActiveTab('closing')" />
 
       <section v-else-if="activeTab === 'closing'" class="space-y-4">
-        <nav aria-label="月结对账子页面" class="flex gap-2 rounded-xl border bg-white p-2 text-xs"><button type="button" :aria-pressed="closingView === 'SUPPLIER'" class="rounded-lg px-4 py-2" :class="closingView === 'SUPPLIER' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="closingView = 'SUPPLIER'">供应商月结对账</button><button type="button" :aria-pressed="closingView === 'INVENTORY'" class="rounded-lg px-4 py-2" :class="closingView === 'INVENTORY' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="closingView = 'INVENTORY'">库存月结记录</button></nav>
+        <nav aria-label="月结对账子页面" class="flex gap-2 rounded-xl border bg-white p-2 text-xs"><button type="button" :aria-pressed="closingView === 'SUPPLIER'" class="rounded-lg px-4 py-2" :class="closingView === 'SUPPLIER' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="closingView = 'SUPPLIER'">双方月结对账</button><button type="button" :aria-pressed="closingView === 'INVENTORY'" class="rounded-lg px-4 py-2" :class="closingView === 'INVENTORY' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="closingView = 'INVENTORY'">库存月结记录</button></nav>
         <CartonSupplierSettlement v-show="closingView === 'SUPPLIER'" :key="selectedFactoryId" :factory-id="selectedFactoryId" />
         <template v-if="closingView === 'INVENTORY'">
         <div class="flex flex-wrap items-center gap-3 rounded-xl border bg-white p-3 text-xs"><label>查询月份 <input v-model="closingQueryPeriod" aria-label="月结查询月份" type="month" class="h-9 rounded-lg border px-3"></label><select v-model="closingStatusFilter" aria-label="月结状态筛选" class="h-9 rounded-lg border px-3"><option value="ALL">全部状态</option><option value="OPEN">待处理</option><option value="LOCKED">已锁账</option></select><button type="button" class="h-9 rounded-lg border px-3" @click="closingQueryPeriod = ''; closingStatusFilter = 'ALL'; selectedCustomer = '全部客户'; globalSearch = ''">清空筛选</button><span class="text-slate-500">{{ closingQueryPeriod || '全部月份' }} · 查询不会生成或修改月结</span></div>

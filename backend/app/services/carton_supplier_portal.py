@@ -314,6 +314,24 @@ def order_out(db, order, *, internal=False):
     return result
 
 
+def pending_shipments(db, user, factory, *, limit=3):
+    """The factory receiving queue is independent of personal work-center state."""
+    factory = internal_permission(user, factory, "carton_procurement:read",
+        "carton_procurement:receipt_write", "carton_procurement:inventory_write")
+    supplier_id = fixed_supplier(db, factory).id
+    queue = select(SupplierShipment.id, SupplierShipment.delivery_note_no,
+        SupplierShipment.delivery_date, CartonReceipt.status.label("receipt_status"),
+        func.count().over().label("total")).outerjoin(
+        CartonReceipt, and_(CartonReceipt.id == SupplierShipment.receipt_id,
+                           CartonReceipt.factory_id == SupplierShipment.factory_id)).where(
+        SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier_id,
+        or_(SupplierShipment.status == "SENT", CartonReceipt.status == "REVERSED"))
+    rows = db.execute(queue.order_by(SupplierShipment.created_at.desc(), SupplierShipment.id.desc()).limit(limit)).all()
+    return {"factory_id": factory, "total": rows[0].total if rows else 0, "items": [
+        {"id": row.id, "delivery_note_no": row.delivery_note_no, "delivery_date": row.delivery_date,
+         "requires_correction": row.receipt_status == "REVERSED"} for row in rows]}
+
+
 def workspace(db, user, factory, *, internal=False):
     if internal:
         internal_permission(user, factory, "carton_procurement:read")
