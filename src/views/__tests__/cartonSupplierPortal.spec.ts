@@ -7,7 +7,7 @@ import CartonSupplierMarkTemplatesView from '../CartonSupplierMarkTemplatesView.
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import type { PortalWorkspace } from '@/api/cartonSupplierPortal'
-const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
+const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receiptOptions: vi.fn(), linkReceipt: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
 const router = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }))
 const routeState = vi.hoisted(() => ({ query: { factory: 'huaxing', shipment: undefined as string | undefined } }))
 const can = vi.hoisted(() => vi.fn((_permission: string) => true))
@@ -25,7 +25,67 @@ const guideOptions = { global: { stubs: { ...options.global.stubs,
   CartonSupplierMonthlyReview: true,
   CartonUsageGuide: { name: 'CartonUsageGuide', props: ['audience', 'factoryName'], emits: ['close', 'supplierNavigate'], template: '<section data-testid="supplier-usage-guide" />' },
 } } }
-beforeEach(() => { routeState.query.shipment = undefined; vi.resetAllMocks(); can.mockReturnValue(true); api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }]); api.workspace.mockResolvedValue(fixture()); api.members.mockResolvedValue([]); api.ship.mockResolvedValue({ id: 'NEW' }); api.previewDeliveryImport.mockResolvedValue({ filename: '送货明细表.xlsx', sha256: 'abc', row_count: 1, groups: [{ factory_id: 'huaxing', destination: '华兴', delivery_note_no: 'DN-NEW', delivery_date: '2026-09-24', ready: true, issues: [], rows: [{ source_sheet: '送货明细', source_row: 2, contract_no: 'SC-A', item_no: 'ITEM-A', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', delivered_quantity: 4, order_no: 'ORDER-A', child_no: 'ORDER-A/01', order_line_id: 'LINE-0', issue_id: 'ISSUE-A', status: 'READY', reason: '已匹配' }] }] }); api.confirmDeliveryImport.mockResolvedValue({ shipments: [{ id: 'NEW' }] }); api.acceptBatch.mockResolvedValue({ order_ids: [] }); api.documents.mockResolvedValue([]); api.activityPage.mockResolvedValue({ items: [{ id: 'ACT1', factory_id: 'huaxing', action: '送货单已登记', created_at: '2026-09-25', reference_no: 'DN-1', actor_name: '供应商' }], total: 1, limit: 50, offset: 0 }); api.activity.mockResolvedValue([]); api.exportDocuments.mockResolvedValue(undefined); api.exportOrderImport.mockResolvedValue(undefined); api.receive.mockResolvedValue({ id: 'SHIP-A' }); api.linkSampleReceipt.mockResolvedValue({ receipt_line_id: 'RL-SAMPLE', order_line_id: 'LINE-0', order_no: 'ORDER-A', quantity: '4' }); api.markAssets.mockResolvedValue([]); api.previewMarkAssetUrl.mockReturnValue('/api/preview.pdf'); api.markTemplates.mockResolvedValue([]); api.previewMarkPdfUrl.mockReturnValue('/api/preview.pdf') })
+beforeEach(() => { routeState.query.shipment = undefined; vi.resetAllMocks(); can.mockReturnValue(true); api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }]); api.workspace.mockResolvedValue(fixture()); api.members.mockResolvedValue([]); api.ship.mockResolvedValue({ id: 'NEW' }); api.previewDeliveryImport.mockResolvedValue({ filename: '送货明细表.xlsx', sha256: 'abc', row_count: 1, groups: [{ factory_id: 'huaxing', destination: '华兴', delivery_note_no: 'DN-NEW', delivery_date: '2026-09-24', ready: true, issues: [], rows: [{ source_sheet: '送货明细', source_row: 2, contract_no: 'SC-A', item_no: 'ITEM-A', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', delivered_quantity: 4, order_no: 'ORDER-A', child_no: 'ORDER-A/01', order_line_id: 'LINE-0', issue_id: 'ISSUE-A', status: 'READY', reason: '已匹配' }] }] }); api.confirmDeliveryImport.mockResolvedValue({ shipments: [{ id: 'NEW' }] }); api.acceptBatch.mockResolvedValue({ order_ids: [] }); api.documents.mockResolvedValue([]); api.activityPage.mockResolvedValue({ items: [{ id: 'ACT1', factory_id: 'huaxing', action: '送货单已登记', created_at: '2026-09-25', reference_no: 'DN-1', actor_name: '供应商' }], total: 1, limit: 50, offset: 0 }); api.activity.mockResolvedValue([]); api.exportDocuments.mockResolvedValue(undefined); api.exportOrderImport.mockResolvedValue(undefined); api.receiptOptions.mockResolvedValue([]); api.linkReceipt.mockResolvedValue({ id: 'SHIP-A' }); api.receive.mockResolvedValue({ id: 'SHIP-A' }); api.linkSampleReceipt.mockResolvedValue({ receipt_line_id: 'RL-SAMPLE', order_line_id: 'LINE-0', order_no: 'ORDER-A', quantity: '4' }); api.markAssets.mockResolvedValue([]); api.previewMarkAssetUrl.mockReturnValue('/api/preview.pdf'); api.markTemplates.mockResolvedValue([]); api.previewMarkPdfUrl.mockReturnValue('/api/preview.pdf') })
+
+describe('late supplier documents use existing warehouse receipts', () => {
+  const originalReceipt = { id: 'RECEIPT-1', revision: 3, status: 'POSTED', receipt_no: 'RCPT-1', delivery_note_no: 'MANUAL-1',
+    delivery_date: '2026-09-20', acceptance_date: '2026-09-21', lines: [{ order_line_id: 'LINE-0', contract_no: 'SC-A', item_no: 'ITEM-A',
+      packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', received_quantity: '10', damaged_quantity: '0', rejected_quantity: '0',
+      unusable_quantity: '0', effective_quantity: '10', unit: '个', unit_price: '2', currency: 'CNY' }] }
+
+  it('links a late note with both revisions and never calls receive', async () => {
+    const work = fixture(); work.shipments[0]!.requires_receipt_link = true
+    api.workspace.mockResolvedValue(work); api.receiptOptions.mockResolvedValue([originalReceipt])
+    const wrapper = mount(CartonSupplierReceiving, { ...options, props: { factoryId: 'huaxing' } }); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '关联已入库记录')!.trigger('click'); await flushPromises()
+    const form = wrapper.get('form[aria-label="关联已入库记录"]')
+    expect(form.text()).toContain('原验收日期 2026-09-21')
+    await form.get('input[type="radio"]').setValue(true)
+    await form.get('input[aria-label="后补凭证关联原因"]').setValue('已手工入库后补凭证')
+    await form.trigger('submit'); await flushPromises()
+    expect(api.linkReceipt).toHaveBeenCalledWith('SHIP-A', { factory_id: 'huaxing', expected_revision: 1, receipt_id: 'RECEIPT-1', expected_receipt_revision: 3, reason: '已手工入库后补凭证' })
+    expect(api.receive).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('库存和月结未重复记账')
+    wrapper.unmount()
+  })
+
+  it('does not offer a new receipt for an unmatched late document', async () => {
+    const work = fixture(); work.shipments[0]!.requires_receipt_link = true; api.workspace.mockResolvedValue(work)
+    const wrapper = mount(CartonSupplierReceiving, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '关联已入库记录')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('没有可关联的原收料')
+    expect(wrapper.findAll('button').some(button => button.text() === '核实实际收到')).toBe(false)
+    expect(wrapper.findAll('button').find(button => button.text() === '确认关联，不重复入库')!.attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('discards candidate results when the factory changes', async () => {
+    let resolve!: (rows: typeof originalReceipt[]) => void
+    api.receiptOptions.mockImplementation(() => new Promise(result => { resolve = result }))
+    const wrapper = mount(CartonSupplierReceiving, { ...options, props: { factoryId: 'huaxing' } }); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '关联已入库记录')!.trigger('click')
+    await wrapper.setProps({ factoryId: 'huakang-a' }); resolve([originalReceipt]); await flushPromises()
+    expect(wrapper.find('form[aria-label="关联已入库记录"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('RCPT-1'); expect(api.linkReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('lets a completed-order original file be submitted as a late document', async () => {
+    const preview = await api.previewDeliveryImport()
+    preview.groups[0].ready = false; preview.groups[0].receipt_link_ready = true; preview.groups[0].existing_receipt_count = 1
+    api.previewDeliveryImport.mockResolvedValue(preview)
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '导入送货单')!.trigger('click')
+    const input = wrapper.get('input[type="file"]')
+    const file = new File(['source'], 'late.xlsx')
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change'); await flushPromises()
+    expect(wrapper.text()).toContain('后补凭证 · 仅关联已有入库')
+    await wrapper.findAll('button').find(button => button.text().includes('确认 1 张送货单'))!.trigger('click'); await flushPromises()
+    expect(api.confirmDeliveryImport).toHaveBeenCalledWith(file, preview, [{ factory_id: 'huaxing', delivery_note_no: 'DN-NEW', registration_mode: 'EXISTING_RECEIPT' }])
+    expect(api.ship).not.toHaveBeenCalled(); wrapper.unmount()
+  })
+})
 
 describe('supplier usage guide entry', () => {
   it('opens and closes without changing order filters or submitting business actions', async () => {
@@ -746,7 +806,7 @@ describe('supplier collaboration entry', () => {
     await wrapper.findAll('button').find(button => button.text() === '确认 1 张送货单发货')!.trigger('click'); await flushPromises()
     expect(api.confirmDeliveryImport).toHaveBeenCalledWith(file, expect.objectContaining({ sha256: 'abc' }), [{ factory_id: 'huaxing', delivery_note_no: 'DN-NEW' }])
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('按送货厂区推送到仓库待确认')
+    expect(wrapper.text()).toContain('新发货由仓库验收，后补凭证由仓库关联原入库')
     expect(api.ship).not.toHaveBeenCalled()
     wrapper.unmount()
   })

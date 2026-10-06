@@ -26,6 +26,7 @@ from app.schemas.carton_procurement import CartonReceiptCreate, CartonReceiptLin
 from app.services.auth import AuthContext, authorization_decision, has_permission_in_scope
 from app.services import carton_positions as positions
 from app.services import carton_supplier_notifications as shipment_notifications
+from app.services import carton_supplier_receipt_link as receipt_link
 from app.services.carton_procurement_imports import _dongkang_identity, _dimension_identity
 from app.services.carton_material_identity import material_conflicts, dimension_identity
 from app.services.carton_procurement import (CARTON_DEPARTMENTS, require_carton_factory, _lock_receipt_factory,
@@ -97,7 +98,13 @@ def supplier_access(db, user, factory, permission="carton_supplier:read"):
 
 
 def fingerprint(payload):
-    return hashlib.sha256(json.dumps(payload.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    data = payload.model_dump(mode="json")
+    # Preserve request identities of ordinary shipments/receipts submitted before late-document support.
+    if data.get("registration_mode") == "SHIPMENT":
+        data.pop("registration_mode")
+    if data.get("new_delivery_confirmation") is False:
+        data.pop("new_delivery_confirmation")
+    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
 def latest_issue(db, order):
@@ -326,6 +333,8 @@ def outstanding(db, line_ids):
             SupplierShipmentLine.order_line_id.in_(line_ids))).all()
     result = {}
     for paper, shipment, receipt_status in rows:
+        if receipt_link.link_only(shipment):
+            continue  # A document for already posted goods is not another in-transit quantity.
         reserved = paper.quantity
         if receipt_status == "REVERSED":
             # Reserve the invalidated effective acceptance, not previously rejected/short quantities.
@@ -467,13 +476,15 @@ def shipment_out(db, row, *, internal=False):
             item.update(unit_price=str(snapshot.get("unit_price") or "0"), currency="CNY")
         result["lines"].append(item)
     accepted = json.loads(row.acceptance_json or "{}")
+    result["requires_receipt_link"] = receipt_link.link_only(row)
+    result["linked_existing_receipt"] = bool(accepted.get("linked_existing_receipt"))
     result["acceptance_date"] = accepted.get("acceptance_date")
     # Supplier sees actual quantities/discrepancies, never internal cost or warehouse IDs.
     result["acceptance_lines"] = [{key: item.get(key) for key in ("shipment_line_id", "received_quantity", "damaged_quantity", "rejected_quantity", "unusable_quantity", "difference_reason", "no_order_decision")} for item in accepted.get("lines", [])]
     result["acceptance_history"] = []
     events = db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == row.factory_id,
         CartonAuditEvent.entity_type == "supplier_shipment", CartonAuditEvent.entity_id == row.id,
-        CartonAuditEvent.event_type.in_({"SUPPLIER_SHIPMENT_RECEIVED", "SUPPLIER_SHIPMENT_NOT_RECEIVED"}))
+        CartonAuditEvent.event_type.in_({"SUPPLIER_SHIPMENT_RECEIVED", "SUPPLIER_SHIPMENT_NOT_RECEIVED", receipt_link.EVENT}))
         .order_by(CartonAuditEvent.sequence)).all()
     for event in events:
         detail = json.loads(event.detail_json)
@@ -626,6 +637,7 @@ def _activity_rules(db, user, factory):
         "SUPPLIER_PAPER_ACCEPTED": ("carton_order", order_nos, "纸品已确认接单"),
         "SUPPLIER_SHIPMENT_CREATED": ("supplier_shipment", shipment_nos, "供应商已确认发货"),
         "SUPPLIER_SHIPMENT_RECEIVED": ("supplier_shipment", shipment_nos, "仓库已核实送货"),
+        receipt_link.EVENT: ("supplier_shipment", shipment_nos, "仓库已关联原入库凭证"),
         "SUPPLIER_SHIPMENT_NOT_RECEIVED": ("supplier_shipment", shipment_nos, "仓库反馈未收到"),
         "SUPPLIER_SHIPMENT_RECEIPT_REVERSED": ("supplier_shipment", shipment_nos, "原收料已冲销，等待仓库更正"),
         "SUPPLIER_SHIPMENT_LINE_LINKED": ("supplier_shipment", shipment_nos, "无单纸品已关联正式订单"),
@@ -926,6 +938,9 @@ def accept_lines(db, user, payload: BatchCommitmentSave):
 def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=None):
     _lock_receipt_factory(db, payload.factory_id)
     supplier = supplier_access(db, user, payload.factory_id, "carton_supplier:edit")
+    late = payload.registration_mode == "EXISTING_RECEIPT"
+    if late and (not source or payload.unmatched_lines):
+        raise HTTPException(422, "后补凭证必须来自原送货单文件，且整单已匹配正式纸品")
     if payload.unmatched_lines and not source:
         raise HTTPException(422, "无单明细只能来自已预览的原始送货单")
     digest = fingerprint(payload)
@@ -938,7 +953,7 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
     if db.scalar(select(SupplierShipment.id).where(SupplierShipment.factory_id == payload.factory_id,
         SupplierShipment.supplier_id == supplier.id, SupplierShipment.delivery_note_no == payload.delivery_note_no)):
         raise HTTPException(409, "此供应商送货单号已经登记")
-    if db.scalar(select(CartonReceipt.id).where(CartonReceipt.factory_id == payload.factory_id,
+    if not late and db.scalar(select(CartonReceipt.id).where(CartonReceipt.factory_id == payload.factory_id,
         CartonReceipt.supplier_id == supplier.id, CartonReceipt.delivery_note_no == payload.delivery_note_no)):
         raise HTTPException(409, "此送货单已有收料记录，请核对原单，不可再次登记发货")
     if payload.unmatched_lines:
@@ -964,8 +979,14 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
         if not line or line.factory_id != payload.factory_id:
             raise HTTPException(404, "未找到纸品子单")
         order = supplier_order(db, line.order_id, payload.factory_id, supplier.id)
-        issue = executable(db, order, item.issue_id)
-        if order.id not in checked_orders:
+        if late:
+            issue = latest_issue(db, order)
+            if (order.status == "CANCELLED" or not issue or issue.id != item.issue_id
+                or _purchase_order_pending_change(order, get_order_lines(db, order.id), issue)[0] != "NONE"):
+                raise HTTPException(409, "后补凭证的采购版本已变更或订单已取消，请重新预览")
+        else:
+            issue = executable(db, order, item.issue_id)
+        if not late and order.id not in checked_orders:
             for paper in _purchase_order_snapshot(issue).get("lines", []):
                 if Decimal(str(paper.get("after_required_quantity", "0"))) <= 0:
                     continue
@@ -976,23 +997,30 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
         if line.id in blocked:
             raise HTTPException(409, "此纸品有补单待核对，请联系内部仓库按原补单流程处理")
         commitment = db.get(SupplierCommitment, line.id)
-        if not commitment or commitment.issue_id != issue.id:
+        if not late and (not commitment or commitment.issue_id != issue.id):
             raise HTTPException(409, "请先确认当前版本纸品子单及承诺交期")
         available = line.required_quantity - fulfilled.get(line.id, 0) - reserved.get(line.id, 0) - pending.get(line.id, 0)
-        if item.quantity > available:
+        if not late and item.quantity > available:
             raise HTTPException(409, f"纸品 {order.order_no}/{line.line_no} 超过当前未送数量")
         snapshots.append({"order_no": order.order_no, "contract_no": order.contract_no, "customer_po": order.customer_po,
             "item_no": order.item_no, "customer_name": order.customer_name, "child_no": f"{order.order_no}/{line.line_no:02d}",
-            **{key: str(getattr(line, key)) for key in ("packaging_type", "paper_quality", "specification", "unit", "unit_price", "currency")},
+            **{key: str(getattr(line, key)) for key in ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit", "unit_price", "currency")},
             **({"delivery_unit_price": str(source["delivery_unit_prices"][line.id])}
                 if source and line.id in source.get("delivery_unit_prices", {}) else {}),
             **({"original_source_material": source["delivery_materials"][line.id]}
                 if source and line.id in source.get("delivery_materials", {}) else {}),
             **({"source_file": {key: source[key] for key in ("filename", "sha256", "rows") if key in source}}
                 if source else {})})
+    late_candidates = receipt_link.matching_receipts(db, payload.factory_id, supplier.id,
+        [snapshot | {"order_line_id": item.order_line_id, "quantity": str(item.quantity)}
+            for snapshot, item in zip(snapshots, payload.lines)], note_no=payload.delivery_note_no) if late else []
+    if late and not late_candidates:
+        raise HTTPException(409, "没有可整单关联的已入库记录，请核对原收料；后补凭证不会新建收料")
     row = SupplierShipment(id=f"CSS-{uuid4().hex}", factory_id=payload.factory_id, supplier_id=supplier.id,
         delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(), status="SENT", revision=1,
-        request_id=payload.request_id, fingerprint=digest, created_by=user.id, created_at=now_text())
+        request_id=payload.request_id, fingerprint=digest, created_by=user.id, created_at=now_text(),
+        acceptance_json=json.dumps({"registration_mode": "EXISTING_RECEIPT",
+            "candidate_receipt_ids": [receipt.id for receipt, _ in late_candidates]}) if late else "{}")
     db.add(row); db.flush()
     for index, item in enumerate(payload.lines):
         db.add(SupplierShipmentLine(id=f"{row.id}-{index+1:03d}", shipment_id=row.id, factory_id=payload.factory_id,
@@ -1006,6 +1034,7 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
             quantity=item.quantity, snapshot_json=json.dumps(snapshot, ensure_ascii=False)))
     _audit(db, user, payload.factory_id, "SUPPLIER_SHIPMENT_CREATED", "supplier_shipment", row.id,
         {"delivery_note_no": row.delivery_note_no, "lines": [item.model_dump(mode="json") for item in payload.lines],
+         "registration_mode": payload.registration_mode,
          "unmatched_lines": [item.model_dump(mode="json") for item in payload.unmatched_lines],
          **({"source_file": source} if source else {})})
     shipment_notifications.create_notification(db, row)
@@ -1034,6 +1063,8 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
             return shipment_out(db, row, internal=True)
     previous_receipt = db.get(CartonReceipt, row.receipt_id) if row.receipt_id else None
     correction = bool(previous_receipt and previous_receipt.status == "REVERSED")
+    if receipt_link.link_only(row):
+        raise HTTPException(409, "此单是后补凭证，请关联已入库记录，不能再次收料入库")
     if correction and len(payload.correction_reason.strip()) < 4:
         raise HTTPException(422, "原收料已冲销，更正验收须填写至少四字原因")
     if row.status in {"RECEIVED", "NOT_RECEIVED"} and not correction:
@@ -1042,6 +1073,10 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
         raise HTTPException(409, "此发货单已确认收料，不可重复入库")
     if row.revision != payload.expected_revision:
         raise HTTPException(409, "发货单版本已变更，请刷新")
+    if (not correction and not payload.new_delivery_confirmation and any(item.received_quantity > 0 for item in payload.lines)
+        and receipt_link.matching_receipts(db, payload.factory_id, row.supplier_id,
+            receipt_link.shipment_papers(db, row), note_no=row.delivery_note_no, include_linked=True)):
+        raise HTTPException(409, "存在相同纸品和数量的已入库记录：后补送货单请关联原记录；确为新一批到货须明确核对后确认")
     formal, unmatched = _shipment_sources(db, row)
     source = formal + unmatched
     supplied = {item.shipment_line_id: item for item in payload.lines}

@@ -56,6 +56,7 @@ class CartonFeatureUpdate(Base):
     __table_args__ = (UniqueConstraint("factory_id", "author_id", "request_key", name="uq_carton_feature_update_request"),)
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     factory_id: Mapped[str] = mapped_column(String(64), index=True)
+    audience: Mapped[str] = mapped_column(String(16), default="INTERNAL", server_default="INTERNAL")
     title: Mapped[str] = mapped_column(String(120))
     body: Mapped[str] = mapped_column(Text)
     author_id: Mapped[str] = mapped_column(String(64))

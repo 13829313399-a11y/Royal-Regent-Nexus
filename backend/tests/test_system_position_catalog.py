@@ -41,7 +41,7 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v31"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v32"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
@@ -278,7 +278,7 @@ def test_fixed_system_position_definition_contract():
     ):
         warehouse = positions.get_system_position(role_id)
         assert warehouse.permission_codes == positions.WAREHOUSE_PERMISSION_CODES
-        assert len(warehouse.permission_codes) == 17
+        assert len(warehouse.permission_codes) == 19
         assert warehouse.scope_mode == (
             positions.CROSS_FACTORY_OPERATE_SCOPE
             if role_id == "position_warehouse_manager"

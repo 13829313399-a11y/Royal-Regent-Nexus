@@ -1014,13 +1014,9 @@ def get_purchase_order_issue(
 def _guard_no_supplier_transit(db: Session, order: CartonOrder) -> None:
     from app.services.carton_order_split import guard_order_change
     guard_order_change(db, order)
-    transit = db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
-        SupplierShipment.id == SupplierShipmentLine.shipment_id).join(CartonOrderLine,
-        CartonOrderLine.id == SupplierShipmentLine.order_line_id).outerjoin(CartonReceipt,
-        CartonReceipt.id == SupplierShipment.receipt_id).where(
-            CartonOrderLine.order_id == order.id, SupplierShipment.factory_id == order.factory_id,
-            or_(SupplierShipment.status == "SENT", and_(SupplierShipment.status == "RECEIVED", CartonReceipt.status == "REVERSED"))).limit(1))
-    if transit:
+    from app.services.carton_supplier_portal import outstanding
+    ids = [line.id for line in _order_lines(db, order.id)]
+    if any(quantity > 0 for quantity in outstanding(db, ids).values()):
         raise HTTPException(409, "订单有供应商在途发货，请先由仓库核实收到或确认整单未收到并退回，再办理减单或取消")
 
 
@@ -2553,10 +2549,10 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
             raise HTTPException(409, "更正必须关联本送货单已冲销的上一张收料")
         # Keep vendor note unique and unchanged; internal receipt revisions get a distinct evidence number.
         receipt_note_no = f"{payload.delivery_note_no[:96]}#C-{previous.id[-12:]}"
-    if not supplier_shipment_id and db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
-        SupplierShipment.id == SupplierShipmentLine.shipment_id).where(SupplierShipment.factory_id == factory_id,
-            SupplierShipment.status == "SENT", SupplierShipmentLine.order_line_id.in_(line_ids)).limit(1)):
-        raise HTTPException(409, "本次纸品已有供应商在途发货，请先在供应商协同管理核实，避免重复入库")
+    if not supplier_shipment_id:
+        from app.services.carton_supplier_portal import outstanding
+        if any(quantity > 0 for quantity in outstanding(db, line_ids).values()):
+            raise HTTPException(409, "本次纸品已有供应商在途发货，请先在供应商协同管理核实，避免重复入库")
     if len(line_ids) != len(set(line_ids)):
         raise HTTPException(status_code=422, detail="同一张收料单不能重复填写同一订单明细")
     order_lines = list(db.scalars(

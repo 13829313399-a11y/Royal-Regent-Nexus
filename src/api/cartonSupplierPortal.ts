@@ -8,12 +8,14 @@ export interface PortalOrder { split_records?: SplitRecord[]; id: string; order_
 export interface ShipmentLine { id: string; order_line_id: string | null; source_type?: 'FORMAL_ORDER' | 'AD_HOC_REVIEW'; order_no: string; contract_no: string; customer_po: string; item_no: string; customer_name: string; child_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; unit_price?: string; delivery_unit_price?: string | null; currency?: string }
 export interface ReceiveLine { shipment_line_id: string; received_quantity: number; damaged_quantity: number; rejected_quantity: number; unusable_quantity: number; unit_price: number; paper_quality: string; specification: string; location_allocations: LocationAllocation[]; difference_reason: string; no_order_decision?: '' | 'SAMPLE' | 'WRONG_DELIVERY'; customer_code?: string; sample_purpose?: string; requested_by?: string; unit?: string }
 export interface SampleReceipt { receipt_line_id: string; customer_code: string; customer_name: string; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; linked_order_line_id: string }
-export interface PortalShipment { id: string; delivery_note_no: string; delivery_date: string; status: string; revision: number; created_at: string; confirmed_at: string; source_filename?: string; source_sha256?: string; receipt_id?: string; receipt_status?: string; requires_correction?: boolean; acceptance_history?: { confirmed_at: string; acceptance_date: string | null; status: string; lines: PortalShipment['acceptance_lines'] }[]; sample_receipts?: SampleReceipt[]; acceptance_date: string | null; lines: ShipmentLine[]; acceptance_lines: Pick<ReceiveLine, 'shipment_line_id' | 'received_quantity' | 'damaged_quantity' | 'rejected_quantity' | 'unusable_quantity' | 'difference_reason' | 'no_order_decision'>[] }
+export interface PortalShipment { requires_receipt_link?: boolean; linked_existing_receipt?: boolean; id: string; delivery_note_no: string; delivery_date: string; status: string; revision: number; created_at: string; confirmed_at: string; source_filename?: string; source_sha256?: string; receipt_id?: string; receipt_status?: string; requires_correction?: boolean; acceptance_history?: { confirmed_at: string; acceptance_date: string | null; status: string; lines: PortalShipment['acceptance_lines'] }[]; sample_receipts?: SampleReceipt[]; acceptance_date: string | null; lines: ShipmentLine[]; acceptance_lines: Pick<ReceiveLine, 'shipment_line_id' | 'received_quantity' | 'damaged_quantity' | 'rejected_quantity' | 'unusable_quantity' | 'difference_reason' | 'no_order_decision'>[] }
 export interface PortalWorkspace { factory_id: string; supplier_name: string; orders: PortalOrder[]; shipments: PortalShipment[] }
 export interface PendingSupplierShipment { id: string; delivery_note_no: string; delivery_date: string; requires_correction: boolean }
 export interface PendingSupplierShipments { factory_id: string; total: number; items: PendingSupplierShipment[] }
 export interface DeliveryImportRow { source_sheet: string; source_row: number; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; delivered_quantity: number; unit_price?: number; order_no: string; child_no: string; order_line_id: string; issue_id: string; status: 'READY' | 'AD_HOC_REVIEW' | 'BLOCKED'; reason: string }
-export interface DeliveryImportGroup { factory_id: string; destination: string; delivery_note_no: string; delivery_date: string; ready: boolean; issues: string[]; rows: DeliveryImportRow[] }
+export interface DeliveryImportGroup { factory_id: string; destination: string; delivery_note_no: string; delivery_date: string; ready: boolean; receipt_link_ready?: boolean; existing_receipt_count?: number; issues: string[]; rows: DeliveryImportRow[] }
+export type DeliveryRegistrationMode = 'SHIPMENT' | 'EXISTING_RECEIPT'
+export interface ShipmentReceiptOption { already_linked?: boolean; id: string; revision: number; status: 'POSTED' | 'REVERSED'; receipt_no: string; delivery_note_no: string; delivery_date: string; acceptance_date: string | null; lines: { order_line_id: string; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; received_quantity: string; damaged_quantity: string; rejected_quantity: string; unusable_quantity: string; effective_quantity: string; unit: string; unit_price: string; currency: string }[] }
 export interface DeliveryImportPreview { filename: string; sha256: string; row_count: number; groups: DeliveryImportGroup[] }
 export interface SupplierMarkTemplate { id: string; customer_name: string; po: string; item: string; contract_number: string; version: number; check_status: string; manual_released: boolean; excel_file_name: string; pdf_file_name: string; created_at: string }
 export interface SupplierDocumentOrder { order_no: string; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; order_date: string; planned_date: string }
@@ -67,12 +69,18 @@ export const cartonSupplierPortalApi = {
     const form = new FormData(); form.append('file', file)
     return (await http.post<DeliveryImportPreview>(base + '/shipments/import-preview', form, { timeout: 120000 })).data
   },
-  async confirmDeliveryImport(file: File, preview: DeliveryImportPreview, selections: { factory_id: string; delivery_note_no: string }[]) {
+  async confirmDeliveryImport(file: File, preview: DeliveryImportPreview, selections: { factory_id: string; delivery_note_no: string; registration_mode?: DeliveryRegistrationMode }[]) {
     const form = new FormData(); form.append('file', file); form.append('sha256', preview.sha256)
     form.append('selections', JSON.stringify(selections))
     return (await http.post<{ shipments: PortalShipment[] }>(base + '/shipments/import-confirm', form, { timeout: 120000 })).data
   },
-  receive(id: string, payload: { correction_reason?: string; split_confirmation?: string; factory_id: string; expected_revision: number; acceptance_date: string; lines: ReceiveLine[] }) { return postCartonInventoryRequest<PortalShipment>(`${base}/internal/shipments/${id}/receive`, payload) },
+  async receiptOptions(factory_id: string, id: string) {
+    return (await http.get<ShipmentReceiptOption[]>(`${base}/internal/shipments/${encodeURIComponent(id)}/receipt-options`, { params: { factory_id } })).data
+  },
+  linkReceipt(id: string, payload: { factory_id: string; expected_revision: number; receipt_id: string; expected_receipt_revision: number; reason: string }) {
+    return postCartonInventoryRequest<PortalShipment>(`${base}/internal/shipments/${encodeURIComponent(id)}/link-receipt`, payload)
+  },
+  receive(id: string, payload: { new_delivery_confirmation?: boolean; correction_reason?: string; split_confirmation?: string; factory_id: string; expected_revision: number; acceptance_date: string; lines: ReceiveLine[] }) { return postCartonInventoryRequest<PortalShipment>(`${base}/internal/shipments/${id}/receive`, payload) },
   async linkShipmentLine(id: string, lineId: string, payload: { factory_id: string; customer_code: string; order_line_id: string; expected_revision: number; expected_order_revision: number; reason: string }) {
     return (await http.post<PortalShipment>(`${base}/internal/shipments/${encodeURIComponent(id)}/lines/${encodeURIComponent(lineId)}/link-order`, payload)).data
   },

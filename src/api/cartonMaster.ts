@@ -3,7 +3,7 @@ import type { CartonLocation } from './cartonPositions'
 import { matchesNumberTemplate } from '@/lib/cartonNumberPatterns'
 
 export interface MasterPaper { packaging_type: string; paper_quality: string; specification: string; dimension_unit: string; unit: string; usage_quantity: string | number }
-export interface NumberRule { mode: 'AUTO' | 'OFF' | 'WARN' | 'BLOCK'; prefix: string; min_length: number; max_length: number; characters: 'ANY' | 'DIGITS' | 'ALNUM_DASH'; templates?: string[]; frozen?: boolean; reset?: boolean; sample_text?: string; source?: 'NONE' | 'MANUAL' | 'HISTORY'; sample_count?: number }
+export interface NumberRule { mode: 'AUTO' | 'OFF' | 'WARN' | 'BLOCK'; prefix: string; min_length: number; max_length: number; characters: 'ANY' | 'DIGITS' | 'ALNUM_DASH'; templates?: string[]; frozen?: boolean; reset?: boolean; sample_text?: string; source?: 'NONE' | 'MANUAL' | 'HISTORY'; sample_count?: number; user_configured?: boolean }
 export type PaperHistory = Partial<Record<'packaging_type' | 'paper_quality' | 'specification', string[]>>
 export interface MasterData { hidden_paper_types?: string[]; hidden_paper_qualities?: string[]; hidden_specifications?: string[]; paper_types?: string[]; paper_qualities?: string[]; specifications?: string[]; product_name: string; packing_name: string; lines: MasterPaper[]; item_nos: string[]; note: string; lead_days: number | null; production_days: number | null; customer_days: number | null; customer_days_disabled: boolean; customer_po_rule: NumberRule; contract_rule: NumberRule; item_rule: NumberRule; warehouses: string[] }
 export interface MasterRecord { id: string; kind: 'CONFIG' | 'CONTRACT' | 'RULE' | 'WORKSHOP' | 'ACCESS'; customer_code: string; code: string; data: Partial<MasterData>; status: 'ACTIVE' | 'INACTIVE'; preferred: boolean; revision: number; maintained: boolean; updated_at: string; sources: { order_no: string; order_date: string; customer_po?: string; contract_no: string; item_no: string; customer_code?: string; configuration: Partial<MasterData> }[] }
@@ -11,7 +11,13 @@ export interface MasterWorkspace { paper_history?: PaperHistory; can_manage: boo
 export type MasterImportKind = 'paper-options' | 'configurations' | 'locations'
 export interface MasterImportResult { factory_id: string; kind: MasterImportKind; fingerprint: string; master_revision: string; preview_token: string; added: number; skipped: number; errors: string[]; details: string[] }
 export const emptyMaster = (): MasterWorkspace => ({ can_manage: false, warehouses: [], records: [], locations: [], users: [] })
-export const defaultNumberRule = (): NumberRule => ({ mode: 'AUTO', prefix: '', min_length: 0, max_length: 128, characters: 'ANY', templates: [], frozen: false, sample_text: '', source: 'NONE', sample_count: 0 })
+export const defaultNumberRule = (mode: NumberRule['mode'] = 'AUTO'): NumberRule => ({ mode, prefix: '', min_length: 0, max_length: 128, characters: 'ANY', templates: [], frozen: false, sample_text: '', source: 'NONE', sample_count: 0, user_configured: false })
+export function effectiveItemRule(rule?: NumberRule): NumberRule {
+  const result = { ...defaultNumberRule('OFF'), ...rule }
+  const unrestricted = !result.prefix && result.min_length === 0 && result.max_length === 128 && result.characters === 'ANY'
+  if (unrestricted && automaticNumberRule(result) && !result.user_configured && result.source !== 'MANUAL') result.mode = 'OFF'
+  return result
+}
 export const automaticNumberRule = (rule: NumberRule) => rule.mode === 'AUTO' ||
   (rule.mode === 'WARN' && !rule.templates?.length && !rule.prefix && rule.min_length === 0 && rule.max_length === 128 && rule.characters === 'ANY')
 export function historicalNumberSamples(records: MasterRecord[], customer: string, key: 'contract_rule' | 'item_rule' | 'customer_po_rule') {
@@ -19,9 +25,9 @@ export function historicalNumberSamples(records: MasterRecord[], customer: strin
     .flatMap(r => r.sources.filter(source => (source.customer_code || r.customer_code) === customer).map(source => key === 'customer_po_rule' ? source.customer_po || '' : key === 'contract_rule' ? source.contract_no : source.item_no))
   return [...new Set(values.filter(Boolean))]
 }
-export const defaultMasterData = (): MasterData => ({ product_name: '', packing_name: '', lines: [], item_nos: [], note: '', lead_days: null, production_days: null, customer_days: null, customer_days_disabled: false, customer_po_rule: defaultNumberRule(), contract_rule: defaultNumberRule(), item_rule: defaultNumberRule(), warehouses: [] })
+export const defaultMasterData = (): MasterData => ({ product_name: '', packing_name: '', lines: [], item_nos: [], note: '', lead_days: null, production_days: null, customer_days: null, customer_days_disabled: false, customer_po_rule: defaultNumberRule(), contract_rule: defaultNumberRule(), item_rule: defaultNumberRule('OFF'), warehouses: [] })
 export function masterDueRules(records: MasterRecord[], customer: string) {
-  const result = { lead_days: 3, production_days: 7, customer_days: null as number | null, customer_po_rule: defaultNumberRule(), contract_rule: defaultNumberRule(), item_rule: defaultNumberRule() }
+  const result = { lead_days: 3, production_days: 7, customer_days: null as number | null, customer_po_rule: defaultNumberRule(), contract_rule: defaultNumberRule(), item_rule: defaultNumberRule('OFF') }
   for (const code of ['', customer].filter((x, i, a) => a.indexOf(x) === i)) {
     const row = records.find(r => r.kind === 'RULE' && r.customer_code === code && r.status === 'ACTIVE')
     if (!row) continue
@@ -32,7 +38,7 @@ export function masterDueRules(records: MasterRecord[], customer: string) {
     if (code) {
       result.customer_po_rule = row.data.customer_po_rule || defaultNumberRule()
       result.contract_rule = row.data.contract_rule || defaultNumberRule()
-      result.item_rule = row.data.item_rule || defaultNumberRule()
+      result.item_rule = effectiveItemRule(row.data.item_rule)
     }
   }
   return result

@@ -130,8 +130,56 @@ def test_image_normalization_rejects_unsupported_and_excessive_pixels():
     with pytest.raises(HTTPException) as error:
         service.normalize_image(output.getvalue())
     assert error.value.status_code == 422
+
     output = BytesIO()
     Image.new("1", (4001, 4000)).save(output, "PNG")
     with pytest.raises(HTTPException) as error:
         service.normalize_image(output.getvalue())
     assert error.value.status_code == 422
+
+
+def test_supplier_feedback_uses_canonical_service_scope_private_images_and_targeted_updates(monkeypatch):
+    from test_carton_supplier_portal import setup_portal, supplier_login, revoke_supplier_permission
+    with make_client(monkeypatch) as client:
+        setup_portal(client)
+        params = {"factory_id": "huaxing", "portal": "supplier"}
+        assert client.get("/api/carton-feedback", params=params).status_code == 200
+        assert client.get("/api/carton-feedback?factory_id=huaxing").status_code == 403
+        assert client.get("/api/carton-feedback", params={**params, "factory_id": "huakang-a"}).status_code == 403
+        response = client.post("/api/carton-feedback", data={**params, "title": "供应商问题", "description": "接单显示异常",
+            "context_path": "/modules/pmc-warehouse/carton-procurement", "request_key": "supplier-feedback"},
+            files=[("files", ("screen.png", picture(), "image/png"))])
+        assert response.status_code == 200, response.text
+        row = response.json()
+        assert row["context_path"] == "/carton-supplier"
+        detail_url = f"/api/carton-feedback/{row['id']}"
+        image_url = detail_url + f"/images/{row['images'][0]}"
+        assert client.get(image_url, params=params).status_code == 200
+        assert client.get("/api/carton-feedback", params={**params, "all_feedback": True}).status_code == 403
+        assert client.post(detail_url + "/reply", params=params, json={"revision": 1, "status": "FIXED", "body": "越权"}).status_code == 403
+        publication = {"title": "新入口", "body": "右上角查看反馈与变更", "request_key": "supplier-update", "audience": "SUPPLIER"}
+        assert client.post("/api/carton-feedback/updates/publish", params=params, json=publication).status_code == 403
+        login_as(client, "admin")
+        assert row["id"] in {r["id"] for r in client.get("/api/carton-feedback", params={"factory_id": "huaxing", "all_feedback": True}).json()["feedbacks"]}
+        assert client.post(detail_url + "/reply?factory_id=huaxing", json={"revision": 1, "status": "FIXED", "body": "已修正接单显示"}).status_code == 200
+        private = submit(client, title="内部问题").json()
+        url = "/api/carton-feedback/updates/publish?factory_id=huaxing"
+        external = client.post(url, json=publication)
+        assert external.status_code == 200, external.text
+        assert client.post(url, json=publication).json() == external.json()
+        assert client.post(url, json={**publication, "audience": "INTERNAL"}).status_code == 409
+        assert client.post(url, json={**publication, "audience": "INTERNAL", "title": "内部敏感说明", "request_key": "internal-update"}).status_code == 200
+        # Even an administrator using the supplier portal cannot enumerate other authors.
+        assert client.get(detail_url, params=params).status_code == 404
+        assert client.get(image_url, params=params).status_code == 404
+        supplier_login(client)
+        workspace = client.get("/api/carton-feedback", params=params).json()
+        assert workspace["can_manage"] is False
+        assert {r["id"] for r in workspace["feedbacks"]} == {row["id"]}
+        assert len(workspace["updates"]) == 1 and workspace["updates"][0]["audience"] == "SUPPLIER"
+        assert client.get(detail_url, params=params).json()["replies"][0]["body"] == "已修正接单显示"
+        assert client.get(f"/api/carton-feedback/{private['id']}", params=params).status_code == 404
+        assert client.get(f"/api/carton-feedback/{private['id']}/images/{private['images'][0]}", params=params).status_code == 404
+        revoke_supplier_permission()
+        assert client.get(detail_url, params=params).status_code == 403
+        assert client.get(image_url, params=params).status_code == 403

@@ -5,9 +5,10 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, ShipmentReceiptLink, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
 from app.services import carton_supplier_delivery_import as delivery_import
+from app.services import carton_supplier_receipt_link as receipt_link
 from app.services import carton_supplier_settlement as settlement
 from app.schemas.carton_supplier_settlement import SupplierSettlementReview
 from app.schemas.carton_supplier_portal import SupplierMarkAssetOut
@@ -128,9 +129,9 @@ async def confirm_shipment_import(file: UploadFile = File(...), sha256: str = Fo
         raw = json.loads(selections)
         if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
             raise ValueError()
-        keys = [(item["factory_id"], item["delivery_note_no"]) for item in raw]
-        if any(not isinstance(factory, str) or not isinstance(note, str)
-            for factory, note in keys):
+        keys = [(item["factory_id"], item["delivery_note_no"], item.get("registration_mode", "SHIPMENT")) for item in raw]
+        if any(not isinstance(factory, str) or not isinstance(note, str) or mode not in {"SHIPMENT", "EXISTING_RECEIPT"}
+            for factory, note, mode in keys):
             raise ValueError()
     except (ValueError, TypeError, KeyError):
         raise HTTPException(422, "所选送货单格式无效") from None
@@ -153,6 +154,16 @@ def internal_pending_shipments(factory_id: str, limit: int = Query(default=3, ge
 @router.post("/internal/shipments/{shipment_id}/receive")
 def receive(shipment_id: str, payload: ShipmentReceive, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.receive_shipment(db, user, shipment_id, payload)
+
+
+@router.get("/internal/shipments/{shipment_id}/receipt-options")
+def shipment_receipt_options(shipment_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return receipt_link.options(db, user, factory_id, shipment_id)
+
+
+@router.post("/internal/shipments/{shipment_id}/link-receipt")
+def link_shipment_receipt(shipment_id: str, payload: ShipmentReceiptLink, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return receipt_link.associate(db, user, shipment_id, payload)
 
 @router.post("/internal/receipt-lines/{receipt_line_id}/link-order")
 def link_sample_receipt(receipt_line_id: str, payload: SampleReceiptLink,
