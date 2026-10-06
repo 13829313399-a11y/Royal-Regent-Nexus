@@ -1035,7 +1035,7 @@ def _parse_huakang_a_rows(
                 records.append(record)
     else:
         parser: Callable[[str, bytes], list[dict[str, Any]]] = (
-            green_toys_headstart.parse_green_toys_image
+            green_toys_headstart.parse_green_toys_po
             if customer_code == "green-toys"
             else green_toys_headstart.parse_headstart_pdf
         )
@@ -1191,6 +1191,20 @@ def create_unified_customer_preview(
         raise CustomerOrderUnifiedError(str(exc)) from exc
 
     detail_rows = [row for row in rows if row.get("row_role") != "parent"]
+    if factory_id == 'huakang-a' and customer_code == 'green-toys':
+        workbook = _load_workbook(schedule_content)
+        try:
+            recovery = huakang_unified.green_summary_recovery(workbook, detail_rows, history)
+        finally:
+            workbook.close()
+        assigned = {key: value['reference'] for key, value in recovery.items()}
+        for row in detail_rows:
+            record = {'contract_no': row['contract_no'], 'item_no': row['product_no']}
+            huakang_unified.reconcile_green_po(record, history, assigned)
+            row['reference_no'] = row['po_no'] = record['customer_po']
+            key = (_text(row['contract_no']), _key(row['product_no']))
+            if key in recovery:
+                parser_warnings.append(f"{row['po_no']} / {row['product_no']}：两张摘要一致但缺少 ITEM 明细；导出时恢复明细和公式关联，保留原编号及人工价格。")
     huaxing_sheets = []
     if huaxing.enabled(factory_id, customer_code):
         workbook = _load_workbook(schedule_content)
@@ -1525,7 +1539,23 @@ def export_unified_customer_schedule(
         if huaxing.enabled(factory_id, customer_code):
             huaxing.export_rows(workbook, rows)
         elif huakang_unified.enabled(factory_id, customer_code) or regional.enabled(factory_id, customer_code):
-            slots_by_sheet = huakang_unified.output_slots(workbook, len(rows))
+            recovery = {}
+            if factory_id == 'huakang-a' and customer_code == 'green-toys':
+                recovery = huakang_unified.green_summary_recovery(workbook, rows,
+                    read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code))
+            recovered_rows = [recovery.get((_text(row.get('contract_no')), _key(row.get('product_no')))) for row in rows]
+            if any(recovered_rows):
+                if any(value and (row['reference_no'] != value['reference'] or row['po_no'] != value['reference'])
+                       for row, value in zip(rows, recovered_rows)):
+                    raise CustomerOrderUnifiedError('恢复摘要时订单身份已改变，请重新核对原单')
+                count = len(rows) - sum(bool(value) for value in recovered_rows)
+                slots_by_sheet = huakang_unified.output_slots(workbook, len(rows), sheet_counts={
+                    ITEM_SHEET: len(rows), ORDER_SHEET: count, REVIEW_SHEET: count,
+                })
+            else:
+                slots_by_sheet = huakang_unified.output_slots(workbook, len(rows))
+            summary_index = 0
+            green_pairs = []
             for index, row in enumerate(rows):
                 row_number = slots_by_sheet[ITEM_SHEET][index]
                 _write_item_row(workbook[ITEM_SHEET], row_number, row)
@@ -1537,10 +1567,26 @@ def export_unified_customer_schedule(
                     from app.services.customer_order_ubtech import write_extensions
                     write_extensions(workbook[ITEM_SHEET], row_number, row)
                 for name in (ORDER_SHEET, REVIEW_SHEET):
-                    _write_summary_row(workbook[name], slots_by_sheet[name][index], row, item_row=row_number, item_sheet=workbook[ITEM_SHEET])
+                    summary_row = recovered_rows[index][name] if recovered_rows[index] else slots_by_sheet[name][summary_index]
+                    _write_summary_row(workbook[name], summary_row, row, item_row=row_number, item_sheet=workbook[ITEM_SHEET])
+                    if factory_id == 'huakang-a' and customer_code == 'green-toys':
+                        green_pairs.append((name, summary_row, row_number))
                     if customer_code == 'ubtech':
                         from app.services.customer_order_ubtech import write_summary
                         write_summary(workbook[name], slots_by_sheet[name][index], row, slots_by_sheet[ORDER_SHEET][index])
+                if not recovered_rows[index]:
+                    summary_index += 1
+            for name, summary_row, item_row in green_pairs:
+                detail = workbook[ITEM_SHEET]
+                summary = workbook[name]
+                if (not _text(detail.cell(item_row, 5).value) or not _text(detail.cell(item_row, 8).value)
+                        or [_text(detail.cell(item_row, c).value) for c in range(4, 9)] !=
+                           [_text(summary.cell(summary_row, c).value) for c in range(3, 8)]):
+                    raise CustomerOrderUnifiedError('Green Toys 导出三表身份不一致，已停止生成，请重新核对')
+                for c, ic in ((1,1),(2,2),(8,9),(9,10),(10,11),(11,12),(12,13),(13,14),(18,25),(19,26)):
+                    ref = f"'ITEM表'!{get_column_letter(ic)}{item_row}"
+                    if summary.cell(summary_row, c).value != f'=IF(LEN({ref})=0,"",{ref})':
+                        raise CustomerOrderUnifiedError('Green Toys 导出三表公式关联不一致，已停止生成')
         else:
             slots = _ensure_output_slots(workbook, len(rows))
             for row_number, row in zip(slots, rows, strict=True):

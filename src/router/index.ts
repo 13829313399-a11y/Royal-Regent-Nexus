@@ -35,10 +35,10 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/carton-supplier/carton-mark', name: 'carton-supplier-carton-mark', component: () => import('@/views/CartonSupplierMarkTemplatesView.vue'),
-    meta: { title: '供应商箱唛资料模板', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
+    meta: { title: '供应商箱唛资料库', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
   },
   {
-    path: '/carton-supplier-management', name: 'carton-supplier-management', component: () => import('@/views/CartonSupplierManagementView.vue'),
+    path: '/carton-supplier-management', name: 'carton-supplier-management', redirect: to => ({ path: '/modules/pmc-warehouse/carton-procurement', query: { ...to.query, tab: 'receipts', receipt_page: 'supplier' } }),
     meta: { title: '供应商协同管理', fullPage: true, requiresAuth: true, permissions: ['carton_procurement:read'], enforcePermissions: true, strictPermissions: true },
   },
   {

@@ -1343,6 +1343,8 @@ class CartonAuditEventListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonAuditEventOut]
+    event_types: dict[str, str] = Field(default_factory=dict)
+    actors: list[dict[str, str]] = Field(default_factory=list)
 
 
 class CartonDashboardOut(BaseModel):

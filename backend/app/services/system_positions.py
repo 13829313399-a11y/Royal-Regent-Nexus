@@ -23,7 +23,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v30"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v32"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -363,6 +363,8 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 WAREHOUSE_PERMISSION_CODES = (
+    "carton_mark:read",
+    "carton_mark:template_upload",
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
     "molding_sample:read",

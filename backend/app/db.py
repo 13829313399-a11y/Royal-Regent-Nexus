@@ -303,11 +303,12 @@ QC_INSPECTION_REQUIRED_TABLES = {
     "qc_inspection_audit_events",
     "qc_inspection_idempotency_records",
 }
-CARTON_MARK_LIBRARY_REVISION = "20260819_0080"
+CARTON_MARK_LIBRARY_REVISION = "20261006_0139"
 CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
     "carton_mark_customers",
     "carton_mark_templates",
     "carton_mark_documents",
+    "carton_mark_assets",
 }
 def ensure_carton_mark_library_schema_ready() -> None:
     """Refuse to let create_all silently bypass the persistent library migration."""
@@ -321,12 +322,19 @@ def ensure_carton_mark_library_schema_ready() -> None:
             "SELECT version_num FROM alembic_version"
         ).scalar_one_or_none()
         missing = sorted(CARTON_MARK_LIBRARY_REQUIRED_TABLES - table_names)
+        if "carton_mark_assets" in table_names:
+            kind_constraint = next((c["sqltext"] for c in inspector.get_check_constraints("carton_mark_assets")
+                if c["name"] == "ck_carton_mark_asset_kind"), "")
+            if "'image'" not in kind_constraint:
+                missing.append("carton_mark_assets 图片格式约束")
+            if "photo_group_id" not in {c["name"] for c in inspector.get_columns("carton_mark_assets")}:
+                missing.append("carton_mark_assets 照片分组字段")
         if not missing:
             return
     raise RuntimeError(
         "检测到箱唛资料库尚未完整迁移 "
         f"{CARTON_MARK_LIBRARY_REVISION}；当前版本：{current_revision}；"
-        f"缺少表：{', '.join(missing)}。"
+        f"缺少结构：{', '.join(missing)}。"
         "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
     )
 
@@ -713,6 +721,27 @@ def ensure_document_tools_schema_ready() -> None:
             raise RuntimeError("文档工具尚未迁移至 20260908_0103_docs；请备份并迁移后启动。缺少：" + ", ".join(missing))
 
 
+def ensure_module_feedback_schema_ready() -> None:
+    """An existing database must be explicitly migrated before feedback starts."""
+    from app.models import module_feedback  # noqa: F401
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if not names:
+            return
+        missing = []
+        for name, table in Base.metadata.tables.items():
+            if not name.startswith("module_feedback_"):
+                continue
+            if name not in names:
+                missing.append(name)
+            else:
+                columns = {column["name"] for column in inspector.get_columns(name)}
+                missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
+        if missing:
+            raise RuntimeError("模块反馈需要迁移至 20261005_0120；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def ensure_identity_schema_ready() -> None:
     """Existing accounts require an explicit additive migration, even with writes off."""
     with engine.connect() as connection:
@@ -734,6 +763,19 @@ def ensure_identity_schema_ready() -> None:
             raise RuntimeError("IAM V2 requires migration 20260926_0125 before startup: " + ", ".join(missing))
 
 
+def ensure_carton_feedback_schema_ready() -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "auth_users" not in tables:
+        return
+    required = {"carton_feedback", "carton_feedback_replies", "carton_feedback_images", "carton_feature_updates"}
+    from app.models import carton_feedback  # noqa: F401
+    missing_columns = any({column.name for column in Base.metadata.tables[table].columns}
+        - {column["name"] for column in inspector.get_columns(table)} for table in required & tables)
+    if required - tables or missing_columns:
+        raise RuntimeError("纸箱反馈结构未就绪，请先备份数据库并执行 Alembic upgrade head 再启动应用。")
+
+
 def init_db() -> None:
     from app.models import (
         work_center,  # noqa: F401
@@ -742,6 +784,7 @@ def init_db() -> None:
         document_tools,  # noqa: F401
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
+        carton_feedback,  # noqa: F401
         carton_procurement,  # noqa: F401
         carton_stocktake,  # noqa: F401
         carton_positions,
@@ -751,6 +794,7 @@ def init_db() -> None:
         customer_order,  # noqa: F401
         customer_order_ledger,  # noqa: F401
         internal_quote,  # noqa: F401
+        module_feedback,  # noqa: F401
         customer_price_settings,  # noqa: F401
         injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
@@ -772,6 +816,7 @@ def init_db() -> None:
     if not getattr(SessionLocal, "work_center_hooks_installed", False):
         install_projection_hooks(SessionLocal)
         SessionLocal.work_center_hooks_installed = True
+    ensure_module_feedback_schema_ready()
     ensure_work_center_schema_ready()
     ensure_identity_schema_ready()
     ensure_molding_dispatch_schema_ready()
@@ -780,6 +825,7 @@ def init_db() -> None:
     ensure_three_d_printing_schema_ready()
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()
+    ensure_carton_feedback_schema_ready()
     ensure_injection_v3_schema_ready()
     ensure_carton_stocktake_schema_ready()
     ensure_carton_positions_schema_ready()

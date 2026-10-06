@@ -2,6 +2,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKeyConstraint,
+    ForeignKey,
     Index,
     Integer,
     LargeBinary,
@@ -12,6 +13,42 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
+
+
+class CartonMarkAsset(Base):
+    """Independent source files; storage does not constitute QC approval."""
+    __tablename__ = "carton_mark_assets"
+    __table_args__ = (
+        UniqueConstraint("factory_id", "sha256", name="uq_carton_mark_asset_factory_sha"),
+        ForeignKeyConstraint(["bound_order_id", "factory_id"],
+                             ["carton_orders.id", "carton_orders.factory_id"],
+                             name="fk_carton_mark_asset_order_factory"),
+        CheckConstraint("kind IN ('excel', 'pdf', 'image')", name="ck_carton_mark_asset_kind"),
+        CheckConstraint("photo_group_id IS NULL OR kind = 'image'", name="ck_carton_mark_asset_photo_group"),
+        CheckConstraint("revision >= 1 AND size_bytes > 0", name="ck_carton_mark_asset_size_revision"),
+        Index("ix_carton_mark_asset_factory_contract", "factory_id", "contract_number"),
+        Index("ix_carton_mark_asset_factory_photo_group", "factory_id", "photo_group_id"),
+    )
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    file_name: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(16))
+    photo_group_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    content_type: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    content: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    contract_number: Mapped[str] = mapped_column(String(128), default="")
+    bound_order_id: Mapped[str | None] = mapped_column(String(96), ForeignKey("carton_orders.id", ondelete="SET NULL", name="fk_carton_mark_asset_order_delete"), nullable=True)
+    recognition_source: Mapped[str] = mapped_column(String(32), default="")
+    candidates_json: Mapped[str] = mapped_column(Text, default="[]")
+    warning: Mapped[str] = mapped_column(String(500), default="")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_by_name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
 
 
 class CartonMarkCustomer(Base):

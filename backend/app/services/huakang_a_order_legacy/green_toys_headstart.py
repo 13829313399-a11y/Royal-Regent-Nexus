@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import re
-import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -18,7 +17,6 @@ from pypdf import PdfReader
 from app.services.carton_mark import (
     find_tesseract_cmd,
     missing_tesseract_message,
-    select_tesseract_language,
 )
 from app.services.huaxing_order_legacy.new_order_excel import (
     append_column_records_to_workbook,
@@ -269,36 +267,15 @@ def parse_headstart_pdf(file_name: str, content: bytes) -> list[dict[str, Any]]:
 
 
 def _ocr_green_toys_image(path: Path) -> str:
+    from .green_toys_image_ocr import GreenImageError, recognize_green_toys_image
+
     tesseract_cmd = find_tesseract_cmd()
     if not tesseract_cmd:
         raise HuakangASpecialCustomerError(missing_tesseract_message())
-    language = select_tesseract_language(tesseract_cmd)
     try:
-        completed = subprocess.run(
-            [
-                tesseract_cmd,
-                str(path),
-                "stdout",
-                "-l",
-                language,
-                "--psm",
-                "4",
-                "-c",
-                "preserve_interword_spaces=1",
-            ],
-            capture_output=True,
-            check=False,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=45,
-        )
-    except Exception as exc:
+        return recognize_green_toys_image(path, tesseract_cmd)
+    except GreenImageError as exc:
         raise HuakangASpecialCustomerError(f"Green Toys 图片 OCR 失败：{exc}") from exc
-    if completed.returncode != 0 or not completed.stdout.strip():
-        detail = _text(completed.stderr) or "未识别到文字"
-        raise HuakangASpecialCustomerError(f"Green Toys 图片 OCR 失败：{detail}")
-    return completed.stdout
 
 
 def _normalize_green_item(value: str) -> str:
@@ -317,13 +294,107 @@ def _green_numeric_token(value: str) -> float | int | None:
     return _number(cleaned)
 
 
+def _green_record(file_name, po_no, po_date, delivery, item, description, quantity, unit_price, warnings):
+    ship_date = _date_value(delivery)
+    problems = list(warnings)
+    for value, message in ((po_no, '未识别 PO 号'), (item, '未识别货号'),
+                           (quantity, '未识别数量'), (delivery, '未识别走货期'),
+                           (unit_price, '未识别 USD 单价')):
+        if not value:
+            problems.append(message)
+    return {
+        'file_name': file_name, 'contract_no': po_no, 'customer_po': po_no,
+        'order_date': po_date, 'item_no': item, '_ocr_item_no': item,
+        'description': description, 'quantity': quantity,
+        'planned_inspection_date': (ship_date - timedelta(days=1)).isoformat() if ship_date else '',
+        'factory_commit_date': delivery, 'unit_price_usd': unit_price,
+        'amount_usd': round(float(quantity) * float(unit_price), 2) if quantity and unit_price else None,
+        'country': '美國', 'transportation_mode': "40'YT", 'parse_warnings': problems,
+        'parse_ok': bool(po_no and item and quantity and delivery and unit_price),
+    }
+
+
+def _green_decimal(value: str) -> Decimal:
+    token = value.strip().removeprefix('$').strip()
+    if not re.fullmatch(r'(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?', token):
+        raise HuakangASpecialCustomerError(f'Green Toys PO 数字无法确认：{value}')
+    return Decimal(token.replace(',', ''))
+
+
+def parse_green_toys_html(file_name: str, content: bytes) -> list[dict[str, Any]]:
+    """Read static table evidence only; never execute scripts or fetch resources."""
+    from lxml import html
+    document = html.fromstring(content, parser=html.HTMLParser(no_network=True))
+    for element in document.xpath('//script | //style'):
+        element.drop_tree()
+    if 'green toys' not in ' '.join(document.text_content().lower().split()):
+        raise HuakangASpecialCustomerError('原始 HTML 不是 Green Toys PO')
+    cells = lambda row: [' '.join(c.text_content().split()) for c in row.xpath('./td | ./th')]
+    labels: dict[str, set[str]] = defaultdict(set)
+    for row in document.xpath('//tr'):
+        values = cells(row)
+        if len(values) == 3 and values[0] in {'PO Date', 'PO #', 'Deliver By Date'}:
+            labels[values[0]].add(values[-1])
+    if any(len(labels[key]) != 1 for key in ('PO Date', 'PO #', 'Deliver By Date')):
+        raise HuakangASpecialCustomerError('Green Toys HTML 的 PO号或日期缺失/不唯一')
+    po_no = next(iter(labels['PO #']))
+    po_date = _iso_date(next(iter(labels['PO Date'])))
+    delivery = _iso_date(next(iter(labels['Deliver By Date'])))
+    if not re.fullmatch(r'\d{4,}', po_no) or not po_date or not delivery:
+        raise HuakangASpecialCustomerError('Green Toys HTML 的 PO号或日期无效')
+    headers = ['Item', 'Description', 'Order Quantity', 'Received', 'Inventory Detail', 'Unit Price', 'Amount']
+    tables = [table for table in document.xpath('//table')
+              if any(cells(row) == headers for row in table.xpath('./tr | ./tbody/tr | ./thead/tr'))]
+    if len(tables) != 1:
+        raise HuakangASpecialCustomerError('Green Toys HTML 明细表缺失/不唯一')
+    records, totals = [], []
+    header_seen, total_seen = False, False
+    for row in tables[0].xpath('./tr | ./tbody/tr | ./thead/tr | ./tfoot/tr'):
+        values = cells(row)
+        if values == headers:
+            header_seen = True
+            continue
+        if not any(values):
+            continue
+        if values[0].casefold() == 'total':
+            totals.append(_green_decimal(values[-1]))
+            total_seen = True
+            continue
+        if not header_seen or total_seen or len(values) != 7:
+            raise HuakangASpecialCustomerError('Green Toys HTML 存在无法确认的明细行')
+        item, description = values[:2]
+        if not re.fullmatch(r'[A-Z0-9][A-Z0-9-]{2,30}', item) or not description:
+            raise HuakangASpecialCustomerError('Green Toys HTML 明细货号/品名不完整')
+        quantity, unit_price, amount = (_green_decimal(values[i]) for i in (2, 5, 6))
+        if quantity <= 0 or quantity != quantity.to_integral_value() or unit_price <= 0:
+            raise HuakangASpecialCustomerError(f'{item}：数量或单价无效')
+        if abs((quantity * unit_price).quantize(Decimal('0.01')) - amount) > Decimal('0.01'):
+            raise HuakangASpecialCustomerError(f'{item}：数量×单价与原单金额不符')
+        record = _green_record(file_name, po_no, po_date, delivery, item, description, int(quantity), float(unit_price), [])
+        record['amount_usd'] = float(amount)
+        record['customer_po'] = f'{po_no}-{len(records) + 1}'
+        records.append(record)
+    if not records or len(totals) != 1 or sum(Decimal(str(r['amount_usd'])) for r in records) != totals[0]:
+        raise HuakangASpecialCustomerError('Green Toys HTML 明细合计与原单总金额不符或总金额缺失')
+    return records
+
+
+def parse_green_toys_po(file_name: str, content: bytes) -> list[dict[str, Any]]:
+    if Path(file_name).suffix.lower() in {'.html', '.htm'}:
+        return parse_green_toys_html(file_name, content)
+    if Path(file_name).suffix.lower() not in {'.png', '.jpg', '.jpeg'}:
+        raise HuakangASpecialCustomerError('Green Toys PO 只支持 HTML 或 PNG/JPG 图片')
+    return parse_green_toys_image(file_name, content)
+
+
 def parse_green_toys_ocr_text(
     file_name: str,
     text: str,
 ) -> list[dict[str, Any]]:
-    po_match = re.search(r"\bPO\s*(?:#|No\.?|e)?\s*[:#]?\s*(\d{4,})\b", text, re.IGNORECASE)
-    file_po = re.search(r"\d{4,}", Path(file_name).stem)
-    po_no = (po_match.group(1) if po_match else "") or (file_po.group(0) if file_po else "")
+    po_numbers = set(re.findall(r"^\s*PO\s*(?:#|No\.?|=)\s*[:#]?\s*(\d{4,})\b", text, re.I | re.M))
+    if len(po_numbers) != 1:
+        raise HuakangASpecialCustomerError('Green Toys 图片 PO号缺失/不唯一；不得用文件名代替 PO号')
+    po_no = po_numbers.pop()
     date_match = re.search(r"PO Date\s+(\d{1,2}/\d{1,2}/\d{4})", text, re.IGNORECASE)
     delivery_match = re.search(
         r"Deliver By Date\s+(\d{1,2}/\d{1,2}/\d{4})",
@@ -332,80 +403,63 @@ def parse_green_toys_ocr_text(
     )
     po_date = _iso_date(date_match.group(1)) if date_match else ""
     delivery = _iso_date(delivery_match.group(1)) if delivery_match else ""
-    ship_date = _date_value(delivery)
     records: list[dict[str, Any]] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        item_match = re.match(r"([A-Z0-9][A-Z0-9,.:\-]{2,20})\s{2,}(.+)$", line, re.IGNORECASE)
+        item_match = re.match(r"([A-Z0-9][A-Z0-9,.:\-]{2,20})(?:\s+(.+))?$", line, re.IGNORECASE)
         if not item_match:
             continue
         raw_item = item_match.group(1)
-        if raw_item.upper().rstrip(".,:") in {"ITEM", "TOTAL", "PURCHASE"}:
+        item_no = _normalize_green_item(raw_item)
+        if not re.search(r'[A-Z]', item_no, re.I) or not re.search(r'\d', item_no):
             continue
-        spans = [part.strip(" |") for part in re.split(r"\s{2,}", line) if part.strip(" |")]
-        if len(spans) < 3:
-            continue
+        rest = item_match.group(2) or ''
+        # A right-hand numeric tail supports both single and preserved spacing.
+        tail = re.fullmatch(r"(.+?)\s+(\d[\d,]*[|\]°]?)\s+(\d[\d,]*[|\]°]?)\s+(\d[\d,.]*)\s+(\$?[\d,.]+)", rest)
+        spans = ([raw_item, tail[1], tail[2], tail[3], tail[4], tail[5]] if tail else
+                 [raw_item] + [part.strip(' |') for part in re.split(r'\s{2,}', rest) if part.strip(' |')])
         quantity_index = next(
             (
                 index
                 for index, part in enumerate(spans[1:], start=1)
                 if re.fullmatch(r"[\d,]+[|\]°]?", part.strip())
-                and (_green_numeric_token(part) or 0) >= 100
+                and (_green_numeric_token(part) or 0) > 0
             ),
             None,
         )
-        if quantity_index is None:
-            continue
-        quantity = _green_numeric_token(spans[quantity_index])
-        if quantity is None:
-            continue
+        quantity = _green_numeric_token(spans[quantity_index]) if quantity_index is not None else None
         trailing = [
             number
             for part in spans[quantity_index + 1 :]
             if (number := _green_numeric_token(part)) not in (None, 0)
-        ]
-        if not trailing:
-            continue
-        unit_price = float(trailing[0])
-        if unit_price >= 100 and float(unit_price).is_integer():
+        ] if quantity_index is not None else []
+        unit_price = float(trailing[0]) if trailing else None
+        if unit_price is not None and unit_price >= 100 and float(unit_price).is_integer():
             unit_price /= 100
-        if unit_price > 20:
-            continue
         if len(trailing) >= 2 and float(quantity):
             printed_amount = float(trailing[1])
             amount_unit_price = round(printed_amount / float(quantity), 4)
-            if abs(amount_unit_price - unit_price) <= 0.02:
+            if unit_price is not None and (abs(amount_unit_price - unit_price) <= 0.02
+                    or ('.' not in spans[quantity_index + 2] and abs(amount_unit_price - unit_price / 10) <= 0.0001)):
                 unit_price = amount_unit_price
-        item_no = _normalize_green_item(raw_item)
-        description = re.sub(r"^[‘'\[]+", "", " ".join(spans[1:quantity_index])).strip()
+        if unit_price is not None and unit_price > 20:
+            unit_price = None
+        description = re.sub(r"^[‘'\[]+", "", " ".join(spans[1:quantity_index]) if quantity_index is not None else rest).strip()
         line_number = len(records) + 1
         warnings = ["图片 PO 使用 OCR 识别，请复核货号、数量、价格和走货期"]
-        if not po_no:
-            warnings.append("未识别 PO 号")
-        if not delivery:
-            warnings.append("未识别走货期")
-        amount = round(float(quantity) * unit_price, 2)
-        records.append({
-            "file_name": file_name,
-            "contract_no": po_no,
-            "customer_po": f"{po_no}-{line_number}" if po_no else "",
-            "order_date": po_date,
-            "item_no": item_no,
-            "_ocr_item_no": item_no,
-            "description": description,
-            "quantity": quantity,
-            "planned_inspection_date": (
-                (ship_date - timedelta(days=1)).isoformat() if ship_date else ""
-            ),
-            "factory_commit_date": delivery,
-            "unit_price_usd": unit_price,
-            "amount_usd": amount,
-            "country": "美國",
-            "transportation_mode": "40'YT",
-            "parse_warnings": warnings,
-            "parse_ok": bool(po_no and item_no and quantity and delivery and unit_price),
-        })
+        record = _green_record(file_name, po_no, po_date, delivery, item_no, description, quantity, unit_price, warnings)
+        record['customer_po'] = f'{po_no}-{line_number}' if po_no else ''
+        records.append(record)
     if records:
+        totals = re.findall(r'\bTotal\s+\$?\s*([\d,]+\.\d{2})\b', text, re.I)
+        if totals:
+            if len(totals) != 1 or any(r['amount_usd'] is None for r in records) or abs(
+                sum(Decimal(str(r['amount_usd'])) for r in records) - _green_decimal(totals[0])
+            ) > Decimal('0.01'):
+                raise HuakangASpecialCustomerError('Green Toys OCR 明细与原单总金额不符，可能漏行；请上传原始 HTML 或清晰图片')
+        else:
+            for record in records:
+                record['parse_warnings'].append('OCR 未识别原单总金额，无法校验是否漏行；建议上传原始 HTML')
         return records
     return [{
         "file_name": file_name,
@@ -426,7 +480,13 @@ def parse_green_toys_image(file_name: str, content: bytes) -> list[dict[str, Any
         suffix = Path(file_name).suffix.lower() or ".png"
         path = Path(temp_dir) / f"po{suffix}"
         path.write_bytes(content)
-        return parse_green_toys_ocr_text(file_name, _ocr_green_toys_image(path))
+        text = _ocr_green_toys_image(path)
+        records = parse_green_toys_ocr_text(file_name, text)
+        # Structured OCR emits three metadata lines, one per physical detail,
+        # and the printed total. Never silently discard an identified row.
+        if len(records) != len(text.splitlines()) - 4 or any(not row['parse_ok'] for row in records):
+            raise HuakangASpecialCustomerError('Green Toys 图片明细不完整，无法安全保存；请核对原图或上传 HTML')
+        return records
 
 
 def _logical_rows(worksheet, *, header_row: int, max_col: int) -> Iterable[int]:
@@ -547,7 +607,7 @@ def prepare_special_batch(
         warnings: list[str] = []
         for file_name, content in po_files:
             parsed = (
-                parse_green_toys_image(file_name, content)
+                parse_green_toys_po(file_name, content)
                 if customer_code == "green-toys"
                 else parse_headstart_pdf(file_name, content)
             )
@@ -706,7 +766,7 @@ def issues_for_record(
     for index, message in enumerate(record.get("parse_warnings") or [], start=1):
         field = field_by_message.get(_text(message), "row")
         is_ocr_review = "OCR" in _text(message)
-        code = "ocr_review" if is_ocr_review else (
+        code = ("ocr_review" if index == 1 else f"ocr_review_{index}") if is_ocr_review else (
             f"missing_{field}" if field != "row" else f"parse_warning_{index}"
         )
         issues.append({

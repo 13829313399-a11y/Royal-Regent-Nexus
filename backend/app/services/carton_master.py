@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.models.carton_master import CartonMasterRecord as Record, CartonMasterSource as Source
 from app.models.carton_procurement import CartonOrder, CartonOrderLine, CartonCustomer, CartonAuditEvent
 from app.models.auth import AuthUser
-from app.schemas.carton_master import MasterSave
+from app.schemas.carton_master import MasterSave, effective_item_rule
 from app.services.auth import has_permission_in_scope, build_auth_context
 
 PERMISSION = "carton_procurement:master_manage"
@@ -88,8 +88,11 @@ def ensure_packing_names(db, factory):
 
 
 def record_out(row, sources=()):
+    data = json.loads(row.data_json)
+    if row.kind == "RULE":
+        data["item_rule"] = effective_item_rule(data.get("item_rule"))
     return {"id": row.id, "kind": row.kind, "customer_code": row.customer_code, "code": row.code,
-            "data": json.loads(row.data_json), "status": row.status, "preferred": bool(row.preferred),
+            "data": data, "status": row.status, "preferred": bool(row.preferred),
             "revision": row.revision, "maintained": bool(row.maintained), "updated_at": row.updated_at,
             "sources": [json.loads(s.snapshot_json) for s in sources]}
 
@@ -116,7 +119,7 @@ def seed_first_number_formats(db, factory, order, user):
             parse_template(template)
         except ValueError:
             continue
-        previous = data.get(key) or {}
+        previous = effective_item_rule(data.get(key)) if key == "item_rule" else data.get(key) or {}
         if previous.get("templates") or previous.get("frozen"):
             continue
         if (previous.get("mode", "AUTO") != "AUTO" or previous.get("prefix") or
@@ -127,6 +130,7 @@ def seed_first_number_formats(db, factory, order, user):
         data[key] = {"mode": "AUTO", "prefix": "", "min_length": 0, "max_length": 128,
                      "characters": "ANY", "templates": [template], "frozen": True,
                      "reset": False, "sample_text": value, "source": "HISTORY", "sample_count": 1}
+        data[key]["user_configured"] = previous.get("user_configured", False)
         captured.append(key)
     if not captured:
         return
@@ -245,6 +249,8 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     if payload.kind == "ACCESS":
         raise HTTPException(422, "已取消单独仓库授权，请按仓管或主管岗位维护本厂资料")
     data = payload.data.model_dump(mode="json")
+    if payload.kind == "RULE" and payload.customer_code and data["item_rule"]["mode"] != "OFF":
+        data["item_rule"]["user_configured"] = True
     if payload.kind == "CONTRACT" and not payload.customer_code:
         raise HTTPException(422, "请选择客户")
     if payload.customer_code and not db.scalar(select(CartonCustomer.id).where(CartonCustomer.factory_id == factory, CartonCustomer.customer_code == payload.customer_code)):
@@ -320,7 +326,7 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
 def due_rules(db, factory, customer):
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "RULE", Record.status == "ACTIVE",
                                                Record.customer_code.in_(["", customer]))))
-    result = {"lead_days": 3, "production_days": 7, "customer_days": None, "contract_rule": {}, "item_rule": {}, "customer_po_rule": {}, "revision": ""}
+    result = {"lead_days": 3, "production_days": 7, "customer_days": None, "contract_rule": {}, "item_rule": effective_item_rule(None), "customer_po_rule": {}, "revision": ""}
     for row in sorted(rows, key=lambda r: bool(r.customer_code)):
         data = json.loads(row.data_json)
         for key in ("lead_days", "production_days", "customer_days"):
@@ -330,6 +336,7 @@ def due_rules(db, factory, customer):
             result["customer_days"] = None
         if row.customer_code:
             result.update({key: data.get(key, {}) for key in ("contract_rule", "item_rule", "customer_po_rule")})
+            result["item_rule"] = effective_item_rule(data.get("item_rule"))
         result["revision"] += f"{row.id}:{row.revision};"
     return result
 

@@ -1,14 +1,17 @@
 from urllib.parse import quote
+from typing import Literal
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, ShipmentReceiptLink, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
 from app.services import carton_supplier_delivery_import as delivery_import
+from app.services import carton_supplier_receipt_link as receipt_link
 from app.services import carton_supplier_settlement as settlement
 from app.schemas.carton_supplier_settlement import SupplierSettlementReview
+from app.schemas.carton_supplier_portal import SupplierMarkAssetOut
 import json
 
 router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
@@ -58,6 +61,32 @@ def export_supplier_order_import(payload: SupplierDocumentExport, db: Session = 
 def activity(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.supplier_activity(db, user, factory_id)
 
+
+@router.get("/activity-page")
+def activity_page(factory_id: str = "", search: str = Query(default="", max_length=128),
+                  event_type: str = Query(default="", max_length=64),
+                  date_from: str = "", date_to: str = "", sort: Literal["ASC", "DESC"] = "DESC",
+                  limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0),
+                  db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.supplier_activity_page(db, user, factory_id, search=search.strip(), event_type=event_type,
+        date_from=date_from, date_to=date_to, sort=sort, limit=limit, offset=offset)
+
+@router.get("/carton-mark/assets", response_model=list[SupplierMarkAssetOut])
+def carton_mark_assets(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.supplier_mark_assets(db, user, factory_id)
+
+
+@router.get("/carton-mark/assets/{asset_id}/document")
+def carton_mark_asset_document(asset_id: str, factory_id: str, preview: bool = False,
+                              db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    asset = service.supplier_mark_asset_document(db, user, factory_id, asset_id)
+    disposition = "inline" if preview and asset.kind in {"pdf", "image"} else "attachment"
+    return Response(asset.content, media_type=asset.content_type, headers={
+        "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(asset.file_name, safe=""),
+        "Content-Length": str(asset.size_bytes), "X-Content-SHA256": asset.sha256,
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
+
 @router.get("/carton-mark/templates", response_model=list[SupplierMarkTemplateOut])
 def carton_mark_templates(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.supplier_mark_templates(db, user, factory_id)
@@ -100,9 +129,9 @@ async def confirm_shipment_import(file: UploadFile = File(...), sha256: str = Fo
         raw = json.loads(selections)
         if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
             raise ValueError()
-        keys = [(item["factory_id"], item["delivery_note_no"]) for item in raw]
-        if any(not isinstance(factory, str) or not isinstance(note, str)
-            for factory, note in keys):
+        keys = [(item["factory_id"], item["delivery_note_no"], item.get("registration_mode", "SHIPMENT")) for item in raw]
+        if any(not isinstance(factory, str) or not isinstance(note, str) or mode not in {"SHIPMENT", "EXISTING_RECEIPT"}
+            for factory, note, mode in keys):
             raise ValueError()
     except (ValueError, TypeError, KeyError):
         raise HTTPException(422, "所选送货单格式无效") from None
@@ -125,6 +154,16 @@ def internal_pending_shipments(factory_id: str, limit: int = Query(default=3, ge
 @router.post("/internal/shipments/{shipment_id}/receive")
 def receive(shipment_id: str, payload: ShipmentReceive, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.receive_shipment(db, user, shipment_id, payload)
+
+
+@router.get("/internal/shipments/{shipment_id}/receipt-options")
+def shipment_receipt_options(shipment_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return receipt_link.options(db, user, factory_id, shipment_id)
+
+
+@router.post("/internal/shipments/{shipment_id}/link-receipt")
+def link_shipment_receipt(shipment_id: str, payload: ShipmentReceiptLink, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return receipt_link.associate(db, user, shipment_id, payload)
 
 @router.post("/internal/receipt-lines/{receipt_line_id}/link-order")
 def link_sample_receipt(receipt_line_id: str, payload: SampleReceiptLink,

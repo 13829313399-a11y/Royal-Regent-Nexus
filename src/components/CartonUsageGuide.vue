@@ -3,11 +3,16 @@ import { computed, nextTick, ref } from 'vue'
 import { BookOpen, Check, ChevronRight, ExternalLink, Printer, Search, X } from '@lucide/vue'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import { cartonDailyChecklist, cartonGuideSections, type CartonGuideDestination } from '@/features/carton-procurement/usageGuide'
+import { cartonSupplierChecklist, cartonSupplierGuideSections, type CartonSupplierGuideDestination } from '@/features/carton-procurement/supplierUsageGuide'
 
-defineProps<{ factoryName: string; canReviewSupplierDeliveries: boolean }>()
-const emit = defineEmits<{ close: []; navigate: [destination: CartonGuideDestination] }>()
+const props = defineProps<{ factoryName: string; canReviewSupplierDeliveries: boolean; audience?: 'warehouse' | 'supplier' }>()
+const emit = defineEmits<{ close: []; navigate: [destination: CartonGuideDestination]; supplierNavigate: [destination: CartonSupplierGuideDestination] }>()
+const isSupplier = computed(() => props.audience === 'supplier')
+const sections = computed(() => isSupplier.value ? cartonSupplierGuideSections : cartonGuideSections)
+const checklist = computed(() => isSupplier.value ? cartonSupplierChecklist : cartonDailyChecklist)
+const title = computed(() => isSupplier.value ? '供应商协同使用教程' : '纸箱模块使用教程')
 const query = ref('')
-const selectedChapter = ref('master')
+const selectedChapter = ref(isSupplier.value ? 'supplier-start' : 'master')
 const reader = ref<HTMLElement | null>(null)
 const checkedItems = ref<number[]>([])
 const printFeedback = ref('')
@@ -15,11 +20,16 @@ const failedImages = ref<string[]>([])
 const groups = ['首次启用', '每天工作', '需要时处理'] as const
 const visibleSections = computed(() => {
   const keyword = query.value.trim().toLocaleLowerCase()
-  return cartonGuideSections.filter(section => !keyword || [
+  return sections.value.filter(section => !keyword || [
     section.number, section.title, section.summary, section.entry, section.result,
     ...section.steps, ...section.reminders, ...(section.table?.rows.flat() ?? []),
   ].join(' ').toLocaleLowerCase().includes(keyword))
 })
+
+function navigate(destination: CartonGuideDestination | CartonSupplierGuideDestination) {
+  if (isSupplier.value) emit('supplierNavigate', destination as CartonSupplierGuideDestination)
+  else emit('navigate', destination as CartonGuideDestination)
+}
 
 async function scrollToChapter(id: string) {
   selectedChapter.value = id
@@ -58,9 +68,9 @@ function imageFailed(id: string) {
         <header class="shrink-0 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
-              <div class="flex items-center gap-2 text-[11px] font-semibold text-teal-700"><BookOpen class="size-4" aria-hidden="true" />{{ factoryName }} · 仓库与纸箱采购</div>
-              <DialogTitle class="mt-1 text-lg font-bold text-slate-950 sm:text-xl">纸箱模块使用教程</DialogTitle>
-              <DialogDescription class="mt-1 text-xs leading-5 text-slate-500">先准备基础资料和历史结余，再从每日看板开始下单、收料和出库。</DialogDescription>
+              <div class="flex items-center gap-2 text-[11px] font-semibold text-teal-700"><BookOpen class="size-4" aria-hidden="true" />{{ factoryName }} · {{ isSupplier ? '供应商协同' : '仓库与纸箱采购' }}</div>
+              <DialogTitle class="mt-1 text-lg font-bold text-slate-950 sm:text-xl">{{ title }}</DialogTitle>
+              <DialogDescription class="mt-1 text-xs leading-5 text-slate-500">{{ isSupplier ? '核对已发行采购、确认接单及发货、跟进仓库反馈，再核对双方月结。' : '先准备基础资料和历史结余，再从每日看板开始下单、收料和出库。' }}</DialogDescription>
             </div>
             <div class="carton-guide-tools flex shrink-0 items-center gap-2">
               <button type="button" class="hidden h-9 items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 sm:inline-flex" @click="printGuide"><Printer class="size-4" aria-hidden="true" />打印 / 保存 PDF</button>
@@ -74,7 +84,7 @@ function imageFailed(id: string) {
           <aside class="carton-guide-sidebar flex shrink-0 flex-col border-b border-slate-200 bg-slate-50/70 lg:w-60 lg:border-b-0 lg:border-r">
             <label class="relative m-3 block">
               <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
-              <input v-model="query" type="search" aria-label="查找教程步骤" placeholder="查找：排期、入库、失败…" class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs outline-none focus:border-teal-500">
+              <input v-model="query" type="search" aria-label="查找教程步骤" :placeholder="isSupplier ? '查找：接单、送货、月结…' : '查找：排期、入库、月结…'" class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs outline-none focus:border-teal-500">
             </label>
             <nav aria-label="使用教程目录" class="flex gap-1 overflow-x-auto px-3 pb-3 lg:min-h-0 lg:flex-1 lg:flex-col lg:gap-3 lg:overflow-y-auto">
               <div v-for="group in groups" :key="group" class="flex shrink-0 gap-1 lg:block">
@@ -87,13 +97,13 @@ function imageFailed(id: string) {
             <p class="hidden border-t border-slate-200 p-4 text-[11px] leading-5 text-slate-500 lg:block">教程只提供操作说明。实际业务按当前厂区、账号权限和实物情况处理。</p>
           </aside>
 
-          <main ref="reader" aria-label="纸箱教程正文" class="carton-guide-reader min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto bg-slate-50 p-4 sm:p-6">
+          <main ref="reader" :aria-label="isSupplier ? '供应商教程正文' : '纸箱教程正文'" class="carton-guide-reader min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto bg-slate-50 p-4 sm:p-6">
             <section v-if="!query.trim()" class="rounded-xl border border-teal-200 bg-white p-4 sm:p-5">
               <p class="text-[11px] font-bold text-teal-700">先看完整顺序</p>
-              <h2 class="mt-1 text-base font-bold text-slate-950">上线只做一次，日常按实际业务走</h2>
-              <p class="mt-2 text-sm leading-6 text-slate-600">首次启用：基础资料 → 期初库存 → 按需要衔接历史订单。之后每天先看工作看板；有新排期就核对，有采购就落单，有到货就验收，有领料就登记出库。</p>
-              <figure class="mt-4"><img :src="'/carton-guide/workflow.svg'" alt="纸箱操作顺序：首次维护基础资料、期初库存与可选历史订单；日常看板、排期、落单、供应商接单送货、验收入库和领料出库" width="1080" height="545" class="h-auto w-full rounded-lg border border-slate-100" @error="imageFailed('workflow')"><figcaption class="mt-2 text-[11px] leading-5 text-slate-500">配图为操作示意及演示数据；每个步骤只有在真实业务发生时才办理。</figcaption></figure>
-              <div class="mt-4 grid gap-2 text-xs leading-6 sm:grid-cols-3">
+              <h2 class="mt-1 text-base font-bold text-slate-950">{{ isSupplier ? '先接单，再发货，按仓库反馈核对月结' : '上线只做一次，日常按实际业务走' }}</h2>
+              <p class="mt-2 text-sm leading-6 text-slate-600">{{ isSupplier ? '先确认目的厂区和已发行采购版本，再确认接单及交期。实际发货登记原送货单；仓库反馈实收后，双方在同一份月结版本上核对与确认。' : '首次启用：基础资料 → 期初库存 → 按需要衔接历史订单。之后每天先看工作看板；有新排期就核对，有采购就落单，有到货就验收，有领料就登记出库。' }}</p>
+              <figure class="mt-4"><img :src="isSupplier ? '/carton-guide/supplier-workflow.svg' : '/carton-guide/workflow.svg'" :alt="isSupplier ? '供应商操作顺序：查看采购、确认接单、登记真实发货、查看仓库反馈、核对同一月结版本' : '纸箱操作顺序：首次维护基础资料、期初库存与可选历史订单；日常看板、排期、落单、供应商接单送货、验收入库和领料出库'" width="1080" height="545" class="h-auto w-full rounded-lg border border-slate-100" @error="imageFailed('workflow')"><figcaption class="mt-2 text-[11px] leading-5 text-slate-500">配图为操作示意及演示数据；每个步骤只有在真实业务发生时才办理。</figcaption></figure>
+              <div v-if="!isSupplier" class="mt-4 grid gap-2 text-xs leading-6 sm:grid-cols-3">
                 <p class="rounded-lg bg-teal-50 px-3 py-2"><b class="text-teal-900">仓库落单</b><br>确认订单并锁定，自动生成首次采购。</p>
                 <p class="rounded-lg bg-sky-50 px-3 py-2"><b class="text-sky-900">供应商送货</b><br>接单并登记送货，形成仓库待核实。</p>
                 <p class="rounded-lg bg-amber-50 px-3 py-2"><b class="text-amber-900">仓库验收</b><br>按有效实收和实际仓位确认入库。</p>
@@ -121,7 +131,7 @@ function imageFailed(id: string) {
                 <div class="rounded-lg border border-teal-100 bg-teal-50/70 p-3 text-sm leading-6 text-teal-900"><p class="flex items-start gap-2"><Check class="mt-1 size-4 shrink-0" aria-hidden="true" /><span><b>完成后检查：</b>{{ section.result }}</span></p></div>
                 <div class="rounded-lg border border-amber-100 bg-amber-50/60 p-3"><p class="text-xs font-bold text-amber-900">操作时留意</p><ul class="mt-2 space-y-2 text-xs leading-6 text-amber-900"><li v-for="reminder in section.reminders" :key="reminder" class="flex gap-2"><span aria-hidden="true">·</span><span>{{ reminder }}</span></li></ul></div>
                 <div class="carton-guide-tools flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
-                  <button v-if="section.destination !== 'supplier-receiving' || canReviewSupplierDeliveries" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white hover:bg-teal-800" @click="emit('navigate', section.destination)">{{ section.actionLabel }}<ChevronRight class="size-3.5" aria-hidden="true" /></button>
+                  <button v-if="section.destination !== 'supplier-receiving' || canReviewSupplierDeliveries" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white hover:bg-teal-800" @click="navigate(section.destination)">{{ section.actionLabel }}<ChevronRight class="size-3.5" aria-hidden="true" /></button>
                   <p v-else class="text-xs text-slate-500">本厂供应商待收入口需具备相应收料权限。供应商使用自己的协同账号操作。</p>
                   <button type="button" class="text-xs font-semibold text-slate-500 hover:text-teal-700" @click="reader?.scrollTo?.({ top: 0, behavior: 'auto' })">回到教程开头</button>
                 </div>
@@ -131,13 +141,13 @@ function imageFailed(id: string) {
             <section v-if="!query.trim()" class="carton-guide-checklist rounded-xl border border-teal-200 bg-white p-4 sm:p-5">
               <h2 class="text-base font-bold text-slate-950">每天收尾，再检查这五件事</h2>
               <p class="mt-1 text-xs leading-6 text-slate-500">勾选仅帮助本次阅读自查，不会修改业务记录。</p>
-              <div class="mt-3 space-y-3"><label v-for="(item, index) in cartonDailyChecklist" :key="item" class="flex items-start gap-3 text-sm leading-6 text-slate-700"><input v-model="checkedItems" type="checkbox" :value="index" class="mt-1 accent-teal-700"><span>{{ item }}</span></label></div>
+              <div class="mt-3 space-y-3"><label v-for="(item, index) in checklist" :key="item" class="flex items-start gap-3 text-sm leading-6 text-slate-700"><input v-model="checkedItems" type="checkbox" :value="index" class="mt-1 accent-teal-700"><span>{{ item }}</span></label></div>
             </section>
           </main>
         </div>
 
         <footer class="carton-guide-tools flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-white px-4 py-3 text-[11px] text-slate-500 sm:px-6">
-          <span>共 {{ cartonGuideSections.length }} 个步骤 · 有错误先查原因，结果不确定先查台账</span>
+          <span>共 {{ sections.length }} 个步骤 · 有错误先查原因，结果不确定先查台账</span>
           <button type="button" class="inline-flex items-center gap-1 font-semibold text-teal-700 sm:hidden" @click="printGuide"><Printer class="size-3.5" aria-hidden="true" />打印 / 保存 PDF</button>
           <button type="button" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold text-slate-600" @click="emit('close')">返回当前工作</button>
         </footer>
