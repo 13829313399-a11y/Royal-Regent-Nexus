@@ -180,7 +180,8 @@ export interface CartonMarkAsset {
   id: string
   factory_id: string
   file_name: string
-  kind: 'excel' | 'pdf'
+  kind: 'excel' | 'pdf' | 'image'
+  photo_group_id?: string | null
   size_bytes: number
   sha256: string
   contract_number: string
@@ -225,6 +226,21 @@ export function createCartonMarkApi(client = http) {
         contract_number: contractNumber, order_id: orderId || null, revision: asset.revision,
       }, { params: { factory_id: factoryId }, signal })
       return response.data
+    },
+    async bindingOrders(factoryId: string, signal?: AbortSignal) {
+      return (await client.get<CartonMarkAsset['orders']>('/carton-mark/assets/binding-orders', { params: { factory_id: factoryId }, signal })).data
+    },
+    async savePhotoGroup(factoryId: string, assets: CartonMarkAsset[], contractNumber: string, orderId: string, groupId?: string, signal?: AbortSignal) {
+      const body = { assets: assets.map(({ id, revision }) => ({ id, revision })), contract_number: contractNumber, order_id: orderId || null }
+      const config = { params: { factory_id: factoryId }, signal }
+      return (groupId
+        ? await client.put<CartonMarkAsset[]>(`/carton-mark/assets/photo-groups/${encodeURIComponent(groupId)}/binding`, body, config)
+        : await client.post<CartonMarkAsset[]>('/carton-mark/assets/photo-groups', body, config)).data
+    },
+    async ungroupPhotos(factoryId: string, groupId: string, assets: CartonMarkAsset[], signal?: AbortSignal) {
+      return (await client.post<CartonMarkAsset[]>(`/carton-mark/assets/photo-groups/${encodeURIComponent(groupId)}/ungroup`, {
+        assets: assets.map(({ id, revision }) => ({ id, revision })),
+      }, { params: { factory_id: factoryId }, signal })).data
     },
     async downloadAsset(factoryId: string, assetId: string, signal?: AbortSignal) {
       const response = await client.get<Blob>(`/carton-mark/assets/${assetId}/document`, {

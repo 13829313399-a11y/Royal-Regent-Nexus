@@ -219,6 +219,7 @@ def _supplier_mark_assets(db, user, factory):
 
 def supplier_mark_assets(db, user, factory):
     return [dict(id=asset.id, file_name=asset.file_name, kind=asset.kind,
+        photo_group_id=asset.photo_group_id,
         size_bytes=asset.size_bytes, contract_number=asset.contract_number,
         created_at=asset.created_at, orders=orders)
         for asset, orders in _supplier_mark_assets(db, user, factory)]

@@ -14,6 +14,7 @@ const checkPanel = ref<InstanceType<typeof CartonMarkCheckPanel> | null>(null)
 const route = useRoute()
 const workspaceTab = ref<'library' | 'check'>(route.query.panel === 'check' ? 'check' : 'library')
 async function useAsset(asset: CartonMarkAsset) {
+  if (asset.kind === 'image') return
   workspaceTab.value = 'check'
   await checkPanel.value?.useLibraryAsset(asset)
 }

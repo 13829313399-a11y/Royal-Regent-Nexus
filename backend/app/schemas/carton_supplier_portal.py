@@ -161,6 +161,7 @@ class SupplierMarkAssetOut(BaseModel):
     id: str
     file_name: str
     kind: str
+    photo_group_id: str | None = None
     size_bytes: int
     contract_number: str
     created_at: str

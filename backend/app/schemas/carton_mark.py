@@ -14,6 +14,7 @@ class CartonMarkAssetOut(BaseModel):
     factory_id: str
     file_name: str
     kind: str
+    photo_group_id: str | None = None
     size_bytes: int
     sha256: str
     contract_number: str
@@ -39,6 +40,20 @@ class CartonMarkAssetUploadResult(BaseModel):
     status: str
     message: str = ""
     asset: CartonMarkAssetOut | None = None
+
+
+class CartonMarkAssetReference(BaseModel):
+    id: str = Field(min_length=1, max_length=96)
+    revision: int = Field(ge=1)
+
+
+class CartonMarkPhotoGroupMembers(BaseModel):
+    assets: list[CartonMarkAssetReference] = Field(min_length=1, max_length=50)
+
+
+class CartonMarkPhotoGroupRequest(CartonMarkPhotoGroupMembers):
+    contract_number: str = Field(default="", max_length=128)
+    order_id: str | None = Field(default=None, max_length=96)
 
 
 class CartonMarkExtractedField(BaseModel):

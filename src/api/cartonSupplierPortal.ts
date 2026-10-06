@@ -23,7 +23,8 @@ export interface SupplierDocumentLine { order_no: string; child_no: string; cont
 export interface SupplierDocument { id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; export_count: number; is_batch?: boolean; source_documents?: { id: string; document_no: string; order_no: string }[]; unmatched_line_count?: number; source_filename?: string; source_sha256?: string; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
 export interface SupplierActivity { id: string; created_at: string; action: string; reference_no: string; actor_name: string; factory_id: string }
 export interface SupplierMarkAsset {
-  id: string; file_name: string; kind: 'pdf' | 'excel'; size_bytes: number; contract_number: string; created_at: string
+  photo_group_id?: string | null
+  id: string; file_name: string; kind: 'pdf' | 'excel' | 'image'; size_bytes: number; contract_number: string; created_at: string
   orders: { id: string; customer_name: string; contract_no: string; customer_po: string; item_no: string }[]
 }
 const base = '/carton-supplier'

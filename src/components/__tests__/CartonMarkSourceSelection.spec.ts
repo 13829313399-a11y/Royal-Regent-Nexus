@@ -25,6 +25,15 @@ beforeEach(() => {
 })
 
 describe('saved carton-mark source selection', () => {
+  it('does not load a photo as an Excel/PDF template source', async () => {
+    const wrapper = mount(CartonMarkCheckPanel, { props: { workspaceMode: 'warehouse' } })
+    await flushPromises()
+    await wrapper.vm.useLibraryAsset({ ...asset('photo'), kind: 'image', file_name: 'photo.jpg' })
+    expect(api.downloadAsset).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain('已从仓库选择 photo.jpg')
+    wrapper.unmount()
+  })
+
   it('keeps both concurrent file types and fills metadata from the last requested source', async () => {
     const wrapper = mount(CartonMarkCheckPanel, { props: { workspaceMode: 'warehouse' } })
     await flushPromises()

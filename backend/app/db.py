@@ -303,7 +303,7 @@ QC_INSPECTION_REQUIRED_TABLES = {
     "qc_inspection_audit_events",
     "qc_inspection_idempotency_records",
 }
-CARTON_MARK_LIBRARY_REVISION = "20261005_0135"
+CARTON_MARK_LIBRARY_REVISION = "20261006_0139"
 CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
     "carton_mark_customers",
     "carton_mark_templates",
@@ -322,12 +322,19 @@ def ensure_carton_mark_library_schema_ready() -> None:
             "SELECT version_num FROM alembic_version"
         ).scalar_one_or_none()
         missing = sorted(CARTON_MARK_LIBRARY_REQUIRED_TABLES - table_names)
+        if "carton_mark_assets" in table_names:
+            kind_constraint = next((c["sqltext"] for c in inspector.get_check_constraints("carton_mark_assets")
+                if c["name"] == "ck_carton_mark_asset_kind"), "")
+            if "'image'" not in kind_constraint:
+                missing.append("carton_mark_assets 图片格式约束")
+            if "photo_group_id" not in {c["name"] for c in inspector.get_columns("carton_mark_assets")}:
+                missing.append("carton_mark_assets 照片分组字段")
         if not missing:
             return
     raise RuntimeError(
         "检测到箱唛资料库尚未完整迁移 "
         f"{CARTON_MARK_LIBRARY_REVISION}；当前版本：{current_revision}；"
-        f"缺少表：{', '.join(missing)}。"
+        f"缺少结构：{', '.join(missing)}。"
         "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
     )
 
