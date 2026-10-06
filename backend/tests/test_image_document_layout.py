@@ -15,11 +15,11 @@ from app.services.document_tools.image_terminology import translate_image_texts
 from app.services.document_tools.document_ir import ToolError
 
 
-def native_pdf(path):
+def native_pdf(path, text=b'Quantity 00123 Length 0.05mm'):
     writer=PdfWriter();page=writer.add_blank_page(400,200)
     font=DictionaryObject({NameObject('/Type'):NameObject('/Font'),NameObject('/Subtype'):NameObject('/Type1'),NameObject('/BaseFont'):NameObject('/Helvetica')})
     page[NameObject('/Resources')]=DictionaryObject({NameObject('/Font'):DictionaryObject({NameObject('/F1'):writer._add_object(font)})})
-    data=DecodedStreamObject();data.set_data(b'BT /F1 14 Tf 20 130 Td (Quantity 00123 Length 0.05mm) Tj ET BT /F1 14 Tf 20 40 Td (________________) Tj ET 10 50 m 390 50 l S')
+    data=DecodedStreamObject();data.set_data(b'BT /F1 14 Tf 20 130 Td ('+text+b') Tj ET BT /F1 14 Tf 20 40 Td (________________) Tj ET 10 50 m 390 50 l S')
     page[NameObject('/Contents')]=writer._add_object(data);writer.write(path)
 
 
@@ -31,6 +31,14 @@ def test_native_word_boundaries_separate_numbers_before_translation(tmp_path):
     assert [r['sourceText'] for r in regions if r['protected']]==['00123','0.05mm']
     for r in regions:
         assert 0<=r['box']['x']<800 and 0<=r['box']['y']<400
+
+
+def test_native_material_code_and_brand_are_isolated_before_translation(tmp_path):
+    source=tmp_path/'native.pdf';native_pdf(source,b'Yellow BR Tricot PEANUTS')
+    with pdfplumber.open(source) as pdf:
+        regions=native_regions(pdf.pages[0],2)
+    assert [r['sourceText'] for r in regions if not r['protected']]==['Yellow','Tricot']
+    assert [r['sourceText'] for r in regions if r['protected']]==['BR','PEANUTS']
 
 
 def test_pdf_overlay_preserves_original_objects_digits_and_visuals(tmp_path):
@@ -168,6 +176,8 @@ def test_plush_pattern_captions_use_parts_and_materials_instead_of_proper_names(
           '手臂', '内臂片', '脚底', '尾巴', '前身片', '后身片',
           '缝份', '裁', '白色毛绒布', '黑色植绒布', '经编布',
           '红色胶片', '史努比', '坐姿毛绒玩具纸样', '缝份']
+    assert translate_image_texts(['WING', 'UPPER', 'UNDER TAIL', 'UPPER TAIL', 'Yellow Plush'],
+        'en_to_zh', unexpected_model_call) == ['翅膀', '上侧', '下尾片', '上尾片', '黄色毛绒布']
 
 
 def test_online_provider_errors_are_not_silently_hidden():

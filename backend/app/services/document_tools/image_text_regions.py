@@ -2,7 +2,7 @@
 import re
 
 
-PROTECTED = re.compile(r"\d|https?://|www\.|@|^[#＃]|^(?:PANTONE|UPC|CE|CPSC|ASTM|EN|ISO|AQL|MIL|QA|QC|PVC|ABS|PP|PET|PE|EEC|EC|EU|USA|S/S|PNP|PUP|HOLOLIVE|JAKKS|Sa|Cr|Maj|Min)$", re.I)
+PROTECTED = re.compile(r"\d|https?://|www\.|@|^[#＃]|^(?:PANTONE|UPC|CE|CPSC|ASTM|EN|ISO|AQL|MIL|QA|QC|PVC|ABS|PP|PET|PE|BR|EEC|EC|EU|USA|S/S|PNP|PUP|HOLOLIVE|JAKKS|PEANUTS|TM|Sa|Cr|Maj|Min)$", re.I)
 
 
 def protected(text):

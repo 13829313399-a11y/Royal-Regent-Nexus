@@ -5,7 +5,8 @@ export type Job = { id: string; source_id: string; source_name: string; operatio
   stage: string; completed_units: number; total_units: number | null; revision: number; error_message?: string;
   options: Record<string, unknown>; artifacts: Artifact[]; created_at: string };
 export type Source = { id: string; inspection_status: string; error_message?: string; inspection_job_id: string;
-  manifest: { pages?: { page_index: number; width_pt: number; height_pt: number }[] }; artifacts: Artifact[] };
+  manifest: { pages?: { page_index: number; width_pt: number; height_pt: number;
+    image_resize?: { original_size: number[]; processing_size: number[] } }[] }; artifacts: Artifact[] };
 export type Capabilities = { worker: { online: boolean }; image_translation?: { available: boolean; reason: string };
   limits: { max_file_bytes: number; max_pages: number };
   translation: { offline_available: boolean; online_available: boolean; online_model: string } };
