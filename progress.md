@@ -43,7 +43,7 @@ https://github.com/13829313399-a11y/Royal-Regent-Nexus/pull/390
 ### 本地验证与数据库
 
 - 前端资料库、API、保存来源及教程相关 28 项测试通过；`npm run build`、`npm run typecheck:test`、教程同步检查通过。
-- 图片、照片组、原文件库及供应商回归 22 项通过，照片组迁移 3 项通过；上一轮照片格式迁移也已验证。
+- 发布工作树合并最新 main 后，图片、照片组、原文件库、供应商权限及两项发布链迁移回归共 28 项通过。Green Toys 图片订单识别及反馈模块回归 65 项通过、4 项环境相关测试跳过。
 - 独立只读复核通过。SQLite 迁移／安全降级和 PostgreSQL 增量 DDL 已检查；本次尚未执行真实生产 PostgreSQL 迁移。
 - 完整本地 SQLite 副本演练和实际分组迁移均保留 336 个业务表的原字段数据摘要、原外键及原索引。
 - 实际开发库：`D:\rr\backend\data\royal_regent_nexus.db`，本地 head `20261006_0137`（照片组，独立本地链）。本地 API 已重启，网页及 health 返回 200。
@@ -64,16 +64,35 @@ https://github.com/13829313399-a11y/Royal-Regent-Nexus/pull/390
 
 ## 未完成的待办
 
-- 本轮用户已明确要求：新建分支、本地提交、获取远程最新 main 并合并、推送分支、创建并合并 PR。具体结果在下方“本轮 Git 交接状态”收尾更新；执行期间不能把进行中写成已完成。
+- PR #391 已创建，最终合并状态及主线提交以 PR 页面为准；本地 D:\rr\progress.md 会在发布操作结束后补充实际结果。
 - 本次照片／分组功能的线上部署尚未执行；当前请求只授权 Git 操作和进展文件。后续部署需以合并后的准确 main 为来源，先完整备份，沿发布链执行新增照片／分组前向迁移，并验证旧文件、授权、库存、应付和账户保存。
 - 正式使用时由仓库人员核对真实照片内容、合同归属和供应商可见结果。自动测试不会替代业务人员确认箱唛是否正确。
 - `D:\rr` 原开发库继续沿已应用的本地链工作；如未来同步成发布链，需先核对结构并备份，不能盲目 stamp 或改迁移版本号。
 
 ## 本轮 Git 交接状态
 
-发布分支计划：`codex/carton-photo-groups-20261006`。
+发布分支：`codex/carton-photo-groups-20261006`。
 
-目前正在整理提交，PR 链接、提交号、最终验证与合并状态将在操作完成后更新到本地 `D:\rr\progress.md`。
+- 本地功能提交：`3bb8e51c9e011fb088b59719d93d4701b14f6ee3`。
+- 已拉取并合并当时最新远程 main：`ef13fc7e6c28e38795f3f8282ab40a99578a8ba9`；集成提交 `ea7ab36663174091ef5cedefb4e97194391d388f`，没有冲突，保留 Green Toys 区域 OCR 修复。
+- 已推送分支并创建 PR #391：https://github.com/13829313399-a11y/Royal-Regent-Nexus/pull/391 。本文在 PR 内记录的是合并前快照；最终状态查看该链接，收尾结果另写本地 progress.md。
+- 本轮增量共 30 个文件，主要位于箱唛 API、模型和服务、供应商源文件投影、共享资料库组件、两侧教程、照片／分组测试与迁移，以及 PROJECT_MEMORY.md、progress.md。精确清单见 PR 的 Files changed 或 `outputs/carton-photo-release-20261006/files.json`。
+- 原开发目录的其他改动与开发库保持原状，发布不修改其已应用迁移链。
+
+合并后的发布工作树已执行：
+
+```text
+npm run build
+npm run typecheck:test
+npm run test:unit -- src/components/__tests__/CartonMarkAssetLibrary.spec.ts src/components/__tests__/CartonMarkSourceSelection.spec.ts src/api/__tests__/cartonMarkAssets.spec.ts src/components/__tests__/CartonUsageGuide.spec.ts
+node scripts/sync-carton-usage-guides.mjs --check
+python -m pytest backend/tests/test_carton_mark_asset_images.py backend/tests/test_carton_mark_photo_groups.py backend/tests/test_carton_mark_assets.py backend/tests/test_carton_supplier_mark_assets.py backend/tests/test_carton_mark_asset_images_migration.py backend/tests/test_carton_mark_photo_groups_migration.py -q
+python -m pytest backend/tests/test_green_toys_image_ocr.py backend/tests/test_module_feedback.py -q
+git diff --check origin/main...HEAD
+python -m alembic -c backend/alembic.ini heads
+```
+
+Python 使用 `D:\rr\backend\.venv\Scripts\python.exe`，命令在发布工作树运行。检查均通过；Alembic 仅一个发布 head `20261006_0139`。4 项跳过不计入已通过数。完整构建、箱唛回归及附加回归日志在 `outputs/carton-photo-release-20261006/`。
 
 ## 新对话可直接使用的接续提示
 
