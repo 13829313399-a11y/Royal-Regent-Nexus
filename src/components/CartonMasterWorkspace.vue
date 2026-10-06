@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Database, X } from '@lucide/vue'
 import CartonMasterSettings from './CartonMasterSettings.vue'
-import { cartonMasterApi, masterPaperOptions, defaultMasterData, defaultNumberRule, emptyMaster, automaticNumberRule, historicalNumberSamples, type MasterRecord, type MasterData, type MasterImportKind, type MasterImportResult } from '@/api/cartonMaster'
+import { cartonMasterApi, masterPaperOptions, defaultMasterData, defaultNumberRule, effectiveItemRule, emptyMaster, automaticNumberRule, historicalNumberSamples, type MasterRecord, type MasterData, type MasterImportKind, type MasterImportResult } from '@/api/cartonMaster'
 import { recognizeNumberTemplates, parseNumberTemplate, describeNumberTemplate } from '@/lib/cartonNumberPatterns'
 import { cartonPositionsApi, type CartonLocation } from '@/api/cartonPositions'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
@@ -14,6 +14,8 @@ const tab = ref('SETTINGS'), search = ref(''), customer = ref(''), editing = ref
 const statusFilter = ref('ACTIVE'), preferredOnly = ref(false)
 const configSort = ref('DEFAULT')
 const configToRemove = ref<MasterRecord | null>(null), configActionMessage = ref('')
+let availabilityGeneration = 0
+onBeforeUnmount(() => { availabilityGeneration++ })
 const warehouseDeleting = ref(false)
 const warehouseEditing = ref(false), warehouseOriginal = ref(''), locationWarehouseLocked = ref(false)
 const sourceRow = ref<MasterRecord | null>(null), locationRow = ref<CartonLocation | null>(null)
@@ -129,11 +131,11 @@ async function resetNumberRule(key: FormatKey) {
   const factory = props.factoryId, editingSession = editingId.value, customerCode = form.customer_code
   busy.value = true; error.value = ''
   try {
-    const data = { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), [key]: { ...defaultNumberRule(), reset: true } } as MasterData
+    const data = { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), [key]: { ...defaultNumberRule(key === 'item_rule' ? 'OFF' : 'AUTO'), reset: true } } as MasterData
     const saved = await cartonMasterApi.save(factory, {
       kind: 'RULE', code: row?.code || '', customer_code: customerCode,
       status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0,
-      reason: row?.data[key]?.mode === 'BLOCK' ? form.reason.trim() : `删除旧${label}格式，等待下次正式订单重新记录`, data,
+      reason: row?.data[key]?.mode === 'BLOCK' ? form.reason.trim() : key === 'item_rule' ? '删除旧货号格式并关闭检查' : `删除旧${label}格式，等待下次正式订单重新记录`, data,
     }, row?.id || '')
     if (factory !== props.factoryId || editingId.value !== editingSession || form.customer_code !== customerCode) return
     workspace.value.records = row
@@ -145,9 +147,9 @@ async function resetNumberRule(key: FormatKey) {
     emit('changed')
   } catch (e) { error.value = getApiErrorMessage(e); return }
   finally { busy.value = false }
-  form.data[key] = { ...defaultNumberRule(), reset: true }
+  form.data[key] = { ...defaultNumberRule(key === 'item_rule' ? 'OFF' : 'AUTO'), reset: true }
   templateText[key] = ''; recognizedText[key] = ''; recognitionErrors[key] = ''
-  recognitionHints[key] = `旧${label}格式已删除；历史订单保留。下次确认并锁定该客户订单时，如编号可识别，将自动记录新格式。`
+  recognitionHints[key] = key === 'item_rule' ? '旧货号格式已删除；历史订单保留。货号默认不检查，需要时手动启用。' : `旧${label}格式已删除；历史订单保留。下次确认并锁定该客户订单时，如编号可识别，将自动记录新格式。`
 }
 function identifyNumberRule(key: FormatKey) {
   const rule = form.data[key], raw = (rule.sample_text || '').trim()
@@ -169,8 +171,8 @@ function editNumberTemplate(key: FormatKey) { recognizedText[key] = (form.data[k
 function resetNumberRules() {
   if (form.kind !== 'RULE') return
   for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
-    form.data[key] = defaultNumberRule(); templateText[key] = ''; recognizedText[key] = ''
-    if (form.customer_code) identifyNumberRule(key)
+    form.data[key] = defaultNumberRule(key === 'item_rule' ? 'OFF' : 'AUTO'); templateText[key] = ''; recognizedText[key] = ''
+    if (form.customer_code && key !== 'item_rule') identifyNumberRule(key)
   }
 }
 
@@ -216,14 +218,14 @@ async function refreshAfterSave(factory: string, successMessage: string) {
   if (refreshError) error.value = `${successMessage}，但列表刷新失败：${refreshError}。请刷新查看，勿重复保存。`
   emit('changed')
 }
-watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; configActionMessage.value = ''; configSort.value = 'DEFAULT'; statusFilter.value = 'ACTIVE'; customer.value = ''; void load() }, { immediate: true })
+watch(() => props.factoryId, () => { availabilityGeneration++; busy.value = false; importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; configActionMessage.value = ''; configSort.value = 'DEFAULT'; statusFilter.value = 'ACTIVE'; customer.value = ''; void load() }, { immediate: true })
 function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = customer.value) {
   paperOnly.value = false
   ruleScopeLocked.value = (row?.kind || kind) === 'RULE'
   editingId.value = row?.id || ''; error.value = ''
   originalStatus.value = row?.status || 'ACTIVE'
   originalHardCheck.value = row?.data.contract_rule?.mode === 'BLOCK' || row?.data.item_rule?.mode === 'BLOCK' || row?.data.customer_po_rule?.mode === 'BLOCK'
-  Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, customer_po_rule: { ...defaultNumberRule(), ...row?.data.customer_po_rule }, item_rule: { ...defaultNumberRule(), ...row?.data.item_rule } } })
+  Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, customer_po_rule: { ...defaultNumberRule(), ...row?.data.customer_po_rule }, item_rule: effectiveItemRule(row?.data.item_rule) } })
   if (form.kind === 'CONFIG') for (const line of form.data.lines) line.dimension_unit = line.dimension_unit?.trim() || 'cm'
   for (const key of ['paper_types', 'paper_qualities', 'specifications'] as const) paperOptionText[key] = (form.data[key] || []).join('\n')
   itemText.value = (form.data.item_nos || []).join('\n'); warehouseText.value = (form.data.warehouses || []).join('\n')
@@ -246,6 +248,7 @@ async function save() {
     if (form.kind === 'RULE' && form.customer_code) for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
       const rule = form.data[key]
       if (rule.mode === 'OFF') continue
+      if (key === 'item_rule') rule.user_configured = true
       if (recognitionErrors[key]) throw new Error('请先处理各编号下的识别提示，或重置对应格式')
       if ((rule.sample_text || '').trim() !== recognizedText[key]) throw new Error('样例已修改，请点击识别格式，或手动修改下方格式后再保存')
       const templates = [...new Set(templateText[key].split('\n').map(t => t.trim()).filter(Boolean))]
@@ -274,28 +277,35 @@ async function save() {
   } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) } finally { busy.value = false }
 }
 async function changeConfigAvailability(row: MasterRecord, status: 'ACTIVE' | 'INACTIVE') {
-  if (busy.value || !workspace.value.can_manage || row.kind !== 'CONFIG') return
-  const factory = props.factoryId
+  if (busy.value || !workspace.value.can_manage || !['CONFIG', 'CONTRACT'].includes(row.kind)) return
+  const factory = props.factoryId, generation = ++availabilityGeneration
+  const contract = row.kind === 'CONTRACT'
   busy.value = true; error.value = ''; configActionMessage.value = ''
   try {
     const saved = await cartonMasterApi.save(factory, {
-      kind: 'CONFIG', code: row.code, customer_code: '', status, preferred: false,
+      kind: row.kind, code: row.code, customer_code: contract ? row.customer_code : '', status, preferred: false,
       expected_revision: row.revision,
-      reason: status === 'INACTIVE' ? '删除不再使用的货号包装资料' : '恢复货号包装资料',
+      reason: contract ? (status === 'INACTIVE' ? '删除不再使用的关联合同' : '恢复关联合同')
+        : status === 'INACTIVE' ? '删除不再使用的货号包装资料' : '恢复货号包装资料',
       data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row.data)) },
     }, row.id)
-    if (factory !== props.factoryId) return
+    if (factory !== props.factoryId || generation !== availabilityGeneration) return
     workspace.value.records = workspace.value.records.map(record => record.id === row.id ? { ...saved, sources: record.sources } : record)
     configToRemove.value = null
     statusFilter.value = 'ACTIVE'
     preferredOnly.value = false
-    configActionMessage.value = status === 'INACTIVE'
+    configActionMessage.value = contract ? (status === 'INACTIVE'
+      ? `合同 ${row.code} 已停用，不再用于新订单；历史单据和来源记录保留，可在“合同状态”的“停用”中恢复。`
+      : `合同 ${row.code} 已恢复，可继续用于新订单。`) : status === 'INACTIVE'
       ? `货号 ${row.code} 的这套包装已从可用资料移除；历史订单保留，可在“停用”中恢复。`
       : `货号 ${row.code} 的这套包装已恢复，可继续用于落单。`
     emit('changed')
-    await load()
-  } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) }
-  finally { busy.value = false }
+    const refreshError = await load()
+    if (factory === props.factoryId && generation === availabilityGeneration && refreshError) {
+      error.value = `${configActionMessage.value} 列表刷新失败：${refreshError}。请刷新查看，勿重复操作。`
+    }
+  } catch (e) { if (factory === props.factoryId && generation === availabilityGeneration) error.value = getApiErrorMessage(e) }
+  finally { if (generation === availabilityGeneration) busy.value = false }
 }
 function editLocation(row?: CartonLocation, warehouse?: string) {
   locationWarehouseLocked.value = Boolean(warehouse)
@@ -348,8 +358,9 @@ async function saveWarehouse() {
       <button v-for="item in [{ id: 'SETTINGS', label: '基础设置' }, { id: 'CONFIG', label: '货号与包装' }]" :key="item.id" type="button" role="tab" :aria-selected="tab === item.id" class="rounded-lg px-5 py-2 text-sm font-bold" :class="tab === item.id ? 'bg-teal-700 text-white' : 'text-slate-600 hover:bg-slate-50'" @click="tab = item.id">{{ item.label }}</button>
     </div>
     <p v-if="error && !editing && !locationRow" role="alert" class="text-sm text-red-700">{{ error }}</p>
+    <p v-if="configActionMessage && tab === 'SETTINGS'" role="status" class="rounded-lg bg-teal-50 px-3 py-2 text-xs text-teal-800">{{ configActionMessage }}</p>
     <div v-if="loading" class="p-10 text-center text-slate-500">正在整理历史与基础资料…</div>
-    <CartonMasterSettings v-else-if="tab === 'SETTINGS'" :key="factoryId" :workspace="workspace" :customers="customers" @rule="editRule" @paper="editPaperOptions" @paper-template="downloadTemplate('paper-options')" @paper-import="openImport('paper-options')" @location-template="downloadTemplate('locations')" @location-import="openImport('locations')" @edit="edit($event)" @create="createRecord" @location="editLocation" @warehouse="editWarehouse" @customer="emit('customers', $event)" @source="sourceRow = $event" />
+    <CartonMasterSettings v-else-if="tab === 'SETTINGS'" :key="factoryId" :workspace="workspace" :customers="customers" :busy="busy" @remove="configToRemove = $event; error = ''" @restore="changeConfigAvailability($event, 'ACTIVE')" @rule="editRule" @paper="editPaperOptions" @paper-template="downloadTemplate('paper-options')" @paper-import="openImport('paper-options')" @location-template="downloadTemplate('locations')" @location-import="openImport('locations')" @edit="edit($event)" @create="createRecord" @location="editLocation" @warehouse="editWarehouse" @customer="emit('customers', $event)" @source="sourceRow = $event" />
     <article v-else class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="货号与包装资料">
       <div class="flex flex-wrap items-center gap-3 border-b bg-slate-50 p-3">
         <span class="text-xs text-slate-500">本厂货号共用，不绑定客户</span>
@@ -366,10 +377,12 @@ async function saveWarehouse() {
       </table></div>
     </article>
     <div v-if="configToRemove" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4">
-      <div role="dialog" aria-modal="true" aria-label="删除货号与包装资料" class="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl">
-        <h3 class="text-base font-bold text-slate-950">删除这套货号与包装资料？</h3>
-        <p class="mt-3 text-sm leading-6 text-slate-600">货号 {{ configToRemove.code }} · {{ configToRemove.data.product_name || '未填写产品名称' }} · {{ configToRemove.data.packing_name || '其他包装' }}</p>
-        <p class="mt-2 text-sm leading-6 text-slate-600">删除后不再用于新订单。历史订单及 {{ configToRemove.sources.length }} 条来源记录保留；可在状态筛选中选择“停用”并恢复。</p>
+      <div role="dialog" aria-modal="true" :aria-label="configToRemove.kind === 'CONTRACT' ? '删除关联合同' : '删除货号与包装资料'" class="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl">
+        <h3 class="text-base font-bold text-slate-950"> {{ configToRemove.kind === 'CONTRACT' ? '删除这个关联合同？' : '删除这套货号与包装资料？' }}</h3>
+        <p v-if="configToRemove.kind === 'CONTRACT'" class="mt-3 text-sm leading-6 text-slate-600">合同 {{ configToRemove.code }} · {{ customers.find(c => c.customer_code === configToRemove?.customer_code)?.customer_name || configToRemove.customer_code }} · 关联货号 {{ configToRemove.data.item_nos?.join('、') || '未填写' }}</p>
+        <p v-else class="mt-3 text-sm leading-6 text-slate-600">货号 {{ configToRemove.code }} · {{ configToRemove.data.product_name || '未填写产品名称' }} · {{ configToRemove.data.packing_name || '其他包装' }}</p>
+        <p v-if="configToRemove.kind === 'CONTRACT'" class="mt-2 text-sm leading-6 text-slate-600">删除按停用处理：该客户不能再用此合同新增或确认订单，已有单据、库存、月结和来源记录保留。可在“合同状态”中选择“停用”并恢复。</p>
+        <p v-else class="mt-2 text-sm leading-6 text-slate-600">删除后不再用于新订单。历史订单及 {{ configToRemove.sources.length }} 条来源记录保留；可在状态筛选中选择“停用”并恢复。</p>
         <p v-if="error" role="alert" class="mt-3 text-sm text-red-700">{{ error }}</p>
         <div class="mt-5 flex justify-end gap-2"><button type="button" :disabled="busy" class="rounded-lg border px-4 py-2 text-sm" @click="configToRemove = null">取消</button><button type="button" :disabled="busy" class="rounded-lg bg-red-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" @click="changeConfigAvailability(configToRemove, 'INACTIVE')">{{ busy ? '正在删除…' : '确认删除' }}</button></div>
       </div>

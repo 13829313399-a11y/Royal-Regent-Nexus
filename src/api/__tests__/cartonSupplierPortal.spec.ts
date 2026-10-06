@@ -7,6 +7,15 @@ vi.mock('@/lib/http', () => ({ http: { post, get } }))
 import { cartonSupplierPortalApi } from '../cartonSupplierPortal'
 
 describe('supplier document export request', () => {
+  it('queries receipt candidates in the selected factory and submits both revisions with a durable request ID', async () => {
+    get.mockResolvedValueOnce({ data: [] })
+    await cartonSupplierPortalApi.receiptOptions('huaxing', 'note/a')
+    expect(get).toHaveBeenLastCalledWith('/carton-supplier/internal/shipments/note%2Fa/receipt-options', { params: { factory_id: 'huaxing' } })
+    const payload = { factory_id: 'huaxing', expected_revision: 2, receipt_id: 'receipt-a', expected_receipt_revision: 3, reason: '已经手工入库后补凭证' }
+    post.mockResolvedValueOnce({ data: { id: 'note/a', linked_existing_receipt: true } })
+    await cartonSupplierPortalApi.linkReceipt('note/a', payload)
+    expect(post).toHaveBeenLastCalledWith('/carton-supplier/internal/shipments/note%2Fa/link-receipt', { ...payload, request_id: expect.any(String) })
+  })
   it('requests scoped paged activity with all query fields before displaying results', async () => {
     const page = { items: [], total: 112, limit: 50, offset: 50 }
     get.mockResolvedValueOnce({ data: page })

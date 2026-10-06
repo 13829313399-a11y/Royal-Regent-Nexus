@@ -2,7 +2,7 @@ import type { CartonGuideSection } from './usageGuide'
 
 export type CartonSupplierGuideDestination =
   | 'supplier-orders' | 'supplier-documents' | 'supplier-shipments'
-  | 'supplier-settlements' | 'supplier-activity' | 'supplier-carton-mark'
+  | 'supplier-settlements' | 'supplier-activity' | 'supplier-carton-mark' | 'supplier-feedback'
 
 export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuideDestination>[] = [
   {
@@ -69,6 +69,7 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     steps: [
       '在订单管理点击“导入送货单”，在“导入东康送货单”窗口选择本次真实发货的原始 Excel，不用 PDF 或照片替代原明细。',
       '逐张核对目的厂区、原送货单号和送货日期，再核对原表行的合同、货号、纸质、规格、单位、发货数量和原送货单价。',
+      '仓库已手工入库时，预览发现可匹配原收料后，选择“后补凭证，仅关联已有入库”，提交原文件并等待仓库关联。已收齐订单也可补凭证；这一步不新增在途、库存或应付。确为新一批送货才选择新发货。',
       '先解决提示的问题：未接单、变更未发行、需求不足、日期冲突或纸品存在多个匹配，都须核实后重新预览。',
       '完整但没有对应订单的纸品，只有预览允许“无单待仓库核实”时才随原单确认；由仓库按实物分类，不会自动变成采购订单。',
       '勾选已核对且可确认的送货单，点击“确认 … 张送货单发货”。再到“发货与仓库反馈”核对原送货单及目的厂区。',
@@ -87,6 +88,7 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     steps: [
       '按厂区、客户、原送货单号、收货状态及订单关联查找；日期可选择送货或实际验收，并选择新旧排序。查看实收、不可用数量和差异原因，未确认时联系对应厂区仓库核实实物。',
       '核对有效数量：例如发货 100、实收 98、不可用 3，则有效验收为 95；按双方认可的依据处理短收、损坏及拒收。',
+      '后补凭证先显示“后补凭证待关联”，仓库完成后显示“已关联原入库”，实收与差异沿用原验收记录；原验收月份不会改成补文件月份。',
       '整单未收到或送错货时，核对仓库反馈并协商真实后续安排，不能直接把原记录当作已入库。',
       '收料已冲销、待更正时，查看验收历史，联系仓库从原送货单重新核实；旧验收不再计入当前实收。',
     ],
@@ -149,6 +151,22 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     reminders: [
       '保留原始 Excel 和提示原文用于核实；“预览成功”不等于发货已经确认。',
       '超时不自动表示成功或失败。先查业务记录，不能另编单号重复提交。',
+    ],
+  },
+  {
+    id: 'supplier-feedback', number: '09', group: '需要时处理', title: '反馈问题，查看功能变更',
+    summary: '文字、截图及编号批注一起提交给管理员；在我的反馈中查看处理结果。',
+    entry: '页面右上角 → 反馈与变更', destination: 'supplier-feedback', actionLabel: '打开反馈与变更',
+    steps: [
+      '打开“反馈与变更”，先选择问题对应的服务厂区，再填写标题、操作步骤和问题说明。',
+      '需要图片时选择截图、Ctrl+V 粘贴，或截取当前标签页；框选问题位置并填写编号批注。最多 3 张，每张 5 MB。',
+      '提交后进入“我的反馈”，查看待处理、已修改或暂时无法修改，以及管理员的回复。',
+      '切到“功能变动”，查看管理员明确发布给本厂区东康供应商的更新说明。可按关键字和日期查询历史说明。',
+    ],
+    result: '管理员收到所属厂区的反馈，供应商能查看自己的回复和对应的更新说明。',
+    reminders: [
+      '文字和图片仅提交人和有权限的管理员可见；其他供应商账号无法读取你的反馈。',
+      '切换厂区、账号或关闭窗口会清空未提交内容；先完成提交。问题反馈不代替送货、验收或月结异议。',
     ],
   },
 ]

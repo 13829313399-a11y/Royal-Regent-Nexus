@@ -16,6 +16,7 @@ class FeedbackReplyRequest(BaseModel):
 
 
 class FeatureUpdateRequest(BaseModel):
+    audience: Literal["INTERNAL", "SUPPLIER"] = "INTERNAL"
     request_key: str = Field(min_length=1, max_length=64)
     title: str = Field(min_length=1, max_length=120)
     body: str = Field(min_length=1, max_length=6000)

@@ -1,18 +1,24 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
-import { Camera, Megaphone, MessageSquare, Paperclip, RefreshCw, X } from '@lucide/vue'
-import { cartonFeedbackApi, type FeedbackDetail, type FeedbackState, type FeedbackWorkspace } from '@/api/cartonFeedback'
+import { Camera, MessageSquare, Paperclip, RefreshCw, X } from '@lucide/vue'
+import { cartonFeedbackApi, type FeedbackDetail, type FeedbackState, type FeedbackWorkspace, type UpdateAudience } from '@/api/cartonFeedback'
 import { getApiErrorMessage } from '@/lib/http'
 import { captureFeedbackScreenshot } from '@/lib/feedbackScreenshot'
 import FeedbackScreenshotAnnotator from '@/components/FeedbackScreenshotAnnotator.vue'
 
-const props = defineProps<{ factoryId: string; factoryName: string; viewerKey?: string }>()
+const props = defineProps<{ factoryId: string; factoryName: string; viewerKey?: string; supplier?: boolean; supplierFactories?: { id: string; name: string }[] }>()
+const supplierFactory = ref('')
+const activeFactory = computed(() => props.supplier ? supplierFactory.value : props.factoryId)
+const activeFactoryName = computed(() => props.supplier ? props.supplierFactories?.find(row => row.id === supplierFactory.value)?.name || '请选择厂区' : props.factoryName)
+const portalArguments = computed(() => props.supplier ? ['supplier' as const] : [])
 type Tab = 'compose' | 'mine' | 'manage' | 'updates'
 type Shot = { id: string; file: File; url: string; notes: string[] }
 const open = ref(false), tab = ref<Tab>('compose'), busy = ref(false), loading = ref(false), capturing = ref(false)
 const error = ref(''), success = ref(''), title = ref(''), description = ref('')
 const data = ref<FeedbackWorkspace>({ can_manage: false, feedbacks: [], updates: [] })
+const manager = computed(() => !props.supplier && data.value.can_manage)
+const updateAudience = ref<UpdateAudience>('INTERNAL')
 const detail = ref<FeedbackDetail | null>(null), detailLoading = ref(false), imageUrls = ref<string[]>([])
 const screenshots = ref<Shot[]>([]), editing = ref<File | null>(null), editingIndex = ref(-1)
 const input = ref<HTMLInputElement | null>(null), replyBody = ref(''), replyState = ref<FeedbackState>('FIXED')
@@ -21,7 +27,7 @@ const search = ref(''), status = ref(''), from = ref(''), to = ref(''), sort = r
 const queryTotal = computed(() => tab.value === 'updates' ? (data.value.updates_total ?? data.value.updates.length) : (data.value.total ?? data.value.feedbacks.length))
 let queryTimer: ReturnType<typeof setTimeout> | undefined
 function clearQueries() { search.value = ''; status.value = ''; from.value = ''; to.value = '' }
-watch([search, status, from, to, sort], () => {
+watch([search, status, from, to, sort, updateAudience], () => {
   page.value = 1; clearDetail(); data.value.feedbacks = []; data.value.updates = []
   listSequence++; if (queryTimer) clearTimeout(queryTimer)
   if (open.value) queryTimer = setTimeout(() => void refresh(), 200)
@@ -30,14 +36,14 @@ watch(page, () => { clearDetail(); if (open.value) void refresh() })
 onBeforeUnmount(() => { if (queryTimer) clearTimeout(queryTimer) })
 const states: Record<FeedbackState, string> = { OPEN: '待处理', FIXED: '已修改', DECLINED: '暂时无法修改' }
 const tabs = computed(() => [{ id: 'compose' as Tab, label: '反馈问题' }, { id: 'mine' as Tab, label: '我的反馈' },
-  ...(data.value.can_manage ? [{ id: 'manage' as Tab, label: '处理反馈' }] : []), { id: 'updates' as Tab, label: '功能变动' }])
+  ...(manager.value ? [{ id: 'manage' as Tab, label: '处理反馈' }] : []), { id: 'updates' as Tab, label: '功能变动' }])
 let controller = new AbortController(), generation = 0, listSequence = 0, detailSequence = 0
 let submitSignature = '', submitKey = '', publishSignature = '', publishKey = ''
 function revokeImages() { imageUrls.value.forEach(url => URL.revokeObjectURL(url)); imageUrls.value = [] }
 function clearDetail() { detailSequence++; detail.value = null; detailLoading.value = false; replyBody.value = ''; revokeImages() }
 function reset() {
   if (queryTimer) clearTimeout(queryTimer)
-  search.value = ''; status.value = ''; from.value = ''; to.value = ''; sort.value = 'DESC'; page.value = 1
+  search.value = ''; status.value = ''; from.value = ''; to.value = ''; sort.value = 'DESC'; page.value = 1; updateAudience.value = 'INTERNAL'
   generation++; listSequence++; detailSequence++; controller.abort(); controller = new AbortController()
   screenshots.value.forEach(shot => URL.revokeObjectURL(shot.url)); screenshots.value = []; revokeImages()
   editing.value = null; editingIndex.value = -1; detail.value = null; replyBody.value = ''
@@ -46,14 +52,20 @@ function reset() {
   submitSignature = ''; submitKey = ''; publishSignature = ''; publishKey = ''
   busy.value = false; loading.value = false; detailLoading.value = false; capturing.value = false; error.value = ''; success.value = ''
 }
-watch(() => [props.factoryId, props.viewerKey], () => { open.value = false; reset() }, { flush: 'sync' })
+watch(() => [props.factoryId, props.viewerKey, props.supplier, JSON.stringify(props.supplierFactories)], () => { open.value = false; reset(); supplierFactory.value = '' }, { flush: 'sync' })
+watch(supplierFactory, () => { if (open.value) { reset(); void refresh() } }, { flush: 'sync' })
 function close() { open.value = false; reset() }
-function show(destination: Tab) { reset(); tab.value = destination; open.value = true; void refresh() }
+function show(destination: Tab) {
+  reset(); tab.value = destination
+  supplierFactory.value = props.supplierFactories?.find(row => row.id === props.factoryId)?.id || props.supplierFactories?.[0]?.id || ''
+  open.value = true; void refresh()
+}
 async function refresh() {
-  const current = generation, sequence = ++listSequence, factory = props.factoryId
+  const current = generation, sequence = ++listSequence, factory = activeFactory.value
+  if (!factory) { error.value = '暂无可反馈的服务厂区，请先刷新供应商协同。'; return }
   loading.value = true; error.value = ''
   try {
-    const result = await cartonFeedbackApi.workspace(factory, tab.value === 'manage', controller.signal, { search: search.value.trim(), status: status.value, date_from: from.value, date_to: to.value, sort: sort.value, limit: 25, offset: tab.value === 'updates' ? 0 : (page.value - 1) * 25, updates_offset: tab.value === 'updates' ? (page.value - 1) * 25 : 0 })
+    const result = await cartonFeedbackApi.workspace(factory, tab.value === 'manage' && !props.supplier, controller.signal, { ...(props.supplier ? { portal: 'supplier' } : {}), updates_audience: manager.value ? updateAudience.value : 'INTERNAL', search: search.value.trim(), status: status.value, date_from: from.value, date_to: to.value, sort: sort.value, limit: 25, offset: tab.value === 'updates' ? 0 : (page.value - 1) * 25, updates_offset: tab.value === 'updates' ? (page.value - 1) * 25 : 0 })
     if (current === generation && sequence === listSequence) {
       data.value = result
       if (detail.value && !result.feedbacks.some(row => row.id === detail.value!.id)) clearDetail()
@@ -67,13 +79,13 @@ function changeTab(destination: Tab) {
   page.value = 1; clearQueries(); tab.value = destination; detailSequence++; detail.value = null; detailLoading.value = false; revokeImages(); error.value = ''; success.value = ''; void refresh()
 }
 async function selectDetail(id: string) {
-  const current = generation, sequence = ++detailSequence, factory = props.factoryId
+  const current = generation, sequence = ++detailSequence, factory = activeFactory.value
   detailLoading.value = true; detail.value = null; revokeImages(); error.value = ''; replyBody.value = ''; replyState.value = 'FIXED'
   try {
-    const row = await cartonFeedbackApi.detail(factory, id, controller.signal)
+    const row = await cartonFeedbackApi.detail(factory, id, controller.signal, ...portalArguments.value)
     if (current !== generation || sequence !== detailSequence) return
     detail.value = row
-    const blobs = await Promise.all(row.images.map(image => cartonFeedbackApi.image(factory, id, image, controller.signal)))
+    const blobs = await Promise.all(row.images.map(image => cartonFeedbackApi.image(factory, id, image, controller.signal, ...portalArguments.value)))
     if (current === generation && sequence === detailSequence) imageUrls.value = blobs.map(blob => URL.createObjectURL(blob))
   } catch (cause) { if (current === generation && sequence === detailSequence) { clearDetail(); error.value = getApiErrorMessage(cause) } }
   finally { if (current === generation && sequence === detailSequence) detailLoading.value = false }
@@ -110,14 +122,14 @@ async function capture() {
   finally { if (current === generation) capturing.value = false }
 }
 async function submit() {
-  if (busy.value || loading.value || !title.value.trim() || !description.value.trim()) return
-  const current = generation, factory = props.factoryId
+  if (busy.value || loading.value || !activeFactory.value || !title.value.trim() || !description.value.trim()) return
+  const current = generation, factory = activeFactory.value
   const body = [description.value.trim(), ...screenshots.value.flatMap((shot, index) => shot.notes.length ? [`截图 ${index + 1} 批注：`, ...shot.notes] : [])].join('\n')
   const signature = JSON.stringify([title.value.trim(), body, screenshots.value.map(shot => shot.id)])
   if (signature !== submitSignature) { submitSignature = signature; submitKey = crypto.randomUUID() }
   busy.value = true; error.value = ''; success.value = ''
   try {
-    const row = await cartonFeedbackApi.create(factory, title.value.trim(), body, '/modules/pmc-warehouse/carton-procurement', submitKey, screenshots.value.map(shot => shot.file), controller.signal)
+    const row = await cartonFeedbackApi.create(factory, title.value.trim(), body, props.supplier ? '/carton-supplier' : '/modules/pmc-warehouse/carton-procurement', submitKey, screenshots.value.map(shot => shot.file), controller.signal, ...portalArguments.value)
     if (current !== generation) return
     title.value = ''; description.value = ''; screenshots.value.forEach(shot => URL.revokeObjectURL(shot.url)); screenshots.value = []
     submitSignature = ''; tab.value = 'mine'; success.value = '反馈已提交，可在这里查看管理员回复。'
@@ -126,8 +138,8 @@ async function submit() {
   finally { if (current === generation) busy.value = false }
 }
 async function reply() {
-  if (busy.value || !detail.value || !replyBody.value.trim()) return
-  const current = generation, row = detail.value, factory = props.factoryId
+  if (busy.value || !manager.value || !detail.value || !replyBody.value.trim()) return
+  const current = generation, row = detail.value, factory = activeFactory.value
   busy.value = true; error.value = ''; success.value = ''
   try {
     const result = await cartonFeedbackApi.reply(factory, row, replyBody.value.trim(), replyState.value, controller.signal)
@@ -136,14 +148,14 @@ async function reply() {
   finally { if (current === generation) busy.value = false }
 }
 async function publish() {
-  if (busy.value || !updateTitle.value.trim() || !updateBody.value.trim()) return
-  const current = generation, factory = props.factoryId
-  const signature = JSON.stringify([updateTitle.value.trim(), updateBody.value.trim()])
+  if (busy.value || !manager.value || !updateTitle.value.trim() || !updateBody.value.trim()) return
+  const current = generation, factory = activeFactory.value
+  const signature = JSON.stringify([updateTitle.value.trim(), updateBody.value.trim(), updateAudience.value])
   if (signature !== publishSignature) { publishSignature = signature; publishKey = crypto.randomUUID() }
   busy.value = true; error.value = ''; success.value = ''
   try {
-    await cartonFeedbackApi.publish(factory, updateTitle.value.trim(), updateBody.value.trim(), publishKey, controller.signal)
-    if (current === generation) { updateTitle.value = ''; updateBody.value = ''; publishSignature = ''; success.value = `更新说明已发布到${props.factoryName}。`; await refresh() }
+    await cartonFeedbackApi.publish(factory, updateTitle.value.trim(), updateBody.value.trim(), publishKey, controller.signal, updateAudience.value)
+    if (current === generation) { updateTitle.value = ''; updateBody.value = ''; publishSignature = ''; success.value = `更新说明已发布到${activeFactoryName.value}。`; await refresh() }
   } catch (cause) { if (current === generation) error.value = getApiErrorMessage(cause) }
   finally { if (current === generation) busy.value = false }
 }
@@ -154,19 +166,19 @@ defineExpose({ openFeedback: () => show('compose') })
 
 <template>
   <div class="flex shrink-0 items-center gap-1.5">
-    <button type="button" aria-label="打开问题反馈" title="问题反馈" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 sm:px-3" @click="show('compose')"><MessageSquare class="size-4" aria-hidden="true" /><span class="hidden lg:inline">问题反馈</span></button>
-    <button type="button" aria-label="查看功能变动" title="功能变动" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 sm:px-3" @click="show('updates')"><Megaphone class="size-4" aria-hidden="true" /><span class="hidden lg:inline">功能变动</span></button>
+    <button type="button" aria-label="打开反馈与变更" title="反馈与变更" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 sm:px-3" @click="show('compose')"><MessageSquare class="size-4" aria-hidden="true" /><span>反馈与变更</span></button>
   </div>
   <DialogRoot :open="open && !capturing && !editing" @update:open="value => { if (!value && !capturing && !editing) close() }">
     <DialogPortal>
     <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/40" />
     <DialogContent class="fixed left-1/2 top-1/2 z-[71] flex max-h-[92dvh] w-[calc(100%_-_1.5rem)] max-w-4xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
       <div class="flex items-start justify-between border-b px-5 py-4">
-        <div><DialogTitle class="text-lg font-bold text-slate-950">问题反馈与功能变动</DialogTitle><DialogDescription class="mt-1 text-xs text-slate-500">{{ factoryName }} · 反馈仅本人和有权限的管理员可见，更新说明供本厂区员工查看。</DialogDescription></div>
+        <div><DialogTitle class="text-lg font-bold text-slate-950">问题反馈与功能变动</DialogTitle><DialogDescription class="mt-1 text-xs text-slate-500">{{ activeFactoryName }} · 反馈仅本人和有权限的管理员可见，更新说明按发布对象展示。</DialogDescription></div>
         <button type="button" aria-label="关闭反馈窗口" class="rounded-lg border p-2" @click="close"><X class="size-4" /></button>
       </div>
       <nav aria-label="问题反馈子页面" class="flex flex-wrap gap-1 border-b bg-slate-50 px-4 py-2"><button v-for="entry in tabs" :key="entry.id" type="button" :disabled="busy" :aria-pressed="tab === entry.id" :class="tab === entry.id ? 'bg-teal-100 text-teal-800' : 'text-slate-600'" class="rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50" @click="changeTab(entry.id)">{{ entry.label }}</button></nav>
       <div class="overflow-y-auto p-4 sm:p-5">
+        <label v-if="supplier" class="mb-4 block text-xs font-semibold text-slate-600">反馈与更新所属厂区<select v-model="supplierFactory" :disabled="busy || capturing" aria-label="反馈所属服务厂区" class="mt-1 block h-9 w-full rounded-lg border bg-white px-3"><option v-if="!supplierFactories?.length" value="">暂无服务厂区</option><option v-for="factory in supplierFactories" :key="factory.id" :value="factory.id">{{ factory.name }}</option></select></label>
         <p v-if="error" role="alert" class="mb-4 whitespace-pre-wrap rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
         <p v-if="success" role="status" class="mb-4 rounded-lg bg-teal-50 p-3 text-sm text-teal-800">{{ success }}</p>
         <p v-if="loading" role="status" class="mb-3 text-sm text-slate-500">正在读取反馈与更新说明…</p>
@@ -203,7 +215,8 @@ defineExpose({ openFeedback: () => show('compose') })
           </div>
         </template>
         <template v-else>
-          <form v-if="data.can_manage" class="mb-5 space-y-3 rounded-xl border border-teal-200 bg-teal-50/50 p-4" @submit.prevent="publish"><h3 class="font-semibold">发布更新说明到{{ factoryName }}</h3><label class="block text-sm">更新标题<input v-model="updateTitle" required maxlength="120" :disabled="busy" class="mt-1 block w-full rounded-lg border bg-white p-2"></label><label class="block text-sm">更新内容<textarea v-model="updateBody" required maxlength="6000" rows="3" :disabled="busy" placeholder="说明哪些功能有变化，员工应该如何使用。" class="mt-1 block w-full rounded-lg border bg-white p-2" /></label><button type="submit" :disabled="busy || !updateTitle.trim() || !updateBody.trim()" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ busy ? '正在发布…' : '发布更新说明' }}</button></form>
+          <label v-if="manager" class="mb-3 block text-xs font-semibold">更新说明发布对象<select v-model="updateAudience" :disabled="busy" aria-label="更新说明发布对象" class="mt-1 block h-9 rounded-lg border bg-white px-3"><option value="INTERNAL">内部员工</option><option value="SUPPLIER">东康供应商</option></select></label>
+          <form v-if="manager" class="mb-5 space-y-3 rounded-xl border border-teal-200 bg-teal-50/50 p-4" @submit.prevent="publish"><h3 class="font-semibold">发布更新说明到{{ activeFactoryName }} · {{ updateAudience === 'SUPPLIER' ? '东康供应商' : '内部员工' }}</h3><label class="block text-sm">更新标题<input v-model="updateTitle" required maxlength="120" :disabled="busy" class="mt-1 block w-full rounded-lg border bg-white p-2"></label><label class="block text-sm">更新内容<textarea v-model="updateBody" required maxlength="6000" rows="3" :disabled="busy" placeholder="说明哪些功能有变化，以及应该如何使用。" class="mt-1 block w-full rounded-lg border bg-white p-2" /></label><button type="submit" :disabled="busy || !updateTitle.trim() || !updateBody.trim()" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ busy ? '正在发布…' : '发布更新说明' }}</button></form>
           <div class="mb-3 flex items-center justify-between"><p class="text-xs text-slate-500">本厂区已发布的更新 · 共 {{ queryTotal }} 条</p><button type="button" :disabled="loading || busy" class="rounded-lg border px-3 py-1.5 text-xs" @click="refresh">刷新更新</button></div>
           <p v-if="!loading && !error && !data.updates.length" class="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-500">管理员尚未发布更新说明。</p>
           <article v-for="entry in data.updates" :key="entry.id" class="mb-3 rounded-xl border p-4"><h3 class="break-words font-bold">{{ entry.title }}</h3><p class="mt-1 text-xs text-slate-400">{{ entry.created_at.replace('T', ' ').slice(0, 16) }} · {{ entry.author_name }}</p><p class="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">{{ entry.body }}</p></article>

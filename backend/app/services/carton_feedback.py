@@ -18,8 +18,12 @@ def can_manage(user, factory):
     return authorization_decision(user, MANAGE, factory, "*")[0]
 
 
-def scope(user, factory):
+def scope(user, factory, *, db=None, supplier=False):
     factory = require_carton_factory(factory)
+    if supplier:
+        from app.services.carton_supplier_portal import supplier_access
+        supplier_access(db, user, factory)
+        return factory
     if not any(authorization_decision(user, "carton_procurement:read", factory, department)[0] for department in CARTON_DEPARTMENTS):
         raise HTTPException(403, "没有此厂区的纸箱模块访问权限")
     return factory
@@ -30,9 +34,9 @@ def require_manager(user, factory):
         raise HTTPException(403, "只有有权限的管理员可以处理反馈和发布更新")
 
 
-def feedback_row(db, user, factory, key):
+def feedback_row(db, user, factory, key, *, supplier=False):
     row = db.scalar(select(CartonFeedback).where(CartonFeedback.id == key, CartonFeedback.factory_id == factory))
-    if row is None or (row.author_id != user.id and not can_manage(user, factory)):
+    if row is None or (supplier and (row.context_path != "/carton-supplier" or row.author_id != user.id)) or (row.author_id != user.id and not can_manage(user, factory)):
         raise HTTPException(404, "未找到可查看的反馈")
     return row
 
@@ -43,8 +47,8 @@ def feedback_out(row):
         revision=row.revision, created_at=row.created_at, updated_at=row.updated_at)
 
 
-def detail(db, user, factory, key):
-    row = feedback_row(db, user, factory, key)
+def detail(db, user, factory, key, *, supplier=False):
+    row = feedback_row(db, user, factory, key, supplier=supplier)
     result = feedback_out(row)
     result["images"] = list(db.scalars(select(CartonFeedbackImage.id).where(CartonFeedbackImage.feedback_id == key,
         CartonFeedbackImage.factory_id == factory).order_by(CartonFeedbackImage.ordinal)))
@@ -55,15 +59,24 @@ def detail(db, user, factory, key):
     return result
 
 
-def workspace(db, user, factory, all_feedback=False, *, search="", status="", date_from="", date_to="", sort="DESC", limit=100, offset=0, updates_offset=0):
+def workspace(db, user, factory, all_feedback=False, *, supplier=False, updates_audience="INTERNAL", search="", status="", date_from="", date_to="", sort="DESC", limit=100, offset=0, updates_offset=0):
     from app.services.carton_query import date_bounds, literal_pattern
     first, after = date_bounds(date_from, date_to)
     if all_feedback:
+        if supplier:
+            raise HTTPException(403, "供应商仅可查看本人的反馈")
+        require_manager(user, factory)
+    if supplier:
+        updates_audience = "SUPPLIER"
+    elif updates_audience != "INTERNAL":
         require_manager(user, factory)
     statement = select(CartonFeedback).where(CartonFeedback.factory_id == factory)
+    if supplier:
+        statement = statement.where(CartonFeedback.context_path == "/carton-supplier")
     if not all_feedback:
         statement = statement.where(CartonFeedback.author_id == user.id)
-    updates = select(CartonFeatureUpdate).where(CartonFeatureUpdate.factory_id == factory)
+    updates = select(CartonFeatureUpdate).where(CartonFeatureUpdate.factory_id == factory,
+        CartonFeatureUpdate.audience == updates_audience)
     if status:
         statement = statement.where(CartonFeedback.status == status)
     if search:
@@ -82,8 +95,8 @@ def workspace(db, user, factory, all_feedback=False, *, search="", status="", da
     updates_total = db.scalar(select(func.count()).select_from(updates.subquery())) or 0
     ascending = sort == "ASC"
     rows = db.scalars(statement.order_by(CartonFeedback.updated_at.asc() if ascending else CartonFeedback.updated_at.desc(), CartonFeedback.id).limit(limit).offset(offset))
-    return dict(can_manage=can_manage(user, factory), feedbacks=[feedback_out(r) for r in rows],
-        updates=[dict(id=r.id, title=r.title, body=r.body, author_name=r.author_name, created_at=r.created_at)
+    return dict(can_manage=not supplier and can_manage(user, factory), feedbacks=[feedback_out(r) for r in rows],
+        updates=[dict(id=r.id, title=r.title, body=r.body, audience=r.audience, author_name=r.author_name, created_at=r.created_at)
             for r in db.scalars(updates.order_by(CartonFeatureUpdate.created_at.asc() if ascending else CartonFeatureUpdate.created_at.desc(), CartonFeatureUpdate.id).limit(limit).offset(updates_offset))],
         total=total, updates_total=updates_total, limit=limit, offset=offset, updates_offset=updates_offset)
 
@@ -109,15 +122,14 @@ def normalize_image(content):
     return result
 
 
-def create(db, user, factory, title, description, context_path, request_key, images):
+def create(db, user, factory, title, description, context_path, request_key, images, *, supplier=False):
     title, description = title.strip(), description.strip()
     if not title or not description or len(title) > 120 or len(description) > 6000:
         raise HTTPException(422, "请填写问题标题和说明；标题最多 120 字，说明最多 6000 字")
     if not request_key or len(request_key) > 64:
         raise HTTPException(422, "提交标识无效，请重新打开反馈表单")
     # Store only a module path, never credentials, page text or arbitrary URL queries.
-    if context_path not in {"/modules/pmc-warehouse/carton-procurement", "/carton-supplier"}:
-        context_path = "/modules/pmc-warehouse/carton-procurement"
+    context_path = "/carton-supplier" if supplier else "/modules/pmc-warehouse/carton-procurement"
     payload = json.dumps([title, description, context_path, [hashlib.sha256(i).hexdigest() for i in images]], ensure_ascii=False)
     digest = hashlib.sha256(payload.encode()).hexdigest()
     def existing():
@@ -127,7 +139,7 @@ def create(db, user, factory, title, description, context_path, request_key, ima
             raise HTTPException(409, "此提交已保存且内容不同，请先查看我的反馈再重新提交")
         return row
     if row := existing():
-        return detail(db, user, factory, row.id)
+        return detail(db, user, factory, row.id, supplier=supplier)
     key, now = f"CF-{uuid4().hex}", now_text()
     row = CartonFeedback(id=key, factory_id=factory, author_id=user.id, author_name=user.display_name,
         title=title, description=description, context_path=context_path, request_key=request_key, payload_sha256=digest,
@@ -142,9 +154,9 @@ def create(db, user, factory, title, description, context_path, request_key, ima
     except IntegrityError:
         db.rollback()
         if row := existing():
-            return detail(db, user, factory, row.id)
+            return detail(db, user, factory, row.id, supplier=supplier)
         raise
-    return detail(db, user, factory, key)
+    return detail(db, user, factory, key, supplier=supplier)
 
 
 def reply(db, user, factory, key, payload):
@@ -168,15 +180,15 @@ def publish(db, user, factory, payload):
     def existing():
         row = db.scalar(select(CartonFeatureUpdate).where(CartonFeatureUpdate.factory_id == factory,
             CartonFeatureUpdate.author_id == user.id, CartonFeatureUpdate.request_key == payload.request_key))
-        if row and (row.title != payload.title or row.body != payload.body):
+        if row and (row.title != payload.title or row.body != payload.body or row.audience != payload.audience):
             raise HTTPException(409, "此更新说明已发布且内容不同，请刷新核对后重新发布")
         return row
     if row := existing():
         return {"id": row.id}
     now, key = now_text(), f"CFU-{uuid4().hex}"
-    db.add(CartonFeatureUpdate(id=key, factory_id=factory, title=payload.title, body=payload.body,
+    db.add(CartonFeatureUpdate(id=key, factory_id=factory, audience=payload.audience, title=payload.title, body=payload.body,
         author_id=user.id, author_name=user.display_name, request_key=payload.request_key, created_at=now))
-    _audit(db, user, factory, "FEATURE_UPDATE_PUBLISHED", "carton_feature_update", key, {})
+    _audit(db, user, factory, "FEATURE_UPDATE_PUBLISHED", "carton_feature_update", key, {"audience": payload.audience})
     try:
         db.commit()
     except IntegrityError:

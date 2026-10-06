@@ -26,6 +26,7 @@ class NumberRule(BaseModel):
     sample_text: str = Field(default="", max_length=12000)
     source: Literal["NONE", "MANUAL", "HISTORY"] = "NONE"
     sample_count: int = Field(default=0, ge=0)
+    user_configured: bool = False
 
     @model_validator(mode="after")
     def bounds(self):
@@ -41,6 +42,10 @@ class NumberRule(BaseModel):
         return self
 
 
+class ItemNumberRule(NumberRule):
+    mode: Literal["AUTO", "OFF", "WARN", "BLOCK"] = "OFF"
+
+
 class MasterData(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     product_name: str = Field(default="", max_length=255)
@@ -54,7 +59,7 @@ class MasterData(BaseModel):
     customer_days_disabled: bool = False
     customer_po_rule: NumberRule = Field(default_factory=NumberRule)
     contract_rule: NumberRule = Field(default_factory=NumberRule)
-    item_rule: NumberRule = Field(default_factory=NumberRule)
+    item_rule: ItemNumberRule = Field(default_factory=ItemNumberRule)
     warehouses: list[str] = Field(default_factory=list, max_length=100)
     paper_types: list[str] = Field(default_factory=list, max_length=200)
     paper_qualities: list[str] = Field(default_factory=list, max_length=500)
@@ -72,6 +77,18 @@ class MasterData(BaseModel):
                 raise ValueError(f"纸品选项不能为空且不能超过 {limit} 字")
             setattr(self, key, list(dict.fromkeys(value.strip() for value in values)))
         return self
+
+
+def effective_item_rule(rule):
+    """Retain templates, but opt out of old automatically enabled item checks."""
+    result = {**NumberRule(mode="OFF").model_dump(mode="json"), **(rule or {})}
+    unrestricted = (not result["prefix"] and result["min_length"] == 0 and
+                    result["max_length"] == 128 and result["characters"] == "ANY")
+    automatic = result["mode"] == "AUTO" or (result["mode"] == "WARN" and
+        unrestricted and not result["templates"])
+    if automatic and unrestricted and not result["user_configured"] and result["source"] != "MANUAL":
+        result["mode"] = "OFF"
+    return result
 
 
 class MasterSave(BaseModel):
