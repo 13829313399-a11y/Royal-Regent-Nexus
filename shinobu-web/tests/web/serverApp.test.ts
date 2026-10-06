@@ -33,7 +33,9 @@ describe('server translation workbench', () => {
         translation: { offline_available: true, online_available: false }, limits: { max_file_bytes: 1_000_000, max_pages: 200 } };
       else if (url.includes('/jobs?')) value = { items: jobs, total: jobs.length };
       else if (url.includes('/sources/')) value = { id: url.split('/').pop(), inspection_status: 'succeeded', artifacts: [],
-        manifest: { pages: [{ page_index: 0, width_pt: 300, height_pt: 200 }, { page_index: 1, width_pt: 300, height_pt: 200 }] } };
+        manifest: { pages: [{ page_index: 0, width_pt: 300, height_pt: 200,
+          image_resize: url.endsWith('/single') ? { original_size: [6000, 4000], processing_size: [300, 200] } : undefined },
+          { page_index: 1, width_pt: 300, height_pt: 200 }] } };
       else throw new Error('Unexpected API: ' + url);
       return new Response(JSON.stringify(value));
     }));
@@ -48,6 +50,7 @@ describe('server translation workbench', () => {
     await act(async () => (document.querySelectorAll('.rs-history-row')[1] as HTMLButtonElement).click());
     expect(document.querySelector('.rs-pagination')?.textContent).toContain('1 / 1');
     expect(document.querySelector('.rs-image-wrap img')?.getAttribute('src')).toContain('single-0');
+    expect(document.body.textContent).toContain('高分辨率图片已自动缩小：6000 × 4000 → 300 × 200 像素，原文件保留。');
     expect(document.body.textContent).not.toContain('API Key');
     expect(document.body.textContent).not.toContain('导入模型');
   });

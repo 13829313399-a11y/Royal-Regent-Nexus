@@ -21,10 +21,14 @@ export type Region = {
   fgColor?: number[];
 };
 const identifiers = /\d|https?:\/\/|www\.|@|^[#＃]|^(?:PANTON[E]?|UPC|CE|CPSC|ASTM|EN|ISO|AQL|MIL|QA|QC|PVC|ABS|PP|PET|PE|BR|EEC|EC|EU|USA|S\/S|PNP|PUP|HOLOLIVE|JAKKS|PEANUTS|TM|Sa|Cr|Maj|Min)$/i;
-const protectedTextTokens=(text:string)=>text.split(/\s+/).filter(t=>/[A-Za-z]/.test(t)&&identifiers.test(t)).map(t=>t.toUpperCase());
+// OCR word breaks need not equal observed gaps. Normalize only complete known
+// caption letters for candidate counts; actual re-OCR still verifies every part.
+const captionWords=(text:string)=>text.replace(/\bS\s*e\s*a\s*m\s+A\s*l\s*l\s*o\s*w\s*a\s*n\s*c\s*e\b/gi,'Seam Allowance')
+  .replace(/\b(Allowance|Front|Back|Left|Right|Cut)(?=\d)/gi,'$1 ');
+const protectedTextTokens=(text:string)=>captionWords(text).split(/\s+/).filter(t=>/[A-Za-z]/.test(t)&&identifiers.test(t)).map(t=>t.toUpperCase());
 export function preserveReason(region: Region, direction: string): string | undefined {
   const text = region.sourceText.trim();
-  if (region.protected || identifiers.test(text)) return 'protected';
+  if (region.protected || identifiers.test(text) || protectedTextTokens(text).length) return 'protected';
   if (/^<[^A-Za-z0-9]{0,4}>$/.test(text) && region.box.height>region.box.width*1.8) return 'diagram';
   if (!(direction === 'zh_to_en' ? /[\u3400-\u9fff]/ : /[A-Za-z]{2}/).test(text)) return 'not-source-language';
   if (region.direction === 'v' || region.box.height > region.box.width * 1.8) return 'vertical';
@@ -85,13 +89,14 @@ export function splitRuledRegion(source: Canvas, region: Region): Region[] {
 /** Candidate word cuts use observed whitespace, never proportional text widths.
  * The caller must re-OCR and verify the concatenated text before accepting. */
 export function splitMixedWords(source:Canvas,region:Region):Region[] {
-  if(!/\d/.test(region.sourceText)||!/[A-Za-z]/.test(region.sourceText)) return [region];
-  const cutInstruction=/Cut\s+\d+\b/i.test(region.sourceText);
-  const words=cutInstruction ? region.sourceText.replace(/([A-Z])([A-Z][a-z])/g,'$1 $2').replace(/(\d)([-–—])/g,'$1 $2').replace(/([-–—])([A-Za-z])/g,'$1 $2') : region.sourceText;
+  if(!(/[0-9]/.test(region.sourceText)||protectedTextTokens(region.sourceText).length)||!/[A-Za-z]/.test(region.sourceText)) return [region];
+  const caption=captionWords(region.sourceText),cutInstruction=/Cut\s+\d+\b/i.test(caption);
+  const words=cutInstruction ? caption.replace(/([A-Z])([A-Z][a-z])/g,'$1 $2').replace(/(\d)([-–—])/g,'$1 $2').replace(/([-–—])([A-Za-z])/g,'$1 $2') : caption;
   let count=words.trim().split(/\s+/).length;
   if(count<2||count>24||region.direction==='v') return [region];
   const b=region.box,x=Math.max(0,Math.floor(b.x)),y=Math.max(0,Math.floor(b.y));
-  const w=Math.min(source.width-x,Math.ceil(b.width)),h=Math.min(source.height-y,Math.ceil(b.height));
+  const trailingCut=cutInstruction&&/^Cut\s+\d+\s*[-–—]?$/i.test(caption.trim());
+  const w=Math.min(source.width-x,Math.ceil(b.width+(trailingCut?Math.min(12,b.height*.35):0))),h=Math.min(source.height-y,Math.ceil(b.height));
   const data=source.getContext('2d').getImageData(x,y,w,h).data;
   const values:number[]=[];
   for(let p=0;p<w*h;p++)values.push((data[p*4]+data[p*4+1]+data[p*4+2])/3);
@@ -102,7 +107,7 @@ export function splitMixedWords(source:Canvas,region:Region):Region[] {
     if(col<w)for(let row=0;row<h;row++) {const p=(row*w+col)*4;if(Math.abs((data[p]+data[p+1]+data[p+2])/3-bg)>35)ink++;}
     const blank=col<w&&ink<=Math.floor(h*.015);
     if(blank&&start<0)start=col;
-    if(!blank&&start>=0){if(start>1&&col<w-1&&col-start>=Math.max(3,h*.08))gaps.push({start,end:col});start=-1;}
+    if(!blank&&start>=0){if(start>1&&col<w-1&&col-start>=Math.max(cutInstruction?2:3,h*.08))gaps.push({start,end:col});start=-1;}
   }
   // OCR often omits a small trailing hyphen from "Cut 2 -". It remains a
   // visible separator; the caller verifies every letter and digit afterward.
@@ -145,16 +150,19 @@ export function verifiedWordParts(source:Canvas,parent:Region,candidates:Region[
   }
   const normalize=(s:string)=>s.toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]/g,'');
   const text=parts.map(p=>p.sourceText).join(' ');
-  const cutInstruction=/Cut\s+\d+\b/i.test(parent.sourceText);
+  const cutInstruction=/Cut\s+\d+\b/i.test(captionWords(parent.sourceText));
+  const materialCaption=/^(yellow|white|black|red|blue|green)\s+BR\s+[A-Za-z!]+$/i.exec(parent.sourceText.trim());
+  const verifiedMaterial=materialCaption&&new RegExp(`^${materialCaption[1]}\\s+BR\\s+Tricot$`,'i').test(text.trim());
   const codesMatch=JSON.stringify(protectedTextTokens(text))===JSON.stringify(protectedTextTokens(parent.sourceText));
-  if(normalize(text)===normalize(parent.sourceText)&&(!cutInstruction||codesMatch))return parts;
-  // A cropped last letter may be misread by the full-line OCR. Only explicit
-  // cut instructions can accept stronger word readings; quantities and known
-  // material codes must still match, and every alphabetic crop needs >= .97.
   const numbers=(s:string)=>s.match(/\d+(?:[.,/]\d+)*/g)??[];
-  return cutInstruction
+  const numbersMatch=JSON.stringify(numbers(text))===JSON.stringify(numbers(parent.sourceText));
+  if(normalize(text)===normalize(parent.sourceText)&&codesMatch&&numbersMatch)return parts;
+  // A cropped last letter may be misread by full-line OCR. Explicit cut
+  // instructions and verified color/BR/Tricot captions can accept stronger
+  // readings, with unchanged quantities/codes and >= .97 for alphabetic crops.
+  return (cutInstruction||verifiedMaterial)
     &&parts.filter(p=>/[A-Za-z]/.test(p.sourceText)).every(p=>(p.prob??0)>=.97)
-    &&JSON.stringify(numbers(text))===JSON.stringify(numbers(parent.sourceText))
+    &&numbersMatch
     &&codesMatch?parts:undefined;
 }
 
@@ -176,16 +184,37 @@ function hasColoredStrokes(source:Canvas,region:Region):boolean {
   return ink>=14&&ink<w*h*.75;
 }
 
+function possibleCaptionTypo(text:string):boolean {
+  if(!/^(?:(?:upper|under|lower)\s+[A-Za-z]{3,8}|plush\s+[A-Za-z]{4,7})$/i.test(text.trim())
+    &&!/^[A-Z]{4,7}$/.test(text.trim()))return false;
+  const vocabulary=['tail','tricot','plush','guide'];
+  return (text.toLowerCase().match(/[a-z]+/g)??[]).some(word=>{
+    if(vocabulary.includes(word)||vocabulary.some(term=>word===term+'s'))return false;
+    return vocabulary.some(term=>{
+      if(Math.abs(term.length-word.length)>1)return false;
+      let i=0,j=0,edits=0;
+      while(i<word.length&&j<term.length) {
+        if(word[i]===term[j]){i++;j++;continue;}
+        if(++edits>1)return false;
+        if(word.length>=term.length)i++;
+        if(term.length>=word.length)j++;
+      }
+      return edits+(word.length-i)+(term.length-j)===1;
+    });
+  });
+}
+
 /** Re-read ordinary document captions on a flat high-contrast copy only.
  * The original bitmap remains authoritative for rendering and protected pixels. */
 export function documentOcrRetry(source:Canvas,regions:Region[]):{canvas:Canvas;regions:Region[]} {
   const canvas=createCanvas(source.width,source.height),ctx=canvas.getContext('2d');
   ctx.fillStyle='white';ctx.fillRect(0,0,canvas.width,canvas.height);
   const candidates=regions.filter(r=>r.method!=='native'&&!r.protected&&r.direction!=='v'&&r.box.height<=r.box.width*1.8
-    &&(!r.sourceText?hasColoredStrokes(source,r):(r.prob??1)<.99&&/[A-Za-z]{2}/.test(r.sourceText))
+    &&(!r.sourceText?hasColoredStrokes(source,r):((r.prob??1)<.99||possibleCaptionTypo(r.sourceText))&&/[A-Za-z]{2}/.test(r.sourceText))
     &&!identifiers.test(r.sourceText)).slice(0,96);
   const retried=candidates.map(r=>{
-    const b=paddedBox(r,regions,source),x=Math.floor(b.x),y=Math.floor(b.y),w=Math.ceil(b.x+b.width)-x,h=Math.ceil(b.y+b.height)-y;
+    const words=/[A-Za-z]{2}\s+[A-Za-z]{2}/.test(r.sourceText);
+    const b=paddedBox(r,regions,source,.35,words?.75:.35),x=Math.floor(b.x),y=Math.floor(b.y),w=Math.ceil(b.x+b.width)-x,h=Math.ceil(b.y+b.height)-y;
     const data=source.getContext('2d').getImageData(x,y,w,h),bins=new Map<string,{count:number;rgb:number[]}>();
     for(let p=0;p<w*h;p++) {
       const rgb=[...data.data.slice(p*4,p*4+3)],key=rgb.map(v=>v>>4).join(',');
@@ -217,11 +246,12 @@ export function acceptDocumentOcrRetry(parent:Region,found:Region|undefined):boo
     &&JSON.stringify(protectedTextTokens(found.sourceText))===JSON.stringify(protectedTextTokens(parent.sourceText));
 }
 
-function paddedBox(region:Region, all:Region[], source:Canvas,ratio=.35):Region['box'] {
+function paddedBox(region:Region, all:Region[], source:Canvas,ratio=.35,horizontalRatio=ratio):Region['box'] {
   // PDF font metrics and OCR boxes can both undershoot visible glyph ink.
   // Neighbor bounds and protected pixel restoration constrain the cleanup.
   const b=region.box, pad=Math.max(1,Math.min(region.method==='native'?12:32,b.height*ratio));
-  let l=Math.max(0,b.x-pad),t=Math.max(0,b.y-pad),r=Math.min(source.width,b.x+b.width+pad),bt=Math.min(source.height,b.y+b.height+pad);
+  const horizontalPad=Math.max(1,Math.min(region.method==='native'?12:32,b.height*horizontalRatio));
+  let l=Math.max(0,b.x-horizontalPad),t=Math.max(0,b.y-pad),r=Math.min(source.width,b.x+b.width+horizontalPad),bt=Math.min(source.height,b.y+b.height+pad);
   for(const other of all) if(other!==region) {
     const o=other.box;
     if(Math.min(bt,o.y+o.height)>Math.max(t,o.y)) {
@@ -247,7 +277,8 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
   for (const region of regions) {
     if (region.skipReason) continue;
     if (!region.translatedText || region.translatedText.trim() === region.sourceText.trim()) {region.skipReason='unchanged';continue;}
-    const b = paddedBox(region,regions,source);
+    const multiwordLine=region.method!=='native'&&/[A-Za-z]{2}\s+[A-Za-z]{2}/.test(region.sourceText);
+    const b = paddedBox(region,regions,source,.35,multiwordLine?.75:.35);
     const x = Math.max(0, Math.floor(b.x)), y = Math.max(0, Math.floor(b.y));
     const w = Math.min(source.width-x, Math.ceil(b.x+b.width)-x), h = Math.min(source.height-y, Math.ceil(b.y+b.height)-y);
     if (w < 3 || h < 5) { region.skipReason = 'too-small'; continue; }
@@ -263,9 +294,30 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     const captionColor=region.fgColor;
     const colored=captionColor?.length===3&&captionColor.every(v=>Number.isFinite(v)&&v>=0&&v<=255)
       &&Math.max(...captionColor)-Math.min(...captionColor)>60&&colorDistance(captionColor,bg)>35;
+    // The OCR average may mix black and red. Measure the dominant colored ink
+    // inside its source box instead of treating that muddy average as exact.
+    let measuredColor=captionColor;
+    if(colored) {
+      const channel=captionColor!.indexOf(Math.max(...captionColor!));
+      const strokes=new Map<string,{count:number;sum:number[]}>();
+      for(let p=0;p<w*h;p++) {
+        const px=x+p%w,py=y+Math.floor(p/w),rgb=Array.from(pixels.data.slice(p*4,p*4+3));
+        if(px<region.box.x||px>=region.box.x+region.box.width||py<region.box.y||py>=region.box.y+region.box.height
+          ||colorDistance(rgb,bg)<45||rgb[channel]-Math.max(...rgb.filter((_,i)=>i!==channel))<60)continue;
+        const key=rgb.map(v=>v>>4).join(','),bin=strokes.get(key)??{count:0,sum:[0,0,0]};
+        bin.count++;rgb.forEach((v,c)=>bin.sum[c]+=v);strokes.set(key,bin);
+      }
+      const stroke=[...strokes.values()].sort((a,b)=>b.count-a.count)[0];
+      if(stroke&&stroke.count>=3)measuredColor=stroke.sum.map(v=>Math.round(v/stroke.count));
+    }
+    // One OCR line can contain a colored heading and a neutral continuation.
+    // Only measured, bounded letter components on a light flat background can
+    // join the cleanup; a single red label inside a dark piece stays color-only.
+    const mixedCaption=colored&&/[A-Za-z]{2}\s+[A-Za-z]{2}/.test(region.sourceText)
+      &&Math.min(...bg)>160&&Math.max(...bg)-Math.min(...bg)<35;
     const isGlyphColor=(p:number)=>{
       if(!colored)return true;
-      const vector=captionColor!.map((v,i)=>v-bg[i]),rgb=Array.from(pixels.data.slice(p*4,p*4+3));
+      const vector=measuredColor!.map((v,i)=>v-bg[i]),rgb=Array.from(pixels.data.slice(p*4,p*4+3));
       if(Math.max(...bg)-Math.min(...bg)<35&&Math.max(...rgb)-Math.min(...rgb)<14)return false;
       const strength=Math.max(0,Math.min(1,vector.reduce((s,v,i)=>s+v*(rgb[i]-bg[i]),0)/vector.reduce((s,v)=>s+v*v,0)));
       return colorDistance(rgb,bg.map((v,i)=>v+strength*vector[i]))<=45;
@@ -324,9 +376,15 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
       const rule=(cw>h*2.5&&ch<=Math.max(3,h*.15)) || (ch>h*.85&&cw<=Math.max(2,h*.08));
       if (rule) {component.forEach(p=>rules[p]=1);continue;}
       if (region.method!=='native' && cw>h*3.5 && ch>h*.5) {complex=true;break;}
+      const bounded=mixedCaption&&cw<=region.box.height*3.5&&ch<=region.box.height*1.25
+        &&l>0&&r<w-1&&t>0&&bt<h-1;
+      const neutralGlyph=bounded&&component.filter(p=>{
+        const rgb=Array.from(pixels.data.slice(p*4,p*4+3));
+        return Math.max(...rgb)-Math.min(...rgb)<35;
+      }).length>=component.length*.8;
       // Colored glyphs have a measured foreground. Neutral artwork or the
       // white surround of a dark curved piece must survive the same crop.
-      component.forEach(p=>{if(isGlyphColor(p))erase[p]=1;else rules[p]=1;});
+      component.forEach(p=>{if(isGlyphColor(p)||neutralGlyph)erase[p]=1;else rules[p]=1;});
     }
     if(complex) {region.skipReason='illustration';continue;}
     // Align to visible ink, since PDF font metric boxes can sit below the
@@ -366,7 +424,7 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     }
     ctx.putImageData(cleaned,x,y);
     ctx.save(); ctx.beginPath(); ctx.rect(x,y,w,h); ctx.clip();
-    const fg=region.fgColor;
+    const fg=measuredColor;
     ctx.fillStyle=fg?.length===3&&fg.every(v=>Number.isFinite(v)&&v>=0&&v<=255)&&colorDistance(fg,bg)>35
       ? `rgb(${fg.join(',')})` : (bg[0]*.299+bg[1]*.587+bg[2]*.114)>140?'#202124':'#ffffff';
     ctx.textBaseline='alphabetic';
