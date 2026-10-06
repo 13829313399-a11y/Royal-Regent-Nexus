@@ -65,12 +65,12 @@ HUAKANG_A_CUSTOMER_MAPPINGS: dict[str, HuakangACustomerMappingSpec] = {
     "green-toys": HuakangACustomerMappingSpec(
         code="green-toys",
         name="Green Toys",
-        po_extensions=(".png", ".jpg", ".jpeg"),
+        po_extensions=(".html", ".htm", ".png", ".jpg", ".jpeg"),
         schedule_extensions=(".xlsx", ".xlsm"),
-        input_template="HUAKANG_A_GREEN_TOYS_IMAGE_PO_V1",
+        input_template="HUAKANG_A_GREEN_TOYS_PO_V2",
         target_template="HUAKANG_A_GREEN_TOYS_SCHEDULE_APPEND_V1",
         rule_summary=(
-            "OCR读取 Green Toys 图片 PO 的 PO号、来单日、Deliver By Date、货号、"
+            "优先读取 Green Toys 原始 HTML PO 并校验明细和总金额；图片使用 OCR 复核。读取 PO号、来单日、Deliver By Date、货号、"
             "英文品名、数量和USD单价；按现有排期同货号唯一继承中文品名、箱规、"
             "国家和落货港，走货方式固定为40'YT，USD按7.8换算HKD。"
         ),

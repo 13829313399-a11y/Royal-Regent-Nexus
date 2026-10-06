@@ -113,7 +113,7 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).toContain('HUAKANG_A_GREEN_TOYS_SCHEDULE_APPEND_V1')
     expect(workspaceSource).toContain('HUAKANG_A_HEADSTART_SCHEDULE_APPEND_V1')
     expect(workspaceSource).toContain('ThreeSixty PURCHASE ORDER RELEASE')
-    expect(workspaceSource).toContain('Green Toys Purchase Order 图片')
+    expect(workspaceSource).toContain('Green Toys 原始 Purchase Order')
     expect(workspaceSource).toContain('HeadStart 文本型 PURCHASE ORDER PDF')
     expect(workspaceSource).toContain('每个货号先按现有产品标题行写入货号和名称')
   })
@@ -190,7 +190,7 @@ describe('customer order center static frontend', () => {
 
     await wrapper.get('[data-testid="customer-choice-green-toys"]').trigger('click')
     let inputs = wrapper.findAll('input[type="file"]')
-    expect(inputs[0]!.attributes('accept')).toBe('.png,.jpg,.jpeg')
+    expect(inputs[0]!.attributes('accept')).toBe('.html,.htm,.png,.jpg,.jpeg')
     expect(inputs[1]!.attributes('accept')).toBe('.xlsx')
 
     await wrapper.get('[data-testid="customer-choice-headstart"]').trigger('click')
