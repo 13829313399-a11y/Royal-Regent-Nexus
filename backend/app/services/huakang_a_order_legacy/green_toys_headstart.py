@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import re
-import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -18,7 +17,6 @@ from pypdf import PdfReader
 from app.services.carton_mark import (
     find_tesseract_cmd,
     missing_tesseract_message,
-    select_tesseract_language,
 )
 from app.services.huaxing_order_legacy.new_order_excel import (
     append_column_records_to_workbook,
@@ -269,36 +267,15 @@ def parse_headstart_pdf(file_name: str, content: bytes) -> list[dict[str, Any]]:
 
 
 def _ocr_green_toys_image(path: Path) -> str:
+    from .green_toys_image_ocr import GreenImageError, recognize_green_toys_image
+
     tesseract_cmd = find_tesseract_cmd()
     if not tesseract_cmd:
         raise HuakangASpecialCustomerError(missing_tesseract_message())
-    language = select_tesseract_language(tesseract_cmd)
     try:
-        completed = subprocess.run(
-            [
-                tesseract_cmd,
-                str(path),
-                "stdout",
-                "-l",
-                language,
-                "--psm",
-                "4",
-                "-c",
-                "preserve_interword_spaces=1",
-            ],
-            capture_output=True,
-            check=False,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=45,
-        )
-    except Exception as exc:
+        return recognize_green_toys_image(path, tesseract_cmd)
+    except GreenImageError as exc:
         raise HuakangASpecialCustomerError(f"Green Toys 图片 OCR 失败：{exc}") from exc
-    if completed.returncode != 0 or not completed.stdout.strip():
-        detail = _text(completed.stderr) or "未识别到文字"
-        raise HuakangASpecialCustomerError(f"Green Toys 图片 OCR 失败：{detail}")
-    return completed.stdout
 
 
 def _normalize_green_item(value: str) -> str:
@@ -414,9 +391,10 @@ def parse_green_toys_ocr_text(
     file_name: str,
     text: str,
 ) -> list[dict[str, Any]]:
-    po_match = re.search(r"\bPO\s*(?:#|No\.?|e)?\s*[:#]?\s*(\d{4,})\b", text, re.IGNORECASE)
-    file_po = re.search(r"\d{4,}", Path(file_name).stem)
-    po_no = (po_match.group(1) if po_match else "") or (file_po.group(0) if file_po else "")
+    po_numbers = set(re.findall(r"^\s*PO\s*(?:#|No\.?|=)\s*[:#]?\s*(\d{4,})\b", text, re.I | re.M))
+    if len(po_numbers) != 1:
+        raise HuakangASpecialCustomerError('Green Toys 图片 PO号缺失/不唯一；不得用文件名代替 PO号')
+    po_no = po_numbers.pop()
     date_match = re.search(r"PO Date\s+(\d{1,2}/\d{1,2}/\d{4})", text, re.IGNORECASE)
     delivery_match = re.search(
         r"Deliver By Date\s+(\d{1,2}/\d{1,2}/\d{4})",
@@ -432,9 +410,9 @@ def parse_green_toys_ocr_text(
         if not item_match:
             continue
         raw_item = item_match.group(1)
-        if not re.search(r'[A-Z]', raw_item, re.I) or not re.search(r'\d', raw_item):
-            continue
         item_no = _normalize_green_item(raw_item)
+        if not re.search(r'[A-Z]', item_no, re.I) or not re.search(r'\d', item_no):
+            continue
         rest = item_match.group(2) or ''
         # A right-hand numeric tail supports both single and preserved spacing.
         tail = re.fullmatch(r"(.+?)\s+(\d[\d,]*[|\]°]?)\s+(\d[\d,]*[|\]°]?)\s+(\d[\d,.]*)\s+(\$?[\d,.]+)", rest)
@@ -502,7 +480,13 @@ def parse_green_toys_image(file_name: str, content: bytes) -> list[dict[str, Any
         suffix = Path(file_name).suffix.lower() or ".png"
         path = Path(temp_dir) / f"po{suffix}"
         path.write_bytes(content)
-        return parse_green_toys_ocr_text(file_name, _ocr_green_toys_image(path))
+        text = _ocr_green_toys_image(path)
+        records = parse_green_toys_ocr_text(file_name, text)
+        # Structured OCR emits three metadata lines, one per physical detail,
+        # and the printed total. Never silently discard an identified row.
+        if len(records) != len(text.splitlines()) - 4 or any(not row['parse_ok'] for row in records):
+            raise HuakangASpecialCustomerError('Green Toys 图片明细不完整，无法安全保存；请核对原图或上传 HTML')
+        return records
 
 
 def _logical_rows(worksheet, *, header_row: int, max_col: int) -> Iterable[int]:
