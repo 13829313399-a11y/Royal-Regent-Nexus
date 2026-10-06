@@ -10,8 +10,11 @@ SCOPE = {"factory_id": "huaxing"}
 def add_asset(db, key, contract, *, factory="huaxing", order_id=None, kind="pdf"):
     from app.models.carton_mark import CartonMarkAsset
     content = b"%PDF-1.4 " + key.encode() if kind == "pdf" else key.encode()
-    asset = CartonMarkAsset(id=key, factory_id=factory, file_name=f"{key}.{kind}",
-        kind=kind, content_type="application/pdf" if kind == "pdf" else "application/vnd.ms-excel",
+    if kind == "image":
+        from test_carton_mark_asset_images import photo_bytes
+        content = photo_bytes()
+    asset = CartonMarkAsset(id=key, factory_id=factory, file_name=f"{key}.png" if kind == "image" else f"{key}.{kind}",
+        kind=kind, content_type="image/png" if kind == "image" else "application/pdf" if kind == "pdf" else "application/vnd.ms-excel",
         size_bytes=len(content), sha256=hashlib.sha256(content).hexdigest(), content=content,
         contract_number=contract, bound_order_id=order_id,
         recognition_source="manual_order" if order_id else "filename", candidates_json='[]',
@@ -30,13 +33,17 @@ def test_supplier_can_read_single_original_files_but_not_unbound_or_other_factor
         with SessionLocal() as db:
             pdf = add_asset(db, "source-pdf", order["contract_no"])
             excel = add_asset(db, "source-excel", order["contract_no"], kind="excel")
+            photo = add_asset(db, "source-photo", order["contract_no"], kind="image")
+            db.flush()
+            db.get(CartonMarkAsset, "source-photo").photo_group_id = "CMP-scoped-photos"
             add_asset(db, "unbound", "")
             add_asset(db, "different-contract", order["contract_no"] + "-OTHER")
             add_asset(db, "other-factory", order["contract_no"], factory="huakang-a")
             db.commit()
         response = client.get(BASE, params=SCOPE)
         assert response.status_code == 200, response.text
-        assert {row["id"] for row in response.json()} == {"source-pdf", "source-excel"}
+        assert {row["id"] for row in response.json()} == {"source-pdf", "source-excel", "source-photo"}
+        assert next(row for row in response.json() if row["id"] == "source-photo")["photo_group_id"] == "CMP-scoped-photos"
         for private in ("private actor", "private warning", "created_by", "warning", "candidates", "order_no", "customer_code"):
             assert private not in response.text
         assert response.json()[0]["orders"][0]["contract_no"] == order["contract_no"]
@@ -44,6 +51,12 @@ def test_supplier_can_read_single_original_files_but_not_unbound_or_other_factor
         preview = client.get(BASE + "/source-pdf/document", params={**SCOPE, "preview": True})
         assert preview.content == pdf and preview.headers["content-disposition"].startswith("inline;")
         assert preview.headers["cache-control"] == "private, no-store"
+        photo_preview = client.get(BASE + "/source-photo/document", params={**SCOPE, "preview": True})
+        assert photo_preview.content == photo and photo_preview.headers["content-type"] == "image/png"
+        assert photo_preview.headers["content-disposition"].startswith("inline;")
+        assert photo_preview.headers["cache-control"] == "private, no-store"
+        assert photo_preview.headers["x-content-type-options"] == "nosniff"
+        assert client.get(BASE + "/source-photo/document", params=SCOPE).headers["content-disposition"].startswith("attachment;")
         for key in ("unbound", "different-contract", "other-factory", "unknown"):
             assert client.get(BASE + f"/{key}/document", params=SCOPE).status_code == 404
         assert client.get(BASE, params={"factory_id": "huakang-a"}).status_code == 403
@@ -57,6 +70,7 @@ def test_supplier_can_read_single_original_files_but_not_unbound_or_other_factor
             db.commit()
         assert client.get(BASE, params=SCOPE).json() == []
         assert client.get(BASE + "/source-excel/document", params=SCOPE).status_code == 404
+        assert client.get(BASE + "/source-photo/document", params=SCOPE).status_code == 404
         revoke_supplier_permission()
         assert client.get(BASE, params=SCOPE).status_code == 403
         assert client.get(BASE + "/source-excel/document", params=SCOPE).status_code == 403

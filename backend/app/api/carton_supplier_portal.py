@@ -80,7 +80,7 @@ def carton_mark_assets(factory_id: str, db: Session = Depends(get_db), user: Aut
 def carton_mark_asset_document(asset_id: str, factory_id: str, preview: bool = False,
                               db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     asset = service.supplier_mark_asset_document(db, user, factory_id, asset_id)
-    disposition = "inline" if preview and asset.kind == "pdf" else "attachment"
+    disposition = "inline" if preview and asset.kind in {"pdf", "image"} else "attachment"
     return Response(asset.content, media_type=asset.content_type, headers={
         "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(asset.file_name, safe=""),
         "Content-Length": str(asset.size_bytes), "X-Content-SHA256": asset.sha256,

@@ -7573,7 +7573,7 @@ watch([
     <DialogOverlay class="fixed inset-0 z-50 bg-slate-950/40" />
     <DialogContent class="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[calc(100%_-_1.5rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl bg-white p-4 shadow-xl" aria-describedby="mark-upload-description">
       <div class="mb-3 flex items-center justify-between gap-3"><DialogTitle class="font-bold">箱唛资料上传</DialogTitle><DialogClose aria-label="关闭箱唛资料上传" class="rounded-lg border p-2"><X class="size-4" /></DialogClose></div>
-      <DialogDescription id="mark-upload-description" class="mb-3 text-xs text-slate-500">批量保存 PDF 或 Excel，按合同自动关联；未识别的资料可稍后在资料库关联。</DialogDescription>
+      <DialogDescription id="mark-upload-description" class="mb-3 text-xs text-slate-500">批量保存 PDF、Excel 或图片，按文件名中的合同号自动关联；未识别的资料可稍后在资料库关联。</DialogDescription>
       <CartonMarkAssetLibrary :key="selectedFactoryId" :factory-id="selectedFactoryId" upload-only />
       <button type="button" class="mt-3 rounded-lg border px-3 py-2 text-xs text-teal-800" @click="showMarkUpload = false; setActiveTab('carton-marks')">打开箱唛资料库</button>
     </DialogContent>

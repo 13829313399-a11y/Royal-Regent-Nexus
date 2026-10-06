@@ -28,6 +28,9 @@ from app.schemas.carton_mark import (
     CartonMarkTemplateOut,
     CartonMarkAssetOut,
     CartonMarkAssetBindingRequest,
+    CartonMarkAssetOrderOut,
+    CartonMarkPhotoGroupRequest,
+    CartonMarkPhotoGroupMembers,
     CartonMarkAssetUploadResult,
 )
 from app.services.auth import AuthContext, ensure_permission, get_current_user
@@ -104,6 +107,37 @@ async def upload_assets(factory_id: str = Form(...), files: list[UploadFile] = F
     return results
 
 
+@router.get("/api/carton-mark/assets/binding-orders", response_model=list[CartonMarkAssetOrderOut])
+def asset_binding_orders(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id)
+    _asset_scope(db, user, factory_id, True)
+    return assets.binding_orders(db, factory)
+
+
+@router.post("/api/carton-mark/assets/photo-groups", response_model=list[CartonMarkAssetOut])
+def create_photo_group(payload: CartonMarkPhotoGroupRequest, factory_id: str,
+                       db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    _asset_scope(db, user, factory_id)
+    return assets.change_photo_group(db, user, factory, payload)
+
+
+@router.put("/api/carton-mark/assets/photo-groups/{group_id}/binding", response_model=list[CartonMarkAssetOut])
+def bind_photo_group(group_id: str, payload: CartonMarkPhotoGroupRequest, factory_id: str,
+                     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    _asset_scope(db, user, factory_id)
+    return assets.change_photo_group(db, user, factory, payload, group_id=group_id)
+
+
+@router.post("/api/carton-mark/assets/photo-groups/{group_id}/ungroup", response_model=list[CartonMarkAssetOut])
+def ungroup_photos(group_id: str, payload: CartonMarkPhotoGroupMembers, factory_id: str,
+                   db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    _asset_scope(db, user, factory_id)
+    return assets.change_photo_group(db, user, factory, payload, group_id=group_id, ungroup=True)
+
+
 @router.put("/api/carton-mark/assets/{asset_id}/binding", response_model=CartonMarkAssetOut)
 def bind_asset(asset_id: str, payload: CartonMarkAssetBindingRequest, factory_id: str,
                db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
@@ -116,7 +150,7 @@ def download_asset(asset_id: str, factory_id: str, preview: bool = False,
                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     factory = _asset_scope(db, user, factory_id)
     asset = assets.active_asset(db, factory, asset_id)
-    disposition = "inline" if preview and asset.kind == "pdf" else "attachment"
+    disposition = "inline" if preview and asset.kind in {"pdf", "image"} else "attachment"
     return Response(content=asset.content, media_type=asset.content_type, headers={
         "Content-Disposition": f"{disposition}; filename*=UTF-8''{url_quote(asset.file_name, safe='')}",
         "X-Content-SHA256": asset.sha256, "Cache-Control": "private, no-store",
