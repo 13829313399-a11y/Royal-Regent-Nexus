@@ -1243,7 +1243,7 @@ def test_sales_section_state_machine_blocks_stale_revision_and_self_review(monke
             json={"status": "handled"},
         )
         assert direct_handle.status_code == 409
-        assert "业务流程" in direct_handle.json()["detail"]
+        assert "对应业务" in direct_handle.json()["detail"]
 
         saved = client.put(
             f"/api/internal-quotes/{quote_id}/sections/sales",

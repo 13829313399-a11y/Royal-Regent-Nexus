@@ -57,6 +57,7 @@ from app.schemas.internal_quote import (
 )
 from app.services.auth import AuthContext, get_current_user
 from app.schemas.internal_quote_alternatives import AlternativeCopyRequest, AlternativeSelectionRequest, AlternativeArchiveRequest, AlternativeSyncRequest
+from app.services.internal_quote_packaging_copy import PackagingCopyRequest, preview_packaging_copy, apply_packaging_copy
 from app.services.internal_quote_sync import sync_options, preview_sync, apply_sync
 from app.services.internal_quote_alternatives import (
     list_alternatives, copy_alternative, select_alternative, archive_alternative, report_alternative, issue_alternative,
@@ -395,6 +396,18 @@ def post_internal_quote_batch_baseline_copy(
         current_user,
         request,
     )
+
+
+@router.post("/{quote_id}/packaging-copy/preview")
+def post_packaging_copy_preview(quote_id: str, payload: PackagingCopyRequest,
+                                db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return preview_packaging_copy(db, quote_id, payload, current_user)
+
+
+@router.post("/{quote_id}/packaging-copy/apply")
+def post_packaging_copy_apply(quote_id: str, payload: PackagingCopyRequest, request: Request,
+                              db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return apply_packaging_copy(db, quote_id, payload, current_user, request)
 
 
 @router.delete("/{quote_id}", status_code=status.HTTP_204_NO_CONTENT)

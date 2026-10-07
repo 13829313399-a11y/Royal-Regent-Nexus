@@ -456,6 +456,11 @@ function toQuote(
   const attachments = extras.attachments ?? []
   return {
     id: source.id,
+    documentQuoteId: source.document_quote_id,
+    documentProductCount: source.document_product_count,
+    documentVersionCount: source.document_version_count,
+    productRootId: source.product_root_id,
+    deleteBlockReason: source.delete_block_reason,
     quoteNo: source.quote_no,
     productName: source.product_name,
     quoteType: source.quote_type ?? 'single',

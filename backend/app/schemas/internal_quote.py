@@ -728,6 +728,11 @@ class InternalQuoteSectionOut(BaseModel):
 
 
 class InternalQuoteOut(BaseModel):
+    document_product_count: int = 1
+    document_version_count: int = 1
+    document_quote_id: str = ""
+    product_root_id: str = ""
+    delete_block_reason: str = ""
     history_sources: list[dict[str, Any]] = Field(default_factory=list)
     id: str
     factory_id: str
