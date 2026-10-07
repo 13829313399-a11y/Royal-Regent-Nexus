@@ -483,7 +483,7 @@ Existing databases must explicitly apply additive migration `20260928_0126` afte
 
 ### Module Catalog and Placeholders
 
-Several cards and dashboards in the module catalog remain planning, design or demonstration surfaces. Their labels, counts and sample rows are not proof of backend implementation. Each module must be classified from its registered route, API client, backend router, model and tests before changes are planned.
+Several cards and dashboards in the module catalog remain planning, design or demonstration surfaces. Their labels, counts and sample rows are not proof of backend implementation. Each module must be classified from its registered route, API client, backend router, model and tests before changes are planned. The PMC / warehouse catalog no longer includes `订单事实收件箱` or the `入库与月结` placeholder, and the production catalog no longer includes `啤机部订单收件箱`. This removes their cards, search results and previews in every factory; existing order-inbox routes, APIs, permissions and records remain available.
 
 ## 7. Deployment and Data Safety Constraints
 
