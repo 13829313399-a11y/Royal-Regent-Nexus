@@ -132,7 +132,7 @@ def replenish_order(db, order_no, payload, user):
     latest = issues[0] if issues else None
     pending_type, _, _, snapshot = core._purchase_order_pending_change(order, lines, latest)
     if pending_type != "NONE":
-        raise HTTPException(409, "原订单有尚未发行的数量或交期变更，请先发行后再补单")
+        raise HTTPException(409, "原订单有尚未生成的数量或交期变更，请先生成后再补单")
     sequence = (latest.issue_sequence if latest else 0) + 1
     number = 1 + sum(bool(core._purchase_order_snapshot(issue).get("replenishment")) for issue in issues)
     document_no = f"{order.order_no}-B{number:02d}"

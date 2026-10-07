@@ -32,6 +32,11 @@ from app.schemas.carton_mark import (
     CartonMarkPhotoGroupRequest,
     CartonMarkPhotoGroupMembers,
     CartonMarkAssetUploadResult,
+    CartonMarkCustomerRecognitionRequest,
+    CartonMarkCustomerRecognitionOut,
+    CartonMarkCustomerInitializationCandidate,
+    CartonMarkCustomerInitializationRequest,
+    CartonMarkCustomerInitializationOut,
 )
 from app.services.auth import AuthContext, ensure_permission, get_current_user
 from app.services.carton_mark import (
@@ -63,6 +68,7 @@ from app.services.carton_mark_customers import (
     update_carton_mark_customer,
 )
 from app.services import carton_mark_assets as assets
+from app.services import carton_mark_customer_matching as customer_matching
 
 router = APIRouter()
 
@@ -307,6 +313,36 @@ def get_carton_mark_customers(
         CARTON_MARK_READ_DEPARTMENTS,
     )
     return list_carton_mark_customers(db, factory_id=factory_id)
+
+
+@router.post("/api/carton-mark/customer-recognition", response_model=CartonMarkCustomerRecognitionOut)
+def recognize_carton_mark_customer(
+    payload: CartonMarkCustomerRecognitionRequest,
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return customer_matching.recognize_customer(db, current_user, factory_id, payload)
+
+
+@router.get("/api/carton-mark/customers/initialization-candidates", response_model=list[CartonMarkCustomerInitializationCandidate])
+def get_carton_mark_customer_initialization_candidates(
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return customer_matching.initialization_candidates(db, current_user, factory_id)
+
+
+@router.post("/api/carton-mark/customers/initialize", response_model=CartonMarkCustomerInitializationOut)
+def initialize_carton_mark_customers(
+    payload: CartonMarkCustomerInitializationRequest,
+    request: Request,
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return customer_matching.initialize_customers(db, current_user, factory_id, payload, request)
 
 
 @router.post(

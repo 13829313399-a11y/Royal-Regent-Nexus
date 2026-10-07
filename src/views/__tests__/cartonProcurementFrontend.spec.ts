@@ -1,4 +1,5 @@
 import { reactive, type Component } from 'vue'
+import { createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CartonProcurementView from '../CartonProcurementView.vue'
@@ -365,6 +366,66 @@ function mockWeeklySchedule(rows: CartonImportPreviewRow[]) {
 }
 
 describe('CartonProcurementView frontend workspace', () => {
+it.each(['*', 'system'])('shows the split entry inside More for a global administrator bound to %s', async department => {
+  const { useAuthStore } = await vi.importActual<typeof import('@/stores/auth')>('@/stores/auth')
+  const administrator = useAuthStore(createPinia())
+  administrator.authzMode = 'enforce'
+  administrator.grants = [{ role_id: 'admin', role_code: 'admin', role_name: '系统管理员',
+    factory_id: '*', department, permissions: [], data_scope: 'all' }]
+  authStoreMock.can.mockImplementation((permission: string, factory?: string, scope?: string) =>
+    administrator.can(permission, factory, scope))
+  routeState.query.factory = 'huakang-b'
+  const order = { ...orderFixture('CT-SPLIT-ADMIN', businessDateOffset(5), 'PENDING_SUPPLIER'), factory_id: 'huakang-b' }
+  mockReceiptWorkspace([order])
+  const wrapper = mountView('orders', { CartonOrderSplitDialog: true }); await flushPromises()
+  expect(wrapper.find('[aria-label="打开 CT-SPLIT-ADMIN 拆单与记录"]').exists()).toBe(false)
+  await wrapper.get('[aria-label="更多 CT-SPLIT-ADMIN 订单操作"]').trigger('click')
+  expect(wrapper.get('[aria-label="追加 CT-SPLIT-ADMIN 订单"]').attributes('disabled')).toBeUndefined()
+  const split = wrapper.get('[role="menuitem"][aria-label="拆单 CT-SPLIT-ADMIN"]')
+  expect(split.attributes('disabled')).toBeUndefined()
+  await split.trigger('click')
+  const dialog = wrapper.findComponent({ name: 'CartonOrderSplitDialog' })
+  expect(dialog.props('canCreate')).toBe(true)
+  expect(dialog.props('order').factory_id).toBe('huakang-b')
+  wrapper.unmount()
+})
+
+it('keeps the split entry only inside More for a read-only account without granting creation', async () => {
+  const order = orderFixture('CT-SPLIT-ENTRY', businessDateOffset(5), 'PENDING_SUPPLIER')
+  cartonApiMock.listOrders.mockResolvedValue([order])
+  cartonApiMock.listCustomers.mockResolvedValue([])
+  cartonApiMock.listMovements.mockResolvedValue([])
+  cartonApiMock.listClosings.mockResolvedValue([])
+  cartonApiMock.listExceptions.mockResolvedValue([])
+  authStoreMock.can.mockImplementation(permission => permission === 'carton_procurement:read')
+  const wrapper = mountView('orders', { CartonOrderSplitDialog: true }); await flushPromises()
+  expect(wrapper.find('[aria-label="打开 CT-SPLIT-ENTRY 拆单与记录"]').exists()).toBe(false)
+  expect(wrapper.find('[aria-label="拆单 CT-SPLIT-ENTRY"]').exists()).toBe(false)
+  await wrapper.get('[aria-label="更多 CT-SPLIT-ENTRY 订单操作"]').trigger('click')
+  await wrapper.get('[role="menuitem"][aria-label="拆单 CT-SPLIT-ENTRY"]').trigger('click')
+  expect(wrapper.findComponent({ name: 'CartonOrderSplitDialog' }).props('canCreate')).toBe(false)
+  expect(wrapper.findComponent({ name: 'CartonOrderSplitDialog' }).props('order').order_no).toBe('CT-SPLIT-ENTRY')
+  wrapper.unmount()
+})
+
+it('shows supplier date differences in both the internal ledger and order details', async () => {
+  const order = { ...orderFixture('CT-DUE-DIFF', businessDateOffset(5), 'PENDING_SUPPLIER'), supplier_acceptance: {
+    status: 'ACCEPTED', label: '供应商已接单', issue_id: 'ISSUE-A', document_no: 'DOC-A', accepted_at: '',
+    accepted_line_count: 1, total_line_count: 1, delivery_differences: [{ order_line_id: 'LINE-A', packaging_type: '外箱',
+      planned_date: '2026-10-10', promised_date: '2026-10-12', difference_days: 2 }] } }
+  cartonApiMock.listOrders.mockResolvedValue([order])
+  cartonApiMock.listCustomers.mockResolvedValue([])
+  cartonApiMock.listMovements.mockResolvedValue([])
+  cartonApiMock.listClosings.mockResolvedValue([])
+  cartonApiMock.listExceptions.mockResolvedValue([])
+  const wrapper = mountView('orders'); await flushPromises()
+  expect(wrapper.get('[data-order-no="CT-DUE-DIFF"]').text()).toContain('外箱承诺 2026-10-12，比计划晚 2 天')
+  await wrapper.get('[aria-label="查看 CT-DUE-DIFF 完整订单明细"]').trigger('click')
+  expect(wrapper.get('[aria-label="订单供应商接单信息"]').text()).toContain('供应商承诺 2026-10-12，延后 2 天')
+  wrapper.unmount()
+})
+
+
   it('opens the corresponding workspace from each dashboard statistic card', async () => {
     const wrapper = mountView('dashboard'); await flushPromises()
     for (const [label, tab] of [['查看待跟进订单', 'orders'], ['查看本周核对与提醒', 'weekly-check'], ['查看当前库存结存', 'inventory'], ['查看未关闭异常', 'exceptions']]) {
@@ -1354,7 +1415,7 @@ describe('CartonProcurementView frontend workspace', () => {
     ['PENDING', '供应商待接单', 0],
     ['PARTIAL', '供应商部分接单', 1],
     ['ACCEPTED', '供应商已接单', 2],
-    ['PENDING_CHANGE', '变更待发行', 0],
+    ['PENDING_CHANGE', '变更待生成', 0],
     ['NOT_ISSUED', '尚未发送供应商', 0],
   ])('shows current supplier acknowledgement %s independently of internal locking', async (status, label, accepted) => {
     const order = { ...orderFixture('CT-ACK', businessDateOffset(8), 'PENDING_SUPPLIER'),
@@ -2339,7 +2400,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     await wrapper.get('input[aria-label="选择订单 CT-BATCH-ISSUE-001"]').setValue(true)
     await wrapper.get('input[aria-label="选择订单 CT-BATCH-ISSUE-002"]').setValue(true)
-    await findButton(wrapper, '发行供应商采购单（2）').trigger('click')
+    await findButton(wrapper, '生成供应商采购单（2）').trigger('click')
     await flushPromises()
 
     expect(cartonApiMock.issuePurchaseOrders).toHaveBeenCalledWith(
@@ -2382,18 +2443,18 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     await wrapper.get(`input[aria-label="选择订单 ${initialOrder.order_no}"]`).setValue(true)
     await wrapper.get(`input[aria-label="选择订单 ${appendOrder.order_no}"]`).setValue(true)
-    const issueButton = findButton(wrapper, '发行供应商采购单（2）')
+    const issueButton = findButton(wrapper, '生成供应商采购单（2）')
 
     await issueButton.trigger('click')
     await flushPromises()
     expect(confirmSpy).not.toHaveBeenCalled()
     let confirmation = wrapper.get('[aria-label="批量采购单确认"]')
-    expect(confirmation.text()).toContain('包含 1 张非首次或已发行采购单')
+    expect(confirmation.text()).toContain('包含 1 张非首次或已生成采购单')
     expect(confirmation.text()).toContain(`${appendOrder.order_no}（追加采购单）`)
     expect(cartonApiMock.issuePurchaseOrders).not.toHaveBeenCalled()
     await confirmation.findAll('button').find(button => button.text() === '取消')!.trigger('click')
     await flushPromises()
-    expect(wrapper.get('[role="status"]').text()).toContain('已取消批量发行')
+    expect(wrapper.get('[role="status"]').text()).toContain('已取消批量生成')
 
     await issueButton.trigger('click')
     await flushPromises()
@@ -2452,7 +2513,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await flushPromises()
     await wrapper.get(`input[aria-label="选择订单 ${first.order_no}"]`).setValue(true)
     await wrapper.get(`input[aria-label="选择订单 ${second.order_no}"]`).setValue(true)
-    await findButton(wrapper, '发行供应商采购单（2）').trigger('click')
+    await findButton(wrapper, '生成供应商采购单（2）').trigger('click')
     await flushPromises()
 
     expect(confirmSpy).not.toHaveBeenCalled()
@@ -2482,7 +2543,7 @@ describe('CartonProcurementView frontend workspace', () => {
     const wrapper = mountView('orders')
     await flushPromises()
     await wrapper.get(`input[aria-label="选择订单 ${order.order_no}"]`).setValue(true)
-    await findButton(wrapper, '发行供应商采购单（1）').trigger('click')
+    await findButton(wrapper, '生成供应商采购单（1）').trigger('click')
     await flushPromises()
     expect(wrapper.find('[aria-label="批量采购单确认"]').exists()).toBe(true)
     routeState.query.tab = 'inventory'
@@ -2736,7 +2797,7 @@ describe('CartonProcurementView frontend workspace', () => {
       expect(notice.text()).toContain('确认锁定失败：供应商未配置，无法下单')
       expect(wrapper.find('[aria-label="执行确认订单并锁定"]').exists()).toBe(true)
     } else {
-      expect(notice.text()).toContain('已确认并锁定，采购单已发行')
+      expect(notice.text()).toContain('已确认并锁定，采购单已生成')
       expect(notice.text()).toContain('操作日志暂不可用')
       expect(notice.text()).not.toContain('确认锁定失败')
       expect(wrapper.find('[aria-label="执行确认订单并锁定"]').exists()).toBe(false)
@@ -3131,7 +3192,7 @@ describe('CartonProcurementView frontend workspace', () => {
         expect.objectContaining({ order_no: 'CT-BULK-SUBMITTED' }),
       ]),
     )
-    expect(wrapper.text()).toContain('已确认并锁定 1 张订单，首次采购单已自动发行到供应商协同；跳过 1 张非待下单订单')
+    expect(wrapper.text()).toContain('已确认并锁定 1 张订单，首次采购单已自动生成到供应商协同；跳过 1 张非待下单订单')
     expect(wrapper.get('[data-order-no="CT-BULK-PENDING"]').text()).toContain('已确认锁定')
     expect((wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').element as HTMLInputElement).checked).toBe(true)
   })
@@ -3156,7 +3217,7 @@ describe('CartonProcurementView frontend workspace', () => {
     await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
     expect(cartonApiMock.downloadPurchaseOrderBatch).toHaveBeenCalledTimes(1)
     expect(cartonApiMock.downloadPurchaseOrderBatch).toHaveBeenCalledWith('huaxing', batch.id)
-    expect(wrapper.text()).toContain('已确认并锁定 2 张订单，合并为 1 张采购单并发行到供应商协同')
+    expect(wrapper.text()).toContain('已确认并锁定 2 张订单，合并为 1 张采购单并生成到供应商协同')
     for (const order of orders) expect(wrapper.get(`[data-order-no="${order.order_no}"]`).text()).toContain('已确认锁定')
     expect(wrapper.text()).not.toContain('批量确认锁定失败')
     expect(wrapper.text()).toContain(downloadFails ? '合并单下载失败' : '合并采购单已下载')

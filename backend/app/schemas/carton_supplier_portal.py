@@ -55,6 +55,7 @@ class SupplierDocumentSelection(BaseModel):
 class SupplierDocumentExport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     documents: list[SupplierDocumentSelection] = Field(min_length=1, max_length=100)
+    acknowledge_unaccepted: bool = False
 
     @model_validator(mode="after")
     def unique_documents(self):

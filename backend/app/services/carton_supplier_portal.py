@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
@@ -118,17 +119,17 @@ def acceptance_summary(db, order, lines, *, projection=None):
     positive_ids = [line.id for line in lines if line.required_quantity > 0]
     result = dict(status="NOT_ISSUED", label="尚未发送供应商",
         issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "",
-        total_line_count=len(positive_ids), accepted_line_count=0, accepted_at="")
+        total_line_count=len(positive_ids), accepted_line_count=0, accepted_at="", delivery_differences=[])
     if order.status == "CANCELLED":
         result.update(status="CANCELLED", label="订单已取消")
     elif not issue or order.status not in VISIBLE_STATES:
         pass
     elif _purchase_order_pending_change(order, lines, issue)[0] != "NONE":
-        result.update(status="PENDING_CHANGE", label="变更待发行")
+        result.update(status="PENDING_CHANGE", label="变更待生成")
     elif not positive_ids:
         result.update(status="NOT_REQUIRED", label="无需接单")
     else:
-        commitments = [row for row in projection["commitments"] if row.issue_id == issue.id and row.order_line_id in positive_ids] if projection is not None else list(db.scalars(select(SupplierCommitment).where(
+        commitments = [row for row in projection["commitments"] if row.factory_id == order.factory_id and row.issue_id == issue.id and row.order_line_id in positive_ids] if projection is not None else list(db.scalars(select(SupplierCommitment).where(
             SupplierCommitment.factory_id == order.factory_id,
             SupplierCommitment.issue_id == issue.id,
             SupplierCommitment.order_line_id.in_(positive_ids))).all())
@@ -137,6 +138,16 @@ def acceptance_summary(db, order, lines, *, projection=None):
             ("PARTIAL", "供应商部分接单") if accepted else ("PENDING", "供应商待接单"))
         result.update(status=status, label=label, accepted_line_count=accepted,
             accepted_at=max((row.accepted_at for row in commitments), default=""))
+        papers = {line.id: line for line in lines}
+        for commitment in sorted(commitments, key=lambda row: (papers[row.order_line_id].line_no, row.order_line_id)):
+            try:
+                days = (date.fromisoformat(commitment.promised_date) - date.fromisoformat(order.due_date)).days
+            except (TypeError, ValueError):
+                continue
+            if days:
+                result["delivery_differences"].append(dict(
+                    order_line_id=commitment.order_line_id, packaging_type=papers[commitment.order_line_id].packaging_type,
+                    planned_date=order.due_date, promised_date=commitment.promised_date, difference_days=days))
     return result
 
 
@@ -312,7 +323,7 @@ def executable(db, order, issue_id):
     if not issue or issue.id != issue_id:
         raise HTTPException(409, "采购版本已变更，请刷新后重新确认接单")
     if _purchase_order_pending_change(order, get_order_lines(db, order.id), issue)[0] != "NONE":
-        raise HTTPException(409, "订单存在未发行变更，旧承诺暂停执行，请等待内部发行后重新接单")
+        raise HTTPException(409, "订单存在未生成变更，旧承诺暂停执行，请等待内部生成后重新接单")
     return issue
 
 
@@ -378,7 +389,7 @@ def order_out(db, order, *, internal=False):
     changed = _purchase_order_pending_change(order, current_lines, issue)[0] != "NONE"
     result = {key: header.get(key, "") for key in ("order_no", "customer_name", "contract_no", "customer_po", "item_no", "product_name")}
     result.update(id=order.id, status=order.status, revision=order.revision,
-        issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "尚未发行",
+        issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "尚未生成",
         order_date=header.get("order_date") or order.order_date,
         planned_date=snapshot.get("after_due_date", ""), awaiting_issue=changed, lines=[])
     if internal:
@@ -527,6 +538,22 @@ def documents(db, user, factory):
         CartonOrder.factory_id == factory, CartonOrder.supplier_id == supplier.id,
         CartonOrder.status.in_(VISIBLE_STATES))).all()
     order_ids = [order.id for order in orders]
+    papers, commitments, all_issues = defaultdict(list), defaultdict(list), defaultdict(list)
+    for start in range(0, len(order_ids), 400):
+        identifiers = order_ids[start:start + 400]
+        for paper in db.scalars(select(CartonOrderLine).where(CartonOrderLine.factory_id == factory, CartonOrderLine.order_id.in_(identifiers))):
+            papers[paper.order_id].append(paper)
+        for commitment, order_id in db.execute(select(SupplierCommitment, CartonOrderLine.order_id).join(
+                CartonOrderLine, CartonOrderLine.id == SupplierCommitment.order_line_id).where(
+                SupplierCommitment.factory_id == factory, CartonOrderLine.factory_id == factory,
+                CartonOrderLine.order_id.in_(identifiers))):
+            commitments[order_id].append(commitment)
+        for issue in db.scalars(select(CartonPurchaseOrderIssue).where(
+                CartonPurchaseOrderIssue.factory_id == factory, CartonPurchaseOrderIssue.order_id.in_(identifiers))
+                .order_by(CartonPurchaseOrderIssue.issue_sequence.desc())):
+            all_issues[issue.order_id].append(issue)
+    acceptances = {order.id: acceptance_summary(db, order, papers[order.id], projection={
+        "issues": all_issues[order.id], "commitments": commitments[order.id]}) for order in orders}
     result = []
     batches = {}
     if order_ids:
@@ -539,11 +566,20 @@ def documents(db, user, factory):
             snapshot = _purchase_order_snapshot(issue)
             batches[issue.id] = purchase_batch(issue)
             header = snapshot.get("order", {})
+            acceptance = dict(acceptances[issue.order_id])
+            if snapshot.get("replenishment"):
+                acceptance.update(status="MANUAL", label="补单待单独确认", accepted_line_count=0,
+                    total_line_count=sum(Decimal(str(line.get("required_quantity_delta") or 0)) > 0 for line in snapshot.get("lines", [])),
+                    accepted_at="", delivery_differences=[])
+            elif acceptance["issue_id"] != issue.id:
+                acceptance.update(status="HISTORICAL", label="旧版本，接单需核实", accepted_line_count=0, accepted_at="", delivery_differences=[])
+            acceptance.update(issue_id=issue.id, document_no=issue.document_no)
             result.append({
                 "id": issue.id, "kind": "PURCHASE", "factory_id": factory,
                 "document_no": issue.document_no, "document_type": issue.document_type,
                 "date": issue.generated_at[:10], "created_at": issue.generated_at,
-                "status": "已发行", "replenishment": bool(snapshot.get("replenishment")),
+                "status": "已生成", "replenishment": bool(snapshot.get("replenishment")),
+                "supplier_acceptance": acceptance,
                 "orders": [{
                     "order_no": issue.order_no, "customer_name": header.get("customer_name") or "",
                     "contract_no": header.get("contract_no") or "", "customer_po": header.get("customer_po") or "",
@@ -634,7 +670,7 @@ def _activity_rules(db, user, factory):
         SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier.id)).all()
     shipment_nos = {row.id: row.delivery_note_no for row in shipments}
     allowed = {
-        "PURCHASE_ORDER_ISSUED": ("carton_purchase_order_issue", issue_nos, "采购单已发行"),
+        "PURCHASE_ORDER_ISSUED": ("carton_purchase_order_issue", issue_nos, "采购单已生成"),
         "SUPPLIER_PAPER_ACCEPTED": ("carton_order", order_nos, "纸品已确认接单"),
         "SUPPLIER_SHIPMENT_CREATED": ("supplier_shipment", shipment_nos, "供应商已确认发货"),
         "SUPPLIER_SHIPMENT_RECEIVED": ("supplier_shipment", shipment_nos, "仓库已核实送货"),
@@ -718,7 +754,7 @@ def export_documents(db, user, payload: SupplierDocumentExport):
     workbook = Workbook()
     workbook.remove(workbook.active)
     for kind, title, headers in (
-        ("PURCHASE", "采购单", ["厂区", "采购单号", "发行日期", "变更类型", "订单号", "客户", "合同号",
+        ("PURCHASE", "采购单", ["厂区", "采购单号", "生成日期", "变更类型", "订单号", "客户", "合同号",
                               "客户PO", "货号", "计划交期", "纸品子单", "纸品类型", "纸质", "规格",
                               "变更前", "本次变化", "变更后", "单位", "原采购单号"]),
         ("DELIVERY", "送货单", ["送货厂区", "送货单号", "送货日期", "仓库状态", "订单号", "客户", "合同号",
@@ -804,6 +840,7 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
     """Dongkang ERP rows use issued deltas, including B replacements, never cumulative totals."""
     if len({selection.factory_id for selection in payload.documents}) != 1:
         raise HTTPException(422, "对方导入模板一次只能包含一个送货厂区；请按厂区分别导出")
+    _lock_receipt_factory(db, payload.documents[0].factory_id)
     visible_by_factory = {}
     issue_rows = []
     selected = []
@@ -818,13 +855,15 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
         document = visible_by_factory[selection.factory_id].get(selection.id)
         if document is None:
             raise HTTPException(404, "所选采购单不存在或不属于当前供应商")
+        if document["supplier_acceptance"]["status"] != "ACCEPTED" and not payload.acknowledge_unaccepted:
+            raise HTTPException(409, f"采购单 {document['document_no']}：{document['supplier_acceptance']['label']}；请先确认接单，或明确确认未接单导出提醒后再导出导入模板。导出不会自动接单")
         selected.append(document)
         if document.get("is_batch"):
             _batch, sources = load_purchase_batch(db, selection.factory_id, selection.id)
         else:
             issue = db.get(CartonPurchaseOrderIssue, selection.id)
             if issue is None or issue.factory_id != selection.factory_id:
-                raise HTTPException(404, "采购单发行快照不存在")
+                raise HTTPException(404, "采购单生成快照不存在")
             sources = [issue]
         issue_rows.extend((issue, _purchase_order_snapshot(issue), document) for issue in sources)
     workbook = Workbook()
@@ -839,11 +878,11 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
         header = snapshot.get("order", {})
         lines = snapshot.get("lines", [])
         if not isinstance(header, dict) or not isinstance(lines, list):
-            raise HTTPException(422, f"采购单 {issue.document_no} 的发行快照不完整")
+            raise HTTPException(422, f"采购单 {issue.document_no} 的生成快照不完整")
         replenishment = snapshot.get("replenishment")
         if replenishment and (not isinstance(replenishment, dict)
                               or replenishment.get("responsibility") not in {"OWN", "SUPPLIER"}):
-            raise HTTPException(422, f"采购单 {issue.document_no} 的补单责任不明确，请先核对发行快照")
+            raise HTTPException(422, f"采购单 {issue.document_no} 的补单责任不明确，请先核对生成快照")
         changes = [Decimal(str(line.get("required_quantity_delta") or 0)) for line in lines]
         if any(change < 0 for change in changes) or not any(change > 0 for change in changes):
             raise HTTPException(422, f"采购单 {issue.document_no} 含减量或仅交期变更，不能作为新增订单导入；请单独与供应商处理变更")
@@ -892,7 +931,9 @@ def export_supplier_order_import(db, user, payload: SupplierDocumentExport):
     workbook.save(output)
     workbook.close()
     for document in selected:
-        _record_document_export(db, user, document, format="SUPPLIER_ORDER_IMPORT")
+        _record_document_export(db, user, document, format="SUPPLIER_ORDER_IMPORT",
+            acknowledge_unaccepted=payload.acknowledge_unaccepted,
+            acceptance_status=document["supplier_acceptance"]["status"])
     db.commit()
     return output.getvalue()
 
@@ -1301,7 +1342,7 @@ def link_sample_receipt(db, user, receipt_line_id: str, payload: SampleReceiptLi
         raise HTTPException(409, "目标订单状态或版本已变化，请刷新后重新核对")
     issue = latest_issue(db, order)
     if issue is None or _purchase_order_pending_change(order, get_order_lines(db, order.id), issue)[0] != "NONE":
-        raise HTTPException(409, "目标正式订单的当前采购单尚未发行，请先发行再关联")
+        raise HTTPException(409, "目标正式订单的当前采购单尚未生成，请先生成再关联")
     matching = (sample.customer_code == order.customer_code
         and _dongkang_identity(sample.item_no) == _dongkang_identity(order.item_no)
         and _dongkang_identity(sample.packaging_type) == _dongkang_identity(target.packaging_type)

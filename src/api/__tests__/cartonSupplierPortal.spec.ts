@@ -7,6 +7,19 @@ vi.mock('@/lib/http', () => ({ http: { post, get } }))
 import { cartonSupplierPortalApi } from '../cartonSupplierPortal'
 
 describe('supplier document export request', () => {
+  it('only acknowledges the unaccepted-export warning after an explicit decision', async () => {
+    const documents = [{ factory_id: 'huaxing', kind: 'PURCHASE' as const, id: 'ISSUE-A' }]
+    post.mockRejectedValue(new Error('request captured'))
+    await expect(cartonSupplierPortalApi.exportOrderImport(documents)).rejects.toThrow('request captured')
+    expect(post).toHaveBeenLastCalledWith('/carton-supplier/documents/order-import.xlsx', {
+      documents, acknowledge_unaccepted: false,
+    }, { responseType: 'blob' })
+    await expect(cartonSupplierPortalApi.exportOrderImport(documents, true)).rejects.toThrow('request captured')
+    expect(post).toHaveBeenLastCalledWith('/carton-supplier/documents/order-import.xlsx', {
+      documents, acknowledge_unaccepted: true,
+    }, { responseType: 'blob' })
+    post.mockReset()
+  })
   it('queries receipt candidates in the selected factory and submits both revisions with a durable request ID', async () => {
     get.mockResolvedValueOnce({ data: [] })
     await cartonSupplierPortalApi.receiptOptions('huaxing', 'note/a')

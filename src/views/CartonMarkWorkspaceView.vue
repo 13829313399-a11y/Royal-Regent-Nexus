@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowLeft, PackageCheck } from '@lucide/vue'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import CartonMarkCheckPanel from '@/components/modules/qa/CartonMarkCheckPanel.vue'
@@ -17,6 +17,11 @@ async function useAsset(asset: CartonMarkAsset) {
   if (asset.kind === 'image') return
   workspaceTab.value = 'check'
   await checkPanel.value?.useLibraryAsset(asset)
+}
+async function useSources(assets: CartonMarkAsset[]) {
+  workspaceTab.value = 'check'
+  await nextTick()
+  await Promise.all(assets.map(asset => checkPanel.value?.useLibraryAsset(asset)))
 }
 
 type CartonMarkWorkspaceMode = 'warehouse' | 'qa' | 'qc'
@@ -85,7 +90,8 @@ watch(currentDepartmentId, (departmentId) => {
         <button type="button" :aria-pressed="workspaceTab === 'library'" class="rounded-lg px-4 py-2 font-semibold" :class="workspaceTab === 'library' ? 'bg-teal-700 text-white' : 'border bg-white text-slate-600'" @click="workspaceTab = 'library'">资料仓库</button>
         <button type="button" :aria-pressed="workspaceTab === 'check'" class="rounded-lg px-4 py-2 font-semibold" :class="workspaceTab === 'check' ? 'bg-teal-700 text-white' : 'border bg-white text-slate-600'" @click="workspaceTab = 'check'">Excel / PDF 核对</button>
       </div>
-      <CartonMarkAssetLibrary v-if="isWarehouseWorkspace" v-show="workspaceTab === 'library'" :factory-id="activeFactory.id" check-enabled @use="useAsset" />
+      <p v-if="isWarehouseWorkspace" class="mb-4 rounded-lg border border-teal-100 bg-teal-50 px-4 py-3 text-sm text-teal-800">资料仓库选取原文件 → Excel / PDF 内容核对 → 核对通过或人工放行 → QC 现场拍照核验</p>
+      <CartonMarkAssetLibrary v-if="isWarehouseWorkspace" v-show="workspaceTab === 'library'" :factory-id="activeFactory.id" check-enabled @use="useAsset" @use-sources="useSources" />
       <CartonMarkCheckPanel ref="checkPanel" v-show="!isWarehouseWorkspace || workspaceTab === 'check'" :workspace-mode="workspaceMode" />
     </section>
   </main>

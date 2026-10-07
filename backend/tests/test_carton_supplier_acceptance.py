@@ -29,7 +29,7 @@ def test_internal_ledger_tracks_partial_and_complete_supplier_acceptance(monkeyp
         assert pending["supplier_acceptance"] == {
             "status": "PENDING", "label": "供应商待接单", "issue_id": order["issue_id"],
             "document_no": order["document_no"], "total_line_count": 2,
-            "accepted_line_count": 0, "accepted_at": ""}
+            "accepted_line_count": 0, "accepted_at": "", "delivery_differences": []}
 
         accept_paper(client, order, order["lines"][0])
         partial = internal_order(client, raw["order_no"])["supplier_acceptance"]

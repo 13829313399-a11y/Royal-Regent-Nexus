@@ -178,6 +178,49 @@ class CartonMarkCustomerUpdateRequest(CartonMarkCustomerCreateRequest):
     revision: int = Field(ge=1)
 
 
+class CartonMarkCustomerRecognitionRequest(BaseModel):
+    contract_number: str = Field(default="", max_length=128)
+    item: str = Field(default="", max_length=128)
+    po: str = Field(default="", max_length=128)
+    order_id: str | None = Field(default=None, max_length=96)
+    excel_asset_id: str | None = Field(default=None, max_length=96)
+    pdf_asset_id: str | None = Field(default=None, max_length=96)
+
+
+class CartonMarkCustomerOrderCandidate(BaseModel):
+    id: str
+    order_no: str
+    contract_no: str
+    item_no: str
+    customer_code: str
+    customer_name: str
+
+
+class CartonMarkCustomerRecognitionOut(BaseModel):
+    status: str
+    customer_name: str = ""
+    managed_customer_id: str | None = None
+    message: str
+    orders: list[CartonMarkCustomerOrderCandidate] = Field(default_factory=list)
+
+
+class CartonMarkCustomerInitializationCandidate(BaseModel):
+    name: str
+    order_count: int
+    customer_codes: list[str]
+    existing_customer_id: str | None = None
+    warning: str = ""
+
+
+class CartonMarkCustomerInitializationRequest(BaseModel):
+    names: list[str] = Field(min_length=1, max_length=200)
+
+
+class CartonMarkCustomerInitializationOut(BaseModel):
+    created_names: list[str]
+    existing_names: list[str]
+
+
 class CartonMarkCustomerOut(CartonMarkCustomerOptionOut):
     factory_id: str
     revision: int = Field(ge=1)

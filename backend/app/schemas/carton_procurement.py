@@ -555,6 +555,14 @@ class CartonOrderHistorySuggestionListOut(BaseModel):
     items: list[CartonOrderHistorySuggestionOut]
 
 
+class CartonSupplierDeliveryDifferenceOut(BaseModel):
+    order_line_id: str
+    packaging_type: str
+    planned_date: str
+    promised_date: str
+    difference_days: int
+
+
 class CartonSupplierAcceptanceOut(BaseModel):
     status: Literal["NOT_ISSUED", "PENDING", "PARTIAL", "ACCEPTED", "PENDING_CHANGE", "NOT_REQUIRED", "CANCELLED"] = "NOT_ISSUED"
     label: str = "尚未发送供应商"
@@ -563,6 +571,7 @@ class CartonSupplierAcceptanceOut(BaseModel):
     total_line_count: int = 0
     accepted_line_count: int = 0
     accepted_at: str = ""
+    delivery_differences: list[CartonSupplierDeliveryDifferenceOut] = Field(default_factory=list)
 
 
 class CartonPurchaseOrderBatchOut(BaseModel):

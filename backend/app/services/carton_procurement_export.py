@@ -219,7 +219,7 @@ def build_purchase_order_issue_batch_workbook(
     workbook = Workbook()
     workbook.properties.creator = "Royal Regent Nexus"
     workbook.properties.title = (f"{batch_document_no} 合并采购单" if batch_document_no
-                                 else f"供应商采购单发行批次（{len(issues)} 份）")
+                                 else f"供应商采购单生成批次（{len(issues)} 份）")
     sheet = workbook.active
     sheet.title = "合并采购单" if batch_document_no else "供应商采购单批次"
     sheet.sheet_view.showGridLines = False
@@ -231,7 +231,7 @@ def build_purchase_order_issue_batch_workbook(
     white = "FFFFFF"
     thin = Side(style="thin", color="CBD5E1")
     sheet.merge_cells("A1:Q1")
-    sheet["A1"] = f"Royal Regent Nexus · {FACTORY_NAMES.get(issues[0].factory_id, issues[0].factory_id)}{'合并采购单' if batch_document_no else '供应商采购单发行批次'}"
+    sheet["A1"] = f"Royal Regent Nexus · {FACTORY_NAMES.get(issues[0].factory_id, issues[0].factory_id)}{'合并采购单' if batch_document_no else '供应商采购单生成批次'}"
     sheet["A1"].font = Font(name="Microsoft YaHei", size=18, bold=True, color=white)
     sheet["A1"].fill = PatternFill("solid", fgColor=teal_dark)
     sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -459,7 +459,7 @@ def build_purchase_order_workbook(
     sheet.cell(
         row=notice_row,
         column=1,
-        value="本采购单由系统正式订单自动生成，无需供应商回签确认；后续按计划交期进入排期核对、收料和库存流程。",
+        value="生成采购单不代表供应商已接单；请在供应商协同中确认接单及承诺交期，再核对发货、收料和库存。",
     )
     sheet.cell(row=notice_row, column=1).font = Font(name="Microsoft YaHei", size=9, bold=True, color=teal_dark)
     sheet.cell(row=notice_row, column=1).fill = PatternFill("solid", fgColor=teal_light)
