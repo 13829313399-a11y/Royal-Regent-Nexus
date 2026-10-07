@@ -187,9 +187,9 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
                     + "。原采购和收料来源保留，数量变更见成对归属流水。"), audit.sequence)
         elif audit.event_type == "PURCHASE_ORDER_ISSUED" and audit.entity_id in issues:
             issue = issues[audit.entity_id]
-            add(Event(**base, **identity(orders[issue.order_id]), event_label="发行供应商采购单",
+            add(Event(**base, **identity(orders[issue.order_id]), event_label="生成供应商采购单",
                       document_no=issue.document_no,
-                      description="已发行不可变采购单；发行本身不改变订单数量或库存。"), audit.sequence)
+                      description="已生成不可变采购单；生成本身不改变订单数量或库存。"), audit.sequence)
         elif audit.entity_type == "carton_receipt" and audit.entity_id in receipts:
             receipt = receipts[audit.entity_id]
             if audit.event_type not in {"RECEIPT_DRAFT_CREATED", "RECEIPT_CONFIRMED", "RECEIPT_REVERSED"}:

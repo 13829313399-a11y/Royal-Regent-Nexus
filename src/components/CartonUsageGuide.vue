@@ -70,7 +70,7 @@ function imageFailed(id: string) {
             <div class="min-w-0">
               <div class="flex items-center gap-2 text-[11px] font-semibold text-teal-700"><BookOpen class="size-4" aria-hidden="true" />{{ factoryName }} · {{ isSupplier ? '供应商协同' : '仓库与纸箱采购' }}</div>
               <DialogTitle class="mt-1 text-lg font-bold text-slate-950 sm:text-xl">{{ title }}</DialogTitle>
-              <DialogDescription class="mt-1 text-xs leading-5 text-slate-500">{{ isSupplier ? '核对已发行采购、确认接单及发货、跟进仓库反馈，再核对双方月结。' : '先准备基础资料和历史结余，再从每日看板开始下单、收料和出库。' }}</DialogDescription>
+              <DialogDescription class="mt-1 text-xs leading-5 text-slate-500">{{ isSupplier ? '核对已生成采购、确认接单及发货、跟进仓库反馈，再核对双方月结。' : '先准备基础资料和历史结余，再从每日看板开始下单、收料和出库。' }}</DialogDescription>
             </div>
             <div class="carton-guide-tools flex shrink-0 items-center gap-2">
               <button type="button" class="hidden h-9 items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 sm:inline-flex" @click="printGuide"><Printer class="size-4" aria-hidden="true" />打印 / 保存 PDF</button>
@@ -101,7 +101,7 @@ function imageFailed(id: string) {
             <section v-if="!query.trim()" class="rounded-xl border border-teal-200 bg-white p-4 sm:p-5">
               <p class="text-[11px] font-bold text-teal-700">先看完整顺序</p>
               <h2 class="mt-1 text-base font-bold text-slate-950">{{ isSupplier ? '先接单，再发货，按仓库反馈核对月结' : '上线只做一次，日常按实际业务走' }}</h2>
-              <p class="mt-2 text-sm leading-6 text-slate-600">{{ isSupplier ? '先确认目的厂区和已发行采购版本，再确认接单及交期。实际发货登记原送货单；仓库反馈实收后，双方在同一份月结版本上核对与确认。' : '首次启用：基础资料 → 期初库存 → 按需要衔接历史订单。之后每天先看工作看板；有新排期就核对，有采购就落单，有到货就验收，有领料就登记出库。' }}</p>
+              <p class="mt-2 text-sm leading-6 text-slate-600">{{ isSupplier ? '先确认目的厂区和已生成采购版本，再确认接单及交期。实际发货登记原送货单；仓库反馈实收后，双方在同一份月结版本上核对与确认。' : '首次启用：基础资料 → 期初库存 → 按需要衔接历史订单。之后每天先看工作看板；有新排期就核对，有采购就落单，有到货就验收，有领料就登记出库。' }}</p>
               <figure class="mt-4"><img :src="isSupplier ? '/carton-guide/supplier-workflow.svg' : '/carton-guide/workflow.svg'" :alt="isSupplier ? '供应商操作顺序：查看采购、确认接单、登记真实发货、查看仓库反馈、核对同一月结版本' : '纸箱操作顺序：首次维护基础资料、期初库存与可选历史订单；日常看板、排期、落单、供应商接单送货、验收入库和领料出库'" width="1080" height="545" class="h-auto w-full rounded-lg border border-slate-100" @error="imageFailed('workflow')"><figcaption class="mt-2 text-[11px] leading-5 text-slate-500">配图为操作示意及演示数据；每个步骤只有在真实业务发生时才办理。</figcaption></figure>
               <div v-if="!isSupplier" class="mt-4 grid gap-2 text-xs leading-6 sm:grid-cols-3">
                 <p class="rounded-lg bg-teal-50 px-3 py-2"><b class="text-teal-900">仓库落单</b><br>确认订单并锁定，自动生成首次采购。</p>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronLeft, ChevronRight, Crop, Eye, FileSpreadsheet, FileText, Image as ImageIcon, RefreshCw, RotateCcw, RotateCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
+import { Camera, CheckCircle2, ChevronLeft, ChevronRight, Crop, Eye, FileSpreadsheet, FileText, Image as ImageIcon, RefreshCw, RotateCcw, RotateCw, Trash2, UploadCloud, XCircle } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import {
   cartonMarkApi,
   type CartonMarkAsset,
@@ -15,6 +15,7 @@ import {
   type CartonMarkTemplateRecordResponse,
 } from '@/api/cartonMark'
 import CartonMarkCustomerDialog from '@/components/modules/qa/CartonMarkCustomerDialog.vue'
+import CartonMarkCustomerRecognition from '@/components/modules/qa/CartonMarkCustomerRecognition.vue'
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
 import {
@@ -171,6 +172,9 @@ const frontPhotoFileInput = ref<HTMLInputElement | null>(null)
 const sidePhotoFileInput = ref<HTMLInputElement | null>(null)
 const frontBatchPhotoFileInput = ref<HTMLInputElement | null>(null)
 const sideBatchPhotoFileInput = ref<HTMLInputElement | null>(null)
+const frontCameraInput = ref<HTMLInputElement | null>(null)
+const sideCameraInput = ref<HTMLInputElement | null>(null)
+const photoFormPanel = ref<HTMLFormElement | null>(null)
 const comparisonRecord = ref<CartonMarkPhotoRecord | null>(null)
 const documentComparisonRecord = ref<CartonMarkTemplateRecord | null>(null)
 const autoCheckResult = ref<CartonMarkAutoCheckResponse | null>(null)
@@ -188,6 +192,7 @@ const photoSuccessMessage = ref('')
 const isLoading = ref(false)
 const isLoadingCustomerOptions = ref(false)
 const customerDialogOpen = ref(false)
+const customerRecognitionBusy = ref(false)
 const manualReleaseRecord = ref<CartonMarkTemplateRecord | null>(null)
 const manualReleaseReason = ref('')
 const manualReleaseError = ref('')
@@ -202,6 +207,7 @@ const deletingPhotoRecordId = ref('')
 const photoStorageMode = ref<'indexedDb' | 'localStorage'>('indexedDb')
 const downloadingDocumentKey = ref('')
 let factoryGeneration = 0
+let appliedQcTemplateRequest = '', qcSelectionGeneration = 0
 let templateRequestController: AbortController | null = null
 let documentRecheckRequestController: AbortController | null = null
 let customerOptionsRequestController: AbortController | null = null
@@ -247,6 +253,8 @@ const canReleaseTemplate = computed(() => isAdmin.value || warehousePermissionDe
 const canUploadPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:photo_upload', activeFactoryId.value, currentDepartmentId.value))
 const canReviewPhoto = computed(() => isAdmin.value || authStore.can('carton_mark:review', activeFactoryId.value, currentDepartmentId.value))
 const canDeleteTemplate = computed(() => isWarehouseWorkspace.value && canUploadTemplate.value)
+const canOpenQc = computed(() => authStore.can('carton_mark:read', activeFactoryId.value, 'qc'))
+const canOpenWarehouse = computed(() => warehousePermissionDepartments.some(department => authStore.can('carton_mark:read', activeFactoryId.value, department)))
 const currentUserName = computed(() => authStore.currentUser?.display_name ?? '当前账号')
 const templatePermissionHint = computed(() => canUploadTemplate.value
   ? '先上传客人提供的 PO 箱唛 Excel，再上传调整排版和图案后的打印 PDF；系统只核对普通业务文字，图形内文字不参与比较。'
@@ -315,6 +323,7 @@ const hasSelectedCustomerOption = computed(() => {
 const canSubmit = computed(() => {
   return Boolean(
     canUploadTemplate.value
+    && !customerRecognitionBusy.value
     && !pendingLibraryReads.pdf && !pendingLibraryReads.excel
     && hasSelectedCustomerOption.value
     && form.item.trim()
@@ -563,6 +572,7 @@ async function loadTemplateRecords(factoryId: ProductionFactoryContextId, factor
     const persistedRecords = await cartonMarkApi.listTemplates(factoryId, controller.signal)
     if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted) return
     allRecords.value = sortRecords(persistedRecords.map((record) => mapTemplateRecord(record, factoryName)))
+    if (photoForm.templateId && !photoReadyRecords.value.some(record => record.id === photoForm.templateId)) photoForm.templateId = ''
   } catch (error) {
     if (!isCurrentFactoryTask(factoryId, generation) || !isPanelMounted || controller.signal.aborted) return
     allRecords.value = []
@@ -575,6 +585,36 @@ async function loadTemplateRecords(factoryId: ProductionFactoryContextId, factor
     }
   }
 }
+
+function refreshTemplates() {
+  if (isLoading.value || isSaving.value || isSavingBatchPhoto.value || isManualReleasing.value || recheckingDocumentId.value) return
+  if (isWarehouseWorkspace.value) errorMessage.value = ''
+  else photoErrorMessage.value = ''
+  void loadTemplateRecords(activeFactoryId.value, activeFactory.value.shortName, factoryGeneration)
+}
+
+async function selectQcTemplate(record: CartonMarkTemplateRecord) {
+  if (isWarehouseWorkspace.value || !canUploadPhoto.value || !record.qcReady || record.factoryId !== activeFactoryId.value || isSavingBatchPhoto.value || photoForm.templateId === record.id) return
+  const scope = activeFactoryId.value, generation = factoryGeneration
+  const selection = ++qcSelectionGeneration
+  photoForm.customerName = record.customerName
+  await nextTick()
+  if (!isPanelMounted || !canUploadPhoto.value || selection !== qcSelectionGeneration || !isCurrentFactoryTask(scope, generation) || !photoReadyRecords.value.some(item => item.id === record.id)) return
+  photoForm.templateId = record.id
+  photoErrorMessage.value = ''
+  await nextTick()
+  if (isCurrentFactoryTask(scope, generation)) photoFormPanel.value?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+}
+
+watch([() => route.query?.template, () => route.query?.factory, photoReadyRecords, isLoading, canUploadPhoto], ([template, factory]) => {
+  if (typeof template !== 'string' || !template.trim()) { appliedQcTemplateRequest = ''; return }
+  if (isWarehouseWorkspace.value || isLoading.value || !isPanelMounted || !canUploadPhoto.value) return
+  if (typeof factory === 'string' && factory !== activeFactoryId.value) return
+  const request = `${activeFactoryId.value}:${template}`
+  const record = photoReadyRecords.value.find(item => item.id === template)
+  if (record && appliedQcTemplateRequest !== request) { appliedQcTemplateRequest = request; void selectQcTemplate(record) }
+  else if (!record) photoErrorMessage.value = '这份模板尚未通过核对或人工放行、已移出，或不属于当前厂区，请刷新资料后重新选择。'
+}, { flush: 'post' })
 
 async function loadCustomerOptions(factoryId: ProductionFactoryContextId, generation: number) {
   customerOptionsRequestController?.abort()
@@ -692,6 +732,7 @@ function revokeTemplateUrls() {
 
 watch(activeFactoryId, () => {
   factoryGeneration += 1
+  appliedQcTemplateRequest = ''; qcSelectionGeneration++
   templateRequestController?.abort()
   documentRecheckRequestController?.abort()
   customerOptionsRequestController?.abort()
@@ -1383,6 +1424,7 @@ function clearPhotoSelection(side: CartonMarkPhotoSide, clearComparison = true) 
     if (frontBatchPhotoFileInput.value) {
       frontBatchPhotoFileInput.value.value = ''
     }
+    if (frontCameraInput.value) frontCameraInput.value.value = ''
 
     return
   }
@@ -1398,6 +1440,7 @@ function clearPhotoSelection(side: CartonMarkPhotoSide, clearComparison = true) 
   if (sideBatchPhotoFileInput.value) {
     sideBatchPhotoFileInput.value.value = ''
   }
+  if (sideCameraInput.value) sideCameraInput.value.value = ''
 }
 
 function resetPhotoSelection(clearComparison = true) {
@@ -1597,10 +1640,6 @@ async function useLibraryAsset(asset: CartonMarkAsset) {
     if (canFillMetadata && asset.contract_number && form.contractNumber === previousForm.contractNumber) form.contractNumber = asset.contract_number
     const items = [...new Set(asset.orders.map(order => order.item_no))]
     if (canFillMetadata && items.length === 1 && form.item === previousForm.item) form.item = items[0] || ''
-    const customers = [...new Set(asset.orders.map(order => order.customer_name))]
-    if (canFillMetadata && form.customerName === previousForm.customerName && customers.length === 1 && customerOptions.value.some(customer => normalizeKey(customer.name) === normalizeKey(customers[0] || ''))) {
-      form.customerName = customers[0] || ''
-    }
     successMessage.value = `已从仓库选择 ${asset.file_name}，提交核对时直接使用保存的原文件。`
   } catch (error) {
     if (isPanelMounted && isCurrentFactoryTask(requestedFactoryId, requestedGeneration)
@@ -1682,6 +1721,23 @@ function selectBatchPhotoFiles(files: File[], side: CartonMarkPhotoSide) {
 function handleBatchPhotoFileChange(event: Event, side: CartonMarkPhotoSide) {
   const input = event.target as HTMLInputElement
   selectBatchPhotoFiles(Array.from(input.files ?? []), side)
+}
+
+function openPhotoCamera(side: CartonMarkPhotoSide) {
+  if (!canUploadPhoto.value || isSavingBatchPhoto.value || isRotatingPhoto[side]) return
+  const input = side === 'front' ? frontCameraInput.value : sideCameraInput.value
+  if (input) { input.value = ''; input.click() }
+}
+
+function handleCameraPhotoChange(event: Event, side: CartonMarkPhotoSide) {
+  const input = event.target as HTMLInputElement
+  const photos = Array.from(input.files ?? [])
+  input.value = ''
+  if (!photos.length || !canUploadPhoto.value || isSavingBatchPhoto.value || isRotatingPhoto[side]) return
+  const previous = [...getBatchPhotoFiles(side)], cropped = [...croppedBatchPhotoIndexes[side]]
+  selectBatchPhotoFiles([...previous, ...photos], side)
+  croppedBatchPhotoIndexes[side] = cropped
+  showBatchPhotoAt(side, Math.max(0, getBatchPhotoFiles(side).length - 1))
 }
 
 function handleBatchPhotoDrop(event: DragEvent, side: CartonMarkPhotoSide) {
@@ -2732,11 +2788,27 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               <button type="button" class="font-semibold underline underline-offset-2" @click="reloadCustomerOptions">重试</button>
             </p>
             <p v-else-if="!isLoadingCustomerOptions && !customerOptions.length" id="carton-mark-customer-help" class="mt-1 text-xs text-amber-700">
-              当前厂区尚未添加箱唛客户，请联系纸箱部主管或经理维护。
+              当前厂区尚未添加箱唛客户。填写合同号可先识别客名，再由主管或管理员确认加入客户库。
             </p>
             <p v-else id="carton-mark-customer-help" class="mt-1 text-xs text-slate-500">
               客名由当前厂区纸箱部主管以上维护，并作为右侧客户资料集合的归档名称。
             </p>
+            <CartonMarkCustomerRecognition
+              class="mt-3"
+              :factory-id="activeFactoryId"
+              :factory-name="activeFactory.shortName"
+              :contract-number="form.contractNumber"
+              :item="form.item"
+              :excel-asset-id="selectedExcelAssetId"
+              :pdf-asset-id="selectedPdfAssetId"
+              :selected-customer="form.customerName"
+              :customers="customerOptions"
+              :allowed="isWarehouseWorkspace && canUploadTemplate && canOpenWarehouse"
+              :can-manage="canManageCustomers"
+              @select="form.customerName = $event"
+              @customers-changed="reloadCustomerOptions"
+              @busy="customerRecognitionBusy = $event"
+            />
           </div>
           <label class="block">
             <span class="text-sm font-medium text-slate-700">ITEM</span>
@@ -3017,6 +3089,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 
         <form
           v-if="!isWarehouseWorkspace"
+          ref="photoFormPanel"
           class="order-1 rounded-lg border border-slate-200 bg-white p-6"
           @submit.prevent="submitBatchPhoto"
         >
@@ -3075,6 +3148,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 <span class="text-sm font-medium text-slate-700">选择箱唛模板</span>
                 <select
                   v-model="photoForm.templateId"
+                  aria-label="选择箱唛模板"
                   class="mt-2 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-50"
                   :disabled="!filteredTemplateOptions.length"
                 >
@@ -3120,6 +3194,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 
           <p class="mt-5 rounded-lg border border-dashed border-blue-200 bg-blue-50/50 px-4 py-3 text-xs leading-5 text-slate-600">
             正唛和侧唛均可一次选择多张；系统会按你选择的类别分别核对，每张图片独立输出结果，无需文件配对。
+            手机可直接拍照，优先使用后置摄像头；再次拍照会追加图片。拍后可旋转、裁剪，点击开始核对才上传。
           </p>
 
           <div class="mt-4 grid gap-4 md:grid-cols-2">
@@ -3137,6 +3212,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 :disabled="!canUploadPhoto"
                 @change="handleBatchPhotoFileChange($event, 'front')"
               >
+              <input ref="frontCameraInput" type="file" accept="image/*" capture="environment" aria-label="拍摄正唛照片" class="hidden" :disabled="!canUploadPhoto || isSavingBatchPhoto" @change="handleCameraPhotoChange($event, 'front')">
               <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div class="flex min-w-0 items-center gap-3">
                   <div class="flex size-11 shrink-0 items-center justify-center rounded-lg bg-white text-blue-700">
@@ -3149,6 +3225,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   </div>
                 </div>
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
+                  <button v-if="canUploadPhoto" type="button" aria-label="拍摄正唛" :disabled="isSavingBatchPhoto || isRotatingPhoto.front" class="inline-flex h-11 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-sm font-semibold text-blue-700 disabled:opacity-50" @click="openPhotoCamera('front')"><Camera class="size-4" aria-hidden="true" />{{ selectedFrontBatchFiles.length ? '再拍正唛' : '拍照正唛' }}</button>
                   <button
                     v-if="selectedFrontBatchFiles.length"
                     type="button"
@@ -3299,6 +3376,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 :disabled="!canUploadPhoto"
                 @change="handleBatchPhotoFileChange($event, 'side')"
               >
+              <input ref="sideCameraInput" type="file" accept="image/*" capture="environment" aria-label="拍摄侧唛照片" class="hidden" :disabled="!canUploadPhoto || isSavingBatchPhoto" @change="handleCameraPhotoChange($event, 'side')">
               <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div class="flex min-w-0 items-center gap-3">
                   <div class="flex size-11 shrink-0 items-center justify-center rounded-lg bg-white text-blue-700">
@@ -3311,6 +3389,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   </div>
                 </div>
                 <div class="flex shrink-0 flex-wrap items-center gap-2">
+                  <button v-if="canUploadPhoto" type="button" aria-label="拍摄侧唛" :disabled="isSavingBatchPhoto || isRotatingPhoto.side" class="inline-flex h-11 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-3 text-sm font-semibold text-blue-700 disabled:opacity-50" @click="openPhotoCamera('side')"><Camera class="size-4" aria-hidden="true" />{{ selectedSideBatchFiles.length ? '再拍侧唛' : '拍照侧唛' }}</button>
                   <button
                     v-if="selectedSideBatchFiles.length"
                     type="button"
@@ -3968,7 +4047,9 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
             class="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-50 md:w-56"
             :placeholder="isWarehouseWorkspace ? '搜索客名 / ITEM / 合同号' : '搜索客名 / 合同号 / ITEM'"
           >
+          <button type="button" aria-label="刷新箱唛核对资料" :disabled="isLoading || isSaving || isSavingBatchPhoto || isManualReleasing || Boolean(recheckingDocumentId)" class="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold disabled:opacity-50" @click="refreshTemplates"><RefreshCw class="size-4" aria-hidden="true" />刷新资料</button>
         </div>
+        <RouterLink v-if="!isWarehouseWorkspace && canOpenWarehouse" :to="{ path: '/modules/pmc-warehouse/carton-mark-check', query: { factory: activeFactoryId, panel: 'check' } }" class="mt-3 inline-flex text-sm font-semibold text-teal-700 underline underline-offset-2">查看纸箱部资料核对</RouterLink>
 
         <div v-if="isWarehouseWorkspace" class="mt-5 grid gap-3 sm:grid-cols-2">
           <button
@@ -4055,6 +4136,8 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               </div>
 
               <div class="flex shrink-0 flex-wrap items-center gap-2 text-sm">
+                <RouterLink v-if="isWarehouseWorkspace && record.qcReady && canOpenQc" :to="{ path: '/modules/qc/carton-mark-check', query: { factory: record.factoryId, template: record.id } }" :aria-label="`用模板 ${record.fileName} 打开 QC 核验`" class="inline-flex rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 font-semibold text-blue-700">打开 QC 核验</RouterLink>
+                <button v-if="!isWarehouseWorkspace && record.qcReady && canUploadPhoto" type="button" :aria-label="`选用模板 ${record.fileName}`" :disabled="isSavingBatchPhoto" class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 font-semibold text-blue-700 disabled:opacity-50" @click="selectQcTemplate(record)">{{ photoForm.templateId === record.id ? '已选用' : '选用此模板' }}</button>
                 <span
                   class="rounded-full border px-3 py-1 font-semibold"
                   :class="record.documentCheckResult ? getDocumentCheckStatusClass(record.documentCheckResult.summary.overall_status) : 'border-slate-200 bg-slate-100 text-slate-600'"

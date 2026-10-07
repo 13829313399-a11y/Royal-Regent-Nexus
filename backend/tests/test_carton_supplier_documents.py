@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 from pypdf import PdfWriter
 from test_molding_sample_api import make_client, login_as
 from test_carton_procurement_api import _create_order, _order_payload
-from test_carton_supplier_portal import BASE, setup_portal
+from test_carton_supplier_portal import BASE, setup_portal, accept_all
 from test_carton_replenishment_api import setup as setup_replenishment, body as replenishment_body, replenish
 from app.services.carton_supplier_portal import SUPPLIER_ORDER_IMPORT_HEADERS, _supplier_import_dimensions
 
@@ -151,7 +151,7 @@ def test_supplier_documents_export_and_audit_are_scoped(monkeypatch):
         activity = client.get(BASE + "/activity", params={"factory_id": "huaxing"})
         assert activity.status_code == 200
         actions = {row["action"] for row in activity.json()}
-        assert {"采购单已发行", "纸品已确认接单", "供应商已确认发货"}.issubset(actions)
+        assert {"采购单已生成", "纸品已确认接单", "供应商已确认发货"}.issubset(actions)
         assert "detail_json" not in activity.text and "unit_price" not in activity.text
         assert client.post(BASE + "/documents/export.xlsx", json={"documents": [
             *selected, {"factory_id": "huadeng", "kind": "PURCHASE", "id": purchase["id"]},
@@ -169,6 +169,7 @@ def test_supplier_order_import_template_uses_issued_delta_and_business_keys(monk
     assert _supplier_import_dimensions("18*12.5*17.25", "PO") == [18.0, 12.5, 17.25]
     with make_client(monkeypatch) as client:
         setup_portal(client)
+        accept_all(client)
         purchase = next(row for row in client.get(BASE + "/documents", params={"factory_id": "huaxing"}).json()
                         if row["kind"] == "PURCHASE")
         selection = {"factory_id": "huaxing", "kind": "PURCHASE", "id": purchase["id"]}
@@ -241,7 +242,9 @@ def test_supplier_order_import_exports_replenishment_delta_with_settlement_note(
         assert purchase["replenishment"] is True
         assert purchase["export_count"] == 0
         selection = {"factory_id": "huaxing", "kind": "PURCHASE", "id": issue["id"]}
-        response = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
+        blocked = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
+        assert blocked.status_code == 409 and "补单待单独确认" in blocked.text
+        response = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection], "acknowledge_unaccepted": True})
         assert response.status_code == 200, response.text
         book = load_workbook(BytesIO(response.content), read_only=True, data_only=True)
         rows = list(book.active.values)

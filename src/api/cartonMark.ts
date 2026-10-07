@@ -125,6 +125,44 @@ export interface CartonMarkCustomerOption {
   name: string
 }
 
+export interface CartonMarkCustomerOrderCandidate {
+  id: string
+  order_no: string
+  contract_no: string
+  item_no: string
+  customer_code: string
+  customer_name: string
+}
+
+export interface CartonMarkCustomerRecognition {
+  status: 'MATCHED' | 'AMBIGUOUS' | 'CONFLICT' | 'NO_MATCH'
+  customer_name: string
+  managed_customer_id: string | null
+  message: string
+  orders: CartonMarkCustomerOrderCandidate[]
+}
+
+export interface CartonMarkCustomerRecognitionRequest {
+  contract_number: string
+  item: string
+  order_id?: string
+  excel_asset_id?: string
+  pdf_asset_id?: string
+}
+
+export interface CartonMarkCustomerInitializationCandidate {
+  name: string
+  order_count: number
+  customer_codes: string[]
+  existing_customer_id: string | null
+  warning: string
+}
+
+export interface CartonMarkCustomerInitializationResult {
+  created_names: string[]
+  existing_names: string[]
+}
+
 export interface CartonMarkCustomer extends CartonMarkCustomerOption {
   factory_id: string
   revision: number
@@ -265,6 +303,27 @@ export function createCartonMarkApi(client = http) {
       const response = await client.get<CartonMarkCustomer[]>('/carton-mark/customers', {
         params: { factory_id: factoryId },
         signal,
+      })
+      return response.data
+    },
+
+    async recognizeCustomer(factoryId: string, payload: CartonMarkCustomerRecognitionRequest, signal?: AbortSignal) {
+      const response = await client.post<CartonMarkCustomerRecognition>('/carton-mark/customer-recognition', payload, {
+        params: { factory_id: factoryId }, signal,
+      })
+      return response.data
+    },
+
+    async customerInitializationCandidates(factoryId: string, signal?: AbortSignal) {
+      const response = await client.get<CartonMarkCustomerInitializationCandidate[]>('/carton-mark/customers/initialization-candidates', {
+        params: { factory_id: factoryId }, signal,
+      })
+      return response.data
+    },
+
+    async initializeCustomers(factoryId: string, names: string[]) {
+      const response = await client.post<CartonMarkCustomerInitializationResult>('/carton-mark/customers/initialize', { names }, {
+        params: { factory_id: factoryId },
       })
       return response.data
     },

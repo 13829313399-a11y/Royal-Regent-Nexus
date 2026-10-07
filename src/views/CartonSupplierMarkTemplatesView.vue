@@ -24,12 +24,12 @@ function selectRequestedFactory() {
   const requested = typeof route.query.factory === 'string' ? route.query.factory : ''
   if (!memberships.value.length) {
     factory.value = ''
-    error.value = '暂无可查看的已下单厂区，请联系内部确认供应商账号已开通且采购单已发行。'
+    error.value = '暂无可查看的已下单厂区，请联系内部确认供应商账号已开通且采购单已生成。'
     return
   }
   if (requested && requested !== ALL_FACTORIES && !memberships.value.some(member => member.factory_id === requested)) {
     factory.value = ''
-    error.value = '所选厂区没有此供应商可查看的已发行订单，请选择其他服务厂区。'
+    error.value = '所选厂区没有此供应商可查看的已生成订单，请选择其他服务厂区。'
     return
   }
   factory.value = requested || ALL_FACTORIES
@@ -49,7 +49,7 @@ async function refresh() {
     memberships.value = available
     if (!available.length) {
       factory.value = ''
-      error.value = '暂无可查看的已下单厂区，请联系内部确认供应商账号已开通且采购单已发行。'
+      error.value = '暂无可查看的已下单厂区，请联系内部确认供应商账号已开通且采购单已生成。'
       return
     }
     const scope = factory.value === ALL_FACTORIES || available.some(item => item.factory_id === factory.value)

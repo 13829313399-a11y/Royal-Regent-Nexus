@@ -2,6 +2,7 @@ import { http } from '@/lib/http'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
 import type { LocationAllocation } from './cartonPositions'
 import type { SplitRecord } from './cartonOrderSplits'
+import type { CartonSupplierAcceptanceResponse } from './cartonProcurement'
 export interface PortalAttachment { id: string; filename: string; version: number; size: number; sha256: string; created_at: string }
 export interface PortalPaper { id: string; line_no: number; child_no: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit: string; unit: string; required_quantity: string; received_quantity: string; in_transit_quantity: string; remaining_to_ship: string; accepted: boolean; shipping_blocked_reason?: string; commitment_revision: number; promised_date: string; unit_price?: string; currency?: string }
 export interface PortalOrder { split_records?: SplitRecord[]; id: string; order_no: string; customer_code?: string; revision?: number; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; status: string; issue_id: string; document_no: string; order_date: string; planned_date: string; awaiting_issue: boolean; lines: PortalPaper[]; attachments: PortalAttachment[] }
@@ -20,7 +21,7 @@ export interface DeliveryImportPreview { filename: string; sha256: string; row_c
 export interface SupplierMarkTemplate { id: string; customer_name: string; po: string; item: string; contract_number: string; version: number; check_status: string; manual_released: boolean; excel_file_name: string; pdf_file_name: string; created_at: string }
 export interface SupplierDocumentOrder { order_no: string; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; order_date: string; planned_date: string }
 export interface SupplierDocumentLine { order_no: string; child_no: string; contract_no?: string; item_no?: string; customer_name?: string; source_document_no?: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; before_quantity?: string; change_quantity?: string; received_quantity?: string }
-export interface SupplierDocument { id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; export_count: number; is_batch?: boolean; source_documents?: { id: string; document_no: string; order_no: string }[]; unmatched_line_count?: number; source_filename?: string; source_sha256?: string; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
+export interface SupplierDocument { supplier_acceptance?: Omit<CartonSupplierAcceptanceResponse, 'status' | 'issue_id' | 'document_no' | 'accepted_at'> & { status: string }; id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; export_count: number; is_batch?: boolean; source_documents?: { id: string; document_no: string; order_no: string }[]; unmatched_line_count?: number; source_filename?: string; source_sha256?: string; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
 export interface SupplierActivity { id: string; created_at: string; action: string; reference_no: string; actor_name: string; factory_id: string }
 export interface SupplierMarkAsset {
   photo_group_id?: string | null
@@ -45,9 +46,9 @@ export const cartonSupplierPortalApi = {
     a.click()
     URL.revokeObjectURL(url)
   },
-  async exportOrderImport(documents: Pick<SupplierDocument, 'factory_id' | 'kind' | 'id'>[]) {
+  async exportOrderImport(documents: Pick<SupplierDocument, 'factory_id' | 'kind' | 'id'>[], acknowledgeUnaccepted = false) {
     const selections = documents.map(({ factory_id, kind, id }) => ({ factory_id, kind, id }))
-    const { data } = await http.post<Blob>(base + '/documents/order-import.xlsx', { documents: selections }, { responseType: 'blob' })
+    const { data } = await http.post<Blob>(base + '/documents/order-import.xlsx', { documents: selections, acknowledge_unaccepted: acknowledgeUnaccepted }, { responseType: 'blob' })
     const url = URL.createObjectURL(data)
     const a = document.createElement('a')
     a.href = url

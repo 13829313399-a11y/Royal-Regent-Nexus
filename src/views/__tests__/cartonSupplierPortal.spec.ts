@@ -21,6 +21,42 @@ function fixture(): PortalWorkspace {
   return { factory_id: 'huaxing', supplier_name: '河源东康', orders: [{ id: 'ORDER-A', order_no: 'ORDER-A', customer_name: 'Dickie', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', product_name: '产品', status: 'PENDING_SUPPLIER', issue_id: 'ISSUE-A', document_no: 'ORDER-A-P00', order_date: '2026-09-10', planned_date: '2026-09-25', awaiting_issue: false, attachments: [], lines: ['外箱', '平卡'].map((name, index) => ({ id: `LINE-${index}`, line_no: index+1, child_no: `ORDER-A/0${index+1}`, packaging_type: name, paper_quality: 'A33', specification: '10*20', dimension_unit: 'cm', unit: index ? '张' : '个', required_quantity: '100', received_quantity: '0', in_transit_quantity: '0', remaining_to_ship: '100', accepted: true, commitment_revision: 1, promised_date: '2026-09-25' })) }], shipments: [{ id: 'SHIP-A', delivery_note_no: 'DN-A', delivery_date: '2026-09-21', status: 'SENT', revision: 1, created_at: '', confirmed_at: '', acceptance_date: null, acceptance_lines: [], lines: [0,1].map(index => ({ id: `SL-${index}`, order_line_id: `LINE-${index}`, order_no: 'ORDER-A', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', customer_name: 'Dickie', child_no: `ORDER-A/0${index+1}`, packaging_type: index ? '平卡' : '外箱', paper_quality: 'A33', specification: '10*20', unit: '个', quantity: '10', unit_price: '2', currency: 'CNY' })) }] }
 }
 const options = { global: { stubs: { AccountMenu: true, NotificationCenter: true, RouterLink: { template: '<a><slot /></a>' }, CartonReceiptAllocations: true } } }
+
+describe('supplier purchase acceptance reminders', () => {
+  it.each(['PENDING', 'PARTIAL', 'HISTORICAL', 'MANUAL'])('requires an explicit export decision for %s documents', async status => {
+    const purchase = { id: 'ISSUE-A', kind: 'PURCHASE', factory_id: 'huaxing', document_no: 'DOC-A', document_type: 'FIRST',
+      date: '2026-09-25', created_at: '', status: '已生成', replenishment: false, export_count: 0, orders: [], lines: [],
+      supplier_acceptance: { status, label: '接单需核实', accepted_line_count: 0, total_line_count: 2 } }
+    api.documents.mockResolvedValue([purchase])
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '采购单与送货单')!.trigger('click'); await flushPromises()
+    expect(wrapper.get('[aria-label="DOC-A 接单状态"]').text()).toContain('接单需核实')
+    await wrapper.get('[aria-label="选择单据 DOC-A"]').setValue(true)
+    const exporter = wrapper.findAll('button').find(button => button.text().startsWith('导出东康导入模板'))!
+    await exporter.trigger('click'); await flushPromises()
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('导出不会自动接单'))
+    expect(api.exportOrderImport).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    await exporter.trigger('click'); await flushPromises()
+    expect(api.exportOrderImport).toHaveBeenCalledWith([purchase], true)
+    wrapper.unmount(); confirm.mockRestore()
+  })
+
+  it('shows accepted date differences and warns immediately when entering a new promise', async () => {
+    const work = fixture()
+    work.orders[0]!.lines[0]!.promised_date = '2026-09-27'
+    work.orders[0]!.lines[1]!.accepted = false
+    api.workspace.mockResolvedValue(work)
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    expect(wrapper.text()).toContain('较我方计划 2026-09-25 延后 2 天')
+    await wrapper.get('[aria-label="确认订单 ORDER-A 接单"]').trigger('click')
+    await wrapper.get('[aria-label="ORDER-A/02 承诺交期"]').setValue('2026-09-24')
+    expect(wrapper.text()).toContain('较我方计划 2026-09-25 提前 1 天')
+    expect(api.accept).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
 const guideOptions = { global: { stubs: { ...options.global.stubs,
   CartonSupplierMonthlyReview: true,
   CartonUsageGuide: { name: 'CartonUsageGuide', props: ['audience', 'factoryName'], emits: ['close', 'supplierNavigate'], template: '<section data-testid="supplier-usage-guide" />' },
@@ -229,7 +265,7 @@ describe('supplier batches and document desk', () => {
     const merged = {
       id: 'CPB-TEST', kind: 'PURCHASE' as const, factory_id: 'huaxing',
       document_no: 'CG-260929-BATCH', document_type: 'INITIAL', date: '2026-09-29',
-      created_at: '2026-09-29T08:00:00+08:00', status: '已发行', replenishment: false,
+      created_at: '2026-09-29T08:00:00+08:00', status: '已生成', replenishment: false,
       export_count: 0, is_batch: true,
       source_documents: ['A', 'B'].map(suffix => ({ id: `I-${suffix}`, document_no: `ORDER-${suffix}-P00`, order_no: `ORDER-${suffix}` })),
       orders: ['A', 'B'].map(suffix => ({ order_no: `ORDER-${suffix}`, customer_name: 'Dickie',
@@ -455,7 +491,7 @@ describe('supplier batches and document desk', () => {
 
   it('filters, inspects and exports selected purchase and delivery documents', async () => {
     const rows = [
-      { id: 'I-1', kind: 'PURCHASE', factory_id: 'huaxing', document_no: 'PO-1', document_type: 'INITIAL', date: '2026-09-21', created_at: '2026-09-21T10:00:00', status: '已发行', replenishment: false, export_count: 0,
+      { id: 'I-1', kind: 'PURCHASE', factory_id: 'huaxing', document_no: 'PO-1', document_type: 'INITIAL', date: '2026-09-21', created_at: '2026-09-21T10:00:00', status: '已生成', replenishment: false, export_count: 0,
         orders: [{ order_no: 'ORDER-A', customer_name: 'Dickie', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', product_name: '产品', order_date: '2026-09-10', planned_date: '2026-09-25' }],
         lines: [{ order_no: 'ORDER-A', child_no: 'ORDER-A/01', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', unit: '个', before_quantity: '0', change_quantity: '100', quantity: '100' }] },
       { id: 'S-1', kind: 'DELIVERY', factory_id: 'huaxing', document_no: 'DN-1', document_type: 'DELIVERY', date: '2026-09-22', created_at: '2026-09-22T10:00:00', status: 'SENT', replenishment: false, export_count: 0,
@@ -524,8 +560,8 @@ describe('supplier batches and document desk', () => {
 
   it('exports only selected purchase issues in the supplier ERP import format', async () => {
     const purchase = { id: 'ISSUE-1', kind: 'PURCHASE', factory_id: 'huaxing', document_no: 'PO-1',
-      document_type: 'INITIAL', date: '2026-09-24', created_at: '2026-09-24T10:00:00', status: '已发行',
-      replenishment: false, export_count: 0, orders: [], lines: [] }
+      document_type: 'INITIAL', date: '2026-09-24', created_at: '2026-09-24T10:00:00', status: '已生成',
+      replenishment: false, export_count: 0, orders: [], lines: [], supplier_acceptance: { status: 'ACCEPTED', label: '供应商已接单', total_line_count: 2, accepted_line_count: 2 } }
     const delivery = { ...purchase, id: 'SHIP-1', kind: 'DELIVERY', document_no: 'DN-1' }
     api.documents.mockResolvedValue([purchase, delivery])
     const wrapper = mount(CartonSupplierView, options); await flushPromises()
@@ -533,7 +569,7 @@ describe('supplier batches and document desk', () => {
     await wrapper.get('input[aria-label="全选当前筛选单据"]').setValue(true)
     await wrapper.findAll('button').find(button => button.text().includes('导出东康导入模板'))!.trigger('click')
     await flushPromises()
-    expect(api.exportOrderImport).toHaveBeenCalledWith([purchase])
+    expect(api.exportOrderImport).toHaveBeenCalledWith([purchase], false)
     expect(api.exportDocuments).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -546,7 +582,7 @@ describe('supplier batches and document desk', () => {
     api.documents.mockImplementation(async (factoryId: string) => [{
       id: `ISSUE-${factoryId}`, kind: 'PURCHASE', factory_id: factoryId,
       document_no: `PO-${factoryId}`, document_type: 'INITIAL', date: '2026-09-24',
-      created_at: '2026-09-24T10:00:00', status: '已发行', replenishment: false,
+      created_at: '2026-09-24T10:00:00', status: '已生成', replenishment: false,
       orders: [{ order_no: 'SHARED-NO', customer_name: '客户', contract_no: 'SC-1', customer_po: '', item_no: 'ITEM-1', product_name: '', order_date: '', planned_date: '' }],
       lines: [{ order_no: 'SHARED-NO', child_no: 'SHARED-NO/01', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', unit: '个', before_quantity: '0', change_quantity: '10', quantity: '10' }],
     }])
@@ -563,7 +599,7 @@ describe('supplier batches and document desk', () => {
     api.documents.mockResolvedValue(Array.from({ length: 101 }, (_, index) => ({
       id: `ISSUE-${index}`, kind: 'PURCHASE', factory_id: 'huaxing', document_no: `PO-${index}`,
       document_type: 'INITIAL', date: '2026-09-24', created_at: '2026-09-24T10:00:00',
-      status: '已发行', replenishment: false, orders: [], lines: [],
+      status: '已生成', replenishment: false, orders: [], lines: [],
     })))
     const wrapper = mount(CartonSupplierView, options); await flushPromises()
     await wrapper.findAll('button').find(button => button.text().includes('采购单与送货单'))!.trigger('click'); await flushPromises()
@@ -628,7 +664,7 @@ describe('supplier collaboration entry', () => {
       ['RECEIPT_PENDING', 'ORDER-TRANSIT', '送货待确定'],
       ['COMPLETED', 'ORDER-COMPLETE', '已完成'],
       ['CANCELLED', 'ORDER-CANCEL', '已取消'],
-      ['PENDING_ISSUE', 'ORDER-UNISSUED', '变更待发行'],
+      ['PENDING_ISSUE', 'ORDER-UNISSUED', '变更待生成'],
     ]) {
       await filter.setValue(value)
       expect(rows()).toHaveLength(1)

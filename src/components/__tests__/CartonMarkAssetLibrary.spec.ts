@@ -22,6 +22,41 @@ beforeEach(() => {
 })
 
 describe('carton-mark source repository', () => {
+  it('selects the explicit Excel/PDF pair across list filters without running a check', async () => {
+    const excel = { ...asset, id: 'excel', kind: 'excel' as const, file_name: 'source.xlsx' }
+    const newerPdf = { ...asset, id: 'pdf-new', file_name: 'revised.pdf' }
+    api.listAssets.mockResolvedValue([asset, excel, newerPdf, { ...asset, id: 'photo', kind: 'image', file_name: 'photo.jpg' }])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', checkEnabled: true } }); await flushPromises()
+    await wrapper.get('[aria-label="箱唛文件类型"]').setValue('pdf')
+    await wrapper.get('[aria-label="选择合同 4500222793 的 Excel / PDF 核对文件"]').trigger('click')
+    expect(wrapper.get('[aria-label="仓库核对 Excel"]').element).toHaveProperty('value', 'excel')
+    expect(wrapper.get('[aria-label="仓库核对 PDF"]').element).toHaveProperty('value', '')
+    expect(wrapper.get('[aria-label="选择仓库核对文件"]').text()).not.toContain('photo.jpg')
+    const confirm = wrapper.findAll('button').find(button => button.text() === '带入 Excel / PDF 核对')!
+    expect(confirm.attributes('disabled')).toBeDefined()
+    await wrapper.get('[aria-label="仓库核对 PDF"]').setValue(newerPdf.id)
+    await confirm.trigger('click')
+    expect(wrapper.emitted('useSources')?.[0]).toEqual([[excel, newerPdf]])
+    expect(api.downloadAsset).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('clears the source picker when the factory changes and hides it in read-only views', async () => {
+    const excel = { ...asset, id: 'excel', kind: 'excel' as const, file_name: 'source.xlsx' }
+    api.listAssets.mockResolvedValue([asset, excel])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', checkEnabled: true } }); await flushPromises()
+    await wrapper.get('[aria-label="选择合同 4500222793 的 Excel / PDF 核对文件"]').trigger('click')
+    api.listAssets.mockResolvedValue([])
+    await wrapper.setProps({ factoryId: 'huakang-a' }); await flushPromises()
+    expect(wrapper.find('[aria-label="选择仓库核对文件"]').exists()).toBe(false)
+    expect(wrapper.emitted('useSources')).toBeUndefined()
+    wrapper.unmount()
+    api.listAssets.mockResolvedValue([asset, excel])
+    const reader = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', checkEnabled: true, readOnly: true } }); await flushPromises()
+    expect(reader.find('[aria-label="选择合同 4500222793 的 Excel / PDF 核对文件"]').exists()).toBe(false)
+    reader.unmount()
+  })
+
   it('binds an unnamed photo by searching all local orders and filling its contract', async () => {
     const photo: CartonMarkAsset = { ...asset, kind: 'image', file_name: '微信图片.png', contract_number: '', orders: [], binding_status: 'UNBOUND' }
     api.listAssets.mockResolvedValue([photo])
