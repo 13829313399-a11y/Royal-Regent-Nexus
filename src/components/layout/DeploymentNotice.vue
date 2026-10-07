@@ -7,7 +7,8 @@ const notice = ref<DeploymentNotice | null>(null)
 const now = ref(Date.now())
 const offset = ref(0)
 const acknowledged = ref('')
-const dismissed = ref('')
+const dismissalStorageKey = 'rrn:deployment-notice:dismissed'
+const dismissed = ref(readDismissal())
 const connected = ref(true)
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 let tickTimer: ReturnType<typeof setInterval> | undefined
@@ -22,8 +23,22 @@ const remaining = computed(() => Math.max(0, Math.ceil(((notice.value?.startsAt 
 const title = computed(() => phase.value === 'scheduled' ? '系统更新停机提醒'
   : phase.value === 'maintenance' ? '系统正在维护' : phase.value === 'completed' ? '系统已恢复' : '更新已取消')
 function acknowledge() { if (phase.value !== 'maintenance') acknowledged.value = key.value }
-function dismiss() { dismissed.value = key.value }
-function refresh() { window.location.reload() }
+function readDismissal() {
+  try {
+    const saved = window.sessionStorage.getItem(dismissalStorageKey) ?? ''
+    return /^[a-f0-9]{32}:(completed|cancelled)$/.test(saved) ? saved : ''
+  } catch { return '' }
+}
+function dismiss() {
+  if (phase.value !== 'completed' && phase.value !== 'cancelled') return
+  dismissed.value = key.value
+  try { window.sessionStorage.setItem(dismissalStorageKey, key.value) } catch { /* Storage may be disabled. */ }
+}
+function refresh() {
+  if (phase.value !== 'completed') return
+  dismiss()
+  window.location.reload()
+}
 async function poll() {
   if (stopped || controller) return
   controller = new AbortController()

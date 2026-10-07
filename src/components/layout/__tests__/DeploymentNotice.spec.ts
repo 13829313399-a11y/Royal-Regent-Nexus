@@ -10,11 +10,12 @@ const response = (payload: unknown, date = 'Wed, 07 Oct 2026 04:00:00 GMT') => (
 let wrapper: ReturnType<typeof mount>
 let request: ReturnType<typeof vi.fn>
 beforeEach(() => {
+  window.sessionStorage.clear()
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-07T04:00:00Z'))
   request = vi.fn().mockResolvedValue(response(state()))
   vi.stubGlobal('fetch', request)
 })
-afterEach(() => { wrapper?.unmount(); vi.useRealTimers(); vi.unstubAllGlobals(); document.body.innerHTML = '' })
+afterEach(() => { wrapper?.unmount(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.innerHTML = '' })
 async function load() { wrapper = mount(DeploymentNotice, { attachTo: document.body }); await flushPromises() }
 async function click(text: string) {
   const button = Array.from(document.querySelectorAll('button')).find(button => button.textContent?.includes(text))
@@ -56,6 +57,56 @@ describe('all-user deployment notice', () => {
     vi.setSystemTime(new Date('2026-10-07T06:00:00Z'))
     await load()
     expect(document.body.textContent).toContain('05:00')
+  })
+
+  it('dismisses recovery before refresh and keeps it dismissed when the page mounts again', async () => {
+    request.mockResolvedValue(response(state('completed')))
+    await load()
+    // JSDOM reports navigation as unimplemented; remount below models the new document.
+    await click('我已保存，刷新页面')
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    wrapper.unmount()
+    await load()
+    expect(document.body.textContent).not.toContain('系统已恢复')
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(document.body.textContent).not.toContain('系统已恢复')
+  })
+
+  it('still shows maintenance and recovery for the next deployment after a refresh acknowledgment', async () => {
+    request.mockResolvedValue(response(state('completed')))
+    await load()
+    await click('保留当前页面')
+    await click('知道了')
+    wrapper.unmount()
+    await load()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    request.mockResolvedValue(response(state('maintenance')))
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(document.body.textContent).toContain('系统正在维护')
+    request.mockResolvedValue(response({ ...state('completed'), id: 'b'.repeat(32) }))
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(document.body.textContent).toContain('我已保存，刷新页面')
+  })
+
+  it('does not let stored acknowledgments hide scheduled or active maintenance notices', async () => {
+    window.sessionStorage.setItem('rrn:deployment-notice:dismissed', `${id}:scheduled`)
+    await load()
+    expect(document.body.textContent).toContain('系统更新停机提醒')
+    wrapper.unmount()
+    window.sessionStorage.setItem('rrn:deployment-notice:dismissed', `${id}:maintenance`)
+    request.mockResolvedValue(response(state('maintenance')))
+    await load()
+    expect(document.body.textContent).toContain('系统正在维护')
+  })
+
+  it('still allows recovery actions when browser storage is unavailable', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    request.mockResolvedValue(response(state('completed')))
+    await load()
+    await click('保留当前页面')
+    await click('知道了')
+    expect(document.body.textContent).not.toContain('系统已恢复')
   })
 
   it('announces a cancelled deployment and does not repeat an acknowledged popup', async () => {
