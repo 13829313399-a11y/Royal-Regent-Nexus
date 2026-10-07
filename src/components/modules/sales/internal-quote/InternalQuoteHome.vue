@@ -428,14 +428,14 @@ function canDeleteQuote(quote: InternalQuote) {
 }
 
 function deleteIsProtected(quote: InternalQuote) {
-  return ['released', 'exported'].includes(quote.status)
+  return Boolean(quote.deleteBlockReason) || ['released', 'exported'].includes(quote.status)
     || quote.finalReleaseStatus === 'approved'
 }
 
 function deleteButtonTitle(quote: InternalQuote) {
-  return deleteIsProtected(quote)
+  return quote.deleteBlockReason || (deleteIsProtected(quote)
     ? '已放行、已导出或已交接的报价不能删除，请使用归档'
-    : '删除内部报价'
+    : '删除内部报价')
 }
 
 function canArchiveQuote(quote: InternalQuote) {
@@ -818,7 +818,7 @@ onBeforeUnmount(() => {
               <td><button type="button" class="quote-number" @click="openQuote(quote)">{{ quote.quoteNo }}</button></td>
               <td><strong>{{ quote.productName }}</strong><span>{{ quote.customer }}</span></td>
               <td><span class="quote-initiator">{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}</span><small>{{ quote.initiatorName }}</small></td>
-              <td><span class="quote-version">{{ quote.versionLabel }}</span></td>
+              <td><span class="quote-version">{{ quote.versionLabel }}</span><span v-if="(quote.documentVersionCount ?? 1) > 1">{{ quote.documentProductCount }} 款 · {{ quote.documentVersionCount }} 个方案版本</span></td>
               <td><span class="quote-status" :class="`tone-${statusMeta[quote.status].tone}`"><i />{{ quoteStatusLabel(quote) }}</span></td>
               <td>
                 <div class="quote-progress-cell"><div><span :style="{ width: `${requiredCount(quote) ? approvedCount(quote) / requiredCount(quote) * 100 : 0}%` }" /></div><strong>{{ approvedCount(quote) }}/{{ requiredCount(quote) }}</strong></div>

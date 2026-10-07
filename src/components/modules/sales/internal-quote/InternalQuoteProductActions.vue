@@ -2,16 +2,18 @@
 import { Copy, Layers3 } from '@lucide/vue'
 import type { InternalQuoteBatchProduct, InternalQuoteStatus } from '@/types/internalQuoteDesk'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   products: InternalQuoteBatchProduct[]
   currentQuoteId: string
   canManage: boolean
+  canCopyBaseline?: boolean
   copyBusyQuoteId: string
-}>()
+}>(), { canCopyBaseline: true })
 
 const emit = defineEmits<{
   switch: [product: InternalQuoteBatchProduct]
   copyBaseline: [product: InternalQuoteBatchProduct]
+  copyPackaging: []
 }>()
 
 const statusLabels: Record<InternalQuoteStatus, string> = {
@@ -30,6 +32,7 @@ const copyAllowed = (product: InternalQuoteBatchProduct | undefined) => Boolean(
   product
   && !product.isBaseline
   && props.canManage
+  && props.canCopyBaseline !== false
   && !['final_pending', 'released', 'exported', 'archived'].includes(product.status),
 )
 
@@ -48,6 +51,7 @@ function switchProduct(event: Event) {
 <template>
   <section v-if="products.length > 1" class="quote-product-footer-actions" aria-label="批次产品操作">
     <label class="quote-product-footer-select"><span><Layers3 />选择产品</span><select :value="currentQuoteId" aria-label="选择报价产品" @change="switchProduct"><option v-for="product in products" :key="product.quoteId" :value="product.quoteId">{{ String(product.position).padStart(2, '0') }} · {{ product.productName }} · {{ statusLabels[product.status] }}{{ product.isBaseline ? ' · 基准款' : product.differsFromBaseline ? ' · 有差异' : ' · 同基准' }}</option></select></label>
+    <button v-if="canManage" type="button" class="quote-product-footer-copy" :disabled="Boolean(copyBusyQuoteId)" @click="emit('copyPackaging')"><Copy />仅复制包装</button>
     <button
       v-if="copyAllowed(currentProduct())"
       type="button"
@@ -55,7 +59,7 @@ function switchProduct(event: Event) {
       :disabled="Boolean(copyBusyQuoteId)"
       @click="copyCurrentProduct"
     >
-      <Copy />{{ copyBusyQuoteId === currentQuoteId ? '复制中…' : '复制基准款到当前款' }}
+      <Copy />{{ copyBusyQuoteId === currentQuoteId ? '复制中…' : '复制整份基准款' }}
     </button>
   </section>
 </template>
