@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from typing import Literal
+from app.schemas.carton_mark import CartonMarkDocumentCheckResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.carton_procurement import CartonLocationAllocation
 
@@ -152,6 +153,7 @@ class ShipmentLineLink(Payload):
 
 class SupplierMarkAssetOrderOut(BaseModel):
     id: str
+    issue_id: str
     customer_name: str
     contract_no: str
     customer_po: str
@@ -160,6 +162,7 @@ class SupplierMarkAssetOrderOut(BaseModel):
 
 class SupplierMarkAssetOut(BaseModel):
     id: str
+    revision: int
     file_name: str
     kind: str
     photo_group_id: str | None = None
@@ -167,3 +170,24 @@ class SupplierMarkAssetOut(BaseModel):
     contract_number: str
     created_at: str
     orders: list[SupplierMarkAssetOrderOut]
+
+
+class SupplierMarkUploadOrderOut(SupplierMarkAssetOrderOut):
+    document_no: str
+    order_date: str
+
+
+class SupplierMarkCheckOut(SupplierMarkTemplateOut):
+    factory_id: str
+    order_id: str
+    issue_id: str
+    excel_asset_id: str
+    qc_ready: bool
+    check_result: CartonMarkDocumentCheckResponse
+
+
+class SupplierMarkAssetUploadOut(BaseModel):
+    file_name: str
+    status: Literal["created", "duplicate", "failed"]
+    message: str = ""
+    asset: SupplierMarkAssetOut | None = None

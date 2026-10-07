@@ -1,20 +1,23 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Blob as NodeBlob } from 'node:buffer'
+import { reactive } from 'vue'
 import CartonSupplierView from '../CartonSupplierView.vue'
 import CartonSupplierReceiving from '@/components/CartonSupplierReceiving.vue'
 import CartonSupplierMarkTemplatesView from '../CartonSupplierMarkTemplatesView.vue'
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import type { PortalWorkspace } from '@/api/cartonSupplierPortal'
-const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receiptOptions: vi.fn(), linkReceipt: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
+const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receiptOptions: vi.fn(), linkReceipt: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), markUploadOrders: vi.fn(), uploadMarkAssets: vi.fn(), markChecks: vi.fn(), createMarkCheck: vi.fn(), downloadMarkCheck: vi.fn(), previewMarkCheckUrl: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
 const router = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }))
 const routeState = vi.hoisted(() => ({ query: { factory: 'huaxing', shipment: undefined as string | undefined } }))
 const can = vi.hoisted(() => vi.fn((_permission: string) => true))
+const authState = reactive({ currentUser: { id: 'supplier-test', display_name: '供应商' }, authorizationVersion: 1 })
 vi.mock('@/api/cartonSupplierPortal', () => ({ cartonSupplierPortalApi: api }))
 vi.mock('@/api/cartonPositions', () => ({ cartonPositionsApi: { locations: vi.fn(async () => [{ id: 'BIN-A', factory_id: 'huaxing', warehouse: 'A', bin_code: '01', label: 'A / 01', status: 'ACTIVE' }]) } }))
 vi.mock('@/api/cartonProcurement', () => ({ cartonProcurementApi: { listCustomers: vi.fn(async () => [{ customer_code: 'DICKIE', customer_name: 'Dickie', status: 'ACTIVE' }]) } }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ can }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ can,
+  get currentUser() { return authState.currentUser }, get authorizationVersion() { return authState.authorizationVersion } }) }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ activeProductionFactory: { id: 'huaxing' } }) }))
 vi.mock('vue-router', () => ({ useRoute: () => routeState, useRouter: () => router, RouterLink: { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' } }))
 function fixture(): PortalWorkspace {
@@ -61,7 +64,7 @@ const guideOptions = { global: { stubs: { ...options.global.stubs,
   CartonSupplierMonthlyReview: true,
   CartonUsageGuide: { name: 'CartonUsageGuide', props: ['audience', 'factoryName'], emits: ['close', 'supplierNavigate'], template: '<section data-testid="supplier-usage-guide" />' },
 } } }
-beforeEach(() => { routeState.query.shipment = undefined; vi.resetAllMocks(); can.mockReturnValue(true); api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }]); api.workspace.mockResolvedValue(fixture()); api.members.mockResolvedValue([]); api.ship.mockResolvedValue({ id: 'NEW' }); api.previewDeliveryImport.mockResolvedValue({ filename: '送货明细表.xlsx', sha256: 'abc', row_count: 1, groups: [{ factory_id: 'huaxing', destination: '华兴', delivery_note_no: 'DN-NEW', delivery_date: '2026-09-24', ready: true, issues: [], rows: [{ source_sheet: '送货明细', source_row: 2, contract_no: 'SC-A', item_no: 'ITEM-A', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', delivered_quantity: 4, order_no: 'ORDER-A', child_no: 'ORDER-A/01', order_line_id: 'LINE-0', issue_id: 'ISSUE-A', status: 'READY', reason: '已匹配' }] }] }); api.confirmDeliveryImport.mockResolvedValue({ shipments: [{ id: 'NEW' }] }); api.acceptBatch.mockResolvedValue({ order_ids: [] }); api.documents.mockResolvedValue([]); api.activityPage.mockResolvedValue({ items: [{ id: 'ACT1', factory_id: 'huaxing', action: '送货单已登记', created_at: '2026-09-25', reference_no: 'DN-1', actor_name: '供应商' }], total: 1, limit: 50, offset: 0 }); api.activity.mockResolvedValue([]); api.exportDocuments.mockResolvedValue(undefined); api.exportOrderImport.mockResolvedValue(undefined); api.receiptOptions.mockResolvedValue([]); api.linkReceipt.mockResolvedValue({ id: 'SHIP-A' }); api.receive.mockResolvedValue({ id: 'SHIP-A' }); api.linkSampleReceipt.mockResolvedValue({ receipt_line_id: 'RL-SAMPLE', order_line_id: 'LINE-0', order_no: 'ORDER-A', quantity: '4' }); api.markAssets.mockResolvedValue([]); api.previewMarkAssetUrl.mockReturnValue('/api/preview.pdf'); api.markTemplates.mockResolvedValue([]); api.previewMarkPdfUrl.mockReturnValue('/api/preview.pdf') })
+beforeEach(() => { routeState.query.shipment = undefined; vi.resetAllMocks(); can.mockReturnValue(true); api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }]); api.workspace.mockResolvedValue(fixture()); api.members.mockResolvedValue([]); api.ship.mockResolvedValue({ id: 'NEW' }); api.previewDeliveryImport.mockResolvedValue({ filename: '送货明细表.xlsx', sha256: 'abc', row_count: 1, groups: [{ factory_id: 'huaxing', destination: '华兴', delivery_note_no: 'DN-NEW', delivery_date: '2026-09-24', ready: true, issues: [], rows: [{ source_sheet: '送货明细', source_row: 2, contract_no: 'SC-A', item_no: 'ITEM-A', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', delivered_quantity: 4, order_no: 'ORDER-A', child_no: 'ORDER-A/01', order_line_id: 'LINE-0', issue_id: 'ISSUE-A', status: 'READY', reason: '已匹配' }] }] }); api.confirmDeliveryImport.mockResolvedValue({ shipments: [{ id: 'NEW' }] }); api.acceptBatch.mockResolvedValue({ order_ids: [] }); api.documents.mockResolvedValue([]); api.activityPage.mockResolvedValue({ items: [{ id: 'ACT1', factory_id: 'huaxing', action: '送货单已登记', created_at: '2026-09-25', reference_no: 'DN-1', actor_name: '供应商' }], total: 1, limit: 50, offset: 0 }); api.activity.mockResolvedValue([]); api.exportDocuments.mockResolvedValue(undefined); api.exportOrderImport.mockResolvedValue(undefined); api.receiptOptions.mockResolvedValue([]); api.linkReceipt.mockResolvedValue({ id: 'SHIP-A' }); api.receive.mockResolvedValue({ id: 'SHIP-A' }); api.linkSampleReceipt.mockResolvedValue({ receipt_line_id: 'RL-SAMPLE', order_line_id: 'LINE-0', order_no: 'ORDER-A', quantity: '4' }); api.markUploadOrders.mockResolvedValue([]); api.uploadMarkAssets.mockResolvedValue([]); api.markAssets.mockResolvedValue([]); api.markChecks.mockResolvedValue([]); api.previewMarkCheckUrl.mockReturnValue("/api/check.pdf"); api.previewMarkAssetUrl.mockReturnValue('/api/preview.pdf'); api.markTemplates.mockResolvedValue([]); api.previewMarkPdfUrl.mockReturnValue('/api/preview.pdf') })
 
 describe('late supplier documents use existing warehouse receipts', () => {
   const originalReceipt = { id: 'RECEIPT-1', revision: 3, status: 'POSTED', receipt_no: 'RCPT-1', delivery_note_no: 'MANUAL-1',
@@ -162,6 +165,26 @@ describe('supplier usage guide entry', () => {
 })
 
 describe('supplier carton mark templates', () => {
+  it('selects a shared Excel into the supplier PDF form without opening the internal warehouse page', async () => {
+    routeState.query.factory = 'huaxing'
+    api.markAssets.mockResolvedValue([{ id: 'excel-a', revision: 4, file_name: '客人.xlsx', kind: 'excel', size_bytes: 400,
+      contract_number: 'SC-A', created_at: '2026-10-05', orders: [{ id: 'ORDER-A', issue_id: 'ISSUE-A', customer_name: 'Dickie', customer_po: 'PO-A', contract_no: 'SC-A', item_no: 'ITEM-A' }] }])
+    const wrapper = mount(CartonSupplierMarkTemplatesView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '选择 Excel 并上传 PDF 核对')!.trigger('click'); await flushPromises()
+    expect(wrapper.get('[aria-label="供应商 Excel / PDF 核对"]').isVisible()).toBe(true)
+    expect(wrapper.get('[aria-label="核对关联采购订单"]').element).toHaveProperty('value', 'ORDER-A')
+    expect(wrapper.get('[aria-label="供应商 Excel / PDF 核对"]').text()).toContain('客人.xlsx')
+    expect(wrapper.text()).not.toContain('维护客户')
+    expect(wrapper.text()).not.toContain('返回PMC')
+    expect(api.markChecks).toHaveBeenCalledWith('huaxing', expect.any(AbortSignal))
+    authState.currentUser = { id: 'supplier-test', display_name: '供应商新头像' }
+    await flushPromises()
+    expect(wrapper.find('[aria-label="核对关联采购订单"]').exists()).toBe(true)
+    authState.authorizationVersion++
+    await flushPromises()
+    expect(wrapper.find('[aria-label="核对关联采购订单"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('defaults to all service factories and can switch to a single factory', async () => {
     routeState.query.factory = ''
     api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }, { factory_id: 'huakang-a', supplier_name: '河源东康' }])
@@ -248,7 +271,8 @@ describe('supplier carton mark templates', () => {
     await wrapper.get('button[aria-label="下载 print.pdf"]').trigger('click'); await flushPromises()
     expect(api.downloadMarkAsset).toHaveBeenCalledWith('mark-1', 'huaxing', expect.any(AbortSignal))
     expect(wrapper.get('[role="alert"]').text()).toContain('下载失败')
-    expect(wrapper.find('input[type="file"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="供应商批量选择箱唛原文件"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="批量选择箱唛原文件"]').exists()).toBe(false)
     wrapper.unmount()
   })
   it('does not request templates when the account has no supplier membership', async () => {

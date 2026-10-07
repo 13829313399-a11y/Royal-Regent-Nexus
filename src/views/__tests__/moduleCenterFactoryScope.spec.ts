@@ -131,7 +131,7 @@ describe('module center factory scope', () => {
     routerPushMock.mockReset()
   })
 
-  it('routes supplier accounts to their own collaboration and read-only carton mark pages', async () => {
+  it('routes supplier accounts to their own collaboration and carton mark checks even with internal roles', async () => {
     routeState.path = '/modules/pmc-warehouse'
     routeState.params.department = 'pmc-warehouse'
     const pinia = createPinia()
@@ -158,6 +158,9 @@ describe('module center factory scope', () => {
     await nextTick()
     expect(getModule('carton-procurement').route).toBe('/modules/pmc-warehouse/carton-procurement?factory=huaxing')
     expect(getModule('carton-supplier').route).toBe('/carton-supplier')
+    expect(getModule('carton-mark-check').route).toBe('/carton-supplier/carton-mark')
+    await wrapper.findAllComponents(ModuleCard).find(card => card.props('module').id === 'carton-mark-check')!.trigger('click')
+    expect(routerPushMock).toHaveBeenLastCalledWith('/carton-supplier/carton-mark')
     auth.permissions = ['carton_procurement:read', 'carton_mark:read']
     auth.effectiveAccess = []
     await nextTick()
@@ -308,7 +311,7 @@ describe('module center factory scope', () => {
         expectedHuakangCModules.map((module) => ({
           id: module.id,
           title: module.title,
-          childLabels: module.children.filter(child => departmentId !== 'pmc-warehouse' || module.id !== 'carton-mark-check' || ['客人 Excel', '印刷 PDF'].includes(child.label)).map((child) => child.label),
+          childLabels: module.children.filter(child => departmentId !== 'pmc-warehouse' || module.id !== 'carton-mark-check' || ['客人 Excel', '印刷 PDF', '内容核对'].includes(child.label)).map((child) => child.label),
         })),
       )
       expectNoForeignFactoryData(wrapper, huakangCModules, 'huakang-c', '华康C')
