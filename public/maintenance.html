@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>系统维护 · Royal Regent</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#edf5f1;font-family:system-ui,sans-serif;color:#334155}main{box-sizing:border-box;width:min(480px,calc(100vw - 32px));padding:40px 30px;text-align:center;background:white;border-radius:20px;box-shadow:0 20px 70px #173c291a}h1{font-size:24px;color:#155c4e}p{line-height:1.8;font-size:14px}small{color:#64748b}button{margin-top:20px;border:0;border-radius:8px;padding:12px 18px;background:#155c4e;color:white;font-size:14px;cursor:pointer}</style></head>
+<body><main><h1 id="title">系统正在维护</h1><p id="message">系统正在更新，暂时无法操作。请稍候，恢复后会在此提示。</p><small id="connection" role="status">正在检查恢复状态…</small><div><button id="resume" hidden>系统已恢复，重新打开页面</button></div></main>
+<script>
+const title = document.getElementById('title'), message = document.getElementById('message'), connection = document.getElementById('connection'), button = document.getElementById('resume');
+button.addEventListener('click', () => location.reload());
+async function check() {
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch('/deployment-status.json', {cache:'no-store', credentials:'omit', signal:controller.signal});
+    if (!response.ok) throw new Error('offline');
+    const status = await response.json();
+    const recovered = status.phase === 'completed' || status.phase === 'cancelled';
+    // Text only; never render the public notice as HTML.
+    if (typeof status.message === 'string' && status.message.length <= 300) message.textContent = status.message;
+    title.textContent = recovered ? '系统已恢复' : '系统正在维护';
+    connection.textContent = recovered ? '可以继续使用系统。' : '恢复后会自动显示提示，无需反复刷新。';
+    button.hidden = !recovered;
+  } catch { connection.textContent = '正在等待服务器恢复连接…'; }
+  finally { clearTimeout(timeout); setTimeout(check, 10000); }
+}
+check();
+</script></body></html>

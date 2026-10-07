@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+/.deployment-notice/
 .tmp/
 .tmp-tests/
 *.local

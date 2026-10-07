@@ -244,3 +244,35 @@ def merge_po_results(results: Iterable[dict[str, Any]]) -> tuple[list[dict[str, 
             report.append(f"PO {po}：保留 {current['filename']}，忽略较旧版本 {result['filename']}")
     rows = [row for result in [*without_po, *chosen.values()] for row in result.get("rows", [])]
     return rows, report
+
+
+def merge_edu_po_results(results: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Revision selection is per customer order, not the workbook's first PO."""
+    from app.services.customer_order_huaxing_unified import edu_order_key
+    chosen: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]] = {}
+    unidentified: list[dict[str, Any]] = []
+    report: list[str] = []
+    for result in results:
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in result.get('rows', []):
+            key = edu_order_key(row.get('contract_no'), row.get('customer_po'))
+            if not any(key):
+                unidentified.append(row)
+                continue
+            groups.setdefault(key, []).append(row)
+        for key, rows in groups.items():
+            current = chosen.get(key)
+            revision = revision_number(result.get('filename', ''), result.get('meta'))
+            old_revision = revision_number(current[0].get('filename', ''), current[0].get('meta')) if current else -1
+            if current and revision == old_revision:
+                fields = ('item_no', 'quantity', 'case_pack', 'ship_date', 'unit_price', 'amount', 'customer', 'country', 'product_name', 'packaging', 'standards', 'notes')
+                signature = lambda values: sorted(tuple(str(row.get(field) or '') for field in fields) for row in values)
+                if signature(rows) != signature(current[1]):
+                    raise ValueError(f"EDU 合同/PO {' / '.join(key)} 在 {current[0]['filename']} 与 {result['filename']} 存在同版本内容冲突，请确认正式修订版后重新导入")
+            if current is None or revision >= old_revision:
+                if current:
+                    report.append(f"EDU 合同/PO {' / '.join(key)}：保留 {result['filename']}，忽略较旧版本 {current[0]['filename']}")
+                chosen[key] = result, rows
+            else:
+                report.append(f"EDU 合同/PO {' / '.join(key)}：保留 {current[0]['filename']}，忽略较旧版本 {result['filename']}")
+    return [*unidentified, *(row for _, rows in chosen.values() for row in rows)], report
