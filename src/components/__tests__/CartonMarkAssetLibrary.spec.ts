@@ -22,6 +22,30 @@ beforeEach(() => {
 })
 
 describe('carton-mark source repository', () => {
+  it('carries a supplier Excel/PDF pair with only common issued orders and no warehouse write', async () => {
+    const order = { ...asset.orders[0]!, issue_id: 'issue-a', customer_po: 'PO-A' }
+    const excel = { ...asset, id: 'excel-own', kind: 'excel' as const, file_name: 'source.xlsx', orders: [order, { ...order, id: 'order-2' }] }
+    const pdf = { ...asset, orders: [order] }
+    supplierApi.markAssets.mockResolvedValue([excel, pdf])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: '', supplierFactories: ['huakang-b'], supplier: true, readOnly: true, supplierCheckEnabled: true } }); await flushPromises()
+    await wrapper.get('[aria-label="选择合同 4500222793 的 Excel / PDF 核对文件"]').trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '带入 Excel / PDF 核对')!.trigger('click')
+    expect(wrapper.emitted('supplierSources')?.[0]?.[0]).toEqual([{ ...excel, factory_id: 'huakang-b', orders: [order] }, { ...pdf, factory_id: 'huakang-b' }])
+    expect(wrapper.emitted('useSources')).toBeUndefined(); expect(api.bindAsset).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('selects a supplier Excel with its factory and issued order without enabling warehouse writes', async () => {
+    const excel = { ...asset, kind: 'excel' as const, file_name: 'customer.xlsx', revision: 3,
+      orders: asset.orders.map(order => ({ ...order, issue_id: 'issue-a', customer_po: 'PO-A' })) }
+    supplierApi.markAssets.mockResolvedValue([excel])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huakang-b', supplier: true, readOnly: true, supplierCheckEnabled: true } }); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '选择 Excel 并上传 PDF 核对')!.trigger('click')
+    expect(wrapper.emitted('supplierExcel')?.[0]?.[0]).toMatchObject({ id: excel.id, factory_id: 'huakang-b', revision: 3, orders: [{ issue_id: 'issue-a' }] })
+    expect(wrapper.text()).not.toContain('上传入库')
+    expect(wrapper.text()).not.toContain('关联设置')
+    expect(api.listAssets).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('selects the explicit Excel/PDF pair across list filters without running a check', async () => {
     const excel = { ...asset, id: 'excel', kind: 'excel' as const, file_name: 'source.xlsx' }
     const newerPdf = { ...asset, id: 'pdf-new', file_name: 'revised.pdf' }
