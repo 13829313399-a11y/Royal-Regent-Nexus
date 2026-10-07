@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth'
 import { factoryContexts } from '@/data/enterpriseMock'
 
 const props = defineProps<{ factoryId: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
-const emit = defineEmits<{ use: [asset: CartonMarkAsset] }>()
+const emit = defineEmits<{ use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]] }>()
 const auth = useAuthStore()
 const canRead = computed(() => props.supplier ? auth.can('carton_supplier:read') : ['pmc-warehouse', 'carton', 'qa', 'qc'].some(d => auth.can('carton_mark:read', props.factoryId, d)))
 const canWrite = computed(() => !props.supplier && !props.readOnly && ['pmc-warehouse', 'carton'].some(d => auth.can('carton_mark:template_upload', props.factoryId, d)))
@@ -17,6 +17,28 @@ const entries = ref<CartonMarkAsset[]>([])
 const results = ref<CartonMarkAssetUploadResult[]>([])
 const pendingFiles = ref<File[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
+const sourcePanel = ref<HTMLElement | null>(null)
+const sourceGroup = ref(''), sourceExcelId = ref(''), sourcePdfId = ref('')
+function groupKey(asset: CartonMarkAsset) {
+  const customer = [...new Set(asset.orders.map(order => order.customer_name))].sort().join('、')
+  return JSON.stringify(asset.photo_group_id ? [asset.factory_id, 'photos', asset.photo_group_id] : [asset.factory_id, asset.contract_number || asset.id, customer])
+}
+const sourceCandidates = computed(() => entries.value.filter(asset => asset.kind !== 'image' && groupKey(asset) === sourceGroup.value))
+const sourceExcels = computed(() => sourceCandidates.value.filter(asset => asset.kind === 'excel'))
+const sourcePdfs = computed(() => sourceCandidates.value.filter(asset => asset.kind === 'pdf'))
+const selectedSources = computed(() => [sourceExcels.value.find(asset => asset.id === sourceExcelId.value), sourcePdfs.value.find(asset => asset.id === sourcePdfId.value)])
+function chooseSources(key: string) {
+  if (!canWrite.value || !props.checkEnabled || busy.value) return
+  sourceGroup.value = key
+  sourceExcelId.value = sourceExcels.value.length === 1 ? sourceExcels.value[0]!.id : ''
+  sourcePdfId.value = sourcePdfs.value.length === 1 ? sourcePdfs.value[0]!.id : ''
+  void nextTick(() => sourcePanel.value?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
+}
+function useSources() {
+  if (!canWrite.value || !props.checkEnabled || busy.value || selectedSources.value.some(asset => !asset || asset.factory_id !== props.factoryId)) return
+  emit('useSources', selectedSources.value as CartonMarkAsset[])
+  sourceGroup.value = ''
+}
 const query = ref('')
 const onlyUnbound = ref(false)
 const kindFilter = ref('ALL')
@@ -61,7 +83,7 @@ const groups = computed(() => {
   const grouped = new Map<string, { key: string; factory: string; contract: string; customer: string; latest: string; photoGroupId: string | null; assets: CartonMarkAsset[] }>()
   for (const asset of visible.value) {
     const customer = [...new Set(asset.orders.map(order => order.customer_name))].sort().join('、')
-    const key = JSON.stringify(asset.photo_group_id ? [asset.factory_id, 'photos', asset.photo_group_id] : [asset.factory_id, asset.contract_number || asset.id, customer])
+    const key = groupKey(asset)
     const group = grouped.get(key) ?? { key, factory: asset.factory_id, contract: asset.contract_number, customer, latest: '', photoGroupId: asset.photo_group_id ?? null, assets: [] }
     group.assets.push(asset); if (asset.created_at > group.latest) group.latest = asset.created_at
     grouped.set(key, group)
@@ -255,6 +277,7 @@ watch(() => [props.factoryId, props.supplierFactories?.join('\0'), props.orderId
   results.value = []
   pendingFiles.value = []
   closeBinding(); selectedPhotos.value = []; allOrders.value = []; gallery.value = []
+  sourceGroup.value = ''; sourceExcelId.value = ''; sourcePdfId.value = ''
   contract.value = ''
   boundOrderId.value = ''
   error.value = ''
@@ -318,6 +341,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
           <span v-if="supplier && supplierFactories">{{ factoryDisplayName(group.factory) }} ·</span>
           <span v-if="group.photoGroupId" class="rounded bg-blue-100 px-2 py-1 text-blue-700">照片组</span>
           <span>合同 {{ group.contract || '未识别' }}</span><span>{{ group.customer }}</span><span class="ml-auto">{{ group.assets.length }} 份原文件<span v-if="group.photoGroupId && photoMembers(group.photoGroupId, group.factory).length !== group.assets.length"> / 整组 {{ photoMembers(group.photoGroupId, group.factory).length }} 张</span></span>
+          <button v-if="canWrite && checkEnabled && group.assets.some(asset => asset.kind !== 'image')" type="button" :disabled="busy" class="rounded border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`选择合同 ${group.contract || '未识别'} 的 Excel / PDF 核对文件`" @click="chooseSources(group.key)">选择 Excel / PDF 核对</button>
           <button v-if="group.photoGroupId" type="button" class="rounded border bg-white px-2 py-1.5" @click="gallery = photoMembers(group.photoGroupId, group.factory)">查看照片组</button>
           <button v-if="canWrite && group.photoGroupId" type="button" :disabled="busy" class="rounded border bg-white px-2 py-1.5" @click="edit(group.assets[0]!)">整组关联</button>
           <button v-if="canWrite && group.photoGroupId" type="button" :disabled="busy" class="rounded border bg-white px-2 py-1.5" @click="ungroup(group.photoGroupId)">解除分组</button>
@@ -349,6 +373,16 @@ onBeforeUnmount(() => { generation++; controller.abort() })
         </li>
         </template>
       </ul>
+      </div>
+      <div v-if="sourceGroup && canWrite && checkEnabled" ref="sourcePanel" role="dialog" aria-label="选择仓库核对文件" class="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
+        <p class="font-semibold">从同一合同的原文件选择 Excel 与打印 PDF</p>
+        <p class="mt-1 text-xs text-slate-600">包含列表筛选隐藏的同合同文件；多个版本请明确选择。带入后仍需提交内容核对，通过或人工放行后才可供 QC 使用。</p>
+        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+          <label class="text-xs">客人 Excel<select v-model="sourceExcelId" aria-label="仓库核对 Excel" class="mt-1 h-10 w-full rounded border bg-white px-2"><option value="">请选择 Excel</option><option v-for="asset in sourceExcels" :key="asset.id" :value="asset.id">{{ asset.file_name }} · {{ asset.created_at.slice(0, 10) }}</option></select></label>
+          <label class="text-xs">打印 PDF<select v-model="sourcePdfId" aria-label="仓库核对 PDF" class="mt-1 h-10 w-full rounded border bg-white px-2"><option value="">请选择 PDF</option><option v-for="asset in sourcePdfs" :key="asset.id" :value="asset.id">{{ asset.file_name }} · {{ asset.created_at.slice(0, 10) }}</option></select></label>
+        </div>
+        <p v-if="!sourceExcels.length || !sourcePdfs.length" class="mt-2 text-xs text-amber-800">此合同缺少 {{ !sourceExcels.length ? 'Excel' : 'PDF' }}，请先上传，或用单个文件的核对入口补选另一份文件。</p>
+        <div class="mt-3 flex flex-wrap gap-2"><button type="button" :disabled="busy || selectedSources.some(asset => !asset)" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" @click="useSources">带入 Excel / PDF 核对</button><button type="button" class="rounded-lg border bg-white px-4 py-2 text-sm" @click="sourceGroup = ''">取消</button></div>
       </div>
       <div v-if="binding" ref="bindingPanel" role="dialog" aria-label="关联箱唛资料" class="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
         <p class="break-all font-semibold">{{ bindingPhotos.length ? `${bindingGroupId ? '整组关联' : '组成照片组'}：${bindingPhotos.length} 张照片` : `关联设置：${binding.file_name}` }}</p>

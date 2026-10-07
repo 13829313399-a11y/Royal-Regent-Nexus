@@ -798,7 +798,7 @@ def register_history_order_placed(db: Session, order: CartonOrder, user: AuthCon
     ))
     _audit(db, user, order.factory_id, "HISTORY_ORDER_PLACED", "carton_order", order.id,
            {"order_no": order.order_no, "previous_status": previous_status, "status": order.status,
-            "reason": "历史订单已在系统外下单，直接待收料，不重复发行采购单"})
+            "reason": "历史订单已在系统外下单，直接待收料，不重复生成采购单"})
     db.flush()
 
 
@@ -845,7 +845,7 @@ def create_purchase_order_issue(
     if order.revision != expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
-        raise HTTPException(status_code=409, detail="只有已确认并锁定的订单可以发行供应商采购单")
+        raise HTTPException(status_code=409, detail="只有已确认并锁定的订单可以生成供应商采购单")
 
     _require_order_complete(db, order)
     issues = _purchase_order_issues(db, order.id)
@@ -963,7 +963,7 @@ def create_purchase_order_issues_batch(
             reusable_issues[order.order_no] = latest_visible_issue
 
     if not pending_orders and not reusable_issues:
-        raise HTTPException(status_code=409, detail="所选订单没有待发行变化或可重新下载的历史采购单")
+        raise HTTPException(status_code=409, detail="所选订单没有待生成变化或可重新下载的历史采购单")
 
     created_by_order: dict[str, CartonPurchaseOrderIssue] = {}
     try:
@@ -1055,7 +1055,7 @@ def order_deletion_block_reason(db: Session, order: CartonOrder, *, projection=N
     if order.status == "CANCELLED":
         return ""
     if any(purchase_batch_out(issue) for issue in (projection["issues"] if projection is not None else _purchase_order_issues(db, order.id))):
-        return "已发行合并采购单，不能直接删除，请按减单或退单流程处理以保留整单历史"
+        return "已生成合并采购单，不能直接删除，请按减单或退单流程处理以保留整单历史"
     from app.services.carton_order_split import plans
     if (projection["plans"] if projection is not None else plans(db, order.factory_id, order.id)):
         return "已有拆单历史及归属记录，不能删除"

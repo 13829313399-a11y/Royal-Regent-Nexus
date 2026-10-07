@@ -1,9 +1,9 @@
 import { mount, flushPromises } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CartonMarkCheckPanel from '../modules/qa/CartonMarkCheckPanel.vue'
 import type { CartonMarkAsset } from '@/api/cartonMark'
 
-const api = vi.hoisted(() => ({ listTemplates: vi.fn(), listCustomers: vi.fn(), downloadAsset: vi.fn(), createTemplate: vi.fn() }))
+const api = vi.hoisted(() => ({ listTemplates: vi.fn(), listCustomers: vi.fn(), downloadAsset: vi.fn(), createTemplate: vi.fn(), recognizeCustomer: vi.fn() }))
 vi.mock('@/api/cartonMark', () => ({ cartonMarkApi: api }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { department: 'pmc-warehouse' } }) }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ activeProductionFactory: { id: 'huaxing', shortName: '华兴' } }) }))
@@ -17,12 +17,21 @@ function asset(id: string, kind: 'pdf' | 'excel' = 'pdf'): CartonMarkAsset {
     created_at: '2026-10-05', created_by_name: '仓管' }
 }
 beforeEach(() => {
+  vi.useFakeTimers()
   vi.clearAllMocks()
   api.listTemplates.mockResolvedValue([])
   api.listCustomers.mockResolvedValue([{ id: 'ZURU', name: 'ZURU' }])
   api.downloadAsset.mockResolvedValue(new Blob(['file']))
+  api.recognizeCustomer.mockResolvedValue({ status: 'MATCHED', customer_name: 'ZURU', managed_customer_id: 'ZURU', message: '已识别客名', orders: [] })
   api.createTemplate.mockRejectedValue(new Error('test: inspect submitted sources'))
 })
+afterEach(() => vi.useRealTimers())
+
+async function recognizeCustomer(wrapper: ReturnType<typeof mount>) {
+  await vi.advanceTimersByTimeAsync(250)
+  await flushPromises()
+  expect(wrapper.get('#carton-mark-customer').element).toHaveProperty('value', 'ZURU')
+}
 
 describe('saved carton-mark source selection', () => {
   it('does not load a photo as an Excel/PDF template source', async () => {
@@ -48,6 +57,7 @@ describe('saved carton-mark source selection', () => {
     await excel
     finishPdf(new Blob(['pdf']))
     await pdf
+    await recognizeCustomer(wrapper)
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(api.createTemplate).toHaveBeenCalledWith(expect.objectContaining({
@@ -67,6 +77,7 @@ describe('saved carton-mark source selection', () => {
     expect(wrapper.text()).toContain('B.pdf')
     expect(wrapper.text()).not.toContain('A.pdf')
     await wrapper.vm.useLibraryAsset(asset('excel', 'excel'))
+    await recognizeCustomer(wrapper)
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(api.createTemplate).toHaveBeenCalledWith(expect.objectContaining({ pdfAssetId: 'B', excelAssetId: 'excel' }))
@@ -91,6 +102,7 @@ describe('saved carton-mark source selection', () => {
     await input.trigger('change')
     finish(new Blob(['late']))
     await pending
+    await recognizeCustomer(wrapper)
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(api.createTemplate).toHaveBeenCalledWith(expect.objectContaining({ pdfAssetId: undefined, printPdf: file }))

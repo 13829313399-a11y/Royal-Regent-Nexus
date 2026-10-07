@@ -64,6 +64,7 @@ export interface CartonSupplierAcceptanceResponse {
   total_line_count: number
   accepted_line_count: number
   accepted_at: string
+  delivery_differences?: { order_line_id: string; packaging_type: string; planned_date: string; promised_date: string; difference_days: number }[]
 }
 
 export interface CartonPurchaseOrderBatchResponse {

@@ -106,7 +106,7 @@ def preview(db, user, filename, content):
         item["receipt_link_eligible"] = bool(order["issue_id"] and order["status"] != "CANCELLED"
             and not order["awaiting_issue"] and not line["shipping_blocked_reason"])
         if order["status"] not in portal.OPEN_STATES or order["awaiting_issue"]:
-            item["reason"] = "订单已结束或采购版本有待发行变更"
+            item["reason"] = "订单已结束或采购版本有待生成变更"
         elif any(Decimal(paper["required_quantity"]) > 0 and not paper["accepted"] for paper in order["lines"]):
             item["reason"] = "此订单尚未整单确认接单"
         elif line["shipping_blocked_reason"]:
