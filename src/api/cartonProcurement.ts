@@ -34,6 +34,8 @@ export interface CartonCustomerSaveRequest {
 
 export interface CartonReplenishmentOption { replenishment_issue_id: string; document_no: string; responsibility: 'OWN' | 'SUPPLIER'; remaining_quantity: string }
 export interface CartonOrderLineResponse {
+  net_weight_kg?: string | null
+  gross_weight_kg?: string | null
   replenishment_review_required?: boolean
   replenishment_options?: CartonReplenishmentOption[]
   replenished_quantity?: string
@@ -77,6 +79,8 @@ export interface CartonPurchaseOrderBatchResponse {
 export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records'>
 
 export interface CartonOrderResponse {
+  net_weight_kg?: string | null
+  gross_weight_kg?: string | null
   purchase_order_batch?: CartonPurchaseOrderBatchResponse | null
   supplier_acceptance?: CartonSupplierAcceptanceResponse
   split_records?: SplitRecord[]
@@ -149,6 +153,8 @@ export interface CartonPurchaseOrderContextResponse {
 }
 
 export interface CartonOrderCreateRequest {
+  net_weight_kg?: number | null
+  gross_weight_kg?: number | null
   schedule_source?: { batch_id: string; source_sheet: string; source_row: number }
   customer_po?: string
   master_config_id?: string
@@ -168,6 +174,8 @@ export interface CartonOrderCreateRequest {
   status: 'CONFIRMED'
   note: string
   lines: Array<{
+    net_weight_kg?: number | null
+    gross_weight_kg?: number | null
     packaging_type: string
     paper_quality: string
     specification: string
@@ -212,6 +220,8 @@ export interface CartonOrderHistorySuggestionResponse {
   match_type: 'EXACT' | 'PREFIX' | 'CONTAINS' | 'SIMILAR'
   match_score: number
   lines: Array<{
+    net_weight_kg?: string | null
+    gross_weight_kg?: string | null
     line_no: number
     packaging_type: string
     paper_quality: string
@@ -1218,5 +1228,6 @@ export interface CartonHistoryOrderPreview {
     product_name: string; product_order_quantity: string | null; order_date: string; due_date: string | null; customer_due_date: string | null;
     status: string; quantity_basis: string; duplicate: boolean; ready: boolean; warnings: string[];
     lines: Array<{ packaging_type: string; paper_quality: string; specification: string; dimension_unit: string;
+      net_weight_kg?: string | null; gross_weight_kg?: string | null;
       usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; note: string }> }>
 }

@@ -12,7 +12,7 @@
     "anchor_id": "carton-procurement.overview",
     "field_keys": [],
     "summary": "从采购、供应商送货到仓库确认入库，分别核对数量、状态和结算期间。",
-    "content": "先选择当前厂区、客户和采购单。产品订单数量换算纸箱需求时，以产品数量除以每箱个数并向上取整；每箱个数必须大于零。采购数量、送货数量、实收数量分别记录，不能把采购完成当成收货入库。\n采购单提交供应商后为 PENDING_SUPPLIER；部分收货为 PARTIALLY_RECEIVED，全部收齐为 COMPLETED，取消为 CANCELLED。已完成订单仍可能经有权限的追加操作调整，所以应同时查看明细数量和变更记录。\n收料预览只供核对。收料单 PENDING_CONFIRMATION 才可确认；确认后为 POSTED，冲回为 REVERSED。确认时核对明细、订单/分批关联、单价和验收日期；有效收货数量大于零的明细需要正单价，供应商责任补货按其专门规则处理。结算期间必须开放。版本冲突应刷新核对，不能重复盲点提交。已 POSTED 的重复确认直接返回原单。\n订单调整、收料和库存处理有独立权限，取消采购、减少数量、删除草稿与冲回收料也不是同一动作。供应商管理旧入口现进入采购页“收货/供应商”区域。助手不创建采购单、不确认库存，不据页面说明推断实际欠货或应付款。",
+    "content": "先选择当前厂区、客户和采购单。产品订单数量换算纸箱需求时，以产品数量除以每箱个数并向上取整；每箱个数必须大于零。采购数量、送货数量、实收数量分别记录，不能把采购完成当成收货入库。\n采购单提交供应商后为 PENDING_SUPPLIER；部分收货为 PARTIALLY_RECEIVED，全部收齐为 COMPLETED，取消为 CANCELLED。已完成订单仍可能经有权限的追加操作调整，所以应同时查看明细数量和变更记录。\n收料预览只供核对。收料单 PENDING_CONFIRMATION 才可确认；确认后为 POSTED，冲回为 REVERSED。确认时核对明细、订单/分批关联、单价和验收日期；有效收货数量大于零的明细需要正单价，供应商责任补货按其专门规则处理。结算期间必须开放。版本冲突应刷新核对，不能重复盲点提交。已 POSTED 的重复确认直接返回原单。\n订单调整、收料和库存处理有独立权限，取消采购、减少数量、删除草稿与冲回收料也不是同一动作。供应商管理旧入口现进入采购页“收货/供应商”区域。助手不创建采购单、不确认库存，不据页面说明推断实际欠货或应付款。\n订单操作还需满足本厂客户责任范围：有订单统筹权限的人员可管理，否则需由主管分配到该客户；这与收货、库存及 QC 的权限分开。遇到“客户未分配”时联系主管，不通过切换入口绕过。",
     "steps": [
       {
         "title": "定位采购单",
@@ -40,26 +40,31 @@
       {
         "path": "backend/app/services/carton_procurement.py",
         "symbol": "required_carton_quantity",
-        "sha256": "06bd38168564ed106881df761dbd556a9b825366c07f7aeca13f29494a462f76"
+        "sha256": "4dbc26b09dd0d9f66b411f199b5d97f1b309946f8079b7ca790c9864ee0b86a2"
       },
       {
         "path": "backend/app/services/carton_procurement.py",
         "symbol": "confirm_receipt",
-        "sha256": "06bd38168564ed106881df761dbd556a9b825366c07f7aeca13f29494a462f76"
+        "sha256": "4dbc26b09dd0d9f66b411f199b5d97f1b309946f8079b7ca790c9864ee0b86a2"
       },
       {
         "path": "backend/app/api/carton_procurement.py",
         "symbol": "receipt-preview",
-        "sha256": "82f202445d63a2cc0595c5e96b13c8f9bd9ccdb766a529e587fd24e5d34c1634"
+        "sha256": "d4dfd027160887ec2e6baef2dac3f3d257686e36454926dfe4663150f4edab05"
       },
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "429070eaf43ffb0b9d1d228b32a680353f3c030a17917d5bef681891e4f5415f"
+        "sha256": "ac9fbc748ade3fc5aa4e4b6cbd986d9dfe72424c3b5c6c7b6b5884d8bc336fd2"
+      },
+      {
+        "path": "backend/app/services/carton_customer_assignment.py",
+        "symbol": "ensure_customer_operation",
+        "sha256": "958a51a7cc165afa724e19259da4f9f4667f33bbdb18a0194a45284f5521c998"
       }
     ],
-    "knowledge_version": "2026.10.08-v2",
-    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "knowledge_version": "2026.10.08-v3",
+    "verified_commit": "c8ff83404a0b2dbe63ba0e484cc0f89c3fe8a5ef",
     "status": "verified"
   }
 ]

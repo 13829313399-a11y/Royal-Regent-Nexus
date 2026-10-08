@@ -639,6 +639,9 @@ POSITION_DEPARTMENT_ALIAS_GROUPS = (
 POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
         *UV_OPS_PERMISSION_CODES,
+        "fabric_warehouse:read",
+        "fabric_warehouse:import",
+        "fabric_warehouse:receive",
         "molding_sample:dispatch",
         "molding_sample:notification_read",
         "internal_quote:create",

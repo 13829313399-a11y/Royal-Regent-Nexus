@@ -23,6 +23,12 @@ def digest(value):
     return hashlib.sha256(encoded(value).encode()).hexdigest()
 
 
+def configuration(data):
+    # Legacy whole-order weights remain in their original records, but cannot
+    # distinguish current paper configurations or cause duplicate enrollment.
+    return {"product_name": data.get("product_name", ""), "lines": canonical_lines(data.get("lines", []))}
+
+
 def can_manage(user, factory):
     return any(has_permission_in_scope(user, PERMISSION, factory, d) for d in ("carton", "pmc-warehouse"))
 
@@ -46,8 +52,12 @@ def canonical_lines(lines):
     result = []
     for line in lines:
         get = line.get if isinstance(line, dict) else lambda k, default="": getattr(line, k, default)
-        result.append({**{k: str(get(k, "") or "").strip() for k in ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit")},
-                       "usage_quantity": format(Decimal(str((get("usage_quantity", 0) or 0))).normalize(), "f")})
+        paper = {**{k: str(get(k, "") or "").strip() for k in ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit")},
+                 "usage_quantity": format(Decimal(str((get("usage_quantity", 0) or 0))).normalize(), "f")}
+        for field in ("net_weight_kg", "gross_weight_kg"):
+            if get(field, None) is not None:
+                paper[field] = format(Decimal(str(get(field))).normalize(), "f")
+        result.append(paper)
     return sorted(result, key=encoded)
 
 
@@ -162,13 +172,18 @@ def sync_history(db, factory):
     for row in sorted(by_id.values(), key=lambda r: (r.maintained, r.updated_at)):
         if row.kind == "CONFIG":
             data = json.loads(row.data_json)
-            semantic = {"product_name": data.get("product_name", ""), "lines": canonical_lines(data.get("lines", []))}
+            semantic = configuration(data)
             records[("CONFIG", digest([row.code, semantic]))] = row
     for source in source_rows:
         row = by_id.get(source.record_id)
         if row and row.kind == "CONFIG":
-            data = json.loads(source.snapshot_json)["configuration"]
+            evidence = json.loads(source.snapshot_json)
+            data = evidence["configuration"]
             records.setdefault(("CONFIG", digest([row.code, data])), row)
+            canonical = configuration(data)
+            records.setdefault(("CONFIG", digest([row.code, canonical])), row)
+            signature = digest([canonical, evidence["customer_po"]]) if evidence.get("customer_po") else digest(canonical)
+            sources.add((row.id, source.order_id, signature))
     # Confirmed supplier orders plus explicitly accepted historical imports; OCR/drafts are excluded.
     imported = set(db.scalars(select(CartonAuditEvent.entity_id).where(CartonAuditEvent.factory_id == factory,
         CartonAuditEvent.event_type.in_(["HISTORY_ORDER_IMPORTED", "ORDER_SUBMITTED_SUPPLIER"]))))
@@ -179,7 +194,7 @@ def sync_history(db, factory):
         lines.setdefault(line.order_id, []).append(line)
     added = 0
     for order in orders:
-        config = {"product_name": order.product_name, "lines": canonical_lines(lines.get(order.id, []))}
+        config = configuration({"product_name": order.product_name, "lines": lines.get(order.id, [])})
         for kind, code, data, identity in (
             ("CONFIG", order.item_no, config, digest([order.item_no, config])),
             ("CONTRACT", order.contract_no, {"item_nos": [order.item_no]}, digest([order.customer_code, order.contract_no])),
@@ -246,6 +261,9 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     factory = payload.factory_id
     _lock_receipt_factory(db, factory)
     require_manage(db, user, factory)
+    if payload.customer_code:
+        from app.services.carton_customer_assignment import ensure_customer_operation
+        ensure_customer_operation(db, user, factory, payload.customer_code)
     if payload.kind == "ACCESS":
         raise HTTPException(422, "已取消单独仓库授权，请按仓管或主管岗位维护本厂资料")
     data = payload.data.model_dump(mode="json")
@@ -274,7 +292,7 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
         if any(not x.strip() or len(x.strip()) > 64 for x in data["warehouses"]):
             raise HTTPException(422, "仓库名称不能为空且不能超过 64 字")
         data["warehouses"] = sorted(set(x.strip().upper() for x in data["warehouses"]))
-    semantic = {"product_name": data["product_name"], "lines": data["lines"]}
+    semantic = configuration(data)
     identity = digest([payload.code, semantic]) if payload.kind == "CONFIG" else digest([payload.customer_code, payload.code if payload.kind != "RULE" else ""])
     row = db.get(Record, identifier) if identifier else None
     if identifier and (not row or row.factory_id != factory):
@@ -282,11 +300,11 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     if payload.kind == "CONFIG":
         old_data = json.loads(row.data_json) if row else {}
         data["packing_name"] = old_data.get("packing_name", "")
-        old_semantic = {"product_name": old_data.get("product_name", ""), "lines": canonical_lines(old_data.get("lines", []))}
+        old_semantic = configuration(old_data)
         for existing in db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "CONFIG",
                 Record.code == payload.code)):
             previous = json.loads(existing.data_json)
-            current = {"product_name": previous.get("product_name", ""), "lines": canonical_lines(previous.get("lines", []))}
+            current = configuration(previous)
             if existing.id != identifier and current == semantic and (not row or old_semantic != semantic):
                 raise HTTPException(409, "相同包装配置已经存在，请维护原记录；停用配置不会自动重建")
     if row:

@@ -12,7 +12,7 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.models.carton_mark import CartonMarkAsset
+from app.models.carton_mark import CartonMarkAsset, CartonMarkAssetOrderBinding
 from app.models.carton_procurement import CartonAuditEvent, CartonOrder
 from app.schemas.carton_mark import CartonMarkAssetOut, CartonMarkAssetOrderOut
 from app.services.carton_mark import (
@@ -120,15 +120,26 @@ def recognize_asset(file_name, content, known_contracts):
                 recognition_source=source, candidates=[v[0] for v in values], warning=warning)
 
 
-def asset_out(asset, orders):
+def matching_asset_orders(asset, orders):
+    if asset.recognition_source == "manual_orders":
+        identifiers = {link.order_id for link in asset.order_bindings}
+        # An empty/deleted explicit selection never falls back to a contract match.
+        return [order for order in orders if order.id in identifiers]
     matches = [o for o in orders if identity(o.contract_no) == identity(asset.contract_number)] if asset.contract_number else []
     if asset.recognition_source == "manual_order" or asset.bound_order_id:
         matches = [o for o in matches if o.id == asset.bound_order_id]
-    ambiguous = not asset.bound_order_id and len({identity(o.customer_code) for o in matches}) > 1
+    return matches
+
+
+def asset_out(asset, orders):
+    matches = matching_asset_orders(asset, orders)
+    explicit = asset.recognition_source in {"manual_order", "manual_orders"} or bool(asset.bound_order_id)
+    ambiguous = not explicit and len({identity(o.customer_code) for o in matches}) > 1
     status = "AMBIGUOUS" if ambiguous else "BOUND" if matches else "NO_ORDER" if asset.contract_number else "UNBOUND"
     return CartonMarkAssetOut(id=asset.id, factory_id=asset.factory_id, file_name=asset.file_name,
         kind=asset.kind, photo_group_id=asset.photo_group_id, size_bytes=asset.size_bytes, sha256=asset.sha256,
         contract_number=asset.contract_number, bound_order_id=asset.bound_order_id,
+        bound_order_ids=[link.order_id for link in asset.order_bindings] if asset.recognition_source == "manual_orders" else ([asset.bound_order_id] if asset.bound_order_id else []),
         recognition_source=asset.recognition_source, candidates=json.loads(asset.candidates_json),
         warning=asset.warning, binding_status=status, revision=asset.revision,
         created_by_name=asset.created_by_name, created_at=asset.created_at,
@@ -209,6 +220,18 @@ def binding_orders(db, factory):
 
 
 def binding_values(db, factory, payload):
+    if payload.order_ids is not None:
+        if payload.order_id or payload.contract_number.strip():
+            raise HTTPException(422, "多合同关联请只提交所选订单，不同时填写单个合同或订单")
+        identifiers = set(payload.order_ids)
+        if len(identifiers) != len(payload.order_ids):
+            raise HTTPException(422, "关联订单不能重复")
+        orders = [order for order in available_orders(db, factory) if order.id in identifiers]
+        if len(orders) != len(identifiers):
+            raise HTTPException(404, "关联订单不存在、已取消或不属于当前厂区")
+        if len({identity(order.customer_code) for order in orders}) != 1:
+            raise HTTPException(422, "同一箱唛资料只能关联同一客户的多个合同，请分别维护不同客户的资料")
+        return dict(contract_number="", bound_order_id=None, recognition_source="manual_orders", warning="")
     contract = payload.contract_number.strip()
     if payload.order_id:
         order = next((o for o in available_orders(db, factory) if o.id == payload.order_id), None)
@@ -221,11 +244,21 @@ def binding_values(db, factory, payload):
         recognition_source="manual_order" if payload.order_id else "manual", warning="")
 
 
+def replace_order_bindings(asset, payload):
+    existing = {link.order_id: link for link in asset.order_bindings}
+    asset.order_bindings[:] = [existing.get(identifier) or CartonMarkAssetOrderBinding(
+        asset_id=asset.id, factory_id=asset.factory_id, order_id=identifier)
+        for identifier in sorted(payload.order_ids or [])]
+
+
 def change_binding(db, user, factory, asset_id, payload):
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, factory)
     asset = active_asset(db, factory, asset_id)
     if asset.photo_group_id:
         raise HTTPException(409, "照片已组成组，请修改整组关联，或先解除分组")
     values = binding_values(db, factory, payload)
+    before_ids = [link.order_id for link in asset.order_bindings] or ([asset.bound_order_id] if asset.bound_order_id else [])
     try:
         result = db.execute(update(CartonMarkAsset).where(CartonMarkAsset.id == asset.id,
             CartonMarkAsset.factory_id == factory, CartonMarkAsset.photo_group_id.is_(None),
@@ -234,7 +267,9 @@ def change_binding(db, user, factory, asset_id, payload):
         if result.rowcount != 1:
             db.rollback()
             raise HTTPException(409, "资料已被修改，请刷新后重试")
-        audit(db, user, asset, "CARTON_MARK_ASSET_BOUND", {"contract_number": values["contract_number"], "order_id": payload.order_id})
+        replace_order_bindings(asset, payload)
+        audit(db, user, asset, "CARTON_MARK_ASSET_BOUND", {"contract_number": values["contract_number"], "order_id": payload.order_id,
+              "before_order_ids": before_ids, "order_ids": payload.order_ids})
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -249,6 +284,8 @@ def change_photo_group(db, user, factory, payload, *, group_id=None, ungroup=Fal
     Whole-group membership and sorted CAS writes serialize merges, binding and
     dissolving without letting a partially filtered client silently split a group.
     """
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, factory)
     references = {ref.id: ref.revision for ref in payload.assets}
     if len(references) != len(payload.assets):
         raise HTTPException(422, "照片不能重复选择")
@@ -282,10 +319,13 @@ def change_photo_group(db, user, factory, payload, *, group_id=None, ungroup=Fal
                     **values, photo_group_id=target, revision=revision + 1, updated_at=timestamp))
             if result.rowcount != 1:
                 raise HTTPException(409, "照片已被修改，整组未保存，请刷新后重试")
+            if not ungroup:
+                replace_order_bindings(asset, payload)
             audit(db, user, asset, "CARTON_MARK_PHOTO_UNGROUPED" if ungroup else "CARTON_MARK_PHOTO_GROUP_SAVED",
                 {"photo_group_id": target, "previous_groups": sorted(previous_groups),
                  "contract_number": values.get("contract_number", asset.contract_number),
-                 "order_id": values.get("bound_order_id", asset.bound_order_id)})
+                 "order_id": values.get("bound_order_id", asset.bound_order_id),
+                 "order_ids": [link.order_id for link in asset.order_bindings]})
         db.commit()
     except (IntegrityError, HTTPException) as exc:
         db.rollback()
@@ -299,6 +339,8 @@ def change_photo_group(db, user, factory, payload, *, group_id=None, ungroup=Fal
 
 
 def archive_asset(db, user, factory, asset_id, revision):
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, factory)
     asset = active_asset(db, factory, asset_id)
     result = db.execute(update(CartonMarkAsset).where(CartonMarkAsset.id == asset.id,
         CartonMarkAsset.revision == revision, CartonMarkAsset.is_archived.is_(False)).values(

@@ -15,6 +15,8 @@ from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_feedback import router as carton_feedback_router
 from app.api.carton_procurement import router as carton_procurement_router
+from app.api.fabric_procurement import router as fabric_procurement_router
+from app.api.fabric_master import router as fabric_master_router
 from app.api.carton_supplier_settlement import router as carton_supplier_settlement_router
 from app.api.carton_supplier_portal import router as carton_supplier_portal_router
 from app.api.customer_order import router as customer_order_router
@@ -199,6 +201,8 @@ app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_feedback_router)
 app.include_router(carton_procurement_router)
+app.include_router(fabric_procurement_router)
+app.include_router(fabric_master_router)
 app.include_router(carton_supplier_settlement_router)
 app.include_router(carton_supplier_portal_router)
 app.include_router(customer_order_router)

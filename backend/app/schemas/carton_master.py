@@ -1,9 +1,10 @@
 from decimal import Decimal
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.schemas.carton_weights import CartonPackingWeights
 
 
-class PaperConfiguration(BaseModel):
+class PaperConfiguration(CartonPackingWeights):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     packaging_type: str = Field(min_length=1, max_length=64)
     paper_quality: str = Field(default="", max_length=128)
@@ -46,7 +47,7 @@ class ItemNumberRule(NumberRule):
     mode: Literal["AUTO", "OFF", "WARN", "BLOCK"] = "OFF"
 
 
-class MasterData(BaseModel):
+class MasterData(CartonPackingWeights):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     product_name: str = Field(default="", max_length=255)
     packing_name: str = Field(default="", max_length=80)

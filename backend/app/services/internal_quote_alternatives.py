@@ -229,7 +229,7 @@ def report_alternative(db, quote_id, payload, user, request=None):
 
 
 @quote_write
-def issue_alternative(db, quote_id, payload, user, request=None):
+def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True):
     from app.services.internal_quote_artifacts import _ensure_export_permission, create_controlled_export
     quote = _get_quote(db, quote_id)
     _ensure_export_permission(db, quote, user)
@@ -237,7 +237,7 @@ def issue_alternative(db, quote_id, payload, user, request=None):
         raise HTTPException(409, "历史报价请复制为新版本后直接输出，原审核记录继续保留")
     # A retry returns the exact already-issued bytes, even after formula/layout upgrades.
     if quote.final_release_status == "issued":
-        return create_controlled_export(db, quote_id, user, request)
+        return create_controlled_export(db, quote_id, user, request, commit=commit)
     _check_revision(quote.header_revision, payload.revision, "报价版本")
     if quote.status not in {"drafting", "rejected", "ready_for_final_review"}:
         raise HTTPException(409, "当前报价不可直接输出")
@@ -282,4 +282,4 @@ def issue_alternative(db, quote_id, payload, user, request=None):
         "schema_version", "quote_id", "issued_by", "issued_at", "header_revision", "manifest_sha256")}), request=request)
     db.flush()
     # The exporter commits the issue, immutable workbook and handoff in one transaction.
-    return create_controlled_export(db, quote_id, user, request)
+    return create_controlled_export(db, quote_id, user, request, commit=commit)

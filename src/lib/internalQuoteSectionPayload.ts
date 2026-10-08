@@ -310,6 +310,8 @@ export interface SewingMaterialRow {
   below_moq_fee_rmb?: number
   usage: number
   unit_price_rmb: number
+  unit_price_hkd?: number
+  unit_price_source_currency?: UnitPriceSourceCurrency
   exchange_rate?: number
   markup: number
   remark: string
@@ -1489,13 +1491,16 @@ export function calculateHairTotalHkd(payload: HairPayload) {
   return payload.lines.reduce((total, row) => total + calculateHairRowAmountHkd(row), 0)
 }
 
-export function calculateSewingBasePriceRmb(row: SewingMaterialRow) {
+export function calculateSewingBasePriceRmb(row: SewingMaterialRow, rmbHkdRate?: unknown) {
+  if (row.unit_price_source_currency === 'HKD') {
+    return positivePreviewNumber(row.usage) * positivePreviewNumber(row.unit_price_hkd) * calculateSewingExchangeRate(row, rmbHkdRate)
+  }
   return Math.max(Number(row.usage) || 0, 0) * Math.max(Number(row.unit_price_rmb) || 0, 0)
 }
 
-export function calculateSewingRowTotalRmb(row: SewingMaterialRow) {
+export function calculateSewingRowTotalRmb(row: SewingMaterialRow, rmbHkdRate?: unknown) {
   const markup = Math.max(Number(row.markup) || 0, 0) || 1
-  return calculateSewingBasePriceRmb(row) * markup
+  return calculateSewingBasePriceRmb(row, rmbHkdRate) * markup
 }
 
 export function calculateSewingExchangeRate(row: SewingMaterialRow, rmbHkdRate: unknown) {
@@ -1503,6 +1508,9 @@ export function calculateSewingExchangeRate(row: SewingMaterialRow, rmbHkdRate: 
 }
 
 export function calculateSewingBasePriceHkd(row: SewingMaterialRow, rmbHkdRate: unknown) {
+  if (row.unit_price_source_currency === 'HKD') {
+    return positivePreviewNumber(row.usage) * positivePreviewNumber(row.unit_price_hkd)
+  }
   const rate = calculateSewingExchangeRate(row, rmbHkdRate)
   return rate ? calculateSewingBasePriceRmb(row) / rate : 0
 }
@@ -1516,8 +1524,8 @@ export function sewingGroupHasLaborLine(group: SewingGroup) {
   return group.materials.some((row) => `${row.item}${row.part}`.includes('人工'))
 }
 
-export function calculateSewingGroupTotalRmb(group: SewingGroup) {
-  const materialTotal = group.materials.reduce((total, row) => total + calculateSewingRowTotalRmb(row), 0)
+export function calculateSewingGroupTotalRmb(group: SewingGroup, rmbHkdRate?: unknown) {
+  const materialTotal = group.materials.reduce((total, row) => total + calculateSewingRowTotalRmb(row, rmbHkdRate), 0)
   return materialTotal + (sewingGroupHasLaborLine(group) ? 0 : Math.max(Number(group.labor_rmb) || 0, 0))
 }
 
@@ -1533,8 +1541,8 @@ export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unk
   return materialTotal + legacyLaborHkd
 }
 
-export function calculateSewingTotalRmb(payload: SewingPayload) {
-  return payload.groups.reduce((total, group) => total + calculateSewingGroupTotalRmb(group), 0)
+export function calculateSewingTotalRmb(payload: SewingPayload, rmbHkdRate?: unknown) {
+  return payload.groups.reduce((total, group) => total + calculateSewingGroupTotalRmb(group, rmbHkdRate), 0)
 }
 
 export function calculateSewingQuickTotalHkd(payload: SewingPayload) {
@@ -1746,6 +1754,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
           ...(Object.prototype.hasOwnProperty.call(row, 'below_moq_fee_rmb') ? { below_moq_fee_rmb: numberValue(row.below_moq_fee_rmb) } : {}),
           usage: numberValue(row.usage ?? row.qty),
           unit_price_rmb: numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
+          ...(row.unit_price_hkd != null ? { unit_price_hkd: numberValue(row.unit_price_hkd) } : {}),
+          ...(row.unit_price_source_currency != null || row.unit_price_hkd != null
+            ? { unit_price_source_currency: normalizeUnitPriceSourceCurrency(row) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'exchange_rate') ? { exchange_rate: numberValue(row.exchange_rate) } : {}),
           markup: numberValue(row.markup, 1),
           remark: textValue(row.remark ?? row.note),

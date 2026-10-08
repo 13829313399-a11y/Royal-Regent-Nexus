@@ -66,6 +66,25 @@ describe('InternalQuoteSectionForm dimension units', () => {
     expect(strips[1].text()).toContain('箱价 HKD 0.336')
   })
 
+  it('edits imported sewing HKD prices without dividing them by the RMB rate', async () => {
+    const payload = normalizeInternalQuotePayload('sewing', { groups: [{ name: '衣服', materials: [
+      { item: '布标', usage: 1, unit_price_hkd: .235294117647059, unit_price_source_currency: 'HKD', markup: 1.1 },
+    ] }] }) as unknown as SewingPayload
+    const wrapper = mount(InternalQuoteSectionForm, { props: {
+      code: 'sewing', modelValue: payload as unknown as Record<string, unknown>, disabled: false, rmbHkdRate: .85,
+    } })
+    expect(wrapper.get('input[aria-label="车缝单价 HKD"]').element).toHaveProperty('value', '0.235294117647059')
+    expect(wrapper.find('input[aria-label="车缝单价 RMB"]').exists()).toBe(false)
+    expect(wrapper.get('.sewing-summary-card').text()).toContain('0.259')
+    await wrapper.get('input[aria-label="车缝单价 HKD"]').setValue('2')
+    expect(payload.groups[0].materials[0].unit_price_hkd).toBe(2)
+    expect(wrapper.get('.sewing-summary-card').text()).toContain('2.200')
+    await wrapper.get('input[aria-label="车缝汇率 RMB 转 HKD"]').setValue('.8')
+    expect(wrapper.get('.sewing-summary-card').text()).toContain('2.200')
+    await wrapper.setProps({ disabled: true })
+    expect(wrapper.get('input[aria-label="车缝单价 HKD"]').attributes('disabled')).toBeDefined()
+  })
+
   it('offers screen printing as a sewing craft and preserves the selection', async () => {
     const payload = normalizeInternalQuotePayload('sewing', {
       groups: [{
@@ -73,7 +92,7 @@ describe('InternalQuoteSectionForm dimension units', () => {
         category: 'clothes',
         materials: [{ item: '网布', part: '正面', craft: '', pieces: 1, usage: 1, unit_price_rmb: 2, markup: 1 }],
       }],
-    }) as SewingPayload
+    }) as unknown as SewingPayload
     const wrapper = mount(InternalQuoteSectionForm, {
       props: {
         code: 'sewing',
@@ -86,7 +105,7 @@ describe('InternalQuoteSectionForm dimension units', () => {
     expect(craftSelect.findAll('option').map((option) => option.text())).toEqual(['常规', '电绣', '丝印'])
     await craftSelect.setValue('丝印')
     expect(payload.groups[0].materials[0].craft).toBe('丝印')
-    expect((normalizeInternalQuotePayload('sewing', payload) as SewingPayload).groups[0].materials[0].craft).toBe('丝印')
+    expect((normalizeInternalQuotePayload('sewing', payload as unknown as Record<string, unknown>) as unknown as SewingPayload).groups[0].materials[0].craft).toBe('丝印')
   })
 
   it('edits flat-card quantity and recalculates the price with exact dimensions', async () => {

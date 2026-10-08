@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.schemas.carton_customer_assignment import CartonCustomerAssignmentSave
 from app.services import carton_file_jobs as file_jobs
 from app.schemas.carton_order_split import SplitCreate, SplitAction, SplitReceiptPreview
 from app.services import carton_order_split as order_splits
@@ -158,6 +159,21 @@ router = APIRouter(
     prefix="/api/carton-procurement",
     tags=["carton-procurement"],
 )
+
+
+@router.get("/customer-responsibilities")
+def get_customer_responsibilities(factory_id: str, summary: bool = False, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return responsibilities.workspace(db, current_user, factory_id, summary=summary)
+
+
+@router.put("/customers/{customer_id}/responsibilities")
+def put_customer_responsibilities(customer_id: str, payload: CartonCustomerAssignmentSave,
+                                  db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
+    return responsibilities.save(db, current_user, customer_id, payload)
 
 
 def _ensure_permission(
@@ -607,8 +623,8 @@ def post_history_order_preview(
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db,current_user,"carton_procurement:order_write",factory_id)
-    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:order_write") as (content, _):
-        return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",content)
+    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:order_write") as (content, actor):
+        return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",content,actor)
 
 
 @router.get("/orders/{order_no}/purchase-order.xlsx")

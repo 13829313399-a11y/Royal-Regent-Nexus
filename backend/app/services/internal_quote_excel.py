@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v32"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v33"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -5111,7 +5111,7 @@ def _build_sewing_sheet(
     reference_snapshot: dict[str, Any],
 ) -> None:
     sheet = workbook.create_sheet("车缝明细")
-    _style_title(sheet, "车缝报价明细", 12)
+    _style_title(sheet, "车缝报价明细", 13)
     _header_row(
         sheet,
         3,
@@ -5122,12 +5122,13 @@ def _build_sewing_sheet(
             "布料MOQ/Y",
             "低于MOQ/每色费用 RMB",
             "用量/码",
-            "单价 RMB",
+            "单价",
             "汇率",
             "成本 HKD",
             "码点",
             "价钱 HKD",
             "备注",
+            "单价币种",
         ),
     )
     row_index = 4
@@ -5140,7 +5141,7 @@ def _build_sewing_sheet(
             continue
         group_name = _safe_text(group.get("name")) or "车缝产品组"
         group_category = "车发" if str(group.get("category")) == "hair" else "车衣"
-        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=12)
+        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=13)
         group_cell = sheet.cell(row_index, 1)
         group_cell.value = f"{group_name} · {group_category}"
         group_cell.fill = PatternFill("solid", fgColor="F8CBAD")
@@ -5158,7 +5159,10 @@ def _build_sewing_sheet(
             if not isinstance(row, dict):
                 continue
             usage = _number(row.get("usage"))
-            unit_price_rmb = _number(row.get("unit_price_rmb"))
+            source_currency = str(row.get("unit_price_source_currency") or (
+                "HKD" if row.get("unit_price_rmb") in (None, "") and row.get("unit_price_hkd") not in (None, "") else "RMB"
+            )).strip().upper()
+            unit_price = _number(row.get("unit_price_hkd" if source_currency == "HKD" else "unit_price_rmb"))
             exchange_rate = _number(row.get("exchange_rate"))
             if not isinstance(exchange_rate, float) or exchange_rate <= 0:
                 exchange_rate = fx
@@ -5183,16 +5187,17 @@ def _build_sewing_sheet(
                     _number(row.get("fabric_moq_y")),
                     _number(row.get("below_moq_fee_rmb")),
                     usage,
-                    unit_price_rmb,
+                    unit_price,
                     exchange_rate,
                     "",
                     markup,
                     "",
                     remark,
+                    source_currency,
                 ),
                 amount_columns={4, 5, 6, 7, 8, 9, 10, 11},
             )
-            sheet.cell(row_index, 9).value = f"=F{row_index}*G{row_index}/H{row_index}"
+            sheet.cell(row_index, 9).value = f'=IF(M{row_index}="HKD",F{row_index}*G{row_index},F{row_index}*G{row_index}/H{row_index})'
             sheet.cell(row_index, 9).number_format = "#,##0.0000"
             sheet.cell(row_index, 11).value = f"=I{row_index}*J{row_index}"
             sheet.cell(row_index, 11).number_format = "#,##0.0000"
@@ -5205,7 +5210,7 @@ def _build_sewing_sheet(
         sheet.cell(row_index, 11).fill = PatternFill("solid", fgColor="FFF200")
         sheet.cell(row_index, 10).font = Font(name="宋体", size=10, bold=True)
         sheet.cell(row_index, 11).font = Font(name="宋体", size=10, bold=True)
-    _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36))
+    _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36, 12))
 
 
 def _build_hair_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
