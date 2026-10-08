@@ -2,11 +2,14 @@
 import asyncio
 import importlib
 from types import SimpleNamespace
+import pytest
 
 from pydantic import SecretStr
 
 
-def test_completed_sse_closes_http_iterators_without_shutdown_errors(monkeypatch):
+@pytest.mark.parametrize('chunked', [False, True])
+@pytest.mark.parametrize('cancel_early', [False, True])
+def test_completed_sse_closes_http_iterators_without_shutdown_errors(monkeypatch, chunked, cancel_early):
     provider = importlib.import_module('app.services.assistant.provider')
     errors, requests = [], []
     body = (
@@ -23,12 +26,25 @@ def test_completed_sse_closes_http_iterators_without_shutdown_errors(monkeypatch
                 headers = await reader.readuntil(b'\r\n\r\n')
                 length = next(int(line.split(b':', 1)[1]) for line in headers.split(b'\r\n') if line.lower().startswith(b'content-length:'))
                 requests.append(await reader.readexactly(length))
-                writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
+                headers = b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n'
+                if chunked:
+                    writer.write(headers + b'Transfer-Encoding: chunked\r\n\r\n' + f'{len(body):x}\r\n'.encode() + body + b'\r\n')
+                else:
+                    writer.write(headers + b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
                 await writer.drain()
+                if chunked:
+                    await asyncio.sleep(.05)
+                    writer.write(b'0\r\n\r\n')
+                    await writer.drain()
                 await reader.read()
+            except (ConnectionError, asyncio.IncompleteReadError):
+                pass
             finally:
                 writer.close()
-                await writer.wait_closed()
+                try:
+                    await writer.wait_closed()
+                except ConnectionError:
+                    pass
 
         async with await asyncio.start_server(respond, '127.0.0.1', 0) as server:
             port = server.sockets[0].getsockname()[1]
@@ -39,9 +55,14 @@ def test_completed_sse_closes_http_iterators_without_shutdown_errors(monkeypatch
                 assistant_connect_timeout_seconds=3,
             ))
             monkeypatch.setattr(provider, 'request_body', lambda *args: {'model': 'synthetic', 'stream': True})
-            events = [event async for event in provider.stream([], SimpleNamespace(thinking='auto'))]
-            assert events[-1] == {'kind': 'done', 'finish_reason': 'stop'}
-            assert any(event.get('text') == 'synthetic' for event in events)
+            stream = provider.stream([], SimpleNamespace(thinking='auto'))
+            if cancel_early:
+                assert (await anext(stream))['kind'] == 'delta'
+                await stream.aclose()
+            else:
+                events = [event async for event in stream]
+                assert events[-1] == {'kind': 'done', 'finish_reason': 'stop'}
+                assert any(event.get('text') == 'synthetic' for event in events)
             await asyncio.sleep(0)
 
     asyncio.run(scenario())
