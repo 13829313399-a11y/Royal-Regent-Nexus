@@ -37,6 +37,11 @@ export interface ApiInternalQuoteSection {
 }
 
 export interface ApiInternalQuote {
+  document_product_count?: number
+  document_version_count?: number
+  document_quote_id?: string
+  product_root_id?: string
+  delete_block_reason?: string
   history_sources?: InternalQuoteHistoryEvidence[]
   id: string
   factory_id: string
@@ -302,6 +307,20 @@ export interface ApiInternalQuoteVersionComparison {
   total_delta_hkd: string
 }
 
+export interface ApiPackagingCopyRequest {
+  revision: number
+  targets: Array<{ quote_id: string; revision: number }>
+  include_assembly: boolean
+  reason: string
+  preview_token?: string
+}
+export interface ApiPackagingCopyPreview {
+  preview_token: string
+  source_name: string
+  material_details?: Array<{ item: string; quantity: number | string; price: number | string; currency: string; specification: string }>
+  targets: Array<{ quote_id: string; product_name: string; changed: boolean; packaging_material_count: number; carton_count: number; replaces_existing: boolean }>
+}
+
 export interface ApiAlternativeSyncRequest {
   revision: number
   family_revision: number
@@ -317,6 +336,8 @@ export interface ApiAlternativeSyncPreview {
 }
 
 export interface ApiInternalQuoteAlternative {
+  can_delete?: boolean
+  delete_block_reason?: string
   quote_id: string
   scenario_id: string
   scenario_name: string
@@ -649,6 +670,12 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async listBatchProducts(quoteId: string) {
       const response = await client.get<ApiInternalQuoteBatchProduct[]>(`/internal-quotes/${quoteId}/batch-products`)
       return response.data
+    },
+    async previewPackagingCopy(quoteId: string, payload: ApiPackagingCopyRequest) {
+      return (await client.post<ApiPackagingCopyPreview>(`/internal-quotes/${quoteId}/packaging-copy/preview`, payload)).data
+    },
+    async applyPackagingCopy(quoteId: string, payload: ApiPackagingCopyRequest) {
+      return (await client.post<{ targets: ApiInternalQuote[] }>(`/internal-quotes/${quoteId}/packaging-copy/apply`, payload)).data
     },
     async copyBatchBaseline(quoteId: string, targetQuoteId: string, revision: number) {
       const response = await client.post<ApiInternalQuote>(

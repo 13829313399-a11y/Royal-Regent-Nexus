@@ -4,6 +4,7 @@
 .pytest_cache
 .tmp
 .tmp-tests
+.deployment-notice
 .vscode
 
 node_modules

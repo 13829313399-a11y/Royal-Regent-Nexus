@@ -176,7 +176,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
             "pallet_width_mm": "decimal>0 mm; defaults to 1150 along carton width",
             "pallet_height_mm": "decimal>0 mm; defaults to 1300 along carton height",
         },
-        "justplay_cartons_per_pallet": "floor(pallet_width_mm/(main carton width*25.4))*floor(pallet_length_mm/(length*25.4))*floor(pallet_height_mm/(height*25.4)); canonical inch carton dimensions, editable mm pallet space; historical manual counts ignored",
+        "justplay_cartons_per_pallet": "positive-integer cartons_per_pallet_override when supplied; otherwise floor(pallet_width_mm/(main carton width*25.4))*floor(pallet_length_mm/(length*25.4))*floor(pallet_height_mm/(height*25.4)); historical cartons_per_pallet ignored",
         "justplay_main_carton": "component mode: complete PDQ dimensions + (0.75,0.75,1) take priority; otherwise selected color-box/product dimensions * directional counts + allowances; canonical inches; manual main dimensions ignored; inner cartons unchanged",
         "justplay_carton": {"dimension_source": "color_box|product; default color_box", "length_count": "positive integer; default 1", "width_count": "positive integer; default 1", "height_count": "positive integer; default 1"},
         "pdq_size_in": {"length": "optional decimal>0 canonical inch", "width": "optional decimal>0 canonical inch", "height": "optional decimal>0 canonical inch"},
@@ -2011,7 +2011,12 @@ def resolve_justplay_packaging_inputs(payload: dict[str, Any]) -> dict[str, Deci
         ("pallet_height_mm", "托板高度 mm", "1300"),
     ):
         inputs[key] = positive_value(source.get(key, fallback), label)
-    # Historical manual counts are no longer authoritative. Dimensions are stored in inches.
+    # Use a separate override field so legacy saved counts do not become active again.
+    override = source.get("cartons_per_pallet_override")
+    if override is not None:
+        override = positive_value(override, "每托板装箱数")
+        if override != override.to_integral_value():
+            raise CalculationInputError("每托板装箱数必须为正整数")
     inputs["cartons_per_pallet"] = ZERO
     cartons = resolve_sales_cartons(payload)
     if cartons:
@@ -2026,6 +2031,8 @@ def resolve_justplay_packaging_inputs(payload: dict[str, Any]) -> dict[str, Deci
             * (inputs["pallet_length_mm"] // length_mm)
             * (inputs["pallet_height_mm"] // height_mm)
         )
+        if override is not None:
+            inputs["cartons_per_pallet"] = override
     return inputs
 
 

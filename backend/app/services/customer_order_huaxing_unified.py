@@ -45,6 +45,41 @@ def extra_columns(sheet):
     return result
 
 
+def edu_order_key(contract, po):
+    from app.services.customer_order_unified import _key, _text
+    return _key(contract), _key(re.sub(r'^PO\s*#?\s*', '', _text(po), flags=re.I))
+
+
+def edu_identity(contract, po, product):
+    from app.services.customer_order_unified import _key
+    order = edu_order_key(contract, po)
+    return (*order, _key(product)) if any(order) else ('', '', '')
+
+
+def edu_history_matches(row, history):
+    contract, po = edu_order_key(row.get('contract_no'), row.get('po_no'))
+    if not contract and not po:
+        return []
+    # A complete composite contract must match completely. Legacy single-part
+    # contracts may reconcile to a unique composite, never to a sibling suffix.
+    return [h for h in history if edu_order_key(h.contract_no, h.po_no)[1] == po and
+            (edu_order_key(h.contract_no, h.po_no)[0] == contract or
+             contract and '/' not in contract and contract in
+             {edu_order_key(part, '')[0] for part in h.contract_no.split('/')})]
+
+
+def allocate_edu_references(records, next_number):
+    assigned = {}
+    for record in records:
+        order = edu_order_key(record.get('contract_no'), record.get('customer_po'))
+        if record.get('huaxing_po'):
+            continue
+        if order not in assigned:
+            assigned[order] = f'EDUHX{next_number:05d}'
+            next_number += 1
+        record['huaxing_po'] = assigned[order]
+
+
 def read_history(workbook, customer_code):
     from app.services.customer_order_unified import UnifiedHistoryRow, _text
     from app.services.customer_order_regional import history_number
@@ -154,15 +189,18 @@ def prepare_row(row, history, customer_code, available_sheets, factory_id='huaxi
             row.setdefault('issues', []).append(_issue('blocked', 'existing_split_release', 'row',
                 '该 Release 在最新排期已拆成多个子单，请核对拆单数量后录入'))
     if customer_code == 'edu':
-        po_key = lambda value: _key(re.sub(r'^PO\s*#?\s*', '', _text(value), flags=re.I))
-        same_order = [h for h in matches if po_key(h.po_no) == po_key(row.get('po_no')) and
-                      _key(row.get('contract_no')) in {_key(part) for part in h.contract_no.split('/')}]
+        if not any(edu_order_key(row.get('contract_no'), row.get('po_no'))):
+            row.setdefault('issues', []).append(_issue('blocked', 'edu_missing_business_identity', 'contract_no',
+                'EDU 缺少客户合同号或客户 PO；自动分配的 EDUHX 编号不能替代客户订单身份'))
+        same_order = edu_history_matches(row, matches)
         refs = {h.reference_no for h in same_order}
-        if len(refs) == 1:
+        contracts = {h.contract_no for h in same_order}
+        if len(refs) == 1 and len(contracts) == 1:
             row['reference_no'] = next(iter(refs))
-            contracts = {h.contract_no for h in same_order}
-            if len(contracts) == 1:
-                row['contract_no'] = next(iter(contracts))
+            row['contract_no'] = next(iter(contracts))
+        elif same_order:
+            row.setdefault('issues', []).append(_issue('blocked', 'ambiguous_edu_history', 'contract_no',
+                '客户合同/PO 与产品对应多个历史编号，必须核对完整订单身份'))
     lanes = {h.source_sheet for h in matches}
     if len(available_sheets) == 1:
         lane = available_sheets[0]
@@ -212,6 +250,13 @@ def validate_edited_identities(preview, original, history, available_sheets, ove
         batch_matches = [other for other in preview['rows'] if other is not row and
                          unified._key(other.get('product_no')) == unified._key(row.get('product_no')) and
                          unified._key(other.get('reference_no')) == unified._key(row.get('reference_no'))]
+        if row.get('_huaxing_customer') == 'edu':
+            if not any(edu_order_key(row.get('contract_no'), row.get('po_no'))):
+                raise unified.CustomerOrderUnifiedError('EDU 修改后缺少客户合同号或客户 PO，请重新核对')
+            same_order += edu_history_matches(row, matches)
+            identity = edu_identity(row.get('contract_no'), row.get('po_no'), row.get('product_no'))
+            batch_matches += [other for other in preview['rows'] if other is not row and
+                              edu_identity(other.get('contract_no'), other.get('po_no'), other.get('product_no')) == identity]
         if same_order or batch_matches:
             raise unified.CustomerOrderUnifiedError('修改后的订单身份存在重复或数量冲突，原重复确认不适用，请修订 PO 后重新预览')
 

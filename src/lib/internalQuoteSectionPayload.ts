@@ -499,6 +499,7 @@ export interface JustPlayPackagingInputs {
   pallet_length_mm?: number | ''
   pallet_width_mm?: number | ''
   pallet_height_mm?: number | ''
+  cartons_per_pallet_override?: number | ''
 }
 export interface JustPlayCartonInputs {
   dimension_source: 'color_box' | 'product'
@@ -847,6 +848,9 @@ export function normalizeJustPlayPackagingInputs(value: unknown): JustPlayPackag
     pallet_length_mm: input('pallet_length_mm', 1000),
     pallet_width_mm: input('pallet_width_mm', 1150),
     pallet_height_mm: input('pallet_height_mm', 1300),
+    ...(source.cartons_per_pallet_override == null ? {} : {
+      cartons_per_pallet_override: input('cartons_per_pallet_override', 0),
+    }),
   }
 }
 
@@ -857,6 +861,8 @@ export function justPlayPackagingInputsValid(value: unknown) {
     && positivePreviewNumber(inputs.pallet_length_mm) > 0
     && positivePreviewNumber(inputs.pallet_width_mm) > 0
     && positivePreviewNumber(inputs.pallet_height_mm) > 0
+    && (inputs.cartons_per_pallet_override === undefined
+      || (Number.isInteger(inputs.cartons_per_pallet_override) && Number(inputs.cartons_per_pallet_override) > 0))
 }
 
 export function normalizeJustPlayCartonInputs(value: unknown): JustPlayCartonInputs {
@@ -914,6 +920,8 @@ export function calculateJustPlayCartonsPerPallet(
   const height = positivePreviewNumber(carton.height_in)
   if (!length || !width || !height) return 0
   const inputs = normalizeJustPlayPackagingInputs(parameters)
+  if (!justPlayPackagingInputsValid(inputs)) return 0
+  if (inputs.cartons_per_pallet_override !== undefined) return Number(inputs.cartons_per_pallet_override)
   return Math.floor(positivePreviewNumber(inputs.pallet_width_mm) / (width * 25.4))
     * Math.floor(positivePreviewNumber(inputs.pallet_length_mm) / (length * 25.4))
     * Math.floor(positivePreviewNumber(inputs.pallet_height_mm) / (height * 25.4))

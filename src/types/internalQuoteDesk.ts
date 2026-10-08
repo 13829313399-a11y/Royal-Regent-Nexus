@@ -223,6 +223,11 @@ export interface InternalQuoteRr2CostSummary {
 }
 
 export interface InternalQuote {
+  documentProductCount?: number
+  documentVersionCount?: number
+  documentQuoteId?: string
+  productRootId?: string
+  deleteBlockReason?: string
   historySources?: InternalQuoteHistoryEvidence[]
   id: string
   quoteNo: string

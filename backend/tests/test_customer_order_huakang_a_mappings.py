@@ -403,6 +403,7 @@ Line Total Unit Cost Qty (Pieces) Item Description Item Code APN Number
 def test_green_toys_ocr_parser_extracts_rows_and_normalizes_prices() -> None:
     text = """
 Purchase Order
+PO# 7816
 PO Date 7/17/2026
 Deliver By Date 10/1/2026
 Item Description Order Quantity Received Inventory Detail Unit Price Amount
@@ -426,13 +427,12 @@ RHWC-1852       Rainbow Harvest - Color-Changing Watering Can Activity Set (Blue
 def test_green_toys_preview_inherits_master_data_and_exports_in_item_group(
     monkeypatch,
 ) -> None:
-    text = """
-Purchase Order
+    # The structured image reader emits metadata, every physical row and total.
+    text = """PO# 7818
 PO Date 7/20/2026
-PO# 7818
 Deliver By Date 9/22/2026
 BBMSUB-1839     Bubbling Submarine & Board Book     2,500     0     1.449     3,622.50
-"""
+Total $3,622.50"""
     monkeypatch.setattr(
         green_toys_headstart,
         "_ocr_green_toys_image",

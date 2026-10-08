@@ -51,6 +51,8 @@ def test_fixed_system_position_definition_contract():
     assert len(registered_codes) == 151
     assert "system:feedback_manage" in permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES
     assert "system:feedback_manage" not in permission_codes.BUSINESS_PERMISSION_CODES
+    assert permission_codes.MODULE_FEEDBACK_PERMISSION_CODES == ("module_feedback:submit", "module_feedback:manage")
+    assert not set(permission_codes.MODULE_FEEDBACK_PERMISSION_CODES) & set(permission_codes.BUSINESS_PERMISSION_CODES)
     assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 143
     assert len(permission_codes.UV_OPS_PERMISSION_CODES) == 18
     assert all(not (set(definition.permission_codes) & set(permission_codes.UV_OPS_PERMISSION_CODES)) for definition in definitions)

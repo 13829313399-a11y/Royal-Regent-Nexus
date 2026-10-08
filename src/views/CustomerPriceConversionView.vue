@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { FileSpreadsheet } from '@lucide/vue'
 import { computed } from 'vue'
+import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import QuoteCenterPanel from '@/components/modules/sales/QuoteCenterPanel.vue'
 import SalesModuleWorkbench from '@/components/modules/sales/SalesModuleWorkbench.vue'
+import { customerPriceUsageGuide } from '@/data/salesUsageGuides'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
@@ -19,6 +21,9 @@ const hasConfiguredCustomerMappings = computed(() => ['huaxing', 'huakang-a'].in
     search-placeholder="搜索客户、文件或导出版本"
   >
     <template #icon><FileSpreadsheet aria-hidden="true" /></template>
+    <div class="mb-4 flex justify-end">
+      <UsageGuideDialog v-bind="customerPriceUsageGuide" />
+    </div>
     <QuoteCenterPanel v-if="hasConfiguredCustomerMappings" />
     <section
       v-else

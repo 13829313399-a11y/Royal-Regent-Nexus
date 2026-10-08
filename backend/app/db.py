@@ -303,7 +303,7 @@ QC_INSPECTION_REQUIRED_TABLES = {
     "qc_inspection_audit_events",
     "qc_inspection_idempotency_records",
 }
-CARTON_MARK_LIBRARY_REVISION = "20261006_0137"
+CARTON_MARK_LIBRARY_REVISION = "20261006_0139"
 CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
     "carton_mark_customers",
     "carton_mark_templates",
@@ -721,6 +721,27 @@ def ensure_document_tools_schema_ready() -> None:
             raise RuntimeError("文档工具尚未迁移至 20260908_0103_docs；请备份并迁移后启动。缺少：" + ", ".join(missing))
 
 
+def ensure_module_feedback_schema_ready() -> None:
+    """An existing database must be explicitly migrated before feedback starts."""
+    from app.models import module_feedback  # noqa: F401
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if not names:
+            return
+        missing = []
+        for name, table in Base.metadata.tables.items():
+            if not name.startswith("module_feedback_"):
+                continue
+            if name not in names:
+                missing.append(name)
+            else:
+                columns = {column["name"] for column in inspector.get_columns(name)}
+                missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
+        if missing:
+            raise RuntimeError("模块反馈需要迁移至 20261005_0120；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def ensure_identity_schema_ready() -> None:
     """Existing accounts require an explicit additive migration, even with writes off."""
     with engine.connect() as connection:
@@ -777,6 +798,7 @@ def init_db() -> None:
         customer_order,  # noqa: F401
         customer_order_ledger,  # noqa: F401
         internal_quote,  # noqa: F401
+        module_feedback,  # noqa: F401
         customer_price_settings,  # noqa: F401
         injection_scheduling,  # noqa: F401
         molding_sample,  # noqa: F401
@@ -798,6 +820,7 @@ def init_db() -> None:
     if not getattr(SessionLocal, "work_center_hooks_installed", False):
         install_projection_hooks(SessionLocal)
         SessionLocal.work_center_hooks_installed = True
+    ensure_module_feedback_schema_ready()
     ensure_work_center_schema_ready()
     ensure_identity_schema_ready()
     ensure_molding_dispatch_schema_ready()

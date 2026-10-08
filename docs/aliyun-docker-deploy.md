@@ -188,7 +188,7 @@ APP_DIR=/你的实际目录 sh deploy/update-from-github.sh
 3. 保持旧服务在线完成 API、Web 镜像构建，并保留带时间戳的 API/Web 回滚镜像。
 4. 没有 Alembic 变更时，先启动继承正式 API 持久 volume 的健康候选容器，再依次替换 Web 和正式 API；Nginx 会动态解析 API 容器地址。
 5. 检测到 Alembic 变更时自动改用维护窗口路径，避免新旧代码同时访问可能不兼容的数据库结构。
-6. 每个服务替换后都等待健康状态，最后验证 `/health`、首页和备份校验和。数据库容器和数据卷不会被重建。
+6. 默认在切换前发布 5 分钟全站倒计时，进入维护后暂停业务访问；每个服务替换后等待健康状态，验证 `/health`、静态首页、维护页和备份校验和后撤销维护。数据库容器和数据卷不会被重建。
 
 可通过 `BACKUP_ROOT` 和 `HEALTH_TIMEOUT_SECONDS` 调整备份目录及健康检查等待时间。部署中途失败且 API 候选容器仍能服务时，脚本会保留该候选容器并输出清理命令，避免自动清理导致二次中断。
 
@@ -212,3 +212,28 @@ docker compose -f docker-compose.prod.yml exec db pg_dump -U rrnexus royal_regen
 - 在前面加一层阿里云负载均衡或 CDN，由它终止 HTTPS。
 
 未配置 HTTPS 前，不要把真实企业账号密码用于公网生产环境。
+
+## 13. 全站停机倒计时与恢复公告
+
+新版网站在所有应用页面显示维护公告，包含登录页。默认停机前 5 分钟弹窗提醒保存；收起后仍显示倒计时横幅。倒计时到零只显示等待更新，真正暂停业务由发布流程显式进入维护。页面在维护期间保留原有输入，恢复后由用户确认刷新，避免直接丢失未保存内容。公告每 10 秒检查一次，切回页面或恢复联网时立即检查。
+
+公告不依赖业务 API 或数据库。Web 需要保留 `docker-compose.prod.yml` 中的只读挂载：主机 `.deployment-notice` 目录到 `/var/run/rrn-notice`。`DEPLOYMENT_NOTICE_DIR` 可指定主机目录，Compose 与公告命令必须指向同一目录。服务器只需 Python 3 标准库。Nginx 在维护期间对业务页面和 API 返回 503，状态公告、独立维护页面及健康检查继续提供；不要直接停止 Web，否则新访问者无法获取维护页。
+
+`deploy/update-from-github.sh` 在完成构建后才发布公告，默认等待 `NOTICE_SECONDS=300` 秒；检查公告确实由当前 Web 提供，再开启维护并切换容器。开始前失败会撤销公告，切换后失败会保留维护状态，健康与备份检查通过后才公布恢复。生产使用服务器自有发布配置 `.deployment-prod-release.yml` 的流程，仍必须遵循其备份、迁移、worker 与单 API 约束，把以下步骤接入实际切换位置；不要用通用脚本替代已验证的发布方案。
+
+手动发布流程的控制命令（在服务器项目目录执行）：
+
+```bash
+# 先完成备份、构建和发布前检查，再通知用户。
+notice_id=$(python3 deploy/maintenance_notice.py start --seconds 300)
+sleep 300
+python3 deploy/maintenance_notice.py maintenance --id "$notice_id"
+
+# 按原有发布方案切换，并验证 API、Web、worker 和静态资源。
+# 确认已恢复后才撤销业务暂停，并给在线用户恢复提示。
+python3 deploy/maintenance_notice.py complete --id "$notice_id"
+```
+
+开始切换前取消部署，可执行 `python3 deploy/maintenance_notice.py cancel --id "$notice_id"`；进入维护后不能用取消绕过恢复验证。故障时执行 `fail --id "$notice_id"` 会保留维护和暂停状态，完成原有恢复／回滚检查后再执行 `complete`。旧公告 ID 无权改动下一次发布，重复部署也不能覆盖正在进行的公告。公告只填写对用户公开的说明，不放凭据、服务器地址或诊断详情。
+
+首次安装时旧 Web 和旧页面没有这项能力，需要先安装新版 Web 与公告目录挂载。通用脚本仅首次引导可显式使用 `MAINTENANCE_NOTICE_ENABLED=0`；它不会声称旧用户已收到提醒。此后恢复默认开启，用户加载过新版页面后才会收到未来的倒计时。外层代理／CDN 必须禁用 `/deployment-status.json` 缓存并透传 503，不应把维护页改写成业务请求成功。首次生产接入要验收两个不同账号、不同页面的同步提醒及失败恢复；本地测试不代表已在服务器启用。

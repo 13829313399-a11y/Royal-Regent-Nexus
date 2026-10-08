@@ -440,6 +440,12 @@ def _enrich_row(
         if identity[0] and identity[1]
         and huakang_unified.identity(huakang_customer, item.reference_no, item.product_no) == identity
     ]
+    if row.get('_huaxing_customer') == 'edu':
+        reference_matches = matches
+        matches = huaxing.edu_history_matches(row, [item for item in history if _key(item.product_no) == _key(product_no)])
+        if any(item not in matches for item in reference_matches):
+            row['issues'].append(_issue('blocked', 'edu_reference_collision', 'contract_no',
+                'EDU 内部编号与产品已被另一客户合同/PO占用，请核对原订单；不能作为普通重复单放行'))
     if matches and not any(
         issue.get("code") in {"duplicate_reference", "existing_order_line", "duplicate_existing_order"}
         for issue in row["issues"]
@@ -451,7 +457,7 @@ def _enrich_row(
             "duplicate_existing_order" if same_quantity else "existing_quantity_conflict",
             "contract_no" if same_quantity else "quantity",
             (
-                f"统一排期 {matches[0].source_sheet}第 {matches[0].row} 行已有相同 SO#/Reference 与产品"
+                f"统一排期 {matches[0].source_sheet}第 {matches[0].row} 行已有相同 {'客户合同/PO' if row.get('_huaxing_customer') == 'edu' else 'SO#/Reference'} 与产品"
                 if same_quantity
                 else f"统一排期已有相同 SO#/Reference 与产品，但数量不同"
             ),
@@ -466,23 +472,38 @@ def _enrich_row(
 
 
 def _mark_batch_duplicates(rows: list[dict[str, Any]]) -> None:
-    seen: dict[tuple[str, str], dict[str, Any]] = {}
+    seen: dict[tuple[str, ...], dict[str, Any]] = {}
+    edu_references: dict[tuple[str, str], tuple[str, ...]] = {}
     for row in rows:
         if row.get("row_role") == "parent":
             continue
         identity = huakang_unified.identity(row.get("_huakang_customer", ""), row.get("reference_no"), row.get("product_no"))
-        if not all(identity):
+        is_edu = row.get('_huaxing_customer') == 'edu'
+        if is_edu:
+            reference_identity = identity
+            identity = huaxing.edu_identity(row.get('contract_no'), row.get('po_no'), row.get('product_no'))
+            previous_identity = edu_references.setdefault(reference_identity, identity)
+            if all(reference_identity) and previous_identity != identity:
+                row['issues'].append(_issue('blocked', 'edu_reference_collision', 'contract_no',
+                    '本批不同客户合同/PO使用了相同 EDU 内部编号与产品，请核对原订单'))
+                _refresh_status(row)
+        if not identity[-1] or not any(identity[:-1]):
             continue
         previous = seen.get(identity)
         if previous is None:
             seen[identity] = row
             continue
+        conflict = is_edu and _number(row.get('quantity')) != _number(previous.get('quantity'))
+        code = 'existing_quantity_conflict' if conflict else 'duplicate_batch_order_line'
+        field = 'quantity' if conflict else 'contract_no'
+        label = '客户合同/PO 与产品' if is_edu else 'SO#/Reference 与产品'
         issue = _issue(
-            "blocked", "duplicate_batch_order_line", "contract_no",
-            f"本批与 {previous.get('source_po_file_name') or '之前文件'} 存在相同 SO#/Reference 与产品",
-            can_skip=True, skip_label="确认本批重复订单行仍需分别写入",
+            "blocked", code, field,
+            f"本批与 {previous.get('source_po_file_name') or '之前文件'} 存在相同 {label}" + ('，但数量不同，按修改/补单阻断' if conflict else ''),
+            can_skip=not conflict, skip_label="确认本批重复订单行仍需分别写入" if not conflict else '',
         )
-        issue["skip_key"] = f"{row['id']}|duplicate_batch_order_line|contract_no"
+        if not conflict:
+            issue["skip_key"] = f"{row['id']}|{code}|{field}"
         row["issues"].append(issue)
         _refresh_status(row)
 
@@ -676,15 +697,13 @@ def _parse_huaxing_rows(
                 raise CustomerOrderUnifiedError(
                     f"{file_name}：识别为 {parsed.get('customer_type') or '未知客户'}，当前入口只处理 EDU"
                 )
-            generated = f"EDUHX{next_number:05d}"
-            next_number += 1
             for record in parsed.get("rows", []):
                 record["_source_po_file_name"] = file_name
-                record["huaxing_po"] = record.get("huaxing_po") or generated
                 edu_schedule.add_derived_fields(record)
             warnings.extend(f"{file_name}：{message}" for message in parsed.get("warnings", []))
             parsed_files.append(parsed)
-        records, dedupe_warnings = edu_po_parser.merge_po_results(parsed_files)
+        records, dedupe_warnings = edu_po_parser.merge_edu_po_results(parsed_files)
+        huaxing.allocate_edu_references(records, next_number)
         warnings.extend(dedupe_warnings)
 
     elif customer_code == "360":
@@ -1035,7 +1054,7 @@ def _parse_huakang_a_rows(
                 records.append(record)
     else:
         parser: Callable[[str, bytes], list[dict[str, Any]]] = (
-            green_toys_headstart.parse_green_toys_image
+            green_toys_headstart.parse_green_toys_po
             if customer_code == "green-toys"
             else green_toys_headstart.parse_headstart_pdf
         )
@@ -1191,6 +1210,20 @@ def create_unified_customer_preview(
         raise CustomerOrderUnifiedError(str(exc)) from exc
 
     detail_rows = [row for row in rows if row.get("row_role") != "parent"]
+    if factory_id == 'huakang-a' and customer_code == 'green-toys':
+        workbook = _load_workbook(schedule_content)
+        try:
+            recovery = huakang_unified.green_summary_recovery(workbook, detail_rows, history)
+        finally:
+            workbook.close()
+        assigned = {key: value['reference'] for key, value in recovery.items()}
+        for row in detail_rows:
+            record = {'contract_no': row['contract_no'], 'item_no': row['product_no']}
+            huakang_unified.reconcile_green_po(record, history, assigned)
+            row['reference_no'] = row['po_no'] = record['customer_po']
+            key = (_text(row['contract_no']), _key(row['product_no']))
+            if key in recovery:
+                parser_warnings.append(f"{row['po_no']} / {row['product_no']}：两张摘要一致但缺少 ITEM 明细；导出时恢复明细和公式关联，保留原编号及人工价格。")
     huaxing_sheets = []
     if huaxing.enabled(factory_id, customer_code):
         workbook = _load_workbook(schedule_content)
@@ -1244,6 +1277,8 @@ def create_unified_customer_preview(
             '只校验公共区域，客户专属字段按已确认的实际表头映射；人工生产和出货内容保留。',
             '历史查重兼容未填SO的客户PO编号，并读取取消单和已走货区中的历史订单。',
         ]
+        if customer_code == 'edu':
+            warnings[2] = 'EDU 按客户完整合同/PO＋产品查重，EDUHX 仅为内部编号；不同客户订单独立续编号，源排期不会被覆盖。'
     return {
         "preview_schema_version": PREVIEW_SCHEMA_VERSION,
         "customer_code": customer_code,
@@ -1525,7 +1560,23 @@ def export_unified_customer_schedule(
         if huaxing.enabled(factory_id, customer_code):
             huaxing.export_rows(workbook, rows)
         elif huakang_unified.enabled(factory_id, customer_code) or regional.enabled(factory_id, customer_code):
-            slots_by_sheet = huakang_unified.output_slots(workbook, len(rows))
+            recovery = {}
+            if factory_id == 'huakang-a' and customer_code == 'green-toys':
+                recovery = huakang_unified.green_summary_recovery(workbook, rows,
+                    read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code))
+            recovered_rows = [recovery.get((_text(row.get('contract_no')), _key(row.get('product_no')))) for row in rows]
+            if any(recovered_rows):
+                if any(value and (row['reference_no'] != value['reference'] or row['po_no'] != value['reference'])
+                       for row, value in zip(rows, recovered_rows)):
+                    raise CustomerOrderUnifiedError('恢复摘要时订单身份已改变，请重新核对原单')
+                count = len(rows) - sum(bool(value) for value in recovered_rows)
+                slots_by_sheet = huakang_unified.output_slots(workbook, len(rows), sheet_counts={
+                    ITEM_SHEET: len(rows), ORDER_SHEET: count, REVIEW_SHEET: count,
+                })
+            else:
+                slots_by_sheet = huakang_unified.output_slots(workbook, len(rows))
+            summary_index = 0
+            green_pairs = []
             for index, row in enumerate(rows):
                 row_number = slots_by_sheet[ITEM_SHEET][index]
                 _write_item_row(workbook[ITEM_SHEET], row_number, row)
@@ -1537,10 +1588,26 @@ def export_unified_customer_schedule(
                     from app.services.customer_order_ubtech import write_extensions
                     write_extensions(workbook[ITEM_SHEET], row_number, row)
                 for name in (ORDER_SHEET, REVIEW_SHEET):
-                    _write_summary_row(workbook[name], slots_by_sheet[name][index], row, item_row=row_number, item_sheet=workbook[ITEM_SHEET])
+                    summary_row = recovered_rows[index][name] if recovered_rows[index] else slots_by_sheet[name][summary_index]
+                    _write_summary_row(workbook[name], summary_row, row, item_row=row_number, item_sheet=workbook[ITEM_SHEET])
+                    if factory_id == 'huakang-a' and customer_code == 'green-toys':
+                        green_pairs.append((name, summary_row, row_number))
                     if customer_code == 'ubtech':
                         from app.services.customer_order_ubtech import write_summary
                         write_summary(workbook[name], slots_by_sheet[name][index], row, slots_by_sheet[ORDER_SHEET][index])
+                if not recovered_rows[index]:
+                    summary_index += 1
+            for name, summary_row, item_row in green_pairs:
+                detail = workbook[ITEM_SHEET]
+                summary = workbook[name]
+                if (not _text(detail.cell(item_row, 5).value) or not _text(detail.cell(item_row, 8).value)
+                        or [_text(detail.cell(item_row, c).value) for c in range(4, 9)] !=
+                           [_text(summary.cell(summary_row, c).value) for c in range(3, 8)]):
+                    raise CustomerOrderUnifiedError('Green Toys 导出三表身份不一致，已停止生成，请重新核对')
+                for c, ic in ((1,1),(2,2),(8,9),(9,10),(10,11),(11,12),(12,13),(13,14),(18,25),(19,26)):
+                    ref = f"'ITEM表'!{get_column_letter(ic)}{item_row}"
+                    if summary.cell(summary_row, c).value != f'=IF(LEN({ref})=0,"",{ref})':
+                        raise CustomerOrderUnifiedError('Green Toys 导出三表公式关联不一致，已停止生成')
         else:
             slots = _ensure_output_slots(workbook, len(rows))
             for row_number, row in zip(slots, rows, strict=True):

@@ -69,6 +69,8 @@ services:
         condition: service_healthy
     ports:
       - "80:80"
+    volumes:
+      - ${DEPLOYMENT_NOTICE_DIR:-./.deployment-notice}:/var/run/rrn-notice:ro
     restart: unless-stopped
     logging: *default-logging
 

@@ -8,22 +8,31 @@ import {
   FileInput,
   HelpCircle,
   LayoutDashboard,
+  MessageSquarePlus,
+  MessagesSquare,
   Search,
   Table2,
 } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
+import ModuleFeedbackHub from '@/features/module-feedback/ModuleFeedbackHub.vue'
+import type { FeedbackContext } from '@/api/moduleFeedback'
 import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue'
+import { customerOrderUsageGuide } from '@/data/salesUsageGuides'
 import { getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
-export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule'
+export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback'
 
 const appStore = useAppStore()
 appStore.setActiveDepartment('sales-business')
 
 const activeSection = ref<CustomerOrderCenterSection>('ledger')
+const orderWorkspace = ref<InstanceType<typeof CustomerOrderCenterWorkspace> | null>(null)
+const feedbackHub = ref<InstanceType<typeof ModuleFeedbackHub> | null>(null)
+const feedbackUnread = ref(0)
 const activeFactory = computed(() => appStore.activeProductionFactory)
 const departmentRoute = computed(() => getFactoryScopedRoute('/modules/sales-business', activeFactory.value.id))
 
@@ -35,7 +44,16 @@ const navigationItems = [
   { id: 'customer-schedule' as const, label: '各客排期', icon: CalendarRange },
   { id: 'exceptions' as const, label: '异常与提醒', icon: CircleAlert },
   { id: 'schedule' as const, label: '厂区总排期', icon: CalendarRange },
+  { id: 'feedback' as const, label: '反馈与答复', icon: MessagesSquare },
 ]
+
+function reportProblem(context?: FeedbackContext) {
+  feedbackHub.value?.openComposer(context ?? {
+    ...orderWorkspace.value?.feedbackContext(),
+    page: navigationItems.find(item => item.id === activeSection.value)?.label ?? '客户订单中心',
+    section: activeSection.value,
+  })
+}
 
 function navigate(section: CustomerOrderCenterSection) {
   activeSection.value = section
@@ -59,12 +77,20 @@ function navigate(section: CustomerOrderCenterSection) {
       </label>
 
       <div class="order-topbar__actions">
-        <button type="button" class="order-icon-button order-help-button">
-          <HelpCircle aria-hidden="true" />
-          <span>帮助</span>
+        <button type="button" class="order-icon-button" @click="reportProblem()">
+          <MessageSquarePlus aria-hidden="true" /><span>反馈问题</span>
         </button>
-        <button type="button" class="order-icon-button" aria-label="通知">
+        <UsageGuideDialog v-bind="customerOrderUsageGuide">
+          <template #trigger>
+            <button type="button" class="order-icon-button order-help-button" aria-label="使用教程">
+              <HelpCircle aria-hidden="true" />
+              <span>使用教程</span>
+            </button>
+          </template>
+        </UsageGuideDialog>
+        <button type="button" class="order-icon-button order-feedback-notice" :aria-label="`反馈通知${feedbackUnread ? `，${feedbackUnread} 条未读` : ''}`" @click="navigate('feedback')">
           <Bell aria-hidden="true" />
+          <b v-if="feedbackUnread" class="order-feedback-count">{{ feedbackUnread > 99 ? '99+' : feedbackUnread }}</b>
         </button>
         <span class="order-factory-chip">{{ activeFactory.shortName }}</span>
         <AccountMenu />
@@ -96,6 +122,7 @@ function navigate(section: CustomerOrderCenterSection) {
         >
           <component :is="item.icon" aria-hidden="true" />
           <span>{{ item.label }}</span>
+          <b v-if="item.id === 'feedback' && feedbackUnread" class="order-feedback-count">{{ feedbackUnread }}</b>
         </button>
       </nav>
 
@@ -124,15 +151,28 @@ function navigate(section: CustomerOrderCenterSection) {
         >
           <component :is="item.icon" aria-hidden="true" />
           {{ item.label }}
+          <b v-if="item.id === 'feedback' && feedbackUnread" class="order-feedback-count">{{ feedbackUnread }}</b>
         </button>
       </nav>
 
       <CustomerOrderCenterWorkspace
+        v-show="activeSection !== 'feedback'"
+        ref="orderWorkspace"
         :key="activeFactory.id"
         :active-section="activeSection"
         :factory-id="activeFactory.id"
         :factory-name="activeFactory.shortName"
         @navigate="navigate"
+        @feedback="reportProblem"
+      />
+      <ModuleFeedbackHub
+        :key="`feedback-${activeFactory.id}`"
+        ref="feedbackHub"
+        :factory-id="activeFactory.id"
+        :factory-name="activeFactory.shortName"
+        :active="activeSection === 'feedback'"
+        @navigate="navigate('feedback')"
+        @unread="feedbackUnread = $event"
       />
     </main>
   </div>
@@ -229,6 +269,7 @@ function navigate(section: CustomerOrderCenterSection) {
 
 .order-global-search {
   width: min(440px, 42vw);
+  min-width: 0;
   height: 38px;
   gap: 9px;
   border: 1px solid var(--order-outline-soft);
@@ -262,6 +303,8 @@ function navigate(section: CustomerOrderCenterSection) {
 
 .order-topbar__actions {
   margin-left: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
   gap: 7px;
 }
 
@@ -283,6 +326,10 @@ function navigate(section: CustomerOrderCenterSection) {
   font-size: 12px;
   font-weight: 800;
 }
+
+.order-feedback-count { min-width: 18px; border-radius: 8px; background: #b45309; padding: 1px 5px; color: white; font-size: 10px; line-height: 16px; }
+.order-feedback-notice { position: relative; }
+.order-feedback-notice .order-feedback-count { position: absolute; top: -2px; right: -6px; }
 
 .order-sidebar {
   position: fixed;
@@ -476,6 +523,7 @@ function navigate(section: CustomerOrderCenterSection) {
 }
 
 @media (max-width: 980px) {
+  .order-global-search { display: none; }
   .order-sidebar {
     display: none;
   }
@@ -536,7 +584,6 @@ function navigate(section: CustomerOrderCenterSection) {
   }
 
   .order-global-search,
-  .order-help-button,
   .order-factory-chip {
     display: none;
   }
@@ -544,6 +591,12 @@ function navigate(section: CustomerOrderCenterSection) {
   .order-main {
     padding-inline: 12px;
   }
+}
+
+@media (max-width: 560px) {
+  .order-back-link span, .order-help-button span { display: none; }
+  .order-topbar__actions { gap: 3px; }
+  .order-icon-button { gap: 4px; padding-inline: 6px; }
 }
 
 @keyframes order-main-enter {

@@ -232,6 +232,33 @@ def test_invalid_pallet_space_never_silently_uses_old_defaults(key, value):
         calculate("sales", {"pricing_mode": "component", "justplay_packaging": {key: value}})
 
 
+@pytest.mark.parametrize("override", [20, "20", None])
+def test_justplay_manual_pallet_count_drives_cost_and_packaging_total(override):
+    payload = {"pricing_mode": "component",
+               "color_box_size_in": {"length": 17.25, "width": 11.25, "height": 9},
+               "cartons": [{"item": "主纸箱", "qty_per_carton": 24}],
+               "justplay_packaging": {"cartons_per_pallet_override": override}}
+    for pallet_length, automatic in [(1000, 30), (1400, 45), (1, 0)]:
+        if override is None and not automatic:
+            continue
+        payload["justplay_packaging"]["pallet_length_mm"] = pallet_length
+        result = calculate("sales", payload)
+        rows = [r for r in result["line_breakdown"] if r.get("kind") == "justplay_fixed_packaging"]
+        expected = Decimal(str(override if override is not None else automatic))
+        paper = next(r for r in rows if r["formula_code"] == "paper_pallet")
+        assert Decimal(paper["cartons_per_pallet"]) == expected
+        paper_cost = Decimal(19) / expected / 24
+        assert Decimal(paper["amount_hkd"]) == paper_cost.quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
+        adhesive = Decimal('3.9') / 2150 * (18 * 2 + 12 * 4 + 6) / 24
+        assert Decimal(result["totals"]["packaging_material_hkd"]) == (paper_cost + adhesive).quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
+
+
+@pytest.mark.parametrize("override", ["", 0, -1, 1.5, "NaN", "Infinity", True])
+def test_justplay_manual_pallet_count_rejects_invalid_values(override):
+    with pytest.raises(CalculationInputError, match="每托板装箱数"):
+        calculate("sales", {"pricing_mode": "component", "justplay_packaging": {"cartons_per_pallet_override": override}})
+
+
 def test_engineering_electronic_and_molding_decimal_vectors():
     engineering = calculate(
         "engineering",
