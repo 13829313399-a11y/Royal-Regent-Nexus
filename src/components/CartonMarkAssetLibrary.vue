@@ -1,19 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Download, Eye, FileSpreadsheet, FileText, FolderOpen, Image as ImageIcon, RefreshCw, UploadCloud } from '@lucide/vue'
-import { cartonSupplierPortalApi } from '@/api/cartonSupplierPortal'
+import { cartonSupplierPortalApi, type SupplierMarkAsset } from '@/api/cartonSupplierPortal'
 import { http } from '@/lib/http'
 import { cartonMarkApi, type CartonMarkAsset, type CartonMarkAssetUploadResult } from '@/api/cartonMark'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 import { factoryContexts } from '@/data/enterpriseMock'
 
-const props = defineProps<{ factoryId: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
-const emit = defineEmits<{ use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]] }>()
+const props = defineProps<{ factoryId: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
+const emit = defineEmits<{ use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]]; supplierExcel: [asset: SupplierMarkAsset & { factory_id: string }]; supplierSources: [assets: (SupplierMarkAsset & { factory_id: string })[]] }>()
 const auth = useAuthStore()
 const canRead = computed(() => props.supplier ? auth.can('carton_supplier:read') : ['pmc-warehouse', 'carton', 'qa', 'qc'].some(d => auth.can('carton_mark:read', props.factoryId, d)))
 const canWrite = computed(() => !props.supplier && !props.readOnly && ['pmc-warehouse', 'carton'].some(d => auth.can('carton_mark:template_upload', props.factoryId, d)))
 const entries = ref<CartonMarkAsset[]>([])
+const supplierSources = ref<(SupplierMarkAsset & { factory_id: string })[]>([])
+function chooseSupplierExcel(asset: CartonMarkAsset) {
+  if (!props.supplier || !props.supplierCheckEnabled || busy.value || !auth.can('carton_supplier:edit', asset.factory_id, '*')) return
+  const source = supplierSources.value.find(row => row.id === asset.id && row.factory_id === asset.factory_id && row.kind === 'excel')
+  if (source) emit('supplierExcel', source)
+}
 const results = ref<CartonMarkAssetUploadResult[]>([])
 const pendingFiles = ref<File[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -28,13 +34,22 @@ const sourceExcels = computed(() => sourceCandidates.value.filter(asset => asset
 const sourcePdfs = computed(() => sourceCandidates.value.filter(asset => asset.kind === 'pdf'))
 const selectedSources = computed(() => [sourceExcels.value.find(asset => asset.id === sourceExcelId.value), sourcePdfs.value.find(asset => asset.id === sourcePdfId.value)])
 function chooseSources(key: string) {
-  if (!canWrite.value || !props.checkEnabled || busy.value) return
+  const candidate = entries.value.find(asset => groupKey(asset) === key)
+  if (busy.value || !(canWrite.value && props.checkEnabled || props.supplier && props.supplierCheckEnabled && candidate && auth.can('carton_supplier:edit', candidate.factory_id, '*'))) return
   sourceGroup.value = key
   sourceExcelId.value = sourceExcels.value.length === 1 ? sourceExcels.value[0]!.id : ''
   sourcePdfId.value = sourcePdfs.value.length === 1 ? sourcePdfs.value[0]!.id : ''
   void nextTick(() => sourcePanel.value?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
 }
 function useSources() {
+  if (props.supplier) {
+    if (!props.supplierCheckEnabled || busy.value || selectedSources.value.some(asset => !asset)) return
+    const [excel, pdf] = selectedSources.value.map(asset => supplierSources.value.find(row => row.id === asset!.id && row.factory_id === asset!.factory_id))
+    if (!excel || !pdf || excel.factory_id !== pdf.factory_id || !auth.can('carton_supplier:edit', excel.factory_id, '*')) return
+    const orders = excel.orders.filter(order => pdf.orders.some(row => row.id === order.id && row.issue_id === order.issue_id))
+    if (!orders.length) { error.value = 'Excel 与 PDF 没有共同的采购订单，请选择同一订单的文件。'; return }
+    emit('supplierSources', [{ ...excel, orders }, pdf]); sourceGroup.value = ''; return
+  }
   if (!canWrite.value || !props.checkEnabled || busy.value || selectedSources.value.some(asset => !asset || asset.factory_id !== props.factoryId)) return
   emit('useSources', selectedSources.value as CartonMarkAsset[])
   sourceGroup.value = ''
@@ -106,9 +121,10 @@ async function refresh() {
         try { return { scope, assets: await cartonSupplierPortalApi.markAssets(scope, controller.signal) } }
         catch (cause) { throw new Error(`${factoryDisplayName(scope)}：${getApiErrorMessage(cause)}`) }
       }))
+      if (current === generation && sequence === listSequence) supplierSources.value = batches.flatMap(({ scope, assets }) => assets.map(asset => ({ ...asset, factory_id: scope })))
       records = batches.flatMap(({ scope, assets }) => assets.map(asset => ({
         ...asset, factory_id: scope, sha256: '', bound_order_id: null, recognition_source: '', candidates: [], warning: '',
-        revision: 0, created_by_name: '', binding_status: 'BOUND' as const, orders: asset.orders.map(order => ({ ...order, order_no: '' })),
+        created_by_name: '', binding_status: 'BOUND' as const, orders: asset.orders.map(order => ({ ...order, order_no: '' })),
       })))
       records.sort((a, b) => b.created_at.localeCompare(a.created_at) || a.factory_id.localeCompare(b.factory_id) || b.id.localeCompare(a.id))
     } else records = await cartonMarkApi.listAssets(factory, props.orderId, controller.signal)
@@ -120,7 +136,7 @@ async function refresh() {
     }
   } catch (cause) {
     if (current === generation && sequence === listSequence) {
-      if (props.supplier) entries.value = []
+      if (props.supplier) { entries.value = []; supplierSources.value = [] }
       gallery.value = []
       error.value = getApiErrorMessage(cause)
     }
@@ -274,6 +290,7 @@ watch(() => [props.factoryId, props.supplierFactories?.join('\0'), props.orderId
   controller.abort()
   controller = new AbortController()
   entries.value = []
+  supplierSources.value = []
   results.value = []
   pendingFiles.value = []
   closeBinding(); selectedPhotos.value = []; allOrders.value = []; gallery.value = []
@@ -294,7 +311,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="flex items-center gap-2 text-base font-bold text-slate-900"><FolderOpen class="size-5 text-teal-700" />{{ uploadOnly ? '批量上传箱唛资料' : '箱唛资料库' }}</h2>
-        <p class="mt-1 text-xs leading-5 text-slate-500">{{ supplier ? '仓库按合同号共享给已下单订单的原文件，可随时查看和下载。' : orderId ? '此订单关联的箱唛原文件，可直接查看和下载。' : 'PDF、Excel、图片可分别上传，按合同号自动关联本厂订单并共享给对应供应商；未识别的文件先保存，之后再关联。' }}</p>
+        <p class="mt-1 text-xs leading-5 text-slate-500">{{ supplier ? '本供应商采购订单的箱唛原文件，可查看、下载，并选择 Excel / PDF 一起核对。' : orderId ? '此订单关联的箱唛原文件，可直接查看和下载。' : 'PDF、Excel、图片可分别上传，按合同号自动关联本厂订单并共享给对应供应商；未识别的文件先保存，之后再关联。' }}</p>
         <p v-if="!supplier && !orderId" class="text-xs leading-5 text-slate-500">图片支持 JPG、PNG、WebP。无需改照片名：上传后可搜索订单手动关联，或勾选多张照片组成组、整组关联。同合同命名可自动识别，如 4500000123_正唛.jpg。</p>
       </div>
       <button v-if="!uploadOnly" type="button" :disabled="busy || loading" class="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-xs disabled:opacity-50" @click="refresh"><RefreshCw class="size-3.5" />刷新</button>
@@ -341,7 +358,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
           <span v-if="supplier && supplierFactories">{{ factoryDisplayName(group.factory) }} ·</span>
           <span v-if="group.photoGroupId" class="rounded bg-blue-100 px-2 py-1 text-blue-700">照片组</span>
           <span>合同 {{ group.contract || '未识别' }}</span><span>{{ group.customer }}</span><span class="ml-auto">{{ group.assets.length }} 份原文件<span v-if="group.photoGroupId && photoMembers(group.photoGroupId, group.factory).length !== group.assets.length"> / 整组 {{ photoMembers(group.photoGroupId, group.factory).length }} 张</span></span>
-          <button v-if="canWrite && checkEnabled && group.assets.some(asset => asset.kind !== 'image')" type="button" :disabled="busy" class="rounded border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`选择合同 ${group.contract || '未识别'} 的 Excel / PDF 核对文件`" @click="chooseSources(group.key)">选择 Excel / PDF 核对</button>
+          <button v-if="(canWrite && checkEnabled || supplier && supplierCheckEnabled && auth.can('carton_supplier:edit', group.factory, '*')) && group.assets.some(asset => asset.kind !== 'image')" type="button" :disabled="busy" class="rounded border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`选择合同 ${group.contract || '未识别'} 的 Excel / PDF 核对文件`" @click="chooseSources(group.key)">选择 Excel / PDF 核对</button>
           <button v-if="group.photoGroupId" type="button" class="rounded border bg-white px-2 py-1.5" @click="gallery = photoMembers(group.photoGroupId, group.factory)">查看照片组</button>
           <button v-if="canWrite && group.photoGroupId" type="button" :disabled="busy" class="rounded border bg-white px-2 py-1.5" @click="edit(group.assets[0]!)">整组关联</button>
           <button v-if="canWrite && group.photoGroupId" type="button" :disabled="busy" class="rounded border bg-white px-2 py-1.5" @click="ungroup(group.photoGroupId)">解除分组</button>
@@ -358,7 +375,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
             <div class="min-w-0"><p class="text-sm font-semibold leading-5 text-slate-800 [overflow-wrap:anywhere]">{{ asset.file_name }}</p><p class="mt-1 text-xs leading-5 text-slate-400">{{ asset.kind === 'pdf' ? 'PDF' : asset.kind === 'image' ? '图片' : 'Excel' }} · {{ (asset.size_bytes / 1024).toFixed(0) }} KB</p></div>
           </div>
           <div class="min-w-0 text-xs">
-            <span class="inline-flex rounded-full px-2 py-1 leading-4" :class="asset.binding_status === 'BOUND' ? 'bg-teal-50 text-teal-700' : 'bg-amber-50 text-amber-700'">{{ supplier ? '仓库已共享' : statuses[asset.binding_status] }}</span>
+            <span class="inline-flex rounded-full px-2 py-1 leading-4" :class="asset.binding_status === 'BOUND' ? 'bg-teal-50 text-teal-700' : 'bg-amber-50 text-amber-700'">{{ supplier ? '已关联采购订单' : statuses[asset.binding_status] }}</span>
             <p class="mt-1 leading-5 text-slate-400">{{ asset.created_at.slice(0, 10) }}</p>
             <p v-if="asset.warning || asset.binding_status === 'AMBIGUOUS'" class="mt-1 text-amber-700">{{ asset.binding_status === 'AMBIGUOUS' ? '同一合同号对应不同客户，请确认具体订单。' : asset.warning }}</p>
           </div>
@@ -369,12 +386,13 @@ onBeforeUnmount(() => { generation++; controller.abort() })
             <button v-if="canWrite" type="button" :disabled="busy" class="rounded-lg border px-2.5 py-1.5" @click="edit(asset)">关联设置</button>
             <button v-if="canWrite" type="button" :disabled="busy" class="rounded-lg px-2.5 py-1.5 text-slate-400" @click="archive(asset)">移出</button>
             <button v-if="canWrite && checkEnabled && asset.kind !== 'image'" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="emit('use', asset)">用于{{ asset.kind === 'pdf' ? 'PDF' : 'Excel' }}核对</button>
+            <button v-if="supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="chooseSupplierExcel(asset)">选择 Excel 并上传 PDF 核对</button>
           </div>
         </li>
         </template>
       </ul>
       </div>
-      <div v-if="sourceGroup && canWrite && checkEnabled" ref="sourcePanel" role="dialog" aria-label="选择仓库核对文件" class="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
+      <div v-if="sourceGroup && (canWrite && checkEnabled || supplier && supplierCheckEnabled)" ref="sourcePanel" role="dialog" aria-label="选择仓库核对文件" class="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
         <p class="font-semibold">从同一合同的原文件选择 Excel 与打印 PDF</p>
         <p class="mt-1 text-xs text-slate-600">包含列表筛选隐藏的同合同文件；多个版本请明确选择。带入后仍需提交内容核对，通过或人工放行后才可供 QC 使用。</p>
         <div class="mt-3 grid gap-3 sm:grid-cols-2">

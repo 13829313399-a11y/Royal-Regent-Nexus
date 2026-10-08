@@ -91,11 +91,12 @@ const visibleModules = computed(() => {
         return { ...scopedModule, route: supplier ? '/carton-supplier'
           : internal ? `${getFactoryScopedRoute('/modules/pmc-warehouse/carton-procurement', factory.id)}&tab=receipts&receipt_page=supplier` : '/carton-supplier' }
       }
-      if (module.id === 'carton-mark-check' && !authStore.can('carton_mark:read', factory.id)) {
+      if (module.id === 'carton-mark-check' && (authStore.can('carton_supplier:read', '*', '*') || !authStore.can('carton_mark:read', factory.id))) {
         return { ...scopedModule, route: '/carton-supplier/carton-mark',
-          summary: '按合同查询已下单订单的仓库箱唛原文件，预览 PDF 或下载 Excel / PDF',
-          status: '供应商只读', statusTone: 'teal' as const, todos: [],
-          children: scopedModule.children.filter(child => ['客人 Excel', '印刷 PDF'].includes(child.label)) }
+          owner: '供应商协同',
+          summary: '查看本供应商订单的箱唛资料，选择客人 Excel 并上传印刷 PDF 核对',
+          status: '供应商工作区', statusTone: 'teal' as const, todos: [],
+          children: scopedModule.children.filter(child => ['客人 Excel', '印刷 PDF', '内容核对'].includes(child.label)) }
       }
     }
 

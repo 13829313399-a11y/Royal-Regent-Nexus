@@ -192,8 +192,8 @@ def _mark_identity(customer_name, po, item, contract_number):
         (customer_name, po, item, contract_number))
 
 
-def _supplier_mark_assets(db, user, factory):
-    """Share source files by contract using issued headers, with factory-wide ambiguity checks."""
+def _supplier_mark_orders(db, user, factory):
+    """Current issued identities; unissued orders still take part in ambiguity checks."""
     supplier = supplier_access(db, user, factory)
     projections, eligible = [], {}
     for order in mark_assets.available_orders(db, factory):
@@ -210,11 +210,17 @@ def _supplier_mark_assets(db, user, factory):
         if (issue and order.supplier_id == supplier.id
                 and header.get("supplier_id") == supplier.id
                 and order.status in OPEN_STATES | {"COMPLETED"}):
-            eligible[order.id] = dict(id=order.id,
+            eligible[order.id] = dict(id=order.id, issue_id=issue.id,
                 customer_name=str(header.get("customer_name") or ""),
                 contract_no=str(header.get("contract_no") or ""),
                 customer_po=str(header.get("customer_po") or ""),
                 item_no=str(header.get("item_no") or ""))
+    return supplier, projections, eligible
+
+
+def _supplier_mark_assets(db, user, factory):
+    """Share source files by contract using issued headers, with factory-wide ambiguity checks."""
+    _, projections, eligible = _supplier_mark_orders(db, user, factory)
     result = []
     for asset in db.scalars(select(CartonMarkAsset).where(
             CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False))
@@ -229,7 +235,7 @@ def _supplier_mark_assets(db, user, factory):
 
 
 def supplier_mark_assets(db, user, factory):
-    return [dict(id=asset.id, file_name=asset.file_name, kind=asset.kind,
+    return [dict(id=asset.id, revision=asset.revision, file_name=asset.file_name, kind=asset.kind,
         photo_group_id=asset.photo_group_id,
         size_bytes=asset.size_bytes, contract_number=asset.contract_number,
         created_at=asset.created_at, orders=orders)
