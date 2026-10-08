@@ -46,7 +46,7 @@ def test_batch_partial_failure_dedup_contract_reuse_future_order_and_factory_sco
         assert {o["id"] for o in asset["orders"]} == {"asset-order-a", "asset-order-b"}
         assert result[1]["asset"]["binding_status"] == "UNBOUND"
         repeat = upload(client, files[:1])[0]
-        assert repeat["status"] == "duplicate" and repeat["asset"]["id"] == asset["id"]
+        assert repeat["status"] == "created" and repeat["asset"]["id"] != asset["id"]
         assert client.get(f"/api/carton-mark/assets/{asset['id']}/document", params={"factory_id": "huakang-a"}).status_code == 404
         assert client.get("/api/carton-mark/assets", params={"factory_id": "huaxing", "order_id": "asset-order-other-factory"}).status_code == 404
         # Files uploaded before an order exist start linking when that contract arrives.
@@ -92,7 +92,7 @@ def test_conflicts_manual_binding_cas_archive_and_order_delete_preserve_original
         assert client.delete(f"/api/carton-mark/assets/{asset['id']}?factory_id=huaxing&revision=2").status_code == 204
         assert client.get(document_url).status_code == 404
         restored = upload(client, [("4500222793.xlsx", content)])[0]
-        assert restored["status"] == "restored" and restored["asset"]["revision"] == 4
+        assert restored["status"] == "created" and restored["asset"]["id"] != asset["id"]
 
 
 def test_recognition_does_not_use_partial_identifiers_or_choose_conflicting_contracts(monkeypatch):
@@ -148,7 +148,7 @@ def test_reuse_stored_pair_runs_original_check_and_keeps_qc_gate(monkeypatch):
         assert local.status_code == 201, local.text
 
 
-def test_raw_repository_permissions_and_stale_restore(monkeypatch):
+def test_raw_repository_permissions_and_stale_copy_never_restore_original(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         content = _workbook_bytes()
@@ -169,11 +169,11 @@ def test_raw_repository_permissions_and_stale_restore(monkeypatch):
             cached = stale.scalar(select(model.CartonMarkAsset).where(model.CartonMarkAsset.id == asset["id"]))
             stale.commit()  # Retain the stale identity map, release the read transaction.
             recognition = service.recognize_asset("4500222793.xlsx", content, [])
-            service.save_asset(first, user, "huaxing", content, recognition)
-            service.archive_asset(first, user, "huaxing", asset["id"], 3)
+            first_copy, first_status = service.save_asset(first, user, "huaxing", content, recognition)
+            assert first_status == "created" and first_copy.id != asset["id"]
             assert cached.revision == 2
-            with pytest.raises(HTTPException) as failure:
-                service.save_asset(stale, user, "huaxing", content, recognition)
-            assert failure.value.status_code == 409
+            stale_copy, stale_status = service.save_asset(stale, user, "huaxing", content, recognition)
+            assert stale_status == "created" and stale_copy.id not in {asset["id"], first_copy.id}
             first.expire_all()
-            assert first.get(model.CartonMarkAsset, asset["id"]).revision == 4
+            original = first.get(model.CartonMarkAsset, asset["id"])
+            assert original.revision == 2 and original.is_archived

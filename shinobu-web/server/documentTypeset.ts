@@ -19,6 +19,8 @@ export type Region = {
   prob?: number; fontSize?: number; bold?: boolean; protected?: boolean; method?: string;
   direction?: string; skipReason?: string; rendered?: boolean;
   fgColor?: number[];
+  quad?: {x:number;y:number}[];
+  lineCount?: number;
 };
 const identifiers = /\d|https?:\/\/|www\.|@|^[#＃]|^(?:PANTON[E]?|UPC|CE|CPSC|ASTM|EN|ISO|AQL|MIL|QA|QC|PVC|ABS|PP|PET|PE|BR|EEC|EC|EU|USA|S\/S|PNP|PUP|HOLOLIVE|JAKKS|PEANUTS|TM|Sa|Cr|Maj|Min)$/i;
 // OCR word breaks need not equal observed gaps. Normalize only complete known
@@ -42,12 +44,95 @@ export function overlap(a: Region['box'], b: Region['box']): number {
     Math.max(0, Math.min(a.y+a.height,b.y+b.height)-Math.max(a.y,b.y));
 }
 
-export function prepareRegions(regions: Region[], direction: string): Region[] {
-  const unique: Region[] = [];
+const letters=(text:string)=>text.toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]/g,'');
+
+/** OCR metric boxes may overlap while the visible rows have a clear gap. */
+function separateOcrRows(source:Canvas, regions:Region[]) {
+  for(let i=0;i<regions.length;i++)for(let j=i+1;j<regions.length;j++) {
+    const a=regions[i],b=regions[j];
+    if(a.method==='native'||b.method==='native'||a.skipReason||b.skipReason||!overlap(a.box,b.box))continue;
+    const [upper,lower]=a.box.y+a.box.height/2<b.box.y+b.box.height/2?[a,b]:[b,a];
+    const u=upper.box,l=lower.box,minHeight=Math.min(u.height,l.height);
+    const horizontal=Math.min(u.x+u.width,l.x+l.width)-Math.max(u.x,l.x);
+    if(horizontal<Math.min(u.width,l.width)*.6||l.y+l.height/2-u.y-u.height/2<minHeight*.7
+      ||u.y+u.height-l.y>minHeight*.5)continue;
+    // Different line widths can put a neighbouring swatch in the union. The
+    // shared text column verifies the baseline gap without sampling that art.
+    const x=Math.max(0,Math.ceil(Math.max(u.x,l.x))),right=Math.min(source.width,Math.floor(Math.min(u.x+u.width,l.x+l.width)));
+    const top=Math.max(0,Math.ceil(u.y+u.height/2)),bottom=Math.min(source.height,Math.floor(l.y+l.height/2));
+    if(bottom<=top||right<=x)continue;
+    const w=right-x,data=source.getContext('2d').getImageData(x,top,w,bottom-top).data;
+    const bins=new Map<string,{count:number;rgb:number[]}>();
+    for(let p=0;p<data.length;p+=4) {
+      const rgb=[data[p],data[p+1],data[p+2]],key=rgb.map(v=>v>>4).join(',');
+      const bin=bins.get(key)??{count:0,rgb};bin.count++;bins.set(key,bin);
+    }
+    const bg=[...bins.values()].sort((a,b)=>b.count-a.count)[0].rgb;
+    let gap=-1,distance=Infinity;
+    for(let y=top;y<bottom;y++) {
+      let ink=0;
+      for(let col=0;col<w;col++){const p=((y-top)*w+col)*4;if(colorDistance([data[p],data[p+1],data[p+2]],bg)>35)ink++;}
+      const d=Math.abs(y-(u.y+u.height+l.y)/2);
+      if(ink<=Math.max(1,w*.015)&&d<distance){gap=y;distance=d;}
+    }
+    if(gap<0)continue;
+    const end=l.y+l.height;
+    u.height=Math.min(u.y+u.height,gap)-u.y;
+    l.y=Math.max(l.y,gap+1);l.height=end-l.y;
+  }
+}
+
+/** If descenders actually overlap, retain their complete pixels in one local
+ * paragraph. This only combines conflicting OCR rows in the same column. */
+function combineConflictingRows(source:Canvas,regions:Region[]):Region[] {
+  const combined=[...regions];
+  for(let i=0;i<combined.length;i++)for(let j=i+1;j<combined.length;j++) {
+    const a=combined[i],b=combined[j];
+    if(a.skipReason||b.skipReason||a.method==='native'||b.method==='native'||!overlap(a.box,b.box))continue;
+    const [upper,lower]=a.box.y<b.box.y?[a,b]:[b,a],u=upper.box,l=lower.box;
+    const rowHeight=Math.min(a.fontSize?a.fontSize/.94:a.box.height,b.fontSize?b.fontSize/.94:b.box.height);
+    const horizontal=Math.min(u.x+u.width,l.x+l.width)-Math.max(u.x,l.x);
+    if(horizontal<Math.min(u.width,l.width)*.6||l.y-u.y<rowHeight*.6
+      ||u.y+u.height-l.y>rowHeight*.55||Math.abs(u.x+u.width/2-l.x-l.width/2)>Math.max(u.width,l.width)*.35
+      ||(a.lineCount??1)+(b.lineCount??1)>6)continue;
+    const x=Math.min(u.x,l.x),y=Math.min(u.y,l.y),right=Math.max(u.x+u.width,l.x+l.width),bottom=Math.max(u.y+u.height,l.y+l.height);
+    const box={x,y,width:right-x,height:bottom-y};
+    if(combined.some(r=>r!==a&&r!==b&&r.skipReason&&r.skipReason!=='diagram'&&overlap(box,r.box)>2))continue;
+    // Require a predominantly plain caption background. Separate columns and
+    // colored marks embedded in product drawings keep their original rules.
+    if([a,b].some(r=>r.fgColor&&Math.max(...r.fgColor)-Math.min(...r.fgColor)>60))continue;
+    const sharedLeft=Math.max(u.x,l.x),sharedRight=Math.min(u.x+u.width,l.x+l.width);
+    const crop=source.getContext('2d').getImageData(Math.floor(sharedLeft),Math.floor(y),Math.ceil(sharedRight-sharedLeft),Math.ceil(box.height)).data;
+    const bins=new Map<string,number>();
+    for(let p=0;p<crop.length;p+=4){const key=[crop[p],crop[p+1],crop[p+2]].map(v=>v>>4).join(',');bins.set(key,(bins.get(key)??0)+1);}
+    const dominant=[...bins.entries()].sort((a,b)=>b[1]-a[1])[0][0].split(',').map(Number);
+    const plain=[...bins.entries()].reduce((count,[key,n])=>count+(key.split(',').every((v,i)=>Math.abs(Number(v)-dominant[i])<=1)?n:0),0);
+    if(plain<crop.length/4*.5)continue;
+    combined[i]={...upper,id:`${upper.id}-paragraph`,box,quad:undefined,
+      sourceText:`${upper.sourceText} ${lower.sourceText}`,translatedText:undefined,
+      prob:Math.min(a.prob??1,b.prob??1),lineCount:(a.lineCount??1)+(b.lineCount??1),fontSize:rowHeight*.94};
+    combined.splice(j,1);j=i;
+  }
+  return combined;
+}
+
+export function prepareRegions(regions: Region[], direction: string, source?:Canvas): Region[] {
+  let unique: Region[] = [];
   for (const original of regions) {
     const region = { ...original, box: { ...original.box }, method: original.method ?? 'ocr' };
-    if (unique.some(other => overlap(region.box, other.box) / Math.min(region.box.width*region.box.height,other.box.width*other.box.height) > .8)) continue;
     region.skipReason = preserveReason(region, direction);
+    let duplicate=false;
+    for(let i=0;i<unique.length;i++) {
+      const other=unique[i],coverage=overlap(region.box,other.box)/Math.min(region.box.width*region.box.height,other.box.width*other.box.height);
+      const text=letters(region.sourceText),previous=letters(other.sourceText);
+      const sameCaption=!region.skipReason&&!other.skipReason&&region.method!=='native'&&other.method!=='native'
+        &&coverage>.5&&text.length>=5&&previous.length>=5&&(text.includes(previous)||previous.includes(text));
+      if(sameCaption&&text.length>previous.length&&(region.prob??0)>=(other.prob??0)) {
+        unique[i]=region;duplicate=true;break;
+      }
+      if(coverage>.8||sameCaption){duplicate=true;break;}
+    }
+    if(duplicate)continue;
     // Captions directly below product IDs are names, not prose. Preserve the
     // original spelling instead of feeding short proper names to a text model.
     if(region.method!=='native'&&/^[A-Z][A-Z'’ -]{5,}$/.test(region.sourceText)&&regions.some(code=>
@@ -56,12 +141,14 @@ export function prepareRegions(regions: Region[], direction: string): Region[] {
       Math.abs(region.box.x+region.box.width/2-code.box.x-code.box.width/2)<Math.max(code.box.width,region.box.width*.4))) region.skipReason='protected';
     unique.push(region);
   }
+  if(source){separateOcrRows(source,unique);unique=combineConflictingRows(source,unique);}
   // An ambiguous overlap must not erase an adjacent value or another label.
   for (const region of unique) {
     if (!region.skipReason && unique.some(other => other !== region && other.skipReason!=='diagram' && overlap(region.box, other.box) > 2)) region.skipReason = 'overlap';
   }
   for(const region of unique.filter(r=>r.method!=='native'&&!r.skipReason)) {
-    const peers=unique.filter(r=>r.method!=='native'&&!r.skipReason&&Math.abs(r.box.x-region.box.x)<region.box.height*.6&&r.box.height/region.box.height>.65&&r.box.height/region.box.height<1.5);
+    if(region.lineCount)continue;
+    const peers=unique.filter(r=>r.method!=='native'&&!r.skipReason&&!r.lineCount&&Math.abs(r.box.x-region.box.x)<region.box.height*.6&&r.box.height/region.box.height>.65&&r.box.height/region.box.height<1.5);
     if(peers.length>=4)region.fontSize=peers.map(r=>r.box.height).sort((a,b)=>a-b)[Math.floor(peers.length/2)]*.94;
   }
   return unique;
@@ -69,21 +156,50 @@ export function prepareRegions(regions: Region[], direction: string): Region[] {
 
 /** OCR occasionally joins words across a table rule. Re-recognize each cell. */
 export function splitRuledRegion(source: Canvas, region: Region): Region[] {
-  if (!/[A-Za-z]/.test(region.sourceText) || !/\d/.test(region.sourceText)) return [region];
-  const b=region.box, x=Math.max(0,Math.floor(b.x)), y=Math.max(0,Math.floor(b.y-b.height));
-  const w=Math.min(source.width-x,Math.ceil(b.width)), h=Math.min(source.height-y,Math.ceil(b.height*3));
+  if (!/[A-Za-z]/.test(region.sourceText)) return [region];
+  const b=region.box, x=Math.max(0,Math.floor(b.x)), y=Math.max(0,Math.floor(b.y-b.height*.35));
+  const w=Math.min(source.width-x,Math.ceil(b.width)), h=Math.min(source.height-y,Math.ceil(b.height*1.7));
   if(w<20||h<12) return [region];
   const d=source.getContext('2d').getImageData(x,y,w,h).data;
   const cuts:number[]=[];
   for(let col=5;col<w-5;col++) {
     let count=0;
-    for(let row=0;row<h;row++) {const at=(row*w+col)*4;if(Math.max(d[at],d[at+1],d[at+2])<90)count++;}
+    for(let row=0;row<h;row++) {const at=(row*w+col)*4;if(Math.max(d[at],d[at+1],d[at+2])<180)count++;}
     if(count/h>.9 && (!cuts.length||col-cuts[cuts.length-1]>5)) cuts.push(col);
   }
   const edges=[0,...cuts,w];
   if(edges.length===2) return [region];
   return edges.slice(0,-1).flatMap((left,i)=>edges[i+1]-left>12?[{...region,id:`${region.id}-cell-${i}`,
     quad:undefined,box:{x:x+left+2,y:b.y,width:edges[i+1]-left-4,height:b.height},sourceText:'',translatedText:''}]:[]);
+}
+
+/** A clipped detector box can divide one word in a numbered title. Only an
+ * independently recognized union with every original letter/value may merge. */
+export function fragmentedCaptionGroups(regions:Region[]):{parents:Region[];candidate:Region}[] {
+  const groups:{parents:Region[];candidate:Region}[]=[],used=new Set<Region>();
+  for(const small of regions) {
+    if(used.has(small)||small.method==='native'||!/^\s*[A-Za-z]{2,6}\s*$/.test(small.sourceText))continue;
+    const long=regions.find(r=>r!==small&&!used.has(r)&&r.method!=='native'&&/\d/.test(r.sourceText)
+      &&r.sourceText.replace(/[^A-Za-z]/g,'').length>12&&r.box.x>small.box.x
+      &&small.box.x+small.box.width>r.box.x&&small.box.x+small.box.width-r.box.x<Math.min(small.box.width,r.box.width)*.35
+      &&Math.abs(small.box.y+small.box.height/2-r.box.y-r.box.height/2)<Math.min(small.box.height,r.box.height)*.3);
+    if(!long)continue;
+    const left=Math.min(small.box.x,long.box.x),top=Math.min(small.box.y,long.box.y);
+    const right=Math.max(small.box.x+small.box.width,long.box.x+long.box.width),bottom=Math.max(small.box.y+small.box.height,long.box.y+long.box.height);
+    groups.push({parents:[small,long],candidate:{...small,id:`${small.id}-caption-union`,sourceText:'',translatedText:'',quad:undefined,
+      box:{x:left,y:top,width:right-left,height:bottom-top}}});
+    used.add(small);used.add(long);
+  }
+  return groups;
+}
+
+export function verifiedCaptionMerge(parents:Region[],found:Region|undefined):boolean {
+  const text=parents.map(r=>r.sourceText).join(' '),numbers=(s:string)=>s.match(/\d+(?:[.,/]\d+)*/g)??[];
+  // Unlike a spelling correction, this changes no recognized letters. Require
+  // the normal OCR confidence floor for both independent readings to agree.
+  return !!found&&(found.prob??0)>=.90&&parents.every(r=>(r.prob??0)>=.90)&&letters(found.sourceText)===letters(text)
+    &&JSON.stringify(numbers(found.sourceText))===JSON.stringify(numbers(text))
+    &&JSON.stringify(protectedTextTokens(found.sourceText))===JSON.stringify(protectedTextTokens(text));
 }
 
 /** Candidate word cuts use observed whitespace, never proportional text widths.
@@ -329,7 +445,31 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     }
     if (flat/(w*h)<.50) { region.skipReason='complex-background'; continue; }
     // Reject large illustration components. Keep straight rules/underlines.
-    const seen=new Uint8Array(w*h), erase=new Uint8Array(w*h), rules=new Uint8Array(w*h); let complex=false;
+    const seen=new Uint8Array(w*h), erase=new Uint8Array(w*h), rules=new Uint8Array(w*h); let complex=false,paddingArtwork=false;
+    // Inspect complete edge components before removing straight rules. A solid
+    // swatch contains long columns too; detaching those first would leave its
+    // curved edge as a small, apparently erasable "letter" inside the box.
+    if(region.method!=='native'&&!colored) {
+      const visited=new Uint8Array(w*h);
+      for(let row=0;row<h;row++)for(const col of [0,w-1]) {
+        const start=row*w+col;if(!ink[start]||visited[start])continue;
+        const component=[start];visited[start]=1;let top=h,bottom=0,outside=0;
+        for(let k=0;k<component.length;k++) {
+          const p=component[k],px=p%w,py=Math.floor(p/w);top=Math.min(top,py);bottom=Math.max(bottom,py);
+          if(x+px<region.box.x||x+px>=region.box.x+region.box.width)outside++;
+          for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]]) {
+            const nx=px+dx,ny=py+dy,np=ny*w+nx;
+            if(nx>=0&&nx<w&&ny>=0&&ny<h&&ink[np]&&!visited[np]){visited[np]=1;component.push(np);}
+          }
+        }
+        const textHeight=region.lineCount?region.fontSize!:region.box.height;
+        const outsideArtwork=outside>component.length*.9&&colorDistance(
+          [0,1,2].map(channel=>component.reduce((sum,p)=>sum+pixels.data[p*4+channel],0)/component.length),region.fgColor??[0,0,0])>35;
+        if(outsideArtwork||(bottom-top+1>Math.min(textHeight*1.2,h*.85)&&outside>component.length*.25)) {
+          paddingArtwork=true;for(const p of component){rules[p]=1;ink[p]=0;}
+        }
+      }
+    }
     const cx=Math.max(0,x-4),cy=Math.max(0,y-4),cw=Math.min(source.width-cx,w+x-cx+4),ch=Math.min(source.height-cy,h+y-cy+4);
     const context=original.getImageData(cx,cy,cw,ch).data;
     const isInk=(px:number,py:number)=>{
@@ -389,9 +529,10 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     if(complex) {region.skipReason='illustration';continue;}
     // Align to visible ink, since PDF font metric boxes can sit below the
     // actual letters. Nearby horizontal rules constrain the usable cell height.
-    let inkTop=h,inkBottom=-1;
-    for(let p=0;p<erase.length;p++)if(erase[p]){const row=Math.floor(p/w);inkTop=Math.min(inkTop,row);inkBottom=Math.max(inkBottom,row);}
+    let inkTop=h,inkBottom=-1,inkLeft=w;
+    for(let p=0;p<erase.length;p++)if(erase[p]){const row=Math.floor(p/w);inkTop=Math.min(inkTop,row);inkBottom=Math.max(inkBottom,row);inkLeft=Math.min(inkLeft,p%w);}
     const center=inkBottom>=inkTop?y+(inkTop+inkBottom+1)/2:region.box.y+region.box.height/2;
+    const textLeft=paddingArtwork&&inkBottom>=inkTop?Math.max(region.box.x,x+inkLeft):region.box.x;
     let top=y,bottom=y+h;
     for(let row=0;row<h;row++) {
       let count=0;for(let col=0;col<w;col++)count+=rules[row*w+col];
@@ -405,14 +546,34 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     let size=nominal;
     const font=()=>`${region.bold ? 'bold ' : ''}${size}px "RR Document Sans"`;
     ctx.font=font(); let metrics=ctx.measureText(translated);
-    const fit=Math.min(1,(region.box.width-1)/Math.max(1,metrics.width),Math.min(region.box.height+1,bottom-top)/Math.max(1,metrics.actualBoundingBoxAscent+metrics.actualBoundingBoxDescent));
-    size*=fit;
+    const availableWidth=region.box.x+region.box.width-textLeft-1;
+    let lines=[translated],lineHeight=0,ascent=0,descent=0;
+    if(region.lineCount) {
+      for(let attempt=0;attempt<32;attempt++) {
+        ctx.font=font();lines=[];let line='';
+        for(const character of translated) {
+          if(line&&ctx.measureText(line+character).width>availableWidth){lines.push(line);line='';}
+          line+=character;
+        }
+        if(line)lines.push(line);
+        const measures=lines.map(line=>ctx.measureText(line));
+        ascent=Math.max(...measures.map(m=>m.actualBoundingBoxAscent));descent=Math.max(...measures.map(m=>m.actualBoundingBoxDescent));
+        lineHeight=Math.max(size*1.2,ascent+descent);
+        if(Math.max(...measures.map(m=>m.width))<=availableWidth&&ascent+descent+(lines.length-1)*lineHeight<=bottom-top)break;
+        size*=.94;
+      }
+    } else {
+      const fit=Math.min(1,availableWidth/Math.max(1,metrics.width),Math.min(region.box.height+1,bottom-top)/Math.max(1,metrics.actualBoundingBoxAscent+metrics.actualBoundingBoxDescent));
+      size*=fit;
+    }
     if (size<nominal*.64 || size<7) {region.skipReason='does-not-fit';continue;}
     ctx.font=font(); metrics=ctx.measureText(translated);
-    // Replace only detected glyph pixels (+ one anti-alias pixel). Original
+    // Replace only detected glyph pixels and their narrow antialias halo. Original
     // lines, surrounding artwork and every pixel outside the source box survive.
     const cleaned=original.getImageData(x,y,w,h);
-    const radius=Math.max(1,Math.round(h*.018));
+    // Pale antialias/stroke halos can sit below the foreground threshold.
+    // Remove their narrow surround while the artwork/rule mask is restored.
+    const radius=Math.max(2,Math.min(4,Math.round(h*.06)));
     for(let p=0;p<erase.length;p++) if(erase[p]) {
       const px=p%w,py=Math.floor(p/w);
       for(let dy=-radius;dy<=radius;dy++) for(let dx=-radius;dx<=radius;dx++) {
@@ -428,9 +589,12 @@ export function renderDocument(source: Canvas, regions: Region[]): Canvas {
     ctx.fillStyle=fg?.length===3&&fg.every(v=>Number.isFinite(v)&&v>=0&&v<=255)&&colorDistance(fg,bg)>35
       ? `rgb(${fg.join(',')})` : (bg[0]*.299+bg[1]*.587+bg[2]*.114)>140?'#202124':'#ffffff';
     ctx.textBaseline='alphabetic';
-    const baseline=Math.max(top+metrics.actualBoundingBoxAscent,Math.min(bottom-metrics.actualBoundingBoxDescent,
-      center+(metrics.actualBoundingBoxAscent-metrics.actualBoundingBoxDescent)/2));
-    ctx.fillText(translated,region.box.x+Math.max(0,metrics.actualBoundingBoxLeft),baseline);
+    const blockAscent=region.lineCount?ascent:metrics.actualBoundingBoxAscent;
+    const blockDescent=region.lineCount?descent:metrics.actualBoundingBoxDescent;
+    const extraHeight=(lines.length-1)*lineHeight;
+    const baseline=Math.max(top+blockAscent,Math.min(bottom-blockDescent-extraHeight,
+      center+(blockAscent-blockDescent-extraHeight)/2));
+    lines.forEach((line,i)=>ctx.fillText(line,textLeft+Math.max(0,ctx.measureText(line).actualBoundingBoxLeft),baseline+i*lineHeight));
     ctx.restore();
     const painted=ctx.getImageData(x,y,w,h);
     for(let p=0;p<rules.length;p++) if(rules[p]) for(let c=0;c<4;c++)painted.data[p*4+c]=pixels.data[p*4+c];

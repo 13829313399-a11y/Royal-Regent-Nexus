@@ -14,3 +14,15 @@ class CartonCustomerAssignment(Base):
     customer_id: Mapped[str] = mapped_column(String(96), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(64), ForeignKey("auth_users.id", ondelete="CASCADE"), primary_key=True)
     factory_id: Mapped[str] = mapped_column(String(64))
+
+
+class CartonCustomerOwner(Base):
+    """The claimant may delegate customer work, never IAM permissions."""
+    __tablename__ = "carton_customer_owners"
+    __table_args__ = (
+        ForeignKeyConstraint(["customer_id", "factory_id"], ["carton_customers.id", "carton_customers.factory_id"],
+                             ondelete="CASCADE", name="fk_carton_owner_customer_factory"),
+    )
+    customer_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("auth_users.id", ondelete="CASCADE"))

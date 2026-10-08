@@ -243,8 +243,8 @@ def download(attachment_id: str, factory_id: str, db: Session = Depends(get_db),
     return file_response(row)
 
 @router.get("/internal/workspace")
-def internal_workspace(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
-    return service.workspace(db, user, factory_id, internal=True)
+def internal_workspace(factory_id: str, responsibility_scope: str = Query("OWN", pattern="^(OWN|ALL)$"), db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return service.workspace(db, user, factory_id, internal=True, responsibility_scope=responsibility_scope)
 
 @router.get("/internal/shipments/pending")
 def internal_pending_shipments(factory_id: str, limit: int = Query(default=3, ge=1, le=100),
