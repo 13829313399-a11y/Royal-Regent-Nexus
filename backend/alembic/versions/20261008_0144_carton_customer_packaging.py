@@ -1,13 +1,13 @@
 """Add carton weights, customer responsibility and explicit shared source bindings.
 
-Primary development lineage; published release must follow its verified carton
-photo-group head rather than replaying the unpublished fabric migrations.
+Published successor of the fabric receiving/master additions. The separate
+already-applied local development lineage is not rewritten or replayed.
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20261008_0140"
-down_revision = "20261007_0138"
+revision = "20261008_0144"
+down_revision = "20261008_0143"
 branch_labels = None
 depends_on = None
 

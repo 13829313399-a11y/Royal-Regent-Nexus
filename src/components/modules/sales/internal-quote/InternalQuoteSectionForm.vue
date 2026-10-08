@@ -470,12 +470,20 @@ function finishJustPlayExtra(key: JustPlayExtraKey, event: Event) {
 const justPlayAdhesivePackagingCost = computed(() => calculateJustPlayAdhesivePackagingCostHkd(primaryCarton.value, justPlayPackagingInputs.value))
 const justPlayPaperPalletCost = computed(() => calculateJustPlayPaperPalletCostHkd(primaryCarton.value, justPlayPackagingInputs.value))
 const justPlayCartonsPerPallet = computed(() => calculateJustPlayCartonsPerPallet(primaryCarton.value, justPlayPackagingInputs.value))
+const justPlayManualPalletCount = computed(() => justPlayPackagingInputs.value.cartons_per_pallet_override !== undefined)
+function resetJustPlayPalletCount() {
+  const inputs = { ...justPlayPackagingInputs.value }
+  delete inputs.cartons_per_pallet_override
+  sales.value.justplay_packaging = inputs
+}
 const justPlayPalletFields = [
   { key: 'pallet_length_mm', label: '托板长度 mm' },
   { key: 'pallet_width_mm', label: '托板宽度 mm' },
   { key: 'pallet_height_mm', label: '托板高度 mm' },
 ] as const
 const justPlayPackagingWarning = computed(() => {
+  const count = justPlayPackagingInputs.value.cartons_per_pallet_override
+  if (count !== undefined && (!Number.isInteger(count) || Number(count) <= 0)) return '每托板装箱数必须为正整数，或点击“恢复自动计算”。'
   if (!justPlayPackagingInputsValid(justPlayPackagingInputs.value)) return '请填写两项附加金额（可填 0，保留一位小数），以及大于 0 的托板长、宽、高（mm）。'
   if (cartonState.value.error) return cartonState.value.error
   return justPlayCartonsPerPallet.value <= 0 ? '主纸箱须能放入所填写的托板空间，请检查托板与主纸箱尺寸，才能自动计算装箱数及纸托板成本。' : ''
@@ -1114,14 +1122,14 @@ function addBuzzBeeColorBoxTier() {
         </div>
       </section>
       <section v-else :id="blockDomId('sewing')" class="payload-block" data-form-block>
-        <header><div><strong>车缝部分</strong><span>逐行汇率参与换算；成本 HKD = 用量 × 单价 RMB ÷ 汇率，价钱 HKD = 成本 HKD × 码点。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('sewing')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('sewing')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addSewingGroup"><Plus />新增产品组</button></div></header>
+        <header><div><strong>车缝部分</strong><span>港币单价直接计算；人民币单价按行汇率换算。价钱 HKD = 用量 × 港币单价 × 码点。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('sewing')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('sewing')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addSewingGroup"><Plus />新增产品组</button></div></header>
         <article v-for="(group,index) in visibleSewingGroups" :key="index" class="nested-card sewing-card">
           <div class="nested-head"><strong>产品组 {{ index + 1 }}</strong><button type="button" class="icon" :disabled="disabled" @click="removeItem(sewing.groups,group)"><Trash2 /></button></div>
           <div class="inline-fields sewing-group-fields"><label><span>产品</span><input v-model="group.name" :disabled="disabled" placeholder="例如：6寸小蜥蜴 / 盾牌" aria-label="车缝产品名称"></label><label><span>类型</span><select v-model="group.category" :disabled="disabled" aria-label="车缝产品类型"><option value="clothes">车衣</option><option v-if="group.category === 'hair'" value="hair">车发（历史数据，请改用车发部）</option></select></label></div>
           <div class="subhead"><span>车缝物料明细</span><button type="button" :disabled="disabled" @click="addSewingMaterial(group)"><Plus />增加行</button></div>
           <div class="payload-table-scroll">
             <table class="sewingTable">
-              <thead><tr><th>#</th><th>物料名称</th><th>裁片部位</th><th>工艺</th><th>裁片数</th><th>供应商</th><th>布料 MOQ/Y</th><th>低于 MOQ/每色费用 RMB</th><th>用量/码</th><th>单价 RMB</th><th>汇率</th><th>成本 HKD（自动）</th><th>码点</th><th>价钱 HKD（自动）</th><th>备注</th><th /></tr></thead>
+              <thead><tr><th>#</th><th>物料名称</th><th>裁片部位</th><th>工艺</th><th>裁片数</th><th>供应商</th><th>布料 MOQ/Y</th><th>低于 MOQ/每色费用 RMB</th><th>用量/码</th><th>单价（原币种）</th><th>汇率</th><th>成本 HKD（自动）</th><th>码点</th><th>价钱 HKD（自动）</th><th>备注</th><th /></tr></thead>
               <tbody>
                 <tr v-for="(row,rowIndex) in group.materials" :key="rowIndex">
                   <td class="row-number">{{ rowIndex + 1 }}</td>
@@ -1133,7 +1141,7 @@ function addBuzzBeeColorBoxTier() {
                   <td><input v-model.number="row.fabric_moq_y" :disabled="disabled" type="number" min="0" step="1" aria-label="车缝布料 MOQ 每码"></td>
                   <td><input v-model.number="row.below_moq_fee_rmb" :disabled="disabled" type="number" min="0" step="0.001" aria-label="车缝低于 MOQ 每色费用 RMB"></td>
                   <td><input v-model.number="row.usage" :disabled="disabled" type="number" min="0" step="1" aria-label="车缝用量每码"></td>
-                  <td><input v-model.number="row.unit_price_rmb" :disabled="disabled" type="number" min="0" step="0.001" aria-label="车缝单价 RMB"></td>
+                  <td><template v-if="row.unit_price_source_currency === 'HKD'"><span>HKD</span><input v-model.number="row.unit_price_hkd" :disabled="disabled" type="number" min="0" step="0.001" aria-label="车缝单价 HKD"></template><template v-else><span>RMB</span><input v-model.number="row.unit_price_rmb" :disabled="disabled" type="number" min="0" step="0.001" aria-label="车缝单价 RMB"></template></td>
                   <td><input v-model.number="row.exchange_rate" :disabled="disabled" type="number" min="0.0001" step="0.0001" :placeholder="String(props.rmbHkdRate || '')" aria-label="车缝汇率 RMB 转 HKD"></td>
                   <td class="calculated-cell">{{ calculated(calculateSewingBasePriceHkd(row, props.rmbHkdRate)) }}</td>
                   <td><input v-model.number="row.markup" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="车缝码点"></td>
@@ -1149,7 +1157,7 @@ function addBuzzBeeColorBoxTier() {
           <div class="sewing-group-status"><span>本组小计：<b>{{ calculated(calculateSewingGroupTotalHkd(group, props.rmbHkdRate)) }}</b> HKD</span><span v-if="sewingEmbroideryCount(group)" class="embroidery-badge">含电绣 {{ sewingEmbroideryCount(group) }} 行</span><span v-if="group.labor_rmb > 0 && !sewingGroupHasLaborLine(group)" class="legacy-labor">已计入历史组人工 RMB {{ calculated(group.labor_rmb) }}</span></div>
         </article>
         <div v-if="!visibleSewingGroups.length" class="empty sewing-empty">当前配件暂无产品组，可新增或从车缝报价单预览导入</div>
-        <div class="sewing-summary-card"><strong>配套合计</strong><span>HKD（逐行汇率；旧数据回退冻结汇率 {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</span><b>{{ calculated(sewingTotalHkd) }}</b></div>
+        <div class="sewing-summary-card"><strong>配套合计</strong><span>HKD（港币不重复换算；人民币默认汇率 {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</span><b>{{ calculated(sewingTotalHkd) }}</b></div>
       </section>
     </template>
 
@@ -1347,7 +1355,10 @@ function addBuzzBeeColorBoxTier() {
               <label v-for="field in justPlayPalletFields" :key="field.key"><span>{{ field.label }}</span><input :value="justPlayPackagingInputs[field.key]" :disabled="disabled" type="number" min="0" step="any" :aria-label="field.label" @input="updateJustPlayPackagingInput(field.key, $event)"></label>
             </div>
             <div class="inline-fields">
-              <label class="sales-testing-fee-result"><span>每托板装箱数（自动）</span><output aria-label="每托板装箱数">{{ justPlayCartonsPerPallet }}</output></label>
+              <div>
+                <label><span>每托板装箱数（可手动修改）</span><input :value="justPlayPackagingInputs.cartons_per_pallet_override ?? justPlayCartonsPerPallet" :disabled="disabled" type="number" min="1" step="1" aria-label="每托板装箱数" @input="updateJustPlayPackagingInput('cartons_per_pallet_override', $event)"></label>
+                <button v-if="justPlayManualPalletCount" type="button" :disabled="disabled" @click="resetJustPlayPalletCount">恢复自动计算</button>
+              </div>
               <label><span>纸托板附加金额 HKD/件</span><input :value="justPlayExtraDisplay('paper_pallet_extra_hkd')" :disabled="disabled" type="number" min="0" step="0.1" aria-label="纸托板附加金额 HKD/件" @focus="editingJustPlayExtra = 'paper_pallet_extra_hkd'" @input="updateJustPlayPackagingInput('paper_pallet_extra_hkd', $event)" @blur="finishJustPlayExtra('paper_pallet_extra_hkd', $event)"></label>
               <label class="sales-testing-fee-result"><span>单件成本 HKD（自动）</span><output aria-label="纸托板单件成本 HKD">{{ calculated(justPlayPaperPalletCost) }}</output></label>
             </div>

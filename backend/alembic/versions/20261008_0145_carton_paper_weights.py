@@ -5,8 +5,8 @@ Legacy order/header values remain intact: their allocation to papers is unknown.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20261008_0141"
-down_revision = "20261008_0140"
+revision = "20261008_0145"
+down_revision = "20261008_0144"
 branch_labels = None
 depends_on = None
 

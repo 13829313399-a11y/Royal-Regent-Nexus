@@ -100,6 +100,55 @@ def reconcile_green_po(record, history, assigned):
     record["customer_po"] = assigned[key]
 
 
+def green_summary_recovery(workbook, rows, history):
+    """Recover only two agreeing summary rows with no corresponding ITEM order.
+
+    They reserve their existing PO suffix, not an order/quantity history record.
+    Literal user data in derived fields makes recovery ambiguous and is refused.
+    """
+    from app.services.customer_order_unified import _key, _text, _marker_row, CustomerOrderUnifiedError
+    keys = {(_text(r.get('contract_no')), _key(r.get('product_no'))) for r in rows}
+    bases = {key[0] for key in keys}
+    actual = {identity('green-toys', h.po_no or h.reference_no, h.product_no) for h in history}
+    existing_references = {}
+    for h in history:
+        existing_references.setdefault(h.po_no or h.reference_no, set()).add(_key(h.product_no))
+    found = {name: {} for name in ('接单表', '正单评审表')}
+    for name in found:
+        sheet = workbook[name]
+        for n in range(4, _marker_row(sheet)):
+            values = tuple(_text(sheet.cell(n, c).value) for c in range(3, 8))
+            base, reference, po, customer, product = values
+            if base not in bases:
+                continue
+            key = (base, _key(product))
+            if identity('green-toys', base, product) in actual:
+                continue
+            if key not in keys:
+                raise CustomerOrderUnifiedError(f'{name} 第{n}行：摘要缺少 ITEM 明细且不在当前原单中，请人工核对')
+            if (key in found[name] or reference != po or not re.fullmatch(re.escape(base) + r'-\d+', po)
+                    or _key(customer) not in {'GT', 'GREENTOYS'}):
+                raise CustomerOrderUnifiedError(f'{name} 第{n}行：摘要身份不唯一，不能自动恢复')
+            if existing_references.get(po, set()) - {key[1]}:
+                raise CustomerOrderUnifiedError(f'{name} 第{n}行：摘要编号已被另一货号占用，不能自动恢复')
+            for c in (1, 2, 8, 9, 10, 11, 12, 13, 18, 19, 20):
+                cell = sheet.cell(n, c)
+                if cell.value not in (None, '') and cell.data_type != 'f':
+                    raise CustomerOrderUnifiedError(f'{name} 第{n}行：摘要有人工填写的派生字段，不能自动覆盖')
+            found[name][key] = (n, values)
+    if found['接单表'].keys() != found['正单评审表'].keys():
+        raise CustomerOrderUnifiedError('Green Toys 两张摘要表的孤立订单不一致，请人工核对')
+    result = {}
+    references = set()
+    for key, (n, values) in found['接单表'].items():
+        review_n, review_values = found['正单评审表'][key]
+        if values != review_values or values[2] in references:
+            raise CustomerOrderUnifiedError('Green Toys 两张摘要表的订单编号/货号不一致，请人工核对')
+        references.add(values[2])
+        result[key] = {'reference': values[2], '接单表': n, '正单评审表': review_n}
+    return result
+
+
 def map_record(row, record, customer_code):
     """Separate actual business fields from the legacy 17-column display strings."""
     row["standard"] = record.get("standard") or ""

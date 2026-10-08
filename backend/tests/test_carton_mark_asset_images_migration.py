@@ -26,7 +26,7 @@ def foreign_key_contracts(db):
 def test_image_upgrade_preserves_originals_keys_and_safe_downgrade(tmp_path):
     path = tmp_path / "photos.db"
     url = f"sqlite:///{path.as_posix()}"
-    result = _run_alembic(url, "upgrade", "20261006_0135")
+    result = _run_alembic(url, "upgrade", "20261006_0137")
     assert result.returncode == 0, result.stderr
     model = importlib.import_module("app.models.carton_procurement")
     engine = create_engine(url)
@@ -41,7 +41,7 @@ def test_image_upgrade_preserves_originals_keys_and_safe_downgrade(tmp_path):
         indexes, foreign_keys = index_contracts(db), foreign_key_contracts(db)
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("UPDATE carton_mark_assets SET kind='image'")
-    result = _run_alembic(url, "upgrade", "20261006_0136")
+    result = _run_alembic(url, "upgrade", "20261006_0138")
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM carton_mark_assets").fetchall() == before
@@ -49,13 +49,13 @@ def test_image_upgrade_preserves_originals_keys_and_safe_downgrade(tmp_path):
         assert foreign_key_contracts(db) == foreign_keys
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         db.execute("UPDATE carton_mark_assets SET kind='image', is_archived=1")
-    result = _run_alembic(url, "downgrade", "20261006_0135")
+    result = _run_alembic(url, "downgrade", "20261006_0137")
     assert result.returncode != 0 and "禁止降级" in result.stderr
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20261006_0136"
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "20261006_0138"
         assert db.execute("SELECT content,kind FROM carton_mark_assets").fetchone() == (b"\0\1\2", "image")
         db.execute("UPDATE carton_mark_assets SET kind='pdf', is_archived=0")
-    result = _run_alembic(url, "downgrade", "20261006_0135")
+    result = _run_alembic(url, "downgrade", "20261006_0137")
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM carton_mark_assets").fetchall() == before
@@ -66,7 +66,7 @@ def test_image_upgrade_preserves_originals_keys_and_safe_downgrade(tmp_path):
 def test_postgres_image_migration_emits_only_constraint_change():
     backend = Path(__file__).resolve().parents[1]
     result = subprocess.run([sys.executable, "-m", "alembic", "-c", str(backend / "alembic.ini"),
-        "upgrade", "20261006_0135:20261006_0136", "--sql"], cwd=backend, capture_output=True, text=True,
+        "upgrade", "20261006_0137:20261006_0138", "--sql"], cwd=backend, capture_output=True, text=True,
         env={**os.environ, "DATABASE_URL": "postgresql://fixture:fixture@localhost/fixture",
              "ALEMBIC_OFFLINE_METADATA_ONLY": "1"}, encoding="utf-8")
     assert result.returncode == 0, result.stderr

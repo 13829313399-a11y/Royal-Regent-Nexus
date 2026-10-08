@@ -619,7 +619,7 @@ def test_slush_import_replace_only_replaces_slush_lines():
     assert merged["legacy_note"] == "keep"
 
 
-def test_sewing_import_keeps_usage_rmb_price_markup_and_labor_line():
+def test_sewing_import_keeps_usage_hkd_price_markup_and_labor_line():
     parsed = parse_internal_quote_workbook(
         workbook_bytes(
             [
@@ -635,7 +635,7 @@ def test_sewing_import_keeps_usage_rmb_price_markup_and_labor_line():
     assert parsed.target_department == "sewing"
     assert group["category"] == "clothes"
     assert group["materials"][0]["usage"] == "0.2500"
-    assert group["materials"][0]["unit_price_rmb"] == "12.0000"
+    assert group["materials"][0]["unit_price_hkd"] == "12.0000"
     assert group["materials"][0]["markup"] == "1.1000"
     assert group["materials"][1]["item"] == "车缝人工"
     assert group["labor_rmb"] == "0.0000"
@@ -696,7 +696,7 @@ def test_sewing_import_forward_fills_material_for_following_cutting_parts():
     ]
     assert [row["part"] for row in materials] == ["前身", "后身", "底部", "前朵", "后耳"]
     assert materials[1]["usage"] == "0.0850"
-    assert materials[1]["unit_price_rmb"] == "93.2000"
+    assert materials[1]["unit_price_hkd"] == "93.2000"
     assert materials[1]["markup"] == "1.1000"
 
 
@@ -730,7 +730,7 @@ def test_sewing_import_preserves_source_precision_and_uses_total_row_as_product_
     assert first_group[0]["usage"] == "0.110590277777778"
     assert first_group[1]["usage"] == "0.116666666666667"
     assert first_group[2]["usage"] == "1.0000"
-    assert first_group[2]["unit_price_rmb"] == "0.0000"
+    assert first_group[2]["unit_price_hkd"] == "0.0000"
 
 
 def test_sewing_import_maps_screenshot_fields_multiple_groups_and_ignores_derived_totals():
@@ -765,6 +765,7 @@ def test_sewing_import_maps_screenshot_fields_multiple_groups_and_ignores_derive
         "supplier": "",
         "usage": "0.2500",
         "unit_price_rmb": "12.0000",
+        "unit_price_source_currency": "RMB",
         "markup": "1.1000",
         "remark": "红色",
         "source_row": 3,

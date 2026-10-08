@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from app.models.auth import AuthUser, AuthUserRole, EmployeeProfile, SystemNotif
 from app.models.internal_quote import (
     InternalQuote,
     InternalQuoteAlternative,
+    InternalQuoteFamily,
     InternalQuoteAttachment,
     InternalQuoteArtifactHandoff,
     InternalQuoteAuditLog,
@@ -74,6 +75,7 @@ from app.services.auth import (
     now_text,
 )
 from app.services.business_authz import ensure_permission_for_departments
+from app.services.internal_quote_document import document_products, product_root, document_id, document_counts, document_list_condition, document_filter_condition, deletion_reason
 from app.services.internal_quote_calculator import (
     FORMULA_VERSION,
     CalculationInputError,
@@ -271,13 +273,13 @@ def quote_write(operation):
         alternative = db.get(InternalQuoteAlternative, quote_id)
         if alternative and alternative.archived and operation.__name__ not in {
             "copy_alternative", "clone_quote", "archive_alternative", "create_controlled_export",
-            "create_engineering_workbook_export", "select_alternative",
+            "create_engineering_workbook_export", "select_alternative", "delete_quote",
         }:
             raise HTTPException(409, "方案版本已归档，请先恢复后操作")
         if quote.module_version == "v4" and quote.final_release_status == "issued" and operation.__name__ not in {
             "copy_alternative", "clone_quote", "issue_alternative", "create_controlled_export",
             "select_alternative", "archive_alternative", "report_alternative",
-            "create_engineering_workbook_export",
+            "create_engineering_workbook_export", "delete_quote",
         }:
             raise HTTPException(409, "已输出版本已冻结，请复制新版本后修改")
         try:
@@ -420,8 +422,14 @@ def quote_to_out(
     history = db.scalar(select(InternalQuoteAuditLog).where(
         InternalQuoteAuditLog.quote_id == quote.id, InternalQuoteAuditLog.action == "history_reference"
     ).order_by(InternalQuoteAuditLog.created_at.desc()).limit(1)) if include_sections else None
+    product_count, version_count = document_counts(db, quote)
     return InternalQuoteOut(
+        document_product_count=product_count,
+        document_version_count=version_count,
         id=quote.id,
+        document_quote_id=document_id(db, quote),
+        product_root_id=product_root(db, quote).id,
+        delete_block_reason=deletion_reason(db, quote),
         factory_id=quote.factory_id,
         workshop_code=quote.workshop_code,
         workshop_name=quote.workshop_name,
@@ -2348,16 +2356,19 @@ def list_quotes(
     statement = select(InternalQuote).where(
         InternalQuote.factory_id == factory_id,
         InternalQuote.batch_position == 1,
+        document_list_condition(),
     )
-    if status:
-        statement = statement.where(InternalQuote.status == status)
-    if keyword:
-        normalized = f"%{keyword.strip()}%"
-        statement = statement.where(
-            InternalQuote.quote_no.like(normalized)
-            | InternalQuote.product_name.like(normalized)
-            | InternalQuote.customer.like(normalized)
-        )
+    def matches(item):
+        conditions = []
+        if status:
+            conditions.append(item.status == status)
+        if keyword:
+            normalized = f"%{keyword.strip()}%"
+            conditions.append(or_(item.quote_no.like(normalized), item.product_name.like(normalized),
+                                  item.customer.like(normalized), item.version_label.like(normalized)))
+        return and_(*conditions) if conditions else true()
+    if status or keyword:
+        statement = statement.where(document_filter_condition(matches))
     statement = statement.order_by(InternalQuote.updated_at.desc(), InternalQuote.id.desc())
     quotes = list(db.scalars(statement).all())
     sections_by_quote = _list_quote_sections(db, quotes) if include_sections else {}
@@ -2390,21 +2401,22 @@ def list_quotes_page(
     statement = select(InternalQuote).where(
         InternalQuote.factory_id == factory_id,
         InternalQuote.batch_position == 1,
+        document_list_condition(),
     )
-    if status:
-        statement = statement.where(InternalQuote.status == status)
-    if customer:
-        statement = statement.where(InternalQuote.customer == customer)
-    if keyword:
-        normalized = f"%{keyword.strip()}%"
-        statement = statement.where(
-            InternalQuote.quote_no.like(normalized)
-            | InternalQuote.product_name.like(normalized)
-            | InternalQuote.customer.like(normalized)
-            | InternalQuote.version_label.like(normalized)
-            | InternalQuote.created_by_name.like(normalized)
-            | InternalQuote.business_owner_name.like(normalized)
-        )
+    def matches(item):
+        conditions = []
+        if status:
+            conditions.append(item.status == status)
+        if customer:
+            conditions.append(item.customer == customer)
+        if keyword:
+            normalized = f"%{keyword.strip()}%"
+            conditions.append(or_(item.quote_no.like(normalized), item.product_name.like(normalized),
+                                  item.customer.like(normalized), item.version_label.like(normalized),
+                                  item.created_by_name.like(normalized), item.business_owner_name.like(normalized)))
+        return and_(*conditions) if conditions else true()
+    if status or customer or keyword:
+        statement = statement.where(document_filter_condition(matches))
 
     total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -2422,6 +2434,7 @@ def list_quotes_page(
             .where(
                 InternalQuote.factory_id == factory_id,
                 InternalQuote.batch_position == 1,
+                document_list_condition(),
                 InternalQuote.customer != "",
             )
             .distinct()
@@ -2502,6 +2515,7 @@ def get_quote_dashboard(
         .where(
             InternalQuote.factory_id == factory_id,
             InternalQuote.batch_position == 1,
+            document_list_condition(),
             InternalQuote.created_at >= start_text,
             InternalQuote.created_at <= end_text,
         )
@@ -2900,7 +2914,9 @@ def list_quote_batch_products(
 ) -> list[InternalQuoteBatchProductOut]:
     quote = _get_quote(db, quote_id)
     ensure_quote_read(db, user, quote.factory_id)
-    rows = get_quote_batch_rows(db, quote)
+    root = product_root(db, quote)
+    roots = document_products(db, quote)
+    rows = [quote if item.id == root.id else item for item in roots]
     quote_ids = [item.id for item in rows]
     sections_by_quote = _list_quote_sections(db, rows)
     references = {
@@ -2923,7 +2939,7 @@ def list_quote_batch_products(
             )
         ).all():
             images.setdefault(attachment.quote_id, attachment)
-    baseline = next((item for item in rows if item.id == (quote.baseline_quote_id or rows[0].id)), rows[0])
+    baseline = next((item for item in rows if product_root(db, item).id == (root.baseline_quote_id or roots[0].id)), rows[0])
     baseline_sections = sections_by_quote.get(baseline.id, [])
     baseline_reference = references.get(baseline.id)
     output: list[InternalQuoteBatchProductOut] = []
@@ -2945,9 +2961,9 @@ def list_quote_batch_products(
             quote_no=item.quote_no,
             product_name=item.product_name,
             qty=item.qty,
-            position=item.batch_position or 1,
-            batch_size=item.batch_size or len(rows),
-            quote_type=item.quote_type or "single",
+            position=product_root(db, item).batch_position or 1,
+            batch_size=len(rows),
+            quote_type=root.quote_type or "single",
             region_code=item.region_code or "",
             status=item.status,
             header_revision=item.header_revision,
@@ -5016,28 +5032,14 @@ def delete_quote(
     _check_revision(quote.header_revision, revision, "报价头")
     batch_quotes = get_quote_batch_rows(db, quote)
     quote_ids = [item.id for item in batch_quotes]
-    if db.scalar(select(InternalQuoteAlternative.quote_id).where(InternalQuoteAlternative.quote_id.in_(quote_ids))):
-        raise HTTPException(409, "已有方案版本记录的报价不可删除，请在方案面板归档")
-    has_export = db.scalar(
-        select(func.count(InternalQuoteExportFile.id)).where(
-            InternalQuoteExportFile.quote_id.in_(quote_ids)
-        )
-    )
-    has_handoff = db.scalar(
-        select(func.count(InternalQuoteArtifactHandoff.id)).where(
-            InternalQuoteArtifactHandoff.quote_id.in_(quote_ids)
-        )
-    )
-    if (
-        any(item.status in {"released", "fully_approved", "exported"} for item in batch_quotes)
-        or any(item.final_release_status == "approved" for item in batch_quotes)
-        or bool(has_export)
-        or bool(has_handoff)
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="已放行、已导出或已进入报客价交接的报价不能删除，请使用归档保留审计记录",
-        )
+    family_ids = sorted({entry.family_id for entry in db.scalars(
+        select(InternalQuoteAlternative).where(InternalQuoteAlternative.quote_id.in_(quote_ids))
+    )})
+    for family_id in family_ids:
+        lock_transaction(db, "internal-quote-family", family_id)
+    blocked = deletion_reason(db, quote)
+    if blocked:
+        raise HTTPException(409, blocked)
 
     add_auth_audit(
         db,
@@ -5056,6 +5058,15 @@ def delete_quote(
             item,
             events=ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS,
         )
+
+    db.execute(delete(InternalQuoteAlternative).where(InternalQuoteAlternative.quote_id.in_(quote_ids)))
+    for family_id in family_ids:
+        family = db.get(InternalQuoteFamily, family_id)
+        if db.scalar(select(InternalQuoteAlternative.quote_id).where(InternalQuoteAlternative.family_id == family_id)):
+            family.revision += 1
+        elif family:
+            db.delete(family)
+    db.flush()
 
     # Explicitly remove children so SQLite test/local databases remain correct
     # even when foreign-key cascade enforcement is not enabled on a connection.

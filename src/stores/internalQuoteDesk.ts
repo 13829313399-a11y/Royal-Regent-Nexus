@@ -456,6 +456,11 @@ function toQuote(
   const attachments = extras.attachments ?? []
   return {
     id: source.id,
+    documentQuoteId: source.document_quote_id,
+    documentProductCount: source.document_product_count,
+    documentVersionCount: source.document_version_count,
+    productRootId: source.product_root_id,
+    deleteBlockReason: source.delete_block_reason,
     quoteNo: source.quote_no,
     productName: source.product_name,
     quoteType: source.quote_type ?? 'single',
@@ -1318,10 +1323,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       )
       return this.loadBatchProducts(targetQuoteId)
     },
-    async uploadProductImage(quoteId: string, file: File) {
+    async uploadProductImage(quoteId: string, file: File, revision?: number) {
       this.fileBusy = true
       try {
-        const result = await internalQuoteApi.uploadProductImage(quoteId, file)
+        const result = await internalQuoteApi.uploadProductImage(quoteId, file, revision ?? this.getQuoteById(quoteId)?.headerRevision)
         await this.refreshAfterMutation(quoteId)
         return result
       } catch (error) {
@@ -1588,6 +1593,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     directIssue(quoteId: string, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.directIssue(quoteId, revision))
+    },
+    async exportSeries(quoteId: string, products: Array<{ quote_id: string; revision: number }>, fileName: string) {
+      const blob = await this.executeMutation(quoteId, () => internalQuoteApi.exportSeries(quoteId, products))
+      triggerDownload(blob as Blob, fileName)
     },
     createExport(quoteId: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.createExport(quoteId))

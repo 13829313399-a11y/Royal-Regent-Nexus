@@ -18,7 +18,7 @@ def ready(db):
 def ensure_schema(db):
     source.ensure_schema(db)
     if not ready(db):
-        raise HTTPException(503, "布料仓基础资料尚未升级，请先备份并执行迁移 20261007_0138")
+        raise HTTPException(503, "布料仓基础资料尚未升级，请先备份并执行迁移 20261008_0143")
 
 
 def record_data(record):

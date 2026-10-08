@@ -133,7 +133,9 @@ def test_incomplete_direct_output_and_legacy_copy_preserve_history(monkeypatch):
         legacy = fill(client, create(client, "OLD", "whole_quote_review"))
         new = fork(client, legacy, "version")
         assert new["module_version"] == "v4" and new["version_label"] == "A-V2"
-        assert client.get(f"/api/internal-quotes/{legacy['id']}").json() == legacy
+        preserved = client.get(f"/api/internal-quotes/{legacy['id']}").json()
+        # Deletion eligibility changes when a descendant exists; stored history does not.
+        assert {key: value for key, value in preserved.items() if key not in {"delete_block_reason", "document_version_count"}} == {key: value for key, value in legacy.items() if key not in {"delete_block_reason", "document_version_count"}}
         denied = client.post(f"/api/internal-quotes/{new['id']}/final-submit", json={"revision": new["header_revision"]})
         assert denied.status_code == 409
 

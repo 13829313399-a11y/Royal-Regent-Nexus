@@ -38,6 +38,7 @@ from app.models import (
     customer_order,  # noqa: F401
     customer_order_ledger,  # noqa: F401
     internal_quote,  # noqa: F401
+    module_feedback,  # noqa: F401
     customer_price_settings,  # noqa: F401
     injection_scheduling,  # noqa: F401
     molding_sample,  # noqa: F401

@@ -1,12 +1,12 @@
 """Customer claim ownership and independent source-file copies.
 
-Local lineage follows 0141; publish after the published 0145 head.
+Forward migration after the published paper-weight schema.
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "20261008_0146"
-down_revision = "20261008_0141"
+down_revision = "20261008_0145"
 branch_labels = None
 depends_on = None
 

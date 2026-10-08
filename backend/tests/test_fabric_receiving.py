@@ -280,7 +280,7 @@ def test_missing_receipt_schema_blocks_posting_without_disabling_sources(monkeyp
             model.__table__.drop(dbm.engine)
         assert stored(client)["total"] == 1
         response = receive(client, line, request(line))
-        assert response.status_code == 503 and "0138" in response.text
+        assert response.status_code == 503 and "20261008_0143" in response.text
 
 
 @pytest.mark.parametrize("same_request", [True, False])
@@ -326,8 +326,8 @@ def test_receipt_migration_constraints_and_downgrade_guard(tmp_path):
     def migration(filename):
         spec = spec_from_file_location("migration_" + filename, Path(__file__).parents[1] / "alembic/versions" / filename)
         module = module_from_spec(spec); spec.loader.exec_module(module); return module
-    prior = migration("20261005_0131_fabric_procurement.py")
-    current = migration("20261006_0135_fabric_receiving.py")
+    prior = migration("20261005_0134_fabric_procurement.py")
+    current = migration("20261008_0142_fabric_receiving.py")
     engine = sa.create_engine("sqlite:///" + str(tmp_path / "receipt-migration.db"))
     with engine.begin() as connection:
         with Operations.context(MigrationContext.configure(connection)):
