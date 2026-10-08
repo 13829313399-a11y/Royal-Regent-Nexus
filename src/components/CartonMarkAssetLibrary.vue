@@ -27,9 +27,13 @@ const sourcePanel = ref<HTMLElement | null>(null)
 const sourceGroup = ref(''), sourceExcelId = ref(''), sourcePdfId = ref('')
 function groupKey(asset: CartonMarkAsset) {
   const customer = [...new Set(asset.orders.map(order => order.customer_name))].sort().join('、')
-  return JSON.stringify(asset.photo_group_id ? [asset.factory_id, 'photos', asset.photo_group_id] : [asset.factory_id, asset.contract_number || asset.id, customer])
+  return JSON.stringify(asset.photo_group_id ? [asset.factory_id, 'photos', asset.photo_group_id] : [asset.factory_id, asset.orders.length ? contractsLabel(asset) : asset.contract_number || asset.id, customer])
 }
-const sourceCandidates = computed(() => entries.value.filter(asset => asset.kind !== 'image' && groupKey(asset) === sourceGroup.value))
+const sourceCandidates = computed(() => {
+  const anchor = entries.value.find(asset => groupKey(asset) === sourceGroup.value)
+  return entries.value.filter(asset => asset.kind !== 'image' && anchor && asset.factory_id === anchor.factory_id
+    && (groupKey(asset) === sourceGroup.value || asset.orders.some(order => anchor.orders.some(row => row.id === order.id))))
+})
 const sourceExcels = computed(() => sourceCandidates.value.filter(asset => asset.kind === 'excel'))
 const sourcePdfs = computed(() => sourceCandidates.value.filter(asset => asset.kind === 'pdf'))
 const selectedSources = computed(() => [sourceExcels.value.find(asset => asset.id === sourceExcelId.value), sourcePdfs.value.find(asset => asset.id === sourcePdfId.value)])
@@ -51,6 +55,11 @@ function useSources() {
     emit('supplierSources', [{ ...excel, orders }, pdf]); sourceGroup.value = ''; return
   }
   if (!canWrite.value || !props.checkEnabled || busy.value || selectedSources.value.some(asset => !asset || asset.factory_id !== props.factoryId)) return
+  const [excel, pdf] = selectedSources.value
+  if (excel!.orders.length && pdf!.orders.length && !excel!.orders.some(order => pdf!.orders.some(row => row.id === order.id))) {
+    error.value = 'Excel 与 PDF 没有共同的关联订单，请选择同一订单的文件。'
+    return
+  }
   emit('useSources', selectedSources.value as CartonMarkAsset[])
   sourceGroup.value = ''
 }
@@ -82,6 +91,11 @@ const gallery = ref<CartonMarkAsset[]>([])
 let bindingSequence = 0
 const contract = ref('')
 const boundOrderId = ref('')
+const multipleContracts = ref(false)
+const boundOrderIds = ref<string[]>([])
+const invalidBoundOrderIds = computed(() => boundOrderIds.value.filter(id => !allOrders.value.some(order => order.id === id)))
+const multiOrderOptions = computed(() => allOrders.value.filter(order => !orderQuery.value.trim() || [order.contract_no, order.customer_name, order.order_no, order.item_no].some(value => value.toLowerCase().includes(orderQuery.value.trim().toLowerCase()))))
+function contractsLabel(asset: CartonMarkAsset) { return [...new Set(asset.orders.map(order => order.contract_no))].join('、') || asset.contract_number || '未识别' }
 let controller = new AbortController()
 let generation = 0
 let listSequence = 0
@@ -99,7 +113,7 @@ const groups = computed(() => {
   for (const asset of visible.value) {
     const customer = [...new Set(asset.orders.map(order => order.customer_name))].sort().join('、')
     const key = groupKey(asset)
-    const group = grouped.get(key) ?? { key, factory: asset.factory_id, contract: asset.contract_number, customer, latest: '', photoGroupId: asset.photo_group_id ?? null, assets: [] }
+    const group = grouped.get(key) ?? { key, factory: asset.factory_id, contract: contractsLabel(asset), customer, latest: '', photoGroupId: asset.photo_group_id ?? null, assets: [] }
     group.assets.push(asset); if (asset.created_at > group.latest) group.latest = asset.created_at
     grouped.set(key, group)
   }
@@ -191,6 +205,9 @@ async function edit(asset: CartonMarkAsset, photos: CartonMarkAsset[] = [], grou
   const targets = members.length ? members : [asset]
   contract.value = targets.every(photo => photo.contract_number === asset.contract_number) ? asset.contract_number : ''
   boundOrderId.value = targets.every(photo => photo.bound_order_id === asset.bound_order_id) ? asset.bound_order_id || '' : ''
+  multipleContracts.value = targets.some(photo => photo.recognition_source === 'manual_orders')
+  boundOrderIds.value = multipleContracts.value ? [...new Set(targets.flatMap(photo =>
+    photo.bound_order_ids?.length ? photo.bound_order_ids : photo.orders.map(order => order.id)))] : []
   orderQuery.value = ''
   error.value = ''
   void nextTick(() => bindingPanel.value?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
@@ -232,10 +249,15 @@ async function saveBinding() {
   if (!binding.value || busy.value || !canWrite.value) return
   const current = generation
   const selected = binding.value
+  if (multipleContracts.value && !boundOrderIds.value.length) { error.value = '请勾选至少一张关联订单。'; return }
+  if (multipleContracts.value && boundOrderIds.value.length > 100) { error.value = '一次最多关联 100 张订单，请减少选择。'; return }
+  const orderIds = multipleContracts.value ? [...boundOrderIds.value] : undefined
+  const contractNumber = multipleContracts.value ? '' : contract.value.trim()
+  const orderId = multipleContracts.value ? '' : boundOrderId.value
   busy.value = true
   try {
-    if (bindingPhotos.value.length) await cartonMarkApi.savePhotoGroup(props.factoryId, bindingPhotos.value, contract.value.trim(), boundOrderId.value, bindingGroupId.value, controller.signal)
-    else await cartonMarkApi.bindAsset(props.factoryId, selected, contract.value.trim(), boundOrderId.value, controller.signal)
+    if (bindingPhotos.value.length) await cartonMarkApi.savePhotoGroup(props.factoryId, bindingPhotos.value, contractNumber, orderId, bindingGroupId.value, controller.signal, orderIds)
+    else await cartonMarkApi.bindAsset(props.factoryId, selected, contractNumber, orderId, controller.signal, orderIds)
     if (current !== generation) return
     closeBinding(); selectedPhotos.value = []
     await refresh()
@@ -366,9 +388,9 @@ onBeforeUnmount(() => { generation++; controller.abort() })
         <li v-for="asset in group.assets" :key="`${asset.factory_id}:${asset.id}`" class="mark-library-columns grid items-start gap-4 px-4 py-4 lg:min-h-24 lg:gap-6">
           <div class="col-span-2 min-w-0 lg:col-span-1">
             <label v-if="canWrite && asset.kind === 'image'" class="mb-2 flex items-center gap-2 text-xs text-slate-500"><input type="checkbox" :aria-label="`选择照片 ${asset.file_name}`" :checked="selectedPhotos.includes(asset.id)" :disabled="busy" @change="togglePhoto(asset, ($event.target as HTMLInputElement).checked)">{{ asset.photo_group_id ? '选择整组' : '选择照片' }}</label>
-            <p class="break-all text-sm font-bold leading-5 text-slate-900">合同号：{{ asset.contract_number || '未识别' }}</p>
+            <p class="break-all text-sm font-bold leading-5 text-slate-900">合同号：{{ contractsLabel(asset) }}</p>
             <p v-if="supplier && supplierFactories" class="mt-1 text-xs font-semibold leading-5 text-teal-700">{{ factoryDisplayName(asset.factory_id) }}</p>
-            <p v-for="order in asset.orders" :key="order.id" class="mt-1 break-all text-xs leading-5 text-slate-500">{{ order.customer_name }} · {{ order.item_no }}<span v-if="!supplier && order.order_no"> · {{ order.order_no }}</span></p>
+            <p v-for="order in asset.orders" :key="order.id" class="mt-1 break-all text-xs leading-5 text-slate-500">{{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}<span v-if="!supplier && order.order_no"> · {{ order.order_no }}</span></p>
           </div>
           <div class="col-span-2 flex min-w-0 items-start gap-2 lg:col-span-1">
             <span class="flex size-8 shrink-0 items-center justify-center rounded-lg" :class="asset.kind === 'pdf' ? 'bg-red-50 text-red-600' : asset.kind === 'image' ? 'bg-blue-50 text-blue-600' : 'bg-teal-50 text-teal-700'"><FileText v-if="asset.kind === 'pdf'" class="size-4" /><ImageIcon v-else-if="asset.kind === 'image'" class="size-4" /><FileSpreadsheet v-else class="size-4" /></span>
@@ -405,9 +427,16 @@ onBeforeUnmount(() => { generation++; controller.abort() })
       <div v-if="binding" ref="bindingPanel" role="dialog" aria-label="关联箱唛资料" class="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
         <p class="break-all font-semibold">{{ bindingPhotos.length ? `${bindingGroupId ? '整组关联' : '组成照片组'}：${bindingPhotos.length} 张照片` : `关联设置：${binding.file_name}` }}</p>
         <p v-if="bindingPhotos.length" class="mt-2 break-all text-xs text-slate-600">{{ bindingPhotos.map(photo => photo.file_name).join('、') }}。保存后整组使用下面同一合同和关联范围，留空则整组待关联。</p>
-        <label class="mt-3 block text-xs">合同号（可留空，保留为待关联）<input v-model="contract" maxlength="128" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm" @input="boundOrderId = ''"></label>
+        <label v-if="!multipleContracts" class="mt-3 block text-xs">合同号（可留空，保留为待关联）<input v-model="contract" maxlength="128" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm" @input="boundOrderId = ''"></label>
+        <label class="mt-3 flex items-center gap-2 text-sm font-semibold"><input v-model="multipleContracts" type="checkbox" aria-label="关联多个合同">关联多个合同</label>
+        <p v-if="multipleContracts" class="mt-2 text-xs text-slate-500">勾选同一客户的多张合同订单，原文件只保存一份。供应商只看到其获授权订单的关联；后续新增订单需要另行勾选。</p>
         <label class="mt-3 block text-xs">搜索本厂订单<input v-model="orderQuery" aria-label="搜索可关联订单" placeholder="合同号 / 客户 / 货号 / 订单号" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm"></label>
-        <label class="mt-3 block text-xs">关联范围<select v-model="boundOrderId" aria-label="选择关联订单" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm" @change="chooseOrder"><option value="">同一合同的订单共用</option><option v-for="order in orderOptions" :key="order.id" :value="order.id">{{ order.contract_no }} · {{ order.customer_name }} · {{ order.order_no }} · {{ order.item_no }}</option></select></label>
+        <div v-if="multipleContracts" class="mt-3 max-h-64 space-y-2 overflow-y-auto rounded-lg border bg-white p-3" aria-label="多合同订单列表">
+          <label v-for="order in multiOrderOptions" :key="order.id" class="flex items-start gap-2 text-xs"><input v-model="boundOrderIds" type="checkbox" :value="order.id" :aria-label="`关联订单 ${order.order_no}`">{{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }} · {{ order.order_no }}</label>
+        </div>
+        <p v-if="multipleContracts" class="mt-2 text-xs">已选 {{ boundOrderIds.length }} 张订单（最多 100 张）</p>
+        <p v-if="multipleContracts && !ordersLoading && !error && invalidBoundOrderIds.length" role="alert" class="mt-2 text-xs text-amber-700">{{ invalidBoundOrderIds.length }} 个原关联订单已取消或删除，请移除后保存。<button type="button" class="ml-2 underline" @click="boundOrderIds = boundOrderIds.filter(id => !invalidBoundOrderIds.includes(id))">移除失效关联</button></p>
+        <label v-if="!multipleContracts" class="mt-3 block text-xs">关联范围<select v-model="boundOrderId" aria-label="选择关联订单" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm" @change="chooseOrder"><option value="">同一合同的订单共用</option><option v-for="order in orderOptions" :key="order.id" :value="order.id">{{ order.contract_no }} · {{ order.customer_name }} · {{ order.order_no }} · {{ order.item_no }}</option></select></label>
         <p v-if="ordersLoading" class="mt-2 text-xs text-slate-500">正在读取本厂订单…</p>
         <p v-else-if="!orderOptions.length" class="mt-2 text-xs text-slate-500">暂无匹配订单，可搜索其他合同或手工填写合同号，后续订单可共用。</p>
         <p v-if="binding.candidates.length > 1" class="mt-2 text-xs text-amber-700">候选合同号：{{ binding.candidates.join('、') }}</p>

@@ -2710,7 +2710,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
 <template>
   <!-- 箱唛模板来自后端资料库；浏览器本地存储仅保留历史现场照片。 -->
   <div class="space-y-6">
-    <div class="grid items-start gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+    <div class="grid items-start gap-6 grid-cols-1 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
       <div class="contents">
         <form
           v-if="isWarehouseWorkspace"
@@ -3213,12 +3213,12 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 @change="handleBatchPhotoFileChange($event, 'front')"
               >
               <input ref="frontCameraInput" type="file" accept="image/*" capture="environment" aria-label="拍摄正唛照片" class="hidden" :disabled="!canUploadPhoto || isSavingBatchPhoto" @change="handleCameraPhotoChange($event, 'front')">
-              <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div class="flex flex-col gap-4">
                 <div class="flex min-w-0 items-center gap-3">
                   <div class="flex size-11 shrink-0 items-center justify-center rounded-lg bg-white text-blue-700">
                     <ImageIcon class="size-5" aria-hidden="true" />
                   </div>
-                  <div class="min-w-0">
+                  <div class="min-w-0 flex-1">
                     <p class="truncate text-sm font-semibold text-slate-900">{{ selectedFrontBatchFilesLabel }}</p>
                     <p class="mt-1 text-xs text-slate-500">正唛图片 · 可一次选择多张；一张只保留一块正唛</p>
                     <p class="mt-1 text-xs font-medium text-blue-700">可点击选择或拖拽多张正唛到此处</p>
@@ -3377,12 +3377,12 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 @change="handleBatchPhotoFileChange($event, 'side')"
               >
               <input ref="sideCameraInput" type="file" accept="image/*" capture="environment" aria-label="拍摄侧唛照片" class="hidden" :disabled="!canUploadPhoto || isSavingBatchPhoto" @change="handleCameraPhotoChange($event, 'side')">
-              <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div class="flex flex-col gap-4">
                 <div class="flex min-w-0 items-center gap-3">
                   <div class="flex size-11 shrink-0 items-center justify-center rounded-lg bg-white text-blue-700">
                     <ImageIcon class="size-5" aria-hidden="true" />
                   </div>
-                  <div class="min-w-0">
+                  <div class="min-w-0 flex-1">
                     <p class="truncate text-sm font-semibold text-slate-900">{{ selectedSideBatchFilesLabel }}</p>
                     <p class="mt-1 text-xs text-slate-500">侧唛图片 · 可一次选择多张；一张只保留一块侧唛</p>
                     <p class="mt-1 text-xs font-medium text-blue-700">可点击选择或拖拽多张侧唛到此处</p>

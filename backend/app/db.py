@@ -624,12 +624,12 @@ def ensure_carton_master_schema_ready() -> None:
         names = set(inspector.get_table_names())
         if "alembic_version" not in names:
             return
-        missing = [name for name in ("carton_master_records", "carton_master_sources") if name not in names]
-        for name, cols in (("carton_orders", ("master_config_id", "master_config_revision")), ("carton_locations", ("status", "revision")), ("carton_inventory_movements", ("workshop_id", "workshop_name"))):
+        missing = [name for name in ("carton_master_records", "carton_master_sources", "carton_customer_assignments", "carton_mark_asset_order_bindings") if name not in names]
+        for name, cols in (("carton_orders", ("master_config_id", "master_config_revision", "net_weight_kg", "gross_weight_kg")), ("carton_order_lines", ("net_weight_kg", "gross_weight_kg")), ("carton_locations", ("status", "revision")), ("carton_inventory_movements", ("workshop_id", "workshop_name"))):
             found = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
             missing.extend(f"{name}.{c}" for c in cols if c not in found)
         if missing:
-            raise RuntimeError("基础资料尚未迁移至 20260908_0104；请先备份并迁移。缺少：" + ", ".join(missing))
+            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0144 及纸品重量 20261008_0145 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
 def ensure_carton_supplier_settlement_schema_ready() -> None:
@@ -786,9 +786,13 @@ def init_db() -> None:
         carton_mark,  # noqa: F401
         carton_feedback,  # noqa: F401
         carton_procurement,  # noqa: F401
+        fabric_procurement,  # noqa: F401
+        fabric_receiving,  # noqa: F401
+        fabric_master,  # noqa: F401
         carton_stocktake,  # noqa: F401
         carton_positions,
         carton_master,  # noqa: F401
+        carton_customer_assignment,  # noqa: F401
         carton_supplier_settlement,  # noqa: F401
         carton_supplier_portal,  # noqa: F401
         customer_order,  # noqa: F401
@@ -866,7 +870,9 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            if not name.startswith("uv_ops_")
+                            # An existing business store upgrades this new domain explicitly.
+                            if (not name.startswith("fabric_") or "auth_users" not in existing_tables)
+                            and not name.startswith("uv_ops_")
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.
                             and (name not in {"three_d_printing_telemetry_rollups", "three_d_printing_telemetry_rollup_state"}

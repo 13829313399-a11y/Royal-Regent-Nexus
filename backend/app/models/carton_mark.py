@@ -10,7 +10,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
@@ -20,6 +20,7 @@ class CartonMarkAsset(Base):
     __tablename__ = "carton_mark_assets"
     __table_args__ = (
         UniqueConstraint("factory_id", "sha256", name="uq_carton_mark_asset_factory_sha"),
+        Index("uq_carton_mark_asset_id_factory", "id", "factory_id", unique=True),
         ForeignKeyConstraint(["bound_order_id", "factory_id"],
                              ["carton_orders.id", "carton_orders.factory_id"],
                              name="fk_carton_mark_asset_order_factory"),
@@ -49,6 +50,22 @@ class CartonMarkAsset(Base):
     created_by_name: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[str] = mapped_column(String(40))
     updated_at: Mapped[str] = mapped_column(String(40))
+    order_bindings: Mapped[list["CartonMarkAssetOrderBinding"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan", passive_deletes=True)
+
+
+class CartonMarkAssetOrderBinding(Base):
+    __tablename__ = "carton_mark_asset_order_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(["asset_id", "factory_id"], ["carton_mark_assets.id", "carton_mark_assets.factory_id"],
+                             ondelete="CASCADE", name="fk_carton_mark_binding_asset_factory"),
+        ForeignKeyConstraint(["order_id", "factory_id"], ["carton_orders.id", "carton_orders.factory_id"],
+                             ondelete="CASCADE", name="fk_carton_mark_binding_order_factory"),
+        Index("ix_carton_mark_binding_factory_order", "factory_id", "order_id"),
+    )
+    asset_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
 
 
 class CartonMarkCustomer(Base):

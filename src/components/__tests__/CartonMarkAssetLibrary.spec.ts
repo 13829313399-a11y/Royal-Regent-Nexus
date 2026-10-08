@@ -22,6 +22,43 @@ beforeEach(() => {
 })
 
 describe('carton-mark source repository', () => {
+  it('lets the warehouse explicitly remove soft-deleted targets from a shared original', async () => {
+    const shared = { ...asset, contract_number: '', recognition_source: 'manual_orders', bound_order_ids: ['order-a', 'deleted'] }
+    api.listAssets.mockResolvedValue([shared])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '关联设置')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('1 个原关联订单已取消或删除')
+    await wrapper.findAll('button').find(button => button.text() === '移除失效关联')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '保存关联')!.trigger('click'); await flushPromises()
+    expect(api.bindAsset).toHaveBeenCalledWith('huaxing', shared, '', '', expect.any(AbortSignal), ['order-a'])
+    wrapper.unmount()
+  })
+  it('rejects a disjoint Excel/PDF pair offered by a multi-order source group', async () => {
+    const second = { ...asset.orders[0]!, id: 'order-b', contract_no: 'CONTRACT-002' }
+    const shared = { ...asset, id: 'shared-excel', kind: 'excel' as const, orders: [...asset.orders, second] }
+    const excel = { ...asset, id: 'narrow-excel', kind: 'excel' as const }
+    const pdf = { ...asset, id: 'other-pdf', orders: [second] }
+    api.listAssets.mockResolvedValue([shared, excel, pdf])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', checkEnabled: true } }); await flushPromises()
+    await wrapper.get('[aria-label="选择合同 4500222793、CONTRACT-002 的 Excel / PDF 核对文件"]').trigger('click')
+    await wrapper.get('[aria-label="仓库核对 Excel"]').setValue(excel.id)
+    await wrapper.findAll('button').find(button => button.text() === '带入 Excel / PDF 核对')!.trigger('click')
+    expect(wrapper.emitted('useSources')).toBeUndefined()
+    expect(wrapper.text()).toContain('没有共同的关联订单')
+    wrapper.unmount()
+  })
+  it('binds one original to explicitly selected contracts without sending a conflicting single binding', async () => {
+    const second = { ...asset.orders[0]!, id: 'order-b', order_no: 'CTR-b', contract_no: 'CONTRACT-002' }
+    api.bindingOrders.mockResolvedValue([...asset.orders, second])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '关联设置')!.trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="关联多个合同"]').setValue(true)
+    await wrapper.get('[aria-label="关联订单 CTR-a"]').setValue(true)
+    await wrapper.get('[aria-label="关联订单 CTR-b"]').setValue(true)
+    await wrapper.findAll('button').find(button => button.text() === '保存关联')!.trigger('click'); await flushPromises()
+    expect(api.bindAsset).toHaveBeenCalledWith('huaxing', asset, '', '', expect.any(AbortSignal), ['order-a', 'order-b'])
+    wrapper.unmount()
+  })
   it('carries a supplier Excel/PDF pair with only common issued orders and no warehouse write', async () => {
     const order = { ...asset.orders[0]!, issue_id: 'issue-a', customer_po: 'PO-A' }
     const excel = { ...asset, id: 'excel-own', kind: 'excel' as const, file_name: 'source.xlsx', orders: [order, { ...order, id: 'order-2' }] }
@@ -34,6 +71,20 @@ describe('carton-mark source repository', () => {
     expect(wrapper.emitted('useSources')).toBeUndefined(); expect(api.bindAsset).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+  it('pairs a multi-contract Excel with a PDF for one of its selected orders', async () => {
+    const second = { ...asset.orders[0]!, id: 'order-b', contract_no: 'CONTRACT-002', issue_id: 'issue-b' }
+    const common = { ...asset.orders[0]!, issue_id: 'issue-a' }
+    const excel = { ...asset, id: 'excel-shared', kind: 'excel' as const, orders: [common, second] }
+    const pdf = { ...asset, orders: [common] }
+    supplierApi.markAssets.mockResolvedValue([excel, pdf])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true, supplierCheckEnabled: true } }); await flushPromises()
+    await wrapper.get('[aria-label="选择合同 4500222793、CONTRACT-002 的 Excel / PDF 核对文件"]').trigger('click')
+    expect(wrapper.get('[aria-label="仓库核对 PDF"]').element).toHaveProperty('value', pdf.id)
+    await wrapper.findAll('button').find(button => button.text() === '带入 Excel / PDF 核对')!.trigger('click')
+    expect(wrapper.emitted('supplierSources')?.[0]?.[0]).toEqual([{ ...excel, factory_id: 'huaxing', orders: [common] }, { ...pdf, factory_id: 'huaxing' }])
+    wrapper.unmount()
+  })
+
   it('selects a supplier Excel with its factory and issued order without enabling warehouse writes', async () => {
     const excel = { ...asset, kind: 'excel' as const, file_name: 'customer.xlsx', revision: 3,
       orders: asset.orders.map(order => ({ ...order, issue_id: 'issue-a', customer_po: 'PO-A' })) }
@@ -89,7 +140,7 @@ describe('carton-mark source repository', () => {
     await wrapper.get('[aria-label="搜索可关联订单"]').setValue('100369')
     await wrapper.get('[aria-label="选择关联订单"]').setValue('order-a')
     await wrapper.findAll('button').find(button => button.text() === '保存关联')!.trigger('click'); await flushPromises()
-    expect(api.bindAsset).toHaveBeenCalledWith('huaxing', photo, '4500222793', 'order-a', expect.any(AbortSignal))
+    expect(api.bindAsset).toHaveBeenCalledWith('huaxing', photo, '4500222793', 'order-a', expect.any(AbortSignal), undefined)
     wrapper.unmount()
   })
 
@@ -103,11 +154,11 @@ describe('carton-mark source repository', () => {
     const grouped = photos.map(photo => ({ ...photo, photo_group_id: 'group-1', revision: 2 }))
     api.listAssets.mockResolvedValue(grouped)
     await wrapper.findAll('button').find(button => button.text() === '保存照片组')!.trigger('click'); await flushPromises()
-    expect(api.savePhotoGroup).toHaveBeenCalledWith('huaxing', photos, '', '', undefined, expect.any(AbortSignal))
+    expect(api.savePhotoGroup).toHaveBeenCalledWith('huaxing', photos, '', '', undefined, expect.any(AbortSignal), undefined)
     await wrapper.findAll('button').find(button => button.text() === '整组关联')!.trigger('click'); await flushPromises()
     await wrapper.get('[aria-label="选择关联订单"]').setValue('order-a')
     await wrapper.findAll('button').find(button => button.text() === '保存照片组')!.trigger('click'); await flushPromises()
-    expect(api.savePhotoGroup).toHaveBeenLastCalledWith('huaxing', grouped, '4500222793', 'order-a', 'group-1', expect.any(AbortSignal))
+    expect(api.savePhotoGroup).toHaveBeenLastCalledWith('huaxing', grouped, '4500222793', 'order-a', 'group-1', expect.any(AbortSignal), undefined)
     vi.spyOn(window, 'confirm').mockReturnValueOnce(true)
     await wrapper.findAll('button').find(button => button.text() === '解除分组')!.trigger('click'); await flushPromises()
     expect(api.ungroupPhotos).toHaveBeenCalledWith('huaxing', 'group-1', grouped, expect.any(AbortSignal))
@@ -289,7 +340,7 @@ describe('carton-mark source repository', () => {
     api.bindAsset.mockResolvedValue(asset)
     await wrapper.findAll('button').find(b => b.text() === '保存关联')!.trigger('click')
     await flushPromises()
-    expect(api.bindAsset).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 1 }), '4500222793', 'order-a', expect.any(AbortSignal))
+    expect(api.bindAsset).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 1 }), '4500222793', 'order-a', expect.any(AbortSignal), undefined)
     wrapper.unmount()
   })
 

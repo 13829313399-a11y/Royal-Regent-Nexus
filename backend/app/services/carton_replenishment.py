@@ -103,6 +103,8 @@ def replenish_order(db, order_no, payload, user):
         return CartonReplenishmentOut.model_validate(evidence["result"])
 
     order = core.get_order_by_no(db, factory, order_no)
+    from app.services.carton_customer_assignment import ensure_customer_operation
+    ensure_customer_operation(db, user, factory, order.customer_code)
     if order.revision != payload.expected_revision:
         raise HTTPException(409, "订单已更新，请刷新后重新核对补单")
     if order.status not in {"PARTIALLY_RECEIVED", "COMPLETED"}:

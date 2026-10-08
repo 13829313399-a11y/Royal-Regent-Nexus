@@ -224,6 +224,7 @@ export interface CartonMarkAsset {
   sha256: string
   contract_number: string
   bound_order_id: string | null
+  bound_order_ids?: string[]
   recognition_source: string
   candidates: string[]
   warning: string
@@ -259,17 +260,18 @@ export function createCartonMarkApi(client = http) {
       })
       return response.data
     },
-    async bindAsset(factoryId: string, asset: CartonMarkAsset, contractNumber: string, orderId?: string, signal?: AbortSignal) {
+    async bindAsset(factoryId: string, asset: CartonMarkAsset, contractNumber: string, orderId?: string, signal?: AbortSignal, orderIds?: string[]) {
       const response = await client.put<CartonMarkAsset>(`/carton-mark/assets/${asset.id}/binding`, {
         contract_number: contractNumber, order_id: orderId || null, revision: asset.revision,
+        ...(orderIds ? { order_ids: orderIds } : {}),
       }, { params: { factory_id: factoryId }, signal })
       return response.data
     },
     async bindingOrders(factoryId: string, signal?: AbortSignal) {
       return (await client.get<CartonMarkAsset['orders']>('/carton-mark/assets/binding-orders', { params: { factory_id: factoryId }, signal })).data
     },
-    async savePhotoGroup(factoryId: string, assets: CartonMarkAsset[], contractNumber: string, orderId: string, groupId?: string, signal?: AbortSignal) {
-      const body = { assets: assets.map(({ id, revision }) => ({ id, revision })), contract_number: contractNumber, order_id: orderId || null }
+    async savePhotoGroup(factoryId: string, assets: CartonMarkAsset[], contractNumber: string, orderId: string, groupId?: string, signal?: AbortSignal, orderIds?: string[]) {
+      const body = { assets: assets.map(({ id, revision }) => ({ id, revision })), contract_number: contractNumber, order_id: orderId || null, ...(orderIds ? { order_ids: orderIds } : {}) }
       const config = { params: { factory_id: factoryId }, signal }
       return (groupId
         ? await client.put<CartonMarkAsset[]>(`/carton-mark/assets/photo-groups/${encodeURIComponent(groupId)}/binding`, body, config)
