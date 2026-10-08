@@ -1,0 +1,61 @@
+[
+  {
+    "id": "portal.overview",
+    "module_id": "portal",
+    "title": "系统门户",
+    "kind": "overview",
+    "audience": "all",
+    "route_names": [
+      "dashboard",
+      "modules-department"
+    ],
+    "factory_ids": [],
+    "anchor_id": "portal.overview",
+    "field_keys": [],
+    "summary": "按当前厂区和部门查找可见模块，再进入对应业务页。",
+    "content": "首页与模块中心是导航目录。先确认当前厂区、部门，再搜索模块名称、说明或标签；搜索与预览使用已经筛选的 visibleModules，不会从隐藏目录补出入口。目录为空时核对厂区和账号授权；卡片说明或预览不代表业务数据已加载。\n普通已登录用户可浏览允许只读访问的页面；设置严格权限的页面仍检查权限。按钮写入权限由页面和后端继续校验，能看到模块不等于能修改业务。\n模块还有适用厂区限制：当前 UV 工作区只属于华康 A；喷油和裁床按各自厂区能力过滤。纸箱采购目录检查当前厂区读取权限；供应商身份与内部采购身份进入各自工作区域。没有可用详情入口的占位卡片不代表功能已经开发完成。\n预览只帮助判断模块用途，进入页面后再核对标题、厂区和实际可用操作。曜灵可在有注册说明的页面讲解；未注册的字段只能明确说暂无精确说明，不能根据卡片文案编造计算或审批规则。",
+    "steps": [
+      {
+        "title": "确认厂区与部门",
+        "description": "在现有导航中选择目标范围，再查看本范围目录。",
+        "anchor_id": "portal.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "搜索并预览",
+        "description": "用名称或功能关键词搜索当前可见模块，核对用途与入口状态。",
+        "anchor_id": "portal.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "进入业务页核对",
+        "description": "进入后确认标题、厂区和权限，需业务写入时在原页面操作。",
+        "anchor_id": "portal.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/config/pageAccessPolicy.ts",
+        "symbol": "allowAuthenticatedReadOnlyAccess",
+        "sha256": "a0f7da167ac37f8fd2bb7b16620acee935763c1bee0937681b50bb9d493bf54f"
+      },
+      {
+        "path": "src/views/ModuleCenterView.vue",
+        "symbol": "visibleModules",
+        "sha256": "ebbdc9af62c02776a109a4e5541998af1954d23ba7e7633a2a428bbf0e1eb570"
+      },
+      {
+        "path": "src/views/ModuleCenterView.vue",
+        "symbol": "detailPage",
+        "sha256": "ebbdc9af62c02776a109a4e5541998af1954d23ba7e7633a2a428bbf0e1eb570"
+      }
+    ],
+    "knowledge_version": "2026.10.08-v2",
+    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "status": "verified"
+  }
+]

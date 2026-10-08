@@ -64,7 +64,7 @@ watch(() => route.fullPath, async () => {
     wide-layout
   >
     <template #icon><Calculator aria-hidden="true" /></template>
-    <div class="internal-quote-desk">
+    <div class="internal-quote-desk" data-yl-help="internal-quote.overview">
       <div class="quote-guide-entry">
         <span>建单 · 部门核价 · 汇总与输出</span>
         <button ref="usageGuideTrigger" type="button" aria-label="打开内部报价使用教程" @click="openUsageGuide"><BookOpen aria-hidden="true" />使用教程</button>

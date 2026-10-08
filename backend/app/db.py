@@ -778,6 +778,7 @@ def ensure_carton_feedback_schema_ready() -> None:
 
 def init_db() -> None:
     from app.models import (
+        assistant,  # noqa: F401
         work_center,  # noqa: F401
         uv_operations,  # noqa: F401
         spray_ops,  # noqa: F401
@@ -866,7 +867,7 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            if not name.startswith("uv_ops_")
+                            if not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.
                             and (name not in {"three_d_printing_telemetry_rollups", "three_d_printing_telemetry_rollup_state"}

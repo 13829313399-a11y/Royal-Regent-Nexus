@@ -62,7 +62,7 @@ function navigate(section: CustomerOrderCenterSection) {
 </script>
 
 <template>
-  <div class="customer-order-center">
+  <div class="customer-order-center" data-yl-help="customer-orders.overview">
     <header class="order-topbar">
       <div class="order-topbar__brand">
         <RouterLink :to="departmentRoute" class="order-back-link" aria-label="返回业务部模块中心">

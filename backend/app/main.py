@@ -9,6 +9,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 
 from app.api.auth import router as auth_router
+from app.api.assistant import router as assistant_router
 from app.api.document_tools import router as document_tools_router
 from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
@@ -175,6 +176,8 @@ async def record_request_timing(request: Request, call_next):
     duration_ms = (perf_counter() - started_at) * 1000
     response.headers["X-Request-ID"] = request_id
     response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
+    if request.url.path.startswith("/api/assistant/"):
+        response.headers["Cache-Control"] = "private, no-store"
     if request.url.path != "/health":
         route = request.scope.get("route")
         route_path = getattr(route, "path", request.url.path)
@@ -190,6 +193,7 @@ async def record_request_timing(request: Request, call_next):
 
 
 app.include_router(auth_router)
+app.include_router(assistant_router)
 app.include_router(document_tools_router)
 app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)

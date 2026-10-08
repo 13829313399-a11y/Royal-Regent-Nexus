@@ -46,7 +46,7 @@ onUnmounted(() => { observer?.disconnect(); center.workspaceOpen = false; center
 </script>
 
 <template>
-  <div ref="root" class="app-page nc-workspace">
+  <div ref="root" class="app-page nc-workspace" data-yl-help="work-center.overview">
     <PageHeader title="事项工作台" description="与我相关 · 全部授权责任范围">
       <template #actions><Button variant="outline" :disabled="center.syncing" @click="center.refresh()"><RefreshCw :size="16" :class="{ 'nc-spinning': center.syncing }" />刷新</Button><Button variant="outline" aria-label="声音与提醒设置" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen"><SlidersHorizontal :size="16" />提醒设置</Button></template>
     </PageHeader>
