@@ -103,6 +103,8 @@ def replenish_order(db, order_no, payload, user):
         return CartonReplenishmentOut.model_validate(evidence["result"])
 
     order = core.get_order_by_no(db, factory, order_no)
+    from app.services.carton_customer_assignment import ensure_customer_operation
+    ensure_customer_operation(db, user, factory, order.customer_code)
     if order.revision != payload.expected_revision:
         raise HTTPException(409, "订单已更新，请刷新后重新核对补单")
     if order.status not in {"PARTIALLY_RECEIVED", "COMPLETED"}:
@@ -132,7 +134,7 @@ def replenish_order(db, order_no, payload, user):
     latest = issues[0] if issues else None
     pending_type, _, _, snapshot = core._purchase_order_pending_change(order, lines, latest)
     if pending_type != "NONE":
-        raise HTTPException(409, "原订单有尚未发行的数量或交期变更，请先发行后再补单")
+        raise HTTPException(409, "原订单有尚未生成的数量或交期变更，请先生成后再补单")
     sequence = (latest.issue_sequence if latest else 0) + 1
     number = 1 + sum(bool(core._purchase_order_snapshot(issue).get("replenishment")) for issue in issues)
     document_no = f"{order.order_no}-B{number:02d}"

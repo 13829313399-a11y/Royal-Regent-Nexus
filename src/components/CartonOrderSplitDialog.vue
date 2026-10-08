@@ -4,13 +4,14 @@ import { DialogRoot, DialogOverlay, DialogContent, DialogTitle, DialogDescriptio
 import { cartonOrderSplitsApi as api, type SplitContext, type SplitRecord, type SplitTargetInput } from '@/api/cartonOrderSplits'
 import type { CartonOrderResponse } from '@/api/cartonProcurement'
 import { getApiErrorMessage } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 
 const props = defineProps<{ order: CartonOrderResponse; canCreate: boolean; canConfirm: boolean }>()
 const emit = defineEmits<{ close: []; changed: [] }>()
 const data = ref<SplitContext | null>(null), error = ref(''), message = ref(''), busy = ref(false), loading = ref(false)
 const targets = ref<SplitTargetInput[]>([]), reason = ref('按客户要求拆分合同归属'), warehouseChecked = ref<Record<string, boolean>>({})
 let generation = 0
-let requestId = crypto.randomUUID()
+let requestId = createRandomUuid()
 const stockTotal = (target: SplitTargetInput) => target.lines.reduce((sum, line) => sum + line.stock.reduce((n, part) => n + Number(part.quantity), 0), 0)
 const live = computed(() => data.value?.plans.filter(plan => plan.status !== 'CANCELLED') ?? [])
 function addTarget() {
@@ -33,12 +34,12 @@ async function load(reset = false) {
     const result = await api.context(scope, number)
     if (token !== generation || scope !== props.order.factory_id || number !== props.order.order_no) return
     data.value = result
-    if (reset) { targets.value = []; addTarget(); warehouseChecked.value = {}; requestId = crypto.randomUUID() }
+    if (reset) { targets.value = []; addTarget(); warehouseChecked.value = {}; requestId = createRandomUuid() }
   } catch (cause) { if (token === generation) error.value = getApiErrorMessage(cause) }
   finally { if (token === generation) loading.value = false }
 }
 watch(() => [props.order.factory_id, props.order.order_no], () => { error.value = ''; message.value = ''; void load(true) }, { immediate: true })
-watch([targets, reason], () => { requestId = crypto.randomUUID() }, { deep: true })
+watch([targets, reason], () => { requestId = createRandomUuid() }, { deep: true })
 async function save() {
   if (busy.value || !data.value || !props.canCreate) return
   error.value = ''; message.value = ''
@@ -79,6 +80,7 @@ async function act(plan: SplitRecord, action: 'confirm' | 'cancel') {
       <p v-if="loading" class="my-3 text-sm">正在核对拆分与库存…</p>
       <p v-if="error" role="alert" class="my-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
       <p v-if="message" role="status" class="my-3 rounded-lg bg-teal-50 p-3 text-sm text-teal-800">{{ message }}</p>
+      <p v-if="!canCreate" role="status" class="my-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">当前账号可查看拆分记录；新增拆单需要订单维护及订单调整权限，或订单维护及库存维护权限。请由有权限的仓管或主管操作。</p>
       <label class="my-4 block text-xs font-bold">操作原因<input v-model="reason" :disabled="busy" aria-label="拆单操作原因" maxlength="500" class="mt-1 h-9 w-full rounded border px-3"></label>
       <section v-if="data" class="space-y-3">
         <h3 class="font-bold">拆分记录 <span class="text-xs font-normal text-slate-500">{{ live.length }} 份有效方案</span></h3>

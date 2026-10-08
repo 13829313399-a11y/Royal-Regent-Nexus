@@ -12,6 +12,7 @@ from app.models.carton_procurement import CartonReceipt
 from app.models.carton_supplier_portal import SupplierShipment
 from app.schemas.carton_supplier_portal import ShipmentCreate
 from app.services import carton_supplier_portal as portal
+from app.services import carton_supplier_receipt_link as receipt_link
 from app.services.carton_material_identity import material_conflicts
 from app.services.carton_procurement_imports import _dongkang_identity, _parse_delivery_spreadsheet
 
@@ -102,8 +103,10 @@ def preview(db, user, filename, content):
         order, line = candidates[0]
         item.update(order_no=order["order_no"], child_no=line["child_no"],
             order_line_id=line["id"], issue_id=order["issue_id"])
+        item["receipt_link_eligible"] = bool(order["issue_id"] and order["status"] != "CANCELLED"
+            and not order["awaiting_issue"] and not line["shipping_blocked_reason"])
         if order["status"] not in portal.OPEN_STATES or order["awaiting_issue"]:
-            item["reason"] = "订单已结束或采购版本有待发行变更"
+            item["reason"] = "订单已结束或采购版本有待生成变更"
         elif any(Decimal(paper["required_quantity"]) > 0 and not paper["accepted"] for paper in order["lines"]):
             item["reason"] = "此订单尚未整单确认接单"
         elif line["shipping_blocked_reason"]:
@@ -115,49 +118,75 @@ def preview(db, user, filename, content):
     for group in groups.values():
         factory = group["factory_id"]
         note_no = group["delivery_note_no"]
+        shipment_exists = False
+        receipt_exists = False
         if factory in factories and note_no:
-            if db.scalar(select(SupplierShipment.id).where(SupplierShipment.factory_id == factory,
-                SupplierShipment.delivery_note_no == note_no).limit(1)) or db.scalar(
-                    select(CartonReceipt.id).where(CartonReceipt.factory_id == factory,
-                        CartonReceipt.delivery_note_no == note_no).limit(1)):
-                group["issues"].append("此厂区的送货单号已经登记或收料")
+            shipment_exists = bool(db.scalar(select(SupplierShipment.id).where(SupplierShipment.factory_id == factory,
+                SupplierShipment.delivery_note_no == note_no).limit(1)))
+            receipt_exists = bool(db.scalar(select(CartonReceipt.id).where(CartonReceipt.factory_id == factory,
+                CartonReceipt.delivery_note_no == note_no).limit(1)))
+            if shipment_exists:
+                group["issues"].append("此厂区的供应商送货单号已经登记")
         duplicates = {line_id for line_id, count in Counter(row["order_line_id"] for row in group["rows"]
             if row["order_line_id"]).items() if count > 1}
         if duplicates:
             group["issues"].append("同一送货单内重复出现同一纸品，请先在原系统合并明细")
         if len(group["rows"]) > 200:
             group["issues"].append("一张送货单最多 200 条纸品")
-        group["ready"] = bool(factory in factories and note_no and group["rows"]
+        group["existing_receipt_count"] = 0
+        if factory in factories and note_no and not group["issues"] and all(row.get("receipt_link_eligible") for row in group["rows"]):
+            by_id = {line["id"]: line | {"contract_no": order["contract_no"], "item_no": order["item_no"],
+                "currency": db.get(portal.CartonOrderLine, line["id"]).currency}
+                for order in workspaces[factory]["orders"] for line in order["lines"]}
+            papers = [by_id[row["order_line_id"]] | {"order_line_id": row["order_line_id"], "quantity": row["delivered_quantity"]} for row in group["rows"]]
+            supplier = portal.supplier_access(db, user, factory, "carton_supplier:edit")
+            group["existing_receipt_count"] = len(receipt_link.matching_receipts(db, factory, supplier.id, papers, note_no=note_no))
+        group["receipt_link_ready"] = group["existing_receipt_count"] > 0
+        group["ready"] = bool(factory in factories and note_no and group["rows"] and not receipt_exists
             and not group["issues"] and all(row["status"] in {"READY", "AD_HOC_REVIEW"} for row in group["rows"]))
+        if receipt_exists:
+            group["issues"].append("此单号已有收料；后补原文件请选择仅关联已有入库")
     return {"filename": filename, "sha256": digest, "row_count": len(rows), "groups": list(groups.values())}
 
 
 def confirm(db, user, filename, content, expected_sha256, selections):
     if _source(filename, content) != expected_sha256:
         raise HTTPException(409, "送货单文件与预览时不同，请重新预览")
-    if not selections or len(selections) > 100 or len(selections) != len(set(selections)):
+    selections = [(item[0], item[1], item[2] if len(item) == 3 else "SHIPMENT") for item in selections]
+    keys = [(factory, note) for factory, note, _ in selections]
+    if not selections or len(selections) > 100 or len(keys) != len(set(keys)) or any(mode not in {"SHIPMENT", "EXISTING_RECEIPT"} for _, _, mode in selections):
         raise HTTPException(422, "请选择 1 至 100 张不重复的送货单")
     result = preview(db, user, filename, content)
     groups = {(group["factory_id"], group["delivery_note_no"]): group for group in result["groups"]}
-    if any(key not in groups for key in selections):
+    if any(key not in groups for key in keys):
         raise HTTPException(422, "所选送货单不在上传文件中")
     sent = []
     try:
-        for factory, note_no in sorted(selections):
+        for factory, note_no, mode in sorted(selections):
             group = groups[(factory, note_no)]
             request_id = _request_id(expected_sha256, factory, note_no)
             existing = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == factory,
                 SupplierShipment.created_by == user.id, SupplierShipment.request_id == request_id))
             if existing:
+                supplier = portal.supplier_access(db, user, factory, "carton_supplier:edit")
+                if existing.supplier_id != supplier.id:
+                    raise HTTPException(403, "账号无权访问此供应商的原送货单")
+                import json
+                evidence = db.scalar(select(portal.CartonAuditEvent).where(portal.CartonAuditEvent.entity_id == existing.id,
+                    portal.CartonAuditEvent.event_type == "SUPPLIER_SHIPMENT_CREATED", portal.CartonAuditEvent.factory_id == factory))
+                old_mode = json.loads(evidence.detail_json).get("registration_mode", "SHIPMENT") if evidence else "SHIPMENT"
+                if old_mode != mode:
+                    raise HTTPException(409, "此原文件已按另一种提交方式登记，不可改为再次发货")
                 sent.append(portal.shipment_out(db, existing))
                 continue
-            if not group["ready"]:
+            if not group["receipt_link_ready" if mode == "EXISTING_RECEIPT" else "ready"]:
                 problem = next((row["reason"] for row in group["rows"] if row["status"] == "BLOCKED"), "")
                 raise HTTPException(409, f"送货单 {note_no} 无法确认：{problem or '；'.join(group['issues'])}")
             payload = ShipmentCreate(factory_id=factory, request_id=request_id, delivery_note_no=note_no,
+                registration_mode=mode,
                 delivery_date=date.fromisoformat(group["delivery_date"]), lines=[{
                     "order_line_id": row["order_line_id"], "issue_id": row["issue_id"],
-                    "quantity": row["delivered_quantity"]} for row in group["rows"] if row["status"] == "READY"],
+                    "quantity": row["delivered_quantity"]} for row in group["rows"] if row["status"] == "READY" or mode == "EXISTING_RECEIPT"],
                 unmatched_lines=[{"source_sheet": row["source_sheet"], "source_row": row["source_row"],
                     "contract_no": row["contract_no"] or "", "item_no": row["item_no"],
                     "packaging_type": row["packaging_type"], "paper_quality": row["paper_quality"],
@@ -169,9 +198,9 @@ def confirm(db, user, filename, content, expected_sha256, selections):
                     "rows": [row["source_row"] for row in group["rows"]],
                     "delivery_materials": {row["order_line_id"]: {key: row.get(key) for key in (
                         "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "source_sheet", "source_row")}
-                        for row in group["rows"] if row["status"] == "READY"},
+                        for row in group["rows"] if row["order_line_id"]},
                     "delivery_unit_prices": {row["order_line_id"]: row["unit_price"]
-                        for row in group["rows"] if row["status"] == "READY"}}))
+                        for row in group["rows"] if row["order_line_id"]}}))
         db.commit()
     except Exception:
         db.rollback()

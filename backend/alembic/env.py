@@ -24,10 +24,15 @@ from app.models import (
     document_tools,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
+    carton_feedback,  # noqa: F401
     carton_procurement,  # noqa: F401
+    fabric_procurement,  # noqa: F401
+    fabric_receiving,  # noqa: F401
+    fabric_master,  # noqa: F401
     carton_stocktake,  # noqa: F401
     carton_positions,
     carton_master,  # noqa: F401
+    carton_customer_assignment,  # noqa: F401
     carton_supplier_settlement,  # noqa: F401
     carton_supplier_portal,  # noqa: F401
     customer_order,  # noqa: F401

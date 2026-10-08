@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.schemas.carton_customer_assignment import CartonCustomerAssignmentSave, CartonCustomerClaim
 from app.services import carton_file_jobs as file_jobs
 from app.schemas.carton_order_split import SplitCreate, SplitAction, SplitReceiptPreview
 from app.services import carton_order_split as order_splits
@@ -22,6 +23,7 @@ from app.schemas.carton_order_timeline import CartonOrderTimelineOut
 from app.services.carton_order_timeline import order_timeline
 from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
 from app.services.carton_stocktake import create_stocktake, stocktake_detail, list_stocktakes, act_stocktake
+from app.services.carton_procurement import audit_query_options
 from app.schemas.carton_procurement import (
     CartonAuditEventListOut,
     CartonClosingGenerateRequest,
@@ -159,6 +161,29 @@ router = APIRouter(
 )
 
 
+@router.get("/customer-responsibilities")
+def get_customer_responsibilities(factory_id: str, summary: bool = False, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return responsibilities.workspace(db, current_user, factory_id, summary=summary)
+
+
+@router.put("/customers/{customer_id}/responsibilities")
+def put_customer_responsibilities(customer_id: str, payload: CartonCustomerAssignmentSave,
+                                  db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return responsibilities.save(db, current_user, customer_id, payload)
+
+
+@router.post("/customers/{customer_id}/claim")
+def claim_customer(customer_id: str, payload: CartonCustomerClaim,
+                   db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return responsibilities.claim(db, current_user, customer_id, payload)
+
+
 def _ensure_permission(
     db: Session,
     user: AuthContext,
@@ -202,6 +227,7 @@ def _ensure_order_deletion_permission(db: Session, user: AuthContext, factory_id
 @router.get("/orders/{order_no}/splits")
 def get_order_splits(order_no: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
     return order_splits.context(db, factory_id, order_no)
 
 
@@ -326,6 +352,7 @@ def get_dashboard_alert_context(
 @router.get("/orders", response_model=CartonOrderListOut)
 def get_orders(
     factory_id: str,
+    responsibility_scope: Literal["OWN", "ALL"] = "OWN",
     customer_code: str = Query(default="", max_length=64),
     search: str = Query(default="", max_length=128),
     status_filter: str = Query(default="", max_length=32),
@@ -338,6 +365,7 @@ def get_orders(
     order_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     due_filter: Literal["ALL", "OVERDUE", "TODAY", "DUE_SOON", "UPCOMING"] = "ALL",
     sort: Literal["ORDER_DESC", "DUE_ASC", "DUE_DESC"] = "ORDER_DESC",
+    collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED"] = "ALL",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -354,7 +382,7 @@ def get_orders(
         limit=limit,
         offset=offset,
         customer_name=customer_name, order_from=order_from, order_to=order_to, due_filter=due_filter, sort=sort,
-        statistics=statistics,
+        statistics=statistics, collaboration_filter=collaboration_filter, user=current_user if responsibility_scope == "OWN" else None,
     )
     from app.services.carton_order_projection import order_page_out
     return CartonOrderListOut(factory_id=factory_id, total=total, limit=limit,
@@ -605,8 +633,8 @@ def post_history_order_preview(
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db,current_user,"carton_procurement:order_write",factory_id)
-    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:order_write") as (content, _):
-        return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",content)
+    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:order_write") as (content, actor):
+        return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",content,actor)
 
 
 @router.get("/orders/{order_no}/purchase-order.xlsx")
@@ -733,7 +761,7 @@ def start_export_job(payload: CartonOrderSelectionRequest, db: Session = Depends
     generated = business_now()
     db.rollback()
     return file_jobs.start_job(current_user.id, factory, "combined_export", (snapshot, generated),
-        {"filename": f"纸箱累计对账表_{generated.strftime('%Y%m%d_%H%M%S')}.xlsx"})
+        {"filename": f"纸箱累计对账表_{generated.strftime('%Y%m%d_%H%M%S')}.xlsx", "order_nos": payload.order_nos})
 
 
 @router.get("/file-jobs/{job_id}/download")
@@ -742,6 +770,7 @@ def download_export_job(job_id: str, factory_id: str, db: Session = Depends(get_
     job = file_jobs.get_job(job_id, current_user.id, factory_id)
     if job.operation != "combined_export":
         raise HTTPException(422, "此任务不是导出任务")
+    _export_order_snapshot(db, factory_id, job.metadata.get("order_nos", []))
     with file_jobs.result(job) as (content, _):
         job.status = "COMPLETED"
         return StreamingResponse(BytesIO(content), media_type=XLSX_MEDIA_TYPE,
@@ -791,6 +820,7 @@ def post_purchase_order_issue_batch_workbook(
 @router.get("/receipts", response_model=CartonReceiptListOut)
 def get_receipts(
     factory_id: str,
+    responsibility_scope: Literal["OWN", "ALL"] = "OWN",
     customer_code: str = Query(default="", max_length=64),
     search: str = Query(default="", max_length=128),
     limit: int = Query(default=50, ge=1, le=200),
@@ -805,7 +835,7 @@ def get_receipts(
         customer_code=customer_code.strip(),
         search=search.strip(),
         limit=limit,
-        offset=offset,
+        offset=offset, user=current_user if responsibility_scope == "OWN" else None,
     )
     return CartonReceiptListOut(
         factory_id=factory_id,
@@ -1196,9 +1226,10 @@ def post_history_inventory_preview(
 @router.get("/stocktakes")
 def stocktakes_list(factory_id: str, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0),
                     status: Literal["", "DRAFT", "SUBMITTED", "POSTED", "CANCELLED"] = "",
+                    date_from: str = "", date_to: str = "", sort: Literal["ASC", "DESC"] = "DESC",
                     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, user, "carton_procurement:read", factory_id)
-    return list_stocktakes(db, factory_id, limit, offset, status)
+    return list_stocktakes(db, factory_id, limit, offset, status, date_from, date_to, sort)
 
 
 @router.get("/stocktakes/{identifier}")
@@ -1352,6 +1383,7 @@ def get_audit_events(
     date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    sort: Literal["ASC", "DESC"] = "DESC",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1366,6 +1398,7 @@ def get_audit_events(
         date_to=date_to.strip(),
         limit=limit,
         offset=offset,
+        sort=sort,
     )
     return CartonAuditEventListOut(
         factory_id=factory_id,
@@ -1373,6 +1406,7 @@ def get_audit_events(
         limit=limit,
         offset=offset,
         items=items,
+        **audit_query_options(db, factory_id),
     )
 
 

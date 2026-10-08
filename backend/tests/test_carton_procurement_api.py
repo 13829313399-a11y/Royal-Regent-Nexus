@@ -96,6 +96,18 @@ def _ensure_dickie_customer(client) -> None:
             },
         )
         assert created_customer.status_code == 201, created_customer.text
+        # Explicit responsibility is a prerequisite of ordinary order fixtures.
+        from app.db import SessionLocal
+        from app.models.auth import AuthUser
+        from app.models.carton_customer_assignment import CartonCustomerAssignment
+        from sqlalchemy import select
+        from test_molding_sample_api import ensure_test_user
+        ensure_test_user('warehouse_keeper')
+        ensure_test_user('carton_warehouse')
+        with SessionLocal() as db:
+            for actor in db.scalars(select(AuthUser).where(AuthUser.username.in_(['warehouse_keeper', 'carton_warehouse']))):
+                db.add(CartonCustomerAssignment(customer_id=created_customer.json()['id'], user_id=actor.id, factory_id='huaxing'))
+            db.commit()
         # Warehouse staff select pre-maintained bins; receiving no longer creates
         # arbitrary master data as a side effect of a free-text label.
         for bin_code in ["纸箱仓 A-01", "纸箱仓 A-03", "纸箱仓 B-01", "纸箱仓 B-02", "打板区 S-01", "A-00", "A-01", "A-02", "B-02", "C-03"]:
@@ -162,6 +174,15 @@ def test_customer_master_crud_permission_and_order_snapshot(monkeypatch):
         )
         assert removed.status_code == 204
 
+        from app.db import SessionLocal
+        from app.models.auth import AuthUser
+        from sqlalchemy import select
+        with SessionLocal() as db:
+            operator_id = db.scalar(select(AuthUser.id).where(AuthUser.username == "warehouse_keeper"))
+        assigned = client.put(f"/api/carton-procurement/customers/{customer['id']}/responsibilities", json={
+            "factory_id": "huaxing", "user_ids": [operator_id], "expected_revision": customer["revision"], "reason": "分配客户订单责任"})
+        assert assigned.status_code == 200, assigned.text
+        customer["revision"] += 1
         login_as(client, "warehouse_keeper")
         order_payload = _order_payload()
         order_payload["customer_name"] = "客户端伪造名称"

@@ -85,6 +85,7 @@ from app.schemas.carton_procurement import (
 )
 from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine, SupplierCommitment, SupplierAttachment
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
+from app.services.carton_customer_assignment import ensure_customer_operation, ensure_receipt_operation, customer_predicate, unrestricted as unrestricted_customer
 from app.schemas.carton_procurement import CartonLocationAllocation
 from app.services import carton_positions as positions
 from app.services.carton_inventory_valuation import cost_key, load_valuation, value_movements, Valuation
@@ -286,6 +287,7 @@ def get_active_customer_by_name(
 
 def create_customer(db: Session, payload: CartonCustomerCreate, user: AuthContext) -> CartonCustomer:
     factory_id = require_carton_factory(payload.factory_id)
+    _lock_receipt_factory(db, factory_id)
     timestamp = now_text()
     duplicate_name = next(
         (
@@ -349,7 +351,9 @@ def update_customer(
     user: AuthContext,
 ) -> CartonCustomer:
     factory_id = require_carton_factory(payload.factory_id)
+    _lock_receipt_factory(db, factory_id)
     customer = _get_customer(db, factory_id, customer_id)
+    ensure_customer_operation(db, user, factory_id, customer.customer_code)
     if customer.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="客户资料已被其他人更新，请刷新后重试")
     changes = payload.model_dump(exclude={"factory_id", "expected_revision"}, exclude_none=True)
@@ -372,6 +376,10 @@ def update_customer(
             raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称")
     if "customer_code" in changes:
         changes["customer_code"] = changes["customer_code"].upper()
+        if changes["customer_code"] != customer.customer_code and db.scalar(select(CartonOrder.id).where(
+                CartonOrder.factory_id == factory_id,
+                CartonOrder.customer_code.in_([customer.customer_code, changes["customer_code"]])).limit(1)):
+            raise HTTPException(409, "客户已有订单，内部编号不能修改；请保留客户身份以延续历史订单和责任范围")
     previous = {field: getattr(customer, field) for field in changes}
     for field, value in changes.items():
         setattr(customer, field, value)
@@ -394,7 +402,9 @@ def update_customer(
 
 def delete_customer(db: Session, factory_id: str, customer_id: str, user: AuthContext) -> None:
     factory_id = require_carton_factory(factory_id)
+    _lock_receipt_factory(db, factory_id)
     customer = _get_customer(db, factory_id, customer_id)
+    ensure_customer_operation(db, user, factory_id, customer.customer_code)
     order_count = db.scalar(
         select(func.count(CartonOrder.id)).where(
             CartonOrder.factory_id == factory_id,
@@ -466,6 +476,39 @@ def _validate_customer_po_identity(db, factory, customer, contract, item, custom
         raise HTTPException(409, "同客户、合同号、货号及客户 PO 的订单已存在，请核对或在原单追加")
 
 
+def _paper_weight_key(line):
+    get = line.get if isinstance(line, dict) else lambda key: getattr(line, key, None)
+    return tuple(str(get(key) or "").strip() for key in
+                 ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit")) + (
+        str(Decimal(str(get("usage_quantity"))).normalize()) if get("usage_quantity") is not None else "",)
+
+
+def _merge_paper_weights(lines, sources, *, preserve_positions=False):
+    """Only an unambiguous matching paper may supply omitted weights."""
+    from app.schemas.carton_procurement import CartonOrderLineCreate
+    grouped = {}
+    for source in sources:
+        grouped.setdefault(_paper_weight_key(source), []).append(source)
+    merged = []
+    for index, line in enumerate(lines, 1):
+        matches = grouped.get(_paper_weight_key(line), [])
+        # Order edits already identify persisted line slots by position. Keep
+        # their snapshots even when two papers share the same material key.
+        if preserve_positions and index <= len(sources) and _paper_weight_key(sources[index - 1]) == _paper_weight_key(line):
+            matches = [sources[index - 1]]
+        defaults = {}
+        if len(matches) == 1:
+            source = matches[0]
+            for field in ("net_weight_kg", "gross_weight_kg"):
+                if field not in line.model_fields_set:
+                    defaults[field] = source.get(field) if isinstance(source, dict) else getattr(source, field)
+        try:
+            merged.append(CartonOrderLineCreate.model_validate({**line.model_dump(), **defaults}))
+        except ValueError as exc:
+            raise HTTPException(422, f"第 {index} 条纸品重量无效：毛重不能小于净重，请核对所选包装资料") from exc
+    return merged
+
+
 def create_order(
     db: Session,
     payload: CartonOrderCreate,
@@ -477,6 +520,8 @@ def create_order(
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
+    payload.customer_code = payload.customer_code.strip().upper()
+    ensure_customer_operation(db, user, factory_id, payload.customer_code)
     schedule_source = _schedule_source_for_order(db, factory_id, payload)
     rules = master_data.validate_order(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, customer_po=payload.customer_po, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
     duplicate_schedule_source = bool(schedule_source and schedule_source.get("schedule_identity_duplicate")
@@ -485,7 +530,11 @@ def create_order(
                                      ).strip().casefold())
     if not duplicate_schedule_source:
         _validate_customer_po_identity(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, payload.customer_po)
-    planned = derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"]) if payload.customer_due_date and payload.quantity_basis == "CALCULATED" else payload.due_date
+    planned = derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"]) if payload.customer_due_date and payload.quantity_basis == "CALCULATED" and audit_event != "HISTORY_ORDER_IMPORTED" else payload.due_date
+    if payload.master_config_id:
+        from app.models.carton_master import CartonMasterRecord
+        config = json.loads(db.get(CartonMasterRecord, payload.master_config_id).data_json)
+        payload.lines = _merge_paper_weights(payload.lines, config.get("lines", []))
     customer = get_active_customer(db, factory_id, payload.customer_code)
     from app.services.carton_order_split import schedule_matches
     if not duplicate_schedule_source and schedule_matches(db, factory_id, {"schedule_customer_code": customer.customer_code,
@@ -523,6 +572,8 @@ def create_order(
         contract_no=payload.contract_no,
         item_no=payload.item_no,
         product_name=product_name,
+        net_weight_kg=payload.net_weight_kg,
+        gross_weight_kg=payload.gross_weight_kg,
         quantity_basis=payload.quantity_basis,
         product_order_quantity=payload.product_order_quantity,
         order_date=payload.order_date,
@@ -560,6 +611,8 @@ def create_order(
                 specification=line.specification,
                 dimension_unit=line.dimension_unit,
                 usage_quantity=line.usage_quantity,
+                net_weight_kg=line.net_weight_kg,
+                gross_weight_kg=line.gross_weight_kg,
                 required_quantity=required_quantity,
                 unit=line.unit,
                 unit_price=line.unit_price,
@@ -584,9 +637,11 @@ def create_order(
             "customer_name": order.customer_name,
             "item_no": order.item_no,
             "product_name": order.product_name,
+            "net_weight_kg": order.net_weight_kg,
+            "gross_weight_kg": order.gross_weight_kg,
             "product_order_quantity": order.product_order_quantity,
             "quantity_basis": order.quantity_basis,
-            "paper_demand": [{"packaging_type": line.packaging_type, "paper_quality": line.paper_quality, "specification": line.specification, "unit": line.unit, "required_quantity": str(_input_required(payload, line)), "usage_quantity": str(line.usage_quantity) if line.usage_quantity is not None else None} for line in payload.lines],
+            "paper_demand": [{"packaging_type": line.packaging_type, "paper_quality": line.paper_quality, "specification": line.specification, "unit": line.unit, "net_weight_kg": str(line.net_weight_kg) if line.net_weight_kg is not None else None, "gross_weight_kg": str(line.gross_weight_kg) if line.gross_weight_kg is not None else None, "required_quantity": str(_input_required(payload, line)), "usage_quantity": str(line.usage_quantity) if line.usage_quantity is not None else None} for line in payload.lines],
             "status": "CONFIRMED",
             "product_name_source": product_name_source,
         },
@@ -709,6 +764,8 @@ def _purchase_order_pending_change(
                 "specification": line.specification,
                 "dimension_unit": line.dimension_unit,
                 "usage_quantity": str(line.usage_quantity) if line.usage_quantity is not None else None,
+                "net_weight_kg": str(line.net_weight_kg) if line.net_weight_kg is not None else None,
+                "gross_weight_kg": str(line.gross_weight_kg) if line.gross_weight_kg is not None else None,
                 "unit": line.unit,
                 "unit_price": str(line.unit_price),
                 "currency": line.currency,
@@ -749,6 +806,8 @@ def _purchase_order_pending_change(
             "customer_po": order.customer_po,
             "item_no": order.item_no,
             "product_name": order.product_name,
+            "net_weight_kg": order.net_weight_kg,
+            "gross_weight_kg": order.gross_weight_kg,
             "order_date": order.order_date,
             "customer_due_date": order.customer_due_date,
             "safety_lead_days": order.safety_lead_days,
@@ -798,7 +857,7 @@ def register_history_order_placed(db: Session, order: CartonOrder, user: AuthCon
     ))
     _audit(db, user, order.factory_id, "HISTORY_ORDER_PLACED", "carton_order", order.id,
            {"order_no": order.order_no, "previous_status": previous_status, "status": order.status,
-            "reason": "历史订单已在系统外下单，直接待收料，不重复发行采购单"})
+            "reason": "历史订单已在系统外下单，直接待收料，不重复生成采购单"})
     db.flush()
 
 
@@ -842,10 +901,11 @@ def create_purchase_order_issue(
 ) -> CartonPurchaseOrderIssue:
     if not already_locked:
         _lock_receipt_factory(db, order.factory_id)
+    ensure_customer_operation(db, user, order.factory_id, order.customer_code)
     if order.revision != expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
-        raise HTTPException(status_code=409, detail="只有已确认并锁定的订单可以发行供应商采购单")
+        raise HTTPException(status_code=409, detail="只有已确认并锁定的订单可以生成供应商采购单")
 
     _require_order_complete(db, order)
     issues = _purchase_order_issues(db, order.id)
@@ -934,11 +994,13 @@ def create_purchase_order_issues_batch(
     user: AuthContext,
 ) -> list[CartonPurchaseOrderIssue]:
     factory_id = require_carton_factory(payload.factory_id)
+    _lock_receipt_factory(db, factory_id)
     pending_orders: list[tuple[CartonOrder, int]] = []
     reusable_issues: dict[str, CartonPurchaseOrderIssue] = {}
     selected_order_nos: list[str] = []
     for item in payload.items:
         order = get_order_by_no(db, factory_id, item.order_no)
+        ensure_customer_operation(db, user, factory_id, order.customer_code)
         selected_order_nos.append(order.order_no)
         if order.revision != item.expected_revision:
             db.rollback()
@@ -963,7 +1025,7 @@ def create_purchase_order_issues_batch(
             reusable_issues[order.order_no] = latest_visible_issue
 
     if not pending_orders and not reusable_issues:
-        raise HTTPException(status_code=409, detail="所选订单没有待发行变化或可重新下载的历史采购单")
+        raise HTTPException(status_code=409, detail="所选订单没有待生成变化或可重新下载的历史采购单")
 
     created_by_order: dict[str, CartonPurchaseOrderIssue] = {}
     try:
@@ -1014,13 +1076,9 @@ def get_purchase_order_issue(
 def _guard_no_supplier_transit(db: Session, order: CartonOrder) -> None:
     from app.services.carton_order_split import guard_order_change
     guard_order_change(db, order)
-    transit = db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
-        SupplierShipment.id == SupplierShipmentLine.shipment_id).join(CartonOrderLine,
-        CartonOrderLine.id == SupplierShipmentLine.order_line_id).outerjoin(CartonReceipt,
-        CartonReceipt.id == SupplierShipment.receipt_id).where(
-            CartonOrderLine.order_id == order.id, SupplierShipment.factory_id == order.factory_id,
-            or_(SupplierShipment.status == "SENT", and_(SupplierShipment.status == "RECEIVED", CartonReceipt.status == "REVERSED"))).limit(1))
-    if transit:
+    from app.services.carton_supplier_portal import outstanding
+    ids = [line.id for line in _order_lines(db, order.id)]
+    if any(quantity > 0 for quantity in outstanding(db, ids).values()):
         raise HTTPException(409, "订单有供应商在途发货，请先由仓库核实收到或确认整单未收到并退回，再办理减单或取消")
 
 
@@ -1059,7 +1117,7 @@ def order_deletion_block_reason(db: Session, order: CartonOrder, *, projection=N
     if order.status == "CANCELLED":
         return ""
     if any(purchase_batch_out(issue) for issue in (projection["issues"] if projection is not None else _purchase_order_issues(db, order.id))):
-        return "已发行合并采购单，不能直接删除，请按减单或退单流程处理以保留整单历史"
+        return "已生成合并采购单，不能直接删除，请按减单或退单流程处理以保留整单历史"
     from app.services.carton_order_split import plans
     if (projection["plans"] if projection is not None else plans(db, order.factory_id, order.id)):
         return "已有拆单历史及归属记录，不能删除"
@@ -1155,6 +1213,7 @@ def bulk_delete_orders(db: Session, payload: CartonOrderBulkDeleteRequest, user:
     # Validate the entire selection before writing any deletion or audit.
     for item in payload.items:
         order = get_order_by_no(db, factory_id, item.order_no)
+        ensure_customer_operation(db, user, factory_id, order.customer_code)
         if order.revision != item.expected_revision:
             raise HTTPException(409, f"订单 {item.order_no} 已更新，请刷新后重试")
         reason = order_deletion_block_reason(db, order)
@@ -1181,6 +1240,8 @@ def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
         normalize_currency(str(line.currency)),
         str(line.price_source),
         str(line.note),
+        str(line.net_weight_kg.normalize()) if line.net_weight_kg is not None else "",
+        str(line.gross_weight_kg.normalize()) if line.gross_weight_kg is not None else "",
     )
 
 
@@ -1193,6 +1254,7 @@ def update_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
     if order.status == "CANCELLED":
         raise HTTPException(status_code=409, detail="已取消订单不能修改")
     if order.status == "COMPLETED":
@@ -1205,9 +1267,21 @@ def update_order(
             detail="订单已确认并锁定，不能再修改；收料差异请通过收料或库存流水处理",
         )
 
+    payload.customer_code = payload.customer_code.strip().upper()
+    ensure_customer_operation(db, user, factory_id, payload.customer_code)
     if "customer_po" not in payload.model_fields_set:
         payload.customer_po = order.customer_po
+    # Older callers omit weights; absence must not erase an existing snapshot.
+    for field in ("net_weight_kg", "gross_weight_kg"):
+        if field not in payload.model_fields_set:
+            setattr(payload, field, getattr(order, field))
+    from app.schemas.carton_weights import CartonPackingWeights
+    try:
+        CartonPackingWeights(net_weight_kg=payload.net_weight_kg, gross_weight_kg=payload.gross_weight_kg)
+    except ValueError as exc:
+        raise HTTPException(422, "每箱毛重不能小于净重") from exc
     existing_lines = _order_lines(db, order.id)
+    payload.lines = _merge_paper_weights(payload.lines, existing_lines, preserve_positions=True)
     customer = (
         get_active_customer(db, factory_id, payload.customer_code)
         if payload.customer_code != order.customer_code
@@ -1234,6 +1308,8 @@ def update_order(
             normalize_currency(line.currency),
             line.price_source,
             line.note,
+            str(line.net_weight_kg.normalize()) if line.net_weight_kg is not None else "",
+            str(line.gross_weight_kg.normalize()) if line.gross_weight_kg is not None else "",
         )
         for line in payload.lines
     ]
@@ -1245,6 +1321,8 @@ def update_order(
             payload.customer_po != order.customer_po,
             payload.item_no != order.item_no,
             payload.product_name != order.product_name,
+            payload.net_weight_kg != order.net_weight_kg,
+            payload.gross_weight_kg != order.gross_weight_kg,
             payload.product_order_quantity != order.product_order_quantity,
             payload.quantity_basis != order.quantity_basis,
             payload.quantity_basis == "EXPLICIT" and [line.required_quantity for line in payload.lines] != [line.required_quantity for line in existing_lines],
@@ -1296,6 +1374,8 @@ def update_order(
         "customer_po": order.customer_po,
         "item_no": order.item_no,
         "product_order_quantity": order.product_order_quantity,
+        "net_weight_kg": order.net_weight_kg,
+        "gross_weight_kg": order.gross_weight_kg,
         "order_date": order.order_date,
         "customer_due_date": order.customer_due_date,
         "safety_lead_days": order.safety_lead_days,
@@ -1314,6 +1394,8 @@ def update_order(
         order.contract_no = payload.contract_no
         order.item_no = payload.item_no
         order.product_name = payload.product_name
+        order.net_weight_kg = payload.net_weight_kg
+        order.gross_weight_kg = payload.gross_weight_kg
         order.quantity_basis = payload.quantity_basis
         order.product_order_quantity = payload.product_order_quantity
         order.order_date = payload.order_date
@@ -1334,6 +1416,8 @@ def update_order(
             line.specification = input_line.specification
             line.dimension_unit = input_line.dimension_unit
             line.usage_quantity = input_line.usage_quantity
+            line.net_weight_kg = input_line.net_weight_kg
+            line.gross_weight_kg = input_line.gross_weight_kg
             line.required_quantity = required_quantity
             line.unit = input_line.unit
             line.unit_price = input_line.unit_price
@@ -1374,6 +1458,8 @@ def update_order(
                 "customer_po": order.customer_po,
                 "item_no": order.item_no,
                 "product_order_quantity": order.product_order_quantity,
+                "net_weight_kg": order.net_weight_kg,
+                "gross_weight_kg": order.gross_weight_kg,
                 "quantity_basis": order.quantity_basis,
                 "required_quantities": [str(line.required_quantity) for line in _order_lines(db, order.id)],
                 "order_date": order.order_date,
@@ -1403,6 +1489,7 @@ def submit_order_to_supplier(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status == "PENDING_SUPPLIER":
@@ -1452,6 +1539,7 @@ def bulk_submit_orders_to_supplier(
     orders: list[CartonOrder] = []
     for item in payload.items:
         order = get_order_by_no(db, factory_id, item.order_no)
+        ensure_customer_operation(db, user, factory_id, order.customer_code)
         if order.status not in {"CONFIRMED", "DRAFT"}:
             continue
         _require_order_complete(db, order)
@@ -1522,6 +1610,7 @@ def cancel_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
     _guard_no_supplier_transit(db, order)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
@@ -1564,6 +1653,7 @@ def append_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
     if order.status not in {
@@ -1700,6 +1790,7 @@ def reduce_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
     _guard_no_supplier_transit(db, order)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
@@ -1838,6 +1929,7 @@ def return_order(
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
     _guard_no_supplier_transit(db, order)
     if order.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
@@ -1971,6 +2063,7 @@ def bulk_cancel_orders(
     orders: list[CartonOrder] = []
     for item in payload.items:
         order = get_order_by_no(db, factory_id, item.order_no)
+        ensure_customer_operation(db, user, factory_id, order.customer_code)
         _guard_no_supplier_transit(db, order)
         if order.revision != item.expected_revision:
             raise HTTPException(status_code=409, detail=f"订单 {item.order_no} 已更新，请刷新后重试")
@@ -2178,6 +2271,8 @@ def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -
         contract_no=order.contract_no,
         item_no=order.item_no,
         product_name=order.product_name,
+        net_weight_kg=order.net_weight_kg,
+        gross_weight_kg=order.gross_weight_kg,
         quantity_basis=order.quantity_basis,
         product_order_quantity=order.product_order_quantity,
         order_date=order.order_date,
@@ -2204,6 +2299,8 @@ def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -
                 specification=line.specification,
                 dimension_unit=line.dimension_unit,
                 usage_quantity=line.usage_quantity,
+                net_weight_kg=line.net_weight_kg,
+                gross_weight_kg=line.gross_weight_kg,
                 required_quantity=line.required_quantity,
                 pending_received_quantity=pending_received.get(line.id, Decimal(0)),
                 maximum_reducible_quantity=max(Decimal(0), line.required_quantity - max(posted_received.get(line.id, Decimal(0)), received.get(line.id, Decimal(0)) + pending_received.get(line.id, Decimal(0)))),
@@ -2237,10 +2334,13 @@ def list_orders(
     limit: int = 50,
     offset: int = 0,
     customer_name: str = "", order_from: str = "", order_to: str = "",
-    due_filter: str = "ALL", sort: str = "ORDER_DESC",
+    due_filter: str = "ALL", sort: str = "ORDER_DESC", collaboration_filter: str = "ALL",
     statistics: dict | None = None,
+    user: AuthContext | None = None,
 ) -> tuple[int, list[CartonOrder]]:
     query = select(CartonOrder).where(CartonOrder.factory_id == factory_id, CartonOrder.deleted_at.is_(None))
+    if user is not None:
+        query = query.where(customer_predicate(user, factory_id, CartonOrder.customer_code))
     if customer_code:
         query = query.where(CartonOrder.customer_code == customer_code)
     if customer_name:
@@ -2289,6 +2389,10 @@ def list_orders(
             + func.coalesce(CartonOrder.customer_po, "") + " " + CartonOrder.product_name + " " + CartonOrder.item_no
             + " " + status_label + " " + func.coalesce(materials.c.text, ""))
         query = query.where(display_text.ilike(pattern, escape="!"))
+    if collaboration_filter != "ALL":
+        from app.services.carton_supplier_portal import acceptance_order_ids
+        matches = acceptance_order_ids(db, list(db.scalars(query)), collaboration_filter)
+        query = query.where(CartonOrder.id.in_(matches))
     if statistics is not None:
         selected_ids = query.with_only_columns(CartonOrder.id).subquery()
         totals = db.execute(select(func.count(),
@@ -2343,6 +2447,7 @@ def search_order_history_items(
     *,
     customer_code: str = "",
     limit: int = 8,
+    user: AuthContext | None = None,
 ) -> list[CartonOrderHistorySuggestionOut]:
     factory_id = require_carton_factory(factory_id)
     raw_query = item_no.strip()
@@ -2358,6 +2463,10 @@ def search_order_history_items(
             )
         ).all()
     )
+    if user is not None:
+        permitted = set(db.scalars(select(CartonCustomer.customer_code).where(CartonCustomer.factory_id == factory_id,
+            customer_predicate(user, factory_id, CartonCustomer.customer_code))))
+        active_customers = {code: name for code, name in active_customers.items() if code in permitted}
     if not active_customers:
         return []
 
@@ -2443,6 +2552,8 @@ def search_order_history_items(
                         specification=line.specification,
                         dimension_unit=line.dimension_unit,
                         usage_quantity=line.usage_quantity,
+                        net_weight_kg=line.net_weight_kg,
+                        gross_weight_kg=line.gross_weight_kg,
                         unit=line.unit,
                         unit_price=line.unit_price,
                         currency=line.currency,
@@ -2493,7 +2604,9 @@ def create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext)
     if previous is not None:
         if json.loads(previous.detail_json).get("request", {}).get("fingerprint") != fingerprint:
             raise HTTPException(status_code=409, detail="本次提交标识已用于不同的收料内容，请核对原入库结果")
-        return db.get(CartonReceipt, previous.entity_id)
+        receipt = db.get(CartonReceipt, previous.entity_id)
+        ensure_receipt_operation(db, user, factory_id, _receipt_lines(db, receipt.id))
+        return receipt
     try:
         receipt = _create_receipt(db, payload, user, commit=False)
         confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(
@@ -2549,10 +2662,10 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
             raise HTTPException(409, "更正必须关联本送货单已冲销的上一张收料")
         # Keep vendor note unique and unchanged; internal receipt revisions get a distinct evidence number.
         receipt_note_no = f"{payload.delivery_note_no[:96]}#C-{previous.id[-12:]}"
-    if not supplier_shipment_id and db.scalar(select(SupplierShipmentLine.id).join(SupplierShipment,
-        SupplierShipment.id == SupplierShipmentLine.shipment_id).where(SupplierShipment.factory_id == factory_id,
-            SupplierShipment.status == "SENT", SupplierShipmentLine.order_line_id.in_(line_ids)).limit(1)):
-        raise HTTPException(409, "本次纸品已有供应商在途发货，请先在供应商协同管理核实，避免重复入库")
+    if not supplier_shipment_id:
+        from app.services.carton_supplier_portal import outstanding
+        if any(quantity > 0 for quantity in outstanding(db, line_ids).values()):
+            raise HTTPException(409, "本次纸品已有供应商在途发货，请先在供应商协同管理核实，避免重复入库")
     if len(line_ids) != len(set(line_ids)):
         raise HTTPException(status_code=422, detail="同一张收料单不能重复填写同一订单明细")
     order_lines = list(db.scalars(
@@ -2570,6 +2683,11 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
             select(CartonOrder).where(CartonOrder.id.in_({line.order_id for line in order_lines}))
         ).all()
     }
+    for order in orders.values():
+        ensure_customer_operation(db, user, factory_id, order.customer_code)
+    for line in payload.lines:
+        if line.source_type != "FORMAL_ORDER":
+            ensure_customer_operation(db, user, factory_id, line.customer_code)
     ineligible_orders = [
         order.order_no
         for order in orders.values()
@@ -2799,8 +2917,14 @@ def list_receipts(
     search: str = "",
     limit: int = 50,
     offset: int = 0,
+    user: AuthContext | None = None,
 ) -> tuple[int, list[CartonReceipt]]:
     query = select(CartonReceipt).where(CartonReceipt.factory_id == factory_id)
+    if user is not None:
+        hidden = select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id,
+            ~customer_predicate(user, factory_id, CartonReceiptLine.customer_code)) if not unrestricted_customer(user, factory_id) else None
+        if hidden is not None:
+            query = query.where(CartonReceipt.id.not_in(hidden))
     if customer_code or search:
         line_query = select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id)
         if customer_code:
@@ -2903,6 +3027,7 @@ def confirm_receipt(
         date_check(receipt.acceptance_date)
     ensure_open(db, factory_id, receipt.supplier_id, (receipt.acceptance_date or now_text()[:10])[:7])
     lines = _receipt_lines(db, receipt.id)
+    ensure_receipt_operation(db, user, factory_id, lines)
     if not lines:
         raise HTTPException(status_code=409, detail="收料单没有可确认的明细")
     from app.services.carton_replenishment_receipts import receipt_links, select_link, EVENT
@@ -3491,6 +3616,7 @@ def reverse_receipt(
     receipt_guard(db, receipt)
     previous_status = receipt.status
     lines = _receipt_lines(db, receipt.id)
+    ensure_receipt_operation(db, user, factory_id, lines)
     timestamp = now_text()
     reversals = []
     if previous_status == "POSTED":
@@ -4195,6 +4321,13 @@ def set_schedule_order_marks(
             raise HTTPException(409, "本批次业务订单身份不唯一，请先人工核对，所选记录均未修改")
         if not isinstance(row.get("quantity"), (int, float)) or row["quantity"] <= 0:
             raise HTTPException(422, "来源排期数量无效，所选记录均未修改")
+        code = str(row.get("schedule_customer_code") or "")
+        if not code:
+            name = " ".join(str(row.get("source_customer_name") or row.get("customer_name") or "").split()).casefold()
+            customers = [item for item in list_customers(db, factory_id)
+                         if " ".join(item.customer_name.split()).casefold() == name]
+            code = customers[0].customer_code if len(customers) == 1 else ""
+        ensure_customer_operation(db, user, factory_id, code)
         selected.append((key, row))
     marks = schedule_order_marks(db, factory_id)
     operation_id = f"SM-{uuid4().hex}"
@@ -4541,6 +4674,15 @@ def update_exception(
     return exception
 
 
+def audit_query_options(db, factory_id):
+    from app.services.carton_query import AUDIT_LABELS
+    events = list(db.scalars(select(CartonAuditEvent.event_type).where(CartonAuditEvent.factory_id == factory_id).distinct()))
+    actors = db.execute(select(CartonAuditEvent.actor_user_id, CartonAuditEvent.actor_name).where(CartonAuditEvent.factory_id == factory_id).distinct()).all()
+    names = dict(actors)
+    return dict(event_types={code: AUDIT_LABELS.get(code, code) for code in sorted(events)},
+                actors=[{"id": key, "name": value or key} for key, value in sorted(names.items(), key=lambda pair: pair[1] or pair[0])])
+
+
 def list_audit_events(
     db: Session,
     factory_id: str,
@@ -4552,31 +4694,35 @@ def list_audit_events(
     date_to: str = "",
     limit: int = 100,
     offset: int = 0,
+    sort: str = "DESC",
 ) -> tuple[int, list[CartonAuditEventOut]]:
+    from app.services.carton_query import AUDIT_LABELS, date_bounds, literal_pattern
+    first, after = date_bounds(date_from, date_to)
     query = select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory_id)
     if event_type:
         query = query.where(CartonAuditEvent.event_type == event_type)
     if actor_user_id:
         query = query.where(CartonAuditEvent.actor_user_id == actor_user_id)
-    if date_from:
-        query = query.where(CartonAuditEvent.created_at >= f"{date_from}T00:00:00")
-    if date_to:
-        query = query.where(CartonAuditEvent.created_at <= f"{date_to}T23:59:59")
+    if first:
+        query = query.where(CartonAuditEvent.created_at >= first)
+    if after:
+        query = query.where(CartonAuditEvent.created_at < after)
     if search:
-        pattern = f"%{search}%"
+        pattern = literal_pattern(search)
         query = query.where(
             or_(
-                CartonAuditEvent.event_type.ilike(pattern),
-                CartonAuditEvent.entity_type.ilike(pattern),
-                CartonAuditEvent.entity_id.ilike(pattern),
-                CartonAuditEvent.actor_name.ilike(pattern),
-                CartonAuditEvent.detail_json.ilike(pattern),
+                CartonAuditEvent.event_type.ilike(pattern, escape="!"),
+                CartonAuditEvent.entity_type.ilike(pattern, escape="!"),
+                CartonAuditEvent.entity_id.ilike(pattern, escape="!"),
+                CartonAuditEvent.actor_name.ilike(pattern, escape="!"),
+                CartonAuditEvent.detail_json.ilike(pattern, escape="!"),
+                CartonAuditEvent.event_type.in_([key for key, label in AUDIT_LABELS.items() if search.casefold() in label.casefold()]),
             )
         )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = list(
         db.scalars(
-            query.order_by(CartonAuditEvent.sequence.desc()).limit(limit).offset(offset)
+            query.order_by(CartonAuditEvent.sequence.asc() if sort == "ASC" else CartonAuditEvent.sequence.desc()).limit(limit).offset(offset)
         ).all()
     )
     items: list[CartonAuditEventOut] = []

@@ -6,6 +6,48 @@ import { prepareRegions, renderDocument, splitRuledRegion, splitMixedWords, veri
 registerDocumentFont(resolve('server/dist'));
 const region=(text:string,x:number,width:number):Region=>({id:text,sourceText:text,box:{x,y:40,width,height:30},prob:.99,method:'native'});
 describe('document-safe typesetting',()=>{
+  it('uses complete known caption letters to recover OCR word breaks while retaining exact fractions',()=>{
+    const source=createCanvas(400,120),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,400,120);
+    c.font='24px Arial';c.fillStyle='#d21941';const text='Seam Allowance 3/16';c.fillText(text,20,64);
+    const parent={...region('Seam Allowan ce 3/16',18,c.measureText(text).width+4),method:'ocr'};
+    const candidates=splitMixedWords(source,parent);expect(candidates).toHaveLength(3);
+    const readings=new Map(candidates.map((r,i)=>[r.id,{...r,sourceText:['Seam','Allowance','3/16'][i],prob:.999}]));
+    expect(verifiedWordParts(source,parent,candidates,readings)).toHaveLength(3);
+    readings.set(candidates[2].id,{...candidates[2],sourceText:'31/6',prob:.999});
+    expect(verifiedWordParts(source,parent,candidates,readings)).toBeUndefined();
+    expect(splitMixedWords(source,{...parent,sourceText:'SKU123'})).toHaveLength(1);
+  });
+  it('isolates inline material codes without quantities and keeps their pixels fixed',()=>{
+    const source=createCanvas(300,120),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,300,120);
+    c.font='20px Arial';c.fillStyle='black';c.fillText('Yellow',20,64);c.fillText('BR',92,64);c.fillText('Tricot',130,64);
+    const parent={...region('Yellow BR Tricot',18,166),method:'ocr'};
+    expect(prepareRegions([parent],'en_to_zh')[0].skipReason).toBe('protected');
+    const candidates=splitMixedWords(source,parent);
+    expect(candidates).toHaveLength(3);
+    const recognized=new Map(candidates.map((r,i)=>[r.id,{...r,sourceText:['Yellow','BR','Tricot'][i],prob:.999}]));
+    const parts=verifiedWordParts(source,parent,candidates,recognized)!;
+    const regions=prepareRegions(parts,'en_to_zh');regions[0].translatedText='黄色';regions[2].translatedText='经编布';
+    const output=renderDocument(source,regions).getContext('2d');
+    expect(regions[0].rendered).toBe(true);expect(regions[2].rendered).toBe(true);
+    expect(output.getImageData(90,35,30,40).data).toEqual(c.getImageData(90,35,30,40).data);
+    recognized.set(candidates[1].id,{...candidates[1],sourceText:'PVC',prob:.999});
+    expect(verifiedWordParts(source,parent,candidates,recognized)).toBeUndefined();
+  });
+  it('cleans a black continuation in the same red heading without changing adjacent rules or quantities',()=>{
+    const source=createCanvas(430,130),c=source.getContext('2d');
+    c.fillStyle='white';c.fillRect(0,0,430,130);c.font='24px Arial';
+    c.fillStyle='#d21941';c.fillText('Ear',20,64);c.fillStyle='black';c.fillText('is thinner at top',70,64);
+    c.fillText('123',335,64);c.fillRect(0,79,430,2);c.fillRect(315,0,2,130);
+    // A narrow OCR box and a muddy red/black foreground estimate both occur
+    // on real scanned specification captions.
+    const regions=prepareRegions([{...region('Ear is thinner at top',18,265),method:'ocr',fgColor:[160,48,73]},region('123',333,60)],'en_to_zh');
+    regions[0].translatedText='耳尖较薄';
+    const output=renderDocument(source,regions).getContext('2d');
+    expect(regions[0].rendered).toBe(true);
+    expect([...output.getImageData(145,36,147,39).data].every(v=>v===255)).toBe(true);
+    expect(output.getImageData(315,0,115,130).data).toEqual(c.getImageData(315,0,115,130).data);
+    expect(output.getImageData(0,79,430,2).data).toEqual(c.getImageData(0,79,430,2).data);
+  });
   it('verifies a faint cut separator from pixels and retains numeric and material code pixels',()=>{
     const source=createCanvas(400,130),c=source.getContext('2d');
     c.fillStyle='white';c.fillRect(0,0,400,130);c.fillStyle='black';c.font='24px Arial';
@@ -44,6 +86,10 @@ describe('document-safe typesetting',()=>{
     expect(acceptDocumentOcrRetry({...cut,sourceText:'Cut 2 Q91075 Plush'},{...parent,sourceText:'Cut 2 R91075 Plush',prob:.999})).toBe(false);
     expect(documentOcrRetry(source,[{...parent,sourceText:''}]).regions).toHaveLength(1);
     expect(documentOcrRetry(source,[{...parent,prob:.999}]).regions).toHaveLength(0);
+    expect(documentOcrRetry(source,[{...parent,sourceText:'UNDER TAII',prob:.999}]).regions).toHaveLength(1);
+    expect(documentOcrRetry(source,[{...parent,sourceText:'UPPER TAIL',prob:.999}]).regions).toHaveLength(0);
+    expect(documentOcrRetry(source,[{...parent,sourceText:'Plush Guiide',prob:.999}]).regions).toHaveLength(1);
+    expect(documentOcrRetry(source,[{...parent,sourceText:'Plush Guide',prob:.999}]).regions).toHaveLength(0);
   });
   it('includes a clipped material suffix for recognition without expanding into adjacent quantities',()=>{
     const source=createCanvas(400,120),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,400,120);
@@ -64,6 +110,16 @@ describe('document-safe typesetting',()=>{
     expect(verifiedWordParts(source,region('Cut 2 PVC Plus!',20,310),parts,recognized)).toBeUndefined();
     recognized.set(parts[3].id,{...parts[3],prob:.96});
     expect(verifiedWordParts(source,region('Cut 2 BR Plus!',20,310),parts,recognized)).toBeUndefined();
+  });
+  it('accepts high-confidence fabric word recovery only within a verified color/code/material caption',()=>{
+    const source=createCanvas(400,130),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,400,130);
+    const parts=['Yellow','BR','Tricot'].map((text,i)=>({...region(text,20+i*100,90),id:`fabric-${i}`,prob:.999}));
+    const readings=new Map(parts.map(r=>[r.id,r]));
+    expect(verifiedWordParts(source,region('Yellow BR Tricof',20,290),parts,readings)).toBeDefined();
+    expect(verifiedWordParts(source,region('White BR Tricof',20,290),parts,readings)).toBeUndefined();
+    expect(verifiedWordParts(source,region('Yellow PVC Tricof',20,290),parts,readings)).toBeUndefined();
+    readings.set(parts[2].id,{...parts[2],prob:.96});
+    expect(verifiedWordParts(source,region('Yellow BR Tricof',20,290),parts,readings)).toBeUndefined();
   });
   it('allows captions next to detected direction arrows without erasing the arrow',()=>{
     const source=createCanvas(220,170),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,220,170);

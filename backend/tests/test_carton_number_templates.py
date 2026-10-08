@@ -1,4 +1,14 @@
 import pytest
+
+
+def test_item_rule_defaults_off_even_when_an_empty_rule_is_provided():
+    from app.schemas.carton_master import MasterData
+    for raw in ({}, {"item_rule": {}}, {"item_rule": {"source": "HISTORY"}}):
+        data = MasterData.model_validate(raw)
+        assert data.item_rule.mode == "OFF"
+        assert data.contract_rule.mode == "AUTO"
+        assert data.customer_po_rule.mode == "AUTO"
+    assert MasterData.model_validate({"item_rule": {"mode": "AUTO"}}).item_rule.mode == "AUTO"
 from pydantic import ValidationError
 from app.schemas.carton_master import NumberRule
 from app.services.carton_number_templates import matches_template

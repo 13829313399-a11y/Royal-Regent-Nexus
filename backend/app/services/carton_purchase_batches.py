@@ -89,10 +89,18 @@ def group_purchase_documents(rows, batches):
             grouped.append(row)
             continue
         sources = [by_id[member] for member in batch["issue_ids"]]
+        acceptances = [source.get("supplier_acceptance", {}) for source in sources]
+        all_accepted = all(item.get("status") == "ACCEPTED" for item in acceptances)
+        accepted_count = sum(item.get("accepted_line_count", 0) for item in acceptances)
+        acceptance = dict(status="ACCEPTED" if all_accepted else "PARTIAL" if accepted_count else "PENDING",
+            label="供应商已接单" if all_accepted else "供应商部分接单" if accepted_count else "供应商待接单",
+            accepted_line_count=accepted_count, total_line_count=sum(item.get("total_line_count", 0) for item in acceptances),
+            delivery_differences=[difference for item in acceptances for difference in item.get("delivery_differences", [])])
         grouped.append({
             **row, "id": batch["id"], "document_no": batch["document_no"],
             "created_at": batch["generated_at"], "date": batch["generated_at"][:10],
             "is_batch": True,
+            "supplier_acceptance": acceptance,
             "source_documents": [{"id": source["id"], "document_no": source["document_no"],
                                   "order_no": source["orders"][0]["order_no"]} for source in sources],
             "orders": [order for source in sources for order in source["orders"]],

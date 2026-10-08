@@ -17,7 +17,7 @@ describe('订单流水明细', () => {
   it('shows business changes once and omits procedural steps from rows, filters and counts', async () => {
     const procedural = [
       ['RECEIPT_DRAFT_CREATED', '保存收料单'], ['ORDER_SUBMITTED_SUPPLIER', '确认订单并锁定'],
-      ['PURCHASE_ORDER_ISSUED', '发行供应商采购单'], ['RECEIPT_CONFIRMED', '确认收料（无有效入库）'],
+      ['PURCHASE_ORDER_ISSUED', '生成供应商采购单'], ['RECEIPT_CONFIRMED', '确认收料（无有效入库）'],
       ['INVENTORY_PRICE_CONFIRMED', '入库核价'], ['ORDER_UPDATED', '修改订单'],
     ].map(([event_type, event_label], index) => ({ ...base, id: `process-${index}`, event_type, event_label }))
     const changes = [

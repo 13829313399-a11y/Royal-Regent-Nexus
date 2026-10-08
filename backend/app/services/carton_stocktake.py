@@ -104,11 +104,17 @@ def _header(doc):
         "submitted_by", "submitted_by_name", "submitted_at", "reviewed_by", "reviewed_by_name", "reviewed_at", "note")}
 
 
-def list_stocktakes(db: Session, factory: str, limit=100, offset=0, status=""):
+def list_stocktakes(db: Session, factory: str, limit=100, offset=0, status="", date_from="", date_to="", sort="DESC"):
+    from app.services.carton_query import date_bounds
+    first, after = date_bounds(date_from, date_to)
     query = select(CartonStocktake).where(CartonStocktake.factory_id == factory)
     if status:
         query = query.where(CartonStocktake.status == status)
-    return [_header(doc) for doc in db.scalars(query.order_by(CartonStocktake.created_at.desc(), CartonStocktake.id)
+    if first:
+        query = query.where(CartonStocktake.created_at >= first)
+    if after:
+        query = query.where(CartonStocktake.created_at < after)
+    return [_header(doc) for doc in db.scalars(query.order_by(CartonStocktake.created_at.asc() if sort == "ASC" else CartonStocktake.created_at.desc(), CartonStocktake.id)
         .limit(limit).offset(offset))]
 
 

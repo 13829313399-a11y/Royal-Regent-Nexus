@@ -9,6 +9,7 @@ import { guardSprayNavigation } from '@/features/spray-production/navigationGuar
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
 import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
+import { warehouseOperationsRoutes } from '@/features/warehouse-operations/routes'
 import { UV_BASE, UV_FACTORY } from '@/features/uv-operations/contracts'
 import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
@@ -35,10 +36,10 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/carton-supplier/carton-mark', name: 'carton-supplier-carton-mark', component: () => import('@/views/CartonSupplierMarkTemplatesView.vue'),
-    meta: { title: '供应商箱唛资料模板', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
+    meta: { title: '供应商箱唛资料库', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
   },
   {
-    path: '/carton-supplier-management', name: 'carton-supplier-management', component: () => import('@/views/CartonSupplierManagementView.vue'),
+    path: '/carton-supplier-management', name: 'carton-supplier-management', redirect: to => ({ path: '/modules/pmc-warehouse/carton-procurement', query: { ...to.query, tab: 'receipts', receipt_page: 'supplier' } }),
     meta: { title: '供应商协同管理', fullPage: true, requiresAuth: true, permissions: ['carton_procurement:read'], enforcePermissions: true, strictPermissions: true },
   },
   {
@@ -185,6 +186,7 @@ const routes: RouteRecordRaw[] = [
   ...sprayProductionRoutes,
   ...uvOperationsRoutes,
   ...cuttingOperationsRoutes,
+  ...warehouseOperationsRoutes,
   {
     path: '/modules/pmc-warehouse/raw-material-management',
     name: 'raw-material-management',

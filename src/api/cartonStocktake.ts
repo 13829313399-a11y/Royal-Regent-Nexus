@@ -20,8 +20,8 @@ export interface StocktakeDetail extends StocktakeHeader {
 }
 export type StocktakeAction = 'SAVE' | 'SUBMIT' | 'APPROVE' | 'CONFIRM' | 'RETURN' | 'CANCEL'
 export const cartonStocktakeApi = {
-  async list(factory_id: string, offset = 0, status: StocktakeStatus | '' = '') {
-    return (await http.get<StocktakeHeader[]>('/carton-procurement/stocktakes', { params: { factory_id, offset, limit: 100, status } })).data
+  async list(factory_id: string, offset = 0, status: StocktakeStatus | '' = '', filters: Record<string, string> = {}) {
+    return (await http.get<StocktakeHeader[]>('/carton-procurement/stocktakes', { params: { factory_id, offset, limit: 100, status, ...filters } })).data
   },
   async detail(factory_id: string, id: string) {
     return (await http.get<StocktakeDetail>(`/carton-procurement/stocktakes/${id}`, { params: { factory_id } })).data
