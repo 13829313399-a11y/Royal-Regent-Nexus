@@ -6,6 +6,21 @@ import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calc
 
 describe('internal quote section payload normalization', () => {
   const defaultPallet = { pallet_length_mm: 1000, pallet_width_mm: 1150, pallet_height_mm: 1300 }
+  it('retains explicit manual pallet counts in saved payloads and uses them for preview costs', () => {
+    const carton = { length_in: 18, width_in: 12, height_in: 10, qty_per_carton: 24 }
+    const inputs = normalizeJustPlayPackagingInputs({ cartons_per_pallet_override: 20 })
+    const payload = normalizeInternalQuotePayload('sales', { pricing_mode: 'component', justplay_packaging: inputs })
+    expect(cloneInternalQuotePayload('sales', payload).justplay_packaging).toEqual(inputs)
+    expect(calculateJustPlayCartonsPerPallet(carton, inputs)).toBe(20)
+    expect(calculateJustPlayPaperPalletCostHkd(carton, inputs)).toBeCloseTo(19 / 20 / 24)
+    expect(calculateJustPlayCartonsPerPallet(carton, { ...inputs, pallet_height_mm: 1 })).toBe(20)
+    for (const value of ['', 0, -1, 1.5, NaN, Infinity]) {
+      const invalid = normalizeJustPlayPackagingInputs({ cartons_per_pallet_override: value })
+      expect(justPlayPackagingInputsValid(invalid)).toBe(false)
+      expect(calculateJustPlayPaperPalletCostHkd(carton, invalid)).toBe(0)
+    }
+    expect(calculateJustPlayCartonsPerPallet(carton, normalizeJustPlayPackagingInputs({ cartons_per_pallet_override: null }))).toBe(30)
+  })
   it('defaults unfilled JustPlay packaging parameters to zero and preserves saved inputs', () => {
     const legacy = normalizeInternalQuotePayload('sales', { pricing_mode: 'component' })
     expect(legacy.justplay_packaging).toEqual({ adhesive_extra_hkd: 0, paper_pallet_extra_hkd: 0, ...defaultPallet })

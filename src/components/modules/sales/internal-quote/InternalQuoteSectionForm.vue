@@ -470,12 +470,20 @@ function finishJustPlayExtra(key: JustPlayExtraKey, event: Event) {
 const justPlayAdhesivePackagingCost = computed(() => calculateJustPlayAdhesivePackagingCostHkd(primaryCarton.value, justPlayPackagingInputs.value))
 const justPlayPaperPalletCost = computed(() => calculateJustPlayPaperPalletCostHkd(primaryCarton.value, justPlayPackagingInputs.value))
 const justPlayCartonsPerPallet = computed(() => calculateJustPlayCartonsPerPallet(primaryCarton.value, justPlayPackagingInputs.value))
+const justPlayManualPalletCount = computed(() => justPlayPackagingInputs.value.cartons_per_pallet_override !== undefined)
+function resetJustPlayPalletCount() {
+  const inputs = { ...justPlayPackagingInputs.value }
+  delete inputs.cartons_per_pallet_override
+  sales.value.justplay_packaging = inputs
+}
 const justPlayPalletFields = [
   { key: 'pallet_length_mm', label: '托板长度 mm' },
   { key: 'pallet_width_mm', label: '托板宽度 mm' },
   { key: 'pallet_height_mm', label: '托板高度 mm' },
 ] as const
 const justPlayPackagingWarning = computed(() => {
+  const count = justPlayPackagingInputs.value.cartons_per_pallet_override
+  if (count !== undefined && (!Number.isInteger(count) || Number(count) <= 0)) return '每托板装箱数必须为正整数，或点击“恢复自动计算”。'
   if (!justPlayPackagingInputsValid(justPlayPackagingInputs.value)) return '请填写两项附加金额（可填 0，保留一位小数），以及大于 0 的托板长、宽、高（mm）。'
   if (cartonState.value.error) return cartonState.value.error
   return justPlayCartonsPerPallet.value <= 0 ? '主纸箱须能放入所填写的托板空间，请检查托板与主纸箱尺寸，才能自动计算装箱数及纸托板成本。' : ''
@@ -1347,7 +1355,10 @@ function addBuzzBeeColorBoxTier() {
               <label v-for="field in justPlayPalletFields" :key="field.key"><span>{{ field.label }}</span><input :value="justPlayPackagingInputs[field.key]" :disabled="disabled" type="number" min="0" step="any" :aria-label="field.label" @input="updateJustPlayPackagingInput(field.key, $event)"></label>
             </div>
             <div class="inline-fields">
-              <label class="sales-testing-fee-result"><span>每托板装箱数（自动）</span><output aria-label="每托板装箱数">{{ justPlayCartonsPerPallet }}</output></label>
+              <div>
+                <label><span>每托板装箱数（可手动修改）</span><input :value="justPlayPackagingInputs.cartons_per_pallet_override ?? justPlayCartonsPerPallet" :disabled="disabled" type="number" min="1" step="1" aria-label="每托板装箱数" @input="updateJustPlayPackagingInput('cartons_per_pallet_override', $event)"></label>
+                <button v-if="justPlayManualPalletCount" type="button" :disabled="disabled" @click="resetJustPlayPalletCount">恢复自动计算</button>
+              </div>
               <label><span>纸托板附加金额 HKD/件</span><input :value="justPlayExtraDisplay('paper_pallet_extra_hkd')" :disabled="disabled" type="number" min="0" step="0.1" aria-label="纸托板附加金额 HKD/件" @focus="editingJustPlayExtra = 'paper_pallet_extra_hkd'" @input="updateJustPlayPackagingInput('paper_pallet_extra_hkd', $event)" @blur="finishJustPlayExtra('paper_pallet_extra_hkd', $event)"></label>
               <label class="sales-testing-fee-result"><span>单件成本 HKD（自动）</span><output aria-label="纸托板单件成本 HKD">{{ calculated(justPlayPaperPalletCost) }}</output></label>
             </div>
