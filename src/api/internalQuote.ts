@@ -938,9 +938,10 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async deleteComponentImage(quoteId: string, componentId: string, revision: number) {
       await client.delete(`/internal-quotes/${quoteId}/components/${encodeURIComponent(componentId)}/image`, { params: { revision } })
     },
-    async uploadProductImage(quoteId: string, file: File) {
+    async uploadProductImage(quoteId: string, file: File, revision?: number) {
       const form = new FormData()
       form.append('file', file)
+      if (revision !== undefined) form.append('revision', String(revision))
       const response = await client.post<ApiInternalQuoteAttachment>(
         `/internal-quotes/${quoteId}/product-image`,
         form,
@@ -977,6 +978,21 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async directIssue(quoteId: string, revision: number) {
       const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/direct-issue`, { revision })
       return response.data
+    },
+    async exportSeries(quoteId: string, products: Array<{ quote_id: string; revision: number }>) {
+      try {
+        const response = await client.post<Blob>(`/internal-quotes/${quoteId}/series-export`, { products }, { responseType: 'blob' })
+        return response.data
+      } catch (cause) {
+        const data = (cause as { response?: { data?: unknown } })?.response?.data
+        if (data instanceof Blob) {
+          let detail: unknown
+          try { detail = JSON.parse(await data.text()).detail } catch { /* Retain the original transport error. */ }
+          if (typeof detail === 'string') throw new Error(detail)
+          if (detail && typeof detail === 'object' && 'message' in detail) throw new Error(String(detail.message))
+        }
+        throw cause
+      }
     },
     async listAlternatives(quoteId: string) {
       return (await client.get<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternatives`)).data

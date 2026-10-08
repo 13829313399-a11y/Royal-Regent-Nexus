@@ -1076,6 +1076,7 @@ def upload_product_image(
     content: bytes,
     user: AuthContext,
     request: Request | None = None,
+    *, revision: int | None = None,
 ) -> InternalQuoteAttachmentOut:
     quote = _get_quote(db, quote_id)
     _ensure_active(quote)
@@ -1088,10 +1089,18 @@ def upload_product_image(
     )
     if quote.status in {"final_reviewing", "fully_approved", "exported"}:
         raise HTTPException(status_code=409, detail="产品已提交审核或完成输出，不能更换主图")
+    if revision is not None:
+        _check_revision(quote.header_revision, revision, "报价资料")
     clean_name = safe_file_name(file_name)
     extension, content_type = _validate_attachment(clean_name, content)
     if extension not in IMAGE_EXTENSIONS:
         raise HTTPException(status_code=400, detail="产品主图仅支持 JPG/JPEG/PNG/WEBP 图片")
+    from PIL import Image
+    try:
+        with Image.open(BytesIO(content)) as image:
+            image.verify()
+    except Exception as error:
+        raise HTTPException(400, "产品主图无法读取，请上传有效图片") from error
     sha256 = digest(content)
     duplicate = db.scalar(
         select(InternalQuoteAttachment.id).where(
@@ -1833,6 +1842,7 @@ def create_controlled_export(
     quote_id: str,
     user: AuthContext,
     request: Request | None = None,
+    *, commit: bool = True,
 ) -> InternalQuoteExportFileOut:
     quote = _get_quote(db, quote_id)
     _ensure_active(quote)
@@ -2058,8 +2068,11 @@ def create_controlled_export(
         ),
         request=request,
     )
-    db.commit()
-    db.refresh(record)
+    if commit:
+        db.commit()
+        db.refresh(record)
+    else:
+        db.flush()
     return _export_out(record)
 
 

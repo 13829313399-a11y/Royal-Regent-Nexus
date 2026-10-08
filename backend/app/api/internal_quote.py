@@ -59,6 +59,8 @@ from app.services.auth import AuthContext, get_current_user
 from app.schemas.internal_quote_alternatives import AlternativeCopyRequest, AlternativeSelectionRequest, AlternativeArchiveRequest, AlternativeSyncRequest
 from app.services.internal_quote_packaging_copy import PackagingCopyRequest, preview_packaging_copy, apply_packaging_copy
 from app.services.internal_quote_sync import sync_options, preview_sync, apply_sync
+from app.schemas.internal_quote_alternatives import SeriesExportRequest
+from app.services.internal_quote_series_export import export_series
 from app.services.internal_quote_alternatives import (
     list_alternatives, copy_alternative, select_alternative, archive_alternative, report_alternative, issue_alternative,
 )
@@ -189,6 +191,15 @@ def post_alternative_reported(quote_id: str, payload: InternalQuoteRevisionReque
 def post_direct_issue(quote_id: str, payload: InternalQuoteRevisionRequest, request: Request,
                       db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     return issue_alternative(db, quote_id, payload, current_user, request)
+
+
+@router.post("/{quote_id}/series-export")
+def post_series_export(quote_id: str, payload: SeriesExportRequest, request: Request,
+                       db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    content, file_name, sha256 = export_series(db, quote_id, payload, current_user, request)
+    return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
+                             "X-Content-SHA256": sha256})
 customer_price_artifact_router = APIRouter(
     prefix="/api/customer-price/internal-quote-artifacts",
     tags=["customer-price-internal-quote-artifacts"],
@@ -849,6 +860,7 @@ async def post_internal_quote_product_image(
     quote_id: str,
     request: Request,
     file: UploadFile = File(...),
+    revision: int | None = Form(default=None, ge=1),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -861,6 +873,7 @@ async def post_internal_quote_product_image(
         content,
         current_user,
         request,
+        revision=revision,
     )
 
 
