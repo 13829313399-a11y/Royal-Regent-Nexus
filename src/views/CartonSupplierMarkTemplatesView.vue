@@ -98,7 +98,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-50 p-4 text-slate-800 md:p-8">
+  <main class="min-h-screen bg-slate-50 p-4 text-slate-800 md:p-8" data-yl-help="carton-supplier.overview">
     <header class="mx-auto mb-6 flex max-w-[1500px] flex-wrap items-center justify-between gap-4">
       <div>
         <RouterLink :to="{ path: '/carton-supplier', query: factory === ALL_FACTORIES ? {} : { factory } }" class="text-sm font-semibold text-teal-700">← 返回供应商协同</RouterLink>

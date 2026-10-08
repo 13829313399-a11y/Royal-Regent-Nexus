@@ -1,0 +1,176 @@
+{
+  "$defs": {
+    "Source": {
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "symbol",
+        "sha256"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "Step": {
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "anchor_id": {
+          "title": "Anchor Id",
+          "type": "string"
+        },
+        "precondition": {
+          "default": "当前页面可见且目标已注册",
+          "title": "Precondition",
+          "type": "string"
+        },
+        "completion": {
+          "default": "目标已显示；业务操作由你确认",
+          "title": "Completion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "description",
+        "anchor_id"
+      ],
+      "title": "Step",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "module_id": {
+      "title": "Module Id",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "overview",
+        "field",
+        "workflow",
+        "state"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "audience": {
+      "enum": [
+        "internal",
+        "supplier",
+        "all"
+      ],
+      "title": "Audience",
+      "type": "string"
+    },
+    "route_names": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Route Names",
+      "type": "array"
+    },
+    "factory_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Factory Ids",
+      "type": "array"
+    },
+    "anchor_id": {
+      "title": "Anchor Id",
+      "type": "string"
+    },
+    "field_keys": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Field Keys",
+      "type": "array"
+    },
+    "summary": {
+      "title": "Summary",
+      "type": "string"
+    },
+    "content": {
+      "title": "Content",
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/Step"
+      },
+      "title": "Steps",
+      "type": "array"
+    },
+    "source_refs": {
+      "items": {
+        "$ref": "#/$defs/Source"
+      },
+      "title": "Source Refs",
+      "type": "array"
+    },
+    "knowledge_version": {
+      "title": "Knowledge Version",
+      "type": "string"
+    },
+    "verified_commit": {
+      "title": "Verified Commit",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "verified",
+        "partial",
+        "unavailable",
+        "needs_review"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "module_id",
+    "title",
+    "kind",
+    "audience",
+    "route_names",
+    "anchor_id",
+    "summary",
+    "content",
+    "source_refs",
+    "knowledge_version",
+    "verified_commit",
+    "status"
+  ],
+  "title": "Article",
+  "type": "object"
+}

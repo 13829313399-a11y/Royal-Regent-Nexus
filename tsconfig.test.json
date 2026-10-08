@@ -4,8 +4,8 @@
     "src/vite-env.d.ts",
     "src/env.d.ts",
     "src/types/**/*.d.ts",
-    "src/features/ai-assistant/__tests__/*.spec.ts",
-    "src/features/module-feedback/__tests__/*.spec.ts"
+    "src/features/module-feedback/__tests__/*.spec.ts",
+    "src/features/assistant/__tests__/*.spec.ts"
   ],
   "exclude": [],
   "compilerOptions": {

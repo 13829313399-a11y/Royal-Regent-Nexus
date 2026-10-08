@@ -36,7 +36,7 @@ const sourceNote = '示例数据 · 筛选与导出暂未接入'
 </script>
 
 <template>
-  <div class="dashboard-page-container">
+  <div class="dashboard-page-container" data-yl-help="portal.overview">
     <div class="app-page dashboard-page rrn-home space-y-6" data-dashboard-ui="jade-v2" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-home-density="density">
     <div class="dashboard-hero">
       <div class="dashboard-hero__art" aria-hidden="true" />

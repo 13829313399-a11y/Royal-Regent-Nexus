@@ -1,0 +1,36 @@
+[
+  {
+    "id": "three-d-printing.overview",
+    "module_id": "three-d-printing",
+    "title": "读懂 3D 设备状态",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "three-d-printing-management"
+    ],
+    "factory_ids": [],
+    "anchor_id": "three-d-printing.overview",
+    "field_keys": [],
+    "summary": "设备状态描述遥测，不自动证明业务入库。",
+    "content": "PREPARE、PREPARING、DOWNLOADING、SLICING 都是准备中。RUNNING 是正在打印，PAUSE 是暂停，IDLE 是空闲，FINISH 是设备打印完成。STALE 是等待状态更新，UNKNOWN 是等待设备状态；不能未经核实断言机器坏了。设备完成不等于生产记录、对账和入库都已完成，须查原业务记录。",
+    "steps": [
+      {
+        "title": "查看当前工作区域",
+        "description": "设备状态描述遥测，不自动证明业务入库。",
+        "anchor_id": "three-d-printing.overview",
+        "precondition": "页面可见且目标已注册",
+        "completion": "已定位；任何业务写入仍需你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/features/three-d-printing/printerPresentation.ts",
+        "symbol": "printerStateText",
+        "sha256": "2426521b139268b0f3f239c2e98b905252004e6913c6f7823bc0ce801a6a08ec"
+      }
+    ],
+    "knowledge_version": "2026.09.29-v1",
+    "verified_commit": "19332e167e0b990fb0900c868ba0620204f9bd26",
+    "status": "verified"
+  }
+]

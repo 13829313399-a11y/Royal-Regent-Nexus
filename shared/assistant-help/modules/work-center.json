@@ -1,0 +1,36 @@
+[
+  {
+    "id": "work-center.overview",
+    "module_id": "work-center",
+    "title": "待办、已读与当前聚焦",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "notification-center"
+    ],
+    "factory_ids": [],
+    "anchor_id": "work-center.overview",
+    "field_keys": [],
+    "summary": "阅读状态与业务办理状态是两件事。",
+    "content": "可处理责任是 task、can_act=true，且业务状态为 open 或 in_progress。标记已读不会完成审批、生产或收货。有效稍后提醒还需时间未到且关注版本一致；当前聚焦排除这些有效稍后项，所以 focus_total 与 actionable_total 可不同。筛选后的 filtered_total 与总览可能范围不同。health=partial 表示来源不完整，不能据此说没有待办。",
+    "steps": [
+      {
+        "title": "查看当前工作区域",
+        "description": "阅读状态与业务办理状态是两件事。",
+        "anchor_id": "work-center.overview",
+        "precondition": "页面可见且目标已注册",
+        "completion": "已定位；任何业务写入仍需你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/services/work_center/service.py",
+        "symbol": "flags",
+        "sha256": "560c606c6d6cb04109f1415f1be445cf1a9bfe22a9a4f391d42de493dab92d09"
+      }
+    ],
+    "knowledge_version": "2026.09.29-v1",
+    "verified_commit": "19332e167e0b990fb0900c868ba0620204f9bd26",
+    "status": "verified"
+  }
+]

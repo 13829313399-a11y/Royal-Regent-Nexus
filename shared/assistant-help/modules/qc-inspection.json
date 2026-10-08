@@ -1,0 +1,64 @@
+[
+  {
+    "id": "qc-inspection.overview",
+    "module_id": "qc-inspection",
+    "title": "QC 验货工作区",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "qc-inspection-schedule",
+      "qc-inspection-order-records",
+      "qc-inspection-order-detail",
+      "qc-inspection-problems",
+      "qc-inspection-reports"
+    ],
+    "factory_ids": [],
+    "anchor_id": "qc-inspection.overview",
+    "field_keys": [],
+    "summary": "区分验货主单进度、验货结果、问题处理和报告文件。",
+    "content": "主单 status 的 SCHEDULED/IN_PROGRESS/COMPLETED/CANCELLED 表示已排期、进行中、完成、取消；验货结果另含 PENDING/PASS/FAIL/REJECTED/CONDITIONAL_PASS/CANCELLED，主单完成不自动等于检验合格。\n问题状态为 DRAFT/OPEN/IN_PROGRESS/RESOLVED/CLOSED/CANCELLED，问题解决与关闭是不同记录。事件类型可区分客户、第三方、巡线、自检、复验和抽检；缺陷严重度与处置方式分别记录。先核对客户、订单、验货日期和事件，再填写问题或生成相应报告。\n排期导入先预览，再逐项选择 UPDATE/KEEP/CREATE/SKIP 后确认，不能把预览成功当成业务已更新。报告 GENERATED/FAILED 描述生成结果；文档 DRAFT/FINAL/REVISED 描述文档版本状态，生成报告不代替问题关闭或业务审核。\n读取、编辑、导入、报告和集团汇总分别检查权限。集团汇总要求显式全局授权，不能从本厂职位推断跨厂权限。助手不读取真实检验结果，不自动确认导入、改验货结论或关闭问题。",
+    "steps": [
+      {
+        "title": "核对主单和事件",
+        "description": "确认厂区、客户、日期及主单进度，另看本次验货结果。",
+        "anchor_id": "qc-inspection.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "复核导入或问题",
+        "description": "导入先逐行决策；问题单独记录严重度、处置与处理状态。",
+        "anchor_id": "qc-inspection.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "检查报告与闭环",
+        "description": "核对报告生成状态和版本，再回原业务确认问题解决或关闭。",
+        "anchor_id": "qc-inspection.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/schemas/qc_inspection.py",
+        "symbol": "QcOrderStatus",
+        "sha256": "4bc7f6d4689bf71e741681fe9d728b906b3c96076856a91ff014ba4de318a378"
+      },
+      {
+        "path": "backend/app/schemas/qc_inspection.py",
+        "symbol": "QcScheduleDecisionAction",
+        "sha256": "4bc7f6d4689bf71e741681fe9d728b906b3c96076856a91ff014ba4de318a378"
+      },
+      {
+        "path": "backend/app/api/qc_inspection.py",
+        "symbol": "_ensure_permission",
+        "sha256": "8ee2ae2642cdebf4b2275782994bd5b4dabc2d721cb2eeb73fdfc8bcb4480378"
+      }
+    ],
+    "knowledge_version": "2026.10.08-v2",
+    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "status": "verified"
+  }
+]

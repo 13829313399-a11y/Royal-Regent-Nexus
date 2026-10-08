@@ -1,0 +1,57 @@
+[
+  {
+    "id": "carton-mark.overview",
+    "module_id": "carton-mark",
+    "title": "箱唛模板与核验",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "carton-mark-template",
+      "carton-mark-check",
+      "qc-carton-mark-check"
+    ],
+    "factory_ids": [],
+    "anchor_id": "carton-mark.overview",
+    "field_keys": [],
+    "summary": "核对客户资料、印刷文件与实物照片，分别保留自动结果和人工放行依据。",
+    "content": "先确认厂区、客户与模板版本，再上传对应 Excel/PDF 或正唛、侧唛照片。单次自动核验需要非空 PDF、正唛照片和侧唛照片；批量照片核验至少包含一张正唛或侧唛照片。上传、绑定、核验是不同操作，文件上传成功不代表核验通过。\n核验结果反映本次资料比较，不证明所有实物合格。模板的 check_status 是自动核对状态；manual_released、放行理由、操作者和时间是单独的人工记录。自动“核对通过”的模板无需人工放行；已放行模板不能重复放行，理由至少 5 个字符。重新核验会撤销原人工放行记录，应重新查看结果。\n先核对资料版本与照片分组，再逐项处理差异；需人工放行时在原页面说明依据并确认。厂区/客户范围和上传、核验、放行权限由原接口校验；助手只能解释，不会修改模板、上传照片或代为放行。",
+    "steps": [
+      {
+        "title": "核对资料归属",
+        "description": "检查厂区、客户、模板版本及正侧唛照片是否对应同一产品。",
+        "anchor_id": "carton-mark.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "检查核验结果",
+        "description": "对照 Excel、PDF 和实物照片查看差异；上传成功不代表通过。",
+        "anchor_id": "carton-mark.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "处理复核",
+        "description": "回原页面处理差异或填写人工放行理由；重新核验后重新确认放行状态。",
+        "anchor_id": "carton-mark.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/api/carton_mark.py",
+        "symbol": "auto-check",
+        "sha256": "f91850a795d86200a4bf08985e8a3b84df23e80497f5ac6afd4aecafbaec32aa"
+      },
+      {
+        "path": "backend/app/services/carton_mark_library.py",
+        "symbol": "manually_release_carton_mark_template",
+        "sha256": "54ea912b68c3f1112e68fbaf05a5f16c9680a99de645b3dffa431c64ce52a8c4"
+      }
+    ],
+    "knowledge_version": "2026.10.08-v2",
+    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "status": "verified"
+  }
+]
