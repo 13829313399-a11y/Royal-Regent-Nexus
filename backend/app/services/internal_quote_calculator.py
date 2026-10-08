@@ -298,7 +298,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     },
     "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "fixed 13"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/UV/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "cost_allocation": "split for explicit oil/labor; direct reserved for legacy quick rows", "paint_cost_hkd": "optional decimal>=0; blank pair requires completion", "labor_cost_hkd": "optional decimal>=0; missing one equals total minus other", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
     "slush": {"lines": [{"product_code": "text", "item": "glue part name", "material": "record only", "weight_g": "record only decimal>=0", "daily_output_24h": "record only decimal>=0", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "remark": "text"}], "formula": "line total HKD = quantity * unit price HKD; total RMB = total HKD * frozen RMB/HKD rate"},
-    "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0", "exchange_rate": "optional row RMB/HKD rate; defaults frozen rate", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode cost HKD = usage * RMB unit price / row exchange rate and price HKD = cost HKD * markup; old rows without a row rate use the frozen RMB/HKD rate"},
+    "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0; legacy defaults RMB", "unit_price_hkd": "decimal>=0", "unit_price_source_currency": "RMB|HKD; HKD bypasses division by FX", "exchange_rate": "optional row RMB/HKD rate; defaults frozen rate", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode cost HKD = usage * HKD unit price, or usage * RMB unit price / row exchange rate and price HKD = cost HKD * markup; old rows without a row rate use the frozen RMB/HKD rate"},
     "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
     "assembly": {
         "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "total_persons": "decimal>0 when processes is empty", "processes": [{"name": "text", "persons": "decimal>=0", "remark": "text"}]}],
@@ -1571,13 +1571,13 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
             contains_labor_line = contains_labor_line or is_labor_line
             pieces = decimal_value(row.get("pieces"), "车缝裁片数")
             usage = decimal_value(row.get("usage"), "车缝用量")
-            unit_price = decimal_value(row.get("unit_price_rmb"), "车缝物料价")
             exchange_rate = positive_value(row.get("exchange_rate"), "车缝行汇率", str(fx))
+            unit_price, unit_price_hkd, source_currency = dual_currency_unit_prices(row, exchange_rate, "车缝物料价")
             markup = decimal_value(row.get("markup"), "车缝码点", "1")
             if markup <= ZERO:
                 markup = Decimal("1")
             cost_rmb = usage * unit_price
-            cost_hkd = cost_rmb / exchange_rate
+            cost_hkd = usage * unit_price_hkd
             line_total_rmb = cost_rmb * markup
             line_total_hkd = cost_hkd * markup
             group_total_rmb += line_total_rmb
@@ -1599,6 +1599,8 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
                 "pieces": decimal_text(pieces),
                 "usage": decimal_text(usage),
                 "unit_price_rmb": decimal_text(unit_price),
+                "unit_price_hkd": decimal_text(unit_price_hkd),
+                "unit_price_source_currency": source_currency,
                 "exchange_rate": decimal_text(exchange_rate),
                 "cost_rmb": decimal_text(cost_rmb),
                 "price_rmb": decimal_text(cost_rmb),
@@ -1607,7 +1609,7 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
                 "cost_kind": "labor" if is_labor_line else "material",
                 "remark": str(row.get("remark") or row.get("note") or ""),
                 "source_row": row.get("source_row", ""),
-                "formula": "usage * unit_price_rmb / exchange_rate * markup",
+                "formula": "usage * unit_price_hkd * markup" if source_currency == "HKD" else "usage * unit_price_rmb / exchange_rate * markup",
                 "amount_rmb": decimal_text(line_total_rmb),
                 "amount_hkd": decimal_text(line_total_hkd),
             })

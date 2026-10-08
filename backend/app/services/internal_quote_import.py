@@ -1114,6 +1114,9 @@ def _parse_sewing(
     next_detail_row_is_product_title = False
     warnings: list[str] = []
     total_rows = 0
+    source_currency = "HKD"
+    price_currency = "HKD"
+    price_is_cost = False
 
     for source_index, row in enumerate(rows, start=1):
         nonempty = [text(value) for value in row if text(value)]
@@ -1135,10 +1138,30 @@ def _parse_sewing(
                 "usage": column_index(row, ("用量",)),
                 "unit": preferred_column_index(row, ("物料价(RMB)", "物料价", "单价(RMB)", "单价")),
                 "exchange_rate": preferred_column_index(row, ("汇率", "RMB/HKD汇率", "RMB→HKD汇率")),
+                "currency": preferred_column_index(row, ("单价币种", "币种")),
                 "markup": column_index(row, ("码点",)),
                 "price": total_price_column,
                 "note": column_index(row, ("备注",)),
             }
+            def header_currency(value: object) -> str | None:
+                label = text(value).upper()
+                if any(token in label for token in ("HKD", "HK$", "港币", "港幣")):
+                    return "HKD"
+                if any(token in label for token in ("RMB", "CNY", "人民币", "人民幣")):
+                    return "RMB"
+                return None
+
+            # The legacy no-rate sewing sheet already contains HKD prices.
+            # The downloadable rate-column template still takes RMB inputs.
+            source_currency = header_currency(value_at(row, columns["unit"])) or (
+                "RMB" if columns["exchange_rate"] is not None
+                else header_currency(value_at(row, columns["price"])) or "HKD"
+            )
+            price_currency = header_currency(value_at(row, columns["price"])) or (
+                "HKD" if columns["exchange_rate"] is not None else source_currency
+            )
+            price_is_cost = "成本" in text(value_at(row, columns["price"]))
+            warnings.append(f"第 {source_index} 行表头：单价按 {source_currency} 导入；港币单价不再除以汇率")
             if current is None or current.get("materials"):
                 name = pending_title or f"导入产品 {len(groups) + 1}"
                 current = {
@@ -1163,6 +1186,9 @@ def _parse_sewing(
         usage = number(value_at(row, columns["usage"]))
         unit = number(value_at(row, columns["unit"]))
         exchange_rate = number(value_at(row, columns["exchange_rate"]))
+        row_currency = text(value_at(row, columns["currency"])).upper() or source_currency
+        if row_currency not in {"RMB", "HKD"}:
+            raise ValueError(f"第 {source_index} 行单价币种必须是 RMB 或 HKD")
         price = number(value_at(row, columns["price"]))
         part = text(value_at(row, columns["part"]))
         if any("合计" in value for value in nonempty):
@@ -1200,14 +1226,21 @@ def _parse_sewing(
             material = last_material
         if not material:
             continue
-        usage_value = max(usage or Decimal("1"), Decimal("0"))
+        usage_value = max(usage if usage is not None else Decimal("1"), Decimal("0"))
         markup_value = max(number(value_at(row, columns["markup"]), Decimal("1")) or Decimal("1"), Decimal("0"))
         if markup_value <= 0:
             markup_value = Decimal("1")
         if unit is None:
-            price_to_rmb = exchange_rate if exchange_rate is not None and exchange_rate > 0 else Decimal("1")
+            # If only a derived price exists, retain that price's currency when
+            # no usable conversion rate is supplied instead of mislabelling it.
+            conversion = Decimal("1")
+            if price_currency != row_currency:
+                if exchange_rate is not None and exchange_rate > 0:
+                    conversion = exchange_rate if row_currency == "RMB" else Decimal("1") / exchange_rate
+                else:
+                    row_currency = price_currency
             unit = (
-                price * price_to_rmb / usage_value / markup_value
+                price * conversion / usage_value / (Decimal("1") if price_is_cost else markup_value)
                 if price is not None and usage_value > 0
                 else Decimal("0")
             )
@@ -1233,7 +1266,8 @@ def _parse_sewing(
                     if columns["below_moq_fee_rmb"] is not None else {}
                 ),
                 "usage": precise_decimal_text(usage_value),
-                "unit_price_rmb": precise_decimal_text(max(unit, Decimal("0"))),
+                f"unit_price_{row_currency.lower()}": precise_decimal_text(max(unit, Decimal("0"))),
+                "unit_price_source_currency": row_currency,
                 **(
                     {"exchange_rate": precise_decimal_text(max(exchange_rate or Decimal("0"), Decimal("0")))}
                     if columns["exchange_rate"] is not None and exchange_rate is not None and exchange_rate > 0 else {}
@@ -1248,7 +1282,7 @@ def _parse_sewing(
     if not groups:
         raise ValueError("已识别车缝表头，但没有解析到车缝产品分组")
     warnings.append(
-        "源表成本、总价钱和合计仅用于核对；保存后按用量/码 × 单价 RMB ÷ 行汇率 × 码点由服务端重算 HKD，裁片数不参与金额"
+        "源表成本、总价钱和合计仅用于核对；保存后按用量/码 × 单价 HKD × 码点，或用量/码 × 单价 RMB ÷ 行汇率 × 码点由服务端重算 HKD，裁片数不参与金额"
     )
     return {"groups": groups}, total_rows, warnings
 
